@@ -445,6 +445,7 @@ impl Debug for HDFSMultiPartUpload {
     }
 }
 
+#[async_trait]
 impl MultipartUpload for HDFSMultiPartUpload {
     fn put_part(&mut self, data: PutPayload) -> UploadPart {
         let writer = self.writer.clone();

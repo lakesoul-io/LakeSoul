@@ -11,15 +11,15 @@ use async_trait::async_trait;
 
 use arrow::datatypes::{Schema, SchemaRef};
 
+use datafusion::catalog::Session;
 use datafusion::datasource::file_format::FileFormat;
 use datafusion::datasource::listing::{ListingOptions, ListingTable, ListingTableUrl};
 use datafusion::execution::context::SessionState;
+use datafusion::logical_expr::{TableProviderFilterPushDown, TableType};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::{datasource::TableProvider, logical_expr::Expr};
-
-use datafusion::logical_expr::{TableProviderFilterPushDown, TableType};
 use datafusion_common::{DataFusionError, Result};
-use tracing::{debug, instrument};
+use tracing::debug;
 
 use crate::helpers::listing_table_from_lakesoul_io_config;
 use crate::lakesoul_io_config::LakeSoulIOConfig;
@@ -101,10 +101,9 @@ impl TableProvider for LakeSoulListingTable {
         TableType::Base
     }
 
-    #[instrument]
     async fn scan(
         &self,
-        state: &SessionState,
+        state: &dyn Session,
         projection: Option<&Vec<usize>>,
         // filters and limit can be used here to inject some push-down operations if needed
         filters: &[Expr],
@@ -126,17 +125,14 @@ impl TableProvider for LakeSoulListingTable {
             filters
                 .iter()
                 .map(|f| {
-                    if let Ok(cols) = f.to_columns() {
-                        if self.lakesoul_io_config.parquet_filter_pushdown
-                            && cols
-                                .iter()
-                                .all(|col| self.lakesoul_io_config.primary_keys.contains(&col.name))
-                        {
-                            // use primary key
-                            Ok(TableProviderFilterPushDown::Inexact)
-                        } else {
-                            Ok(TableProviderFilterPushDown::Unsupported)
-                        }
+                    let cols = f.column_refs();
+                    if self.lakesoul_io_config.parquet_filter_pushdown
+                        && cols
+                            .iter()
+                            .all(|col| self.lakesoul_io_config.primary_keys.contains(&col.name))
+                    {
+                        // use primary key
+                        Ok(TableProviderFilterPushDown::Inexact)
                     } else {
                         Ok(TableProviderFilterPushDown::Unsupported)
                     }
@@ -147,7 +143,7 @@ impl TableProvider for LakeSoulListingTable {
 
     async fn insert_into(
         &self,
-        state: &SessionState,
+        state: &dyn Session,
         input: Arc<dyn ExecutionPlan>,
         overwrite: bool,
     ) -> Result<Arc<dyn ExecutionPlan>> {

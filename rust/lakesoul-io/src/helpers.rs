@@ -373,7 +373,7 @@ pub async fn listing_table_from_lakesoul_io_config(
             let listing_options = ListingOptions::new(file_format.clone())
                 .with_file_extension(".parquet")
                 .with_table_partition_cols(table_partition_cols);
-            let prefix = ListingTableUrl::parse_create_local_if_not_exists(lakesoul_io_config.prefix.clone(), true)?;
+            let prefix = ListingTableUrl::parse(lakesoul_io_config.prefix.clone())?;
 
             ListingTableConfig::new(prefix)
                 .with_listing_options(listing_options)
@@ -461,7 +461,7 @@ fn batch_from_partition(wrapper: &JniWrapper, schema: SchemaRef, index_field: Fi
         .collect::<Result<Vec<_>>>()?;
 
     // Add index column
-    let mut fields_with_index = schema.all_fields().into_iter().cloned().collect::<Vec<_>>();
+    let mut fields_with_index = schema.flattened_fields().into_iter().cloned().collect::<Vec<_>>();
     fields_with_index.push(index_field);
     let schema_with_index = SchemaRef::new(Schema::new(fields_with_index));
     columns.push(Arc::new(UInt32Array::from(
