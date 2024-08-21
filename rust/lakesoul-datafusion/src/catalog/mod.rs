@@ -2,12 +2,11 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use datafusion::catalog::TableReference;
 use std::env;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::SystemTime;
-
+use datafusion::catalog_common::TableReference;
 use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_metadata::MetaDataClientRef;
 use proto::proto::entity::{CommitOp, DataCommitInfo, DataFileOp, FileOp, TableInfo, Uuid};

@@ -3,14 +3,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::ops::Not;
-use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::anyhow;
 use arrow_schema::{DataType, Field, Fields, SchemaRef};
 use datafusion::functions::core::expr_ext::FieldAccessor;
-use datafusion::logical_expr::expr::ScalarFunction;
-use datafusion::logical_expr::{Expr, LogicalPlan, Operator};
+use datafusion::logical_expr::{Expr, LogicalPlan};
 use datafusion::prelude::{col, SessionContext};
 use datafusion::scalar::ScalarValue;
 use datafusion_common::DataFusionError::{External, Internal};
@@ -236,21 +234,6 @@ impl Parser {
             }
         })
     }
-}
-
-enum ScalarFunctionType {
-    Builtin(ScalarFunction),
-    Op(Operator),
-    /// [Expr::Not]
-    Not,
-    /// [Expr::Like] Used for filtering rows based on the given wildcard pattern. Case-sensitive
-    Like,
-    /// [Expr::Like] Case insensitive operator counterpart of `Like`
-    ILike,
-    /// [Expr::IsNull]
-    IsNull,
-    /// [Expr::IsNotNull]
-    IsNotNull,
 }
 
 fn qualified_expr(expr_str: &str, schema: SchemaRef) -> Option<(Expr, Arc<Field>)> {

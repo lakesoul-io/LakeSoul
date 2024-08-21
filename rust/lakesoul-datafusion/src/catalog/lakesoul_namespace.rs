@@ -4,10 +4,11 @@
 
 use crate::catalog::create_io_config_builder;
 use async_trait::async_trait;
-use datafusion::catalog::schema::SchemaProvider;
+use datafusion::catalog_common::SchemaProvider;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
+use datafusion::error::DataFusionError::External;
 use datafusion::error::Result;
 use datafusion::prelude::SessionContext;
 use lakesoul_io::datasource::file_format::LakeSoulParquetFormat;
@@ -98,46 +99,36 @@ impl SchemaProvider for LakeSoulNamespace {
 
     /// Search table by name
     /// return LakeSoulListing table
-    async fn table(&self, name: &str) -> Option<Arc<dyn TableProvider>> {
+    async fn table(&self, name: &str) -> Result<Option<Arc<dyn TableProvider>>, DataFusionError> {
         let _guard = self.namespace_lock.read().await;
-        if self
+
+        match self
             .metadata_client
             .get_table_info_by_table_name(name, &self.namespace)
             .await
-            .is_ok()
         {
-            debug!("call table() on table: {}.{}", &self.namespace, name);
-            let config;
-            if let Ok(config_builder) =
-                create_io_config_builder(self.metadata_client.clone(), Some(name), true, self.namespace()).await
-            {
-                config = config_builder.build();
-            } else {
-                return None;
-            }
-            // Maybe should change
-            let file_format = Arc::new(LakeSoulParquetFormat::new(
-                Arc::new(ParquetFormat::new()),
-                config.clone(),
-            ));
-            if let Ok(table_provider) = LakeSoulListingTable::new_with_config_and_format(
-                &self.context.state(),
-                config,
-                file_format,
-                // care this
-                false,
-            )
-            .await
-            {
-                debug!("get table provider success");
-                return Some(Arc::new(table_provider));
-            }
-            debug("get table provider fail");
-            return None;
-        } else {
-            debug("get table provider fail");
-            None
+            Ok(_) => {}
+            Err(_) => return Ok(None),
         }
+        debug!("call table() on table: {}.{}", &self.namespace, name);
+        let config = create_io_config_builder(self.metadata_client.clone(), Some(name), true, self.namespace())
+            .await
+            .map_err(|e| External(Box::new(e)))?
+            .build();
+        // Maybe should change
+        let file_format = Arc::new(LakeSoulParquetFormat::new(
+            Arc::new(ParquetFormat::new()),
+            config.clone(),
+        ));
+        let table_provider = LakeSoulListingTable::new_with_config_and_format(
+            &self.context.state(),
+            config,
+            file_format,
+            // care this
+            false,
+        )
+        .await?;
+        Ok(Some(Arc::new(table_provider)))
     }
 
     /// If supported by the implementation, adds a new table to this schema.

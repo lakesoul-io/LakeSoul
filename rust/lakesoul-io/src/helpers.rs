@@ -420,7 +420,7 @@ pub fn apply_partition_filter(wrapper: JniWrapper, schema: SchemaRef, filter: Pl
         let batch = batch_from_partition(&wrapper, schema, index_filed)?;
 
         let dataframe = context.read_batch(batch)?;
-        let df_filter = Parser::parse_proto(&filter, dataframe.schema())?;
+        let df_filter = Parser::parse_substrait_plan(&filter)?;
 
         let results = dataframe.filter(df_filter)?.collect().await?;
 

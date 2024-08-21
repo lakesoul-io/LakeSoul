@@ -11,10 +11,11 @@ use datafusion::logical_expr::Expr;
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::{ExecutionMode, PlanProperties};
 use datafusion::{
-    datasource::physical_plan::{FileScanConfig, ParquetExec},
+    datasource::physical_plan::FileScanConfig,
     execution::TaskContext,
     physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PhysicalExpr, SendableRecordBatchStream},
 };
+use datafusion::datasource::physical_plan::parquet::ParquetExecBuilder;
 use datafusion_common::config::TableParquetOptions;
 use datafusion_common::{DFSchemaRef, DataFusionError, Result};
 use datafusion_substrait::substrait::proto::Plan;
@@ -49,13 +50,15 @@ impl MergeParquetExec {
         // source file parquet scan
         let mut inputs = Vec::<Arc<dyn ExecutionPlan>>::new();
         for config in flatten_configs {
-            let single_exec = Arc::new(ParquetExec::new(
-                config,
-                predicate.clone(),
-                metadata_size_hint,
-                TableParquetOptions::default(),
-            ));
-            inputs.push(single_exec);
+            let mut builder =
+                ParquetExecBuilder::new_with_options(config, TableParquetOptions::default());
+            if let Some(predicate) = &predicate {
+                builder = builder.with_predicate(predicate.clone());
+            }
+            if let Some(metadata_size_hint) = metadata_size_hint {
+                builder = builder.with_metadata_size_hint(metadata_size_hint);
+            }
+            inputs.push(Arc::new(builder.build()));
         }
         // O(nml), n = number of schema fields, m = number of file schema fields, l = number of files
         let schema = SchemaRef::new(Schema::new(
@@ -281,7 +284,7 @@ pub fn convert_filter(df: &DataFrame, filter_str: Vec<String>, filter_protos: Ve
         str_filters.push(filter);
     }
     for p in &filter_protos {
-        let e = FilterParser::parse_proto(p, df.schema())?;
+        let e = FilterParser::parse_substrait_plan(p)?;
         proto_filters.push(e);
     }
     debug!("str filters: {:#?}", str_filters);

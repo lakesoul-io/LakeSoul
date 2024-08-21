@@ -12,15 +12,19 @@ use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaBuilder, SchemaRef};
-use datafusion::common::{project_schema, FileType, Statistics};
-use datafusion::datasource::physical_plan::ParquetExec;
+use datafusion::common::{project_schema, GetExt, Statistics};
+use datafusion::datasource::file_format::file_compression_type::FileCompressionType;
+use datafusion::datasource::file_format::parquet::ParquetFormatFactory;
+use datafusion::datasource::physical_plan::parquet::ParquetExecBuilder;
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
-use datafusion::physical_expr::PhysicalSortExpr;
+use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::union::UnionExec;
-use datafusion::physical_plan::{DisplayAs, DisplayFormatType, Distribution, Partitioning, SendableRecordBatchStream};
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, Distribution, Partitioning, PlanProperties, SendableRecordBatchStream,
+};
 use datafusion::sql::TableReference;
 use datafusion::{
     datasource::{
@@ -96,6 +100,14 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         self
     }
 
+    fn get_ext(&self) -> String {
+        ParquetFormatFactory::new().get_ext()
+    }
+
+    fn get_ext_with_compression(&self, _file_compression_type: &FileCompressionType) -> Result<String> {
+        Ok(self.get_ext())
+    }
+
     async fn infer_schema(
         &self,
         state: &SessionState,
@@ -126,11 +138,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         // If enable pruning then combine the filters to build the predicate.
         // If disable pruning then set the predicate to None, thus readers
         // will not prune data based on the statistics.
-        let predicate = self
-            .parquet_format
-            .enable_pruning(state.config_options())
-            .then(|| filters.cloned())
-            .flatten();
+        let predicate = self.parquet_format.enable_pruning().then(|| filters.cloned()).flatten();
 
         let file_schema = conf.file_schema.clone();
         let mut builder = SchemaBuilder::from(file_schema.fields());
@@ -165,15 +173,16 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
             HashMap::new();
         let mut column_nullable = HashSet::<String>::new();
 
-        for config in &flatten_conf {
-            let (partition_desc, partition_columnar_value) = partition_desc_from_file_scan_config(config)?;
+        for config in flatten_conf {
+            let (partition_desc, partition_columnar_value) = partition_desc_from_file_scan_config(&config)?;
             let partition_columnar_value = Arc::new(partition_columnar_value);
 
-            let parquet_exec = Arc::new(ParquetExec::new(
-                config.clone(),
-                predicate.clone(),
-                self.parquet_format.metadata_size_hint(state.config_options()),
-            ));
+            let mut builder = ParquetExecBuilder::new(config);
+            if let Some(predicate) = &predicate {
+                builder = builder.with_predicate(predicate.clone());
+            }
+
+            let parquet_exec = Arc::new(builder.build());
             for field in parquet_exec.schema().fields().iter() {
                 if field.is_nullable() {
                     column_nullable.insert(field.name().clone());
@@ -252,10 +261,6 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
                 as _,
         )
     }
-
-    fn file_type(&self) -> FileType {
-        FileType::PARQUET
-    }
 }
 
 // /// Execution plan for writing record batches to a [`LakeSoulParquetSink`]
@@ -276,6 +281,8 @@ pub struct LakeSoulHashSinkExec {
     metadata_client: MetaDataClientRef,
 
     range_partitions: Arc<Vec<String>>,
+
+    cache: PlanProperties,
 }
 
 impl Debug for LakeSoulHashSinkExec {
@@ -295,13 +302,19 @@ impl LakeSoulHashSinkExec {
         let (range_partitions, _) = parse_table_info_partitions(table_info.partitions.clone())
             .map_err(|_| DataFusionError::External("parse table_info.partitions failed".into()))?;
         let range_partitions = Arc::new(range_partitions);
+        let schema = make_sink_schema();
         Ok(Self {
-            input,
-            sink_schema: make_sink_schema(),
+            input: input.clone(),
+            sink_schema: schema.clone(),
             sort_order,
             table_info,
             metadata_client,
             range_partitions,
+            cache: PlanProperties::new(
+                EquivalenceProperties::new(schema),
+                Partitioning::UnknownPartitioning(1),
+                input.properties().execution_mode,
+            ),
         })
     }
 
@@ -434,6 +447,10 @@ impl DisplayAs for LakeSoulHashSinkExec {
 }
 
 impl ExecutionPlan for LakeSoulHashSinkExec {
+    fn name(&self) -> &str {
+        "LakeSoulHashSinkExec"
+    }
+
     /// Return a reference to Any that can be used for downcasting
     fn as_any(&self) -> &dyn Any {
         self
@@ -444,16 +461,8 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         self.sink_schema.clone()
     }
 
-    fn output_partitioning(&self) -> Partitioning {
-        Partitioning::UnknownPartitioning(1)
-    }
-
-    fn unbounded_output(&self, _children: &[bool]) -> Result<bool> {
-        Ok(_children[0])
-    }
-
-    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
-        None
+    fn properties(&self) -> &PlanProperties {
+        &self.cache
     }
 
     fn required_input_distribution(&self) -> Vec<Distribution> {
@@ -474,6 +483,7 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
             Some(requirements) => vec![Some(requirements.clone())],
             None => vec![self
                 .input
+                .properties()
                 .output_ordering()
                 .map(PhysicalSortRequirement::from_sort_exprs)],
         }
@@ -489,8 +499,8 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         vec![false]
     }
 
-    fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
-        vec![self.input.clone()]
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.input]
     }
 
     fn with_new_children(self: Arc<Self>, children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
@@ -501,6 +511,7 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
             table_info: self.table_info.clone(),
             range_partitions: self.range_partitions.clone(),
             metadata_client: self.metadata_client.clone(),
+            cache: self.cache.clone(),
         }))
     }
 
@@ -512,7 +523,7 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
                 "FileSinkExec can only be called on partition 0!".to_string(),
             ));
         }
-        let num_input_partitions = self.input.output_partitioning().partition_count();
+        let num_input_partitions = self.input.properties().output_partitioning().partition_count();
 
         // launch one async task per *input* partition
         let mut join_handles = vec![];

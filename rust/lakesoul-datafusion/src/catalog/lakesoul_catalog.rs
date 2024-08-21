@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::catalog::LakeSoulNamespace;
-use datafusion::catalog::schema::SchemaProvider;
 use datafusion::catalog::CatalogProvider;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::prelude::SessionContext;
@@ -13,6 +12,7 @@ use proto::proto::entity::Namespace;
 use std::any::Any;
 use std::fmt::{Debug, Formatter};
 use std::sync::{Arc, RwLock};
+use datafusion::catalog_common::SchemaProvider;
 use tokio::runtime::Handle;
 
 /// A metadata wrapper
