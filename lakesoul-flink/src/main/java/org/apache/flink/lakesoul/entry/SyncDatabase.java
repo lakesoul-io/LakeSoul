@@ -20,7 +20,6 @@ import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.table.api.TableResult;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.catalog.Catalog;
 import org.apache.flink.table.types.DataType;
@@ -341,7 +340,6 @@ public class SyncDatabase {
         }
 
         tEnvs.executeSql(sql);
-        tEnvs.executeSql("select * from lakeSoul.`default`.test_table").print();
         tEnvs.executeSql("insert into " + targetTableName + " select * from lakeSoul.`" + sourceDatabase + "`." + sourceTableName);
 
         statement.close();
