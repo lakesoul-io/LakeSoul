@@ -2,19 +2,19 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::env;
-use std::fmt::Debug;
-use std::sync::Arc;
-use std::time::SystemTime;
 use datafusion::catalog_common::TableReference;
 use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_metadata::MetaDataClientRef;
 use proto::proto::entity::{CommitOp, DataCommitInfo, DataFileOp, FileOp, TableInfo, Uuid};
+use std::env;
+use std::fmt::Debug;
+use std::sync::Arc;
+use std::time::SystemTime;
 
-use crate::lakesoul_table::helpers::create_io_config_builder_from_table_info;
-use crate::serialize::arrow_java::ArrowJavaSchema;
 // use crate::transaction::TransactionMetaInfo;
 use crate::error::{LakeSoulError, Result};
+use crate::lakesoul_table::helpers::create_io_config_builder_from_table_info;
+use crate::serialize::arrow_java::ArrowJavaSchema;
 
 // pub mod lakesoul_sink;
 // pub mod lakesoul_source;
@@ -84,6 +84,7 @@ pub(crate) async fn create_io_config_builder(
         } else {
             vec![]
         };
+        println!("get table {} files: {:?}", table_name, data_files);
         create_io_config_builder_from_table_info(Arc::new(table_info)).map(|builder| builder.with_files(data_files))
     } else {
         Ok(LakeSoulIOConfigBuilder::new())
