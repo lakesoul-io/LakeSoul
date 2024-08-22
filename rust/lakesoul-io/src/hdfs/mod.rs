@@ -19,10 +19,9 @@ use object_store::{
     Attributes, GetOptions, GetRange, GetResult, GetResultPayload, ListResult, MultipartUpload, ObjectMeta,
     ObjectStore, PutMode, PutMultipartOpts, PutOptions, PutPayload, PutResult, UploadPart,
 };
-use parquet::data_type::AsBytes;
 use std::fmt::{Debug, Display, Formatter};
 use std::io::ErrorKind::NotFound;
-use std::io::{IoSlice, SeekFrom};
+use std::io::SeekFrom;
 use std::ops::Range;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
@@ -125,15 +124,19 @@ impl ObjectStore for Hdfs {
                 source: Box::new(e),
             })?
             .compat_write();
-        let mut slices = payload.iter().map(|b| IoSlice::new(b.as_bytes())).collect::<Vec<_>>();
-        async_write
-            .write_vectored(slices.as_mut_slice())
-            .await
-            .map_err(|e| Generic {
-                store: "hdfs",
-                source: Box::new(e),
-            })?;
+        for mut bytes in payload.into_iter() {
+            async_write.write_all_buf(&mut bytes)
+                .await
+                .map_err(|e| Generic {
+                    store: "hdfs",
+                    source: Box::new(e),
+                })?
+        }
         async_write.flush().await.map_err(|e| Generic {
+            store: "hdfs",
+            source: Box::new(e),
+        })?;
+        async_write.shutdown().await.map_err(|e| Generic {
             store: "hdfs",
             source: Box::new(e),
         })?;
@@ -449,32 +452,17 @@ impl Debug for HDFSMultiPartUpload {
 impl MultipartUpload for HDFSMultiPartUpload {
     fn put_part(&mut self, data: PutPayload) -> UploadPart {
         let writer = self.writer.clone();
-        let location = self.location.clone();
         async move {
             let mut writer = writer.lock().await;
-            let mut to_write = 0;
-            let mut slices = data
-                .iter()
-                .map(|b| {
-                    to_write += b.len();
-                    IoSlice::new(b.as_bytes())
-                })
-                .collect::<Vec<_>>();
-            let write_size = writer
-                .write_vectored(slices.as_mut_slice())
-                .await
-                .map_err(|e| Generic {
-                    store: "hdfs",
-                    source: Box::new(e),
-                })?;
-            if write_size != to_write {
-                Err(Generic {
-                    store: "hdfs",
-                    source: format!("write file {} range not complete", location).into(),
-                })
-            } else {
-                Ok(())
+            for mut bytes in data.into_iter() {
+                writer.write_all_buf(&mut bytes)
+                    .await
+                    .map_err(|e| Generic {
+                        store: "hdfs",
+                        source: Box::new(e),
+                    })?;
             }
+            Ok(())
         }
         .boxed()
     }
@@ -511,15 +499,15 @@ mod tests {
     use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfigBuilder};
     use bytes::Bytes;
     use datafusion::datasource::object_store::ObjectStoreUrl;
-    use futures::{AsyncWriteExt, StreamExt};
+    use futures::StreamExt;
     use object_store::buffered::BufWriter;
     use object_store::path::Path;
-    use object_store::GetResult::Stream;
     use object_store::GetResultPayload::Stream;
     use object_store::ObjectStore;
     use rand::distributions::{Alphanumeric, DistString};
     use rand::thread_rng;
     use std::sync::Arc;
+    use tokio::io::AsyncWriteExt;
     use url::Url;
 
     fn bytes_to_string(bytes: Vec<Bytes>) -> String {
@@ -535,7 +523,7 @@ mod tests {
 
     async fn read_file_from_hdfs(path: String, object_store: Arc<dyn ObjectStore>) -> String {
         let file = object_store.get(&Path::from(path)).await.unwrap();
-        match file {
+        match file.payload {
             Stream(s) => {
                 let read_result = s
                     .collect::<Vec<object_store::Result<Bytes>>>()
@@ -551,53 +539,28 @@ mod tests {
 
     #[tokio::test]
     async fn test_hdfs() {
-        let files = vec![
-            format!("/user/{}/input/hdfs-site.xml", whoami::username()),
-            format!("/user/{}/input/yarn-site.xml", whoami::username()),
-            format!("/user/{}/input/core-site.xml", whoami::username()),
-        ];
-
+        // multipart upload and multi range get
+        let write_path = format!("/user/{}/output.test.txt", whoami::username());
+        let complete_path = format!("hdfs://chenxu-dev:9000{}", write_path);
+        let url = Url::parse(complete_path.as_str()).unwrap();
         let mut conf = LakeSoulIOConfigBuilder::new()
             .with_thread_num(2)
             .with_batch_size(8192)
             .with_max_row_group_size(250000)
-            .with_object_store_option("fs.defaultFS".to_string(), "hdfs://localhost:9000".to_string())
+            .with_object_store_option("fs.defaultFS".to_string(), "hdfs://chenxu-dev:9000".to_string())
             .with_object_store_option("fs.hdfs.user".to_string(), whoami::username())
             .with_files(vec![
-                format!("hdfs://localhost:9000{}", files[0]),
-                format!("hdfs://{}", files[1]),
-                files[2].clone(),
+                write_path.clone()
             ])
             .build();
-
         let sess_ctx = create_session_context(&mut conf).unwrap();
-
-        let url = Url::parse(conf.files[0].as_str()).unwrap();
+        println!("files: {:?}", conf.files);
         let object_store = sess_ctx
             .runtime_env()
             .object_store(ObjectStoreUrl::parse(&url[..url::Position::BeforePath]).unwrap())
             .unwrap();
 
-        assert_eq!(
-            conf.files,
-            vec![
-                format!("hdfs://localhost:9000{}", files[0]),
-                format!("hdfs://localhost:9000{}", files[1]),
-                format!("hdfs://localhost:9000{}", files[2]),
-            ]
-        );
-        let meta0 = object_store.head(&Path::from(files[0].as_str())).await.unwrap();
-        assert_eq!(meta0.location, Path::from(files[0].as_str()));
-        assert_eq!(meta0.size, 867);
-
-        let s = read_file_from_hdfs(files[1].clone(), object_store.clone()).await;
-        let path = format!("{}/etc/hadoop/yarn-site.xml", std::env::var("HADOOP_HOME").unwrap());
-        let f = std::fs::read_to_string(path).unwrap();
-        assert_eq!(s, f);
-
-        // multipart upload and multi range get
-        let write_path = format!("/user/{}/output/test.txt", whoami::username());
-        let mut write = BufWriter::new(object_store, Path::from(write_path));
+        let mut write = BufWriter::new(object_store.clone(), Path::from(write_path.clone()));
         let mut rng = thread_rng();
 
         let size = 64 * 1024 * 1024usize;
@@ -611,9 +574,24 @@ mod tests {
             write.write_all(buf).await.unwrap();
         }
         write.flush().await.unwrap();
-        write.close().await.unwrap();
+        write.shutdown().await.unwrap();
         drop(write);
 
+        assert_eq!(
+            conf.files,
+            vec![
+                complete_path,
+            ]
+        );
+        let meta0 = object_store.head(&Path::from(write_path.as_str())).await.unwrap();
+        assert_eq!(meta0.location, Path::from(write_path.as_str()));
+        assert_eq!(meta0.size, size);
+
+        // test get
+        let s = read_file_from_hdfs(write_path.clone(), object_store.clone()).await;
+        assert_eq!(s, string);
+
+        // test get_range
         let read_concurrency = 16;
         let step = size / read_concurrency;
         let ranges = (0..read_concurrency)
@@ -635,6 +613,7 @@ mod tests {
         let result = bytes_to_string(result);
         assert_eq!(result, string);
 
+        // test get_ranges
         let result = object_store
             .get_ranges(&Path::from(write_path.as_str()), ranges.as_slice())
             .await
