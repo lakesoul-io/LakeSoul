@@ -11,12 +11,12 @@ use arrow::error::ArrowError;
 use arrow_schema::{Schema, SchemaRef};
 use datafusion::datasource::object_store::ObjectStoreUrl;
 pub use datafusion::error::{DataFusionError, Result};
-use datafusion::execution::context::{QueryPlanner, SessionState};
+use datafusion::execution::context::QueryPlanner;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
+use datafusion::execution::session_state::SessionStateBuilder;
 use datafusion::logical_expr::Expr;
 use datafusion::optimizer::analyzer::type_coercion::TypeCoercion;
 use datafusion::optimizer::push_down_filter::PushDownFilter;
-use datafusion::optimizer::push_down_projection::PushDownProjection;
 use datafusion::optimizer::rewrite_disjunctive_predicate::RewriteDisjunctivePredicate;
 use datafusion::optimizer::simplify_expressions::SimplifyExpressions;
 use datafusion::optimizer::unwrap_cast_in_comparison::UnwrapCastInComparison;
@@ -347,9 +347,10 @@ pub fn register_s3_object_store(url: &Url, config: &LakeSoulIOConfig, runtime: &
     }
 
     if bucket.is_none() {
-        return Err(DataFusionError::ArrowError(ArrowError::InvalidArgumentError(
-            "missing fs.s3a.bucket".to_string(),
-        )));
+        return Err(DataFusionError::ArrowError(
+            ArrowError::InvalidArgumentError("missing fs.s3a.bucket".to_string()),
+            None,
+        ));
     }
 
     let retry_config = RetryConfig::default();
@@ -476,7 +477,6 @@ pub fn create_session_context_with_planner(
     let mut sess_conf = SessionConfig::default()
         .with_batch_size(config.batch_size)
         .with_parquet_pruning(true)
-        .with_prefetch(config.prefetch_size)
         .with_information_schema(true)
         .with_create_default_catalog_and_schema(true);
 
@@ -484,7 +484,6 @@ pub fn create_session_context_with_planner(
     sess_conf.options_mut().optimizer.prefer_hash_join = false; //if true, panicked at 'range end out of bounds'
     sess_conf.options_mut().execution.parquet.pushdown_filters = config.parquet_filter_pushdown;
     sess_conf.options_mut().execution.target_partitions = 1;
-    // sess_conf.options_mut().catalog.default_catalog = "lakesoul".into();
 
     let runtime = RuntimeEnv::new(RuntimeConfig::new())?;
 
@@ -519,11 +518,20 @@ pub fn create_session_context_with_planner(
     info!("NativeIO final config: {:?}", config);
 
     // create session context
-    let mut state = if let Some(planner) = planner {
-        SessionState::new_with_config_rt(sess_conf, Arc::new(runtime)).with_query_planner(planner)
-    } else {
-        SessionState::new_with_config_rt(sess_conf, Arc::new(runtime))
-    };
+    let mut builder = SessionStateBuilder::new()
+        .with_config(sess_conf)
+        .with_runtime_env(Arc::new(runtime))
+        .with_analyzer_rules(vec![Arc::new(TypeCoercion {})])
+        .with_optimizer_rules(vec![
+            Arc::new(PushDownFilter {}),
+            Arc::new(SimplifyExpressions {}),
+            Arc::new(UnwrapCastInComparison {}),
+            Arc::new(RewriteDisjunctivePredicate {}),
+        ]);
+    if let Some(planner) = planner {
+        builder = builder.with_query_planner(planner);
+    }
+    let state = builder.build();
     // only keep projection/filter rules as others are unnecessary
     let physical_opt_rules = state
         .physical_optimizers()
@@ -537,18 +545,9 @@ pub fn create_session_context_with_planner(
             }
         })
         .collect();
-    state = state
-        .with_analyzer_rules(vec![Arc::new(TypeCoercion {})])
-        .with_optimizer_rules(vec![
-            Arc::new(PushDownFilter {}),
-            Arc::new(PushDownProjection {}),
-            Arc::new(SimplifyExpressions {}),
-            Arc::new(UnwrapCastInComparison {}),
-            Arc::new(RewriteDisjunctivePredicate {}),
-        ])
-        .with_physical_optimizer_rules(physical_opt_rules);
+    let builder = SessionStateBuilder::new_from_existing(state).with_physical_optimizer_rules(physical_opt_rules);
 
-    Ok(SessionContext::new_with_state(state))
+    Ok(SessionContext::new_with_state(builder.build()))
 }
 
 #[cfg(test)]

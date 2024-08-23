@@ -4,5 +4,5 @@
 
 pub mod empty_schema;
 pub mod file_format;
-pub mod listing;
+pub mod table;
 pub mod physical_plan;

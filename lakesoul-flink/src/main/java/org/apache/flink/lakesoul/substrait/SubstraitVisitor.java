@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 package org.apache.flink.lakesoul.substrait;
 
 import com.dmetasoul.lakesoul.lakesoul.io.DateTimeUtils;

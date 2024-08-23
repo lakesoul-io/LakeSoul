@@ -18,4 +18,4 @@ prost = { workspace = true }
 prost-build = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.build-dependencies]
-protobuf-src = "1.1.0"
+protobuf-src = "2.0.0"

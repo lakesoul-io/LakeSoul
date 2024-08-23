@@ -14,10 +14,7 @@ use arrow_arith::boolean::and;
 use arrow_cast::cast;
 
 use datafusion::{
-    common::{DFField, DFSchema},
-    error::DataFusionError,
-    execution::context::ExecutionProps,
-    logical_expr::Expr,
+    common::DFSchema, error::DataFusionError, execution::context::ExecutionProps, logical_expr::Expr,
     physical_expr::create_physical_expr,
 };
 use lakesoul_metadata::MetaDataClientRef;
@@ -46,6 +43,7 @@ pub(crate) fn create_io_config_builder_from_table_info(table_info: Arc<TableInfo
 }
 
 pub async fn prune_partitions(
+    table_info: &TableInfo,
     all_partition_info: Vec<PartitionInfo>,
     filters: &[Expr],
     partition_cols: &[(String, DataType)],
@@ -87,7 +85,12 @@ pub async fn prune_partitions(
     let df_schema = DFSchema::new_with_metadata(
         partition_cols
             .iter()
-            .map(|(n, d)| DFField::new_unqualified(n, d.clone(), true))
+            .map(|(n, d)| {
+                (
+                    Some(format!("{}.{}", table_info.table_namespace, table_info.table_name).into()),
+                    Arc::new(Field::new(n, d.clone(), false)),
+                )
+            })
             .collect(),
         Default::default(),
     )?;
@@ -99,7 +102,7 @@ pub async fn prune_partitions(
 
     // Applies `filter` to `batch` returning `None` on error
     let do_filter = |filter| -> Option<ArrayRef> {
-        let expr = create_physical_expr(filter, &df_schema, &schema, &props).ok()?;
+        let expr = create_physical_expr(filter, &df_schema, &props).ok()?;
         expr.evaluate(&batch).ok()?.into_array(all_partition_info.len()).ok()
     };
 

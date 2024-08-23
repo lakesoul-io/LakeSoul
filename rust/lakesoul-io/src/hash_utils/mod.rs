@@ -122,6 +122,18 @@ impl HashValue for [u8] {
     }
 }
 
+impl HashValue for IntervalDayTime {
+    fn hash_one(&self, _seed: u32) -> u32 {
+        panic!("IntervalDayTimeType is not supported yet.");
+    }
+}
+
+impl HashValue for IntervalMonthDayNano {
+    fn hash_one(&self, _seed: u32) -> u32 {
+        panic!("IntervalDayTimeType is not supported yet.");
+    }
+}
+
 /// Builds hash values of PrimitiveArray and writes them into `hashes_buffer`
 /// If `rehash==true` this combines the previous hash value in the buffer
 /// with the new hash using `combine_hashes`
@@ -132,7 +144,7 @@ fn hash_array_primitive<T>(
     rehash: bool,
 ) where
     T: ArrowPrimitiveType,
-    <T as arrow_array::ArrowPrimitiveType>::Native: HashValue,
+    <T as ArrowPrimitiveType>::Native: HashValue,
 {
     assert_eq!(
         hashes_buffer.len(),
@@ -436,7 +448,6 @@ mod tests {
 
     #[test]
     // Tests actual values of hashes, which are different if forcing collisions
-    #[cfg(not(feature = "force_hash_collisions"))]
     fn create_hashes_for_dict_arrays() {
         let strings = [Some("foo"), None, Some("bar"), Some("foo"), None];
 
@@ -485,7 +496,6 @@ mod tests {
 
     #[test]
     // Tests actual values of hashes, which are different if forcing collisions
-    #[cfg(not(feature = "force_hash_collisions"))]
     fn create_hashes_for_list_arrays() {
         let data = vec![
             Some(vec![Some(0), Some(1), Some(2)]),
@@ -511,7 +521,6 @@ mod tests {
 
     #[test]
     // Tests actual values of hashes, which are different if forcing collisions
-    #[cfg(not(feature = "force_hash_collisions"))]
     fn create_multi_column_hash_for_dict_arrays() {
         let strings1 = [Some("foo"), None, Some("bar")];
         let strings2 = [Some("blarg"), Some("blah"), None];

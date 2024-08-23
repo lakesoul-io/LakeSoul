@@ -20,6 +20,7 @@ import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.table.api.TableDescriptor;
 import org.apache.flink.table.api.TableResult;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.catalog.Catalog;
@@ -255,10 +256,13 @@ public class SyncDatabase {
         Catalog lakesoulCatalog = new LakeSoulCatalog();
         tEnvs.registerCatalog("lakeSoul", lakesoulCatalog);
         String jdbcUrl = url + targetDatabase;
-        TableResult schemaResult = tEnvs.executeSql(
-                "SELECT * FROM lakeSoul.`" + sourceDatabase + "`.`" + sourceTableName + "` LIMIT 1");
-        DataType[] fieldDataTypes = schemaResult.getTableSchema().getFieldDataTypes();
-        String[] fieldNames = schemaResult.getTableSchema().getFieldNames();
+//        TableResult schemaResult = tEnvs.executeSql(
+//                "SELECT * FROM lakeSoul.`" + sourceDatabase + "`.`" + sourceTableName + "` LIMIT 1");
+        Table lakesoulTable = tEnvs.from("`lakesoul`.`" + sourceDatabase + "`.`" + sourceTableName + "`");
+        DataType[] fieldDataTypes = lakesoulTable.getSchema().getFieldDataTypes();
+        String[] fieldNames = lakesoulTable.getSchema().getFieldNames();
+//        DataType[] fieldDataTypes = schemaResult.getTableSchema().getFieldDataTypes();
+//        String[] fieldNames = schemaResult.getTableSchema().getFieldNames();
         String tablePk = getTablePk(sourceDatabase, sourceTableName);
         String[] stringFieldsTypes = getMysqlFieldsTypes(fieldDataTypes, fieldNames, tablePk);
         String createTableSql = pgAndMsqlCreateTableSql(stringFieldsTypes, fieldNames, targetTableName, tablePk);

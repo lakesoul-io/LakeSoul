@@ -21,7 +21,7 @@ use datafusion::{
     physical_planner::create_physical_sort_expr,
 };
 use datafusion_common::DataFusionError::{External, Internal};
-use datafusion_common::{cast::as_primitive_array, DFSchema, DataFusionError, Result, ScalarValue};
+use datafusion_common::{cast::as_primitive_array, DFSchema, Result, ScalarValue};
 
 use datafusion_substrait::substrait::proto::Plan;
 use object_store::path::Path;
@@ -43,7 +43,6 @@ use crate::{
 pub fn column_names_to_physical_sort_expr(
     columns: &[String],
     input_dfschema: &DFSchema,
-    input_schema: &Schema,
     session_state: &SessionState,
 ) -> Result<Vec<PhysicalSortExpr>> {
     columns
@@ -52,7 +51,6 @@ pub fn column_names_to_physical_sort_expr(
             create_physical_sort_expr(
                 &col(column).sort(true, true),
                 input_dfschema,
-                input_schema,
                 session_state.execution_props(),
             )
         })
@@ -62,7 +60,6 @@ pub fn column_names_to_physical_sort_expr(
 pub fn column_names_to_physical_expr(
     columns: &[String],
     input_dfschema: &DFSchema,
-    input_schema: &Schema,
     session_state: &SessionState,
 ) -> Result<Vec<Arc<dyn PhysicalExpr>>> {
     let runtime_expr = columns
@@ -71,7 +68,6 @@ pub fn column_names_to_physical_expr(
             create_physical_expr(
                 &col(column),
                 input_dfschema,
-                input_schema,
                 session_state.execution_props(),
             )
         })
@@ -92,7 +88,7 @@ fn range_partition_to_partition_cols(
 pub fn get_columnar_values(
     batch: &RecordBatch,
     range_partitions: Arc<Vec<String>>,
-) -> datafusion::error::Result<Vec<(String, ScalarValue)>> {
+) -> Result<Vec<(String, ScalarValue)>> {
     range_partitions
         .iter()
         .map(|range_col| {
@@ -102,12 +98,12 @@ pub fn get_columnar_values(
                     Err(e) => Err(e),
                 }
             } else {
-                Err(datafusion::error::DataFusionError::External(
+                Err(External(
                     format!("Invalid partition desc of {}", range_col).into(),
                 ))
             }
         })
-        .collect::<datafusion::error::Result<Vec<_>>>()
+        .collect::<Result<Vec<_>>>()
 }
 
 pub fn format_scalar_value(v: &ScalarValue) -> String {
@@ -281,7 +277,7 @@ pub fn partition_desc_to_scalar_values(schema: SchemaRef, partition_desc: String
                     part_values.push((name, val));
                 }
                 _ => {
-                    return Err(datafusion::error::DataFusionError::External(
+                    return Err(External(
                         format!("Invalid partition_desc: {}", partition_desc).into(),
                     ))
                 }
@@ -320,7 +316,7 @@ pub fn partition_desc_from_file_scan_config(conf: &FileScanConfig) -> Result<(St
                         .map(|(idx, col)| (col.name().clone(), file.partition_values[idx].to_string())),
                 ),
             )),
-            None => Err(DataFusionError::External(
+            None => Err(External(
                 format!("Invalid file_group {:?}", conf.file_groups).into(),
             )),
         }
@@ -366,7 +362,6 @@ pub async fn listing_table_from_lakesoul_io_config(
 
             ListingTableConfig::new_with_multi_paths(table_paths)
                 .with_listing_options(listing_options)
-                // .with_schema(Arc::new(builder.finish()))
                 .with_schema(resolved_schema)
         }
         true => {
@@ -376,9 +371,8 @@ pub async fn listing_table_from_lakesoul_io_config(
 
             let listing_options = ListingOptions::new(file_format.clone())
                 .with_file_extension(".parquet")
-                .with_table_partition_cols(table_partition_cols)
-                .with_insert_mode(datafusion::datasource::listing::ListingTableInsertMode::AppendNewFiles);
-            let prefix = ListingTableUrl::parse_create_local_if_not_exists(lakesoul_io_config.prefix.clone(), true)?;
+                .with_table_partition_cols(table_partition_cols);
+            let prefix = ListingTableUrl::parse(lakesoul_io_config.prefix.clone())?;
 
             ListingTableConfig::new(prefix)
                 .with_listing_options(listing_options)
@@ -397,7 +391,7 @@ pub async fn infer_schema(
     // Create default parquet options
     let object_store_url = table_paths
         .first()
-        .ok_or(DataFusionError::Internal("no table path".to_string()))?
+        .ok_or(Internal("no table path".to_string()))?
         .object_store();
     let store = sc.runtime_env().object_store(object_store_url.clone())?;
     let mut objects = vec![];
@@ -425,7 +419,7 @@ pub fn apply_partition_filter(wrapper: JniWrapper, schema: SchemaRef, filter: Pl
         let batch = batch_from_partition(&wrapper, schema, index_filed)?;
 
         let dataframe = context.read_batch(batch)?;
-        let df_filter = Parser::parse_proto(&filter, dataframe.schema())?;
+        let df_filter = Parser::parse_substrait_plan(filter, dataframe.schema())?;
 
         let results = dataframe.filter(df_filter)?.collect().await?;
 
@@ -466,7 +460,7 @@ fn batch_from_partition(wrapper: &JniWrapper, schema: SchemaRef, index_field: Fi
         .collect::<Result<Vec<_>>>()?;
 
     // Add index column
-    let mut fields_with_index = schema.all_fields().into_iter().cloned().collect::<Vec<_>>();
+    let mut fields_with_index = schema.flattened_fields().into_iter().cloned().collect::<Vec<_>>();
     fields_with_index.push(index_field);
     let schema_with_index = SchemaRef::new(Schema::new(fields_with_index));
     columns.push(Arc::new(UInt32Array::from(
