@@ -12,7 +12,7 @@ use datafusion::error::DataFusionError::External;
 use datafusion::error::Result;
 use datafusion::prelude::SessionContext;
 use lakesoul_io::datasource::file_format::LakeSoulParquetFormat;
-use lakesoul_io::datasource::listing::LakeSoulListingTable;
+use lakesoul_io::datasource::table::LakeSoulTableProvider;
 use lakesoul_metadata::error::LakeSoulMetaDataError;
 use lakesoul_metadata::MetaDataClientRef;
 use std::any::Any;
@@ -120,7 +120,7 @@ impl SchemaProvider for LakeSoulNamespace {
             Arc::new(ParquetFormat::new()),
             config.clone(),
         ));
-        let table_provider = LakeSoulListingTable::new_with_config_and_format(
+        let table_provider = LakeSoulTableProvider::new_with_config_and_format(
             &self.context.state(),
             config,
             file_format,
@@ -167,7 +167,7 @@ impl SchemaProvider for LakeSoulNamespace {
                                 Arc::new(ParquetFormat::new()),
                                 config.clone(),
                             ));
-                            if let Ok(table_provider) = LakeSoulListingTable::new_with_config_and_format(
+                            if let Ok(table_provider) = LakeSoulTableProvider::new_with_config_and_format(
                                 &cxt.state(),
                                 config,
                                 file_format,

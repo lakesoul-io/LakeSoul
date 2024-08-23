@@ -362,7 +362,6 @@ pub async fn listing_table_from_lakesoul_io_config(
 
             ListingTableConfig::new_with_multi_paths(table_paths)
                 .with_listing_options(listing_options)
-                // .with_schema(Arc::new(builder.finish()))
                 .with_schema(resolved_schema)
         }
         true => {
@@ -420,7 +419,7 @@ pub fn apply_partition_filter(wrapper: JniWrapper, schema: SchemaRef, filter: Pl
         let batch = batch_from_partition(&wrapper, schema, index_filed)?;
 
         let dataframe = context.read_batch(batch)?;
-        let df_filter = Parser::parse_substrait_plan(&filter)?;
+        let df_filter = Parser::parse_substrait_plan(filter, dataframe.schema())?;
 
         let results = dataframe.filter(df_filter)?.collect().await?;
 

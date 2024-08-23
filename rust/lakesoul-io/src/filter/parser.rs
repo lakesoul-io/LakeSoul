@@ -8,15 +8,24 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use arrow_schema::{DataType, Field, Fields, SchemaRef};
 use datafusion::functions::core::expr_ext::FieldAccessor;
-use datafusion::logical_expr::{Expr, LogicalPlan};
+use datafusion::logical_expr::Expr;
 use datafusion::prelude::{col, SessionContext};
 use datafusion::scalar::ScalarValue;
 use datafusion_common::DataFusionError::{External, Internal};
-use datafusion_common::{Column, Result};
-use datafusion_substrait::logical_plan::consumer::from_substrait_plan;
+use datafusion_common::{Column, DFSchema, Result};
+use datafusion_substrait::extensions::Extensions;
+use datafusion_substrait::logical_plan::consumer::from_substrait_rex;
+use datafusion_substrait::substrait::proto::expression::field_reference::ReferenceType;
+use datafusion_substrait::substrait::proto::expression::literal::LiteralType;
+use datafusion_substrait::substrait::proto::expression::reference_segment::StructField;
+use datafusion_substrait::substrait::proto::expression::{reference_segment, Literal, RexType};
+use datafusion_substrait::substrait::proto::function_argument::ArgType;
+use datafusion_substrait::substrait::proto::plan_rel::RelType::Root;
 use datafusion_substrait::substrait::proto::r#type::Nullability;
-use datafusion_substrait::substrait::proto::Plan;
-use tokio::runtime::Builder;
+use datafusion_substrait::substrait::proto::rel::RelType::Read;
+use datafusion_substrait::substrait::proto::{Expression, FunctionArgument, Plan, PlanRel, Rel, RelRoot};
+use tokio::runtime::{Builder, Handle};
+use tokio::task;
 
 pub struct Parser {}
 
@@ -63,9 +72,7 @@ impl Parser {
     }
 
     fn parse_filter_str(filter: String) -> Result<(String, String, String)> {
-        let op_offset = filter
-            .find('(')
-            .ok_or(External(anyhow!("wrong filter str").into()))?;
+        let op_offset = filter.find('(').ok_or(External(anyhow!("wrong filter str").into()))?;
         let (op, filter) = filter.split_at(op_offset);
         if !filter.ends_with(')') {
             return Err(External(anyhow!("wrong filter str").into()));
@@ -105,11 +112,7 @@ impl Parser {
             DataType::Decimal128(precision, scale) => {
                 if precision <= 18 {
                     Expr::Literal(ScalarValue::Decimal128(
-                        Some(
-                            value
-                                .parse::<i128>()
-                                .map_err(|e| External(Box::new(e)))?,
-                        ),
+                        Some(value.parse::<i128>().map_err(|e| External(Box::new(e)))?),
                         precision,
                         scale,
                     ))
@@ -128,52 +131,32 @@ impl Parser {
                 }
             }
             DataType::Boolean => Expr::Literal(ScalarValue::Boolean(Some(
-                value
-                    .parse::<bool>()
-                    .map_err(|e| External(Box::new(e)))?,
+                value.parse::<bool>().map_err(|e| External(Box::new(e)))?,
             ))),
             DataType::Binary => Expr::Literal(ScalarValue::Binary(Parser::parse_binary_array(value.as_str())?)),
             DataType::Float32 => Expr::Literal(ScalarValue::Float32(Some(
-                value
-                    .parse::<f32>()
-                    .map_err(|e| External(Box::new(e)))?,
+                value.parse::<f32>().map_err(|e| External(Box::new(e)))?,
             ))),
             DataType::Float64 => Expr::Literal(ScalarValue::Float64(Some(
-                value
-                    .parse::<f64>()
-                    .map_err(|e| External(Box::new(e)))?,
+                value.parse::<f64>().map_err(|e| External(Box::new(e)))?,
             ))),
             DataType::Int8 => Expr::Literal(ScalarValue::Int8(Some(
-                value
-                    .parse::<i8>()
-                    .map_err(|e| External(Box::new(e)))?,
+                value.parse::<i8>().map_err(|e| External(Box::new(e)))?,
             ))),
             DataType::Int16 => Expr::Literal(ScalarValue::Int16(Some(
-                value
-                    .parse::<i16>()
-                    .map_err(|e| External(Box::new(e)))?,
+                value.parse::<i16>().map_err(|e| External(Box::new(e)))?,
             ))),
             DataType::Int32 => Expr::Literal(ScalarValue::Int32(Some(
-                value
-                    .parse::<i32>()
-                    .map_err(|e| External(Box::new(e)))?,
+                value.parse::<i32>().map_err(|e| External(Box::new(e)))?,
             ))),
             DataType::Int64 => Expr::Literal(ScalarValue::Int64(Some(
-                value
-                    .parse::<i64>()
-                    .map_err(|e| External(Box::new(e)))?,
+                value.parse::<i64>().map_err(|e| External(Box::new(e)))?,
             ))),
             DataType::Date32 => Expr::Literal(ScalarValue::Date32(Some(
-                value
-                    .parse::<i32>()
-                    .map_err(|e| External(Box::new(e)))?,
+                value.parse::<i32>().map_err(|e| External(Box::new(e)))?,
             ))),
             DataType::Timestamp(_, _) => Expr::Literal(ScalarValue::TimestampMicrosecond(
-                Some(
-                    value
-                        .parse::<i64>()
-                        .map_err(|e| External(Box::new(e)))?,
-                ),
+                Some(value.parse::<i64>().map_err(|e| External(Box::new(e)))?),
                 Some(crate::constant::LAKESOUL_TIMEZONE.into()),
             )),
             DataType::Utf8 => {
@@ -215,24 +198,79 @@ impl Parser {
         Ok(res)
     }
 
-    pub(crate) fn parse_substrait_plan(plan: &Plan) -> Result<Expr> {
-        let runtime = Builder::new_current_thread().build().map_err(|e| {
-            External(Box::new(e))
-        })?;
-        runtime.block_on(async {
-            let ctx = SessionContext::default();
-            let logical_plan = from_substrait_plan(&ctx, plan).await?;
-            match logical_plan {
-                LogicalPlan::TableScan(scan) => {
-                    if scan.filters.len() == 1 {
-                        Ok(scan.filters[0].clone())
-                    } else {
-                        Err(Internal(format!("encountered wrong substrait plan {:?}", plan)))
+    // caller may only pass MapKey for field reference,
+    // we need to change it to StructField since from_substrait_field_reference
+    // only supports it
+    fn modify_substrait_argument(arguments: &mut Vec<FunctionArgument>, df_schema: &DFSchema) {
+        for arg in arguments {
+            match &mut arg.arg_type {
+                Some(ArgType::Value(Expression {
+                    rex_type: Some(RexType::Selection(f)),
+                })) => {
+                    if let Some(ReferenceType::DirectReference(reference_segment)) = &mut f.reference_type {
+                        if let Some(reference_segment::ReferenceType::MapKey(map_key)) =
+                            &mut reference_segment.reference_type
+                        {
+                            if let Some(Literal {
+                                literal_type: Some(LiteralType::String(name)),
+                                ..
+                            }) = &map_key.map_key
+                            {
+                                if let Some(idx) = df_schema.index_of_column_by_name(None, name.as_ref()) {
+                                    reference_segment.reference_type =
+                                        Some(reference_segment::ReferenceType::StructField(Box::new(StructField {
+                                            field: idx as i32,
+                                            child: None,
+                                        })));
+                                }
+                            }
+                        }
                     }
-                },
-                _ => Err(Internal(format!("encountered wrong substrait plan {:?}", plan)))
+                }
+                Some(ArgType::Value(Expression {
+                    rex_type: Some(RexType::ScalarFunction(f)),
+                })) => {
+                    Self::modify_substrait_argument(&mut f.arguments, df_schema);
+                }
+                _ => {}
             }
-        })
+        }
+    }
+
+    pub(crate) fn parse_substrait_plan(plan: Plan, df_schema: &DFSchema) -> Result<Expr> {
+        let handle = Handle::try_current();
+        let closure = async {
+            let ctx = SessionContext::default();
+            if let Some(PlanRel {
+                rel_type:
+                    Some(Root(RelRoot {
+                        input:
+                            Some(Rel {
+                                rel_type: Some(Read(mut read_rel)),
+                            }),
+                        ..
+                    })),
+            }) = plan.relations.get(0).cloned()
+            {
+                if let Some(ref mut expression) = &mut read_rel.filter {
+                    let extensions = Extensions::try_from(&plan.extensions)?;
+                    if let Some(RexType::ScalarFunction(f)) = &mut expression.rex_type {
+                        Self::modify_substrait_argument(&mut f.arguments, df_schema);
+                    }
+                    return from_substrait_rex(&ctx, expression, df_schema, &extensions).await;
+                }
+            }
+            Err(Internal(format!("encountered wrong substrait plan {:?}", plan)))
+        };
+        match handle {
+            Ok(handle) => task::block_in_place(move || handle.block_on(closure)),
+            _ => {
+                let runtime = Builder::new_current_thread()
+                    .build()
+                    .map_err(|e| External(Box::new(e)))?;
+                runtime.block_on(closure)
+            }
+        }
     }
 }
 
@@ -312,7 +350,7 @@ mod tests {
         ];
         let byte_array = unsafe { std::mem::transmute::<&[i8], &[u8]>(&byte_array[..]) };
         let plan = Plan::decode(&byte_array[..]).unwrap();
-        let e = Parser::parse_substrait_plan(&plan).unwrap();
+        let e = Parser::parse_substrait_plan(plan, df.schema()).unwrap();
         let df = df.filter(e).unwrap();
         let df = df.explain(true, true).unwrap();
         df.show().await.unwrap()

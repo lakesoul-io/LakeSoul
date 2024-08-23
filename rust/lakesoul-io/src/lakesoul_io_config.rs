@@ -484,7 +484,6 @@ pub fn create_session_context_with_planner(
     sess_conf.options_mut().optimizer.prefer_hash_join = false; //if true, panicked at 'range end out of bounds'
     sess_conf.options_mut().execution.parquet.pushdown_filters = config.parquet_filter_pushdown;
     sess_conf.options_mut().execution.target_partitions = 1;
-    // sess_conf.options_mut().catalog.default_catalog = "lakesoul".into();
 
     let runtime = RuntimeEnv::new(RuntimeConfig::new())?;
 

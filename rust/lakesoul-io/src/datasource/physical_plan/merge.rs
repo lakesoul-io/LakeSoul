@@ -7,6 +7,7 @@ use std::{any::Any, collections::HashMap};
 
 use arrow_schema::{Field, Schema, SchemaRef};
 use datafusion::dataframe::DataFrame;
+use datafusion::datasource::physical_plan::parquet::ParquetExecBuilder;
 use datafusion::logical_expr::Expr;
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::{ExecutionMode, PlanProperties};
@@ -15,7 +16,6 @@ use datafusion::{
     execution::TaskContext,
     physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PhysicalExpr, SendableRecordBatchStream},
 };
-use datafusion::datasource::physical_plan::parquet::ParquetExecBuilder;
 use datafusion_common::config::TableParquetOptions;
 use datafusion_common::{DFSchemaRef, DataFusionError, Result};
 use datafusion_substrait::substrait::proto::Plan;
@@ -50,8 +50,7 @@ impl MergeParquetExec {
         // source file parquet scan
         let mut inputs = Vec::<Arc<dyn ExecutionPlan>>::new();
         for config in flatten_configs {
-            let mut builder =
-                ParquetExecBuilder::new_with_options(config, TableParquetOptions::default());
+            let mut builder = ParquetExecBuilder::new_with_options(config, TableParquetOptions::default());
             if let Some(predicate) = &predicate {
                 builder = builder.with_predicate(predicate.clone());
             }
@@ -278,15 +277,13 @@ pub fn convert_filter(df: &DataFrame, filter_str: Vec<String>, filter_protos: Ve
     let arrow_schema = Arc::new(Schema::from(df.schema()));
     debug!("schema:{:?}", arrow_schema);
     let mut str_filters = vec![];
-    let mut proto_filters = vec![];
     for f in &filter_str {
         let filter = FilterParser::parse(f.clone(), arrow_schema.clone())?;
         str_filters.push(filter);
     }
-    for p in &filter_protos {
-        let e = FilterParser::parse_substrait_plan(p)?;
-        proto_filters.push(e);
-    }
+    let proto_filters = filter_protos.into_iter().map(|plan| {
+        FilterParser::parse_substrait_plan(plan, df.schema())
+    }).collect::<Result<Vec<_>>>()?;
     debug!("str filters: {:#?}", str_filters);
     debug!("proto filters: {:#?}", proto_filters);
     if proto_filters.is_empty() {

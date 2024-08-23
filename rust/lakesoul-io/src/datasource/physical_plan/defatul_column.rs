@@ -6,10 +6,10 @@ use std::sync::Arc;
 use std::{any::Any, collections::HashMap};
 
 use arrow_schema::SchemaRef;
+use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::PlanProperties;
 use datafusion::{
-    execution::TaskContext
-    ,
+    execution::TaskContext,
     physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, SendableRecordBatchStream},
 };
 use datafusion_common::{DataFusionError, Result};
@@ -30,12 +30,16 @@ impl DefaultColumnExec {
         target_schema: SchemaRef,
         default_column_value: Arc<HashMap<String, String>>,
     ) -> Result<Self> {
-        let properties = input.properties().clone();
+        let execution_mode = input.properties().execution_mode;
         Ok(Self {
             input,
-            target_schema,
+            target_schema: target_schema.clone(),
             default_column_value,
-            cache: properties,
+            cache: PlanProperties::new(
+                EquivalenceProperties::new(target_schema),
+                datafusion::physical_plan::Partitioning::UnknownPartitioning(1),
+                execution_mode,
+            ),
         })
     }
 }

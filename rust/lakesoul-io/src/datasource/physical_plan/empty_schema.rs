@@ -5,15 +5,15 @@
 use std::any::Any;
 use std::sync::Arc;
 
+use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;
 use arrow_schema::{Schema, SchemaRef};
+use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_plan::{ExecutionMode, PlanProperties};
 use datafusion::{
     execution::TaskContext,
     physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, SendableRecordBatchStream},
 };
-use datafusion::physical_expr::EquivalenceProperties;
-use datafusion::physical_plan::{ExecutionMode, PlanProperties};
 use datafusion_common::Result;
-use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;
 
 #[derive(Debug)]
 pub struct EmptySchemaScanExec {
@@ -29,10 +29,10 @@ impl EmptySchemaScanExec {
             count,
             empty_schema: empty_schema.clone(),
             cache: PlanProperties::new(
-            EquivalenceProperties::new(empty_schema),
-            datafusion::physical_plan::Partitioning::UnknownPartitioning(1),
-            ExecutionMode::Bounded,
-            )
+                EquivalenceProperties::new(empty_schema),
+                datafusion::physical_plan::Partitioning::UnknownPartitioning(1),
+                ExecutionMode::Bounded,
+            ),
         }
     }
 }
