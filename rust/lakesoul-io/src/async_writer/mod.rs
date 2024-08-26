@@ -4,8 +4,10 @@
 
 mod multipart_writer;
 pub use multipart_writer::MultiPartAsyncWriter;
+
 mod sort_writer;
 pub use sort_writer::SortAsyncWriter;
+
 mod partitioning_writer;
 pub use partitioning_writer::PartitioningAsyncWriter;
 
@@ -28,16 +30,25 @@ use datafusion::{
     },
 };
 use datafusion_common::{DataFusionError, Result};
+use parquet::format::FileMetaData;
+
+
+// The result of a flush operation with format (partition_desc, file_path, file_meta)
+pub type WriterFlushResult = Result<Vec<(String, String, FileMetaData)>>;
 
 #[async_trait::async_trait]
 pub trait AsyncBatchWriter {
     async fn write_record_batch(&mut self, batch: RecordBatch) -> Result<()>;
 
-    async fn flush_and_close(self: Box<Self>) -> Result<Vec<u8>>;
+    async fn flush_and_close(self: Box<Self>) -> WriterFlushResult;
 
-    async fn abort_and_close(self: Box<Self>) -> Result<Vec<u8>>;
+    async fn abort_and_close(self: Box<Self>) -> Result<()>;
 
     fn schema(&self) -> SchemaRef;
+
+    fn buffered_rows(&self) -> usize {
+        0
+    }
 }
 
 /// A VecDeque which is both std::io::Write and bytes::Buf

@@ -26,6 +26,7 @@ use derivative::Derivative;
 use log::info;
 use object_store::aws::AmazonS3Builder;
 use object_store::{ClientOptions, RetryConfig};
+use tracing::debug;
 use url::{ParseError, Url};
 
 #[cfg(feature = "hdfs")]
@@ -110,6 +111,9 @@ pub struct LakeSoulIOConfig {
 
     #[derivative(Default(value = "None"))]
     pub(crate) memory_limit: Option<usize>,
+
+    #[derivative(Default(value = "None"))]
+    pub(crate) max_file_size: Option<usize>,
 }
 
 impl LakeSoulIOConfig {
@@ -291,6 +295,11 @@ impl LakeSoulIOConfigBuilder {
         self
     }
 
+    pub fn with_max_file_size(mut self, size: usize) -> Self {
+        self.config.max_file_size = Some(size);
+        self
+    }
+
     pub fn build(self) -> LakeSoulIOConfig {
         self.config
     }
@@ -309,6 +318,10 @@ impl LakeSoulIOConfigBuilder {
 
     pub fn prefix(&self) -> &String {
         &self.config.prefix
+    }
+
+    pub fn max_file_size(&self) -> &Option<usize> {
+        &self.config.max_file_size
     }
 }
 
@@ -501,12 +514,11 @@ pub fn create_session_context_with_planner(
     sess_conf.options_mut().execution.parquet.pushdown_filters = config.parquet_filter_pushdown;
     sess_conf.options_mut().execution.target_partitions = 1;
     // sess_conf.options_mut().execution.sort_in_place_threshold_bytes = 16 * 1024;
-    sess_conf.options_mut().execution.sort_spill_reservation_bytes = 2 * 1024 * 1024;
+    // sess_conf.options_mut().execution.sort_spill_reservation_bytes = 2 * 1024 * 1024;
     // sess_conf.options_mut().catalog.default_catalog = "lakesoul".into();
 
     let mut runtime_conf = RuntimeConfig::new();
     if let Some(pool_size) = config.memory_limit {
-        dbg!(pool_size);
         let memory_pool = FairSpillPool::new(pool_size);
         runtime_conf = runtime_conf.with_memory_pool(Arc::new(memory_pool));
     }
@@ -530,7 +542,7 @@ pub fn create_session_context_with_planner(
         let normalized_prefix = register_object_store(&prefix, config, &runtime)?;
         config.prefix = normalized_prefix;
     }
-    dbg!(&config.prefix);
+    debug!("{}", &config.prefix);
 
     // register object store(s) for input/output files' path
     // and replace file names with default fs concatenated if exist

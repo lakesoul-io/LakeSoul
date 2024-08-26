@@ -10,16 +10,15 @@ use atomic_refcell::AtomicRefCell;
 use datafusion::execution::{object_store::ObjectStoreUrl, TaskContext};
 use datafusion_common::{project_schema, DataFusionError, Result};
 use object_store::{path::Path, MultipartId, ObjectStore};
-use parquet::{arrow::ArrowWriter, basic::Compression, file::properties::WriterProperties};
+use parquet::{arrow::ArrowWriter, basic::Compression, file::properties::WriterProperties, format::FileMetaData};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use url::Url;
 
 use crate::{
-    lakesoul_io_config::{create_session_context, LakeSoulIOConfig},
-    transform::{uniform_record_batch, uniform_schema},
+    constant::TBD_PARTITION_DESC, lakesoul_io_config::{create_session_context, LakeSoulIOConfig}, transform::{uniform_record_batch, uniform_schema}
 };
 
-use super::{AsyncBatchWriter, InMemBuf};
+use super::{AsyncBatchWriter, WriterFlushResult, InMemBuf};
 
 /// An async writer using object_store's multi-part upload feature for cloud storage.
 /// This writer uses a `VecDeque<u8>` as `std::io::Write` for arrow-rs's ArrowWriter.
@@ -168,17 +167,19 @@ impl MultiPartAsyncWriter {
 
 #[async_trait::async_trait]
 impl AsyncBatchWriter for MultiPartAsyncWriter {
+
     async fn write_record_batch(&mut self, batch: RecordBatch) -> Result<()> {
         let batch = uniform_record_batch(batch)?;
         self.num_rows += batch.num_rows() as u64;
         MultiPartAsyncWriter::write_batch(batch, &mut self.arrow_writer, &mut self.in_mem_buf, &mut self.writer).await
     }
 
-    async fn flush_and_close(self: Box<Self>) -> Result<Vec<u8>> {
+    async fn flush_and_close(self: Box<Self>) -> WriterFlushResult {
         // close arrow writer to flush remaining rows
         let mut this = *self;
         let arrow_writer = this.arrow_writer;
-        let _metadata = arrow_writer.close()?;
+        let file_path = this.absolute_path.clone();
+        let metadata = arrow_writer.close()?;
         let mut v = this
             .in_mem_buf
             .0
@@ -190,19 +191,25 @@ impl AsyncBatchWriter for MultiPartAsyncWriter {
         // shutdown multi-part async writer to complete the upload
         this.writer.flush().await?;
         this.writer.shutdown().await?;
-        Ok(vec![])
+        dbg!(&file_path);
+        Ok(vec![(TBD_PARTITION_DESC.to_string(), file_path, metadata)])
     }
 
-    async fn abort_and_close(self: Box<Self>) -> Result<Vec<u8>> {
+    async fn abort_and_close(self: Box<Self>) -> Result<()> {
         let this = *self;
         this.object_store
             .abort_multipart(&this.path, &this.multi_part_id)
             .await
             .map_err(DataFusionError::ObjectStore)?;
-        Ok(vec![])
+        Ok(())
     }
 
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }
+
+    fn buffered_rows(&self) -> usize {
+        self.num_rows as usize
+    }
+
 }

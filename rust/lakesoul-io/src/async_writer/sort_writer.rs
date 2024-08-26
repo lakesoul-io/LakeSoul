@@ -19,12 +19,13 @@ use datafusion::{
     },
 };
 use datafusion_common::{DataFusionError, Result};
+use parquet::format::FileMetaData;
 use tokio::{runtime::Runtime, sync::mpsc::Sender, task::JoinHandle};
 use tokio_stream::StreamExt;
 
 use crate::lakesoul_io_config::LakeSoulIOConfig;
 
-use super::{AsyncBatchWriter, MultiPartAsyncWriter, ReceiverStreamExec};
+use super::{AsyncBatchWriter, WriterFlushResult, MultiPartAsyncWriter, ReceiverStreamExec};
 
 /// Wrap the above async writer with a SortExec to
 /// sort the batches before write to async writer
@@ -32,17 +33,18 @@ pub struct SortAsyncWriter {
     schema: SchemaRef,
     sorter_sender: Sender<Result<RecordBatch>>,
     _sort_exec: Arc<dyn ExecutionPlan>,
-    join_handle: Option<JoinHandle<Result<Vec<u8>>>>,
+    join_handle: Option<JoinHandle<Result<Vec<WriterFlushResult>>>>,
     err: Option<DataFusionError>,
+    buffer_rows: usize,
 }
 
 impl SortAsyncWriter {
     pub fn try_new(
         async_writer: MultiPartAsyncWriter,
         config: LakeSoulIOConfig,
-        runtime: Arc<Runtime>,
+        // runtime: Arc<Runtime>,
     ) -> Result<Self> {
-        let _ = runtime.enter();
+        // let _ = runtime.enter();
         let schema = config.target_schema.0.clone();
         let receiver_stream_builder = RecordBatchReceiverStream::builder(schema.clone(), 8);
         let tx = receiver_stream_builder.tx();
@@ -126,6 +128,7 @@ impl SortAsyncWriter {
             _sort_exec: exec_plan,
             join_handle: Some(join_handle),
             err: None,
+            buffer_rows: 0,
         })
     }
 }
@@ -139,7 +142,11 @@ impl AsyncBatchWriter for SortAsyncWriter {
                 err
             )));
         }
+
+        let num_rows = batch.num_rows();
         let send_result = self.sorter_sender.send(Ok(batch)).await;
+        self.buffer_rows += num_rows;
+
         match send_result {
             Ok(_) => Ok(()),
             // channel has been closed, indicating error happened during sort write
@@ -162,11 +169,12 @@ impl AsyncBatchWriter for SortAsyncWriter {
         }
     }
 
-    async fn flush_and_close(self: Box<Self>) -> Result<Vec<u8>> {
+    async fn flush_and_close(self: Box<Self>) -> WriterFlushResult {
         if let Some(join_handle) = self.join_handle {
             let sender = self.sorter_sender;
             drop(sender);
-            join_handle.await.map_err(|e| DataFusionError::External(Box::new(e)))?
+            let _ = join_handle.await.map_err(|e| DataFusionError::External(Box::new(e)))?;
+            Ok(vec![])
         } else {
             Err(DataFusionError::Internal(
                 "SortAsyncWriter has been aborted, cannot flush".to_string(),
@@ -174,7 +182,7 @@ impl AsyncBatchWriter for SortAsyncWriter {
         }
     }
 
-    async fn abort_and_close(self: Box<Self>) -> Result<Vec<u8>> {
+    async fn abort_and_close(self: Box<Self>) -> Result<()> {
         if let Some(join_handle) = self.join_handle {
             let sender = self.sorter_sender;
             // send abort signal to the task
@@ -183,14 +191,19 @@ impl AsyncBatchWriter for SortAsyncWriter {
                 .await
                 .map_err(|e| DataFusionError::External(Box::new(e)))?;
             drop(sender);
-            join_handle.await.map_err(|e| DataFusionError::External(Box::new(e)))?
+            let _ = join_handle.await.map_err(|e| DataFusionError::External(Box::new(e)))?;
+            Ok(())
         } else {
             // previous error has already aborted writer
-            Ok(vec![])
+            Ok(())
         }
     }
 
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
+    }
+
+    fn buffered_rows(&self) -> usize {
+        self.buffer_rows
     }
 }

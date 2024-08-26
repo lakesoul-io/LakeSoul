@@ -12,14 +12,18 @@ use async_trait::async_trait;
 use arrow::datatypes::{Schema, SchemaRef};
 
 use datafusion::datasource::file_format::FileFormat;
-use datafusion::datasource::listing::{ListingOptions, ListingTable, ListingTableUrl};
+use datafusion::datasource::listing::{ListingOptions, ListingTable, ListingTableUrl, PartitionedFile};
+use datafusion::datasource::physical_plan::FileScanConfig;
 use datafusion::execution::context::SessionState;
+use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::{datasource::TableProvider, logical_expr::Expr};
 
 use datafusion::logical_expr::{TableProviderFilterPushDown, TableType};
-use datafusion_common::{DataFusionError, Result};
+use datafusion_common::{DataFusionError, Result, Statistics, ToDFSchema};
+use object_store::path::Path;
 use tracing::{debug, instrument};
+use url::Url;
 
 use crate::helpers::listing_table_from_lakesoul_io_config;
 use crate::lakesoul_io_config::LakeSoulIOConfig;
@@ -111,7 +115,56 @@ impl TableProvider for LakeSoulListingTable {
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         debug!("listing scan start");
-        self.listing_table.scan(state, projection, filters, limit).await
+        let object_store_url = if let Some(url) = self.table_paths().get(0) {
+            url.object_store()
+        } else {
+            return Ok(Arc::new(EmptyExec::new(false, Arc::new(Schema::empty()))));
+        };
+        let statistics = Statistics::new_unknown(&self.schema());
+
+        let filters = if let Some(expr) = datafusion::optimizer::utils::conjunction(filters.to_vec()) {
+            // NOTE: Use the table schema (NOT file schema) here because `expr` may contain references to partition columns.
+            let table_df_schema = self.table_schema.as_ref().clone().to_dfschema()?;
+            let filters = datafusion::physical_expr::create_physical_expr(
+                &expr,
+                &table_df_schema,
+                &self.table_schema,
+                state.execution_props(),
+            )?;
+            Some(filters)
+        } else {
+            None
+        };
+
+        let store = state.runtime_env().object_store(object_store_url.clone())?;
+        
+        let mut partition_files : Vec<PartitionedFile> = vec![];
+        for url in self.table_paths() {
+            partition_files.push(
+                PartitionedFile::from(
+                store
+                    .head(&Path::from_url_path(
+                        <ListingTableUrl as AsRef<Url>>::as_ref(url).path(),
+                    )?)
+                    .await?,
+            ));
+        }
+        self.options().format.create_physical_plan(
+            state,
+            FileScanConfig {
+                object_store_url,
+                file_schema: Arc::clone(&self.schema()),
+                file_groups: vec![self.table_paths().iter().map(|url|PartitionedFile::new(url.to_string(), 0)).collect::<Vec<_>>()],
+                statistics,
+                projection: projection.cloned(),
+                limit,
+                output_ordering: vec![],
+                table_partition_cols: vec![],
+                infinite_source: false,
+            },
+            filters.as_ref(),
+        )
+        .await
     }
 
     fn supports_filters_pushdown(&self, filters: &[&Expr]) -> Result<Vec<TableProviderFilterPushDown>> {

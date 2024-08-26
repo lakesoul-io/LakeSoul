@@ -10,9 +10,10 @@ use arrow_schema::SchemaRef;
 use datafusion_common::{DataFusionError, Result};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
+use tracing::debug;
 
-use crate::async_writer::{AsyncBatchWriter, MultiPartAsyncWriter, PartitioningAsyncWriter, SortAsyncWriter};
-use crate::lakesoul_io_config::{create_session_context, IOSchema, LakeSoulIOConfig};
+use crate::async_writer::{AsyncBatchWriter, WriterFlushResult, MultiPartAsyncWriter, PartitioningAsyncWriter, SortAsyncWriter};
+use crate::lakesoul_io_config::{IOSchema, LakeSoulIOConfig};
 use crate::transform::uniform_schema;
 
 
@@ -21,9 +22,11 @@ pub type SendableWriter = Box<dyn AsyncBatchWriter + Send>;
 // inner is sort writer
 // multipart writer
 pub struct SyncSendableMutableLakeSoulWriter {
-    inner: Arc<Mutex<SendableWriter>>,
     runtime: Arc<Runtime>,
     schema: SchemaRef,
+    config: LakeSoulIOConfig,
+    /// The in-progress file writer if any
+    in_progress: Option<Arc<Mutex<SendableWriter>>>,
 }
 
 impl SyncSendableMutableLakeSoulWriter {
@@ -46,67 +49,141 @@ impl SyncSendableMutableLakeSoulWriter {
                 config.target_schema.0.clone()
             };
 
-            let mut writer_config = config.clone();
-            let writer: Box<dyn AsyncBatchWriter + Send> = if config.use_dynamic_partition {
-                let task_context = create_session_context(&mut writer_config)?.task_ctx();
-                Box::new(PartitioningAsyncWriter::try_new(task_context, writer_config, runtime.clone())?)
-            } else if !config.primary_keys.is_empty() {
-                // sort primary key table
-
-                writer_config.target_schema = IOSchema(uniform_schema(writer_schema));
-                let writer = MultiPartAsyncWriter::try_new(writer_config).await?;
-                Box::new(SortAsyncWriter::try_new(writer, config, runtime.clone())?)
-            } else {
-                // else multipart
-                writer_config.target_schema = IOSchema(uniform_schema(writer_schema));
-                let writer = MultiPartAsyncWriter::try_new(writer_config).await?;
-                Box::new(writer)
-            };
+            let writer = Self::create_writer(writer_schema, config.clone()).await?;
             let schema = writer.schema();
 
             Ok(SyncSendableMutableLakeSoulWriter {
-                inner: Arc::new(Mutex::new(writer)),
+                in_progress: Some(Arc::new(Mutex::new(writer))),
                 runtime,
                 schema, // this should be the final written schema
+                config,
             })
         })
+    }
+
+    async fn create_writer(writer_schema: SchemaRef, config: LakeSoulIOConfig) -> Result<Box<dyn AsyncBatchWriter + Send>> {
+        let mut writer_config = config.clone();
+        let writer : Box<dyn AsyncBatchWriter + Send> = if config.use_dynamic_partition {
+            Box::new(PartitioningAsyncWriter::try_new(writer_config)?)
+        } else if !writer_config.primary_keys.is_empty() {
+            // sort primary key table
+            writer_config.target_schema = IOSchema(uniform_schema(writer_schema));
+            let writer = MultiPartAsyncWriter::try_new(writer_config).await?;
+            Box::new(SortAsyncWriter::try_new(writer, config)?)
+        } else {
+            // else multipart
+            writer_config.target_schema = IOSchema(uniform_schema(writer_schema));
+            let writer = MultiPartAsyncWriter::try_new(writer_config).await?;
+            Box::new(writer)
+        };
+        Ok(writer)
+    }
+
+    pub fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+    
+    pub fn config(&self) -> &LakeSoulIOConfig {
+        &self.config
     }
 
     // blocking method for writer record batch.
     // since the underlying multipart upload would accumulate buffers
     // and upload concurrently in background, we only need blocking method here
     // for ffi callers
-    pub fn write_batch(&self, record_batch: RecordBatch) -> Result<()> {
-        let inner_writer = self.inner.clone();
+    pub fn write_batch(&mut self, record_batch: RecordBatch) -> Result<()> {
+        
         let runtime = self.runtime.clone();
         runtime.block_on(async move {
-            let mut writer = inner_writer.lock().await;
-            writer.write_record_batch(record_batch).await
+            self.write_batch_async(record_batch).await
         })
     }
 
-    pub fn flush_and_close(self) -> Result<Vec<u8>> {
-        let inner_writer = match Arc::try_unwrap(self.inner) {
-            Ok(inner) => inner,
-            Err(_) => return Err(DataFusionError::Internal("Cannot get ownership of inner writer".to_string())),
-        };
-        let runtime = self.runtime;
-        runtime.block_on(async move {
-            let writer = inner_writer.into_inner();
-            writer.flush_and_close().await
-        })
+    #[async_recursion::async_recursion(?Send)]
+    async fn write_batch_async(&mut self, record_batch: RecordBatch) -> Result<()> {
+        debug!(record_batch_rows = ?record_batch.num_rows());
+        let schema = self.schema();
+            let config = self.config().clone();
+            if let Some(max_file_size) = self.config().max_file_size {
+                // if max_file_size is set, we need to split batch into multiple files
+                let in_progress_writer = match &mut self.in_progress {
+                    Some(writer)  => writer,
+                    x => 
+                       x.insert(
+                        Arc::new(Mutex::new(
+                            Self::create_writer(schema, config).await?
+                        ))
+                    )
+                };
+                // let in_progress_writer = in_progress_writer.clone();
+                let mut guard = in_progress_writer.lock().await;
+            
+                // If would exceed max_file_size, split batch
+                if guard.buffered_rows() + record_batch.num_rows() > max_file_size {
+                    let to_write = max_file_size - guard.buffered_rows();
+                    let a = record_batch.slice(0, to_write);
+                    let b = record_batch.slice(to_write, record_batch.num_rows() - to_write);
+                    drop(guard);
+                    self.write_batch_async(a).await?;
+                    return self.write_batch_async(b).await;
+                }
+                guard.write_record_batch(record_batch).await?;
+
+                if guard.buffered_rows() >= max_file_size {
+                    drop(guard);
+                    if let Some(writer) = self.in_progress.take() {
+                        let inner_writer = match Arc::try_unwrap(writer) {
+                            Ok(inner) => inner,
+                            Err(e) => {
+                                return Err(DataFusionError::Internal("Cannot get ownership of inner writer".to_string()))
+                            },
+                        };
+                        let writer = inner_writer.into_inner();
+                        writer.flush_and_close().await?;
+                    }
+                }
+                Ok(())
+            } else {
+                if let Some(inner_writer) = &self.in_progress {
+                    let inner_writer = inner_writer.clone();
+                    let mut writer = inner_writer.lock().await;
+                    writer.write_record_batch(record_batch).await
+                } else {
+                    Err(DataFusionError::Internal("Invalid state of inner writer".to_string()))
+                }
+            }
     }
 
-    pub fn abort_and_close(self) -> Result<Vec<u8>> {
-        let inner_writer = match Arc::try_unwrap(self.inner) {
-            Ok(inner) => inner,
-            Err(_) => return Err(DataFusionError::Internal("Cannot get ownership of inner writer".to_string())),
-        };
-        let runtime = self.runtime;
-        runtime.block_on(async move {
-            let writer = inner_writer.into_inner();
-            writer.abort_and_close().await
-        })
+    pub fn flush_and_close(self) -> WriterFlushResult {
+        if let Some(inner_writer) = self.in_progress {
+            let inner_writer = match Arc::try_unwrap(inner_writer) {
+                Ok(inner) => inner,
+                Err(_) => return Err(DataFusionError::Internal("Cannot get ownership of inner writer".to_string())),
+            };
+            let runtime = self.runtime;
+            runtime.block_on(async move {
+                let writer = inner_writer.into_inner();
+                writer.flush_and_close().await
+            })
+        } else {
+            Ok(vec![])
+        }
+    }
+
+    pub fn abort_and_close(self) -> Result<()> {
+        if let Some(inner_writer) = self.in_progress {
+            let inner_writer = match Arc::try_unwrap(inner_writer) {
+                Ok(inner) => inner,
+                Err(_) => return Err(DataFusionError::Internal("Cannot get ownership of inner writer".to_string())),
+            };
+            let runtime = self.runtime;
+            runtime.block_on(async move {
+                let writer = inner_writer.into_inner();
+                writer.abort_and_close().await
+            })
+        } else {
+            Ok(())
+        }
     }
 
     pub fn get_schema(&self) -> SchemaRef {
@@ -130,6 +207,7 @@ mod tests {
     use datafusion::error::Result;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use rand::distributions::DistString;
+    use tracing_subscriber::layer::SubscriberExt;
     use std::{fs::File, sync::Arc};
     use tokio::{runtime::Builder, time::Instant};
 
@@ -187,7 +265,7 @@ mod tests {
                 .build();
 
             let async_writer = MultiPartAsyncWriter::try_new(writer_conf.clone()).await?;
-            let mut async_writer = SortAsyncWriter::try_new(async_writer, writer_conf, runtime.clone())?;
+            let mut async_writer = SortAsyncWriter::try_new(async_writer, writer_conf)?;
             async_writer.write_record_batch(to_write.clone()).await?;
             Box::new(async_writer).flush_and_close().await?;
 
@@ -238,7 +316,7 @@ mod tests {
             .with_aux_sort_column("col2".to_string())
             .build();
 
-        let writer = SyncSendableMutableLakeSoulWriter::try_new(writer_conf, runtime)?;
+        let mut writer = SyncSendableMutableLakeSoulWriter::try_new(writer_conf, runtime)?;
         writer.write_batch(to_write.clone())?;
         writer.flush_and_close()?;
 
@@ -340,7 +418,7 @@ mod tests {
                 .with_schema(schema)
                 .build();
             let async_writer = MultiPartAsyncWriter::try_new(write_conf.clone()).await?;
-            let mut async_writer = SortAsyncWriter::try_new(async_writer, write_conf, runtime.clone())?;
+            let mut async_writer = SortAsyncWriter::try_new(async_writer, write_conf)?;
 
             while let Some(rb) = reader.next_rb().await {
                 let rb = rb?;
@@ -386,7 +464,7 @@ mod tests {
                 .with_primary_keys(vec!["str0".to_string(), "str1".to_string(), "int1".to_string()])
                 .build();
             let async_writer = MultiPartAsyncWriter::try_new(write_conf.clone()).await?;
-            let mut async_writer = SortAsyncWriter::try_new(async_writer, write_conf, runtime.clone())?;
+            let mut async_writer = SortAsyncWriter::try_new(async_writer, write_conf)?;
 
             while let Some(rb) = reader.next_rb().await {
                 let rb = rb?;
@@ -448,7 +526,7 @@ mod tests {
             // .with_aux_sort_column("col2".to_string())
             .build();
 
-        let writer = SyncSendableMutableLakeSoulWriter::try_new(writer_conf, runtime)?;
+        let mut writer = SyncSendableMutableLakeSoulWriter::try_new(writer_conf, runtime)?;
 
         let start = Instant::now();
         for _ in 0..num_batch {
@@ -485,14 +563,25 @@ mod tests {
     #[cfg(feature = "dhat-heap")]
     #[global_allocator]
     static ALLOC: dhat::Alloc = dhat::Alloc;
+    
 
+    #[tracing::instrument]
     #[test]
     fn writer_profiling() -> Result<()> {
+        use tracing_subscriber::fmt;
+
+        tracing_subscriber::fmt::init();
+        
+        let subscriber = fmt::layer()
+            .event_format(fmt::format::Format::default().with_level(true).with_source_location(true).with_file(true));
+            // .with_max_level(Level::TRACE);
+        tracing_subscriber::registry().with(subscriber);
+
         #[cfg(feature = "dhat-heap")]
         let _profiler = dhat::Profiler::new_heap();
 
         let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
-        let num_batch = 100;
+        let num_batch = 300;
         let num_rows = 1000;
         let num_columns = 20;
         let str_len = 4;
@@ -522,11 +611,12 @@ mod tests {
                     .collect::<Vec<String>>(),
             )
             // .with_aux_sort_column("col2".to_string())
-            .with_memory_limit(1024 * 1024 * 20)
-            .set_dynamic_partition(true)
+            // .with_memory_limit(1024 * 1024 * 8)
+            // .set_dynamic_partition(true)
+            // .with_max_file_size(10_000)
             .build();
 
-        let writer = SyncSendableMutableLakeSoulWriter::try_new(writer_conf, runtime)?;
+        let mut writer = SyncSendableMutableLakeSoulWriter::try_new(writer_conf, runtime)?;
 
         let start = Instant::now();
         for _ in 0..num_batch {

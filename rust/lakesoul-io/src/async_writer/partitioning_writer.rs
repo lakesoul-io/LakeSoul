@@ -32,13 +32,13 @@ use tracing::debug;
 
 use crate::{
     helpers::{columnar_values_to_partition_desc, columnar_values_to_sub_path, get_columnar_values},
-    lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder},
+    lakesoul_io_config::{create_session_context, LakeSoulIOConfig, LakeSoulIOConfigBuilder},
     repartition::RepartitionByRangeAndHashExec,
 };
 
-use super::{AsyncBatchWriter, MultiPartAsyncWriter, ReceiverStreamExec};
+use super::{AsyncBatchWriter, WriterFlushResult, MultiPartAsyncWriter, ReceiverStreamExec};
 
-type PartitionedWriterInfo = Arc<Mutex<HashMap<String, (Vec<String>, u64)>>>;
+type PartitionedWriterInfo = Arc<Mutex<HashMap<String, Vec<WriterFlushResult>>>>;
 
 /// Wrap the above async writer with a RepartitionExec to
 /// dynamic repartitioning the batches before write to async writer
@@ -46,14 +46,16 @@ pub struct PartitioningAsyncWriter {
     schema: SchemaRef,
     sorter_sender: Sender<Result<RecordBatch>>,
     _partitioning_exec: Arc<dyn ExecutionPlan>,
-    join_handle: Option<JoinHandle<Result<Vec<u8>>>>,
+    join_handle: Option<JoinHandle<WriterFlushResult>>,
     err: Option<DataFusionError>,
+    buffer_rows: usize,
 }
 
 impl PartitioningAsyncWriter {
-    pub fn try_new(task_context: Arc<TaskContext>, config: LakeSoulIOConfig, runtime: Arc<Runtime>) -> Result<Self> {
-        dbg!(&config.prefix);
-        let _ = runtime.enter();
+    pub fn try_new(config: LakeSoulIOConfig) -> Result<Self> {
+        let mut config = config.clone();
+        let task_context = create_session_context(&mut config)?.task_ctx();
+
         let schema = config.target_schema.0.clone();
         let receiver_stream_builder = RecordBatchReceiverStream::builder(schema.clone(), 8);
         let tx = receiver_stream_builder.tx();
@@ -74,8 +76,7 @@ impl PartitioningAsyncWriter {
                 task_context.clone(),
                 config.clone().into(),
                 Arc::new(config.range_partitions.clone()),
-                write_id.clone(),
-                partitioned_file_path_and_row_count.clone(),
+                write_id.clone()
             ));
             // // In a separate task, wait for each input to be done
             // // (and pass along any errors, including panic!s)
@@ -84,7 +85,7 @@ impl PartitioningAsyncWriter {
 
         let join_handle = tokio::spawn(Self::await_and_summary(
             join_handles,
-            partitioned_file_path_and_row_count,
+            // partitioned_file_path_and_row_count,
         ));
 
         Ok(Self {
@@ -93,6 +94,7 @@ impl PartitioningAsyncWriter {
             _partitioning_exec: partitioning_exec,
             join_handle: Some(join_handle),
             err: None,
+            buffer_rows: 0,
         })
     }
 
@@ -180,8 +182,8 @@ impl PartitioningAsyncWriter {
         config_builder: LakeSoulIOConfigBuilder,
         range_partitions: Arc<Vec<String>>,
         write_id: String,
-        partitioned_file_path_and_row_count: PartitionedWriterInfo,
-    ) -> Result<u64> {
+        // partitioned_flush_result: PartitionedWriterInfo,
+    ) -> Result<Vec<JoinHandle<WriterFlushResult>>> {
         let mut data = input.execute(partition, context.clone())?;
         // O(nm), n = number of data fields, m = number of range partitions
         let schema_projection_excluding_range = data
@@ -200,18 +202,21 @@ impl PartitioningAsyncWriter {
         let mut row_count = 0;
 
         let mut partitioned_writer = HashMap::<String, Box<MultiPartAsyncWriter>>::new();
-        let mut partitioned_file_path_and_row_count_locked = partitioned_file_path_and_row_count.lock().await;
+        let mut flush_join_handle_list = Vec::new();
+        // let mut partitioned_flush_result_locked = partitioned_flush_result.lock().await;
         while let Some(batch_result) = data.next().await {
             match batch_result {
                 Ok(batch) => {
                     debug!("write record_batch with {} rows", batch.num_rows());
                     let columnar_values = get_columnar_values(&batch, range_partitions.clone())?;
                     let partition_desc = columnar_values_to_partition_desc(&columnar_values);
+                    let partition_sub_path = columnar_values_to_sub_path(&columnar_values);
                     let batch_excluding_range = batch.project(&schema_projection_excluding_range)?;
+
                     let file_absolute_path = format!(
                         "{}{}part-{}_{:0>4}.parquet",
                         config_builder.prefix(),
-                        columnar_values_to_sub_path(&columnar_values),
+                        partition_sub_path,
                         write_id,
                         partition
                     );
@@ -227,6 +232,7 @@ impl PartitioningAsyncWriter {
                         row_count += batch_excluding_range.num_rows();
                         async_writer.write_record_batch(batch_excluding_range).await?;
                     }
+                    
                 }
                 // received abort signal
                 Err(e) => {
@@ -250,49 +256,71 @@ impl PartitioningAsyncWriter {
                     }
                 }
             }
-            Ok(row_count as u64)
+            Ok(flush_join_handle_list)
         } else {
+            
             for (partition_desc, writer) in partitioned_writer.into_iter() {
-                let file_absolute_path = writer.absolute_path();
-                let num_rows = writer.nun_rows();
-                if let Some(file_path_and_row_count) =
-                    partitioned_file_path_and_row_count_locked.get_mut(&partition_desc)
-                {
-                    file_path_and_row_count.0.push(file_absolute_path);
-                    file_path_and_row_count.1 += num_rows;
-                } else {
-                    partitioned_file_path_and_row_count_locked
-                        .insert(partition_desc.clone(), (vec![file_absolute_path], num_rows));
-                }
-                writer.flush_and_close().await?;
+                
+                let flush_result = tokio::spawn(async move {
+                    let writer_flush_results =writer.flush_and_close().await?;
+                    Ok(
+                        writer_flush_results.into_iter().map(|(_, path, file_metadata)| (partition_desc.clone(), path, file_metadata)).collect::<Vec<_>>()
+                    )
+                });
+                flush_join_handle_list.push(flush_result);
             }
-            Ok(row_count as u64)
+            Ok(flush_join_handle_list)
         }
     }
 
     async fn await_and_summary(
-        join_handles: Vec<JoinHandle<Result<u64>>>,
-        partitioned_file_path_and_row_count: PartitionedWriterInfo,
-    ) -> Result<Vec<u8>> {
-        let _ =
-            futures::future::join_all(join_handles)
-                .await
-                .iter()
-                .try_fold(0u64, |counter, result| match &result {
-                    Ok(Ok(count)) => Ok(counter + count),
-                    Ok(Err(e)) => Err(DataFusionError::Execution(format!("{}", e))),
-                    Err(e) => Err(DataFusionError::Execution(format!("{}", e))),
-                })?;
-        let partitioned_file_path_and_row_count = partitioned_file_path_and_row_count.lock().await;
-
-        let mut summary = format!("{}", partitioned_file_path_and_row_count.len());
-        for (partition_desc, (files, _)) in partitioned_file_path_and_row_count.iter() {
-            summary += "\x01";
-            summary += partition_desc.as_str();
-            summary += "\x02";
-            summary += files.join("\x02").as_str();
+        join_handles: Vec<JoinHandle<Result<Vec<JoinHandle<WriterFlushResult>>>>>,
+        // partitioned_file_path_and_row_count: PartitionedWriterInfo,
+    ) -> WriterFlushResult {
+        let mut flatten_results = Vec::new();
+        let results = futures::future::join_all(join_handles).await;
+        for result in results {
+            match result {
+                Ok(Ok(part_join_handles)) => {
+                    let part_results = futures::future::join_all(part_join_handles).await;
+                    for part_result in part_results {
+                        match part_result {
+                            Ok(Ok(flatten_part_result)) => {
+                                flatten_results.extend(flatten_part_result);
+                            }
+                            Ok(Err(e)) => return Err(DataFusionError::Execution(format!("{}", e))),
+                            Err(e) => return Err(DataFusionError::Execution(format!("{}", e))),
+                        }
+                    }
+                }
+                Ok(Err(e)) => return Err(DataFusionError::Execution(format!("{}", e))),
+                Err(e) => return Err(DataFusionError::Execution(format!("{}", e))),
+            }
         }
-        Ok(summary.into_bytes())
+        // dbg!(&flatten_results);
+        Ok(flatten_results)
+        // let mut map: HashMap<String, Vec<FlushResult>> = HashMap::new();
+        // let results = futures::future::join_all(join_handles).await;
+        // for result in results {
+        //     match result {
+        //         Ok(Ok(partitioned_flush_result)) => {
+        //             todo!()
+        //         }
+        //         Ok(Err(e)) => return Err(DataFusionError::External(Box::new(e))),
+        //         Err(e) => return Err(DataFusionError::External(Box::new(e))),
+        //     }
+        // }
+        // Ok(map)
+        // let partitioned_file_path_and_row_count = partitioned_file_path_and_row_count.lock().await;
+
+        // let mut summary = format!("{}", partitioned_file_path_and_row_count.len());
+        // for (partition_desc, (files, _)) in partitioned_file_path_and_row_count.iter() {
+        //     summary += "\x01";
+        //     summary += partition_desc.as_str();
+        //     summary += "\x02";
+        //     summary += files.join("\x02").as_str();
+        // }
+        // Ok(summary.into_bytes())
     }
 }
 
@@ -306,7 +334,10 @@ impl AsyncBatchWriter for PartitioningAsyncWriter {
                 err
             )));
         }
+
+        let num_rows = batch.num_rows();
         let send_result = self.sorter_sender.send(Ok(batch)).await;
+        self.buffer_rows += num_rows;
         match send_result {
             Ok(_) => Ok(()),
             // channel has been closed, indicating error happened during sort write
@@ -329,7 +360,7 @@ impl AsyncBatchWriter for PartitioningAsyncWriter {
         }
     }
 
-    async fn flush_and_close(self: Box<Self>) -> Result<Vec<u8>> {
+    async fn flush_and_close(self: Box<Self>) -> WriterFlushResult {
         if let Some(join_handle) = self.join_handle {
             let sender = self.sorter_sender;
             drop(sender);
@@ -341,7 +372,7 @@ impl AsyncBatchWriter for PartitioningAsyncWriter {
         }
     }
 
-    async fn abort_and_close(self: Box<Self>) -> Result<Vec<u8>> {
+    async fn abort_and_close(self: Box<Self>) -> Result<()> {
         if let Some(join_handle) = self.join_handle {
             let sender = self.sorter_sender;
             // send abort signal to the task
@@ -350,14 +381,19 @@ impl AsyncBatchWriter for PartitioningAsyncWriter {
                 .await
                 .map_err(|e| DataFusionError::External(Box::new(e)))?;
             drop(sender);
-            join_handle.await.map_err(|e| DataFusionError::External(Box::new(e)))?
+            let _ = join_handle.await.map_err(|e| DataFusionError::External(Box::new(e)))?;
+            Ok(())
         } else {
             // previous error has already aborted writer
-            Ok(vec![])
+            Ok(())
         }
     }
 
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
+    }
+
+    fn buffered_rows(&self) -> usize {
+        self.buffer_rows
     }
 }
