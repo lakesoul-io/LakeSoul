@@ -89,7 +89,9 @@ public class LakeSoulTableSource
         this.optionParams = optionParams;
         this.modificationContext = null;
     }
-
+    public TableId getTableId(){
+        return this.tableId;
+    }
     @Override
     public DynamicTableSource copy() {
         LakeSoulTableSource newInstance = new LakeSoulTableSource(this.tableId,

@@ -7,16 +7,15 @@ package org.apache.flink.lakesoul.entry.sql.flink;
 
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.exception.ExceptionUtils;
+import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.bridge.java.StreamStatementSet;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.api.internal.TableEnvironmentInternal;
 import org.apache.flink.table.delegation.Parser;
-import org.apache.flink.table.operations.CreateTableASOperation;
-import org.apache.flink.table.operations.ModifyOperation;
-import org.apache.flink.table.operations.Operation;
-import org.apache.flink.table.operations.QueryOperation;
+import org.apache.flink.table.operations.*;
 import org.apache.flink.table.operations.command.AddJarOperation;
 import org.apache.flink.table.operations.command.SetOperation;
 import org.slf4j.Logger;
@@ -25,6 +24,9 @@ import org.slf4j.helpers.MessageFormatter;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
+
+import static org.apache.flink.configuration.ExecutionOptions.RUNTIME_MODE;
 
 public class ExecuteSql {
 
@@ -35,6 +37,45 @@ public class ExecuteSql {
 
     private static final String COMMENT_PATTERN = "(--.*)|(((\\/\\*)+?[\\w\\W]+?(\\*\\/)+))";
 
+
+    public static void executeSqlFileContent(String script, TableEnvironment tableEnv)
+            throws ExecutionException, InterruptedException {
+        List<String> statements = parseStatements(script);
+        Parser parser = ((TableEnvironmentInternal) tableEnv).getParser();
+        for (String statement : statements) {
+            Operation operation = parser.parse(statement).get(0);
+            if (operation instanceof SetOperation) {
+                SetOperation setOperation = (SetOperation) operation;
+                if (setOperation.getKey().isPresent() && setOperation.getValue().isPresent()) {
+                    System.out.println(MessageFormatter.format("\n======Setting config: {}={}",
+                            setOperation.getKey().get(),
+                            setOperation.getValue().get()).getMessage());
+                    tableEnv.getConfig().getConfiguration()
+                            .setString(setOperation.getKey().get(), setOperation.getValue().get());
+                } else if (setOperation.getKey().isPresent()) {
+                    String value = tableEnv.getConfig().getConfiguration().getString(setOperation.getKey().get(), "");
+                    System.out.println(MessageFormatter.format("Config {}={}",
+                            setOperation.getKey().get(), value).getMessage());
+                } else {
+                    System.out.println(MessageFormatter.format("All configs: {}",
+                            tableEnv.getConfig().getConfiguration()).getMessage());
+                }
+            } else if (operation instanceof ModifyOperation || operation instanceof BeginStatementSetOperation) {
+                System.out.println(MessageFormatter.format("\n======Executing insertion:\n{}", statement).getMessage());
+                // execute insertion and do not wait for results for stream mode
+                if (tableEnv.getConfig().get(RUNTIME_MODE) == RuntimeExecutionMode.BATCH) {
+                    tableEnv.executeSql(statement).await();
+                } else {
+                    tableEnv.executeSql(statement);
+                }
+            } else {
+                // for all show/select/alter/create catalog/use, etc. statements
+                // execute and print results
+                System.out.println(MessageFormatter.format("\n======Executing:\n{}", statement).getMessage());
+                tableEnv.executeSql(statement).print();
+            }
+        }
+    }
     public static void executeSqlFileContent(String script, StreamTableEnvironment tableEnv,
                                              StreamExecutionEnvironment env)
             throws Exception {
@@ -42,7 +83,7 @@ public class ExecuteSql {
         Parser parser = ((TableEnvironmentInternal) tableEnv).getParser();
 
         StreamStatementSet statementSet = tableEnv.createStatementSet();
-
+        Boolean hasModifiedOp = false;
         for (String statement : statements) {
             Operation operation;
             try {
@@ -75,6 +116,7 @@ public class ExecuteSql {
             } else if (operation instanceof ModifyOperation) {
                 System.out.println(MessageFormatter.format("\n======Executing insertion:\n{}", statement).getMessage());
                 // add insertion to statement set
+                hasModifiedOp = true;
                 statementSet.addInsertSql(statement);
             } else if ((operation instanceof QueryOperation) || (operation instanceof AddJarOperation)) {
                 LOG.warn("SQL Statement {} is ignored", statement);
@@ -85,12 +127,15 @@ public class ExecuteSql {
                 tableEnv.executeSql(statement).print();
             }
         }
-        statementSet.attachAsDataStream();
-        Configuration conf = (Configuration) env.getConfiguration();
+        if(hasModifiedOp){
+            statementSet.attachAsDataStream();
+            Configuration conf = (Configuration) env.getConfiguration();
 
-        // try get k8s cluster name
-        String k8sClusterID = conf.getString("kubernetes.cluster-id", "");
-        env.execute(k8sClusterID.isEmpty() ? null : k8sClusterID + "-job");
+            // try get k8s cluster name
+            String k8sClusterID = conf.getString("kubernetes.cluster-id", "");
+            env.execute(k8sClusterID.isEmpty() ? null : k8sClusterID + "-job");
+        }
+
     }
 
     public static List<String> parseStatements(String script) {

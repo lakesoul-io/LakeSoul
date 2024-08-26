@@ -69,6 +69,21 @@ SPDX-License-Identifier: Apache-2.0
             <version>${flink.version}</version>
             <scope>${local.scope}</scope>
         </dependency>
+
+
+        <dependency>
+            <groupId>io.openlineage</groupId>
+            <artifactId>openlineage-flink</artifactId>
+            <version>1.20.0-SNAPSHOT</version>
+            <scope>${local.scope}</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-connector-kafka</artifactId>
+            <version>${flink.version}</version>
+            <scope>${local.scope}</scope>
+        </dependency>
+
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-core</artifactId>
@@ -359,6 +374,12 @@ SPDX-License-Identifier: Apache-2.0
             <version>3.3.2</version>
             <scope>${local.scope}</scope>
         </dependency>
+        <dependency>
+            <groupId>com.dmetasoul</groupId>
+            <artifactId>lakesoul-common</artifactId>
+            <version>2.6.0-SNAPSHOT</version>
+            <scope>compile</scope>
+        </dependency>
     </dependencies>
 
     <build>
@@ -446,6 +467,7 @@ SPDX-License-Identifier: Apache-2.0
                             <include>com.ververica:flink-sql-connector-mysql-cdc</include>
                             <include>com.dmetasoul:lakesoul-common</include>
                             <include>com.dmetasoul:lakesoul-io-java</include>
+                            <include>org.apache.flink:flink-connector-mongodb</include>
                             <include>com.github.jnr:*</include>
                             <include>org.ow2.asm:*</include>
                             <include>org.apache.arrow:*</include>
@@ -475,7 +497,6 @@ SPDX-License-Identifier: Apache-2.0
                             <include>org.furyio:fury-core</include>
                             <include>com.google.guava:guava</include>
                             <include>com.google.guava:failureaccess</include>
-
                             <!-- casbin & aspectj -->
                             <include>org.casbin:jdbc-adapter</include>
                             <include>org.aspectj:aspectjrt</include>

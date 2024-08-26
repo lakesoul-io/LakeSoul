@@ -133,4 +133,7 @@ public class LakeSoulMultiTablesSink<IN, OUT> implements
         // StreamingFileSink
         return Collections.singleton("lakesoul-cdc-multitable-bucket-states");
     }
+    public BucketsBuilder getBucketsBuilder(){
+        return  this.bucketsBuilder;
+    }
 }
