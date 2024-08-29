@@ -47,6 +47,7 @@ pub static OPTION_DEFAULT_VALUE_KEEP_ORDERS: &str = "false";
 
 pub static OPTION_KEY_MEM_LIMIT: &str = "mem_limit";
 pub static OPTION_KEY_POOL_SIZE: &str = "pool_size";
+pub static OPTION_KEY_HASH_BUCKET_ID : &str = "hash_bucket_id";
 pub static OPTION_KEY_MAX_FILE_SIZE: &str = "max_file_size";
 
 
@@ -160,6 +161,10 @@ impl LakeSoulIOConfig {
         self.options.get(key)
     }
 
+    pub fn prefix(&self) -> &String {
+        &self.prefix
+    }
+
     pub fn keep_ordering(&self) -> bool {
         self.option(OPTION_KEY_KEEP_ORDERS).map_or(false, |x| x.eq("true"))
     }
@@ -170,6 +175,10 @@ impl LakeSoulIOConfig {
 
     pub fn pool_size(&self) -> Option<usize> {
         self.option(OPTION_KEY_POOL_SIZE).map(|x| x.parse().unwrap())
+    }
+
+    pub fn hash_bucket_id(&self) -> usize {
+        self.option(OPTION_KEY_HASH_BUCKET_ID).map_or(0, |x| x.parse().unwrap())
     }
 }
 

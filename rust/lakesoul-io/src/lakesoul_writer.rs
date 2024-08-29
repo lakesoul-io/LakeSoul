@@ -10,6 +10,7 @@ use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use datafusion_common::{DataFusionError, Result};
 use parquet::format::FileMetaData;
+use rand::distributions::DistString;
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 use tracing::debug;
@@ -63,7 +64,6 @@ impl SyncSendableMutableLakeSoulWriter {
                     config.max_file_size = Some((mem_limit as f64 * 0.2) as u64);
                 }     
             }
-            dbg!(config.max_file_size);
 
             Ok(SyncSendableMutableLakeSoulWriter {
                 in_progress: Some(Arc::new(Mutex::new(writer))),
@@ -82,11 +82,27 @@ impl SyncSendableMutableLakeSoulWriter {
         } else if !writer_config.primary_keys.is_empty() && !writer_config.keep_ordering() {
             // sort primary key table
             writer_config.target_schema = IOSchema(uniform_schema(writer_schema));
+            if writer_config.files.is_empty() && !writer_config.prefix().is_empty() {
+                writer_config.files = vec![format!(
+                    "{}/part-{}_{:0>4}.parquet",
+                    writer_config.prefix(),
+                    rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 16),
+                    writer_config.hash_bucket_id()
+                )];
+            }
             let writer = MultiPartAsyncWriter::try_new(writer_config).await?;
             Box::new(SortAsyncWriter::try_new(writer, config)?)
         } else {
             // else multipart
             writer_config.target_schema = IOSchema(uniform_schema(writer_schema));
+            if writer_config.files.is_empty() && !writer_config.prefix().is_empty() {
+                writer_config.files = vec![format!(
+                    "{}/part-{}_{:0>4}.parquet",
+                    writer_config.prefix(),
+                    rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 16),
+                    writer_config.hash_bucket_id()
+                )];
+            }
             let writer = MultiPartAsyncWriter::try_new(writer_config).await?;
             Box::new(writer)
         };
@@ -135,6 +151,9 @@ impl SyncSendableMutableLakeSoulWriter {
                 let batch_memory_size = record_batch.get_array_memory_size() as u64;
                 let batch_rows = record_batch.num_rows() as u64;
                 // If would exceed max_file_size, split batch
+                // let msg = format!("buffered size of current writer= {}, batch_size = {}, do_spill={}", guard.buffered_size(), batch_memory_size, do_spill);
+                // dbg!(max_file_size);
+                // dbg!(msg);
                 if !do_spill && guard.buffered_size() + batch_memory_size > max_file_size {
                     let to_write = (batch_rows * (max_file_size - guard.buffered_size())) / batch_memory_size;
                     if to_write + 1 < batch_rows {
@@ -149,8 +168,7 @@ impl SyncSendableMutableLakeSoulWriter {
                 guard.write_record_batch(record_batch).await?;
 
                 if do_spill {
-                    debug!("spilling writer with size: {}", guard.buffered_size());
-                    dbg!(guard.buffered_size());
+                    dbg!(format!("spilling writer with size: {}", guard.buffered_size()));
                     drop(guard);
                     if let Some(writer) = self.in_progress.take() {
                         let inner_writer = match Arc::try_unwrap(writer) {

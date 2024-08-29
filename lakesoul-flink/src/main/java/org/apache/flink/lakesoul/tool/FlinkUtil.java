@@ -385,7 +385,9 @@ public class FlinkUtil {
         for (ConfigOption<String> option : NativeOptions.OPTION_LIST) {
             String value = conf.get(option);
             if (value != null) {
-                io.setOption(option.key(), value);
+                int lastDot = option.key().lastIndexOf('.');
+                String key = lastDot == -1 ? option.key() : option.key().substring(lastDot + 1);
+                io.setOption(key, value);
             }
         }
     }

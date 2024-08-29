@@ -32,7 +32,7 @@ pub struct SortAsyncWriter {
     schema: SchemaRef,
     sorter_sender: Sender<Result<RecordBatch>>,
     _sort_exec: Arc<dyn ExecutionPlan>,
-    join_handle: Option<JoinHandle<Result<Vec<WriterFlushResult>>>>,
+    join_handle: Option<JoinHandle<WriterFlushResult>>,
     err: Option<DataFusionError>,
     buffered_size: u64,
 }
@@ -116,8 +116,7 @@ impl SortAsyncWriter {
                     ))),
                 }
             } else {
-                async_writer.flush_and_close().await?;
-                Ok(vec![])
+                async_writer.flush_and_close().await
             }
         });
 
@@ -172,8 +171,7 @@ impl AsyncBatchWriter for SortAsyncWriter {
         if let Some(join_handle) = self.join_handle {
             let sender = self.sorter_sender;
             drop(sender);
-            let _ = join_handle.await.map_err(|e| DataFusionError::External(Box::new(e)))?;
-            Ok(vec![])
+            join_handle.await.map_err(|e| DataFusionError::External(Box::new(e)))?
         } else {
             Err(DataFusionError::Internal(
                 "SortAsyncWriter has been aborted, cannot flush".to_string(),

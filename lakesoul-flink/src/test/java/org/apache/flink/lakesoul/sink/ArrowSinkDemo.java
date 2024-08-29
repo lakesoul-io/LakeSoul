@@ -12,6 +12,7 @@ import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
 import org.apache.arrow.vector.types.pojo.Schema;
+import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
 import org.apache.flink.configuration.Configuration;
@@ -50,8 +51,8 @@ import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BATCH_SIZE;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.MAX_ROW_GROUP_VALUE_NUMBER;
 
 public class ArrowSinkDemo {
-    static long checkpointInterval = 60 * 1000;
-    static int tableNum = 1;
+    static long checkpointInterval = 5 * 1000;
+    static int tableNum = 8;
 
 
     public static void main(String[] args) throws Exception {
@@ -75,20 +76,21 @@ public class ArrowSinkDemo {
         conf.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
         conf.set(TaskManagerOptions.TOTAL_PROCESS_MEMORY, MemorySize.parse("512m"));
         conf.set(TaskManagerOptions.TASK_OFF_HEAP_MEMORY, MemorySize.parse("512m"));
-        conf.set(NativeOptions.MEM_LIMIT, String.valueOf(1024 * 1024 * 100));
+        conf.set(NativeOptions.MEM_LIMIT, String.valueOf(1024 * 1024 * 10));
 //        conf.set(TaskManagerOptions.JVM_OVERHEAD_MAX, MemorySize.parse("20m"));
 //        conf.set(TaskManagerOptions.JVM_METASPACE, MemorySize.parse("512m"));
 //        conf.set(ExecutionCheckpointingOptions.TOLERABLE_FAILURE_NUMBER, 2);
 
-//        StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(conf);
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironment(conf);
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(conf);
+//        StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironment(conf);
 
         int cols = 2000;
         int batchSize = 2000;
-        int batchPerSecond = 8 * tableNum;
-        int parallelism = 1;
+        int batchPerSecond = 20 * tableNum;
+        int sourceParallelism = 8;
+        int sinkParallelism = 4;
 
-        int batchPerTask = 600 * tableNum;
+        int batchPerTask = 100 * tableNum;
 
         // TableInfo object can be reused
         List<TableInfo> sinkTableInfo = new ArrayList<>();
@@ -112,7 +114,9 @@ public class ArrowSinkDemo {
                             // no primary field
                             Collections.emptyList(),
                             // partition fields
-                            Arrays.asList("date", "fltNum", "tailNum")))
+                            Collections.emptyList()
+//                            , Arrays.asList("date", "fltNum", "tailNum")
+                    ))
                     .setProperties("{}")
                     .build();
             sinkTableInfo.add(tableInfo);
@@ -121,8 +125,9 @@ public class ArrowSinkDemo {
         DataStreamSource<LakeSoulArrowWrapper>
                 source =
                 env.addSource(new ArrowDataGenSource(sinkTableInfo, cols, batchSize, batchPerSecond, batchPerTask))
-                        .setParallelism(parallelism);
+                        .setParallelism(sourceParallelism);
         env.getCheckpointConfig().setCheckpointInterval(checkpointInterval);
+        env.setRestartStrategy(RestartStrategies.fixedDelayRestart(2, 1000L));
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;
         context.conf = (Configuration) env.getConfiguration();
@@ -131,7 +136,7 @@ public class ArrowSinkDemo {
 //        context.conf.set(MAX_ROW_GROUP_VALUE_NUMBER, rowGroupValues);
         context.conf.set(BATCH_SIZE, batchSize);
 
-        LakeSoulMultiTableSinkStreamBuilder.buildArrowSink(context, source);
+        LakeSoulMultiTableSinkStreamBuilder.buildArrowSink(context, source, sinkParallelism);
 //        String name = "Print Sink";
 //        PrintSinkFunction<LakeSoulArrowWrapper> printFunction = new PrintSinkFunction<>(name, false);
 //
