@@ -126,7 +126,7 @@ public class LakeSoulArrowSplitRecordsReader implements RecordsWithSplitIds<Lake
             Schema arrowSchema = ArrowUtils.toArrowSchema(projectedRowTypeWithPk);
             reader.setSchema(arrowSchema);
             reader.setPrimaryKeys(pkColumns);
-            FlinkUtil.setFSConfigs(conf, reader);
+            FlinkUtil.setIOConfigs(conf, reader);
         }
 
         reader.setPartitionSchema(partitionSchema);

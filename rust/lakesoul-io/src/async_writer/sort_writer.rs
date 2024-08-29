@@ -19,8 +19,7 @@ use datafusion::{
     },
 };
 use datafusion_common::{DataFusionError, Result};
-use parquet::format::FileMetaData;
-use tokio::{runtime::Runtime, sync::mpsc::Sender, task::JoinHandle};
+use tokio::{sync::mpsc::Sender, task::JoinHandle};
 use tokio_stream::StreamExt;
 
 use crate::lakesoul_io_config::LakeSoulIOConfig;
@@ -35,7 +34,7 @@ pub struct SortAsyncWriter {
     _sort_exec: Arc<dyn ExecutionPlan>,
     join_handle: Option<JoinHandle<Result<Vec<WriterFlushResult>>>>,
     err: Option<DataFusionError>,
-    buffer_rows: usize,
+    buffered_size: u64,
 }
 
 impl SortAsyncWriter {
@@ -128,7 +127,7 @@ impl SortAsyncWriter {
             _sort_exec: exec_plan,
             join_handle: Some(join_handle),
             err: None,
-            buffer_rows: 0,
+            buffered_size: 0,
         })
     }
 }
@@ -143,9 +142,9 @@ impl AsyncBatchWriter for SortAsyncWriter {
             )));
         }
 
-        let num_rows = batch.num_rows();
+        let memory_size = batch.get_array_memory_size() as u64;
         let send_result = self.sorter_sender.send(Ok(batch)).await;
-        self.buffer_rows += num_rows;
+        self.buffered_size += memory_size;
 
         match send_result {
             Ok(_) => Ok(()),
@@ -203,7 +202,7 @@ impl AsyncBatchWriter for SortAsyncWriter {
         self.schema.clone()
     }
 
-    fn buffered_rows(&self) -> usize {
-        self.buffer_rows
+    fn buffered_size(&self) -> u64 {
+        self.buffered_size
     }
 }

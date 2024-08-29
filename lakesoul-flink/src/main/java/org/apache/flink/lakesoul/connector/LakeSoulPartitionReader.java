@@ -47,10 +47,12 @@ public class LakeSoulPartitionReader implements PartitionReader<LakeSoulPartitio
         this.primaryKeys = primaryKeys;
         this.schema = schema;
         this.capacity = conf.getInteger(LakeSoulOptions.LAKESOUL_NATIVE_IO_BATCH_SIZE);
-        this.conf = new Configuration(conf);;
+        this.conf = new Configuration(conf);
+        ;
         this.awaitTimeout = 10000;
         this.curPartitionId = -1;
     }
+
     /**
      * Opens the reader with given partitions.
      *
@@ -80,7 +82,7 @@ public class LakeSoulPartitionReader implements PartitionReader<LakeSoulPartitio
     }
 
     private Optional<RowData> nextRecord() throws IOException {
-         if (curArrowReader == null || curRecordId >= currentVSR.getRowCount()) {
+        if (curArrowReader == null || curRecordId >= currentVSR.getRowCount()) {
             curArrowReader = nextBatch();
         }
         if (curArrowReader == null) return Optional.empty();
@@ -109,7 +111,7 @@ public class LakeSoulPartitionReader implements PartitionReader<LakeSoulPartitio
         }
         nativeIOReader = new NativeIOReader();
         LakeSoulPartition partition = partitions.get(partitionIndex);
-        for (Path path: partition.getPaths()) {
+        for (Path path : partition.getPaths()) {
             nativeIOReader.addFile(FlinkUtil.makeQualifiedPath(path).toString());
         }
 
@@ -121,7 +123,7 @@ public class LakeSoulPartitionReader implements PartitionReader<LakeSoulPartitio
             nativeIOReader.setPrimaryKeys(primaryKeys);
         }
         Schema arrowSchema = ArrowUtils.toArrowSchema(schema);
-        FlinkUtil.setFSConfigs(conf, nativeIOReader);
+        FlinkUtil.setIOConfigs(conf, nativeIOReader);
         nativeIOReader.setSchema(arrowSchema);
         nativeIOReader.setBatchSize(capacity);
         nativeIOReader.initializeReader();

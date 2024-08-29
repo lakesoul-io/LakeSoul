@@ -232,7 +232,7 @@ class FieldRefVisitor extends ExpressionDefaultVisitor<FieldReference> {
         return FieldReference.builder()
                 .type(Objects.requireNonNull(type))
                 .addSegments(
-                        ImmutableMapKey.of(ExpressionCreator.string(true, name))
+                        ImmutableStructField.of(fieldReference.getInputIndex())
                 )
                 .build();
     }

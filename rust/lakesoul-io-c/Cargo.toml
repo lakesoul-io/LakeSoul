@@ -13,6 +13,8 @@ crate-type = ["cdylib"]
 [dependencies]
 lakesoul-io = { path = "../lakesoul-io" }
 arrow = { workspace = true, features = ["ffi"] }
+arrow-buffer = { workspace = true }
+arrow-ipc = { workspace = true }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1.0"
 serde = { version = "1.0", default-features = false, features = ["derive", "std"], optional = true }

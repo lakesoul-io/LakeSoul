@@ -44,6 +44,8 @@ public interface LibLakeSoulIO {
 
     Pointer lakesoul_config_builder_set_object_store_option(Pointer builder, String key, String value);
 
+    Pointer lakesoul_config_builder_set_option(Pointer builder, String key, String value);
+
     Pointer lakesoul_config_builder_set_thread_num(Pointer builder, int thread_num);
 
     Pointer lakesoul_config_builder_set_dynamic_partition(Pointer builder, boolean enable);
@@ -92,7 +94,7 @@ public interface LibLakeSoulIO {
 
     String write_record_batch_blocked(Pointer writer, @LongLong long schemaAddr, @LongLong long arrayAddr);
 
-    String write_record_batch_ipc_blocked(Pointer writer, @LongLong long schemaAddr, @LongLong long arrayAddr);
+    String write_record_batch_ipc_blocked(Pointer writer, @LongLong long ipcAddr, @LongLong long len);
 
     void free_lakesoul_reader(Pointer reader);
 

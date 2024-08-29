@@ -3,16 +3,18 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::borrow::Borrow;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use datafusion_common::{DataFusionError, Result};
+use parquet::format::FileMetaData;
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 use tracing::debug;
 
-use crate::async_writer::{AsyncBatchWriter, WriterFlushResult, MultiPartAsyncWriter, PartitioningAsyncWriter, SortAsyncWriter};
+use crate::async_writer::{AsyncBatchWriter, MultiPartAsyncWriter, PartitioningAsyncWriter, SortAsyncWriter};
 use crate::lakesoul_io_config::{IOSchema, LakeSoulIOConfig};
 use crate::transform::uniform_schema;
 
@@ -27,6 +29,7 @@ pub struct SyncSendableMutableLakeSoulWriter {
     config: LakeSoulIOConfig,
     /// The in-progress file writer if any
     in_progress: Option<Arc<Mutex<SendableWriter>>>,
+    flush_results: Vec<(String, String, FileMetaData)>,
 }
 
 impl SyncSendableMutableLakeSoulWriter {
@@ -48,15 +51,26 @@ impl SyncSendableMutableLakeSoulWriter {
             } else {
                 config.target_schema.0.clone()
             };
-
-            let writer = Self::create_writer(writer_schema, config.clone()).await?;
+            let writer_config = config.clone();
+            let mut config = config.clone();
+            let writer = Self::create_writer(writer_schema, writer_config).await?;
             let schema = writer.schema();
+
+            if let Some(mem_limit) = config.mem_limit() {
+                if config.use_dynamic_partition {
+                    config.max_file_size = Some((mem_limit as f64 * 0.15) as u64);
+                } else if !config.primary_keys.is_empty() && !config.keep_ordering() {
+                    config.max_file_size = Some((mem_limit as f64 * 0.2) as u64);
+                }     
+            }
+            dbg!(config.max_file_size);
 
             Ok(SyncSendableMutableLakeSoulWriter {
                 in_progress: Some(Arc::new(Mutex::new(writer))),
                 runtime,
                 schema, // this should be the final written schema
                 config,
+                flush_results: vec![],
             })
         })
     }
@@ -65,7 +79,7 @@ impl SyncSendableMutableLakeSoulWriter {
         let mut writer_config = config.clone();
         let writer : Box<dyn AsyncBatchWriter + Send> = if config.use_dynamic_partition {
             Box::new(PartitioningAsyncWriter::try_new(writer_config)?)
-        } else if !writer_config.primary_keys.is_empty() {
+        } else if !writer_config.primary_keys.is_empty() && !writer_config.keep_ordering() {
             // sort primary key table
             writer_config.target_schema = IOSchema(uniform_schema(writer_schema));
             let writer = MultiPartAsyncWriter::try_new(writer_config).await?;
@@ -95,13 +109,13 @@ impl SyncSendableMutableLakeSoulWriter {
         
         let runtime = self.runtime.clone();
         runtime.block_on(async move {
-            self.write_batch_async(record_batch).await
+            self.write_batch_async(record_batch, false).await
         })
     }
 
     #[async_recursion::async_recursion(?Send)]
-    async fn write_batch_async(&mut self, record_batch: RecordBatch) -> Result<()> {
-        debug!(record_batch_rows = ?record_batch.num_rows());
+    async fn write_batch_async(&mut self, record_batch: RecordBatch, do_spill: bool) -> Result<()> {
+        debug!(record_batch_row=?record_batch.num_rows(), do_spill=?do_spill, "write_batch_async");
         let schema = self.schema();
             let config = self.config().clone();
             if let Some(max_file_size) = self.config().max_file_size {
@@ -118,43 +132,50 @@ impl SyncSendableMutableLakeSoulWriter {
                 // let in_progress_writer = in_progress_writer.clone();
                 let mut guard = in_progress_writer.lock().await;
             
+                let batch_memory_size = record_batch.get_array_memory_size() as u64;
+                let batch_rows = record_batch.num_rows() as u64;
                 // If would exceed max_file_size, split batch
-                if guard.buffered_rows() + record_batch.num_rows() > max_file_size {
-                    let to_write = max_file_size - guard.buffered_rows();
-                    let a = record_batch.slice(0, to_write);
-                    let b = record_batch.slice(to_write, record_batch.num_rows() - to_write);
-                    drop(guard);
-                    self.write_batch_async(a).await?;
-                    return self.write_batch_async(b).await;
+                if !do_spill && guard.buffered_size() + batch_memory_size > max_file_size {
+                    let to_write = (batch_rows * (max_file_size - guard.buffered_size())) / batch_memory_size;
+                    if to_write + 1 < batch_rows {
+                        let to_write = to_write as usize + 1;
+                        let a = record_batch.slice(0, to_write);
+                        let b = record_batch.slice(to_write, record_batch.num_rows() - to_write);
+                        drop(guard);
+                        self.write_batch_async(a, true).await?;
+                        return self.write_batch_async(b, false).await;
+                    } 
                 }
                 guard.write_record_batch(record_batch).await?;
 
-                if guard.buffered_rows() >= max_file_size {
+                if do_spill {
+                    debug!("spilling writer with size: {}", guard.buffered_size());
+                    dbg!(guard.buffered_size());
                     drop(guard);
                     if let Some(writer) = self.in_progress.take() {
                         let inner_writer = match Arc::try_unwrap(writer) {
                             Ok(inner) => inner,
-                            Err(e) => {
+                            Err(_) => {
                                 return Err(DataFusionError::Internal("Cannot get ownership of inner writer".to_string()))
                             },
                         };
                         let writer = inner_writer.into_inner();
-                        writer.flush_and_close().await?;
+                        let results = writer.flush_and_close().await?;
+                        self.flush_results.extend(results);
                     }
                 }
                 Ok(())
+            } else if let Some(inner_writer) = &self.in_progress {
+                let inner_writer = inner_writer.clone();
+                let mut writer = inner_writer.lock().await;
+                writer.write_record_batch(record_batch).await
             } else {
-                if let Some(inner_writer) = &self.in_progress {
-                    let inner_writer = inner_writer.clone();
-                    let mut writer = inner_writer.lock().await;
-                    writer.write_record_batch(record_batch).await
-                } else {
-                    Err(DataFusionError::Internal("Invalid state of inner writer".to_string()))
-                }
+                Err(DataFusionError::Internal("Invalid state of inner writer".to_string()))
             }
+            
     }
 
-    pub fn flush_and_close(self) -> WriterFlushResult {
+    pub fn flush_and_close(self) -> Result<Vec<u8>> {
         if let Some(inner_writer) = self.in_progress {
             let inner_writer = match Arc::try_unwrap(inner_writer) {
                 Ok(inner) => inner,
@@ -163,7 +184,28 @@ impl SyncSendableMutableLakeSoulWriter {
             let runtime = self.runtime;
             runtime.block_on(async move {
                 let writer = inner_writer.into_inner();
-                writer.flush_and_close().await
+                
+                let mut grouped_results: HashMap<String, Vec<String>> = HashMap::new();
+                let results = writer.flush_and_close().await?;
+                for (partition_desc, file, _) in self.flush_results.into_iter().chain(results) {
+                    match grouped_results.get_mut(&partition_desc) {
+                        Some(files) => {
+                            files.push(file);
+                        }
+                        None => {
+                            grouped_results.insert(partition_desc, vec![file]);
+                        }
+                    }
+                }
+                let mut summary = format!("{}", grouped_results.len());
+                for (partition_desc, files) in grouped_results.iter() {
+                    summary += "\x01";
+                    summary += partition_desc.as_str();
+                    summary += "\x02";
+                    summary += files.join("\x02").as_str();
+                }
+                Ok(summary.into_bytes())
+
             })
         } else {
             Ok(vec![])
@@ -194,7 +236,7 @@ impl SyncSendableMutableLakeSoulWriter {
 #[cfg(test)]
 mod tests {
     use crate::{
-        lakesoul_io_config::LakeSoulIOConfigBuilder,
+        lakesoul_io_config::{LakeSoulIOConfigBuilder, OPTION_KEY_MEM_LIMIT},
         lakesoul_reader::LakeSoulReader,
         lakesoul_writer::{AsyncBatchWriter, MultiPartAsyncWriter, SyncSendableMutableLakeSoulWriter},
     };
@@ -206,7 +248,7 @@ mod tests {
     use arrow_schema::{DataType, Field, Schema};
     use datafusion::error::Result;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
-    use rand::distributions::DistString;
+    use rand::{distributions::DistString, Rng};
     use tracing_subscriber::layer::SubscriberExt;
     use std::{fs::File, sync::Arc};
     use tokio::{runtime::Builder, time::Instant};
@@ -480,6 +522,7 @@ mod tests {
 
     fn create_batch(num_columns: usize, num_rows: usize, str_len: usize) -> RecordBatch {
         let mut rng = rand::thread_rng();
+        let mut len_rng = rand::thread_rng();
         let iter = (0..num_columns)
             .into_iter()
             .map(|i| {
@@ -488,7 +531,7 @@ mod tests {
                     Arc::new(StringArray::from(
                         (0..num_rows)
                             .into_iter()
-                            .map(|_| rand::distributions::Alphanumeric.sample_string(&mut rng, str_len))
+                            .map(|_| rand::distributions::Alphanumeric.sample_string(&mut rng, len_rng.gen_range(str_len..str_len * 3)))
                             .collect::<Vec<_>>(),
                     )) as ArrayRef,
                     true,
@@ -581,9 +624,9 @@ mod tests {
         let _profiler = dhat::Profiler::new_heap();
 
         let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
-        let num_batch = 300;
+        let num_batch = 100;
         let num_rows = 1000;
-        let num_columns = 20;
+        let num_columns = 100;
         let str_len = 4;
 
         let to_write = create_batch(num_columns, num_rows, str_len);
@@ -594,7 +637,6 @@ mod tests {
             .into_os_string()
             .into_string()
             .unwrap();
-        dbg!(&path);
         let writer_conf = LakeSoulIOConfigBuilder::new()
             .with_files(vec![path.clone()])
             .with_prefix(tempfile::tempdir()?.into_path().into_os_string().into_string().unwrap())
@@ -611,9 +653,10 @@ mod tests {
                     .collect::<Vec<String>>(),
             )
             // .with_aux_sort_column("col2".to_string())
-            // .with_memory_limit(1024 * 1024 * 8)
-            // .set_dynamic_partition(true)
-            // .with_max_file_size(10_000)
+            .with_option(OPTION_KEY_MEM_LIMIT, format!("{}", 1024 * 1024 * 48))
+            .set_dynamic_partition(true)
+            .with_hash_bucket_num(4)
+            // .with_max_file_size(1024 * 1024 * 32)
             .build();
 
         let mut writer = SyncSendableMutableLakeSoulWriter::try_new(writer_conf, runtime)?;

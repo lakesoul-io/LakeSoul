@@ -19,13 +19,16 @@ import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.configuration.TaskManagerOptions;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTableSinkStreamBuilder;
+import org.apache.flink.lakesoul.tool.NativeOptions;
 import org.apache.flink.lakesoul.types.arrow.LakeSoulArrowWrapper;
 import org.apache.flink.runtime.state.FunctionInitializationContext;
 import org.apache.flink.runtime.state.FunctionSnapshotContext;
 import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
+import org.apache.flink.streaming.api.datastream.DataStreamSink;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.functions.sink.PrintSinkFunction;
 import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunction;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.TableEnvironment;
@@ -47,43 +50,45 @@ import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BATCH_SIZE;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.MAX_ROW_GROUP_VALUE_NUMBER;
 
 public class ArrowSinkDemo {
-    static long checkpointInterval = 10000;
-    static int tableNum = 8;
+    static long checkpointInterval = 60 * 1000;
+    static int tableNum = 1;
 
 
     public static void main(String[] args) throws Exception {
 
 //         read data
 
-        TableEnvironment tEnv = TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
-        tEnv.registerCatalog("lakesoul", new LakeSoulCatalog());
-        tEnv.useCatalog("lakesoul");
-        long total = 0;
-        for (int i = 0; i < tableNum; i++) {
-            List<Row> collect = CollectionUtil.iteratorToList(tEnv.executeSql("select count(*) as `rows` from `default`.`qar_table_" + i + "`").collect());
-            total += (long) collect.get(0).getField(0);
-        }
-        System.out.println(total);
-        System.exit(0);
+//        TableEnvironment tEnv = TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
+//        tEnv.registerCatalog("lakesoul", new LakeSoulCatalog());
+//        tEnv.useCatalog("lakesoul");
+//        long total = 0;
+//        for (int i = 0; i < tableNum; i++) {
+//            List<Row> collect = CollectionUtil.iteratorToList(tEnv.executeSql("select count(*) as `rows` from `default`.`qar_table_" + i + "`").collect());
+//            total += (long) collect.get(0).getField(0);
+//        }
+//        System.out.println(total);
+//        System.exit(0);
 
         new LakeSoulCatalog().cleanForTest();
 
         Configuration conf = new Configuration();
         conf.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
-//        conf.set(TaskManagerOptions.TOTAL_PROCESS_MEMORY, MemorySize.parse("10000m"));
-        conf.set(TaskManagerOptions.TASK_OFF_HEAP_MEMORY, MemorySize.parse("200m"));
+        conf.set(TaskManagerOptions.TOTAL_PROCESS_MEMORY, MemorySize.parse("512m"));
+        conf.set(TaskManagerOptions.TASK_OFF_HEAP_MEMORY, MemorySize.parse("512m"));
+        conf.set(NativeOptions.MEM_LIMIT, String.valueOf(1024 * 1024 * 100));
 //        conf.set(TaskManagerOptions.JVM_OVERHEAD_MAX, MemorySize.parse("20m"));
 //        conf.set(TaskManagerOptions.JVM_METASPACE, MemorySize.parse("512m"));
 //        conf.set(ExecutionCheckpointingOptions.TOLERABLE_FAILURE_NUMBER, 2);
 
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(conf);
+//        StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(conf);
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironment(conf);
 
         int cols = 2000;
-        int batchSize = 3000;
-        int batchPerSecond = 5 * tableNum;
-        int parallelism = 2;
+        int batchSize = 2000;
+        int batchPerSecond = 8 * tableNum;
+        int parallelism = 1;
 
-        int batchPerTask = 80;
+        int batchPerTask = 600 * tableNum;
 
         // TableInfo object can be reused
         List<TableInfo> sinkTableInfo = new ArrayList<>();
@@ -112,7 +117,7 @@ public class ArrowSinkDemo {
                     .build();
             sinkTableInfo.add(tableInfo);
         }
-        
+
         DataStreamSource<LakeSoulArrowWrapper>
                 source =
                 env.addSource(new ArrowDataGenSource(sinkTableInfo, cols, batchSize, batchPerSecond, batchPerTask))
@@ -127,6 +132,10 @@ public class ArrowSinkDemo {
         context.conf.set(BATCH_SIZE, batchSize);
 
         LakeSoulMultiTableSinkStreamBuilder.buildArrowSink(context, source);
+//        String name = "Print Sink";
+//        PrintSinkFunction<LakeSoulArrowWrapper> printFunction = new PrintSinkFunction<>(name, false);
+//
+//        DataStreamSink<LakeSoulArrowWrapper> sink = source.addSink(printFunction).name(name).setParallelism(2);
 
         env.execute("Test Arrow Sink");
 

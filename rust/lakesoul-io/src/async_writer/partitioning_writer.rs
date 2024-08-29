@@ -23,8 +23,7 @@ use datafusion_common::{DataFusionError, Result};
 
 use rand::distributions::DistString;
 use tokio::{
-    runtime::Runtime,
-    sync::{mpsc::Sender, Mutex},
+    sync::mpsc::Sender,
     task::JoinHandle,
 };
 use tokio_stream::StreamExt;
@@ -38,7 +37,7 @@ use crate::{
 
 use super::{AsyncBatchWriter, WriterFlushResult, MultiPartAsyncWriter, ReceiverStreamExec};
 
-type PartitionedWriterInfo = Arc<Mutex<HashMap<String, Vec<WriterFlushResult>>>>;
+// type PartitionedWriterInfo = Arc<Mutex<HashMap<String, Vec<WriterFlushResult>>>>;
 
 /// Wrap the above async writer with a RepartitionExec to
 /// dynamic repartitioning the batches before write to async writer
@@ -48,7 +47,7 @@ pub struct PartitioningAsyncWriter {
     _partitioning_exec: Arc<dyn ExecutionPlan>,
     join_handle: Option<JoinHandle<WriterFlushResult>>,
     err: Option<DataFusionError>,
-    buffer_rows: usize,
+    buffered_size: u64,
 }
 
 impl PartitioningAsyncWriter {
@@ -68,7 +67,7 @@ impl PartitioningAsyncWriter {
 
         let write_id = rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
 
-        let partitioned_file_path_and_row_count = Arc::new(Mutex::new(HashMap::<String, (Vec<String>, u64)>::new()));
+        // let partitioned_file_path_and_row_count = Arc::new(Mutex::new(HashMap::<String, (Vec<String>, u64)>::new()));
         for i in 0..partitioning_exec.output_partitioning().partition_count() {
             let sink_task = tokio::spawn(Self::pull_and_sink(
                 partitioning_exec.clone(),
@@ -94,7 +93,7 @@ impl PartitioningAsyncWriter {
             _partitioning_exec: partitioning_exec,
             join_handle: Some(join_handle),
             err: None,
-            buffer_rows: 0,
+            buffered_size: 0,
         })
     }
 
@@ -199,7 +198,6 @@ impl PartitioningAsyncWriter {
 
         let mut err = None;
 
-        let mut row_count = 0;
 
         let mut partitioned_writer = HashMap::<String, Box<MultiPartAsyncWriter>>::new();
         let mut flush_join_handle_list = Vec::new();
@@ -229,7 +227,7 @@ impl PartitioningAsyncWriter {
                     }
 
                     if let Some(async_writer) = partitioned_writer.get_mut(&partition_desc) {
-                        row_count += batch_excluding_range.num_rows();
+                        // row_count += batch_excluding_range.num_rows();
                         async_writer.write_record_batch(batch_excluding_range).await?;
                     }
                     
@@ -264,7 +262,12 @@ impl PartitioningAsyncWriter {
                 let flush_result = tokio::spawn(async move {
                     let writer_flush_results =writer.flush_and_close().await?;
                     Ok(
-                        writer_flush_results.into_iter().map(|(_, path, file_metadata)| (partition_desc.clone(), path, file_metadata)).collect::<Vec<_>>()
+                        writer_flush_results.into_iter().map(
+                            |(_, path, file_metadata)| 
+                            {
+                                (partition_desc.clone(), path, file_metadata)
+                            }
+                        ).collect::<Vec<_>>()
                     )
                 });
                 flush_join_handle_list.push(flush_result);
@@ -335,9 +338,9 @@ impl AsyncBatchWriter for PartitioningAsyncWriter {
             )));
         }
 
-        let num_rows = batch.num_rows();
+        let memory_size = batch.get_array_memory_size() as u64;
         let send_result = self.sorter_sender.send(Ok(batch)).await;
-        self.buffer_rows += num_rows;
+        self.buffered_size += memory_size;
         match send_result {
             Ok(_) => Ok(()),
             // channel has been closed, indicating error happened during sort write
@@ -393,7 +396,7 @@ impl AsyncBatchWriter for PartitioningAsyncWriter {
         self.schema.clone()
     }
 
-    fn buffered_rows(&self) -> usize {
-        self.buffer_rows
+    fn buffered_size(&self) -> u64 {
+        self.buffered_size
     }
 }

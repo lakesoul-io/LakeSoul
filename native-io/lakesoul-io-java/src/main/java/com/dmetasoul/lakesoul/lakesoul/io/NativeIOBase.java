@@ -57,12 +57,16 @@ public class NativeIOBase implements AutoCloseable {
         ioConfigBuilder = libLakeSoulIO.new_lakesoul_io_config_builder();
         tokioRuntimeBuilder = libLakeSoulIO.new_tokio_runtime_builder();
 
-        fixedBuffer = Runtime.getRuntime(libLakeSoulIO).getMemoryManager().allocateDirect(5000L);
-        mutableBuffer = Runtime.getRuntime(libLakeSoulIO).getMemoryManager().allocateDirect(1 << 12);
+        fixedBuffer = getRuntime().getMemoryManager().allocateDirect(5000L);
+        mutableBuffer = getRuntime().getMemoryManager().allocateDirect(1 << 12);
 
         setBatchSize(10240);
         setThreadNum(2);
         libLakeSoulIO.rust_logger_init();
+    }
+
+    protected Runtime getRuntime() {
+        return Runtime.getRuntime(libLakeSoulIO);
     }
 
     public ObjectReferenceManager<IntegerCallback> getIntReferenceManager() {
@@ -165,6 +169,13 @@ public class NativeIOBase implements AutoCloseable {
         assert ioConfigBuilder != null;
         if (key != null && value != null) {
             ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_object_store_option(ioConfigBuilder, key, value);
+        }
+    }
+
+    public void setOption(String key, String value) {
+        assert ioConfigBuilder != null;
+        if (key != null && value != null) {
+            ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_option(ioConfigBuilder, key, value);
         }
     }
 

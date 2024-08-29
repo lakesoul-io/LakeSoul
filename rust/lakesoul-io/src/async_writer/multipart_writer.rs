@@ -10,7 +10,7 @@ use atomic_refcell::AtomicRefCell;
 use datafusion::execution::{object_store::ObjectStoreUrl, TaskContext};
 use datafusion_common::{project_schema, DataFusionError, Result};
 use object_store::{path::Path, MultipartId, ObjectStore};
-use parquet::{arrow::ArrowWriter, basic::Compression, file::properties::WriterProperties, format::FileMetaData};
+use parquet::{arrow::ArrowWriter, basic::Compression, file::properties::WriterProperties};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use url::Url;
 
@@ -39,6 +39,7 @@ pub struct MultiPartAsyncWriter {
     path: Path,
     absolute_path: String,
     num_rows: u64,
+    buffered_size: u64,
 }
 
 impl MultiPartAsyncWriter {
@@ -117,6 +118,7 @@ impl MultiPartAsyncWriter {
             path,
             absolute_path: file_name.to_string(),
             num_rows: 0,
+            buffered_size: 0,
         })
     }
 
@@ -171,6 +173,7 @@ impl AsyncBatchWriter for MultiPartAsyncWriter {
     async fn write_record_batch(&mut self, batch: RecordBatch) -> Result<()> {
         let batch = uniform_record_batch(batch)?;
         self.num_rows += batch.num_rows() as u64;
+        self.buffered_size += batch.get_array_memory_size() as u64;
         MultiPartAsyncWriter::write_batch(batch, &mut self.arrow_writer, &mut self.in_mem_buf, &mut self.writer).await
     }
 
@@ -191,7 +194,6 @@ impl AsyncBatchWriter for MultiPartAsyncWriter {
         // shutdown multi-part async writer to complete the upload
         this.writer.flush().await?;
         this.writer.shutdown().await?;
-        dbg!(&file_path);
         Ok(vec![(TBD_PARTITION_DESC.to_string(), file_path, metadata)])
     }
 
@@ -208,8 +210,8 @@ impl AsyncBatchWriter for MultiPartAsyncWriter {
         self.schema.clone()
     }
 
-    fn buffered_rows(&self) -> usize {
-        self.num_rows as usize
+    fn buffered_size(&self) -> u64 {
+        self.buffered_size
     }
 
 }

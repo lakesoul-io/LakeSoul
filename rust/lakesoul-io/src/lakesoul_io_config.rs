@@ -42,6 +42,15 @@ impl Default for IOSchema {
     }
 }
 
+pub static OPTION_KEY_KEEP_ORDERS: &str = "keep_orders";
+pub static OPTION_DEFAULT_VALUE_KEEP_ORDERS: &str = "false";
+
+pub static OPTION_KEY_MEM_LIMIT: &str = "mem_limit";
+pub static OPTION_KEY_POOL_SIZE: &str = "pool_size";
+pub static OPTION_KEY_MAX_FILE_SIZE: &str = "max_file_size";
+
+
+
 #[derive(Debug, Derivative)]
 #[derivative(Default, Clone)]
 pub struct LakeSoulIOConfig {
@@ -101,6 +110,8 @@ pub struct LakeSoulIOConfig {
     // to be compatible with hadoop's fs.defaultFS
     pub(crate) default_fs: String,
 
+    pub(super) options: HashMap<String, String>,
+
     // if dynamic partition
     #[derivative(Default(value = "false"))]
     pub(crate) use_dynamic_partition: bool,
@@ -113,7 +124,11 @@ pub struct LakeSoulIOConfig {
     pub(crate) memory_limit: Option<usize>,
 
     #[derivative(Default(value = "None"))]
-    pub(crate) max_file_size: Option<usize>,
+    pub(crate) memory_pool_size: Option<usize>,
+
+    // max file size of bytes
+    #[derivative(Default(value = "None"))]
+    pub(crate) max_file_size: Option<u64>,
 }
 
 impl LakeSoulIOConfig {
@@ -139,6 +154,22 @@ impl LakeSoulIOConfig {
 
     pub fn aux_sort_cols_slice(&self) -> &[String] {
         &self.aux_sort_cols
+    }
+
+    pub fn option(&self, key: &str) -> Option<&String> {
+        self.options.get(key)
+    }
+
+    pub fn keep_ordering(&self) -> bool {
+        self.option(OPTION_KEY_KEEP_ORDERS).map_or(false, |x| x.eq("true"))
+    }
+
+    pub fn mem_limit(&self) -> Option<usize> {
+        self.option(OPTION_KEY_MEM_LIMIT).map(|x| x.parse().unwrap())
+    }
+
+    pub fn pool_size(&self) -> Option<usize> {
+        self.option(OPTION_KEY_POOL_SIZE).map(|x| x.parse().unwrap())
     }
 }
 
@@ -225,11 +256,6 @@ impl LakeSoulIOConfigBuilder {
         self
     }
 
-    pub fn with_memory_limit(mut self, memory_limit: usize) -> Self {
-        self.config.memory_limit = Some(memory_limit);
-        self
-    }
-
     pub fn with_parquet_filter_pushdown(mut self, enable: bool) -> Self {
         self.config.parquet_filter_pushdown = enable;
         self
@@ -280,6 +306,11 @@ impl LakeSoulIOConfigBuilder {
         self
     }
 
+    pub fn with_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.config.options.insert(key.into(), value.into());
+        self
+    }
+
     pub fn with_thread_num(mut self, thread_num: usize) -> Self {
         self.config.thread_num = thread_num;
         self
@@ -295,7 +326,7 @@ impl LakeSoulIOConfigBuilder {
         self
     }
 
-    pub fn with_max_file_size(mut self, size: usize) -> Self {
+    pub fn with_max_file_size(mut self, size: u64) -> Self {
         self.config.max_file_size = Some(size);
         self
     }
@@ -318,10 +349,6 @@ impl LakeSoulIOConfigBuilder {
 
     pub fn prefix(&self) -> &String {
         &self.config.prefix
-    }
-
-    pub fn max_file_size(&self) -> &Option<usize> {
-        &self.config.max_file_size
     }
 }
 
@@ -518,8 +545,9 @@ pub fn create_session_context_with_planner(
     // sess_conf.options_mut().catalog.default_catalog = "lakesoul".into();
 
     let mut runtime_conf = RuntimeConfig::new();
-    if let Some(pool_size) = config.memory_limit {
+    if let Some(pool_size) = config.pool_size() {
         let memory_pool = FairSpillPool::new(pool_size);
+        dbg!(&memory_pool);
         runtime_conf = runtime_conf.with_memory_pool(Arc::new(memory_pool));
     }
     let runtime = RuntimeEnv::new(runtime_conf)?;

@@ -46,14 +46,14 @@ pub trait AsyncBatchWriter {
 
     fn schema(&self) -> SchemaRef;
 
-    fn buffered_rows(&self) -> usize {
+    fn buffered_size(&self) -> u64 {
         0
     }
 }
 
 /// A VecDeque which is both std::io::Write and bytes::Buf
 #[derive(Clone)]
-pub(self) struct InMemBuf(Arc<AtomicRefCell<VecDeque<u8>>>);
+struct InMemBuf(Arc<AtomicRefCell<VecDeque<u8>>>);
 
 impl Write for InMemBuf {
     #[inline]

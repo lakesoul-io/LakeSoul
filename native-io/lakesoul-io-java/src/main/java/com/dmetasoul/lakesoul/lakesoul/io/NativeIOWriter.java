@@ -4,6 +4,7 @@
 
 package com.dmetasoul.lakesoul.lakesoul.io;
 
+import jnr.ffi.Memory;
 import jnr.ffi.Pointer;
 import jnr.ffi.Runtime;
 import org.apache.arrow.c.ArrowArray;
@@ -16,6 +17,7 @@ import org.apache.arrow.vector.types.pojo.Schema;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -29,6 +31,7 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
     public NativeIOWriter(Schema schema) {
         super("NativeWriter");
         setSchema(schema);
+//        setOption("mem_limit", String.valueOf(1024 * 1024 * 100));
     }
 
 
@@ -68,6 +71,16 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
     }
 
     public int writeIpc(byte[] encodedBatch) throws IOException {
+//        Pointer ipc = getRuntime().getMemoryManager().allocateDirect(encodedBatch.length + 1, true);
+//        ipc.put(0, encodedBatch, 0, encodedBatch.length);
+//        ipc.putByte(encodedBatch.length, (byte) 0);
+//        String msg = libLakeSoulIO.write_record_batch_ipc_blocked(writer, ipc.address(), ipc.size());
+//        if (!msg.startsWith("Ok: ")) {
+//            throw new IOException("Native writer write batch failed with error: " + msg);
+//        }
+//
+//        return Integer.parseInt(msg.substring(4));
+
         int batchSize = 0;
         try (ArrowStreamReader reader = new ArrowStreamReader(new ByteArrayInputStream(encodedBatch), allocator)) {
             if (reader.loadNextBatch()) {

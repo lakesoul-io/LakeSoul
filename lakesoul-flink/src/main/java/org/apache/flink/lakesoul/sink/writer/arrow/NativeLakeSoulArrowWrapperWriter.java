@@ -88,7 +88,7 @@ public class NativeLakeSoulArrowWrapperWriter implements InProgressFileWriter<La
         nativeWriter.withPrefix(this.prefix);
         nativeWriter.useDynamicPartition(true);
 
-        FlinkUtil.setFSConfigs(conf, nativeWriter);
+        FlinkUtil.setIOConfigs(conf, nativeWriter);
         nativeWriter.initializeWriter();
 //        LOG.info("Initialized NativeLakeSoulArrowWrapperWriter: {}", this);
     }

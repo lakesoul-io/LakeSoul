@@ -116,6 +116,10 @@ IOConfigBuilder *lakesoul_config_builder_set_object_store_option(IOConfigBuilder
                                                                  const char *key,
                                                                  const char *value);
 
+IOConfigBuilder *lakesoul_config_builder_set_option(IOConfigBuilder *builder,
+                                                    const char *key,
+                                                    const char *value);
+
 IOConfigBuilder *lakesoul_config_builder_add_files(IOConfigBuilder *builder,
                                                    const char *const *files,
                                                    c_size_t file_num);
@@ -177,6 +181,10 @@ void write_record_batch(CResult<Writer> *writer,
 const char *write_record_batch_blocked(CResult<Writer> *writer,
                                        c_ptrdiff_t schema_addr,
                                        c_ptrdiff_t array_addr);
+
+const char *write_record_batch_ipc_blocked(CResult<Writer> *writer,
+                                           c_ptrdiff_t ipc_addr,
+                                           int64_t len);
 
 void export_bytes_result(void (*callback)(bool, const char*),
                          CResult<BytesResult> *bytes,

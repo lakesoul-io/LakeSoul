@@ -80,7 +80,7 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         this.path = path.makeQualified(path.getFileSystem());
         nativeWriter.addFile(this.path.toUri().toString());
 
-        FlinkUtil.setFSConfigs(conf, this.nativeWriter);
+        FlinkUtil.setIOConfigs(conf, this.nativeWriter);
         this.nativeWriter.initializeWriter();
     }
 
@@ -225,7 +225,8 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         return this.lastUpdateTime;
     }
 
-    @Override public String toString() {
+    @Override
+    public String toString() {
         return "NativeParquetWriter{" +
                 "maxRowGroupRows=" + maxRowGroupRows +
                 ", creationTime=" + creationTime +

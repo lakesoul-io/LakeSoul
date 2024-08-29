@@ -93,7 +93,7 @@ public class DynamicPartitionNativeParquetWriter implements InProgressFileWriter
         nativeWriter.withPrefix(this.prefix);
         nativeWriter.useDynamicPartition(true);
 
-        FlinkUtil.setFSConfigs(conf, nativeWriter);
+        FlinkUtil.setIOConfigs(conf, nativeWriter);
         nativeWriter.initializeWriter();
         LOG.info("Initialized DynamicPartitionNativeParquetWriter: {}", this);
     }

@@ -511,11 +511,7 @@ pub fn timestamp_str_to_unix_time(value: &str, fmt: &str) -> Result<Duration> {
 
 pub fn column_with_name_and_name2index<'a>(schema: &'a SchemaRef, name: &str, name_to_index: &Option<HashMap<String, usize>>) -> Option<(usize, &'a Field)> {
     if let Some(name_to_index) = name_to_index {
-        if let Some(index) = name_to_index.get(name) {
-            Some((*index, schema.field(*index)))
-        } else {
-            None
-        }
+        name_to_index.get(name).map(|index| (*index, schema.field(*index)))
     } else {
         schema.column_with_name(name)
     }

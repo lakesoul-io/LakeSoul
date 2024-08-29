@@ -1955,6 +1955,8 @@ name = "lakesoul-io-c"
 version = "2.5.0"
 dependencies = [
  "arrow",
+ "arrow-buffer",
+ "arrow-ipc",
  "bytes",
  "cbindgen",
  "datafusion-substrait",
