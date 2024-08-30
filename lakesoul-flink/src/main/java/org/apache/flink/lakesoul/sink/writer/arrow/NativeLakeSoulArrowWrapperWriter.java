@@ -104,10 +104,9 @@ public class NativeLakeSoulArrowWrapperWriter implements InProgressFileWriter<La
 
     @Override
     public PendingFileRecoverable closeForCommit() throws IOException {
-        HashMap<String, List<String>> partitionDescAndFilesMap = this.nativeWriter.flush();
+        this.nativeWriter.flush();
         try {
             this.nativeWriter.close();
-            initNativeWriter();
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
@@ -130,7 +129,6 @@ public class NativeLakeSoulArrowWrapperWriter implements InProgressFileWriter<La
 
         try {
             this.nativeWriter.close();
-            initNativeWriter();
         } catch (Exception e) {
             throw new RuntimeException(e);
         }

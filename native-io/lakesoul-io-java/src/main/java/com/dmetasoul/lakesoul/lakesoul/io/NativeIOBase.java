@@ -60,7 +60,7 @@ public class NativeIOBase implements AutoCloseable {
         fixedBuffer = Runtime.getRuntime(libLakeSoulIO).getMemoryManager().allocateDirect(5000L);
         mutableBuffer = Runtime.getRuntime(libLakeSoulIO).getMemoryManager().allocateDirect(1 << 12);
 
-        setBatchSize(10240);
+        setBatchSize(1024);
         setThreadNum(2);
         libLakeSoulIO.rust_logger_init();
     }
@@ -247,7 +247,6 @@ public class NativeIOBase implements AutoCloseable {
             removerReferenceKey();
         }
     }
-
 
     public BufferAllocator getAllocator() {
         return allocator;

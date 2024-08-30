@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BATCH_SIZE;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKET;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.MAX_ROW_GROUP_SIZE;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SORT_FIELD;
@@ -89,9 +90,9 @@ public class DynamicPartitionNativeParquetWriter implements InProgressFileWriter
         batch = VectorSchemaRoot.create(arrowSchema, nativeWriter.getAllocator());
         arrowWriter = ArrowUtils.createRowDataArrowWriter(batch, rowType);
 
-
         nativeWriter.withPrefix(this.prefix);
         nativeWriter.useDynamicPartition(true);
+        nativeWriter.setBatchSize(conf.get(BATCH_SIZE));
 
         FlinkUtil.setFSConfigs(conf, nativeWriter);
         nativeWriter.initializeWriter();
@@ -121,19 +122,17 @@ public class DynamicPartitionNativeParquetWriter implements InProgressFileWriter
         return null;
     }
 
-
     @Override
     public PendingFileRecoverable closeForCommit() throws IOException {
         this.arrowWriter.finish();
         this.nativeWriter.write(this.batch);
-        HashMap<String, List<String>> partitionDescAndFilesMap = this.nativeWriter.flush();
+        this.nativeWriter.flush();
         this.arrowWriter.reset();
         this.rowsInBatch = 0;
         this.batch.clear();
         this.batch.close();
         try {
             this.nativeWriter.close();
-            initNativeWriter();
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
@@ -145,27 +144,25 @@ public class DynamicPartitionNativeParquetWriter implements InProgressFileWriter
         Map<String, List<PendingFileRecoverable>> recoverableMap = new HashMap<>();
         if (this.batch.getRowCount() > 0) {
             this.nativeWriter.write(this.batch);
-            HashMap<String, List<String>> partitionDescAndFilesMap = this.nativeWriter.flush();
-            for (Map.Entry<String, List<String>> entry : partitionDescAndFilesMap.entrySet()) {
-                recoverableMap.put(
-                        entry.getKey(),
-                        entry.getValue()
-                                .stream()
-                                .map(path -> new NativeParquetWriter.NativeWriterPendingFileRecoverable(path,
-                                        creationTime))
-                                .collect(Collectors.toList())
-                );
-            }
-            this.arrowWriter.reset();
-            this.rowsInBatch = 0;
-            this.batch.clear();
-            this.batch.close();
-            try {
-                this.nativeWriter.close();
-                initNativeWriter();
-            } catch (Exception e) {
-                throw new RuntimeException(e);
-            }
+        }
+        HashMap<String, List<String>> partitionDescAndFilesMap = this.nativeWriter.flush();
+        this.arrowWriter.reset();
+        this.rowsInBatch = 0;
+        this.batch.close();
+        for (Map.Entry<String, List<String>> entry : partitionDescAndFilesMap.entrySet()) {
+            recoverableMap.put(
+                    entry.getKey(),
+                    entry.getValue()
+                            .stream()
+                            .map(path -> new NativeParquetWriter.NativeWriterPendingFileRecoverable(path,
+                                    creationTime))
+                            .collect(Collectors.toList())
+            );
+        }
+        try {
+            this.nativeWriter.close();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
         }
         LOG.info("CloseForCommitWithRecoverableMap done, recoverableMap={}", recoverableMap);
         return recoverableMap;

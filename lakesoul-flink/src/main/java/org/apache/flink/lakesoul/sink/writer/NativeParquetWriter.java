@@ -29,6 +29,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BATCH_SIZE;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.MAX_ROW_GROUP_SIZE;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SORT_FIELD;
 
@@ -79,6 +80,7 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         arrowWriter = ArrowUtils.createRowDataArrowWriter(batch, rowType);
         this.path = path.makeQualified(path.getFileSystem());
         nativeWriter.addFile(this.path.toUri().toString());
+        nativeWriter.setBatchSize(conf.get(BATCH_SIZE));
 
         FlinkUtil.setFSConfigs(conf, this.nativeWriter);
         this.nativeWriter.initializeWriter();

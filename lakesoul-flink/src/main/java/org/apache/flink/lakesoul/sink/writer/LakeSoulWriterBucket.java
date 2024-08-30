@@ -291,10 +291,10 @@ public class LakeSoulWriterBucket {
                 InProgressFileWriter.PendingFileRecoverable pendingFileRecoverable =
                         inProgressPartWriter.closeForCommit();
                 pendingFilesMap.computeIfAbsent(bucketId, bucketId -> new ArrayList()).add(pendingFileRecoverable);
-                inProgressPartWriter = null;
                 LOG.info("Closed part file {} for {}ms", pendingFileRecoverable.getPath(),
                         (System.currentTimeMillis() - start));
             }
+            inProgressPartWriter = null;
         }
     }
 
