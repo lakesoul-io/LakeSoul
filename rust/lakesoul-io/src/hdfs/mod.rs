@@ -11,14 +11,12 @@ use bytes::Bytes;
 use datafusion::error::Result;
 use datafusion_common::DataFusionError;
 use futures::stream::BoxStream;
-// use futures::TryStreamExt;
 use hdfs_sys::{hdfsGetLastExceptionRootCause, hdfsGetLastExceptionStackTrace};
 use hdrs::{Client, ClientBuilder};
 use object_store::path::Path;
 use object_store::Error::Generic;
 use object_store::{GetOptions, GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore};
 use parquet::data_type::AsBytes;
-use std::error::Error;
 use std::ffi::CStr;
 use std::fmt::{Debug, Display, Formatter};
 use std::io;
@@ -28,7 +26,6 @@ use std::ops::Range;
 use std::sync::Arc;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio_util::compat::{FuturesAsyncReadCompatExt, FuturesAsyncWriteCompatExt};
-// use tokio_util::io::ReaderStream;
 
 pub struct Hdfs {
     client: Arc<Client>,
