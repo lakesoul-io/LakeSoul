@@ -259,13 +259,14 @@ public class LakeSoulArrowWriterBucket {
                 Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFileRecoverableMap =
                         ((NativeLakeSoulArrowWrapperWriter) inProgressPartWriter).closeForCommitWithRecoverableMap();
                 for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry : pendingFileRecoverableMap.entrySet()) {
-                    pendingFilesMap.computeIfAbsent(entry.getKey(), bucketId -> new ArrayList())
+                    pendingFilesMap.computeIfAbsent(entry.getKey(), bucketId -> new ArrayList<>())
                             .addAll(entry.getValue());
                 }
             } else {
                 throw new RuntimeException(
                         "inProgressPartWriter only support instanceof NativeLakeSoulArrowWrapperWriter");
             }
+            inProgressPartWriter = null;
         }
     }
 

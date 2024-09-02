@@ -73,7 +73,7 @@ public class LakeSoulTestUtils {
         env.getCheckpointConfig().setTolerableCheckpointFailureNumber(0);
         env.getCheckpointConfig().setCheckpointTimeout(checkpointTimeout);
         env.getCheckpointConfig().configure(config);
-        env.setRestartStrategy(RestartStrategies.fixedDelayRestart(Integer.MAX_VALUE, 1000L));
+        env.setRestartStrategy(RestartStrategies.fixedDelayRestart(2, 1000L));
         return env;
     }
 
