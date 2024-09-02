@@ -205,9 +205,7 @@ public class SubstraitUtil {
 
         byte[] jniBytes = jniWrapper.toByteArray();
         byte[] filterBytes = partitionFilter.toByteArray();
-        System.out.println(BUFFER1.size());
         tryPutBuffer1(jniBytes);
-        System.out.println(BUFFER1.size());
         tryPutBuffer2(filterBytes);
 
         try {
