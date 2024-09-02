@@ -1909,6 +1909,7 @@ dependencies = [
  "futures",
  "half",
  "hdrs",
+ "hex",
  "lazy_static",
  "log",
  "object_store",

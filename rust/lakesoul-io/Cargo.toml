@@ -43,7 +43,7 @@ log = "0.4.20"
 anyhow = { workspace = true, features = [] }
 prost = { workspace = true }
 env_logger = "0.11"
-
+hex = "0.4"
 
 [features]
 hdfs = ["dep:hdrs"]
@@ -54,8 +54,6 @@ datafusion-substrait = { workspace = true }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 datafusion-substrait = { workspace = true, features = ["protoc"] }
-
-
 
 
 [dev-dependencies]
