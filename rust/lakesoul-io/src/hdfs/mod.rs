@@ -12,12 +12,16 @@ use datafusion::error::Result;
 use datafusion_common::DataFusionError;
 use futures::stream::BoxStream;
 // use futures::TryStreamExt;
+use hdfs_sys::{hdfsGetLastExceptionRootCause, hdfsGetLastExceptionStackTrace};
 use hdrs::{Client, ClientBuilder};
 use object_store::path::Path;
 use object_store::Error::Generic;
 use object_store::{GetOptions, GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore};
 use parquet::data_type::AsBytes;
+use std::error::Error;
+use std::ffi::CStr;
 use std::fmt::{Debug, Display, Formatter};
+use std::io;
 use std::io::ErrorKind::NotFound;
 use std::io::{Read, Seek, SeekFrom};
 use std::ops::Range;
@@ -38,11 +42,20 @@ impl Hdfs {
             None => client_builder,
             Some(user) => client_builder.with_user(user.as_str()),
         };
-        let client = client_builder.connect().map_err(DataFusionError::IoError)?;
-
-        Ok(Self {
-            client: Arc::new(client),
-        })
+        let client = client_builder.connect();
+        match client {
+            Ok(c) => Ok(Self { client: Arc::new(c) }),
+            Err(e) => unsafe {
+                let errmsg = format!(
+                    "Open HDFS client failed: {:?}\nroot cause: {:?}\nstack trace: {:?}",
+                    e,
+                    CStr::from_ptr(hdfsGetLastExceptionRootCause()),
+                    CStr::from_ptr(hdfsGetLastExceptionStackTrace())
+                );
+                println!("{}", errmsg);
+                Err(DataFusionError::IoError(io::Error::new(e.kind(), errmsg)))
+            },
+        }
     }
 
     async fn is_file_exist(&self, path: &Path) -> object_store::Result<bool> {
@@ -342,7 +355,7 @@ mod tests {
     use datafusion::datasource::object_store::ObjectStoreUrl;
     use futures::StreamExt;
     use object_store::path::Path;
-    use object_store::GetResult::Stream;
+    use object_store::GetResultPayload::Stream;
     use object_store::ObjectStore;
     use rand::distributions::{Alphanumeric, DistString};
     use rand::thread_rng;
@@ -363,7 +376,7 @@ mod tests {
 
     async fn read_file_from_hdfs(path: String, object_store: Arc<dyn ObjectStore>) -> String {
         let file = object_store.get(&Path::from(path)).await.unwrap();
-        match file {
+        match file.payload {
             Stream(s) => {
                 let read_result = s
                     .collect::<Vec<object_store::Result<Bytes>>>()

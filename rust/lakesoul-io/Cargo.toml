@@ -31,6 +31,7 @@ smallvec = "1.10"
 dary_heap = "0.3"
 bytes = { workspace = true }
 hdrs = { git = "https://github.com/lakesoul-io/hdrs.git", branch = "main", features = ["async_file"], optional = true }
+hdfs-sys = { version = "0.3", default-features = false, features = ["hdfs_3_3"], optional = true }
 lazy_static = "1.4.0"
 chrono = "0.4"
 serde_json = { workspace = true }
@@ -46,7 +47,7 @@ env_logger = "0.11"
 hex = "0.4"
 
 [features]
-hdfs = ["dep:hdrs"]
+hdfs = ["dep:hdrs", "dep:hdfs-sys"]
 default = []
 
 [target.'cfg(target_os = "windows")'.dependencies]

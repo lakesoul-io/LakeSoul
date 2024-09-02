@@ -399,7 +399,7 @@ pub extern "C" fn create_lakesoul_reader_from_config(
     let runtime: Runtime = from_opaque(runtime);
     let result = match LakeSoulReader::new(config) {
         Ok(reader) => CResult::<Reader>::new(SyncSendableMutableLakeSoulReader::new(reader, runtime)),
-        Err(e) => CResult::<Reader>::error(format!("{}", e).as_str()),
+        Err(e) => CResult::<Reader>::error(format!("{:?}", e).as_str()),
     };
     convert_to_nonnull(result)
 }
