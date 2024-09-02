@@ -80,6 +80,22 @@ public class SubstraitTest extends AbstractTestBase {
     }
 
     @Test
+    public void partitionTest() throws ExecutionException, InterruptedException {
+        TableEnvironment createTableEnv = TestUtils.createTableEnv(BATCH_TYPE);
+        createLakeSoulSourceTableWithDateType(createTableEnv);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < 65536; i++) {
+            sb.append("0");
+        }
+        String testSql = String.format("select * from type_info where zone='%s' or zone='A'", sb.toString());
+        StreamTableEnvironment tEnvs = TestUtils.createStreamTableEnv(BATCH_TYPE);
+        List<Row> rows = CollectionUtil.iteratorToList(tEnvs.executeSql(testSql).collect());
+        rows.sort(Comparator.comparing(Row::toString));
+        assertThat(rows.toString()).isEqualTo(
+                "[+I[1, Bob, 1995-10-01, true, 10.01, A, 1.85, 3, 1, 89, 100.11, [1, -81], [18, 67, 112, -105], 1990-01-07T10:10, 1995-10-01T07:10:00Z]]");
+    }
+
+    @Test
     public void cmpTest() throws ExecutionException, InterruptedException {
         TableEnvironment createTableEnv = TestUtils.createTableEnv(BATCH_TYPE);
         createLakeSoulSourceTableWithDateType(createTableEnv);
@@ -110,7 +126,10 @@ public class SubstraitTest extends AbstractTestBase {
                 "    country VARBINARY, " +
                 "    createTime TIMESTAMP, " +
                 "    modifyTime TIMESTAMP_LTZ " +
-                ") WITH (" +
+                ") " +
+                "PARTITIONED BY (`zone`,`country`,`money`)" +
+
+                "WITH (" +
                 "    'connector'='lakesoul'," +
                 "    'hashBucketNum'='2'," +
                 "    'path'='" + getTempDirUri("/lakeSource/type") +

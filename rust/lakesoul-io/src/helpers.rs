@@ -6,6 +6,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use arrow::datatypes::UInt32Type;
 use arrow_array::{RecordBatch, UInt32Array};
+use arrow_buffer::i256;
 use arrow_schema::{DataType, Field, Schema, SchemaBuilder, SchemaRef, TimeUnit};
 use chrono::{DateTime, Duration};
 use datafusion::{
@@ -31,9 +32,7 @@ use url::Url;
 
 use crate::{
     constant::{
-        DATE32_FORMAT, FLINK_TIMESTAMP_FORMAT, LAKESOUL_EMPTY_STRING, LAKESOUL_NULL_STRING,
-        TIMESTAMP_MICROSECOND_FORMAT, TIMESTAMP_MILLSECOND_FORMAT, TIMESTAMP_NANOSECOND_FORMAT,
-        TIMESTAMP_SECOND_FORMAT,
+        DATE32_FORMAT, FLINK_TIMESTAMP_FORMAT, LAKESOUL_COMMA, LAKESOUL_EMPTY_STRING, LAKESOUL_EQ, LAKESOUL_NULL_STRING, TIMESTAMP_MICROSECOND_FORMAT, TIMESTAMP_MILLSECOND_FORMAT, TIMESTAMP_NANOSECOND_FORMAT, TIMESTAMP_SECOND_FORMAT
     },
     filter::parser::Parser,
     lakesoul_io_config::LakeSoulIOConfig,
@@ -123,7 +122,7 @@ pub fn format_scalar_value(v: &ScalarValue) -> String {
             if s.is_empty() {
                 LAKESOUL_EMPTY_STRING.to_string()
             } else {
-                s.clone()
+                s.replace(',', LAKESOUL_EQ).replace(',', LAKESOUL_COMMA)
             }
         }
         ScalarValue::TimestampSecond(Some(s), _) => {
@@ -166,6 +165,14 @@ pub fn format_scalar_value(v: &ScalarValue) -> String {
                     .format(TIMESTAMP_NANOSECOND_FORMAT)
             )
         }
+        ScalarValue::Decimal128(Some(s), _, _) => format!("{}", s),
+        ScalarValue::Decimal256(Some(s), _, _) => format!("{}", s),
+        ScalarValue::Binary(e)
+            | ScalarValue::FixedSizeBinary(_, e)
+            | ScalarValue::LargeBinary(e) => match e {
+                Some(bytes) => hex::encode(bytes),
+                None => LAKESOUL_NULL_STRING.to_string(),
+            }
         other => other.to_string(),
     }
 }
@@ -180,7 +187,7 @@ pub fn into_scalar_value(val: &str, data_type: &DataType) -> Result<ScalarValue>
                 if val.eq(LAKESOUL_EMPTY_STRING) {
                     Ok(ScalarValue::Utf8(Some("".to_string())))
                 } else {
-                    Ok(ScalarValue::Utf8(Some(val.to_string())))
+                    Ok(ScalarValue::Utf8(Some(val.replace(LAKESOUL_EQ, "=").replace(LAKESOUL_COMMA, ","))))
                 }
             }
             DataType::Timestamp(unit, timezone) => match unit {
@@ -238,6 +245,11 @@ pub fn into_scalar_value(val: &str, data_type: &DataType) -> Result<ScalarValue>
                     Ok(ScalarValue::TimestampNanosecond(Some(nanosecs), timezone.clone()))
                 }
             },
+            DataType::Decimal128(p, s) => Ok(ScalarValue::Decimal128(Some(val.parse::<i128>().unwrap()), *p, *s)),
+            DataType::Decimal256(p, s) => Ok(ScalarValue::Decimal256(Some(i256::from_string(val).unwrap()), *p, *s)),
+            DataType::Binary=>  Ok(ScalarValue::Binary(Some(hex::decode(val).unwrap()))),
+            DataType::FixedSizeBinary(size) => Ok(ScalarValue::FixedSizeBinary(*size, Some(hex::decode(val).unwrap()))),
+            DataType::LargeBinary => Ok(ScalarValue::LargeBinary(Some(hex::decode(val).unwrap()))),
             _ => ScalarValue::try_from_string(val.to_string(), data_type),
         }
     }

@@ -14,6 +14,8 @@ use lazy_static::lazy_static;
 pub static LAKESOUL_TIMEZONE: &str = "UTC";
 pub static LAKESOUL_NULL_STRING: &str = "__L@KE$OUL_NULL__";
 pub static LAKESOUL_EMPTY_STRING: &str = "__L@KE$OUL_EMPTY_STRING__";
+pub static LAKESOUL_EQ: &str = "__L@KE$OUL_EQ__";
+pub static LAKESOUL_COMMA: &str = "__L@KE$OUL_COMMA__";
 
 pub static DATE32_FORMAT: &str = "%Y-%m-%d";
 pub static FLINK_TIMESTAMP_FORMAT: &str = "%Y-%m-%d %H:%M:%S%.9f";

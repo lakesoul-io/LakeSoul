@@ -69,8 +69,8 @@ public class SubstraitUtil {
 
     private static final LibLakeSoulIO LIB;
 
-    private static final Pointer BUFFER1;
-    private static final Pointer BUFFER2;
+    private static Pointer BUFFER1;
+    private static Pointer BUFFER2;
 
     private static final NativeIOBase NATIVE_IO_BASE;
 
@@ -204,12 +204,9 @@ public class SubstraitUtil {
         JniWrapper jniWrapper = JniWrapper.newBuilder().addAllPartitionInfo(allPartitionInfo).build();
 
         byte[] jniBytes = jniWrapper.toByteArray();
-        BUFFER1.put(0, jniBytes, 0, jniBytes.length);
-        BUFFER1.putByte(jniBytes.length, (byte) 0);
-
         byte[] filterBytes = partitionFilter.toByteArray();
-        BUFFER2.put(0, filterBytes, 0, filterBytes.length);
-        BUFFER2.putByte(filterBytes.length, (byte) 0);
+        tryPutBuffer1(jniBytes);
+        tryPutBuffer2(filterBytes);
 
         try {
             final CompletableFuture<Integer> filterFuture = new CompletableFuture<>();
@@ -265,6 +262,22 @@ public class SubstraitUtil {
         }
 
         return resultPartitionInfo;
+    }
+
+    private static void tryPutBuffer1(byte[] bytes) {
+        while (BUFFER1.size() < bytes.length + 1) {
+            BUFFER1 = Runtime.getRuntime(LIB).getMemoryManager().allocateDirect(BUFFER1.size() * 2);
+        }
+        BUFFER1.put(0, bytes, 0, bytes.length);
+        BUFFER1.putByte(bytes.length, (byte) 0);
+    }
+
+    private static void tryPutBuffer2(byte[] bytes) {
+        while (BUFFER2.size() < bytes.length + 1) {
+            BUFFER2 = Runtime.getRuntime(LIB).getMemoryManager().allocateDirect(BUFFER2.size() * 2);
+        }
+        BUFFER2.put(0, bytes, 0, bytes.length);
+        BUFFER2.putByte(bytes.length, (byte) 0);
     }
 
 

@@ -19,7 +19,7 @@ use crate::constant::{
     ARROW_CAST_OPTIONS, FLINK_TIMESTAMP_FORMAT, LAKESOUL_EMPTY_STRING, LAKESOUL_NULL_STRING,
     TIMESTAMP_MICROSECOND_FORMAT, TIMESTAMP_MILLSECOND_FORMAT, TIMESTAMP_NANOSECOND_FORMAT, TIMESTAMP_SECOND_FORMAT,
 };
-use crate::helpers::{date_str_to_epoch_days, timestamp_str_to_unix_time};
+use crate::helpers::{date_str_to_epoch_days, into_scalar_value, timestamp_str_to_unix_time};
 
 /// adjust time zone to UTC
 pub fn uniform_field(orig_field: &FieldRef) -> FieldRef {
@@ -315,12 +315,18 @@ pub fn make_default_array(datatype: &DataType, value: &String, num_rows: usize) 
                 .map_err(|e| External(Box::new(e)))?;
             num_rows
         ])),
-        _ => {
-            println!(
-                "make_default_array() datatype not match, datatype={:?}, value={:?}",
-                datatype, value
-            );
-            new_null_array(datatype, num_rows)
+        data_type => {
+            match into_scalar_value(value, data_type) {
+                Ok(scalar) => scalar.to_array_of_size(num_rows)?,
+                Err(_) => {
+                    println!(
+                        "make_default_array() datatype not match, datatype={:?}, value={:?}",
+                        datatype, value
+                    );
+                    new_null_array(datatype, num_rows)
+                }
+            }
+
         }
     })
 }
