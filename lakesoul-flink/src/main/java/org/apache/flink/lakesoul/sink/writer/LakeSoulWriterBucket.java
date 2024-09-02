@@ -262,46 +262,18 @@ public class LakeSoulWriterBucket {
      */
     private Path assembleNewPartPath() {
         return bucketPath;
-//        if (DYNAMIC_BUCKET.equals(bucketId)) {
-//            return bucketPath;
-//        }
-//        long currentPartCounter = partCounter++;
-//        String count = String.format("%03d", currentPartCounter);
-//        String subTask = String.format("%05d", this.subTaskId);
-//        return new Path(
-//                assembleBucketPath(bucketPath, bucketId),
-//                outputFileConfig.getPartPrefix()
-//                        + '-'
-//                        + subTask
-//                        + '-'
-//                        + uniqueId
-//                        + '_'
-//                        + subTask
-//                        + ".c"
-//                        + count
-//                        + outputFileConfig.getPartSuffix());
     }
 
     private void closePartFile() throws IOException {
         if (inProgressPartWriter != null) {
             long start = System.currentTimeMillis();
-//            if (inProgressPartWriter instanceof DynamicPartitionNativeParquetWriter) {
             Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFileRecoverableMap =
-//                    ((DynamicPartitionNativeParquetWriter) inProgressPartWriter).closeForCommitWithRecoverableMap();
                     ((NativeParquetWriter) inProgressPartWriter).closeForCommitWithRecoverableMap();
             for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry : pendingFileRecoverableMap.entrySet()) {
                 pendingFilesMap.computeIfAbsent(entry.getKey(), bucketId -> new ArrayList())
                         .addAll(entry.getValue());
             }
             inProgressPartWriter = null;
-//            } else {
-//                InProgressFileWriter.PendingFileRecoverable pendingFileRecoverable =
-//                        inProgressPartWriter.closeForCommit();
-//                pendingFilesMap.computeIfAbsent(bucketId, bucketId -> new ArrayList()).add(pendingFileRecoverable);
-//                inProgressPartWriter = null;
-//                LOG.info("Closed part file {} for {}ms", pendingFileRecoverable.getPath(),
-//                        (System.currentTimeMillis() - start));
-//            }
         }
     }
 

@@ -127,7 +127,6 @@ public class NativeLakeSoulArrowWrapperWriter implements InProgressFileWriter<La
 
         try {
             this.nativeWriter.close();
-            initNativeWriter();
         } catch (Exception e) {
             throw new RuntimeException(e);
         }

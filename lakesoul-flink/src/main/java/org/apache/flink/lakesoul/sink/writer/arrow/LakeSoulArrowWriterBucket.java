@@ -272,6 +272,7 @@ public class LakeSoulArrowWriterBucket {
                     pendingFilesMap.computeIfAbsent(entry.getKey(), bucketId -> new ArrayList())
                             .addAll(entry.getValue());
                 }
+                inProgressPartWriter = null;
             } else {
                 throw new RuntimeException(
                         "inProgressPartWriter only support instanceof NativeLakeSoulArrowWrapperWriter");

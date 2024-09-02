@@ -145,15 +145,12 @@ impl SyncSendableMutableLakeSoulWriter {
                         ))
                     )
                 };
-                // let in_progress_writer = in_progress_writer.clone();
                 let mut guard = in_progress_writer.lock().await;
             
                 let batch_memory_size = record_batch.get_array_memory_size() as u64;
                 let batch_rows = record_batch.num_rows() as u64;
                 // If would exceed max_file_size, split batch
-                // let msg = format!("buffered size of current writer= {}, batch_size = {}, do_spill={}", guard.buffered_size(), batch_memory_size, do_spill);
-                // dbg!(max_file_size);
-                // dbg!(msg);
+                
                 if !do_spill && guard.buffered_size() + batch_memory_size > max_file_size {
                     let to_write = (batch_rows * (max_file_size - guard.buffered_size())) / batch_memory_size;
                     if to_write + 1 < batch_rows {

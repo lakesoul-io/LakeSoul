@@ -83,22 +83,7 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
             this.prefix = new Path(this.prefix, bucketID);
         }
         initNativeWriter();
-
-//        ArrowUtils.setLocalTimeZone(FlinkUtil.getLocalTimeZone(conf));
-//        Schema arrowSchema = ArrowUtils.toArrowSchema(rowType);
-//        nativeWriter = new NativeIOWriter(arrowSchema);
-//        nativeWriter.setPrimaryKeys(primaryKeys);
-//        if (conf.getBoolean(LakeSoulSinkOptions.isMultiTableSource)) {
-//            nativeWriter.setAuxSortColumns(Collections.singletonList(SORT_FIELD));
-//        }
-//        nativeWriter.setRowGroupRowNumber(this.maxRowGroupRows);
-//        batch = VectorSchemaRoot.create(arrowSchema, nativeWriter.getAllocator());
-//        arrowWriter = ArrowUtils.createRowDataArrowWriter(batch, rowType);
-//        this.path = path.makeQualified(path.getFileSystem());
-//        nativeWriter.addFile(this.path.toUri().toString());
-//
-//        FlinkUtil.setIOConfigs(conf, this.nativeWriter);
-//        this.nativeWriter.initializeWriter();
+        
     }
 
 
