@@ -122,7 +122,7 @@ pub fn format_scalar_value(v: &ScalarValue) -> String {
             if s.is_empty() {
                 LAKESOUL_EMPTY_STRING.to_string()
             } else {
-                s.replace("=", LAKESOUL_EQ).replace(",", LAKESOUL_COMMA)
+                s.replace(',', LAKESOUL_EQ).replace(',', LAKESOUL_COMMA)
             }
         }
         ScalarValue::TimestampSecond(Some(s), _) => {
@@ -245,7 +245,7 @@ pub fn into_scalar_value(val: &str, data_type: &DataType) -> Result<ScalarValue>
                     Ok(ScalarValue::TimestampNanosecond(Some(nanosecs), timezone.clone()))
                 }
             },
-            DataType::Decimal128(p, s) => Ok(ScalarValue::Decimal128(Some(i128::from_str_radix(val, 10).unwrap()), *p, *s)),
+            DataType::Decimal128(p, s) => Ok(ScalarValue::Decimal128(Some(val.parse::<i128>().unwrap()), *p, *s)),
             DataType::Decimal256(p, s) => Ok(ScalarValue::Decimal256(Some(i256::from_string(val).unwrap()), *p, *s)),
             DataType::Binary=>  Ok(ScalarValue::Binary(Some(hex::decode(val).unwrap()))),
             DataType::FixedSizeBinary(size) => Ok(ScalarValue::FixedSizeBinary(*size, Some(hex::decode(val).unwrap()))),
