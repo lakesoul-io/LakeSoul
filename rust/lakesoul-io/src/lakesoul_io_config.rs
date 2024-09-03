@@ -393,6 +393,7 @@ fn register_hdfs_object_store(
     {
         let hdfs = Hdfs::try_new(_host, _config.clone())?;
         _runtime.register_object_store(_url, Arc::new(hdfs));
+        println!("registered hdfs objec store {:?}, {:?}", _host, _url);
         Ok(())
     }
 }
