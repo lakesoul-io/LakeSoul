@@ -379,7 +379,7 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
 
 
         streamTableEnv.executeSql(String.format(createSinkSqlFormat, resolvedSchema, "",
-                tempFolder.newFolder("testMockTableSource").getAbsolutePath(), 2,
+                tempFolder.newFolder("testMockTableSource").getAbsolutePath(),
                 resolvedSchema.getPrimaryKey().isPresent() ?
                         ", 'hashBucketNum'='2'" : ""));
 
