@@ -11,7 +11,7 @@ public class NativeOptions {
     public static final ConfigOption<String> MEM_LIMIT =
             key("lakesoul.native_writer.mem_limit")
                     .stringType()
-                    .defaultValue(String.valueOf(10 * 1024 * 1024))
+                    .defaultValue(String.valueOf(50 * 1024 * 1024))
                     .withDescription("Option to set memory limit of native writer");
 
     public static final ConfigOption<String> HASH_BUCKET_ID =

@@ -8,6 +8,7 @@ import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 public class SinkMemoryLeakTest {
     public static void main(String[] args) throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.getCheckpointConfig().setCheckpointInterval(60_000);
         TableEnvironment tableEnvironment = StreamTableEnvironment.create(env);
         tableEnvironment.executeSql("create catalog lakesoul with ('type'='lakesoul')").await();
         tableEnvironment.executeSql(

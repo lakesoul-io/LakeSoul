@@ -16,6 +16,7 @@ use tokio::sync::Mutex;
 use tracing::debug;
 
 use crate::async_writer::{AsyncBatchWriter, MultiPartAsyncWriter, PartitioningAsyncWriter, SortAsyncWriter};
+use crate::helpers::get_batch_memory_size;
 use crate::lakesoul_io_config::{IOSchema, LakeSoulIOConfig};
 use crate::transform::uniform_schema;
 
@@ -147,10 +148,9 @@ impl SyncSendableMutableLakeSoulWriter {
                 };
                 let mut guard = in_progress_writer.lock().await;
             
-                let batch_memory_size = record_batch.get_array_memory_size() as u64;
+                let batch_memory_size = get_batch_memory_size(&record_batch)? as u64;
                 let batch_rows = record_batch.num_rows() as u64;
                 // If would exceed max_file_size, split batch
-                
                 if !do_spill && guard.buffered_size() + batch_memory_size > max_file_size {
                     let to_write = (batch_rows * (max_file_size - guard.buffered_size())) / batch_memory_size;
                     if to_write + 1 < batch_rows {

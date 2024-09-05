@@ -22,7 +22,7 @@ use datafusion_common::{DataFusionError, Result};
 use tokio::{sync::mpsc::Sender, task::JoinHandle};
 use tokio_stream::StreamExt;
 
-use crate::lakesoul_io_config::LakeSoulIOConfig;
+use crate::{helpers::get_batch_memory_size, lakesoul_io_config::LakeSoulIOConfig};
 
 use super::{AsyncBatchWriter, WriterFlushResult, MultiPartAsyncWriter, ReceiverStreamExec};
 
@@ -141,7 +141,7 @@ impl AsyncBatchWriter for SortAsyncWriter {
             )));
         }
 
-        let memory_size = batch.get_array_memory_size() as u64;
+        let memory_size = get_batch_memory_size(&batch)? as u64;
         let send_result = self.sorter_sender.send(Ok(batch)).await;
         self.buffered_size += memory_size;
 

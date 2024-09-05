@@ -30,7 +30,7 @@ use tokio_stream::StreamExt;
 use tracing::debug;
 
 use crate::{
-    helpers::{columnar_values_to_partition_desc, columnar_values_to_sub_path, get_columnar_values},
+    helpers::{columnar_values_to_partition_desc, columnar_values_to_sub_path, get_batch_memory_size, get_columnar_values},
     lakesoul_io_config::{create_session_context, LakeSoulIOConfig, LakeSoulIOConfigBuilder},
     repartition::RepartitionByRangeAndHashExec,
 };
@@ -300,30 +300,7 @@ impl PartitioningAsyncWriter {
                 Err(e) => return Err(DataFusionError::Execution(format!("{}", e))),
             }
         }
-        // dbg!(&flatten_results);
         Ok(flatten_results)
-        // let mut map: HashMap<String, Vec<FlushResult>> = HashMap::new();
-        // let results = futures::future::join_all(join_handles).await;
-        // for result in results {
-        //     match result {
-        //         Ok(Ok(partitioned_flush_result)) => {
-        //             todo!()
-        //         }
-        //         Ok(Err(e)) => return Err(DataFusionError::External(Box::new(e))),
-        //         Err(e) => return Err(DataFusionError::External(Box::new(e))),
-        //     }
-        // }
-        // Ok(map)
-        // let partitioned_file_path_and_row_count = partitioned_file_path_and_row_count.lock().await;
-
-        // let mut summary = format!("{}", partitioned_file_path_and_row_count.len());
-        // for (partition_desc, (files, _)) in partitioned_file_path_and_row_count.iter() {
-        //     summary += "\x01";
-        //     summary += partition_desc.as_str();
-        //     summary += "\x02";
-        //     summary += files.join("\x02").as_str();
-        // }
-        // Ok(summary.into_bytes())
     }
 }
 
@@ -338,7 +315,7 @@ impl AsyncBatchWriter for PartitioningAsyncWriter {
             )));
         }
 
-        let memory_size = batch.get_array_memory_size() as u64;
+        let memory_size = get_batch_memory_size(&batch)? as u64;
         let send_result = self.sorter_sender.send(Ok(batch)).await;
         self.buffered_size += memory_size;
         match send_result {

@@ -15,7 +15,7 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 use url::Url;
 
 use crate::{
-    constant::TBD_PARTITION_DESC, lakesoul_io_config::{create_session_context, LakeSoulIOConfig}, transform::{uniform_record_batch, uniform_schema}
+    constant::TBD_PARTITION_DESC, helpers::get_batch_memory_size, lakesoul_io_config::{create_session_context, LakeSoulIOConfig}, transform::{uniform_record_batch, uniform_schema}
 };
 
 use super::{AsyncBatchWriter, WriterFlushResult, InMemBuf};
@@ -173,7 +173,7 @@ impl AsyncBatchWriter for MultiPartAsyncWriter {
     async fn write_record_batch(&mut self, batch: RecordBatch) -> Result<()> {
         let batch = uniform_record_batch(batch)?;
         self.num_rows += batch.num_rows() as u64;
-        self.buffered_size += batch.get_array_memory_size() as u64;
+        self.buffered_size += get_batch_memory_size(&batch)? as u64;
         MultiPartAsyncWriter::write_batch(batch, &mut self.arrow_writer, &mut self.in_mem_buf, &mut self.writer).await
     }
 
