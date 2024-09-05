@@ -308,6 +308,11 @@ public class LakeSoulCatalog implements Catalog {
                 throw new CatalogException(
                         "Valid integer value for hashBucketNum property must be set for table with primary key");
             }
+        } else {
+            // for non-primary key table, hashBucketNum properties should not be set
+            if (tableOptions.containsKey(HASH_BUCKET_NUM.key())) {
+                throw new CatalogException("hashBucketNum property should not be set for table without primary key");
+            }
         }
         String tableId = TABLE_ID_PREFIX + UUID.randomUUID();
         String qualifiedPath = "";
