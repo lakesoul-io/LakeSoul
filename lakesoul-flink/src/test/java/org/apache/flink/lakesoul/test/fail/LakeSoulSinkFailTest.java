@@ -373,11 +373,15 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
 
         testLakeSoulCatalog.setTestFactory(testFactory);
 
-        streamTableEnv.executeSql(String.format(createSourceSqlFormat, resolvedSchema));
+        streamTableEnv.executeSql(String.format(createSourceSqlFormat, resolvedSchema,
+            resolvedSchema.getPrimaryKey().isPresent() ?
+                    "'hashBucketNum'='2'," : ""));
 
 
         streamTableEnv.executeSql(String.format(createSinkSqlFormat, resolvedSchema, "",
-                tempFolder.newFolder("testMockTableSource").getAbsolutePath(), 2));
+                tempFolder.newFolder("testMockTableSource").getAbsolutePath(), 2,
+                resolvedSchema.getPrimaryKey().isPresent() ?
+                        ", 'hashBucketNum'='2'" : ""));
 
         streamTableEnv.executeSql("DROP TABLE IF EXISTS default_catalog.default_database.test_sink");
         streamTableEnv.executeSql(

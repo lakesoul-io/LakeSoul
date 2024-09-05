@@ -29,7 +29,6 @@ public class DataTypeSupportTest extends AbstractTestBase {
                 "    modifyTime TIMESTAMP_LTZ " +
                 ") WITH (" +
                 "    'connector'='lakesoul'," +
-                "    'hashBucketNum'='2'," +
                 "    'path'='" + getTempDirUri("/lakeSource/test_timestamp_ltz") +
                 "' )";
 

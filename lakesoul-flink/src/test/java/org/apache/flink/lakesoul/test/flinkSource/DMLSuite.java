@@ -368,7 +368,6 @@ public class DMLSuite extends AbstractTestBase {
                 "    score DECIMAL" +
                 ") WITH (" +
                 "    'format'='lakesoul'," +
-                "    'hashBucketNum'='2'," +
                 "    'path'='" + getTempDirUri("/lakeSource/user2") +
                 "' )";
         tEnvs.executeSql("DROP TABLE if exists user_info_2");
