@@ -8,8 +8,6 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
 import org.apache.flink.lakesoul.test.AbstractTestBase;
 import org.apache.flink.lakesoul.test.LakeSoulTestUtils;
-import org.apache.flink.streaming.api.CheckpointingMode;
-import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.ExplainDetail;
@@ -29,11 +27,9 @@ import java.io.File;
 import java.io.IOException;
 import java.net.URI;
 import java.util.*;
-import java.util.concurrent.ExecutionException;
 import java.util.function.Consumer;
 
 import static org.apache.flink.lakesoul.LakeSoulOptions.LAKESOUL_TABLE_PATH;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.HASH_BUCKET_NUM;
 import static org.apache.flink.table.planner.utils.TableTestUtil.*;
 import static org.junit.Assert.assertEquals;
 
@@ -297,9 +293,6 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                                 + " real_col int"
                                 + ") WITH ("
                                 + "'"
-                                + HASH_BUCKET_NUM.key()
-                                + "'= '3',"
-                                + "'"
                                 + LAKESOUL_TABLE_PATH.key()
                                 + "'='" +
                                 getTempDirUri("/test_table")
@@ -337,9 +330,6 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                                 + ") "
                                 + " PARTITIONED BY ( part )"
                                 + " WITH ("
-                                + "'"
-                                + HASH_BUCKET_NUM.key()
-                                + "'= '3',"
                                 + "'"
                                 + LAKESOUL_TABLE_PATH.key()
                                 + "'='" +
