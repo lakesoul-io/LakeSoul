@@ -48,9 +48,6 @@ hex = "0.4"
 dhat = { version="0.3.3", optional = true }
 async-recursion = "1.1.1"
 
-[profile.release]
-debug = true
-
 [features]
 hdfs = ["dep:hdrs", "dep:hdfs-sys"]
 default = []

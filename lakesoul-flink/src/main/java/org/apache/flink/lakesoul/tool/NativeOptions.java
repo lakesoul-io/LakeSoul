@@ -9,19 +9,19 @@ import static org.apache.flink.configuration.ConfigOptions.key;
 
 public class NativeOptions {
     public static final ConfigOption<String> MEM_LIMIT =
-            key("native_writer.mem_limit")
+            key("lakesoul.native_writer.mem_limit")
                     .stringType()
                     .defaultValue(String.valueOf(10 * 1024 * 1024))
                     .withDescription("Option to set memory limit of native writer");
 
     public static final ConfigOption<String> HASH_BUCKET_ID =
-            key("native_writer.hash_bucket_id")
+            key("lakesoul.native_writer.hash_bucket_id")
                     .stringType()
                     .defaultValue("0")
                     .withDescription("Option to set hash bucket id of native writer");
 
     public static final ConfigOption<String> KEEP_ORDERS =
-            key("native_writer.keep_orders")
+            key("lakesoul.native_writer.keep_orders")
                     .stringType()
                     .noDefaultValue()
                     .withDescription("Option to set if keep order of records for native writer");
