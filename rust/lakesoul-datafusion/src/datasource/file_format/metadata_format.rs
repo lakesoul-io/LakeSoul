@@ -33,6 +33,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, PhysicalExpr},
 };
 use futures::StreamExt;
+use lakesoul_io::async_writer::{AsyncBatchWriter, MultiPartAsyncWriter};
 use lakesoul_io::datasource::file_format::{compute_project_column_indices, flatten_file_scan_config};
 use lakesoul_io::datasource::physical_plan::MergeParquetExec;
 use lakesoul_io::helpers::{
@@ -40,7 +41,6 @@ use lakesoul_io::helpers::{
     partition_desc_from_file_scan_config,
 };
 use lakesoul_io::lakesoul_io_config::LakeSoulIOConfig;
-use lakesoul_io::lakesoul_writer::{AsyncBatchWriter, MultiPartAsyncWriter};
 use lakesoul_metadata::MetaDataClientRef;
 use object_store::{ObjectMeta, ObjectStore};
 use proto::proto::entity::TableInfo;

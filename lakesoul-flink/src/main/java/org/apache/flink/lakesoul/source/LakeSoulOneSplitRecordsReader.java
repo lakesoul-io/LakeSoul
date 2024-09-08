@@ -122,7 +122,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
             Schema arrowSchema = ArrowUtils.toArrowSchema(projectedRowTypeWithPk);
             reader.setSchema(arrowSchema);
             reader.setPrimaryKeys(pkColumns);
-            FlinkUtil.setFSConfigs(conf, reader);
+            FlinkUtil.setIOConfigs(conf, reader);
         }
 
         reader.setPartitionSchema(partitionSchema);

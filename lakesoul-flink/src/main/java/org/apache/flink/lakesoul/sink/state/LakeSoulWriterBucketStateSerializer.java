@@ -67,6 +67,7 @@ public class LakeSoulWriterBucketStateSerializer
     private void serialize(LakeSoulWriterBucketState state, DataOutputView dataOutputView)
             throws IOException {
 //        dataOutputView.writeUTF(state.getBucketId());
+        dataOutputView.writeInt(state.getRestartTimes());
         dataOutputView.writeUTF(state.getBucketPath().toString());
 
         SimpleVersionedSerialization.writeVersionAndSerialize(
@@ -102,6 +103,7 @@ public class LakeSoulWriterBucketStateSerializer
             throws IOException {
 
 //        String bucketId = dataInputView.readUTF();
+        int restartTimes = dataInputView.readInt();
         String bucketPathStr = dataInputView.readUTF();
 
         TableSchemaIdentity identity = SimpleVersionedSerialization.readVersionAndDeSerialize(
@@ -123,7 +125,9 @@ public class LakeSoulWriterBucketStateSerializer
         return new LakeSoulWriterBucketState(
                 identity,
                 new Path(bucketPathStr),
-                pendingFileRecoverableMap);
+                pendingFileRecoverableMap,
+                restartTimes
+        );
     }
 
     private void validateMagicNumber(DataInputView in) throws IOException {

@@ -77,6 +77,13 @@ public class LakeSoulMultiTableSinkStreamBuilder {
 
     public static DataStreamSink<LakeSoulArrowWrapper> buildArrowSink(Context context,
                                                                       DataStream<LakeSoulArrowWrapper> stream) {
+        return buildArrowSink(context, stream, 1);
+    }
+
+    public static DataStreamSink<LakeSoulArrowWrapper> buildArrowSink(Context context,
+                                                                      DataStream<LakeSoulArrowWrapper> stream,
+                                                                      int parallelism
+    ) {
         if (!context.conf.contains(AUTO_SCHEMA_CHANGE)) {
             context.conf.set(AUTO_SCHEMA_CHANGE, true);
         }
@@ -92,7 +99,7 @@ public class LakeSoulMultiTableSinkStreamBuilder {
                         .withRollingPolicy(rollingPolicy)
                         .withOutputFileConfig(fileNameConfig)
                         .build();
-        return stream.sinkTo(sink).name("LakeSoul MultiTable Arrow Sink");
+        return stream.sinkTo(sink).name("LakeSoul MultiTable Arrow Sink").setParallelism(parallelism);
     }
 
     public DataStreamSink<BinarySourceRecord> printStream(DataStream<BinarySourceRecord> stream, String name) {

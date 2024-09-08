@@ -55,6 +55,8 @@ public class LakeSoulArrowWriterBucket {
 
     private long partCounter;
 
+    private int restartTimes;
+
     @Nullable
     private InProgressFileWriter<LakeSoulArrowWrapper, String> inProgressPartWriter;
 
@@ -80,6 +82,7 @@ public class LakeSoulArrowWriterBucket {
 
         this.uniqueId = UUID.randomUUID().toString();
         this.partCounter = 0;
+        this.restartTimes = 0;
     }
 
     /**
@@ -109,6 +112,7 @@ public class LakeSoulArrowWriterBucket {
                 .entrySet()) {
             pendingFilesMap.computeIfAbsent(entry.getKey(), key -> new ArrayList<>()).addAll(entry.getValue());
         }
+        restartTimes = state.getRestartTimes();
     }
 
     public String getBucketId() {
@@ -156,28 +160,34 @@ public class LakeSoulArrowWriterBucket {
         // we always close part file and do not keep in-progress file
         // since the native parquet writer doesn't support resume
         if (inProgressPartWriter != null) {
-            LOG.info(
-                    "Closing in-progress part file for bucket id={} on checkpoint.", getBucketId());
             closePartFile();
+            LOG.info(
+                    "Closing in-progress part file for flush={} bucket id={} subTaskId={} tableId={} pendingFilesMap={} on checkpoint.",
+                    flush,
+                    getBucketId(),
+                    subTaskId,
+                    tableId,
+                    pendingFilesMap);
+
         }
 
         List<LakeSoulMultiTableSinkCommittable> committables = new ArrayList<>();
-        long time = pendingFilesMap.isEmpty() ? Long.MIN_VALUE :
-                ((NativeParquetWriter.NativeWriterPendingFileRecoverable) pendingFilesMap.values().stream().findFirst()
-                        .get().get(0)).creationTime;
+        if (!pendingFilesMap.isEmpty()) {
+            long time = ((NativeParquetWriter.NativeWriterPendingFileRecoverable) pendingFilesMap.values().stream().findFirst()
+                    .get().get(0)).creationTime;
 
-        committables.add(new LakeSoulMultiTableSinkCommittable(
-                tableId,
-                new HashMap<>(pendingFilesMap),
-                time,
-                UUID.randomUUID().toString(),
-                tsMs,
-                dmlType,
-                sourcePartitionInfo
-        ));
-        LOG.info("org.apache.flink.lakesoul.sink.writer.arrow.LakeSoulArrowWriterBucket.prepareCommit {}",
-                committables);
-        pendingFilesMap.clear();
+            committables.add(new LakeSoulMultiTableSinkCommittable(
+                    tableId,
+                    new HashMap<>(pendingFilesMap),
+                    time,
+                    UUID.randomUUID().toString(),
+                    tsMs,
+                    dmlType,
+                    sourcePartitionInfo
+            ));
+            LOG.info("prepareCommit {}", committables);
+            pendingFilesMap.clear();
+        }
 
         return committables;
     }
@@ -253,7 +263,7 @@ public class LakeSoulArrowWriterBucket {
     }
 
     private void closePartFile() throws IOException {
-        LOG.info("ClosePartFile {}", inProgressPartWriter);
+//        LOG.info("ClosePartFile {}", inProgressPartWriter);
         if (inProgressPartWriter != null) {
             if (inProgressPartWriter instanceof NativeLakeSoulArrowWrapperWriter) {
                 Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFileRecoverableMap =
@@ -262,6 +272,7 @@ public class LakeSoulArrowWriterBucket {
                     pendingFilesMap.computeIfAbsent(entry.getKey(), bucketId -> new ArrayList())
                             .addAll(entry.getValue());
                 }
+                inProgressPartWriter = null;
             } else {
                 throw new RuntimeException(
                         "inProgressPartWriter only support instanceof NativeLakeSoulArrowWrapperWriter");

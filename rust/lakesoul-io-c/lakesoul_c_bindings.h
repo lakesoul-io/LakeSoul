@@ -103,6 +103,9 @@ IOConfigBuilder *lakesoul_config_builder_set_batch_size(IOConfigBuilder *builder
 IOConfigBuilder *lakesoul_config_builder_set_max_row_group_size(IOConfigBuilder *builder,
                                                                 c_size_t max_row_group_size);
 
+IOConfigBuilder *lakesoul_config_builder_set_max_row_group_num_values(IOConfigBuilder *builder,
+                                                                      c_size_t max_row_group_num_values);
+
 IOConfigBuilder *lakesoul_config_builder_set_buffer_size(IOConfigBuilder *builder,
                                                          c_size_t buffer_size);
 
@@ -112,6 +115,10 @@ IOConfigBuilder *lakesoul_config_builder_set_hash_bucket_num(IOConfigBuilder *bu
 IOConfigBuilder *lakesoul_config_builder_set_object_store_option(IOConfigBuilder *builder,
                                                                  const char *key,
                                                                  const char *value);
+
+IOConfigBuilder *lakesoul_config_builder_set_option(IOConfigBuilder *builder,
+                                                    const char *key,
+                                                    const char *value);
 
 IOConfigBuilder *lakesoul_config_builder_add_files(IOConfigBuilder *builder,
                                                    const char *const *files,
@@ -174,6 +181,10 @@ void write_record_batch(CResult<Writer> *writer,
 const char *write_record_batch_blocked(CResult<Writer> *writer,
                                        c_ptrdiff_t schema_addr,
                                        c_ptrdiff_t array_addr);
+
+const char *write_record_batch_ipc_blocked(CResult<Writer> *writer,
+                                           c_ptrdiff_t ipc_addr,
+                                           int64_t len);
 
 void export_bytes_result(void (*callback)(bool, const char*),
                          CResult<BytesResult> *bytes,

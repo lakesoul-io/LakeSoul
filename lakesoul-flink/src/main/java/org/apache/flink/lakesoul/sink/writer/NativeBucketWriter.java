@@ -7,8 +7,6 @@ package org.apache.flink.lakesoul.sink.writer;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
-import org.apache.flink.core.memory.DataInputDeserializer;
-import org.apache.flink.core.memory.DataOutputSerializer;
 import org.apache.flink.streaming.api.functions.sink.filesystem.BucketWriter;
 import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter;
 import org.apache.flink.streaming.api.functions.sink.filesystem.WriterProperties;
@@ -18,8 +16,6 @@ import org.apache.flink.table.types.logical.RowType;
 import java.io.IOException;
 import java.util.List;
 
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKET;
-
 public class NativeBucketWriter implements BucketWriter<RowData, String> {
 
     private final RowType rowType;
@@ -28,20 +24,19 @@ public class NativeBucketWriter implements BucketWriter<RowData, String> {
 
     private final Configuration conf;
     private final List<String> partitionKeys;
+    private final int subTaskId;
 
-    public NativeBucketWriter(RowType rowType, List<String> primaryKeys, List<String> partitionKeys, Configuration conf) {
+    public NativeBucketWriter(RowType rowType, List<String> primaryKeys, List<String> partitionKeys, Configuration conf, int subTaskId) {
         this.rowType = rowType;
         this.primaryKeys = primaryKeys;
         this.partitionKeys = partitionKeys;
         this.conf = conf;
+        this.subTaskId = subTaskId;
     }
 
     @Override
     public InProgressFileWriter<RowData, String> openNewInProgressFile(String bucketId, Path path, long creationTime) throws IOException {
-        if (DYNAMIC_BUCKET.equals(bucketId)) {
-            return new DynamicPartitionNativeParquetWriter(rowType, primaryKeys, partitionKeys, path, creationTime, conf);
-        }
-        return new NativeParquetWriter(rowType, primaryKeys, bucketId, path, creationTime, conf);
+        return new NativeParquetWriter(rowType, primaryKeys, partitionKeys, bucketId, path, creationTime, conf, subTaskId);
     }
 
     @Override

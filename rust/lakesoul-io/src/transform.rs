@@ -19,7 +19,7 @@ use crate::constant::{
     ARROW_CAST_OPTIONS, FLINK_TIMESTAMP_FORMAT, LAKESOUL_EMPTY_STRING, LAKESOUL_NULL_STRING,
     TIMESTAMP_MICROSECOND_FORMAT, TIMESTAMP_MILLSECOND_FORMAT, TIMESTAMP_NANOSECOND_FORMAT, TIMESTAMP_SECOND_FORMAT,
 };
-use crate::helpers::{date_str_to_epoch_days, into_scalar_value, timestamp_str_to_unix_time};
+use crate::helpers::{column_with_name_and_name2index, date_str_to_epoch_days, timestamp_str_to_unix_time, into_scalar_value};
 
 /// adjust time zone to UTC
 pub fn uniform_field(orig_field: &FieldRef) -> FieldRef {
@@ -83,6 +83,18 @@ pub fn transform_record_batch(
 ) -> Result<RecordBatch> {
     let num_rows = batch.num_rows();
     let orig_schema = batch.schema();
+    let name_to_index =
+        if orig_schema.fields().len() > crate::constant::NUM_COLUMN_OPTIMIZE_THRESHOLD {
+            Some(HashMap::<String, usize>::from_iter(
+                orig_schema
+                .fields()
+                .iter()
+                .enumerate()
+                .map(|(idx, field)| (field.name().clone(), idx))
+            ))
+        } else {
+            None
+        };
     let mut transform_arrays = Vec::new();
     let mut fields = vec![];
     // O(nm) n = orig_schema.fields().len(), m = target_schema.fields().len()
@@ -91,7 +103,7 @@ pub fn transform_record_batch(
         .iter()
         .enumerate()
         .try_for_each(|(_, target_field)| -> Result<()> {
-            match orig_schema.column_with_name(target_field.name()) {
+            match column_with_name_and_name2index(&orig_schema, target_field.name(), &name_to_index) {
                 Some((idx, _)) => {
                     let data_type = target_field.data_type();
                     let transformed_array = transform_array(

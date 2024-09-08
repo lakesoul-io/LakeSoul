@@ -14,6 +14,7 @@ import org.apache.flink.core.memory.DataInputDeserializer;
 import org.apache.flink.core.memory.DataOutputSerializer;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
+import org.apache.flink.lakesoul.tool.NativeOptions;
 import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.runtime.arrow.ArrowUtils;
@@ -25,26 +26,27 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 import java.io.IOException;
 import java.io.Serializable;
-import java.util.Collections;
-import java.util.List;
-import java.util.Objects;
+import java.util.*;
+import java.util.stream.Collectors;
 
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.MAX_ROW_GROUP_SIZE;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SORT_FIELD;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 
 public class NativeParquetWriter implements InProgressFileWriter<RowData, String> {
 
     private static final Logger LOG = LoggerFactory.getLogger(NativeParquetWriter.class);
 
-    private final ArrowWriter<RowData> arrowWriter;
-
+    private final RowType rowType;
+    private final int subTaskId;
+    private ArrowWriter<RowData> arrowWriter;
+    private final List<String> primaryKeys;
+    private final List<String> rangeColumns;
     private NativeIOWriter nativeWriter;
-
+    private final Configuration conf;
     private final int maxRowGroupRows;
 
     private final long creationTime;
 
-    private final VectorSchemaRoot batch;
+    private VectorSchemaRoot batch;
 
     private final String bucketID;
 
@@ -52,36 +54,64 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
 
     long lastUpdateTime;
 
-    Path path;
+    Path prefix;
 
     private long totalRows = 0;
+    private final boolean isDynamicBucket;
 
     public NativeParquetWriter(RowType rowType,
                                List<String> primaryKeys,
+                               List<String> rangeColumns,
                                String bucketID,
                                Path path,
                                long creationTime,
-                               Configuration conf) throws IOException {
+                               Configuration conf,
+                               int subTaskId) throws IOException {
         this.maxRowGroupRows = conf.getInteger(MAX_ROW_GROUP_SIZE);
         this.creationTime = creationTime;
         this.bucketID = bucketID;
+        this.isDynamicBucket = DYNAMIC_BUCKET.equals(bucketID);
         this.rowsInBatch = 0;
+        this.rowType = rowType;
+        this.primaryKeys = primaryKeys;
+        this.rangeColumns = rangeColumns;
+        this.conf = conf;
+        this.subTaskId = subTaskId;
 
+        this.prefix = path.makeQualified(path.getFileSystem());
+        if (!bucketID.isEmpty() && !isDynamicBucket) {
+            this.prefix = new Path(this.prefix, bucketID);
+        }
+        initNativeWriter();
+        
+    }
+
+
+    private void initNativeWriter() throws IOException {
         ArrowUtils.setLocalTimeZone(FlinkUtil.getLocalTimeZone(conf));
         Schema arrowSchema = ArrowUtils.toArrowSchema(rowType);
         nativeWriter = new NativeIOWriter(arrowSchema);
         nativeWriter.setPrimaryKeys(primaryKeys);
+
         if (conf.getBoolean(LakeSoulSinkOptions.isMultiTableSource)) {
             nativeWriter.setAuxSortColumns(Collections.singletonList(SORT_FIELD));
         }
+        nativeWriter.setHashBucketNum(conf.getInteger(LakeSoulSinkOptions.HASH_BUCKET_NUM));
+
         nativeWriter.setRowGroupRowNumber(this.maxRowGroupRows);
         batch = VectorSchemaRoot.create(arrowSchema, nativeWriter.getAllocator());
         arrowWriter = ArrowUtils.createRowDataArrowWriter(batch, rowType);
-        this.path = path.makeQualified(path.getFileSystem());
-        nativeWriter.addFile(this.path.toUri().toString());
 
-        FlinkUtil.setFSConfigs(conf, this.nativeWriter);
-        this.nativeWriter.initializeWriter();
+        nativeWriter.withPrefix(this.prefix.toString());
+        nativeWriter.setOption(NativeOptions.HASH_BUCKET_ID.key(), String.valueOf(subTaskId));
+        if (isDynamicBucket) {
+            nativeWriter.setRangePartitions(rangeColumns);
+            nativeWriter.useDynamicPartition(true);
+        }
+
+        FlinkUtil.setIOConfigs(conf, nativeWriter);
+        nativeWriter.initializeWriter();
+        LOG.info("Initialized NativeParquetWriter: {}", this);
     }
 
     @Override
@@ -190,7 +220,40 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
-        return new NativeWriterPendingFileRecoverable(this.path.toString(), this.creationTime);
+        return new NativeWriterPendingFileRecoverable(this.prefix.toString(), this.creationTime);
+    }
+
+    public Map<String, List<PendingFileRecoverable>> closeForCommitWithRecoverableMap() throws IOException {
+        long timer = System.currentTimeMillis();
+        this.arrowWriter.finish();
+        Map<String, List<PendingFileRecoverable>> recoverableMap = new HashMap<>();
+        if (this.batch.getRowCount() > 0) {
+            this.nativeWriter.write(this.batch);
+        }
+        HashMap<String, List<String>> partitionDescAndFilesMap = this.nativeWriter.flush();
+        for (Map.Entry<String, List<String>> entry : partitionDescAndFilesMap.entrySet()) {
+            String key = isDynamicBucket ? entry.getKey() : bucketID;
+            recoverableMap.put(
+                    key,
+                    entry.getValue()
+                            .stream()
+                            .map(path -> new NativeParquetWriter.NativeWriterPendingFileRecoverable(path,
+                                    creationTime))
+                            .collect(Collectors.toList())
+            );
+        }
+        this.arrowWriter.reset();
+        this.rowsInBatch = 0;
+        this.batch.clear();
+        this.batch.close();
+        try {
+            this.nativeWriter.close();
+            initNativeWriter();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+        LOG.info("CloseForCommitWithRecoverableMap done, costTime={}ms, recoverableMap={}", System.currentTimeMillis() - timer, recoverableMap);
+        return recoverableMap;
     }
 
     @Override
@@ -225,14 +288,15 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         return this.lastUpdateTime;
     }
 
-    @Override public String toString() {
+    @Override
+    public String toString() {
         return "NativeParquetWriter{" +
                 "maxRowGroupRows=" + maxRowGroupRows +
                 ", creationTime=" + creationTime +
                 ", bucketID='" + bucketID + '\'' +
                 ", rowsInBatch=" + rowsInBatch +
                 ", lastUpdateTime=" + lastUpdateTime +
-                ", path=" + path +
+                ", path=" + prefix +
                 ", totalRows=" + totalRows +
                 '}';
     }

@@ -86,7 +86,7 @@ mod upsert_with_io_config_tests {
         let builder = builder.with_file(file.clone()).with_schema(batch.schema());
         let config = builder.clone().build();
 
-        let writer =
+        let mut writer =
             SyncSendableMutableLakeSoulWriter::try_new(config, Builder::new_current_thread().build().unwrap()).unwrap();
         let _ = writer.write_batch(batch);
         let _ = writer.flush_and_close();

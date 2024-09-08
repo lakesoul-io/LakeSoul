@@ -7,7 +7,7 @@ use std::{collections::HashMap, sync::Arc};
 use arrow::datatypes::UInt32Type;
 use arrow_array::{RecordBatch, UInt32Array};
 use arrow_buffer::i256;
-use arrow_schema::{DataType, Field, Schema, SchemaBuilder, SchemaRef, TimeUnit};
+use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaBuilder, SchemaRef, TimeUnit};
 use chrono::{DateTime, Duration};
 use datafusion::{
     datasource::{
@@ -32,7 +32,9 @@ use url::Url;
 
 use crate::{
     constant::{
-        DATE32_FORMAT, FLINK_TIMESTAMP_FORMAT, LAKESOUL_COMMA, LAKESOUL_EMPTY_STRING, LAKESOUL_EQ, LAKESOUL_NULL_STRING, TIMESTAMP_MICROSECOND_FORMAT, TIMESTAMP_MILLSECOND_FORMAT, TIMESTAMP_NANOSECOND_FORMAT, TIMESTAMP_SECOND_FORMAT
+        DATE32_FORMAT, FLINK_TIMESTAMP_FORMAT, LAKESOUL_EMPTY_STRING, LAKESOUL_NULL_STRING,
+        TIMESTAMP_MICROSECOND_FORMAT, TIMESTAMP_MILLSECOND_FORMAT, TIMESTAMP_NANOSECOND_FORMAT,
+        TIMESTAMP_SECOND_FORMAT, LAKESOUL_COMMA, LAKESOUL_EQ
     },
     filter::parser::Parser,
     lakesoul_io_config::LakeSoulIOConfig,
@@ -507,4 +509,23 @@ pub fn timestamp_str_to_unix_time(value: &str, fmt: &str) -> Result<Duration> {
     ))?;
 
     Ok(datetime.signed_duration_since(epoch_time.naive_utc()))
+}
+
+pub fn column_with_name_and_name2index<'a>(schema: &'a SchemaRef, name: &str, name_to_index: &Option<HashMap<String, usize>>) -> Option<(usize, &'a Field)> {
+    if let Some(name_to_index) = name_to_index {
+        name_to_index.get(name).map(|index| (*index, schema.field(*index)))
+    } else {
+        schema.column_with_name(name)
+    }
+}
+
+pub fn get_batch_memory_size(batch: &RecordBatch) -> Result<usize> {
+    Ok(
+        batch.columns()
+        .iter()
+        .map(|array| array.to_data().get_slice_memory_size())
+        .collect::<std::result::Result<Vec<usize>, ArrowError>>()?
+        .into_iter()
+        .sum()
+    )
 }

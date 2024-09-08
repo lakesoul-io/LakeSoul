@@ -16,7 +16,7 @@ import com.dmetasoul.lakesoul.meta.PartitionInfoScala;
 import com.dmetasoul.lakesoul.meta.dao.TableInfoDao;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.arrow.vector.types.pojo.Field;
-import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.core.fs.FileSystem;
@@ -351,7 +351,7 @@ public class FlinkUtil {
         return splited[splited.length - 1];
     }
 
-    public static void setFSConfigs(Configuration conf, NativeIOBase io) {
+    public static void setIOConfigs(Configuration conf, NativeIOBase io) {
         conf.addAll(GlobalConfiguration.loadConfiguration());
         try {
             FlinkUtil.class.getClassLoader().loadClass("org.apache.hadoop.hdfs.HdfsConfiguration");
@@ -380,6 +380,16 @@ public class FlinkUtil {
         setFSConf(conf, "s3.endpoint.region", "fs.s3a.endpoint.region", io);
         setFSConf(conf, S3_PATH_STYLE_ACCESS.key(), "fs.s3a.path.style.access", io);
         setFSConf(conf, S3_BUCKET.key(), "fs.s3a.bucket", io);
+
+        // try other native options
+        for (ConfigOption<String> option : NativeOptions.OPTION_LIST) {
+            String value = conf.get(option);
+            if (value != null) {
+                int lastDot = option.key().lastIndexOf('.');
+                String key = lastDot == -1 ? option.key() : option.key().substring(lastDot + 1);
+                io.setOption(key, value);
+            }
+        }
     }
 
     public static void setFSConf(Configuration conf, String confKey, String fsConfKey, NativeIOBase io) {

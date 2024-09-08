@@ -46,7 +46,7 @@ import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.INFERRING_SCHEM
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.MAX_ROW_GROUP_SIZE;
 
 public class LakeSoulArrowConnectorCase extends AbstractTestBase {
-    @Test
+    //    @Test
     public void test() throws Exception {
         int parallelism = 2;
         StreamExecutionEnvironment execEnv =

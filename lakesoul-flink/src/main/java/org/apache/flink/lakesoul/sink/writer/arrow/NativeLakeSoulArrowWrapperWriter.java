@@ -19,15 +19,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.io.UnsupportedEncodingException;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKET;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.MAX_ROW_GROUP_SIZE;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SORT_FIELD;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 
 public class NativeLakeSoulArrowWrapperWriter implements InProgressFileWriter<LakeSoulArrowWrapper, String> {
 
@@ -81,13 +80,17 @@ public class NativeLakeSoulArrowWrapperWriter implements InProgressFileWriter<La
         nativeWriter.setHashBucketNum(conf.getInteger(LakeSoulSinkOptions.HASH_BUCKET_NUM));
 
         nativeWriter.setRowGroupRowNumber(this.maxRowGroupRows);
+        nativeWriter.setBatchSize(conf.get(BATCH_SIZE));
+        int maxRowGroupValueNumber = conf.getInteger(MAX_ROW_GROUP_VALUE_NUMBER);
+        LOG.info("maxRowGroupValueNumber={}", maxRowGroupValueNumber);
+        if (maxRowGroupValueNumber != -1) nativeWriter.setRowGroupValueNumber(maxRowGroupValueNumber);
 
         nativeWriter.withPrefix(this.prefix);
         nativeWriter.useDynamicPartition(true);
 
-        FlinkUtil.setFSConfigs(conf, nativeWriter);
+        FlinkUtil.setIOConfigs(conf, nativeWriter);
         nativeWriter.initializeWriter();
-        LOG.info("Initialized NativeLakeSoulArrowWrapperWriter: {}", this);
+//        LOG.info("Initialized NativeLakeSoulArrowWrapperWriter: {}", this);
     }
 
     @Override
@@ -104,17 +107,11 @@ public class NativeLakeSoulArrowWrapperWriter implements InProgressFileWriter<La
 
     @Override
     public PendingFileRecoverable closeForCommit() throws IOException {
-        HashMap<String, List<String>> partitionDescAndFilesMap = this.nativeWriter.flush();
-        try {
-            this.nativeWriter.close();
-            initNativeWriter();
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-        return new NativeParquetWriter.NativeWriterPendingFileRecoverable(this.prefix, this.creationTime);
+        throw new UnsupportedEncodingException();
     }
 
     public Map<String, List<PendingFileRecoverable>> closeForCommitWithRecoverableMap() throws IOException {
+        long timer = System.currentTimeMillis();
         Map<String, List<PendingFileRecoverable>> recoverableMap = new HashMap<>();
 
         HashMap<String, List<String>> partitionDescAndFilesMap = this.nativeWriter.flush();
@@ -130,12 +127,11 @@ public class NativeLakeSoulArrowWrapperWriter implements InProgressFileWriter<La
 
         try {
             this.nativeWriter.close();
-            initNativeWriter();
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
 
-        LOG.info("CloseForCommitWithRecoverableMap done, recoverableMap={}", recoverableMap);
+        LOG.info("CloseForCommitWithRecoverableMap done, costTime={}ms, recoverableMap={}", String.format("%06d", System.currentTimeMillis() - timer), recoverableMap);
         return recoverableMap;
     }
 

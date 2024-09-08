@@ -2,16 +2,15 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use anyhow::anyhow;
 use arrow::error::ArrowError;
 use arrow_schema::{Schema, SchemaRef};
-use datafusion::datasource::object_store::ObjectStoreUrl;
 pub use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::{QueryPlanner, SessionState};
+use datafusion::execution::memory_pool::FairSpillPool;
+use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion::logical_expr::Expr;
 use datafusion::optimizer::analyzer::type_coercion::TypeCoercion;
@@ -27,6 +26,7 @@ use derivative::Derivative;
 use log::info;
 use object_store::aws::AmazonS3Builder;
 use object_store::{ClientOptions, RetryConfig};
+use tracing::debug;
 use url::{ParseError, Url};
 
 #[cfg(feature = "hdfs")]
@@ -41,6 +41,16 @@ impl Default for IOSchema {
         IOSchema(Arc::new(Schema::empty()))
     }
 }
+
+pub static OPTION_KEY_KEEP_ORDERS: &str = "keep_orders";
+pub static OPTION_DEFAULT_VALUE_KEEP_ORDERS: &str = "false";
+
+pub static OPTION_KEY_MEM_LIMIT: &str = "mem_limit";
+pub static OPTION_KEY_POOL_SIZE: &str = "pool_size";
+pub static OPTION_KEY_HASH_BUCKET_ID : &str = "hash_bucket_id";
+pub static OPTION_KEY_MAX_FILE_SIZE: &str = "max_file_size";
+
+
 
 #[derive(Debug, Derivative)]
 #[derivative(Default, Clone)]
@@ -71,6 +81,9 @@ pub struct LakeSoulIOConfig {
     // write row group max row num
     #[derivative(Default(value = "250000"))]
     pub(crate) max_row_group_size: usize,
+    // write row group max num of values
+    #[derivative(Default(value = "2147483647"))]
+    pub(crate) max_row_group_num_values: usize,
     #[derivative(Default(value = "1"))]
     pub(crate) prefetch_size: usize,
     #[derivative(Default(value = "false"))]
@@ -98,6 +111,8 @@ pub struct LakeSoulIOConfig {
     // to be compatible with hadoop's fs.defaultFS
     pub(crate) default_fs: String,
 
+    pub(super) options: HashMap<String, String>,
+
     // if dynamic partition
     #[derivative(Default(value = "false"))]
     pub(crate) use_dynamic_partition: bool,
@@ -105,6 +120,16 @@ pub struct LakeSoulIOConfig {
     // if inferring schema
     #[derivative(Default(value = "false"))]
     pub(crate) inferring_schema: bool,
+
+    #[derivative(Default(value = "None"))]
+    pub(crate) memory_limit: Option<usize>,
+
+    #[derivative(Default(value = "None"))]
+    pub(crate) memory_pool_size: Option<usize>,
+
+    // max file size of bytes
+    #[derivative(Default(value = "None"))]
+    pub(crate) max_file_size: Option<u64>,
 }
 
 impl LakeSoulIOConfig {
@@ -130,6 +155,30 @@ impl LakeSoulIOConfig {
 
     pub fn aux_sort_cols_slice(&self) -> &[String] {
         &self.aux_sort_cols
+    }
+
+    pub fn option(&self, key: &str) -> Option<&String> {
+        self.options.get(key)
+    }
+
+    pub fn prefix(&self) -> &String {
+        &self.prefix
+    }
+
+    pub fn keep_ordering(&self) -> bool {
+        self.option(OPTION_KEY_KEEP_ORDERS).map_or(false, |x| x.eq("true"))
+    }
+
+    pub fn mem_limit(&self) -> Option<usize> {
+        self.option(OPTION_KEY_MEM_LIMIT).map(|x| x.parse().unwrap())
+    }
+
+    pub fn pool_size(&self) -> Option<usize> {
+        self.option(OPTION_KEY_POOL_SIZE).map(|x| x.parse().unwrap())
+    }
+
+    pub fn hash_bucket_id(&self) -> usize {
+        self.option(OPTION_KEY_HASH_BUCKET_ID).map_or(0, |x| x.parse().unwrap())
     }
 }
 
@@ -206,6 +255,11 @@ impl LakeSoulIOConfigBuilder {
         self
     }
 
+    pub fn with_max_row_group_num_values(mut self, max_row_group_num_values: usize) -> Self {
+        self.config.max_row_group_num_values = max_row_group_num_values;
+        self
+    }
+
     pub fn with_prefetch_size(mut self, prefetch_size: usize) -> Self {
         self.config.prefetch_size = prefetch_size;
         self
@@ -261,6 +315,11 @@ impl LakeSoulIOConfigBuilder {
         self
     }
 
+    pub fn with_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.config.options.insert(key.into(), value.into());
+        self
+    }
+
     pub fn with_thread_num(mut self, thread_num: usize) -> Self {
         self.config.thread_num = thread_num;
         self
@@ -273,6 +332,11 @@ impl LakeSoulIOConfigBuilder {
 
     pub fn set_inferring_schema(mut self, enable: bool) -> Self {
         self.config.inferring_schema = enable;
+        self
+    }
+
+    pub fn with_max_file_size(mut self, size: u64) -> Self {
+        self.config.max_file_size = Some(size);
         self
     }
 
@@ -485,9 +549,17 @@ pub fn create_session_context_with_planner(
     sess_conf.options_mut().optimizer.prefer_hash_join = false; //if true, panicked at 'range end out of bounds'
     sess_conf.options_mut().execution.parquet.pushdown_filters = config.parquet_filter_pushdown;
     sess_conf.options_mut().execution.target_partitions = 1;
+    // sess_conf.options_mut().execution.sort_in_place_threshold_bytes = 16 * 1024;
+    // sess_conf.options_mut().execution.sort_spill_reservation_bytes = 2 * 1024 * 1024;
     // sess_conf.options_mut().catalog.default_catalog = "lakesoul".into();
 
-    let runtime = RuntimeEnv::new(RuntimeConfig::new())?;
+    let mut runtime_conf = RuntimeConfig::new();
+    if let Some(pool_size) = config.pool_size() {
+        let memory_pool = FairSpillPool::new(pool_size);
+        dbg!(&memory_pool);
+        runtime_conf = runtime_conf.with_memory_pool(Arc::new(memory_pool));
+    }
+    let runtime = RuntimeEnv::new(runtime_conf)?;
 
     // firstly parse default fs if exist
     let default_fs = config
@@ -507,6 +579,7 @@ pub fn create_session_context_with_planner(
         let normalized_prefix = register_object_store(&prefix, config, &runtime)?;
         config.prefix = normalized_prefix;
     }
+    debug!("{}", &config.prefix);
 
     // register object store(s) for input/output files' path
     // and replace file names with default fs concatenated if exist

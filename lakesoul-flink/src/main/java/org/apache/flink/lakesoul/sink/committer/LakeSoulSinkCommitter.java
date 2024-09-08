@@ -129,7 +129,7 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
                 if (LOG.isInfoEnabled()) {
                     String fileOpStr = dataFileOpList.stream()
                             .map(op -> String.format("%s,%s,%d,%s", op.getPath(), op.getFileOp(), op.getSize(),
-                                    op.getFileExistCols())).collect(Collectors.joining("\n\t"));
+                                    "op.getFileExistCols()")).collect(Collectors.joining("\n\t"));
                     LOG.info("Commit to LakeSoul: Table={}, TableId={}, Partition={}, Files:\n\t{}, " +
                                     "CommitOp={}, Timestamp={}, UUID={}", identity.tableId.identifier(),
                             tableNameId.getTableId(), partition, fileOpStr, dataCommitInfo.getCommitOp(),

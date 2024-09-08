@@ -63,6 +63,8 @@ public class LakeSoulWriterBucket {
 
     private long tsMs;
 
+    private int restartTimes;
+
     private final Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFilesMap =
             new HashMap<>();
 
@@ -96,6 +98,7 @@ public class LakeSoulWriterBucket {
 
         this.uniqueId = UUID.randomUUID().toString();
         this.partCounter = 0;
+        this.restartTimes = 0;
     }
 
     /**
@@ -127,6 +130,7 @@ public class LakeSoulWriterBucket {
                 .entrySet()) {
             pendingFilesMap.computeIfAbsent(entry.getKey(), key -> new ArrayList<>()).addAll(entry.getValue());
         }
+        restartTimes = state.getRestartTimes();
     }
 
     public String getBucketId() {
@@ -257,44 +261,19 @@ public class LakeSoulWriterBucket {
      * Constructor a new PartPath and increment the partCounter.
      */
     private Path assembleNewPartPath() {
-        if (DYNAMIC_BUCKET.equals(bucketId)) {
-            return bucketPath;
-        }
-        long currentPartCounter = partCounter++;
-        String count = String.format("%03d", currentPartCounter);
-        String subTask = String.format("%05d", this.subTaskId);
-        return new Path(
-                assembleBucketPath(bucketPath, bucketId),
-                outputFileConfig.getPartPrefix()
-                        + '-'
-                        + subTask
-                        + '-'
-                        + uniqueId
-                        + '_'
-                        + subTask
-                        + ".c"
-                        + count
-                        + outputFileConfig.getPartSuffix());
+        return bucketPath;
     }
 
     private void closePartFile() throws IOException {
         if (inProgressPartWriter != null) {
             long start = System.currentTimeMillis();
-            if (inProgressPartWriter instanceof DynamicPartitionNativeParquetWriter) {
-                Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFileRecoverableMap =
-                        ((DynamicPartitionNativeParquetWriter) inProgressPartWriter).closeForCommitWithRecoverableMap();
-                for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry : pendingFileRecoverableMap.entrySet()) {
-                    pendingFilesMap.computeIfAbsent(entry.getKey(), bucketId -> new ArrayList())
-                            .addAll(entry.getValue());
-                }
-            } else {
-                InProgressFileWriter.PendingFileRecoverable pendingFileRecoverable =
-                        inProgressPartWriter.closeForCommit();
-                pendingFilesMap.computeIfAbsent(bucketId, bucketId -> new ArrayList()).add(pendingFileRecoverable);
-                inProgressPartWriter = null;
-                LOG.info("Closed part file {} for {}ms", pendingFileRecoverable.getPath(),
-                        (System.currentTimeMillis() - start));
+            Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFileRecoverableMap =
+                    ((NativeParquetWriter) inProgressPartWriter).closeForCommitWithRecoverableMap();
+            for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry : pendingFileRecoverableMap.entrySet()) {
+                pendingFilesMap.computeIfAbsent(entry.getKey(), bucketId -> new ArrayList())
+                        .addAll(entry.getValue());
             }
+            inProgressPartWriter = null;
         }
     }
 

@@ -12,8 +12,6 @@ import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
 import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
 import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketState;
-import org.apache.flink.lakesoul.sink.writer.arrow.LakeSoulArrowWriterBucket;
-import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.metrics.Counter;
@@ -116,7 +114,7 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
                     bucketFactory.restoreBucket(
                             subTaskId,
                             state.getIdentity(),
-                            creator.createBucketWriter(),
+                            creator.createBucketWriter(getSubTaskId()),
                             rollingPolicy,
                             state,
                             outputFileConfig);
@@ -222,12 +220,16 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
         LakeSoulWriterBucket bucket = activeBuckets.get(Tuple2.of(identity, bucketId));
         if (bucket == null) {
             final Path bucketPath = creator.tableLocation;
-            BucketWriter<RowData, String> bucketWriter = creator.createBucketWriter();
+            BucketWriter<RowData, String> bucketWriter = creator.createBucketWriter(getSubTaskId());
             bucket =
                     bucketFactory.getNewBucket(
                             subTaskId,
                             creator.identity,
-                            bucketId, bucketPath, bucketWriter, rollingPolicy, outputFileConfig);
+                            bucketId,
+                            bucketPath,
+                            bucketWriter,
+                            rollingPolicy,
+                            outputFileConfig);
             activeBuckets.put(Tuple2.of(identity, bucketId), bucket);
             LOG.info("Create new bucket {}, {}, {}",
                     identity, bucketId, bucketPath);

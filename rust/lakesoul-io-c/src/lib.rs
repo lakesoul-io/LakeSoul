@@ -262,6 +262,17 @@ pub extern "C" fn lakesoul_config_builder_set_max_row_group_size(
     )
 }
 
+
+#[no_mangle]
+pub extern "C" fn lakesoul_config_builder_set_max_row_group_num_values(
+    builder: NonNull<IOConfigBuilder>,
+    max_row_group_num_values: c_size_t,
+) -> NonNull<IOConfigBuilder> {
+    convert_to_opaque(
+        from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_max_row_group_num_values(max_row_group_num_values),
+    )
+}
+
 #[no_mangle]
 pub extern "C" fn lakesoul_config_builder_set_buffer_size(
     builder: NonNull<IOConfigBuilder>,
@@ -291,6 +302,21 @@ pub extern "C" fn lakesoul_config_builder_set_object_store_option(
         let value = CStr::from_ptr(value).to_str().unwrap().to_string();
         convert_to_opaque(
             from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_object_store_option(key, value),
+        )
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lakesoul_config_builder_set_option(
+    builder: NonNull<IOConfigBuilder>,
+    key: *const c_char,
+    value: *const c_char,
+) -> NonNull<IOConfigBuilder> {
+    unsafe {
+        let key = CStr::from_ptr(key).to_str().unwrap().to_string();
+        let value = CStr::from_ptr(value).to_str().unwrap().to_string();
+        convert_to_opaque(
+            from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_option(key, value),
         )
     }
 }
@@ -698,7 +724,7 @@ pub extern "C" fn write_record_batch(
     callback: ResultCallback,
 ) {
     unsafe {
-        let writer = NonNull::new_unchecked(writer.as_ref().ptr as *mut SyncSendableMutableLakeSoulWriter);
+        let writer = NonNull::new_unchecked(writer.as_ref().ptr as *mut SyncSendableMutableLakeSoulWriter).as_mut();
         let mut ffi_array = FFI_ArrowArray::empty();
         (array_addr as *mut FFI_ArrowArray).copy_to(&mut ffi_array as *mut FFI_ArrowArray, 1);
         let mut ffi_schema = FFI_ArrowSchema::empty();
@@ -707,7 +733,7 @@ pub extern "C" fn write_record_batch(
             let array_data = from_ffi(ffi_array, &ffi_schema)?;
             let struct_array = StructArray::from(array_data);
             let rb = RecordBatch::from(struct_array);
-            writer.as_ref().write_batch(rb)?;
+            writer.write_batch(rb)?;
             Ok(())
         };
         let result: lakesoul_io::Result<()> = result_fn();
@@ -729,7 +755,7 @@ pub extern "C" fn write_record_batch_blocked(
     array_addr: c_ptrdiff_t,
 ) -> *const c_char {
     unsafe {
-        let writer = NonNull::new_unchecked(writer.as_ref().ptr as *mut SyncSendableMutableLakeSoulWriter);
+        let writer = NonNull::new_unchecked(writer.as_ref().ptr as *mut SyncSendableMutableLakeSoulWriter).as_mut();
         let mut ffi_array = FFI_ArrowArray::empty();
         (array_addr as *mut FFI_ArrowArray).copy_to(&mut ffi_array as *mut FFI_ArrowArray, 1);
         let mut ffi_schema = FFI_ArrowSchema::empty();
@@ -738,7 +764,7 @@ pub extern "C" fn write_record_batch_blocked(
             let array_data = from_ffi(ffi_array, &ffi_schema)?;
             let struct_array = StructArray::from(array_data);
             let rb = RecordBatch::from(struct_array);
-            writer.as_ref().write_batch(rb)?;
+            writer.write_batch(rb)?;
             Ok(())
         };
         let result: lakesoul_io::Result<()> = result_fn();
@@ -748,6 +774,46 @@ pub extern "C" fn write_record_batch_blocked(
         }
     }
 }
+
+#[no_mangle]
+pub extern "C" fn write_record_batch_ipc_blocked(
+    writer: NonNull<CResult<Writer>>,
+    ipc_addr: c_ptrdiff_t,
+    len: i64,
+) -> *const c_char  {
+    let writer = unsafe {
+        NonNull::new_unchecked(writer.as_ref().ptr as *mut SyncSendableMutableLakeSoulWriter).as_mut()
+    }; 
+    let raw_parts = unsafe { 
+        std::slice::from_raw_parts(ipc_addr as *const u8, len as usize) 
+    };
+
+    let reader = std::io::Cursor::new(raw_parts);
+    let mut reader = arrow_ipc::reader::StreamReader::try_new(reader, None).unwrap();
+    let mut row_count = 0;
+    loop {
+        if reader.is_finished() {
+            break;
+        }
+        match reader.next().transpose() {
+            Ok(Some(batch)) => {
+                let num_rows = batch.num_rows();
+                match writer.write_batch(batch) {
+                    Ok(_) => {
+                        row_count += num_rows
+                    }
+                    Err(e) => return CString::new(format!("Error: {}", e).as_str()).unwrap().into_raw(),
+                }
+            }
+            Ok(None) => {
+                break;
+            }
+            Err(e) => return CString::new(format!("Error: {}", e).as_str()).unwrap().into_raw(),
+        }
+    }
+    CString::new(format!("Ok: {}", row_count).as_str()).unwrap().into_raw()
+}
+
 
 #[no_mangle]
 pub extern "C" fn export_bytes_result(
