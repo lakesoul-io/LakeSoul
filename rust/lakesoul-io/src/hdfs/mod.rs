@@ -11,15 +11,12 @@ use bytes::Bytes;
 use datafusion::error::Result;
 use datafusion_common::DataFusionError;
 use futures::stream::BoxStream;
-use hdfs_sys::{hdfsGetLastExceptionRootCause, hdfsGetLastExceptionStackTrace};
-use hdrs::{Client, ClientBuilder};
+use hdrs::{Client, ClientBuilder, File};
 use object_store::path::Path;
 use object_store::Error::Generic;
 use object_store::{GetOptions, GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore};
 use parquet::data_type::AsBytes;
-use std::ffi::CStr;
 use std::fmt::{Debug, Display, Formatter};
-use std::io;
 use std::io::ErrorKind::NotFound;
 use std::io::{Read, Seek, SeekFrom};
 use std::ops::Range;
@@ -42,16 +39,7 @@ impl Hdfs {
         let client = client_builder.connect();
         match client {
             Ok(c) => Ok(Self { client: Arc::new(c) }),
-            Err(e) => unsafe {
-                let errmsg = format!(
-                    "Open HDFS client failed: {:?}\nroot cause: {:?}\nstack trace: {:?}",
-                    e,
-                    CStr::from_ptr(hdfsGetLastExceptionRootCause()),
-                    CStr::from_ptr(hdfsGetLastExceptionStackTrace())
-                );
-                println!("{}", errmsg);
-                Err(DataFusionError::IoError(io::Error::new(e.kind(), errmsg)))
-            },
+            Err(e) => Err(DataFusionError::IoError(e)),
         }
     }
 
@@ -88,6 +76,13 @@ impl Debug for Hdfs {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "HDFSObjectStore")
     }
+}
+
+fn read_at(file: &File, buf: &mut [u8], offset: u64) -> object_store::Result<usize> {
+    file.read_at(buf, offset).map_err(|e| Generic {
+        store: "hdfs",
+        source: Box::new(e),
+    })
 }
 
 #[async_trait]
@@ -152,28 +147,6 @@ impl ObjectStore for Hdfs {
         }
     }
 
-    // async fn get(&self, location: &Path) -> object_store::Result<GetResult> {
-    //     let path = add_leading_slash(location);
-    //     let async_file = self
-    //         .client
-    //         .open_file()
-    //         .read(true)
-    //         .async_open(path.as_str())
-    //         .await
-    //         .map_err(|e| Generic {
-    //             store: "hdfs",
-    //             source: Box::new(e),
-    //         })?;
-    //     let reader_stream = ReaderStream::new(async_file.compat());
-    //     Ok(GetResult{
-    //         payload: GetResultPayload::Stream(Box::pin(reader_stream.map_err(|e| Generic {
-    //             store: "hdfs",
-    //             source: Box::new(e),
-    //             }))),
-    //         meta:
-    //     })
-    // }
-
     async fn get_opts(&self, location: &Path, _options: GetOptions) -> object_store::Result<GetResult> {
         self.get(location).await
     }
@@ -206,10 +179,40 @@ impl ObjectStore for Hdfs {
     }
 
     async fn get_ranges(&self, location: &Path, ranges: &[Range<usize>]) -> object_store::Result<Vec<Bytes>> {
-        // tweak coalesce size and concurrency for hdfs
+        let location = add_leading_slash(location);
+        let client = self.client.clone();
+        let file = Arc::new(
+            client
+                .open_file()
+                .read(true)
+                .open(location.as_ref())
+                .map_err(|e| Generic {
+                    store: "hdfs",
+                    source: Box::new(e),
+                })?,
+        );
         coalesce_ranges(
             ranges,
-            |range| self.get_range(location, range),
+            move |range| {
+                let location = location.clone();
+                let file = file.clone();
+                async move {
+                    maybe_spawn_blocking(move || {
+                        let to_read = range.end - range.start;
+                        let mut buf = vec![0; to_read];
+                        let read_size = read_at(&file, &mut buf, range.start as u64)?;
+                        if read_size != to_read {
+                            Err(Generic {
+                                store: "hdfs",
+                                source: format!("read file {} range not complete", location).into(),
+                            })
+                        } else {
+                            Ok(buf.into())
+                        }
+                    })
+                    .await
+                }
+            },
             OBJECT_STORE_COALESCE_DEFAULT,
         )
         .await
