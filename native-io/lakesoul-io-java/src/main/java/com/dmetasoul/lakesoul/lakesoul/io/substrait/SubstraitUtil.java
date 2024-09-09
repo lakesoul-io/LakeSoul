@@ -89,6 +89,13 @@ public class SubstraitUtil {
         } catch (IOException e) {
             throw new RuntimeException("load simple extension failed");
         }
+        java.lang.Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            try {
+                NATIVE_IO_BASE.close();
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        }));
     }
 
     public static Expression and(Expression left, Expression right) {
