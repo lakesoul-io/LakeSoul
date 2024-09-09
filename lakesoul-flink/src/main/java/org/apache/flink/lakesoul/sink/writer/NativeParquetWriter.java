@@ -83,7 +83,7 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
             this.prefix = new Path(this.prefix, bucketID);
         }
         initNativeWriter();
-        
+
     }
 
 
@@ -248,7 +248,6 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         this.batch.close();
         try {
             this.nativeWriter.close();
-            initNativeWriter();
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
