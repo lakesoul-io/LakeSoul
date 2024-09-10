@@ -146,13 +146,15 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
                 .withOutputFileConfig(fileNameConfig).build();
         if (!primaryKeyList.isEmpty()) {
             LakeSoulKeyGen keyGen = new LakeSoulKeyGen(rowType, primaryKeyList.toArray(new String[0]));
-            dataStream = dataStream.partitionCustom(new HashPartitioner(), keyGen::getRePartitionHash);
+            Integer hashBucketNum = flinkConf.get(HASH_BUCKET_NUM);
+            dataStream = dataStream.partitionCustom(new HashPartitioner(hashBucketNum), keyGen::getRePartitionHash);
             if (flinkConf.get(DYNAMIC_BUCKETING)) {
                 return dataStream.sinkTo(sink);
             } else {
                 // before dynamic bucket routing in native, we rely on flink's
                 // parallelism to partition primary keys to target hash bucket
-                return dataStream.sinkTo(sink).setParallelism(flinkConf.get(HASH_BUCKET_NUM));
+                Integer parallelism = flinkConf.get(BUCKET_PARALLELISM) > hashBucketNum?flinkConf.get(BUCKET_PARALLELISM):hashBucketNum;
+                return dataStream.sinkTo(sink).setParallelism(flinkConf.get(BUCKET_PARALLELISM));
             }
         } else {
             return dataStream.sinkTo(sink);

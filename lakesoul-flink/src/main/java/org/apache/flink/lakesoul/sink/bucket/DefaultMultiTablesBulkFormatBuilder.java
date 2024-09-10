@@ -10,6 +10,7 @@ import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.sink.writer.AbstractLakeSoulMultiTableSinkWriter;
 import org.apache.flink.lakesoul.sink.writer.DefaultLakeSoulWriterBucketFactory;
 import org.apache.flink.lakesoul.sink.writer.LakeSoulMultiTableSinkWriter;
+import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.BinarySourceRecord;
 import org.apache.flink.table.data.RowData;
 
@@ -22,8 +23,9 @@ public class DefaultMultiTablesBulkFormatBuilder
 
     @Override
     public AbstractLakeSoulMultiTableSinkWriter<BinarySourceRecord, RowData> createWriter(Sink.InitContext context, int subTaskId) {
+        int hashBucketNum = conf.getInteger(LakeSoulSinkOptions.HASH_BUCKET_NUM);
         return new LakeSoulMultiTableSinkWriter(
-                subTaskId,
+                hashBucketNum == -1 ? subTaskId: subTaskId % hashBucketNum,
                 context.metricGroup(),
                 super.bucketFactory,
                 super.rollingPolicy,

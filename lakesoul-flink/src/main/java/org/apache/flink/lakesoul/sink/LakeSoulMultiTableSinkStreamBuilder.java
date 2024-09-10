@@ -51,7 +51,7 @@ public class LakeSoulMultiTableSinkStreamBuilder {
     }
 
     public DataStream<BinarySourceRecord> buildHashPartitionedCDCStream(DataStream<BinarySourceRecord> stream) {
-        return stream.partitionCustom(new HashPartitioner(), convert::computeBinarySourceRecordPrimaryKeyHash);
+        return stream.partitionCustom(new HashPartitioner(context.conf.getInteger(HASH_BUCKET_NUM)), convert::computeBinarySourceRecordPrimaryKeyHash);
     }
 
     public DataStreamSink<BinarySourceRecord> buildLakeSoulDMLSink(DataStream<BinarySourceRecord> stream) {
