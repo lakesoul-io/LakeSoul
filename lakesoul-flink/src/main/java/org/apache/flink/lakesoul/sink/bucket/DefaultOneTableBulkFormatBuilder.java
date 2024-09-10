@@ -11,6 +11,7 @@ import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
 import org.apache.flink.lakesoul.sink.writer.AbstractLakeSoulMultiTableSinkWriter;
 import org.apache.flink.lakesoul.sink.writer.DefaultLakeSoulWriterBucketFactory;
 import org.apache.flink.lakesoul.sink.writer.LakeSoulRowDataOneTableSinkWriter;
+import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.table.data.RowData;
 
@@ -36,8 +37,11 @@ public final class DefaultOneTableBulkFormatBuilder
     @Override
     public AbstractLakeSoulMultiTableSinkWriter<RowData, RowData> createWriter(Sink.InitContext context, int subTaskId) throws
             IOException {
+        int hashBucketNum = conf.getInteger(LakeSoulSinkOptions.HASH_BUCKET_NUM);
+        int hashBucketId = hashBucketNum == -1 ? subTaskId : subTaskId % hashBucketNum;
+        System.out.printf("DefaultOneTableBulkFormatBuilder::createWriter, subTaskId=%d, hashBucketId=%d\n", subTaskId, hashBucketId);
         return new LakeSoulRowDataOneTableSinkWriter(
-                subTaskId,
+                hashBucketId,
                 identity,
                 context.metricGroup(),
                 super.bucketFactory,

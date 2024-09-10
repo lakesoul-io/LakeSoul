@@ -24,8 +24,10 @@ public class DefaultMultiTablesBulkFormatBuilder
     @Override
     public AbstractLakeSoulMultiTableSinkWriter<BinarySourceRecord, RowData> createWriter(Sink.InitContext context, int subTaskId) {
         int hashBucketNum = conf.getInteger(LakeSoulSinkOptions.HASH_BUCKET_NUM);
+        int hashBucketId = hashBucketNum == -1 ? subTaskId : subTaskId % hashBucketNum;
+        System.out.printf("DefaultMultiTablesBulkFormatBuilder::createWriter, subTaskId=%d, hashBucketId=%d\n", subTaskId, hashBucketId);
         return new LakeSoulMultiTableSinkWriter(
-                hashBucketNum == -1 ? subTaskId: subTaskId % hashBucketNum,
+                hashBucketId,
                 context.metricGroup(),
                 super.bucketFactory,
                 super.rollingPolicy,
