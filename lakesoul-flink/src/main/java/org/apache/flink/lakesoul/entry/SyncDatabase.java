@@ -383,11 +383,26 @@ public class SyncDatabase {
         String sql;
         if (jdbcOrDorisOptions == null){
             sql = String.format(
-                    "create table %s(%s) with ('connector' = '%s', 'jdbc-url' = '%s', 'fenodes' = '%s', 'table.identifier' = '%s', 'username' = '%s', 'password' = '%s')",
+                    "create table %s(%s) with ('connector' = '%s'," +
+                            " 'jdbc-url' = '%s'," +
+                            " 'fenodes' = '%s'," +
+                            " 'table.identifier' = '%s'," +
+                            " 'username' = '%s'," +
+                            " 'password' = '%s'," +
+                            " 'sink.properties.format' = 'json'," +
+                            " 'sink.properties.read_json_by_line' = 'true')",
                     targetTableName, coulmns, "doris", jdbcUrl, fenodes, targetDatabase + "." + targetTableName, username, password);
         }else {
             sql = String.format(
-                    "create table %s(%s) with ('connector' = '%s', 'jdbc-url' = '%s', 'fenodes' = '%s', 'table.identifier' = '%s', 'username' = '%s', 'password' = '%s', %s)",
+                    "create table %s(%s) with ('connector' = '%s'," +
+                            " 'jdbc-url' = '%s'," +
+                            " 'fenodes' = '%s'," +
+                            " 'table.identifier' = '%s'," +
+                            " 'username' = '%s'," +
+                            " 'password' = '%s'," +
+                            " 'sink.properties.format' = 'json'," +
+                            " 'sink.properties.read_json_by_line' = 'true'," +
+                            "  %s)",
                     targetTableName, coulmns, "doris", jdbcUrl, fenodes, targetDatabase + "." + targetTableName, username, password, jdbcOrDorisOptions);
         }
 
