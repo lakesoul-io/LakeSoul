@@ -69,8 +69,8 @@ public class SubstraitUtil {
 
     private static final LibLakeSoulIO LIB;
 
-    private static Pointer BUFFER1;
-    private static Pointer BUFFER2;
+//    private static Pointer BUFFER1;
+//    private static Pointer BUFFER2;
 
     private static final NativeIOBase NATIVE_IO_BASE;
 
@@ -82,8 +82,8 @@ public class SubstraitUtil {
             EXTENSIONS = SimpleExtension.loadDefaults();
             BUILDER = new SubstraitBuilder(EXTENSIONS);
             LIB = JnrLoader.get();
-            BUFFER1 = Runtime.getRuntime(LIB).getMemoryManager().allocateDirect(4096);
-            BUFFER2 = Runtime.getRuntime(LIB).getMemoryManager().allocateDirect(4096);
+//            BUFFER1 = Runtime.getRuntime(LIB).getMemoryManager().allocateDirect(4096);
+//            BUFFER2 = Runtime.getRuntime(LIB).getMemoryManager().allocateDirect(4096);
             LOCK = new ReentrantReadWriteLock();
             NATIVE_IO_BASE = new NativeIOBase("Substrait");
         } catch (IOException e) {
@@ -211,9 +211,16 @@ public class SubstraitUtil {
         JniWrapper jniWrapper = JniWrapper.newBuilder().addAllPartitionInfo(allPartitionInfo).build();
 
         byte[] jniBytes = jniWrapper.toByteArray();
+        Pointer jniBuffer = Runtime.getRuntime(LIB).getMemoryManager().allocateDirect(jniBytes.length + 1, true);
+        jniBuffer.put(0, jniBytes, 0, jniBytes.length);
+        jniBuffer.putByte(jniBytes.length, (byte) 0);
+
         byte[] filterBytes = partitionFilter.toByteArray();
-        tryPutBuffer1(jniBytes);
-        tryPutBuffer2(filterBytes);
+        Pointer filterBuffer = Runtime.getRuntime(LIB).getMemoryManager().allocateDirect(filterBytes.length + 1, true);
+        filterBuffer.put(0, filterBytes, 0, filterBytes.length);
+        filterBuffer.putByte(filterBytes.length, (byte) 0);
+//        tryPutBuffer1(jniBytes);
+//        tryPutBuffer2(filterBytes);
 
         try {
             final CompletableFuture<Integer> filterFuture = new CompletableFuture<>();
@@ -225,15 +232,16 @@ public class SubstraitUtil {
                             filterFuture.completeExceptionally(new SQLException(msg));
                         }
                     }, NATIVE_IO_BASE.getIntReferenceManager()),
-                    jniBytes.length, BUFFER1.address(),
+                    jniBytes.length, jniBuffer.address(),
                     ffiSchema.memoryAddress(),
                     filterBytes.length,
-                    BUFFER2.address()
+                    filterBuffer.address()
             );
             Integer len = null;
             len = filterFuture.get(TIMEOUT, TimeUnit.MILLISECONDS);
             if (len < 0) return null;
             Integer lenWithTail = len + 1;
+            Pointer exportBuffer = Runtime.getRuntime(LIB).getMemoryManager().allocateDirect(lenWithTail, true);
 
             final CompletableFuture<Boolean> importFuture = new CompletableFuture<>();
             LIB.export_bytes_result(
@@ -246,13 +254,13 @@ public class SubstraitUtil {
                     }, NATIVE_IO_BASE.getBoolReferenceManager()),
                     filterResult,
                     len,
-                    BUFFER1.address()
+                    exportBuffer.address()
             );
             Boolean b = importFuture.get(TIMEOUT, TimeUnit.MILLISECONDS);
             if (!b) return null;
 
             byte[] bytes = new byte[len];
-            BUFFER1.get(0, bytes, 0, len);
+            exportBuffer.get(0, bytes, 0, len);
             resultPartitionInfo = JniWrapper.parseFrom(bytes).getPartitionInfoList();
             LIB.free_bytes_result(filterResult);
         } catch (InterruptedException e) {
@@ -270,23 +278,6 @@ public class SubstraitUtil {
 
         return resultPartitionInfo;
     }
-
-    private static void tryPutBuffer1(byte[] bytes) {
-        while (BUFFER1.size() < bytes.length + 1) {
-            BUFFER1 = Runtime.getRuntime(LIB).getMemoryManager().allocateDirect(BUFFER1.size() * 2);
-        }
-        BUFFER1.put(0, bytes, 0, bytes.length);
-        BUFFER1.putByte(bytes.length, (byte) 0);
-    }
-
-    private static void tryPutBuffer2(byte[] bytes) {
-        while (BUFFER2.size() < bytes.length + 1) {
-            BUFFER2 = Runtime.getRuntime(LIB).getMemoryManager().allocateDirect(BUFFER2.size() * 2);
-        }
-        BUFFER2.put(0, bytes, 0, bytes.length);
-        BUFFER2.putByte(bytes.length, (byte) 0);
-    }
-
 
     public static FieldReference arrowFieldToSubstraitField(Field field) {
         return FieldReference
