@@ -172,6 +172,10 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
             ""
           )
           executeCompaction(sparkSession, tc, files, Array(partitionInfo))
+          if (cleanOldCompaction) {
+            val tablePath = snapshotManagement.table_path
+            cleanOldCommitOpDiskData(tablePath, partitionSet.head, sparkSession)
+          }
         }
 
       })
@@ -194,13 +198,13 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
             logInfo(s"== Partition ${part.range_value} has no delta file.")
           } else {
             executeCompaction(sparkSession, tc, files, Array(part))
+            if (cleanOldCompaction) {
+              val tablePath = snapshotManagement.table_path
+              cleanOldCommitOpDiskData(tablePath, null, sparkSession)
+            }
           }
         })
       })
-    }
-    if (cleanOldCompaction) {
-      val tablePath = snapshotManagement.table_path
-      cleanOldCommitOpDiskData(tablePath, sparkSession)
     }
     Seq.empty
   }
