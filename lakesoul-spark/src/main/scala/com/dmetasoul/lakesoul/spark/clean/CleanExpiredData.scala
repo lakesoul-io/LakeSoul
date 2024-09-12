@@ -74,20 +74,33 @@ object CleanExpiredData {
       println("partitionDesc:" + partitionDesc)
       println("tablePartitionTTL: " + tablePartitionTTL)
       println("tableRedundantTTL: " + tableRedundantTTL)
+      val latestCommitTimestamp = getLatestCommitTimestamp(tableId, partitionDesc, spark)
+      println("latestCommitTimestamp: " + latestCommitTimestamp)
 
-      if (tableOnlySaveOnceCompaction != null && onlySaveOnceCompaction.equals("true")) {
+      if (tableOnlySaveOnceCompaction != null && tableOnlySaveOnceCompaction.equals("true")) {
         println("******* 0. processing onlySaveOnceCompaction *******")
-        val existsCompactionFlag = existsCompaction(tableId, partitionDesc, tableRedundantTTL.toString.toInt, spark)
-        println("------- existsCompaction: " + existsCompactionFlag + " -------")
-        if (existsCompactionFlag) {
-          val timeDeadline = getExpiredDateZeroTimeStamp(tableRedundantTTL.toString.toInt)
-          cleanSinglePartitionExpiredDiskData(tableId, partitionDesc, timeDeadline, spark)
-          cleanSingleDataCommitInfo(tableId, partitionDesc, timeDeadline)
-          cleanSinglePartitionInfo(tableId, partitionDesc, timeDeadline)
+        if (tablePartitionTTL != null) {
+          println("******* 0-1. last compactionTimestamp before expiration is null && tablePartitionTTL is not null *******")
+          val partitionTtlMils = getExpiredDateZeroTimeStamp(tablePartitionTTL.toString.toInt)
+          println("------- partitionTtlMils: " + partitionTtlMils + " -------")
+          if (partitionTtlMils > latestCommitTimestamp) {
+            cleanSinglePartitionExpiredDiskData(tableId, partitionDesc, partitionTtlMils, spark)
+            cleanSingleDataCommitInfo(tableId, partitionDesc, partitionTtlMils)
+            cleanSinglePartitionInfo(tableId, partitionDesc, partitionTtlMils)
+          }
+        }
+        if (tableRedundantTTL != null) {
+          val existsCompactionFlag = existsCompaction(tableId, partitionDesc, tableRedundantTTL.toString.toInt, spark)
+          println("------- existsCompaction: " + existsCompactionFlag + " -------")
+          if (existsCompactionFlag) {
+            val timeDeadline = getExpiredDateZeroTimeStamp(tableRedundantTTL.toString.toInt)
+            cleanSinglePartitionExpiredDiskData(tableId, partitionDesc, timeDeadline, spark)
+            cleanSingleDataCommitInfo(tableId, partitionDesc, timeDeadline)
+            cleanSinglePartitionInfo(tableId, partitionDesc, timeDeadline)
+          }
         }
       } else {
         println("last compactionTimestamp before expiration:" + latestCompactionTimestampBeforeRedundantTTL)
-        val latestCommitTimestamp = getLatestCommitTimestamp(tableId, partitionDesc, spark)
         //no compaction action
         if (latestCompactionTimestampBeforeRedundantTTL == 0L) {
           if (tablePartitionTTL != null) {

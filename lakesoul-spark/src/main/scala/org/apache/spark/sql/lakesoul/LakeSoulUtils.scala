@@ -233,7 +233,9 @@ object LakeSoulTableProperties {
 
   val compactionTtl = "compaction.ttl"
 
-  val extraTblProps: Set[String] = Set(lakeSoulCDCChangePropKey, partitionTtl, compactionTtl)
+  val onlySaveOnceCompaction = "only_save_once_compaction"
+
+  val extraTblProps: Set[String] = Set(lakeSoulCDCChangePropKey, partitionTtl, compactionTtl, onlySaveOnceCompaction)
 
   def isLakeSoulTableProperty(name: String): Boolean = {
     extraTblProps.contains(name)

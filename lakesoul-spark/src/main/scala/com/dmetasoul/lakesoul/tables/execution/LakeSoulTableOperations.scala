@@ -7,7 +7,7 @@ package com.dmetasoul.lakesoul.tables.execution
 import com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_RANGE_PARTITION_SPLITTER
 import com.dmetasoul.lakesoul.meta.SparkMetaVersion
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
-import com.dmetasoul.lakesoul.spark.clean.CleanUtils.{setCompactionExpiredDays, setTableDataExpiredDays, cancelTableDataExpiredDays, cancelCompactionExpiredDays}
+import com.dmetasoul.lakesoul.spark.clean.CleanUtils.{cancelCompactionExpiredDays, cancelTableDataExpiredDays, setCompactionExpiredDays, setTableDataExpiredDays, setTableOnlySaveOnceCompactionValue}
 import org.apache.spark.sql.catalyst.analysis.{EliminateSubqueryAliases, UnresolvedAttribute}
 import org.apache.spark.sql.catalyst.expressions.{Expression, Literal}
 import org.apache.spark.sql.catalyst.plans.logical.{Assignment, DeleteFromTable, LakeSoulUpsert, UpdateTable}
@@ -192,6 +192,11 @@ trait LakeSoulTableOperations extends AnalysisHelper {
   protected def executeSetPartitionTtl(snapshotManagement: SnapshotManagement, days: Int): Unit = {
     val tablePath = snapshotManagement.table_path
     setTableDataExpiredDays(tablePath, days)
+  }
+
+  protected def executeSetOnlySaveOnceCompactionValue(snapshotManagement: SnapshotManagement, value: Boolean): Unit = {
+    val tablePath = snapshotManagement.table_path
+    setTableOnlySaveOnceCompactionValue(tablePath, value)
   }
 
   protected def executeCancelCompactionTtl(snapshotManagement: SnapshotManagement): Unit = {

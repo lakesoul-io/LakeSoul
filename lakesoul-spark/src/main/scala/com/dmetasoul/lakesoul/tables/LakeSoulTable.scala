@@ -392,6 +392,11 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
     this
   }
 
+  def onlySaveOnceCompaction(value: Boolean): LakeSoulTable = {
+    executeSetOnlySaveOnceCompactionValue(snapshotManagement, value)
+    this
+  }
+
   def cancelCompactionTtl(): Boolean = {
     executeCancelCompactionTtl(snapshotManagement)
     true
