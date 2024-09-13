@@ -318,6 +318,10 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
     compaction(condition, true, Map.empty[String, Any], "", "", false)
   }
 
+  def compaction(condition: String, cleanOldCompaction: Boolean): Unit = {
+    compaction(condition, true, Map.empty[String, Any], "", "", cleanOldCompaction)
+  }
+
   def compaction(mergeOperatorInfo: Map[String, Any]): Unit = {
     compaction("", true, mergeOperatorInfo, "", "", false)
   }
@@ -385,6 +389,11 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
 
   def setPartitionTtl(days: Int): LakeSoulTable = {
     executeSetPartitionTtl(snapshotManagement, days)
+    this
+  }
+
+  def onlySaveOnceCompaction(value: Boolean): LakeSoulTable = {
+    executeSetOnlySaveOnceCompactionValue(snapshotManagement, value)
     this
   }
 

@@ -12,7 +12,7 @@ import scala.collection.mutable.Set
 
 object CleanOldCompaction {
 
-  def cleanOldCommitOpDiskData(tablePath: String, spark: SparkSession): Unit = {
+  def cleanOldCommitOpDiskData(tablePath: String, partitionDesc: String, spark: SparkSession): Unit = {
     val sql =
       s"""
          |SELECT DISTINCT table_id,
@@ -25,12 +25,15 @@ object CleanOldCompaction {
          |);
          |""".stripMargin
     val partitionRows = sqlToDataframe(sql, spark).rdd.collect()
-    partitionRows.foreach(p => {
-      val table_id = p.get(0).toString
-      val partition_desc = p.get(1).toString
-      cleanSinglePartitionCompactionDataInDisk(table_id, partition_desc, spark)
-    })
-
+    if (partitionDesc == null) {
+      partitionRows.foreach(p => {
+        val table_id = p.get(0).toString
+        val partition_desc = p.get(1).toString
+        cleanSinglePartitionCompactionDataInDisk(table_id, partition_desc, spark)
+      })
+    } else {
+      cleanSinglePartitionCompactionDataInDisk(partitionRows.head.get(0).toString, partitionDesc, spark)
+    }
   }
 
   def cleanSinglePartitionCompactionDataInDisk(tableId: String, partitionDesc: String, spark: SparkSession): Unit = {

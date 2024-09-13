@@ -100,6 +100,17 @@ object CleanUtils {
     stmt.execute()
   }
 
+  def setTableOnlySaveOnceCompactionValue(tablePath: String, value: Boolean): Unit = {
+    val sql =
+      s"""
+         |UPDATE table_info
+         |SET properties = properties::jsonb || '{"only_save_once_compaction": "$value"}'::jsonb
+         |WHERE table_id = (SELECT table_id from table_info where table_path='$tablePath');
+         |""".stripMargin
+    val stmt = conn.prepareStatement(sql)
+    stmt.execute()
+  }
+
   def cancelTableDataExpiredDays(tablePath: String): Unit = {
     val sql =
       s"""
