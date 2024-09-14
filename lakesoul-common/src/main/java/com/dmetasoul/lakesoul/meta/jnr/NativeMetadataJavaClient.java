@@ -36,11 +36,6 @@ public class NativeMetadataJavaClient implements AutoCloseable {
     private long timeout;
 
     private Pointer tokioPostgresClient = null;
-
-//    private Pointer fixedBuffer = null;
-//
-//    private Pointer mutableBuffer = null;
-
     private Pointer tokioRuntime = null;
 
     private Pointer preparedStatement = null;
@@ -74,9 +69,6 @@ public class NativeMetadataJavaClient implements AutoCloseable {
         booleanCallbackObjectReferenceManager = Runtime.getRuntime(libLakeSoulMetaData).newObjectReferenceManager();
         stringCallbackObjectReferenceManager = Runtime.getRuntime(libLakeSoulMetaData).newObjectReferenceManager();
         integerCallbackObjectReferenceManager = Runtime.getRuntime(libLakeSoulMetaData).newObjectReferenceManager();
-
-//        fixedBuffer = Runtime.getRuntime(libLakeSoulMetaData).getMemoryManager().allocateDirect(bufferSize);
-//        mutableBuffer = Runtime.getRuntime(libLakeSoulMetaData).getMemoryManager().allocateDirect(bufferSize);
 
         lock = new ReentrantReadWriteLock();
         initialize();
@@ -257,12 +249,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                     Integer lenWithTail = len + 1;
 
                     Pointer buffer = Runtime.getRuntime(libLakeSoulMetaData).getMemoryManager().allocateDirect(lenWithTail, true);
-//                    if (lenWithTail > fixedBuffer.size()) {
-//                        if (lenWithTail > mutableBuffer.size()) {
-//                            mutableBuffer = Runtime.getRuntime(libLakeSoulMetaData).getMemoryManager().allocateDirect(lenWithTail);
-//                        }
-//                        buffer = mutableBuffer;
-//                    }
+
                     final CompletableFuture<Boolean> importFuture = new CompletableFuture<>();
                     getLibLakeSoulMetaData().export_bytes_result(
                             new ReferencedBooleanCallback((result, msg) -> {
@@ -341,16 +328,6 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                     byte[] bytes = jniWrapper.toByteArray();
                     Pointer buffer = Runtime.getRuntime(libLakeSoulMetaData).getMemoryManager().allocateDirect(bytes.length, true);;
                     buffer.put(0, bytes, 0, bytes.length);
-//                    if (bytes.length < fixedBuffer.size())
-//                        fixedBuffer.put(0, bytes, 0, bytes.length);
-//                    else if (bytes.length < mutableBuffer.size()) {
-//                        mutableBuffer.put(0, bytes, 0, bytes.length);
-//                        buffer = mutableBuffer;
-//                    } else {
-//                        mutableBuffer = Runtime.getRuntime(libLakeSoulMetaData).getMemoryManager().allocateDirect(bytes.length);
-//                        mutableBuffer.put(0, bytes, 0, bytes.length);
-//                        buffer = mutableBuffer;
-//                    }
 
                     getLibLakeSoulMetaData().execute_insert(
                             new ReferencedIntegerCallback((result, msg) -> {

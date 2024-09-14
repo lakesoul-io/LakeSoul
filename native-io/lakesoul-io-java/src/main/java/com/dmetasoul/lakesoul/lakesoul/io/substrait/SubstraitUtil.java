@@ -7,7 +7,6 @@ import com.dmetasoul.lakesoul.lakesoul.io.jnr.LibLakeSoulIO;
 import com.dmetasoul.lakesoul.lakesoul.memory.ArrowMemoryUtils;
 import com.dmetasoul.lakesoul.meta.entity.JniWrapper;
 import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
-import com.dmetasoul.lakesoul.meta.jnr.NativeMetadataJavaClient;
 import com.google.protobuf.InvalidProtocolBufferException;
 import io.substrait.dsl.SubstraitBuilder;
 import io.substrait.expression.Expression;
@@ -69,8 +68,6 @@ public class SubstraitUtil {
 
     private static final LibLakeSoulIO LIB;
 
-//    private static Pointer BUFFER1;
-//    private static Pointer BUFFER2;
 
     private static final NativeIOBase NATIVE_IO_BASE;
 
@@ -82,8 +79,6 @@ public class SubstraitUtil {
             EXTENSIONS = SimpleExtension.loadDefaults();
             BUILDER = new SubstraitBuilder(EXTENSIONS);
             LIB = JnrLoader.get();
-//            BUFFER1 = Runtime.getRuntime(LIB).getMemoryManager().allocateDirect(4096);
-//            BUFFER2 = Runtime.getRuntime(LIB).getMemoryManager().allocateDirect(4096);
             LOCK = new ReentrantReadWriteLock();
             NATIVE_IO_BASE = new NativeIOBase("Substrait");
         } catch (IOException e) {
@@ -219,8 +214,6 @@ public class SubstraitUtil {
         Pointer filterBuffer = Runtime.getRuntime(LIB).getMemoryManager().allocateDirect(filterBytes.length + 1, true);
         filterBuffer.put(0, filterBytes, 0, filterBytes.length);
         filterBuffer.putByte(filterBytes.length, (byte) 0);
-//        tryPutBuffer1(jniBytes);
-//        tryPutBuffer2(filterBytes);
 
         try {
             final CompletableFuture<Integer> filterFuture = new CompletableFuture<>();
