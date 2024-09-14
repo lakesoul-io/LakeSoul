@@ -4,6 +4,7 @@
 
 package org.apache.flink.lakesoul.tool;
 
+import com.dmetasoul.lakesoul.meta.LakeSoulOptions;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ConfigOptions;
 import org.apache.flink.core.fs.Path;
@@ -78,10 +79,10 @@ public class LakeSoulSinkOptions {
             .key("sink.parallelism")
             .intType()
             .defaultValue(4)
-            .withDescription("bucket number parallelism");
+            .withDescription("parallelism of sink");
 
     public static final ConfigOption<Integer> HASH_BUCKET_NUM = ConfigOptions
-            .key("hashBucketNum")
+            .key(LakeSoulOptions.HASH_BUCKET_NUM())
             .intType()
             .defaultValue(4)
             .withDescription("bucket number for table");
