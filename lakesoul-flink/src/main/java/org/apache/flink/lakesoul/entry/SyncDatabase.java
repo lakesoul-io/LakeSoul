@@ -48,7 +48,6 @@ public class SyncDatabase {
     static int sinkParallelism;
     static String jdbcOrDorisOptions;
     static int checkpointInterval;
-    static String checkpointPath;
 
     public static void main(String[] args) throws Exception {
         StringBuilder connectorOptions = new StringBuilder();
@@ -60,7 +59,6 @@ public class SyncDatabase {
         targetTableName = parameter.get(TARGET_DB_TABLE_NAME.key()).toLowerCase();
         url = parameter.get(TARGET_DB_URL.key());
         checkpointInterval = parameter.getInt(JOB_CHECKPOINT_INTERVAL.key(), JOB_CHECKPOINT_INTERVAL.defaultValue());
-        checkpointPath = parameter.get(FLINK_CHECKPOINT.key());
         if (dbType.equals("mysql") || dbType.equals("postgresql") || dbType.equals("doris")){
             for (int i = 0; i < args.length; i++) {
                 if ( args[i].startsWith("--D")){
@@ -88,7 +86,6 @@ public class SyncDatabase {
         conf.setString(RestOptions.BIND_PORT, "8081-8089");
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(conf);
         env.setParallelism(sinkParallelism);
-        env.getCheckpointConfig().setCheckpointStorage(checkpointPath);
 
         switch (dbType) {
             case "mysql":
