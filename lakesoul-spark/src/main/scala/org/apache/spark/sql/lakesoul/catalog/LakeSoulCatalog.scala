@@ -277,11 +277,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
 
     val schema = StructType(ori_schema.map {
       case StructField(name, dataType, nullable, metadata) =>
-        if (tableDesc.partitionColumnNames.contains(name)) {
-          StructField(name, dataType, nullable = false, metadata)
-        } else {
-          StructField(name, dataType, nullable, metadata)
-        }
+          StructField(name, dataType, nullable , metadata)
     })
 
 
