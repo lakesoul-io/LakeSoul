@@ -4,13 +4,17 @@
 
 package org.apache.flink.lakesoul.entry.sql.flink;
 
+import io.openlineage.flink.OpenLineageFlinkJobListener;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.time.Time;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.core.execution.JobListener;
 import org.apache.flink.lakesoul.entry.sql.Submitter;
 import org.apache.flink.lakesoul.entry.sql.common.FlinkOption;
 import org.apache.flink.lakesoul.entry.sql.common.JobType;
 import org.apache.flink.lakesoul.entry.sql.common.SubmitOption;
 import org.apache.flink.lakesoul.entry.sql.utils.FileUtil;
+import org.apache.flink.lakesoul.tool.JobOptions;
 import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
@@ -32,6 +36,13 @@ public class FlinkSqlSubmitter extends Submitter {
 
     @Override
     public void submit() throws Exception {
+        String lineageUrl = System.getenv("LINEAGE_URL");
+        Configuration conf = new Configuration();
+        if (lineageUrl != null) {
+            conf.set(JobOptions.transportTypeOption, "http");
+            conf.set(JobOptions.urlOption, lineageUrl);
+            conf.set(JobOptions.execAttach, true);
+        }
         EnvironmentSettings settings = null;
         StreamTableEnvironment tEnv = null;
         if (submitOption.getJobType().equals(JobType.STREAM.getType())) {
@@ -47,9 +58,23 @@ public class FlinkSqlSubmitter extends Submitter {
         } else {
             throw new RuntimeException("jobType is not supported: " + submitOption.getJobType());
         }
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(conf);
         if (submitOption.getJobType().equals(JobType.STREAM.getType())) {
             this.setCheckpoint(env);
+        }
+        if (lineageUrl != null) {
+            String appName = env.getConfiguration().get(JobOptions.KUBE_CLUSTER_ID);
+            String namespace = System.getenv("LAKESOUL_CURRENT_DOMAIN");
+            if (namespace == null) {
+                namespace = "lake-public";
+            }
+            LOG.info("----namespace:table----{}:{}", appName, namespace);
+            JobListener listener = OpenLineageFlinkJobListener.builder()
+                    .executionEnvironment(env)
+                    .jobName(appName)
+                    .jobNamespace(namespace)
+                    .build();
+            env.registerJobListener(listener);
         }
         tEnv = StreamTableEnvironment.create(env, settings);
 

@@ -11,6 +11,7 @@ import org.apache.flink.configuration.description.Description;
 import java.time.Duration;
 
 import static org.apache.flink.configuration.ConfigOptions.key;
+import static org.apache.flink.configuration.description.TextElement.code;
 import static org.apache.flink.configuration.description.TextElement.text;
 
 public class JobOptions {
@@ -119,5 +120,28 @@ public class JobOptions {
                     .stringType()
                     .defaultValue("file:///")
                     .withDescription("Option to set fs default scheme");
+
+    public static final ConfigOption transportTypeOption =
+            ConfigOptions.key("openlineage.transport.type").stringType().defaultValue("http");
+    public static final ConfigOption urlOption =
+            ConfigOptions.key("openlineage.transport.url").stringType().noDefaultValue();
+    public static final ConfigOption execAttach =
+            ConfigOptions.key("execution.attached").booleanType().defaultValue(false);
+    public static final ConfigOption lineageOption =
+            ConfigOptions.key("openlineage.executed").booleanType().defaultValue(false);
+
+    public static final ConfigOption<String> KUBE_CLUSTER_ID =
+            key("kubernetes.cluster-id")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            Description.builder()
+                                    .text(
+                                            "The cluster-id, which should be no more than 45 characters, is used for identifying a unique Flink cluster. "
+                                                    + "The id must only contain lowercase alphanumeric characters and \"-\". "
+                                                    + "The required format is %s. "
+                                                    + "If not set, the client will automatically generate it with a random ID.",
+                                            code("[a-z]([-a-z0-9]*[a-z0-9])"))
+                                    .build());
 
 }

@@ -42,7 +42,7 @@ public class ExecuteSql {
         Parser parser = ((TableEnvironmentInternal) tableEnv).getParser();
 
         StreamStatementSet statementSet = tableEnv.createStatementSet();
-
+        Boolean hasModifiedOp = false;
         for (String statement : statements) {
             Operation operation;
             try {
@@ -75,6 +75,7 @@ public class ExecuteSql {
             } else if (operation instanceof ModifyOperation) {
                 System.out.println(MessageFormatter.format("\n======Executing insertion:\n{}", statement).getMessage());
                 // add insertion to statement set
+                hasModifiedOp = true;
                 statementSet.addInsertSql(statement);
             } else if ((operation instanceof QueryOperation) || (operation instanceof AddJarOperation)) {
                 LOG.warn("SQL Statement {} is ignored", statement);
@@ -85,12 +86,16 @@ public class ExecuteSql {
                 tableEnv.executeSql(statement).print();
             }
         }
-        statementSet.attachAsDataStream();
-        Configuration conf = (Configuration) env.getConfiguration();
+        if (hasModifiedOp) {
+            statementSet.attachAsDataStream();
+            Configuration conf = (Configuration) env.getConfiguration();
 
-        // try get k8s cluster name
-        String k8sClusterID = conf.getString("kubernetes.cluster-id", "");
-        env.execute(k8sClusterID.isEmpty() ? null : k8sClusterID + "-job");
+            // try get k8s cluster name
+            String k8sClusterID = conf.getString("kubernetes.cluster-id", "");
+            env.execute(k8sClusterID.isEmpty() ? null : k8sClusterID + "-job");
+        } else {
+            System.out.println("There's no INSERT INTO statement, the program will terminate");
+        }
     }
 
     public static List<String> parseStatements(String script) {

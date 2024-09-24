@@ -80,6 +80,9 @@ public abstract class LakeSoulSource<OUT> implements Source<OUT, LakeSoulPartiti
         this.pushedFilter = pushedFilter;
         this.partitionFilters = partitionFilters;
     }
+    public TableId getTableId(){
+        return this.tableId;
+    }
 
     @Override
     public Boundedness getBoundedness() {

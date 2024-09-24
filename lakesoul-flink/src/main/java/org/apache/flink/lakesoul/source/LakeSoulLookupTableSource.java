@@ -67,7 +67,9 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
         catalogTable.getOptions().forEach(configuration::setString);
         validateLookupConfigurations();
     }
-
+    public TableId getTableId(){
+        return this.tableId;
+    }
     private void validateLookupConfigurations() {
         String partitionInclude = configuration.get(STREAMING_SOURCE_PARTITION_INCLUDE);
 
