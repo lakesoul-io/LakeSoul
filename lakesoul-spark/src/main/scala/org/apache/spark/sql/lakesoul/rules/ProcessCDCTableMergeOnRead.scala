@@ -31,7 +31,7 @@ case class ProcessCDCTableMergeOnRead(sqlConf: SQLConf) extends Rule[LogicalPlan
           else {
             p
           }
-          case _ => p
+        case _ => p
       }
     case p: LogicalPlan if p.children.exists(_.isInstanceOf[DataSourceV2Relation]) && p.isInstanceOf[Filter] =>
       p.children.find(_.isInstanceOf[DataSourceV2Relation]).get match {
@@ -52,7 +52,7 @@ case class ProcessCDCTableMergeOnRead(sqlConf: SQLConf) extends Rule[LogicalPlan
           } else {
             p
           }
-          case _ => p
+        case _ => p
       }
   }
 
