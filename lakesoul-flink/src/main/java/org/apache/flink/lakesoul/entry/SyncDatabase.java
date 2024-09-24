@@ -7,7 +7,6 @@ package org.apache.flink.lakesoul.entry;
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
-import io.openlineage.flink.OpenLineageFlinkJobListener;
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.utils.ParameterTool;
@@ -15,7 +14,6 @@ import org.apache.flink.connector.base.DeliveryGuarantee;
 import org.apache.flink.connector.mongodb.sink.MongoSink;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.RestOptions;
-import org.apache.flink.core.execution.JobListener;
 import org.apache.flink.lakesoul.entry.sql.flink.LakeSoulInAndOutputJobListener;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
 import org.apache.flink.lakesoul.tool.JobOptions;
@@ -25,7 +23,6 @@ import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.table.api.TableResult;
 import org.apache.flink.table.api.bridge.java.StreamStatementSet;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.catalog.Catalog;
@@ -38,7 +35,6 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 import static org.apache.flink.lakesoul.entry.MongoSinkUtils.*;
-import static org.apache.flink.lakesoul.tool.JobOptions.FLINK_CHECKPOINT;
 import static org.apache.flink.lakesoul.tool.JobOptions.JOB_CHECKPOINT_INTERVAL;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkDatabasesOptions.*;
 
@@ -407,7 +403,6 @@ public class SyncDatabase {
         DataType[] fieldDataTypes = lakesoulTable.getSchema().getFieldDataTypes();
         String[] fieldNames = lakesoulTable.getSchema().getFieldNames();
         String[] dorisFieldTypes = getDorisFieldTypes(fieldDataTypes);
-        String[] fieldNames = schemaResult.getTableSchema().getFieldNames();
         if (lineageUrl != null) {
             String inputName = "lakeSoul." + sourceDatabase + "." + sourceTableName;
             String inputnNamespace = getTableDomain(sourceDatabase,sourceTableName);

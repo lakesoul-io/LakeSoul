@@ -58,18 +58,17 @@ public class FlinkSqlSubmitter extends Submitter {
         } else {
             throw new RuntimeException("jobType is not supported: " + submitOption.getJobType());
         }
-//        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(conf);
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(conf);
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(conf);
         if (submitOption.getJobType().equals(JobType.STREAM.getType())) {
             this.setCheckpoint(env);
         }
         if (lineageUrl != null) {
             String appName = env.getConfiguration().get(JobOptions.KUBE_CLUSTER_ID);
             String namespace = System.getenv("LAKESOUL_CURRENT_DOMAIN");
-            LOG.info("----namespace:table----{}:{}", appName, namespace);
             if (namespace == null) {
-                namespace = "public";
+                namespace = "lake-public";
             }
+            LOG.info("----namespace:table----{}:{}", appName, namespace);
             JobListener listener = OpenLineageFlinkJobListener.builder()
                     .executionEnvironment(env)
                     .jobName(appName)
