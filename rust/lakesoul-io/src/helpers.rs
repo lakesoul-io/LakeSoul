@@ -181,7 +181,22 @@ pub fn format_scalar_value(v: &ScalarValue) -> String {
 
 pub fn into_scalar_value(val: &str, data_type: &DataType) -> Result<ScalarValue> {
     if val.eq(LAKESOUL_NULL_STRING) {
-        Ok(ScalarValue::Null)
+        match data_type {
+            DataType::Date32 => Ok(ScalarValue::Date32(None)),
+            DataType::Utf8 => Ok(ScalarValue::Utf8(None)),
+            DataType::Timestamp(unit, timezone) => match unit {
+                TimeUnit::Second => Ok(ScalarValue::TimestampSecond(None, timezone.clone())),
+                TimeUnit::Millisecond => Ok(ScalarValue::TimestampMillisecond(None, timezone.clone())),
+                TimeUnit::Microsecond => Ok(ScalarValue::TimestampMicrosecond(None, timezone.clone())),
+                TimeUnit::Nanosecond => Ok(ScalarValue::TimestampNanosecond(None, timezone.clone())),
+            },
+            DataType::Decimal128(p, s) => Ok(ScalarValue::Decimal128(None, *p, *s)),
+            DataType::Decimal256(p, s) => Ok(ScalarValue::Decimal256(None, *p, *s)),
+            DataType::Binary=>  Ok(ScalarValue::Binary(None)),
+            DataType::FixedSizeBinary(size) => Ok(ScalarValue::FixedSizeBinary(*size, None)),
+            DataType::LargeBinary => Ok(ScalarValue::LargeBinary(None)),
+            _ => Ok(ScalarValue::Null),
+        }
     } else {
         match data_type {
             DataType::Date32 => Ok(ScalarValue::Date32(Some(date_str_to_epoch_days(val)?))),
