@@ -1218,7 +1218,7 @@ trait TableCreationTests
             s" 'hashPartitions'='id'," +
             s" 'hashBucketNum'='2')")
         }
-        assert(e.getMessage.contains("primary keys must be declared as 'NOT NULL'."))
+        assert(e.getMessage.contains("primary keys id must be declared as 'NOT NULL'."))
       }
     }
   }

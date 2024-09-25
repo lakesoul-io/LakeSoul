@@ -276,7 +276,11 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
       plan.schema.asNullable
     }.getOrElse(tableDesc.schema)
 
-    val hashPartitions = tableDesc.properties("hashPartitions").split(",")
+    var hashPartitions = Array[String]()
+    if (tableDesc.properties.contains("hashPartitions")){
+      hashPartitions= tableDesc.properties("hashPartitions").split(",")
+    }
+
     val schema = StructType(ori_schema.map {
       case StructField(name, dataType, nullable, metadata) =>
         if (hashPartitions.contains(name)){
