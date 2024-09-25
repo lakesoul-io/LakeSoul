@@ -266,6 +266,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
   private def verifyTableAndSolidify(tableDesc: CatalogTable,
                                      query: Option[LogicalPlan]): CatalogTable = {
 
+
     if (tableDesc.bucketSpec.isDefined) {
       throw LakeSoulErrors.operationNotSupportedException("Bucketing", Some(tableDesc.identifier))
     }
@@ -275,11 +276,16 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
       plan.schema.asNullable
     }.getOrElse(tableDesc.schema)
 
+    val hashPartitions = tableDesc.properties("hashPartitions").split(",")
     val schema = StructType(ori_schema.map {
       case StructField(name, dataType, nullable, metadata) =>
-          StructField(name, dataType, nullable , metadata)
+        if (hashPartitions.contains(name)){
+          if (nullable){
+            throw new AnalysisException(s"primary keys ${name} must be declared as 'NOT NULL'.")
+          }
+        }
+        StructField(name, dataType, nullable , metadata)
     })
-
 
     PartitioningUtils.validatePartitionColumn(
       schema,
