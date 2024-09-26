@@ -1206,19 +1206,27 @@ trait TableCreationTests
     }
   }
 
-  test("create table sql with range and hash partition - fails when hash partition is nullable") {
+  test("create table sql with range and hash partition -  hash partition is not nullable even the hashPartition fields not be declared as 'NOT NULL'") {
     withTempPath { dir =>
       val tableName = "test_table"
       withTable(s"$tableName") {
-        val e = intercept[AnalysisException] {
-          spark.sql(s"CREATE TABLE $tableName(id string, date string, data string) USING lakesoul" +
-            s" PARTITIONED BY (date)" +
-            s" LOCATION '${dir.toURI}'" +
-            s" TBLPROPERTIES('lakesoul_cdc_change_column'='change_kind'," +
-            s" 'hashPartitions'='id'," +
-            s" 'hashBucketNum'='2')")
-        }
-        assert(e.getMessage.contains("primary keys id must be declared as 'NOT NULL'."))
+        spark.sql(s"CREATE TABLE $tableName(id string, date string, data string) USING lakesoul" +
+          s" PARTITIONED BY (date)" +
+          s" LOCATION '${dir.toURI}'" +
+          s" TBLPROPERTIES('lakesoul_cdc_change_column'='change_kind'," +
+          s" 'hashPartitions'='id'," +
+          s" 'hashBucketNum'='2')")
+
+        val path = dir.getCanonicalPath
+        val catalog = spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
+        val table = catalog.loadTable(toIdentifier("test_table"))
+        assert(table.properties.get("lakesoul_cdc_change_column") == "change_kind")
+        val tableInfo = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toUri.toString).getTableInfoOnly
+        assert(tableInfo.table_schema.contains("\"name\" : \"id\",\n    \"nullable\" : false"))
+        assert(tableInfo.short_table_name.get.equals(tableName))
+        assert(tableInfo.range_partition_columns.equals(Seq("date")))
+        assert(tableInfo.hash_partition_columns.equals(Seq("id")))
+        assert(tableInfo.bucket_num == 2)
       }
     }
   }

@@ -285,10 +285,14 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
       case StructField(name, dataType, nullable, metadata) =>
         if (hashPartitions.contains(name)){
           if (nullable){
-            throw new AnalysisException(s"primary keys ${name} must be declared as 'NOT NULL'.")
+            StructField(name, dataType, nullable=false, metadata)
+          } else {
+            StructField(name, dataType, nullable , metadata)
           }
         }
-        StructField(name, dataType, nullable , metadata)
+        else {
+          StructField(name, dataType, nullable , metadata)
+          }
     })
 
     PartitioningUtils.validatePartitionColumn(
