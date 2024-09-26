@@ -84,9 +84,7 @@ public class LakeSoulMultiTableSinkStreamBuilder {
                                                                       DataStream<LakeSoulArrowWrapper> stream,
                                                                       int parallelism
     ) {
-        if (!context.conf.contains(AUTO_SCHEMA_CHANGE)) {
-            context.conf.set(AUTO_SCHEMA_CHANGE, true);
-        }
+        context.conf.set(DYNAMIC_BUCKETING, true);
         LakeSoulRollingPolicyImpl<LakeSoulArrowWrapper> rollingPolicy = new LakeSoulRollingPolicyImpl<>(
                 context.conf.getLong(FILE_ROLLING_SIZE), context.conf.getLong(FILE_ROLLING_TIME));
         OutputFileConfig fileNameConfig = OutputFileConfig.builder()

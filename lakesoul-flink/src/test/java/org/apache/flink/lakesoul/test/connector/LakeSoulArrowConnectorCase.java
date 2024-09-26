@@ -41,6 +41,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.AUTO_SCHEMA_CHANGE;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.FILE_ROLLING_SIZE;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.INFERRING_SCHEMA;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.MAX_ROW_GROUP_SIZE;
@@ -60,6 +61,7 @@ public class LakeSoulArrowConnectorCase extends AbstractTestBase {
 
         Configuration conf = new Configuration();
         conf.set(LakeSoulSinkOptions.BUCKET_PARALLELISM, parallelism);
+        conf.set(AUTO_SCHEMA_CHANGE, true);
 
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = execEnv;
@@ -172,6 +174,7 @@ public class LakeSoulArrowConnectorCase extends AbstractTestBase {
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;
         context.conf = (Configuration) env.getConfiguration();
+        context.conf.set(AUTO_SCHEMA_CHANGE, true);
 
         LakeSoulMultiTableSinkStreamBuilder.buildArrowSink(context, source);
 
