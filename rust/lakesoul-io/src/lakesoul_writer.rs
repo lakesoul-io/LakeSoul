@@ -77,6 +77,22 @@ impl SyncSendableMutableLakeSoulWriter {
     }
 
     async fn create_writer(writer_schema: SchemaRef, config: LakeSoulIOConfig) -> Result<Box<dyn AsyncBatchWriter + Send>> {
+        // if aux sort cols exist, we need to adjust the schema of final writer
+        // to exclude all aux sort cols
+        let writer_schema: SchemaRef = if !config.aux_sort_cols.is_empty() {
+            let schema = config.target_schema.0.clone();
+            // O(nm), n = number of target schema fields, m = number of aux sort cols
+            let proj_indices = schema
+                .fields
+                .iter()
+                .filter(|f| !config.aux_sort_cols.contains(f.name()))
+                .map(|f| schema.index_of(f.name().as_str()).map_err(DataFusionError::ArrowError))
+                .collect::<Result<Vec<usize>>>()?;
+            Arc::new(schema.project(proj_indices.borrow())?)
+        } else {
+            config.target_schema.0.clone()
+        };
+
         let mut writer_config = config.clone();
         let writer : Box<dyn AsyncBatchWriter + Send> = if config.use_dynamic_partition {
             Box::new(PartitioningAsyncWriter::try_new(writer_config)?)
@@ -162,7 +178,8 @@ impl SyncSendableMutableLakeSoulWriter {
                         return self.write_batch_async(b, false).await;
                     } 
                 }
-                guard.write_record_batch(record_batch).await?;
+                let rb_schema = record_batch.schema();
+                guard.write_record_batch(record_batch).await.map_err(|e| DataFusionError::Internal(format!("err={}, config={:?}, batch_schema={:?}", e, self.config.clone(), rb_schema)))?;
 
                 if do_spill {
                     dbg!(format!("spilling writer with size: {}", guard.buffered_size()));
@@ -175,7 +192,7 @@ impl SyncSendableMutableLakeSoulWriter {
                             },
                         };
                         let writer = inner_writer.into_inner();
-                        let results = writer.flush_and_close().await?;
+                        let results = writer.flush_and_close().await.map_err(|e| DataFusionError::Internal(format!("err={}, config={:?}, batch_schema={:?}", e, self.config.clone(), rb_schema)))?;
                         self.flush_results.extend(results);
                     }
                 }
@@ -201,7 +218,7 @@ impl SyncSendableMutableLakeSoulWriter {
                 let writer = inner_writer.into_inner();
                 
                 let mut grouped_results: HashMap<String, Vec<String>> = HashMap::new();
-                let results = writer.flush_and_close().await?;
+                let results = writer.flush_and_close().await.map_err(|e| DataFusionError::Internal(format!("err={}, config={:?}", e, self.config.clone())))?;
                 for (partition_desc, file, _) in self.flush_results.into_iter().chain(results) {
                     match grouped_results.get_mut(&partition_desc) {
                         Some(files) => {
