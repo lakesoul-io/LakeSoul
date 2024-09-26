@@ -20,7 +20,6 @@ use crate::helpers::get_batch_memory_size;
 use crate::lakesoul_io_config::{IOSchema, LakeSoulIOConfig};
 use crate::transform::uniform_schema;
 
-
 pub type SendableWriter = Box<dyn AsyncBatchWriter + Send>;
 
 // inner is sort writer
@@ -38,7 +37,6 @@ impl SyncSendableMutableLakeSoulWriter {
     pub fn try_new(config: LakeSoulIOConfig, runtime: Runtime) -> Result<Self> {
         let runtime = Arc::new(runtime);
         runtime.clone().block_on(async move {
-
             let writer_config = config.clone();
             let mut config = config.clone();
             let writer = Self::create_writer(writer_config).await?;
@@ -49,7 +47,7 @@ impl SyncSendableMutableLakeSoulWriter {
                     config.max_file_size = Some((mem_limit as f64 * 0.15) as u64);
                 } else if !config.primary_keys.is_empty() && !config.keep_ordering() {
                     config.max_file_size = Some((mem_limit as f64 * 0.2) as u64);
-                }     
+                }
             }
 
             Ok(SyncSendableMutableLakeSoulWriter {
@@ -80,7 +78,7 @@ impl SyncSendableMutableLakeSoulWriter {
         };
 
         let mut writer_config = config.clone();
-        let writer : Box<dyn AsyncBatchWriter + Send> = if config.use_dynamic_partition {
+        let writer: Box<dyn AsyncBatchWriter + Send> = if config.use_dynamic_partition {
             Box::new(PartitioningAsyncWriter::try_new(writer_config)?)
         } else if !writer_config.primary_keys.is_empty() && !writer_config.keep_ordering() {
             // sort primary key table
@@ -115,7 +113,7 @@ impl SyncSendableMutableLakeSoulWriter {
     pub fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }
-    
+
     pub fn config(&self) -> &LakeSoulIOConfig {
         &self.config
     }
@@ -125,11 +123,8 @@ impl SyncSendableMutableLakeSoulWriter {
     // and upload concurrently in background, we only need blocking method here
     // for ffi callers
     pub fn write_batch(&mut self, record_batch: RecordBatch) -> Result<()> {
-        
         let runtime = self.runtime.clone();
-        runtime.block_on(async move {
-            self.write_batch_async(record_batch, false).await
-        })
+        runtime.block_on(async move { self.write_batch_async(record_batch, false).await })
     }
 
     #[async_recursion::async_recursion(?Send)]
@@ -139,16 +134,11 @@ impl SyncSendableMutableLakeSoulWriter {
         if let Some(max_file_size) = self.config().max_file_size {
             // if max_file_size is set, we need to split batch into multiple files
             let in_progress_writer = match &mut self.in_progress {
-                Some(writer)  => writer,
-                x => 
-                    x.insert(
-                    Arc::new(Mutex::new(
-                        Self::create_writer(config).await?
-                    ))
-                )
+                Some(writer) => writer,
+                x => x.insert(Arc::new(Mutex::new(Self::create_writer(config).await?))),
             };
             let mut guard = in_progress_writer.lock().await;
-        
+
             let batch_memory_size = get_batch_memory_size(&record_batch)? as u64;
             let batch_rows = record_batch.num_rows() as u64;
             // If would exceed max_file_size, split batch
@@ -161,10 +151,17 @@ impl SyncSendableMutableLakeSoulWriter {
                     drop(guard);
                     self.write_batch_async(a, true).await?;
                     return self.write_batch_async(b, false).await;
-                } 
+                }
             }
             let rb_schema = record_batch.schema();
-            guard.write_record_batch(record_batch).await.map_err(|e| DataFusionError::Internal(format!("err={}, config={:?}, batch_schema={:?}", e, self.config.clone(), rb_schema)))?;
+            guard.write_record_batch(record_batch).await.map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "err={}, config={:?}, batch_schema={:?}",
+                    e,
+                    self.config.clone(),
+                    rb_schema
+                ))
+            })?;
 
             if do_spill {
                 dbg!(format!("spilling writer with size: {}", guard.buffered_size()));
@@ -173,11 +170,20 @@ impl SyncSendableMutableLakeSoulWriter {
                     let inner_writer = match Arc::try_unwrap(writer) {
                         Ok(inner) => inner,
                         Err(_) => {
-                            return Err(DataFusionError::Internal("Cannot get ownership of inner writer".to_string()))
-                        },
+                            return Err(DataFusionError::Internal(
+                                "Cannot get ownership of inner writer".to_string(),
+                            ))
+                        }
                     };
                     let writer = inner_writer.into_inner();
-                    let results = writer.flush_and_close().await.map_err(|e| DataFusionError::Internal(format!("err={}, config={:?}, batch_schema={:?}", e, self.config.clone(), rb_schema)))?;
+                    let results = writer.flush_and_close().await.map_err(|e| {
+                        DataFusionError::Internal(format!(
+                            "err={}, config={:?}, batch_schema={:?}",
+                            e,
+                            self.config.clone(),
+                            rb_schema
+                        ))
+                    })?;
                     self.flush_results.extend(results);
                 }
             }
@@ -189,21 +195,27 @@ impl SyncSendableMutableLakeSoulWriter {
         } else {
             Err(DataFusionError::Internal("Invalid state of inner writer".to_string()))
         }
-            
     }
 
     pub fn flush_and_close(self) -> Result<Vec<u8>> {
         if let Some(inner_writer) = self.in_progress {
             let inner_writer = match Arc::try_unwrap(inner_writer) {
                 Ok(inner) => inner,
-                Err(_) => return Err(DataFusionError::Internal("Cannot get ownership of inner writer".to_string())),
+                Err(_) => {
+                    return Err(DataFusionError::Internal(
+                        "Cannot get ownership of inner writer".to_string(),
+                    ))
+                }
             };
             let runtime = self.runtime;
             runtime.block_on(async move {
                 let writer = inner_writer.into_inner();
-                
+
                 let mut grouped_results: HashMap<String, Vec<String>> = HashMap::new();
-                let results = writer.flush_and_close().await.map_err(|e| DataFusionError::Internal(format!("err={}, config={:?}", e, self.config.clone())))?;
+                let results = writer
+                    .flush_and_close()
+                    .await
+                    .map_err(|e| DataFusionError::Internal(format!("err={}, config={:?}", e, self.config.clone())))?;
                 for (partition_desc, file, _) in self.flush_results.into_iter().chain(results) {
                     match grouped_results.get_mut(&partition_desc) {
                         Some(files) => {
@@ -222,7 +234,6 @@ impl SyncSendableMutableLakeSoulWriter {
                     summary += files.join("\x02").as_str();
                 }
                 Ok(summary.into_bytes())
-
             })
         } else {
             Ok(vec![])
@@ -233,7 +244,11 @@ impl SyncSendableMutableLakeSoulWriter {
         if let Some(inner_writer) = self.in_progress {
             let inner_writer = match Arc::try_unwrap(inner_writer) {
                 Ok(inner) => inner,
-                Err(_) => return Err(DataFusionError::Internal("Cannot get ownership of inner writer".to_string())),
+                Err(_) => {
+                    return Err(DataFusionError::Internal(
+                        "Cannot get ownership of inner writer".to_string(),
+                    ))
+                }
             };
             let runtime = self.runtime;
             runtime.block_on(async move {
@@ -266,9 +281,9 @@ mod tests {
     use datafusion::error::Result;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use rand::{distributions::DistString, Rng};
-    use tracing_subscriber::layer::SubscriberExt;
     use std::{fs::File, sync::Arc};
     use tokio::{runtime::Builder, time::Instant};
+    use tracing_subscriber::layer::SubscriberExt;
 
     use super::SortAsyncWriter;
 
@@ -548,7 +563,10 @@ mod tests {
                     Arc::new(StringArray::from(
                         (0..num_rows)
                             .into_iter()
-                            .map(|_| rand::distributions::Alphanumeric.sample_string(&mut rng, len_rng.gen_range(str_len..str_len * 3)))
+                            .map(|_| {
+                                rand::distributions::Alphanumeric
+                                    .sample_string(&mut rng, len_rng.gen_range(str_len..str_len * 3))
+                            })
                             .collect::<Vec<_>>(),
                     )) as ArrayRef,
                     true,
@@ -623,7 +641,6 @@ mod tests {
     #[cfg(feature = "dhat-heap")]
     #[global_allocator]
     static ALLOC: dhat::Alloc = dhat::Alloc;
-    
 
     #[tracing::instrument]
     #[test]
@@ -631,10 +648,14 @@ mod tests {
         use tracing_subscriber::fmt;
 
         tracing_subscriber::fmt::init();
-        
-        let subscriber = fmt::layer()
-            .event_format(fmt::format::Format::default().with_level(true).with_source_location(true).with_file(true));
-            // .with_max_level(Level::TRACE);
+
+        let subscriber = fmt::layer().event_format(
+            fmt::format::Format::default()
+                .with_level(true)
+                .with_source_location(true)
+                .with_file(true),
+        );
+        // .with_max_level(Level::TRACE);
         tracing_subscriber::registry().with(subscriber);
 
         #[cfg(feature = "dhat-heap")]

@@ -15,10 +15,13 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 use url::Url;
 
 use crate::{
-    constant::TBD_PARTITION_DESC, helpers::get_batch_memory_size, lakesoul_io_config::{create_session_context, LakeSoulIOConfig}, transform::{uniform_record_batch, uniform_schema}
+    constant::TBD_PARTITION_DESC,
+    helpers::get_batch_memory_size,
+    lakesoul_io_config::{create_session_context, LakeSoulIOConfig},
+    transform::{uniform_record_batch, uniform_schema},
 };
 
-use super::{AsyncBatchWriter, WriterFlushResult, InMemBuf};
+use super::{AsyncBatchWriter, InMemBuf, WriterFlushResult};
 
 /// An async writer using object_store's multi-part upload feature for cloud storage.
 /// This writer uses a `VecDeque<u8>` as `std::io::Write` for arrow-rs's ArrowWriter.
@@ -169,7 +172,6 @@ impl MultiPartAsyncWriter {
 
 #[async_trait::async_trait]
 impl AsyncBatchWriter for MultiPartAsyncWriter {
-
     async fn write_record_batch(&mut self, batch: RecordBatch) -> Result<()> {
         let batch = uniform_record_batch(batch)?;
         self.num_rows += batch.num_rows() as u64;
@@ -213,5 +215,4 @@ impl AsyncBatchWriter for MultiPartAsyncWriter {
     fn buffered_size(&self) -> u64 {
         self.buffered_size
     }
-
 }
