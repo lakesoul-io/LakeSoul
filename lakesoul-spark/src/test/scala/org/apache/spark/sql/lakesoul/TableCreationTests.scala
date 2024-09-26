@@ -658,15 +658,15 @@ trait TableCreationTests
       val snapshotManagement = getSnapshotManagement(new Path(path.get))
 
       assert(snapshotManagement.snapshot.getTableInfo.schema == new StructType()
-        .add("a", "long", false).add("b", "string"))
+        .add("a", "long", true).add("b", "string"))
       assert(snapshotManagement.snapshot.getTableInfo.partition_schema ==
-        new StructType().add("a", "long", false))
+        new StructType().add("a", "long", true))
 
       assert(StructType(snapshotManagement.snapshot.getTableInfo.data_schema
         ++ snapshotManagement.snapshot.getTableInfo.range_partition_schema) == getSchema("lakesoul_test"))
       assert(getPartitioningColumns("lakesoul_test") == Seq("a"))
       assert(getSchema("lakesoul_test") == new StructType()
-        .add("b", "string").add("a", "long", false))
+        .add("b", "string").add("a", "long", true))
 
       sql("INSERT INTO lakesoul_test SELECT 'a', 1")
 
@@ -749,7 +749,7 @@ trait TableCreationTests
           txn.tableInfo.copy(
             table_schema = new StructType()
               .add("a", "long")
-              .add("b", "string", false).json,
+              .add("b", "string").json,
             range_column = "b"))
         sql("CREATE TABLE lakesoul_test(a LONG, b String) USING lakesoul " +
           s"OPTIONS (path '${tempDir.getCanonicalPath}') PARTITIONED BY(b)")
@@ -761,9 +761,9 @@ trait TableCreationTests
         val snapshotManagement2 = getSnapshotManagement(new Path(path.get))
 
         assert(snapshotManagement2.snapshot.getTableInfo.schema == new StructType()
-          .add("a", "long").add("b", "string", false))
+          .add("a", "long").add("b", "string"))
         assert(snapshotManagement2.snapshot.getTableInfo.partition_schema == new StructType()
-          .add("b", "string", false))
+          .add("b", "string"))
 
         assert(getSchema("lakesoul_test") === snapshotManagement2.snapshot.getTableInfo.schema)
         assert(getPartitioningColumns("lakesoul_test") === Seq("b"))
@@ -1206,21 +1206,27 @@ trait TableCreationTests
     }
   }
 
-  test("create table sql with range and hash partition - fails when hash partition is nullable") {
+  test("create table sql with range and hash partition -  hash partition is not nullable even the hashPartition fields not be declared as 'NOT NULL'") {
     withTempPath { dir =>
       val tableName = "test_table"
       withTable(s"$tableName") {
-        val e = intercept[AnalysisException] {
-          spark.sql(s"CREATE TABLE $tableName(id string, date string, data string) USING lakesoul" +
-            s" PARTITIONED BY (date)" +
-            s" LOCATION '${dir.toURI}'" +
-            s" TBLPROPERTIES('lakesoul_cdc_change_column'='change_kind'," +
-            s" 'hashPartitions'='id'," +
-            s" 'hashBucketNum'='2')")
-        }
-        assert(e.getMessage.contains(tableName))
-        assert(e.getMessage.contains("The hash partitions"))
-        assert(e.getMessage.contains("contains nullable column."))
+        spark.sql(s"CREATE TABLE $tableName(id string, date string, data string) USING lakesoul" +
+          s" PARTITIONED BY (date)" +
+          s" LOCATION '${dir.toURI}'" +
+          s" TBLPROPERTIES('lakesoul_cdc_change_column'='change_kind'," +
+          s" 'hashPartitions'='id'," +
+          s" 'hashBucketNum'='2')")
+
+        val path = dir.getCanonicalPath
+        val catalog = spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
+        val table = catalog.loadTable(toIdentifier("test_table"))
+        assert(table.properties.get("lakesoul_cdc_change_column") == "change_kind")
+        val tableInfo = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toUri.toString).getTableInfoOnly
+        assert(tableInfo.table_schema.contains("\"name\" : \"id\",\n    \"nullable\" : false"))
+        assert(tableInfo.short_table_name.get.equals(tableName))
+        assert(tableInfo.range_partition_columns.equals(Seq("date")))
+        assert(tableInfo.hash_partition_columns.equals(Seq("id")))
+        assert(tableInfo.bucket_num == 2)
       }
     }
   }

@@ -287,7 +287,7 @@ trait DataFrameWriterV2Tests
 
     // table should not have been changed
     assert(table.name === "default.table_name")
-    assert(table.schema === new StructType().add("data", StringType).add("id", LongType, false))
+    assert(table.schema === new StructType().add("data", StringType).add("id", LongType, true))
     assert(table.partitioning === Seq(IdentityTransform(FieldReference("id"))))
     assert(getProperties(table).isEmpty)
   }
@@ -305,7 +305,7 @@ trait DataFrameWriterV2Tests
 
     // validate the initial table
     assert(table.name === "default.table_name")
-    assert(table.schema === new StructType().add("data", StringType).add("id", LongType, false))
+    assert(table.schema === new StructType().add("data", StringType).add("id", LongType, true))
     assert(table.partitioning === Seq(IdentityTransform(FieldReference("id"))))
     assert(getProperties(table).isEmpty)
 
