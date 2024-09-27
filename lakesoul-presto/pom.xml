@@ -79,6 +79,10 @@
                     <groupId>com.fasterxml.jackson.datatype</groupId>
                     <artifactId>*</artifactId>
                 </exclusion>
+                <exclusion>
+                    <groupId>org.antlr</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
             </exclusions>
             <scope>test</scope>
         </dependency>

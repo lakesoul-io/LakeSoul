@@ -100,7 +100,6 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
     }
 
     public void write(VectorSchemaRoot batch) throws IOException {
-        System.out.println("writing batch: " + batch.getRowCount());
         ArrowArray array = ArrowArray.allocateNew(allocator);
         ArrowSchema schema = ArrowSchema.allocateNew(allocator);
         Data.exportVectorSchemaRoot(allocator, batch, provider, array, schema);
