@@ -13,29 +13,26 @@ use datafusion::{
         PhysicalSortExpr,
     },
     physical_plan::{
-        projection::ProjectionExec,
-        sorts::sort::SortExec,
-        stream::RecordBatchReceiverStream,
-        ExecutionPlan, Partitioning, PhysicalExpr,
+        projection::ProjectionExec, sorts::sort::SortExec, stream::RecordBatchReceiverStream, ExecutionPlan,
+        Partitioning, PhysicalExpr,
     },
 };
 use datafusion_common::{DataFusionError, Result};
 
 use rand::distributions::DistString;
-use tokio::{
-    sync::mpsc::Sender,
-    task::JoinHandle,
-};
+use tokio::{sync::mpsc::Sender, task::JoinHandle};
 use tokio_stream::StreamExt;
 use tracing::debug;
 
 use crate::{
-    helpers::{columnar_values_to_partition_desc, columnar_values_to_sub_path, get_batch_memory_size, get_columnar_values},
+    helpers::{
+        columnar_values_to_partition_desc, columnar_values_to_sub_path, get_batch_memory_size, get_columnar_values,
+    },
     lakesoul_io_config::{create_session_context, LakeSoulIOConfig, LakeSoulIOConfigBuilder},
     repartition::RepartitionByRangeAndHashExec,
 };
 
-use super::{AsyncBatchWriter, WriterFlushResult, MultiPartAsyncWriter, ReceiverStreamExec};
+use super::{AsyncBatchWriter, MultiPartAsyncWriter, ReceiverStreamExec, WriterFlushResult};
 
 // type PartitionedWriterInfo = Arc<Mutex<HashMap<String, Vec<WriterFlushResult>>>>;
 
@@ -75,7 +72,7 @@ impl PartitioningAsyncWriter {
                 task_context.clone(),
                 config.clone().into(),
                 Arc::new(config.range_partitions.clone()),
-                write_id.clone()
+                write_id.clone(),
             ));
             // // In a separate task, wait for each input to be done
             // // (and pass along any errors, including panic!s)
@@ -198,7 +195,6 @@ impl PartitioningAsyncWriter {
 
         let mut err = None;
 
-
         let mut partitioned_writer = HashMap::<String, Box<MultiPartAsyncWriter>>::new();
         let mut flush_join_handle_list = Vec::new();
         // let mut partitioned_flush_result_locked = partitioned_flush_result.lock().await;
@@ -230,7 +226,6 @@ impl PartitioningAsyncWriter {
                         // row_count += batch_excluding_range.num_rows();
                         async_writer.write_record_batch(batch_excluding_range).await?;
                     }
-                    
                 }
                 // received abort signal
                 Err(e) => {
@@ -256,19 +251,13 @@ impl PartitioningAsyncWriter {
             }
             Ok(flush_join_handle_list)
         } else {
-            
             for (partition_desc, writer) in partitioned_writer.into_iter() {
-                
                 let flush_result = tokio::spawn(async move {
-                    let writer_flush_results =writer.flush_and_close().await?;
-                    Ok(
-                        writer_flush_results.into_iter().map(
-                            |(_, path, file_metadata)| 
-                            {
-                                (partition_desc.clone(), path, file_metadata)
-                            }
-                        ).collect::<Vec<_>>()
-                    )
+                    let writer_flush_results = writer.flush_and_close().await?;
+                    Ok(writer_flush_results
+                        .into_iter()
+                        .map(|(_, path, file_metadata)| (partition_desc.clone(), path, file_metadata))
+                        .collect::<Vec<_>>())
                 });
                 flush_join_handle_list.push(flush_result);
             }

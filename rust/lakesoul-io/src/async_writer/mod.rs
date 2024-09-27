@@ -32,7 +32,6 @@ use datafusion::{
 use datafusion_common::{DataFusionError, Result};
 use parquet::format::FileMetaData;
 
-
 // The result of a flush operation with format (partition_desc, file_path, file_meta)
 pub type WriterFlushResult = Result<Vec<(String, String, FileMetaData)>>;
 

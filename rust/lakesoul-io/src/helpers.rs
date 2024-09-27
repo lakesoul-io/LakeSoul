@@ -32,9 +32,9 @@ use url::Url;
 
 use crate::{
     constant::{
-        DATE32_FORMAT, FLINK_TIMESTAMP_FORMAT, LAKESOUL_EMPTY_STRING, LAKESOUL_NULL_STRING,
-        TIMESTAMP_MICROSECOND_FORMAT, TIMESTAMP_MILLSECOND_FORMAT, TIMESTAMP_NANOSECOND_FORMAT,
-        TIMESTAMP_SECOND_FORMAT, LAKESOUL_COMMA, LAKESOUL_EQ
+        DATE32_FORMAT, FLINK_TIMESTAMP_FORMAT, LAKESOUL_COMMA, LAKESOUL_EMPTY_STRING, LAKESOUL_EQ,
+        LAKESOUL_NULL_STRING, TIMESTAMP_MICROSECOND_FORMAT, TIMESTAMP_MILLSECOND_FORMAT, TIMESTAMP_NANOSECOND_FORMAT,
+        TIMESTAMP_SECOND_FORMAT,
     },
     filter::parser::Parser,
     lakesoul_io_config::LakeSoulIOConfig,
@@ -169,12 +169,10 @@ pub fn format_scalar_value(v: &ScalarValue) -> String {
         }
         ScalarValue::Decimal128(Some(s), _, _) => format!("{}", s),
         ScalarValue::Decimal256(Some(s), _, _) => format!("{}", s),
-        ScalarValue::Binary(e)
-            | ScalarValue::FixedSizeBinary(_, e)
-            | ScalarValue::LargeBinary(e) => match e {
-                Some(bytes) => hex::encode(bytes),
-                None => LAKESOUL_NULL_STRING.to_string(),
-            }
+        ScalarValue::Binary(e) | ScalarValue::FixedSizeBinary(_, e) | ScalarValue::LargeBinary(e) => match e {
+            Some(bytes) => hex::encode(bytes),
+            None => LAKESOUL_NULL_STRING.to_string(),
+        },
         other => other.to_string(),
     }
 }
@@ -192,7 +190,7 @@ pub fn into_scalar_value(val: &str, data_type: &DataType) -> Result<ScalarValue>
             },
             DataType::Decimal128(p, s) => Ok(ScalarValue::Decimal128(None, *p, *s)),
             DataType::Decimal256(p, s) => Ok(ScalarValue::Decimal256(None, *p, *s)),
-            DataType::Binary=>  Ok(ScalarValue::Binary(None)),
+            DataType::Binary => Ok(ScalarValue::Binary(None)),
             DataType::FixedSizeBinary(size) => Ok(ScalarValue::FixedSizeBinary(*size, None)),
             DataType::LargeBinary => Ok(ScalarValue::LargeBinary(None)),
             _ => Ok(ScalarValue::Null),
@@ -204,7 +202,9 @@ pub fn into_scalar_value(val: &str, data_type: &DataType) -> Result<ScalarValue>
                 if val.eq(LAKESOUL_EMPTY_STRING) {
                     Ok(ScalarValue::Utf8(Some("".to_string())))
                 } else {
-                    Ok(ScalarValue::Utf8(Some(val.replace(LAKESOUL_EQ, "=").replace(LAKESOUL_COMMA, ","))))
+                    Ok(ScalarValue::Utf8(Some(
+                        val.replace(LAKESOUL_EQ, "=").replace(LAKESOUL_COMMA, ","),
+                    )))
                 }
             }
             DataType::Timestamp(unit, timezone) => match unit {
@@ -264,7 +264,7 @@ pub fn into_scalar_value(val: &str, data_type: &DataType) -> Result<ScalarValue>
             },
             DataType::Decimal128(p, s) => Ok(ScalarValue::Decimal128(Some(val.parse::<i128>().unwrap()), *p, *s)),
             DataType::Decimal256(p, s) => Ok(ScalarValue::Decimal256(Some(i256::from_string(val).unwrap()), *p, *s)),
-            DataType::Binary=>  Ok(ScalarValue::Binary(Some(hex::decode(val).unwrap()))),
+            DataType::Binary => Ok(ScalarValue::Binary(Some(hex::decode(val).unwrap()))),
             DataType::FixedSizeBinary(size) => Ok(ScalarValue::FixedSizeBinary(*size, Some(hex::decode(val).unwrap()))),
             DataType::LargeBinary => Ok(ScalarValue::LargeBinary(Some(hex::decode(val).unwrap()))),
             _ => ScalarValue::try_from_string(val.to_string(), data_type),
@@ -526,7 +526,11 @@ pub fn timestamp_str_to_unix_time(value: &str, fmt: &str) -> Result<Duration> {
     Ok(datetime.signed_duration_since(epoch_time.naive_utc()))
 }
 
-pub fn column_with_name_and_name2index<'a>(schema: &'a SchemaRef, name: &str, name_to_index: &Option<HashMap<String, usize>>) -> Option<(usize, &'a Field)> {
+pub fn column_with_name_and_name2index<'a>(
+    schema: &'a SchemaRef,
+    name: &str,
+    name_to_index: &Option<HashMap<String, usize>>,
+) -> Option<(usize, &'a Field)> {
     if let Some(name_to_index) = name_to_index {
         name_to_index.get(name).map(|index| (*index, schema.field(*index)))
     } else {
@@ -535,12 +539,11 @@ pub fn column_with_name_and_name2index<'a>(schema: &'a SchemaRef, name: &str, na
 }
 
 pub fn get_batch_memory_size(batch: &RecordBatch) -> Result<usize> {
-    Ok(
-        batch.columns()
+    Ok(batch
+        .columns()
         .iter()
         .map(|array| array.to_data().get_slice_memory_size())
         .collect::<std::result::Result<Vec<usize>, ArrowError>>()?
         .into_iter()
-        .sum()
-    )
+        .sum())
 }

@@ -229,7 +229,6 @@ impl Parser {
     }
 
     pub(crate) fn parse_proto(plan: &Plan, df_schema: &DFSchema) -> Result<Expr> {
-        
         let function_extension = plan
             .extensions
             .iter()
@@ -733,7 +732,10 @@ fn _from_nullability(nullability: Nullability) -> bool {
 mod tests {
     use std::result::Result;
 
-    use datafusion::{logical_expr::{LogicalPlan, TableScan}, prelude::{ParquetReadOptions, SessionContext}};
+    use datafusion::{
+        logical_expr::{LogicalPlan, TableScan},
+        prelude::{ParquetReadOptions, SessionContext},
+    };
     use prost::Message;
 
     use super::*;
@@ -750,7 +752,6 @@ mod tests {
 
     #[tokio::test]
     async fn tt() {
-        
         let ctx = SessionContext::new();
         let options = ParquetReadOptions::default();
         let table_path = "/var/folders/_b/qyl87wbn1119cvw8kts6fqtw0000gn/T/lakeSource/type/part-00000-97db3149-f99e-404a-aa9a-2af4ab3f7a44_00000.c000.parquet";

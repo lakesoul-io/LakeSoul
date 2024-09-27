@@ -12,10 +12,8 @@ use datafusion::{
         PhysicalSortExpr,
     },
     physical_plan::{
-        projection::ProjectionExec,
-        sorts::sort::SortExec,
-        stream::RecordBatchReceiverStream,
-        ExecutionPlan, PhysicalExpr,
+        projection::ProjectionExec, sorts::sort::SortExec, stream::RecordBatchReceiverStream, ExecutionPlan,
+        PhysicalExpr,
     },
 };
 use datafusion_common::{DataFusionError, Result};
@@ -24,7 +22,7 @@ use tokio_stream::StreamExt;
 
 use crate::{helpers::get_batch_memory_size, lakesoul_io_config::LakeSoulIOConfig};
 
-use super::{AsyncBatchWriter, WriterFlushResult, MultiPartAsyncWriter, ReceiverStreamExec};
+use super::{AsyncBatchWriter, MultiPartAsyncWriter, ReceiverStreamExec, WriterFlushResult};
 
 /// Wrap the above async writer with a SortExec to
 /// sort the batches before write to async writer
