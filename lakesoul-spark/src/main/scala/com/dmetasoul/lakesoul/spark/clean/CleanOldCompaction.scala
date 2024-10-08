@@ -41,10 +41,11 @@ object CleanOldCompaction {
     val sql =
       s"""
          |WITH expiredCommit AS (
-         |    SELECT DISTINCT ON (table_id)
+         |    SELECT
          |        table_id,
          |        commit_op,
          |        partition_desc,
+         |        snapshot,
          |        timestamp
          |    FROM partition_info
          |    WHERE commit_op = 'CompactionCommit'
@@ -58,14 +59,15 @@ object CleanOldCompaction {
          |FROM (
          |    SELECT file_ops
          |    FROM data_commit_info
-         |    WHERE commit_id IN (
-         |        SELECT DISTINCT unnest(pi.snapshot) AS commit_id
-         |        FROM partition_info pi
-         |        LEFT JOIN expiredCommit ec ON pi.table_id = ec.table_id
-         |        WHERE pi.timestamp < ec.timestamp
-         |            AND pi.commit_op = 'CompactionCommit'
-         |            AND pi.partition_desc = ec.partition_desc
-         |    )
+         |    WHERE table_id= '$tableId'
+         |        AND partition_desc = '$partitionDesc'
+         |        AND commit_id IN (
+         |            SELECT DISTINCT unnest(snapshot)
+         |            FROM (
+         |              SELECT snapshot FROM expiredCommit
+         |              LIMIT (SELECT COUNT(1) - 1 FROM expiredCommit) OFFSET 1
+         |              ) t_limit
+         |        )
          |) t
          |CROSS JOIN LATERAL (
          |    SELECT
@@ -81,10 +83,12 @@ object CleanOldCompaction {
 
     })
     pathSet.foreach(p => {
-      val path = new Path(p)
-      val sessionHadoopConf = spark.sessionState.newHadoopConf()
-      val fs = path.getFileSystem(sessionHadoopConf)
-      fs.delete(path, true)
+      if (p != null && p != "") {
+        val path = new Path(p)
+        val sessionHadoopConf = spark.sessionState.newHadoopConf()
+        val fs = path.getFileSystem(sessionHadoopConf)
+        fs.delete(path, true)
+      }
     })
   }
 
