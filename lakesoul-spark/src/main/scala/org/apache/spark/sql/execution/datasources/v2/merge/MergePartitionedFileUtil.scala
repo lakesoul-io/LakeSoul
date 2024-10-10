@@ -18,7 +18,7 @@ object MergePartitionedFileUtil {
                     filePath: Path,
                     partitionValues: InternalRow,
                     tableInfo: TableInfo,
-                    fileInfo: Seq[DataFileInfo],
+                    touchedFileInfo: DataFileInfo,
                     requestFilesSchemaMap: Map[String, StructType],
                     requestDataSchema: StructType,
                     requestPartitionFields: Array[String]): Seq[MergePartitionedFile] = {
@@ -28,7 +28,7 @@ object MergePartitionedFileUtil {
       filePath,
       partitionValues,
       tableInfo,
-      fileInfo,
+      touchedFileInfo,
       requestFilesSchemaMap,
       requestDataSchema,
       requestPartitionFields))
@@ -39,7 +39,7 @@ object MergePartitionedFileUtil {
                          filePath: Path,
                          partitionValues: InternalRow,
                          tableInfo: TableInfo,
-                         fileInfo: Seq[DataFileInfo],
+                         touchedFileInfo: DataFileInfo,
                          requestFilesSchemaMap: Map[String, StructType],
                          requestDataSchema: StructType,
                          requestPartitionFields: Array[String]): MergePartitionedFile = {
@@ -49,8 +49,6 @@ object MergePartitionedFileUtil {
       .getFileSystem(sparkSession.sessionState.newHadoopConf())
     val filePathStr = fs
       .makeQualified(filePath).toString
-    val touchedFileInfo = fileInfo.find(f => filePathStr.equals(fs.makeQualified(new Path(f.path)).toString))
-      .getOrElse(throw LakeSoulErrors.filePathNotFoundException(filePathStr, fileInfo.mkString(",")))
 
     val touchedFileSchema = requestFilesSchemaMap(touchedFileInfo.range_version).fieldNames
 
