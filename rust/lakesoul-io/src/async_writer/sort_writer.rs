@@ -30,7 +30,7 @@ pub struct SortAsyncWriter {
     schema: SchemaRef,
     sorter_sender: Sender<Result<RecordBatch>>,
     _sort_exec: Arc<dyn ExecutionPlan>,
-    join_handle: Option<JoinHandle<WriterFlushResult>>,
+    join_handle: Option<JoinHandle<Result<WriterFlushResult>>>,
     err: Option<DataFusionError>,
     buffered_size: u64,
 }
@@ -165,7 +165,7 @@ impl AsyncBatchWriter for SortAsyncWriter {
         }
     }
 
-    async fn flush_and_close(self: Box<Self>) -> WriterFlushResult {
+    async fn flush_and_close(self: Box<Self>) -> Result<WriterFlushResult> {
         if let Some(join_handle) = self.join_handle {
             let sender = self.sorter_sender;
             drop(sender);

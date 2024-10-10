@@ -114,13 +114,13 @@ public class NativeLakeSoulArrowWrapperWriter implements InProgressFileWriter<La
         long timer = System.currentTimeMillis();
         Map<String, List<PendingFileRecoverable>> recoverableMap = new HashMap<>();
 
-        HashMap<String, List<String>> partitionDescAndFilesMap = this.nativeWriter.flush();
-        for (Map.Entry<String, List<String>> entry : partitionDescAndFilesMap.entrySet()) {
+        HashMap<String, List<NativeIOWriter.FlushResult>> partitionDescAndFilesMap = this.nativeWriter.flush();
+        for (Map.Entry<String, List<NativeIOWriter.FlushResult>> entry : partitionDescAndFilesMap.entrySet()) {
             recoverableMap.put(
                     entry.getKey(),
                     entry.getValue()
                             .stream()
-                            .map(path -> new NativeParquetWriter.NativeWriterPendingFileRecoverable(path, creationTime))
+                            .map(result -> new NativeParquetWriter.NativeWriterPendingFileRecoverable(result.getFilePath(), creationTime))
                             .collect(Collectors.toList())
             );
         }

@@ -13,7 +13,7 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, FieldRef, Fields, Schema, SchemaBuilder, SchemaRef, TimeUnit};
 use datafusion::error::Result;
-use datafusion_common::DataFusionError::{ArrowError, External, Internal};
+use datafusion_common::DataFusionError::{self, ArrowError, External, Internal};
 
 use crate::constant::{
     ARROW_CAST_OPTIONS, FLINK_TIMESTAMP_FORMAT, LAKESOUL_EMPTY_STRING, LAKESOUL_NULL_STRING,
@@ -148,24 +148,19 @@ pub fn transform_array(
     default_column_value: Arc<HashMap<String, String>>,
 ) -> Result<ArrayRef> {
     Ok(match target_datatype {
-        DataType::Timestamp(target_unit, Some(target_tz)) => make_array(match &target_unit {
-            TimeUnit::Second => as_primitive_array::<TimestampSecondType>(&array)
-                .clone()
-                .with_timezone_opt(Some(target_tz))
-                .into_data(),
-            TimeUnit::Microsecond => as_primitive_array::<TimestampMicrosecondType>(&array)
-                .clone()
-                .with_timezone_opt(Some(target_tz))
-                .into_data(),
-            TimeUnit::Millisecond => as_primitive_array::<TimestampMillisecondType>(&array)
-                .clone()
-                .with_timezone_opt(Some(target_tz))
-                .into_data(),
-            TimeUnit::Nanosecond => as_primitive_array::<TimestampNanosecondType>(&array)
-                .clone()
-                .with_timezone_opt(Some(target_tz))
-                .into_data(),
-        }),
+        DataType::Timestamp(target_unit, Some(target_tz)) => {
+            let array = match array.data_type() {
+                DataType::Timestamp(TimeUnit::Second, _) => as_primitive_array::<TimestampSecondType>(&array).clone().into_data(),
+                DataType::Timestamp(TimeUnit::Millisecond, _) => as_primitive_array::<TimestampMillisecondType>(&array).clone().into_data(),
+                DataType::Timestamp(TimeUnit::Microsecond, _) => as_primitive_array::<TimestampMicrosecondType>(&array).clone().into_data(),
+                DataType::Timestamp(TimeUnit::Nanosecond, _) => as_primitive_array::<TimestampNanosecondType>(&array).clone().into_data(),
+                _ => return Err(DataFusionError::Internal("Unsupported timestamp type".to_string())),
+            };
+
+            let casted_array = cast_with_options(&make_array(array), &DataType::Timestamp(target_unit.clone(), Some(target_tz.clone())), &ARROW_CAST_OPTIONS)
+                .map_err(ArrowError)?;
+            casted_array
+        },
         DataType::Struct(target_child_fields) => {
             let orig_array = as_struct_array(&array);
             let mut child_array = vec![];

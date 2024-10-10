@@ -26,6 +26,7 @@ use datafusion_common::{cast::as_primitive_array, DFSchema, DataFusionError, Res
 
 use datafusion_substrait::substrait::proto::Plan;
 use object_store::path::Path;
+use parquet::format::FileMetaData;
 use proto::proto::entity::JniWrapper;
 use rand::distributions::DistString;
 use url::Url;
@@ -546,4 +547,24 @@ pub fn get_batch_memory_size(batch: &RecordBatch) -> Result<usize> {
         .collect::<std::result::Result<Vec<usize>, ArrowError>>()?
         .into_iter()
         .sum())
+}
+
+pub fn get_file_size(metadata: &FileMetaData) -> usize {
+    let footer_size= metadata.footer_signing_key_metadata.as_ref().map_or(0, |f| f.len());
+    dbg!(&metadata);
+    let rg_size = metadata
+        .row_groups
+        .iter()
+        .map(|row_group| row_group.total_byte_size as usize)
+        .sum::<usize>();
+    footer_size + rg_size
+}
+
+pub fn get_file_exist_col(metadata: &FileMetaData) -> String {
+    metadata
+        .schema
+        .iter()
+        .map(|schema_element| schema_element.name.clone())
+        .collect::<Vec<_>>()
+        .join(",")
 }

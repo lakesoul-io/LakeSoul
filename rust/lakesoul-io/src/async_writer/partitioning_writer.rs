@@ -42,7 +42,7 @@ pub struct PartitioningAsyncWriter {
     schema: SchemaRef,
     sorter_sender: Sender<Result<RecordBatch>>,
     _partitioning_exec: Arc<dyn ExecutionPlan>,
-    join_handle: Option<JoinHandle<WriterFlushResult>>,
+    join_handle: Option<JoinHandle<Result<WriterFlushResult>>>,
     err: Option<DataFusionError>,
     buffered_size: u64,
 }
@@ -179,7 +179,7 @@ impl PartitioningAsyncWriter {
         range_partitions: Arc<Vec<String>>,
         write_id: String,
         // partitioned_flush_result: PartitionedWriterInfo,
-    ) -> Result<Vec<JoinHandle<WriterFlushResult>>> {
+    ) -> Result<Vec<JoinHandle<Result<WriterFlushResult>>>> {
         let mut data = input.execute(partition, context.clone())?;
         // O(nm), n = number of data fields, m = number of range partitions
         let schema_projection_excluding_range = data
@@ -256,7 +256,7 @@ impl PartitioningAsyncWriter {
                     let writer_flush_results = writer.flush_and_close().await?;
                     Ok(writer_flush_results
                         .into_iter()
-                        .map(|(_, path, file_metadata)| (partition_desc.clone(), path, file_metadata))
+                        .map(|(_, path, object_meta, file_metadata)| (partition_desc.clone(), path, object_meta, file_metadata))
                         .collect::<Vec<_>>())
                 });
                 flush_join_handle_list.push(flush_result);
@@ -266,9 +266,9 @@ impl PartitioningAsyncWriter {
     }
 
     async fn await_and_summary(
-        join_handles: Vec<JoinHandle<Result<Vec<JoinHandle<WriterFlushResult>>>>>,
+        join_handles: Vec<JoinHandle<Result<Vec<JoinHandle<Result<WriterFlushResult>>>>>>,
         // partitioned_file_path_and_row_count: PartitionedWriterInfo,
-    ) -> WriterFlushResult {
+    ) -> Result<WriterFlushResult> {
         let mut flatten_results = Vec::new();
         let results = futures::future::join_all(join_handles).await;
         for result in results {
@@ -329,7 +329,7 @@ impl AsyncBatchWriter for PartitioningAsyncWriter {
         }
     }
 
-    async fn flush_and_close(self: Box<Self>) -> WriterFlushResult {
+    async fn flush_and_close(self: Box<Self>) -> Result<WriterFlushResult> {
         if let Some(join_handle) = self.join_handle {
             let sender = self.sorter_sender;
             drop(sender);
