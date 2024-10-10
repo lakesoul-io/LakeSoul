@@ -265,8 +265,17 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
           })
       }
 
+      val fileInfoSeq = if (isStreaming) newFileIndex.getFileInfoForPartitionVersion() else fileInfo
+      val dataInfoPath = fileInfoSeq.mkString(",")
+      val fs = partition.files.head.getPath
+        .getFileSystem(sparkSession.sessionState.newHadoopConf())
+      val pathToFileInfoMap = fileInfoSeq.map(f => fs.makeQualified(new Path(f.path)).toString -> f).toMap
+
       partition.files.flatMap { file =>
         val filePath = file.getPath
+        val qualifiedPath = fs.makeQualified(filePath).toString
+
+        val touchedFileInfo = pathToFileInfoMap.getOrElse(qualifiedPath, throw LakeSoulErrors.filePathNotFoundException(qualifiedPath, dataInfoPath))
 
         MergePartitionedFileUtil.notSplitFiles(
           sparkSession,
@@ -274,7 +283,7 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
           filePath,
           partitionValues,
           tableInfo,
-          fileInfo = if (isStreaming) newFileIndex.getFileInfoForPartitionVersion() else fileInfo,
+          touchedFileInfo,
           requestFilesSchemaMap,
           readDataSchema,
           readPartitionSchema.fieldNames)
