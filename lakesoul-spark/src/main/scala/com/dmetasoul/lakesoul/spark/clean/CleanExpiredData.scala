@@ -68,7 +68,6 @@ object CleanExpiredData {
         tableOnlySaveOnceCompaction = onlySaveOnceCompaction
       }
 
-      val latestCompactionTimestampBeforeRedundantTTL = getLatestCompactionTimestamp(tableId, partitionDesc, tableRedundantTTL, spark)
       println("========== deal with new partition ========== ")
       println("tableId:" + tableId)
       println("partitionDesc:" + partitionDesc)
@@ -100,6 +99,7 @@ object CleanExpiredData {
           }
         }
       } else {
+        val latestCompactionTimestampBeforeRedundantTTL = getLatestCompactionTimestamp(tableId, partitionDesc, tableRedundantTTL, spark)
         println("last compactionTimestamp before expiration:" + latestCompactionTimestampBeforeRedundantTTL)
         //no compaction action
         if (latestCompactionTimestampBeforeRedundantTTL == 0L) {
@@ -214,19 +214,12 @@ object CleanExpiredData {
     val sql =
       s"""
          |DELETE FROM partition_info
-         |WHERE (table_id,partition_desc,version)
-         |IN
-         |(SELECT
-         |    table_id,
-         |    partition_desc,
-         |    version
-         |FROM partition_info
          |WHERE
-         |    timestamp < $deadTimestamp
-         |AND
          |    table_id = '$tableId'
          |AND
-         |    partition_desc='$partitionDesc')
+         |    partition_desc='$partitionDesc'
+         |AND
+         |    timestamp < $deadTimestamp
          |""".stripMargin
     val stmt = conn.prepareStatement(sql)
     stmt.execute()
@@ -236,13 +229,14 @@ object CleanExpiredData {
     val sql =
       s"""
          |SELECT
-         |    max(timestamp) max_time
+         |    timestamp max_time
          |from
          |    partition_info
          |where
          |    table_id='$table_id'
          |AND partition_desc = '$partitionDesc'
-         |
+         |ORDER BY
+         |    version DESC
          |""".stripMargin
     sqlToDataframe(sql, spark).select("max_time").first().getLong(0)
   }
@@ -253,7 +247,7 @@ object CleanExpiredData {
       val expiredDateZeroTimeMils = getExpiredDateZeroTimeStamp(expiredDaysField.toString.toInt)
       val sql =
         s"""
-           |SELECT DISTINCT ON (table_id)
+           |SELECT
            |        table_id,
            |        commit_op,
            |        timestamp
@@ -266,7 +260,7 @@ object CleanExpiredData {
            |        AND timestamp < '$expiredDateZeroTimeMils'
            |    ORDER BY
            |        table_id,
-           |        timestamp DESC
+           |        version DESC
            |""".stripMargin
       if (sqlToDataframe(sql, spark).count() > 0)
         latestTimestampMils = sqlToDataframe(sql, spark).select("timestamp").first().getLong(0)
@@ -278,7 +272,7 @@ object CleanExpiredData {
     val redundantDataTTlZeroTimeMils = getExpiredDateZeroTimeStamp(redundantDataTTL.toString.toInt)
     val sql =
       s"""
-         |SELECT DISTINCT ON (table_id)
+         |SELECT
          |        table_id,
          |        commit_op,
          |        timestamp
@@ -289,9 +283,6 @@ object CleanExpiredData {
          |        AND partition_desc = '$partitionDesc'
          |        AND table_id = '$table_id'
          |        AND timestamp > '$redundantDataTTlZeroTimeMils'
-         |    ORDER BY
-         |        table_id,
-         |        timestamp DESC
          |""".stripMargin
     if (sqlToDataframe(sql, spark).count() > 0) {
       true
