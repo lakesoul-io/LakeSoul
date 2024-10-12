@@ -65,7 +65,7 @@ object CleanOldCompaction {
          |            SELECT DISTINCT unnest(snapshot)
          |            FROM (
          |              SELECT snapshot FROM expiredCommit
-         |              LIMIT (SELECT COUNT(1) - 1 FROM expiredCommit) OFFSET 1
+         |              LIMIT (SELECT CASE WHEN COUNT(1) = 0 THEN 1 ELSE COUNT(1) END - 1 FROM expiredCommit) OFFSET 1
          |              ) t_limit
          |        )
          |) t
