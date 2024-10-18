@@ -106,6 +106,7 @@ class ParquetScanSuite extends QueryTest
         .save(tablePath)
       val table = LakeSoulTable.forPath(tablePath)
       table.compaction()
+      LakeSoulTable.uncached(tablePath)
 
       val plan = table.toDF.queryExecution.toString()
 

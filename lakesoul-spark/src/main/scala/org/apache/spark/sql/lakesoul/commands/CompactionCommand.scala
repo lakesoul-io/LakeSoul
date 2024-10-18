@@ -27,6 +27,7 @@ import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.{Dataset, Row, SparkSession}
 import org.apache.spark.util.Utils
 
+import java.util.UUID
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.collection.JavaConverters._
@@ -43,7 +44,7 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
                             )
   extends LeafRunnableCommand with PredicateHelper with Logging {
 
-  lazy val compactPath: String = tableInfo.table_path.toString + "/compact_" + System.currentTimeMillis()
+  def newCompactPath: String = tableInfo.table_path.toString + "/compact_" + System.currentTimeMillis()
 
   lazy val bucketNumChanged: Boolean = newBucketNum.exists(tableInfo.bucket_num != _)
 
@@ -55,7 +56,7 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
     partitionInfo.read_files.length >= 1
   }
 
-  def executeCompaction(spark: SparkSession, tc: TransactionCommit, files: Seq[DataFileInfo], readPartitionInfo: Array[PartitionInfoScala]): List[DataCommitInfo] = {
+  def executeCompaction(spark: SparkSession, tc: TransactionCommit, files: Seq[DataFileInfo], readPartitionInfo: Array[PartitionInfoScala], compactPath: String): List[DataCommitInfo] = {
     if (readPartitionInfo.forall(p => p.commit_op.equals("CompactionCommit") && p.read_files.length == 1)) {
       logInfo("=========== All Partitions Have Compacted, This Operation Will Cancel!!! ===========")
       return List.empty
@@ -138,13 +139,14 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
     builder.toString()
   }
 
-  def compactSinglePartition(sparkSession: SparkSession, tc: TransactionCommit, files: Seq[DataFileInfo], sourcePartition: PartitionInfoScala) = {
+  def compactSinglePartition(sparkSession: SparkSession, tc: TransactionCommit, files: Seq[DataFileInfo], sourcePartition: PartitionInfoScala): String = {
     logInfo(s"Compacting Single Partition=${sourcePartition} with ${files.length} files")
     val bucketedFiles = if (tableInfo.hash_partition_columns.isEmpty || bucketNumChanged) {
       Seq(-1 -> files)
     } else {
       files.groupBy(_.file_bucket_id)
     }
+    val compactPath = newCompactPath
     val allDataCommitInfo = bucketedFiles.flatMap(groupByBucketId => {
       val (bucketId, files) = groupByBucketId
       val groupedFiles = if (fileNumLimit.isDefined) {
@@ -165,7 +167,7 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
           files.forall(_.size == 1)
         }
         if (!hasNoDeltaFile) {
-          executeCompaction(sparkSession, tc, files, Array(sourcePartition))
+          executeCompaction(sparkSession, tc, files, Array(sourcePartition), compactPath)
         } else {
           logInfo(s"== Partition ${sourcePartition.range_value} has no delta file.")
           None
@@ -173,34 +175,47 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
       })
     })
 
-    val compactPartitionInfo = List.newBuilder[PartitionInfoScala]
-    compactPartitionInfo += PartitionInfoScala(
-      table_id = tc.tableInfo.table_id,
-      range_value = sourcePartition.range_value,
-      read_files = allDataCommitInfo.map(_.getCommitId).map(DBUtil.toJavaUUID).toArray
-    )
+    if (allDataCommitInfo.nonEmpty) {
+      val compactDataCommitInfoId = UUID.randomUUID
+      val compactDataCommitInfo =
+        DataCommitInfo.newBuilder(allDataCommitInfo.head)
+          .setCommitId(DBUtil.toProtoUuid(compactDataCommitInfoId))
+          .clearFileOps
+          .addAllFileOps(allDataCommitInfo.flatMap(_.getFileOpsList.asScala).asJava)
+          .build
 
-    tc.commitDataCommitInfo(allDataCommitInfo.toList, compactPartitionInfo.result, "", -1, Array(sourcePartition))
+      val compactPartitionInfo = List.newBuilder[PartitionInfoScala]
+      compactPartitionInfo += PartitionInfoScala(
+        table_id = tc.tableInfo.table_id,
+        range_value = sourcePartition.range_value,
+        read_files = Array(compactDataCommitInfoId)
+      )
 
-    val partitionStr = escapeSingleBackQuotedString(conditionString)
-    if (hiveTableName.nonEmpty) {
-      val spark = SparkSession.active
-      val currentCatalog = spark.sessionState.catalogManager.currentCatalog.name()
-      Utils.tryWithSafeFinally({
-        spark.sessionState.catalogManager.setCurrentCatalog(SESSION_CATALOG_NAME)
-        if (hivePartitionName.nonEmpty) {
-          spark.sql(s"ALTER TABLE $hiveTableName DROP IF EXISTS partition($hivePartitionName)")
-          spark.sql(s"ALTER TABLE $hiveTableName ADD partition($hivePartitionName) location '${compactPath}/$partitionStr'")
-        } else {
-          spark.sql(s"ALTER TABLE $hiveTableName DROP IF EXISTS partition($conditionString)")
-          spark.sql(s"ALTER TABLE $hiveTableName ADD partition($conditionString) location '${compactPath}/$partitionStr'")
+      tc.commitDataCommitInfo(List(compactDataCommitInfo), compactPartitionInfo.result, "", -1, Array(sourcePartition))
+
+      val partitionStr = escapeSingleBackQuotedString(conditionString)
+      if (hiveTableName.nonEmpty) {
+        val spark = SparkSession.active
+        val currentCatalog = spark.sessionState.catalogManager.currentCatalog.name()
+        Utils.tryWithSafeFinally({
+          spark.sessionState.catalogManager.setCurrentCatalog(SESSION_CATALOG_NAME)
+          if (hivePartitionName.nonEmpty) {
+            spark.sql(s"ALTER TABLE $hiveTableName DROP IF EXISTS partition($hivePartitionName)")
+            spark.sql(s"ALTER TABLE $hiveTableName ADD partition($hivePartitionName) location '${compactPath}/$partitionStr'")
+          } else {
+            spark.sql(s"ALTER TABLE $hiveTableName DROP IF EXISTS partition($conditionString)")
+            spark.sql(s"ALTER TABLE $hiveTableName ADD partition($conditionString) location '${compactPath}/$partitionStr'")
+          }
+
+        }) {
+          spark.sessionState.catalogManager.setCurrentCatalog(currentCatalog)
         }
-
-      }) {
-        spark.sessionState.catalogManager.setCurrentCatalog(currentCatalog)
       }
+      logInfo("=========== Compaction Success!!! ===========")
+      compactPath
+    } else {
+      ""
     }
-    logInfo("=========== Compaction Success!!! ===========")
 
   }
 
@@ -232,9 +247,9 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
           ""
         )
 
-        compactSinglePartition(sparkSession, tc, files, partitionInfo)
+        val newCompact = compactSinglePartition(sparkSession, tc, files, partitionInfo)
 
-        if (cleanOldCompaction) {
+        if (newCompact.nonEmpty && cleanOldCompaction) {
           val tablePath = snapshotManagement.table_path
           cleanOldCommitOpDiskData(tablePath, partitionSet.head, sparkSession)
         }
@@ -251,21 +266,20 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
           tc.setCommitType("compaction")
           val files = tc.getCompactionPartitionFiles(part)
 
-          compactSinglePartition(sparkSession, tc, files, part)
-
-          if (cleanOldCompaction) {
+          val newCompact = compactSinglePartition(sparkSession, tc, files, part)
+          if (newCompact.nonEmpty && cleanOldCompaction) {
             val tablePath = snapshotManagement.table_path
-            cleanOldCommitOpDiskData(tablePath, null, sparkSession)
+            cleanOldCommitOpDiskData(tablePath, part.range_value, sparkSession)
           }
         })
       })
     }
     if (bucketNumChanged) {
-        val properties = SparkMetaVersion.dbManager.getTableInfoByTableId(tableInfo.table_id).getProperties
-        val newProperties = JSON.parseObject(properties);
-        newProperties.put(TableInfoProperty.HASH_BUCKET_NUM, newBucketNum.get.toString)
-        SparkMetaVersion.dbManager.updateTableProperties(tableInfo.table_id, newProperties.toJSONString)
-        snapshotManagement.updateSnapshot()
+      val properties = SparkMetaVersion.dbManager.getTableInfoByTableId(tableInfo.table_id).getProperties
+      val newProperties = JSON.parseObject(properties);
+      newProperties.put(TableInfoProperty.HASH_BUCKET_NUM, newBucketNum.get.toString)
+      SparkMetaVersion.dbManager.updateTableProperties(tableInfo.table_id, newProperties.toJSONString)
+      snapshotManagement.updateSnapshot()
     }
     Seq.empty
   }
