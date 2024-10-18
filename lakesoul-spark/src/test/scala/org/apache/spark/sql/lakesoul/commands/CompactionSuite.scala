@@ -4,6 +4,8 @@
 
 package org.apache.spark.sql.lakesoul.commands
 
+import com.dmetasoul.lakesoul.meta.LakeSoulOptions.SHORT_TABLE_NAME
+import com.dmetasoul.lakesoul.meta.{DataOperation, SparkMetaVersion}
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkConf
@@ -13,9 +15,10 @@ import org.apache.spark.sql.lakesoul.SnapshotManagement
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestSparkSession, MergeOpInt}
-import org.apache.spark.sql.lakesoul.utils.SparkUtil
+import org.apache.spark.sql.lakesoul.utils.{SparkUtil, TableInfo}
 import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
 import org.apache.spark.sql.{AnalysisException, QueryTest, Row, SparkSession}
+import org.apache.spark.util.Utils
 import org.junit.runner.RunWith
 import org.scalatest.BeforeAndAfterEach
 import org.scalatestplus.junit.JUnitRunner
@@ -90,7 +93,7 @@ class CompactionSuite extends QueryTest
       assert(!rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)))
 
 
-      LakeSoulTable.forPath(tableName).compaction(true)
+      LakeSoulTable.forPath(tableName).compaction()
       rangeGroup = SparkUtil.allDataInfo(sm.updateSnapshot()).groupBy(_.range_partitions)
       rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1))
       assert(rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)))
@@ -127,7 +130,7 @@ class CompactionSuite extends QueryTest
       assert(!rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)))
 
 
-      LakeSoulTable.forPath(tableName).compaction(true)
+      LakeSoulTable.forPath(tableName).compaction()
       rangeGroup = SparkUtil.allDataInfo(sm.updateSnapshot()).groupBy(_.range_partitions)
       rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1))
       assert(rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)))
@@ -161,7 +164,7 @@ class CompactionSuite extends QueryTest
         .mode("append")
         .save(tableName)
 
-      LakeSoulTable.forPath(tableName).compaction(true)
+      LakeSoulTable.forPath(tableName).compaction()
     })
   }
 
@@ -194,7 +197,7 @@ class CompactionSuite extends QueryTest
       assert(!rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)))
 
 
-      LakeSoulTable.forPath(tableName).compaction(true)
+      LakeSoulTable.forPath(tableName).compaction()
       rangeGroup = SparkUtil.allDataInfo(sm.updateSnapshot()).groupBy(_.range_partitions)
       rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1))
       assert(rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)))
@@ -231,7 +234,7 @@ class CompactionSuite extends QueryTest
       assert(!rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)))
 
 
-      LakeSoulTable.forPath(tableName).compaction(true)
+      LakeSoulTable.forPath(tableName).compaction()
       rangeGroup = SparkUtil.allDataInfo(sm.updateSnapshot()).groupBy(_.range_partitions)
       rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1))
       assert(rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)))
@@ -434,7 +437,8 @@ class CompactionSuite extends QueryTest
       val mergeOperatorInfo = Map(
         "v1" -> new MergeOpInt(),
         "v2" -> "org.apache.spark.sql.lakesoul.test.MergeOpString")
-      table.compaction(true, mergeOperatorInfo, true)
+      table.compaction(mergeOperatorInfo = mergeOperatorInfo, cleanOldCompaction = true)
+      LakeSoulTable.uncached(tableName)
       checkAnswer(table.toDF.select("range", "hash", "v1", "v2"), result)
 
     })
@@ -459,12 +463,12 @@ class CompactionSuite extends QueryTest
       val e1 = intercept[AnalysisException] {
         class tmp {}
         val mergeOperatorInfo = Map("value" -> new tmp())
-        table.compaction(true, mergeOperatorInfo, true)
+        table.compaction(mergeOperatorInfo = mergeOperatorInfo, cleanOldCompaction = true)
       }
       assert(e1.getMessage().contains("is not a legal merge operator class"))
       val e2 = intercept[ClassNotFoundException] {
         val mergeOperatorInfo = Map("value" -> "ClassWillNeverExsit")
-        table.compaction(true, mergeOperatorInfo, true)
+        table.compaction(mergeOperatorInfo = mergeOperatorInfo, cleanOldCompaction = true)
       }
       assert(e2.getMessage.contains("ClassWillNeverExsit"))
 
@@ -493,7 +497,7 @@ class CompactionSuite extends QueryTest
       checkAnswer(spark.sql("show tables in default"),
         Seq(Row("default", "lakesoul_test_table", false)))
       val lakeSoulTable = LakeSoulTable.forName("lakesoul_test_table")
-      lakeSoulTable.compaction("date='2021-01-01'", "spark_catalog.default.external_table")
+      lakeSoulTable.compaction("date='2021-01-01'", hiveTableName = "spark_catalog.default.external_table")
       checkAnswer(spark.sql("show partitions spark_catalog.default.external_table"),
         Seq(Row("date=2021-01-01")))
       checkAnswer(spark.sql("select * from spark_catalog.default.external_table order by id"),
@@ -501,6 +505,166 @@ class CompactionSuite extends QueryTest
     }
   }
 
+  test("compaction with limited file") {
+    withTempDir { tempDir =>
+      //    val tempDir = Utils.createDirectory(System.getProperty("java.io.tmpdir"))
+      val tablePath = tempDir.getCanonicalPath
+      val spark = SparkSession.active
+
+      val hashBucketNum = 4
+      val compactRounds = 5
+      val dataPerRounds = 10
+      val compactGroupSize = 3
+
+      // Create test data
+      val df = Seq(
+        (1, "2023-01-01", 10, 1),
+        (2, "2023-01-02", 20, 1),
+        (3, "2023-01-03", 30, 1),
+        (4, "2023-01-04", 40, 1),
+        (5, "2023-01-05", 50, 1)
+      ).toDF("id", "date", "value", "range")
+
+      // Write initial data
+      df.write
+        .format("lakesoul")
+        .option("rangePartitions", "range")
+        .option("hashPartitions", "id")
+        .option(SHORT_TABLE_NAME, "compaction_limit_table")
+        .option("hashBucketNum", hashBucketNum.toString)
+        .save(tablePath)
+
+      val lakeSoulTable = LakeSoulTable.forPath(tablePath)
+
+      for (c <- 0 until compactRounds) {
+        // Simulate multiple append operations
+        for (i <- c * dataPerRounds + 1 to (c + 1) * dataPerRounds) {
+          val appendDf = Seq(
+            (i * 10, s"2023-02-0$i", i * 100, 1)
+          ).toDF("id", "date", "value", "range")
+          lakeSoulTable.upsert(appendDf)
+        }
+
+        // Get initial PartitionInfo count
+        val initialFileCount = getFileCount(tablePath)
+        println(s"before compact initialPartitionInfoCount=$initialFileCount")
+        lakeSoulTable.toDF.show
+
+        // Perform limited compaction (group every compactGroupSize PartitionInfo)
+        lakeSoulTable.compaction(fileNumLimit = Some(compactGroupSize))
+
+        // Get PartitionInfo count after compaction
+        val compactedFileCount = getFileCount(tablePath)
+
+        println(s"after compact compactedPartitionInfoCount=$compactedFileCount")
+
+        lakeSoulTable.toDF.show
+
+        // Verify results
+        assert(compactedFileCount < initialFileCount,
+          s"Compaction should reduce the number of files, but it changed from ${initialFileCount} to $compactedFileCount")
+
+
+        assert(compactedFileCount >= (initialFileCount - 1) / compactGroupSize + 1,
+          s"Compaction should produce files above a lower bound, but there are ${compactedFileCount} files")
+
+        assert(compactedFileCount <= (initialFileCount - 1) / compactGroupSize + 1 + hashBucketNum,
+          s"Compaction should produce files below a upper bound, but there are ${compactedFileCount} files")
+      }
+
+      // Verify data integrity
+      val compactedData = lakeSoulTable.toDF.orderBy("id", "date").collect()
+      println(compactedData.mkString("Array(", ", ", ")"))
+      assert(compactedData.length == 5 + dataPerRounds * compactRounds, s"The compressed data should have ${5 + dataPerRounds * compactRounds} rows, but it actually has ${compactedData.length} rows")
+    }
+  }
+
+  // Auxiliary method: Get the number of files
+  def getFileCount(tablePath: String): Int = {
+    val sm = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(tablePath)).toString)
+    val partitionList = SparkMetaVersion.getAllPartitionInfo(sm.getTableInfoOnly.table_id)
+    val files = DataOperation.getTableDataInfo(partitionList)
+    files.length
+  }
+
+  test("compaction with newBucketNum") {
+    withTempDir { tempDir =>
+      //      val tempDir = Utils.createDirectory(System.getProperty("java.io.tmpdir"))
+      val tablePath = tempDir.getCanonicalPath
+      val spark = SparkSession.active
+
+      val hashBucketNum = 4
+      val newHashBucketNum = 7
+      val compactRounds = 5
+      val dataPerRounds = 10
+      val compactGroupSize = 3
+
+      // Create test data
+      val df = Seq(
+        (1, "2023-01-01", 10, 1),
+        (2, "2023-01-02", 20, 1),
+        (3, "2023-01-03", 30, 1),
+        (4, "2023-01-04", 40, 1),
+        (5, "2023-01-05", 50, 1)
+      ).toDF("id", "date", "value", "range")
+
+      //    val df = Seq(
+      //      (1, "2023-01-01", 10, 1, "insert"),
+      //      (2, "2023-01-02", 20, 1, "insert"),
+      //      (3, "2023-01-03", 30, 1, "insert"),
+      //      (4, "2023-01-04", 40, 1, "insert"),
+      //      (5, "2023-01-05", 50, 1, "insert")
+      //    ).toDF("id", "date", "value", "range", "op")
+
+      // Write initial data
+      df.write
+        .format("lakesoul")
+        .option("rangePartitions", "range")
+        .option("hashPartitions", "id")
+        .option(SHORT_TABLE_NAME, "rebucket_table")
+        .option("hashBucketNum", hashBucketNum.toString)
+        //      .option("lakesoul_cdc_change_column", "op")
+        .save(tablePath)
+
+      val lakeSoulTable = LakeSoulTable.forPath(tablePath)
+
+      for (i <- 1 to 100) {
+        val appendDf = Seq(
+          (i * 10, s"2023-02-0$i", i * 100, 1)
+        ).toDF("id", "date", "value", "range")
+        //        val appendDf = Seq(
+        //          (i * 10, s"2023-02-0$i", i * 100, 1, "insert")
+        //        ).toDF("id", "date", "value", "range", "op")
+        lakeSoulTable.upsert(appendDf)
+      }
+      assert(getFileBucketSet(tablePath).size == hashBucketNum)
+      assert(getTableInfo(tablePath).bucket_num == hashBucketNum)
+
+      lakeSoulTable.compaction(newBucketNum = Some(newHashBucketNum))
+
+      assert(getFileBucketSet(tablePath).size == newHashBucketNum)
+      assert(getTableInfo(tablePath).bucket_num == newHashBucketNum)
+
+      val compactedData = lakeSoulTable.toDF.orderBy("id", "date").collect()
+      println(compactedData.mkString("Array(", ", ", ")"))
+      assert(compactedData.length == 105, s"The compressed data should have ${105} rows, but it actually has ${compactedData.length} rows")
+
+    }
+  }
+
+  // Auxiliary method: Get the bucket number of table
+  def getFileBucketSet(tablePath: String): Set[Int] = {
+    val sm = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(tablePath)).toString)
+    val partitionList = SparkMetaVersion.getAllPartitionInfo(sm.getTableInfoOnly.table_id)
+    val files = DataOperation.getTableDataInfo(partitionList)
+    println(files.mkString("Array(", ", ", ")"))
+    files.groupBy(_.file_bucket_id).keys.toSet
+  }
+
+  // Auxiliary method: Get the bucket number of table
+  def getTableInfo(tablePath: String): TableInfo = {
+    val sm = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(tablePath)).toString)
+    sm.getTableInfoOnly
+  }
 
 }
-

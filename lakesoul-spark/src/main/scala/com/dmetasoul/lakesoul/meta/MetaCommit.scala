@@ -5,13 +5,14 @@
 package com.dmetasoul.lakesoul.meta
 
 import com.alibaba.fastjson.JSONObject
-import com.dmetasoul.lakesoul.meta.entity.{FileOp, Uuid}
+import com.dmetasoul.lakesoul.meta.entity.Uuid
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.utils._
 
 import java.util
 import scala.collection.JavaConverters
+import scala.collection.JavaConverters.asScalaBufferConverter
 
 object MetaCommit extends Logging {
   //meta commit process
@@ -94,21 +95,21 @@ object MetaCommit extends Logging {
     for (dataCommitInfo <- dataCommitInfoArray) {
       val metaDataCommitInfo = entity.DataCommitInfo.newBuilder
       metaDataCommitInfo.setTableId(table_id)
-      metaDataCommitInfo.setPartitionDesc(dataCommitInfo.range_value)
+      metaDataCommitInfo.setPartitionDesc(dataCommitInfo.getPartitionDesc)
       metaDataCommitInfo.setCommitOp(entity.CommitOp.valueOf(commitType))
-      val uuid = dataCommitInfo.commit_id
-      metaDataCommitInfo.setCommitId(Uuid.newBuilder.setHigh(uuid.getMostSignificantBits).setLow(uuid.getLeastSignificantBits).build)
+      val uuid = dataCommitInfo.getCommitId
+      metaDataCommitInfo.setCommitId(uuid)
       val fileOps = new util.ArrayList[entity.DataFileOp]()
-      for (file_info <- dataCommitInfo.file_ops) {
+      for (file_info <- dataCommitInfo.getFileOpsList.asScala) {
         val metaDataFileInfo = entity.DataFileOp.newBuilder
-        metaDataFileInfo.setPath(file_info.path)
-        metaDataFileInfo.setFileOp(FileOp.valueOf(file_info.file_op))
-        metaDataFileInfo.setSize(file_info.size)
-        metaDataFileInfo.setFileExistCols(file_info.file_exist_cols)
+        metaDataFileInfo.setPath(file_info.getPath)
+        metaDataFileInfo.setFileOp(file_info.getFileOp)
+        metaDataFileInfo.setSize(file_info.getSize)
+        metaDataFileInfo.setFileExistCols(file_info.getFileExistCols)
         fileOps.add(metaDataFileInfo.build)
       }
       metaDataCommitInfo.addAllFileOps(fileOps)
-      metaDataCommitInfo.setTimestamp(dataCommitInfo.modification_time)
+      metaDataCommitInfo.setTimestamp(dataCommitInfo.getTimestamp)
       metaDataCommitInfoList.add(metaDataCommitInfo.build)
     }
     SparkMetaVersion.dbManager.batchCommitDataCommitInfo(metaDataCommitInfoList)

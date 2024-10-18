@@ -42,7 +42,7 @@ case class CallExecCommand(action: String, args: Seq[CallArgument]) extends Leaf
         val table = getLakeSoulTable(argsMap)
         if (argsMap.contains(toVersion)) {
           table.rollbackPartition(getPartitionVal(argsMap(parValue)), argsMap(toVersion).toString().toInt)
-        }else if (argsMap.contains(zoneId)) {
+        } else if (argsMap.contains(zoneId)) {
           table.rollbackPartition(getPartitionVal(argsMap(parValue)), argsMap(toTime).toString(), argsMap(zoneId).toString())
         } else {
           table.rollbackPartition(getPartitionVal(argsMap(parValue)), argsMap(toTime).toString())
@@ -57,10 +57,10 @@ case class CallExecCommand(action: String, args: Seq[CallArgument]) extends Leaf
           ""
         }
         if (argsMap.contains(hiveTableName)) {
-          table.compaction(conditons, argsMap(hiveTableName).toString())
+          table.compaction(conditons, hiveTableName = argsMap(hiveTableName).toString())
         }
         if (argsMap.contains(cleanOld)) {
-          table.compaction(argsMap(cleanOld).toString().toBoolean)
+          table.compaction(cleanOldCompaction = argsMap(cleanOld).toString().toBoolean)
         }
         table.compaction(conditons)
       }

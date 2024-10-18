@@ -49,7 +49,7 @@ class CompactionDoNotChangeResult {
       assert(!rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)))
 
 
-      LakeSoulTable.forPath(tableName).compaction(true)
+      LakeSoulTable.forPath(tableName).compaction(cleanOldCompaction = true)
       rangeGroup = SparkUtil.allDataInfo(sm.snapshot).groupBy(_.range_partitions)
       assert(rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)))
 

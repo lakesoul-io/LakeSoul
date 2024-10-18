@@ -5,6 +5,7 @@
 package org.apache.spark.sql.lakesoul
 
 import com.dmetasoul.lakesoul.meta._
+import com.dmetasoul.lakesoul.meta.entity.{CommitOp, DataCommitInfo, DataFileOp, FileOp, Uuid}
 import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
@@ -15,6 +16,7 @@ import org.apache.spark.sql.lakesoul.schema.SchemaUtils
 import org.apache.spark.sql.lakesoul.utils._
 
 import java.util.{ConcurrentModificationException, UUID}
+import scala.collection.JavaConverters._
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 
@@ -254,105 +256,144 @@ trait Transaction extends TransactionalWrite with Logging {
         )
       }
 
-      val expireFilesWithDeleteOp = expireFiles.map(f => f.copy(file_op = "del"))
+      val (add_file_arr_buf, add_partition_info_arr_buf) = createDataCommitInfo(addFiles, expireFiles, query_id, batch_id)
 
-      val depend_files = readFiles.toSeq ++ addFiles ++ expireFilesWithDeleteOp
-
-      //Gets all the partition names that need to be changed
-      val depend_partitions = depend_files
-        .groupBy(_.range_partitions).keys
-        .toSet
-
-      val add_file_arr_buf = new ArrayBuffer[DataCommitInfo]()
-
-      val add_partition_info_arr_buf = new ArrayBuffer[PartitionInfoScala]()
-
-      val commit_type = commitType.getOrElse(CommitType("append")).name
-      if (commit_type.equals(CommitType("update").name)) {
-        val delete_file_set = new mutable.HashSet[String]()
-        expireFilesWithDeleteOp.foreach(file => {
-          delete_file_set.add(file.path)
-        })
-
-        val partition_list = snapshotManagement.snapshot.getPartitionInfoArray
-        depend_partitions.foreach(range_key => {
-          val filter_files = new ArrayBuffer[DataFileInfo]()
-          val partition_info = partition_list.filter(_.range_value.equalsIgnoreCase(range_key))
-          if (partition_info.length > 0) {
-            val partition_files = DataOperation.getSinglePartitionDataInfo(partition_info.head)
-            partition_files.foreach(partition_file => {
-              if (!delete_file_set.contains(partition_file.path)) {
-                filter_files += partition_file
-              }
-            })
-          }
-
-          val changeFiles = addFiles.union(expireFilesWithDeleteOp)
-            .filter(a => a.range_partitions.equalsIgnoreCase(range_key))
-
-          filter_files ++= changeFiles
-
-          if (filter_files.nonEmpty) {
-            val addUUID = getCommitIdByBatchIdAndQueryId(batch_id, query_id)
-            add_file_arr_buf += DataCommitInfo(
-              tableInfo.table_id,
-              range_key,
-              addUUID,
-              commit_type,
-              System.currentTimeMillis(),
-              filter_files.toArray
-            )
-            add_partition_info_arr_buf += PartitionInfoScala(
-              table_id = tableInfo.table_id,
-              range_value = range_key,
-              read_files = Array(addUUID)
-            )
-          }
-        })
-      } else {
-        depend_partitions.foreach(range_key => {
-          val changeFiles = addFiles.union(expireFilesWithDeleteOp)
-            .filter(a => a.range_partitions.equalsIgnoreCase(range_key))
-          if (changeFiles.nonEmpty) {
-            val addUUID = getCommitIdByBatchIdAndQueryId(batch_id, query_id)
-            add_file_arr_buf += DataCommitInfo(
-              tableInfo.table_id,
-              range_key,
-              addUUID,
-              commit_type,
-              System.currentTimeMillis(),
-              changeFiles.toArray
-            )
-            add_partition_info_arr_buf += PartitionInfoScala(
-              table_id = tableInfo.table_id,
-              range_value = range_key,
-              read_files = Array(addUUID)
-            )
-          }
-        })
-      }
-
-      val meta_info = MetaInfo(
-        table_info = tableInfo.copy(short_table_name = shortTableName),
-        dataCommitInfo = add_file_arr_buf.toArray,
-        partitionInfoArray = add_partition_info_arr_buf.toArray,
-        commit_type = commitType.getOrElse(CommitType("append")),
-        query_id = query_id,
-        batch_id = batch_id,
-        readPartitionInfo = readPartitionInfo
-      )
-
-      try {
-        val changeSchema = !isFirstCommit && newTableInfo.nonEmpty
-        MetaCommit.doMetaCommit(meta_info, changeSchema)
-      } catch {
-        case e: MetaRerunException => throw e
-        case e: Throwable => throw e
-      }
-
-      committed = true
+      commitDataCommitInfo(add_file_arr_buf, add_partition_info_arr_buf, query_id, batch_id, readPartitionInfo)
     }
     snapshotManagement.updateSnapshot()
+  }
+
+  def createDataCommitInfo(addFiles: Seq[DataFileInfo],
+                           expireFiles: Seq[DataFileInfo],
+                           query_id: String,
+                           batch_id: Long): (List[DataCommitInfo], List[PartitionInfoScala]) = {
+    val expireFilesWithDeleteOp = expireFiles.map(f => f.copy(file_op = "del"))
+
+    val depend_files = readFiles.toSeq ++ addFiles ++ expireFilesWithDeleteOp
+
+    //Gets all the partition names that need to be changed
+    val depend_partitions = depend_files
+      .groupBy(_.range_partitions).keys
+      .toSet
+
+    val add_file_arr_buf = List.newBuilder[DataCommitInfo]
+
+    val add_partition_info_arr_buf = List.newBuilder[PartitionInfoScala]
+
+    val commit_type = commitType.getOrElse(CommitType("append")).name
+    if (commit_type.equals(CommitType("update").name)) {
+      val delete_file_set = new mutable.HashSet[String]()
+      expireFilesWithDeleteOp.foreach(file => {
+        delete_file_set.add(file.path)
+      })
+
+      val partition_list = snapshotManagement.snapshot.getPartitionInfoArray
+      depend_partitions.foreach(range_key => {
+        val filter_files = new ArrayBuffer[DataFileInfo]()
+        val partition_info = partition_list.filter(_.range_value.equalsIgnoreCase(range_key))
+        if (partition_info.length > 0) {
+          val partition_files = DataOperation.getSinglePartitionDataInfo(partition_info.head)
+          partition_files.foreach(partition_file => {
+            if (!delete_file_set.contains(partition_file.path)) {
+              filter_files += partition_file
+            }
+          })
+        }
+
+        val changeFiles = addFiles.union(expireFilesWithDeleteOp)
+          .filter(a => a.range_partitions.equalsIgnoreCase(range_key))
+
+        filter_files ++= changeFiles
+
+        if (filter_files.nonEmpty) {
+          val addUUID = getCommitIdByBatchIdAndQueryId(batch_id, query_id)
+          val fileOps = filter_files.map { file =>
+            DataFileOp.newBuilder()
+              .setPath(file.path)
+              .setFileOp(if (file.file_op == "add") FileOp.add else FileOp.del)
+              .setSize(file.size)
+              .setFileExistCols(file.file_exist_cols)
+              .build()
+          }
+
+          add_file_arr_buf += DataCommitInfo.newBuilder()
+            .setTableId(tableInfo.table_id)
+            .setPartitionDesc(range_key)
+            .setCommitId(Uuid.newBuilder().setHigh(addUUID.getMostSignificantBits).setLow(addUUID.getLeastSignificantBits).build())
+            .addAllFileOps(fileOps.toList.asJava)
+            .setCommitOp(CommitOp.valueOf(commit_type))
+            .setTimestamp(System.currentTimeMillis())
+            .setCommitted(false)
+            .build()
+
+          add_partition_info_arr_buf += PartitionInfoScala(
+            table_id = tableInfo.table_id,
+            range_value = range_key,
+            read_files = Array(addUUID)
+          )
+        }
+      })
+    } else {
+      depend_partitions.foreach(range_key => {
+        val changeFiles = addFiles.union(expireFilesWithDeleteOp)
+          .filter(a => a.range_partitions.equalsIgnoreCase(range_key))
+        if (changeFiles.nonEmpty) {
+          val addUUID = getCommitIdByBatchIdAndQueryId(batch_id, query_id)
+          val fileOps = changeFiles.map { file =>
+            DataFileOp.newBuilder()
+              .setPath(file.path)
+              .setFileOp(if (file.file_op == "add") FileOp.add else FileOp.del)
+              .setSize(file.size)
+              .setFileExistCols(file.file_exist_cols)
+              .build()
+          }
+
+          add_file_arr_buf += DataCommitInfo.newBuilder()
+            .setTableId(tableInfo.table_id)
+            .setPartitionDesc(range_key)
+            .setCommitId(Uuid.newBuilder().setHigh(addUUID.getMostSignificantBits).setLow(addUUID.getLeastSignificantBits).build())
+            .addAllFileOps(fileOps.toList.asJava)
+            .setCommitOp(CommitOp.valueOf(commit_type))
+            .setTimestamp(System.currentTimeMillis())
+            .setCommitted(false)
+            .build()
+
+          add_partition_info_arr_buf += PartitionInfoScala(
+            table_id = tableInfo.table_id,
+            range_value = range_key,
+            read_files = Array(addUUID)
+          )
+        }
+      })
+    }
+
+    (add_file_arr_buf.result(), add_partition_info_arr_buf.result())
+  }
+
+  def commitDataCommitInfo(add_file_arr_buf: List[DataCommitInfo],
+                           add_partition_info_arr_buf: List[PartitionInfoScala],
+                           query_id: String,
+                           batch_id: Long,
+                           readPartitionInfo: Array[PartitionInfoScala]): Unit = {
+    val meta_info = MetaInfo(
+      table_info = tableInfo.copy(short_table_name = shortTableName),
+      dataCommitInfo = add_file_arr_buf.toArray,
+      partitionInfoArray = add_partition_info_arr_buf.toArray,
+      commit_type = commitType.getOrElse(CommitType("append")),
+      query_id = query_id,
+      batch_id = batch_id,
+      readPartitionInfo = readPartitionInfo
+    )
+
+    try {
+      val changeSchema = !isFirstCommit && newTableInfo.nonEmpty
+      MetaCommit.doMetaCommit(meta_info, changeSchema)
+    } catch {
+      case e: MetaRerunException => throw e
+      case e: Throwable => throw e
+    }
+
+    committed = true
   }
 
   def getCommitIdByBatchIdAndQueryId(batch_id: Long, query_id: String): UUID = {

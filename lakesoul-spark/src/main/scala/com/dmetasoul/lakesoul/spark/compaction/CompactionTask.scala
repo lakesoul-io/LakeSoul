@@ -22,18 +22,23 @@ object CompactionTask {
   val dateFormat: SimpleDateFormat = new SimpleDateFormat("yyyy/MM/dd HH:mm:ss")
   val THREADPOOL_SIZE_PARAMETER = "threadpool.size"
   val DATABASE_PARAMETER = "database"
+  val FILE_NUM_LIMIT_PARAMETER = "file_num_limit"
 
   val NOTIFY_CHANNEL_NAME = "lakesoul_compaction_notify"
   val threadMap: java.util.Map[String, Integer] = new ConcurrentHashMap
 
   var threadPoolSize = 8
   var database = ""
+  var fileNumLimit: Option[Int] = None
 
   def main(args: Array[String]): Unit = {
 
     val parameter = ParametersTool.fromArgs(args)
     threadPoolSize = parameter.getInt(THREADPOOL_SIZE_PARAMETER, 8)
     database = parameter.get(DATABASE_PARAMETER, "")
+    if (parameter.has(FILE_NUM_LIMIT_PARAMETER)) {
+      fileNumLimit = Some(parameter.getInt(FILE_NUM_LIMIT_PARAMETER))
+    }
 
     val builder = SparkSession.builder()
       .config("spark.sql.parquet.mergeSchema", value = true)
@@ -94,14 +99,14 @@ object CompactionTask {
       try {
         val table = LakeSoulTable.forPath(path)
         if (partitionDesc == "") {
-          table.compaction()
+          table.compaction(fileNumLimit = fileNumLimit)
         } else {
           val partitions = partitionDesc.split(",").map(
             partition => {
               partition.replace("=", "='") + "'"
             }
           ).mkString(" and ")
-          table.compaction(partitions, true)
+          table.compaction(partitions, cleanOldCompaction = true, fileNumLimit = fileNumLimit)
         }
       } catch {
         case e: Exception => throw e
