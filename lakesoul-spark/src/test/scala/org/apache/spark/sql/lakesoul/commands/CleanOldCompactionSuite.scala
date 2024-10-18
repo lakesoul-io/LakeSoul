@@ -106,6 +106,7 @@ class CleanOldCompactionSuite extends QueryTest
         LakeSoulTable.forPath(tableName).upsert(df1)
         LakeSoulTable.forPath(tableName).compaction(cleanOldCompaction = true)
 
+        LakeSoulTable.uncached(tableName)
         val sm = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(tableName)).toString)
         val fs = FileSystem.get(spark.sparkContext.hadoopConfiguration)
         assert(LakeSoulTable.forPath(tableName).toDF.count() == 4)
@@ -136,6 +137,7 @@ class CleanOldCompactionSuite extends QueryTest
 
         LakeSoulTable.forPath(tableName).upsert(df1)
         LakeSoulTable.forPath(tableName).compaction(cleanOldCompaction = true)
+        LakeSoulTable.uncached(tableName)
         val sm = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(tableName)).toString)
         assert(LakeSoulTable.forPath(tableName).toDF.count() == 4)
         val fs = FileSystem.get(spark.sparkContext.hadoopConfiguration)
@@ -173,6 +175,7 @@ class CleanOldCompactionSuite extends QueryTest
         setPartitionInfoTimestamp(tableId, getExpiredDateZeroTimeStamp(3), 2)
         LakeSoulTable.forPath(tableName).compaction(cleanOldCompaction = true)
         cleanAllPartitionExpiredData(spark)
+        LakeSoulTable.uncached(tableName)
         if (onlySaveOnceCompaction) {
           assert(readPartitionInfo(tableId, spark).count() == 2)
           assert(readDataCommitInfo(tableId, spark).count() == 2)
@@ -217,6 +220,7 @@ class CleanOldCompactionSuite extends QueryTest
         setPartitionInfoTimestamp(tableId, getExpiredDateZeroTimeStamp(5), 1)
         setPartitionInfoTimestamp(tableId, getExpiredDateZeroTimeStamp(3), 2)
         cleanAllPartitionExpiredData(spark)
+        LakeSoulTable.uncached(tableName)
         assert(readPartitionInfo(tableId, spark).count() == 0)
         assert(readDataCommitInfo(tableId, spark).count() == 0)
 
@@ -255,6 +259,7 @@ class CleanOldCompactionSuite extends QueryTest
         setPartitionInfoTimestamp(tableId, getExpiredDateZeroTimeStamp(6), 0)
         setPartitionInfoTimestamp(tableId, getExpiredDateZeroTimeStamp(5), 1)
         cleanAllPartitionExpiredData(spark)
+        LakeSoulTable.uncached(tableName)
         assert(readPartitionInfo(tableId, spark).count() == 6)
         assert(readDataCommitInfo(tableId, spark).count() == 6)
 
@@ -293,6 +298,7 @@ class CleanOldCompactionSuite extends QueryTest
         setPartitionInfoTimestamp(tableId, getExpiredDateZeroTimeStamp(5), 1)
         setPartitionInfoTimestamp(tableId, getExpiredDateZeroTimeStamp(4), 2)
         cleanAllPartitionExpiredData(spark)
+        LakeSoulTable.uncached(tableName)
         assert(readPartitionInfo(tableId, spark).count() == 0)
         assert(readDataCommitInfo(tableId, spark).count() == 0)
 
@@ -331,6 +337,7 @@ class CleanOldCompactionSuite extends QueryTest
         setPartitionInfoTimestamp(tableId, getExpiredDateZeroTimeStamp(5), 1)
         setPartitionInfoTimestamp(tableId, getExpiredDateZeroTimeStamp(4), 2)
         cleanAllPartitionExpiredData(spark)
+        LakeSoulTable.uncached(tableName)
         if (onlySaveOnceCompaction) {
           assert(readPartitionInfo(tableId, spark).count() == 2)
           assert(readDataCommitInfo(tableId, spark).count() == 2)
@@ -371,6 +378,7 @@ class CleanOldCompactionSuite extends QueryTest
 
         LakeSoulTable.forPath(tableName).compaction(cleanOldCompaction = onlySaveOnceCompaction)
         cleanAllPartitionExpiredData(spark)
+        LakeSoulTable.uncached(tableName)
         assert(readPartitionInfo(tableId, spark).count() == 8)
         assert(readDataCommitInfo(tableId, spark).count() == 8)
       })
@@ -403,6 +411,7 @@ class CleanOldCompactionSuite extends QueryTest
         //      assert(readPartitionInfo(tableId, spark).count() == 4)
         //      assert(readDataCommitInfo(tableId, spark).count() == 4)
         //if parttition.ttl has benn set and all partition is expired
+        LakeSoulTable.uncached(tableName)
         assert(readPartitionInfo(tableId, spark).count() == 0)
         assert(readDataCommitInfo(tableId, spark).count() == 0)
       })
@@ -431,6 +440,7 @@ class CleanOldCompactionSuite extends QueryTest
         setPartitionInfoTimestamp(tableId, getExpiredDateZeroTimeStamp(6), 0)
         setPartitionInfoTimestamp(tableId, getExpiredDateZeroTimeStamp(5), 1)
         cleanAllPartitionExpiredData(spark)
+        LakeSoulTable.uncached(tableName)
         val fs = FileSystem.get(spark.sparkContext.hadoopConfiguration)
         assert(fileCount(sm.table_path, fs) == 0)
       })
@@ -464,6 +474,7 @@ class CleanOldCompactionSuite extends QueryTest
         LakeSoulTable.forPath(tableName).update(col("date") > "2020-01-01", Map("date" -> lit("2021-01-03")))
         cleanAllPartitionExpiredData(spark)
         LakeSoulTable.forPath(tableName).toDF.show()
+        LakeSoulTable.uncached(tableName)
         if (onlySaveOnceCompaction) {
           assert(readPartitionInfo(tableId, spark).count() == 2)
           assert(readDataCommitInfo(tableId, spark).count() == 2)
