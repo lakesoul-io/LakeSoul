@@ -285,6 +285,28 @@ public class DMLSuite extends AbstractTestBase {
     }
 
     @Test
+    public void testSelectWithLimit() throws ExecutionException, InterruptedException {
+        TableEnvironment tEnv = TestUtils.createTableEnv(BATCH_TYPE);
+        createLakeSoulSourceTableUserWithRange(tEnv);
+        tEnv.executeSql(
+                        "INSERT INTO user_info_1 VALUES (2, 'Alice', 80),(3, 'Jack', 75),(3, 'Amy', 95),(4, 'Bob', 110)")
+                .await();
+        String testSelect = "select * from user_info_1 limit 2";
+        List<Row> result = CollectionUtil.iteratorToList(tEnv.executeSql(testSelect).collect());
+        assert result.size() == 2;
+        String testSelect1 = "select * from user_info_1 limit 9";
+        List<Row> result1 = CollectionUtil.iteratorToList(tEnv.executeSql(testSelect1).collect());
+        assert result1.size() == 4;
+        StreamTableEnvironment streamEnv = TestUtils.createStreamTableEnv(BATCH_TYPE);
+        TableImpl flinkTable = (TableImpl) streamEnv.sqlQuery(testSelect);
+        List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
+        assert result.size() == 2;
+        TableImpl flinkTable1 = (TableImpl) streamEnv.sqlQuery(testSelect1);
+        List<Row> result2 = CollectionUtil.iteratorToList(flinkTable1.execute().collect());
+        assert result2.size() == 4;
+    }
+
+    @Test
     public void testDeleteAllPartitionedDataExactlySQL() throws ExecutionException, InterruptedException {
         TableEnvironment tEnv = TestUtils.createTableEnv(BATCH_TYPE);
         createLakeSoulSourceTableUserWithRange(tEnv);

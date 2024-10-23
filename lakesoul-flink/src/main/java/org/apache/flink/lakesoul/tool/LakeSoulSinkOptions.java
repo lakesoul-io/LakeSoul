@@ -11,7 +11,7 @@ import org.apache.flink.core.fs.Path;
 
 import java.time.Duration;
 
-public class LakeSoulSinkOptions {
+public class  LakeSoulSinkOptions {
 
     public static final String FACTORY_IDENTIFIER = "lakesoul";
 
@@ -231,6 +231,11 @@ public class LakeSoulSinkOptions {
             .booleanType()
             .defaultValue(false)
             .withDescription("If true, lakesoul sink will auto change sink table's schema");
+    public static final ConfigOption<Long> LIMIT = ConfigOptions
+            .key("lakesoul.limit")
+            .longType()
+            .defaultValue(Long.MAX_VALUE)
+            .withDescription("limit io read num");
 }
 
 

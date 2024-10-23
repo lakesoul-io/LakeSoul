@@ -25,6 +25,7 @@ import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.connector.source.ScanTableSource;
 import org.apache.flink.table.connector.source.SourceProvider;
 import org.apache.flink.table.connector.source.abilities.SupportsFilterPushDown;
+import org.apache.flink.table.connector.source.abilities.SupportsLimitPushDown;
 import org.apache.flink.table.connector.source.abilities.SupportsProjectionPushDown;
 import org.apache.flink.table.connector.source.abilities.SupportsRowLevelModificationScan;
 import org.apache.flink.table.expressions.ResolvedExpression;
@@ -47,7 +48,7 @@ import static com.dmetasoul.lakesoul.lakesoul.io.substrait.SubstraitUtil.substra
 
 public class LakeSoulTableSource
         implements SupportsFilterPushDown, SupportsProjectionPushDown, ScanTableSource,
-        SupportsRowLevelModificationScan {
+        SupportsRowLevelModificationScan, SupportsLimitPushDown {
 
     private static final Logger LOG = LoggerFactory.getLogger(LakeSoulTableSource.class);
 
@@ -350,5 +351,10 @@ public class LakeSoulTableSource
 
     public LakeSoulRowLevelModificationScanContext getModificationContext() {
         return modificationContext;
+    }
+
+    @Override
+    public void applyLimit(long limit) {
+        this.optionParams.put(LakeSoulSinkOptions.LIMIT.key(),String.valueOf(limit));
     }
 }

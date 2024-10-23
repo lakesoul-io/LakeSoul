@@ -32,6 +32,7 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BATCH_SIZE;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.LIMIT;
 
 public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowData>, AutoCloseable {
 
@@ -79,6 +80,9 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
 
     private final Plan filter;
 
+    private long totalRead = 0;
+    private long limit = Long.MAX_VALUE;
+
     public LakeSoulOneSplitRecordsReader(Configuration conf,
                                          LakeSoulPartitionSplit split,
                                          RowType tableRowType,
@@ -106,6 +110,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
         this.partitionSchema = new Schema(partitionFields);
         this.partitionValues = DBUtil.parsePartitionDesc(split.getPartitionDesc());
         this.filter = filter;
+        this.limit = conf.getLong(LIMIT, LIMIT.defaultValue());
         initializeReader();
         recoverFromSkipRecord();
     }
@@ -187,9 +192,11 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
                 }
                 this.currentVCR = this.reader.nextResultVectorSchemaRoot();
                 skipRowCount += this.currentVCR.getRowCount();
+
             }
             skipRowCount -= currentVCR.getRowCount();
             curRecordIdx = (int) (skipRecords - skipRowCount);
+            totalRead = skipRecords;
         } else {
             if (this.reader.hasNext()) {
                 this.currentVCR = this.reader.nextResultVectorSchemaRoot();
@@ -217,6 +224,11 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
             return null;
         }
         while (true) {
+            if (totalRead >= this.limit) {
+                this.reader.close();
+                LOG.info("Reach limit condition {}", split);
+                return null;
+            }
             if (curRecordIdx >= currentVCR.getRowCount()) {
                 if (this.reader.hasNext()) {
                     this.currentVCR = this.reader.nextResultVectorSchemaRoot();
@@ -262,6 +274,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
             rd = this.curArrowReaderRequestedSchema.read(rowId);
             // change rowkind if needed
             rd.setRowKind(rk);
+            totalRead++;
             return rd;
         }
     }
