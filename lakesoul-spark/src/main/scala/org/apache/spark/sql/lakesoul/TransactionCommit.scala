@@ -121,6 +121,8 @@ trait Transaction extends TransactionalWrite with Logging {
   protected lazy val table_path: String = tableInfo.table_path_s.get
 
 
+  protected val renameFiles = new ArrayBuffer[(Path, Path)]
+
   /**
     * Tracks the data that could have been seen by recording the partition
     * predicates by which files have been queried by by this transaction.
@@ -370,6 +372,26 @@ trait Transaction extends TransactionalWrite with Logging {
     (add_file_arr_buf.result(), add_partition_info_arr_buf.result())
   }
 
+  def addRenameFile(src: Path, dst: Path): Unit = {
+    renameFiles += src -> dst
+  }
+
+  def clearRenameFile(): Unit = renameFiles.clear()
+
+  private def doRenameFile(): Unit = {
+    if (renameFiles.nonEmpty) {
+      val fs = renameFiles.head._1.getFileSystem(spark.sessionState.newHadoopConf())
+      renameFiles.foreach(srcAndDst => fs.rename(srcAndDst._1, srcAndDst._2))
+    }
+  }
+
+  private def rollbackRenameFile(): Unit = {
+    if (renameFiles.nonEmpty) {
+      val fs = renameFiles.head._1.getFileSystem(spark.sessionState.newHadoopConf())
+      renameFiles.foreach(srcAndDst => fs.rename(srcAndDst._2, srcAndDst._1))
+    }
+  }
+
   def commitDataCommitInfo(add_file_arr_buf: List[DataCommitInfo],
                            add_partition_info_arr_buf: List[PartitionInfoScala],
                            query_id: String,
@@ -386,11 +408,16 @@ trait Transaction extends TransactionalWrite with Logging {
     )
 
     try {
+      doRenameFile()
       val changeSchema = !isFirstCommit && newTableInfo.nonEmpty
       MetaCommit.doMetaCommit(meta_info, changeSchema)
     } catch {
-      case e: MetaRerunException => throw e
-      case e: Throwable => throw e
+      case e: MetaRerunException =>
+        rollbackRenameFile()
+        throw e
+      case e: Throwable =>
+        rollbackRenameFile()
+        throw e
     }
 
     committed = true

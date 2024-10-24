@@ -18,6 +18,7 @@ import org.apache.spark.sql.connector.write._
 import org.apache.spark.sql.lakesoul._
 import org.apache.spark.sql.lakesoul.commands.WriteIntoTable
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf.NATIVE_IO_CDC_COLUMN
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulDataSource, LakeSoulSQLConf, LakeSoulSourceUtils}
 import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.sources.{BaseRelation, Filter, InsertableRelation}
@@ -64,7 +65,14 @@ case class LakeSoulTableV2(spark: SparkSession,
 
   // The loading of the SnapshotManagement is lazy in order to reduce the amount of FileSystem calls,
   // in cases where we will fallback to the V1 behavior.
-  lazy val snapshotManagement: SnapshotManagement = SnapshotManagement(rootPath, namespace)
+  lazy val snapshotManagement: SnapshotManagement = {
+    val mgr = SnapshotManagement(rootPath, namespace)
+    val cdcColumn = mgr.snapshot.getTableInfo.configuration.get(LakeSoulTableProperties.lakeSoulCDCChangePropKey)
+    if (cdcColumn.isDefined) {
+      spark.sessionState.conf.setConfString(NATIVE_IO_CDC_COLUMN.key, cdcColumn.get)
+    }
+    mgr
+  }
 
   override def name(): String = catalogTable.map(_.identifier.unquotedString)
     .orElse(tableIdentifier)

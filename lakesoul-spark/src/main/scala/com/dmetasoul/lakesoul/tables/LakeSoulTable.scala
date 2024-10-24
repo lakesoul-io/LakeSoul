@@ -5,7 +5,7 @@
 package com.dmetasoul.lakesoul.tables
 
 import com.dmetasoul.lakesoul.meta.DBConfig.{LAKESOUL_HASH_PARTITION_SPLITTER, LAKESOUL_RANGE_PARTITION_SPLITTER}
-import com.dmetasoul.lakesoul.meta.SparkMetaVersion
+import com.dmetasoul.lakesoul.meta.{DBUtil, SparkMetaVersion}
 import com.dmetasoul.lakesoul.tables.execution.LakeSoulTableOperations
 import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
@@ -314,6 +314,7 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
                  cleanOldCompaction: Boolean = false,
                  fileNumLimit: Option[Int] = None,
                  newBucketNum: Option[Int] = None,
+                 fileSizeLimit: Option[String] = None,
                 ): Unit = {
     val newMergeOpInfo = mergeOperatorInfo.map(m => {
       val key =
@@ -330,7 +331,8 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
       (key, value)
     })
 
-    executeCompaction(df, snapshotManagement, condition, force, newMergeOpInfo, hiveTableName, hivePartitionName, cleanOldCompaction, fileNumLimit, newBucketNum)
+    val parsedFileSizeLimit = fileSizeLimit.map(DBUtil.parseMemoryExpression)
+    executeCompaction(df, snapshotManagement, condition, force, newMergeOpInfo, hiveTableName, hivePartitionName, cleanOldCompaction, fileNumLimit, newBucketNum, parsedFileSizeLimit)
   }
 
   def setCompactionTtl(days: Int): LakeSoulTable = {

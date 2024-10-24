@@ -175,7 +175,8 @@ trait LakeSoulTableOperations extends AnalysisHelper {
                                   hivePartitionName: String = "",
                                   cleanOldCompaction: Boolean,
                                   fileNumLimit: Option[Int],
-                                  newBucketNum: Option[Int]): Unit = {
+                                  newBucketNum: Option[Int],
+                                  fileSizeLimit: Option[Long]): Unit = {
     toDataset(sparkSession, CompactionCommand(
       snapshotManagement,
       condition,
@@ -185,7 +186,8 @@ trait LakeSoulTableOperations extends AnalysisHelper {
       hivePartitionName,
       cleanOldCompaction,
       fileNumLimit,
-      newBucketNum
+      newBucketNum,
+      fileSizeLimit
     ))
   }
 

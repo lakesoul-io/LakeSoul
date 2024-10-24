@@ -99,17 +99,35 @@ object LakeSoulSQLConf {
     buildConf("native.io.enable")
       .doc(
         """
-           |If ture, NativeIO would be enabled for both read and write
+          |If ture, NativeIO would be enabled for both read and write
         """.stripMargin)
       .booleanConf
       .createWithDefault(true)
+
+  val NATIVE_IO_CDC_COLUMN: ConfigEntry[String] =
+    buildConf("native.io.cdc_column")
+      .doc(
+        """
+          |If empty, table have no cdc column
+        """.stripMargin)
+      .stringConf
+      .createWithDefault("")
+
+  val NATIVE_IO_IS_COMPACTED: ConfigEntry[String] =
+    buildConf("native.io.is_compacted")
+      .doc(
+        """
+          |If ture, Native Reader would read data as compacted data
+        """.stripMargin)
+      .stringConf
+      .createWithDefault("false")
 
 
   val NATIVE_IO_PREFETCHER_BUFFER_SIZE: ConfigEntry[Int] =
     buildConf("native.io.prefetch.buffer.size")
       .doc(
         """
-           |If NATIVE_IO_ENABLE=true, NATIVE_IO_PREFETCHER_BUFFER_SIZE of batches will be buffered while native-io prefetching
+          |If NATIVE_IO_ENABLE=true, NATIVE_IO_PREFETCHER_BUFFER_SIZE of batches will be buffered while native-io prefetching
         """.stripMargin)
       .intConf
       .createWithDefault(1)

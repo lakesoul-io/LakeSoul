@@ -22,6 +22,8 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import static com.dmetasoul.lakesoul.meta.DBConfig.*;
@@ -373,4 +375,25 @@ public class DBUtil {
         }
 
     }
+
+    public static long parseMemoryExpression(String memoryExpression) {
+        Pattern pattern = Pattern.compile("(\\d+)(\\w+)");
+        Matcher matcher = pattern.matcher(memoryExpression);
+        if (matcher.find()) {
+            long value = Long.parseLong(matcher.group(1));
+            String unit = matcher.group(2);
+            switch (unit) {
+                case "KB":
+                    return value * 1024;
+                case "MB":
+                    return value * 1024 * 1024;
+                case "GB":
+                    return value * 1024 * 1024 * 1024;
+                default:
+                    return value;
+            }
+        }
+        return 0;
+    }
+
 }

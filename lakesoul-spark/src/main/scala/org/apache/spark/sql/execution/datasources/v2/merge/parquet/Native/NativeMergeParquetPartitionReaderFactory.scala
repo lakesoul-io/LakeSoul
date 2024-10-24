@@ -17,15 +17,15 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.catalyst.util.RebaseDateTime.RebaseSpec
-import org.apache.spark.sql.connector.read.{InputPartition, PartitionReader}
+import org.apache.spark.sql.connector.read.PartitionReader
 import org.apache.spark.sql.execution.datasources.parquet._
 import org.apache.spark.sql.execution.datasources.v2.merge.MergePartitionedFile
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
 import org.apache.spark.sql.execution.datasources.{DataSourceUtils, RecordReaderIterator}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf.{NATIVE_IO_ENABLE, NATIVE_IO_PREFETCHER_BUFFER_SIZE, NATIVE_IO_READER_AWAIT_TIMEOUT, NATIVE_IO_THREAD_NUM}
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf._
 import org.apache.spark.sql.sources.Filter
-import org.apache.spark.sql.types.{AtomicType, StructField, StructType}
+import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 
@@ -70,7 +70,8 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
   private val nativeIOPrefecherBufferSize = sqlConf.getConf(NATIVE_IO_PREFETCHER_BUFFER_SIZE)
   private val nativeIOThreadNum = sqlConf.getConf(NATIVE_IO_THREAD_NUM)
   private val nativeIOAwaitTimeout = sqlConf.getConf(NATIVE_IO_READER_AWAIT_TIMEOUT)
-
+  private val nativeIOCdcColumn = sqlConf.getConf(NATIVE_IO_CDC_COLUMN)
+  private val nativeIOIsCompacted = sqlConf.getConf(NATIVE_IO_IS_COMPACTED)
 
   // schemea: path->schema    source: path->file|path->file|path->file
   private val requestSchemaMap: mutable.Map[String, String] = broadcastedConf.value.value
@@ -174,6 +175,12 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
     logDebug(s"Appending $partitionSchema $partitionValues")
 
     val mergeOp = mergeOperatorInfo.map(tp => (tp._1, tp._2.toNativeName))
+    val options = mutable.Map[String, String]()
+    if (nativeIOCdcColumn.nonEmpty) {
+      options += ("cdc_column" -> nativeIOCdcColumn)
+    }
+    options += ("is_compacted" -> nativeIOIsCompacted)
+    vectorizedReader.setOptions(options.asJava)
 
     // multi files
     val file = files.head

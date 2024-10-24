@@ -6,10 +6,10 @@ package org.apache.spark.sql.lakesoul.commands
 
 import com.alibaba.fastjson.JSON
 import com.dmetasoul.lakesoul.meta.DBConfig.TableInfoProperty
-import com.dmetasoul.lakesoul.meta.entity.DataCommitInfo
+import com.dmetasoul.lakesoul.meta.entity.{DataCommitInfo, DataFileOp, FileOp}
 import com.dmetasoul.lakesoul.meta.{DBUtil, DataFileInfo, PartitionInfoScala, SparkMetaVersion}
-import com.dmetasoul.lakesoul.spark.clean.CleanOldCompaction.cleanOldCommitOpDiskData
-import org.apache.hadoop.fs.Path
+import com.dmetasoul.lakesoul.spark.clean.CleanOldCompaction.{cleanOldCommitOpDiskData, splitCompactFilePath}
+import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.PredicateHelper
 import org.apache.spark.sql.connector.catalog.CatalogManager.SESSION_CATALOG_NAME
@@ -40,11 +40,18 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
                              hivePartitionName: String = "",
                              cleanOldCompaction: Boolean,
                              fileNumLimit: Option[Int] = None,
-                             newBucketNum: Option[Int] = None
+                             newBucketNum: Option[Int] = None,
+                             fileSizeLimit: Option[Long] = None,
                             )
   extends LeafRunnableCommand with PredicateHelper with Logging {
 
   def newCompactPath: String = tableInfo.table_path.toString + "/compact_" + System.currentTimeMillis()
+
+
+  def getFs(sparkSession: SparkSession, path: Path): FileSystem = {
+    val sessionHadoopConf = sparkSession.sessionState.newHadoopConf()
+    path.getFileSystem(sessionHadoopConf)
+  }
 
   lazy val bucketNumChanged: Boolean = newBucketNum.exists(tableInfo.bucket_num != _)
 
@@ -56,8 +63,13 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
     partitionInfo.read_files.length >= 1
   }
 
-  def executeCompaction(spark: SparkSession, tc: TransactionCommit, files: Seq[DataFileInfo], readPartitionInfo: Array[PartitionInfoScala], compactPath: String): List[DataCommitInfo] = {
-    if (readPartitionInfo.forall(p => p.commit_op.equals("CompactionCommit") && p.read_files.length == 1)) {
+  def executeCompaction(spark: SparkSession,
+                        tc: TransactionCommit,
+                        files: Seq[DataFileInfo],
+                        readPartitionInfo: Array[PartitionInfoScala],
+                        compactPath: String,
+                        fullCompact: Boolean): List[DataCommitInfo] = {
+    if (newBucketNum.isEmpty && readPartitionInfo.forall(p => p.commit_op.equals("CompactionCommit") && p.read_files.length == 1)) {
       logInfo("=========== All Partitions Have Compacted, This Operation Will Cancel!!! ===========")
       return List.empty
     }
@@ -109,6 +121,10 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
     val map = mutable.HashMap[String, String]()
     map.put("isCompaction", "true")
     map.put("compactPath", compactPath)
+    map.put("fullCompact", fullCompact.toString)
+    if (fileNumLimit.isDefined) {
+      map.put("fileNumLimit", "true")
+    }
     if (readPartitionInfo.nonEmpty) {
       map.put("partValue", readPartitionInfo.head.range_value)
     }
@@ -139,6 +155,43 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
     builder.toString()
   }
 
+  def renameOldCompactedFile(tc: TransactionCommit,
+                             files: Seq[DataFileInfo],
+                             partitionDesc: String,
+                             dstCompactPath: String): List[DataCommitInfo] = {
+    val srcFile = files.head
+
+    val srcPath = new Path(srcFile.path)
+    val (srcCompactDir, srcBasePath) = splitCompactFilePath(srcFile.path)
+    val dstPath = new Path(dstCompactPath, srcBasePath)
+    val dstFile = srcFile.copy(path = dstPath.toString)
+    tc.addRenameFiles(Seq(srcPath -> dstPath))
+
+    val current = System.currentTimeMillis()
+
+    List(DataCommitInfo.newBuilder()
+      .setTableId(tableInfo.table_id)
+      .setPartitionDesc(partitionDesc)
+      .addAllFileOps(
+        List(DataFileOp.newBuilder()
+          .setPath(dstFile.path)
+          .setFileOp(FileOp.add)
+          .setSize(dstFile.size)
+          .setFileExistCols(dstFile.file_exist_cols)
+          .build(),
+          DataFileOp.newBuilder()
+            .setPath(srcFile.path)
+            .setFileOp(FileOp.del)
+            .setSize(srcFile.size)
+            .setFileExistCols(srcFile.file_exist_cols)
+            .build(),
+        ).asJava
+      )
+      .setTimestamp(current)
+      .setCommitted(false)
+      .build())
+  }
+
   def compactSinglePartition(sparkSession: SparkSession, tc: TransactionCommit, files: Seq[DataFileInfo], sourcePartition: PartitionInfoScala): String = {
     logInfo(s"Compacting Single Partition=${sourcePartition} with ${files.length} files")
     val bucketedFiles = if (tableInfo.hash_partition_columns.isEmpty || bucketNumChanged) {
@@ -149,28 +202,47 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
     val compactPath = newCompactPath
     val allDataCommitInfo = bucketedFiles.flatMap(groupByBucketId => {
       val (bucketId, files) = groupByBucketId
-      val groupedFiles = if (fileNumLimit.isDefined) {
-        val groupSize = fileNumLimit.get
+      val groupedFiles = if (fileNumLimit.isDefined || fileSizeLimit.isDefined) {
         val groupedFiles = new ArrayBuffer[Seq[DataFileInfo]]
-        for (i <- files.indices by groupSize) {
-          groupedFiles += files.slice(i, i + groupSize)
+        var groupHead = 0
+        var groupSize = 0L
+        var groupFileCount = 0
+        for (i <- files.indices) {
+          // each group contains at least one file
+          if (i == groupHead) {
+            groupSize += files(i).size
+            groupFileCount += 1
+          } else if (fileSizeLimit.exists(groupSize + files(i).size > _) || fileNumLimit.exists(groupFileCount + 1 > _)) {
+            // if the file size limit is reached, or the file count limit is reached, we need to start a new group
+            groupedFiles += files.slice(groupHead, i)
+            groupHead = i
+            groupSize = files(i).size
+            groupFileCount = 1
+          } else {
+            // otherwise, we add the file to the current group
+            groupSize += files(i).size
+            groupFileCount += 1
+          }
         }
+        // add the last group to the groupedFiles
+        groupedFiles += files.slice(groupHead, files.length)
         groupedFiles
       } else {
         Seq(files)
       }
+      val fullCompact = groupedFiles.size == 1
 
       groupedFiles.flatMap(files => {
-        lazy val hasNoDeltaFile = if (force) {
+        lazy val hasNoDeltaFile = if (force || newBucketNum.isDefined) {
           false
         } else {
-          files.forall(_.size == 1)
+          files.size == 1 && splitCompactFilePath(files.head.path)._1.nonEmpty
         }
         if (!hasNoDeltaFile) {
-          executeCompaction(sparkSession, tc, files, Array(sourcePartition), compactPath)
+          executeCompaction(sparkSession, tc, files, Array(sourcePartition), compactPath, fullCompact)
         } else {
           logInfo(s"== Partition ${sourcePartition.range_value} has no delta file.")
-          None
+          renameOldCompactedFile(tc, files, sourcePartition.range_value, compactPath)
         }
       })
     })

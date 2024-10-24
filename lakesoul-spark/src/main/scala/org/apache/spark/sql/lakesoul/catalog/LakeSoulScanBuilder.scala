@@ -4,7 +4,7 @@
 
 package org.apache.spark.sql.lakesoul.catalog
 
-import com.dmetasoul.lakesoul.meta.DataFileInfo
+import com.dmetasoul.lakesoul.meta.{DataFileInfo, DataOperation}
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.{SparkSession, sources}
@@ -18,6 +18,7 @@ import org.apache.spark.sql.execution.datasources.v2.merge.{MultiPartitionMergeB
 import org.apache.spark.sql.execution.datasources.v2.parquet.{EmptyParquetScan, NativeParquetScan, ParquetScan, StreamParquetScan}
 import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf.NATIVE_IO_IS_COMPACTED
 import org.apache.spark.sql.lakesoul.utils.{SparkUtil, TableInfo}
 import org.apache.spark.sql.lakesoul.{LakeSoulFileIndexV2, LakeSoulUtils}
 import org.apache.spark.sql.sources.Filter
@@ -113,19 +114,17 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
     } else {
       hasNoDeltaFile = fileInfo.forall(f => f._2.size <= 1)
     }
+    if (fileIndex.snapshotManagement.snapshot.getPartitionInfoArray.forall(p => p.commit_op.equals("CompactionCommit"))) {
+      sparkSession.sessionState.conf.setConfString(NATIVE_IO_IS_COMPACTED.key, "true")
+    }
     if (fileInfo.isEmpty) {
       EmptyParquetScan(sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
         readPartitionSchema(), pushedParquetFilters, options, partitionFilters, dataFilters)
     } else if (tableInfo.hash_partition_columns.isEmpty) {
       parquetScan()
     } else if (onlyOnePartition) {
-      if (fileIndex.snapshotManagement.snapshot.getPartitionInfoArray.forall(p => p.commit_op.equals("CompactionCommit")
-        && p.read_files.length == 1)) {
-        parquetScan()
-      } else {
-        OnePartitionMergeBucketScan(sparkSession, hadoopConf, fileIndex, dataSchema, mergeReadDataSchema(),
-          readPartitionSchema(), pushedParquetFilters, options, tableInfo, partitionFilters, dataFilters)
-      }
+      OnePartitionMergeBucketScan(sparkSession, hadoopConf, fileIndex, dataSchema, mergeReadDataSchema(),
+        readPartitionSchema(), pushedParquetFilters, options, tableInfo, partitionFilters, dataFilters)
     } else {
       if (sparkSession.sessionState.conf
         .getConf(LakeSoulSQLConf.BUCKET_SCAN_MULTI_PARTITION_ENABLE)) {
