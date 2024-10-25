@@ -154,6 +154,8 @@ impl SyncSendableMutableLakeSoulReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::array::as_primitive_array;
+    use arrow_array::ArrayRef;
     use rand::prelude::*;
     use std::mem::ManuallyDrop;
     use std::ops::Not;
@@ -161,7 +163,7 @@ mod tests {
     use std::time::Instant;
     use tokio::runtime::Builder;
 
-    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::datatypes::{DataType, Field, Schema, TimestampSecondType};
     use arrow::util::pretty::print_batches;
 
     #[tokio::test]
@@ -622,4 +624,64 @@ mod tests {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_read_file() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, true),
+            Field::new("range", DataType::Int32, true),
+            Field::new("datetimeSec", DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, Some(Arc::from("UTC"))), true),
+        ]));
+        let partition_schema = Arc::new(Schema::new(vec![Field::new("range", DataType::Int32, true)]));
+        let reader_conf = LakeSoulIOConfigBuilder::new()
+            .with_files(vec!["file:/private/tmp/test_local_java_table/range=0/part-AX31Bzzu4jGi23qY_0000.parquet".to_string()])
+            // .with_files(vec!["file:/var/folders/4c/34n9w2cd65n0pyjkc3n4q7pc0000gn/T/lakeSource/user1/order_id=4/part-59guLCg5R6v4oLUT_0000.parquet".to_string()])
+            .with_thread_num(1)
+            .with_batch_size(8192)
+            .with_schema(schema)
+            .with_partition_schema(partition_schema)
+            .with_default_column_value("range".to_string(), "0".to_string())
+            // .set_inferring_schema(true)
+            .build();
+        let reader = LakeSoulReader::new(reader_conf)?;
+        let mut reader = ManuallyDrop::new(reader);
+        reader.start().await?;
+        static mut ROW_CNT: usize = 0;
+
+        let start = Instant::now();
+        while let Some(rb) = reader.next_rb().await {
+            dbg!(&rb);
+            let num_rows = &rb.unwrap().num_rows();
+            unsafe {
+                ROW_CNT += num_rows;
+                println!("{}", ROW_CNT);
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+        println!("time cost: {:?}ms", start.elapsed().as_millis()); // ms
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_as_primitive_array_timestamp_second_type() -> Result<()> {
+        use arrow_array::{Array, TimestampSecondArray};
+        use arrow_schema::DataType;
+        use std::sync::Arc;
+
+        // 创建一个 TimestampSecondArray
+        let data = vec![Some(1627846260), Some(1627846261), None, Some(1627846263)];
+        let array = Arc::new(TimestampSecondArray::from(data)) as ArrayRef;
+
+        // 调用 as_primitive_array::<TimestampSecondType>(&array)
+        let primitive_array = as_primitive_array::<TimestampSecondType>(&array);
+
+        // 验证结果
+        assert_eq!(primitive_array.value(0), 1627846260);
+        assert_eq!(primitive_array.value(1), 1627846261);
+        assert!(primitive_array.is_null(2));
+        assert_eq!(primitive_array.value(3), 1627846263);
+        Ok(())
+    }
+
 }

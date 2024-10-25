@@ -29,12 +29,18 @@ public abstract class DBConfig {
     public static String LAKESOUL_PARTITION_DESC_KV_DELIM = "=";
 
     public static class TableInfoProperty {
-        public static String HASH_BUCKET_NUM = "hashBucketNum";
+        public static final String HASH_BUCKET_NUM = "hashBucketNum";
 
-        public static String DROPPED_COLUMN = "droppedColumn";
+        public static final String DROPPED_COLUMN = "droppedColumn";
 
-        public static String DROPPED_COLUMN_SPLITTER = ",";
+        public static final String DROPPED_COLUMN_SPLITTER = ",";
 
-        public static String LAST_TABLE_SCHEMA_CHANGE_TIME = "last_schema_change_time";
+        public static final String LAST_TABLE_SCHEMA_CHANGE_TIME = "last_schema_change_time";
+
+        public static final String USE_CDC = "use_cdc";
+
+        public static final String CDC_CHANGE_COLUMN = "lakesoul_cdc_change_column";
+
+        public static final String CDC_CHANGE_COLUMN_DEFAULT = "rowKinds";
     }
 }

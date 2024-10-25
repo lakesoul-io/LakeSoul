@@ -9,14 +9,13 @@ use std::sync::Arc;
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use datafusion_common::{DataFusionError, Result};
-use parquet::format::FileMetaData;
 use rand::distributions::DistString;
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 use tracing::debug;
 
-use crate::async_writer::{AsyncBatchWriter, MultiPartAsyncWriter, PartitioningAsyncWriter, SortAsyncWriter};
-use crate::helpers::get_batch_memory_size;
+use crate::async_writer::{AsyncBatchWriter, MultiPartAsyncWriter, PartitioningAsyncWriter, SortAsyncWriter, WriterFlushResult};
+use crate::helpers::{get_batch_memory_size, get_file_exist_col};
 use crate::lakesoul_io_config::{IOSchema, LakeSoulIOConfig};
 use crate::transform::uniform_schema;
 
@@ -30,7 +29,7 @@ pub struct SyncSendableMutableLakeSoulWriter {
     config: LakeSoulIOConfig,
     /// The in-progress file writer if any
     in_progress: Option<Arc<Mutex<SendableWriter>>>,
-    flush_results: Vec<(String, String, FileMetaData)>,
+    flush_results: WriterFlushResult,
 }
 
 impl SyncSendableMutableLakeSoulWriter {
@@ -216,13 +215,14 @@ impl SyncSendableMutableLakeSoulWriter {
                     .flush_and_close()
                     .await
                     .map_err(|e| DataFusionError::Internal(format!("err={}, config={:?}", e, self.config.clone())))?;
-                for (partition_desc, file, _) in self.flush_results.into_iter().chain(results) {
+                for (partition_desc, file, object_meta, metadata) in self.flush_results.into_iter().chain(results) {
+                    let encoded = format!("{}\x03{}\x03{}", file, object_meta.size, get_file_exist_col(&metadata));
                     match grouped_results.get_mut(&partition_desc) {
                         Some(files) => {
-                            files.push(file);
+                            files.push(encoded);
                         }
                         None => {
-                            grouped_results.insert(partition_desc, vec![file]);
+                            grouped_results.insert(partition_desc, vec![encoded]);
                         }
                     }
                 }

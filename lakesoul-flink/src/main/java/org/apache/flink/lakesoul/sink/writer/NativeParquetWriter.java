@@ -230,14 +230,14 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         if (this.batch.getRowCount() > 0) {
             this.nativeWriter.write(this.batch);
         }
-        HashMap<String, List<String>> partitionDescAndFilesMap = this.nativeWriter.flush();
-        for (Map.Entry<String, List<String>> entry : partitionDescAndFilesMap.entrySet()) {
+        HashMap<String, List<NativeIOWriter.FlushResult>> partitionDescAndFilesMap = this.nativeWriter.flush();
+        for (Map.Entry<String, List<NativeIOWriter.FlushResult>> entry : partitionDescAndFilesMap.entrySet()) {
             String key = isDynamicBucket ? entry.getKey() : bucketID;
             recoverableMap.put(
                     key,
                     entry.getValue()
                             .stream()
-                            .map(path -> new NativeParquetWriter.NativeWriterPendingFileRecoverable(path,
+                            .map(result -> new NativeParquetWriter.NativeWriterPendingFileRecoverable(result.getFilePath(),
                                     creationTime))
                             .collect(Collectors.toList())
             );

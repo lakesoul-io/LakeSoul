@@ -7,7 +7,7 @@ use std::{collections::VecDeque, sync::Arc};
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use atomic_refcell::AtomicRefCell;
-use datafusion::execution::{object_store::ObjectStoreUrl, TaskContext};
+use datafusion::{datasource::listing::ListingTableUrl, execution::{object_store::ObjectStoreUrl, TaskContext}};
 use datafusion_common::{project_schema, DataFusionError, Result};
 use object_store::{path::Path, MultipartId, ObjectStore};
 use parquet::{arrow::ArrowWriter, basic::Compression, file::properties::WriterProperties};
@@ -179,7 +179,7 @@ impl AsyncBatchWriter for MultiPartAsyncWriter {
         MultiPartAsyncWriter::write_batch(batch, &mut self.arrow_writer, &mut self.in_mem_buf, &mut self.writer).await
     }
 
-    async fn flush_and_close(self: Box<Self>) -> WriterFlushResult {
+    async fn flush_and_close(self: Box<Self>) -> Result<WriterFlushResult> {
         // close arrow writer to flush remaining rows
         let mut this = *self;
         let arrow_writer = this.arrow_writer;
@@ -196,7 +196,11 @@ impl AsyncBatchWriter for MultiPartAsyncWriter {
         // shutdown multi-part async writer to complete the upload
         this.writer.flush().await?;
         this.writer.shutdown().await?;
-        Ok(vec![(TBD_PARTITION_DESC.to_string(), file_path, metadata)])
+        let path = Path::from_url_path(
+            <ListingTableUrl as AsRef<Url>>::as_ref(&ListingTableUrl::parse(&file_path)?).path(),
+        )?;
+        let object_meta = this.object_store.head(&path).await?;
+        Ok(vec![(TBD_PARTITION_DESC.to_string(), file_path, object_meta, metadata)])
     }
 
     async fn abort_and_close(self: Box<Self>) -> Result<()> {

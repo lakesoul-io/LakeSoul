@@ -100,6 +100,12 @@ public class DBManager {
 
     public void createNewTable(String tableId, String namespace, String tableName, String tablePath, String tableSchema,
                                JSONObject properties, String partitions) {
+        properties.put(DBConfig.TableInfoProperty.LAST_TABLE_SCHEMA_CHANGE_TIME, String.valueOf(System.currentTimeMillis()));
+        createTable(tableId, namespace, tableName, tablePath, tableSchema, properties.toJSONString(), partitions);
+    }
+
+    public void createTable(String tableId, String namespace, String tableName, String tablePath, String tableSchema,
+                            String properties, String partitions) {
 
         TableInfo.Builder tableInfo = TableInfo.newBuilder();
         tableInfo.setTableId(tableId);
@@ -108,8 +114,7 @@ public class DBManager {
         tableInfo.setTablePath(tablePath);
         tableInfo.setTableSchema(tableSchema);
         tableInfo.setPartitions(partitions);
-        properties.put(DBConfig.TableInfoProperty.LAST_TABLE_SCHEMA_CHANGE_TIME, String.valueOf(System.currentTimeMillis()));
-        tableInfo.setProperties(properties.toJSONString());
+        tableInfo.setProperties(properties);
 
         String domain = getNameSpaceDomain(namespace);
 

@@ -6,6 +6,7 @@ mod multipart_writer;
 pub use multipart_writer::MultiPartAsyncWriter;
 
 mod sort_writer;
+use object_store::ObjectMeta;
 pub use sort_writer::SortAsyncWriter;
 
 mod partitioning_writer;
@@ -32,14 +33,14 @@ use datafusion::{
 use datafusion_common::{DataFusionError, Result};
 use parquet::format::FileMetaData;
 
-// The result of a flush operation with format (partition_desc, file_path, file_meta)
-pub type WriterFlushResult = Result<Vec<(String, String, FileMetaData)>>;
+// The result of a flush operation with format (partition_desc, file_path, object_meta, file_meta)
+pub type WriterFlushResult = Vec<(String, String, ObjectMeta, FileMetaData)>;
 
 #[async_trait::async_trait]
 pub trait AsyncBatchWriter {
     async fn write_record_batch(&mut self, batch: RecordBatch) -> Result<()>;
 
-    async fn flush_and_close(self: Box<Self>) -> WriterFlushResult;
+    async fn flush_and_close(self: Box<Self>) -> Result<WriterFlushResult>;
 
     async fn abort_and_close(self: Box<Self>) -> Result<()>;
 
