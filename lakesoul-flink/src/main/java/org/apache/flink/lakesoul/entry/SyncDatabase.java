@@ -285,7 +285,7 @@ public class SyncDatabase {
                     coulmns.append("`").append(fieldNames[i]).append("` ").append("VARCHAR");
                     break;
                 case "FLOAT8":
-                    coulmns.append("`").append(fieldNames[i]).append("`").append("DOUBLE");
+                    coulmns.append("`").append(fieldNames[i]).append("` ").append("DOUBLE");
                     break;
                 default:
                     coulmns.append("`").append(fieldNames[i]).append("` ").append(stringFieldsTypes[i]);
