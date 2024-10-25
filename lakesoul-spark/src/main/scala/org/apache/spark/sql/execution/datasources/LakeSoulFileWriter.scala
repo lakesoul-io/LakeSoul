@@ -239,7 +239,7 @@ object LakeSoulFileWriter extends Logging {
             description = description,
             jobIdInstant = jobIdInstant,
             sparkStageId = taskContext.stageId(),
-            sparkPartitionId = if (isCompaction && staticBucketId != -1) staticBucketId else taskContext.partitionId(),
+            sparkPartitionId = if (isCompaction && staticBucketId != -1) staticBucketId else -1,
             sparkAttemptNumber = taskContext.taskAttemptId().toInt & Integer.MAX_VALUE,
             committer,
             iterator = iter,
@@ -400,13 +400,25 @@ object LakeSoulFileWriter extends Logging {
     private val partValue: Option[String] = options.get("partValue").filter(_ != LAKESOUL_NON_PARTITION_TABLE_PART_DESC)
       .map(_.replace(LAKESOUL_RANGE_PARTITION_SPLITTER, "/"))
 
-    private def newOutputWriter(): Unit = {
+    /** Given an input row, returns the corresponding `bucketId` */
+    protected lazy val getBucketId: InternalRow => Int = {
+      val proj =
+        UnsafeProjection.create(Seq(description.bucketSpec.get.bucketIdExpression),
+          description.allColumns)
+      row => proj(row).getInt(0)
+    }
+
+    private def newOutputWriter(record: InternalRow): Unit = {
       recordsInFile = 0
       releaseResources()
 
       val ext = description.outputWriterFactory.getFileExtension(taskAttemptContext)
       val suffix = if (bucketSpec.isDefined) {
-        val bucketIdStr = BucketingUtils.bucketIdToString(partitionId)
+        val bucketIdStr = if (partitionId == -1) {
+          BucketingUtils.bucketIdToString(getBucketId(record))
+        } else {
+          BucketingUtils.bucketIdToString(partitionId)
+        }
         f"$bucketIdStr.c$fileCounter%03d" + ext
       } else {
         f"-c$fileCounter%03d" + ext
@@ -427,13 +439,13 @@ object LakeSoulFileWriter extends Logging {
 
     override def write(record: InternalRow): Unit = {
       if (currentWriter == null) {
-        newOutputWriter()
+        newOutputWriter(record)
       } else if (description.maxRecordsPerFile > 0 && recordsInFile >= description.maxRecordsPerFile) {
         fileCounter += 1
         assert(fileCounter < MAX_FILE_COUNTER,
           s"File counter $fileCounter is beyond max value $MAX_FILE_COUNTER")
 
-        newOutputWriter()
+        newOutputWriter(record)
       }
 
       currentWriter.write(record)
