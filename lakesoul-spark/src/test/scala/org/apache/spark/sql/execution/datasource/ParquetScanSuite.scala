@@ -111,7 +111,7 @@ class ParquetScanSuite extends QueryTest
       val plan = table.toDF.queryExecution.toString()
 
       logInfo(plan)
-      assert(plan.contains("ParquetScan"))
+      assert(plan.contains("OnePartitionMergeBucketScan"))
 
     })
   }
