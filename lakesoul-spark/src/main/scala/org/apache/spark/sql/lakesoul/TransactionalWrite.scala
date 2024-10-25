@@ -8,6 +8,7 @@ import com.dmetasoul.lakesoul.meta.DBConfig.{LAKESOUL_EMPTY_STRING, LAKESOUL_NUL
 import com.dmetasoul.lakesoul.meta.{CommitType, DataFileInfo}
 import com.dmetasoul.lakesoul.meta.entity.DataCommitInfo
 import org.apache.hadoop.fs.Path
+import org.apache.spark.internal.io.FileCommitProtocol
 import org.apache.spark.sql.Dataset
 import org.apache.spark.sql.catalyst.catalog.BucketSpec
 import org.apache.spark.sql.catalyst.expressions.Attribute
@@ -145,12 +146,12 @@ trait TransactionalWrite {
     var outputPath = SparkUtil.makeQualifiedTablePath(tableInfo.table_path)
     if (isCompaction) {
 
-      val compactPath = if (writeOptions.isDefined) {
-        writeOptions.get.options.getOrElse("compactPath", tableInfo.table_path.toString + "/compact_" + System.currentTimeMillis())
+      val compactionPath = if (writeOptions.isDefined) {
+        writeOptions.get.options.getOrElse("compactionPath", tableInfo.table_path.toString + "/compact_" + System.currentTimeMillis())
       } else {
         tableInfo.table_path.toString + "/compact_" + System.currentTimeMillis()
       }
-      outputPath = SparkUtil.makeQualifiedTablePath(new Path(compactPath))
+      outputPath = SparkUtil.makeQualifiedTablePath(new Path(compactionPath))
     }
     val dc = if (isCompaction) {
       if (bucketNumChanged) {
@@ -162,7 +163,7 @@ trait TransactionalWrite {
       if (cdcCol.nonEmpty) {
         options.put("isCDC", "true")
         val cdcColName = cdcCol.get
-        if (writeOptions.forall(_.options.getOrElse("fullCompact", "true").equals("true"))) {
+        if (writeOptions.forall(_.options.getOrElse("fullCompaction", "true").equals("true"))) {
           data.withColumn(cdcColName,
             when(col(cdcColName) === "update", "insert")
               .otherwise(col(cdcColName))
@@ -213,7 +214,13 @@ trait TransactionalWrite {
           output.length < data.schema.size)
     }
 
-    val committer = getCommitter(outputPath)
+    val committer = if (writeOptions.exists(_.options.getOrElse("copyCompactedFile", "").nonEmpty)) {
+      val srcPath = writeOptions.get.options.get("copyCompactedFile")
+      options.put("copyCompactedFile", srcPath.get)
+      new DelayedCopyCommitProtocol("lakesoul", outputPath.toString, None)
+    } else {
+      getCommitter(outputPath)
+    }
 
     SQLExecution.withNewExecutionId(queryExecution) {
       val outputSpec = LakeSoulFileWriter.OutputSpec(

@@ -158,4 +158,13 @@ object LakeSoulSQLConf {
         """.stripMargin)
       .intConf
       .createWithDefault(10000)
+
+  val RENAME_COMPACTED_FILE: ConfigEntry[Boolean] =
+    buildConf("lakesoul.compact.rename")
+      .doc(
+        """
+          |If NATIVE_IO_ENABLE=true, timeout for each iterate will be set to NATIVE_IO_READER_AWAIT_TIMEOUT mills
+        """.stripMargin)
+      .booleanConf
+      .createWithDefault(false)
 }

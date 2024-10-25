@@ -16,7 +16,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.internal.io.{FileCommitProtocol, SparkHadoopWriterUtils}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.shuffle.FetchFailedException
-import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.{Row, SparkSession}
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.catalog.BucketSpec
 import org.apache.spark.sql.catalyst.catalog.CatalogTypes.TablePartitionSpec
@@ -34,6 +34,9 @@ import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.vectorized.ArrowFakeRowAdaptor
 import org.apache.spark.util.{SerializableConfiguration, Utils}
 import com.dmetasoul.lakesoul.meta.DBConfig.{LAKESOUL_NON_PARTITION_TABLE_PART_DESC, LAKESOUL_RANGE_PARTITION_SPLITTER}
+import com.dmetasoul.lakesoul.spark.clean.CleanOldCompaction.splitCompactFilePath
+import org.apache.spark.sql.lakesoul.DelayedCopyCommitProtocol
+import org.apache.spark.sql.types.{DataTypes, StringType, StructField, StructType}
 
 import java.util.{Date, UUID}
 
@@ -199,28 +202,32 @@ object LakeSoulFileWriter extends Logging {
 
     try {
       // for compaction, we won't break ordering from batch scan
-      val (rdd, concurrentOutputWriterSpec) = if (!isBucketNumChanged && (orderingMatched || isCompaction)) {
-        (nativeWrap(empty2NullPlan), None)
-      } else {
-        // SPARK-21165: the `requiredOrdering` is based on the attributes from analyzed plan, and
-        // the physical plan may have different attribute ids due to optimizer removing some
-        // aliases. Here we bind the expression ahead to avoid potential attribute ids mismatch.
-        val orderingExpr = bindReferences(
-          requiredOrdering.map(SortOrder(_, Ascending)), finalOutputSpec.outputColumns)
-        val sortPlan = SortExec(
-          orderingExpr,
-          global = false,
-          child = empty2NullPlan)
-
-        val maxWriters = sparkSession.sessionState.conf.maxConcurrentOutputFileWriters
-        val concurrentWritersEnabled = maxWriters > 0 && sortColumns.isEmpty
-        if (concurrentWritersEnabled) {
-          (empty2NullPlan.execute(),
-            Some(ConcurrentOutputWriterSpec(maxWriters, () => sortPlan.createSorter())))
+      val (rdd, concurrentOutputWriterSpec) =
+        if (isCompaction && options.getOrElse("copyCompactedFile", "").nonEmpty) {
+          val data = Seq(InternalRow(options("copyCompactedFile")))
+          (sparkSession.sparkContext.parallelize(data), None)
+        } else if (!isBucketNumChanged && (orderingMatched || isCompaction)) {
+          (nativeWrap(empty2NullPlan), None)
         } else {
-          (nativeWrap(sortPlan), None)
+          // SPARK-21165: the `requiredOrdering` is based on the attributes from analyzed plan, and
+          // the physical plan may have different attribute ids due to optimizer removing some
+          // aliases. Here we bind the expression ahead to avoid potential attribute ids mismatch.
+          val orderingExpr = bindReferences(
+            requiredOrdering.map(SortOrder(_, Ascending)), finalOutputSpec.outputColumns)
+          val sortPlan = SortExec(
+            orderingExpr,
+            global = false,
+            child = empty2NullPlan)
+
+          val maxWriters = sparkSession.sessionState.conf.maxConcurrentOutputFileWriters
+          val concurrentWritersEnabled = maxWriters > 0 && sortColumns.isEmpty
+          if (concurrentWritersEnabled) {
+            (empty2NullPlan.execute(),
+              Some(ConcurrentOutputWriterSpec(maxWriters, () => sortPlan.createSorter())))
+          } else {
+            (nativeWrap(sortPlan), None)
+          }
         }
-      }
 
       // SPARK-23271 If we are attempting to write a zero partition rdd, create a dummy single
       // partition rdd to make sure we at least set up one write task to write the metadata.
@@ -317,7 +324,11 @@ object LakeSoulFileWriter extends Logging {
       } else if (description.partitionColumns.isEmpty && description.bucketSpec.isEmpty && !isCompaction) {
         new SingleDirectoryDataWriter(description, taskAttemptContext, committer)
       } else if (isCompaction) {
-        new StaticPartitionedDataWriter(description, taskAttemptContext, committer, options, sparkPartitionId, bucketSpec)
+        if (committer.isInstanceOf[DelayedCopyCommitProtocol]) {
+          new CopyFileWriter(description, taskAttemptContext, committer, options)
+        } else {
+          new StaticPartitionedDataWriter(description, taskAttemptContext, committer, options, sparkPartitionId, bucketSpec)
+        }
       } else {
         concurrentOutputWriterSpec match {
           case Some(spec) =>
@@ -453,4 +464,31 @@ object LakeSoulFileWriter extends Logging {
       recordsInFile += 1
     }
   }
+
+  private class CopyFileWriter(
+                                description: WriteJobDescription,
+                                taskAttemptContext: TaskAttemptContext,
+                                committer: FileCommitProtocol,
+                                options: Map[String, String],
+                                customMetrics: Map[String, SQLMetric] = Map.empty)
+    extends FileFormatDataWriter(description, taskAttemptContext, committer, customMetrics) {
+
+    private val partValue: Option[String] = options.get("partValue").filter(_ != LAKESOUL_NON_PARTITION_TABLE_PART_DESC)
+      .map(_.replace(LAKESOUL_RANGE_PARTITION_SPLITTER, "/"))
+
+    /** Given an input row, returns the corresponding `bucketId` */
+    protected lazy val getSrcPath: InternalRow => String = {
+      row => row.get(0, StringType).asInstanceOf[String]
+    }
+
+    override def write(record: InternalRow): Unit = {
+      val dstPath = committer.newTaskTempFile(
+        taskAttemptContext,
+        partValue,
+        getSrcPath(record))
+
+      statsTrackers.foreach(_.newFile(dstPath))
+    }
+  }
+
 }

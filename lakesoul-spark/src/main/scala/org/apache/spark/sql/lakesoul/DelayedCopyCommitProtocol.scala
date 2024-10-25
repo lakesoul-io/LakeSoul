@@ -5,10 +5,8 @@
 package org.apache.spark.sql.lakesoul
 
 import com.dmetasoul.lakesoul.meta.{DataFileInfo, MetaUtils}
-
-import java.net.URI
-import java.util.UUID
-import org.apache.hadoop.fs.Path
+import com.dmetasoul.lakesoul.spark.clean.CleanOldCompaction.splitCompactFilePath
+import org.apache.hadoop.fs.{FileSystem, FileUtil, Path}
 import org.apache.hadoop.mapreduce.{JobContext, TaskAttemptContext}
 import org.apache.spark.internal.Logging
 import org.apache.spark.internal.io.FileCommitProtocol
@@ -17,32 +15,24 @@ import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.lakesoul.utils.{DateFormatter, PartitionUtils, TimestampFormatter}
 import org.apache.spark.sql.types.StringType
 
+import java.net.URI
+import java.util.UUID
 import scala.collection.mutable.ArrayBuffer
 import scala.util.Random
 
 /**
   * Writes out the files to `path` and returns a list of them in `addedStatuses`.
   */
-class DelayedCommitProtocol(jobId: String,
-                            path: String,
-                            randomPrefixLength: Option[Int])
-  extends FileCommitProtocol
+class DelayedCopyCommitProtocol(jobId: String,
+                                dstPath: String,
+                                randomPrefixLength: Option[Int])
+  extends DelayedCommitProtocol(jobId, dstPath, randomPrefixLength)
     with Serializable with Logging {
 
-  // Track the list of files added by a task, only used on the executors.
-  @transient private var addedFiles: ArrayBuffer[(List[(String, String)], String)] = _
-  @transient val addedStatuses = new ArrayBuffer[DataFileInfo]
-
-  val timestampPartitionPattern = "yyyy-MM-dd HH:mm:ss[.S]"
-
+  @transient private var copyFiles: ArrayBuffer[(String, String)] = _
 
   override def setupJob(jobContext: JobContext): Unit = {
 
-  }
-
-  override def commitJob(jobContext: JobContext, taskCommits: Seq[TaskCommitMessage]): Unit = {
-    val fileStatuses = taskCommits.flatMap(_.obj.asInstanceOf[Seq[DataFileInfo]]).toArray
-    addedStatuses ++= fileStatuses
   }
 
   override def abortJob(jobContext: JobContext): Unit = {
@@ -50,66 +40,14 @@ class DelayedCommitProtocol(jobId: String,
   }
 
   override def setupTask(taskContext: TaskAttemptContext): Unit = {
-    addedFiles = new ArrayBuffer[(List[(String, String)], String)]
+    copyFiles = new ArrayBuffer[(String, String)]
   }
 
-  protected def getFileName(taskContext: TaskAttemptContext, ext: String): String = {
-    // The file name looks like part-r-00000-2dd664f9-d2c4-4ffe-878f-c6c70c1fb0cb_00003.gz.parquet
-    // Note that %05d does not truncate the split number, so if we have more than 100000 tasks,
-    // the file name is fine and won't overflow.
-    val split = taskContext.getTaskAttemptID.getTaskID.getId
-    val uuid = UUID.randomUUID.toString
-    f"part-$split%05d-$uuid$ext"
-  }
-
-  protected def parsePartitions(dir: String): List[(String, String)] = {
-    // TODO: timezones?
-    // TODO: enable validatePartitionColumns?
-    val dateFormatter = DateFormatter()
-    val timestampFormatter =
-      TimestampFormatter(timestampPartitionPattern, java.util.TimeZone.getDefault)
-    val parsedPartition =
-      PartitionUtils
-        .parsePartition(
-          new Path(dir),
-          typeInference = false,
-          Set.empty,
-          Map.empty,
-          validatePartitionColumns = false,
-          java.util.TimeZone.getDefault,
-          dateFormatter,
-          timestampFormatter)
-        ._1
-        .get
-    parsedPartition.columnNames.zip(parsedPartition.literals.map(l => Cast(l, StringType).eval()).map(Option(_).map(_.toString).orNull)).toList
-  }
-
-  /** Generates a string created of `randomPrefixLength` alphanumeric characters. */
-  private def getRandomPrefix(numChars: Int): String = {
-    Random.alphanumeric.take(numChars).mkString
-  }
 
   override def newTaskTempFile(taskContext: TaskAttemptContext, dir: Option[String], ext: String): String = {
-    val filename = getFileName(taskContext, ext)
-    val partitionValues = dir.map(parsePartitions).getOrElse(List.empty[(String, String)])
-    val unescapedDir = if (partitionValues.nonEmpty) {
-      Some(partitionValues.map(partitionValue => partitionValue._1 + "=" + partitionValue._2).mkString("/"))
-    } else {
-      dir
-    }
-    val relativePath = randomPrefixLength.map { prefixLength =>
-      getRandomPrefix(prefixLength) // Generate a random prefix as a first choice
-    }.orElse {
-      // or else write into the partition unescaped directory if it is partitioned
-      unescapedDir
-    }.map { subDir =>
-      new Path(subDir, filename)
-    }.getOrElse(new Path(filename)) // or directly write out to the output path
-
-    val absolutePath = new Path(path, relativePath).toUri.toString
-    //returns the absolute path to the file
-    addedFiles.append((partitionValues, absolutePath))
-    absolutePath
+    val (srcCompactDir, srcBasePath) = splitCompactFilePath(ext)
+    copyFiles += dir.getOrElse("-5") -> ext
+    new Path(dstPath, srcBasePath).toString
   }
 
   override def newTaskTempFileAbsPath(taskContext: TaskAttemptContext, absoluteDir: String, ext: String): String = {
@@ -119,13 +57,15 @@ class DelayedCommitProtocol(jobId: String,
 
   override def commitTask(taskContext: TaskAttemptContext): TaskCommitMessage = {
 
-    if (addedFiles.nonEmpty) {
-      val fs = new Path(path, addedFiles.head._2).getFileSystem(taskContext.getConfiguration)
-      val statuses: Seq[DataFileInfo] = addedFiles.map { f =>
-
-        val filePath = new Path(new URI(f._2))
-        val stat = fs.getFileStatus(filePath)
-        DataFileInfo(MetaUtils.getPartitionKeyFromList(f._1), fs.makeQualified(filePath).toString, "add", stat.getLen, stat.getModificationTime)
+    if (copyFiles.nonEmpty) {
+      val fs = new Path(copyFiles.head._2).getFileSystem(taskContext.getConfiguration)
+      val statuses = copyFiles.map { f =>
+        val (partitionDesc, srcPath) = f
+        val (srcCompactDir, srcBasePath) = splitCompactFilePath(srcPath)
+        val dstFile = new Path(dstPath, srcBasePath)
+        FileUtil.copy(fs, new Path(srcPath), fs, new Path(dstPath, srcBasePath), false, taskContext.getConfiguration)
+        val status = fs.getFileStatus(dstFile)
+        DataFileInfo(partitionDesc, fs.makeQualified(dstFile).toString, "add", status.getLen, status.getModificationTime)
       }
 
       new TaskCommitMessage(statuses)
