@@ -52,7 +52,8 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
                                                     partitionSchema: StructType,
                                                     filters: Array[Filter],
                                                     mergeOperatorInfo: Map[String, MergeOperator[Any]],
-                                                    defaultMergeOp: MergeOperator[Any])
+                                                    defaultMergeOp: MergeOperator[Any],
+                                                    options: Map[String, String] = Map.empty)
   extends NativeMergeFilePartitionReaderFactory(mergeOperatorInfo, defaultMergeOp) with Logging {
 
   private val isCaseSensitive = sqlConf.caseSensitiveAnalysis
@@ -70,8 +71,8 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
   private val nativeIOPrefecherBufferSize = sqlConf.getConf(NATIVE_IO_PREFETCHER_BUFFER_SIZE)
   private val nativeIOThreadNum = sqlConf.getConf(NATIVE_IO_THREAD_NUM)
   private val nativeIOAwaitTimeout = sqlConf.getConf(NATIVE_IO_READER_AWAIT_TIMEOUT)
-  private val nativeIOCdcColumn = sqlConf.getConf(NATIVE_IO_CDC_COLUMN)
-  private val nativeIOIsCompacted = sqlConf.getConf(NATIVE_IO_IS_COMPACTED)
+  private val nativeIOCdcColumn = options.getOrElse(NATIVE_IO_CDC_COLUMN.key, "")
+  private val nativeIOIsCompacted = options.getOrElse(NATIVE_IO_IS_COMPACTED.key, "false")
 
   // schemea: path->schema    source: path->file|path->file|path->file
   private val requestSchemaMap: mutable.Map[String, String] = broadcastedConf.value.value

@@ -114,25 +114,28 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
     } else {
       hasNoDeltaFile = fileInfo.forall(f => f._2.size <= 1)
     }
+    val writableOptions = mutable.Map.empty[String, String] ++ options.asScala
     if (fileIndex.snapshotManagement.snapshot.getPartitionInfoArray.forall(p => p.commit_op.equals("CompactionCommit"))) {
-      sparkSession.sessionState.conf.setConfString(NATIVE_IO_IS_COMPACTED.key, "true")
+      println(s"set NATIVE_IO_IS_COMPACTED with ${fileIndex.snapshotManagement.snapshot.getPartitionInfoArray.mkString("Array(", ", ", ")")}")
+      writableOptions.put(NATIVE_IO_IS_COMPACTED.key, "true")
     }
+    val updatedOptions = new CaseInsensitiveStringMap(writableOptions.asJava)
     if (fileInfo.isEmpty) {
       EmptyParquetScan(sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
-        readPartitionSchema(), pushedParquetFilters, options, partitionFilters, dataFilters)
+        readPartitionSchema(), pushedParquetFilters, updatedOptions, partitionFilters, dataFilters)
     } else if (tableInfo.hash_partition_columns.isEmpty) {
       parquetScan()
     } else if (onlyOnePartition) {
       OnePartitionMergeBucketScan(sparkSession, hadoopConf, fileIndex, dataSchema, mergeReadDataSchema(),
-        readPartitionSchema(), pushedParquetFilters, options, tableInfo, partitionFilters, dataFilters)
+        readPartitionSchema(), pushedParquetFilters, updatedOptions, tableInfo, partitionFilters, dataFilters)
     } else {
       if (sparkSession.sessionState.conf
         .getConf(LakeSoulSQLConf.BUCKET_SCAN_MULTI_PARTITION_ENABLE)) {
         MultiPartitionMergeBucketScan(sparkSession, hadoopConf, fileIndex, dataSchema, mergeReadDataSchema(),
-          readPartitionSchema(), pushedParquetFilters, options, tableInfo, partitionFilters, dataFilters)
+          readPartitionSchema(), pushedParquetFilters, updatedOptions, tableInfo, partitionFilters, dataFilters)
       } else {
         MultiPartitionMergeScan(sparkSession, hadoopConf, fileIndex, dataSchema, mergeReadDataSchema(),
-          readPartitionSchema(), pushedParquetFilters, options, tableInfo, partitionFilters, dataFilters)
+          readPartitionSchema(), pushedParquetFilters, updatedOptions, tableInfo, partitionFilters, dataFilters)
       }
     }
   }
