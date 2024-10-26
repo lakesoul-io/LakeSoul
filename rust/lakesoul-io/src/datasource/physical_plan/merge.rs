@@ -32,6 +32,7 @@ pub struct MergeParquetExec {
     default_column_value: Arc<HashMap<String, String>>,
     merge_operators: Arc<HashMap<String, String>>,
     inputs: Vec<Arc<dyn ExecutionPlan>>,
+    io_config: LakeSoulIOConfig,
 }
 
 impl MergeParquetExec {
@@ -71,6 +72,7 @@ impl MergeParquetExec {
                 .collect::<Vec<_>>(),
         ));
 
+        let config = io_config.clone();
         let primary_keys = Arc::new(io_config.primary_keys);
         let default_column_value = Arc::new(io_config.default_column_value);
         let merge_operators: Arc<HashMap<String, String>> = Arc::new(io_config.merge_operators);
@@ -81,6 +83,7 @@ impl MergeParquetExec {
             primary_keys,
             default_column_value,
             merge_operators,
+            io_config: config
         })
     }
 
@@ -90,6 +93,7 @@ impl MergeParquetExec {
         io_config: LakeSoulIOConfig,
         default_column_value: Arc<HashMap<String, String>>,
     ) -> Result<Self> {
+        let config = io_config.clone();
         let primary_keys = Arc::new(io_config.primary_keys);
         let merge_operators = Arc::new(io_config.merge_operators);
 
@@ -99,6 +103,7 @@ impl MergeParquetExec {
             primary_keys,
             default_column_value,
             merge_operators,
+            io_config: config
         })
     }
 
@@ -149,6 +154,7 @@ impl ExecutionPlan for MergeParquetExec {
             primary_keys: self.primary_keys(),
             default_column_value: self.default_column_value(),
             merge_operators: self.merge_operators(),
+            io_config: self.io_config.clone()
         }))
     }
 
@@ -180,6 +186,7 @@ impl ExecutionPlan for MergeParquetExec {
             self.default_column_value(),
             self.merge_operators(),
             context.session_config().batch_size(),
+            self.io_config.clone(),
         )?;
 
         Ok(merged_stream)
@@ -193,8 +200,18 @@ pub fn merge_stream(
     default_column_value: Arc<HashMap<String, String>>,
     merge_operators: Arc<HashMap<String, String>>,
     batch_size: usize,
+    config: LakeSoulIOConfig,
 ) -> Result<SendableRecordBatchStream> {
-    let merge_stream = if primary_keys.is_empty() {
+    let merge_on_read = if config.files.len() == 1 {
+        if config.primary_keys.is_empty() {
+            false
+        } else {
+            !config.merge_operators.is_empty() || !config.is_compacted()
+        }
+    } else {
+        true
+    };
+    let merge_stream = if !merge_on_read {
         Box::pin(DefaultColumnStream::new_from_streams_with_default(
             streams,
             schema,

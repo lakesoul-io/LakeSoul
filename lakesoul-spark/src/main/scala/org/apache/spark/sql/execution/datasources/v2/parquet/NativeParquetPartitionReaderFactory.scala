@@ -21,7 +21,7 @@ import org.apache.spark.sql.connector.read.PartitionReader
 import org.apache.spark.sql.execution.datasources.parquet.{NativeVectorizedReader, ParquetFilters}
 import org.apache.spark.sql.execution.datasources.{DataSourceUtils, PartitionedFile, RecordReaderIterator}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf.{NATIVE_IO_ENABLE, NATIVE_IO_PREFETCHER_BUFFER_SIZE, NATIVE_IO_READER_AWAIT_TIMEOUT, NATIVE_IO_THREAD_NUM}
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf.{NATIVE_IO_CDC_COLUMN, NATIVE_IO_ENABLE, NATIVE_IO_IS_COMPACTED, NATIVE_IO_PREFETCHER_BUFFER_SIZE, NATIVE_IO_READER_AWAIT_TIMEOUT, NATIVE_IO_THREAD_NUM}
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -29,7 +29,8 @@ import org.apache.spark.util.SerializableConfiguration
 
 import java.net.URI
 import java.time.ZoneId
-
+import scala.collection.JavaConverters.mutableMapAsJavaMapConverter
+import scala.collection.mutable
 
 
 /**
@@ -48,7 +49,7 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
                                                readDataSchema: StructType,
                                                partitionSchema: StructType,
                                                filters: Array[Filter])
-  extends NativeFilePartitionReaderFactory with Logging{
+  extends NativeFilePartitionReaderFactory with Logging {
   private val isCaseSensitive = sqlConf.caseSensitiveAnalysis
   private val enableOffHeapColumnVector = sqlConf.offHeapColumnVectorEnabled
   private val timestampConversion: Boolean = sqlConf.isParquetINT96TimestampConversion
@@ -63,18 +64,20 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
   private val nativeIOPrefecherBufferSize = sqlConf.getConf(NATIVE_IO_PREFETCHER_BUFFER_SIZE)
   private val nativeIOThreadNum = sqlConf.getConf(NATIVE_IO_THREAD_NUM)
   private val nativeIOAwaitTimeout = sqlConf.getConf(NATIVE_IO_READER_AWAIT_TIMEOUT)
+  private val nativeIOCdcColumn = sqlConf.getConf(NATIVE_IO_CDC_COLUMN)
+  private val nativeIOIsCompacted = sqlConf.getConf(NATIVE_IO_IS_COMPACTED)
 
   override def buildReader(partitionedFile: PartitionedFile): PartitionReader[InternalRow] = {
     throw new Exception("LakeSoul native scan shouldn't use this method, only buildColumnarReader will be used.")
   }
 
-  def createVectorizedReader(file: PartitionedFile): RecordReader[Void,ColumnarBatch] = {
+  def createVectorizedReader(file: PartitionedFile): RecordReader[Void, ColumnarBatch] = {
     val recordReader = buildReaderBase(file, createParquetVectorizedReader)
     assert(nativeIOEnable)
-    val vectorizedReader=recordReader.asInstanceOf[NativeVectorizedReader]
+    val vectorizedReader = recordReader.asInstanceOf[NativeVectorizedReader]
     vectorizedReader.initBatch(partitionSchema, file.partitionValues)
     vectorizedReader.enableReturningBatches()
-    vectorizedReader.asInstanceOf[RecordReader[Void,ColumnarBatch]]
+    vectorizedReader.asInstanceOf[RecordReader[Void, ColumnarBatch]]
 
   }
 
@@ -142,6 +145,7 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
     } else {
       None
     }
+
     // PARQUET_INT96_TIMESTAMP_CONVERSION says to apply timezone conversions to int96 timestamps'
     // *only* if the file was created by something other than "parquet-mr", so check the actual
     // writer here for this file.  We have to do this per-file, as each file in the table may
@@ -185,36 +189,44 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
                                              convertTz: Option[ZoneId],
                                              datetimeRebaseSpec: RebaseSpec,
                                              int96RebaseSpec: RebaseSpec):
-  RecordReader[Void,ColumnarBatch] =
-  {
+  RecordReader[Void, ColumnarBatch] = {
     val taskContext = Option(TaskContext.get())
     assert(nativeIOEnable)
-    val vectorizedReader =  if (pushed.isDefined) {
-        new NativeVectorizedReader(
-          convertTz.orNull,
-          datetimeRebaseSpec.mode.toString,
-          int96RebaseSpec.mode.toString,
-          enableOffHeapColumnVector && taskContext.isDefined,
-          capacity,
-          pushed.get
-      )} else {
-          new NativeVectorizedReader(
-            convertTz.orNull,
-            datetimeRebaseSpec.mode.toString,
-            int96RebaseSpec.mode.toString,
-            enableOffHeapColumnVector && taskContext.isDefined,
-            capacity
-          )
-      }
+    val vectorizedReader = if (pushed.isDefined) {
+      new NativeVectorizedReader(
+        convertTz.orNull,
+        datetimeRebaseSpec.mode.toString,
+        int96RebaseSpec.mode.toString,
+        enableOffHeapColumnVector && taskContext.isDefined,
+        capacity,
+        pushed.get
+      )
+    } else {
+      new NativeVectorizedReader(
+        convertTz.orNull,
+        datetimeRebaseSpec.mode.toString,
+        int96RebaseSpec.mode.toString,
+        enableOffHeapColumnVector && taskContext.isDefined,
+        capacity
+      )
+    }
     vectorizedReader.setPrefetchBufferSize(nativeIOPrefecherBufferSize)
     vectorizedReader.setThreadNum(nativeIOThreadNum)
     vectorizedReader.setAwaitTimeout(nativeIOAwaitTimeout)
+
+    val options = mutable.Map[String, String]()
+
+    if (nativeIOCdcColumn.nonEmpty) {
+      options += ("cdc_column" -> nativeIOCdcColumn)
+    }
+    options += ("is_compacted" -> nativeIOIsCompacted)
+    vectorizedReader.setOptions(options.asJava)
 
     val iter = new RecordReaderIterator(vectorizedReader)
     // SPARK-23457 Register a task completion listener before `initialization`.
     taskContext.foreach(_.addTaskCompletionListener[Unit](_ => iter.close()))
     logDebug(s"Appending $partitionSchema ${file.partitionValues}")
     vectorizedReader.initialize(Array(split), hadoopAttemptContext, readDataSchema)
-    vectorizedReader.asInstanceOf[RecordReader[Void,ColumnarBatch]]
+    vectorizedReader.asInstanceOf[RecordReader[Void, ColumnarBatch]]
   }
 }

@@ -30,7 +30,8 @@ class NativeParquetFileFormat extends FileFormat
       .getOrElse(DateTimeUtils.TIMEZONE_OPTION, sparkSession.sessionState.conf.sessionLocalTimeZone)
 
     if (options.getOrElse("isCompaction", "false").toBoolean &&
-      !options.getOrElse("isCDC", "false").toBoolean
+      !options.getOrElse("isCDC", "false").toBoolean &&
+      !options.getOrElse("isBucketNumChanged", "false").toBoolean
     ) {
       new OutputWriterFactory {
         override def newInstance(

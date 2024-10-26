@@ -5,7 +5,7 @@
 package com.dmetasoul.lakesoul.tables
 
 import com.dmetasoul.lakesoul.meta.DBConfig.{LAKESOUL_HASH_PARTITION_SPLITTER, LAKESOUL_RANGE_PARTITION_SPLITTER}
-import com.dmetasoul.lakesoul.meta.SparkMetaVersion
+import com.dmetasoul.lakesoul.meta.{DBUtil, SparkMetaVersion}
 import com.dmetasoul.lakesoul.tables.execution.LakeSoulTableOperations
 import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
@@ -306,64 +306,16 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
   }
 
   //by default, force perform compaction on whole table
-  def compaction(): Unit = {
-    compaction("", true, Map.empty[String, Any], "", "", false)
-  }
-
-  def compaction(cleanOldCompaction: Boolean): Unit = {
-    compaction("", true, Map.empty[String, Any], "", "", cleanOldCompaction)
-  }
-
-  def compaction(condition: String): Unit = {
-    compaction(condition, true, Map.empty[String, Any], "", "", false)
-  }
-
-  def compaction(condition: String, cleanOldCompaction: Boolean): Unit = {
-    compaction(condition, true, Map.empty[String, Any], "", "", cleanOldCompaction)
-  }
-
-  def compaction(mergeOperatorInfo: Map[String, Any]): Unit = {
-    compaction("", true, mergeOperatorInfo, "", "", false)
-  }
-
-  def compaction(condition: String,
-                 mergeOperatorInfo: Map[String, Any]): Unit = {
-    compaction(condition, true, mergeOperatorInfo, "", "", false)
-  }
-
-  def compaction(condition: String, hiveTableName: String): Unit = {
-    compaction(condition, true, Map.empty[String, Any], hiveTableName, "", false)
-  }
-
-  def compaction(condition: String, hiveTableName: String, hivePartitionName: String): Unit = {
-    compaction(condition, true, Map.empty[String, Any], hiveTableName, hivePartitionName, false)
-  }
-
-  def compaction(force: Boolean,
-                 mergeOperatorInfo: Map[String, Any] = Map.empty[String, Any],
-                 cleanOldCompaction: Boolean): Unit = {
-    compaction("", force, mergeOperatorInfo, "", "", cleanOldCompaction)
-  }
-
-  def compaction(condition: String,
-                 force: Boolean,
-                 cleanOldCompaction: Boolean): Unit = {
-    compaction(condition, true, Map.empty[String, Any], "", "", cleanOldCompaction)
-  }
-
-  def compaction(condition: String,
-                 force: Boolean,
-                 mergeOperatorInfo: java.util.Map[String, Any],
-                 cleanOldCompaction: Boolean): Unit = {
-    compaction(condition, force, mergeOperatorInfo.asScala.toMap, "", "", cleanOldCompaction)
-  }
-
-  def compaction(condition: String,
-                 force: Boolean,
-                 mergeOperatorInfo: Map[String, Any],
-                 hiveTableName: String,
-                 hivePartitionName: String,
-                 cleanOldCompaction: Boolean): Unit = {
+  def compaction(condition: String = "",
+                 force: Boolean = true,
+                 mergeOperatorInfo: Map[String, Any] = Map.empty,
+                 hiveTableName: String = "",
+                 hivePartitionName: String = "",
+                 cleanOldCompaction: Boolean = false,
+                 fileNumLimit: Option[Int] = None,
+                 newBucketNum: Option[Int] = None,
+                 fileSizeLimit: Option[String] = None,
+                ): Unit = {
     val newMergeOpInfo = mergeOperatorInfo.map(m => {
       val key =
         if (!m._1.startsWith(LakeSoulUtils.MERGE_OP_COL)) {
@@ -379,7 +331,8 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
       (key, value)
     })
 
-    executeCompaction(df, snapshotManagement, condition, force, newMergeOpInfo, hiveTableName, hivePartitionName, cleanOldCompaction)
+    val parsedFileSizeLimit = fileSizeLimit.map(DBUtil.parseMemoryExpression)
+    executeCompaction(df, snapshotManagement, condition, force, newMergeOpInfo, hiveTableName, hivePartitionName, cleanOldCompaction, fileNumLimit, newBucketNum, parsedFileSizeLimit)
   }
 
   def setCompactionTtl(days: Int): LakeSoulTable = {

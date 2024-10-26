@@ -6,6 +6,7 @@ package org.apache.spark.sql.lakesoul.utils
 
 import com.dmetasoul.lakesoul.meta.DBConfig.{LAKESOUL_HASH_PARTITION_SPLITTER, LAKESOUL_RANGE_PARTITION_SPLITTER}
 import com.dmetasoul.lakesoul.meta.dao.TableInfoDao
+import com.dmetasoul.lakesoul.meta.entity
 import com.dmetasoul.lakesoul.meta.{CommitState, CommitType, DataFileInfo, PartitionInfoScala}
 import com.fasterxml.jackson.annotation.JsonIgnore
 import org.apache.arrow.vector.types.pojo.Schema
@@ -17,7 +18,7 @@ import java.util.UUID
 
 case class MetaInfo(table_info: TableInfo,
                     partitionInfoArray: Array[PartitionInfoScala],
-                    dataCommitInfo: Array[DataCommitInfo],
+                    dataCommitInfo: Array[entity.DataCommitInfo],
                     commit_type: CommitType,
                     commit_id: String = "",
                     query_id: String = "",

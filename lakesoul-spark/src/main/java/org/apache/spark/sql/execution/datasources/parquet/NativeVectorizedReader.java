@@ -142,7 +142,11 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
         initialize(inputSplits, taskAttemptContext, null, requestSchema, null);
     }
 
-    public void initialize(InputSplit[] inputSplits, TaskAttemptContext taskAttemptContext, String[] primaryKeys, StructType requestSchema, Map<String, String> mergeOperatorInfo)
+    public void initialize(InputSplit[] inputSplits,
+                           TaskAttemptContext taskAttemptContext,
+                           String[] primaryKeys,
+                           StructType requestSchema,
+                           Map<String, String> mergeOperatorInfo)
             throws IOException, InterruptedException, UnsupportedOperationException {
         super.initialize(inputSplits[0], taskAttemptContext);
         FileSplit split = (FileSplit) inputSplits[0];
@@ -220,6 +224,10 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
         this.prefetchBufferSize = prefetchBufferSize;
     }
 
+    public void setOptions(Map<String, String> options) {
+        this.options = options;
+    }
+
     public void setThreadNum(int threadNum) {
         this.threadNum = threadNum;
     }
@@ -248,6 +256,12 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
         reader.setBatchSize(capacity);
         reader.setBufferSize(prefetchBufferSize);
         reader.setThreadNum(threadNum);
+
+        if (options != null) {
+            for (Map.Entry<String, String> kv : options.entrySet()) {
+                reader.setOption(kv.getKey(), kv.getValue());
+            }
+        }
 
         NativeIOUtils.setNativeIOOptions(reader, this.nativeIOOptions);
 
@@ -371,6 +385,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     private NativeIOOptions nativeIOOptions;
 
     private Map<String, String> mergeOps = null;
+    private Map<String, String> options = null;
 
     private final FilterPredicate filter;
 }

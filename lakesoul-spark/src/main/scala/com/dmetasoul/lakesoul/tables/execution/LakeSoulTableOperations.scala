@@ -173,7 +173,10 @@ trait LakeSoulTableOperations extends AnalysisHelper {
                                   mergeOperatorInfo: Map[String, String],
                                   hiveTableName: String = "",
                                   hivePartitionName: String = "",
-                                  cleanOldCompaction: Boolean): Unit = {
+                                  cleanOldCompaction: Boolean,
+                                  fileNumLimit: Option[Int],
+                                  newBucketNum: Option[Int],
+                                  fileSizeLimit: Option[Long]): Unit = {
     toDataset(sparkSession, CompactionCommand(
       snapshotManagement,
       condition,
@@ -181,7 +184,11 @@ trait LakeSoulTableOperations extends AnalysisHelper {
       mergeOperatorInfo,
       hiveTableName,
       hivePartitionName,
-      cleanOldCompaction))
+      cleanOldCompaction,
+      fileNumLimit,
+      newBucketNum,
+      fileSizeLimit
+    ))
   }
 
   protected def executeSetCompactionTtl(snapshotManagement: SnapshotManagement, days: Int): Unit = {

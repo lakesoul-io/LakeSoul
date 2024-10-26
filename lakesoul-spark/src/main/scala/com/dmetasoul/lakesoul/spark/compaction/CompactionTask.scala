@@ -22,18 +22,30 @@ object CompactionTask {
   val dateFormat: SimpleDateFormat = new SimpleDateFormat("yyyy/MM/dd HH:mm:ss")
   val THREADPOOL_SIZE_PARAMETER = "threadpool.size"
   val DATABASE_PARAMETER = "database"
+  val CLEAN_OLD_COMPACTION = "clean_old_compaction"
+  val FILE_NUM_LIMIT_PARAMETER = "file_num_limit"
+  val FILE_SIZE_LIMIT_PARAMETER = "file_size_limit"
 
   val NOTIFY_CHANNEL_NAME = "lakesoul_compaction_notify"
   val threadMap: java.util.Map[String, Integer] = new ConcurrentHashMap
 
   var threadPoolSize = 8
   var database = ""
+  var cleanOldCompaction: Option[Boolean] = Some(false)
+  var fileNumLimit: Option[Int] = None
+  var fileSizeLimit: Option[String] = None
 
   def main(args: Array[String]): Unit = {
 
     val parameter = ParametersTool.fromArgs(args)
     threadPoolSize = parameter.getInt(THREADPOOL_SIZE_PARAMETER, 8)
     database = parameter.get(DATABASE_PARAMETER, "")
+    if (parameter.has(FILE_NUM_LIMIT_PARAMETER)) {
+      fileNumLimit = Some(parameter.getInt(FILE_NUM_LIMIT_PARAMETER))
+    }
+    if (parameter.has(FILE_SIZE_LIMIT_PARAMETER)) {
+      fileSizeLimit = Some(parameter.get(FILE_SIZE_LIMIT_PARAMETER))
+    }
 
     val builder = SparkSession.builder()
       .config("spark.sql.parquet.mergeSchema", value = true)
@@ -94,14 +106,14 @@ object CompactionTask {
       try {
         val table = LakeSoulTable.forPath(path)
         if (partitionDesc == "") {
-          table.compaction()
+          table.compaction(cleanOldCompaction = cleanOldCompaction.get, fileNumLimit = fileNumLimit, fileSizeLimit = fileSizeLimit, force = fileSizeLimit.isEmpty)
         } else {
           val partitions = partitionDesc.split(",").map(
             partition => {
               partition.replace("=", "='") + "'"
             }
           ).mkString(" and ")
-          table.compaction(partitions, true)
+          table.compaction(partitions, cleanOldCompaction = cleanOldCompaction.get, fileNumLimit = fileNumLimit, fileSizeLimit = fileSizeLimit, force = fileSizeLimit.isEmpty)
         }
       } catch {
         case e: Exception => throw e

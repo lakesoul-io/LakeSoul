@@ -79,7 +79,7 @@ object CleanOldCompaction {
          |""".stripMargin
 
     sqlToDataframe(sql, spark).rdd.collect().foreach(p => {
-      pathSet.add(getPath(p.get(0).toString))
+      pathSet.add(splitCompactFilePath(p.get(0).toString)._1)
 
     })
     pathSet.foreach(p => {
@@ -92,16 +92,18 @@ object CleanOldCompaction {
     })
   }
 
-  def getPath(filePath: String): String = {
+  def splitCompactFilePath(filePath: String): (String, String) = {
     val targetString = "compact_"
     var directoryPath = ""
+    var basePath = ""
     val lastCompactIndex = filePath.lastIndexOf(targetString)
     if (lastCompactIndex != -1) {
       val nextDirectoryIndex = filePath.indexOf("/", lastCompactIndex)
       if (nextDirectoryIndex != -1) {
         directoryPath = filePath.substring(0, nextDirectoryIndex)
+        basePath = filePath.substring(nextDirectoryIndex + 1)
       }
     }
-    directoryPath
+    directoryPath -> basePath
   }
 }

@@ -163,4 +163,9 @@ public class BatchReadSuite extends AbstractTestBase {
         tEnvs.executeSql(createOrderSql);
         tEnvs.executeSql("INSERT INTO order_noPK VALUES (1,'apple',20), (2,'tomato',10), (3,'water',15)").await();
     }
+
+    public static void main(String[] args) {
+        TableEnvironment tEnv = TestUtils.createTableEnv(BATCH_TYPE);
+        tEnv.executeSql("select * from compaction_limit_table order by `id`, `date`").print();
+    }
 }
