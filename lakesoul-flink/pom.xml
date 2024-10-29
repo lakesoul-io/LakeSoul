@@ -146,7 +146,6 @@ SPDX-License-Identifier: Apache-2.0
             <groupId>com.ververica</groupId>
             <artifactId>flink-sql-connector-sqlserver-cdc</artifactId>
             <version>${cdc.version}</version>
-            <scope>${local.scope}</scope>
         </dependency>
         <dependency>
             <groupId>com.ververica</groupId>
@@ -157,31 +156,26 @@ SPDX-License-Identifier: Apache-2.0
             <groupId>com.ververica</groupId>
             <artifactId>flink-sql-connector-oracle-cdc</artifactId>
             <version>${cdc.version}</version>
-            <scope>${local.scope}</scope>
         </dependency>
         <dependency>
             <groupId>com.ververica</groupId>
             <artifactId>flink-sql-connector-postgres-cdc</artifactId>
             <version>${cdc.version}</version>
-            <scope>${local.scope}</scope>
         </dependency>
         <dependency>
             <groupId>com.ververica</groupId>
             <artifactId>flink-sql-connector-mongodb-cdc</artifactId>
             <version>${cdc.version}</version>
-            <scope>${local.scope}</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-connector-mongodb</artifactId>
             <version>1.0.1-1.17</version>
-            <scope>${local.scope}</scope>
         </dependency>
         <dependency>
             <groupId>org.mongodb</groupId>
             <artifactId>bson</artifactId>
             <version>4.7.2</version>
-            <scope>${local.scope}</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.doris</groupId>
@@ -193,7 +187,6 @@ SPDX-License-Identifier: Apache-2.0
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-connector-jdbc</artifactId>
             <version>3.1.1-1.17</version>
-            <scope>${local.scope}</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.flink</groupId>
@@ -459,6 +452,12 @@ SPDX-License-Identifier: Apache-2.0
                         <includes>
                             <include>com.dmetasoul:lakesoul-flink</include>
                             <include>com.ververica:flink-sql-connector-mysql-cdc</include>
+                            <include>com.ververica:flink-sql-connector-postgres-cdc</include>
+                            <include>com.ververica:flink-sql-connector-mongodb-cdc</include>
+                            <include>com.ververica:flink-sql-connector-oracle-cdc</include>
+                            <include>org.apache.flink:flink-connector-mongodb</include>
+                            <include>org.mongodb:bson</include>
+                            <include>org.apache.flink:flink-connector-jdbc</include>
                             <include>com.dmetasoul:lakesoul-common</include>
                             <include>com.dmetasoul:lakesoul-io-java</include>
                             <include>com.github.jnr:*</include>
