@@ -41,6 +41,55 @@ public class LakeSoulArrowSource extends LakeSoulSource<LakeSoulArrowWrapper> {
         );
     }
 
+    public static LakeSoulArrowSource create(
+            String tableNamespace,
+            String tableName,
+            Configuration conf,
+            List<Map<String, String>> remainingPartitions
+    ) throws IOException {
+        TableId tableId = new TableId(LakeSoulCatalog.CATALOG_NAME, tableNamespace, tableName);
+        TableInfo tableInfo = DataOperation.dbManager().getTableInfoByNameAndNamespace(tableName, tableNamespace);
+        RowType tableRowType = ArrowUtils.fromArrowSchema(Schema.fromJSON(tableInfo.getTableSchema()));
+        DBUtil.TablePartitionKeys tablePartitionKeys = DBUtil.parseTableInfoPartitions(tableInfo.getPartitions());
+        boolean isBounded = conf.getBoolean("IS_BOUNDED", false);
+        return new LakeSoulArrowSource(
+                tableInfo,
+                tableId,
+                conf.toMap(),
+                tableRowType,
+                isBounded,
+                tablePartitionKeys.primaryKeys,
+                tablePartitionKeys.rangeKeys,
+                remainingPartitions
+        );
+    }
+
+    LakeSoulArrowSource(
+            TableInfo tableInfo,
+            TableId tableId,
+            Map<String, String> optionParams,
+            RowType tableRowType,
+            boolean isBounded,
+            List<String> pkColumns,
+            List<String> partitionColumns,
+            List<Map<String, String>> remainingPartitions
+    ) {
+        super(
+                tableId,
+                tableRowType,
+                tableRowType,
+                tableRowType,
+                isBounded,
+                pkColumns,
+                partitionColumns,
+                optionParams,
+                remainingPartitions,
+                null,
+                null
+        );
+        this.encodedTableInfo = tableInfo.toByteArray();
+    }
+
     LakeSoulArrowSource(
             TableInfo tableInfo,
             TableId tableId,
