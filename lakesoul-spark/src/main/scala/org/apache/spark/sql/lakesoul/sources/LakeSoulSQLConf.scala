@@ -167,4 +167,23 @@ object LakeSoulSQLConf {
         """.stripMargin)
       .booleanConf
       .createWithDefault(false)
+
+  val SCAN_FILE_NUMBER_LIMIT: ConfigEntry[Int] =
+    buildConf("scan.file.number.limit")
+      .doc(
+        """
+          |If SCAN_FILE_NUMBER_LIMIT < Int.MaxValue, Scan will scan file with number less than SCAN_FILE_NUMBER_LIMIT per file group
+        """.stripMargin)
+      .intConf
+      .createWithDefault(Int.MaxValue)
+
+
+  val COMPACTION_TASK: ConfigEntry[Boolean] =
+    buildConf("scan.file.size.limit")
+      .doc(
+        """
+          |If SCAN_FILE_NUMBER_LIMIT < Int.MaxValue, Scan will scan file with number less than SCAN_FILE_NUMBER_LIMIT per file group
+        """.stripMargin)
+      .booleanConf
+      .createWithDefault(false)
 }

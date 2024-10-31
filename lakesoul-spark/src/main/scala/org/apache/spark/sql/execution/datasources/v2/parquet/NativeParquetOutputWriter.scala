@@ -5,6 +5,7 @@
 package org.apache.spark.sql.execution.datasources.v2.parquet
 
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOWriter
+import com.dmetasoul.lakesoul.lakesoul.io.NativeIOWriter.FlushResult
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.types.pojo.Schema
@@ -18,11 +19,17 @@ import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.{GlutenUtils, NativeIOUtils}
 
+import java.util
+import scala.collection.JavaConverters.mapAsScalaMapConverter
+import scala.collection.mutable
+
 class NativeParquetOutputWriter(val path: String, dataSchema: StructType, timeZoneId: String, context: TaskAttemptContext) extends OutputWriter {
 
   val NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE: Int = SQLConf.get.getConf(LakeSoulSQLConf.NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE)
 
   private var recordCount = 0
+
+  var flushResult: mutable.Map[String, util.List[FlushResult]] = mutable.Map.empty
 
   val arrowSchema: Schema = ArrowUtils.toArrowSchema(dataSchema, timeZoneId)
 
@@ -30,7 +37,11 @@ class NativeParquetOutputWriter(val path: String, dataSchema: StructType, timeZo
 
   GlutenUtils.setArrowAllocator(nativeIOWriter)
   nativeIOWriter.setRowGroupRowNumber(NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE)
-  nativeIOWriter.addFile(path)
+  if (path.endsWith(".parquet")) {
+    nativeIOWriter.addFile(path)
+  } else {
+    nativeIOWriter.withPrefix(path)
+  }
 
   NativeIOUtils.setNativeIOOptions(nativeIOWriter, NativeIOUtils.getNativeIOOptions(context, new Path(path)))
 
@@ -59,7 +70,7 @@ class NativeParquetOutputWriter(val path: String, dataSchema: StructType, timeZo
     recordWriter.finish()
 
     nativeIOWriter.write(root)
-    nativeIOWriter.flush()
+    flushResult = nativeIOWriter.flush().asScala
 
     recordWriter.reset()
     root.close()

@@ -116,7 +116,6 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
     }
     val writableOptions = mutable.Map.empty[String, String] ++ options.asScala
     if (fileIndex.snapshotManagement.snapshot.getPartitionInfoArray.forall(p => p.commit_op.equals("CompactionCommit"))) {
-      println(s"set NATIVE_IO_IS_COMPACTED with ${fileIndex.snapshotManagement.snapshot.getPartitionInfoArray.mkString("Array(", ", ", ")")}")
       writableOptions.put(NATIVE_IO_IS_COMPACTED.key, "true")
     }
     val updatedOptions = new CaseInsensitiveStringMap(writableOptions.asJava)

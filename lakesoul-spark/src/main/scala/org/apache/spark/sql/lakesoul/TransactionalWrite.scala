@@ -12,6 +12,7 @@ import org.apache.spark.internal.io.FileCommitProtocol
 import org.apache.spark.sql.Dataset
 import org.apache.spark.sql.catalyst.catalog.BucketSpec
 import org.apache.spark.sql.catalyst.expressions.Attribute
+import org.apache.spark.sql.execution.datasources.LakeSoulFileWriter.COPY_FILE_WRITER_KEY
 import org.apache.spark.sql.execution.datasources.{BasicWriteJobStatsTracker, LakeSoulFileWriter, WriteJobStatsTracker}
 import org.apache.spark.sql.execution.{QueryExecution, SQLExecution}
 import org.apache.spark.sql.functions.{col, when}
@@ -103,7 +104,8 @@ trait TransactionalWrite {
     */
   def writeFiles(oriData: Dataset[_],
                  writeOptions: Option[LakeSoulOptions],
-                 isCompaction: Boolean): (Seq[DataFileInfo], Path) = {
+                 isCompaction: Boolean,
+                 copyCompactedFile: Seq[DataFileInfo] = Seq.empty): (Seq[DataFileInfo], Path) = {
     val spark = oriData.sparkSession
     // LakeSoul always writes timestamp data with timezone=UTC
     spark.conf.set("spark.sql.session.timeZone", "UTC")
@@ -160,7 +162,7 @@ trait TransactionalWrite {
         options.put("isBucketNumChanged", "false")
       }
       val cdcCol = snapshot.getTableInfo.configuration.get(LakeSoulTableProperties.lakeSoulCDCChangePropKey)
-      if (cdcCol.nonEmpty) {
+      if (cdcCol.nonEmpty && copyCompactedFile.isEmpty) {
         options.put("isCDC", "true")
         val cdcColName = cdcCol.get
         if (writeOptions.forall(_.options.getOrElse("fullCompaction", "true").equals("true"))) {
@@ -214,10 +216,9 @@ trait TransactionalWrite {
           output.length < data.schema.size)
     }
 
-    val committer = if (writeOptions.exists(_.options.getOrElse("copyCompactedFile", "").nonEmpty)) {
-      val srcPath = writeOptions.get.options.get("copyCompactedFile")
-      options.put("copyCompactedFile", srcPath.get)
-      new DelayedCopyCommitProtocol("lakesoul", outputPath.toString, None)
+    val committer = if (copyCompactedFile.nonEmpty) {
+      options.put(COPY_FILE_WRITER_KEY, "true")
+      new DelayedCopyCommitProtocol(copyCompactedFile, "lakesoul", outputPath.toString, None)
     } else {
       getCommitter(outputPath)
     }
