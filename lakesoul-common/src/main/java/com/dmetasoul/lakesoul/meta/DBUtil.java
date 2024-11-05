@@ -285,9 +285,9 @@ public class DBUtil {
 
     public static void fillDataSourceConfig(HikariConfig config) {
         config.setConnectionTimeout(10000);
-        config.setIdleTimeout(60000);
-        config.setMaximumPoolSize(8);
-        config.setKeepaliveTime(30000);
+        config.setIdleTimeout(30000);
+        config.setMaximumPoolSize(2);
+        config.setKeepaliveTime(10000);
         config.setMinimumIdle(1);
         config.addDataSourceProperty("cachePrepStmts", "true");
         config.addDataSourceProperty("prepStmtCacheSize", "250");
