@@ -65,6 +65,10 @@ public class DBConnector {
         }
     }
 
+    static {
+        Runtime.getRuntime().addShutdownHook(new Thread(DBConnector::closeAllConnections));
+    }
+
     public static void closeConn(Connection conn) {
         if (conn != null) {
            try {

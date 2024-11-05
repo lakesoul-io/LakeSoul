@@ -4,6 +4,7 @@
 package com.dmetasoul.lakesoul.meta.jnr;
 
 import com.alibaba.fastjson.JSON;
+import com.dmetasoul.lakesoul.meta.DBConnector;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.DataBaseProperty;
 import com.dmetasoul.lakesoul.meta.entity.JniWrapper;
@@ -541,6 +542,9 @@ public class NativeMetadataJavaClient implements AutoCloseable {
         }
     }
 
+    static {
+        java.lang.Runtime.getRuntime().addShutdownHook(new Thread(NativeMetadataJavaClient::closeAll));
+    }
 
     /**
      * if ffi function failed with -100
