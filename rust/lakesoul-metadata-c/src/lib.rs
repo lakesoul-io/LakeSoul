@@ -16,7 +16,7 @@ use prost::Message;
 
 use lakesoul_metadata::error::LakeSoulMetaDataError;
 use lakesoul_metadata::transfusion::SplitDesc;
-use lakesoul_metadata::{Builder, Client, MetaDataClient, PreparedStatementMap, Runtime};
+use lakesoul_metadata::{Builder, Client, MetaDataClient, PooledClient, PreparedStatementMap, Runtime};
 use proto::proto::entity;
 
 #[allow(non_camel_case_types)]
@@ -34,13 +34,13 @@ impl<OpaqueT> CResult<OpaqueT> {
     pub fn new<T>(obj: T) -> Self {
         CResult {
             ptr: convert_to_opaque_raw::<T, OpaqueT>(obj),
-            err: std::ptr::null(),
+            err: null(),
         }
     }
 
     pub fn error(err_msg: &str) -> Self {
         CResult {
-            ptr: std::ptr::null_mut(),
+            ptr: null_mut(),
             err: CString::new(err_msg).unwrap().into_raw(),
         }
     }
@@ -146,7 +146,7 @@ pub extern "C" fn execute_insert(
     len: i32,
 ) {
     let runtime = unsafe { NonNull::new_unchecked(runtime.as_ref().ptr as *mut Runtime).as_ref() };
-    let client = unsafe { NonNull::new_unchecked(client.as_ref().ptr as *mut Client).as_mut() };
+    let client = unsafe { NonNull::new_unchecked(client.as_ref().ptr as *mut PooledClient).as_mut() };
     let prepared = unsafe { NonNull::new_unchecked(prepared.as_ref().ptr as *mut PreparedStatementMap).as_mut() };
 
     let raw_parts = unsafe { std::slice::from_raw_parts(addr as *const u8, len as usize) };
@@ -154,7 +154,7 @@ pub extern "C" fn execute_insert(
     let result =
         runtime.block_on(async { lakesoul_metadata::execute_insert(client, prepared, insert_type, wrapper).await });
     match result {
-        Ok(count) => call_result_callback(callback, count, std::ptr::null()),
+        Ok(count) => call_result_callback(callback, count, null()),
         Err(e) => call_result_callback(callback, -1, CString::new(e.to_string().as_str()).unwrap().into_raw()),
     }
 }
@@ -169,14 +169,14 @@ pub extern "C" fn execute_update(
     joined_string: *const c_char,
 ) {
     let runtime = unsafe { NonNull::new_unchecked(runtime.as_ref().ptr as *mut Runtime).as_ref() };
-    let client = unsafe { NonNull::new_unchecked(client.as_ref().ptr as *mut Client).as_mut() };
+    let client = unsafe { NonNull::new_unchecked(client.as_ref().ptr as *mut PooledClient).as_mut() };
     let prepared = unsafe { NonNull::new_unchecked(prepared.as_ref().ptr as *mut PreparedStatementMap).as_mut() };
 
     let result = runtime.block_on(async {
         lakesoul_metadata::execute_update(client, prepared, update_type, string_from_ptr(joined_string)).await
     });
     match result {
-        Ok(count) => call_result_callback(callback, count, std::ptr::null()),
+        Ok(count) => call_result_callback(callback, count, null()),
         Err(e) => call_result_callback(callback, -1, CString::new(e.to_string().as_str()).unwrap().into_raw()),
     }
 }
@@ -191,15 +191,15 @@ pub extern "C" fn execute_query_scalar(
     joined_string: *const c_char,
 ) {
     let runtime = unsafe { NonNull::new_unchecked(runtime.as_ref().ptr as *mut Runtime).as_ref() };
-    let client = unsafe { NonNull::new_unchecked(client.as_ref().ptr as *mut Client).as_mut() };
+    let client = unsafe { NonNull::new_unchecked(client.as_ref().ptr as *mut PooledClient).as_mut() };
     let prepared = unsafe { NonNull::new_unchecked(prepared.as_ref().ptr as *mut PreparedStatementMap).as_mut() };
 
     let result = runtime.block_on(async {
         lakesoul_metadata::execute_query_scalar(client, prepared, update_type, string_from_ptr(joined_string)).await
     });
     let (result, err): (*mut c_char, *const c_char) = match result {
-        Ok(Some(result)) => (CString::new(result.as_str()).unwrap().into_raw(), std::ptr::null()),
-        Ok(None) => (CString::new("").unwrap().into_raw(), std::ptr::null()),
+        Ok(Some(result)) => (CString::new(result.as_str()).unwrap().into_raw(), null()),
+        Ok(None) => (CString::new("").unwrap().into_raw(), null()),
         Err(e) => (
             CString::new("").unwrap().into_raw(),
             CString::new(e.to_string().as_str()).unwrap().into_raw(),
@@ -221,7 +221,7 @@ pub extern "C" fn execute_query(
     joined_string: *const c_char,
 ) -> NonNull<CResult<BytesResult>> {
     let runtime = unsafe { NonNull::new_unchecked(runtime.as_ref().ptr as *mut Runtime).as_ref() };
-    let client = unsafe { NonNull::new_unchecked(client.as_ref().ptr as *mut Client).as_ref() };
+    let client = unsafe { NonNull::new_unchecked(client.as_ref().ptr as *mut PooledClient).as_ref() };
     let prepared = unsafe { NonNull::new_unchecked(prepared.as_ref().ptr as *mut PreparedStatementMap).as_mut() };
 
     let result = runtime.block_on(async {
@@ -230,7 +230,7 @@ pub extern "C" fn execute_query(
     match result {
         Ok(u8_vec) => {
             let len = u8_vec.len();
-            call_result_callback(callback, len as i32, std::ptr::null());
+            call_result_callback(callback, len as i32, null());
             convert_to_nonnull(CResult::<BytesResult>::new::<Vec<u8>>(u8_vec))
         }
         Err(e) => {
@@ -267,7 +267,7 @@ pub extern "C" fn export_bytes_result(
     let mut writer = dst.writer();
     let _ = writer.write_all(bytes.as_slice());
 
-    call_result_callback(callback, true, std::ptr::null());
+    call_result_callback(callback, true, null());
 }
 
 #[no_mangle]
@@ -282,10 +282,10 @@ pub extern "C" fn clean_meta_for_test(
     client: NonNull<CResult<TokioPostgresClient>>,
 ) {
     let runtime = unsafe { NonNull::new_unchecked(runtime.as_ref().ptr as *mut Runtime).as_ref() };
-    let client = unsafe { NonNull::new_unchecked(client.as_ref().ptr as *mut Client).as_ref() };
+    let client = unsafe { NonNull::new_unchecked(client.as_ref().ptr as *mut PooledClient).as_ref() };
     let result = runtime.block_on(async { lakesoul_metadata::clean_meta_for_test(client).await });
     match result {
-        Ok(count) => call_result_callback(callback, count, std::ptr::null()),
+        Ok(count) => call_result_callback(callback, count, null()),
         Err(e) => call_result_callback(callback, -1, CString::new(e.to_string().as_str()).unwrap().into_raw()),
     }
 }
@@ -319,7 +319,7 @@ pub extern "C" fn create_tokio_postgres_client(
 
     let result = match result {
         Ok(client) => {
-            call_result_callback(callback, true, std::ptr::null());
+            call_result_callback(callback, true, null());
             CResult::<TokioPostgresClient>::new(client)
         }
         Err(e) => {
@@ -382,7 +382,7 @@ pub extern "C" fn create_split_desc_array(
     namespace: *const c_char,
 ) -> *mut c_char {
     let runtime = unsafe { NonNull::new_unchecked(runtime.as_ref().ptr as *mut Runtime).as_ref() };
-    let client = unsafe { NonNull::new_unchecked(client.as_ref().ptr as *mut Client).as_ref() };
+    let client = unsafe { NonNull::new_unchecked(client.as_ref().ptr as *mut PooledClient).as_ref() };
     let prepared = unsafe { NonNull::new_unchecked(prepared.as_ref().ptr as *mut PreparedStatementMap).as_mut() };
     let table_name = c_char2str(table_name);
     let namespace = c_char2str(namespace);

@@ -9,7 +9,6 @@ use std::{collections::HashMap, env, fs, vec};
 
 use prost::Message;
 use tokio::sync::Mutex;
-use tokio_postgres::Client;
 use tracing::debug;
 use url::Url;
 
@@ -18,13 +17,14 @@ use proto::proto::entity::{
 };
 
 use crate::error::{LakeSoulMetaDataError, Result};
+use crate::pooled_client::PooledClient;
 use crate::{
     clean_meta_for_test, create_connection, execute_insert, execute_query, execute_update, DaoType,
     PreparedStatementMap, PARAM_DELIM, PARTITION_DESC_DELIM,
 };
 
 pub struct MetaDataClient {
-    client: Arc<Mutex<Client>>,
+    client: Arc<Mutex<PooledClient>>,
     prepared: Arc<Mutex<PreparedStatementMap>>,
     max_retry: usize,
 }
@@ -474,9 +474,10 @@ impl MetaDataClient {
             )
             .await
         {
-            Ok(wrapper) if wrapper.table_info.is_empty() => Err(crate::error::LakeSoulMetaDataError::NotFound(
-                format!("Table '{}' not found", table_name),
-            )),
+            Ok(wrapper) if wrapper.table_info.is_empty() => Err(LakeSoulMetaDataError::NotFound(format!(
+                "Table '{}' not found",
+                table_name
+            ))),
             Ok(wrapper) => Ok(wrapper.table_info[0].clone()),
             Err(err) => Err(err),
         }
@@ -487,9 +488,10 @@ impl MetaDataClient {
             .execute_query(DaoType::SelectTablePathIdByTablePath as i32, table_path.to_string())
             .await
         {
-            Ok(wrapper) if wrapper.table_info.is_empty() => Err(crate::error::LakeSoulMetaDataError::NotFound(
-                format!("Table '{}' not found", table_path),
-            )),
+            Ok(wrapper) if wrapper.table_info.is_empty() => Err(LakeSoulMetaDataError::NotFound(format!(
+                "Table '{}' not found",
+                table_path
+            ))),
             Ok(wrapper) => Ok(wrapper.table_info[0].clone()),
             Err(err) => Err(err),
         }

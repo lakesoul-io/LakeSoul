@@ -269,3 +269,6 @@ REVOKE INSERT, UPDATE, DELETE ON TABLE global_config FROM base_admin_role;
 REVOKE INSERT, UPDATE, DELETE ON TABLE namespace FROM base_user_role;
 REVOKE INSERT, UPDATE, DELETE ON TABLE global_config FROM base_user_role;
 REVOKE INSERT, UPDATE, DELETE ON TABLE casbin_rule FROM base_user_role;
+
+ALTER TABLE table_info ADD creator TEXT default current_user;
+ALTER TABLE namespace ADD creator TEXT default current_user;

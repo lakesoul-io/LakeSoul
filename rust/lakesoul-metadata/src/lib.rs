@@ -8,10 +8,10 @@ use std::{collections::HashMap, io::ErrorKind};
 use postgres_types::{FromSql, ToSql};
 use prost::Message;
 pub use tokio::runtime::{Builder, Runtime};
-use tokio::spawn;
 pub use tokio_postgres::{Client, NoTls, Statement};
-use tokio_postgres::{Error, Row};
+use tokio_postgres::Row;
 
+pub use crate::pooled_client::PooledClient;
 use error::{LakeSoulMetaDataError, Result};
 pub use metadata_client::{MetaDataClient, MetaDataClientRef};
 use proto::proto::entity;
@@ -20,6 +20,7 @@ pub mod transfusion;
 
 pub mod error;
 mod metadata_client;
+mod pooled_client;
 
 pub const DAO_TYPE_QUERY_ONE_OFFSET: i32 = 0;
 pub const DAO_TYPE_QUERY_LIST_OFFSET: i32 = 100;
@@ -155,7 +156,7 @@ pub enum DaoType {
 pub type PreparedStatementMap = HashMap<DaoType, Statement>;
 
 async fn get_prepared_statement(
-    client: &Client,
+    client: &PooledClient,
     prepared: &mut PreparedStatementMap,
     dao_type: &DaoType,
 ) -> Result<Statement> {
@@ -428,7 +429,7 @@ fn separate_uuid(concated_uuid: &str) -> Result<Vec<String>> {
 }
 
 pub async fn execute_query(
-    client: &Client,
+    client: &PooledClient,
     prepared: &mut PreparedStatementMap,
     query_type: i32,
     joined_string: String,
@@ -802,7 +803,7 @@ pub async fn execute_query(
 }
 
 pub async fn execute_insert(
-    client: &mut Client,
+    client: &mut PooledClient,
     prepared: &mut PreparedStatementMap,
     insert_type: i32,
     wrapper: entity::JniWrapper,
@@ -927,7 +928,8 @@ pub async fn execute_insert(
             let mut partition_info_list = wrapper.partition_info.clone();
             let snapshot_container = partition_info_list.pop().unwrap();
             let result = {
-                let transaction = client.transaction().await?;
+                let mut conn = client.get().await?;
+                let transaction = conn.transaction().await?;
                 let transaction_insert_statement = match transaction
                     .prepare(
                         "insert into partition_info(
@@ -1009,7 +1011,8 @@ pub async fn execute_insert(
         DaoType::TransactionInsertDataCommitInfo => {
             let data_commit_info_list = wrapper.data_commit_info;
             let result = {
-                let transaction = client.transaction().await?;
+                let mut conn = client.get().await?;
+                let transaction = conn.transaction().await?;
                 let prepared = transaction
                     .prepare(
                         "insert into data_commit_info(
@@ -1087,7 +1090,7 @@ pub async fn execute_insert(
 }
 
 pub async fn execute_update(
-    client: &mut Client,
+    client: &mut PooledClient,
     prepared: &mut PreparedStatementMap,
     update_type: i32,
     joined_string: String,
@@ -1212,7 +1215,7 @@ pub async fn execute_update(
     }
 }
 
-fn ts_string(res: Result<Option<Row>, Error>) -> Result<Option<String>> {
+fn ts_string(res: Result<Option<Row>>) -> Result<Option<String>> {
     match res {
         Ok(Some(row)) => {
             let ts = row.get::<_, Option<i64>>(0);
@@ -1221,13 +1224,13 @@ fn ts_string(res: Result<Option<Row>, Error>) -> Result<Option<String>> {
                 None => Ok(None),
             }
         }
-        Err(e) => Err(LakeSoulMetaDataError::from(e)),
+        Err(e) => Err(e),
         Ok(None) => Ok(None),
     }
 }
 
 pub async fn execute_query_scalar(
-    client: &mut Client,
+    client: &mut PooledClient,
     prepared: &mut PreparedStatementMap,
     query_type: i32,
     joined_string: String,
@@ -1284,7 +1287,7 @@ pub async fn execute_query_scalar(
     }
 }
 
-pub async fn clean_meta_for_test(client: &Client) -> Result<i32> {
+pub async fn clean_meta_for_test(client: &PooledClient) -> Result<i32> {
     let result = client
         .batch_execute(
             "delete from namespace;
@@ -1302,22 +1305,8 @@ pub async fn clean_meta_for_test(client: &Client) -> Result<i32> {
 }
 
 ///  Create a pg connection, return pg client
-pub async fn create_connection(config: String) -> Result<Client> {
-    let (client, connection) = match tokio_postgres::connect(config.as_str(), NoTls).await {
-        Ok((client, connection)) => (client, connection),
-        Err(e) => {
-            eprintln!("{}", e);
-            return Err(LakeSoulMetaDataError::from(ErrorKind::ConnectionRefused));
-        }
-    };
-
-    spawn(async move {
-        if let Err(e) = connection.await {
-            eprintln!("connection error: {}", e);
-        }
-    });
-
-    Ok(client)
+pub async fn create_connection(config: String) -> Result<PooledClient> {
+    PooledClient::try_new(config).await
 }
 
 fn row_to_uuid_list(row: &Row) -> Vec<entity::Uuid> {

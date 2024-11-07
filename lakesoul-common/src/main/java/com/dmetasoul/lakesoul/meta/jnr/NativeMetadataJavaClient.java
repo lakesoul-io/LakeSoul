@@ -193,7 +193,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
         tokioRuntime = libLakeSoulMetaData.create_tokio_runtime();
 
         String config = String.format(
-                "host=%s port=%s dbname=%s user=%s password=%s",
+                "host=%s port=%s dbname=%s user=%s password=%s connect_timeout=10 ",
                 dataBaseProperty.getHost(),
                 dataBaseProperty.getPort(),
                 dataBaseProperty.getDbName(),
