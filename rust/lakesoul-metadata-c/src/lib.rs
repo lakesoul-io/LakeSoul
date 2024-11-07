@@ -16,7 +16,7 @@ use prost::Message;
 
 use lakesoul_metadata::error::LakeSoulMetaDataError;
 use lakesoul_metadata::transfusion::SplitDesc;
-use lakesoul_metadata::{Builder, Client, MetaDataClient, PooledClient, PreparedStatementMap, Runtime};
+use lakesoul_metadata::{Builder, MetaDataClient, PooledClient, PreparedStatementMap, Runtime};
 use proto::proto::entity;
 
 #[allow(non_camel_case_types)]
@@ -336,7 +336,7 @@ pub extern "C" fn create_tokio_postgres_client(
 
 #[no_mangle]
 pub extern "C" fn free_tokio_postgres_client(client: NonNull<CResult<TokioPostgresClient>>) {
-    from_nonnull(client).free::<Client>();
+    from_nonnull(client).free::<PooledClient>();
 }
 
 #[no_mangle]
