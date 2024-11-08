@@ -6,7 +6,7 @@
 //! [WIP]
 //! prototype
 use std::collections::{HashMap, HashSet};
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
 
 use prost::Message;
 use regex::Regex;
@@ -21,7 +21,7 @@ use crate::transfusion::config::{
     LAKESOUL_HASH_PARTITION_SPLITTER, LAKESOUL_NON_PARTITION_TABLE_PART_DESC,
     LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH, LAKESOUL_RANGE_PARTITION_SPLITTER,
 };
-use crate::{error::Result, execute_query, DaoType, PooledClient, PreparedStatementMap, PARAM_DELIM};
+use crate::{error::Result, execute_query, DaoType, PooledClient, PARAM_DELIM};
 
 mod config {
     #![allow(unused)]
@@ -73,11 +73,10 @@ pub fn table_without_pk(hash_bucket_num: &str) -> bool {
 /// see https://users.rust-lang.org/t/dereferencing-a-boxed-value/86768
 pub async fn split_desc_array(
     client: &PooledClient,
-    prepared: &mut PreparedStatementMap,
     table_name: &str,
     namespace: &str,
 ) -> Result<SplitDescArray> {
-    let db = RawClient::new(client, prepared);
+    let db = RawClient::new(client);
     let table_info = db.get_table_info_by_table_name(table_name, namespace).await?;
     let data_files = db.get_table_data_info(&table_info.table_id).await?;
 
@@ -136,18 +135,12 @@ pub async fn split_desc_array(
 
 struct RawClient<'a> {
     client: Mutex<&'a PooledClient>,
-    prepared: Mutex<&'a mut PreparedStatementMap>,
 }
-// struct RawClient<'a> {
-//     client: &'a Client,
-//     prepared: &'a mut PreparedStatementMap,
-// }
 
 impl<'a> RawClient<'_> {
-    fn new(client: &'a PooledClient, prepared: &'a mut PreparedStatementMap) -> RawClient<'a> {
+    fn new(client: &'a PooledClient) -> RawClient<'a> {
         RawClient {
             client: Mutex::new(client),
-            prepared: Mutex::new(prepared),
         }
     }
     pub async fn get_table_info_by_table_name(&self, table_name: &str, namespace: &str) -> Result<TableInfo> {
@@ -230,7 +223,6 @@ impl<'a> RawClient<'_> {
     async fn query(&self, query_type: i32, joined_string: String) -> Result<JniWrapper> {
         let encoded = execute_query(
             self.client.lock().await.deref(),
-            self.prepared.lock().await.deref_mut(),
             query_type,
             joined_string.clone(),
         )

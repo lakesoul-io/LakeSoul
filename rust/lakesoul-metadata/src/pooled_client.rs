@@ -3,32 +3,52 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::error::Result;
-use bb8_postgres::bb8::{Pool, PooledConnection};
-use bb8_postgres::PostgresConnectionManager;
-use postgres_types::ToSql;
+use async_trait::async_trait;
+use bb8_postgres::bb8::{Pool, PooledConnection, QueueStrategy};
+use bb8_postgres::{bb8, PostgresConnectionManager};
+use postgres_types::{ToSql, Type};
+use std::borrow::Cow;
+use std::collections::HashMap;
+use std::fmt;
+use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
-use tokio_postgres::{Config, NoTls, Row, Statement, ToStatement};
+use tokio_postgres::{Client, Config, Error, NoTls, Row, Statement, ToStatement};
 
 pub struct PooledClient {
-    pool: Pool<PostgresConnectionManager<NoTls>>,
+    pool: Pool<PgConnectionManager>,
+    pub statement_cache: Arc<StatementCache>,
 }
+
+pub type PgConnection<'a> = PooledConnection<'a, PgConnectionManager>;
 
 impl PooledClient {
     pub async fn try_new(config: String) -> Result<PooledClient> {
         let config = config.parse::<Config>()?;
-        let manager = PostgresConnectionManager::new(config, NoTls);
+        let manager = PgConnectionManager::new(config);
         let pool = Pool::builder()
             .max_size(8)
             .min_idle(0)
             .connection_timeout(Duration::from_secs(60))
             .idle_timeout(Some(Duration::from_secs(30)))
+            .queue_strategy(QueueStrategy::Lifo)
             .build(manager)
             .await?;
-        Ok(PooledClient { pool })
+        Ok(Self {
+            pool,
+            statement_cache: Arc::new(StatementCache::new()),
+        })
     }
 
-    pub async fn get(&self) -> Result<PooledConnection<PostgresConnectionManager<NoTls>>> {
+    pub async fn get(&self) -> Result<PgConnection> {
         self.pool.get().await.map_err(Into::into)
+    }
+
+    pub async fn prepare_cached(&self, query: &str) -> Result<(PgConnection, Statement)> {
+        let conn = self.get().await?;
+        let statement = conn.prepare_cached(query).await?;
+        Ok((conn, statement))
     }
 
     pub async fn prepare(&self, query: &str) -> Result<Statement> {
@@ -67,6 +87,74 @@ impl PooledClient {
     pub async fn batch_execute(&self, query: &str) -> Result<()> {
         let conn = self.get().await?;
         conn.batch_execute(query).await.map_err(Into::into)
+    }
+}
+
+// wrap a managed connection with statement cache
+pub struct PgConnectionManager {
+    pg_conn: PostgresConnectionManager<NoTls>,
+}
+
+pub struct PgConnWithStmtCache {
+    client: Client,
+    statement_cache: Arc<StatementCache>,
+}
+
+impl Deref for PgConnWithStmtCache {
+    type Target = Client;
+
+    fn deref(&self) -> &Self::Target {
+        &self.client
+    }
+}
+
+impl DerefMut for PgConnWithStmtCache {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.client
+    }
+}
+
+impl PgConnWithStmtCache {
+    pub async fn prepare_cached(&self, query: &str) -> Result<Statement> {
+        self.statement_cache.prepare(&self.client, query).await
+    }
+}
+
+impl PgConnectionManager {
+    pub fn new(config: Config) -> Self {
+        let pg_conn = PostgresConnectionManager::new(config, NoTls);
+        Self { pg_conn }
+    }
+}
+
+#[async_trait]
+impl bb8::ManageConnection for PgConnectionManager
+{
+    type Connection = PgConnWithStmtCache;
+    type Error = Error;
+
+    async fn connect(&self) -> std::result::Result<Self::Connection, Self::Error> {
+        let client = self.pg_conn.connect().await?;
+        Ok(PgConnWithStmtCache {
+            client,
+            statement_cache: Arc::new(StatementCache::new()),
+        })
+    }
+
+    async fn is_valid(&self, conn: &mut Self::Connection) -> std::result::Result<(), Self::Error> {
+        self.pg_conn.is_valid(&mut conn.client).await
+    }
+
+    fn has_broken(&self, conn: &mut Self::Connection) -> bool {
+        self.pg_conn.has_broken(&mut conn.client)
+    }
+}
+
+impl Deref for PgConnectionManager {
+    type Target = PostgresConnectionManager<NoTls>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.pg_conn
     }
 }
 
@@ -222,7 +310,7 @@ impl StatementCache {
     /// possible.
     ///
     /// See [`tokio_postgres::Client::prepare()`].
-    pub async fn prepare(&self, client: &PgClient, query: &str) -> Result<Statement, Error> {
+    pub async fn prepare<'a>(&self, client: &Client, query: &str) -> Result<Statement> {
         self.prepare_typed(client, query, &[]).await
     }
 
@@ -230,12 +318,12 @@ impl StatementCache {
     /// explicitly using this [`StatementCache`], if possible.
     ///
     /// See [`tokio_postgres::Client::prepare_typed()`].
-    pub async fn prepare_typed(
+    pub async fn prepare_typed<'a>(
         &self,
-        client: &PgClient,
+        client: &Client,
         query: &str,
         types: &[Type],
-    ) -> Result<Statement, Error> {
+    ) -> Result<Statement> {
         match self.get(query, types) {
             Some(statement) => Ok(statement),
             None => {

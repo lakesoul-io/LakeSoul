@@ -86,20 +86,6 @@ fn _call_integer_result_callback(callback: IntegerResultCallBack, status: i32, e
     }
 }
 
-// #[repr(C)]
-// struct CVoid {
-//     data: *const c_void,
-// }
-
-// unsafe impl Send for CVoid {}
-
-// unsafe impl Sync for CVoid {}
-
-#[repr(C)]
-pub struct PreparedStatement {
-    private: [u8; 0],
-}
-
 #[repr(C)]
 pub struct TokioPostgresClient {
     private: [u8; 0],
@@ -140,19 +126,17 @@ pub extern "C" fn execute_insert(
     callback: extern "C" fn(i32, *const c_char),
     runtime: NonNull<CResult<TokioRuntime>>,
     client: NonNull<CResult<TokioPostgresClient>>,
-    prepared: NonNull<CResult<PreparedStatement>>,
     insert_type: i32,
     addr: c_ptrdiff_t,
     len: i32,
 ) {
     let runtime = unsafe { NonNull::new_unchecked(runtime.as_ref().ptr as *mut Runtime).as_ref() };
     let client = unsafe { NonNull::new_unchecked(client.as_ref().ptr as *mut PooledClient).as_mut() };
-    let prepared = unsafe { NonNull::new_unchecked(prepared.as_ref().ptr as *mut PreparedStatementMap).as_mut() };
 
     let raw_parts = unsafe { std::slice::from_raw_parts(addr as *const u8, len as usize) };
     let wrapper = entity::JniWrapper::decode(prost::bytes::Bytes::from(raw_parts)).unwrap();
     let result =
-        runtime.block_on(async { lakesoul_metadata::execute_insert(client, prepared, insert_type, wrapper).await });
+        runtime.block_on(async { lakesoul_metadata::execute_insert(client, insert_type, wrapper).await });
     match result {
         Ok(count) => call_result_callback(callback, count, null()),
         Err(e) => call_result_callback(callback, -1, CString::new(e.to_string().as_str()).unwrap().into_raw()),
@@ -164,16 +148,14 @@ pub extern "C" fn execute_update(
     callback: extern "C" fn(i32, *const c_char),
     runtime: NonNull<CResult<TokioRuntime>>,
     client: NonNull<CResult<TokioPostgresClient>>,
-    prepared: NonNull<CResult<PreparedStatement>>,
     update_type: i32,
     joined_string: *const c_char,
 ) {
     let runtime = unsafe { NonNull::new_unchecked(runtime.as_ref().ptr as *mut Runtime).as_ref() };
     let client = unsafe { NonNull::new_unchecked(client.as_ref().ptr as *mut PooledClient).as_mut() };
-    let prepared = unsafe { NonNull::new_unchecked(prepared.as_ref().ptr as *mut PreparedStatementMap).as_mut() };
 
     let result = runtime.block_on(async {
-        lakesoul_metadata::execute_update(client, prepared, update_type, string_from_ptr(joined_string)).await
+        lakesoul_metadata::execute_update(client, update_type, string_from_ptr(joined_string)).await
     });
     match result {
         Ok(count) => call_result_callback(callback, count, null()),
@@ -186,16 +168,14 @@ pub extern "C" fn execute_query_scalar(
     callback: extern "C" fn(*const c_char, *const c_char),
     runtime: NonNull<CResult<TokioRuntime>>,
     client: NonNull<CResult<TokioPostgresClient>>,
-    prepared: NonNull<CResult<PreparedStatement>>,
     update_type: i32,
     joined_string: *const c_char,
 ) {
     let runtime = unsafe { NonNull::new_unchecked(runtime.as_ref().ptr as *mut Runtime).as_ref() };
     let client = unsafe { NonNull::new_unchecked(client.as_ref().ptr as *mut PooledClient).as_mut() };
-    let prepared = unsafe { NonNull::new_unchecked(prepared.as_ref().ptr as *mut PreparedStatementMap).as_mut() };
 
     let result = runtime.block_on(async {
-        lakesoul_metadata::execute_query_scalar(client, prepared, update_type, string_from_ptr(joined_string)).await
+        lakesoul_metadata::execute_query_scalar(client, update_type, string_from_ptr(joined_string)).await
     });
     let (result, err): (*mut c_char, *const c_char) = match result {
         Ok(Some(result)) => (CString::new(result.as_str()).unwrap().into_raw(), null()),
@@ -216,16 +196,14 @@ pub extern "C" fn execute_query(
     callback: extern "C" fn(i32, *const c_char),
     runtime: NonNull<CResult<TokioRuntime>>,
     client: NonNull<CResult<TokioPostgresClient>>,
-    prepared: NonNull<CResult<PreparedStatement>>,
     query_type: i32,
     joined_string: *const c_char,
 ) -> NonNull<CResult<BytesResult>> {
     let runtime = unsafe { NonNull::new_unchecked(runtime.as_ref().ptr as *mut Runtime).as_ref() };
     let client = unsafe { NonNull::new_unchecked(client.as_ref().ptr as *mut PooledClient).as_ref() };
-    let prepared = unsafe { NonNull::new_unchecked(prepared.as_ref().ptr as *mut PreparedStatementMap).as_mut() };
 
     let result = runtime.block_on(async {
-        lakesoul_metadata::execute_query(client, prepared, query_type, string_from_ptr(joined_string)).await
+        lakesoul_metadata::execute_query(client, query_type, string_from_ptr(joined_string)).await
     });
     match result {
         Ok(u8_vec) => {
@@ -340,17 +318,6 @@ pub extern "C" fn free_tokio_postgres_client(client: NonNull<CResult<TokioPostgr
 }
 
 #[no_mangle]
-pub extern "C" fn create_prepared_statement() -> NonNull<CResult<PreparedStatement>> {
-    let prepared = PreparedStatementMap::new();
-    convert_to_nonnull(CResult::<PreparedStatement>::new(prepared))
-}
-
-#[no_mangle]
-pub extern "C" fn free_prepared_statement(prepared: NonNull<CResult<PreparedStatement>>) {
-    from_nonnull(prepared).free::<PreparedStatementMap>();
-}
-
-#[no_mangle]
 pub extern "C" fn create_lakesoul_metadata_client() -> NonNull<CResult<MetaDataClient>> {
     let client = MetaDataClient::from_env();
     convert_to_nonnull(CResult::<MetaDataClient>::new(client))
@@ -376,18 +343,16 @@ fn c_char2str<'a>(ptr: *const c_char) -> &'a str {
 pub extern "C" fn create_split_desc_array(
     callback: ResultCallback,
     client: NonNull<CResult<TokioPostgresClient>>,
-    prepared: NonNull<CResult<PreparedStatement>>,
     runtime: NonNull<CResult<TokioRuntime>>,
     table_name: *const c_char,
     namespace: *const c_char,
 ) -> *mut c_char {
     let runtime = unsafe { NonNull::new_unchecked(runtime.as_ref().ptr as *mut Runtime).as_ref() };
     let client = unsafe { NonNull::new_unchecked(client.as_ref().ptr as *mut PooledClient).as_ref() };
-    let prepared = unsafe { NonNull::new_unchecked(prepared.as_ref().ptr as *mut PreparedStatementMap).as_mut() };
     let table_name = c_char2str(table_name);
     let namespace = c_char2str(namespace);
     let result: Result<*mut c_char, LakeSoulMetaDataError> = runtime.block_on(async {
-        let ret = lakesoul_metadata::transfusion::split_desc_array(client, prepared, table_name, namespace).await?;
+        let ret = lakesoul_metadata::transfusion::split_desc_array(client, table_name, namespace).await?;
         let v = serde_json::to_vec(&ret)?;
         Ok(CString::new(v)
             .map_err(|e| LakeSoulMetaDataError::Internal(e.to_string()))?

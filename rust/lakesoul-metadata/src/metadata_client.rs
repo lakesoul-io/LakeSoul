@@ -20,12 +20,11 @@ use crate::error::{LakeSoulMetaDataError, Result};
 use crate::pooled_client::PooledClient;
 use crate::{
     clean_meta_for_test, create_connection, execute_insert, execute_query, execute_update, DaoType,
-    PreparedStatementMap, PARAM_DELIM, PARTITION_DESC_DELIM,
+    PARAM_DELIM, PARTITION_DESC_DELIM,
 };
 
 pub struct MetaDataClient {
     client: Arc<Mutex<PooledClient>>,
-    prepared: Arc<Mutex<PreparedStatementMap>>,
     max_retry: usize,
 }
 
@@ -86,10 +85,8 @@ impl MetaDataClient {
 
     pub async fn from_config_and_max_retry(config: String, max_retry: usize) -> Result<Self> {
         let client = Arc::new(Mutex::new(create_connection(config).await?));
-        let prepared = Arc::new(Mutex::new(PreparedStatementMap::new()));
         Ok(Self {
             client,
-            prepared,
             max_retry,
         })
     }
@@ -163,7 +160,6 @@ impl MetaDataClient {
         for times in 0..self.max_retry as i64 {
             match execute_insert(
                 self.client.lock().await.deref_mut(),
-                self.prepared.lock().await.deref_mut(),
                 insert_type,
                 wrapper.clone(),
             )
@@ -181,7 +177,6 @@ impl MetaDataClient {
         for times in 0..self.max_retry as i64 {
             match execute_update(
                 self.client.lock().await.deref_mut(),
-                self.prepared.lock().await.deref_mut(),
                 update_type,
                 joined_string.clone(),
             )
@@ -199,7 +194,6 @@ impl MetaDataClient {
         for times in 0..self.max_retry as i64 {
             match execute_query(
                 self.client.lock().await.deref_mut(),
-                self.prepared.lock().await.deref_mut(),
                 query_type,
                 joined_string.clone(),
             )
