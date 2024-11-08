@@ -16,7 +16,7 @@ use prost::Message;
 
 use lakesoul_metadata::error::LakeSoulMetaDataError;
 use lakesoul_metadata::transfusion::SplitDesc;
-use lakesoul_metadata::{Builder, MetaDataClient, PooledClient, PreparedStatementMap, Runtime};
+use lakesoul_metadata::{Builder, MetaDataClient, PooledClient, Runtime};
 use proto::proto::entity;
 
 #[allow(non_camel_case_types)]

@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio_postgres::{Client, Config, Error, NoTls, Row, Statement, ToStatement};
 
@@ -159,48 +159,6 @@ impl Deref for PgConnectionManager {
 }
 
 /// copied and modified from https://github.com/bikeshedder/deadpool/blob/master/postgres/src/lib.rs
-
-/// Structure holding a reference to all [`StatementCache`]s and providing
-/// access for clearing all caches and removing single statements from them.
-#[derive(Default, Debug)]
-pub struct StatementCaches {
-    caches: Mutex<Vec<Weak<StatementCache>>>,
-}
-
-impl StatementCaches {
-    fn attach(&self, cache: &Arc<StatementCache>) {
-        let cache = Arc::downgrade(cache);
-        self.caches.lock().unwrap().push(cache);
-    }
-
-    fn detach(&self, cache: &Arc<StatementCache>) {
-        let cache = Arc::downgrade(cache);
-        self.caches.lock().unwrap().retain(|sc| !sc.ptr_eq(&cache));
-    }
-
-    /// Clears [`StatementCache`] of all connections which were handed out by a
-    /// [`Manager`].
-    pub fn clear(&self) {
-        let caches = self.caches.lock().unwrap();
-        for cache in caches.iter() {
-            if let Some(cache) = cache.upgrade() {
-                cache.clear();
-            }
-        }
-    }
-
-    /// Removes statement from all caches which were handed out by a
-    /// [`Manager`].
-    pub fn remove(&self, query: &str, types: &[Type]) {
-        let caches = self.caches.lock().unwrap();
-        for cache in caches.iter() {
-            if let Some(cache) = cache.upgrade() {
-                drop(cache.remove(query, types));
-            }
-        }
-    }
-}
-
 impl fmt::Debug for StatementCache {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ClientWrapper")

@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::str::FromStr;
-use std::{collections::HashMap, io::ErrorKind};
+use std::io::ErrorKind;
 
 use postgres_types::{FromSql, ToSql};
 use prost::Message;
@@ -11,11 +11,11 @@ pub use tokio::runtime::{Builder, Runtime};
 pub use tokio_postgres::{Client, NoTls, Statement};
 use tokio_postgres::{Error, Row};
 
+use crate::pooled_client::PgConnection;
 pub use crate::pooled_client::PooledClient;
 use error::{LakeSoulMetaDataError, Result};
 pub use metadata_client::{MetaDataClient, MetaDataClientRef};
 use proto::proto::entity;
-use crate::pooled_client::PgConnection;
 
 pub mod transfusion;
 
