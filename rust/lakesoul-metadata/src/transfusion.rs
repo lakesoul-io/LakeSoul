@@ -6,14 +6,13 @@
 //! [WIP]
 //! prototype
 use std::collections::{HashMap, HashSet};
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
 
 use prost::Message;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::Mutex;
-use tokio_postgres::Client;
 
 use proto::proto::entity::{DataCommitInfo, DataFileOp, FileOp, JniWrapper, PartitionInfo, TableInfo};
 
@@ -22,7 +21,7 @@ use crate::transfusion::config::{
     LAKESOUL_HASH_PARTITION_SPLITTER, LAKESOUL_NON_PARTITION_TABLE_PART_DESC,
     LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH, LAKESOUL_RANGE_PARTITION_SPLITTER,
 };
-use crate::{error::Result, execute_query, DaoType, PreparedStatementMap, PARAM_DELIM};
+use crate::{error::Result, execute_query, DaoType, PooledClient, PARAM_DELIM};
 
 mod config {
     #![allow(unused)]
@@ -73,12 +72,11 @@ pub fn table_without_pk(hash_bucket_num: &str) -> bool {
 /// stay origin memory the same
 /// see https://users.rust-lang.org/t/dereferencing-a-boxed-value/86768
 pub async fn split_desc_array(
-    client: &Client,
-    prepared: &mut PreparedStatementMap,
+    client: &PooledClient,
     table_name: &str,
     namespace: &str,
 ) -> Result<SplitDescArray> {
-    let db = RawClient::new(client, prepared);
+    let db = RawClient::new(client);
     let table_info = db.get_table_info_by_table_name(table_name, namespace).await?;
     let data_files = db.get_table_data_info(&table_info.table_id).await?;
 
@@ -136,19 +134,13 @@ pub async fn split_desc_array(
 }
 
 struct RawClient<'a> {
-    client: Mutex<&'a Client>,
-    prepared: Mutex<&'a mut PreparedStatementMap>,
+    client: Mutex<&'a PooledClient>,
 }
-// struct RawClient<'a> {
-//     client: &'a Client,
-//     prepared: &'a mut PreparedStatementMap,
-// }
 
 impl<'a> RawClient<'_> {
-    fn new(client: &'a Client, prepared: &'a mut PreparedStatementMap) -> RawClient<'a> {
+    fn new(client: &'a PooledClient) -> RawClient<'a> {
         RawClient {
             client: Mutex::new(client),
-            prepared: Mutex::new(prepared),
         }
     }
     pub async fn get_table_info_by_table_name(&self, table_name: &str, namespace: &str) -> Result<TableInfo> {
@@ -159,7 +151,7 @@ impl<'a> RawClient<'_> {
             )
             .await
         {
-            Ok(wrapper) if wrapper.table_info.is_empty() => Err(crate::error::LakeSoulMetaDataError::NotFound(
+            Ok(wrapper) if wrapper.table_info.is_empty() => Err(LakeSoulMetaDataError::NotFound(
                 format!("Table '{}' not found", table_name),
             )),
             Ok(wrapper) => Ok(wrapper.table_info[0].clone()),
@@ -231,7 +223,6 @@ impl<'a> RawClient<'_> {
     async fn query(&self, query_type: i32, joined_string: String) -> Result<JniWrapper> {
         let encoded = execute_query(
             self.client.lock().await.deref(),
-            self.prepared.lock().await.deref_mut(),
             query_type,
             joined_string.clone(),
         )

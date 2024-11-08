@@ -139,7 +139,7 @@ object LakeSoulSQLConf {
           |If NATIVE_IO_ENABLE=true, NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE of rows will be used to write a new row group
       """.stripMargin)
       .intConf
-      .createWithDefault(1000000)
+      .createWithDefault(100000)
 
   val NATIVE_IO_THREAD_NUM: ConfigEntry[Int] =
     buildConf("native.io.thread.num")

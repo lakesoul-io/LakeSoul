@@ -3,15 +3,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::str::FromStr;
-use std::{collections::HashMap, io::ErrorKind};
+use std::io::ErrorKind;
 
 use postgres_types::{FromSql, ToSql};
 use prost::Message;
 pub use tokio::runtime::{Builder, Runtime};
-use tokio::spawn;
 pub use tokio_postgres::{Client, NoTls, Statement};
 use tokio_postgres::{Error, Row};
 
+use crate::pooled_client::PgConnection;
+pub use crate::pooled_client::PooledClient;
 use error::{LakeSoulMetaDataError, Result};
 pub use metadata_client::{MetaDataClient, MetaDataClientRef};
 use proto::proto::entity;
@@ -20,6 +21,7 @@ pub mod transfusion;
 
 pub mod error;
 mod metadata_client;
+mod pooled_client;
 
 pub const DAO_TYPE_QUERY_ONE_OFFSET: i32 = 0;
 pub const DAO_TYPE_QUERY_LIST_OFFSET: i32 = 100;
@@ -152,257 +154,241 @@ pub enum DaoType {
     DeleteDataCommitInfoByTableId = DAO_TYPE_UPDATE_OFFSET + 15,
 }
 
-pub type PreparedStatementMap = HashMap<DaoType, Statement>;
-
-async fn get_prepared_statement(
-    client: &Client,
-    prepared: &mut PreparedStatementMap,
+async fn get_prepared_statement<'a>(
+    client: &'a PooledClient,
     dao_type: &DaoType,
-) -> Result<Statement> {
-    if let Some(statement) = prepared.get(dao_type) {
-        Ok(statement.clone())
-    } else {
-        let result = {
-            let statement = match dao_type {
-                // Select Namespace
-                DaoType::SelectNamespaceByNamespace =>
-                    "select namespace, properties, comment, domain
-                    from namespace
-                    where namespace = $1::TEXT",
-                DaoType::ListNamespaces =>
-                    "select namespace, properties, comment, domain
-                    from namespace",
+) -> Result<(PgConnection<'a>, Statement)> {
+    let statement = match dao_type {
+        // Select Namespace
+        DaoType::SelectNamespaceByNamespace =>
+            "select namespace, properties, comment, domain
+            from namespace
+            where namespace = $1::TEXT",
+        DaoType::ListNamespaces =>
+            "select namespace, properties, comment, domain
+            from namespace",
 
-                // Select TablePathId
-                DaoType::SelectTablePathIdByTablePath =>
-                    "select table_path, table_id, table_namespace, domain
-                    from table_path_id
-                    where table_path = $1::TEXT",
-                DaoType::ListAllTablePath =>
-                    "select table_path, table_id, table_namespace, domain
-                    from table_path_id",
-                DaoType::ListAllPathTablePathByNamespace =>
-                    "select table_path
-                    from table_path_id
-                    where table_namespace = $1::TEXT ",
+        // Select TablePathId
+        DaoType::SelectTablePathIdByTablePath =>
+            "select table_path, table_id, table_namespace, domain
+            from table_path_id
+            where table_path = $1::TEXT",
+        DaoType::ListAllTablePath =>
+            "select table_path, table_id, table_namespace, domain
+            from table_path_id",
+        DaoType::ListAllPathTablePathByNamespace =>
+            "select table_path
+            from table_path_id
+            where table_namespace = $1::TEXT ",
 
-                // Select TableNameId
-                DaoType::SelectTableNameIdByTableName =>
-                    "select table_name, table_id, table_namespace, domain
-                    from table_name_id
-                    where table_name = $1::TEXT and table_namespace = $2::TEXT",
-                DaoType::ListTableNameByNamespace =>
-                    "select table_name, table_id, table_namespace, domain
-                    from table_name_id
-                    where table_namespace = $1::TEXT",
+        // Select TableNameId
+        DaoType::SelectTableNameIdByTableName =>
+            "select table_name, table_id, table_namespace, domain
+            from table_name_id
+            where table_name = $1::TEXT and table_namespace = $2::TEXT",
+        DaoType::ListTableNameByNamespace =>
+            "select table_name, table_id, table_namespace, domain
+            from table_name_id
+            where table_namespace = $1::TEXT",
 
-                // Select TableInfo
-                DaoType::SelectTableInfoByTableId =>
-                    "select table_id, table_name, table_path, table_schema, properties, partitions, table_namespace, domain
-                    from table_info
-                    where table_id = $1::TEXT",
-                DaoType::SelectTableInfoByTableNameAndNameSpace =>
-                    "select table_id, table_name, table_path, table_schema, properties, partitions, table_namespace, domain
-                    from table_info
-                    where table_name = $1::TEXT and table_namespace=$2::TEXT",
-                DaoType::SelectTableInfoByTablePath =>
-                    "select table_id, table_name, table_path, table_schema, properties, partitions, table_namespace, domain
-                    from table_info
-                    where table_path = $1::TEXT",
-                DaoType::SelectTableInfoByIdAndTablePath =>
-                    "select table_id, table_name, table_path, table_schema, properties, partitions, table_namespace, domain
-                    from table_info
-                    where table_id = $1::TEXT and table_path=$2::TEXT",
+        // Select TableInfo
+        DaoType::SelectTableInfoByTableId =>
+            "select table_id, table_name, table_path, table_schema, properties, partitions, table_namespace, domain
+            from table_info
+            where table_id = $1::TEXT",
+        DaoType::SelectTableInfoByTableNameAndNameSpace =>
+            "select table_id, table_name, table_path, table_schema, properties, partitions, table_namespace, domain
+            from table_info
+            where table_name = $1::TEXT and table_namespace=$2::TEXT",
+        DaoType::SelectTableInfoByTablePath =>
+            "select table_id, table_name, table_path, table_schema, properties, partitions, table_namespace, domain
+            from table_info
+            where table_path = $1::TEXT",
+        DaoType::SelectTableInfoByIdAndTablePath =>
+            "select table_id, table_name, table_path, table_schema, properties, partitions, table_namespace, domain
+            from table_info
+            where table_id = $1::TEXT and table_path=$2::TEXT",
 
-                // Select PartitionInfo
-                DaoType::SelectPartitionVersionByTableIdAndDescAndVersion =>
-                    "select table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain
-                    from partition_info
-                    where table_id = $1::TEXT and partition_desc = $2::TEXT and version = $3::INT",
-                DaoType::SelectOnePartitionVersionByTableIdAndDesc =>
-                    "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.timestamp, m.expression, m.domain from (
-                        select table_id,partition_desc,max(version) from partition_info
-                        where table_id = $1::TEXT and partition_desc = $2::TEXT group by table_id, partition_desc) t
-                        left join partition_info m on t.table_id = m.table_id
-                        and t.partition_desc = m.partition_desc and t.max = m.version",
-                DaoType::ListPartitionByTableIdAndDesc =>
-                    "select table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain
-                    from partition_info
-                    where table_id = $1::TEXT and partition_desc = $2::TEXT ",
-                DaoType::ListPartitionByTableId =>
-                    "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.timestamp, m.expression, m.domain
-                    from (
-                        select table_id,partition_desc,max(version)
-                        from partition_info
-                        where table_id = $1::TEXT
-                        group by table_id,partition_desc) t
-                    left join partition_info m
-                    on t.table_id = m.table_id and t.partition_desc = m.partition_desc and t.max = m.version",
-                DaoType::ListPartitionVersionByTableIdAndPartitionDescAndTimestampRange =>
-                    "select table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain
-                    from partition_info
-                    where table_id = $1::TEXT and partition_desc = $2::TEXT and timestamp >= $3::BIGINT and timestamp < $4::BIGINT",
-                DaoType::ListCommitOpsBetweenVersions =>
-                    "select distinct(commit_op)
-                    from partition_info
-                    where table_id = $1::TEXT and partition_desc = $2::TEXT and version between $3::INT and $4::INT",
-                DaoType::ListPartitionVersionByTableIdAndPartitionDescAndVersionRange =>
-                    "select table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain
-                    from partition_info
-                    where table_id = $1::TEXT and partition_desc = $2::TEXT and version >= $3::INT and version <= $4::INT",
+        // Select PartitionInfo
+        DaoType::SelectPartitionVersionByTableIdAndDescAndVersion =>
+            "select table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain
+            from partition_info
+            where table_id = $1::TEXT and partition_desc = $2::TEXT and version = $3::INT",
+        DaoType::SelectOnePartitionVersionByTableIdAndDesc =>
+            "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.timestamp, m.expression, m.domain from (
+                select table_id,partition_desc,max(version) from partition_info
+                where table_id = $1::TEXT and partition_desc = $2::TEXT group by table_id, partition_desc) t
+                left join partition_info m on t.table_id = m.table_id
+                and t.partition_desc = m.partition_desc and t.max = m.version",
+        DaoType::ListPartitionByTableIdAndDesc =>
+            "select table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain
+            from partition_info
+            where table_id = $1::TEXT and partition_desc = $2::TEXT ",
+        DaoType::ListPartitionByTableId =>
+            "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.timestamp, m.expression, m.domain
+            from (
+                select table_id,partition_desc,max(version)
+                from partition_info
+                where table_id = $1::TEXT
+                group by table_id,partition_desc) t
+            left join partition_info m
+            on t.table_id = m.table_id and t.partition_desc = m.partition_desc and t.max = m.version",
+        DaoType::ListPartitionVersionByTableIdAndPartitionDescAndTimestampRange =>
+            "select table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain
+            from partition_info
+            where table_id = $1::TEXT and partition_desc = $2::TEXT and timestamp >= $3::BIGINT and timestamp < $4::BIGINT",
+        DaoType::ListCommitOpsBetweenVersions =>
+            "select distinct(commit_op)
+            from partition_info
+            where table_id = $1::TEXT and partition_desc = $2::TEXT and version between $3::INT and $4::INT",
+        DaoType::ListPartitionVersionByTableIdAndPartitionDescAndVersionRange =>
+            "select table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain
+            from partition_info
+            where table_id = $1::TEXT and partition_desc = $2::TEXT and version >= $3::INT and version <= $4::INT",
 
-                // Select DataCommitInfo
-                DaoType::SelectOneDataCommitInfoByTableIdAndPartitionDescAndCommitId =>
-                    "select table_id, partition_desc, commit_id, file_ops, commit_op, timestamp, committed, domain
-                    from data_commit_info
-                    where table_id = $1::TEXT and partition_desc = $2::TEXT and commit_id = $3::UUID",
+        // Select DataCommitInfo
+        DaoType::SelectOneDataCommitInfoByTableIdAndPartitionDescAndCommitId =>
+            "select table_id, partition_desc, commit_id, file_ops, commit_op, timestamp, committed, domain
+            from data_commit_info
+            where table_id = $1::TEXT and partition_desc = $2::TEXT and commit_id = $3::UUID",
 
 
-                // Insert
-                DaoType::InsertNamespace =>
-                    "insert into namespace(
-                        namespace,
-                        properties,
-                        comment,
-                        domain)
-                    values($1::TEXT, $2::JSON, $3::TEXT, $4::TEXT)",
-                DaoType::InsertTableInfo =>
-                    "insert into table_info(
-                        table_id,
-                        table_name,
-                        table_path,
-                        table_schema,
-                        properties,
-                        partitions,
-                        table_namespace,
-                        domain)
-                    values($1::TEXT, $2::TEXT, $3::TEXT, $4::TEXT, $5::JSON, $6::TEXT, $7::TEXT, $8::TEXT)",
-                DaoType::InsertTableNameId =>
-                    "insert into table_name_id(
-                        table_id,
-                        table_name,
-                        table_namespace,
-                        domain)
-                    values($1::TEXT, $2::TEXT, $3::TEXT, $4::TEXT)",
-                DaoType::InsertTablePathId =>
-                    "insert into table_path_id(
-                        table_id,
-                        table_path,
-                        table_namespace,
-                        domain)
-                    values($1::TEXT, $2::TEXT, $3::TEXT, $4::TEXT)",
-                DaoType::InsertPartitionInfo =>
-                    "insert into partition_info(
-                        table_id,
-                        partition_desc,
-                        version,
-                        commit_op,
-                        snapshot,
-                        expression,
-                        domain
-                    )
-                    values($1::TEXT, $2::TEXT, $3::INT, $4::TEXT, $5::_UUID, $6::TEXT, $7::TEXT)",
-                DaoType::InsertDataCommitInfo =>
-                    "insert into data_commit_info(
-                        table_id,
-                        partition_desc,
-                        commit_id,
-                        file_ops,
-                        commit_op,
-                        timestamp,
-                        committed,
-                        domain
-                    )
-                    values($1::TEXT, $2::TEXT, $3::UUID, $4::_data_file_op, $5::TEXT, $6::BIGINT, $7::BOOL, $8::TEXT)",
+        // Insert
+        DaoType::InsertNamespace =>
+            "insert into namespace(
+                namespace,
+                properties,
+                comment,
+                domain)
+            values($1::TEXT, $2::JSON, $3::TEXT, $4::TEXT)",
+        DaoType::InsertTableInfo =>
+            "insert into table_info(
+                table_id,
+                table_name,
+                table_path,
+                table_schema,
+                properties,
+                partitions,
+                table_namespace,
+                domain)
+            values($1::TEXT, $2::TEXT, $3::TEXT, $4::TEXT, $5::JSON, $6::TEXT, $7::TEXT, $8::TEXT)",
+        DaoType::InsertTableNameId =>
+            "insert into table_name_id(
+                table_id,
+                table_name,
+                table_namespace,
+                domain)
+            values($1::TEXT, $2::TEXT, $3::TEXT, $4::TEXT)",
+        DaoType::InsertTablePathId =>
+            "insert into table_path_id(
+                table_id,
+                table_path,
+                table_namespace,
+                domain)
+            values($1::TEXT, $2::TEXT, $3::TEXT, $4::TEXT)",
+        DaoType::InsertPartitionInfo =>
+            "insert into partition_info(
+                table_id,
+                partition_desc,
+                version,
+                commit_op,
+                snapshot,
+                expression,
+                domain
+            )
+            values($1::TEXT, $2::TEXT, $3::INT, $4::TEXT, $5::_UUID, $6::TEXT, $7::TEXT)",
+        DaoType::InsertDataCommitInfo =>
+            "insert into data_commit_info(
+                table_id,
+                partition_desc,
+                commit_id,
+                file_ops,
+                commit_op,
+                timestamp,
+                committed,
+                domain
+            )
+            values($1::TEXT, $2::TEXT, $3::UUID, $4::_data_file_op, $5::TEXT, $6::BIGINT, $7::BOOL, $8::TEXT)",
 
-                // Query Scalar
-                DaoType::GetLatestTimestampFromPartitionInfo =>
-                    "select max(timestamp) as timestamp
-                    from partition_info
-                    where table_id = $1::TEXT and partition_desc = $2::TEXT",
-                DaoType::GetLatestTimestampFromPartitionInfoWithoutPartitionDesc =>
-                    "select max(timestamp) as timestamp
-                    from partition_info
-                    where table_id = $1::TEXT",
-                DaoType::GetLatestVersionUpToTimeFromPartitionInfo =>
-                    "select max(version) as version
-                    from partition_info
-                    where table_id = $1::TEXT and partition_desc = $2::TEXT and timestamp < $3::BIGINT",
-                DaoType::GetLatestVersionTimestampUpToTimeFromPartitionInfo =>
-                    "select max(timestamp) as timestamp
-                    from partition_info
-                    where table_id = $1::TEXT and partition_desc = $2::TEXT and timestamp < $3::BIGINT",
+        // Query Scalar
+        DaoType::GetLatestTimestampFromPartitionInfo =>
+            "select max(timestamp) as timestamp
+            from partition_info
+            where table_id = $1::TEXT and partition_desc = $2::TEXT",
+        DaoType::GetLatestTimestampFromPartitionInfoWithoutPartitionDesc =>
+            "select max(timestamp) as timestamp
+            from partition_info
+            where table_id = $1::TEXT",
+        DaoType::GetLatestVersionUpToTimeFromPartitionInfo =>
+            "select max(version) as version
+            from partition_info
+            where table_id = $1::TEXT and partition_desc = $2::TEXT and timestamp < $3::BIGINT",
+        DaoType::GetLatestVersionTimestampUpToTimeFromPartitionInfo =>
+            "select max(timestamp) as timestamp
+            from partition_info
+            where table_id = $1::TEXT and partition_desc = $2::TEXT and timestamp < $3::BIGINT",
 
-                // Update / Delete
-                DaoType::DeleteNamespaceByNamespace =>
-                    "delete from namespace
-                    where namespace = $1::TEXT ",
-                DaoType::UpdateNamespacePropertiesByNamespace =>
-                    "update namespace
-                    set properties = $2::JSON where namespace = $1::TEXT",
+        // Update / Delete
+        DaoType::DeleteNamespaceByNamespace =>
+            "delete from namespace
+            where namespace = $1::TEXT ",
+        DaoType::UpdateNamespacePropertiesByNamespace =>
+            "update namespace
+            set properties = $2::JSON where namespace = $1::TEXT",
 
-                DaoType::DeleteTableNameIdByTableNameAndNamespace =>
-                    "delete from table_name_id
-                    where table_name = $1::TEXT and table_namespace = $2::TEXT",
-                DaoType::DeleteTableNameIdByTableId =>
-                    "delete from table_name_id
-                    where table_id = $1::TEXT",
+        DaoType::DeleteTableNameIdByTableNameAndNamespace =>
+            "delete from table_name_id
+            where table_name = $1::TEXT and table_namespace = $2::TEXT",
+        DaoType::DeleteTableNameIdByTableId =>
+            "delete from table_name_id
+            where table_id = $1::TEXT",
 
-                DaoType::DeleteTableInfoByIdAndPath =>
-                    "delete from table_info
-                    where table_id = $1::TEXT and table_path = $2::TEXT",
-                DaoType::UpdateTableInfoPropertiesById =>
-                    "update table_info
-                    set properties = $2::JSON where table_id = $1::TEXT",
+        DaoType::DeleteTableInfoByIdAndPath =>
+            "delete from table_info
+            where table_id = $1::TEXT and table_path = $2::TEXT",
+        DaoType::UpdateTableInfoPropertiesById =>
+            "update table_info
+            set properties = $2::JSON where table_id = $1::TEXT",
 
-                DaoType::DeleteTablePathIdByTablePath =>
-                    "delete from table_path_id
-                    where table_path = $1::TEXT ",
-                DaoType::DeleteTablePathIdByTableId =>
-                    "delete from table_path_id
-                    where table_id = $1::TEXT ",
+        DaoType::DeleteTablePathIdByTablePath =>
+            "delete from table_path_id
+            where table_path = $1::TEXT ",
+        DaoType::DeleteTablePathIdByTableId =>
+            "delete from table_path_id
+            where table_id = $1::TEXT ",
 
-                DaoType::DeleteOneDataCommitInfoByTableIdAndPartitionDescAndCommitId =>
-                    "delete from data_commit_info
-                    where table_id = $1::TEXT and partition_desc = $2::TEXT and commit_id = $3::UUID ",
-                DaoType::DeleteDataCommitInfoByTableIdAndPartitionDesc =>
-                    "delete from data_commit_info
-                    where table_id = $1::TEXT and partition_desc = $2::TEXT",
-                DaoType::DeleteDataCommitInfoByTableId =>
-                    "delete from data_commit_info
-                    where table_id = $1::TEXT",
+        DaoType::DeleteOneDataCommitInfoByTableIdAndPartitionDescAndCommitId =>
+            "delete from data_commit_info
+            where table_id = $1::TEXT and partition_desc = $2::TEXT and commit_id = $3::UUID ",
+        DaoType::DeleteDataCommitInfoByTableIdAndPartitionDesc =>
+            "delete from data_commit_info
+            where table_id = $1::TEXT and partition_desc = $2::TEXT",
+        DaoType::DeleteDataCommitInfoByTableId =>
+            "delete from data_commit_info
+            where table_id = $1::TEXT",
 
-                DaoType::DeletePartitionInfoByTableId =>
-                    "delete from partition_info
-                    where table_id = $1::TEXT",
-                DaoType::DeletePartitionInfoByTableIdAndPartitionDesc =>
-                    "delete from partition_info
-                    where table_id = $1::TEXT and partition_desc = $2::TEXT",
-                DaoType::DeletePreviousVersionPartition =>
-                    "delete from partition_info
-                    where table_id = $1::TEXT and partition_desc = $2::TEXT and timestamp <= $3::BIGINT",
+        DaoType::DeletePartitionInfoByTableId =>
+            "delete from partition_info
+            where table_id = $1::TEXT",
+        DaoType::DeletePartitionInfoByTableIdAndPartitionDesc =>
+            "delete from partition_info
+            where table_id = $1::TEXT and partition_desc = $2::TEXT",
+        DaoType::DeletePreviousVersionPartition =>
+            "delete from partition_info
+            where table_id = $1::TEXT and partition_desc = $2::TEXT and timestamp <= $3::BIGINT",
 
 
-                // not prepared
-                DaoType::UpdateTableInfoById |
-                DaoType::TransactionInsertDataCommitInfo |
-                DaoType::TransactionInsertPartitionInfo |
-                DaoType::ListDataCommitInfoByTableIdAndPartitionDescAndCommitList |
-                DaoType::DeleteDataCommitInfoByTableIdAndPartitionDescAndCommitIdList |
-                DaoType::ListPartitionDescByTableIdAndParList => "",
+        // not prepared
+        DaoType::UpdateTableInfoById |
+        DaoType::TransactionInsertDataCommitInfo |
+        DaoType::TransactionInsertPartitionInfo |
+        DaoType::ListDataCommitInfoByTableIdAndPartitionDescAndCommitList |
+        DaoType::DeleteDataCommitInfoByTableIdAndPartitionDescAndCommitIdList |
+        DaoType::ListPartitionDescByTableIdAndParList => "",
 
-                /* _ => todo!(), */
-            };
-            client.prepare(statement).await
-        };
-        match result {
-            Ok(statement) => {
-                prepared.insert(*dao_type, statement.clone());
-                Ok(statement)
-            }
-            Err(err) => Err(LakeSoulMetaDataError::from(err)),
-        }
-    }
+        /* _ => todo!(), */
+    };
+    client.prepare_cached(statement).await
 }
 
 fn get_params(joined_string: String) -> Vec<String> {
@@ -428,8 +414,7 @@ fn separate_uuid(concated_uuid: &str) -> Result<Vec<String>> {
 }
 
 pub async fn execute_query(
-    client: &Client,
-    prepared: &mut PreparedStatementMap,
+    client: &PooledClient,
     query_type: i32,
     joined_string: String,
 ) -> Result<Vec<u8>> {
@@ -438,7 +423,7 @@ pub async fn execute_query(
         return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
     }
     let query_type = DaoType::try_from(query_type).map_err(|e| LakeSoulMetaDataError::Other(Box::new(e)))?;
-    let statement = get_prepared_statement(client, prepared, &query_type).await?;
+    let (client, statement) = get_prepared_statement(client, &query_type).await?;
 
     let params = get_params(joined_string);
 
@@ -802,8 +787,7 @@ pub async fn execute_query(
 }
 
 pub async fn execute_insert(
-    client: &mut Client,
-    prepared: &mut PreparedStatementMap,
+    client: &mut PooledClient,
     insert_type: i32,
     wrapper: entity::JniWrapper,
 ) -> Result<i32> {
@@ -812,7 +796,7 @@ pub async fn execute_insert(
         return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
     }
     let insert_type = DaoType::try_from(insert_type).map_err(|e| LakeSoulMetaDataError::Other(Box::new(e)))?;
-    let statement = get_prepared_statement(client, prepared, &insert_type).await?;
+    let (mut client, statement) = get_prepared_statement(client, &insert_type).await?;
 
     let result = match insert_type {
         DaoType::InsertNamespace if wrapper.namespace.len() == 1 => {
@@ -1087,8 +1071,7 @@ pub async fn execute_insert(
 }
 
 pub async fn execute_update(
-    client: &mut Client,
-    prepared: &mut PreparedStatementMap,
+    client: &mut PooledClient,
     update_type: i32,
     joined_string: String,
 ) -> Result<i32> {
@@ -1097,7 +1080,7 @@ pub async fn execute_update(
         return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
     }
     let update_type = DaoType::try_from(update_type).map_err(|e| LakeSoulMetaDataError::Other(Box::new(e)))?;
-    let statement = get_prepared_statement(client, prepared, &update_type).await?;
+    let (client, statement) = get_prepared_statement(client, &update_type).await?;
 
     let params = joined_string
         .split(PARAM_DELIM)
@@ -1227,8 +1210,7 @@ fn ts_string(res: Result<Option<Row>, Error>) -> Result<Option<String>> {
 }
 
 pub async fn execute_query_scalar(
-    client: &mut Client,
-    prepared: &mut PreparedStatementMap,
+    client: &mut PooledClient,
     query_type: i32,
     joined_string: String,
 ) -> Result<Option<String>, LakeSoulMetaDataError> {
@@ -1237,7 +1219,7 @@ pub async fn execute_query_scalar(
         return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
     }
     let query_type = DaoType::try_from(query_type).map_err(|e| LakeSoulMetaDataError::Other(Box::new(e)))?;
-    let statement = get_prepared_statement(client, prepared, &query_type).await?;
+    let (client, statement) = get_prepared_statement(client, &query_type).await?;
 
     let params = get_params(joined_string);
 
@@ -1284,7 +1266,7 @@ pub async fn execute_query_scalar(
     }
 }
 
-pub async fn clean_meta_for_test(client: &Client) -> Result<i32> {
+pub async fn clean_meta_for_test(client: &PooledClient) -> Result<i32> {
     let result = client
         .batch_execute(
             "delete from namespace;
@@ -1302,22 +1284,8 @@ pub async fn clean_meta_for_test(client: &Client) -> Result<i32> {
 }
 
 ///  Create a pg connection, return pg client
-pub async fn create_connection(config: String) -> Result<Client> {
-    let (client, connection) = match tokio_postgres::connect(config.as_str(), NoTls).await {
-        Ok((client, connection)) => (client, connection),
-        Err(e) => {
-            eprintln!("{}", e);
-            return Err(LakeSoulMetaDataError::from(ErrorKind::ConnectionRefused));
-        }
-    };
-
-    spawn(async move {
-        if let Err(e) = connection.await {
-            eprintln!("connection error: {}", e);
-        }
-    });
-
-    Ok(client)
+pub async fn create_connection(config: String) -> Result<PooledClient> {
+    PooledClient::try_new(config).await
 }
 
 fn row_to_uuid_list(row: &Row) -> Vec<entity::Uuid> {

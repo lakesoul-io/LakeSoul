@@ -13,29 +13,25 @@ public interface LibLakeSoulMetaData {
 
     void free_tokio_runtime(Pointer runtime);
 
-    Pointer create_prepared_statement();
-
-    void free_prepared_statement(Pointer prepared);
-
     Pointer create_tokio_postgres_client(BooleanCallback booleanCallback, String config, Pointer runtime);
 
     void free_tokio_postgres_client(Pointer client);
 
-    Pointer execute_query(IntegerCallback integerCallback, Pointer runtime, Pointer client, Pointer prepared, Integer type, String texts);
+    Pointer execute_query(IntegerCallback integerCallback, Pointer runtime, Pointer client, Integer type, String texts);
 
     void export_bytes_result(BooleanCallback booleanCallback, Pointer bytes, Integer len, @LongLong long addr);
 
     void free_bytes_result(Pointer bytes);
 
-    void execute_update(IntegerCallback integerCallback, Pointer runtime, Pointer client, Pointer prepared, Integer type, String texts);
+    void execute_update(IntegerCallback integerCallback, Pointer runtime, Pointer client, Integer type, String texts);
 
-    void execute_query_scalar(StringCallback stringCallback, Pointer runtime, Pointer client, Pointer prepared, Integer type, String texts);
+    void execute_query_scalar(StringCallback stringCallback, Pointer runtime, Pointer client, Integer type, String texts);
 
-    void execute_insert(IntegerCallback integerCallback, Pointer runtime, Pointer client, Pointer prepared, Integer type, @LongLong long addr, int length);
+    void execute_insert(IntegerCallback integerCallback, Pointer runtime, Pointer client, Integer type, @LongLong long addr, int length);
 
     void clean_meta_for_test(IntegerCallback integerCallback, Pointer runtime, Pointer client);
 
-    Pointer create_split_desc_array(BooleanCallback booleanCallback, Pointer client, Pointer prepared, Pointer runtime, String tableName, String namespace);
+    Pointer create_split_desc_array(BooleanCallback booleanCallback, Pointer client, Pointer runtime, String tableName, String namespace);
 
     void free_split_desc_array(Pointer json);
 
