@@ -190,7 +190,8 @@ impl LakeSoulIOConfig {
     }
 
     pub fn is_compacted(&self) -> bool {
-        self.option(OPTION_KEY_IS_COMPACTED).map_or(false, |x| x.eq("true"))
+        // self.option(OPTION_KEY_IS_COMPACTED).map_or(false, |x| x.eq("true"))
+        false
     }
 }
 
