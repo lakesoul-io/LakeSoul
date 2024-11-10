@@ -9,7 +9,6 @@ use std::{collections::HashMap, env, fs, vec};
 
 use prost::Message;
 use tokio::sync::Mutex;
-use tokio_postgres::Client;
 use tracing::debug;
 use url::Url;
 
@@ -18,14 +17,14 @@ use proto::proto::entity::{
 };
 
 use crate::error::{LakeSoulMetaDataError, Result};
+use crate::pooled_client::PooledClient;
 use crate::{
     clean_meta_for_test, create_connection, execute_insert, execute_query, execute_update, DaoType,
-    PreparedStatementMap, PARAM_DELIM, PARTITION_DESC_DELIM,
+    PARAM_DELIM, PARTITION_DESC_DELIM,
 };
 
 pub struct MetaDataClient {
-    client: Arc<Mutex<Client>>,
-    prepared: Arc<Mutex<PreparedStatementMap>>,
+    client: Arc<Mutex<PooledClient>>,
     max_retry: usize,
 }
 
@@ -86,10 +85,8 @@ impl MetaDataClient {
 
     pub async fn from_config_and_max_retry(config: String, max_retry: usize) -> Result<Self> {
         let client = Arc::new(Mutex::new(create_connection(config).await?));
-        let prepared = Arc::new(Mutex::new(PreparedStatementMap::new()));
         Ok(Self {
             client,
-            prepared,
             max_retry,
         })
     }
@@ -163,7 +160,6 @@ impl MetaDataClient {
         for times in 0..self.max_retry as i64 {
             match execute_insert(
                 self.client.lock().await.deref_mut(),
-                self.prepared.lock().await.deref_mut(),
                 insert_type,
                 wrapper.clone(),
             )
@@ -181,7 +177,6 @@ impl MetaDataClient {
         for times in 0..self.max_retry as i64 {
             match execute_update(
                 self.client.lock().await.deref_mut(),
-                self.prepared.lock().await.deref_mut(),
                 update_type,
                 joined_string.clone(),
             )
@@ -199,7 +194,6 @@ impl MetaDataClient {
         for times in 0..self.max_retry as i64 {
             match execute_query(
                 self.client.lock().await.deref_mut(),
-                self.prepared.lock().await.deref_mut(),
                 query_type,
                 joined_string.clone(),
             )
@@ -474,9 +468,10 @@ impl MetaDataClient {
             )
             .await
         {
-            Ok(wrapper) if wrapper.table_info.is_empty() => Err(crate::error::LakeSoulMetaDataError::NotFound(
-                format!("Table '{}' not found", table_name),
-            )),
+            Ok(wrapper) if wrapper.table_info.is_empty() => Err(LakeSoulMetaDataError::NotFound(format!(
+                "Table '{}' not found",
+                table_name
+            ))),
             Ok(wrapper) => Ok(wrapper.table_info[0].clone()),
             Err(err) => Err(err),
         }
@@ -487,9 +482,10 @@ impl MetaDataClient {
             .execute_query(DaoType::SelectTablePathIdByTablePath as i32, table_path.to_string())
             .await
         {
-            Ok(wrapper) if wrapper.table_info.is_empty() => Err(crate::error::LakeSoulMetaDataError::NotFound(
-                format!("Table '{}' not found", table_path),
-            )),
+            Ok(wrapper) if wrapper.table_info.is_empty() => Err(LakeSoulMetaDataError::NotFound(format!(
+                "Table '{}' not found",
+                table_path
+            ))),
             Ok(wrapper) => Ok(wrapper.table_info[0].clone()),
             Err(err) => Err(err),
         }

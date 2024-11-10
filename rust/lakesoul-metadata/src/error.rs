@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::{io, num, result, sync::Arc};
-
+use bb8_postgres::bb8::RunError;
 use thiserror::Error;
 
 /// Result type for operations that could result in an [LakeSoulMetaDataError]
@@ -20,6 +20,8 @@ pub type GenericError = Box<dyn std::error::Error + Send + Sync>;
 pub enum LakeSoulMetaDataError {
     #[error("postgres error: {0}")]
     PostgresError(#[from] tokio_postgres::Error),
+    #[error("postgres pool error: {0}")]
+    PostgresPoolError(#[from] RunError<tokio_postgres::Error>),
     #[error("IO error: {0}")]
     IoError(#[from] io::Error),
     #[error("serde_json error: {0}")]
