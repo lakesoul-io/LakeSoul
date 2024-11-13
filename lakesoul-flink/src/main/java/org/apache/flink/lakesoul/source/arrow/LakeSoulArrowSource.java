@@ -31,10 +31,12 @@ public class LakeSoulArrowSource extends LakeSoulSource<LakeSoulArrowWrapper> {
         TableInfo tableInfo = DataOperation.dbManager().getTableInfoByNameAndNamespace(tableName, tableNamespace);
         RowType tableRowType = ArrowUtils.fromArrowSchema(Schema.fromJSON(tableInfo.getTableSchema()));
         DBUtil.TablePartitionKeys tablePartitionKeys = DBUtil.parseTableInfoPartitions(tableInfo.getPartitions());
+        boolean isBounded = conf.getBoolean("IS_BOUNDED", false);
         return new LakeSoulArrowSource(
                 tableInfo,
                 tableId,
                 conf.toMap(),
+                isBounded,
                 tableRowType,
                 tablePartitionKeys.primaryKeys,
                 tablePartitionKeys.rangeKeys
@@ -56,8 +58,8 @@ public class LakeSoulArrowSource extends LakeSoulSource<LakeSoulArrowWrapper> {
                 tableInfo,
                 tableId,
                 conf.toMap(),
-                tableRowType,
                 isBounded,
+                tableRowType,
                 tablePartitionKeys.primaryKeys,
                 tablePartitionKeys.rangeKeys,
                 remainingPartitions
@@ -68,8 +70,8 @@ public class LakeSoulArrowSource extends LakeSoulSource<LakeSoulArrowWrapper> {
             TableInfo tableInfo,
             TableId tableId,
             Map<String, String> optionParams,
-            RowType tableRowType,
             boolean isBounded,
+            RowType tableRowType,
             List<String> pkColumns,
             List<String> partitionColumns,
             List<Map<String, String>> remainingPartitions
@@ -94,6 +96,7 @@ public class LakeSoulArrowSource extends LakeSoulSource<LakeSoulArrowWrapper> {
             TableInfo tableInfo,
             TableId tableId,
             Map<String, String> optionParams,
+            boolean isBounded,
             RowType tableRowType,
             List<String> pkColumns,
             List<String> partitionColumns
@@ -103,7 +106,7 @@ public class LakeSoulArrowSource extends LakeSoulSource<LakeSoulArrowWrapper> {
                 tableRowType,
                 tableRowType,
                 tableRowType,
-                false,
+                isBounded,
                 pkColumns,
                 partitionColumns,
                 optionParams,

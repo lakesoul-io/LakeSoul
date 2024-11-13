@@ -274,6 +274,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
 
     @Override
     public void close() throws Exception {
+        LOG.info("Close reader split {}, read num {}", splitId, totalRead);
         if (this.currentVCR != null) {
             this.currentVCR.close();
             this.currentVCR = null;
