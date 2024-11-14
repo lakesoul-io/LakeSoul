@@ -4,10 +4,15 @@
 
 package org.apache.spark.sql.lakesoul.commands
 
+import com.dmetasoul.lakesoul.lakesoul.local.LakeSoulLocalJavaWriter
+import com.dmetasoul.lakesoul.lakesoul.local.LakeSoulLocalJavaWriter.ArrowTypeMockDataGenerator
+import com.dmetasoul.lakesoul.meta.DBConfig.TableInfoProperty
 import com.dmetasoul.lakesoul.meta.LakeSoulOptions.SHORT_TABLE_NAME
 import com.dmetasoul.lakesoul.meta.{DBUtil, DataFileInfo, DataOperation, SparkMetaVersion}
 import com.dmetasoul.lakesoul.spark.clean.CleanOldCompaction.splitCompactFilePath
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
+import org.apache.arrow.vector.types.{DateUnit, TimeUnit}
+import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType}
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.functions.lit
@@ -22,6 +27,12 @@ import org.apache.spark.sql.{AnalysisException, QueryTest, Row, SparkSession}
 import org.junit.runner.RunWith
 import org.scalatest.BeforeAndAfterEach
 import org.scalatestplus.junit.JUnitRunner
+
+import java.time.ZoneId
+import java.util
+import java.util.{Arrays, List}
+import scala.collection.JavaConverters.mapAsJavaMapConverter
+
 
 @RunWith(classOf[JUnitRunner])
 class CompactionSuite extends QueryTest
@@ -919,5 +930,147 @@ class CompactionSuite extends QueryTest
     val sm = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(tablePath)).toString)
     sm.getTableInfoOnly
   }
+
+
+  test("compaction with concurrent data insertion and compaction") {
+    withTempDir { tempDir =>
+      //      val tempDir = org.apache.spark.util.Utils.createDirectory(System.getProperty("java.io.tmpdir"))
+      val tablePath = tempDir.getCanonicalPath
+      //      val spark = SparkSession.active
+
+      val hashBucketNum = 4
+      val compactRounds = 10
+      val compactGapMs = 10000
+      val upsertRounds = 100
+      val upsertGapMs = 100
+      val upsertRows = 1024
+      val compactGroupSize = 3
+      val cdc = true
+      val ranges = 2;
+
+      val fields: util.List[Field] = if (cdc) {
+        util.Arrays.asList(
+          new Field("id", FieldType.nullable(new ArrowType.Int(32, true)), null),
+          new Field("date", FieldType.nullable(new ArrowType.Utf8), null),
+          new Field("value", FieldType.nullable(new ArrowType.Int(32, true)), null),
+          new Field("range", FieldType.nullable(new ArrowType.Int(32, true)), null),
+          new Field(TableInfoProperty.CDC_CHANGE_COLUMN_DEFAULT, FieldType.nullable(new ArrowType.Utf8), null),
+        )
+      } else {
+        util.Arrays.asList(
+          new Field("id", FieldType.nullable(new ArrowType.Int(32, true)), null),
+          new Field("date", FieldType.nullable(new ArrowType.Utf8), null),
+          new Field("value", FieldType.nullable(new ArrowType.Int(32, true)), null),
+          new Field("range", FieldType.nullable(new ArrowType.Int(32, true)), null),
+        )
+      }
+      //      if (cdc) fields = util.Arrays.asList(new Field("id", FieldType.nullable(new ArrowType.Int(32, true)), null), new Field("range", FieldType.nullable(new ArrowType.Int(32, true)), null), new Field("int", FieldType.nullable(new ArrowType.Int(32, true)), null), new Field("utf8", FieldType.nullable(new ArrowType.Utf8), null), new Field("decimal", FieldType.nullable(ArrowType.Decimal.createDecimal(10, 3, null)), null), new Field("boolean", FieldType.nullable(new ArrowType.Bool), null), new Field("date", FieldType.nullable(new ArrowType.Date(DateUnit.DAY)), null), new Field("datetimeSec", FieldType.nullable(new ArrowType.Timestamp(TimeUnit.SECOND, ZoneId.of("UTC").toString)), null), new Field(TableInfoProperty.CDC_CHANGE_COLUMN_DEFAULT, FieldType.notNullable(new ArrowType.Utf8), null), new Field("datetimeMilli", FieldType.nullable(new ArrowType.Timestamp(TimeUnit.MILLISECOND, ZoneId.of("UTC").toString)), null))
+      //      else fields = util.Arrays.asList(new Field("id", FieldType.nullable(new ArrowType.Int(32, true)), null), new Field("range", FieldType.nullable(new ArrowType.Int(32, true)), null), new Field("int", FieldType.nullable(new ArrowType.Int(32, true)), null), new Field("utf8", FieldType.nullable(new ArrowType.Utf8), null), new Field("decimal", FieldType.nullable(ArrowType.Decimal.createDecimal(10, 3, null)), null), new Field("boolean", FieldType.nullable(new ArrowType.Bool), null), new Field("date", FieldType.nullable(new ArrowType.Date(DateUnit.DAY)), null), new Field("datetimeSec", FieldType.nullable(new ArrowType.Timestamp(TimeUnit.SECOND, ZoneId.of("UTC").toString)), null), new Field("datetimeMilli", FieldType.nullable(new ArrowType.Timestamp(TimeUnit.MILLISECOND, ZoneId.of("UTC").toString)), null))
+
+      val numCols = fields.size
+      // Create test data
+      val df = if (cdc) {
+        Seq(
+          (-1, "2023-01-01", 10, ranges + 1, "insert"),
+          (-2, "2023-01-02", 20, ranges + 1, "insert"),
+          (-3, "2023-01-03", 30, ranges + 1, "insert"),
+          (-4, "2023-01-04", 40, ranges + 1, "insert"),
+          (-5, "2023-01-05", 50, ranges + 1, "insert")
+        ).toDF("id", "date", "value", "range", TableInfoProperty.CDC_CHANGE_COLUMN_DEFAULT)
+      } else {
+        Seq(
+          (1, "2023-01-01", 10, ranges + 1),
+          (2, "2023-01-02", 20, ranges + 1),
+          (3, "2023-01-03", 30, ranges + 1),
+          (4, "2023-01-04", 40, ranges + 1),
+          (5, "2023-01-05", 50, ranges + 1)
+        ).toDF("id", "date", "value", "range")
+      }
+
+      // Write initial data
+      df.write
+        .format("lakesoul")
+        //        .option("rangePartitions", "range")
+        .option("hashPartitions", "id")
+        .option(SHORT_TABLE_NAME, "compaction_size_limit_table")
+        .option("hashBucketNum", hashBucketNum.toString)
+        .option(TableInfoProperty.CDC_CHANGE_COLUMN, TableInfoProperty.CDC_CHANGE_COLUMN_DEFAULT)
+        .save(tablePath)
+
+      val lakeSoulTable = LakeSoulTable.forPath(tablePath)
+      val insertThread = new Thread {
+
+        override def run(): Unit = {
+          val localWriter = new LakeSoulLocalJavaWriter()
+          val params = Map(
+            ("lakesoul.pg.url", "jdbc:postgresql://127.0.0.1:5433/test_lakesoul_meta?stringtype=unspecified"),
+            ("lakesoul.pg.username", "yugabyte"),
+            ("lakesoul.pg.password", "yugabyte"),
+            (LakeSoulLocalJavaWriter.TABLE_NAME, "compaction_size_limit_table")
+          )
+          localWriter.init(params.asJava)
+
+          for (c <- 0 until upsertRounds) {
+            println(s"upsertRound = $c")
+            for (i <- c * upsertRows until c * upsertRows + upsertRows) {
+              val row: Array[AnyRef] = new Array[AnyRef](if (cdc) {
+                numCols - 1
+              }
+              else {
+                numCols
+              })
+              var j: Int = 0
+              var k: Int = 0
+              while (j < numCols) {
+                if (!fields.get(j).getName.contains(TableInfoProperty.CDC_CHANGE_COLUMN_DEFAULT)) {
+                  if (fields.get(j).getName.contains("id")) {
+                    row(k) = i.asInstanceOf[AnyRef]
+                    k += 1
+                  }
+                  else {
+                    if (fields.get(j).getName.contains("range")) {
+                      row(k) = (i % ranges).asInstanceOf[AnyRef]
+                      k += 1
+                    }
+                    else {
+                      row(k) = fields.get(j).getType.accept(ArrowTypeMockDataGenerator.INSTANCE)
+                      k += 1
+                    }
+                  }
+                }
+
+                j += 1
+              }
+              localWriter.writeAddRow(row)
+              //              if (cdc && i % 7 == 0) {
+              //                localWriter.writeDeleteRow(row)
+              //              }
+            }
+            localWriter.commit()
+            Thread.sleep(upsertGapMs)
+          }
+          localWriter.close()
+        }
+      }
+      LakeSoulTable.uncached(tablePath)
+      val compactionThread = new Thread {
+        override def run(): Unit = {
+          for (c <- 1 to compactRounds) {
+            println(s"compactRound = $c")
+
+            lakeSoulTable.compaction(fileNumLimit = Some(2), fileSizeLimit = Some("10KB"), force = false)
+            Thread.sleep(compactGapMs) // Simulate compaction delay
+          }
+        }
+      }
+      //      insertThread.start()
+      //      compactionThread.start()
+      //      insertThread.join()
+      //      compactionThread.join()
+      //      val compactedData = lakeSoulTable.toDF.orderBy("id", "date").collect()
+      //      assert(compactedData.length == upsertRounds * upsertRows + 5, s"The compressed data should have 105 rows, but it actually has ${compactedData.length} rows")
+    }
+  }
+
 
 }

@@ -12,7 +12,7 @@ import org.apache.spark.internal.io.FileCommitProtocol
 import org.apache.spark.sql.Dataset
 import org.apache.spark.sql.catalyst.catalog.BucketSpec
 import org.apache.spark.sql.catalyst.expressions.Attribute
-import org.apache.spark.sql.execution.datasources.LakeSoulFileWriter.COPY_FILE_WRITER_KEY
+import org.apache.spark.sql.execution.datasources.LakeSoulFileWriter.{COPY_FILE_WRITER_KEY, COPY_FILE_WRITER_SPLITTER}
 import org.apache.spark.sql.execution.datasources.{BasicWriteJobStatsTracker, LakeSoulFileWriter, WriteJobStatsTracker}
 import org.apache.spark.sql.execution.{QueryExecution, SQLExecution}
 import org.apache.spark.sql.functions.{col, when}
@@ -217,7 +217,7 @@ trait TransactionalWrite {
     }
 
     val committer = if (copyCompactedFile.nonEmpty) {
-      options.put(COPY_FILE_WRITER_KEY, "true")
+      options.put(COPY_FILE_WRITER_KEY, copyCompactedFile.map(_.path).mkString(COPY_FILE_WRITER_SPLITTER))
       new DelayedCopyCommitProtocol(copyCompactedFile, "lakesoul", outputPath.toString, None)
     } else {
       getCommitter(outputPath)

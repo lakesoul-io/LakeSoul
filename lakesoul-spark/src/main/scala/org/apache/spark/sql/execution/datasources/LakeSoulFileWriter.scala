@@ -50,6 +50,7 @@ object LakeSoulFileWriter extends Logging {
   val HASH_BUCKET_ID_KEY = "hash_bucket_id"
   val SNAPPY_COMPRESS_RATIO = 3
   val COPY_FILE_WRITER_KEY = "copy_file_writer"
+  val COPY_FILE_WRITER_SPLITTER = "\u0001"
 
   /**
     * Basic work flow of this command is:
@@ -216,8 +217,8 @@ object LakeSoulFileWriter extends Logging {
     try {
       // for compaction, we won't break ordering from batch scan
       val (rdd, concurrentOutputWriterSpec) =
-        if (isCompaction && options.getOrElse(COPY_FILE_WRITER_KEY, "false").toBoolean) {
-          val data = Seq(InternalRow(COPY_FILE_WRITER_KEY))
+        if (isCompaction && options.getOrElse(COPY_FILE_WRITER_KEY, "").nonEmpty) {
+          val data = options(COPY_FILE_WRITER_KEY).split(COPY_FILE_WRITER_SPLITTER).map(InternalRow(_)).toSeq
           (sparkSession.sparkContext.parallelize(data), None)
         } else if (!isBucketNumChanged && (orderingMatched || isCompaction)) {
           (nativeWrap(empty2NullPlan), None)
@@ -439,9 +440,14 @@ object LakeSoulFileWriter extends Logging {
           currentWriter.close()
           if (maxFileSize.isDefined) {
             currentWriter.asInstanceOf[NativeParquetOutputWriter].flushResult.foreach(result => {
-              val (partitionDesc, flushResult) = result
-              val partitionDescList = if (partitionDesc == "-4") {
-                DBUtil.parsePartitionDesc(options.getOrElse("partValue", LAKESOUL_NON_PARTITION_TABLE_PART_DESC)).asScala.toList
+              var (partitionDesc, flushResult) = result
+              partitionDesc = if (partitionDesc == "-4") {
+                options.getOrElse("partValue", LAKESOUL_NON_PARTITION_TABLE_PART_DESC)
+              } else {
+                partitionDesc
+              }
+              val partitionDescList = if (partitionDesc == "-5") {
+                List.empty
               } else {
                 DBUtil.parsePartitionDesc(partitionDesc).asScala.toList
               }
@@ -516,8 +522,13 @@ object LakeSoulFileWriter extends Logging {
                                 options: Map[String, String],
                                 customMetrics: Map[String, SQLMetric] = Map.empty)
     extends FileFormatDataWriter(description, taskAttemptContext, committer, customMetrics) {
+    private val partValue: Option[String] = options.get("partValue").filter(_ != LAKESOUL_NON_PARTITION_TABLE_PART_DESC)
+      .map(_.replace(LAKESOUL_RANGE_PARTITION_SPLITTER, "/"))
 
     override def write(record: InternalRow): Unit = {
+      val path = record.get(0, StringType).toString
+      val currentPath = committer.newTaskTempFile(taskAttemptContext, partValue, path)
+      statsTrackers.foreach(_.newFile(currentPath))
       logInfo("copy file")
     }
   }

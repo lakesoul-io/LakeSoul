@@ -208,7 +208,7 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
     val (copyFiles, scanFiles) = if (fileSizeLimit.isEmpty || bucketNumChanged || force) {
       (Seq.empty, files)
     } else {
-      files.splitAt(files.indexWhere(_.size < fileSizeLimit.get * 0.5))
+      files.splitAt(files.indexWhere(file => file.size < fileSizeLimit.get * 0.5 || splitCompactFilePath(file.path)._2.isEmpty))
     }
 
 

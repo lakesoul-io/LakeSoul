@@ -30,9 +30,17 @@ class DelayedCopyCommitProtocol(srcFiles: Seq[DataFileInfo],
   extends DelayedCommitProtocol(jobId, dstPath, randomPrefixLength)
     with Serializable with Logging {
 
+  @transient private var addedFileInfo: ArrayBuffer[DataFileInfo] = _
+  @transient private var pathToFileInfo: Map[String, Seq[DataFileInfo]] = _
+
+  override def setupTask(taskContext: TaskAttemptContext): Unit = {
+    addedFileInfo = new ArrayBuffer[DataFileInfo]
+    pathToFileInfo = srcFiles.groupBy(_.path)
+  }
+
   override def newTaskTempFile(taskContext: TaskAttemptContext, dir: Option[String], ext: String): String = {
-    throw new UnsupportedOperationException(
-      s"$this does not support adding files with an absolute path")
+    addedFileInfo += pathToFileInfo(ext).head
+    ext
   }
 
   override def newTaskTempFileAbsPath(taskContext: TaskAttemptContext, absoluteDir: String, ext: String): String = {
@@ -41,10 +49,9 @@ class DelayedCopyCommitProtocol(srcFiles: Seq[DataFileInfo],
   }
 
   override def commitTask(taskContext: TaskAttemptContext): TaskCommitMessage = {
-
-    if (srcFiles.nonEmpty) {
-      val fs = new Path(srcFiles.head.path).getFileSystem(taskContext.getConfiguration)
-      val statuses = srcFiles.map { srcFile =>
+    if (addedFileInfo.nonEmpty) {
+      val fs = new Path(addedFileInfo.head.path).getFileSystem(taskContext.getConfiguration)
+      val statuses = addedFileInfo.map { srcFile =>
         val (srcCompactDir, srcBasePath) = splitCompactFilePath(srcFile.path)
         val dstFile = new Path(dstPath, srcBasePath)
         FileUtil.copy(fs, new Path(srcFile.path), fs, new Path(dstPath, srcBasePath), false, taskContext.getConfiguration)
