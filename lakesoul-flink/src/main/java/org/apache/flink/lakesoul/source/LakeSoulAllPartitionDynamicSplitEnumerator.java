@@ -90,20 +90,23 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator implements SplitEnumerat
             return;
         }
         int tasksSize = context.registeredReaders().size();
-        Optional<LakeSoulPartitionSplit> nextSplit = this.splitAssigner.getNext(subtaskId, tasksSize);
-        if (nextSplit.isPresent()) {
-            context.assignSplit(nextSplit.get(), subtaskId);
-            taskIdsAwaitingSplit.remove(subtaskId);
-        } else {
-            taskIdsAwaitingSplit.add(subtaskId);
+        synchronized (this) {
+            Optional<LakeSoulPartitionSplit> nextSplit = this.splitAssigner.getNext(subtaskId, tasksSize);
+            if (nextSplit.isPresent()) {
+                context.assignSplit(nextSplit.get(), subtaskId);
+                taskIdsAwaitingSplit.remove(subtaskId);
+            } else {
+                taskIdsAwaitingSplit.add(subtaskId);
+            }
         }
-
     }
 
     @Override
     public void addSplitsBack(List<LakeSoulPartitionSplit> splits, int subtaskId) {
         LOG.info("Add split back: {}", splits);
-        splitAssigner.addSplits(splits);
+        synchronized (this) {
+            splitAssigner.addSplits(splits);
+        }
     }
 
     @Override
@@ -112,11 +115,13 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator implements SplitEnumerat
 
     @Override
     public LakeSoulPendingSplits snapshotState(long checkpointId) throws Exception {
-        LakeSoulPendingSplits pendingSplits =
-                new LakeSoulPendingSplits(splitAssigner.remainingSplits(), this.nextStartTime, this.tableId, "",
-                        this.discoveryInterval, this.hashBucketNum);
-        LOG.info("LakeSoulAllPartitionDynamicSplitEnumerator snapshotState {}", pendingSplits);
-        return pendingSplits;
+        synchronized (this) {
+            LakeSoulPendingSplits pendingSplits =
+                    new LakeSoulPendingSplits(splitAssigner.remainingSplits(), this.nextStartTime, this.tableId, "",
+                            this.discoveryInterval, this.hashBucketNum);
+            LOG.info("LakeSoulAllPartitionDynamicSplitEnumerator snapshotState {}", pendingSplits);
+            return pendingSplits;
+        }
     }
 
     @Override
@@ -131,14 +136,16 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator implements SplitEnumerat
         }
         LOG.info("Process discovered splits {}", splits);
         int tasksSize = context.registeredReaders().size();
-        this.splitAssigner.addSplits(splits);
-        Iterator<Integer> iter = taskIdsAwaitingSplit.iterator();
-        while (iter.hasNext()) {
-            int taskId = iter.next();
-            Optional<LakeSoulPartitionSplit> al = this.splitAssigner.getNext(taskId, tasksSize);
-            if (al.isPresent()) {
-                context.assignSplit(al.get(), taskId);
-                iter.remove();
+        synchronized (this) {
+            this.splitAssigner.addSplits(splits);
+            Iterator<Integer> iter = taskIdsAwaitingSplit.iterator();
+            while (iter.hasNext()) {
+                int taskId = iter.next();
+                Optional<LakeSoulPartitionSplit> al = this.splitAssigner.getNext(taskId, tasksSize);
+                if (al.isPresent()) {
+                    context.assignSplit(al.get(), taskId);
+                    iter.remove();
+                }
             }
         }
     }
@@ -148,7 +155,6 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator implements SplitEnumerat
         LOG.info("allPartitionInfo={}", allPartitionInfo);
         List<PartitionInfo> filteredPartition = SubstraitUtil.applyPartitionFilters(allPartitionInfo, partitionArrowSchema, partitionFilters);
         LOG.info("filteredPartition={}, filter={}", filteredPartition, partitionFilters);
-
 
         ArrayList<LakeSoulPartitionSplit> splits = new ArrayList<>(16);
         for (PartitionInfo partitionInfo : filteredPartition) {
