@@ -132,11 +132,13 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator implements SplitEnumerat
         LOG.info("Process discovered splits {}", splits);
         int tasksSize = context.registeredReaders().size();
         this.splitAssigner.addSplits(splits);
-        for (Integer item : taskIdsAwaitingSplit) {
-            Optional<LakeSoulPartitionSplit> al = this.splitAssigner.getNext(item, tasksSize);
+        Iterator<Integer> iter = taskIdsAwaitingSplit.iterator();
+        while (iter.hasNext()) {
+            int taskId = iter.next();
+            Optional<LakeSoulPartitionSplit> al = this.splitAssigner.getNext(taskId, tasksSize);
             if (al.isPresent()) {
-                context.assignSplit(al.get(), item);
-                taskIdsAwaitingSplit.remove(item);
+                context.assignSplit(al.get(), taskId);
+                iter.remove();
             }
         }
     }
