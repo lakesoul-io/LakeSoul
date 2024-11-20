@@ -309,7 +309,16 @@ SPDX-License-Identifier: Apache-2.0
                     <groupId>org.slf4j</groupId>
                     <artifactId>slf4j-api</artifactId>
                 </exclusion>
+                <exclusion>
+                    <groupId>org.casbin</groupId>
+                    <artifactId>jcasbin</artifactId>
+                </exclusion>
             </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>org.casbin</groupId>
+            <artifactId>jcasbin</artifactId>
+            <version>1.73.0</version>
         </dependency>
         <!-- aspectJ -->
         <dependency>
