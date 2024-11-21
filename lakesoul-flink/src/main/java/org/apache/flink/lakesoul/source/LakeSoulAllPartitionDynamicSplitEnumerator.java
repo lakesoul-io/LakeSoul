@@ -152,7 +152,7 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator implements SplitEnumerat
                 partitionColumns,
                 System.identityHashCode(this),
                 Thread.currentThread().getId());
-        long startTime = System.currentTimeMillis();
+        long s = System.currentTimeMillis();
         List<PartitionInfo> allPartitionInfo;
         if (partitionColumns.isEmpty()) {
             allPartitionInfo = DataOperation.dbManager().getPartitionInfos(tableId,
@@ -160,8 +160,8 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator implements SplitEnumerat
         } else {
             allPartitionInfo = MetaVersion.getAllPartitionInfo(tableId);
         }
-        long endTime = System.currentTimeMillis();
-        LOG.info("allPartitionInfo={}, queryTime={}ms", allPartitionInfo, endTime - startTime);
+        long e = System.currentTimeMillis();
+        LOG.info("allPartitionInfo={}, queryTime={}ms", allPartitionInfo, e - s);
         List<PartitionInfo> filteredPartition = SubstraitUtil.applyPartitionFilters(
                 allPartitionInfo, partitionArrowSchema, partitionFilters);
         LOG.info("filteredPartition={}, filter={}", filteredPartition, partitionFilters);
