@@ -66,12 +66,17 @@ public class LakeSoulSplitReader implements SplitReader<RowData, LakeSoulPartiti
     }
 
     @Override
-    public RecordsWithSplitIds<RowData> fetch() throws IOException {
+    public synchronized RecordsWithSplitIds<RowData> fetch() throws IOException {
         try {
             close();
+            LakeSoulPartitionSplit split = splits.poll();
+            LOG.info("Fetched split {}, oid {}, tid {}",
+                    split,
+                    System.identityHashCode(this),
+                    Thread.currentThread().getId());
             lastSplitReader =
                     new LakeSoulOneSplitRecordsReader(this.conf,
-                            Objects.requireNonNull(splits.poll()),
+                            Objects.requireNonNull(split),
                             this.tableRowType,
                             this.projectedRowType,
                             this.projectedRowTypeWithPk,
@@ -88,15 +93,17 @@ public class LakeSoulSplitReader implements SplitReader<RowData, LakeSoulPartiti
     }
 
     @Override
-    public void handleSplitsChanges(SplitsChange<LakeSoulPartitionSplit> splitChange) {
+    public synchronized void handleSplitsChanges(SplitsChange<LakeSoulPartitionSplit> splitChange) {
         if (!(splitChange instanceof SplitsAddition)) {
             throw new UnsupportedOperationException(
                     String.format("The SplitChange type of %s is not supported.",
                             splitChange.getClass()));
         }
 
-        LOG.info("Handling split change {}",
-                splitChange);
+        LOG.info("Handling split change {}, oid {}, tid {}",
+                splitChange,
+                System.identityHashCode(this),
+                Thread.currentThread().getId());
         splits.addAll(splitChange.splits());
     }
 
@@ -105,7 +112,7 @@ public class LakeSoulSplitReader implements SplitReader<RowData, LakeSoulPartiti
     }
 
     @Override
-    public void close() throws Exception {
+    public synchronized void close() throws Exception {
         if (lastSplitReader != null) {
             lastSplitReader.close();
             lastSplitReader = null;
