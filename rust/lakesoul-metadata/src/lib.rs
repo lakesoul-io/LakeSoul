@@ -526,6 +526,7 @@ pub async fn execute_query(
             }
         }
         DaoType::ListPartitionDescByTableIdAndParList if params.len() == 2 => {
+            /*
             let partitions = "'".to_owned()
                 + &params[1]
                     .replace('\'', "''")
@@ -546,6 +547,57 @@ pub async fn execute_query(
                 Ok(rows) => rows,
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
+            */
+            let statement = "\
+                select
+                    table_id,
+                    partition_desc,
+                    max(version)
+                from
+                    partition_info
+                where
+                    table_id = $1::text
+                group by
+                    table_id,
+                    partition_desc
+                select
+                    m.table_id,
+                    m.partition_desc,
+                    m.version,
+                    m.commit_op,
+                    m.snapshot,
+                    m.timestamp,
+                    m.expression,
+                    m.domain
+                from
+                    (
+                        select
+                            max(version)
+                        from
+                            partition_info
+                        where
+                            table_id = $1::text
+                            and partition_desc = $2::text
+                    ) t
+                    left join partition_info m on t.max = m.version
+                where
+                    m.table_id = $1::text
+                    and m.partition_desc = $2::text;
+            ";
+            let partitions = params[1].to_owned().replace('\'', "''");
+            let partitions = partitions
+                .split(PARTITION_DESC_DELIM)
+                .collect::<Vec<&str>>();
+            let statement = client.prepare(&statement).await?;
+            let mut all_rows: Vec<Row> = vec![];
+            for part in partitions {
+                let result = client.query(&statement, &[&params[0], &part]).await;
+                match result {
+                    Ok(mut rows) => all_rows.append(&mut rows),
+                    Err(e) => return Err(LakeSoulMetaDataError::from(e)),
+                }
+            }
+            all_rows
         }
         DaoType::ListPartitionVersionByTableIdAndPartitionDescAndTimestampRange if params.len() == 4 => {
             let result = client
