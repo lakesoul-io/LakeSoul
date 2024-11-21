@@ -550,17 +550,6 @@ pub async fn execute_query(
             */
             let statement = "\
                 select
-                    table_id,
-                    partition_desc,
-                    max(version)
-                from
-                    partition_info
-                where
-                    table_id = $1::text
-                group by
-                    table_id,
-                    partition_desc
-                select
                     m.table_id,
                     m.partition_desc,
                     m.version,

@@ -180,10 +180,13 @@ public class PartitionInfoDao {
     public List<PartitionInfo> findByTableIdAndParList(String tableId, List<String> partitionDescList) {
         if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
             if (partitionDescList.isEmpty()) return Collections.emptyList();
+            long start = System.currentTimeMillis();
             JniWrapper jniWrapper = NativeMetadataJavaClient.query(
                     NativeUtils.CodedDaoType.ListPartitionDescByTableIdAndParList,
                     Arrays.asList(tableId,
                             String.join(NativeUtils.PARTITION_DESC_DELIM, partitionDescList)));
+            long end = System.currentTimeMillis();
+            System.out.println("query elapsed time " + (end - start) + "ms");
             if (jniWrapper == null) return null;
             return jniWrapper.getPartitionInfoList();
         }
