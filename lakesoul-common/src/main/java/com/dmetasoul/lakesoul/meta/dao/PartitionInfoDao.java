@@ -9,6 +9,8 @@ import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.*;
 import com.dmetasoul.lakesoul.meta.jnr.NativeMetadataJavaClient;
 import com.dmetasoul.lakesoul.meta.jnr.NativeUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.sql.*;
 import java.util.*;
@@ -16,6 +18,7 @@ import java.util.stream.Collectors;
 
 public class PartitionInfoDao {
     final DBUtil.Timer transactionInsertTimer = new DBUtil.Timer("transactionInsert");
+    private static final Logger LOG = LoggerFactory.getLogger(PartitionInfoDao.class);
 
     public void insert(PartitionInfo partitionInfo) {
         if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
@@ -186,7 +189,7 @@ public class PartitionInfoDao {
                     Arrays.asList(tableId,
                             String.join(NativeUtils.PARTITION_DESC_DELIM, partitionDescList)));
             long end = System.currentTimeMillis();
-            System.out.println("query elapsed time " + (end - start) + "ms");
+            LOG.info("findByTableIdAndParList query elapsed time {}ms", end - start);
             if (jniWrapper == null) return null;
             return jniWrapper.getPartitionInfoList();
         }

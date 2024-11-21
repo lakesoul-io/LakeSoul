@@ -29,6 +29,8 @@ import java.io.IOException;
 import java.util.*;
 import java.util.stream.Collectors;
 
+import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_NON_PARTITION_TABLE_PART_DESC;
+
 public class LakeSoulAllPartitionDynamicSplitEnumerator implements SplitEnumerator<LakeSoulPartitionSplit, LakeSoulPendingSplits> {
     private static final Logger LOG = LoggerFactory.getLogger(LakeSoulAllPartitionDynamicSplitEnumerator.class);
 
@@ -146,11 +148,20 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator implements SplitEnumerat
     }
 
     public synchronized Collection<LakeSoulPartitionSplit> enumerateSplits() {
-        LOG.info("enumerateSplits begin, oid {}, tid {}",
+        LOG.info("enumerateSplits begin, partition columns {}, oid {}, tid {}",
+                partitionColumns,
                 System.identityHashCode(this),
                 Thread.currentThread().getId());
-        List<PartitionInfo> allPartitionInfo = MetaVersion.getAllPartitionInfo(tableId);
-        LOG.info("allPartitionInfo={}", allPartitionInfo);
+        long startTime = System.currentTimeMillis();
+        List<PartitionInfo> allPartitionInfo;
+        if (partitionColumns.isEmpty()) {
+            allPartitionInfo = DataOperation.dbManager().getPartitionInfos(tableId,
+                    Collections.singletonList(LAKESOUL_NON_PARTITION_TABLE_PART_DESC));
+        } else {
+            allPartitionInfo = MetaVersion.getAllPartitionInfo(tableId);
+        }
+        long endTime = System.currentTimeMillis();
+        LOG.info("allPartitionInfo={}, queryTime={}ms", allPartitionInfo, endTime - startTime);
         List<PartitionInfo> filteredPartition = SubstraitUtil.applyPartitionFilters(
                 allPartitionInfo, partitionArrowSchema, partitionFilters);
         LOG.info("filteredPartition={}, filter={}", filteredPartition, partitionFilters);
