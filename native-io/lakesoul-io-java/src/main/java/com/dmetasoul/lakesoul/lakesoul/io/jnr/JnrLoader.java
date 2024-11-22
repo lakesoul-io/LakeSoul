@@ -10,6 +10,7 @@ import jnr.ffi.LibraryOption;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.InputStream;
+import java.net.URL;
 import java.net.URLConnection;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
@@ -39,7 +40,11 @@ public class JnrLoader {
         String finalPath = null;
 
         try {
-            URLConnection connection = com.dmetasoul.lakesoul.meta.jnr.JnrLoader.class.getResource(libName).openConnection();
+            URL url = JnrLoader.class.getClassLoader().getResource(libName);
+            if (url == null) {
+                throw new FileNotFoundException(libName);
+            }
+            URLConnection connection = url.openConnection();
             if (connection != null) {
                 connection.setUseCaches(false);
                 try (final InputStream is = connection.getInputStream()) {
