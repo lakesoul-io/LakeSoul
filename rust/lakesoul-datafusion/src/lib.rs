@@ -6,12 +6,16 @@
 // after finished. remove above attr
 extern crate core;
 
-mod catalog;
-mod datasource;
-mod error;
-mod lakesoul_table;
-mod planner;
-mod serialize;
+pub mod catalog;
+pub mod datasource;
+pub mod error;
+pub use error::{Result, LakeSoulError};
+
+pub mod lakesoul_table;
+pub mod planner;
+pub use planner::query_planner::LakeSoulQueryPlanner;
+
+pub mod serialize;
 
 #[cfg(test)]
 mod test;

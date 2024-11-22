@@ -44,6 +44,7 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
         logical_plan: &LogicalPlan,
         session_state: &SessionState,
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        dbg!(&logical_plan);
         match logical_plan {
             LogicalPlan::Dml(DmlStatement {
                 table_name,

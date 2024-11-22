@@ -1,0 +1,29 @@
+[package]
+name = "lakesoul-examples"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[[example]]
+name = "flight_server"
+path = "examples/flight/flight_server.rs"
+
+
+[[example]]
+name = "flight_sql_server"
+path = "examples/flight/flight_sql_server.rs"
+
+[dependencies]
+arrow-flight = { workspace = true}
+arrow-ipc = { workspace = true}
+arrow-array = { workspace = true}
+arrow-schema = { workspace = true}
+datafusion = {workspace = true}
+prost = { workspace = true}
+futures = { workspace = true}
+tokio = {workspace = true}
+tonic = {workspace = true}
+lakesoul-datafusion = { path = "../lakesoul-datafusion" }
+lakesoul-flight = { path = "../lakesoul-flight" }
+env_logger = {workspace = true}

@@ -18,7 +18,6 @@ use std::any::Any;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use tokio::runtime::Handle;
-use tokio::sync::RwLock;
 use tracing::debug;
 use tracing::field::debug;
 
@@ -28,9 +27,7 @@ use tracing::field::debug;
 pub struct LakeSoulNamespace {
     metadata_client: MetaDataClientRef,
     context: Arc<SessionContext>,
-    // primary key
     namespace: String,
-    namespace_lock: Arc<RwLock<()>>,
 }
 
 impl LakeSoulNamespace {
@@ -39,7 +36,6 @@ impl LakeSoulNamespace {
             metadata_client: meta_data_client_ref,
             context,
             namespace: namespace.to_string(),
-            namespace_lock: Arc::new(RwLock::new(())),
         }
     }
 
@@ -76,13 +72,12 @@ impl SchemaProvider for LakeSoulNamespace {
 
     /// query table_name_id by namespace
     fn table_names(&self) -> Vec<String> {
+        dbg!("table_names");
         let client = self.metadata_client.clone();
         let np = self.namespace.clone();
-        let lock = self.namespace_lock.clone();
         futures::executor::block_on(async move {
             Handle::current()
                 .spawn(async move {
-                    let _guard = lock.read().await;
                     client
                         .get_all_table_name_id_by_namespace(&np)
                         .await
@@ -99,7 +94,6 @@ impl SchemaProvider for LakeSoulNamespace {
     /// Search table by name
     /// return LakeSoulListing table
     async fn table(&self, name: &str) -> Option<Arc<dyn TableProvider>> {
-        let _guard = self.namespace_lock.read().await;
         if self
             .metadata_client
             .get_table_info_by_table_name(name, &self.namespace)
@@ -155,12 +149,9 @@ impl SchemaProvider for LakeSoulNamespace {
         let table_name = name.to_string();
         let np = self.namespace.clone();
         let cxt = self.context.clone();
-        let lock = self.namespace_lock.clone();
         futures::executor::block_on(async move {
             Handle::current()
                 .spawn(async move {
-                    // get table info
-                    let _guard = lock.write().await;
                     match client.get_table_info_by_table_name(&table_name, &np).await {
                         Ok(table_info) => {
                             let config;
@@ -210,11 +201,9 @@ impl SchemaProvider for LakeSoulNamespace {
         // table name is primary key for `table_name_id`
         let client = self.metadata_client.clone();
         let np = self.namespace.clone();
-        let lock = self.namespace_lock.clone();
         futures::executor::block_on(async move {
             Handle::current()
                 .spawn(async move {
-                    let _guard = lock.read().await;
                     client
                         .get_all_table_name_id_by_namespace(&np)
                         .await

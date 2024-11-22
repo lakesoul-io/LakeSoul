@@ -1,0 +1,21 @@
+[package]
+name = "lakesoul-flight"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+lakesoul-datafusion = { path = "../lakesoul-datafusion" }
+lakesoul-metadata = { path = "../lakesoul-metadata" }
+arrow-flight = { workspace = true }
+tonic = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+arrow = { workspace = true } 
+proto = { path = "../proto" }
+prost = { workspace = true }
+uuid = { workspace = true }
+dashmap = "5.5.3"
+datafusion = { workspace = true }
+object_store = { workspace = true }
+log = "0.4"
+url = { workspace = true }
