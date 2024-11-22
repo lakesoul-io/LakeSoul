@@ -9,7 +9,7 @@ use postgres_types::{FromSql, ToSql};
 use prost::Message;
 pub use tokio::runtime::{Builder, Runtime};
 pub use tokio_postgres::{Client, NoTls, Statement};
-use tokio_postgres::{Error, Row};
+use tokio_postgres::{Error, GenericClient, Row};
 
 use crate::pooled_client::PgConnection;
 pub use crate::pooled_client::PooledClient;
@@ -573,11 +573,11 @@ pub async fn execute_query(
                     m.table_id = $1::text
                     and m.partition_desc = $2::text;
             ";
-            let partitions = params[1].to_owned().replace('\'', "''");
+            let partitions = params[1].to_owned();
             let partitions = partitions
                 .split(PARTITION_DESC_DELIM)
                 .collect::<Vec<&str>>();
-            let statement = client.prepare(&statement).await?;
+            let statement = client.prepare_cached(&statement).await?;
             let mut all_rows: Vec<Row> = vec![];
             for part in partitions {
                 let result = client.query(&statement, &[&params[0], &part]).await;
