@@ -29,7 +29,7 @@ In the future, Apache Doris will gradually support more advanced features of Lak
 
 This article will explain how to quickly set up an Apache Doris + LakeSoul testing & demonstration environment and demonstrate the usage of various features, showcasing the integration and benefits of using both systems in a lakehouse architecture .
 
-For more information, please refer to [LakeSoul Catalog](../../../lakehouse/datalake-analytics/lakesoul)
+For more information, please refer to [LakeSoul Catalog](https://doris.apache.org/docs/3.0/lakehouse/datalake-analytics/lakesoul)
 
 
 ## User Guide
