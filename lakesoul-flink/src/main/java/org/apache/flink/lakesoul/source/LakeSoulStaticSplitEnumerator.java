@@ -33,7 +33,7 @@ public class LakeSoulStaticSplitEnumerator implements SplitEnumerator<LakeSoulPa
     }
 
     @Override
-    public void handleSplitRequest(int subtaskId, @Nullable String requesterHostname) {
+    public synchronized void handleSplitRequest(int subtaskId, @Nullable String requesterHostname) {
         if (!context.registeredReaders().containsKey(subtaskId)) {
             // reader failed between sending the request and now. skip this request.
             return;
@@ -51,7 +51,7 @@ public class LakeSoulStaticSplitEnumerator implements SplitEnumerator<LakeSoulPa
     }
 
     @Override
-    public void addSplitsBack(List<LakeSoulPartitionSplit> splits, int subtaskId) {
+    public synchronized void addSplitsBack(List<LakeSoulPartitionSplit> splits, int subtaskId) {
         LOG.info("Add split back: {}", splits);
         splitAssigner.addSplits(splits);
     }
@@ -61,7 +61,7 @@ public class LakeSoulStaticSplitEnumerator implements SplitEnumerator<LakeSoulPa
     }
 
     @Override
-    public LakeSoulPendingSplits snapshotState(long checkpointId) throws Exception {
+    public synchronized LakeSoulPendingSplits snapshotState(long checkpointId) throws Exception {
         LOG.info("LakeSoulStaticSplitEnumerator snapshotState");
         return null;
     }

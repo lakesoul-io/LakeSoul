@@ -780,6 +780,10 @@ public class DBManager {
         return curPartitionInfo;
     }
 
+    public List<PartitionInfo> getPartitionInfos(String tableId, List<String> partitionDescList) {
+        return partitionInfoDao.findByTableIdAndParList(tableId, partitionDescList);
+    }
+
     private Map<String, PartitionInfo> getCurPartitionMap(String tableId, List<String> partitionDescList) {
         List<PartitionInfo> curPartitionList = partitionInfoDao.findByTableIdAndParList(tableId, partitionDescList);
         Map<String, PartitionInfo> curMap = new HashMap<>();

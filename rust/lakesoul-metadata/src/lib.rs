@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::str::FromStr;
 use std::io::ErrorKind;
+use std::str::FromStr;
 
 use postgres_types::{FromSql, ToSql};
 use prost::Message;
@@ -413,11 +413,7 @@ fn separate_uuid(concated_uuid: &str) -> Result<Vec<String>> {
     Ok(uuid_list)
 }
 
-pub async fn execute_query(
-    client: &PooledClient,
-    query_type: i32,
-    joined_string: String,
-) -> Result<Vec<u8>> {
+pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string: String) -> Result<Vec<u8>> {
     if query_type >= DAO_TYPE_INSERT_ONE_OFFSET {
         eprintln!("Invalid query_type_index: {:?}", query_type);
         return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
@@ -526,6 +522,7 @@ pub async fn execute_query(
             }
         }
         DaoType::ListPartitionDescByTableIdAndParList if params.len() == 2 => {
+            /*
             let partitions = "'".to_owned()
                 + &params[1]
                     .replace('\'', "''")
@@ -546,6 +543,44 @@ pub async fn execute_query(
                 Ok(rows) => rows,
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
+            */
+            let statement = "\
+                select
+                    m.table_id,
+                    m.partition_desc,
+                    m.version,
+                    m.commit_op,
+                    m.snapshot,
+                    m.timestamp,
+                    m.expression,
+                    m.domain
+                from
+                    (
+                        select
+                            max(version)
+                        from
+                            partition_info
+                        where
+                            table_id = $1::text
+                            and partition_desc = $2::text
+                    ) t
+                    left join partition_info m on t.max = m.version
+                where
+                    m.table_id = $1::text
+                    and m.partition_desc = $2::text;
+            ";
+            let partitions = params[1].to_owned();
+            let partitions = partitions.split(PARTITION_DESC_DELIM).collect::<Vec<&str>>();
+            let statement = client.prepare_cached(&statement).await?;
+            let mut all_rows: Vec<Row> = vec![];
+            for part in partitions {
+                let result = client.query(&statement, &[&params[0], &part]).await;
+                match result {
+                    Ok(mut rows) => all_rows.append(&mut rows),
+                    Err(e) => return Err(LakeSoulMetaDataError::from(e)),
+                }
+            }
+            all_rows
         }
         DaoType::ListPartitionVersionByTableIdAndPartitionDescAndTimestampRange if params.len() == 4 => {
             let result = client
@@ -786,11 +821,7 @@ pub async fn execute_query(
     Ok(wrapper.encode_to_vec())
 }
 
-pub async fn execute_insert(
-    client: &mut PooledClient,
-    insert_type: i32,
-    wrapper: entity::JniWrapper,
-) -> Result<i32> {
+pub async fn execute_insert(client: &mut PooledClient, insert_type: i32, wrapper: entity::JniWrapper) -> Result<i32> {
     if !(DAO_TYPE_INSERT_ONE_OFFSET..DAO_TYPE_QUERY_SCALAR_OFFSET).contains(&insert_type) {
         eprintln!("Invalid insert_type_index: {:?}", insert_type);
         return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
@@ -1070,11 +1101,7 @@ pub async fn execute_insert(
     }
 }
 
-pub async fn execute_update(
-    client: &mut PooledClient,
-    update_type: i32,
-    joined_string: String,
-) -> Result<i32> {
+pub async fn execute_update(client: &mut PooledClient, update_type: i32, joined_string: String) -> Result<i32> {
     if update_type < DAO_TYPE_UPDATE_OFFSET {
         eprintln!("Invalid update_type_index: {:?}", update_type);
         return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
