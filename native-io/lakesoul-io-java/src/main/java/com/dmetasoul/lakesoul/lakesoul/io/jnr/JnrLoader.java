@@ -9,8 +9,9 @@ import jnr.ffi.LibraryOption;
 
 import java.io.File;
 import java.io.FileNotFoundException;
-import java.io.IOException;
 import java.io.InputStream;
+import java.net.URL;
+import java.net.URLConnection;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.HashMap;
@@ -38,20 +39,27 @@ public class JnrLoader {
 
         String finalPath = null;
 
-        if (JnrLoader.class.getClassLoader().getResource(libName) != null) {
-            try {
-                File temp = File.createTempFile(libName + "_", ".tmp", new File(System.getProperty("java.io.tmpdir")));
-                temp.deleteOnExit();
-                try (final InputStream is = JnrLoader.class.getClassLoader().getResourceAsStream(libName)) {
+        try {
+            URL url = JnrLoader.class.getClassLoader().getResource(libName);
+            if (url == null) {
+                throw new FileNotFoundException(libName);
+            }
+            URLConnection connection = url.openConnection();
+            if (connection != null) {
+                connection.setUseCaches(false);
+                try (final InputStream is = connection.getInputStream()) {
                     if (is == null) {
                         throw new FileNotFoundException(libName);
                     }
+                    File temp = File.createTempFile(libName + "_", ".tmp", new File(System.getProperty("java.io.tmpdir")));
+                    temp.deleteOnExit();
                     Files.copy(is, temp.toPath(), StandardCopyOption.REPLACE_EXISTING);
                     finalPath = temp.getAbsolutePath();
                 }
-            } catch (IOException e) {
-                throw new IllegalStateException("error loading native libraries: " + e);
             }
+        } catch (Exception e) {
+            e.printStackTrace();
+            throw new IllegalStateException("error loading native libraries: " + e);
         }
 
         if (finalPath != null) {
