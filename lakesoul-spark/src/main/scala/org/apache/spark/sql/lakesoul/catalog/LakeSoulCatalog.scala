@@ -130,7 +130,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
       case _ => identifier
     }
     if (isPathIdentifier(ident)) {
-      val tableInfo = SparkMetaVersion.getTableInfo(ident.namespace().mkString("."), ident.name())
+      val tableInfo = SparkMetaVersion.getTableInfoByPath(ident.name())
       if (tableInfo == null) {
         throw new NoSuchTableException(ident)
       }
@@ -624,7 +624,7 @@ object LakeSoulCatalog {
 
   def listTables(namespaces: Array[String]): Array[Identifier] = {
     SparkMetaVersion.listTables(namespaces).asScala.map(tablePath => {
-      val tableInfo = SparkMetaVersion.getTableInfo(tablePath)
+      val tableInfo = SparkMetaVersion.getTableInfoByPath(tablePath)
       Identifier.of(namespaces, tableInfo.short_table_name.getOrElse(tableInfo.table_path.toUri.toString))
     }).toArray
   }

@@ -177,6 +177,10 @@ trait LakeSoulTableOperations extends AnalysisHelper {
                                   fileNumLimit: Option[Int],
                                   newBucketNum: Option[Int],
                                   fileSizeLimit: Option[Long]): Unit = {
+    val t = snapshotManagement.getTableInfoOnly
+    sparkSession.sparkContext.setJobDescription(
+      s"Compact(${t.namespace}.${t.short_table_name.getOrElse(t.table_path)}/$condition" +
+      s",f=$force,c=$cleanOldCompaction,n=$fileNumLimit,s=$fileSizeLimit,b=$newBucketNum)")
     toDataset(sparkSession, CompactionCommand(
       snapshotManagement,
       condition,

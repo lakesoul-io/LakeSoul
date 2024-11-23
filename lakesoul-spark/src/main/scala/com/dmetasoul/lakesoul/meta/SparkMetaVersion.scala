@@ -79,11 +79,7 @@ object SparkMetaVersion {
     dbManager.listTablePathsByNamespace(namespace.mkString("."))
   }
 
-  def getTableInfo(table_path: String): TableInfo = {
-    getTableInfo(LakeSoulCatalog.showCurrentNamespace().mkString("."), table_path)
-  }
-
-  def getTableInfo(namespace: String, table_path: String): TableInfo = {
+  def getTableInfoByPath(table_path: String): TableInfo = {
     val path = SparkUtil.makeQualifiedPath(table_path).toUri.toString
     val info = dbManager.getTableInfoByPath(path)
     if (info == null) {
@@ -105,7 +101,7 @@ object SparkMetaVersion {
       case _ => -1
     }
     TableInfo(
-      namespace,
+      info.getTableNamespace,
       Some(table_path),
       info.getTableId,
       info.getTableSchema,
