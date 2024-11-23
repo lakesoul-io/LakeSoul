@@ -14,7 +14,6 @@ import java.util.TimeZone
 
 object CleanExpiredData {
 
-  private val conn = DBConnector.getConn
   var serverTimeZone = TimeZone.getDefault.getID
   private var defaultPartitionTTL: Int = -1
   private var defaultRedundantTTL: Int = -1
