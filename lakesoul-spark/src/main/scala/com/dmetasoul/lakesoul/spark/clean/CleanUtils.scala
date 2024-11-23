@@ -8,6 +8,7 @@ import com.dmetasoul.lakesoul.meta.DBConnector
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.apache.spark.sql.types.{BooleanType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, StringType, StructField, StructType, TimestampType}
 
+import java.io.Closeable
 import java.sql.ResultSet
 import java.util
 import scala.collection.mutable.ArrayBuffer
@@ -73,9 +74,12 @@ object CleanUtils {
   }
 
   def sqlToDataframe(sql: String, spark: SparkSession): DataFrame = {
-    val stmt = conn.prepareStatement(sql)
-    val resultSet = stmt.executeQuery()
-    createResultSetToDF(resultSet, spark)
+    tryWithResource(DBConnector.getConn) { conn =>
+      tryWithResource(conn.prepareStatement(sql)) { stmt =>
+        val resultSet = stmt.executeQuery()
+        createResultSetToDF(resultSet, spark)
+      }
+    }
   }
 
   def setTableDataExpiredDays(tablePath: String, expiredDays: Int): Unit = {
@@ -85,8 +89,7 @@ object CleanUtils {
          |SET properties = properties::jsonb || '{"partition.ttl": "$expiredDays"}'::jsonb
          |WHERE table_id = (SELECT table_id from table_info where table_path='$tablePath');
          |""".stripMargin
-    val stmt = conn.prepareStatement(sql)
-    stmt.execute()
+    executeMetaSql(sql)
   }
 
   def setCompactionExpiredDays(tablePath: String, expiredDays: Int): Unit = {
@@ -96,8 +99,7 @@ object CleanUtils {
          |SET properties = properties::jsonb || '{"compaction.ttl": "$expiredDays"}'::jsonb
          |WHERE table_id = (SELECT table_id from table_info where table_path='$tablePath');
          |""".stripMargin
-    val stmt = conn.prepareStatement(sql)
-    stmt.execute()
+    executeMetaSql(sql)
   }
 
   def setTableOnlySaveOnceCompactionValue(tablePath: String, value: Boolean): Unit = {
@@ -107,8 +109,7 @@ object CleanUtils {
          |SET properties = properties::jsonb || '{"only_save_once_compaction": "$value"}'::jsonb
          |WHERE table_id = (SELECT table_id from table_info where table_path='$tablePath');
          |""".stripMargin
-    val stmt = conn.prepareStatement(sql)
-    stmt.execute()
+    executeMetaSql(sql)
   }
 
   def cancelTableDataExpiredDays(tablePath: String): Unit = {
@@ -118,8 +119,7 @@ object CleanUtils {
          |SET properties = properties::jsonb - 'partition.ttl'
          |WHERE table_id = (SELECT table_id from table_info where table_path='$tablePath');
          |""".stripMargin
-    val stmt = conn.prepareStatement(sql)
-    stmt.execute()
+    executeMetaSql(sql)
   }
 
   def cancelCompactionExpiredDays(tablePath: String): Unit = {
@@ -129,8 +129,7 @@ object CleanUtils {
          |SET properties = properties::jsonb - 'compaction.ttl'
          |WHERE table_id = (SELECT table_id from table_info where table_path='$tablePath');
          |""".stripMargin
-    val stmt = conn.prepareStatement(sql)
-    stmt.execute()
+    executeMetaSql(sql)
   }
 
   def setPartitionInfoTimestamp(tableId: String, timestamp: Long, version: Int): Unit = {
@@ -141,8 +140,7 @@ object CleanUtils {
          |WHERE table_id = '$tableId'
          |AND version = $version
          |""".stripMargin
-    val stmt = conn.prepareStatement(sql)
-    stmt.execute()
+    executeMetaSql(sql)
   }
 
   def readPartitionInfo(tableId: String, spark: SparkSession): DataFrame = {
@@ -163,5 +161,18 @@ object CleanUtils {
          |WHERE table_id = '$tableId'
          |""".stripMargin
     sqlToDataframe(sql, spark)
+  }
+
+  def tryWithResource[R <: Closeable, T](createResource: => R)(f: R => T): T = {
+    val resource = createResource
+    try f.apply(resource) finally resource.close()
+  }
+
+  def executeMetaSql(sql: String): Unit = {
+    tryWithResource(DBConnector.getConn) { conn =>
+      tryWithResource(conn.prepareStatement(sql)) { stmt =>
+        stmt.execute()
+      }
+    }
   }
 }
