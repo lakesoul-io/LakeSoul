@@ -4,18 +4,16 @@
 
 package com.dmetasoul.lakesoul.spark.clean
 
-import com.dmetasoul.lakesoul.meta.DBConnector
 import com.dmetasoul.lakesoul.spark.ParametersTool
-import org.apache.spark.sql.SparkSession
-import com.dmetasoul.lakesoul.spark.clean.CleanUtils.sqlToDataframe
+import com.dmetasoul.lakesoul.spark.clean.CleanUtils.{executeMetaSql, sqlToDataframe}
 import org.apache.hadoop.fs.Path
+import org.apache.spark.sql.SparkSession
 
 import java.time.{LocalDateTime, Period, ZoneId}
 import java.util.TimeZone
 
 object CleanExpiredData {
 
-  private val conn = DBConnector.getConn
   var serverTimeZone = TimeZone.getDefault.getID
   private var defaultPartitionTTL: Int = -1
   private var defaultRedundantTTL: Int = -1
@@ -206,8 +204,7 @@ object CleanExpiredData {
          |    partition_desc='$partitionDesc')
          |""".stripMargin
 
-    val stmt = conn.prepareStatement(sql)
-    stmt.execute()
+    executeMetaSql(sql)
   }
 
   def cleanSinglePartitionInfo(tableId: String, partitionDesc: String, deadTimestamp: Long): Unit = {
@@ -221,8 +218,7 @@ object CleanExpiredData {
          |AND
          |    timestamp < $deadTimestamp
          |""".stripMargin
-    val stmt = conn.prepareStatement(sql)
-    stmt.execute()
+    executeMetaSql(sql)
   }
 
   def getLatestCommitTimestamp(table_id: String, partitionDesc: String, spark: SparkSession): Long = {
