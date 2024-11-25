@@ -7,7 +7,7 @@ package org.apache.flink.lakesoul.sink.committer;
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.*;
-import org.apache.flink.api.connector.sink.Committer;
+import org.apache.flink.api.connector.sink2.Committer;
 import org.apache.flink.core.fs.FileStatus;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
@@ -44,13 +44,11 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
     public LakeSoulSinkCommitter() {
     }
 
-    @Override
-    public List<LakeSoulMultiTableSinkCommittable> commit(List<LakeSoulMultiTableSinkCommittable> committables)
-            throws IOException {
-        LOG.info("Found {} committable for LakeSoul to commit", committables.size());
-        // commit by file creation time in ascending order
-        committables.sort(LakeSoulMultiTableSinkCommittable::compareTo);
-
+    public void commit(List<LakeSoulMultiTableSinkCommittable> committables, boolean sort)
+            throws IOException, InterruptedException {
+        if (sort) {
+            committables.sort(LakeSoulMultiTableSinkCommittable::compareTo);
+        }
         DBManager lakeSoulDBManager = new DBManager();
         for (LakeSoulMultiTableSinkCommittable committable : committables) {
             LOG.info("Committing {}", committable);
@@ -140,8 +138,16 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
             }
             LOG.info("Committing done, committable={} ", committable);
         }
+    }
 
-        return Collections.emptyList();
+    @Override
+    public void commit(Collection<CommitRequest<LakeSoulMultiTableSinkCommittable>> commits)
+            throws IOException, InterruptedException {
+        LOG.info("Found {} committable for LakeSoul to commit", commits.size());
+        // commit by file creation time in ascending order
+        List<LakeSoulMultiTableSinkCommittable> committables =
+                commits.stream().map(CommitRequest::getCommittable).sorted(LakeSoulMultiTableSinkCommittable::compareTo).collect(Collectors.toList());
+        this.commit(committables, false);
     }
 
     @Override

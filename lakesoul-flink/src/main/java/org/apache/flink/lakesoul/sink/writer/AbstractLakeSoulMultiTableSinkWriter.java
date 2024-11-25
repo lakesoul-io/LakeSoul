@@ -4,8 +4,9 @@
 
 package org.apache.flink.lakesoul.sink.writer;
 
-import org.apache.flink.api.connector.sink.Sink;
-import org.apache.flink.api.connector.sink.SinkWriter;
+import org.apache.flink.api.common.operators.ProcessingTimeService;
+import org.apache.flink.api.connector.sink2.StatefulSink;
+import org.apache.flink.api.connector.sink2.TwoPhaseCommittingSink;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
@@ -34,7 +35,7 @@ import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
- * A {@link SinkWriter} implementation for {@link LakeSoulMultiTablesSink}.
+ * A sink writer implementation for {@link LakeSoulMultiTablesSink}.
  *
  * <p>It writes data to and manages the different active {@link LakeSoulWriterBucket buckes} in the
  * {@link LakeSoulMultiTablesSink}.
@@ -42,8 +43,9 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  * @param <IN> The type of input elements.
  */
 public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
-        implements SinkWriter<IN, LakeSoulMultiTableSinkCommittable, LakeSoulWriterBucketState>,
-        Sink.ProcessingTimeService.ProcessingTimeCallback {
+    implements
+        StatefulSink.StatefulSinkWriter<IN, LakeSoulWriterBucketState>,
+        TwoPhaseCommittingSink.PrecommittingSinkWriter<IN, LakeSoulMultiTableSinkCommittable> {
 
     private static final Logger LOG = LoggerFactory.getLogger(AbstractLakeSoulMultiTableSinkWriter.class);
 
@@ -52,8 +54,6 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
     private final LakeSoulWriterBucketFactory bucketFactory;
 
     private final RollingPolicy<OUT, String> rollingPolicy;
-
-    protected final Sink.ProcessingTimeService processingTimeService;
 
     private final long bucketCheckInterval;
 
@@ -69,13 +69,15 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
 
     protected final Configuration conf;
 
+    protected final ProcessingTimeService processingTimeService;
+
     public AbstractLakeSoulMultiTableSinkWriter(
             int subTaskId,
             final SinkWriterMetricGroup metricGroup,
             final LakeSoulWriterBucketFactory bucketFactory,
             final RollingPolicy<OUT, String> rollingPolicy,
             final OutputFileConfig outputFileConfig,
-            final Sink.ProcessingTimeService processingTimeService,
+            final ProcessingTimeService processingTimeService,
             final long bucketCheckInterval,
             final Configuration conf) {
         this.subTaskId = subTaskId;
@@ -121,8 +123,6 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
 
             updateActiveBucketId(identity, bucketId, restoredBucket);
         }
-
-        registerNextBucketInspectionTimer();
     }
 
     private void updateActiveBucketId(TableSchemaIdentity tableId, String bucketId, LakeSoulWriterBucket restoredBucket)
@@ -178,7 +178,7 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
     }
 
     @Override
-    public List<LakeSoulMultiTableSinkCommittable> prepareCommit(boolean flush) throws IOException {
+    public Collection<LakeSoulMultiTableSinkCommittable> prepareCommit() throws IOException {
         List<LakeSoulMultiTableSinkCommittable> committables = new ArrayList<>();
         String dmlType = this.conf.getString(LakeSoulSinkOptions.DML_TYPE);
         String sourcePartitionInfo = this.conf.getString(LakeSoulSinkOptions.SOURCE_PARTITION_INFO);
@@ -192,7 +192,7 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
             if (!entry.getValue().isActive()) {
                 activeBucketIt.remove();
             } else {
-                committables.addAll(entry.getValue().prepareCommit(flush, dmlType, sourcePartitionInfo));
+                committables.addAll(entry.getValue().prepareCommit(dmlType, sourcePartitionInfo));
             }
         }
         LOG.info("PrepareCommit with conf={}, \n activeBuckets={}, \n committables={}", conf, activeBuckets, committables);
@@ -238,6 +238,11 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
     }
 
     @Override
+    public void flush(boolean endOfInput) throws IOException, InterruptedException {
+
+    }
+
+    @Override
     public void close() {
         if (activeBuckets != null) {
             activeBuckets.values().forEach(LakeSoulWriterBucket::disposePartFile);
@@ -249,21 +254,6 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
             return basePath;
         }
         return new Path(basePath, bucketId);
-    }
-
-    @Override
-    public void onProcessingTime(long time) throws IOException {
-        for (LakeSoulWriterBucket bucket : activeBuckets.values()) {
-            bucket.onProcessingTime(time);
-        }
-
-        registerNextBucketInspectionTimer();
-    }
-
-    protected void registerNextBucketInspectionTimer() {
-        final long nextInspectionTime =
-                processingTimeService.getCurrentProcessingTime() + bucketCheckInterval;
-        processingTimeService.registerProcessingTimer(nextInspectionTime, this);
     }
 
     protected int getSubTaskId() {

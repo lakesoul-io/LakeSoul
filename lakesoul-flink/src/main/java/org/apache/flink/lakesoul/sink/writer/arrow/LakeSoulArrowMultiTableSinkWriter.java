@@ -4,6 +4,7 @@
 
 package org.apache.flink.lakesoul.sink.writer.arrow;
 
+import org.apache.flink.api.common.operators.ProcessingTimeService;
 import org.apache.flink.api.connector.sink.Sink;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.Configuration;
@@ -43,7 +44,7 @@ public class LakeSoulArrowMultiTableSinkWriter extends AbstractLakeSoulMultiTabl
                                              LakeSoulArrowWriterBucketFactory bucketFactory,
                                              RollingPolicy<LakeSoulArrowWrapper, String> rollingPolicy,
                                              OutputFileConfig outputFileConfig,
-                                             Sink.ProcessingTimeService processingTimeService,
+                                             ProcessingTimeService processingTimeService,
                                              long bucketCheckInterval,
                                              Configuration conf) {
         super(subTaskId, metricGroup, new DefaultLakeSoulWriterBucketFactory(conf), rollingPolicy, outputFileConfig, processingTimeService,
@@ -122,8 +123,6 @@ public class LakeSoulArrowMultiTableSinkWriter extends AbstractLakeSoulMultiTabl
 
             updateActiveBucketId(identity, restoredBucket);
         }
-
-        registerNextBucketInspectionTimer();
     }
 
     private void updateActiveBucketId(TableSchemaIdentity tableId, LakeSoulArrowWriterBucket restoredBucket)
@@ -158,7 +157,7 @@ public class LakeSoulArrowMultiTableSinkWriter extends AbstractLakeSoulMultiTabl
     }
 
     @Override
-    public List<LakeSoulMultiTableSinkCommittable> prepareCommit(boolean flush) throws IOException {
+    public List<LakeSoulMultiTableSinkCommittable> prepareCommit() throws IOException {
         long timer = System.currentTimeMillis();
         List<LakeSoulMultiTableSinkCommittable> committables = new ArrayList<>();
         String dmlType = this.conf.getString(LakeSoulSinkOptions.DML_TYPE);
@@ -173,10 +172,10 @@ public class LakeSoulArrowMultiTableSinkWriter extends AbstractLakeSoulMultiTabl
             if (!entry.getValue().isActive()) {
                 activeBucketIt.remove();
             } else {
-                committables.addAll(entry.getValue().prepareCommit(flush, dmlType, sourcePartitionInfo));
+                committables.addAll(entry.getValue().prepareCommit(dmlType, sourcePartitionInfo));
             }
         }
-        LOG.info("LakeSoulArrowMultiTableSinkWriter.prepareCommit done, costTime={}ms, subTaskId={}, flush={}, {}", String.format("%06d", System.currentTimeMillis() - timer), getSubTaskId(), flush, committables);
+        LOG.info("LakeSoulArrowMultiTableSinkWriter.prepareCommit done, costTime={}ms, subTaskId={}, {}", String.format("%06d", System.currentTimeMillis() - timer), getSubTaskId(), committables);
 
         return committables;
     }

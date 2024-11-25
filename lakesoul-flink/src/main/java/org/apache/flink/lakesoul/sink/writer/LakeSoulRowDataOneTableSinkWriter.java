@@ -4,7 +4,7 @@
 
 package org.apache.flink.lakesoul.sink.writer;
 
-import org.apache.flink.api.connector.sink.Sink;
+import org.apache.flink.api.common.operators.ProcessingTimeService;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakesoul.types.LakeSoulRecordConvert;
@@ -20,7 +20,6 @@ import java.util.List;
 import java.util.stream.IntStream;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SERVER_TIME_ZONE;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.USE_CDC;
 
 public class LakeSoulRowDataOneTableSinkWriter extends AbstractLakeSoulMultiTableSinkWriter<RowData, RowData> {
 
@@ -39,7 +38,7 @@ public class LakeSoulRowDataOneTableSinkWriter extends AbstractLakeSoulMultiTabl
             LakeSoulWriterBucketFactory bucketFactory,
             RollingPolicy<RowData, String> rollingPolicy,
             OutputFileConfig outputFileConfig,
-            Sink.ProcessingTimeService processingTimeService,
+            ProcessingTimeService processingTimeService,
             long bucketCheckInterval,
             Configuration conf) throws IOException {
         super(subTaskId, metricGroup, bucketFactory, rollingPolicy, outputFileConfig,
