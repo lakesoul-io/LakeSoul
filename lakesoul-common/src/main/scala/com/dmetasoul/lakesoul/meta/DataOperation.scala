@@ -4,9 +4,7 @@
 
 package com.dmetasoul.lakesoul.meta
 
-import com.dmetasoul.lakesoul.meta.entity.{DataCommitInfo, PartitionInfo}
-
-import java.net.URI
+import com.dmetasoul.lakesoul.meta.entity.{CommitOp, DataCommitInfo, PartitionInfo}
 
 import java.util
 import java.util.{Objects, UUID}
@@ -219,7 +217,7 @@ object DataOperation {
     loop.breakable {
       for (dataItem <- dataCommitInfoList) {
         count += 1
-        if ("UpdateCommit".equals(dataItem.getCommitOp) && startVersionTimestamp != dataItem
+        if (CommitOp.UpdateCommit.equals(dataItem.getCommitOp) && startVersionTimestamp != dataItem
           .getTimestamp && count != 1) {
           updated = true
           loop.break()
@@ -227,7 +225,7 @@ object DataOperation {
         if (startVersionTimestamp == dataItem.getTimestamp) {
           preVersionUUIDs ++= dataItem.getSnapshotList.asScala.map(DBUtil.toJavaUUID)
         } else {
-          if ("CompactionCommit".equals(dataItem.getCommitOp)) {
+          if (CommitOp.CompactionCommit.equals(dataItem.getCommitOp)) {
             val compactShotList = dataItem.getSnapshotList.asScala.map(DBUtil.toJavaUUID).toArray
             compactionUUIDs += compactShotList(0)
             if (compactShotList.length > 1) {
