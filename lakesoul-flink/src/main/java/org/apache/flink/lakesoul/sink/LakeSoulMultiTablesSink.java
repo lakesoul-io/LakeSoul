@@ -4,10 +4,10 @@
 
 package org.apache.flink.lakesoul.sink;
 
-import org.apache.flink.api.connector.sink.Committer;
 import org.apache.flink.api.connector.sink.GlobalCommitter;
-import org.apache.flink.api.connector.sink.Sink;
-import org.apache.flink.api.connector.sink.SinkWriter;
+import org.apache.flink.api.connector.sink2.Committer;
+import org.apache.flink.api.connector.sink2.StatefulSink;
+import org.apache.flink.api.connector.sink2.TwoPhaseCommittingSink;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
@@ -21,21 +21,23 @@ import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketState;
 import org.apache.flink.lakesoul.sink.writer.AbstractLakeSoulMultiTableSinkWriter;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
-import org.apache.flink.table.data.RowData;
+import org.apache.flink.streaming.api.connector.sink2.CommittableMessage;
+import org.apache.flink.streaming.api.connector.sink2.StandardSinkTopologies;
+import org.apache.flink.streaming.api.connector.sink2.WithPostCommitTopology;
+import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.util.FlinkRuntimeException;
 
 import java.io.IOException;
-import java.text.SimpleDateFormat;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.List;
-import java.util.Optional;
+import java.io.UncheckedIOException;
+import java.util.*;
+import java.util.stream.Collectors;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 public class LakeSoulMultiTablesSink<IN, OUT> implements
-        Sink<IN, LakeSoulMultiTableSinkCommittable, LakeSoulWriterBucketState,
-                LakeSoulMultiTableSinkGlobalCommittable> {
+        StatefulSink<IN, LakeSoulWriterBucketState>,
+        TwoPhaseCommittingSink<IN, LakeSoulMultiTableSinkCommittable>,
+        WithPostCommitTopology<IN, LakeSoulMultiTableSinkCommittable> {
 
     private final BucketsBuilder<IN, OUT, ? extends BucketsBuilder<IN, OUT, ?>> bucketsBuilder;
 
@@ -60,18 +62,24 @@ public class LakeSoulMultiTablesSink<IN, OUT> implements
     }
 
     @Override
-    public SinkWriter<IN, LakeSoulMultiTableSinkCommittable, LakeSoulWriterBucketState> createWriter(
-            InitContext context, List<LakeSoulWriterBucketState> states) throws IOException {
+    public AbstractLakeSoulMultiTableSinkWriter<IN, OUT> createWriter(InitContext context) throws IOException {
         int subTaskId = context.getSubtaskId();
         AbstractLakeSoulMultiTableSinkWriter<IN, OUT> writer = bucketsBuilder.createWriter(context, subTaskId);
-        writer.initializeState(states);
         return writer;
     }
 
     @Override
-    public Optional<SimpleVersionedSerializer<LakeSoulWriterBucketState>> getWriterStateSerializer() {
+    public StatefulSinkWriter<IN, LakeSoulWriterBucketState> restoreWriter(InitContext context, Collection<LakeSoulWriterBucketState> recoveredState) throws IOException {
+        int subTaskId = context.getSubtaskId();
+        AbstractLakeSoulMultiTableSinkWriter<IN, OUT> writer = bucketsBuilder.createWriter(context, subTaskId);
+        writer.initializeState(new ArrayList<>(recoveredState));
+        return writer;
+    }
+
+    @Override
+    public SimpleVersionedSerializer<LakeSoulWriterBucketState> getWriterStateSerializer() {
         try {
-            return Optional.of(bucketsBuilder.getWriterStateSerializer());
+            return bucketsBuilder.getWriterStateSerializer();
         } catch (IOException e) {
             // it's not optimal that we have to do this but creating the serializers for the
             // LakeSoulMultiTablesSink requires (among other things) a call to FileSystem.get() which declares
@@ -83,25 +91,21 @@ public class LakeSoulMultiTablesSink<IN, OUT> implements
     // committer must not be null since flink requires it to enable
     // StatefulGlobalTwoPhaseCommittingSinkAdapter
     @Override
-    public Optional<Committer<LakeSoulMultiTableSinkCommittable>> createCommitter() throws IOException {
-        return Optional.of(new Committer<LakeSoulMultiTableSinkCommittable>() {
-            @Override
-            public List<LakeSoulMultiTableSinkCommittable> commit(List<LakeSoulMultiTableSinkCommittable> committables)
-                    throws IOException, InterruptedException {
-                System.out.println(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(System.currentTimeMillis()) + " org.apache.flink.api.connector.sink.Committer.commit: " + committables);
-                return Collections.emptyList();
-            }
-
+    public Committer<LakeSoulMultiTableSinkCommittable> createCommitter() throws IOException {
+        return new Committer<LakeSoulMultiTableSinkCommittable>() {
             @Override
             public void close() throws Exception {
             }
-        });
+            @Override
+            public void commit(Collection<CommitRequest<LakeSoulMultiTableSinkCommittable>> committables) throws IOException, InterruptedException {
+            }
+        };
     }
 
     @Override
-    public Optional<SimpleVersionedSerializer<LakeSoulMultiTableSinkCommittable>> getCommittableSerializer() {
+    public SimpleVersionedSerializer<LakeSoulMultiTableSinkCommittable> getCommittableSerializer() {
         try {
-            return Optional.of(bucketsBuilder.getCommittableSerializer());
+            return bucketsBuilder.getCommittableSerializer();
         } catch (IOException e) {
             // it's not optimal that we have to do this but creating the serializers for the
             // LakeSoulMultiTablesSink requires (among other things) a call to FileSystem.get() which declares
@@ -110,30 +114,65 @@ public class LakeSoulMultiTablesSink<IN, OUT> implements
         }
     }
 
-    @Override
-    public Optional<GlobalCommitter<LakeSoulMultiTableSinkCommittable, LakeSoulMultiTableSinkGlobalCommittable>> createGlobalCommitter()
-            throws IOException {
-        return Optional.ofNullable(bucketsBuilder.createGlobalCommitter());
-    }
-
-    @Override
-    public Optional<SimpleVersionedSerializer<LakeSoulMultiTableSinkGlobalCommittable>> getGlobalCommittableSerializer() {
-        try {
-            return Optional.of(bucketsBuilder.getGlobalCommittableSerializer());
-        } catch (IOException e) {
-            // it's not optimal that we have to do this but creating the serializers for the
-            // LakeSoulMultiTablesSink requires (among other things) a call to FileSystem.get() which declares
-            // IOException.
-            throw new FlinkRuntimeException("Could not create global committable serializer.", e);
-        }
-    }
-
-    @Override
-    public Collection<String> getCompatibleStateNames() {
-        // StreamingFileSink
-        return Collections.singleton("lakesoul-cdc-multitable-bucket-states");
-    }
     public BucketsBuilder getBucketsBuilder(){
-        return  this.bucketsBuilder;
+        return this.bucketsBuilder;
+    }
+
+    @Override
+    public void addPostCommitTopology(DataStream<CommittableMessage<LakeSoulMultiTableSinkCommittable>> committables) {
+        StandardSinkTopologies.addGlobalCommitter(
+                committables,
+                GlobalCommitterAdapter::new,
+                this::getCommittableSerializer);
+    }
+
+    public class GlobalCommitterAdapter implements Committer<LakeSoulMultiTableSinkCommittable> {
+        final GlobalCommitter<LakeSoulMultiTableSinkCommittable, LakeSoulMultiTableSinkGlobalCommittable> globalCommitter;
+        final SimpleVersionedSerializer<LakeSoulMultiTableSinkGlobalCommittable> globalCommittableSerializer;
+
+        GlobalCommitterAdapter() {
+            try {
+                globalCommitter = LakeSoulMultiTablesSink.this.bucketsBuilder.createGlobalCommitter();
+                globalCommittableSerializer = LakeSoulMultiTablesSink.this.bucketsBuilder.getGlobalCommittableSerializer();
+            } catch (IOException e) {
+                throw new UncheckedIOException("Cannot create global committer", e);
+            }
+        }
+
+        @Override
+        public void close() throws Exception {
+            globalCommitter.close();
+        }
+
+        @Override
+        public void commit(Collection<CommitRequest<LakeSoulMultiTableSinkCommittable>> committables)
+                throws IOException, InterruptedException {
+            if (committables.isEmpty()) {
+                return;
+            }
+
+            List<LakeSoulMultiTableSinkCommittable> rawCommittables =
+                    committables.stream()
+                            .map(CommitRequest::getCommittable)
+                            .collect(Collectors.toList());
+            List<LakeSoulMultiTableSinkGlobalCommittable> globalCommittables =
+                    Collections.singletonList(globalCommitter.combine(rawCommittables));
+            List<LakeSoulMultiTableSinkGlobalCommittable> failures = globalCommitter.commit(globalCommittables);
+            // Only committables are retriable so the complete batch of committables is retried
+            // because we cannot trace back the committable to which global committable it belongs.
+            // This might lead to committing the same global committable twice, but we assume that
+            // the GlobalCommitter commit call is idempotent.
+            if (!failures.isEmpty()) {
+                committables.forEach(CommitRequest::retryLater);
+            }
+        }
+
+        public GlobalCommitter<LakeSoulMultiTableSinkCommittable, LakeSoulMultiTableSinkGlobalCommittable> getGlobalCommitter() {
+            return globalCommitter;
+        }
+
+        public SimpleVersionedSerializer<LakeSoulMultiTableSinkGlobalCommittable> getGlobalCommittableSerializer() {
+            return globalCommittableSerializer;
+        }
     }
 }

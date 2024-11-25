@@ -4,7 +4,7 @@
 
 package org.apache.flink.lakesoul.sink.writer;
 
-import org.apache.flink.api.connector.sink.Sink;
+import org.apache.flink.api.common.operators.ProcessingTimeService;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakesoul.types.BinarySourceRecord;
@@ -32,7 +32,7 @@ public class LakeSoulMultiTableSinkWriter extends AbstractLakeSoulMultiTableSink
                                         LakeSoulWriterBucketFactory bucketFactory,
                                         RollingPolicy<RowData, String> rollingPolicy,
                                         OutputFileConfig outputFileConfig,
-                                        Sink.ProcessingTimeService processingTimeService,
+                                        ProcessingTimeService processingTimeService,
                                         long bucketCheckInterval,
                                         Configuration conf) {
         super(subTaskId, metricGroup, bucketFactory, rollingPolicy, outputFileConfig, processingTimeService,

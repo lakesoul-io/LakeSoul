@@ -4,7 +4,7 @@
 
 package org.apache.flink.lakesoul.sink.bucket;
 
-import org.apache.flink.api.connector.sink.Sink;
+import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.lakesoul.sink.committer.LakeSoulSinkCommitter;
 import org.apache.flink.lakesoul.sink.committer.LakeSoulSinkGlobalCommitter;
@@ -41,7 +41,7 @@ public abstract class BucketsBuilder<IN, OUT, T extends BucketsBuilder<IN, OUT, 
     public abstract SimpleVersionedSerializer<LakeSoulMultiTableSinkCommittable> getCommittableSerializer()
             throws IOException;
 
-    public abstract LakeSoulSinkGlobalCommitter createGlobalCommitter() throws IOException;
+    public abstract LakeSoulSinkGlobalCommitter createGlobalCommitter();
 
     public abstract SimpleVersionedSerializer<LakeSoulMultiTableSinkGlobalCommittable> getGlobalCommittableSerializer()
             throws IOException;

@@ -257,7 +257,7 @@ public class LakeSoulSinkGlobalCommitter
                 }
             }
 
-            committer.commit(lakeSoulMultiTableSinkCommittable);
+            committer.commit(lakeSoulMultiTableSinkCommittable, true);
         }
         return Collections.emptyList();
     }
