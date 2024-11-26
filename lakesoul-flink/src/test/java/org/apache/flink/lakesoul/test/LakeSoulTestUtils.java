@@ -11,6 +11,7 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.*;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.planner.factories.TestValuesTableFactory;
+import org.apache.flink.types.Row;
 
 import java.util.Comparator;
 import java.util.List;
@@ -131,11 +132,11 @@ public class LakeSoulTestUtils {
         } catch (InterruptedException e) {
             throw new RuntimeException(e);
         }
-        List<String> results = TestValuesTableFactory.getResults(String.format("%s_sink", sourceTable));
+        List<Row> results = TestValuesTableFactory.getResults(String.format("%s_sink", sourceTable));
         if (expectedAnswer.isEmpty()) {
             System.out.println(results);
         } else {
-            results.sort(Comparator.comparing(
+            results.stream().map(Row::toString).sorted(Comparator.comparing(
                     row -> Integer.valueOf(row.substring(3, (row.contains(",")) ? row.indexOf(",") : row.length() - 1))));
             assertThat(results.toString()).isEqualTo(expectedAnswer);
         }
