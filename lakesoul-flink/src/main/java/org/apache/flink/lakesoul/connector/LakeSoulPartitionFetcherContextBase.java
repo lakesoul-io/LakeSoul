@@ -13,7 +13,7 @@ import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.flink.connector.file.table.PartitionFetcher;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.types.TableId;
-import org.apache.flink.shaded.guava30.com.google.common.base.Splitter;
+import org.apache.flink.shaded.guava31.com.google.common.base.Splitter;
 import org.apache.flink.table.utils.PartitionPathUtils;
 
 import java.util.*;

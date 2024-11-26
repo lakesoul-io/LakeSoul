@@ -371,8 +371,8 @@ public class CHBenchmark {
         } catch (TimeoutException e) {
             System.out.println("Join is done.");
         }
-        List<String> results = TestValuesTableFactory.getResults("sink");
-        results.sort(Comparator.comparing(row -> Integer.valueOf(row.substring(3, row.indexOf(",")))));
+        List<Row> results = TestValuesTableFactory.getResults("sink");
+        results.stream().map(Row::toString).sorted(Comparator.comparing(row -> Integer.valueOf(row.substring(3, row.indexOf(",")))));
 
         System.out.println(results);
 
