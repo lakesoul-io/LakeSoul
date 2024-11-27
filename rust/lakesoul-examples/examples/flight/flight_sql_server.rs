@@ -13,10 +13,19 @@ fn to_tonic_err(e: lakesoul_datafusion::LakeSoulError) -> Status {
 /// This example is run along-side the example `flight_client`.
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 设置详细的日志格式，包含时间、日志级别、文件位置、行号
+    std::env::set_var("RUST_LOG", "debug");
+    // 修改日志格式以包含行号
+    // %l 表示日志级别
+    // %m 表示日志消息
+    // %f 表示文件名
+    // %L 表示行号
+    std::env::set_var("RUST_LOG_FORMAT", "%Y-%m-%dT%H:%M:%SZ %l [%f:%L] %m");
+
     env_logger::init();
     let addr = "0.0.0.0:50051".parse()?;
     let service = FlightSqlServiceImpl::new().await.map_err(to_tonic_err)?;
-    service.create_ctx().await?;
+    service.init().await?;
 
     let svc = FlightServiceServer::new(service);
 

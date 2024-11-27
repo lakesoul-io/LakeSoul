@@ -15,6 +15,8 @@ use datafusion::{
     execution::context::{SessionContext, SessionState},
     logical_expr::LogicalPlanBuilder,
 };
+use lakesoul_io::async_writer::AsyncBatchWriter;
+use lakesoul_io::lakesoul_writer::{create_writer, SyncSendableMutableLakeSoulWriter};
 use lakesoul_io::{lakesoul_io_config::create_session_context_with_planner, lakesoul_reader::RecordBatch};
 use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 use proto::proto::entity::TableInfo;
@@ -52,6 +54,13 @@ impl LakeSoulTable {
 
     pub async fn for_name(table_name: &str) -> Result<Self> {
         Self::for_namespace_and_name("default", table_name).await
+    }
+
+    pub async fn for_table_reference(table_ref: &TableReference<'_>) -> Result<Self> {
+        let schema = table_ref.schema().unwrap_or("default");
+        let table_name = table_ref.table();
+        
+        Self::for_namespace_and_name(schema, table_name).await
     }
 
     pub async fn for_namespace_and_name(namespace: &str, table_name: &str) -> Result<Self> {
@@ -108,6 +117,8 @@ impl LakeSoulTable {
             create_session_context_with_planner(&mut builder.clone().build(), Some(LakeSoulQueryPlanner::new_ref()))?;
 
         let schema = record_batch.schema();
+        
+        dbg!(&schema, &self.table_schema);
         let logical_plan = LogicalPlanBuilder::insert_into(
             sess_ctx.read_batch(record_batch)?.into_unoptimized_plan(),
             TableReference::partial(self.table_namespace().to_string(), self.table_name().to_string()),
@@ -125,6 +136,15 @@ impl LakeSoulTable {
         debug!("{}", pretty_format_batches(&results)?);
         Ok(())
     }
+
+    pub async fn get_writer(&self) -> Result<Box<dyn AsyncBatchWriter + Send>> {
+        let client = Arc::new(MetaDataClient::from_env().await?);
+        let builder = create_io_config_builder(client, Some(self.table_name()), false, self.table_namespace()).await?;
+        let config = builder.build();
+        let writer = create_writer(config).await?;
+        Ok(writer)
+    }
+
 
     pub async fn to_dataframe(&self, context: &SessionContext) -> Result<DataFrame> {
         let config_builder =
@@ -190,4 +210,6 @@ impl LakeSoulTable {
     pub fn schema(&self) -> SchemaRef {
         self.table_schema.clone()
     }
+
+    
 }

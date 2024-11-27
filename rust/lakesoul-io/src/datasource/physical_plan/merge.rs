@@ -202,14 +202,10 @@ pub fn merge_stream(
     batch_size: usize,
     config: LakeSoulIOConfig,
 ) -> Result<SendableRecordBatchStream> {
-    let merge_on_read = if config.files.len() == 1 {
-        if config.primary_keys.is_empty() {
-            false
-        } else {
-            !config.merge_operators.is_empty() || !config.is_compacted()
-        }
+    let merge_on_read = if config.primary_keys.is_empty() {
+        false
     } else {
-        true
+        config.files.len() == 1 && config.merge_operators.is_empty() && config.is_compacted()
     };
     let merge_stream = if !merge_on_read {
         Box::pin(DefaultColumnStream::new_from_streams_with_default(

@@ -25,6 +25,57 @@ use crate::local_sensitive_hash::LSH;
 
 pub type SendableWriter = Box<dyn AsyncBatchWriter + Send>;
 
+pub async fn create_writer(config: LakeSoulIOConfig) -> Result<Box<dyn AsyncBatchWriter + Send>> {
+    // if aux sort cols exist, we need to adjust the schema of final writer
+    // to exclude all aux sort cols
+    let writer_schema: SchemaRef = if !config.aux_sort_cols.is_empty() {
+        let schema = config.target_schema.0.clone();
+        // O(nm), n = number of target schema fields, m = number of aux sort cols
+        let proj_indices = schema
+            .fields
+            .iter()
+            .filter(|f| !config.aux_sort_cols.contains(f.name()))
+            .map(|f| schema.index_of(f.name().as_str()).map_err(DataFusionError::ArrowError))
+            .collect::<Result<Vec<usize>>>()?;
+        Arc::new(schema.project(proj_indices.borrow())?)
+    } else {
+        config.target_schema.0.clone()
+    };
+
+    let mut writer_config = config.clone();
+    let writer: Box<dyn AsyncBatchWriter + Send> = if config.use_dynamic_partition {
+        Box::new(PartitioningAsyncWriter::try_new(writer_config)?)
+    } else if !writer_config.primary_keys.is_empty() && !writer_config.keep_ordering() {
+        // sort primary key table
+        writer_config.target_schema = IOSchema(uniform_schema(writer_schema));
+        if writer_config.files.is_empty() && !writer_config.prefix().is_empty() {
+            writer_config.files = vec![format!(
+                "{}/part-{}_{:0>4}.parquet",
+                writer_config.prefix(),
+                rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 16),
+                writer_config.hash_bucket_id()
+            )];
+        }
+        let writer = MultiPartAsyncWriter::try_new(writer_config).await?;
+        Box::new(SortAsyncWriter::try_new(writer, config)?)
+    } else {
+        // else multipart
+        writer_config.target_schema = IOSchema(uniform_schema(writer_schema));
+        if writer_config.files.is_empty() && !writer_config.prefix().is_empty() {
+            writer_config.files = vec![format!(
+                "{}/part-{}_{:0>4}.parquet",
+                writer_config.prefix(),
+                rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 16),
+                writer_config.hash_bucket_id()
+            )];
+        }
+        let writer = MultiPartAsyncWriter::try_new(writer_config).await?;
+        Box::new(writer)
+    };
+    Ok(writer)
+}
+
+
 // inner is sort writer
 // multipart writer
 pub struct SyncSendableMutableLakeSoulWriter {
@@ -100,55 +151,6 @@ impl SyncSendableMutableLakeSoulWriter {
         })
     }
 
-    async fn create_writer(config: LakeSoulIOConfig) -> Result<Box<dyn AsyncBatchWriter + Send>> {
-        // if aux sort cols exist, we need to adjust the schema of final writer
-        // to exclude all aux sort cols
-        let writer_schema: SchemaRef = if !config.aux_sort_cols.is_empty() {
-            let schema = config.target_schema.0.clone();
-            // O(nm), n = number of target schema fields, m = number of aux sort cols
-            let proj_indices = schema
-                .fields
-                .iter()
-                .filter(|f| !config.aux_sort_cols.contains(f.name()))
-                .map(|f| schema.index_of(f.name().as_str()).map_err(DataFusionError::ArrowError))
-                .collect::<Result<Vec<usize>>>()?;
-            Arc::new(schema.project(proj_indices.borrow())?)
-        } else {
-            config.target_schema.0.clone()
-        };
-
-        let mut writer_config = config.clone();
-        let writer: Box<dyn AsyncBatchWriter + Send> = if config.use_dynamic_partition {
-            Box::new(PartitioningAsyncWriter::try_new(writer_config)?)
-        } else if !writer_config.primary_keys.is_empty() && !writer_config.keep_ordering() {
-            // sort primary key table
-            writer_config.target_schema = IOSchema(uniform_schema(writer_schema));
-            if writer_config.files.is_empty() && !writer_config.prefix().is_empty() {
-                writer_config.files = vec![format!(
-                    "{}/part-{}_{:0>4}.parquet",
-                    writer_config.prefix(),
-                    rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 16),
-                    writer_config.hash_bucket_id()
-                )];
-            }
-            let writer = MultiPartAsyncWriter::try_new(writer_config).await?;
-            Box::new(SortAsyncWriter::try_new(writer, config)?)
-        } else {
-            // else multipart
-            writer_config.target_schema = IOSchema(uniform_schema(writer_schema));
-            if writer_config.files.is_empty() && !writer_config.prefix().is_empty() {
-                writer_config.files = vec![format!(
-                    "{}/part-{}_{:0>4}.parquet",
-                    writer_config.prefix(),
-                    rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 16),
-                    writer_config.hash_bucket_id()
-                )];
-            }
-            let writer = MultiPartAsyncWriter::try_new(writer_config).await?;
-            Box::new(writer)
-        };
-        Ok(writer)
-    }
 
     pub fn schema(&self) -> SchemaRef {
         self.schema.clone()
@@ -211,7 +213,7 @@ impl SyncSendableMutableLakeSoulWriter {
             // if max_file_size is set, we need to split batch into multiple files
             let in_progress_writer = match &mut self.in_progress {
                 Some(writer) => writer,
-                x => x.insert(Arc::new(Mutex::new(Self::create_writer(config).await?))),
+                x => x.insert(Arc::new(Mutex::new(create_writer(config).await?))),
             };
             let mut guard = in_progress_writer.lock().await;
 

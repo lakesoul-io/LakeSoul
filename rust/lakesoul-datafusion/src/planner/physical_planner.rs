@@ -21,6 +21,7 @@ use async_trait::async_trait;
 use datafusion::logical_expr::{DmlStatement, WriteOp};
 use lakesoul_io::helpers::{column_names_to_physical_expr, column_names_to_physical_sort_expr};
 use lakesoul_io::repartition::RepartitionByRangeAndHashExec;
+use tracing::debug;
 
 use crate::lakesoul_table::LakeSoulTable;
 
@@ -44,7 +45,7 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
         logical_plan: &LogicalPlan,
         session_state: &SessionState,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        dbg!(&logical_plan);
+        debug!("create_physical_plan: {:?}", &logical_plan);
         match logical_plan {
             LogicalPlan::Dml(DmlStatement {
                 table_name,

@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::catalog::create_io_config_builder;
+use crate::lakesoul_table::LakeSoulTable;
 use async_trait::async_trait;
 use datafusion::catalog::schema::SchemaProvider;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
@@ -20,6 +21,8 @@ use std::sync::Arc;
 use tokio::runtime::Handle;
 use tracing::debug;
 use tracing::field::debug;
+use crate::catalog::create_table;
+use lakesoul_io::lakesoul_io_config::LakeSoulIOConfigBuilder;
 
 /// A [`SchemaProvider`] that query pg to automatically discover tables.
 /// Due to the restriction of datafusion 's api, "CREATE [EXTERNAL] Table ... " is not supported.
@@ -94,69 +97,54 @@ impl SchemaProvider for LakeSoulNamespace {
     /// Search table by name
     /// return LakeSoulListing table
     async fn table(&self, name: &str) -> Option<Arc<dyn TableProvider>> {
-        if self
-            .metadata_client
-            .get_table_info_by_table_name(name, &self.namespace)
-            .await
-            .is_ok()
-        {
-            debug!("call table() on table: {}.{}", &self.namespace, name);
-            let config;
-            if let Ok(config_builder) =
-                create_io_config_builder(self.metadata_client.clone(), Some(name), true, self.namespace()).await
-            {
-                config = config_builder.build();
-            } else {
-                return None;
-            }
-            // Maybe should change
-            let file_format = Arc::new(LakeSoulParquetFormat::new(
-                Arc::new(ParquetFormat::new()),
-                config.clone(),
-            ));
-            if let Ok(table_provider) = LakeSoulListingTable::new_with_config_and_format(
-                &self.context.state(),
-                config,
-                file_format,
-                // care this
-                false,
-            )
-            .await
-            {
-                debug!("get table provider success");
-                return Some(Arc::new(table_provider));
-            }
-            debug("get table provider fail");
-            return None;
-        } else {
-            debug("get table provider fail");
-            None
-        }
+        let table = match LakeSoulTable::for_namespace_and_name(&self.namespace, name).await {
+            Ok(t) => t,
+            Err(_) => return None,
+        };
+        table.as_sink_provider(&self.context.state()).await.ok()
     }
 
     /// If supported by the implementation, adds a new table to this schema.
     /// If a table of the same name existed before, it returns "Table already exists" error.
     #[allow(unused_variables)]
     fn register_table(&self, name: String, table: Arc<dyn TableProvider>) -> Result<Option<Arc<dyn TableProvider>>> {
-        // the type info of dyn TableProvider is not enough or use AST??????
-        unimplemented!("schema provider does not support registering tables")
+        // 获取表的 schema
+        let schema = table.schema();
+        
+        // 创建 LakeSoulIOConfig
+        let config = LakeSoulIOConfigBuilder::new()
+            .with_schema(schema.clone())
+            .build();
+        
+        // 调用 create_table 创建表
+        let client = self.metadata_client.clone();
+        tokio::task::block_in_place(|| 
+            match futures::executor::block_on(async move {
+                create_table(client, &name, config).await.map_err(|e| DataFusionError::External(Box::new(e)))
+            }) {
+                Ok(_) => Ok(None),
+                Err(e) => Err(e)
+            }
+        )
     }
     /// If supported by the implementation, removes an existing table from this schema and returns it.
     /// If no table of that name exists, returns Ok(None).
     #[allow(unused_variables)]
     fn deregister_table(&self, name: &str) -> Result<Option<Arc<dyn TableProvider>>> {
+        debug!("deregister_table: {:?}", name);
         let client = self.metadata_client.clone();
         let table_name = name.to_string();
-        let np = self.namespace.clone();
+        let namespace = self.namespace.clone();
         let cxt = self.context.clone();
-        futures::executor::block_on(async move {
-            Handle::current()
+        tokio::task::block_in_place(|| {    
+            futures::executor::block_on(async move {
+                Handle::current()
                 .spawn(async move {
-                    match client.get_table_info_by_table_name(&table_name, &np).await {
+                    match client.get_table_info_by_table_name(&table_name, &namespace).await {
                         Ok(table_info) => {
                             let config;
                             if let Ok(config_builder) =
-                                create_io_config_builder(client.clone(), Some(&table_name), true, &np).await
+                                create_io_config_builder(client.clone(), Some(&table_name), true, &namespace).await
                             {
                                 config = config_builder.build();
                             } else {
@@ -183,7 +171,7 @@ impl SchemaProvider for LakeSoulNamespace {
                                     .map_err(|_| DataFusionError::External("delete table info failed".into()))?;
                                 return Ok(Some(Arc::new(table_provider) as Arc<dyn TableProvider>));
                             }
-                            debug("get table provider fail");
+                            debug!("get table provider fail");
                             Err(DataFusionError::External("get table provider failed".into()))
                         }
                         Err(e) => match e {
@@ -194,10 +182,12 @@ impl SchemaProvider for LakeSoulNamespace {
                 })
                 .await
                 .map_err(|e| DataFusionError::External(Box::new(e)))?
-        })
+        })    
+    })
     }
 
     fn table_exist(&self, name: &str) -> bool {
+        dbg!("table_exist", name, &self.namespace);
         // table name is primary key for `table_name_id`
         let client = self.metadata_client.clone();
         let np = self.namespace.clone();

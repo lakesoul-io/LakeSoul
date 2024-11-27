@@ -33,7 +33,7 @@ datafusion-substrait = { workspace = true, features = ["protoc"] }
 
 
 [features]
-hdfs = ["lakesoul-io/hdfs"]
+# hdfs = ["lakesoul-io/hdfs"]
 default = []
 
 [build-dependencies]

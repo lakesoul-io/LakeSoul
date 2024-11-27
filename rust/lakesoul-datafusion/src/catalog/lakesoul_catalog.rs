@@ -72,7 +72,6 @@ impl CatalogProvider for LakeSoulCatalog {
                 self.metadata_client.get_all_namespace().await
             }) {
                 Ok(v) => {
-                    dbg!(&v);
                     if v.iter().any(|np| np.namespace == name) {
                         Some(Arc::new(LakeSoulNamespace::new(
                             self.metadata_client.clone(),
