@@ -181,6 +181,7 @@ public class LakeSoulLocalJavaWriter implements AutoCloseable {
     }
 
     public void writeAddRow(Object[] row) {
+//        System.out.println(Arrays.toString(row));
         if (cdcColumn != null) {
             Object[] addRow = new Object[row.length + 1];
             for (int i = 0; i < row.length; i++) {
@@ -271,7 +272,7 @@ public class LakeSoulLocalJavaWriter implements AutoCloseable {
         }
     }
 
-    private static class ArrowTypeMockDataGenerator
+    public static class ArrowTypeMockDataGenerator
             implements ArrowType.ArrowTypeVisitor<Object> {
 
         long count = 0;

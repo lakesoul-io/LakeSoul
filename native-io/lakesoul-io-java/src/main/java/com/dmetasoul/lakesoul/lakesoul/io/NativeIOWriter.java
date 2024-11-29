@@ -166,6 +166,15 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
         public String getFileExistCols() {
             return fileExistCols;
         }
+
+        @Override
+        public String toString() {
+            return "FlushResult{" +
+                    "filePath='" + filePath + '\'' +
+                    ", fileSize=" + fileSize +
+                    ", fileExistCols='" + fileExistCols + '\'' +
+                    '}';
+        }
     }
 
     public static FlushResult decodeFlushResult(String encoded) {

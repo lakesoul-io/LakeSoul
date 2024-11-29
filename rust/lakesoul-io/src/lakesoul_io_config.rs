@@ -173,6 +173,10 @@ impl LakeSoulIOConfig {
         self.option(OPTION_KEY_MEM_LIMIT).map(|x| x.parse().unwrap())
     }
 
+    pub fn max_file_size_option(&self) -> Option<u64> {
+        self.option(OPTION_KEY_MAX_FILE_SIZE).map(|x| x.parse().unwrap())
+    }
+
     pub fn pool_size(&self) -> Option<usize> {
         self.option(OPTION_KEY_POOL_SIZE).map(|x| x.parse().unwrap())
     }
@@ -186,7 +190,8 @@ impl LakeSoulIOConfig {
     }
 
     pub fn is_compacted(&self) -> bool {
-        self.option(OPTION_KEY_IS_COMPACTED).map_or(false, |x| x.eq("true"))
+        // self.option(OPTION_KEY_IS_COMPACTED).map_or(false, |x| x.eq("true"))
+        false
     }
 }
 

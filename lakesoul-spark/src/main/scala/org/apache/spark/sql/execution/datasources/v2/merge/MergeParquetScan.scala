@@ -28,6 +28,7 @@ import org.apache.spark.sql.sources.{EqualTo, Filter, Not}
 import org.apache.spark.sql.lakesoul._
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf.{COMPACTION_TASK, SCAN_FILE_NUMBER_LIMIT}
 import org.apache.spark.sql.lakesoul.utils.{SparkUtil, TableInfo, TimestampFormatter}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
@@ -412,15 +413,34 @@ case class OnePartitionMergeBucketScan(sparkSession: SparkSession,
     val fileWithBucketId = groupByPartition.head._2
       .groupBy(_.fileBucketId).map(f => (f._1, f._2.toArray))
 
+    val fileNumLimit = options.getOrDefault(SCAN_FILE_NUMBER_LIMIT.key, Int.MaxValue.toString).toInt
+    val isCompactionTask = options.getOrDefault(COMPACTION_TASK.key, COMPACTION_TASK.defaultValueString).toBoolean
+
     Seq.tabulate(bucketNum) { bucketId =>
       var files = fileWithBucketId.getOrElse(bucketId, Array.empty)
-      val isSingleFile = files.length == 1
-
-      if (!isSingleFile) {
-        val versionFiles = for (version <- files.indices) yield files(version).copy(writeVersion = version + 1)
-        files = versionFiles.toArray
+      var groupedFiles = if (fileNumLimit < Int.MaxValue && isCompactionTask) {
+        val groupedFiles = new ArrayBuffer[Array[MergePartitionedFile]]
+        for (i <- files.indices by fileNumLimit) {
+          groupedFiles += files.slice(i, i + fileNumLimit)
+        }
+        groupedFiles.toArray
+      } else {
+        Array(files)
       }
-      MergeFilePartition(bucketId, Array(files), isSingleFile)
+
+      var allPartitionIsSingleFile = true
+      var isSingleFile = false
+
+      for (index <- groupedFiles.indices) {
+        isSingleFile = groupedFiles(index).length == 1
+        if (!isSingleFile) {
+          val versionFiles = for (elem <- groupedFiles(index).indices) yield groupedFiles(index)(elem).copy(writeVersion = elem)
+          groupedFiles(index) = versionFiles.toArray
+          allPartitionIsSingleFile = false
+        }
+      }
+
+      MergeFilePartition(bucketId, groupedFiles, allPartitionIsSingleFile)
     }
   }
 

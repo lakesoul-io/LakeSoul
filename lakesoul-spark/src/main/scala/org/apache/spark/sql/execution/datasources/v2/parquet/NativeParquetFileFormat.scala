@@ -31,7 +31,8 @@ class NativeParquetFileFormat extends FileFormat
 
     if (options.getOrElse("isCompaction", "false").toBoolean &&
       !options.getOrElse("isCDC", "false").toBoolean &&
-      !options.getOrElse("isBucketNumChanged", "false").toBoolean
+      !options.getOrElse("isBucketNumChanged", "false").toBoolean &&
+      options.contains("staticBucketId")
     ) {
       new OutputWriterFactory {
         override def newInstance(

@@ -90,26 +90,39 @@ class DelayedCommitProtocol(jobId: String,
   }
 
   override def newTaskTempFile(taskContext: TaskAttemptContext, dir: Option[String], ext: String): String = {
-    val filename = getFileName(taskContext, ext)
     val partitionValues = dir.map(parsePartitions).getOrElse(List.empty[(String, String)])
     val unescapedDir = if (partitionValues.nonEmpty) {
       Some(partitionValues.map(partitionValue => partitionValue._1 + "=" + partitionValue._2).mkString("/"))
     } else {
       dir
     }
-    val relativePath = randomPrefixLength.map { prefixLength =>
-      getRandomPrefix(prefixLength) // Generate a random prefix as a first choice
-    }.orElse {
-      // or else write into the partition unescaped directory if it is partitioned
+    if (ext.isEmpty) {
       unescapedDir
-    }.map { subDir =>
-      new Path(subDir, filename)
-    }.getOrElse(new Path(filename)) // or directly write out to the output path
+        .map(new Path(path, _))
+        .getOrElse(new Path(path))
+        .toUri.toString
+    } else {
+      val filename = getFileName(taskContext, ext)
 
-    val absolutePath = new Path(path, relativePath).toUri.toString
-    //returns the absolute path to the file
-    addedFiles.append((partitionValues, absolutePath))
-    absolutePath
+      val relativePath = randomPrefixLength.map { prefixLength =>
+        getRandomPrefix(prefixLength) // Generate a random prefix as a first choice
+      }.orElse {
+        // or else write into the partition unescaped directory if it is partitioned
+        unescapedDir
+      }.map { subDir =>
+        new Path(subDir, filename)
+      }.getOrElse(new Path(filename)) // or directly write out to the output path
+
+
+      val absolutePath = new Path(path, relativePath).toUri.toString
+      //returns the absolute path to the file
+      addedFiles.append((partitionValues, absolutePath))
+      absolutePath
+    }
+  }
+
+  def addOutputFile(partitionValues: List[(String, String)], files: List[String]): Unit = {
+    files.foreach(file => addedFiles.append((partitionValues, file)))
   }
 
   override def newTaskTempFileAbsPath(taskContext: TaskAttemptContext, absoluteDir: String, ext: String): String = {
