@@ -60,38 +60,6 @@ pub struct FlightSqlServiceImpl {
     results: Arc<DashMap<String, Vec<RecordBatch>>>,
 }
 
-#[tonic::async_trait]
-impl FlightService for FlightSqlServiceImpl {
-    async fn get_schema(
-        &self,
-        request: Request<FlightDescriptor>,
-    ) -> Result<Response<SchemaResult>, Status> {
-        info!("get_schema");
-        let ctx = self.get_ctx(&request)?;
-        
-        // 获取 FlightDescriptor 中的命令
-        let cmd = &request.get_ref().cmd;
-        
-        // 解析命令获取 schema
-        let df = ctx.sql(std::str::from_utf8(cmd).map_err(|e| Status::internal(format!("{e}")))?)
-            .await
-            .map_err(|e| Status::internal(format!("Error executing query: {e}")))?;
-            
-        let schema = df.schema();
-        
-        // 将 schema 转换为 IPC 格式
-        let message = SchemaAsIpc::new(&schema, &IpcWriteOptions::default())
-            .try_into()
-            .map_err(|e| Status::internal(format!("Error serializing schema: {e}")))?;
-        let IpcMessage(schema_bytes) = message;
-
-        Ok(Response::new(SchemaResult {
-            schema: schema_bytes,
-        }))
-    }
-
-    type DoGetStream = BoxStream<'static, Result<FlightData, Status>>;
-}
 
 #[tonic::async_trait]
 impl FlightSqlService for FlightSqlServiceImpl {
