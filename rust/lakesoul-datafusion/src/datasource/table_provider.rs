@@ -5,9 +5,10 @@
 use std::any::Any;
 use std::ops::Deref;
 use std::sync::Arc;
+use std::env;
 
 use arrow::compute::SortOptions;
-use arrow::datatypes::{DataType, Schema, SchemaRef};
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
 use datafusion::{execution::context::SessionState, logical_expr::Expr};
 use datafusion::common::{FileTypeWriterOptions, project_schema, Statistics, ToDFSchema};
@@ -17,7 +18,7 @@ use datafusion::datasource::listing::{ListingOptions, ListingTableUrl, Partition
 use datafusion::datasource::physical_plan::{FileScanConfig, FileSinkConfig};
 use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result};
-use datafusion::logical_expr::{TableProviderFilterPushDown, TableType};
+use datafusion::logical_expr::{CreateExternalTable, TableProviderFilterPushDown, TableType};
 use datafusion::logical_expr::expr::Sort;
 use datafusion::optimizer::utils::conjunction;
 use datafusion::physical_expr::{create_physical_expr, LexOrdering, PhysicalSortExpr};
@@ -32,9 +33,9 @@ use lakesoul_io::lakesoul_io_config::LakeSoulIOConfig;
 use lakesoul_metadata::MetaDataClientRef;
 use proto::proto::entity::TableInfo;
 
-use crate::catalog::parse_table_info_partitions;
-use crate::lakesoul_table::helpers::{listing_partition_info, parse_partitions_for_partition_desc, prune_partitions};
-use crate::serialize::arrow_java::schema_from_metadata_str;
+use crate::catalog::{format_table_info_partitions, parse_table_info_partitions, LakeSoulTableProperty};
+use crate::lakesoul_table::helpers::{case_fold_column_name, case_fold_table_name, listing_partition_info, parse_partitions_for_partition_desc, prune_partitions};
+use crate::serialize::arrow_java::{schema_from_metadata_str, ArrowJavaSchema};
 
 use super::file_format::LakeSoulMetaDataParquetFormat;
 
@@ -52,14 +53,14 @@ use super::file_format::LakeSoulMetaDataParquetFormat;
 ///
 /// ```
 pub struct LakeSoulTableProvider {
-    listing_options: ListingOptions,
-    listing_table_paths: Vec<ListingTableUrl>,
-    client: MetaDataClientRef,
-    table_info: Arc<TableInfo>,
-    table_schema: SchemaRef,
-    file_schema: SchemaRef,
-    primary_keys: Vec<String>,
-    range_partitions: Vec<String>,
+    pub(crate) listing_options: ListingOptions,
+    pub(crate) listing_table_paths: Vec<ListingTableUrl>,
+    pub(crate) client: MetaDataClientRef,
+    pub(crate) table_info: Arc<TableInfo>,
+    pub(crate) table_schema: SchemaRef,
+    pub(crate) file_schema: SchemaRef,
+    pub(crate) primary_keys: Vec<String>,
+    pub(crate) range_partitions: Vec<String>,
 }
 
 impl LakeSoulTableProvider {
@@ -114,6 +115,52 @@ impl LakeSoulTableProvider {
         })
     }
 
+    pub async fn new_from_create_external_table(
+        session_state: &SessionState,
+        client: MetaDataClientRef,
+        cmd: &CreateExternalTable,
+    ) -> crate::error::Result<Self> {
+        
+        let table_schema: SchemaRef = Arc::new(Schema::new(
+            Schema::from(cmd.schema.as_ref())
+                .fields()
+                .iter()
+                .map(|field| Field::new(case_fold_column_name(field.name()), field.data_type().clone(), field.is_nullable()))
+                .collect::<Vec<_>>()
+        ));
+        let file_schema: SchemaRef = table_schema.clone();
+        let primary_keys = cmd.table_partition_cols.clone();
+        let range_partitions = cmd.table_partition_cols.clone();
+
+        let table_info = Arc::new(TableInfo {
+            table_id: format!("table_{}", uuid::Uuid::new_v4()),
+            table_namespace: cmd.name.schema().unwrap_or("default").to_string(),
+            table_name: case_fold_table_name(cmd.name.table()),
+            table_schema: serde_json::to_string::<ArrowJavaSchema>(&table_schema.clone().into())?,
+            properties: serde_json::to_string(&LakeSoulTableProperty {
+                hash_bucket_num: None,
+                datafusion_properties: Some(cmd.options.clone()),
+            }).unwrap(),
+            partitions: format_table_info_partitions(&range_partitions, &primary_keys),
+            table_path: if cmd.location.is_empty() {
+                format!("file://{}/{}/{}", env::current_dir().unwrap().to_str().unwrap(), cmd.name.schema().unwrap_or("default"), cmd.name.table())
+            } else {
+                cmd.location.to_string()
+            },
+            domain: "public".to_string(),
+        });
+        Ok(Self {
+            listing_options: LakeSoulMetaDataParquetFormat::default_listing_options().await?,
+            listing_table_paths: vec![],
+            client,
+            table_info,
+            table_schema,
+            file_schema,
+            primary_keys,
+            range_partitions,
+        })
+    }
+
     fn client(&self) -> MetaDataClientRef {
         self.client.clone()
     }
@@ -122,7 +169,7 @@ impl LakeSoulTableProvider {
         &self.primary_keys
     }
 
-    fn table_info(&self) -> Arc<TableInfo> {
+    pub fn table_info(&self) -> Arc<TableInfo> {
         self.table_info.clone()
     }
 

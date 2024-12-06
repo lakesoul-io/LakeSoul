@@ -4,10 +4,13 @@
 
 pub mod helpers;
 
+use std::collections::HashMap;
 use std::{ops::Deref, sync::Arc};
 
 use arrow::datatypes::{Schema, SchemaRef};
 use arrow_cast::pretty::pretty_format_batches;
+use datafusion::datasource::file_format::parquet::ParquetFormat;
+use datafusion::datasource::listing::ListingOptions;
 use datafusion::sql::TableReference;
 use datafusion::{
     dataframe::DataFrame,
@@ -15,13 +18,15 @@ use datafusion::{
     execution::context::{SessionContext, SessionState},
     logical_expr::LogicalPlanBuilder,
 };
+use helpers::case_fold_table_name;
 use lakesoul_io::async_writer::AsyncBatchWriter;
 use lakesoul_io::lakesoul_writer::{create_writer, SyncSendableMutableLakeSoulWriter};
 use lakesoul_io::{lakesoul_io_config::create_session_context_with_planner, lakesoul_reader::RecordBatch};
 use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 use proto::proto::entity::TableInfo;
-use tracing::debug;
+use log::{debug, info};
 
+use crate::datasource::file_format::LakeSoulMetaDataParquetFormat;
 use crate::{
     catalog::{create_io_config_builder, parse_table_info_partitions, LakeSoulTableProperty},
     error::Result,
@@ -58,9 +63,9 @@ impl LakeSoulTable {
 
     pub async fn for_table_reference(table_ref: &TableReference<'_>) -> Result<Self> {
         let schema = table_ref.schema().unwrap_or("default");
-        let table_name = table_ref.table();
-        
-        Self::for_namespace_and_name(schema, table_name).await
+        let table_name = case_fold_table_name(table_ref.table());
+        info!("for_table_reference: {:?}, {:?}", schema, table_name);
+        Self::for_namespace_and_name(schema, &table_name).await
     }
 
     pub async fn for_namespace_and_name(namespace: &str, table_name: &str) -> Result<Self> {
@@ -118,7 +123,6 @@ impl LakeSoulTable {
 
         let schema = record_batch.schema();
         
-        dbg!(&schema, &self.table_schema);
         let logical_plan = LogicalPlanBuilder::insert_into(
             sess_ctx.read_batch(record_batch)?.into_unoptimized_plan(),
             TableReference::partial(self.table_namespace().to_string(), self.table_name().to_string()),
@@ -178,6 +182,20 @@ impl LakeSoulTable {
             .await?,
         ))
     }
+
+    pub async fn as_provider(&self) -> Result<Arc<dyn TableProvider>> {
+        Ok(Arc::new(LakeSoulTableProvider {
+            listing_options: LakeSoulMetaDataParquetFormat::default_listing_options().await?,
+            listing_table_paths: vec![],
+            client: self.client(),
+            table_info: self.table_info(),
+            table_schema: self.schema(),
+            file_schema: self.schema(),
+            primary_keys: self.primary_keys().to_vec(),
+            range_partitions: self.range_partitions().to_vec(),
+        }))
+    }
+
 
     pub fn table_name(&self) -> &str {
         &self.table_name

@@ -10,6 +10,7 @@ use datafusion::prelude::SessionContext;
 use lakesoul_metadata::error::LakeSoulMetaDataError;
 use lakesoul_metadata::MetaDataClientRef;
 use proto::proto::entity::Namespace;
+use log::info;
 use std::any::Any;
 use std::fmt::{Debug, Formatter};
 use std::sync::{Arc, RwLock};
@@ -67,6 +68,7 @@ impl CatalogProvider for LakeSoulCatalog {
     }
 
     fn schema(&self, name: &str) -> Option<Arc<dyn SchemaProvider>> {
+        info!("schema: {:?}", name);
         tokio::task::block_in_place(|| {
             match futures::executor::block_on(async {
                 self.metadata_client.get_all_namespace().await

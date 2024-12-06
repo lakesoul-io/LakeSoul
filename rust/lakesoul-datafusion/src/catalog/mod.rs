@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use datafusion::catalog::TableReference;
+use log::info;
+use std::collections::HashMap;
 use std::env;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -27,13 +29,16 @@ pub use lakesoul_catalog::*;
 mod lakesoul_namespace;
 pub use lakesoul_namespace::*;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LakeSoulTableProperty {
-    #[serde(rename = "hashBucketNum")]
+    #[serde(rename = "hashBucketNum", skip_serializing_if = "Option::is_none")]
     pub hash_bucket_num: Option<usize>,
+    #[serde(rename = "datafusionProperties", skip_serializing_if = "Option::is_none")] 
+    pub datafusion_properties: Option<HashMap<String, String>>,
 }
 
 pub(crate) async fn create_table(client: MetaDataClientRef, table_name: &str, config: LakeSoulIOConfig) -> Result<()> {
+    info!("create_table: {:?}", &table_name);
     client
         .create_table(TableInfo {
             table_id: format!("table_{}", uuid::Uuid::new_v4()),
@@ -50,6 +55,7 @@ pub(crate) async fn create_table(client: MetaDataClientRef, table_name: &str, co
             table_namespace: "default".to_string(),
             properties: serde_json::to_string(&LakeSoulTableProperty {
                 hash_bucket_num: Some(4),
+                ..Default::default()
             })?,
             partitions: format!(
                 "{};{}",
@@ -112,6 +118,14 @@ pub(crate) fn parse_table_info_partitions(partitions: String) -> Result<(Vec<Str
             .filter_map(|str| if str.is_empty() { None } else { Some(str.to_string()) })
             .collect::<Vec<String>>(),
     ))
+}
+
+pub(crate) fn format_table_info_partitions(range_keys: &[String], hash_keys: &[String]) -> String {
+    format!(
+        "{};{}",
+        range_keys.join(","),
+        hash_keys.join(",")
+    )
 }
 
 pub(crate) async fn commit_data(

@@ -13,6 +13,7 @@ use async_trait::async_trait;
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaBuilder, SchemaRef};
 use datafusion::common::{project_schema, FileType, Statistics};
+use datafusion::datasource::listing::ListingOptions;
 use datafusion::datasource::physical_plan::ParquetExec;
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
@@ -41,14 +42,14 @@ use lakesoul_io::helpers::{
     partition_desc_from_file_scan_config,
 };
 use lakesoul_io::lakesoul_io_config::LakeSoulIOConfig;
-use lakesoul_metadata::MetaDataClientRef;
+use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 use object_store::{ObjectMeta, ObjectStore};
 use proto::proto::entity::TableInfo;
 use rand::distributions::DistString;
 
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use tracing::debug;
+use log::debug;
 
 use crate::catalog::{commit_data, parse_table_info_partitions};
 use crate::lakesoul_table::helpers::create_io_config_builder_from_table_info;
@@ -87,6 +88,19 @@ impl LakeSoulMetaDataParquetFormat {
 
     pub fn table_info(&self) -> Arc<TableInfo> {
         self.table_info.clone()
+    }
+
+    pub async fn default_listing_options() -> Result<ListingOptions> {
+        Ok(ListingOptions::new(
+            Arc::new(Self::new(
+                Arc::new(MetaDataClient::from_env().await.map_err(|e| DataFusionError::External(Box::new(e)))?),
+                Arc::new(ParquetFormat::new()),
+                Arc::new(TableInfo::default()),
+                LakeSoulIOConfig::default(),
+            )
+            .await
+            .map_err(|e| DataFusionError::External(Box::new(e)))?
+        )))
     }
 }
 

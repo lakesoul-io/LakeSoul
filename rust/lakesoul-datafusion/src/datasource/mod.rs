@@ -4,3 +4,4 @@
 
 pub mod file_format;
 pub mod table_provider;
+pub mod table_factory;

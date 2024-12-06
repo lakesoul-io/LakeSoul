@@ -2049,6 +2049,7 @@ dependencies = [
  "json",
  "lakesoul-io",
  "lakesoul-metadata",
+ "log",
  "object_store",
  "parquet",
  "prost",
@@ -2061,7 +2062,6 @@ dependencies = [
  "thiserror",
  "tokio",
  "tonic",
- "tracing",
  "url",
  "uuid",
 ]
@@ -2185,6 +2185,7 @@ dependencies = [
  "async-trait",
  "bb8-postgres",
  "bytes",
+ "log",
  "num_enum",
  "postgres",
  "postgres-types",

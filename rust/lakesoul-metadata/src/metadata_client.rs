@@ -9,7 +9,7 @@ use std::{collections::HashMap, env, fs, vec};
 
 use prost::Message;
 use tokio::sync::Mutex;
-use tracing::debug;
+use log::{debug, info};
 use url::Url;
 
 use proto::proto::entity::{
@@ -97,6 +97,7 @@ impl MetaDataClient {
     }
 
     pub async fn create_table(&self, table_info: TableInfo) -> Result<()> {
+        info!("create_table: {:?}", &table_info);
         self.insert_table_path_id(&table_path_id_from_table_info(&table_info))
             .await?;
         self.insert_table_name_id(&table_name_id_from_table_info(&table_info))
@@ -219,6 +220,7 @@ impl MetaDataClient {
     }
 
     async fn insert_table_info(&self, table_info: &TableInfo) -> Result<i32> {
+        info!("insert_table_info: {:?}", &table_info);
         self.execute_insert(
             DaoType::InsertTableInfo as i32,
             JniWrapper {

@@ -22,7 +22,7 @@ use datafusion::{
 };
 use lakesoul_metadata::MetaDataClientRef;
 use object_store::{path::Path, ObjectMeta, ObjectStore};
-use tracing::{debug, trace};
+use log::{debug, trace};
 use url::Url;
 
 use crate::error::Result;
@@ -178,4 +178,12 @@ pub async fn listing_partition_info(
         files.push(result);
     }
     Ok((partition_info, files))
+}
+
+pub fn case_fold_table_name(name: &str) -> String {
+    name.to_ascii_lowercase()
+}
+
+pub fn case_fold_column_name(name: &str) -> String {
+    name.to_ascii_lowercase()
 }
