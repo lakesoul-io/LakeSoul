@@ -1,8 +1,11 @@
+use std::sync::Arc;
+
+use log::info;
 use tonic::transport::Server;
 use tonic::Status;
-use arrow_flight::flight_service_server::FlightServiceServer;
 
-use lakesoul_flight::FlightSqlServiceImpl;
+use lakesoul_metadata::MetaDataClient;
+use lakesoul_flight::{FlightServiceServerWrapper, FlightSqlServiceImpl};
 
 fn to_tonic_err(e: lakesoul_datafusion::LakeSoulError) -> Status {
     Status::internal(format!("{e:?}"))
@@ -25,12 +28,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     env_logger::init();
     let addr = "0.0.0.0:50051".parse()?;
-    let service = FlightSqlServiceImpl::new().await.map_err(to_tonic_err)?;
+    info!("Connecting to metadata server");
+
+    let metadata_client = Arc::new(MetaDataClient::from_env().await?);
+    info!("Metadata server connected");
+    info!("Cleaning up metadata server");
+    metadata_client.meta_cleanup().await?;
+    info!("Metadata server cleaned up");
+
+    let service = FlightSqlServiceImpl::new(metadata_client.clone()).await.map_err(to_tonic_err)?;
     service.init().await?;
 
-    let svc = FlightServiceServer::new(service);
+    // 使用包装器创建服务
+    let svc = FlightServiceServerWrapper::new(service, metadata_client.clone());
 
-    println!("Listening on {addr:?}");
+    info!("Listening on {addr:?}");
 
     Server::builder().add_service(svc).serve(addr).await?;
 

@@ -7,18 +7,19 @@ use arrow::util::pretty::print_batches;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::flight_descriptor::DescriptorType;
-use arrow_flight::flight_service_server::FlightService;
+use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
 use arrow_flight::sql::server::{FlightSqlService, PeekableFlightDataStream};
-use arrow_flight::sql::{ActionClosePreparedStatementRequest, ActionCreatePreparedStatementRequest, ActionCreatePreparedStatementResult, Any, CommandGetCatalogs, CommandGetDbSchemas, CommandGetTables, CommandPreparedStatementQuery, CommandPreparedStatementUpdate, CommandStatementQuery, CommandStatementUpdate, ProstMessageExt, SqlInfo};
+use arrow_flight::sql::{ActionBeginSavepointRequest, ActionBeginTransactionRequest, ActionCancelQueryRequest, ActionClosePreparedStatementRequest, ActionCreatePreparedStatementRequest, ActionCreatePreparedStatementResult, ActionCreatePreparedSubstraitPlanRequest, ActionEndSavepointRequest, ActionEndTransactionRequest, Any, Command, CommandGetCatalogs, CommandGetDbSchemas, CommandGetTables, CommandPreparedStatementQuery, CommandPreparedStatementUpdate, CommandStatementQuery, CommandStatementUpdate, DoPutUpdateResult, ProstMessageExt, SqlInfo};
 use arrow_flight::utils::flight_data_to_arrow_batch;
 use arrow_flight::{
-    Action, FlightData, FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest, HandshakeResponse, IpcMessage, PutResult, SchemaAsIpc, Ticket
+    Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest, HandshakeResponse, IpcMessage, PutResult, SchemaAsIpc, SchemaResult, Ticket
 };
 use datafusion::common::parsers::CompressionTypeVariant;
 use datafusion::datasource::TableProvider;
 use datafusion::sql::parser::{CreateExternalTable, DFParser, Statement};
 use datafusion::sql::sqlparser::ast::ColumnDef;
 use datafusion::sql::TableReference;
+use futures::stream::Peekable;
 use futures::{Stream, StreamExt, TryStreamExt, stream::BoxStream};
 use lakesoul_datafusion::datasource::table_factory::LakeSoulTableProviderFactory;
 use lakesoul_datafusion::lakesoul_table::helpers::case_fold_column_name;
@@ -37,7 +38,7 @@ use dashmap::DashMap;
 use datafusion::prelude::*;
 use datafusion::logical_expr::{ColumnarValue, DdlStatement, DmlStatement, LogicalPlan, Volatility, WriteOp};
 use arrow::record_batch::RecordBatch;
-use log::info;
+use log::{error, info};
 use arrow::array::{ArrayRef, BinaryArray, Float64Array, Int32Array, Int64Array, ListArray, StringArray};
 
 use datafusion::execution::runtime_env::RuntimeEnv;
@@ -273,7 +274,14 @@ impl FlightSqlService for FlightSqlServiceImpl {
             Some(batch) => (batch.schema(), result.clone()),
         };
 
-        let batch_stream = futures::stream::iter(batches).map(Ok);
+        let batch_stream = futures::stream::iter(batches)
+            .then(|batch| async move {
+                tokio::time::sleep(tokio::time::Duration::from_millis(10000)).await;
+                let now = std::time::SystemTime::now();
+                let datetime: chrono::DateTime<chrono::Local> = now.into();
+                info!("do get fallback current time: {}", datetime.format("%Y-%m-%d %H:%M:%S.%3f"));
+                Ok(batch)
+            });
 
         let stream = FlightDataEncoderBuilder::new()
             .with_schema(schema)
@@ -345,6 +353,9 @@ impl FlightSqlService for FlightSqlServiceImpl {
         let mut row_count: i64 = 0;
         
         while let Some(batch) = stream.try_next().await.map_err(|e| status!("Error getting next batch", e))? {
+            let now = std::time::SystemTime::now();
+            let datetime: chrono::DateTime<chrono::Local> = now.into();
+            info!("do put prepared statement update current time: {}", datetime.format("%Y-%m-%d %H:%M:%S.%3f"));
             row_count += batch.num_rows() as i64;
             info!("batch schema: {:?}, {:?}", batch.schema(), table.schema());
             // 将列名转换为大写
@@ -584,11 +595,9 @@ fn normalize_sql(sql: &str) -> Result<String, Status> {
 }
 
 impl FlightSqlServiceImpl {
-    pub async fn new() -> Result<Self> {
-        let client = Arc::new(MetaDataClient::from_env().await?);
-        client.meta_cleanup().await?;
+    pub async fn new(metadata_client: MetaDataClientRef) -> Result<Self> {
         Ok(FlightSqlServiceImpl {
-            client,
+            client: metadata_client,
             contexts: Default::default(),
             statements: Default::default(),
             results: Default::default(),
@@ -636,6 +645,18 @@ impl FlightSqlServiceImpl {
             "LAKESOUL".to_string(), 
             catalog
         );        
+
+        ctx.sql("CREATE EXTERNAL TABLE lakesoul_test_table (name STRING, id INT, score FLOAT) STORED AS LAKESOUL LOCATION ''")
+            .await.map_err(|e| {
+                error!("Error creating table: {e}");
+                Status::internal(format!("Error creating table: {e}"))
+            })?
+            .collect()
+            .await
+            .map_err(|e| {
+                error!("Error collecting results: {e}");
+                Status::internal(format!("Error collecting results: {e}"))
+            })?;
 
         self.contexts.insert(uuid.clone(), ctx);
         Ok(uuid)
