@@ -14,7 +14,7 @@ use arrow_arith::boolean::and;
 use arrow_cast::cast;
 
 use datafusion::{
-    common::{DFField, DFSchema},
+    common::DFSchema,
     error::DataFusionError,
     execution::context::ExecutionProps,
     logical_expr::Expr,
@@ -87,7 +87,7 @@ pub async fn prune_partitions(
     let df_schema = DFSchema::new_with_metadata(
         partition_cols
             .iter()
-            .map(|(n, d)| DFField::new_unqualified(n, d.clone(), true))
+            .map(|(n, d)| (None, Arc::new(Field::new(n, d.clone(), true))))
             .collect(),
         Default::default(),
     )?;
@@ -99,7 +99,7 @@ pub async fn prune_partitions(
 
     // Applies `filter` to `batch` returning `None` on error
     let do_filter = |filter| -> Option<ArrayRef> {
-        let expr = create_physical_expr(filter, &df_schema, &schema, &props).ok()?;
+        let expr = create_physical_expr(filter, &df_schema, &props).ok()?;
         expr.evaluate(&batch).ok()?.into_array(all_partition_info.len()).ok()
     };
 

@@ -1,15 +1,16 @@
 // ... 在文件开头添加以下代码 ...
 
 use std::sync::Arc;
+use datafusion::catalog::{Session, TableProviderFactory};
 use datafusion::error::DataFusionError;
 use lakesoul_metadata::MetaDataClientRef;
-use log::{debug, info};
-use datafusion::datasource::provider::TableProviderFactory;
+use log::info;
 use datafusion::datasource::TableProvider;
-use datafusion::execution::context::SessionState;
 use datafusion::logical_expr::logical_plan::CreateExternalTable;
 
 use crate::datasource::table_provider::LakeSoulTableProvider;
+
+#[derive(Debug, Clone)]
 pub struct LakeSoulTableProviderFactory {
     metadata_client: MetaDataClientRef,
 }
@@ -31,7 +32,7 @@ impl LakeSoulTableProviderFactory {
 impl TableProviderFactory for LakeSoulTableProviderFactory {
     async fn create(
         &self, 
-        state: &SessionState,
+        state: &dyn Session,
         cmd: &CreateExternalTable
     ) -> datafusion::error::Result<Arc<dyn TableProvider>> {
         info!("LakeSoulTableProviderFactory::create: {:?}, {:?}", cmd.name, cmd.location);

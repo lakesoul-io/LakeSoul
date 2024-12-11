@@ -122,6 +122,21 @@ impl HashValue for [u8] {
     }
 }
 
+
+// todo: check if this is correct
+impl HashValue for IntervalDayTime {
+    fn hash_one(&self, seed: u32) -> u32 {
+        (self.as_usize() as u32).hash_one(seed)
+    }
+}
+
+// todo: check if this is correct
+impl HashValue for IntervalMonthDayNano {
+    fn hash_one(&self, seed: u32) -> u32 {
+        (self.as_usize() as u32).hash_one(seed)
+    }
+}
+
 /// Builds hash values of PrimitiveArray and writes them into `hashes_buffer`
 /// If `rehash==true` this combines the previous hash value in the buffer
 /// with the new hash using `combine_hashes`

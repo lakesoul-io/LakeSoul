@@ -11,9 +11,11 @@ use async_trait::async_trait;
 
 use arrow::datatypes::{Schema, SchemaRef};
 
+use datafusion::catalog::Session;
 use datafusion::datasource::file_format::FileFormat;
 use datafusion::datasource::listing::{ListingOptions, ListingTable, ListingTableUrl};
 use datafusion::execution::context::SessionState;
+use datafusion::logical_expr::dml::InsertOp;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::{datasource::TableProvider, logical_expr::Expr};
 
@@ -101,10 +103,9 @@ impl TableProvider for LakeSoulListingTable {
         TableType::Base
     }
 
-    #[instrument]
     async fn scan(
         &self,
-        state: &SessionState,
+        state: &dyn Session,
         projection: Option<&Vec<usize>>,
         // filters and limit can be used here to inject some push-down operations if needed
         filters: &[Expr],
@@ -126,20 +127,17 @@ impl TableProvider for LakeSoulListingTable {
             filters
                 .iter()
                 .map(|f| {
-                    if let Ok(cols) = f.to_columns() {
-                        if self.lakesoul_io_config.parquet_filter_pushdown
-                            && cols
-                                .iter()
-                                .all(|col| self.lakesoul_io_config.primary_keys.contains(&col.name))
+                    let cols = f.column_refs();
+                    if self.lakesoul_io_config.parquet_filter_pushdown
+                        && cols
+                            .iter()
+                            .all(|col| self.lakesoul_io_config.primary_keys.contains(&col.name))
                         {
                             // use primary key
                             Ok(TableProviderFilterPushDown::Inexact)
                         } else {
                             Ok(TableProviderFilterPushDown::Unsupported)
                         }
-                    } else {
-                        Ok(TableProviderFilterPushDown::Unsupported)
-                    }
                 })
                 .collect()
         }
@@ -147,9 +145,9 @@ impl TableProvider for LakeSoulListingTable {
 
     async fn insert_into(
         &self,
-        state: &SessionState,
+        state: &dyn Session,
         input: Arc<dyn ExecutionPlan>,
-        overwrite: bool,
+        overwrite: InsertOp,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         self.listing_table.insert_into(state, input, overwrite).await
     }

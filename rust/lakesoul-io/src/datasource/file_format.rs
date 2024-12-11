@@ -9,11 +9,13 @@ use std::sync::Arc;
 use arrow::datatypes::SchemaRef;
 use arrow_cast::can_cast_types;
 use arrow_schema::{ArrowError, FieldRef, Fields, Schema, SchemaBuilder};
+
+use datafusion::datasource::file_format::file_compression_type::FileCompressionType;
 use datafusion::datasource::file_format::{parquet::ParquetFormat, FileFormat};
 use datafusion::datasource::physical_plan::{FileScanConfig, FileSinkConfig};
 use datafusion::execution::context::SessionState;
 
-use datafusion::physical_expr::PhysicalSortRequirement;
+use datafusion::physical_expr::LexRequirement;
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::{ExecutionPlan, PhysicalExpr};
 use datafusion_common::{project_schema, DataFusionError, FileType, Result, Statistics};
@@ -135,6 +137,14 @@ impl FileFormat for LakeSoulParquetFormat {
         self
     }
 
+    fn get_ext(&self) -> String {
+        self.parquet_format.get_ext()
+    }
+
+    fn get_ext_with_compression(&self, file_compression_type: &FileCompressionType) -> Result<String> {
+        self.parquet_format.get_ext_with_compression(file_compression_type)
+    }
+
     async fn infer_schema(
         &self,
         state: &SessionState,
@@ -201,7 +211,7 @@ impl FileFormat for LakeSoulParquetFormat {
         // will not prune data based on the statistics.
         let predicate = self
             .parquet_format
-            .enable_pruning(state.config_options())
+            .enable_pruning()
             .then(|| filters.cloned())
             .flatten();
 
@@ -233,7 +243,7 @@ impl FileFormat for LakeSoulParquetFormat {
             merged_schema.clone(),
             flatten_conf,
             predicate,
-            self.parquet_format.metadata_size_hint(state.config_options()),
+            self.parquet_format.metadata_size_hint(),
             self.conf.clone(),
         )?);
 
@@ -256,16 +266,13 @@ impl FileFormat for LakeSoulParquetFormat {
         input: Arc<dyn ExecutionPlan>,
         state: &SessionState,
         conf: FileSinkConfig,
-        order_requirements: Option<Vec<PhysicalSortRequirement>>,
+        order_requirements: Option<LexRequirement>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         self.parquet_format
             .create_writer_physical_plan(input, state, conf, order_requirements)
             .await
     }
 
-    fn file_type(&self) -> FileType {
-        FileType::PARQUET
-    }
 }
 
 pub async fn flatten_file_scan_config(
@@ -303,7 +310,6 @@ pub async fn flatten_file_scan_config(
             let limit = conf.limit;
             let table_partition_cols = conf.table_partition_cols.clone();
             let output_ordering = conf.output_ordering.clone();
-            let infinite_source = conf.infinite_source;
             let config = FileScanConfig {
                 object_store_url: object_store_url.clone(),
                 file_schema,
@@ -313,7 +319,6 @@ pub async fn flatten_file_scan_config(
                 limit,
                 table_partition_cols,
                 output_ordering,
-                infinite_source,
             };
             flatten_configs.push(config);
         }

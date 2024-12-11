@@ -57,7 +57,8 @@ impl DataFileOp {
     fn from_proto_data_file_op(data_file_op: &entity::DataFileOp) -> Result<Self> {
         Ok(DataFileOp {
             path: data_file_op.path.clone(),
-            file_op: entity::FileOp::try_from(data_file_op.file_op)?
+            file_op: entity::FileOp::try_from(data_file_op.file_op)
+                .map_err(|e| LakeSoulMetaDataError::Internal(e.to_string()))?
                 .as_str_name()
                 .to_string(),
             size: data_file_op.size,

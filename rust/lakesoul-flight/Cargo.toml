@@ -22,4 +22,4 @@ object_store = { workspace = true }
 log = "0.4"
 url = { workspace = true }
 http = { workspace = true }
-http-body = { workspace = true }
+# http-body-util = { workspace = true }

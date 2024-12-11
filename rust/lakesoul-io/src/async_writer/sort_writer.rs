@@ -8,8 +8,7 @@ use arrow_array::RecordBatch;
 use arrow_schema::{SchemaRef, SortOptions};
 use datafusion::{
     physical_expr::{
-        expressions::{col, Column},
-        PhysicalSortExpr,
+        expressions::{col, Column}, LexOrdering, PhysicalSortExpr
     },
     physical_plan::{
         projection::ProjectionExec, sorts::sort::SortExec, stream::RecordBatchReceiverStream, ExecutionPlan,
@@ -60,7 +59,7 @@ impl SortAsyncWriter {
                 })
             })
             .collect::<Result<Vec<PhysicalSortExpr>>>()?;
-        let sort_exec = Arc::new(SortExec::new(sort_exprs, Arc::new(recv_exec)));
+        let sort_exec = Arc::new(SortExec::new(LexOrdering::new(sort_exprs), Arc::new(recv_exec)));
 
         // see if we need to prune aux sort cols
         let exec_plan: Arc<dyn ExecutionPlan> = if config.aux_sort_cols.is_empty() {

@@ -9,12 +9,11 @@ use arrow_schema::{SchemaRef, SortOptions};
 use datafusion::{
     execution::TaskContext,
     physical_expr::{
-        expressions::{col, Column},
-        PhysicalSortExpr,
+        expressions::{col, Column}, LexOrdering, PhysicalSortExpr
     },
     physical_plan::{
         projection::ProjectionExec, sorts::sort::SortExec, stream::RecordBatchReceiverStream, ExecutionPlan,
-        Partitioning, PhysicalExpr,
+        Partitioning, PhysicalExpr, ExecutionPlanProperties
     },
 };
 use datafusion_common::{DataFusionError, Result};
@@ -113,7 +112,7 @@ impl PartitioningAsyncWriter {
             return Ok(Arc::new(input));
         }
 
-        let sort_exec = Arc::new(SortExec::new(sort_exprs, Arc::new(input)));
+        let sort_exec = Arc::new(SortExec::new(LexOrdering::new(sort_exprs), Arc::new(input)));
 
         // see if we need to prune aux sort cols
         let sort_exec: Arc<dyn ExecutionPlan> = if config.aux_sort_cols.is_empty() {

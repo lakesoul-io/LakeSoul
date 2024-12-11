@@ -8,6 +8,8 @@ use std::{any::Any, collections::HashMap};
 use arrow_schema::{Field, Schema, SchemaRef};
 use datafusion::dataframe::DataFrame;
 use datafusion::logical_expr::Expr;
+use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_plan::{ExecutionMode, ExecutionPlanProperties, Partitioning, PlanProperties};
 use datafusion::{
     datasource::physical_plan::{FileScanConfig, ParquetExec},
     execution::TaskContext,
@@ -33,6 +35,7 @@ pub struct MergeParquetExec {
     merge_operators: Arc<HashMap<String, String>>,
     inputs: Vec<Arc<dyn ExecutionPlan>>,
     io_config: LakeSoulIOConfig,
+    properties: PlanProperties,
 }
 
 impl MergeParquetExec {
@@ -47,7 +50,16 @@ impl MergeParquetExec {
         // source file parquet scan
         let mut inputs = Vec::<Arc<dyn ExecutionPlan>>::new();
         for config in flatten_configs {
-            let single_exec = Arc::new(ParquetExec::new(config, predicate.clone(), metadata_size_hint));
+            let single_exec = Arc::new({
+                let mut builder = ParquetExec::builder(config);
+                if let Some(predicate) = predicate.clone() {
+                    builder = builder.with_predicate(predicate.clone());
+                }
+                if let Some(metadata_size_hint) = metadata_size_hint {
+                    builder = builder.with_metadata_size_hint(metadata_size_hint);
+                }
+                builder.build()
+            });
             inputs.push(single_exec);
         }
         // O(nml), n = number of schema fields, m = number of file schema fields, l = number of files
@@ -78,12 +90,13 @@ impl MergeParquetExec {
         let merge_operators: Arc<HashMap<String, String>> = Arc::new(io_config.merge_operators);
 
         Ok(Self {
-            schema,
+            schema: schema.clone(),
             inputs,
             primary_keys,
             default_column_value,
             merge_operators,
-            io_config: config
+            io_config: config,
+            properties: PlanProperties::new(EquivalenceProperties::new(schema), Partitioning::UnknownPartitioning(1), ExecutionMode::Bounded),
         })
     }
 
@@ -98,12 +111,13 @@ impl MergeParquetExec {
         let merge_operators = Arc::new(io_config.merge_operators);
 
         Ok(Self {
-            schema,
+            schema: schema.clone(),
             inputs,
             primary_keys,
             default_column_value,
             merge_operators,
-            io_config: config
+            io_config: config,
+            properties: PlanProperties::new(EquivalenceProperties::new(schema), Partitioning::UnknownPartitioning(1), ExecutionMode::Bounded),
         })
     }
 
@@ -126,7 +140,30 @@ impl DisplayAs for MergeParquetExec {
     }
 }
 
+impl ExecutionPlanProperties for MergeParquetExec {
+    fn output_partitioning(&self) -> &Partitioning {
+        &self.properties.partitioning
+    }
+
+    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
+        None
+    }
+
+    fn execution_mode(&self) -> ExecutionMode {
+        self.properties.execution_mode
+    }
+
+    fn equivalence_properties(&self) -> &EquivalenceProperties {
+        &self.properties.eq_properties
+    }
+}
+
 impl ExecutionPlan for MergeParquetExec {
+
+    fn name(&self) -> &str {
+        "MergeParquetExec"
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -135,16 +172,8 @@ impl ExecutionPlan for MergeParquetExec {
         self.schema.clone()
     }
 
-    fn output_partitioning(&self) -> datafusion::physical_plan::Partitioning {
-        datafusion::physical_plan::Partitioning::UnknownPartitioning(1)
-    }
-
-    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
-        None
-    }
-
-    fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
-        self.inputs.clone()
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        self.inputs.iter().map(|p| p).collect()
     }
 
     fn with_new_children(self: Arc<Self>, inputs: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
@@ -154,7 +183,8 @@ impl ExecutionPlan for MergeParquetExec {
             primary_keys: self.primary_keys(),
             default_column_value: self.default_column_value(),
             merge_operators: self.merge_operators(),
-            io_config: self.io_config.clone()
+            io_config: self.io_config.clone(),
+            properties: self.properties.clone(),
         }))
     }
 
@@ -190,6 +220,10 @@ impl ExecutionPlan for MergeParquetExec {
         )?;
 
         Ok(merged_stream)
+    }
+
+    fn properties(&self) -> &PlanProperties {
+        &self.properties
     }
 }
 

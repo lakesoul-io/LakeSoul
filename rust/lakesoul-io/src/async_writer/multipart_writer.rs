@@ -2,14 +2,15 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{collections::VecDeque, sync::Arc};
+use std::{collections::VecDeque, io::Write, sync::Arc};
 
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use atomic_refcell::AtomicRefCell;
+use bytes::Bytes;
 use datafusion::{datasource::listing::ListingTableUrl, execution::{object_store::ObjectStoreUrl, TaskContext}};
 use datafusion_common::{project_schema, DataFusionError, Result};
-use object_store::{path::Path, MultipartId, ObjectStore};
+use object_store::{multipart::MultipartStore, path::Path, MultipartId, ObjectStore, WriteMultipart};
 use parquet::{arrow::ArrowWriter, basic::Compression, file::properties::WriterProperties};
 use parquet::basic::ZstdLevel;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
@@ -35,8 +36,9 @@ pub struct MultiPartAsyncWriter {
     in_mem_buf: InMemBuf,
     task_context: Arc<TaskContext>,
     schema: SchemaRef,
-    writer: Box<dyn AsyncWrite + Unpin + Send>,
-    multi_part_id: MultipartId,
+    // writer: Box<dyn AsyncWrite + Unpin + Send>,
+    writer: WriteMultipart,
+    // multi_part_id: MultipartId,
     arrow_writer: ArrowWriter<InMemBuf>,
     _config: LakeSoulIOConfig,
     object_store: Arc<dyn ObjectStore>,
@@ -71,7 +73,9 @@ impl MultiPartAsyncWriter {
         }?;
 
         // get underlying multipart uploader
-        let (multipart_id, async_writer) = object_store.put_multipart(&path).await?;
+        let multipart_upload = object_store.put_multipart(&path).await?;
+        let write_multi_part = WriteMultipart::new_with_chunk_size(multipart_upload, 16 * 1024);
+        
         let in_mem_buf = InMemBuf(Arc::new(AtomicRefCell::new(VecDeque::<u8>::with_capacity(
             16 * 1024, // 16kb
         ))));
@@ -114,8 +118,8 @@ impl MultiPartAsyncWriter {
             in_mem_buf,
             task_context,
             schema,
-            writer: async_writer,
-            multi_part_id: multipart_id,
+            writer: write_multi_part,
+            // multi_part_id: multipart_id,
             arrow_writer,
             _config: config.clone(),
             object_store,
@@ -135,8 +139,7 @@ impl MultiPartAsyncWriter {
         batch: RecordBatch,
         arrow_writer: &mut ArrowWriter<InMemBuf>,
         in_mem_buf: &mut InMemBuf,
-        // underlying writer
-        writer: &mut Box<dyn AsyncWrite + Unpin + Send>,
+        writer: &mut WriteMultipart,
     ) -> Result<()> {
         arrow_writer.write(&batch)?;
         let mut v = in_mem_buf
@@ -151,10 +154,11 @@ impl MultiPartAsyncWriter {
     }
 
     pub async fn write_part(
-        writer: &mut Box<dyn AsyncWrite + Unpin + Send>,
+        writer: &mut WriteMultipart,
         in_mem_buf: &mut VecDeque<u8>,
     ) -> Result<()> {
-        writer.write_all_buf(in_mem_buf).await?;
+        let bytes = Bytes::from(in_mem_buf.drain(..).collect::<Vec<u8>>());
+        writer.put(bytes);
         Ok(())
     }
 
@@ -195,8 +199,7 @@ impl AsyncBatchWriter for MultiPartAsyncWriter {
             MultiPartAsyncWriter::write_part(&mut this.writer, &mut v).await?;
         }
         // shutdown multi-part async writer to complete the upload
-        this.writer.flush().await?;
-        this.writer.shutdown().await?;
+        this.writer.finish().await?;
         let path = Path::from_url_path(
             <ListingTableUrl as AsRef<Url>>::as_ref(&ListingTableUrl::parse(&file_path)?).path(),
         )?;
@@ -206,8 +209,8 @@ impl AsyncBatchWriter for MultiPartAsyncWriter {
 
     async fn abort_and_close(self: Box<Self>) -> Result<()> {
         let this = *self;
-        this.object_store
-            .abort_multipart(&this.path, &this.multi_part_id)
+        this.writer
+            .abort()
             .await
             .map_err(DataFusionError::ObjectStore)?;
         Ok(())

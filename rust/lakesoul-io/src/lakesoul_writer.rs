@@ -35,7 +35,7 @@ pub async fn create_writer(config: LakeSoulIOConfig) -> Result<Box<dyn AsyncBatc
             .fields
             .iter()
             .filter(|f| !config.aux_sort_cols.contains(f.name()))
-            .map(|f| schema.index_of(f.name().as_str()).map_err(DataFusionError::ArrowError))
+            .map(|f| schema.index_of(f.name().as_str()).map_err(|e| DataFusionError::ArrowError(e, Some("index_of".to_string()))))
             .collect::<Result<Vec<usize>>>()?;
         Arc::new(schema.project(proj_indices.borrow())?)
     } else {

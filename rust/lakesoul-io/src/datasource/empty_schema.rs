@@ -8,6 +8,7 @@ use std::sync::Arc;
 use arrow::datatypes::{Schema, SchemaRef};
 
 use async_trait::async_trait;
+use datafusion::catalog::Session;
 use datafusion::execution::context::SessionState;
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::ExecutionPlan;
@@ -47,7 +48,7 @@ impl TableProvider for EmptySchemaProvider {
 
     async fn scan(
         &self,
-        _state: &SessionState,
+        _state: &dyn Session,
         _projections: Option<&Vec<usize>>,
         // filters and limit can be used here to inject some push-down operations if needed
         _filters: &[Expr],

@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::catalog::LakeSoulNamespace;
-use datafusion::catalog::schema::SchemaProvider;
+use datafusion::catalog::SchemaProvider;
 use datafusion::catalog::CatalogProvider;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::prelude::SessionContext;

@@ -8,7 +8,7 @@ use crate::lakesoul_table::helpers::case_fold_table_name;
 use crate::lakesoul_table::LakeSoulTable;
 use crate::LakeSoulError;
 use async_trait::async_trait;
-use datafusion::catalog::schema::SchemaProvider;
+use datafusion::catalog::SchemaProvider;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
@@ -96,14 +96,14 @@ impl SchemaProvider for LakeSoulNamespace {
 
     /// Search table by name
     /// return LakeSoulListing table
-    async fn table(&self, name: &str) -> Option<Arc<dyn TableProvider>> {
+    async fn table(&self, name: &str) -> Result<Option<Arc<dyn TableProvider>>> {
         let name = case_fold_table_name(name);
         info!("table: {:?} {:?}", name, &self.namespace);
         let table = match LakeSoulTable::for_namespace_and_name(&self.namespace, &name).await {
             Ok(t) => t,
-            Err(_) => return None,
+            Err(_) => return Ok(None),
         };
-        table.as_sink_provider(&self.context.state()).await.ok()
+        Ok(table.as_sink_provider(&self.context.state()).await.ok())
     }
 
     /// If supported by the implementation, adds a new table to this schema.

@@ -6,6 +6,8 @@ use std::sync::Arc;
 use std::{any::Any, collections::HashMap};
 
 use arrow_schema::SchemaRef;
+use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_plan::{ExecutionMode, ExecutionPlanProperties, Partitioning, PlanProperties};
 use datafusion::{
     execution::TaskContext,
     physical_expr::PhysicalSortExpr,
@@ -20,6 +22,7 @@ pub struct DefaultColumnExec {
     input: Arc<dyn ExecutionPlan>,
     target_schema: SchemaRef,
     default_column_value: Arc<HashMap<String, String>>,
+    properties: PlanProperties,
 }
 
 impl DefaultColumnExec {
@@ -30,8 +33,9 @@ impl DefaultColumnExec {
     ) -> Result<Self> {
         Ok(Self {
             input,
-            target_schema,
+            target_schema: target_schema.clone(),
             default_column_value,
+            properties: PlanProperties::new(EquivalenceProperties::new(target_schema), Partitioning::UnknownPartitioning(1), ExecutionMode::Bounded),
         })
     }
 }
@@ -42,7 +46,29 @@ impl DisplayAs for DefaultColumnExec {
     }
 }
 
+impl ExecutionPlanProperties for DefaultColumnExec {
+    fn equivalence_properties(&self) -> &EquivalenceProperties {
+        &self.properties.eq_properties
+    }
+
+    fn output_partitioning(&self) -> &Partitioning {
+        &self.properties.partitioning
+    }
+
+    fn execution_mode(&self) -> ExecutionMode {
+        self.properties.execution_mode
+    }
+
+    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
+        None
+    }
+}
+
 impl ExecutionPlan for DefaultColumnExec {
+    fn name(&self) -> &str {
+        "DefaultColumnExec"
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -51,16 +77,8 @@ impl ExecutionPlan for DefaultColumnExec {
         self.target_schema.clone()
     }
 
-    fn output_partitioning(&self) -> datafusion::physical_plan::Partitioning {
-        datafusion::physical_plan::Partitioning::UnknownPartitioning(1)
-    }
-
-    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
-        None
-    }
-
-    fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
-        vec![]
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.input]
     }
 
     fn with_new_children(self: Arc<Self>, _: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
@@ -84,5 +102,9 @@ impl ExecutionPlan for DefaultColumnExec {
             self.schema(),
             self.default_column_value.clone(),
         )))
+    }
+
+    fn properties(&self) -> &PlanProperties {
+        &self.properties
     }
 }

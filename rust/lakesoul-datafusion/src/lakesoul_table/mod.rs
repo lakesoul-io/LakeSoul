@@ -4,13 +4,11 @@
 
 pub mod helpers;
 
-use std::collections::HashMap;
 use std::{ops::Deref, sync::Arc};
 
 use arrow::datatypes::{Schema, SchemaRef};
 use arrow_cast::pretty::pretty_format_batches;
-use datafusion::datasource::file_format::parquet::ParquetFormat;
-use datafusion::datasource::listing::ListingOptions;
+use datafusion::logical_expr::dml::InsertOp;
 use datafusion::sql::TableReference;
 use datafusion::{
     dataframe::DataFrame,
@@ -20,7 +18,7 @@ use datafusion::{
 };
 use helpers::case_fold_table_name;
 use lakesoul_io::async_writer::AsyncBatchWriter;
-use lakesoul_io::lakesoul_writer::{create_writer, SyncSendableMutableLakeSoulWriter};
+use lakesoul_io::lakesoul_writer::{create_writer};
 use lakesoul_io::{lakesoul_io_config::create_session_context_with_planner, lakesoul_reader::RecordBatch};
 use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 use proto::proto::entity::TableInfo;
@@ -61,7 +59,7 @@ impl LakeSoulTable {
         Self::for_namespace_and_name("default", table_name).await
     }
 
-    pub async fn for_table_reference(table_ref: &TableReference<'_>) -> Result<Self> {
+    pub async fn for_table_reference(table_ref: &TableReference) -> Result<Self> {
         let schema = table_ref.schema().unwrap_or("default");
         let table_name = case_fold_table_name(table_ref.table());
         info!("for_table_reference: {:?}, {:?}", schema, table_name);
@@ -103,7 +101,7 @@ impl LakeSoulTable {
             dataframe.into_unoptimized_plan(),
             TableReference::partial(self.table_namespace().to_string(), self.table_name().to_string()),
             &schema,
-            false,
+            InsertOp::Replace,
         )?
         .build()?;
         let dataframe = DataFrame::new(sess_ctx.state(), logical_plan);
@@ -127,7 +125,7 @@ impl LakeSoulTable {
             sess_ctx.read_batch(record_batch)?.into_unoptimized_plan(),
             TableReference::partial(self.table_namespace().to_string(), self.table_name().to_string()),
             schema.deref(),
-            false,
+            InsertOp::Replace,
         )?
         .build()?;
         let dataframe = DataFrame::new(sess_ctx.state(), logical_plan);

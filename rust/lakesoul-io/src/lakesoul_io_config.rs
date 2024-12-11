@@ -12,15 +12,15 @@ use datafusion::execution::context::{QueryPlanner, SessionState};
 use datafusion::execution::memory_pool::FairSpillPool;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
+use datafusion::execution::SessionStateBuilder;
 use datafusion::logical_expr::Expr;
 use datafusion::optimizer::analyzer::type_coercion::TypeCoercion;
 use datafusion::optimizer::push_down_filter::PushDownFilter;
-use datafusion::optimizer::push_down_projection::PushDownProjection;
-use datafusion::optimizer::rewrite_disjunctive_predicate::RewriteDisjunctivePredicate;
 use datafusion::optimizer::simplify_expressions::SimplifyExpressions;
 use datafusion::optimizer::unwrap_cast_in_comparison::UnwrapCastInComparison;
+use datafusion::physical_optimizer::projection_pushdown::ProjectionPushdown;
 use datafusion::prelude::{SessionConfig, SessionContext};
-use datafusion_common::DataFusionError::{External, ObjectStore};
+use datafusion_common::DataFusionError::External;
 use datafusion_substrait::substrait::proto::Plan;
 use derivative::Derivative;
 use log::info;
@@ -441,7 +441,7 @@ pub fn register_s3_object_store(url: &Url, config: &LakeSoulIOConfig, runtime: &
     if bucket.is_none() {
         return Err(DataFusionError::ArrowError(ArrowError::InvalidArgumentError(
             "missing fs.s3a.bucket".to_string(),
-        )));
+        ), None));
     }
 
     let retry_config = RetryConfig::default();
@@ -464,7 +464,7 @@ pub fn register_s3_object_store(url: &Url, config: &LakeSoulIOConfig, runtime: &
     if let Some(ep) = endpoint {
         s3_store_builder = s3_store_builder.with_endpoint(ep);
     }
-    let s3_store = Arc::new(s3_store_builder.build()?);
+    let s3_store = Arc::new(s3_store_builder.build().map_err(|e| DataFusionError::ObjectStore(e))?);
     runtime.register_object_store(url, s3_store);
     Ok(())
 }
@@ -573,7 +573,7 @@ pub fn create_session_context_with_planner(
     let mut sess_conf = SessionConfig::default()
         .with_batch_size(config.batch_size)
         .with_parquet_pruning(true)
-        .with_prefetch(config.prefetch_size)
+        // .with_prefetch(config.prefetch_size)
         .with_information_schema(true)
         .with_create_default_catalog_and_schema(true);
 
@@ -592,7 +592,7 @@ pub fn create_session_context_with_planner(
         dbg!(&memory_pool);
         runtime_conf = runtime_conf.with_memory_pool(Arc::new(memory_pool));
     }
-    let runtime = RuntimeEnv::new(runtime_conf)?;
+    let runtime = RuntimeEnv::try_new(runtime_conf)?;
 
     // firstly parse default fs if exist
     let default_fs = config
@@ -625,35 +625,27 @@ pub fn create_session_context_with_planner(
     info!("NativeIO normalized file names: {:?}", config.files);
     info!("NativeIO final config: {:?}", config);
 
-    // create session context
-    let mut state = if let Some(planner) = planner {
-        SessionState::new_with_config_rt(sess_conf, Arc::new(runtime)).with_query_planner(planner)
+    let builder = SessionStateBuilder::new()
+        .with_config(sess_conf)
+        .with_runtime_env(Arc::new(runtime));
+    let builder = if let Some(planner) = planner {
+        builder.with_query_planner(planner)
     } else {
-        SessionState::new_with_config_rt(sess_conf, Arc::new(runtime))
+        builder
     };
+    // create session context
     // only keep projection/filter rules as others are unnecessary
-    let physical_opt_rules = state
-        .physical_optimizers()
-        .iter()
-        .filter_map(|r| {
-            // this rule is private mod in datafusion, so we use name to filter out it
-            if r.name() == "ProjectionPushdown" {
-                Some(r.clone())
-            } else {
-                None
-            }
-        })
-        .collect();
-    state = state
+    let state = builder
         .with_analyzer_rules(vec![Arc::new(TypeCoercion {})])
         .with_optimizer_rules(vec![
             Arc::new(PushDownFilter {}),
-            Arc::new(PushDownProjection {}),
+            // Arc::new(ProjectionPushdown {}),
             Arc::new(SimplifyExpressions {}),
             Arc::new(UnwrapCastInComparison {}),
-            Arc::new(RewriteDisjunctivePredicate {}),
+            // Arc::new(RewriteDisjunctivePredicate {}),
         ])
-        .with_physical_optimizer_rules(physical_opt_rules);
+        .with_physical_optimizer_rules(vec![Arc::new(ProjectionPushdown {})])
+        .build();
 
     Ok(SessionContext::new_with_state(state))
 }

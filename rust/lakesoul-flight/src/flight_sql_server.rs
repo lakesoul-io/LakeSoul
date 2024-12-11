@@ -9,7 +9,7 @@ use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::flight_descriptor::DescriptorType;
 use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
 use arrow_flight::sql::server::{FlightSqlService, PeekableFlightDataStream};
-use arrow_flight::sql::{ActionBeginSavepointRequest, ActionBeginTransactionRequest, ActionCancelQueryRequest, ActionClosePreparedStatementRequest, ActionCreatePreparedStatementRequest, ActionCreatePreparedStatementResult, ActionCreatePreparedSubstraitPlanRequest, ActionEndSavepointRequest, ActionEndTransactionRequest, Any, Command, CommandGetCatalogs, CommandGetDbSchemas, CommandGetTables, CommandPreparedStatementQuery, CommandPreparedStatementUpdate, CommandStatementQuery, CommandStatementUpdate, DoPutUpdateResult, ProstMessageExt, SqlInfo};
+use arrow_flight::sql::{ActionBeginSavepointRequest, ActionBeginTransactionRequest, ActionCancelQueryRequest, ActionClosePreparedStatementRequest, ActionCreatePreparedStatementRequest, ActionCreatePreparedStatementResult, ActionCreatePreparedSubstraitPlanRequest, ActionEndSavepointRequest, ActionEndTransactionRequest, Any, Command, CommandGetCatalogs, CommandGetDbSchemas, CommandGetTables, CommandPreparedStatementQuery, CommandPreparedStatementUpdate, CommandStatementQuery, CommandStatementUpdate, DoPutPreparedStatementResult, DoPutUpdateResult, ProstMessageExt, SqlInfo};
 use arrow_flight::utils::flight_data_to_arrow_batch;
 use arrow_flight::{
     Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest, HandshakeResponse, IpcMessage, PutResult, SchemaAsIpc, SchemaResult, Ticket
@@ -17,7 +17,7 @@ use arrow_flight::{
 use datafusion::common::parsers::CompressionTypeVariant;
 use datafusion::datasource::TableProvider;
 use datafusion::sql::parser::{CreateExternalTable, DFParser, Statement};
-use datafusion::sql::sqlparser::ast::ColumnDef;
+use datafusion::sql::sqlparser::ast::{ColumnDef, CreateTable};
 use datafusion::sql::TableReference;
 use futures::stream::Peekable;
 use futures::{Stream, StreamExt, TryStreamExt, stream::BoxStream};
@@ -313,14 +313,14 @@ impl FlightSqlService for FlightSqlServiceImpl {
         &self,
         query: CommandPreparedStatementQuery,
         request: Request<PeekableFlightDataStream>,
-    ) -> Result<Response<Pin<Box<dyn Stream<Item = Result<PutResult, Status>> + Send>>>, Status> {
+    ) -> Result<DoPutPreparedStatementResult, Status> {
         dbg!(&query);
 
         let handle = std::str::from_utf8(&query.prepared_statement_handle)
             .map_err(|e| status!("Unable to parse uuid", e))?;
         let plan = self.get_plan(handle)?;
-        let output = futures::stream::iter(vec![]).boxed();
-        Ok(Response::new(Box::pin(output)))
+        // let output = futures::stream::iter(vec![]).boxed();
+        todo!()
     }
 
     async fn do_put_prepared_statement_update(
@@ -335,7 +335,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
 
         let plan = self.get_plan(handle)?;
         let table = match &plan {
-            LogicalPlan::Dml(DmlStatement { op: WriteOp::InsertInto, table_name, .. }) => {
+            LogicalPlan::Dml(DmlStatement { op: WriteOp::Insert(_), table_name, .. }) => {
                 Arc::new(LakeSoulTable::for_table_reference(table_name).await.unwrap())
             },
             LogicalPlan::Ddl(DdlStatement::CreateExternalTable(cmd)) => {
@@ -580,7 +580,7 @@ fn normalize_sql(sql: &str) -> Result<String, Status> {
     if let Some(Statement::Statement(stmt)) = statements.front() {
         info!("stmt: {:?}", stmt);
         match stmt.as_ref() {
-            datafusion::sql::sqlparser::ast::Statement::CreateTable { name, columns, .. } => {
+            datafusion::sql::sqlparser::ast::Statement::CreateTable(CreateTable { name, columns, .. }) => {
                 Ok(format!(
                     "CREATE EXTERNAL TABLE {} ({}) STORED AS LAKESOUL LOCATION ''", 
                     name, 
@@ -729,7 +729,7 @@ impl FlightSqlServiceImpl {
             for schema in catalog_provider.schema_names() {
                 let schema_provider = catalog_provider.schema(&schema).unwrap();
                 for table in schema_provider.table_names() {
-                    let table_provider = schema_provider.table(&table).await.unwrap();
+                    let table_provider = schema_provider.table(&table).await.unwrap().unwrap();
                     let table_schema = table_provider.schema();
                     
                     let message = SchemaAsIpc::new(&table_schema, &IpcWriteOptions::default())

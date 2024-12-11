@@ -25,9 +25,9 @@ use arrow_schema::SchemaRef;
 use atomic_refcell::AtomicRefCell;
 use datafusion::{
     execution::{SendableRecordBatchStream, TaskContext},
-    physical_expr::PhysicalSortExpr,
+    physical_expr::{EquivalenceProperties, PhysicalSortExpr},
     physical_plan::{
-        stream::RecordBatchReceiverStreamBuilder, DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning,
+        stream::RecordBatchReceiverStreamBuilder, DisplayAs, DisplayFormatType, ExecutionMode, ExecutionPlan, ExecutionPlanProperties, Partitioning, PlanProperties
     },
 };
 use datafusion_common::{DataFusionError, Result};
@@ -85,13 +85,15 @@ impl Write for InMemBuf {
 pub struct ReceiverStreamExec {
     receiver_stream_builder: AtomicRefCell<Option<RecordBatchReceiverStreamBuilder>>,
     schema: SchemaRef,
+    properties: PlanProperties,
 }
 
 impl ReceiverStreamExec {
     pub fn new(receiver_stream_builder: RecordBatchReceiverStreamBuilder, schema: SchemaRef) -> Self {
         Self {
             receiver_stream_builder: AtomicRefCell::new(Some(receiver_stream_builder)),
-            schema,
+            schema: schema.clone(),
+            properties: PlanProperties::new(EquivalenceProperties::new(schema), Partitioning::UnknownPartitioning(1), ExecutionMode::Bounded),
         }
     }
 }
@@ -108,7 +110,34 @@ impl DisplayAs for ReceiverStreamExec {
     }
 }
 
+impl ExecutionPlanProperties for ReceiverStreamExec {
+    fn output_partitioning(&self) -> &Partitioning {
+        &self.properties.partitioning
+    }
+
+    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
+        None
+    }
+
+    fn execution_mode(&self) -> ExecutionMode {
+        self.properties.execution_mode
+    }
+
+    fn equivalence_properties(&self) -> &EquivalenceProperties {
+        &self.properties.eq_properties
+    }
+
+}
+
 impl ExecutionPlan for ReceiverStreamExec {
+    fn name(&self) -> &str {
+        "ReceiverStreamExec"
+    }
+
+    fn properties(&self) -> &PlanProperties {
+        &self.properties
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -117,15 +146,7 @@ impl ExecutionPlan for ReceiverStreamExec {
         Arc::clone(&self.schema)
     }
 
-    fn output_partitioning(&self) -> Partitioning {
-        Partitioning::UnknownPartitioning(1)
-    }
-
-    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
-        None
-    }
-
-    fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         unimplemented!()
     }
 

@@ -274,6 +274,10 @@ impl From<&FieldRef> for ArrowJavaField {
             DataType::Duration(_) => todo!("Duration type not supported"),
             DataType::Interval(_) => todo!("Interval type not supported"),
             DataType::RunEndEncoded(_, _) => todo!("RunEndEncoded type not supported"),
+            DataType::BinaryView => todo!("BinaryView type not supported"),
+            DataType::Utf8View => todo!("Utf8View type not supported"),
+            DataType::ListView(_) => todo!("ListView type not supported"),
+            DataType::LargeListView(_) => todo!("LargeListView type not supported"),
         };
         let nullable = field.is_nullable();
         ArrowJavaField {
