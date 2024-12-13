@@ -92,6 +92,8 @@ pub enum DaoType {
     SelectPartitionVersionByTableIdAndDescAndVersion = DAO_TYPE_QUERY_ONE_OFFSET + 8,
 
     SelectOneDataCommitInfoByTableIdAndPartitionDescAndCommitId = DAO_TYPE_QUERY_ONE_OFFSET + 9,
+    SelectTableDomainById = DAO_TYPE_QUERY_ONE_OFFSET + 10,
+    SelectTableDomainByName = DAO_TYPE_QUERY_ONE_OFFSET + 11,
 
     // ==== Query List ====
     ListNamespaces = DAO_TYPE_QUERY_LIST_OFFSET,
@@ -253,6 +255,10 @@ async fn get_prepared_statement<'a>(
             from data_commit_info
             where table_id = $1::TEXT and partition_desc = $2::TEXT and commit_id = $3::UUID",
 
+        // Select Table Domain by id
+        DaoType::SelectTableDomainById =>
+            "select table_name, table_id, table_namespace, domain
+             from table_name_id where table_id = $1::TEXT",
 
         // Insert
         DaoType::InsertNamespace =>
@@ -502,6 +508,15 @@ pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
+        DaoType::SelectTableDomainById if params.len() == 1 => {
+            let result = client
+                .query(&statement, &[&params[0]])
+                .await;
+            match result {
+                Ok(rows) => rows,
+                Err(e) => return Err(LakeSoulMetaDataError::from(e)),
+            }
+        }
         DaoType::ListCommitOpsBetweenVersions
         | DaoType::ListPartitionVersionByTableIdAndPartitionDescAndVersionRange
             if params.len() == 4 =>
@@ -647,7 +662,9 @@ pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string
 
         DaoType::SelectTablePathIdByTablePath | DaoType::ListAllTablePath => ResultType::TablePathId,
 
-        DaoType::SelectTableNameIdByTableName | DaoType::ListTableNameByNamespace => ResultType::TableNameId,
+        DaoType::SelectTableNameIdByTableName
+        | DaoType::ListTableNameByNamespace
+        | DaoType::SelectTableDomainById => ResultType::TableNameId,
 
         DaoType::ListPartitionByTableId
         | DaoType::ListPartitionDescByTableIdAndParList

@@ -419,9 +419,17 @@ impl MetaDataClient {
         .await
     }
 
-    pub fn get_table_domain(&self, _table_id: &str) -> Result<String> {
-        // todo: get property table_domain
-        Ok("public".to_string())
+    pub async fn get_table_domain(&self, table_id: &str) -> Result<TableNameId> {
+        match self
+            .execute_query(
+                DaoType::SelectTableDomainById as i32,
+                [table_id].join(PARAM_DELIM),
+            )
+            .await
+        {
+            Ok(wrapper) => Ok(wrapper.table_name_id[0].clone()),
+            Err(err) => Err(err),
+        }
     }
 
     pub async fn get_all_table_name_id_by_namespace(&self, namespace: &str) -> Result<Vec<TableNameId>> {

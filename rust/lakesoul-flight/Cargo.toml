@@ -23,3 +23,6 @@ log = "0.4"
 url = { workspace = true }
 http = { workspace = true }
 # http-body-util = { workspace = true }
+base64 = "0.22.1"
+jsonwebtoken = {version = "9", default-features = false }
+serde = { workspace = true }

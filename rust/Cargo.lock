@@ -2307,6 +2307,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "078e285eafdfb6c4b434e0d31e8cfcb5115b651496faca5749b88fafd4f23bfd"
 
 [[package]]
+name = "jsonwebtoken"
+version = "9.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a87cc7a48537badeae96744432de36f4be2b4a34a05a5ef32e9dd8a1c169dde"
+dependencies = [
+ "base64 0.22.1",
+ "js-sys",
+ "ring",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "lakesoul-datafusion"
 version = "0.1.0"
 dependencies = [
@@ -2369,17 +2382,20 @@ dependencies = [
  "arrow",
  "arrow-flight",
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "dashmap 5.5.3",
  "datafusion",
  "futures",
  "http",
+ "jsonwebtoken",
  "lakesoul-datafusion",
  "lakesoul-metadata",
  "log",
  "object_store",
  "prost",
  "proto",
+ "serde",
  "tokio",
  "tonic",
  "url",
@@ -3302,6 +3318,7 @@ dependencies = [
  "bytes",
  "prost",
  "prost-build",
+ "protobuf-src",
 ]
 
 [[package]]
