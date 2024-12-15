@@ -10,6 +10,7 @@ use std::{collections::HashMap, env, fs, vec};
 use prost::Message;
 use tokio::sync::Mutex;
 use log::{debug, info};
+use postgres::Config;
 use url::Url;
 
 use proto::proto::entity::{
@@ -26,6 +27,7 @@ use crate::{
 pub struct MetaDataClient {
     client: Arc<Mutex<PooledClient>>,
     max_retry: usize,
+    secret: String,
 }
 
 impl Debug for MetaDataClient {
@@ -85,9 +87,12 @@ impl MetaDataClient {
 
     pub async fn from_config_and_max_retry(config: String, max_retry: usize) -> Result<Self> {
         let client = Arc::new(Mutex::new(create_connection(config).await?));
+        let config = config.parse::<Config>()?;
         Ok(Self {
             client,
             max_retry,
+            secret: format!("{:x}", md5::compute(
+                format!("!@{}#${}&*", config.get_user(), config.get_password()).as_bytes()))
         })
     }
 
@@ -625,6 +630,10 @@ impl MetaDataClient {
             Ok(wrapper) => Ok(wrapper.partition_info),
             Err(e) => Err(e),
         }
+    }
+
+    pub fn get_client_secret(&self) -> &String {
+        &self.secret
     }
 }
 

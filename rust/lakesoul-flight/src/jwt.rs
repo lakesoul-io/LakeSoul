@@ -9,19 +9,34 @@ pub(crate) struct Claims {
     pub exp: usize,
 }
 
-pub(crate) fn create_token(claims: Claims, secret: String) -> Result<String, jsonwebtoken::errors::Error> {
-    encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(secret.as_bytes()),
-    )
+pub(crate) struct JwtServer {
+    encoding_key: EncodingKey,
+    decoding_key: DecodingKey,
 }
 
-pub(crate) fn decode_token(token: &str) -> Result<Claims, jsonwebtoken::errors::Error> {
-    let data = decode::<Claims>(
-        &token,
-        &DecodingKey::from_secret("secret".as_ref()),
-        &Validation::default(),
-    )?;
-    Ok(data.claims)
+impl JwtServer {
+    pub fn new(secret: &str) -> Self {
+        Self {
+            encoding_key: EncodingKey::from_secret(secret.as_bytes()),
+            decoding_key: DecodingKey::from_secret(secret.as_bytes()),
+        }
+    }
+
+    pub(crate) fn create_token(&self, claims: Claims) -> Result<String, jsonwebtoken::errors::Error> {
+        encode(
+            &Header::default(),
+            &claims,
+            &self.encoding_key,
+        )
+    }
+
+    pub(crate) fn decode_token(&self, token: &str) -> Result<Claims, jsonwebtoken::errors::Error> {
+        let data = decode::<Claims>(
+            &token,
+            &self.decoding_key,
+            &Validation::default(),
+        )?;
+        Ok(data.claims)
+    }
 }
+
