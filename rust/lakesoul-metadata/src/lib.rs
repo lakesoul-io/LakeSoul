@@ -93,7 +93,6 @@ pub enum DaoType {
 
     SelectOneDataCommitInfoByTableIdAndPartitionDescAndCommitId = DAO_TYPE_QUERY_ONE_OFFSET + 9,
     SelectTableDomainById = DAO_TYPE_QUERY_ONE_OFFSET + 10,
-    SelectTableDomainByName = DAO_TYPE_QUERY_ONE_OFFSET + 11,
 
     // ==== Query List ====
     ListNamespaces = DAO_TYPE_QUERY_LIST_OFFSET,

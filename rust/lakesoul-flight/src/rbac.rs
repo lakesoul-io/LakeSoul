@@ -27,3 +27,27 @@ pub(crate) async fn verify_permission(
         ))),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use chrono::Days;
+    use lakesoul_metadata::MetaDataClient;
+    use crate::jwt::JwtServer;
+    use super::*;
+    #[test]
+    async fn test_verify_permission() -> Result<()> {
+        let metadata_client = Arc::new(MetaDataClient::from_env().await?);
+        let jwt_server = JwtServer::new(metadata_client.get_client_secret().as_str());
+        let claims = Claims {
+            sub: "lake-iam-001".to_string(),
+            group: "lake-czods".to_string(),
+            exp: chrono::Utc::now().checked_add_days(Days::new(365)).unwrap().timestamp() as usize,
+        };
+        let token = jwt_server.create_token(claims).map_err(|e| LakeSoulError::from(e))?;
+        println!("{:?}", token);
+        let decoded_claims = jwt_server.decode_token(token.as_str()).map_err(|e| LakeSoulError::from(e))?;
+        println!("{:?}", decoded_claims);
+        Ok(())
+    }
+}
