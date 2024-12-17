@@ -6,11 +6,6 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [[example]]
-name = "flight_server"
-path = "examples/flight/flight_server.rs"
-
-
-[[example]]
 name = "flight_sql_server"
 path = "examples/flight/flight_sql_server.rs"
 

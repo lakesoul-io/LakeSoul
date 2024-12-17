@@ -9,7 +9,6 @@ use std::{collections::HashMap, env, fs, vec};
 
 use prost::Message;
 use tokio::sync::Mutex;
-use tokio_stream::{self as stream, StreamExt};
 use log::{debug, info};
 use postgres::Config;
 use url::Url;

@@ -19,7 +19,7 @@ pub(crate) async fn verify_permission(
     match table_name_id.domain.as_str() {
         "public" | "lake-public" => Ok(()),
         domain if domain == claims.group => Ok(()),
-        _ => Err(LakeSoulError::from(LakeSoulMetaDataError::Other(
+        _ => Err(LakeSoulError::MetaDataError(LakeSoulMetaDataError::Other(
             format!(
                 "permission denied to access {}.{} from user {} in group {}",
                 ns, table, claims.sub, claims.group
