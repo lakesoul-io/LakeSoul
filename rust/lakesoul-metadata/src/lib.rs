@@ -13,7 +13,7 @@ use tokio_postgres::{Error, Row};
 
 use crate::pooled_client::PgConnection;
 pub use crate::pooled_client::PooledClient;
-use error::{LakeSoulMetaDataError, Result};
+pub use error::{LakeSoulMetaDataError, Result};
 pub use metadata_client::{MetaDataClient, MetaDataClientRef};
 use proto::proto::entity;
 

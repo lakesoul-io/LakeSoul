@@ -35,7 +35,7 @@ impl TableProviderFactory for LakeSoulTableProviderFactory {
         state: &dyn Session,
         cmd: &CreateExternalTable
     ) -> datafusion::error::Result<Arc<dyn TableProvider>> {
-        info!("LakeSoulTableProviderFactory::create: {:?}, {:?}", cmd.name, cmd.location);
+        info!("LakeSoulTableProviderFactory::create: {:?}, {:?}, {:?}, {:?}", cmd.name, cmd.location, cmd.schema, cmd.constraints);
 
         Ok(Arc::new(LakeSoulTableProvider::new_from_create_external_table(state, self.metadata_client(), cmd)
             .await

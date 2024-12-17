@@ -17,12 +17,16 @@ use datafusion::{
     logical_expr::LogicalPlanBuilder,
 };
 use helpers::case_fold_table_name;
-use lakesoul_io::async_writer::AsyncBatchWriter;
+use lakesoul_io::async_writer::{AsyncBatchWriter, WriterFlushResult};
 use lakesoul_io::lakesoul_writer::{create_writer};
 use lakesoul_io::{lakesoul_io_config::create_session_context_with_planner, lakesoul_reader::RecordBatch};
 use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
-use proto::proto::entity::TableInfo;
+use proto::proto::entity::{CommitOp, DataCommitInfo, DataFileOp, FileOp, TableInfo};
+use uuid::Uuid;
+use std::collections::HashMap;
+use chrono::Utc;
 use log::{debug, info};
+use datafusion::error::DataFusionError;
 
 use crate::datasource::file_format::LakeSoulMetaDataParquetFormat;
 use crate::{
@@ -227,5 +231,80 @@ impl LakeSoulTable {
         self.table_schema.clone()
     }
 
+    pub async fn commit_flush_result(&self, result: WriterFlushResult) -> Result<()> {
+
+        // 创建data commit info列表
+        let mut data_commit_info_list = Vec::new();
+
+        let partition_desc_and_files_map = partitioned_files_from_writer_flush_result(&result)?;
+        
+        // 处理分区文件映射
+        for (partition_desc, file_list) in partition_desc_and_files_map {
+            // 创建DataCommitInfo
+            let mut builder = DataCommitInfo::default();
+            builder.table_id = self.table_info.table_id.clone();
+            builder.partition_desc = partition_desc;
+            builder.commit_id = {
+                let (high, low) = Uuid::new_v4().as_u64_pair();
+                Some(proto::proto::entity::Uuid { high, low })
+            };
+            builder.committed = false;
+            builder.commit_op = CommitOp::AppendCommit.into();
+            builder.timestamp = Utc::now().timestamp_millis();
+            builder.domain = "public".to_string();
+
+            // 添加文件操作
+            let mut file_ops = Vec::new();
+            for flush_result in file_list {
+                let mut file_op = DataFileOp::default();
+                file_op.file_op = FileOp::Add.into();
+                file_op.path = flush_result.file_path;
+                file_op.size = flush_result.file_size;
+                file_op.file_exist_cols = flush_result.file_exist_cols;
+                
+                file_ops.push(file_op);
+            }
+            builder.file_ops = file_ops;
+
+            data_commit_info_list.push(builder);
+        }
+
+        // 提交所有DataCommitInfo
+        info!("Committing DataCommitInfo={:?}", data_commit_info_list);
+        for commit_info in data_commit_info_list {
+            self.client.commit_data_commit_info(commit_info).await?;
+        }
+
+        Ok(())
+    }
+
+
+}
+
+#[derive(Debug)]
+struct FlushResult {
+    file_path: String,
+    file_size: i64,
+    file_exist_cols: String,
+}
+
+
+fn partitioned_files_from_writer_flush_result(flush_result: &WriterFlushResult) -> Result<HashMap<String, Vec<FlushResult>>> {
+    let mut partition_desc_and_files_map = HashMap::new();
     
+    for (partition_desc, file_path, meta, file_meta) in flush_result {
+        let file_exist_cols = file_meta.schema.iter().map(|s| s.name.clone()).collect::<Vec<String>>().join(",");
+        let flush_result = FlushResult {
+            file_path: file_path.clone(),
+            file_size: meta.size as i64,
+            file_exist_cols,
+        };
+        
+        partition_desc_and_files_map
+            .entry(partition_desc.to_string())
+            .or_insert_with(Vec::new)
+            .push(flush_result);
+    }
+    
+    Ok(partition_desc_and_files_map)
 }

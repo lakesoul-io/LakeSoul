@@ -14,7 +14,7 @@ use datafusion::catalog::Session;
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::logical_expr::utils::conjunction;
 use datafusion::{execution::context::SessionState, logical_expr::Expr};
-use datafusion::common::{project_schema, Statistics, ToDFSchema};
+use datafusion::common::{project_schema, Constraint, Statistics, ToDFSchema};
 use datafusion::datasource::file_format::FileFormat;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{ListingOptions, ListingTableUrl, PartitionedFile};
@@ -132,7 +132,16 @@ impl LakeSoulTableProvider {
                 .collect::<Vec<_>>()
         ));
         let file_schema: SchemaRef = table_schema.clone();
-        let primary_keys = cmd.table_partition_cols.clone();
+        let primary_keys = cmd.constraints
+            .iter()
+            .flat_map(|constraint| 
+                match constraint {
+                    Constraint::PrimaryKey(pk) => 
+                        pk.iter().map(|col| table_schema.field(*col).name().to_string()).collect::<Vec<_>>(),
+                    _ => vec![],
+                }
+            )
+            .collect::<Vec<_>>();
         let range_partitions = cmd.table_partition_cols.clone();
 
         let table_info = Arc::new(TableInfo {

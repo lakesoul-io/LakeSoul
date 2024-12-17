@@ -60,6 +60,7 @@ impl MergeParquetExec {
                 }
                 builder.build()
             });
+            dbg!(&single_exec);
             inputs.push(single_exec);
         }
         // O(nml), n = number of schema fields, m = number of file schema fields, l = number of files
@@ -198,6 +199,7 @@ impl ExecutionPlan for MergeParquetExec {
         let mut stream_init_futs = Vec::with_capacity(self.inputs.len());
         for i in 0..self.inputs.len() {
             let input = &self.inputs[i];
+            // dbg!(&input);
             let input_partition_count = input.output_partitioning().partition_count();
             if input_partition_count != 1 {
                 return Err(DataFusionError::Internal(format!(

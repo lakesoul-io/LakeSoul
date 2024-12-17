@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use datafusion::sql::TableReference;
+use lakesoul_io::async_writer::WriterFlushResult;
 use log::info;
 use std::collections::HashMap;
 use std::env;
