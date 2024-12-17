@@ -325,10 +325,10 @@ impl MetaDataClient {
         let cur_map = self
             .get_cur_partition_map(&table_info.table_id, &partition_desc_list)
             .await?;
+        let domain = self.get_table_domain(table_info.table_id.as_str()).await?.domain;
 
         match commit_op {
             CommitOp::AppendCommit | CommitOp::MergeCommit => {
-                /*
                 let mut new_partition_list = meta_info
                     .list_partition
                     .iter()
@@ -337,7 +337,7 @@ impl MetaDataClient {
                         match cur_map.get(partition_desc) {
                             Some(cur_partition_info) => {
                                 let mut cur_partition_info = cur_partition_info.clone();
-                                cur_partition_info.domain = self.get_table_domain(&table_info.table_id).await?.domain;
+                                cur_partition_info.domain = domain.clone();
                                 cur_partition_info
                                     .snapshot
                                     .extend_from_slice(&partition_info.snapshot[..]);
@@ -351,7 +351,7 @@ impl MetaDataClient {
                                 partition_desc: partition_desc.clone(),
                                 version: 0,
                                 snapshot: Vec::from(&partition_info.snapshot[..]),
-                                domain: self.get_table_domain(&table_info.table_id)?,
+                                domain: domain.clone(),
                                 commit_op: commit_op as i32,
                                 expression: partition_info.expression.clone(),
                                 ..Default::default()
@@ -359,40 +359,6 @@ impl MetaDataClient {
                         }
                     })
                     .collect::<Result<Vec<PartitionInfo>>>()?;
-                 */
-                let mut new_partition_list = stream::iter(meta_info.list_partition)
-                    .then(|partition_info: PartitionInfo| {
-                        let cur_map = cur_map.clone();
-                        let table_id = table_info.table_id.clone();
-
-                        Box::pin(async move {
-                            let partition_desc = &partition_info.partition_desc;
-                            match cur_map.get(partition_desc) {
-                                Some(cur_partition_info) => {
-                                    let mut cur_partition_info = cur_partition_info.clone();
-                                    cur_partition_info.domain = self.get_table_domain(table_id.as_str()).await?.domain;
-                                    cur_partition_info
-                                        .snapshot
-                                        .extend_from_slice(&partition_info.snapshot[..]);
-                                    cur_partition_info.version += 1;
-                                    cur_partition_info.commit_op = commit_op as i32;
-                                    cur_partition_info.expression = partition_info.expression.clone();
-                                    Ok(cur_partition_info)
-                                }
-                                None => Ok(PartitionInfo {
-                                    table_id: table_id.clone(),
-                                    partition_desc: partition_desc.clone(),
-                                    version: 0,
-                                    snapshot: Vec::from(&partition_info.snapshot[..]),
-                                    domain: self.get_table_domain(table_id.as_str()).await?.domain,
-                                    commit_op: commit_op as i32,
-                                    expression: partition_info.expression.clone(),
-                                    ..Default::default()
-                                }),
-                            }
-                        })
-                    }
-                    ).collect::<Result<Vec<PartitionInfo>>>().await?;
                 new_partition_list.push(PartitionInfo { ..Default::default() });
                 let val = self.transaction_insert_partition_info(new_partition_list).await?;
                 let vec = self.get_all_partition_info(table_info.table_id.as_str()).await?;

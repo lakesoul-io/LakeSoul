@@ -15,6 +15,7 @@ pub(crate) async fn verify_permission(
         .as_ref()
         .get_table_name_id_by_table_name(table, ns)
         .await?;
+    log::debug!("table {}.{} in domain {}", ns, table, table_name_id.domain);
     match table_name_id.domain.as_str() {
         "public" | "lake-public" => Ok(()),
         domain if domain == claims.group => Ok(()),
@@ -30,24 +31,29 @@ pub(crate) async fn verify_permission(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use super::*;
+    use crate::jwt::JwtServer;
     use chrono::Days;
     use lakesoul_metadata::MetaDataClient;
-    use crate::jwt::JwtServer;
-    use super::*;
-    #[test]
+    use std::sync::Arc;
+    #[tokio::test]
     async fn test_verify_permission() -> Result<()> {
         let metadata_client = Arc::new(MetaDataClient::from_env().await?);
         let jwt_server = JwtServer::new(metadata_client.get_client_secret().as_str());
         let claims = Claims {
             sub: "lake-iam-001".to_string(),
             group: "lake-czods".to_string(),
-            exp: chrono::Utc::now().checked_add_days(Days::new(365)).unwrap().timestamp() as usize,
+            exp: chrono::Utc::now().checked_add_days(Days::new(1)).unwrap().timestamp() as usize,
         };
-        let token = jwt_server.create_token(claims).map_err(|e| LakeSoulError::from(e))?;
+        let token = jwt_server
+            .create_token(claims)
+            .map_err(|e| LakeSoulError::MetaDataError(LakeSoulMetaDataError::Other(Box::new(e))))?;
         println!("{:?}", token);
-        let decoded_claims = jwt_server.decode_token(token.as_str()).map_err(|e| LakeSoulError::from(e))?;
+        let decoded_claims = jwt_server
+            .decode_token(token.as_str())
+            .map_err(|e| LakeSoulError::MetaDataError(LakeSoulMetaDataError::Other(Box::new(e))))?;
         println!("{:?}", decoded_claims);
+        verify_permission(decoded_claims, "default", "sink_table", metadata_client).await?;
         Ok(())
     }
 }
