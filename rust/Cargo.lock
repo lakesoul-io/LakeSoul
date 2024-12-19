@@ -2390,6 +2390,7 @@ dependencies = [
  "http",
  "jsonwebtoken",
  "lakesoul-datafusion",
+ "lakesoul-io",
  "lakesoul-metadata",
  "log",
  "object_store",

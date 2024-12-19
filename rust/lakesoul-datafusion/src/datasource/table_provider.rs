@@ -33,6 +33,7 @@ use futures::StreamExt;
 use lakesoul_io::helpers::listing_table_from_lakesoul_io_config;
 use lakesoul_io::lakesoul_io_config::LakeSoulIOConfig;
 use lakesoul_metadata::MetaDataClientRef;
+use log::info;
 use proto::proto::entity::TableInfo;
 
 use crate::catalog::{format_table_info_partitions, parse_table_info_partitions, LakeSoulTableProperty};
@@ -294,6 +295,8 @@ impl LakeSoulTableProvider {
                 )
             })?;
 
+        info!("prune_partition_info: {:?}", prune_partition_info);
+
         let mut futures = FuturesUnordered::new();
         for partition in prune_partition_info {
             futures.push(listing_partition_info(partition, store.as_ref(), self.client()))
@@ -324,6 +327,7 @@ impl LakeSoulTableProvider {
                 .collect::<Vec<_>>();
             file_groups.push(files)
         }
+        info!("file_groups: {:?}", file_groups);
 
         Ok((file_groups, Statistics::new_unknown(self.schema().deref())))
     }

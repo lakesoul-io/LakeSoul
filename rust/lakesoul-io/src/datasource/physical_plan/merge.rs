@@ -18,7 +18,7 @@ use datafusion::{
 };
 use datafusion_common::{DFSchemaRef, DataFusionError, Result};
 use datafusion_substrait::substrait::proto::Plan;
-use log::debug;
+use log::{debug, info};
 
 use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;
 use crate::default_column_stream::DefaultColumnStream;
@@ -107,6 +107,7 @@ impl MergeParquetExec {
         io_config: LakeSoulIOConfig,
         default_column_value: Arc<HashMap<String, String>>,
     ) -> Result<Self> {
+        info!("MergeParquetExec::new_with_inputs: {:?}, {:?}", schema, io_config);
         let config = io_config.clone();
         let primary_keys = Arc::new(io_config.primary_keys);
         let merge_operators = Arc::new(io_config.merge_operators);
@@ -241,7 +242,7 @@ pub fn merge_stream(
     let merge_on_read = if config.primary_keys.is_empty() {
         false
     } else {
-        config.files.len() == 1 && config.merge_operators.is_empty() && config.is_compacted()
+        !(config.files.len() == 1 && config.merge_operators.is_empty() && config.is_compacted())
     };
     let merge_stream = if !merge_on_read {
         Box::pin(DefaultColumnStream::new_from_streams_with_default(
@@ -250,6 +251,7 @@ pub fn merge_stream(
             default_column_value,
         ))
     } else {
+
         let merge_schema = Arc::new(Schema::new(
             schema
                 .fields

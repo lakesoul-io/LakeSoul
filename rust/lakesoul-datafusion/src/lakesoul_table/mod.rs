@@ -272,7 +272,9 @@ impl LakeSoulTable {
         // 提交所有DataCommitInfo
         info!("Committing DataCommitInfo={:?}", data_commit_info_list);
         for commit_info in data_commit_info_list {
+            let commit_id = commit_info.commit_id.clone();
             self.client.commit_data_commit_info(commit_info).await?;
+            info!("Commit done for commit_id={:?}", commit_id);
         }
 
         Ok(())

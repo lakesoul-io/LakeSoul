@@ -354,7 +354,9 @@ impl MetaDataClient {
                     })
                     .collect::<Result<Vec<PartitionInfo>>>()?;
                 new_partition_list.push(PartitionInfo { ..Default::default() });
+                let partition_version = new_partition_list.iter().map(|p| p.version).max().unwrap_or(0);
                 self.transaction_insert_partition_info(new_partition_list).await?;
+                info!("Commit Done for {:?}, partition_version={:?}", commit_op, partition_version);
                 Ok(())
             }
             

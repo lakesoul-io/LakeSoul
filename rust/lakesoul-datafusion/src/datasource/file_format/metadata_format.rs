@@ -209,7 +209,6 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
                 }
                 builder.build()
             });
-            dbg!(&parquet_exec);
             for field in parquet_exec.schema().fields().iter() {
                 if field.is_nullable() {
                     column_nullable.insert(field.name().clone());
