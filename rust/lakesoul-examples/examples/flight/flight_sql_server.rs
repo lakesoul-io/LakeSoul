@@ -4,8 +4,8 @@ use log::info;
 use tonic::transport::Server;
 use tonic::Status;
 
-use lakesoul_metadata::MetaDataClient;
 use lakesoul_flight::{FlightServiceServerWrapper, FlightSqlServiceImpl};
+use lakesoul_metadata::MetaDataClient;
 
 fn to_tonic_err(e: lakesoul_datafusion::LakeSoulError) -> Status {
     Status::internal(format!("{e:?}"))
@@ -36,7 +36,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     metadata_client.meta_cleanup().await?;
     info!("Metadata server cleaned up");
 
-    let service = FlightSqlServiceImpl::new(metadata_client.clone()).await.map_err(to_tonic_err)?;
+    let service = FlightSqlServiceImpl::new(metadata_client.clone())
+        .await
+        .map_err(to_tonic_err)?;
     service.init().await?;
 
     // 使用包装器创建服务

@@ -1,6 +1,3 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::pin::Pin;
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::ipc::writer::IpcWriteOptions;
 use arrow::util::pretty::print_batches;
@@ -9,10 +6,18 @@ use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::flight_descriptor::DescriptorType;
 use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
 use arrow_flight::sql::server::{FlightSqlService, PeekableFlightDataStream};
-use arrow_flight::sql::{ActionBeginSavepointRequest, ActionBeginTransactionRequest, ActionBeginTransactionResult, ActionCancelQueryRequest, ActionClosePreparedStatementRequest, ActionCreatePreparedStatementRequest, ActionCreatePreparedStatementResult, ActionCreatePreparedSubstraitPlanRequest, ActionEndSavepointRequest, ActionEndTransactionRequest, Any, Command, CommandGetCatalogs, CommandGetDbSchemas, CommandGetPrimaryKeys, CommandGetTables, CommandPreparedStatementQuery, CommandPreparedStatementUpdate, CommandStatementIngest, CommandStatementQuery, CommandStatementUpdate, DoPutPreparedStatementResult, DoPutUpdateResult, ProstMessageExt, SqlInfo, TicketStatementQuery};
+use arrow_flight::sql::{
+    ActionBeginSavepointRequest, ActionBeginTransactionRequest, ActionBeginTransactionResult, ActionCancelQueryRequest,
+    ActionClosePreparedStatementRequest, ActionCreatePreparedStatementRequest, ActionCreatePreparedStatementResult,
+    ActionCreatePreparedSubstraitPlanRequest, ActionEndSavepointRequest, ActionEndTransactionRequest, Any, Command,
+    CommandGetCatalogs, CommandGetDbSchemas, CommandGetPrimaryKeys, CommandGetTables, CommandPreparedStatementQuery,
+    CommandPreparedStatementUpdate, CommandStatementIngest, CommandStatementQuery, CommandStatementUpdate,
+    DoPutPreparedStatementResult, DoPutUpdateResult, ProstMessageExt, SqlInfo, TicketStatementQuery,
+};
 use arrow_flight::utils::flight_data_to_arrow_batch;
 use arrow_flight::{
-    Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest, HandshakeResponse, IpcMessage, PutResult, SchemaAsIpc, SchemaResult, Ticket
+    Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest,
+    HandshakeResponse, IpcMessage, PutResult, SchemaAsIpc, SchemaResult, Ticket,
 };
 use datafusion::common::parsers::CompressionTypeVariant;
 use datafusion::datasource::TableProvider;
@@ -20,33 +25,36 @@ use datafusion::sql::parser::{CreateExternalTable, DFParser, Statement};
 use datafusion::sql::sqlparser::ast::{ColumnDef, CreateTable};
 use datafusion::sql::TableReference;
 use futures::stream::Peekable;
-use futures::{Stream, StreamExt, TryStreamExt, stream::BoxStream};
+use futures::{stream::BoxStream, Stream, StreamExt, TryStreamExt};
 use lakesoul_datafusion::datasource::table_factory::LakeSoulTableProviderFactory;
 use lakesoul_datafusion::lakesoul_table::helpers::case_fold_column_name;
 use lakesoul_datafusion::lakesoul_table::LakeSoulTable;
 use lakesoul_datafusion::planner::query_planner::LakeSoulQueryPlanner;
 use lakesoul_datafusion::serialize::arrow_java::{schema_from_metadata_str, ArrowJavaSchema};
-use tonic::{Request, Response, Status, metadata::MetadataValue, Streaming};
-use prost::Message;
 use prost::bytes::Bytes;
+use prost::Message;
+use std::collections::HashMap;
+use std::pin::Pin;
+use std::sync::Arc;
+use tonic::{metadata::MetadataValue, Request, Response, Status, Streaming};
 
-use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 use lakesoul_io::async_writer::WriterFlushResult;
+use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 use uuid::Uuid;
 
 use lakesoul_datafusion::Result;
 
-use dashmap::DashMap;
-use datafusion::prelude::*;
-use datafusion::logical_expr::{ColumnarValue, DdlStatement, DmlStatement, LogicalPlan, Volatility, WriteOp};
-use arrow::record_batch::RecordBatch;
-use log::{error, info};
 use arrow::array::{ArrayRef, BinaryArray, Float64Array, Int32Array, Int64Array, ListArray, StringArray};
+use arrow::record_batch::RecordBatch;
+use dashmap::DashMap;
+use datafusion::logical_expr::{ColumnarValue, DdlStatement, DmlStatement, LogicalPlan, Volatility, WriteOp};
+use datafusion::prelude::*;
+use log::{error, info};
 
-use datafusion::execution::runtime_env::RuntimeEnv;
-use object_store::local::LocalFileSystem;
-use lakesoul_datafusion::catalog::lakesoul_catalog::LakeSoulCatalog;
 use datafusion::execution::context::SessionState;
+use datafusion::execution::runtime_env::RuntimeEnv;
+use lakesoul_datafusion::catalog::lakesoul_catalog::LakeSoulCatalog;
+use object_store::local::LocalFileSystem;
 use url::Url;
 
 use crate::{datafusion_error_to_status, lakesoul_error_to_status, lakesoul_metadata_error_to_status};
@@ -59,7 +67,6 @@ macro_rules! status {
 
 type TransactionalData = (Arc<LakeSoulTable>, WriterFlushResult);
 
-
 pub struct FlightSqlServiceImpl {
     client: MetaDataClientRef,
     contexts: Arc<DashMap<String, Arc<SessionContext>>>,
@@ -67,22 +74,14 @@ pub struct FlightSqlServiceImpl {
     transactional_data: Arc<DashMap<String, TransactionalData>>,
 }
 
-
 #[tonic::async_trait]
 impl FlightSqlService for FlightSqlServiceImpl {
     type FlightService = Self;
 
-    async fn register_sql_info(&self, id: i32, result: &SqlInfo) { 
-        info!("register_sql_info - id: {}", id);
-    }
-
     async fn do_handshake(
         &self,
         _request: Request<Streaming<HandshakeRequest>>,
-    ) -> Result<
-        Response<Pin<Box<dyn Stream<Item = Result<HandshakeResponse, Status>> + Send>>>,
-        Status,
-    > {
+    ) -> Result<Response<Pin<Box<dyn Stream<Item = Result<HandshakeResponse, Status>> + Send>>>, Status> {
         info!("do_handshake - starting handshake");
         // no authentication actually takes place here
         // see Ballista implementation for example of basic auth
@@ -97,87 +96,10 @@ impl FlightSqlService for FlightSqlServiceImpl {
         let result = Ok(result);
         let output = futures::stream::iter(vec![result]);
         let str = format!("Bearer {token}");
-        let mut resp: Response<Pin<Box<dyn Stream<Item = Result<_, _>> + Send>>> =
-            Response::new(Box::pin(output));
-        let md = MetadataValue::try_from(str)
-            .map_err(|_| Status::invalid_argument("authorization not parsable"))?;
+        let mut resp: Response<Pin<Box<dyn Stream<Item = Result<_, _>> + Send>>> = Response::new(Box::pin(output));
+        let md = MetadataValue::try_from(str).map_err(|_| Status::invalid_argument("authorization not parsable"))?;
         resp.metadata_mut().insert("authorization", md);
         Ok(resp)
-    }
-
-    
-
-    async fn get_flight_info_prepared_statement(
-        &self,
-        cmd: CommandPreparedStatementQuery,
-        request: Request<FlightDescriptor>,
-    ) -> Result<Response<FlightInfo>, Status> {
-        info!("get_flight_info_prepared_statement - handle: {:?}", 
-            std::str::from_utf8(&cmd.prepared_statement_handle).unwrap_or("invalid utf8"));
-        
-        let handle = std::str::from_utf8(&cmd.prepared_statement_handle)
-            .map_err(|e| status!("Unable to parse uuid", e))?;
-
-        let ctx = self.get_ctx(&request)?;
-        let plan = self.get_plan(handle)?;
-
-        let state = ctx.state();
-        // dbg!(&plan);
-        let df = DataFrame::new(state, plan);
-        let result = df
-            .collect()
-            .await
-            .map_err(|e| status!("Error executing query", e))?;
-
-        // if we get an empty result, create an empty schema
-        let schema = match result.first() {
-            None => Schema::empty(),
-            Some(batch) => (*batch.schema()).clone(),
-        };
-
-
-        let ticket = Ticket { ticket: Command::CommandPreparedStatementQuery(cmd).into_any().encode_to_vec().into() };
-
-        let info = FlightInfo::new()
-            // Encode the Arrow schema
-            .try_with_schema(&schema)
-            .expect("encoding failed")
-            .with_endpoint(FlightEndpoint::new().with_ticket(ticket))
-            .with_descriptor(FlightDescriptor {
-                r#type: DescriptorType::Cmd.into(),
-                cmd: Default::default(),
-                path: vec![],
-            });
-        let resp = Response::new(info);
-        Ok(resp)
-    }
-
-    async fn do_get_prepared_statement(
-        &self,
-        query: CommandPreparedStatementQuery,
-        request: Request<Ticket>,
-    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
-        info!("do_get_prepared_statement - handle: {:?}", 
-            std::str::from_utf8(&query.prepared_statement_handle).unwrap_or("invalid utf8"));
-        
-        let handle = std::str::from_utf8(&query.prepared_statement_handle)
-            .map_err(|e| status!("Unable to parse uuid", e))?;
-        let ctx = self.get_ctx(&request)?;
-        let plan = self.get_plan(handle)?;
-        let state = ctx.state();
-        let df = DataFrame::new(state, plan);
-        let schema = Arc::new(df.schema().clone().into());
-        let stream = df.execute_stream().await
-            .map_err(|e| status!("Error executing query", e))?
-            .map(|batch| {
-                let batch = batch.map_err(|e| status!("Error executing query", e))?;
-                Ok(batch)
-            });
-        let stream = FlightDataEncoderBuilder::new()
-            .with_schema(schema)
-            .build(stream)
-            .map_err(Status::from);
-        Ok(Response::new(Box::pin(stream)))
     }
 
     async fn get_flight_info_statement(
@@ -195,10 +117,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
 
         // let state = ctx.state();
         let df = ctx.sql(sql).await.map_err(|e| status!("Error executing query", e))?;
-        let result = df
-            .collect()
-            .await
-            .map_err(|e| status!("Error executing query", e))?;
+        let result = df.collect().await.map_err(|e| status!("Error executing query", e))?;
 
         // if we get an empty result, create an empty schema
         let schema = match result.first() {
@@ -208,7 +127,14 @@ impl FlightSqlService for FlightSqlServiceImpl {
         info!("get_flight_info_statement result:");
         // print_batches(&result);
 
-        let ticket = Ticket { ticket: Command::TicketStatementQuery(TicketStatementQuery { statement_handle: sql.as_bytes().to_vec().into() }).into_any().encode_to_vec().into() };
+        let ticket = Ticket {
+            ticket: Command::TicketStatementQuery(TicketStatementQuery {
+                statement_handle: sql.as_bytes().to_vec().into(),
+            })
+            .into_any()
+            .encode_to_vec()
+            .into(),
+        };
 
         let info = FlightInfo::new()
             // Encode the Arrow schema
@@ -224,28 +150,152 @@ impl FlightSqlService for FlightSqlServiceImpl {
         Ok(resp)
     }
 
-    async fn do_get_statement(
+    async fn get_flight_info_prepared_statement(
         &self,
-        query: TicketStatementQuery,
-        request: Request<Ticket>,
-    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
-        info!("do_get_statement - query: {:?}", query.statement_handle);
-        let sql = std::str::from_utf8(&query.statement_handle)
-            .map_err(|e| status!("Unable to parse uuid", e))?;
+        cmd: CommandPreparedStatementQuery,
+        request: Request<FlightDescriptor>,
+    ) -> Result<Response<FlightInfo>, Status> {
+        info!(
+            "get_flight_info_prepared_statement - handle: {:?}",
+            std::str::from_utf8(&cmd.prepared_statement_handle).unwrap_or("invalid utf8")
+        );
+
+        let handle =
+            std::str::from_utf8(&cmd.prepared_statement_handle).map_err(|e| status!("Unable to parse uuid", e))?;
+
         let ctx = self.get_ctx(&request)?;
-        let df = ctx.sql(sql).await.map_err(|e| status!("Error executing query", e))?;
-        let schema = Arc::new(df.schema().clone().into());
-        let stream = df.execute_stream().await
-            .map_err(|e| status!("Error executing query", e))?
-            .map(|batch| {
-                let batch = batch.map_err(|e| status!("Error executing query", e))?;
-                Ok(batch)
+        let plan = self.get_plan(handle)?;
+
+        let state = ctx.state();
+        // dbg!(&plan);
+        let df = DataFrame::new(state, plan);
+        let result = df.collect().await.map_err(|e| status!("Error executing query", e))?;
+
+        // if we get an empty result, create an empty schema
+        let schema = match result.first() {
+            None => Schema::empty(),
+            Some(batch) => (*batch.schema()).clone(),
+        };
+
+        let ticket = Ticket {
+            ticket: Command::CommandPreparedStatementQuery(cmd)
+                .into_any()
+                .encode_to_vec()
+                .into(),
+        };
+
+        let info = FlightInfo::new()
+            // Encode the Arrow schema
+            .try_with_schema(&schema)
+            .expect("encoding failed")
+            .with_endpoint(FlightEndpoint::new().with_ticket(ticket))
+            .with_descriptor(FlightDescriptor {
+                r#type: DescriptorType::Cmd.into(),
+                cmd: Default::default(),
+                path: vec![],
             });
-        let stream = FlightDataEncoderBuilder::new()
-            .with_schema(schema)
-            .build(stream)
-            .map_err(Status::from);
-        Ok(Response::new(Box::pin(stream)))
+        let resp = Response::new(info);
+        Ok(resp)
+    }
+
+    /// Get a FlightInfo for listing catalogs.
+    async fn get_flight_info_catalogs(
+        &self,
+        cmd: CommandGetCatalogs,
+        request: Request<FlightDescriptor>,
+    ) -> Result<Response<FlightInfo>, Status> {
+        info!("get_flight_info_catalogs");
+        // dbg!(&query, &request);
+        let ctx = self.get_ctx(&request)?;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("catalog_name", DataType::Utf8, false)]));
+
+        let handle = Uuid::new_v4().hyphenated().to_string();
+        let catalogs = ctx.catalog_names();
+        let array = StringArray::from(catalogs);
+        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(array)])
+            .map_err(|e| status!("Error creating record batch", e))?;
+
+        let ticket = Ticket {
+            ticket: Command::CommandGetCatalogs(cmd).into_any().encode_to_vec().into(),
+        };
+
+        let endpoint = FlightEndpoint::new().with_ticket(ticket);
+
+        let flight_info = FlightInfo::new()
+            .try_with_schema(schema.as_ref())
+            .expect("encoding failed")
+            .with_endpoint(endpoint);
+
+        Ok(Response::new(flight_info))
+    }
+
+    async fn get_flight_info_schemas(
+        &self,
+        query: CommandGetDbSchemas,
+        request: Request<FlightDescriptor>,
+    ) -> Result<Response<FlightInfo>, Status> {
+        info!(
+            "get_flight_info_schemas - catalog: {:?}, schema: {:?}",
+            query.catalog,
+            query.db_schema_filter_pattern()
+        );
+        let ctx = self.get_ctx(&request)?;
+
+        // 执行查询获取所有schema
+        // 修改 schema 使 catalog_name 可空
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("catalog_name", DataType::Utf8, true), // 设置 nullable=true
+            Field::new("db_schema_name", DataType::Utf8, false),
+        ]));
+
+        let ticket = Ticket {
+            ticket: Command::CommandGetDbSchemas(query).into_any().encode_to_vec().into(),
+        };
+
+        let info = FlightInfo::new()
+            .try_with_schema(&schema)
+            .expect("encoding failed")
+            .with_endpoint(FlightEndpoint::new().with_ticket(ticket))
+            .with_descriptor(FlightDescriptor {
+                r#type: DescriptorType::Cmd.into(),
+                cmd: Default::default(),
+                path: vec![],
+            });
+
+        Ok(Response::new(info))
+    }
+
+    async fn get_flight_info_tables(
+        &self,
+        query: CommandGetTables,
+        request: Request<FlightDescriptor>,
+    ) -> Result<Response<FlightInfo>, Status> {
+        // let CommandGetTables { catalog, db_schema_filter_pattern, table_name_filter_pattern, table_types, include_schema } = query;
+        info!("get_flight_info_tables - catalog: {:?}", query);
+
+        let ctx = self.get_ctx(&request)?;
+        let data = self.tables(ctx).await;
+        let schema = data.schema();
+
+        let uuid = Uuid::new_v4().hyphenated().to_string();
+
+        let ticket = Ticket {
+            ticket: Command::CommandGetTables(query).into_any().encode_to_vec().into(),
+        };
+
+        let info = FlightInfo::new()
+            // Encode the Arrow schema
+            .try_with_schema(&schema)
+            .expect("encoding failed")
+            .with_endpoint(FlightEndpoint::new().with_ticket(ticket))
+            .with_descriptor(FlightDescriptor {
+                r#type: DescriptorType::Cmd.into(),
+                cmd: Default::default(),
+                path: vec![],
+            });
+        let resp = Response::new(info);
+        Ok(resp)
     }
 
     // async fn do_get_fallback(
@@ -267,11 +317,11 @@ impl FlightSqlService for FlightSqlServiceImpl {
     //         .ok_or_else(|| Status::internal("Expected FetchResults but got None!"))?;
 
     //     let handle = fr.handle;
-        
+
     //     // 获上下文和计划
     //     let ctx = self.get_ctx(&request)?;
     //     let plan = self.get_plan(&handle)?;
-        
+
     //     // 直接执行计划
     //     let state = ctx.state();
     //     let df = DataFrame::new(state, plan);
@@ -280,7 +330,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
     //         .map_err(|e| status!("Error executing query", e))?
     //         .map(|batch| {
     //             let batch = batch.map_err(|e| status!("Error executing query", e))?;
-                
+
     //             Ok(batch)
     //         });
 
@@ -292,6 +342,192 @@ impl FlightSqlService for FlightSqlServiceImpl {
     //     Ok(Response::new(Box::pin(stream)))
     // }
 
+    async fn get_flight_info_primary_keys(
+        &self,
+        query: CommandGetPrimaryKeys,
+        request: Request<FlightDescriptor>,
+    ) -> Result<Response<FlightInfo>, Status> {
+        info!(
+            "get_flight_info_primary_keys - catalog: {:?}, schema: {:?}, table: {:?}",
+            query.catalog, query.db_schema, query.table
+        );
+        let table_info = self
+            .get_metadata_client()
+            .get_table_info_by_table_name(&query.table, query.db_schema())
+            .await
+            .map_err(lakesoul_metadata_error_to_status)?;
+        let schema = schema_from_metadata_str(&table_info.table_schema);
+        let ticket = Ticket {
+            ticket: Command::CommandGetPrimaryKeys(query).into_any().encode_to_vec().into(),
+        };
+
+        let info = FlightInfo::new()
+            .try_with_schema(&schema)
+            .expect("encoding failed")
+            .with_endpoint(FlightEndpoint::new().with_ticket(ticket))
+            .with_descriptor(FlightDescriptor {
+                r#type: DescriptorType::Cmd.into(),
+                cmd: Default::default(),
+                path: vec![],
+            });
+        Ok(Response::new(info))
+    }
+
+    async fn do_get_statement(
+        &self,
+        query: TicketStatementQuery,
+        request: Request<Ticket>,
+    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        info!("do_get_statement - query: {:?}", query.statement_handle);
+        let sql = std::str::from_utf8(&query.statement_handle).map_err(|e| status!("Unable to parse uuid", e))?;
+        let ctx = self.get_ctx(&request)?;
+        let df = ctx.sql(sql).await.map_err(|e| status!("Error executing query", e))?;
+        let schema = Arc::new(df.schema().clone().into());
+        let stream = df
+            .execute_stream()
+            .await
+            .map_err(|e| status!("Error executing query", e))?
+            .map(|batch| {
+                let batch = batch.map_err(|e| status!("Error executing query", e))?;
+                Ok(batch)
+            });
+        let stream = FlightDataEncoderBuilder::new()
+            .with_schema(schema)
+            .build(stream)
+            .map_err(Status::from);
+        Ok(Response::new(Box::pin(stream)))
+    }
+
+    async fn do_get_prepared_statement(
+        &self,
+        query: CommandPreparedStatementQuery,
+        request: Request<Ticket>,
+    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        info!(
+            "do_get_prepared_statement - handle: {:?}",
+            std::str::from_utf8(&query.prepared_statement_handle).unwrap_or("invalid utf8")
+        );
+
+        let handle =
+            std::str::from_utf8(&query.prepared_statement_handle).map_err(|e| status!("Unable to parse uuid", e))?;
+        let ctx = self.get_ctx(&request)?;
+        let plan = self.get_plan(handle)?;
+        let state = ctx.state();
+        let df = DataFrame::new(state, plan);
+        let schema = Arc::new(df.schema().clone().into());
+        let stream = df
+            .execute_stream()
+            .await
+            .map_err(|e| status!("Error executing query", e))?
+            .map(|batch| {
+                let batch = batch.map_err(|e| status!("Error executing query", e))?;
+                Ok(batch)
+            });
+        let stream = FlightDataEncoderBuilder::new()
+            .with_schema(schema)
+            .build(stream)
+            .map_err(Status::from);
+        Ok(Response::new(Box::pin(stream)))
+    }
+
+    async fn do_get_schemas(
+        &self,
+        query: CommandGetDbSchemas,
+        request: Request<Ticket>,
+    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        let CommandGetDbSchemas {
+            catalog,
+            db_schema_filter_pattern,
+        } = query;
+        info!(
+            "do_get_schemas - catalog: {:?}, schema: {:?}",
+            catalog, db_schema_filter_pattern
+        );
+
+        let namespaces = self
+            .get_metadata_client()
+            .get_all_namespace()
+            .await
+            .map_err(lakesoul_metadata_error_to_status)?;
+        let data: Vec<ArrayRef> = vec![
+            Arc::new(StringArray::from(vec![String::from("lakesoul"); namespaces.len()])),
+            Arc::new(StringArray::from(
+                namespaces.iter().map(|n| n.namespace.clone()).collect::<Vec<String>>(),
+            )),
+        ];
+
+        // 修改 schema 使 catalog_name 可空
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("catalog_name", DataType::Utf8, true), // 设置 nullable=true
+            Field::new("db_schema_name", DataType::Utf8, false),
+        ]));
+
+        // 使用新的 schema 创建新的 RecordBatch
+        let data = RecordBatch::try_new(schema.clone(), data)
+            .map_err(|e| Status::internal(format!("Error creating record batch: {e}")))?;
+
+        let stream = FlightDataEncoderBuilder::new()
+            .with_schema(schema)
+            .build(futures::stream::iter(vec![Ok(data)]))
+            .map_err(|e| Status::internal(format!("Error creating flight data encoder: {e}")));
+
+        Ok(Response::new(Box::pin(stream)))
+    }
+
+    async fn do_get_tables(
+        &self,
+        query: CommandGetTables,
+        request: Request<Ticket>,
+    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        let table_names = self
+            .get_metadata_client()
+            .get_all_table_name_id_by_namespace(query.catalog())
+            .await
+            .map_err(lakesoul_metadata_error_to_status)?;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("catalog_name", DataType::Utf8, false),
+            Field::new("db_schema_name", DataType::Utf8, false),
+            Field::new("table_name", DataType::Utf8, false),
+            Field::new("table_type", DataType::Utf8, false),
+        ]));
+        let data: Vec<ArrayRef> = vec![
+            Arc::new(StringArray::from(vec![String::from("lakesoul"); table_names.len()])),
+            Arc::new(StringArray::from(
+                table_names
+                    .iter()
+                    .map(|n| n.table_namespace.clone())
+                    .collect::<Vec<String>>(),
+            )),
+            Arc::new(StringArray::from(
+                table_names
+                    .iter()
+                    .map(|n| n.table_name.clone())
+                    .collect::<Vec<String>>(),
+            )),
+            Arc::new(StringArray::from(vec![String::from("BaseTable"); table_names.len()])),
+        ];
+        let data = RecordBatch::try_new(schema.clone(), data)
+            .map_err(|e| Status::internal(format!("Error creating record batch: {e}")))?;
+
+        let stream = FlightDataEncoderBuilder::new()
+            .with_schema(schema)
+            .build(futures::stream::iter(vec![Ok(data)]))
+            .map_err(|e| Status::internal(format!("Error creating flight data encoder: {e}")));
+        Ok(Response::new(Box::pin(stream)))
+    }
+
+    async fn do_get_primary_keys(
+        &self,
+        query: CommandGetPrimaryKeys,
+        request: Request<Ticket>,
+    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        info!(
+            "do_get_primary_keys - catalog: {:?}, schema: {:?}, table: {:?}",
+            query.catalog, query.db_schema, query.table
+        );
+        Ok(Response::new(Box::pin(futures::stream::iter(vec![]))))
+    }
+
     async fn do_put_statement_update(
         &self,
         query: CommandStatementUpdate,
@@ -302,7 +538,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         let sql = &query.query;
         let sql = normalize_sql(sql)?;
         info!("execute SQL: {}", sql);
-        
+
         let ctx = self.get_ctx(&request)?;
         let df = ctx.sql(&sql).await.map_err(|e| status!("Error executing query", e))?;
         let result = df.collect().await.map_err(|e| status!("Error executing query", e))?;
@@ -310,17 +546,96 @@ impl FlightSqlService for FlightSqlServiceImpl {
         Ok(0)
     }
 
+    async fn do_put_statement_ingest(
+        &self,
+        cmd: CommandStatementIngest,
+        request: Request<PeekableFlightDataStream>,
+    ) -> Result<i64, Status> {
+        let CommandStatementIngest {
+            table_definition_options,
+            table,
+            schema,
+            catalog,
+            temporary,
+            transaction_id,
+            options,
+        } = cmd;
+        info!("do_put_statement_ingest: table: {table}, schema: {schema:?}, catalog: {catalog:?}, temporary: {temporary}, transaction_id: {transaction_id:?}, options: {options:?} table_definition_options: {table_definition_options:?}");
+
+        // 获取 session context
+        let ctx = self.get_ctx(&request)?;
+        // 获取输入流
+        let mut stream = request.into_inner();
+
+        // 获取第一条息,它应该包含 schema 信息
+        // The first message contains the flight descriptor and the schema.
+        // Read the flight descriptor without discarding the schema:
+        let flight_descriptor: FlightDescriptor = stream
+            .peek()
+            .await
+            .cloned()
+            .transpose()?
+            .and_then(|data| data.flight_descriptor)
+            .expect("first message should contain flight descriptor");
+
+        // 创建 LakeSoulTable
+        let table = LakeSoulTable::for_namespace_and_name(schema.unwrap_or("default".to_string()).as_str(), &table)
+            .await
+            .map_err(|e| Status::internal(format!("Error creating table: {}", e)))?;
+
+        let mut writer = table.get_writer().await.map_err(lakesoul_error_to_status)?;
+
+        // 创建 FlightRecordBatchStream 来解码数据
+        let mut batch_stream = FlightRecordBatchStream::new_from_flight_data(stream.map_err(|e| e.into()));
+
+        // 记录处理的记录数
+        let mut record_count = 0i64;
+
+        // 处理每个批次
+        while let Some(batch) = batch_stream
+            .try_next()
+            .await
+            .map_err(|e| Status::internal(format!("Error getting next batch: {}", e)))?
+        {
+            // 累加记录数
+            record_count += batch.num_rows() as i64;
+            // 这里可以添加实际的数据导入逻辑
+            // 例如写入数据库等
+            info!("batch num_rows: {:?}", batch.num_rows());
+            writer
+                .write_record_batch(batch)
+                .await
+                .map_err(datafusion_error_to_status)?;
+        }
+        let result = writer.flush_and_close().await.map_err(datafusion_error_to_status)?;
+        if let Some(transaction_id) = transaction_id {
+            // Convert Bytes to String before passing to append_transactional_data
+            let transaction_id = String::from_utf8(transaction_id.to_vec())
+                .map_err(|e| Status::internal(format!("Invalid transaction ID: {}", e)))?;
+            self.append_transactional_data(transaction_id, Arc::new(table), result)?;
+        } else {
+            table
+                .commit_flush_result(result)
+                .await
+                .map_err(lakesoul_error_to_status)?;
+        }
+
+        Ok(record_count)
+    }
+
     async fn do_put_prepared_statement_query(
         &self,
         query: CommandPreparedStatementQuery,
         request: Request<PeekableFlightDataStream>,
     ) -> Result<DoPutPreparedStatementResult, Status> {
-        info!("do_put_prepared_statement_query - handle: {:?}",
-            std::str::from_utf8(&query.prepared_statement_handle).unwrap_or("invalid utf8"));
+        info!(
+            "do_put_prepared_statement_query - handle: {:?}",
+            std::str::from_utf8(&query.prepared_statement_handle).unwrap_or("invalid utf8")
+        );
         dbg!(&query);
 
-        let handle = std::str::from_utf8(&query.prepared_statement_handle)
-            .map_err(|e| status!("Unable to parse uuid", e))?;
+        let handle =
+            std::str::from_utf8(&query.prepared_statement_handle).map_err(|e| status!("Unable to parse uuid", e))?;
         let plan = self.get_plan(handle)?;
         // let output = futures::stream::iter(vec![]).boxed();
         todo!()
@@ -331,224 +646,71 @@ impl FlightSqlService for FlightSqlServiceImpl {
         query: CommandPreparedStatementUpdate,
         request: Request<PeekableFlightDataStream>,
     ) -> Result<i64, Status> {
-        info!("do_put_prepared_statement_update - handle: {:?}",
-            std::str::from_utf8(&query.prepared_statement_handle).unwrap_or("invalid utf8"));
+        info!(
+            "do_put_prepared_statement_update - handle: {:?}",
+            std::str::from_utf8(&query.prepared_statement_handle).unwrap_or("invalid utf8")
+        );
         dbg!(&query);
         info!("do_put_prepared_statement_update");
-        let handle = std::str::from_utf8(&query.prepared_statement_handle)
-            .map_err(|e| status!("Unable to parse uuid", e))?;
+        let handle =
+            std::str::from_utf8(&query.prepared_statement_handle).map_err(|e| status!("Unable to parse uuid", e))?;
 
         let plan = self.get_plan(handle)?;
         let table = match &plan {
-            LogicalPlan::Dml(DmlStatement { op: WriteOp::Insert(_), table_name, .. }) => {
-                Arc::new(LakeSoulTable::for_table_reference(table_name).await.unwrap())
-            },
+            LogicalPlan::Dml(DmlStatement {
+                op: WriteOp::Insert(_),
+                table_name,
+                ..
+            }) => Arc::new(LakeSoulTable::for_table_reference(table_name).await.unwrap()),
             LogicalPlan::Ddl(DdlStatement::CreateExternalTable(cmd)) => {
                 info!("create external table: {}, {:?}", cmd.name, cmd.definition);
                 Arc::new(LakeSoulTable::for_table_reference(&cmd.name).await.unwrap())
-            },
-            LogicalPlan::EmptyRelation(_) => {
-                Arc::new(LakeSoulTable::for_table_reference(&TableReference::from("test_table")).await.unwrap())
-            },
-            _ => Err(Status::internal("Not a valid insert into or create external table plan"))?
+            }
+            LogicalPlan::EmptyRelation(_) => Arc::new(
+                LakeSoulTable::for_table_reference(&TableReference::from("test_table"))
+                    .await
+                    .unwrap(),
+            ),
+            _ => Err(Status::internal(
+                "Not a valid insert into or create external table plan",
+            ))?,
         };
         let stream = request.into_inner();
-        
+
         let mut stream = FlightRecordBatchStream::new_from_flight_data(stream.map_err(|e| e.into()));
         let mut row_count: i64 = 0;
-        
-        while let Some(batch) = stream.try_next().await.map_err(|e| status!("Error getting next batch", e))? {
+
+        while let Some(batch) = stream
+            .try_next()
+            .await
+            .map_err(|e| status!("Error getting next batch", e))?
+        {
             let now = std::time::SystemTime::now();
             let datetime: chrono::DateTime<chrono::Local> = now.into();
-            info!("do put prepared statement update current time: {}", datetime.format("%Y-%m-%d %H:%M:%S.%3f"));
+            info!(
+                "do put prepared statement update current time: {}",
+                datetime.format("%Y-%m-%d %H:%M:%S.%3f")
+            );
             row_count += batch.num_rows() as i64;
             info!("batch schema: {:?}, {:?}", batch.schema(), table.schema());
             // 将列名转换为大写
             let schema = batch.schema();
-            let fields = schema.fields().iter().map(|f| {
-                Field::new(case_fold_column_name(f.name()), f.data_type().clone(), f.is_nullable())
-            }).collect::<Vec<_>>();
+            let fields = schema
+                .fields()
+                .iter()
+                .map(|f| Field::new(case_fold_column_name(f.name()), f.data_type().clone(), f.is_nullable()))
+                .collect::<Vec<_>>();
             let new_schema = Arc::new(Schema::new(fields));
             let batch = RecordBatch::try_new(new_schema, batch.columns().to_vec())
                 .map_err(|e| status!("Error creating record batch with case folded column names", e))?;
             dbg!(&batch);
-            table.execute_upsert(batch).await.map_err(|e| status!("Error executing upsert", e))?;
+            table
+                .execute_upsert(batch)
+                .await
+                .map_err(|e| status!("Error executing upsert", e))?;
         }
 
         Ok(row_count)
-    }
-    
-    async fn get_flight_info_tables(
-        &self,
-        query: CommandGetTables,
-        request: Request<FlightDescriptor>,
-    ) -> Result<Response<FlightInfo>, Status> {
-        // let CommandGetTables { catalog, db_schema_filter_pattern, table_name_filter_pattern, table_types, include_schema } = query;
-        info!("get_flight_info_tables - catalog: {:?}", query);
-        
-        let ctx = self.get_ctx(&request)?;
-        let data = self.tables(ctx).await;
-        let schema = data.schema();
-
-
-        let uuid = Uuid::new_v4().hyphenated().to_string();
-
-        let ticket = Ticket { 
-            ticket: Command::CommandGetTables(query).into_any().encode_to_vec().into() 
-        };
-
-        let info = FlightInfo::new()
-            // Encode the Arrow schema
-            .try_with_schema(&schema)
-            .expect("encoding failed")
-            .with_endpoint(FlightEndpoint::new().with_ticket(ticket))
-            .with_descriptor(FlightDescriptor {
-                r#type: DescriptorType::Cmd.into(),
-                cmd: Default::default(),
-                path: vec![],
-            });
-        let resp = Response::new(info);
-        Ok(resp)
-    }
-
-    async fn do_get_tables(
-        &self,
-        query: CommandGetTables,
-        request: Request<Ticket>,
-    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
-        let table_names = self.get_metadata_client().get_all_table_name_id_by_namespace(query.catalog()).await
-            .map_err(lakesoul_metadata_error_to_status)?;
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("catalog_name", DataType::Utf8, false),
-            Field::new("db_schema_name", DataType::Utf8, false),
-            Field::new("table_name", DataType::Utf8, false),
-            Field::new("table_type", DataType::Utf8, false),
-        ]));
-        let data: Vec<ArrayRef> = vec![
-            Arc::new(StringArray::from(vec![String::from("lakesoul");table_names.len()])), 
-            Arc::new(StringArray::from(table_names.iter().map(|n| n.table_namespace.clone()).collect::<Vec<String>>())),
-            Arc::new(StringArray::from(table_names.iter().map(|n| n.table_name.clone()).collect::<Vec<String>>())),
-            Arc::new(StringArray::from(vec![String::from("BaseTable");table_names.len()]))
-        ];
-        let data = RecordBatch::try_new(
-            schema.clone(), 
-            data)
-            .map_err(|e| Status::internal(format!("Error creating record batch: {e}")))?;
-
-        let stream = FlightDataEncoderBuilder::new()
-            .with_schema(schema)
-            .build(futures::stream::iter(vec![Ok(data)]))
-            .map_err(|e| Status::internal(format!("Error creating flight data encoder: {e}")));
-        Ok(Response::new(Box::pin(stream)))
-    }
-
-    async fn get_flight_info_schemas(
-        &self,
-        query: CommandGetDbSchemas,
-        request: Request<FlightDescriptor>,
-    ) -> Result<Response<FlightInfo>, Status> {
-        info!("get_flight_info_schemas - catalog: {:?}, schema: {:?}", 
-            query.catalog, query.db_schema_filter_pattern());
-        let ctx = self.get_ctx(&request)?;
-        
-        // 执行查询获取所有schema
-        // 修改 schema 使 catalog_name 可空
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("catalog_name", DataType::Utf8, true),     // 设置 nullable=true
-            Field::new("db_schema_name", DataType::Utf8, false)
-        ]));
-
-        
-        let ticket = Ticket { 
-            ticket: Command::CommandGetDbSchemas(query).into_any().encode_to_vec().into() 
-        };
-
-        let info = FlightInfo::new()
-            .try_with_schema(&schema)
-            .expect("encoding failed")
-            .with_endpoint(FlightEndpoint::new().with_ticket(ticket))
-            .with_descriptor(FlightDescriptor {
-                r#type: DescriptorType::Cmd.into(),
-                cmd: Default::default(),
-                path: vec![],
-            });
-            
-        Ok(Response::new(info))
-    }
-
-    async fn do_get_schemas(
-        &self,
-        query: CommandGetDbSchemas,
-        request: Request<Ticket>,
-    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
-        let CommandGetDbSchemas { catalog, db_schema_filter_pattern } = query;
-        info!("do_get_schemas - catalog: {:?}, schema: {:?}", catalog, db_schema_filter_pattern);
-        
-        let namespaces = self.get_metadata_client().get_all_namespace().await
-            .map_err(lakesoul_metadata_error_to_status)?;
-        let data: Vec<ArrayRef> = vec![
-            Arc::new(StringArray::from(vec![String::from("lakesoul");namespaces.len()])), 
-            Arc::new(StringArray::from(namespaces.iter().map(|n| n.namespace.clone()).collect::<Vec<String>>()))
-        ];
-        
-        // 修改 schema 使 catalog_name 可空
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("catalog_name", DataType::Utf8, true),     // 设置 nullable=true
-            Field::new("db_schema_name", DataType::Utf8, false)
-        ]));
-        
-        // 使用新的 schema 创建新的 RecordBatch
-        let data = RecordBatch::try_new(
-            schema.clone(),
-            data
-        ).map_err(|e| Status::internal(format!("Error creating record batch: {e}")))?;
-
-        let stream = FlightDataEncoderBuilder::new()
-            .with_schema(schema)
-            .build(futures::stream::iter(vec![Ok(data)]))
-            .map_err(|e| Status::internal(format!("Error creating flight data encoder: {e}")));
-
-        Ok(Response::new(Box::pin(stream)))
-    }
-
-
-    async fn get_flight_info_primary_keys(
-        &self,
-        query: CommandGetPrimaryKeys,
-        request: Request<FlightDescriptor>,
-    ) -> Result<Response<FlightInfo>, Status> {
-        info!("get_flight_info_primary_keys - catalog: {:?}, schema: {:?}, table: {:?}", 
-            query.catalog, query.db_schema, query.table);
-        let table_info = self
-            .get_metadata_client()
-            .get_table_info_by_table_name(&query.table, query.db_schema())
-            .await
-            .map_err(lakesoul_metadata_error_to_status)?;
-        let schema = schema_from_metadata_str(&table_info.table_schema);
-        let ticket = Ticket { 
-            ticket: Command::CommandGetPrimaryKeys(query).into_any().encode_to_vec().into() 
-        };
-
-        let info = FlightInfo::new()
-            .try_with_schema(&schema)
-            .expect("encoding failed")
-            .with_endpoint(FlightEndpoint::new().with_ticket(ticket))
-            .with_descriptor(FlightDescriptor {
-                r#type: DescriptorType::Cmd.into(),
-                cmd: Default::default(),
-                path: vec![],
-            });
-        Ok(Response::new(info))
-    }
-
-    async fn do_get_primary_keys(
-        &self,
-        query: CommandGetPrimaryKeys,
-        request: Request<Ticket>,
-    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
-        info!("do_get_primary_keys - catalog: {:?}, schema: {:?}, table: {:?}", 
-            query.catalog, query.db_schema, query.table);
-        Ok(Response::new(Box::pin(futures::stream::iter(vec![]))))
     }
 
     async fn do_action_create_prepared_statement(
@@ -564,10 +726,8 @@ impl FlightSqlService for FlightSqlServiceImpl {
         info!("do_action_create_prepared_statement: {normalized_query}");
 
         let ctx = self.get_ctx(&request)?;
-        
-        let plan = ctx
-            .sql(&normalized_query)
-            .await;
+
+        let plan = ctx.sql(&normalized_query).await;
         // dbg!(&plan);
         let plan = plan
             .and_then(|df| df.into_optimized_plan())
@@ -577,11 +737,10 @@ impl FlightSqlService for FlightSqlServiceImpl {
         // store a copy of the plan,  it will be used for execution
         let plan_uuid = Uuid::new_v4().hyphenated().to_string();
         // let plan_uuid = "debug_uuid".to_string();
-        
+
         let plan_schema = plan.schema();
 
         self.statements.insert(plan_uuid.clone(), plan.clone());
-
 
         let arrow_schema = (&**plan_schema).into();
         let message = SchemaAsIpc::new(&arrow_schema, &IpcWriteOptions::default())
@@ -604,15 +763,15 @@ impl FlightSqlService for FlightSqlServiceImpl {
         Ok(res)
     }
 
-    
-
     async fn do_action_close_prepared_statement(
         &self,
         handle: ActionClosePreparedStatementRequest,
         _request: Request<Action>,
     ) -> Result<(), Status> {
-        info!("do_action_close_prepared_statement - handle: {:?}",
-            std::str::from_utf8(&handle.prepared_statement_handle).unwrap_or("invalid utf8"));
+        info!(
+            "do_action_close_prepared_statement - handle: {:?}",
+            std::str::from_utf8(&handle.prepared_statement_handle).unwrap_or("invalid utf8")
+        );
         dbg!(&handle);
         let handle = std::str::from_utf8(&handle.prepared_statement_handle);
         if let Ok(handle) = handle {
@@ -622,106 +781,6 @@ impl FlightSqlService for FlightSqlServiceImpl {
         Ok(())
     }
 
-    /// Get a FlightInfo for listing catalogs.
-    async fn get_flight_info_catalogs(
-        &self,
-        cmd: CommandGetCatalogs,
-        request: Request<FlightDescriptor>,
-    ) -> Result<Response<FlightInfo>, Status> {
-        info!("get_flight_info_catalogs");
-        // dbg!(&query, &request);
-        let ctx = self.get_ctx(&request)?;
-
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("catalog_name", DataType::Utf8, false),
-        ]));
-
-        let handle = Uuid::new_v4().hyphenated().to_string();
-        let catalogs = ctx.catalog_names();
-        let array = StringArray::from(catalogs);
-        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(array)])
-            .map_err(|e| status!("Error creating record batch", e))?;
-
-
-        let ticket = Ticket {
-            ticket: Command::CommandGetCatalogs(cmd).into_any().encode_to_vec().into(),
-        };
-
-        let endpoint = FlightEndpoint::new().with_ticket(ticket);
-
-        let flight_info = FlightInfo::new()
-            .try_with_schema(schema.as_ref())
-            .expect("encoding failed")
-            .with_endpoint(endpoint);
-
-        Ok(Response::new(flight_info))
-    }
-
-    async fn do_put_statement_ingest(
-        &self,
-        cmd: CommandStatementIngest,
-        request: Request<PeekableFlightDataStream>,
-    ) -> Result<i64, Status> {
-        let CommandStatementIngest { table_definition_options, table, schema, catalog, temporary, transaction_id, options } = cmd;
-        info!("do_put_statement_ingest: table: {table}, schema: {schema:?}, catalog: {catalog:?}, temporary: {temporary}, transaction_id: {transaction_id:?}, options: {options:?} table_definition_options: {table_definition_options:?}");
-
-        // 获取 session context
-        let ctx = self.get_ctx(&request)?;
-        // 获取输入流
-        let mut stream = request.into_inner();
-        
-        // 获取第一条息,它应该包含 schema 信息
-        // The first message contains the flight descriptor and the schema.
-        // Read the flight descriptor without discarding the schema:
-        let flight_descriptor: FlightDescriptor = stream
-            .peek()
-            .await
-            .cloned()
-            .transpose()?
-            .and_then(|data| data.flight_descriptor)
-            .expect("first message should contain flight descriptor");
-            
-        
-        // 创建 LakeSoulTable
-        let table = LakeSoulTable::for_namespace_and_name(schema.unwrap_or("default".to_string()).as_str(), &table)
-            .await
-            .map_err(|e| Status::internal(format!("Error creating table: {}", e)))?;
-
-        let mut writer = table.get_writer().await.map_err(lakesoul_error_to_status)?;
-        
-        // 创建 FlightRecordBatchStream 来解码数据
-        let mut batch_stream = FlightRecordBatchStream::new_from_flight_data(
-            stream.map_err(|e| e.into())
-        );
-
-        // 记录处理的记录数
-        let mut record_count = 0i64;
-
-        
-        // 处理每个批次
-        while let Some(batch) = batch_stream.try_next().await
-            .map_err(|e| Status::internal(format!("Error getting next batch: {}", e)))? 
-        {
-            // 累加记录数
-            record_count += batch.num_rows() as i64;
-            // 这里可以添加实际的数据导入逻辑
-            // 例如写入数据库等
-            info!("batch num_rows: {:?}", batch.num_rows());
-            writer.write_record_batch(batch).await.map_err(datafusion_error_to_status)?;
-        }
-        let result = writer.flush_and_close().await.map_err(datafusion_error_to_status)?;
-        if let Some(transaction_id) = transaction_id {
-            // Convert Bytes to String before passing to append_transactional_data
-            let transaction_id = String::from_utf8(transaction_id.to_vec())
-                .map_err(|e| Status::internal(format!("Invalid transaction ID: {}", e)))?;
-            self.append_transactional_data(transaction_id, Arc::new(table), result)?;
-        } else {
-            table.commit_flush_result(result).await.map_err(lakesoul_error_to_status)?;
-        }
-
-        Ok(record_count)
-    }
-
     async fn do_action_begin_transaction(
         &self,
         query: ActionBeginTransactionRequest,
@@ -729,7 +788,9 @@ impl FlightSqlService for FlightSqlServiceImpl {
     ) -> Result<ActionBeginTransactionResult, Status> {
         let transaction_id = Uuid::new_v4().hyphenated().to_string();
         info!("do_action_begin_transaction - transaction_id: {:?}", transaction_id);
-        Ok(ActionBeginTransactionResult { transaction_id: transaction_id.into() })
+        Ok(ActionBeginTransactionResult {
+            transaction_id: transaction_id.into(),
+        })
     }
 
     async fn do_action_end_transaction(
@@ -738,23 +799,24 @@ impl FlightSqlService for FlightSqlServiceImpl {
         request: Request<Action>,
     ) -> Result<(), Status> {
         let ActionEndTransactionRequest { transaction_id, action } = query;
-        info!("do_action_end_transaction - transaction_id: {:?}, action: {:?}", transaction_id, action);
+        info!(
+            "do_action_end_transaction - transaction_id: {:?}, action: {:?}",
+            transaction_id, action
+        );
         let transaction_id = String::from_utf8(transaction_id.to_vec())
             .map_err(|e| Status::internal(format!("Invalid transaction ID: {}", e)))?;
         match action {
-            1 => {
-                self.commit_transactional_data(transaction_id).await
-            }
-            2 => {
-                self.clear_transactional_data(transaction_id)
-            }
+            1 => self.commit_transactional_data(transaction_id).await,
+            2 => self.clear_transactional_data(transaction_id),
             _ => {
                 return Err(Status::internal("Invalid action"));
             }
         }
     }
 
-
+    async fn register_sql_info(&self, id: i32, result: &SqlInfo) {
+        info!("register_sql_info - id: {}", id);
+    }
 }
 
 // 独立的函数，用于转换占位符
@@ -762,7 +824,7 @@ fn convert_placeholders(query: &str) -> String {
     let mut result = String::new();
     let mut param_count = 1;
     let mut chars = query.chars().peekable();
-    
+
     while let Some(c) = chars.next() {
         if c == '?' {
             result.push('$');
@@ -777,20 +839,21 @@ fn convert_placeholders(query: &str) -> String {
 
 fn normalize_sql(sql: &str) -> Result<String, Status> {
     let sql = convert_placeholders(sql);
-    let statements = DFParser::parse_sql(&sql)
-        .map_err(|e| status!("Error parsing SQL", e))?;
-    
+    let statements = DFParser::parse_sql(&sql).map_err(|e| status!("Error parsing SQL", e))?;
+
     if let Some(Statement::Statement(stmt)) = statements.front() {
         // info!("stmt: {:?}", stmt);
         match stmt.as_ref() {
-            datafusion::sql::sqlparser::ast::Statement::CreateTable(CreateTable { name, columns, .. }) => {
-                Ok(format!(
-                    "CREATE EXTERNAL TABLE {} ({}) STORED AS LAKESOUL LOCATION ''", 
-                    name, 
-                    columns.iter().map(|c| c.to_string()).collect::<Vec<String>>().join(", ")
-                ))
-            }
-            _ => Ok(sql.to_string())
+            datafusion::sql::sqlparser::ast::Statement::CreateTable(CreateTable { name, columns, .. }) => Ok(format!(
+                "CREATE EXTERNAL TABLE {} ({}) STORED AS LAKESOUL LOCATION ''",
+                name,
+                columns
+                    .iter()
+                    .map(|c| c.to_string())
+                    .collect::<Vec<String>>()
+                    .join(", ")
+            )),
+            _ => Ok(sql.to_string()),
         }
     } else {
         Ok(sql.to_string())
@@ -809,7 +872,7 @@ impl FlightSqlServiceImpl {
 
     pub async fn init(&self) -> Result<(), Status> {
         self.create_ctx().await?;
-        
+
         Ok(())
     }
 
@@ -830,11 +893,12 @@ impl FlightSqlServiceImpl {
 
         let planner = LakeSoulQueryPlanner::new_ref();
 
-        let mut state = SessionState::new_with_config_rt(
-            session_config,
-            Arc::new(RuntimeEnv::default()),
-        ).with_query_planner(planner);
-        state.table_factories_mut().insert("LAKESOUL".to_string(), Arc::new(LakeSoulTableProviderFactory::new(self.get_metadata_client())));
+        let mut state = SessionState::new_with_config_rt(session_config, Arc::new(RuntimeEnv::default()))
+            .with_query_planner(planner);
+        state.table_factories_mut().insert(
+            "LAKESOUL".to_string(),
+            Arc::new(LakeSoulTableProviderFactory::new(self.get_metadata_client())),
+        );
         let ctx = Arc::new(SessionContext::new_with_state(state));
 
         let catalog = Arc::new(LakeSoulCatalog::new(self.client.clone(), ctx.clone()));
@@ -844,15 +908,12 @@ impl FlightSqlServiceImpl {
         //     Arc::new(S3FileSystem::new())
         // );
         let file_url = Url::parse("file://").unwrap();
-        ctx.runtime_env().register_object_store(
-            &file_url,
-            Arc::new(LocalFileSystem::new())
-        );
+        ctx.runtime_env()
+            .register_object_store(&file_url, Arc::new(LocalFileSystem::new()));
 
-        ctx.state().catalog_list().register_catalog(
-            "LAKESOUL".to_string(), 
-            catalog
-        );        
+        ctx.state()
+            .catalog_list()
+            .register_catalog("LAKESOUL".to_string(), catalog);
 
         ctx.sql("CREATE EXTERNAL TABLE lakesoul_test_table (name STRING, id INT PRIMARY KEY, score FLOAT) STORED AS LAKESOUL LOCATION ''")
             .await.map_err(|e| {
@@ -890,9 +951,7 @@ impl FlightSqlServiceImpl {
         if let Some(context) = self.contexts.get(&auth) {
             Ok(context.clone())
         } else {
-            Err(Status::internal(format!(
-                "Context handle not found: {auth}"
-            )))?
+            Err(Status::internal(format!("Context handle not found: {auth}")))?
         }
     }
 
@@ -906,17 +965,15 @@ impl FlightSqlServiceImpl {
         }
     }
 
-
-
     async fn tables(&self, ctx: Arc<SessionContext>) -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![
             Field::new("catalog_name", DataType::Utf8, true),
-            Field::new("db_schema_name", DataType::Utf8, true), 
+            Field::new("db_schema_name", DataType::Utf8, true),
             Field::new("table_name", DataType::Utf8, false),
             Field::new("table_type", DataType::Utf8, false),
             Field::new("table_schema", DataType::Binary, false),
         ]));
-        
+
         let mut catalogs = vec![];
         let mut schemas = vec![];
         let mut names = vec![];
@@ -931,12 +988,12 @@ impl FlightSqlServiceImpl {
                 for table in schema_provider.table_names() {
                     let table_provider = schema_provider.table(&table).await.unwrap().unwrap();
                     let table_schema = table_provider.schema();
-                    
+
                     let message = SchemaAsIpc::new(&table_schema, &IpcWriteOptions::default())
                         .try_into()
                         .unwrap();
                     let IpcMessage(schema_bytes) = message;
-                    
+
                     catalogs.push(catalog.clone());
                     schemas.push(schema.clone());
                     names.push(table.clone());
@@ -958,7 +1015,7 @@ impl FlightSqlServiceImpl {
             Arc::new(StringArray::from(schemas)),
             Arc::new(StringArray::from(names)),
             Arc::new(StringArray::from(types)),
-            Arc::new(binary_array)
+            Arc::new(binary_array),
         ];
 
         RecordBatch::try_new(schema, arrays).unwrap()
@@ -969,12 +1026,16 @@ impl FlightSqlServiceImpl {
         Ok(())
     }
 
-
     fn get_metadata_client(&self) -> MetaDataClientRef {
         self.client.clone()
     }
 
-    fn append_transactional_data(&self, transaction_id: String, table: Arc<LakeSoulTable>, result: WriterFlushResult) -> Result<(), Status> {
+    fn append_transactional_data(
+        &self,
+        transaction_id: String,
+        table: Arc<LakeSoulTable>,
+        result: WriterFlushResult,
+    ) -> Result<(), Status> {
         info!("Appending transactional data for transaction: {}", transaction_id);
         self.transactional_data.insert(transaction_id, (table, result));
         Ok(())
@@ -989,12 +1050,12 @@ impl FlightSqlServiceImpl {
         // Get returns a Ref, so we need to dereference it to get the tuple
         if let Some(ref_data) = self.transactional_data.get(&transaction_id) {
             let (table, result) = &*ref_data; // Dereference the Ref to get the tuple
-            table.commit_flush_result(result.clone()).await.map_err(lakesoul_error_to_status)?;
+            table
+                .commit_flush_result(result.clone())
+                .await
+                .map_err(lakesoul_error_to_status)?;
         }
         self.clear_transactional_data(transaction_id)?;
         Ok(())
     }
-
 }
-
-

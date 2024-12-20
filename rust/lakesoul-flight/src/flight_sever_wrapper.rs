@@ -1,16 +1,24 @@
-use std::{future::Future, pin::Pin, sync::Arc, task::{Context, Poll}};
 use arrow::error::ArrowError;
-use arrow_flight::{flight_descriptor::{self, DescriptorType}, flight_service_server::{FlightService, FlightServiceServer}, sql::{Any, Command}, SchemaAsIpc};
 use arrow_flight::sql::server::FlightSqlService;
-use lakesoul_datafusion::serialize::arrow_java::schema_from_metadata_str;
-use log::info;
-use tonic::{body::BoxBody, codec::EnabledCompressionEncodings, codegen::Service, server::NamedService, transport::Body, Response};
-use tonic::codegen::{StdError, BoxFuture};
+use arrow_flight::{
+    flight_service_server::{FlightService, FlightServiceServer},
+    sql::{Any, Command},
+    SchemaAsIpc,
+};
 use http::Request;
-use prost::Message;
+use lakesoul_datafusion::serialize::arrow_java::schema_from_metadata_str;
 use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
+use prost::Message;
+use std::{
+    task::{Context, Poll},
+};
+use tonic::codegen::{BoxFuture, StdError};
+use tonic::{
+    body::BoxBody, codec::EnabledCompressionEncodings, codegen::Service, server::NamedService, transport::Body,
+    Response,
+};
 
-use crate::{decode_error_to_status, arrow_error_to_status};
+use crate::{arrow_error_to_status, decode_error_to_status};
 
 #[derive(Debug)]
 pub struct FlightServiceServerWrapper<T: FlightService> {
@@ -35,7 +43,7 @@ impl<T: FlightService> FlightServiceServerWrapper<T> {
     }
 }
 
-impl<T, B> tonic::codegen::Service<http::Request<B>> for FlightServiceServerWrapper<T> 
+impl<T, B> tonic::codegen::Service<http::Request<B>> for FlightServiceServerWrapper<T>
 where
     T: FlightService,
     B: Body + Send + 'static,
@@ -52,17 +60,10 @@ where
         if req.uri().path() == "/arrow.flight.protocol.FlightService/GetSchema" {
             #[allow(non_camel_case_types)]
             struct GetSchemaSvc();
-            impl tonic::server::UnaryService<arrow_flight::FlightDescriptor>
-            for GetSchemaSvc {
+            impl tonic::server::UnaryService<arrow_flight::FlightDescriptor> for GetSchemaSvc {
                 type Response = arrow_flight::SchemaResult;
-                type Future = BoxFuture<
-                    tonic::Response<Self::Response>,
-                    tonic::Status,
-                >;
-                fn call(
-                    &mut self,
-                    request: tonic::Request<arrow_flight::FlightDescriptor>,
-                ) -> Self::Future {
+                type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                fn call(&mut self, request: tonic::Request<arrow_flight::FlightDescriptor>) -> Self::Future {
                     let request = request.into_inner();
                     let fut = async move {
                         // info!("GetSchema request: {:?}", request);
@@ -72,7 +73,7 @@ where
                                     return Err(tonic::Status::invalid_argument("Path not provided"));
                                 }
                                 let table_name = request.path.last().unwrap().to_string();
-                                let namespace = request.path[..request.path.len()-1].join(".");
+                                let namespace = request.path[..request.path.len() - 1].join(".");
                                 let table_info = MetaDataClient::from_env()
                                     .await
                                     .map_err(|e| tonic::Status::internal(e.to_string()))?
@@ -107,7 +108,6 @@ where
                             .map_err(|e: ArrowError| tonic::Status::internal(e.to_string()))?;
 
                         Ok(Response::new(schema_result))
-
                     };
                     Box::pin(fut)
                 }
@@ -120,14 +120,8 @@ where
                 let method = GetSchemaSvc();
                 let codec = tonic::codec::ProstCodec::default();
                 let mut grpc = tonic::server::Grpc::new(codec)
-                    .apply_compression_config(
-                        accept_compression_encodings,
-                        send_compression_encodings,
-                    )
-                    .apply_max_message_size_config(
-                        max_decoding_message_size,
-                        max_encoding_message_size,
-                    );
+                    .apply_compression_config(accept_compression_encodings, send_compression_encodings)
+                    .apply_max_message_size_config(max_decoding_message_size, max_encoding_message_size);
                 let res = grpc.unary(method, req).await;
                 Ok(res)
             };
