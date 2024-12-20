@@ -48,6 +48,7 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator implements SplitEnumerat
     private long startTime;
     private long nextStartTime;
     private int hashBucketNum = -1;
+    String fullTableName;
 
     public LakeSoulAllPartitionDynamicSplitEnumerator(SplitEnumeratorContext<LakeSoulPartitionSplit> context, LakeSoulDynSplitAssigner splitAssigner, RowType rowType, long discoveryInterval, long startTime, String tableId, String hashBucketNum, List<String> partitionColumns, Plan partitionFilters) {
         this.context = context;
@@ -66,6 +67,9 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator implements SplitEnumerat
         this.partitionArrowSchema = new Schema(partitionFields);
         this.partitionFilters = partitionFilters;
         tableInfo = DataOperation.dbManager().getTableInfoByTableId(tableId);
+        fullTableName = tableInfo.getTableNamespace() + "." + tableInfo.getTableName();
+        LOG.info("Create Dyn enumerator for table name {}, tableId {}, context {}",
+                fullTableName, tableId, System.identityHashCode(context));
     }
 
     @Override
