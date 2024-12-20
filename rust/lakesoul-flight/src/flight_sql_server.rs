@@ -55,8 +55,10 @@ use datafusion::execution::context::SessionState;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use lakesoul_datafusion::catalog::lakesoul_catalog::LakeSoulCatalog;
 use object_store::local::LocalFileSystem;
+use tonic::metadata::MetadataMap;
 use url::Url;
 
+use crate::jwt::{Claims, JwtServer};
 use crate::{datafusion_error_to_status, lakesoul_error_to_status, lakesoul_metadata_error_to_status};
 
 macro_rules! status {
@@ -72,6 +74,8 @@ pub struct FlightSqlServiceImpl {
     contexts: Arc<DashMap<String, Arc<SessionContext>>>,
     statements: Arc<DashMap<String, LogicalPlan>>,
     transactional_data: Arc<DashMap<String, TransactionalData>>,
+    jwt_server: Arc<JwtServer>,
+    auth_enabled: bool,
 }
 
 #[tonic::async_trait]
@@ -107,7 +111,8 @@ impl FlightSqlService for FlightSqlServiceImpl {
         cmd: CommandStatementQuery,
         request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
-        info!("get_flight_info_statement - query: {}", cmd.query);
+        self.verify_token(request.metadata())?;
+        info!("get_flight_info_statement - query: {}, claims: {:?}", cmd.query, claims);
         dbg!(&cmd, &request);
         info!("get_flight_info_prepared_statement");
         let sql = &cmd.query;
@@ -155,6 +160,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         cmd: CommandPreparedStatementQuery,
         request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
+        self.verify_token(request.metadata())?;
         info!(
             "get_flight_info_prepared_statement - handle: {:?}",
             std::str::from_utf8(&cmd.prepared_statement_handle).unwrap_or("invalid utf8")
@@ -205,16 +211,10 @@ impl FlightSqlService for FlightSqlServiceImpl {
         request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
         info!("get_flight_info_catalogs");
-        // dbg!(&query, &request);
+        self.verify_token(request.metadata())?;
         let ctx = self.get_ctx(&request)?;
 
         let schema = Arc::new(Schema::new(vec![Field::new("catalog_name", DataType::Utf8, false)]));
-
-        let handle = Uuid::new_v4().hyphenated().to_string();
-        let catalogs = ctx.catalog_names();
-        let array = StringArray::from(catalogs);
-        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(array)])
-            .map_err(|e| status!("Error creating record batch", e))?;
 
         let ticket = Ticket {
             ticket: Command::CommandGetCatalogs(cmd).into_any().encode_to_vec().into(),
@@ -235,12 +235,12 @@ impl FlightSqlService for FlightSqlServiceImpl {
         query: CommandGetDbSchemas,
         request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
+        self.verify_token(request.metadata())?;
         info!(
             "get_flight_info_schemas - catalog: {:?}, schema: {:?}",
             query.catalog,
             query.db_schema_filter_pattern()
         );
-        let ctx = self.get_ctx(&request)?;
 
         // 执行查询获取所有schema
         // 修改 schema 使 catalog_name 可空
@@ -271,14 +271,12 @@ impl FlightSqlService for FlightSqlServiceImpl {
         query: CommandGetTables,
         request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
-        // let CommandGetTables { catalog, db_schema_filter_pattern, table_name_filter_pattern, table_types, include_schema } = query;
+        self.verify_token(request.metadata())?;
         info!("get_flight_info_tables - catalog: {:?}", query);
 
         let ctx = self.get_ctx(&request)?;
         let data = self.tables(ctx).await;
         let schema = data.schema();
-
-        let uuid = Uuid::new_v4().hyphenated().to_string();
 
         let ticket = Ticket {
             ticket: Command::CommandGetTables(query).into_any().encode_to_vec().into(),
@@ -298,55 +296,12 @@ impl FlightSqlService for FlightSqlServiceImpl {
         Ok(resp)
     }
 
-    // async fn do_get_fallback(
-    //     &self,
-    //     request: Request<Ticket>,
-    //     message: Any
-    // ) -> Result<Response<BoxStream<'static, Result<FlightData, Status>>>, Status> {
-    //     info!("do_get_fallback - message type: {}", message.type_url);
-    //     if !message.is::<FetchResults>() {
-    //         Err(Status::unimplemented(format!(
-    //             "do_get: The defined request is invalid: {}",
-    //             message.type_url
-    //         )))?
-    //     }
-
-    //     let fr: FetchResults = message
-    //         .unpack()
-    //         .map_err(|e| Status::internal(format!("{e:?}")))?
-    //         .ok_or_else(|| Status::internal("Expected FetchResults but got None!"))?;
-
-    //     let handle = fr.handle;
-
-    //     // 获上下文和计划
-    //     let ctx = self.get_ctx(&request)?;
-    //     let plan = self.get_plan(&handle)?;
-
-    //     // 直接执行计划
-    //     let state = ctx.state();
-    //     let df = DataFrame::new(state, plan);
-    //     let schema = Arc::new(df.schema().clone().into());
-    //     let stream = df.execute_stream().await
-    //         .map_err(|e| status!("Error executing query", e))?
-    //         .map(|batch| {
-    //             let batch = batch.map_err(|e| status!("Error executing query", e))?;
-
-    //             Ok(batch)
-    //         });
-
-    //     let stream = FlightDataEncoderBuilder::new()
-    //         .with_schema(schema)
-    //         .build(stream)
-    //         .map_err(Status::from);
-
-    //     Ok(Response::new(Box::pin(stream)))
-    // }
-
     async fn get_flight_info_primary_keys(
         &self,
         query: CommandGetPrimaryKeys,
         request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
+        self.verify_token(request.metadata())?;
         info!(
             "get_flight_info_primary_keys - catalog: {:?}, schema: {:?}, table: {:?}",
             query.catalog, query.db_schema, query.table
@@ -378,6 +333,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         query: TicketStatementQuery,
         request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        self.verify_token(request.metadata())?;
         info!("do_get_statement - query: {:?}", query.statement_handle);
         let sql = std::str::from_utf8(&query.statement_handle).map_err(|e| status!("Unable to parse uuid", e))?;
         let ctx = self.get_ctx(&request)?;
@@ -403,6 +359,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         query: CommandPreparedStatementQuery,
         request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        self.verify_token(request.metadata())?;
         info!(
             "do_get_prepared_statement - handle: {:?}",
             std::str::from_utf8(&query.prepared_statement_handle).unwrap_or("invalid utf8")
@@ -435,6 +392,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         query: CommandGetDbSchemas,
         request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        self.verify_token(request.metadata())?;
         let CommandGetDbSchemas {
             catalog,
             db_schema_filter_pattern,
@@ -479,6 +437,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         query: CommandGetTables,
         request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        self.verify_token(request.metadata())?;
         let table_names = self
             .get_metadata_client()
             .get_all_table_name_id_by_namespace(query.catalog())
@@ -521,6 +480,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         query: CommandGetPrimaryKeys,
         request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        self.verify_token(request.metadata())?;
         info!(
             "do_get_primary_keys - catalog: {:?}, schema: {:?}, table: {:?}",
             query.catalog, query.db_schema, query.table
@@ -533,6 +493,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         query: CommandStatementUpdate,
         request: Request<PeekableFlightDataStream>,
     ) -> Result<i64, Status> {
+        self.verify_token(request.metadata())?;
         info!("do_put_statement_update - query: {}", query.query);
         dbg!(&query);
         let sql = &query.query;
@@ -551,6 +512,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         cmd: CommandStatementIngest,
         request: Request<PeekableFlightDataStream>,
     ) -> Result<i64, Status> {
+        self.verify_token(request.metadata())?;
         let CommandStatementIngest {
             table_definition_options,
             table,
@@ -628,6 +590,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         query: CommandPreparedStatementQuery,
         request: Request<PeekableFlightDataStream>,
     ) -> Result<DoPutPreparedStatementResult, Status> {
+        self.verify_token(request.metadata())?;
         info!(
             "do_put_prepared_statement_query - handle: {:?}",
             std::str::from_utf8(&query.prepared_statement_handle).unwrap_or("invalid utf8")
@@ -646,6 +609,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         query: CommandPreparedStatementUpdate,
         request: Request<PeekableFlightDataStream>,
     ) -> Result<i64, Status> {
+        self.verify_token(request.metadata())?;
         info!(
             "do_put_prepared_statement_update - handle: {:?}",
             std::str::from_utf8(&query.prepared_statement_handle).unwrap_or("invalid utf8")
@@ -718,6 +682,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         query: ActionCreatePreparedStatementRequest,
         request: Request<Action>,
     ) -> Result<ActionCreatePreparedStatementResult, Status> {
+        self.verify_token(request.metadata())?;
         info!("do_action_create_prepared_statement - query: {}", query.query);
         // dbg!(&query, &request);
         let user_query = query.query.as_str();
@@ -768,6 +733,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         handle: ActionClosePreparedStatementRequest,
         _request: Request<Action>,
     ) -> Result<(), Status> {
+        self.verify_token(request.metadata())?;
         info!(
             "do_action_close_prepared_statement - handle: {:?}",
             std::str::from_utf8(&handle.prepared_statement_handle).unwrap_or("invalid utf8")
@@ -786,6 +752,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         query: ActionBeginTransactionRequest,
         request: Request<Action>,
     ) -> Result<ActionBeginTransactionResult, Status> {
+        self.verify_token(request.metadata())?;
         let transaction_id = Uuid::new_v4().hyphenated().to_string();
         info!("do_action_begin_transaction - transaction_id: {:?}", transaction_id);
         Ok(ActionBeginTransactionResult {
@@ -798,6 +765,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         query: ActionEndTransactionRequest,
         request: Request<Action>,
     ) -> Result<(), Status> {
+        self.verify_token(request.metadata())?;
         let ActionEndTransactionRequest { transaction_id, action } = query;
         info!(
             "do_action_end_transaction - transaction_id: {:?}, action: {:?}",
@@ -862,11 +830,19 @@ fn normalize_sql(sql: &str) -> Result<String, Status> {
 
 impl FlightSqlServiceImpl {
     pub async fn new(metadata_client: MetaDataClientRef) -> Result<Self> {
+        let secret = metadata_client.get_client_secret();
+        let jwt_server = Arc::new(JwtServer::new(secret.as_str()));
+        let auth_enabled = std::env::var("JWT_AUTH_ENABLED")
+            .unwrap_or("false".to_string())
+            .parse::<bool>()
+            .unwrap();
         Ok(FlightSqlServiceImpl {
             client: metadata_client,
             contexts: Default::default(),
             statements: Default::default(),
             transactional_data: Default::default(),
+            jwt_server,
+            auth_enabled,
         })
     }
 
@@ -1056,6 +1032,39 @@ impl FlightSqlServiceImpl {
                 .map_err(lakesoul_error_to_status)?;
         }
         self.clear_transactional_data(transaction_id)?;
+        Ok(())
+    }
+
+    pub fn get_jwt_server(&self) -> Arc<JwtServer> {
+        self.jwt_server.clone()
+    }
+
+    fn verify_token(&self, metadata: &MetadataMap) -> Result<(), Status> {
+        if !self.auth_enabled {
+            return Ok(())
+        }
+        let authorization = metadata
+            .get("Authorization")
+            .ok_or(Status::permission_denied("Missing authorization header"))?;
+        info!("Verifying token header {:?}", authorization);
+        let token = authorization
+            .to_str()
+            .map_err(|e| Status::permission_denied(format!("Invalid authorization header: {e}")))?;
+        if token.len() < 8 || !token.starts_with("Bearer ") {
+            return Err(Status::permission_denied(format!(
+                "Invalid authorization token: {token}"
+            )));
+        }
+        let token = token.trim_start_matches("Bearer ");
+        if token.is_empty() {
+            return Err(Status::permission_denied(format!(
+                "Invalid authorization token: {token}"
+            )));
+        }
+        let _ = self
+            .jwt_server
+            .decode_token(token)
+            .map_err(|e| Status::permission_denied(format!("Invalid authorization token: {e}")))?;
         Ok(())
     }
 }

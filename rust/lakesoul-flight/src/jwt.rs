@@ -3,13 +3,13 @@ use serde::{Deserialize, Serialize};
 
 /// Our claims struct, it needs to derive `Serialize` and/or `Deserialize`
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct Claims {
+pub struct Claims {
     pub sub: String,
     pub group: String,
     pub exp: usize,
 }
 
-pub(crate) struct JwtServer {
+pub struct JwtServer {
     encoding_key: EncodingKey,
     decoding_key: DecodingKey,
 }
@@ -22,7 +22,7 @@ impl JwtServer {
         }
     }
 
-    pub(crate) fn create_token(&self, claims: Claims) -> Result<String, jsonwebtoken::errors::Error> {
+    pub fn create_token(&self, claims: &Claims) -> Result<String, jsonwebtoken::errors::Error> {
         encode(
             &Header::default(),
             &claims,
@@ -30,7 +30,7 @@ impl JwtServer {
         )
     }
 
-    pub(crate) fn decode_token(&self, token: &str) -> Result<Claims, jsonwebtoken::errors::Error> {
+    pub fn decode_token(&self, token: &str) -> Result<Claims, jsonwebtoken::errors::Error> {
         let data = decode::<Claims>(
             &token,
             &self.decoding_key,

@@ -1,14 +1,40 @@
+mod token_codec;
+
 use std::sync::Arc;
 
 use log::info;
 use tonic::transport::Server;
-use tonic::Status;
+use tonic::{Request, Response, Status};
 
-use lakesoul_flight::{FlightServiceServerWrapper, FlightSqlServiceImpl};
+use lakesoul_flight::{FlightServiceServerWrapper, FlightSqlServiceImpl, JwtServer};
 use lakesoul_metadata::MetaDataClient;
 
 fn to_tonic_err(e: lakesoul_datafusion::LakeSoulError) -> Status {
     Status::internal(format!("{e:?}"))
+}
+
+pub mod token {
+    include!(concat!(env!("OUT_DIR"), "/json.token.TokenServer.rs"));
+}
+use crate::token::token_server_server::TokenServerServer;
+use crate::token_codec::{Claims, TokenResponse};
+use token::token_server_server::TokenServer;
+
+pub struct TokenService {
+    jwt_server: Arc<JwtServer>,
+}
+
+#[tonic::async_trait]
+impl TokenServer for TokenService {
+    async fn create_token(&self, request: Request<Claims>) -> Result<Response<TokenResponse>, Status> {
+        let claims = request.into_inner();
+        let token = self
+            .jwt_server
+            .create_token(&claims)
+            .map_err(|e| Status::internal(format!("Token creation failed: {e:?}")))?;
+        info!("Token created {token:?} for claims {claims:?}");
+        Ok(Response::new(TokenResponse { token }))
+    }
 }
 
 /// This example shows how to wrap DataFusion with `FlightService` to support looking up schema information for
@@ -40,13 +66,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await
         .map_err(to_tonic_err)?;
     service.init().await?;
+    let jwt_server = service.get_jwt_server();
+
+    let token_service = TokenService { jwt_server };
 
     // 使用包装器创建服务
     let svc = FlightServiceServerWrapper::new(service, metadata_client.clone());
 
     info!("Listening on {addr:?}");
 
-    Server::builder().add_service(svc).serve(addr).await?;
+    Server::builder()
+        .add_service(svc)
+        .add_service(TokenServerServer::new(token_service))
+        .serve(addr)
+        .await?;
 
     Ok(())
 }

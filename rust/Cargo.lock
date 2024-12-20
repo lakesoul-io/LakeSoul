@@ -2359,13 +2359,17 @@ dependencies = [
 name = "lakesoul-examples"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "env_logger",
  "lakesoul-datafusion",
  "lakesoul-flight",
  "lakesoul-metadata",
  "log",
+ "serde",
+ "serde_json",
  "tokio",
  "tonic",
+ "tonic-build",
 ]
 
 [[package]]
@@ -4450,6 +4454,20 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
+]
+
+[[package]]
+name = "tonic-build"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9557ce109ea773b399c9b9e5dca39294110b74f1f342cb347a80d1fce8c26a11"
+dependencies = [
+ "prettyplease",
+ "proc-macro2",
+ "prost-build",
+ "prost-types",
+ "quote",
+ "syn 2.0.90",
 ]
 
 [[package]]

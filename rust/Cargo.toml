@@ -50,6 +50,7 @@ tokio-stream = "0.1.9"
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io", "compat"] }
 tonic = "0.12.3"
+tonic-build = "0.12.3"
 derivative = "2.2.0"
 atomic_refcell = "0.1.8"
 futures = "0.3"

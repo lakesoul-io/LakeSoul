@@ -6,6 +6,7 @@ mod rbac;
 pub use flight_sql_server::FlightSqlServiceImpl;
 use datafusion::error::DataFusionError;
 pub use flight_sever_wrapper::FlightServiceServerWrapper;
+pub use jwt::{JwtServer, Claims};
 
 use lakesoul_metadata::LakeSoulMetaDataError;
 use lakesoul_datafusion::LakeSoulError;
