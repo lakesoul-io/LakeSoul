@@ -14,7 +14,6 @@ tonic = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
 arrow = { workspace = true } 
-proto = { path = "../proto" }
 prost = { workspace = true }
 uuid = { workspace = true }
 dashmap = "5.5.3"
@@ -23,7 +22,9 @@ object_store = { workspace = true }
 log = "0.4"
 url = { workspace = true }
 http = { workspace = true }
-# http-body-util = { workspace = true }
-base64 = "0.22.1"
 jsonwebtoken = {version = "9", default-features = false }
 serde = { workspace = true }
+
+[features]
+hdfs = ["lakesoul-io/hdfs"]
+default = []

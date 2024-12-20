@@ -2359,18 +2359,11 @@ dependencies = [
 name = "lakesoul-examples"
 version = "0.1.0"
 dependencies = [
- "arrow-array",
- "arrow-flight",
- "arrow-ipc",
- "arrow-schema",
- "datafusion",
  "env_logger",
- "futures",
  "lakesoul-datafusion",
  "lakesoul-flight",
  "lakesoul-metadata",
  "log",
- "prost",
  "tokio",
  "tonic",
 ]
@@ -2382,7 +2375,6 @@ dependencies = [
  "arrow",
  "arrow-flight",
  "async-trait",
- "base64 0.22.1",
  "chrono",
  "dashmap 5.5.3",
  "datafusion",
@@ -2395,7 +2387,6 @@ dependencies = [
  "log",
  "object_store",
  "prost",
- "proto",
  "serde",
  "tokio",
  "tonic",
@@ -2428,6 +2419,7 @@ dependencies = [
  "env_logger",
  "futures",
  "half",
+ "hdfs-sys",
  "hdrs",
  "hex",
  "lazy_static",
@@ -2459,7 +2451,6 @@ name = "lakesoul-io-c"
 version = "2.5.0"
 dependencies = [
  "arrow",
- "arrow-buffer",
  "arrow-ipc",
  "bytes",
  "cbindgen",
@@ -2469,8 +2460,6 @@ dependencies = [
  "log",
  "prost",
  "proto",
- "serde",
- "serde_json",
  "tokio",
 ]
 

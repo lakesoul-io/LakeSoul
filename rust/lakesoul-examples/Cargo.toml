@@ -10,13 +10,6 @@ name = "flight_sql_server"
 path = "examples/flight/flight_sql_server.rs"
 
 [dependencies]
-arrow-flight = { workspace = true}
-arrow-ipc = { workspace = true}
-arrow-array = { workspace = true}
-arrow-schema = { workspace = true}
-datafusion = {workspace = true}
-prost = { workspace = true}
-futures = { workspace = true}
 tokio = {workspace = true}
 tonic = {workspace = true}
 lakesoul-datafusion = { path = "../lakesoul-datafusion" }
