@@ -46,7 +46,7 @@ mod tests {
             exp: chrono::Utc::now().checked_add_days(Days::new(1)).unwrap().timestamp() as usize,
         };
         let token = jwt_server
-            .create_token(claims)
+            .create_token(&claims)
             .map_err(|e| LakeSoulError::MetaDataError(LakeSoulMetaDataError::Other(Box::new(e))))?;
         println!("{:?}", token);
         let decoded_claims = jwt_server
