@@ -87,6 +87,8 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator implements SplitEnumerat
         }
         int tasksSize = context.registeredReaders().size();
         if (tasksSize == 0) {
+            LOG.info("handleSplitRequest: Task size is 0 for subtaskId {} for table {}", subtaskId, fullTableName);
+            taskIdsAwaitingSplit.add(subtaskId);
             return;
         }
         Optional<LakeSoulPartitionSplit> nextSplit = this.splitAssigner.getNext(subtaskId, tasksSize);
@@ -138,10 +140,10 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator implements SplitEnumerat
         LOG.info("Process discovered splits {}, taskSize {}, oid {}, tid {}", splits,
                 tasksSize, System.identityHashCode(this),
                 Thread.currentThread().getId());
+        this.splitAssigner.addSplits(splits);
         if (tasksSize == 0) {
             return;
         }
-        this.splitAssigner.addSplits(splits);
         Iterator<Integer> iter = taskIdsAwaitingSplit.iterator();
         while (iter.hasNext()) {
             int taskId = iter.next();
