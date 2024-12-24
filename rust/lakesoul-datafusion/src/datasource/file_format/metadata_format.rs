@@ -402,7 +402,7 @@ impl LakeSoulHashSinkExec {
             );
 
             if !partitioned_writer.contains_key(&partition_desc) {
-                let mut config = create_io_config_builder_from_table_info(table_info.clone())
+                let mut config = create_io_config_builder_from_table_info(table_info.clone(), None)
                     .map_err(|e| DataFusionError::External(Box::new(e)))?
                     .with_files(vec![file_absolute_path])
                     .with_schema(batch_excluding_range.schema())

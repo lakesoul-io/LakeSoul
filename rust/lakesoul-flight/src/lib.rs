@@ -1,11 +1,9 @@
 mod flight_sql_server;
-mod flight_sever_wrapper;
 mod jwt;
 mod rbac;
 
 pub use flight_sql_server::FlightSqlServiceImpl;
 use datafusion::error::DataFusionError;
-pub use flight_sever_wrapper::FlightServiceServerWrapper;
 pub use jwt::{JwtServer, Claims};
 
 use lakesoul_metadata::LakeSoulMetaDataError;

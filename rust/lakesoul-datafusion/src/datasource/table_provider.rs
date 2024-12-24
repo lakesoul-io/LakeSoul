@@ -452,7 +452,7 @@ impl TableProvider for LakeSoulTableProvider {
             keep_partition_by_columns: false,
         };
 
-        let unsorted: Vec<Vec<Expr>> = vec![];
+        let _unsorted: Vec<Vec<Expr>> = vec![];
         // todo: fix this
         let order_requirements = None;
 

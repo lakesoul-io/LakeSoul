@@ -100,7 +100,7 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                         let physical_input = if !lakesoul_table.primary_keys().is_empty()
                             || !lakesoul_table.range_partitions().is_empty()
                         {
-                            let input_schema = physical_input.schema();
+                            let _input_schema = physical_input.schema();
                             let input_dfschema = input.as_ref().schema();
                             let sort_expr = column_names_to_physical_sort_expr(
                                 [

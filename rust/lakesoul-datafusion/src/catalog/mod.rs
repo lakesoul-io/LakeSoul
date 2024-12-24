@@ -84,6 +84,7 @@ pub(crate) async fn create_io_config_builder(
     table_name: Option<&str>,
     fetch_files: bool,
     namespace: &str,
+    options: Option<HashMap<String, String>>,
 ) -> Result<LakeSoulIOConfigBuilder> {
     if let Some(table_name) = table_name {
         let table_info = client.get_table_info_by_table_name(table_name, namespace).await?;
@@ -92,7 +93,7 @@ pub(crate) async fn create_io_config_builder(
         } else {
             vec![]
         };
-        create_io_config_builder_from_table_info(Arc::new(table_info)).map(|builder| builder.with_files(data_files))
+        create_io_config_builder_from_table_info(Arc::new(table_info), options).map(|builder| builder.with_files(data_files))
     } else {
         Ok(LakeSoulIOConfigBuilder::new())
     }

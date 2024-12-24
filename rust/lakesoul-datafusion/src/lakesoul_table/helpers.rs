@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::sync::Arc;
+use std::collections::HashMap;
 
 use arrow::{
     array::{Array, ArrayRef, AsArray, StringBuilder},
@@ -34,15 +35,27 @@ use crate::{
     serialize::arrow_java::schema_from_metadata_str,
 };
 
-pub(crate) fn create_io_config_builder_from_table_info(table_info: Arc<TableInfo>) -> Result<LakeSoulIOConfigBuilder> {
+pub(crate) fn create_io_config_builder_from_table_info(
+    table_info: Arc<TableInfo>,
+    options: Option<HashMap<String, String>>,
+) -> Result<LakeSoulIOConfigBuilder> {
     let (range_partitions, hash_partitions) = parse_table_info_partitions(table_info.partitions.clone())?;
     let properties = serde_json::from_str::<LakeSoulTableProperty>(&table_info.properties)?;
-    Ok(LakeSoulIOConfigBuilder::new()
+    
+    let mut builder = LakeSoulIOConfigBuilder::new()
         .with_schema(schema_from_metadata_str(&table_info.table_schema))
         .with_prefix(table_info.table_path.clone())
         .with_primary_keys(hash_partitions)
         .with_range_partitions(range_partitions)
-        .with_hash_bucket_num(properties.hash_bucket_num.unwrap_or(1)))
+        .with_hash_bucket_num(properties.hash_bucket_num.unwrap_or(1));
+
+    if let Some(opts) = options {
+        for (key, value) in opts {
+            builder = builder.with_option(key, value);
+        }
+    }
+
+    Ok(builder)
 }
 
 pub async fn prune_partitions(

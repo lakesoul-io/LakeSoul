@@ -1,45 +1,32 @@
+use std::sync::Arc;
+use std::pin::Pin;
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::ipc::writer::IpcWriteOptions;
-use arrow::util::pretty::print_batches;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::flight_descriptor::DescriptorType;
-use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
+use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::sql::server::{FlightSqlService, PeekableFlightDataStream};
-use arrow_flight::sql::{
-    ActionBeginSavepointRequest, ActionBeginTransactionRequest, ActionBeginTransactionResult, ActionCancelQueryRequest,
-    ActionClosePreparedStatementRequest, ActionCreatePreparedStatementRequest, ActionCreatePreparedStatementResult,
-    ActionCreatePreparedSubstraitPlanRequest, ActionEndSavepointRequest, ActionEndTransactionRequest, Any, Command,
-    CommandGetCatalogs, CommandGetDbSchemas, CommandGetPrimaryKeys, CommandGetTables, CommandPreparedStatementQuery,
-    CommandPreparedStatementUpdate, CommandStatementIngest, CommandStatementQuery, CommandStatementUpdate,
-    DoPutPreparedStatementResult, DoPutUpdateResult, ProstMessageExt, SqlInfo, TicketStatementQuery,
-};
-use arrow_flight::utils::flight_data_to_arrow_batch;
+use arrow_flight::sql::{ActionBeginTransactionRequest, ActionBeginTransactionResult, ActionClosePreparedStatementRequest, ActionCreatePreparedStatementRequest, ActionCreatePreparedStatementResult, ActionEndTransactionRequest, Command, CommandGetDbSchemas, CommandGetPrimaryKeys, CommandGetTables, CommandPreparedStatementQuery, CommandPreparedStatementUpdate, CommandStatementIngest, CommandStatementQuery, CommandStatementUpdate,  SqlInfo, TicketStatementQuery, DoPutPreparedStatementResult, CommandGetCatalogs};
 use arrow_flight::{
-    Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest,
-    HandshakeResponse, IpcMessage, PutResult, SchemaAsIpc, SchemaResult, Ticket,
+    Action, FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest, HandshakeResponse, IpcMessage, SchemaAsIpc, Ticket
 };
-use datafusion::common::parsers::CompressionTypeVariant;
-use datafusion::datasource::TableProvider;
-use datafusion::sql::parser::{CreateExternalTable, DFParser, Statement};
-use datafusion::sql::sqlparser::ast::{ColumnDef, CreateTable};
+use datafusion::sql::parser::{DFParser, Statement};
+use datafusion::sql::sqlparser::ast::CreateTable;
 use datafusion::sql::TableReference;
-use futures::stream::Peekable;
-use futures::{stream::BoxStream, Stream, StreamExt, TryStreamExt};
+use futures::{Stream, StreamExt, TryStreamExt};
 use lakesoul_datafusion::datasource::table_factory::LakeSoulTableProviderFactory;
 use lakesoul_datafusion::lakesoul_table::helpers::case_fold_column_name;
 use lakesoul_datafusion::lakesoul_table::LakeSoulTable;
 use lakesoul_datafusion::planner::query_planner::LakeSoulQueryPlanner;
-use lakesoul_datafusion::serialize::arrow_java::{schema_from_metadata_str, ArrowJavaSchema};
-use prost::bytes::Bytes;
+use lakesoul_datafusion::serialize::arrow_java::schema_from_metadata_str;
+use lakesoul_io::helpers::get_batch_memory_size;
+use tonic::{Request, Response, Status, metadata::MetadataValue, Streaming};
 use prost::Message;
-use std::collections::HashMap;
-use std::pin::Pin;
-use std::sync::Arc;
-use tonic::{metadata::MetadataValue, Request, Response, Status, Streaming};
 
+
+use lakesoul_metadata::MetaDataClientRef;
 use lakesoul_io::async_writer::WriterFlushResult;
-use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 use uuid::Uuid;
 
 use lakesoul_datafusion::Result;
@@ -47,6 +34,7 @@ use lakesoul_datafusion::Result;
 use arrow::array::{ArrayRef, BinaryArray, Float64Array, Int32Array, Int64Array, ListArray, StringArray};
 use arrow::record_batch::RecordBatch;
 use dashmap::DashMap;
+use datafusion::common::DFSchema;
 use datafusion::logical_expr::{ColumnarValue, DdlStatement, DmlStatement, LogicalPlan, Volatility, WriteOp};
 use datafusion::prelude::*;
 use log::{error, info};
@@ -60,6 +48,13 @@ use url::Url;
 
 use crate::jwt::{Claims, JwtServer};
 use crate::{datafusion_error_to_status, lakesoul_error_to_status, lakesoul_metadata_error_to_status};
+use metrics::{counter, gauge, histogram};
+use std::time::Instant;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::Mutex;
+
+const LOG_INTERVAL: usize = 100; // Log every 100 batches
+const MEGABYTE: f64 = 1_048_576.0;
 
 macro_rules! status {
     ($desc:expr, $err:expr) => {
@@ -74,13 +69,87 @@ pub struct FlightSqlServiceImpl {
     contexts: Arc<DashMap<String, Arc<SessionContext>>>,
     statements: Arc<DashMap<String, LogicalPlan>>,
     transactional_data: Arc<DashMap<String, TransactionalData>>,
+    metrics: Arc<StreamMetrics>,
     jwt_server: Arc<JwtServer>,
     auth_enabled: bool,
+}
+
+struct StreamMetrics {
+    active_streams: AtomicI64,
+    total_bytes: AtomicU64,
+    total_rows: AtomicU64,
+    start_time: Mutex<Option<Instant>>,
+}
+
+impl StreamMetrics {
+    fn new() -> Self {
+        Self {
+            active_streams: AtomicI64::new(0),
+            total_bytes: AtomicU64::new(0),
+            total_rows: AtomicU64::new(0),
+            start_time: Mutex::new(None),
+        }
+    }
+
+    fn start_stream(&self) {
+        counter!("stream_write_total", 1);
+        self.active_streams.fetch_add(1, Ordering::SeqCst);
+        gauge!("stream_write_active_stream", self.active_streams.load(Ordering::SeqCst) as f64);
+        if self.active_streams.load(Ordering::SeqCst) == 1 {
+            let mut start_time = self.start_time.lock().unwrap();
+            if start_time.is_none() {
+                *start_time = Some(Instant::now());
+            }
+        }
+    }
+
+    fn end_stream(&self) {
+        self.add_batch_metrics(0, 0);
+        self.report_metrics("end_stream_write");
+        self.active_streams.fetch_sub(1, Ordering::SeqCst);
+        gauge!("stream_write_active_stream", self.active_streams.load(Ordering::SeqCst) as f64);
+
+        if self.active_streams.load(Ordering::SeqCst) == 0 {
+            let mut start_time = self.start_time.lock().unwrap();
+            *start_time = None;
+            self.total_bytes.store(0, Ordering::SeqCst);
+            self.total_rows.store(0, Ordering::SeqCst);
+        }
+    }
+
+    fn add_batch_metrics(&self, rows: u64, bytes: u64) {
+        self.total_rows.fetch_add(rows, Ordering::SeqCst);
+        self.total_bytes.fetch_add(bytes, Ordering::SeqCst);
+        histogram!("stream_write_rows_of_batch", rows as f64);
+        histogram!("stream_write_bytes_of_batch", bytes as f64 / MEGABYTE);
+        counter!("stream_write_rows_total", rows);
+        counter!("stream_write_bytes_total", bytes);
+    }
+
+    fn report_metrics(&self, prefix: &str) {
+        let active_streams = self.active_streams.load(Ordering::SeqCst);
+        let total_bytes = self.total_bytes.load(Ordering::SeqCst);
+        let total_rows = self.total_rows.load(Ordering::SeqCst);
+        let start_time = *self.start_time.lock().unwrap();
+        if let Some(start_time) = start_time {
+            let duration = start_time.elapsed().as_secs_f64();
+            let rows_per_second = total_rows as f64 / duration;
+            let mb_per_second = (total_bytes as f64 / MEGABYTE) / duration;
+            info!("{} active_streams: {}, total_bytes: {:.2}MB, total_rows: {:.2}K, rows_per_second: {:.2}K, mb_per_second: {:.2}MB", prefix, active_streams, total_bytes as f64 / MEGABYTE, total_rows as f64 / 1000.0, rows_per_second, mb_per_second);
+
+            histogram!("stream_write_rows_per_second", rows_per_second);
+            histogram!("stream_write_mb_per_second", mb_per_second);
+        }
+    }
 }
 
 #[tonic::async_trait]
 impl FlightSqlService for FlightSqlServiceImpl {
     type FlightService = Self;
+
+    async fn register_sql_info(&self, id: i32, result: &SqlInfo) { 
+        info!("register_sql_info - id: {}, result: {:?}", id, result);
+    }
 
     async fn do_handshake(
         &self,
@@ -112,25 +181,15 @@ impl FlightSqlService for FlightSqlServiceImpl {
         request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
         self.verify_token(request.metadata())?;
-        info!("get_flight_info_statement - query: {}, claims: {:?}", cmd.query, claims);
+        info!("get_flight_info_statement - query: {}", cmd.query);
         dbg!(&cmd, &request);
         info!("get_flight_info_prepared_statement");
         let sql = &cmd.query;
 
         let ctx = self.get_ctx(&request)?;
-        // let plan = self.get_plan(handle)?;
-
-        // let state = ctx.state();
-        let df = ctx.sql(sql).await.map_err(|e| status!("Error executing query", e))?;
-        let result = df.collect().await.map_err(|e| status!("Error executing query", e))?;
-
-        // if we get an empty result, create an empty schema
-        let schema = match result.first() {
-            None => Schema::empty(),
-            Some(batch) => (*batch.schema()).clone(),
-        };
-        info!("get_flight_info_statement result:");
-        // print_batches(&result);
+        let plan = ctx.sql(sql).await.map_err(|e| status!("Error executing query", e))?;
+        let schema = plan.schema().clone();
+        let schema = schema.into();
 
         let ticket = Ticket {
             ticket: Command::TicketStatementQuery(TicketStatementQuery {
@@ -507,83 +566,6 @@ impl FlightSqlService for FlightSqlServiceImpl {
         Ok(0)
     }
 
-    async fn do_put_statement_ingest(
-        &self,
-        cmd: CommandStatementIngest,
-        request: Request<PeekableFlightDataStream>,
-    ) -> Result<i64, Status> {
-        self.verify_token(request.metadata())?;
-        let CommandStatementIngest {
-            table_definition_options,
-            table,
-            schema,
-            catalog,
-            temporary,
-            transaction_id,
-            options,
-        } = cmd;
-        info!("do_put_statement_ingest: table: {table}, schema: {schema:?}, catalog: {catalog:?}, temporary: {temporary}, transaction_id: {transaction_id:?}, options: {options:?} table_definition_options: {table_definition_options:?}");
-
-        // 获取 session context
-        let ctx = self.get_ctx(&request)?;
-        // 获取输入流
-        let mut stream = request.into_inner();
-
-        // 获取第一条息,它应该包含 schema 信息
-        // The first message contains the flight descriptor and the schema.
-        // Read the flight descriptor without discarding the schema:
-        let flight_descriptor: FlightDescriptor = stream
-            .peek()
-            .await
-            .cloned()
-            .transpose()?
-            .and_then(|data| data.flight_descriptor)
-            .expect("first message should contain flight descriptor");
-
-        // 创建 LakeSoulTable
-        let table = LakeSoulTable::for_namespace_and_name(schema.unwrap_or("default".to_string()).as_str(), &table)
-            .await
-            .map_err(|e| Status::internal(format!("Error creating table: {}", e)))?;
-
-        let mut writer = table.get_writer().await.map_err(lakesoul_error_to_status)?;
-
-        // 创建 FlightRecordBatchStream 来解码数据
-        let mut batch_stream = FlightRecordBatchStream::new_from_flight_data(stream.map_err(|e| e.into()));
-
-        // 记录处理的记录数
-        let mut record_count = 0i64;
-
-        // 处理每个批次
-        while let Some(batch) = batch_stream
-            .try_next()
-            .await
-            .map_err(|e| Status::internal(format!("Error getting next batch: {}", e)))?
-        {
-            // 累加记录数
-            record_count += batch.num_rows() as i64;
-            // 这里可以添加实际的数据导入逻辑
-            // 例如写入数据库等
-            info!("batch num_rows: {:?}", batch.num_rows());
-            writer
-                .write_record_batch(batch)
-                .await
-                .map_err(datafusion_error_to_status)?;
-        }
-        let result = writer.flush_and_close().await.map_err(datafusion_error_to_status)?;
-        if let Some(transaction_id) = transaction_id {
-            // Convert Bytes to String before passing to append_transactional_data
-            let transaction_id = String::from_utf8(transaction_id.to_vec())
-                .map_err(|e| Status::internal(format!("Invalid transaction ID: {}", e)))?;
-            self.append_transactional_data(transaction_id, Arc::new(table), result)?;
-        } else {
-            table
-                .commit_flush_result(result)
-                .await
-                .map_err(lakesoul_error_to_status)?;
-        }
-
-        Ok(record_count)
-    }
 
     async fn do_put_prepared_statement_query(
         &self,
@@ -731,7 +713,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
     async fn do_action_close_prepared_statement(
         &self,
         handle: ActionClosePreparedStatementRequest,
-        _request: Request<Action>,
+        request: Request<Action>,
     ) -> Result<(), Status> {
         self.verify_token(request.metadata())?;
         info!(
@@ -747,9 +729,80 @@ impl FlightSqlService for FlightSqlServiceImpl {
         Ok(())
     }
 
+    async fn do_put_statement_ingest(
+        &self,
+        cmd: CommandStatementIngest,
+        request: Request<PeekableFlightDataStream>,
+    ) -> Result<i64, Status> {
+        let CommandStatementIngest { table_definition_options, table, schema, catalog, temporary, transaction_id, options } = cmd;
+        info!("do_put_statement_ingest: table: {table}, schema: {schema:?}, catalog: {catalog:?}, temporary: {temporary}, transaction_id: {transaction_id:?}, options: {options:?} table_definition_options: {table_definition_options:?}");
+
+        // 获取输入流
+        let stream = request.into_inner();
+        
+        // 创建 LakeSoulTable
+        let table = LakeSoulTable::for_namespace_and_name(schema.unwrap_or("default".to_string()).as_str(), &table)
+            .await
+            .map_err(|e| Status::internal(format!("Error creating table: {}", e)))?;
+
+        // 开始记录流式指标
+        self.metrics.start_stream();
+
+        let mut writer = table.get_writer().await.map_err(lakesoul_error_to_status)?;
+        
+        // 创建 FlightRecordBatchStream 来解码数据
+        let mut batch_stream = FlightRecordBatchStream::new_from_flight_data(
+            stream.map_err(|e| e.into())
+        );
+
+        // 记录处理的记录数
+        let mut record_count = 0i64;
+
+        let mut batch_count = 0;
+
+        // 处理每个批次
+        while let Some(batch) = batch_stream.try_next().await
+            .map_err(|e| Status::internal(format!("Error getting next batch: {}", e)))? 
+        {
+            let batch_rows = batch.num_rows();
+            record_count += batch_rows as i64;
+            let batch_bytes = get_batch_memory_size(&batch).map_err(datafusion_error_to_status)?;
+            
+            batch_count += 1;
+
+
+            // 这里可以添加实际的数据导入逻辑
+            // 例如写入数据库等
+            // info!("batch num_rows: {:?}", batch.num_rows());
+            writer.write_record_batch(batch).await.map_err(datafusion_error_to_status)?;
+
+            self.metrics.add_batch_metrics(batch_rows as u64, batch_bytes as u64);
+            // Log metrics at intervals
+            if batch_count % LOG_INTERVAL == 0 {
+                self.metrics.report_metrics(format!("stream_write_batch_metrics at {} batches", batch_count).as_str());
+            }
+
+        }
+        let result = writer.flush_and_close().await.map_err(datafusion_error_to_status)?;
+
+        // 结束流式处理
+        self.metrics.end_stream();
+
+        if let Some(transaction_id) = transaction_id {
+            // Convert Bytes to String before passing to append_transactional_data
+            let transaction_id = String::from_utf8(transaction_id.to_vec())
+                .map_err(|e| Status::internal(format!("Invalid transaction ID: {}", e)))?;
+            self.append_transactional_data(transaction_id, Arc::new(table), result)?;
+        } else {
+            table.commit_flush_result(result).await.map_err(lakesoul_error_to_status)?;
+        }
+
+        Ok(record_count)
+    }
+
     async fn do_action_begin_transaction(
         &self,
-        query: ActionBeginTransactionRequest,
+        _query: ActionBeginTransactionRequest,
         request: Request<Action>,
     ) -> Result<ActionBeginTransactionResult, Status> {
         self.verify_token(request.metadata())?;
@@ -780,10 +833,6 @@ impl FlightSqlService for FlightSqlServiceImpl {
                 return Err(Status::internal("Invalid action"));
             }
         }
-    }
-
-    async fn register_sql_info(&self, id: i32, result: &SqlInfo) {
-        info!("register_sql_info - id: {}", id);
     }
 }
 
@@ -843,6 +892,7 @@ impl FlightSqlServiceImpl {
             transactional_data: Default::default(),
             jwt_server,
             auth_enabled,
+            metrics: Arc::new(StreamMetrics::new()),
         })
     }
 
@@ -853,7 +903,7 @@ impl FlightSqlServiceImpl {
     }
 
     pub async fn create_ctx(&self) -> Result<String, Status> {
-        let uuid = Uuid::new_v4().hyphenated().to_string();
+        // let uuid = Uuid::new_v4().hyphenated().to_string();
         let uuid = "1".to_string();
         let mut session_config = SessionConfig::from_env()
             .map_err(|e| Status::internal(format!("Error building plan: {e}")))?
@@ -907,7 +957,7 @@ impl FlightSqlServiceImpl {
         Ok(uuid)
     }
 
-    fn get_ctx<T>(&self, req: &Request<T>) -> Result<Arc<SessionContext>, Status> {
+    fn get_ctx<T>(&self, _req: &Request<T>) -> Result<Arc<SessionContext>, Status> {
         // get the token from the authorization header on Request
         // let auth = req
         //     .metadata()

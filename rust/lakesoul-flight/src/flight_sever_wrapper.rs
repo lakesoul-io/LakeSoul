@@ -149,3 +149,4 @@ impl<T: FlightService> Clone for FlightServiceServerWrapper<T> {
 impl<T: FlightService> NamedService for FlightServiceServerWrapper<T> {
     const NAME: &'static str = "arrow.flight.protocol.FlightService";
 }
+

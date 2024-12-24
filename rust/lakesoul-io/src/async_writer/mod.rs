@@ -12,6 +12,9 @@ pub use sort_writer::SortAsyncWriter;
 mod partitioning_writer;
 pub use partitioning_writer::PartitioningAsyncWriter;
 
+mod sendable_writer;
+pub use sendable_writer::AsyncSendableMutableLakeSoulWriter;
+
 use std::{
     any::Any,
     collections::VecDeque,
