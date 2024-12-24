@@ -29,11 +29,7 @@ class NativeParquetFileFormat extends FileFormat
     val timeZoneId = options
       .getOrElse(DateTimeUtils.TIMEZONE_OPTION, sparkSession.sessionState.conf.sessionLocalTimeZone)
 
-    if (options.getOrElse("isCompaction", "false").toBoolean &&
-      !options.getOrElse("isCDC", "false").toBoolean &&
-      !options.getOrElse("isBucketNumChanged", "false").toBoolean &&
-      options.contains("staticBucketId")
-    ) {
+    if (options.getOrElse("isNative", "false").toBoolean) {
       new OutputWriterFactory {
         override def newInstance(
                                   path: String,

@@ -6,6 +6,10 @@
 
 package org.apache.spark.sql.execution.datasources
 
+import com.dmetasoul.lakesoul.meta.DBConfig.{LAKESOUL_NON_PARTITION_TABLE_PART_DESC, LAKESOUL_RANGE_PARTITION_SPLITTER}
+import org.apache.gluten.execution.{LoadArrowDataExec, ValidatablePlan}
+import org.apache.gluten.extension.columnar.FallbackTags
+import org.apache.gluten.extension.columnar.heuristic.HeuristicTransform
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileAlreadyExistsException, Path}
 import org.apache.hadoop.mapreduce._
@@ -16,7 +20,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.internal.io.{FileCommitProtocol, SparkHadoopWriterUtils}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.shuffle.FetchFailedException
-import org.apache.spark.sql.{Row, SparkSession}
+import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.catalog.BucketSpec
 import org.apache.spark.sql.catalyst.catalog.CatalogTypes.TablePartitionSpec
@@ -29,8 +33,10 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.datasources.FileFormatWriter.ConcurrentOutputWriterSpec
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.lakesoul.DelayedCopyCommitProtocol
 import org.apache.spark.sql.lakesoul.rules.withPartitionAndOrdering
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
+import org.apache.spark.sql.types.StringType
 import org.apache.spark.sql.vectorized.{ArrowFakeRowAdaptor, GlutenUtils}
 import org.apache.spark.util.{SerializableConfiguration, Utils}
 import com.dmetasoul.lakesoul.meta.DBConfig.{LAKESOUL_NON_PARTITION_TABLE_PART_DESC, LAKESOUL_RANGE_PARTITION_SPLITTER}
@@ -41,6 +47,7 @@ import org.apache.spark.sql.lakesoul.{DelayedCommitProtocol, DelayedCopyCommitPr
 import org.apache.gluten.extension.columnar.heuristic.HeuristicTransform
 import org.apache.spark.sql.types.{DataTypes, StringType, StructField, StructType}
 
+import java.util
 import java.util.{Date, UUID}
 import scala.collection.JavaConverters.mapAsScalaMapConverter
 import scala.collection.convert.ImplicitConversions.`iterable AsScalaIterable`
@@ -133,26 +140,6 @@ object LakeSoulFileWriter extends Logging {
 
     val dataSchema = dataColumns.toStructType
     DataSourceUtils.verifySchema(fileFormat, dataSchema)
-    // Note: prepareWrite has side effect. It sets "job".
-    val outputWriterFactory =
-      fileFormat.prepareWrite(sparkSession, job, caseInsensitiveOptions, dataSchema)
-
-    val description = new WriteJobDescription(
-      uuid = UUID.randomUUID.toString,
-      serializableHadoopConf = new SerializableConfiguration(job.getConfiguration),
-      outputWriterFactory = outputWriterFactory,
-      allColumns = finalOutputSpec.outputColumns,
-      dataColumns = dataColumns,
-      partitionColumns = partitionColumns,
-      bucketSpec = writerBucketSpec,
-      path = finalOutputSpec.outputPath,
-      customPartitionLocations = finalOutputSpec.customPartitionLocations,
-      maxRecordsPerFile = caseInsensitiveOptions.get("maxRecordsPerFile").map(_.toLong)
-        .getOrElse(sparkSession.sessionState.conf.maxRecordsPerFile),
-      timeZoneId = caseInsensitiveOptions.get(DateTimeUtils.TIMEZONE_OPTION)
-        .getOrElse(sparkSession.sessionState.conf.sessionLocalTimeZone),
-      statsTrackers = statsTrackers
-    )
 
     val isCDC = caseInsensitiveOptions.getOrElse("isCDC", "false").toBoolean
     val isCompaction = caseInsensitiveOptions.getOrElse("isCompaction", "false").toBoolean
@@ -177,51 +164,58 @@ object LakeSoulFileWriter extends Logging {
 
     SQLExecution.checkSQLExecutionId(sparkSession)
 
-    // propagate the description UUID into the jobs, so that committers
-    // get an ID guaranteed to be unique.
-    job.getConfiguration.set("spark.sql.sources.writeJobUUID", description.uuid)
-
     // This call shouldn't be put into the `try` block below because it only initializes and
     // prepares the job, any exception thrown from here shouldn't cause abortJob() to be called.
     committer.setupJob(job)
 
     val nativeIOEnable = sparkSession.sessionState.conf.getConf(LakeSoulSQLConf.NATIVE_IO_ENABLE)
 
-    def nativeWrap(plan: SparkPlan): RDD[InternalRow] = {
-      if (isCompaction
-        && staticBucketId != -1
-        && !isCDC
-        && !isBucketNumChanged
-        && nativeIOEnable) {
+    def nativeWrap(plan: SparkPlan, isArrowColumnarInput: Boolean): (RDD[InternalRow], Boolean) = {
+      if (isArrowColumnarInput) {
         plan match {
           case withPartitionAndOrdering(_, _, child) =>
-            return nativeWrap(child)
+            return nativeWrap(child, isArrowColumnarInput)
           case _ =>
+        }
+        // try use gluten plan
+        if (GlutenUtils.isGlutenEnabled) {
+          val nativePlan = HeuristicTransform.static().apply(plan)
+          nativePlan match {
+            case plan1: ValidatablePlan =>
+              if (plan1.doValidate().ok()) {
+                return (ArrowFakeRowAdaptor(
+                  LoadArrowDataExec(nativePlan)
+                ).execute(), true)
+              }
+            case _ =>
+          }
         }
         // in this case, we drop columnar to row
         // and use columnar batch directly as input
         // this takes effect no matter gluten enabled or not
-        ArrowFakeRowAdaptor(plan match {
+        (ArrowFakeRowAdaptor(plan match {
           case ColumnarToRowExec(child) => child
           case UnaryExecNode(plan, child)
             if plan.getClass.getName == "org.apache.execution.VeloxColumnarToRowExec" => child
           case WholeStageCodegenExec(ColumnarToRowExec(child)) => child
           case WholeStageCodegenExec(ProjectExec(_, child)) => child
           case _ => plan
-        }).execute()
+        }).execute(), true)
       } else {
-        plan.execute()
+        (plan.execute(), false)
       }
     }
 
+    val isArrowColumnarInput = nativeIOEnable && ((isCompaction && !isCDC) || GlutenUtils.isGlutenEnabled)
+
     try {
       // for compaction, we won't break ordering from batch scan
-      val (rdd, concurrentOutputWriterSpec) =
-        if (isCompaction && options.getOrElse(COPY_FILE_WRITER_KEY, "false").toBoolean) {
-          val data = Seq(InternalRow(COPY_FILE_WRITER_KEY))
-          (sparkSession.sparkContext.parallelize(data), None)
+      val ((rdd, isNative), concurrentOutputWriterSpec) =
+        if (isCompaction && options.getOrElse("copyCompactedFile", "").nonEmpty) {
+          val data = Seq(InternalRow(options("copyCompactedFile")))
+          ((sparkSession.sparkContext.parallelize(data), false), None)
         } else if (!isBucketNumChanged && (orderingMatched || isCompaction)) {
-          (nativeWrap(empty2NullPlan), None)
+          (nativeWrap(empty2NullPlan, isArrowColumnarInput), None)
         } else {
           // SPARK-21165: the `requiredOrdering` is based on the attributes from analyzed plan, and
           // the physical plan may have different attribute ids due to optimizer removing some
@@ -232,18 +226,45 @@ object LakeSoulFileWriter extends Logging {
             orderingExpr,
             global = false,
             child = empty2NullPlan)
-          val transform = HeuristicTransform.static()
-          val plan = transform.apply(sortPlan)
 
-          val maxWriters = sparkSession.sessionState.conf.maxConcurrentOutputFileWriters
-          val concurrentWritersEnabled = maxWriters > 0 && sortColumns.isEmpty
-          if (concurrentWritersEnabled) {
-            (empty2NullPlan.execute(),
-              Some(ConcurrentOutputWriterSpec(maxWriters, () => sortPlan.createSorter())))
+          if (isArrowColumnarInput) {
+            (nativeWrap(sortPlan, isArrowColumnarInput), None)
           } else {
-            (nativeWrap(sortPlan), None)
+            val maxWriters = sparkSession.sessionState.conf.maxConcurrentOutputFileWriters
+            val concurrentWritersEnabled = maxWriters > 0 && sortColumns.isEmpty
+            if (concurrentWritersEnabled) {
+              ((empty2NullPlan.execute(), false),
+                Some(ConcurrentOutputWriterSpec(maxWriters, () => sortPlan.createSorter())))
+            } else {
+              ((sortPlan.execute(), false), None)
+            }
           }
         }
+
+      // Note: prepareWrite has side effect. It sets "job".
+      val outputWriterFactory =
+        fileFormat.prepareWrite(sparkSession, job, caseInsensitiveOptions + (("isNative", isNative.toString)), dataSchema)
+
+      val description = new WriteJobDescription(
+        uuid = UUID.randomUUID.toString,
+        serializableHadoopConf = new SerializableConfiguration(job.getConfiguration),
+        outputWriterFactory = outputWriterFactory,
+        allColumns = finalOutputSpec.outputColumns,
+        dataColumns = dataColumns,
+        partitionColumns = partitionColumns,
+        bucketSpec = writerBucketSpec,
+        path = finalOutputSpec.outputPath,
+        customPartitionLocations = finalOutputSpec.customPartitionLocations,
+        maxRecordsPerFile = caseInsensitiveOptions.get("maxRecordsPerFile").map(_.toLong)
+          .getOrElse(sparkSession.sessionState.conf.maxRecordsPerFile),
+        timeZoneId = caseInsensitiveOptions.get(DateTimeUtils.TIMEZONE_OPTION)
+          .getOrElse(sparkSession.sessionState.conf.sessionLocalTimeZone),
+        statsTrackers = statsTrackers
+      )
+
+      // propagate the description UUID into the jobs, so that committers
+      // get an ID guaranteed to be unique.
+      job.getConfiguration.set("spark.sql.sources.writeJobUUID", description.uuid)
 
       // SPARK-23271 If we are attempting to write a zero partition rdd, create a dummy single
       // partition rdd to make sure we at least set up one write task to write the metadata.
@@ -292,7 +313,7 @@ object LakeSoulFileWriter extends Logging {
       ret.map(_.summary.updatedPartitions).reduceOption(_ ++ _).getOrElse(Set.empty)
     } catch {
       case cause: Throwable =>
-        logError(s"Aborting job ${description.uuid}.", cause)
+        logError(s"Aborting job", cause)
         committer.abortJob(job)
         throw QueryExecutionErrors.jobAbortedError(cause)
     }
