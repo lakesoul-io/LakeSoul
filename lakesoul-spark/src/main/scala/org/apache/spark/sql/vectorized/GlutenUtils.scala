@@ -16,10 +16,10 @@ import java.lang.reflect.{Constructor, Method}
  */
 object GlutenUtils {
   lazy val isGlutenEnabled: Boolean =
-    SparkContext.getActive.exists(_.getConf.get("spark.plugins", "").contains("io.glutenproject.GlutenPlugin"))
+    SparkContext.getActive.exists(_.getConf.get("spark.plugins", "").contains("org.apache.gluten.GlutenPlugin"))
 
   private lazy val getGlutenAllocatorMethod: Method = {
-    val cls = Class.forName("io.glutenproject.memory.arrowalloc.ArrowBufferAllocators")
+    val cls = Class.forName("org.apache.gluten.memory.arrow.alloc.ArrowBufferAllocators")
     cls.getDeclaredMethod("contextInstance")
   }
 
@@ -43,7 +43,7 @@ object GlutenUtils {
 
   private lazy val glutenArrowColumnVectorCtor: Constructor[_] = {
     if (isGlutenEnabled) {
-      val cls = Class.forName("io.glutenproject.vectorized.ArrowWritableColumnVector")
+      val cls = Class.forName("org.apache.gluten.vectorized.ArrowWritableColumnVector")
       cls.getConstructor(classOf[ValueVector], classOf[ValueVector], classOf[Int], classOf[Int], classOf[Boolean])
     } else {
       null

@@ -78,6 +78,9 @@ public class NativeIOBase implements AutoCloseable {
     }
 
     public void setExternalAllocator(BufferAllocator allocator) {
+        if (this.allocator != null && this.allocator != allocator) {
+            this.allocator.close();
+        }
         this.allocator = allocator;
     }
 

@@ -27,7 +27,7 @@ SPDX-License-Identifier: Apache-2.0
         <avro.version>1.11.3</avro.version>
         <mysql.version>8.0.30</mysql.version>
         <jackson.yaml.version>2.12.7</jackson.yaml.version>
-        <gluten.version>1.1.0</gluten.version>
+        <gluten.version>1.3.0-SNAPSHOT</gluten.version>
         <local.scope>provided</local.scope>
         <test.fork.count>2</test.fork.count>
     </properties>
@@ -104,6 +104,10 @@ SPDX-License-Identifier: Apache-2.0
                 </exclusion>
                 <exclusion>
                     <groupId>org.antlr</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.apache.arrow</groupId>
                     <artifactId>*</artifactId>
                 </exclusion>
             </exclusions>
@@ -387,55 +391,68 @@ SPDX-License-Identifier: Apache-2.0
         </dependency>
 
         <!-- for test only. we don't rely on gluten during package and runtime -->
-        <!--        <dependency>-->
-        <!--            <groupId>io.glutenproject</groupId>-->
-        <!--            <artifactId>backends-velox</artifactId>-->
-        <!--            <version>${gluten.version}</version>-->
-        <!--            <scope>${local.scope}</scope>-->
-        <!--        </dependency>-->
-        <!--        <dependency>-->
-        <!--            <groupId>io.glutenproject</groupId>-->
-        <!--            <artifactId>gluten-core</artifactId>-->
-        <!--            <version>${gluten.version}</version>-->
-        <!--            <exclusions>-->
-        <!--                <exclusion>-->
-        <!--                    <groupId>io.glutenproject</groupId>-->
-        <!--                    <artifactId>spark-sql-columnar-shims-spark32</artifactId>-->
-        <!--                </exclusion>-->
-        <!--            </exclusions>-->
-        <!--            <scope>${local.scope}</scope>-->
-        <!--        </dependency>-->
-        <!--        <dependency>-->
-        <!--            <groupId>io.glutenproject</groupId>-->
-        <!--            <artifactId>gluten-core</artifactId>-->
-        <!--            <version>${gluten.version}</version>-->
-        <!--            <exclusions>-->
-        <!--                <exclusion>-->
-        <!--                    <groupId>io.glutenproject</groupId>-->
-        <!--                    <artifactId>spark-sql-columnar-shims-spark32</artifactId>-->
-        <!--                </exclusion>-->
-        <!--            </exclusions>-->
-        <!--            <classifier>tests</classifier>-->
-        <!--            <scope>test</scope>-->
-        <!--        </dependency>-->
-        <!--        <dependency>-->
-        <!--            <groupId>io.glutenproject</groupId>-->
-        <!--            <artifactId>gluten-data</artifactId>-->
-        <!--            <version>${gluten.version}</version>-->
-        <!--            <scope>${local.scope}</scope>-->
-        <!--        </dependency>-->
-        <!--        <dependency>-->
-        <!--            <groupId>io.glutenproject</groupId>-->
-        <!--            <artifactId>spark-sql-columnar-shims-common</artifactId>-->
-        <!--            <version>${gluten.version}</version>-->
-        <!--            <scope>${local.scope}</scope>-->
-        <!--        </dependency>-->
-        <!-- currently this jar is missing on maven repo -->
-        <!--        <dependency>-->
-        <!--            <groupId>io.glutenproject</groupId>-->
-        <!--            <artifactId>spark-sql-columnar-shims-spark33</artifactId>-->
-        <!--            <version>${gluten.version}</version>-->
-        <!--        </dependency>-->
+        <dependency>
+            <groupId>org.apache.gluten</groupId>
+            <artifactId>backends-velox</artifactId>
+            <version>${gluten.version}</version>
+            <scope>${local.scope}</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.gluten</groupId>
+            <artifactId>gluten-core</artifactId>
+            <version>${gluten.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.apache.gluten</groupId>
+                    <artifactId>spark-sql-columnar-shims-spark32</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.apache.gluten</groupId>
+                    <artifactId>spark-sql-columnar-shims-spark34</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.apache.gluten</groupId>
+                    <artifactId>spark-sql-columnar-shims-spark35</artifactId>
+                </exclusion>
+            </exclusions>
+            <scope>${local.scope}</scope>
+        </dependency>
+<!--        <dependency>-->
+<!--            <groupId>org.apache.gluten</groupId>-->
+<!--            <artifactId>gluten-core</artifactId>-->
+<!--            <version>${gluten.version}</version>-->
+<!--            <exclusions>-->
+<!--                <exclusion>-->
+<!--                    <groupId>io.glutenproject</groupId>-->
+<!--                    <artifactId>spark-sql-columnar-shims-spark32</artifactId>-->
+<!--                </exclusion>-->
+<!--            </exclusions>-->
+<!--            <classifier>tests</classifier>-->
+<!--            <scope>test</scope>-->
+<!--        </dependency>-->
+<!--        <dependency>-->
+<!--            <groupId>org.apache.gluten</groupId>-->
+<!--            <artifactId>gluten-data</artifactId>-->
+<!--            <version>${gluten.version}</version>-->
+<!--            <scope>${local.scope}</scope>-->
+<!--        </dependency>-->
+        <dependency>
+            <groupId>org.apache.gluten</groupId>
+            <artifactId>gluten-substrait</artifactId>
+            <version>${gluten.version}</version>
+            <scope>${local.scope}</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.gluten</groupId>
+            <artifactId>spark-sql-columnar-shims-common</artifactId>
+            <version>${gluten.version}</version>
+            <scope>${local.scope}</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.gluten</groupId>
+            <artifactId>spark-sql-columnar-shims-spark33</artifactId>
+            <version>${gluten.version}</version>
+        </dependency>
     </dependencies>
 
     <profiles>
@@ -563,7 +580,7 @@ SPDX-License-Identifier: Apache-2.0
                             <include>com.dmetasoul:lakesoul-io-java</include>
                             <include>com.github.jnr:*</include>
                             <include>org.ow2.asm:*</include>
-                            <include>org.apache.arrow:*</include>
+<!--                            <include>org.apache.arrow:*</include>-->
                             <include>org.eclipse.collections:*</include>
                             <include>com.google.flatbuffers:*</include>
                             <include>com.zaxxer:HikariCP</include>
@@ -614,23 +631,23 @@ SPDX-License-Identifier: Apache-2.0
                         </relocation>
                         <relocation>
                             <pattern>com.google.flatbuffers</pattern>
-                            <shadedPattern>com.lakesoul.shaded.com.google.flatbuffers</shadedPattern>
+                            <shadedPattern>org.apache.gluten.shaded.com.google.flatbuffers</shadedPattern>
                         </relocation>
                         <relocation>
                             <pattern>org.apache.arrow.flatbuf</pattern>
-                            <shadedPattern>io.glutenproject.shaded.org.apache.arrow.flatbuf</shadedPattern>
+                            <shadedPattern>org.apache.gluten.shaded.org.apache.arrow.flatbuf</shadedPattern>
                         </relocation>
                         <relocation>
                             <pattern>org.apache.arrow.memory</pattern>
-                            <shadedPattern>io.glutenproject.shaded.org.apache.arrow.memory</shadedPattern>
+                            <shadedPattern>org.apache.gluten.shaded.org.apache.arrow.memory</shadedPattern>
                         </relocation>
                         <relocation>
                             <pattern>org.apache.arrow.util</pattern>
-                            <shadedPattern>io.glutenproject.shaded.org.apache.arrow.util</shadedPattern>
+                            <shadedPattern>org.apache.gluten.shaded.org.apache.arrow.util</shadedPattern>
                         </relocation>
                         <relocation>
                             <pattern>org.apache.arrow.vector</pattern>
-                            <shadedPattern>io.glutenproject.shaded.org.apache.arrow.vector</shadedPattern>
+                            <shadedPattern>org.apache.gluten.shaded.org.apache.arrow.vector</shadedPattern>
                         </relocation>
                         <relocation>
                             <pattern>com.google.protobuf</pattern>
