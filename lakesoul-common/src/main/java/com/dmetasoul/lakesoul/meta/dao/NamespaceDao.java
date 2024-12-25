@@ -10,9 +10,6 @@ import com.dmetasoul.lakesoul.meta.entity.JniWrapper;
 import com.dmetasoul.lakesoul.meta.entity.Namespace;
 import com.dmetasoul.lakesoul.meta.jnr.NativeMetadataJavaClient;
 import com.dmetasoul.lakesoul.meta.jnr.NativeUtils;
-import com.dmetasoul.lakesoul.meta.rbac.AuthZContext;
-import com.dmetasoul.lakesoul.meta.rbac.AuthZEnforcer;
-import dev.failsafe.internal.util.Lists;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -184,7 +181,7 @@ public class NamespaceDao {
                     .setNamespace(DBConfig.LAKESOUL_DEFAULT_NAMESPACE)
                     .setProperties("{}")
                     .setComment("")
-                    .setDomain(AuthZContext.getInstance().getDomain())
+                    .setDomain("public")
                     .build();
 
 }
