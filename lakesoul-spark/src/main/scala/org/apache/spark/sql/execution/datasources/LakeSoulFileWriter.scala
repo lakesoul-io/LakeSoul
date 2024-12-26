@@ -7,7 +7,7 @@
 package org.apache.spark.sql.execution.datasources
 
 import com.dmetasoul.lakesoul.meta.DBConfig.{LAKESOUL_NON_PARTITION_TABLE_PART_DESC, LAKESOUL_RANGE_PARTITION_SPLITTER}
-import org.apache.gluten.execution.{LoadArrowDataExec, ValidatablePlan}
+import org.apache.gluten.execution.{LoadArrowDataExec, TransformSupport, ValidatablePlan, VeloxColumnarToRowExec, WholeStageTransformer}
 import org.apache.gluten.extension.columnar.FallbackTags
 import org.apache.gluten.extension.columnar.heuristic.HeuristicTransform
 import org.apache.hadoop.conf.Configuration
@@ -175,6 +175,9 @@ object LakeSoulFileWriter extends Logging {
         plan match {
           case withPartitionAndOrdering(_, _, child) =>
             return nativeWrap(child, isArrowColumnarInput)
+          case VeloxColumnarToRowExec(child) => return nativeWrap(child, isArrowColumnarInput)
+          case WholeStageTransformer(_, _) =>
+            return (ArrowFakeRowAdaptor(LoadArrowDataExec(plan)).execute(), true)
           case _ =>
         }
         // try use gluten plan
@@ -183,9 +186,20 @@ object LakeSoulFileWriter extends Logging {
           nativePlan match {
             case plan1: ValidatablePlan =>
               if (plan1.doValidate().ok()) {
-                return (ArrowFakeRowAdaptor(
-                  LoadArrowDataExec(nativePlan)
-                ).execute(), true)
+                val needTransformPlan = nativePlan match {
+                  case _: TransformSupport =>
+                    WholeStageTransformer(nativePlan)(
+                      ColumnarCollapseTransformStages.transformStageCounter.incrementAndGet())
+                  case _ => nativePlan
+                }
+                // for partitioning/bucketing, we switch back to row
+                if (!orderingMatched) {
+                  return (VeloxColumnarToRowExec(needTransformPlan).execute(), false)
+                } else {
+                  return (ArrowFakeRowAdaptor(
+                    LoadArrowDataExec(needTransformPlan)
+                  ).execute(), true)
+                }
               }
             case _ =>
           }
@@ -206,7 +220,27 @@ object LakeSoulFileWriter extends Logging {
       }
     }
 
-    val isArrowColumnarInput = nativeIOEnable && ((isCompaction && !isCDC) || GlutenUtils.isGlutenEnabled)
+    val isArrowColumnarInput = nativeIOEnable &&
+      ((isCompaction && !isCDC) // none cdc compaction compaction is a arrow columnar scan
+        || (GlutenUtils.isGlutenEnabled &&
+        (
+          true
+//          isCompaction // for gluten we can support compaction with cdc
+//          || partitionColumns.isEmpty // for write with no partitions(we currently rely on spark's own row-wise dynamic partition writer)
+        )
+        ))
+
+    def getChildForSort(child: SparkPlan): SparkPlan = {
+      if (!GlutenUtils.isGlutenEnabled || !isArrowColumnarInput) {
+        child
+      } else {
+        // gluten may have VeloxColumnarToRow(WholeStageTransformer)
+        child match {
+          case VeloxColumnarToRowExec(WholeStageTransformer(c, _)) => c
+          case _ => child
+        }
+      }
+    }
 
     try {
       // for compaction, we won't break ordering from batch scan
@@ -225,7 +259,7 @@ object LakeSoulFileWriter extends Logging {
           val sortPlan = SortExec(
             orderingExpr,
             global = false,
-            child = empty2NullPlan)
+            child = getChildForSort(empty2NullPlan))
 
           if (isArrowColumnarInput) {
             (nativeWrap(sortPlan, isArrowColumnarInput), None)

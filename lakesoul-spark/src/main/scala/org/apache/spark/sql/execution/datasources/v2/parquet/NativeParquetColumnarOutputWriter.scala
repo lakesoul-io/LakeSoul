@@ -11,7 +11,7 @@ import org.apache.hadoop.mapreduce.TaskAttemptContext
 import org.apache.spark.sql.arrow.ArrowColumnVector
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.types.StructType
-import org.apache.spark.sql.vectorized.{ArrowFakeRow, ColumnarBatch}
+import org.apache.spark.sql.vectorized.{ArrowFakeRow, ColumnarBatch, NativeIOUtils}
 
 import scala.collection.JavaConverters.{asScalaBufferConverter, seqAsJavaListConverter}
 
@@ -37,6 +37,11 @@ class NativeParquetCompactionColumnarOutputWriter(path: String, dataSchema: Stru
     }
   }
 
+  override def close() = {
+    nativeIOWriter.flush()
+    nativeIOWriter.close()
+  }
+
   private def extractVectorSchemaRoot(columnarBatch: ColumnarBatch): Unit = {
     var batch: ArrowRecordBatch = null
     try {
@@ -54,10 +59,8 @@ class NativeParquetCompactionColumnarOutputWriter(path: String, dataSchema: Stru
     val numRowsInBatch = columnarBatch.numRows()
     val cols = (0 until columnarBatch.numCols).toList.map(
       i =>
-        columnarBatch
-          .column(i)
-          .asInstanceOf[ArrowColumnVector]
-          .getValueVector)
+        NativeIOUtils.columnVectorToArrowValueVector(columnarBatch.column(i))
+    )
     toArrowRecordBatch(numRowsInBatch, cols)
   }
 

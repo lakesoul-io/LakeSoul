@@ -50,12 +50,29 @@ object GlutenUtils {
     }
   }
 
+  private lazy val glutenArrowColumnVectorGetValueVector: Method = {
+    if (isGlutenEnabled) {
+      val cls = Class.forName("org.apache.gluten.vectorized.ArrowWritableColumnVector")
+      cls.getMethod("getValueVector")
+    } else {
+      null
+    }
+  }
+
   def createArrowColumnVector(vector: ValueVector): ColumnVector = {
     if (isGlutenEnabled) {
       val args = Array[AnyRef](vector, null, Integer.valueOf(0), Integer.valueOf(vector.getValueCapacity), java.lang.Boolean.FALSE)
       glutenArrowColumnVectorCtor.newInstance(args:_*).asInstanceOf[ColumnVector]
     } else {
       new org.apache.spark.sql.arrow.ArrowColumnVector(vector)
+    }
+  }
+
+  def getValueVectorFromArrowVector(vector: ColumnVector): ValueVector = {
+    if (isGlutenEnabled) {
+      glutenArrowColumnVectorGetValueVector.invoke(vector).asInstanceOf[ValueVector]
+    } else {
+      vector.asInstanceOf[org.apache.spark.sql.arrow.ArrowColumnVector].getValueVector
     }
   }
 }
