@@ -1,6 +1,7 @@
+use std::env;
 use std::sync::Arc;
 use std::pin::Pin;
-use arrow::datatypes::{DataType, Field, Schema};
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::ipc::writer::IpcWriteOptions;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::encode::FlightDataEncoderBuilder;
@@ -11,6 +12,8 @@ use arrow_flight::sql::{ActionBeginTransactionRequest, ActionBeginTransactionRes
 use arrow_flight::{
     Action, FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest, HandshakeResponse, IpcMessage, SchemaAsIpc, Ticket
 };
+use datafusion::error::DataFusionError;
+use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::sql::parser::{DFParser, Statement};
 use datafusion::sql::sqlparser::ast::CreateTable;
 use datafusion::sql::TableReference;
@@ -21,6 +24,7 @@ use lakesoul_datafusion::lakesoul_table::LakeSoulTable;
 use lakesoul_datafusion::planner::query_planner::LakeSoulQueryPlanner;
 use lakesoul_datafusion::serialize::arrow_java::schema_from_metadata_str;
 use lakesoul_io::helpers::get_batch_memory_size;
+use lakesoul_io::lakesoul_io_config::{register_s3_object_store, LakeSoulIOConfigBuilder};
 use tonic::{Request, Response, Status, metadata::MetadataValue, Streaming};
 use prost::Message;
 
@@ -31,7 +35,7 @@ use uuid::Uuid;
 
 use lakesoul_datafusion::Result;
 
-use arrow::array::{ArrayRef, BinaryArray, Float64Array, Int32Array, Int64Array, ListArray, StringArray};
+use arrow::array::{ArrayRef, BinaryArray, Float32Array, Float64Array, Int32Array, Int64Array, ListArray, StringArray};
 use arrow::record_batch::RecordBatch;
 use dashmap::DashMap;
 use datafusion::common::DFSchema;
@@ -46,8 +50,9 @@ use object_store::local::LocalFileSystem;
 use tonic::metadata::MetadataMap;
 use url::Url;
 
+use crate::args::Args;
 use crate::jwt::{Claims, JwtServer};
-use crate::{datafusion_error_to_status, lakesoul_error_to_status, lakesoul_metadata_error_to_status};
+use crate::{arrow_error_to_status, datafusion_error_to_status, lakesoul_error_to_status, lakesoul_metadata_error_to_status};
 use metrics::{counter, gauge, histogram};
 use std::time::Instant;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
@@ -65,29 +70,60 @@ macro_rules! status {
 type TransactionalData = (Arc<LakeSoulTable>, WriterFlushResult);
 
 pub struct FlightSqlServiceImpl {
+    args: Args,
     client: MetaDataClientRef,
     contexts: Arc<DashMap<String, Arc<SessionContext>>>,
     statements: Arc<DashMap<String, LogicalPlan>>,
     transactional_data: Arc<DashMap<String, TransactionalData>>,
-    metrics: Arc<StreamMetrics>,
+    metrics: Arc<StreamWriteMetrics>,
     jwt_server: Arc<JwtServer>,
     auth_enabled: bool,
 }
 
-struct StreamMetrics {
+struct StreamWriteMetrics {
     active_streams: AtomicI64,
     total_bytes: AtomicU64,
     total_rows: AtomicU64,
     start_time: Mutex<Option<Instant>>,
+    target_mb_per_second_for_write: f64,
+    target_mb_per_second_for_flush: f64,
+    last_check: Mutex<Instant>,
+    bytes_since_last_check: AtomicU64,
 }
 
-impl StreamMetrics {
-    fn new() -> Self {
+impl StreamWriteMetrics {
+    fn new(target_mb_per_second_for_write: f64, target_mb_per_second_for_flush: f64) -> Self {
         Self {
             active_streams: AtomicI64::new(0),
             total_bytes: AtomicU64::new(0),
             total_rows: AtomicU64::new(0),
             start_time: Mutex::new(None),
+            target_mb_per_second_for_write,
+            target_mb_per_second_for_flush,
+            last_check: Mutex::new(Instant::now()),
+            bytes_since_last_check: AtomicU64::new(0),
+        }
+    }
+
+    fn control_throughput(&self, target_mb_per_second: f64) {
+        // let mut last_check = self.last_check.lock().unwrap();
+        let elapsed = {
+            let last_check = self.last_check.lock().unwrap();
+            last_check.elapsed().as_secs_f64()
+        };
+        if elapsed >= 1.0 {
+            let bytes = self.bytes_since_last_check.swap(0, Ordering::SeqCst);
+            let current_mb_per_second = (bytes as f64 / MEGABYTE) / elapsed;
+            if current_mb_per_second > target_mb_per_second {
+                let sleep_duration = std::time::Duration::from_secs_f64(
+                    (current_mb_per_second / target_mb_per_second - 1.0) * elapsed
+                );
+                info!("Sleeping for {} seconds to control throughput", sleep_duration.as_secs_f64());
+                std::thread::sleep(sleep_duration);
+                info!("Waking up after sleeping");
+            }
+            let mut last_check = self.last_check.lock().unwrap();
+            *last_check = Instant::now();
         }
     }
 
@@ -114,12 +150,15 @@ impl StreamMetrics {
             *start_time = None;
             self.total_bytes.store(0, Ordering::SeqCst);
             self.total_rows.store(0, Ordering::SeqCst);
+            self.bytes_since_last_check.store(0, Ordering::SeqCst);
         }
+        self.control_throughput(self.target_mb_per_second_for_flush);
     }
 
     fn add_batch_metrics(&self, rows: u64, bytes: u64) {
         self.total_rows.fetch_add(rows, Ordering::SeqCst);
         self.total_bytes.fetch_add(bytes, Ordering::SeqCst);
+        self.bytes_since_last_check.fetch_add(bytes, Ordering::SeqCst);
         histogram!("stream_write_rows_of_batch", rows as f64);
         histogram!("stream_write_bytes_of_batch", bytes as f64 / MEGABYTE);
         counter!("stream_write_rows_total", rows);
@@ -139,6 +178,7 @@ impl StreamMetrics {
 
             histogram!("stream_write_rows_per_second", rows_per_second);
             histogram!("stream_write_mb_per_second", mb_per_second);
+            
         }
     }
 }
@@ -182,8 +222,6 @@ impl FlightSqlService for FlightSqlServiceImpl {
     ) -> Result<Response<FlightInfo>, Status> {
         self.verify_token(request.metadata())?;
         info!("get_flight_info_statement - query: {}", cmd.query);
-        dbg!(&cmd, &request);
-        info!("get_flight_info_prepared_statement");
         let sql = &cmd.query;
 
         let ctx = self.get_ctx(&request)?;
@@ -741,60 +779,68 @@ impl FlightSqlService for FlightSqlServiceImpl {
         let stream = request.into_inner();
         
         // 创建 LakeSoulTable
-        let table = LakeSoulTable::for_namespace_and_name(schema.unwrap_or("default".to_string()).as_str(), &table)
-            .await
-            .map_err(|e| Status::internal(format!("Error creating table: {}", e)))?;
+        // let table = Arc::new(LakeSoulTable::for_namespace_and_name(schema.unwrap_or("default".to_string()).as_str(), &table)
+        //     .await
+        //     .map_err(|e| Status::internal(format!("Error creating table: {}", e)))?);
+        let table_reference = TableReference::from(match &schema {
+            Some(schema) => TableReference::partial(schema.as_str(), table.as_str()),
+            None => TableReference::bare(table.as_str()),
+        });
+        let (flush_result, record_count) = self.write_stream(table_reference, stream).await?;
 
-        // 开始记录流式指标
-        self.metrics.start_stream();
+        // // 开始记录流式指标
+        // self.metrics.start_stream();
 
-        let mut writer = table.get_writer().await.map_err(lakesoul_error_to_status)?;
+        // let mut writer = table.get_writer(self.args.s3_options()).await.map_err(lakesoul_error_to_status)?;
         
-        // 创建 FlightRecordBatchStream 来解码数据
-        let mut batch_stream = FlightRecordBatchStream::new_from_flight_data(
-            stream.map_err(|e| e.into())
-        );
+        // // 创建 FlightRecordBatchStream 来解码数据
+        // let mut batch_stream = FlightRecordBatchStream::new_from_flight_data(
+        //     stream.map_err(|e| e.into())
+        // );
 
-        // 记录处理的记录数
-        let mut record_count = 0i64;
+        // // 记录处理的记录数
+        // let mut record_count = 0i64;
 
-        let mut batch_count = 0;
+        // let mut batch_count = 0;
 
-        // 处理每个批次
-        while let Some(batch) = batch_stream.try_next().await
-            .map_err(|e| Status::internal(format!("Error getting next batch: {}", e)))? 
-        {
-            let batch_rows = batch.num_rows();
-            record_count += batch_rows as i64;
-            let batch_bytes = get_batch_memory_size(&batch).map_err(datafusion_error_to_status)?;
+        // // 处理每个批次
+        // while let Some(batch) = batch_stream.try_next().await
+        //     .map_err(|e| Status::internal(format!("Error getting next batch: {}", e)))? 
+        // {
+        //     let batch_rows = batch.num_rows();
+        //     record_count += batch_rows as i64;
+        //     let batch_bytes = get_batch_memory_size(&batch).map_err(datafusion_error_to_status)?;
             
-            batch_count += 1;
+        //     batch_count += 1;
 
 
-            // 这里可以添加实际的数据导入逻辑
-            // 例如写入数据库等
-            // info!("batch num_rows: {:?}", batch.num_rows());
-            writer.write_record_batch(batch).await.map_err(datafusion_error_to_status)?;
+        //     // 这里可以添加实际的数据导入逻辑
+        //     // 例如写入数据库等
+        //     // info!("batch num_rows: {:?}", batch.num_rows());
+        //     writer.write_record_batch(batch).await.map_err(datafusion_error_to_status)?;
 
-            self.metrics.add_batch_metrics(batch_rows as u64, batch_bytes as u64);
-            // Log metrics at intervals
-            if batch_count % LOG_INTERVAL == 0 {
-                self.metrics.report_metrics(format!("stream_write_batch_metrics at {} batches", batch_count).as_str());
-            }
+        //     self.metrics.add_batch_metrics(batch_rows as u64, batch_bytes as u64);
+        //     // Log metrics at intervals
+        //     if batch_count % LOG_INTERVAL == 0 {
+        //         self.metrics.report_metrics(format!("stream_write_batch_metrics at {} batches", batch_count).as_str());
+        //     }
 
-        }
-        let result = writer.flush_and_close().await.map_err(datafusion_error_to_status)?;
+        // }
+        // let result = writer.flush_and_close().await.map_err(datafusion_error_to_status)?;
 
-        // 结束流式处理
-        self.metrics.end_stream();
+        // // 结束流式处理
+        // self.metrics.end_stream();
+        let table = Arc::new(LakeSoulTable::for_namespace_and_name(schema.unwrap_or("default".to_string()).as_str(), table.as_str())
+            .await
+            .map_err(|e| Status::internal(format!("Error creating table: {}", e)))?);
 
         if let Some(transaction_id) = transaction_id {
             // Convert Bytes to String before passing to append_transactional_data
             let transaction_id = String::from_utf8(transaction_id.to_vec())
                 .map_err(|e| Status::internal(format!("Invalid transaction ID: {}", e)))?;
-            self.append_transactional_data(transaction_id, Arc::new(table), result)?;
+            self.append_transactional_data(transaction_id, table, flush_result)?;
         } else {
-            table.commit_flush_result(result).await.map_err(lakesoul_error_to_status)?;
+            table.commit_flush_result(flush_result).await.map_err(lakesoul_error_to_status)?;
         }
 
         Ok(record_count)
@@ -878,21 +924,32 @@ fn normalize_sql(sql: &str) -> Result<String, Status> {
 }
 
 impl FlightSqlServiceImpl {
-    pub async fn new(metadata_client: MetaDataClientRef) -> Result<Self> {
+    pub async fn new(metadata_client: MetaDataClientRef, args: Args) -> Result<Self> {
         let secret = metadata_client.get_client_secret();
         let jwt_server = Arc::new(JwtServer::new(secret.as_str()));
         let auth_enabled = std::env::var("JWT_AUTH_ENABLED")
             .unwrap_or("false".to_string())
             .parse::<bool>()
             .unwrap();
+        // 从环境变量或配置中获取目标速率
+        let target_mb_per_second_for_write = std::env::var("STREAM_WRITE_TARGET_MB_PER_SECOND_FOR_WRITE")
+            .unwrap_or("2.0".to_string())
+            .parse::<f64>()
+            .unwrap_or(100.0);
+        let target_mb_per_second_for_flush = std::env::var("STREAM_WRITE_TARGET_MB_PER_SECOND_FOR_FLUSH")
+            .unwrap_or("2.0".to_string())
+            .parse::<f64>()
+            .unwrap_or(100.0);
+
         Ok(FlightSqlServiceImpl {
             client: metadata_client,
+            args,
             contexts: Default::default(),
             statements: Default::default(),
             transactional_data: Default::default(),
             jwt_server,
             auth_enabled,
-            metrics: Arc::new(StreamMetrics::new()),
+            metrics: Arc::new(StreamWriteMetrics::new(target_mb_per_second_for_write, target_mb_per_second_for_flush)),
         })
     }
 
@@ -923,7 +980,7 @@ impl FlightSqlServiceImpl {
             .with_query_planner(planner);
         state.table_factories_mut().insert(
             "LAKESOUL".to_string(),
-            Arc::new(LakeSoulTableProviderFactory::new(self.get_metadata_client())),
+            Arc::new(LakeSoulTableProviderFactory::new(self.get_metadata_client(), self.args.warehouse_prefix.clone())),
         );
         let ctx = Arc::new(SessionContext::new_with_state(state));
 
@@ -933,9 +990,55 @@ impl FlightSqlServiceImpl {
         //     Url::parse("s3://").unwrap().scheme(),
         //     Arc::new(S3FileSystem::new())
         // );
-        let file_url = Url::parse("file://").unwrap();
-        ctx.runtime_env()
-            .register_object_store(&file_url, Arc::new(LocalFileSystem::new()));
+
+        
+        if let Some(warehouse_prefix) = &self.args.warehouse_prefix {
+            env::set_var("LAKESOUL_WAREHOUSE_PREFIX", warehouse_prefix);
+            let url = Url::parse(warehouse_prefix);
+            match url {
+                Ok(url) => match url.scheme() {
+                "s3" | "s3a" => {
+                    if let Some(s3_secret_key) = &self.args.s3_secret_key {
+                        env::set_var("AWS_SECRET_ACCESS_KEY", s3_secret_key);
+                    }
+                    if let Some(s3_access_key) = &self.args.s3_access_key {
+                        env::set_var("AWS_ACCESS_KEY_ID", s3_access_key);
+                    }
+                    if let Some(endpoint) = &self.args.endpoint {
+                        env::set_var("AWS_ENDPOINT", endpoint);
+                    }
+
+                    if ctx.runtime_env()
+                        .object_store(ObjectStoreUrl::parse(&url[..url::Position::BeforePath]).map_err(datafusion_error_to_status)?)
+                        .is_ok()
+                    {
+                        return Err(Status::internal("Object store already registered"));
+                    }
+                    
+                    
+                    let mut config = self.get_io_config_builder().build();
+                    register_s3_object_store(&url, &config, &ctx.runtime_env()).map_err(datafusion_error_to_status)?;
+
+                }
+                "hdfs" => {
+                    todo!()
+                }
+                "file" => {
+                    ctx.runtime_env()
+                        .register_object_store(&url, Arc::new(LocalFileSystem::new()));
+                }
+                _ => {
+                    return Err(Status::internal("Invalid scheme of warehouse prefix"));
+                }
+            }
+            Err(_) => {
+                return Err(Status::internal("Invalid warehouse prefix"));
+            }
+            }
+        } else {
+            ctx.runtime_env()
+                .register_object_store(&Url::parse("file://").unwrap(), Arc::new(LocalFileSystem::new()));
+        }
 
         ctx.state()
             .catalog_list()
@@ -952,6 +1055,45 @@ impl FlightSqlServiceImpl {
                 error!("Error collecting results: {e}");
                 Status::internal(format!("Error collecting results: {e}"))
             })?;
+        let table = LakeSoulTable::for_namespace_and_name("default", "lakesoul_test_table").await.unwrap();
+        table.execute_upsert(
+            RecordBatch::try_new(SchemaRef::new(Schema::new(vec![
+            Field::new("name", DataType::Utf8, true),
+            Field::new("id", DataType::Int32, true),
+                Field::new("score", DataType::Float32, true),
+            ])), 
+            vec![
+                Arc::new(StringArray::from(vec!["Alice", "Bob", "Charlie"])),
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(Float32Array::from(vec![85.5, 90.0, 78.5])),
+            ]).map_err(arrow_error_to_status)?,
+        ).await.map_err(lakesoul_error_to_status)?;
+
+        // 创建 LakeSoulTable
+        let table = LakeSoulTable::for_namespace_and_name("default", "lakesoul_test_table")
+            .await
+            .map_err(|e| Status::internal(format!("Error creating table: {}", e)))?;
+
+        let mut writer = table.get_writer(self.args.s3_options()).await.map_err(lakesoul_error_to_status)?;
+        
+        let batch = RecordBatch::try_new(SchemaRef::new(Schema::new(vec![
+            Field::new("name", DataType::Utf8, true),
+            Field::new("id", DataType::Int32, true),
+            Field::new("score", DataType::Float32, true),
+        ])), 
+        vec![
+            Arc::new(StringArray::from(vec!["Alice", "Bob", "Charlie"])),
+            Arc::new(Int32Array::from(vec![1, 2, 3])),
+            Arc::new(Float32Array::from(vec![85.5, 90.0, 78.5])),
+        ]).map_err(arrow_error_to_status)?;
+        // 这里可以添加实际的数据导入逻辑
+        // 例如写入数据库等
+        // info!("batch num_rows: {:?}", batch.num_rows());
+        writer.write_record_batch(batch).await.map_err(datafusion_error_to_status)?;
+
+        let result = writer.flush_and_close().await.map_err(datafusion_error_to_status)?;
+
+        table.commit_flush_result(result).await.map_err(lakesoul_error_to_status)?;
 
         self.contexts.insert(uuid.clone(), ctx);
         Ok(uuid)
@@ -1117,4 +1259,65 @@ impl FlightSqlServiceImpl {
             .map_err(|e| Status::permission_denied(format!("Invalid authorization token: {e}")))?;
         Ok(())
     }
+
+    fn get_io_config_builder(&self) -> LakeSoulIOConfigBuilder {
+        let object_store_opttions = self.args.s3_options();
+        LakeSoulIOConfigBuilder::new_with_object_store_options(object_store_opttions)
+    }
+
+    async fn write_stream(
+        &self,
+        table_reference: TableReference,
+        stream: PeekableFlightDataStream,
+    ) -> Result<(WriterFlushResult, i64), Status> {
+        // 开始记录流式指标
+        self.metrics.start_stream();
+
+        let schema = table_reference.schema();
+        let table_name = table_reference.table();
+
+        let table = Arc::new(LakeSoulTable::for_namespace_and_name(schema.unwrap_or("default"), &table_name)
+            .await
+            .map_err(|e| Status::internal(format!("Error creating table: {}", e)))?);
+
+        let mut writer = table.get_writer(self.args.s3_options()).await.map_err(lakesoul_error_to_status)?;
+        
+        let mut total_bytes = 0u64;
+        // 创建 FlightRecordBatchStream 来解码数据
+        let mut batch_stream = FlightRecordBatchStream::new_from_flight_data(
+            stream.map_err(|e| e.into())
+        );
+
+        // 记录处理的记录数
+        let mut record_count = 0i64;
+        let mut batch_count = 0;
+
+        // 处理每个批次
+        while let Some(batch) = batch_stream.try_next().await
+            .map_err(|e| Status::internal(format!("Error getting next batch: {}", e)))? 
+        {
+            let batch_rows = batch.num_rows();
+            record_count += batch_rows as i64;
+            let batch_bytes = get_batch_memory_size(&batch).map_err(datafusion_error_to_status)? as u64;
+            total_bytes += batch_bytes;
+            batch_count += 1;
+
+            writer.write_record_batch(batch).await.map_err(datafusion_error_to_status)?;
+
+            self.metrics.add_batch_metrics(batch_rows as u64, batch_bytes);
+            // Log metrics at intervals
+            if batch_count % LOG_INTERVAL == 0 {
+                self.metrics.report_metrics(format!("stream_write_batch_metrics at {} batches of {}", batch_count, table_name).as_str());
+                self.metrics.control_throughput(self.metrics.target_mb_per_second_for_write);
+            }
+        }
+        let result = writer.flush_and_close().await.map_err(datafusion_error_to_status)?;
+
+        // 结束流式处理
+        self.metrics.end_stream();
+
+        Ok((result, record_count))
+    }
+
 }
+

@@ -11,6 +11,7 @@ use arrow::compute::SortOptions;
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
 use datafusion::catalog::Session;
+use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::logical_expr::utils::conjunction;
 use datafusion::{execution::context::SessionState, logical_expr::Expr};
@@ -35,6 +36,7 @@ use lakesoul_io::lakesoul_io_config::LakeSoulIOConfig;
 use lakesoul_metadata::MetaDataClientRef;
 use log::info;
 use proto::proto::entity::TableInfo;
+use url::Url;
 
 use crate::catalog::{format_table_info_partitions, parse_table_info_partitions, LakeSoulTableProperty};
 use crate::lakesoul_table::helpers::{case_fold_column_name, case_fold_table_name, listing_partition_info, parse_partitions_for_partition_desc, prune_partitions};
@@ -430,7 +432,9 @@ impl TableProvider for LakeSoulTableProvider {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let table_path = &self.table_paths()[0];
         // Get the object store for the table path.
-        let _store = state.runtime_env().object_store(table_path)?;
+        // let url = Url::parse(table_path.as_str()).unwrap();
+        // let _store = state.runtime_env().object_store(ObjectStoreUrl::parse(&url[..url::Position::BeforePath])?);
+        // dbg!(&_store);
         let state = state.as_any().downcast_ref::<SessionState>().unwrap();
 
 

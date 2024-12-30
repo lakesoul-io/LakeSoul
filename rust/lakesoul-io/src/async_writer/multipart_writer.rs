@@ -15,6 +15,7 @@ use parquet::{arrow::ArrowWriter, basic::Compression, file::properties::WriterPr
 use parquet::basic::ZstdLevel;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use url::Url;
+use log::info;
 
 use crate::{
     constant::TBD_PARTITION_DESC,
@@ -74,7 +75,7 @@ impl MultiPartAsyncWriter {
 
         // get underlying multipart uploader
         let multipart_upload = object_store.put_multipart(&path).await?;
-        let write_multi_part = WriteMultipart::new_with_chunk_size(multipart_upload, 16 * 1024);
+        let write_multi_part = WriteMultipart::new_with_chunk_size(multipart_upload, 128 * 1024 * 1024);
         
         let in_mem_buf = InMemBuf(Arc::new(AtomicRefCell::new(VecDeque::<u8>::with_capacity(
             16 * 1024, // 16kb

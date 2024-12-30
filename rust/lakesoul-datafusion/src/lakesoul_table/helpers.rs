@@ -37,7 +37,8 @@ use crate::{
 
 pub(crate) fn create_io_config_builder_from_table_info(
     table_info: Arc<TableInfo>,
-    options: Option<HashMap<String, String>>,
+    options: HashMap<String, String>,
+    object_store_options: HashMap<String, String>,
 ) -> Result<LakeSoulIOConfigBuilder> {
     let (range_partitions, hash_partitions) = parse_table_info_partitions(table_info.partitions.clone())?;
     let properties = serde_json::from_str::<LakeSoulTableProperty>(&table_info.properties)?;
@@ -49,10 +50,12 @@ pub(crate) fn create_io_config_builder_from_table_info(
         .with_range_partitions(range_partitions)
         .with_hash_bucket_num(properties.hash_bucket_num.unwrap_or(1));
 
-    if let Some(opts) = options {
-        for (key, value) in opts {
-            builder = builder.with_option(key, value);
-        }
+    for (key, value) in options {
+        builder = builder.with_option(key, value);
+    }
+
+    for (key, value) in object_store_options {
+        builder = builder.with_object_store_option(key, value);
     }
 
     Ok(builder)

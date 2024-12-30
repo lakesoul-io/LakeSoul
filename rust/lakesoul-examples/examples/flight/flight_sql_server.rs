@@ -10,8 +10,9 @@ use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use tonic::service::Interceptor;
+use clap::Parser;
 
-use lakesoul_flight::{FlightSqlServiceImpl, JwtServer};
+use lakesoul_flight::{FlightSqlServiceImpl, JwtServer, args::Args};
 use lakesoul_metadata::MetaDataClient;
 
 
@@ -129,21 +130,17 @@ impl Drop for CallbackOnDrop {
 /// This example shows how to wrap DataFusion with `FlightService` to support looking up schema information for
 /// Parquet files and executing SQL queries against them on a remote server.
 /// This example is run along-side the example `flight_client`.
-#[tokio::main(flavor = "multi_thread", worker_threads = 5)]
+#[tokio::main(flavor = "multi_thread", worker_threads = 10)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 解析命令行参数
+    let args = Args::parse();
 
-    // 设置细的日志格式，包含时间、日志级别、文件位置、行号
-    std::env::set_var("RUST_LOG", "info");
-    // std::env::set_var("RUST_LOG", "debug");
-    // 修改日志格式以包含行号
-    // %l 表示日志级别
-    // %m 表示日志消息
-    // %f 表示文件名
-    // %L 表示行号
+    // 设置日志级别
+    // std::env::set_var("RUST_LOG", &args.log_level);
     std::env::set_var("RUST_LOG_FORMAT", "%Y-%m-%dT%H:%M:%S%:z %l [%f:%L] %m");
-
     env_logger::init();
-    let addr = "0.0.0.0:50051".parse()?;
+
+    let addr = args.addr.parse()?;
     info!("Connecting to metadata server");
 
     let metadata_client = Arc::new(MetaDataClient::from_env().await?);
@@ -152,38 +149,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     metadata_client.meta_cleanup().await?;
     info!("Metadata server cleaned up");
 
-    // 配置 Prometheus 指标导出器
+    // 使用参数中的 metrics_addr
+    let metrics_addr = {
+        let re = regex::Regex::new(r"^([^:]+):(\d+)$").unwrap();
+        let (host, port) = if let Some(caps) = re.captures(&args.metrics_addr) {
+            (
+                caps.get(1).unwrap().as_str().parse()?,
+                caps.get(2).unwrap().as_str().parse()?
+            )
+        } else {
+            return Err("Invalid metrics_addr format".into());
+        };
+        std::net::SocketAddr::new(host, port)
+    };
+
     let builder = PrometheusBuilder::new();
     builder
-        .with_http_listener(std::net::SocketAddr::from(([0, 0, 0, 0], 19000)))
+        .with_http_listener(metrics_addr)
         .add_global_label("service", "lakesoul_flight")
-        // .set_buckets(&[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0])?
         .install()?;
 
-    let service = FlightSqlServiceImpl::new(metadata_client.clone())
-        .await
-        .map_err(to_tonic_err)?;
+    let service = FlightSqlServiceImpl::new(metadata_client.clone(), args)
+        .await?;
     service.init().await?;
     let jwt_server = service.get_jwt_server();
 
     let token_service = TokenService { jwt_server };
 
     let interceptor = GrpcInterceptor::default();
-
     
     let svc = FlightServiceServer::with_interceptor(service, interceptor);
 
     info!("Listening on {addr:?}");
     info!("Metrics server listening on {:?}", std::net::SocketAddr::from(([0, 0, 0, 0], 19000)));
 
-    // 使用 ServiceBuilder 添加拦截器
     Server::builder()
-        
         .add_service(svc)
-        
         .add_service(TokenServerServer::new(token_service))
         .serve(addr)
-        
         .await?;
 
     Ok(())

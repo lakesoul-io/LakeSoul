@@ -28,6 +28,8 @@ metrics = "0.21"
 metrics-exporter-prometheus = "0.12"
 tower = { version = "0.4", features = ["full"] }
 tower-http = { version = "0.4", features = ["trace"] }
+clap = { version = "4.4", features = ["derive"] }
+
 
 [features]
 hdfs = ["lakesoul-io/hdfs"]

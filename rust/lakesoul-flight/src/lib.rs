@@ -1,6 +1,7 @@
 mod flight_sql_server;
 mod jwt;
 mod rbac;
+pub mod args;
 
 pub use flight_sql_server::FlightSqlServiceImpl;
 use datafusion::error::DataFusionError;

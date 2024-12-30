@@ -25,7 +25,7 @@ use datafusion_substrait::substrait::proto::Plan;
 use derivative::Derivative;
 use log::info;
 use object_store::aws::AmazonS3Builder;
-use object_store::{ClientOptions, RetryConfig};
+use object_store::{ClientOptions, ObjectStore, RetryConfig};
 use tracing::debug;
 use url::{ParseError, Url};
 
@@ -216,6 +216,12 @@ impl LakeSoulIOConfigBuilder {
         LakeSoulIOConfigBuilder {
             config: LakeSoulIOConfig::default(),
         }
+    }
+
+    pub fn new_with_object_store_options(options: HashMap<String, String>) -> Self {
+        let mut builder = LakeSoulIOConfigBuilder::new();
+        builder.config.object_store_options = options;
+        builder
     }
 
     pub fn with_prefix(mut self, prefix: String) -> Self {
@@ -417,7 +423,7 @@ pub fn register_s3_object_store(url: &Url, config: &LakeSoulIOConfig, runtime: &
         .or_else(|| config.object_store_options.get("fs.s3a.endpoint").cloned());
     let bucket = config.object_store_options.get("fs.s3a.bucket").cloned();
     let virtual_path_style = config.object_store_options.get("fs.s3a.path.style.access").cloned();
-    let virtual_path_style = virtual_path_style.is_some_and(|s| s == "true");
+    let virtual_path_style = !virtual_path_style.is_some_and(|s| s != "true");
     if !virtual_path_style {
         if let (Some(endpoint_str), Some(bucket)) = (&endpoint, &bucket) {
             // for host style access with endpoint defined, we need to check endpoint contains bucket name
@@ -444,7 +450,10 @@ pub fn register_s3_object_store(url: &Url, config: &LakeSoulIOConfig, runtime: &
         ), None));
     }
 
-    let retry_config = RetryConfig::default();
+    let mut retry_config = RetryConfig::default();
+    retry_config.max_retries = 20;
+    retry_config.retry_timeout = Duration::from_secs(10);
+
     let mut s3_store_builder = AmazonS3Builder::new()
         .with_region(region.unwrap_or_else(|| "us-east-1".to_owned()))
         .with_bucket_name(bucket.unwrap())
@@ -606,10 +615,15 @@ pub fn create_session_context_with_planner(
         register_object_store(&fs, config, &runtime)?;
     };
 
+
     if !config.prefix.is_empty() {
         let prefix = config.prefix.clone();
         info!("NativeIO register prefix fs {}", prefix);
         let normalized_prefix = register_object_store(&prefix, config, &runtime)?;
+        config.prefix = normalized_prefix;
+    } else if let Ok(warehouse_prefix) = std::env::var("LAKESOUL_WAREHOUSE_PREFIX") {
+        info!("NativeIO register warehouse prefix {}", warehouse_prefix);
+        let normalized_prefix = register_object_store(&warehouse_prefix, config, &runtime)?;
         config.prefix = normalized_prefix;
     }
     debug!("{}", &config.prefix);

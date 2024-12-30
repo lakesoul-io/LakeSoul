@@ -18,8 +18,8 @@ use datafusion::{
 };
 use helpers::case_fold_table_name;
 use lakesoul_io::async_writer::{AsyncBatchWriter, AsyncSendableMutableLakeSoulWriter, WriterFlushResult};
-use lakesoul_io::lakesoul_io_config::{OPTION_KEY_MAX_FILE_SIZE, OPTION_KEY_MEM_LIMIT};
-use lakesoul_io::lakesoul_writer::{create_writer};
+use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfigBuilder, OPTION_KEY_MAX_FILE_SIZE, OPTION_KEY_MEM_LIMIT};
+use lakesoul_io::lakesoul_writer::create_writer;
 use lakesoul_io::{lakesoul_io_config::create_session_context_with_planner, lakesoul_reader::RecordBatch};
 use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 use proto::proto::entity::{CommitOp, DataCommitInfo, DataFileOp, FileOp, TableInfo};
@@ -97,7 +97,7 @@ impl LakeSoulTable {
 
     pub async fn upsert_dataframe(&self, dataframe: DataFrame) -> Result<()> {
         let client = Arc::new(MetaDataClient::from_env().await?);
-        let builder = create_io_config_builder(client, None, false, self.table_namespace(), None).await?;
+        let builder = create_io_config_builder(client, None, false, self.table_namespace(), Default::default(), Default::default()).await?;
         let sess_ctx =
             create_session_context_with_planner(&mut builder.clone().build(), Some(LakeSoulQueryPlanner::new_ref()))?;
 
@@ -120,7 +120,7 @@ impl LakeSoulTable {
 
     pub async fn execute_upsert(&self, record_batch: RecordBatch) -> Result<()> {
         let client = Arc::new(MetaDataClient::from_env().await?);
-        let builder = create_io_config_builder(client, None, false, self.table_namespace(), None).await?;
+        let builder = create_io_config_builder(client, None, false, self.table_namespace(), Default::default(), Default::default()).await?;
         let sess_ctx =
             create_session_context_with_planner(&mut builder.clone().build(), Some(LakeSoulQueryPlanner::new_ref()))?;
 
@@ -140,21 +140,23 @@ impl LakeSoulTable {
             .collect()
             .await?;
 
-        debug!("{}", pretty_format_batches(&results)?);
+        info!("{}", pretty_format_batches(&results)?);
         Ok(())
     }
 
-    pub async fn get_writer(&self) -> Result<Box<dyn AsyncBatchWriter + Send>> {
+    pub async fn get_writer(&self, object_store_options: HashMap<String, String>) -> Result<Box<dyn AsyncBatchWriter + Send>> {
         let client = Arc::new(MetaDataClient::from_env().await?);
-        let builder = create_io_config_builder(
+        let mut builder = create_io_config_builder(
             client, 
             Some(self.table_name()), 
             false, 
             self.table_namespace(), 
-            Some(HashMap::from([
+            HashMap::from([
                 (OPTION_KEY_MEM_LIMIT.to_string(), format!("{}", 1u64 * 1024 * 1024 * 1024)),
-            ]))
-        ).await?;
+            ]),
+            object_store_options
+        ).await?.clone();
+
         let config = builder.build();
         let writer = AsyncSendableMutableLakeSoulWriter::try_new(config).await?;
         Ok(Box::new(writer))
@@ -163,7 +165,7 @@ impl LakeSoulTable {
 
     pub async fn to_dataframe(&self, context: &SessionContext) -> Result<DataFrame> {
         let config_builder =
-            create_io_config_builder(self.client(), Some(self.table_name()), true, self.table_namespace(), None).await?;
+            create_io_config_builder(self.client(), Some(self.table_name()), true, self.table_namespace(), HashMap::new(), HashMap::new()).await?;
         let provider = Arc::new(
             LakeSoulTableProvider::try_new(
                 &context.state(),
@@ -179,7 +181,7 @@ impl LakeSoulTable {
 
     pub async fn as_sink_provider(&self, session_state: &SessionState) -> Result<Arc<dyn TableProvider>> {
         let config_builder =
-            create_io_config_builder(self.client(), Some(self.table_name()), false, self.table_namespace(), None)
+            create_io_config_builder(self.client(), Some(self.table_name()), false, self.table_namespace(), HashMap::new(), HashMap::new())
                 .await?
                 .with_prefix(self.table_info.table_path.clone());
         Ok(Arc::new(
