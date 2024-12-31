@@ -106,14 +106,13 @@ impl StreamWriteMetrics {
     }
 
     fn control_throughput(&self, target_mb_per_second: f64) {
-        // let mut last_check = self.last_check.lock().unwrap();
-        let elapsed = {
-            let last_check = self.last_check.lock().unwrap();
-            last_check.elapsed().as_secs_f64()
-        };
+        let mut last_check = self.last_check.lock().unwrap();
+        let elapsed = last_check.elapsed().as_secs_f64();
+        
         if elapsed >= 1.0 {
             let bytes = self.bytes_since_last_check.swap(0, Ordering::SeqCst);
             let current_mb_per_second = (bytes as f64 / MEGABYTE) / elapsed;
+            
             if current_mb_per_second > target_mb_per_second {
                 let sleep_duration = std::time::Duration::from_secs_f64(
                     (current_mb_per_second / target_mb_per_second - 1.0) * elapsed
@@ -122,7 +121,7 @@ impl StreamWriteMetrics {
                 std::thread::sleep(sleep_duration);
                 info!("Waking up after sleeping");
             }
-            let mut last_check = self.last_check.lock().unwrap();
+            
             *last_check = Instant::now();
         }
     }
@@ -933,11 +932,11 @@ impl FlightSqlServiceImpl {
             .unwrap();
         // 从环境变量或配置中获取目标速率
         let target_mb_per_second_for_write = std::env::var("STREAM_WRITE_TARGET_MB_PER_SECOND_FOR_WRITE")
-            .unwrap_or("2.0".to_string())
+            .unwrap_or("100.0".to_string())
             .parse::<f64>()
             .unwrap_or(100.0);
         let target_mb_per_second_for_flush = std::env::var("STREAM_WRITE_TARGET_MB_PER_SECOND_FOR_FLUSH")
-            .unwrap_or("2.0".to_string())
+            .unwrap_or("100.0".to_string())
             .parse::<f64>()
             .unwrap_or(100.0);
 

@@ -451,8 +451,8 @@ pub fn register_s3_object_store(url: &Url, config: &LakeSoulIOConfig, runtime: &
     }
 
     let mut retry_config = RetryConfig::default();
-    retry_config.max_retries = 20;
-    retry_config.retry_timeout = Duration::from_secs(10);
+    retry_config.backoff.base = 2.5;
+    retry_config.backoff.max_backoff = Duration::from_secs(20);
 
     let mut s3_store_builder = AmazonS3Builder::new()
         .with_region(region.unwrap_or_else(|| "us-east-1".to_owned()))
@@ -462,9 +462,9 @@ pub fn register_s3_object_store(url: &Url, config: &LakeSoulIOConfig, runtime: &
         .with_client_options(
             ClientOptions::new()
                 .with_allow_http(true)
-                .with_connect_timeout(Duration::from_secs(10))
-                .with_pool_idle_timeout(Duration::from_secs(300))
-                .with_timeout(Duration::from_secs(10)),
+                .with_connect_timeout(Duration::from_secs(30))
+                .with_pool_idle_timeout(Duration::from_secs(600))
+                .with_timeout(Duration::from_secs(30)),
         )
         .with_allow_http(true);
     if let (Some(k), Some(s)) = (key, secret) {
