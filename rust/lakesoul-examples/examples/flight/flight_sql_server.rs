@@ -130,64 +130,70 @@ impl Drop for CallbackOnDrop {
 /// This example shows how to wrap DataFusion with `FlightService` to support looking up schema information for
 /// Parquet files and executing SQL queries against them on a remote server.
 /// This example is run along-side the example `flight_client`.
-#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 解析命令行参数
     let args = Args::parse();
 
-    // 设置日志级别
-    // std::env::set_var("RUST_LOG", &args.log_level);
-    std::env::set_var("RUST_LOG_FORMAT", "%Y-%m-%dT%H:%M:%S%:z %l [%f:%L] %m");
-    env_logger::init();
+    // 创建并配置 tokio runtime
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(args.worker_threads)
+        .enable_all()
+        .build()?;
 
-    let addr = args.addr.parse()?;
-    info!("Connecting to metadata server");
+    // 使用 runtime 运行异步代码
+    runtime.block_on(async {
+        // 设置日志级别
+        env_logger::init();
 
-    let metadata_client = Arc::new(MetaDataClient::from_env().await?);
-    info!("Metadata server connected");
-    info!("Cleaning up metadata server");
-    metadata_client.meta_cleanup().await?;
-    info!("Metadata server cleaned up");
+        let addr = args.addr.parse()?;
+        info!("Connecting to metadata server");
 
-    // 使用参数中的 metrics_addr
-    let metrics_addr = {
-        let re = regex::Regex::new(r"^([^:]+):(\d+)$").unwrap();
-        let (host, port) = if let Some(caps) = re.captures(&args.metrics_addr) {
-            (
-                caps.get(1).unwrap().as_str().parse()?,
-                caps.get(2).unwrap().as_str().parse()?
-            )
-        } else {
-            return Err("Invalid metrics_addr format".into());
+        let metadata_client = Arc::new(MetaDataClient::from_env().await?);
+        info!("Metadata server connected");
+        info!("Cleaning up metadata server");
+        metadata_client.meta_cleanup().await?;
+        info!("Metadata server cleaned up");
+
+        // 使用参数中的 metrics_addr
+        let metrics_addr = {
+            let re = regex::Regex::new(r"^([^:]+):(\d+)$").unwrap();
+            let (host, port) = if let Some(caps) = re.captures(&args.metrics_addr) {
+                (
+                    caps.get(1).unwrap().as_str().parse()?,
+                    caps.get(2).unwrap().as_str().parse()?
+                )
+            } else {
+                return Err("Invalid metrics_addr format".into());
+            };
+            std::net::SocketAddr::new(host, port)
         };
-        std::net::SocketAddr::new(host, port)
-    };
 
-    let builder = PrometheusBuilder::new();
-    builder
-        .with_http_listener(metrics_addr)
-        .add_global_label("service", "lakesoul_flight")
-        .install()?;
+        let builder = PrometheusBuilder::new();
+        builder
+            .with_http_listener(metrics_addr)
+            .add_global_label("service", "lakesoul_flight")
+            .install()?;
 
-    let service = FlightSqlServiceImpl::new(metadata_client.clone(), args)
-        .await?;
-    service.init().await?;
-    let jwt_server = service.get_jwt_server();
+        let service = FlightSqlServiceImpl::new(metadata_client.clone(), args)
+            .await?;
+        service.init().await?;
+        let jwt_server = service.get_jwt_server();
 
-    let token_service = TokenService { jwt_server };
+        let token_service = TokenService { jwt_server };
 
-    let interceptor = GrpcInterceptor::default();
-    
-    let svc = FlightServiceServer::with_interceptor(service, interceptor);
+        let interceptor = GrpcInterceptor::default();
+        
+        let svc = FlightServiceServer::with_interceptor(service, interceptor);
 
-    info!("Listening on {addr:?}");
-    info!("Metrics server listening on {:?}", std::net::SocketAddr::from(([0, 0, 0, 0], 19000)));
+        info!("Listening on {addr:?}");
+        info!("Metrics server listening on {:?}", std::net::SocketAddr::from(([0, 0, 0, 0], 19000)));
 
-    Server::builder()
-        .add_service(svc)
-        .add_service(TokenServerServer::new(token_service))
-        .serve(addr)
-        .await?;
+        Server::builder()
+            .add_service(svc)
+            .add_service(TokenServerServer::new(token_service))
+            .serve(addr)
+            .await?;
 
-    Ok(())
+        Ok(())
+    })
 }

@@ -9,6 +9,10 @@ edition = "2021"
 name = "flight_sql_server"
 path = "examples/flight/flight_sql_server.rs"
 
+[[bin]]
+name = "flight_sql_server"
+path = "examples/flight/flight_sql_server.rs"
+
 [dependencies]
 tokio = {workspace = true}
 tonic = {workspace = true}

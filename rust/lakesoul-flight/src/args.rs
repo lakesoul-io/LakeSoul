@@ -39,6 +39,10 @@ pub struct Args {
     /// S3 密钥
     #[arg(long)]
     pub s3_secret_key: Option<String>,
+
+    /// 设置 tokio runtime 的工作线程数
+    #[clap(long, default_value = "2")]
+    pub worker_threads: usize,
 }
 
 impl Args {
