@@ -72,16 +72,39 @@ impl MetaDataClient {
                 .await
             }
             Err(_) => {
-                Self::from_config(
-                    "host=127.0.0.1 port=5432 dbname=lakesoul_test user=lakesoul_test password=lakesoul_test"
-                        .to_string(),
-                )
-                .await
+                match env::var("LAKESOUL_PG_URL") {
+                    Ok(pg_url) => {
+                        info!("create metadata client from env LAKESOUL_PG_URL= {}", pg_url);
+                        let url = Url::parse(&pg_url[5..])?;
+                        Self::from_config(format!(
+                            "host={} port={} dbname={} user={} password={}",
+                            url.host_str()
+                                .ok_or(LakeSoulMetaDataError::Internal("url host missing".to_string()))?,
+                            url.port()
+                                .ok_or(LakeSoulMetaDataError::Internal("url port missing".to_string()))?,
+                            url.path_segments()
+                                .ok_or(LakeSoulMetaDataError::Internal("url path missing".to_string()))?
+                                .next()
+                                .ok_or(LakeSoulMetaDataError::Internal("url path missing".to_string()))?,
+                            env::var("LAKESOUL_PG_USERNAME").unwrap_or_else(|_| "lakesoul_test".to_string()),
+                            env::var("LAKESOUL_PG_PASSWORD").unwrap_or_else(|_| "lakesoul_test".to_string())    
+                        ))
+                        .await
+                    }
+                    Err(_) => {
+                        Self::from_config(
+                            "host=127.0.0.1 port=5432 dbname=lakesoul_test user=lakesoul_test password=lakesoul_test"
+                                .to_string(),
+                        )
+                        .await
+                    }
+                }
             }
         }
     }
 
     pub async fn from_config(config: String) -> Result<Self> {
+        info!("create metadata client from config: {}", config);
         Self::from_config_and_max_retry(config, 3).await
     }
 

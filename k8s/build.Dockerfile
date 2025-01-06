@@ -3,17 +3,18 @@ FROM ubuntu:22.04
 ENV HADOOP_VERSION=3.3.6
 ENV HADOOP_HOME=/opt/hadoop
 
-RUN curl -L -o /opt/hadoop-${HADOOP_VERSION}.tar.gz https://mirrors.huaweicloud.com/apache/hadoop/common/hadoop-${HADOOP_VERSION}/hadoop-${HADOOP_VERSION}.tar.gz && \                                                                                                                                                        HADOOP_TAR_NAME=hadoop-${HADOOP_VERSION} && \
-    tar -xzf /opt/${HADOOP_TAR_NAME}.tar.gz -C /opt && \
-    ln -s /opt/hadoop-${HADOOP_VERSION} ${HADOOP_HOME} && \
-    rm /opt/${HADOOP_TAR_NAME}.tar.gz \
-
-RUN sed -i "s@http://.*archive.ubuntu.com@http://mirrors.huaweicloud.com@g" /etc/apt/sources.list
-RUN sed -i "s@http://.*security.ubuntu.com@http://mirrors.huaweicloud.com@g" /etc/apt/sources.list
+RUN sed -i "s@http://.*archive.ubuntu.com@http://mirrors.huaweicloud.com@g" /etc/apt/sources.list && \
+    sed -i "s@http://.*security.ubuntu.com@http://mirrors.huaweicloud.com@g" /etc/apt/sources.list
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update -y && \
     apt-get install net-tools procps telnet vim openjdk-11-jre-headless curl libjemalloc2 -y
+
+RUN curl -L -o /opt/hadoop-${HADOOP_VERSION}.tar.gz https://mirrors.huaweicloud.com/apache/hadoop/common/hadoop-${HADOOP_VERSION}/hadoop-${HADOOP_VERSION}.tar.gz && \
+    HADOOP_TAR_NAME=hadoop-${HADOOP_VERSION} && \
+    tar -xzf /opt/${HADOOP_TAR_NAME}.tar.gz -C /opt && \
+    ln -s /opt/hadoop-${HADOOP_VERSION} ${HADOOP_HOME} && \
+    rm /opt/${HADOOP_TAR_NAME}.tar.gz
 
 ENV JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
 ENV LD_LIBRARY_PATH=${JAVA_HOME}/lib/server:${LD_LIBRARY_PATH}
@@ -37,9 +38,9 @@ RUN groupadd -r -g ${LAKESOUL_UID} ${LAKESOUL_USER} \
  && echo ${LAKESOUL_USER}' ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers \
  && mkdir -p /app
 
-COPY ./flight_sql_server /app/flight_sql_server
+COPY rust/target/release/flight_sql_server /app/flight_sql_server
 RUN chown -R $LAKESOUL_USER:$LAKESOUL_USER /app \
-    && chmod +x /app/flight_sql_server
+    && chmod +x /app/flight_sql_server --warehouse-prefix hdfs://simple-hdfs/lakesoul-bucket/benchmarkWrite
 
 USER ${LAKESOUL_USER}
 WORKDIR ${HOME}

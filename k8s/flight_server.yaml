@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: lakesoul-flight-server
+  name: lakesoul-flight-server
+  namespace: lake-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lakesoul-flight-server
+  template:
+    metadata:
+      labels:
+        app: lakesoul-flight-server
+    spec:
+      containers:
+      - image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/lakesoul-flight-server:v1.0.0
+        command: ["/app/flight_sql_server", "--warehouse-prefix", "hdfs://simple-hdfs/lakesoul-bucket/flight_test"]
+        resources:
+          limits:
+            cpu: 2000m
+            memory: 100Mi
+          requests:
+            cpu: 1000m
+            memory: 50Mi
+        imagePullPolicy: Always
+        name: lakesoul-flight-server
+        ports:
+        - containerPort: 50051
+        env:
+        - name: HADOOP_CONF_DIR
+          value: /etc/hadoop/conf
+        - name: LAKESOUL_PG_DRIVER
+          value: com.lakesoul.shaded.org.postgresql.Driver
+        - name: LAKESOUL_PG_URL
+          value: jdbc:postgres://root:eH9hdJkqYORNsNN6OGjF@192.168.24.180:5432/flight_test?stringtype=unspecified
+        - name: LAKESOUL_PG_USERNAME
+          value: root
+        - name: LAKESOUL_PG_PASSWORD
+          value: eH9hdJkqYORNsNN6OGjF
+        volumeMounts:
+        - mountPath: /etc/hadoop/conf
+          name: hadoop-config-volume
+      volumes:
+      - configMap:
+          defaultMode: 420
+          items:
+            - key: hdfs-site.xml
+              path: hdfs-site.xml
+            - key: core-site.xml
+              path: core-site.xml
+          name: test-dashboard-config
+        name: hadoop-config-volume
