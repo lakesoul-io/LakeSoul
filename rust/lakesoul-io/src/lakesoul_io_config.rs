@@ -478,7 +478,7 @@ pub fn register_s3_object_store(url: &Url, config: &LakeSoulIOConfig, runtime: &
     Ok(())
 }
 
-fn register_hdfs_object_store(
+pub fn register_hdfs_object_store(
     _url: &Url,
     _host: &str,
     _config: &LakeSoulIOConfig,

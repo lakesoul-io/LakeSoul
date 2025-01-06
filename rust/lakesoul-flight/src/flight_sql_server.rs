@@ -24,7 +24,7 @@ use lakesoul_datafusion::lakesoul_table::LakeSoulTable;
 use lakesoul_datafusion::planner::query_planner::LakeSoulQueryPlanner;
 use lakesoul_datafusion::serialize::arrow_java::schema_from_metadata_str;
 use lakesoul_io::helpers::get_batch_memory_size;
-use lakesoul_io::lakesoul_io_config::{register_s3_object_store, LakeSoulIOConfigBuilder};
+use lakesoul_io::lakesoul_io_config::{register_s3_object_store, register_hdfs_object_store, LakeSoulIOConfigBuilder};
 use tonic::{Request, Response, Status, metadata::MetadataValue, Streaming};
 use prost::Message;
 
@@ -1020,7 +1020,26 @@ impl FlightSqlServiceImpl {
 
                 }
                 "hdfs" => {
-                    todo!()
+                    if url.has_host() {
+                        if ctx.runtime_env()
+                            .object_store(ObjectStoreUrl::parse(&url[..url::Position::BeforePath]).map_err(datafusion_error_to_status)?)
+                            .is_ok()
+                        {
+                            return Err(Status::internal("Object store already registered"));
+                        }
+                        let mut config = self.get_io_config_builder().build();
+                        register_hdfs_object_store(
+                            &url,
+                            &url[url::Position::BeforeHost..url::Position::BeforePath],
+                            &config,
+                            &ctx.runtime_env(),
+                        ).map_err(datafusion_error_to_status)?;
+                    } else {
+                        // defaultFS should have been registered with hdfs,
+                        // and we convert hdfs://user/hadoop/file to
+                        // hdfs://defaultFS/user/hadoop/file
+                        todo!()
+                    }
                 }
                 "file" => {
                     ctx.runtime_env()
