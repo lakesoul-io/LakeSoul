@@ -40,7 +40,7 @@ RUN groupadd -r -g ${LAKESOUL_UID} ${LAKESOUL_USER} \
 
 COPY rust/target/release/flight_sql_server /app/flight_sql_server
 RUN chown -R $LAKESOUL_USER:$LAKESOUL_USER /app \
-    && chmod +x /app/flight_sql_server --warehouse-prefix hdfs://simple-hdfs/lakesoul-bucket/benchmarkWrite
+    && chmod +x /app/flight_sql_server 
 
 USER ${LAKESOUL_USER}
 WORKDIR ${HOME}
