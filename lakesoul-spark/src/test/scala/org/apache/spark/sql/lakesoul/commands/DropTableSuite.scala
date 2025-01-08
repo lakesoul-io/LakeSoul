@@ -50,6 +50,19 @@ class DropTableSuite extends QueryTest
     })
   }
 
+  test("truncate table") {
+    withTempDir(f => {
+      val tmpPath = f.getCanonicalPath
+      Seq((1, 2), (2, 3), (3, 4)).toDF("key", "value")
+        .write
+        .format("lakesoul")
+        .mode("append")
+        .save(tmpPath)
+      LakeSoulTable.forPath(tmpPath).truncateTable()
+      val table = LakeSoulTable.forPath(tmpPath)
+      checkAnswer(table.toDF, Seq.empty[Row])
+    })
+  }
 
   test("drop partition") {
     withTempDir(f => {

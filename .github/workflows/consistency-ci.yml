@@ -52,7 +52,7 @@ jobs:
       - name: Install requirement
         uses: ConorMacBride/install-package@v1
         with:
-          apt: postgresql-client-14 cargo
+          apt: postgresql-client-16 cargo
       - name: Init PG
         run: |
           ./script/meta_init_for_local_test.sh -j 2

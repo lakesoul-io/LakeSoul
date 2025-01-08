@@ -365,6 +365,11 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
     true
   }
 
+  def truncateTable(): Boolean = {
+    executeTruncateTable(snapshotManagement)
+    true
+  }
+
   def dropPartition(condition: String): Unit = {
     dropPartition(functions.expr(condition).expr)
   }

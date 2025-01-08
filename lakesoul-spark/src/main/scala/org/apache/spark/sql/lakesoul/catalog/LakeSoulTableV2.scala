@@ -16,7 +16,7 @@ import org.apache.spark.sql.connector.catalog._
 import org.apache.spark.sql.connector.expressions.{FieldReference, IdentityTransform, Transform}
 import org.apache.spark.sql.connector.write._
 import org.apache.spark.sql.lakesoul._
-import org.apache.spark.sql.lakesoul.commands.WriteIntoTable
+import org.apache.spark.sql.lakesoul.commands.{TruncateTableCommand, WriteIntoTable}
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulDataSource, LakeSoulSQLConf, LakeSoulSourceUtils}
 import org.apache.spark.sql.lakesoul.utils.SparkUtil
@@ -36,7 +36,8 @@ case class LakeSoulTableV2(spark: SparkSession,
                            tableIdentifier: Option[String] = None,
                            userDefinedFileIndex: Option[LakeSoulFileIndexV2] = None,
                            var mergeOperatorInfo: Option[Map[String, String]] = None)
-  extends Table with SupportsWrite with SupportsRead with SupportsPartitionManagement {
+  extends Table with SupportsWrite with SupportsRead with SupportsPartitionManagement
+  with TruncatableTable {
 
   val path: Path = SparkUtil.makeQualifiedTablePath(path_orig)
 
@@ -51,7 +52,6 @@ case class LakeSoulTableV2(spark: SparkSession,
           tableIdentifier.substring(0, idx)
         }
     }
-
 
   private lazy val (rootPath, partitionFilters) = {
     if (catalogTable.isDefined) {
@@ -220,6 +220,10 @@ case class LakeSoulTableV2(spark: SparkSession,
     ss
   }
 
+  override def truncateTable(): Boolean = {
+    TruncateTableCommand.run(snapshot)
+    true
+  }
 }
 
 private class WriteIntoTableBuilder(snapshotManagement: SnapshotManagement,
