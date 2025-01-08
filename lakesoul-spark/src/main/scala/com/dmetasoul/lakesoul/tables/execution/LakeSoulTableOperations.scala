@@ -230,6 +230,16 @@ trait LakeSoulTableOperations extends AnalysisHelper {
     DropTableCommand.run(snapshot)
   }
 
+  protected def executeTruncateTable(snapshotManagement: SnapshotManagement): Unit = {
+    val snapshot = snapshotManagement.snapshot
+    val tableInfo = snapshot.getTableInfo
+
+    if (!SparkMetaVersion.isTableIdExists(tableInfo.table_path_s.get, tableInfo.table_id)) {
+      LakeSoulErrors.tableNotFoundException(tableInfo.table_path_s.get, tableInfo.table_id)
+    }
+    TruncateTableCommand.run(snapshot)
+  }
+
   protected def executeDropPartition(snapshotManagement: SnapshotManagement,
                                      condition: Expression): Unit = {
     DropPartitionCommand.run(

@@ -486,7 +486,49 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
     }
   }
 
-  //  test("read test table") {
-  //    sql("select * from test_local_java_table where range=2").show(1000)
-  //  }
+  test("Truncate TABLE") {
+    withTempDir { dir =>
+      withTable("lakesoul_test") {
+        val path = dir.getCanonicalPath
+
+        val df = Seq(
+          (1, "IT", "Alice"),
+          (2, "CS", "Bob"),
+          (3, "IT", "Carol")).toDF("id", "dept", "name")
+        df.write.format("lakesoul").save(path)
+
+        sql(s"CREATE TABLE lakesoul_test USING lakesoul LOCATION '$path'")
+        checkAnswer(sql("select * from lakesoul_test"),
+          Row(1, "IT", "Alice") ::
+          Row(2, "CS", "Bob") ::
+          Row(3, "IT", "Carol") :: Nil)
+
+        sql("TRUNCATE TABLE lakesoul_test")
+        checkAnswer(sql("select * from lakesoul_test"), Seq.empty[Row])
+      }
+    }
+  }
+
+  test("Truncate TABLE with partitions") {
+    withTempDir { dir =>
+      withTable("lakesoul_test") {
+        val path = dir.getCanonicalPath
+
+        val df = Seq(
+          (1, "IT", "Alice"),
+          (2, "CS", "Bob"),
+          (3, "IT", "Carol")).toDF("id", "dept", "name")
+        df.write.format("lakesoul").partitionBy("dept").save(path)
+
+        sql(s"CREATE TABLE lakesoul_test USING lakesoul LOCATION '$path'")
+        checkAnswer(sql("select * from lakesoul_test").select("id", "dept", "name"),
+          Row(1, "IT", "Alice") ::
+            Row(2, "CS", "Bob") ::
+            Row(3, "IT", "Carol") :: Nil)
+
+        sql("TRUNCATE TABLE lakesoul_test")
+        checkAnswer(sql("select * from lakesoul_test"), Seq.empty[Row])
+      }
+    }
+  }
 }

@@ -8,6 +8,7 @@ import com.dmetasoul.lakesoul.meta._
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Expression, PredicateHelper}
+import org.apache.spark.sql.lakesoul.commands.DropTableCommand.WAIT_TIME
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.{PartitionFilter, Snapshot, SnapshotManagement}
 
@@ -38,6 +39,22 @@ object DropTableCommand {
     val sessionHadoopConf = SparkSession.active.sessionState.newHadoopConf()
     val fs = path.getFileSystem(sessionHadoopConf)
     SnapshotManagement.invalidateCache(table_path.get)
+    fs.delete(path, true)
+  }
+}
+
+object TruncateTableCommand {
+  def run(snapshot: Snapshot): Unit = {
+    val tableInfo = snapshot.getTableInfo
+    val table_id = tableInfo.table_id
+    val table_path = tableInfo.table_path_s
+    TimeUnit.SECONDS.sleep(WAIT_TIME)
+    SparkMetaVersion.dropPartitionInfoByTableId(table_id)
+    DataOperation.dropDataInfoData(table_id)
+    SnapshotManagement.invalidateCache(table_path.get)
+    val path = new Path(table_path.get)
+    val sessionHadoopConf = SparkSession.active.sessionState.newHadoopConf()
+    val fs = path.getFileSystem(sessionHadoopConf)
     fs.delete(path, true)
   }
 }
