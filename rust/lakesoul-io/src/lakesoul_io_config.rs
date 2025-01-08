@@ -367,16 +367,6 @@ impl LakeSoulIOConfigBuilder {
         self
     }
 
-//     pub fn with_nbits(mut self,mut nbits:u64) -> Self {
-//         self.config.nbits = Some(nbits);
-//         self
-//     }
-
-//     pub fn with_d(mut self,d:u64) -> Self {
-//         self.config.d = Some(d);
-//         self
-//     }
-
     pub fn with_seed(mut self,seed:u64) -> Self {
         self.config.seed = seed;
         self

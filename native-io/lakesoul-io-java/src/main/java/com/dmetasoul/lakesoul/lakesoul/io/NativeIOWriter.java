@@ -89,10 +89,6 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
         assert tokioRuntimeBuilder != null;
         assert ioConfigBuilder != null;
 
-        setOption("is_lsh","true");
-        setOption("nbits","400");
-        setOption("d","200");
-
         tokioRuntime = libLakeSoulIO.create_tokio_runtime_from_builder(tokioRuntimeBuilder);
         config = libLakeSoulIO.create_lakesoul_io_config_from_builder(ioConfigBuilder);
         writer = libLakeSoulIO.create_lakesoul_writer_from_config(config, tokioRuntime);
