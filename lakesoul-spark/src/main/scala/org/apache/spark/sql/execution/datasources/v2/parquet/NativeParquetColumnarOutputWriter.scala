@@ -20,7 +20,6 @@ import scala.collection.JavaConverters.{asScalaBufferConverter, seqAsJavaListCon
 class NativeParquetCompactionColumnarOutputWriter(path: String, dataSchema: StructType, timeZoneId: String,
                                                   context: TaskAttemptContext)
   extends NativeParquetOutputWriter(path, dataSchema, timeZoneId, context) {
-
   override def write(row: InternalRow): Unit = {
     if (!row.isInstanceOf[ArrowFakeRow]) {
       throw new IllegalStateException(

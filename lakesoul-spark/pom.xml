@@ -142,6 +142,14 @@ SPDX-License-Identifier: Apache-2.0
                 </exclusion>
             </exclusions>
         </dependency>
+        <!-- https://mvnrepository.com/artifact/io.jhdf/jhdf -->
+        <dependency>
+            <groupId>io.jhdf</groupId>
+            <artifactId>jhdf</artifactId>
+            <version>0.6.10</version>
+        </dependency>
+
+
 
         <dependency>
             <groupId>org.apache.spark</groupId>
@@ -322,55 +330,55 @@ SPDX-License-Identifier: Apache-2.0
         </dependency>
 
         <!-- for test only. we don't rely on gluten during package and runtime -->
-<!--        <dependency>-->
-<!--            <groupId>io.glutenproject</groupId>-->
-<!--            <artifactId>backends-velox</artifactId>-->
-<!--            <version>${gluten.version}</version>-->
-<!--            <scope>${local.scope}</scope>-->
-<!--        </dependency>-->
-<!--        <dependency>-->
-<!--            <groupId>io.glutenproject</groupId>-->
-<!--            <artifactId>gluten-core</artifactId>-->
-<!--            <version>${gluten.version}</version>-->
-<!--            <exclusions>-->
-<!--                <exclusion>-->
-<!--                    <groupId>io.glutenproject</groupId>-->
-<!--                    <artifactId>spark-sql-columnar-shims-spark32</artifactId>-->
-<!--                </exclusion>-->
-<!--            </exclusions>-->
-<!--            <scope>${local.scope}</scope>-->
-<!--        </dependency>-->
-<!--        <dependency>-->
-<!--            <groupId>io.glutenproject</groupId>-->
-<!--            <artifactId>gluten-core</artifactId>-->
-<!--            <version>${gluten.version}</version>-->
-<!--            <exclusions>-->
-<!--                <exclusion>-->
-<!--                    <groupId>io.glutenproject</groupId>-->
-<!--                    <artifactId>spark-sql-columnar-shims-spark32</artifactId>-->
-<!--                </exclusion>-->
-<!--            </exclusions>-->
-<!--            <classifier>tests</classifier>-->
-<!--            <scope>test</scope>-->
-<!--        </dependency>-->
-<!--        <dependency>-->
-<!--            <groupId>io.glutenproject</groupId>-->
-<!--            <artifactId>gluten-data</artifactId>-->
-<!--            <version>${gluten.version}</version>-->
-<!--            <scope>${local.scope}</scope>-->
-<!--        </dependency>-->
-<!--        <dependency>-->
-<!--            <groupId>io.glutenproject</groupId>-->
-<!--            <artifactId>spark-sql-columnar-shims-common</artifactId>-->
-<!--            <version>${gluten.version}</version>-->
-<!--            <scope>${local.scope}</scope>-->
-<!--        </dependency>-->
+        <!--        <dependency>-->
+        <!--            <groupId>io.glutenproject</groupId>-->
+        <!--            <artifactId>backends-velox</artifactId>-->
+        <!--            <version>${gluten.version}</version>-->
+        <!--            <scope>${local.scope}</scope>-->
+        <!--        </dependency>-->
+        <!--        <dependency>-->
+        <!--            <groupId>io.glutenproject</groupId>-->
+        <!--            <artifactId>gluten-core</artifactId>-->
+        <!--            <version>${gluten.version}</version>-->
+        <!--            <exclusions>-->
+        <!--                <exclusion>-->
+        <!--                    <groupId>io.glutenproject</groupId>-->
+        <!--                    <artifactId>spark-sql-columnar-shims-spark32</artifactId>-->
+        <!--                </exclusion>-->
+        <!--            </exclusions>-->
+        <!--            <scope>${local.scope}</scope>-->
+        <!--        </dependency>-->
+        <!--        <dependency>-->
+        <!--            <groupId>io.glutenproject</groupId>-->
+        <!--            <artifactId>gluten-core</artifactId>-->
+        <!--            <version>${gluten.version}</version>-->
+        <!--            <exclusions>-->
+        <!--                <exclusion>-->
+        <!--                    <groupId>io.glutenproject</groupId>-->
+        <!--                    <artifactId>spark-sql-columnar-shims-spark32</artifactId>-->
+        <!--                </exclusion>-->
+        <!--            </exclusions>-->
+        <!--            <classifier>tests</classifier>-->
+        <!--            <scope>test</scope>-->
+        <!--        </dependency>-->
+        <!--        <dependency>-->
+        <!--            <groupId>io.glutenproject</groupId>-->
+        <!--            <artifactId>gluten-data</artifactId>-->
+        <!--            <version>${gluten.version}</version>-->
+        <!--            <scope>${local.scope}</scope>-->
+        <!--        </dependency>-->
+        <!--        <dependency>-->
+        <!--            <groupId>io.glutenproject</groupId>-->
+        <!--            <artifactId>spark-sql-columnar-shims-common</artifactId>-->
+        <!--            <version>${gluten.version}</version>-->
+        <!--            <scope>${local.scope}</scope>-->
+        <!--        </dependency>-->
         <!-- currently this jar is missing on maven repo -->
-<!--        <dependency>-->
-<!--            <groupId>io.glutenproject</groupId>-->
-<!--            <artifactId>spark-sql-columnar-shims-spark33</artifactId>-->
-<!--            <version>${gluten.version}</version>-->
-<!--        </dependency>-->
+        <!--        <dependency>-->
+        <!--            <groupId>io.glutenproject</groupId>-->
+        <!--            <artifactId>spark-sql-columnar-shims-spark33</artifactId>-->
+        <!--            <version>${gluten.version}</version>-->
+        <!--        </dependency>-->
     </dependencies>
 
     <profiles>
