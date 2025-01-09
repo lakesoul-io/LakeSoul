@@ -43,6 +43,10 @@ pub struct Args {
     /// 设置 tokio runtime 的工作线程数
     #[clap(long, default_value = "2")]
     pub worker_threads: usize,
+
+    /// 流写入速率限制
+    #[arg(long, default_value = "100.0")]
+    pub throughput_limit: String,
 }
 
 impl Args {

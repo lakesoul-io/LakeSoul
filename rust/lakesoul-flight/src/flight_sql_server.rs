@@ -85,27 +85,25 @@ struct StreamWriteMetrics {
     total_bytes: AtomicU64,
     total_rows: AtomicU64,
     start_time: Mutex<Option<Instant>>,
-    target_mb_per_second_for_write: f64,
-    target_mb_per_second_for_flush: f64,
+    throughput_limit: f64,
     last_check: Mutex<Instant>,
     bytes_since_last_check: AtomicU64,
 }
 
 impl StreamWriteMetrics {
-    fn new(target_mb_per_second_for_write: f64, target_mb_per_second_for_flush: f64) -> Self {
+    fn new(throughput_limit: f64) -> Self {
         Self {
             active_streams: AtomicI64::new(0),
             total_bytes: AtomicU64::new(0),
             total_rows: AtomicU64::new(0),
             start_time: Mutex::new(None),
-            target_mb_per_second_for_write,
-            target_mb_per_second_for_flush,
+            throughput_limit,
             last_check: Mutex::new(Instant::now()),
             bytes_since_last_check: AtomicU64::new(0),
         }
     }
 
-    fn control_throughput(&self, target_mb_per_second: f64) {
+    fn control_throughput(&self) {
         let mut last_check = self.last_check.lock().unwrap();
         let elapsed = last_check.elapsed().as_secs_f64();
         
@@ -113,9 +111,9 @@ impl StreamWriteMetrics {
             let bytes = self.bytes_since_last_check.swap(0, Ordering::SeqCst);
             let current_mb_per_second = (bytes as f64 / MEGABYTE) / elapsed;
             
-            if current_mb_per_second > target_mb_per_second {
+            if current_mb_per_second > self.throughput_limit {
                 let sleep_duration = std::time::Duration::from_secs_f64(
-                    (current_mb_per_second / target_mb_per_second - 1.0) * elapsed
+                    (current_mb_per_second / self.throughput_limit - 1.0) * elapsed
                 );
                 info!("Sleeping for {} seconds to control throughput", sleep_duration.as_secs_f64());
                 std::thread::sleep(sleep_duration);
@@ -151,7 +149,7 @@ impl StreamWriteMetrics {
             self.total_rows.store(0, Ordering::SeqCst);
             self.bytes_since_last_check.store(0, Ordering::SeqCst);
         }
-        self.control_throughput(self.target_mb_per_second_for_flush);
+        self.control_throughput();
     }
 
     fn add_batch_metrics(&self, rows: u64, bytes: u64) {
@@ -787,48 +785,6 @@ impl FlightSqlService for FlightSqlServiceImpl {
         });
         let (flush_result, record_count) = self.write_stream(table_reference, stream).await?;
 
-        // // 开始记录流式指标
-        // self.metrics.start_stream();
-
-        // let mut writer = table.get_writer(self.args.s3_options()).await.map_err(lakesoul_error_to_status)?;
-        
-        // // 创建 FlightRecordBatchStream 来解码数据
-        // let mut batch_stream = FlightRecordBatchStream::new_from_flight_data(
-        //     stream.map_err(|e| e.into())
-        // );
-
-        // // 记录处理的记录数
-        // let mut record_count = 0i64;
-
-        // let mut batch_count = 0;
-
-        // // 处理每个批次
-        // while let Some(batch) = batch_stream.try_next().await
-        //     .map_err(|e| Status::internal(format!("Error getting next batch: {}", e)))? 
-        // {
-        //     let batch_rows = batch.num_rows();
-        //     record_count += batch_rows as i64;
-        //     let batch_bytes = get_batch_memory_size(&batch).map_err(datafusion_error_to_status)?;
-            
-        //     batch_count += 1;
-
-
-        //     // 这里可以添加实际的数据导入逻辑
-        //     // 例如写入数据库等
-        //     // info!("batch num_rows: {:?}", batch.num_rows());
-        //     writer.write_record_batch(batch).await.map_err(datafusion_error_to_status)?;
-
-        //     self.metrics.add_batch_metrics(batch_rows as u64, batch_bytes as u64);
-        //     // Log metrics at intervals
-        //     if batch_count % LOG_INTERVAL == 0 {
-        //         self.metrics.report_metrics(format!("stream_write_batch_metrics at {} batches", batch_count).as_str());
-        //     }
-
-        // }
-        // let result = writer.flush_and_close().await.map_err(datafusion_error_to_status)?;
-
-        // // 结束流式处理
-        // self.metrics.end_stream();
         let table = Arc::new(LakeSoulTable::for_namespace_and_name(schema.unwrap_or("default".to_string()).as_str(), table.as_str())
             .await
             .map_err(|e| Status::internal(format!("Error creating table: {}", e)))?);
@@ -931,12 +887,7 @@ impl FlightSqlServiceImpl {
             .parse::<bool>()
             .unwrap();
         // 从环境变量或配置中获取目标速率
-        let target_mb_per_second_for_write = std::env::var("STREAM_WRITE_TARGET_MB_PER_SECOND_FOR_WRITE")
-            .unwrap_or("100.0".to_string())
-            .parse::<f64>()
-            .unwrap_or(100.0);
-        let target_mb_per_second_for_flush = std::env::var("STREAM_WRITE_TARGET_MB_PER_SECOND_FOR_FLUSH")
-            .unwrap_or("100.0".to_string())
+        let throughput_limit = args.throughput_limit
             .parse::<f64>()
             .unwrap_or(100.0);
 
@@ -948,7 +899,7 @@ impl FlightSqlServiceImpl {
             transactional_data: Default::default(),
             jwt_server,
             auth_enabled,
-            metrics: Arc::new(StreamWriteMetrics::new(target_mb_per_second_for_write, target_mb_per_second_for_flush)),
+            metrics: Arc::new(StreamWriteMetrics::new(throughput_limit)),
         })
     }
 
@@ -984,11 +935,6 @@ impl FlightSqlServiceImpl {
         let ctx = Arc::new(SessionContext::new_with_state(state));
 
         let catalog = Arc::new(LakeSoulCatalog::new(self.client.clone(), ctx.clone()));
-
-        // ctx.runtime_env().register_object_store(
-        //     Url::parse("s3://").unwrap().scheme(),
-        //     Arc::new(S3FileSystem::new())
-        // );
 
         
         if let Some(warehouse_prefix) = &self.args.warehouse_prefix {
@@ -1062,57 +1008,6 @@ impl FlightSqlServiceImpl {
             .catalog_list()
             .register_catalog("LAKESOUL".to_string(), catalog);
 
-        ctx.sql("CREATE EXTERNAL TABLE lakesoul_test_table (name STRING, id INT PRIMARY KEY, score FLOAT) STORED AS LAKESOUL LOCATION ''")
-            .await.map_err(|e| {
-                error!("Error creating table: {e}");
-                Status::internal(format!("Error creating table: {e}"))
-            })?
-            .collect()
-            .await
-            .map_err(|e| {
-                error!("Error collecting results: {e}");
-                Status::internal(format!("Error collecting results: {e}"))
-            })?;
-        let table = LakeSoulTable::for_namespace_and_name("default", "lakesoul_test_table").await.unwrap();
-        table.execute_upsert(
-            RecordBatch::try_new(SchemaRef::new(Schema::new(vec![
-            Field::new("name", DataType::Utf8, true),
-            Field::new("id", DataType::Int32, true),
-                Field::new("score", DataType::Float32, true),
-            ])), 
-            vec![
-                Arc::new(StringArray::from(vec!["Alice", "Bob", "Charlie"])),
-                Arc::new(Int32Array::from(vec![1, 2, 3])),
-                Arc::new(Float32Array::from(vec![85.5, 90.0, 78.5])),
-            ]).map_err(arrow_error_to_status)?,
-        ).await.map_err(lakesoul_error_to_status)?;
-
-        // 创建 LakeSoulTable
-        let table = LakeSoulTable::for_namespace_and_name("default", "lakesoul_test_table")
-            .await
-            .map_err(|e| Status::internal(format!("Error creating table: {}", e)))?;
-
-        let mut writer = table.get_writer(self.args.s3_options()).await.map_err(lakesoul_error_to_status)?;
-        
-        let batch = RecordBatch::try_new(SchemaRef::new(Schema::new(vec![
-            Field::new("name", DataType::Utf8, true),
-            Field::new("id", DataType::Int32, true),
-            Field::new("score", DataType::Float32, true),
-        ])), 
-        vec![
-            Arc::new(StringArray::from(vec!["Alice", "Bob", "Charlie"])),
-            Arc::new(Int32Array::from(vec![1, 2, 3])),
-            Arc::new(Float32Array::from(vec![85.5, 90.0, 78.5])),
-        ]).map_err(arrow_error_to_status)?;
-        // 这里可以添加实际的数据导入逻辑
-        // 例如写入数据库等
-        // info!("batch num_rows: {:?}", batch.num_rows());
-        writer.write_record_batch(batch).await.map_err(datafusion_error_to_status)?;
-
-        let result = writer.flush_and_close().await.map_err(datafusion_error_to_status)?;
-
-        table.commit_flush_result(result).await.map_err(lakesoul_error_to_status)?;
-
         self.contexts.insert(uuid.clone(), ctx);
         Ok(uuid)
     }
@@ -1167,7 +1062,6 @@ impl FlightSqlServiceImpl {
         let mut table_schemas: Vec<Vec<u8>> = vec![];
 
         for catalog in ctx.catalog_names() {
-            // dbg!(&catalog);
             let catalog_provider = ctx.catalog(&catalog).unwrap();
             for schema in catalog_provider.schema_names() {
                 let schema_provider = catalog_provider.schema(&schema).unwrap();
@@ -1326,7 +1220,7 @@ impl FlightSqlServiceImpl {
             // Log metrics at intervals
             if batch_count % LOG_INTERVAL == 0 {
                 self.metrics.report_metrics(format!("stream_write_batch_metrics at {} batches of {}", batch_count, table_name).as_str());
-                self.metrics.control_throughput(self.metrics.target_mb_per_second_for_write);
+                self.metrics.control_throughput();
             }
         }
         let result = writer.flush_and_close().await.map_err(datafusion_error_to_status)?;

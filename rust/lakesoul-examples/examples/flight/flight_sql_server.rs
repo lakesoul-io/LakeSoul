@@ -150,9 +150,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let metadata_client = Arc::new(MetaDataClient::from_env().await?);
         info!("Metadata server connected");
-        info!("Cleaning up metadata server");
-        metadata_client.meta_cleanup().await?;
-        info!("Metadata server cleaned up");
+        // info!("Cleaning up metadata server");
+        // metadata_client.meta_cleanup().await?;
+        // info!("Metadata server cleaned up");
 
         // 使用参数中的 metrics_addr
         let metrics_addr = {
