@@ -2,37 +2,22 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::any::TypeId;
 use std::borrow::Borrow;
 use std::collections::HashMap;
-use std::fs::File;
-use std::ops::BitXor;
-use std::process::Output;
-use std::{array, clone, default, ptr, result};
+use std:: ptr;
 
-use rayon::prelude::*;
-
-use arrow::ipc::convert;
-use parquet::file::reader::SerializedFileReader;
-use tokio::{runtime::Builder, time::Instant};
-
-use arrow::datatypes::{DataType, Field, UInt32Type,Schema};
+use arrow::datatypes::{DataType, Field};
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
-use datafusion::catalog::schema;
-use datafusion::prelude::col;
-use datafusion::sql::sqlparser::ast::Array;
 use datafusion_common::{DataFusionError, Result};
-use parquet::arrow::ArrowWriter;
-use parquet::file::properties::WriterProperties;
 use rand::distributions::DistString;
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 use tracing::debug;
 use rand::{Rng,SeedableRng,rngs::StdRng};
-use ndarray::{concatenate, s, stack, Array2, Axis,ArrayView2};
-use arrow::array::{Array as OtherArray, Float64Array, FixedSizeListArray,UInt64Array,UInt32Array,ArrayData,ListArray,Float32Array,BinaryArray,GenericBinaryArray,Int32Builder,Int64Builder,ListBuilder,Int32Array,Int64Array,GenericListArray};
-use arrow::buffer::{Buffer,OffsetBuffer};
+use ndarray::{concatenate, s, Array2, Axis,ArrayView2};
+use arrow::array::{Array as OtherArray, Float64Array, ListArray,Float32Array,Int64Array,GenericListArray};
+use arrow::buffer::OffsetBuffer;
 use std::sync::Arc;
 
 
@@ -61,7 +46,7 @@ impl SyncSendableMutableLakeSoulWriter {
             let mut config = config.clone();
             let writer_config = config.clone();
             let writer = Self::create_writer(writer_config).await?;
-            let mut schema = writer.schema();
+            let schema = writer.schema();
             if let Some(mem_limit) = config.mem_limit() {
                 if config.use_dynamic_partition {
                     config.max_file_size = Some((mem_limit as f64 * 0.15) as u64);
@@ -150,7 +135,6 @@ impl SyncSendableMutableLakeSoulWriter {
         else{
             if self.config.is_lsh() {
                 let projection: ListArray= if let Some(array) = record_batch.column_by_name("Embedding") {
-                    let fixed_size = self.config.d().unwrap();
                     let embedding = array.as_any().downcast_ref::<ListArray>().unwrap();
                     let projection_result:Result<ListArray,String> = self.lsh(&Some(embedding.clone()));
                     projection_result.unwrap().into()
