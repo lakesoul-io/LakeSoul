@@ -28,6 +28,8 @@ class NativeParquetOutputWriter(val path: String, dataSchema: StructType, timeZo
 
   protected val nativeIOWriter: NativeIOWriter = new NativeIOWriter(arrowSchema)
 
+
+
   GlutenUtils.setArrowAllocator(nativeIOWriter)
   nativeIOWriter.setRowGroupRowNumber(NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE)
   nativeIOWriter.addFile(path)

@@ -4,8 +4,9 @@
 
 use std::borrow::Borrow;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std:: ptr;
 
+use arrow::datatypes::{DataType, Field};
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use datafusion_common::{DataFusionError, Result};
@@ -13,6 +14,12 @@ use rand::distributions::DistString;
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 use tracing::debug;
+use rand::{Rng,SeedableRng,rngs::StdRng};
+use ndarray::{concatenate, s, Array2, Axis,ArrayView2};
+use arrow::array::{Array as OtherArray, Float64Array, ListArray,Float32Array,Int64Array,GenericListArray};
+use arrow::buffer::OffsetBuffer;
+use std::sync::Arc;
+
 
 use crate::async_writer::{AsyncBatchWriter, MultiPartAsyncWriter, PartitioningAsyncWriter, SortAsyncWriter, WriterFlushResult};
 use crate::helpers::{get_batch_memory_size, get_file_exist_col};
@@ -36,11 +43,10 @@ impl SyncSendableMutableLakeSoulWriter {
     pub fn try_new(config: LakeSoulIOConfig, runtime: Runtime) -> Result<Self> {
         let runtime = Arc::new(runtime);
         runtime.clone().block_on(async move {
-            let writer_config = config.clone();
             let mut config = config.clone();
+            let writer_config = config.clone();
             let writer = Self::create_writer(writer_config).await?;
             let schema = writer.schema();
-
             if let Some(mem_limit) = config.mem_limit() {
                 if config.use_dynamic_partition {
                     config.max_file_size = Some((mem_limit as f64 * 0.15) as u64);
@@ -123,7 +129,31 @@ impl SyncSendableMutableLakeSoulWriter {
     // for ffi callers
     pub fn write_batch(&mut self, record_batch: RecordBatch) -> Result<()> {
         let runtime = self.runtime.clone();
-        runtime.block_on(async move { self.write_batch_async(record_batch, false).await })
+        if record_batch.num_rows() == 0{
+            runtime.block_on(async move { self.write_batch_async(record_batch, false).await })
+        }
+        else{
+            if self.config.is_lsh() {
+                let projection: ListArray= if let Some(array) = record_batch.column_by_name("Embedding") {
+                    let embedding = array.as_any().downcast_ref::<ListArray>().unwrap();
+                    let projection_result:Result<ListArray,String> = self.lsh(&Some(embedding.clone()));
+                    projection_result.unwrap().into()
+
+                } else {
+                    eprintln!("there is no column named Embedding");
+                    return Ok(()) ;
+                };
+
+                let mut new_columns = record_batch.columns().to_vec();
+                new_columns[record_batch.schema().index_of("LSH").unwrap()] = Arc::new(projection.clone());
+                let new_record_batch = RecordBatch::try_new(self.config.target_schema(),new_columns).unwrap();
+
+                runtime.block_on(async move { self.write_batch_async(new_record_batch, false).await })
+            }
+            else{
+                runtime.block_on(async move { self.write_batch_async(record_batch, false).await })
+            }
+        }
     }
 
     #[async_recursion::async_recursion(?Send)]
@@ -263,29 +293,215 @@ impl SyncSendableMutableLakeSoulWriter {
     pub fn get_schema(&self) -> SchemaRef {
         self.schema.clone()
     }
+
+    // generate random digit with fixed seed
+    fn create_rng_with_seed(&self) -> StdRng {
+        StdRng::seed_from_u64(self.config.seed)
+    }
+
+    // generate random planes
+    fn generate_random_array(&self) -> Result<Array2<f64>,String>{
+        match self.config.nbits() {
+            Some(nbits) if nbits > 0 => {
+                match self.config.d() {
+                    Some(d) if d > 0 => {
+                        let mut rng = self.create_rng_with_seed();
+//                         assert!(d >= nbits,"the dimension of the embedding must be greater than nbits");
+                        let random_array = Array2::from_shape_fn((nbits as usize, d as usize), |_| rng.gen_range(-1.0..1.0));
+                        Ok(random_array)
+                    }
+                    Some(_) => Err("the dimension you input in the config must be greater than 0".to_string()),
+                    None => Err("the dimension you input in the config is None".to_string()),
+                }
+            }
+            Some(_) => Err("the number of bits used for binary encoding must be greater than 0".to_string()),
+            None => Err("the number of bits used for binary encoding must be greater than 0".to_string()),
+        }
+    }
+
+    // project the input data
+    fn project(&self,input_data:&ListArray,random_plans:&Result<Array2<f64>,String>) -> Result<Array2<f64>,String>{
+        let list_len = input_data.len();
+        assert!(list_len > 0,"the length of input data must be large than 0");
+        let dimension_len = input_data.value(0).len();
+
+        let input_values = if let Some(values) = input_data.values().as_any().downcast_ref::<Float32Array>(){
+            let float64_values: Vec<f64> = values.iter().map(|x| x.unwrap() as f64).collect();
+            Float64Array::from(float64_values)
+        } else if let Some(values) = input_data.values().as_any().downcast_ref::<Float64Array>(){
+            values.clone()
+            }
+        else {
+                return Err("Unsupported data type in ListArray.".to_string());
+            };
+
+        let mut re_array2 = Array2::<f64>::zeros((list_len,dimension_len));
+
+        unsafe {
+            let data_ptr = input_values.values().as_ptr();
+            let data_size = list_len * dimension_len;
+            ptr::copy_nonoverlapping(data_ptr,re_array2.as_mut_ptr(),data_size);
+        }
+        match random_plans {
+            Ok(random_array) => {
+                assert!(re_array2.shape()[1] == random_array.shape()[1],"the dimension corresponding to the matrix must be the same");
+//                    let final_result = re_array2.dot(&random_array.t());
+                let batch_size = 1000;
+                let num_batches = re_array2.shape()[0] / batch_size;
+                let remaining_rows = re_array2.shape()[0] % batch_size;
+                let mut result = vec![];
+
+                for batch_idx in 0..num_batches{
+                    let batch_start = batch_idx * batch_size;
+                    let batch_end = batch_start + batch_size;
+
+                    let current_batch = re_array2.slice(s![batch_start..batch_end,..]);
+                    let random_projection = current_batch.dot(&random_array.t());
+
+                    result.push(random_projection);
+                }
+
+                if remaining_rows > 0{
+                    let batch_start = num_batches * batch_size;
+                    let batch_end = batch_start + remaining_rows;
+
+                    let remaining_batch = re_array2.slice(s![batch_start..batch_end,..]);
+
+                    let random_projection = remaining_batch.dot(&random_array.t());
+
+                    result.push(random_projection);
+                }
+
+                let result_views: Vec<ArrayView2<f64>> = result.iter().map(|arr| ArrayView2::from(arr)).collect();
+
+
+                let final_result = concatenate(Axis(0),&result_views).expect("Failed to concatenate results");
+
+                // println!("{:}",end);
+
+                Ok(final_result)
+            }
+            Err(e) => {
+                eprintln!("Error:{}",e);
+                Err(e.to_string())
+            }
+        }
+    }
+    // add the input data with their projection
+    pub fn lsh(&self,input_embedding:&Option<ListArray>) -> Result<ListArray,String>
+    where
+    {
+        match input_embedding {
+            Some(data) => {
+                let random_plans = self.generate_random_array();
+                let data_projection = self.project(data,&random_plans).unwrap();
+                match Ok(data_projection) {
+                    Ok(mut projection) => {
+                        projection.mapv_inplace(|x| if x >= 0.0 {1.0} else {0.0});
+                        let convert:Vec<Vec<u64>> = Self::convert_array_to_u64_vec(&projection);
+                        Ok(Self::convert_vec_to_byte_u64(convert))
+                    }
+                    Err(e) => {
+                        eprintln!("Error:{}",e);
+                        Err(e)
+                    }
+                }
+            }
+            None => {
+                Err("the input data is None".to_string())
+            }
+        }
+    }
+
+    fn convert_vec_to_byte_u64(array:Vec<Vec<u64>>) -> ListArray {
+            let field = Arc::new(Field::new("element", DataType::Int64,true));
+             let values = Int64Array::from(array.iter().flatten().map(|&x| x as i64).collect::<Vec<i64>>());
+             let mut offsets = vec![];
+             for subarray in array{
+                 let current_offset = subarray.len() as usize;
+                 offsets.push(current_offset);
+               }
+             let offsets_buffer = OffsetBuffer::from_lengths(offsets);
+             let list_array = GenericListArray::try_new(field,offsets_buffer,Arc::new(values),None).expect("can not list_array");
+             list_array
+
+            }
+
+    fn convert_array_to_u64_vec<T>(array:&Array2<f64>) -> Vec<Vec<T>>
+    where
+        T: TryFrom<u64> + Copy,
+        <T as TryFrom<u64>>::Error: std::fmt::Debug,
+    {
+        let bianry_encode:Vec<Vec<u64>> = array
+        .axis_iter(ndarray::Axis(0))
+        .map(|row|{
+            let mut results = Vec::new();
+            let mut acc = 0u64;
+
+            for(i,&bit) in row.iter().enumerate(){
+                acc = (acc << 1) | bit as u64;
+                if(i + 1) % 64 == 0{
+                    results.push(acc);
+                    acc = 0;
+                }
+            }
+            if row.len() % 64 != 0{
+                results.push(acc);
+            }
+            results
+        })
+        .collect();
+
+        bianry_encode
+        .into_iter()
+        .map(|inner_vec|{
+            inner_vec
+            .into_iter()
+            .map(|x| T::try_from(x).unwrap())
+            .collect()
+        }).collect()
+    }
+
 }
 
 #[cfg(test)]
 mod tests {
+    use arrow_array::builder;
+    use datafusion::catalog::schema;
+    use hdf5::File as OtherFile;
+    use hdf5::Group;
+    use parquet::arrow::ArrowWriter;
+    use parquet::column;
+    use parquet::file::properties::WriterProperties;
     use crate::{
         lakesoul_io_config::{LakeSoulIOConfigBuilder, OPTION_KEY_MEM_LIMIT},
         lakesoul_reader::LakeSoulReader,
         lakesoul_writer::{AsyncBatchWriter, MultiPartAsyncWriter, SyncSendableMutableLakeSoulWriter},
     };
+
     use arrow::{
-        array::{ArrayRef, Int64Array},
+        array::{ArrayRef, Int64Array,FixedSizeListArray,ArrayData},
         record_batch::RecordBatch,
     };
     use arrow_array::{Array, StringArray};
     use arrow_schema::{DataType, Field, Schema};
-    use datafusion::error::Result;
+    use datafusion::{error::Result, physical_expr::math_expressions};
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use rand::{distributions::DistString, Rng};
     use std::{fs::File, sync::Arc};
     use tokio::{runtime::Builder, time::Instant};
     use tracing_subscriber::layer::SubscriberExt;
+    use arrow::buffer::{Buffer, NullBuffer};
 
     use super::SortAsyncWriter;
+    use std::env;
+    use std::path::Path;
+    use ndarray::{Array2,s,Dim};
+    use crate::helpers::get_batch_memory_size;
+    use parquet::file::reader::{FileReader,SerializedFileReader};
+    use arrow::compute::sort;
+    use arrow::compute::sort_to_indices;
+    use arrow::compute::SortOptions;
 
     #[test]
     fn test_parquet_async_write() -> Result<()> {
@@ -730,4 +946,5 @@ mod tests {
         // assert_eq!(num_rows * num_batch, actual_batch.num_rows());
         Ok(())
     }
+
 }

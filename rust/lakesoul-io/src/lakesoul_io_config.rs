@@ -51,6 +51,9 @@ pub static OPTION_KEY_HASH_BUCKET_ID: &str = "hash_bucket_id";
 pub static OPTION_KEY_CDC_COLUMN: &str = "cdc_column";
 pub static OPTION_KEY_IS_COMPACTED: &str = "is_compacted";
 pub static OPTION_KEY_MAX_FILE_SIZE: &str = "max_file_size";
+pub static OPTION_KEY_IS_LSH: &str = "is_lsh";
+pub static OPTION_KEY_NBITS: &str = "nbits";
+pub static OPTION_KEY_D: &str= "d";
 
 #[derive(Debug, Derivative)]
 #[derivative(Default, Clone)]
@@ -130,6 +133,10 @@ pub struct LakeSoulIOConfig {
     // max file size of bytes
     #[derivative(Default(value = "None"))]
     pub(crate) max_file_size: Option<u64>,
+
+    // the seed for rng
+    #[derivative(Default(value = "1234"))]
+    pub(crate) seed: u64,
 }
 
 impl LakeSoulIOConfig {
@@ -187,6 +194,18 @@ impl LakeSoulIOConfig {
 
     pub fn is_compacted(&self) -> bool {
         self.option(OPTION_KEY_IS_COMPACTED).map_or(false, |x| x.eq("true"))
+    }
+
+    pub fn is_lsh(&self) -> bool {
+        self.option(OPTION_KEY_IS_LSH).map_or(false,|x| x.eq("true"))
+    }
+
+    pub fn nbits(&self) -> Option<u64>{
+        self.option(OPTION_KEY_NBITS).map(|x| x.parse().unwrap())
+    }
+
+    pub fn d(&self) -> Option<u64>{
+        self.option(OPTION_KEY_D).map(|x| x.parse().unwrap())
     }
 }
 
@@ -345,6 +364,11 @@ impl LakeSoulIOConfigBuilder {
 
     pub fn with_max_file_size(mut self, size: u64) -> Self {
         self.config.max_file_size = Some(size);
+        self
+    }
+
+    pub fn with_seed(mut self,seed:u64) -> Self {
+        self.config.seed = seed;
         self
     }
 
@@ -517,7 +541,12 @@ fn register_object_store(path: &str, config: &mut LakeSoulIOConfig, runtime: &Ru
                     Ok(joined_path)
                 }
             }
+            // "file" => Ok(path.to_owned()),
             "file" => Ok(path.to_owned()),
+            // Support Windows drive letter paths like "c:" or "d:"
+            scheme if scheme.len() == 1 && scheme.chars().next().unwrap().is_ascii_alphabetic() => {
+                Ok(format!("file://{}", path))
+            },
             _ => Err(ObjectStore(object_store::Error::NotSupported {
                 source: "FileSystem not supported".into(),
             })),
@@ -652,5 +681,10 @@ mod tests {
                 "file:///some/absolute/local/file2".to_string(),
             ]
         );
+        let mut lakesoulconfigbuilder = LakeSoulIOConfigBuilder::from(conf.clone());
+        let conf = lakesoulconfigbuilder.with_d(32 as u64).with_nbits(64 as u64).build();
+        assert_eq!(conf.seed,1234 as u64);
+        assert_eq!(conf.d,Some(32));
+        assert_eq!(conf.nbits,Some(64));
     }
 }
