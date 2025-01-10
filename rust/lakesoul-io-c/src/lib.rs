@@ -730,7 +730,8 @@ pub extern "C" fn write_record_batch(
         let mut ffi_schema = FFI_ArrowSchema::empty();
         (schema_addr as *mut FFI_ArrowSchema).copy_to(&mut ffi_schema as *mut FFI_ArrowSchema, 1);
         let result_fn = move || {
-            let array_data = from_ffi(ffi_array, &ffi_schema)?;
+            let mut array_data = from_ffi(ffi_array, &ffi_schema)?;
+            array_data.align_buffers();
             let struct_array = StructArray::from(array_data);
             let rb = RecordBatch::from(struct_array);
             writer.write_batch(rb)?;
@@ -761,7 +762,8 @@ pub extern "C" fn write_record_batch_blocked(
         let mut ffi_schema = FFI_ArrowSchema::empty();
         (schema_addr as *mut FFI_ArrowSchema).copy_to(&mut ffi_schema as *mut FFI_ArrowSchema, 1);
         let result_fn = move || {
-            let array_data = from_ffi(ffi_array, &ffi_schema)?;
+            let mut array_data = from_ffi(ffi_array, &ffi_schema)?;
+            array_data.align_buffers();
             let struct_array = StructArray::from(array_data);
             let rb = RecordBatch::from(struct_array);
             writer.write_batch(rb)?;

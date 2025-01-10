@@ -21,6 +21,9 @@ import org.apache.flink.table.catalog.exceptions.TableNotExistException;
 import org.apache.flink.table.types.logical.*;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.CollectionUtil;
+import org.apache.spark.sql.arrow.DataTypeCastUtils$;
+import org.apache.spark.sql.catalyst.expressions.Cast$;
+import org.apache.spark.sql.types.DataTypes;
 import org.junit.BeforeClass;
 import org.junit.Rule;
 import org.junit.Test;
@@ -76,7 +79,7 @@ public class SchemaMigrationTest extends AbstractTestBase {
         );
     }
 
-    @Test(expected = ExecutionException.class)
+    @Test()
     public void testFromIntToBigIntWithoutAllowance() throws IOException, ExecutionException, InterruptedException {
         Map<String, String> options = new HashMap<>();
         options.put(CATALOG_PATH.key(), tempFolder.newFolder("test_sink").getAbsolutePath());
@@ -84,7 +87,6 @@ public class SchemaMigrationTest extends AbstractTestBase {
         RowType.RowField beforeField = new RowType.RowField("a", new IntType());
         RowType.RowField afterField = new RowType.RowField("a", new BigIntType());
 
-        System.setProperty("datatype.cast.allow_precision_inc", "false");
         testSchemaMigration(
                 CatalogTable.of(Schema.newBuilder().column(beforeField.getName(), beforeField.getType().asSerializableString()).build(), "", Collections.emptyList(), options),
                 CatalogTable.of(Schema.newBuilder().column(afterField.getName(), afterField.getType().asSerializableString()).build(), "", Collections.emptyList(), options),
@@ -97,7 +99,7 @@ public class SchemaMigrationTest extends AbstractTestBase {
         );
     }
 
-    @Test(expected = ExecutionException.class)
+    @Test
     public void testFromBigIntToInt() throws IOException, ExecutionException, InterruptedException {
         Map<String, String> options = new HashMap<>();
         options.put(CATALOG_PATH.key(), tempFolder.newFolder("test_sink").getAbsolutePath());
@@ -105,16 +107,15 @@ public class SchemaMigrationTest extends AbstractTestBase {
         RowType.RowField beforeField = new RowType.RowField("a", new BigIntType());
         RowType.RowField afterField = new RowType.RowField("a", new IntType());
 
-        System.clearProperty("datatype.cast.allow_precision_loss");
         testSchemaMigration(
                 CatalogTable.of(Schema.newBuilder().column(beforeField.getName(), beforeField.getType().asSerializableString()).build(), "", Collections.emptyList(), options),
                 CatalogTable.of(Schema.newBuilder().column(afterField.getName(), afterField.getType().asSerializableString()).build(), "", Collections.emptyList(), options),
                 "insert into test_sink values (10000000000), (20000000000)",
                 "insert into test_sink values (3), (4)",
                 "[+I[a, BIGINT, true, null, null, null]]",
-                "",
+                "[+I[a, INT, true, null, null, null]]",
                 "[+I[10000000000], +I[20000000000]]",
-                ""
+                "[+I[3], +I[4], +I[null], +I[null]]"
         );
     }
 
@@ -160,7 +161,7 @@ public class SchemaMigrationTest extends AbstractTestBase {
         );
     }
 
-    @Test(expected = ExecutionException.class)
+    @Test()
     public void testFromFloatToDoubleWithoutAllowance() throws IOException, ExecutionException, InterruptedException {
         Map<String, String> options = new HashMap<>();
         options.put(CATALOG_PATH.key(), tempFolder.newFolder("test_sink").getAbsolutePath());
@@ -168,7 +169,6 @@ public class SchemaMigrationTest extends AbstractTestBase {
         RowType.RowField beforeField = new RowType.RowField("a", new FloatType());
         RowType.RowField afterField = new RowType.RowField("a", new DoubleType());
 
-        System.setProperty("datatype.cast.allow_precision_inc", "false");
         testSchemaMigration(
                 CatalogTable.of(Schema.newBuilder().column(beforeField.getName(), beforeField.getType().asSerializableString()).build(), "", Collections.emptyList(), options),
                 CatalogTable.of(Schema.newBuilder().column(afterField.getName(), afterField.getType().asSerializableString()).build(), "", Collections.emptyList(), options),
@@ -274,7 +274,16 @@ public class SchemaMigrationTest extends AbstractTestBase {
         assertThat(Objects.requireNonNull(properties).toString()).contains("b");
     }
 
-    @Test(expected = ExecutionException.class)
+    @Test
+    public void testCanCast() {
+        assertThat(DataTypeCastUtils$.MODULE$.checkDataTypeEqualOrCanCast(DataTypes.DoubleType, DataTypes.FloatType))
+                .isEqualTo(DataTypeCastUtils$.MODULE$.CAN_CAST());
+        assertThat(DataTypeCastUtils$.MODULE$.checkDataTypeEqualOrCanCast(DataTypes.createDecimalType(20, 2),
+                DataTypes.createDecimalType(25, 2)))
+                .isEqualTo(DataTypeCastUtils$.MODULE$.CAN_CAST());
+    }
+
+    @Test
     public void testFromDoubleToFloat() throws IOException, ExecutionException, InterruptedException {
         Map<String, String> options = new HashMap<>();
         options.put(CATALOG_PATH.key(), tempFolder.newFolder("test_sink").getAbsolutePath());
@@ -282,16 +291,15 @@ public class SchemaMigrationTest extends AbstractTestBase {
         RowType.RowField beforeField = new RowType.RowField("a", new DoubleType());
         RowType.RowField afterField = new RowType.RowField("a", new FloatType());
 
-        System.clearProperty("datatype.cast.allow_precision_loss");
         testSchemaMigration(
                 CatalogTable.of(Schema.newBuilder().column(beforeField.getName(), beforeField.getType().asSerializableString()).build(), "", Collections.emptyList(), options),
                 CatalogTable.of(Schema.newBuilder().column(afterField.getName(), afterField.getType().asSerializableString()).build(), "", Collections.emptyList(), options),
                 "insert into test_sink values (1.11111111111), (2.22222222222)",
                 "insert into test_sink values (3.3333333333), (4.44444444444)",
                 "[+I[a, DOUBLE, true, null, null, null]]",
-                "",
+                "[+I[a, FLOAT, true, null, null, null]]",
                 "[+I[1.11111111111], +I[2.22222222222]]",
-                ""
+                "[+I[1.1111112], +I[2.2222223], +I[3.3333333], +I[4.4444447]]"
         );
     }
 

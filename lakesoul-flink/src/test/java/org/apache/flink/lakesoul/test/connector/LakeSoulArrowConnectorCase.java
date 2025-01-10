@@ -4,6 +4,7 @@
 
 package org.apache.flink.lakesoul.test.connector;
 
+import com.dmetasoul.lakesoul.lakesoul.local.arrow.writers.DecimalWriter;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.arrow.memory.BufferAllocator;
@@ -35,6 +36,8 @@ import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.junit.Test;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -47,6 +50,34 @@ import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.INFERRING_SCHEM
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.MAX_ROW_GROUP_SIZE;
 
 public class LakeSoulArrowConnectorCase extends AbstractTestBase {
+    public static void main(String[] args) throws Exception {
+
+        int parallelism = 2;
+
+        StreamExecutionEnvironment
+                execEnv =
+                LakeSoulTestUtils.createStreamExecutionEnvironment(parallelism, 2000L, 2000L);
+
+        Configuration conf = new Configuration();
+        conf.set(INFERRING_SCHEMA, true);
+        DataStreamSource<LakeSoulArrowWrapper> source = execEnv.fromSource(
+                LakeSoulArrowSource.create(
+                        "default",
+                        MockLakeSoulArrowSource.MockSourceFunction.tableName,
+                        conf
+                ),
+                WatermarkStrategy.noWatermarks(),
+                "LakeSoul Arrow Source"
+        );
+
+        String name = "Print Sink";
+        PrintSinkFunction<LakeSoulArrowWrapper> printFunction = new PrintSinkFunction<>(name, false);
+
+        DataStreamSink<LakeSoulArrowWrapper> sink = source.addSink(printFunction).name(name);
+        execEnv.execute("Test MockLakeSoulArrowSource.MockSourceFunction");
+
+    }
+
     //    @Test
     public void test() throws Exception {
         int parallelism = 2;
@@ -207,8 +238,11 @@ public class LakeSoulArrowConnectorCase extends AbstractTestBase {
                     // float 32 column
                     new Field("field_float32",
                             FieldType.nullable(new ArrowType.FloatingPoint(FloatingPointPrecision.SINGLE)), null),
-                    // date partition column
-                    new Field("timestamp", FieldType.nullable(new ArrowType.Timestamp(TimeUnit.MILLISECOND, "UTC")), null)
+                    // timestamp column
+                    new Field("timestamp", FieldType.nullable(new ArrowType.Timestamp(TimeUnit.MILLISECOND, "UTC")),
+                            null)
+                    // decimal column
+                    , new Field("decimal", FieldType.nullable(new ArrowType.Decimal(20, 2)), null)
             ));
 
             // TableInfo object can be reused
@@ -266,6 +300,14 @@ public class LakeSoulArrowConnectorCase extends AbstractTestBase {
                 }
                 timestampVector.setValueCount(batchSize);
 
+                // create decimal vector
+                DecimalVector decimalVector = (DecimalVector) arrowBatch.getVector("decimal");
+                decimalVector.allocateNew(batchSize);
+                for (int i = 0; i < batchSize; i++) {
+                    decimalVector.set(i, i * 1000);
+                }
+                decimalVector.setValueCount(batchSize);
+
                 arrowBatch.setRowCount(batchSize);
 
                 arrowBatches.add(new LakeSoulArrowWrapper(sinkTableInfoEncoded, arrowBatch));
@@ -300,7 +342,10 @@ public class LakeSoulArrowConnectorCase extends AbstractTestBase {
                     new Field("field_float32",
                             FieldType.nullable(new ArrowType.FloatingPoint(FloatingPointPrecision.DOUBLE)), null),
                     // date partition column
-                    new Field("timestamp", FieldType.nullable(new ArrowType.Timestamp(TimeUnit.MILLISECOND, null)), null)
+                    new Field("timestamp", FieldType.nullable(new ArrowType.Timestamp(TimeUnit.MILLISECOND, null)),
+                            null)
+                    // decimal column
+                    , new Field("decimal", FieldType.nullable(new ArrowType.Decimal(25, 2)), null)
             ));
 
             // TableInfo object can be reused
@@ -358,6 +403,14 @@ public class LakeSoulArrowConnectorCase extends AbstractTestBase {
                 }
                 timestampVector.setValueCount(batchSize);
 
+                // create decimal vector
+                DecimalVector decimalVector = (DecimalVector) arrowBatch.getVector("decimal");
+                decimalVector.allocateNew(batchSize);
+                for (int i = 0; i < batchSize; i++) {
+                    decimalVector.set(i, i * 1000);
+                }
+                decimalVector.setValueCount(batchSize);
+
                 arrowBatch.setRowCount(batchSize);
 
                 arrowBatches.add(new LakeSoulArrowWrapper(sinkTableInfoEncoded, arrowBatch));
@@ -379,33 +432,5 @@ public class LakeSoulArrowConnectorCase extends AbstractTestBase {
             tEnv.executeSql("desc `default`.`qar_table`").print();
             tEnv.executeSql("select * from `default`.`qar_table`").print();
         }
-    }
-
-    public static void main(String[] args) throws Exception {
-
-        int parallelism = 2;
-
-        StreamExecutionEnvironment
-                execEnv =
-                LakeSoulTestUtils.createStreamExecutionEnvironment(parallelism, 2000L, 2000L);
-
-        Configuration conf = new Configuration();
-        conf.set(INFERRING_SCHEMA, true);
-        DataStreamSource<LakeSoulArrowWrapper> source = execEnv.fromSource(
-                LakeSoulArrowSource.create(
-                        "default",
-                        MockLakeSoulArrowSource.MockSourceFunction.tableName,
-                        conf
-                ),
-                WatermarkStrategy.noWatermarks(),
-                "LakeSoul Arrow Source"
-        );
-
-        String name = "Print Sink";
-        PrintSinkFunction<LakeSoulArrowWrapper> printFunction = new PrintSinkFunction<>(name, false);
-
-        DataStreamSink<LakeSoulArrowWrapper> sink = source.addSink(printFunction).name(name);
-        execEnv.execute("Test MockLakeSoulArrowSource.MockSourceFunction");
-
     }
 }

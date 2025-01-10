@@ -60,12 +60,11 @@ object DataTypeCastUtils {
    *
    * @param source
    * @param target
-   * @return 0 if two StructType is equal, 1 if two StructType is not equal but Struct source can be cast to target, -1 if Struct source can not be cast to target
    */
   def checkDataTypeEqualOrCanCast(source: DataType, target: DataType): String = {
-    if (source == target)
+    if (source == target) {
       IS_EQUAL
-    else if (Cast.canCast(source, target)) {
+    } else if (Cast.canCast(source, target)) {
       CAN_CAST
     } else {
       s"$source is not allowed to cast to $target"
