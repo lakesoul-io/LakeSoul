@@ -121,7 +121,6 @@ public class LakeSoulSinkGlobalCommitter
                         isBounded);
         LOG.info("Committing: {}", globalCommittable);
 
-        int index = 0;
         String dbType = this.conf.getString(SOURCE_DB_TYPE, "");
 
         for (Map.Entry<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> entry :
@@ -195,60 +194,56 @@ public class LakeSoulSinkGlobalCommitter
                     boolean schemaChanged = (boolean) equalOrCanCastTuple3._2();
                     StructType mergeStructType = equalOrCanCastTuple3._3();
 
-                    boolean schemaChangeFound = false;
-                    if (dbType.equals("mongodb")) {
-                        if (mergeStructType.length() > origSchema.size()) {
-                            schemaChangeFound = schemaChanged;
-                        }
-                    } else {
-                        schemaChangeFound = equalOrCanCast.equals(DataTypeCastUtils.CAN_CAST());
-                    }
-                    if (schemaChangeFound) {
+                    if (equalOrCanCast.equals(DataTypeCastUtils.CAN_CAST())) {
                         LOG.warn("Schema change found, origin schema = {}, changed schema = {}",
                                 origSchema.json(),
                                 msgSchema.toJson());
-                        if (logicallyDropColumn) {
-                            List<String> droppedColumn = DataTypeCastUtils.getDroppedColumn(origSchema, sparkSchema);
-                            if (droppedColumn.size() > 0) {
-                                LOG.warn("Dropping Column {} Logically", droppedColumn);
-                                dbManager.logicallyDropColumn(tableInfo.getTableId(), droppedColumn);
-                                if (schemaChanged) {
-                                    dbManager.updateTableSchema(tableInfo.getTableId(), mergeStructType.json());
-                                }
-                            } else {
-                                dbManager.updateTableSchema(tableInfo.getTableId(), msgSchema.toJson());
+                        if (dbType.equals("mongodb")) {
+                            if (schemaChanged) {
+                                dbManager.updateTableSchema(tableInfo.getTableId(), mergeStructType.json());
                             }
                         } else {
-                            LOG.info("Changing table schema: {}, {}, {}, {}, {}, {}",
-                                    tableNamespace,
-                                    tableName,
-                                    identity.tableLocation,
-                                    msgSchema,
-                                    identity.useCDC,
-                                    identity.cdcColumn);
-                            if (dbType.equals("mongodb")) {
-                                dbManager.updateTableSchema(tableInfo.getTableId(),
-                                        ArrowUtils.toArrowSchema(mergeStructType, "UTC").toJson());
+                            if (logicallyDropColumn) {
+                                List<String>
+                                        droppedColumn =
+                                        DataTypeCastUtils.getDroppedColumn(origSchema, sparkSchema);
+                                if (droppedColumn.size() > 0) {
+                                    LOG.warn("Dropping Column {} Logically", droppedColumn);
+                                    dbManager.logicallyDropColumn(tableInfo.getTableId(), droppedColumn);
+                                    if (schemaChanged) {
+                                        dbManager.updateTableSchema(tableInfo.getTableId(), mergeStructType.json());
+                                    }
+                                } else {
+                                    dbManager.updateTableSchema(tableInfo.getTableId(), msgSchema.toJson());
+                                }
                             } else {
+                                LOG.info("Changing table schema: {}, {}, {}, {}, {}, {}",
+                                        tableNamespace,
+                                        tableName,
+                                        identity.tableLocation,
+                                        msgSchema,
+                                        identity.useCDC,
+                                        identity.cdcColumn);
                                 dbManager.updateTableSchema(tableInfo.getTableId(), msgSchema.toJson());
-                            }
-                            if (JSONObject.parseObject(tableInfo.getProperties())
-                                    .containsKey(DBConfig.TableInfoProperty.DROPPED_COLUMN)) {
-                                dbManager.removeLogicallyDropColumn(tableInfo.getTableId());
+                                if (JSONObject.parseObject(tableInfo.getProperties())
+                                        .containsKey(DBConfig.TableInfoProperty.DROPPED_COLUMN)) {
+                                    dbManager.removeLogicallyDropColumn(tableInfo.getTableId());
+                                }
                             }
                         }
                     } else if (!equalOrCanCast.equals(DataTypeCastUtils.IS_EQUAL())) {
                         long
                                 schemaLastChangeTime =
                                 JSON.parseObject(tableInfo.getProperties())
-                                        .getLong(DBConfig.TableInfoProperty.LAST_TABLE_SCHEMA_CHANGE_TIME);
+                                        .getLongValue(DBConfig.TableInfoProperty.LAST_TABLE_SCHEMA_CHANGE_TIME);
                         if (equalOrCanCast.contains("Change of Partition Column") ||
                                 equalOrCanCast.contains("Change of Primary Key Column")) {
                             throw new IOException(equalOrCanCast);
                         }
                         for (LakeSoulMultiTableSinkCommittable committable : lakeSoulMultiTableSinkCommittable) {
                             if (committable.getTsMs() > schemaLastChangeTime) {
-                                LOG.error("incompatible cast data created and delayThreshold time: {}, dml create time: {}",
+                                LOG.error("Incompatible cast data {} created and delayThreshold time: {}, dml create time: {}",
+                                        equalOrCanCast,
                                         schemaLastChangeTime, committable.getTsMs());
                                 throw new IOException(equalOrCanCast);
                             }

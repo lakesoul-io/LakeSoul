@@ -96,6 +96,9 @@ public class BinarySourceRecord {
                 }
                 if (sourceField.schema().field("ts_ms") != null) {
                     tsMs = (Long) source.getWithoutDefault("ts_ms");
+                    if (tsMs == 0) {
+                        tsMs = System.currentTimeMillis();
+                    }
                 }
             }
             long sortField = (binlogFileIndex << 32) + binlogPosition;
