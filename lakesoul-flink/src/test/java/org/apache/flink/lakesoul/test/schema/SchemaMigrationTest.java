@@ -110,12 +110,12 @@ public class SchemaMigrationTest extends AbstractTestBase {
         testSchemaMigration(
                 CatalogTable.of(Schema.newBuilder().column(beforeField.getName(), beforeField.getType().asSerializableString()).build(), "", Collections.emptyList(), options),
                 CatalogTable.of(Schema.newBuilder().column(afterField.getName(), afterField.getType().asSerializableString()).build(), "", Collections.emptyList(), options),
-                "insert into test_sink values (10000000000), (20000000000)",
+                "insert into test_sink values (1000000000), (2000000000)",
                 "insert into test_sink values (3), (4)",
                 "[+I[a, BIGINT, true, null, null, null]]",
                 "[+I[a, INT, true, null, null, null]]",
-                "[+I[10000000000], +I[20000000000]]",
-                "[+I[3], +I[4], +I[null], +I[null]]"
+                "[+I[1000000000], +I[2000000000]]",
+                "[+I[1000000000], +I[2000000000], +I[3], +I[4]]"
         );
     }
 
@@ -127,16 +127,15 @@ public class SchemaMigrationTest extends AbstractTestBase {
         RowType.RowField beforeField = new RowType.RowField("a", new BigIntType());
         RowType.RowField afterField = new RowType.RowField("a", new TinyIntType());
 
-        System.setProperty("datatype.cast.allow_precision_loss", "true");
         testSchemaMigration(
                 CatalogTable.of(Schema.newBuilder().column(beforeField.getName(), beforeField.getType().asSerializableString()).build(), "", Collections.emptyList(), options),
                 CatalogTable.of(Schema.newBuilder().column(afterField.getName(), afterField.getType().asSerializableString()).build(), "", Collections.emptyList(), options),
-                "insert into test_sink values (10000000000), (20000000000)",
+                "insert into test_sink values (100), (127)",
                 "insert into test_sink values (CAST(3 as TINYINT)), (CAST(4 as TINYINT))",
                 "[+I[a, BIGINT, true, null, null, null]]",
                 "[+I[a, TINYINT, true, null, null, null]]",
-                "[+I[10000000000], +I[20000000000]]",
-                "[+I[3], +I[4], +I[null], +I[null]]"
+                "[+I[100], +I[127]]",
+                "[+I[100], +I[127], +I[3], +I[4]]"
         );
     }
 
@@ -277,6 +276,8 @@ public class SchemaMigrationTest extends AbstractTestBase {
     @Test
     public void testCanCast() {
         assertThat(DataTypeCastUtils$.MODULE$.checkDataTypeEqualOrCanCast(DataTypes.DoubleType, DataTypes.FloatType))
+                .isEqualTo(DataTypeCastUtils$.MODULE$.CAN_CAST());
+        assertThat(DataTypeCastUtils$.MODULE$.checkDataTypeEqualOrCanCast(DataTypes.LongType, DataTypes.IntegerType))
                 .isEqualTo(DataTypeCastUtils$.MODULE$.CAN_CAST());
         assertThat(DataTypeCastUtils$.MODULE$.checkDataTypeEqualOrCanCast(DataTypes.createDecimalType(20, 2),
                 DataTypes.createDecimalType(25, 2)))

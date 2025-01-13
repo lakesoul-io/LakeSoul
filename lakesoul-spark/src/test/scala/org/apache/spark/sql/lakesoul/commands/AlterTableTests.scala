@@ -618,25 +618,17 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
     }
   }
 
-  ddlTest("CHANGE COLUMN - incompatible") { ns =>
-    withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2"), ns) { tableName =>
-
-      assertNotSupported(
-        s"ALTER TABLE $tableName CHANGE COLUMN v1 v1 long",
-        "'v1' with type 'IntegerType (nullable = true)'",
-        "'v1' with type 'LongType (nullable = true)'")
+  test("change column - type") {
+    withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2"), "default") { tableName =>
+      sql(s"ALTER TABLE $tableName CHANGE COLUMN v1 v1 long")
     }
   }
 
-  ddlTest("CHANGE COLUMN - incompatible (nested)") { ns =>
+  test("change column - type nested") {
     val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
       .withColumn("struct", struct("v1", "v2"))
-    withLakeSoulTable(df, ns) { tableName =>
-
-      assertNotSupported(
-        s"ALTER TABLE $tableName CHANGE COLUMN struct.v1 v1 long",
-        "'struct.v1' with type 'IntegerType (nullable = true)'",
-        "'v1' with type 'LongType (nullable = true)'")
+    withLakeSoulTable(df, "default") { tableName =>
+      sql(s"ALTER TABLE $tableName CHANGE COLUMN struct.v1 v1 long")
     }
   }
 
