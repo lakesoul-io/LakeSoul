@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use arrow::array::ArrayRef;
 use arrow::compute::CastOptions;
 use arrow_array::{new_empty_array, new_null_array};
+use arrow_cast::display::FormatOptions;
 use arrow_schema::DataType;
 
 use lazy_static::lazy_static;
@@ -30,7 +31,10 @@ pub static TIMESTAMP_NANOSECOND_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.9f";
 pub static NUM_COLUMN_OPTIMIZE_THRESHOLD: usize = 200;
 
 lazy_static! {
-    pub static ref ARROW_CAST_OPTIONS: CastOptions<'static> = CastOptions::default();
+    pub static ref ARROW_CAST_OPTIONS: CastOptions<'static> = CastOptions {
+        safe: false,
+        format_options: FormatOptions::default(),
+    };
 }
 
 #[derive(Debug, Default)]
