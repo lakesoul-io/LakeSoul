@@ -236,16 +236,23 @@ public class LakeSoulSinkGlobalCommitter
                                 schemaLastChangeTime =
                                 JSON.parseObject(tableInfo.getProperties())
                                         .getLongValue(DBConfig.TableInfoProperty.LAST_TABLE_SCHEMA_CHANGE_TIME);
+                        StringBuilder sb = new StringBuilder();
+                        sb.append(equalOrCanCast);
+                        sb.append(", for table ");
+                        sb.append(tableInfo.getTableNamespace());
+                        sb.append(".");
+                        sb.append(tableInfo.getTableName());
+                        String msg = sb.toString();
                         if (equalOrCanCast.contains("Change of Partition Column") ||
                                 equalOrCanCast.contains("Change of Primary Key Column")) {
-                            throw new IOException(equalOrCanCast);
+                            throw new SuppressRestartsException(new IllegalStateException(msg));
                         }
                         for (LakeSoulMultiTableSinkCommittable committable : lakeSoulMultiTableSinkCommittable) {
                             if (committable.getTsMs() > schemaLastChangeTime) {
                                 LOG.error("Incompatible cast data {} created and delayThreshold time: {}, dml create time: {}",
-                                        equalOrCanCast,
+                                        msg,
                                         schemaLastChangeTime, committable.getTsMs());
-                                throw new IOException(equalOrCanCast);
+                                throw new IOException(msg);
                             }
                         }
                     }

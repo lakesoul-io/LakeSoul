@@ -463,14 +463,11 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
         assert(sql("SELECT * FROM lakesoul_test").collect()(0) == Row(1, "a"))
         LakeSoulTable.uncached(dir.getCanonicalPath)
 
-        val e1 = intercept[AnalysisException] {
-          sql(
-            s"""
-               |ALTER TABLE lakesoul_test
-               |CHANGE COLUMN a a String""".stripMargin)
-        }
-        assert(e1.getMessage.contains("ALTER TABLE CHANGE COLUMN is not supported"))
-        assert(sql("SELECT * FROM lakesoul_test").collect()(0) == Row(1, "a"))
+        sql(
+          s"""
+             |ALTER TABLE lakesoul_test
+             |CHANGE COLUMN a a String""".stripMargin)
+        assert(sql("SELECT * FROM lakesoul_test").collect()(0) == Row("1", "a"))
         LakeSoulTable.uncached(dir.getCanonicalPath)
 
 
