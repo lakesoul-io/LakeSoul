@@ -51,9 +51,8 @@ pub static OPTION_KEY_HASH_BUCKET_ID: &str = "hash_bucket_id";
 pub static OPTION_KEY_CDC_COLUMN: &str = "cdc_column";
 pub static OPTION_KEY_IS_COMPACTED: &str = "is_compacted";
 pub static OPTION_KEY_MAX_FILE_SIZE: &str = "max_file_size";
-pub static OPTION_KEY_IS_LSH: &str = "is_lsh";
-pub static OPTION_KEY_NBITS: &str = "nbits";
-pub static OPTION_KEY_D: &str= "d";
+pub static OPTION_KEY_COMPUTE_LSH: &str = "compute_lsh";
+
 
 #[derive(Debug, Derivative)]
 #[derivative(Default, Clone)]
@@ -196,17 +195,10 @@ impl LakeSoulIOConfig {
         self.option(OPTION_KEY_IS_COMPACTED).map_or(false, |x| x.eq("true"))
     }
 
-    pub fn is_lsh(&self) -> bool {
-        self.option(OPTION_KEY_IS_LSH).map_or(false,|x| x.eq("true"))
+    pub fn compute_lsh(&self) -> bool {
+        self.option(OPTION_KEY_COMPUTE_LSH).map_or(true,|x| x.eq("true"))
     }
 
-    pub fn nbits(&self) -> Option<u64>{
-        self.option(OPTION_KEY_NBITS).map(|x| x.parse().unwrap())
-    }
-
-    pub fn d(&self) -> Option<u64>{
-        self.option(OPTION_KEY_D).map(|x| x.parse().unwrap())
-    }
 }
 
 #[derive(Derivative, Debug)]

@@ -31,6 +31,12 @@ object LakeSoulOptions {
   val TIME_ZONE = "timezone"
   val DISCOVERY_INTERVAL = "discoveryinterval"
 
+  object SchemaFieldMetadata {
+    val LSH_EMBEDDING_DIMENSION = "lsh_embedding_dimension"
+    val LSH_BIT_WIDTH = "lsh_bit_width"
+    val LSH_RNG_SEED = "lsh_rng_seed"
+  }
+
   object ReadType extends Enumeration {
     val FULL_READ = "fullread"
     val SNAPSHOT_READ = "snapshot"

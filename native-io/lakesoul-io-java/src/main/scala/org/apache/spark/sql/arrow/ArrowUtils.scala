@@ -4,6 +4,8 @@
 
 package org.apache.spark.sql.arrow
 
+import com.dmetasoul.lakesoul.meta.LakeSoulOptions
+import com.dmetasoul.lakesoul.meta.LakeSoulOptions.SchemaFieldMetadata.{LSH_BIT_WIDTH, LSH_EMBEDDING_DIMENSION, LSH_RNG_SEED}
 import org.apache.arrow.memory.RootAllocator
 import org.apache.arrow.vector.complex.MapVector
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
@@ -167,11 +169,20 @@ object ArrowUtils {
   def toArrowSchema(schema: StructType, timeZoneId: String = "UTC"): Schema = {
     new Schema(schema.map { field =>
       val comment = field.getComment
-      val metadata = if (comment.isDefined) {
-        val map = new util.HashMap[String, String]
-        map.put("spark_comment", comment.get)
-        map
-      } else null
+      val metadata = new util.HashMap[String, String]
+      if (field.metadata.contains(LSH_EMBEDDING_DIMENSION)) {
+        metadata.put(LSH_EMBEDDING_DIMENSION, field.metadata.getString(LSH_EMBEDDING_DIMENSION))
+      }
+      if (field.metadata.contains(LSH_BIT_WIDTH)) {
+        metadata.put(LSH_BIT_WIDTH, field.metadata.getString(LSH_BIT_WIDTH))
+      }
+      if (field.metadata.contains(LSH_RNG_SEED)) {
+        metadata.put(LSH_RNG_SEED, field.metadata.getString(LSH_RNG_SEED))
+      }
+
+      if (comment.isDefined) {
+        metadata.put("spark_comment", comment.get)
+      }
       toArrowField(field.name, field.dataType, field.nullable, timeZoneId, field.metadata, metadata)
     }.asJava)
   }
