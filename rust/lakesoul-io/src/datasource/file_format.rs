@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
-
-use arrow_schema::SchemaBuilder;
+use arrow_cast::can_cast_types;
+use arrow_schema::{ArrowError, FieldRef, Fields, Schema, SchemaBuilder};
 use datafusion::datasource::file_format::{parquet::ParquetFormat, FileFormat};
 use datafusion::datasource::physical_plan::{FileScanConfig, FileSinkConfig};
 use datafusion::execution::context::SessionState;
@@ -16,14 +16,16 @@ use datafusion::execution::context::SessionState;
 use datafusion::physical_expr::PhysicalSortRequirement;
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::{ExecutionPlan, PhysicalExpr};
-use datafusion_common::{project_schema, FileType, Result, Statistics};
+use datafusion_common::{project_schema, DataFusionError, FileType, Result, Statistics};
 
 use object_store::{ObjectMeta, ObjectStore};
 
-use async_trait::async_trait;
-
 use crate::datasource::{listing::LakeSoulListingTable, physical_plan::MergeParquetExec};
 use crate::lakesoul_io_config::LakeSoulIOConfig;
+use async_trait::async_trait;
+use datafusion::datasource::file_format::parquet::fetch_parquet_metadata;
+use futures::{StreamExt, TryStreamExt};
+use parquet::arrow::parquet_to_arrow_schema;
 
 /// LakeSoul `FileFormat` implementation for supporting Apache Parquet
 ///
@@ -56,6 +58,77 @@ impl LakeSoulParquetFormat {
     }
 }
 
+async fn fetch_schema(store: &dyn ObjectStore, file: &ObjectMeta, metadata_size_hint: Option<usize>) -> Result<Schema> {
+    let metadata = fetch_parquet_metadata(store, file, metadata_size_hint).await?;
+    let file_metadata = metadata.file_metadata();
+    let schema = parquet_to_arrow_schema(file_metadata.schema_descr(), file_metadata.key_value_metadata())?;
+    Ok(schema)
+}
+
+fn clear_metadata(schemas: impl IntoIterator<Item = Schema>) -> impl Iterator<Item = Schema> {
+    schemas.into_iter().map(|schema| {
+        let fields = schema
+            .fields()
+            .iter()
+            .map(|field| {
+                field.as_ref().clone().with_metadata(Default::default()) // clear meta
+            })
+            .collect::<Fields>();
+        Schema::new(fields)
+    })
+}
+
+#[derive(Debug, Default)]
+pub struct CanCastSchemaBuilder {
+    fields: Vec<FieldRef>,
+}
+
+impl CanCastSchemaBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            fields: Vec::with_capacity(capacity),
+        }
+    }
+
+    pub fn push(&mut self, field: impl Into<FieldRef>) {
+        self.fields.push(field.into())
+    }
+
+    fn merge(e: &mut FieldRef, field: &FieldRef) -> Result<(), ArrowError> {
+        if can_cast_types(e.data_type(), field.data_type()) {
+            *e = field.clone();
+            Ok(())
+        } else {
+            Err(ArrowError::SchemaError(format!(
+                "Fail to merge schema field '{}' because the from data_type = {} does not equal {}",
+                field.name(),
+                e.data_type(),
+                field.data_type()
+            )))
+        }
+    }
+
+    pub fn try_merge(&mut self, field: &FieldRef) -> Result<(), ArrowError> {
+        // This could potentially be sped up with a HashMap or similar
+        let existing = self.fields.iter_mut().find(|f| f.name() == field.name());
+        match existing {
+            Some(e) => {
+                Self::merge(e, field)?;
+            }
+            None => self.fields.push(field.clone()),
+        }
+        Ok(())
+    }
+
+    pub fn finish(self) -> Schema {
+        Schema::new(self.fields)
+    }
+}
+
 #[async_trait]
 impl FileFormat for LakeSoulParquetFormat {
     fn as_any(&self) -> &dyn Any {
@@ -68,7 +141,41 @@ impl FileFormat for LakeSoulParquetFormat {
         store: &Arc<dyn ObjectStore>,
         objects: &[ObjectMeta],
     ) -> Result<SchemaRef> {
-        self.parquet_format.infer_schema(state, store, objects).await
+        let schemas: Vec<_> = futures::stream::iter(objects)
+            .map(|object| {
+                fetch_schema(
+                    store.as_ref(),
+                    object,
+                    self.parquet_format.metadata_size_hint(state.config_options()),
+                )
+            })
+            .boxed() // Workaround https://github.com/rust-lang/rust/issues/64552
+            .buffered(state.config_options().execution.meta_fetch_concurrency)
+            .try_collect()
+            .await?;
+
+        let mut out_meta = HashMap::new();
+        let mut out_fields = CanCastSchemaBuilder::new();
+        for schema in clear_metadata(schemas) {
+            let Schema { metadata, fields } = schema;
+
+            // merge metadata
+            for (key, value) in metadata.into_iter() {
+                if let Some(old_val) = out_meta.get(&key) {
+                    if old_val != &value {
+                        return Err(DataFusionError::ArrowError(ArrowError::SchemaError(format!(
+                            "Fail to merge schema due to conflicting metadata. \
+                                         Key '{key}' has different values '{old_val}' and '{value}'"
+                        ))));
+                    }
+                }
+                out_meta.insert(key, value);
+            }
+
+            // merge fields
+            fields.iter().try_for_each(|x| out_fields.try_merge(x))?
+        }
+        Ok(Arc::new(out_fields.finish().with_metadata(out_meta)))
     }
 
     async fn infer_stats(

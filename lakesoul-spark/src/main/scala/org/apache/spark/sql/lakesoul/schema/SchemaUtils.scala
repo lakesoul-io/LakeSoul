@@ -6,6 +6,7 @@ package org.apache.spark.sql.lakesoul.schema
 
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.analysis.{Resolver, UnresolvedAttribute}
+import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetFileFormat, ParquetSchemaConverter}
 import org.apache.spark.sql.functions.{col, struct}
@@ -688,7 +689,7 @@ object SchemaUtils {
               (if (columnPath.nonEmpty) s" from ${UnresolvedAttribute(columnPath).name}" else ""))
 
         case (fromDataType, toDataType) =>
-          verify(fromDataType == toDataType,
+          verify(Cast.canCast(fromDataType, toDataType),
             s"changing data type of ${UnresolvedAttribute(columnPath).name} " +
               s"from $fromDataType to $toDataType")
       }

@@ -23,6 +23,8 @@ import org.junit.runner.RunWith
 import org.scalatest.BeforeAndAfterEach
 import org.scalatestplus.junit.JUnitRunner
 
+import java.math.MathContext
+
 @RunWith(classOf[JUnitRunner])
 class CompactionSuite extends QueryTest
   with SharedSparkSession with BeforeAndAfterEach
@@ -904,11 +906,74 @@ class CompactionSuite extends QueryTest
     }
   }
 
-
   // Auxiliary method: Get the bucket number of table
   def getTableInfo(tablePath: String): TableInfo = {
     val sm = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(tablePath)).toString)
     sm.getTableInfoOnly
   }
 
+  test("Compaction with schema change") {
+    withSQLConf(LakeSoulSQLConf.SCHEMA_AUTO_MIGRATE.key -> "true") {
+      withTempDir { tempDir =>
+        val tablePath = tempDir.getCanonicalPath
+        val spark = SparkSession.active
+
+        val hashBucketNum = 2
+        val mathContext = new MathContext(20)
+
+        {
+          // Create test data
+          val df = Seq(
+            (1, "2023-01-01", 10, BigDecimal(10, 2, mathContext), "insert"),
+            (2, "2023-01-02", 20, BigDecimal(20, 2, mathContext), "insert"),
+            (3, "2023-01-03", 30, BigDecimal(30, 2, mathContext), "insert"),
+            (4, "2023-01-04", 40, BigDecimal(40, 2, mathContext), "insert"),
+            (5, "2023-01-05", 50, BigDecimal(50, 2, mathContext), "insert")
+          ).toDF("id", "date", "value", "range", "op")
+          df.printSchema()
+
+          // Write initial data
+          df.write
+            .format("lakesoul")
+            .option("hashPartitions", "id")
+            .option(SHORT_TABLE_NAME, "compaction_test_table")
+            .option("lakesoul_cdc_change_column", "op")
+            .option("hashBucketNum", hashBucketNum.toString)
+            .save(tablePath)
+        }
+
+        {
+          // change schema
+          val df = Seq(
+            (1, "1", 1, "insert"),
+            (2, "2", 1, "update"),
+            (3, "3", 1, "delete"),
+            (4, "4", 1, "insert"),
+            (5, "5", 1, "update")
+          ).toDF("id", "value", "range", "op")
+
+          val table = LakeSoulTable.forPath(tablePath)
+          table.upsert(df)
+        }
+
+        {
+          // compaction
+          val table = LakeSoulTable.forPath(tablePath)
+          LakeSoulTable.uncached(tablePath)
+          table.compaction()
+        }
+
+        val table = LakeSoulTable.forPath(tablePath)
+        LakeSoulTable.uncached(tablePath)
+        val tableDF = table.toDF
+
+        checkAnswer(tableDF, Seq(
+          Row(1, "2023-01-01", 1, 1.0, "insert"),
+          Row(2, "2023-01-02", 2, 1.0, "insert"),
+          Row(4, "2023-01-04", 4, 1.0, "insert"),
+          Row(5, "2023-01-05", 5, 1.0, "insert"))
+        )
+      }
+    }
+  }
 }

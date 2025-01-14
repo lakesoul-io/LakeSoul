@@ -4,6 +4,7 @@
 
 package org.apache.spark.sql.arrow;
 
+import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.types._
 
 import scala.collection.JavaConverters.bufferAsJavaListConverter
@@ -20,13 +21,14 @@ object DataTypeCastUtils {
   val CAN_CAST = "canCast"
 
   /**
-    * Compare two StructType, and check if StructType target can be cast from StructType source
-    *
-    * @param source
-    * @param target
-    * @return "equal" if two StructType is equal, "can_cast" if two StructType is not equal but Struct source can be cast to target, other if Struct source can not be cast to target
-    */
-  def checkSchemaEqualOrCanCast(source: StructType, target: StructType, partitionKeyList: java.util.List[String], primaryKeyList: java.util.List[String]): (String, Boolean, StructType) = {
+   * Compare two StructType, and check if StructType target can be cast from StructType source
+   *
+   * @param source
+   * @param target
+   * @return "equal" if two StructType is equal, "can_cast" if two StructType is not equal but Struct source can be cast to target, other if Struct source can not be cast to target
+   */
+  def checkSchemaEqualOrCanCast(source: StructType, target: StructType, partitionKeyList: java.util.List[String],
+                                primaryKeyList: java.util.List[String]): (String, Boolean, StructType) = {
     var mergeStructType = source
     var isEqual = source.fields.length == target.fields.length
     var schemaChanged = false
@@ -54,35 +56,18 @@ object DataTypeCastUtils {
   }
 
   /**
-    * Compare two StructType, and check if StructType target can be cast from StructType source
-    *
-    * @param source
-    * @param target
-    * @return 0 if two StructType is equal, 1 if two StructType is not equal but Struct source can be cast to target, -1 if Struct source can not be cast to target
-    */
+   * Compare two StructType, and check if StructType target can be cast from StructType source
+   *
+   * @param source
+   * @param target
+   */
   def checkDataTypeEqualOrCanCast(source: DataType, target: DataType): String = {
-    if (source == target)
+    if (source == target) {
       IS_EQUAL
-    else (source, target) match {
-      case (IntegerType, LongType)
-           | (ByteType, LongType)
-           | (ShortType, LongType)
-           | (ShortType, IntegerType)
-           | (ByteType, IntegerType)
-           | (ByteType, ShortType)
-        if allowPrecisionIncrement => CAN_CAST
-      case (FloatType, DoubleType)
-        if allowPrecisionIncrement => CAN_CAST
-      case (LongType, IntegerType)
-           | (LongType, ShortType)
-           | (LongType, ByteType)
-           | (IntegerType, ShortType)
-           | (IntegerType, ByteType)
-           | (ShortType, ByteType)
-        if allowPrecisionLoss => CAN_CAST
-      case (DoubleType, FloatType)
-        if allowPrecisionLoss => CAN_CAST
-      case _ => s"$source is not allowed to cast to $target"
+    } else if (Cast.canCast(source, target)) {
+      CAN_CAST
+    } else {
+      s"$source is not allowed to cast to $target"
     }
   }
 
