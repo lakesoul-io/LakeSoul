@@ -1,0 +1,245 @@
+package org.apache.spark.sql.lakesoul.benchmark.ann
+
+import com.dmetasoul.lakesoul.meta.LakeSoulOptions
+import com.dmetasoul.lakesoul.spark.ParametersTool
+import com.dmetasoul.lakesoul.tables.LakeSoulTable
+import io.jhdf.HdfFile
+import org.apache.spark.sql.{Row, SparkSession}
+import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
+import org.apache.spark.sql.functions.{collect_list, sum, udf}
+import org.apache.spark.sql.types.{ArrayType, FloatType, IntegerType, LongType, MetadataBuilder, StructField, StructType}
+
+import java.nio.file.Paths
+import scala.concurrent.duration.DurationLong
+import scala.math.{pow, sqrt}
+
+
+object LocalSensitiveHashANN {
+
+  val HDF5_FILE = "HDF5_FILE"
+  val LAKESOUL_WAREHOUSE = "LAKESOUL_WAREHOUSE"
+  var warehouse = "/Users/ceng/LakeSoul_WareHouse/"
+
+  var filePath = "/Users/ceng/Downloads/fashion-mnist-784-euclidean.hdf5"
+  var trainPath = s"${warehouse}/train"
+  var testPath = s"${warehouse}/test"
+
+  def main(args: Array[String]): Unit = {
+
+    val parameter = ParametersTool.fromArgs(args)
+    if (parameter.has(HDF5_FILE)) {
+      filePath = parameter.get(HDF5_FILE)
+    }
+    if (parameter.has(LAKESOUL_WAREHOUSE)) {
+      warehouse = parameter.get(LAKESOUL_WAREHOUSE)
+    }
+
+
+    val builder = SparkSession.builder()
+      .appName("LocalSensitiveHashANN")
+      .master("local[1]")
+      .config("spark.sql.parquet.mergeSchema", value = true)
+      .config("spark.sql.parquet.filterPushdown", value = true)
+      .config("spark.sql.extensions", "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension")
+      .config("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
+      .config(SQLConf.DEFAULT_CATALOG.key, LakeSoulCatalog.CATALOG_NAME)
+
+    val spark = builder.getOrCreate()
+    spark.sparkContext.setLogLevel("WARN")
+
+    val hdfFile = new HdfFile(Paths.get(filePath))
+
+    val trainDataset = hdfFile.getDatasetByPath("train")
+    val testDataset = hdfFile.getDatasetByPath("test")
+    val neighborDataset = hdfFile.getDatasetByPath("neighbors")
+    val trainData = trainDataset.getData()
+    val testData = testDataset.getData()
+    val neighborData = neighborDataset.getData()
+
+    var float2DDataNeighbor: Array[Array[Int]] = null
+    neighborData match {
+      case data: Array[Array[Int]] =>
+        float2DDataNeighbor = data
+      case _ =>
+        println("not")
+    }
+    // the smaller the Hamming distance,the greater the similarity
+    val calculateHammingDistanceUDF = udf((trainLSH: Seq[Long], testLSH: Seq[Long]) => {
+      require(trainLSH.length == testLSH.length, "The input sequences must have the same length")
+      trainLSH.zip(testLSH).map { case (train, test) =>
+        java.lang.Long.bitCount(train ^ test)
+      }.sum
+    })
+    // the smaller the Euclidean distance,the greater the similarity
+    val calculateEuclideanDistanceUDF = udf((trainEmbedding: Seq[Float], testEmbedding: Seq[Float]) => {
+      require(testEmbedding.length == trainEmbedding.length, "The input sequences must have the same length")
+      sqrt(trainEmbedding.zip(testEmbedding).map { case (train, test) =>
+        pow(train - test, 2)
+      }.sum)
+    })
+    //the greater the Cosine distance,the greater the similarity
+    val calculateCosineDistanceUDF = udf((trainEmbedding: Seq[Float], testEmbedding: Seq[Float]) => {
+      require(testEmbedding.length == trainEmbedding.length, "The input sequences must have the same length")
+      trainEmbedding.zip(testEmbedding).map { case (train, test) =>
+        train * test
+      }.sum / (sqrt(trainEmbedding.map { train => train * train }.sum) * sqrt(testEmbedding.map { test => test * test }.sum))
+    })
+    //the smaller the Jaccard distance,the greater the similarity
+    val calculateJaccardDistanceUDF = udf((trainEmbedding: Seq[Float], testEmbedding: Seq[Float]) => {
+      require(testEmbedding.length == trainEmbedding.length, "The input sequences must have the same length")
+      val anb = testEmbedding.intersect(trainEmbedding).distinct
+      val aub = testEmbedding.union(trainEmbedding).distinct
+      val jaccardCoefficient = anb.length.toDouble / aub.length
+      1 - jaccardCoefficient
+    })
+    spark.udf.register("calculateHammingDistance", calculateHammingDistanceUDF)
+    spark.udf.register("calculateEuclideanDistance", calculateEuclideanDistanceUDF)
+    spark.udf.register("calculateCosineDistance", calculateCosineDistanceUDF)
+    spark.udf.register("calculateJaccardDistance", calculateJaccardDistanceUDF)
+    //      println(float2DDataNeighbor.length)
+    val schema = StructType(Array(
+      StructField("IndexId", IntegerType, true),
+      StructField("Embedding", ArrayType(FloatType), true, new MetadataBuilder()
+        .putString(LakeSoulOptions.SchemaFieldMetadata.LSH_EMBEDDING_DIMENSION, "784")
+        .putString(LakeSoulOptions.SchemaFieldMetadata.LSH_BIT_WIDTH, "512")
+        .putString(LakeSoulOptions.SchemaFieldMetadata.LSH_RNG_SEED, "1234567890").build()),
+      StructField("Embedding_LSH", ArrayType(LongType), true)
+    ))
+    trainData match {
+      case float2DData: Array[Array[Float]] =>
+        val classIds = (1 to float2DData.length).toArray
+
+        val rows = float2DData.zip(classIds).map {
+          case (embedding, indexId) =>
+            //                  Row(indexId, embedding)
+            Row(indexId, embedding, null)
+        }
+        val df = spark.createDataFrame(spark.sparkContext.parallelize(rows), schema)
+        df.write.format("lakesoul")
+          .option("hashPartitions", "IndexId")
+          .option("hashBucketNum", 4)
+          .option(LakeSoulOptions.SHORT_TABLE_NAME, "trainData")
+          .mode("Overwrite").save(trainPath)
+
+        //            val startTime1 = System.nanoTime()
+        val lakeSoulTable = LakeSoulTable.forPath(trainPath)
+
+        testData match {
+          case float2DTestData: Array[Array[Float]] =>
+            val classIdsTest = (1 to float2DTestData.length).toArray
+
+            val rowsTest = float2DTestData.zip(classIdsTest).map {
+              case (embedding, indexId) =>
+                //                      Row(indexId, embedding)
+                Row(indexId, embedding, null)
+            }
+
+            val num = 50
+            val dfTest = spark.createDataFrame(spark.sparkContext.parallelize(rowsTest), schema).limit(num)
+            dfTest.write.format("lakesoul")
+              .option("hashPartitions", "IndexId")
+              .option("hashBucketNum", 4)
+              .option(LakeSoulOptions.SHORT_TABLE_NAME, "testData")
+              .mode("Overwrite").save(testPath)
+            val lakeSoulTableTest = LakeSoulTable.forPath(testPath)
+
+            lakeSoulTableTest.compaction()
+            //                val endTime1 = System.nanoTime()
+            //                val duration1 = (endTime1 - startTime1).nanos
+            //                println(s"time:${duration1.toMillis}")
+            //                val lshTrain = sql("select LSH from trainData")
+            //                val lshTest = sql("select LSH from testData")
+
+            //                val arr = Array(1,5,10,20,40,60,80,100,150,200,250,300)
+            //                for(n <- arr) {
+            val n = 3
+            val topk = 100
+            val topkFirst = n * topk
+
+            //                val result = sql("select testData.IndexId as indexId,trainData.LSH as trainLSH,testData.LSH as testLSH," +
+            //                  "calculateHammingDistance(testData.LSH,trainData.LSH) AS hamming_distance " +
+            //                  "from testData " +
+            //                  "cross join trainData " +
+            //                  "order by indexId,hamming_distance")
+
+            //                val result = spark.sql(s"""
+            //                    SELECT *
+            //                    FROM (
+            //                        SELECT
+            //                            testData.IndexId AS indexIdTest,
+            //                            trainData.IndexId AS indexIdTrain,
+            //                            trainData.LSH AS trainLSH,
+            //                            testData.LSH AS testLSH,
+            //                            calculateHammingDistance(testData.LSH, trainData.LSH) AS hamming_distance,
+            //                            ROW_NUMBER() OVER (PARTITION BY testData.IndexId ORDER BY calculateHammingDistance(testData.LSH, trainData.LSH) asc) AS rank
+            //                        FROM testData
+            //                        CROSS JOIN trainData
+            //                    ) ranked
+            //                    WHERE rank <= $topk
+            //                """).groupBy("indexIdTest").agg(collect_list("indexIdTrain").alias("indexIdTrainList"))
+            val startTime = System.nanoTime()
+            val result = spark.sql(
+              s"""
+                      SELECT *
+                      FROM (
+                          SELECT
+                              testData.IndexId AS indexIdTest,
+                              trainData.IndexId AS indexIdTrain,
+                              testData.Embedding as EmbeddingTest,
+                              trainData.Embedding as EmbeddingTrain,
+                              ROW_NUMBER() OVER (PARTITION BY testData.IndexId ORDER BY calculateHammingDistance(testData.Embedding_LSH, trainData.Embedding_LSH) asc) AS rank
+                          FROM testData
+                          CROSS JOIN trainData
+                      ) ranked
+                      WHERE rank <= $topkFirst
+                  """)
+            result.createOrReplaceTempView("rank")
+            val reResult = spark.sql(
+              s"""
+                       SELECT *
+                       FROM (
+                          SELECT
+                            rank.indexIdTest,
+                            rank.indexIDTrain,
+                            ROW_NUMBER() OVER(PARTITION BY rank.indexIdTest ORDER BY calculateEuclideanDistance(rank.EmbeddingTest,rank.EmbeddingTrain) asc) AS reRank
+                          FROM rank
+                       ) reRanked
+                       WHERE reRank <= $topk
+                       """).groupBy("indexIdTest").agg(collect_list("indexIdTrain").alias("indexIdTrainList"))
+
+
+            val endTime = System.nanoTime()
+            val duration = (endTime - startTime).nanos
+            println(s"time for query n4topk ${n} :${duration.toMillis} milliseconds")
+
+            val startTime2 = System.nanoTime()
+
+            val recallDF = reResult.select("indexIdTest", "indexIdTrainList").rdd.map(row => {
+              val indexIdTest = row.getAs[Int]("indexIdTest")
+              val indexIdTrainList = row.getAs[Seq[Int]]("indexIdTrainList").toArray
+              val updatedList = indexIdTrainList.map(_ - 1)
+              val count = float2DDataNeighbor(indexIdTest - 1).take(topk).count(updatedList.contains)
+              val recall = count.toDouble / topk
+              (recall, 1)
+            }).reduce((acc1, acc2) => {
+              (acc1._1 + acc2._1, acc1._2 + acc2._2)
+            })
+
+            val avgRecall = recallDF._1 / recallDF._2
+            println(s"recall rate = $avgRecall")
+
+            val endTime2 = System.nanoTime()
+            val duration2 = (endTime2 - startTime2).nanos
+            println(s"time for sort:${duration2.toMillis} milliseconds")
+          //                }
+        }
+      case _ =>
+        println("unexpected data type")
+      case _ =>
+        println("unexpected data type")
+    }
+
+  }
+
+}
