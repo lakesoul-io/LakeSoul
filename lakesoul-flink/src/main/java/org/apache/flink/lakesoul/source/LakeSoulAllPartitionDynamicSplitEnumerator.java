@@ -48,6 +48,7 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator implements SplitEnumerat
     private long startTime;
     private long nextStartTime;
     private int hashBucketNum = -1;
+    String fullTableName;
 
     public LakeSoulAllPartitionDynamicSplitEnumerator(SplitEnumeratorContext<LakeSoulPartitionSplit> context, LakeSoulDynSplitAssigner splitAssigner, RowType rowType, long discoveryInterval, long startTime, String tableId, String hashBucketNum, List<String> partitionColumns, Plan partitionFilters) {
         this.context = context;
@@ -66,6 +67,9 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator implements SplitEnumerat
         this.partitionArrowSchema = new Schema(partitionFields);
         this.partitionFilters = partitionFilters;
         tableInfo = DataOperation.dbManager().getTableInfoByTableId(tableId);
+        fullTableName = tableInfo.getTableNamespace() + "." + tableInfo.getTableName();
+        LOG.info("Create Dyn enumerator for table name {}, tableId {}, context {}",
+                fullTableName, tableId, System.identityHashCode(context));
     }
 
     @Override
@@ -83,6 +87,8 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator implements SplitEnumerat
         }
         int tasksSize = context.registeredReaders().size();
         if (tasksSize == 0) {
+            LOG.info("handleSplitRequest: Task size is 0 for subtaskId {} for table {}", subtaskId, fullTableName);
+            taskIdsAwaitingSplit.add(subtaskId);
             return;
         }
         Optional<LakeSoulPartitionSplit> nextSplit = this.splitAssigner.getNext(subtaskId, tasksSize);
@@ -134,10 +140,10 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator implements SplitEnumerat
         LOG.info("Process discovered splits {}, taskSize {}, oid {}, tid {}", splits,
                 tasksSize, System.identityHashCode(this),
                 Thread.currentThread().getId());
+        this.splitAssigner.addSplits(splits);
         if (tasksSize == 0) {
             return;
         }
-        this.splitAssigner.addSplits(splits);
         Iterator<Integer> iter = taskIdsAwaitingSplit.iterator();
         while (iter.hasNext()) {
             int taskId = iter.next();
