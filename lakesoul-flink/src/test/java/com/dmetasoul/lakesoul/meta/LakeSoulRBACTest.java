@@ -209,7 +209,7 @@ public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
         login(USER1, USER1_PASS, DOMAIN1);
         // create table
         sql("use database1");
-        Path tablePath = new Path("hdfs://chenxu-dev:9000/lakesoul-test-bucket/database1/table1");
+        Path tablePath = new Path("hdfs://localhost:9000/lakesoul-test-bucket/database1/table1");
         sql("create table if not exists table1 ( id int, foo string, bar string )"
                 + " with ('format' = 'lakesoul', 'path' = '"
                 + tablePath.toString()
