@@ -158,9 +158,17 @@ public class ArrowColumnVector extends ColumnVector {
         } else if (vector instanceof DateDayVector) {
             accessor = new DateAccessor((DateDayVector) vector);
         } else if (vector instanceof TimeStampMicroTZVector) {
-            accessor = new TimestampAccessor((TimeStampMicroTZVector) vector);
+            accessor = new TimestampMicroAccessor((TimeStampMicroTZVector) vector);
         } else if (vector instanceof TimeStampMicroVector) {
-            accessor = new TimestampNTZAccessor((TimeStampMicroVector) vector);
+            accessor = new TimestampMicroNTZAccessor((TimeStampMicroVector) vector);
+        } else if (vector instanceof TimeStampMilliTZVector) {
+            accessor = new TimestampMilliAccessor((TimeStampMilliTZVector) vector);
+        } else if (vector instanceof TimeStampMilliVector) {
+            accessor = new TimestampMilliNTZAccessor((TimeStampMilliVector) vector);
+        } else if (vector instanceof TimeStampSecTZVector) {
+            accessor = new TimestampSecAccessor((TimeStampSecTZVector) vector);
+        } else if (vector instanceof TimeStampSecVector) {
+            accessor = new TimestampSecNTZAccessor((TimeStampSecVector) vector);
         } else if (vector instanceof MapVector) {
             MapVector mapVector = (MapVector) vector;
             accessor = new MapAccessor(mapVector);
@@ -432,11 +440,11 @@ public class ArrowColumnVector extends ColumnVector {
         }
     }
 
-    static class TimestampAccessor extends ArrowVectorAccessor {
+    static class TimestampMicroAccessor extends ArrowVectorAccessor {
 
         private final TimeStampMicroTZVector accessor;
 
-        TimestampAccessor(TimeStampMicroTZVector vector) {
+        TimestampMicroAccessor(TimeStampMicroTZVector vector) {
             super(vector);
             this.accessor = vector;
         }
@@ -447,11 +455,11 @@ public class ArrowColumnVector extends ColumnVector {
         }
     }
 
-    static class TimestampNTZAccessor extends ArrowVectorAccessor {
+    static class TimestampMicroNTZAccessor extends ArrowVectorAccessor {
 
         private final TimeStampMicroVector accessor;
 
-        TimestampNTZAccessor(TimeStampMicroVector vector) {
+        TimestampMicroNTZAccessor(TimeStampMicroVector vector) {
             super(vector);
             this.accessor = vector;
         }
@@ -459,6 +467,66 @@ public class ArrowColumnVector extends ColumnVector {
         @Override
         final long getLong(int rowId) {
             return accessor.get(rowId);
+        }
+    }
+
+    static class TimestampSecAccessor extends ArrowVectorAccessor {
+
+        private final TimeStampSecTZVector accessor;
+
+        TimestampSecAccessor(TimeStampSecTZVector vector) {
+            super(vector);
+            this.accessor = vector;
+        }
+
+        @Override
+        final long getLong(int rowId) {
+            return accessor.get(rowId) * 1000000;
+        }
+    }
+
+    static class TimestampSecNTZAccessor extends ArrowVectorAccessor {
+
+        private final TimeStampSecVector accessor;
+
+        TimestampSecNTZAccessor(TimeStampSecVector vector) {
+            super(vector);
+            this.accessor = vector;
+        }
+
+        @Override
+        final long getLong(int rowId) {
+            return accessor.get(rowId) * 1000000;
+        }
+    }
+
+    static class TimestampMilliAccessor extends ArrowVectorAccessor {
+
+        private final TimeStampMilliTZVector accessor;
+
+        TimestampMilliAccessor(TimeStampMilliTZVector vector) {
+            super(vector);
+            this.accessor = vector;
+        }
+
+        @Override
+        final long getLong(int rowId) {
+            return accessor.get(rowId) * 1000;
+        }
+    }
+
+    static class TimestampMilliNTZAccessor extends ArrowVectorAccessor {
+
+        private final TimeStampMilliVector accessor;
+
+        TimestampMilliNTZAccessor(TimeStampMilliVector vector) {
+            super(vector);
+            this.accessor = vector;
+        }
+
+        @Override
+        final long getLong(int rowId) {
+            return accessor.get(rowId) * 1000;
         }
     }
 
