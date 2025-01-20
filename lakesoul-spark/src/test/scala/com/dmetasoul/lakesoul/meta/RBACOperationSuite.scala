@@ -8,7 +8,7 @@ import com.dmetasoul.lakesoul.meta.jnr.NativeMetadataJavaClient
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.security.UserGroupInformation
 import org.apache.spark.SparkException
-import org.apache.spark.sql.QueryTest
+import org.apache.spark.sql.{QueryTest, Row}
 import org.apache.spark.sql.catalyst.analysis.NoSuchNamespaceException
 import org.apache.spark.sql.catalyst.expressions.GenericRowWithSchema
 import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
@@ -75,7 +75,7 @@ class RBACOperationSuite extends QueryTest
     spark.sql("create database if not exists database1")
     val df = spark.sql("show databases").toDF()
     df.show
-    assert(df.count() == 1)
+    checkAnswer(df, Seq(Row("default"), Row("database1")))
     // drop: coming soon
     //    spark.sql("drop database database1").collect()
     //    val df2 = spark.sql("show databases").toDF()
@@ -196,7 +196,7 @@ class RBACOperationSuite extends QueryTest
     println(err2.getMessage)
     assert(err2.getMessage.contains("permission denied for table namespace"))
 
-    assert(spark.sql("show databases").toDF().count() == 1)
+    assert(spark.sql("show databases").toDF().count() == 2)
 
     // create & drop table
     spark.sql("create table if not exists table1 ( id int, foo string, bar string ) using lakesoul ")

@@ -39,13 +39,13 @@ public class DBUtil {
     public static final String urlKey = "lakesoul.pg.url";
     public static final String usernameKey = "lakesoul.pg.username";
     public static final String passwordKey = "lakesoul.pg.password";
+    public static final String domainKey = "lakesoul.current.domain";
 
     private static final String driverNameEnv = "LAKESOUL_PG_DRIVER";
     private static final String urlEnv = "LAKESOUL_PG_URL";
     private static final String usernameEnv = "LAKESOUL_PG_USERNAME";
     private static final String passwordEnv = "LAKESOUL_PG_PASSWORD";
     private static final String domainENV = "LAKESOUL_CURRENT_DOMAIN";
-    public static final String domainKey = "lakesoul.current.domain";
 
     private static final String lakeSoulHomeEnv = "LAKESOUL_HOME";
 
@@ -287,7 +287,7 @@ public class DBUtil {
         config.setConnectionTimeout(10000);
         config.setIdleTimeout(10000);
         config.setMaximumPoolSize(8);
-        config.setKeepaliveTime(5000);
+        config.setKeepaliveTime(60000);
         config.setMinimumIdle(0);
         config.setMaxLifetime(1800000);
         config.addDataSourceProperty("cachePrepStmts", "true");

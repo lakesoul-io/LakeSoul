@@ -10,8 +10,6 @@ import com.dmetasoul.lakesoul.meta.dao.*;
 import com.dmetasoul.lakesoul.meta.entity.*;
 import com.dmetasoul.lakesoul.meta.jnr.NativeMetadataJavaClient;
 import com.dmetasoul.lakesoul.meta.jnr.NativeUtils;
-import com.dmetasoul.lakesoul.meta.rbac.AuthZContext;
-import com.dmetasoul.lakesoul.meta.rbac.AuthZEnforcer;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -844,9 +842,6 @@ public class DBManager {
     }
 
     private String getTableDomain(String tableId) {
-        if (!AuthZEnforcer.authZEnabled()) {
-            return "public";
-        }
         TableInfo tableInfo = this.getTableInfoByTableId(tableId);
         if (tableInfo == null) {
             throw new IllegalStateException("target tableinfo does not exists");
@@ -855,9 +850,6 @@ public class DBManager {
     }
 
     private String getNameSpaceDomain(String namespace) {
-        if (!AuthZEnforcer.authZEnabled()) {
-            return "public";
-        }
         Namespace namespaceInfo = getNamespaceByNamespace(namespace);
         if (namespaceInfo == null) {
             throw new IllegalStateException("target namespace does not exists");
@@ -917,9 +909,7 @@ public class DBManager {
                 .setProperties(properties)
                 .setComment(comment == null ? "" : comment);
 
-        namespace.setDomain(AuthZEnforcer.authZEnabled()
-                ? AuthZContext.getInstance().getDomain()
-                : "public");
+        namespace.setDomain(DBUtil.getDomain());
         namespaceDao.insert(namespace.build());
 
     }
@@ -952,15 +942,11 @@ public class DBManager {
     public void cleanMeta() {
         if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
             NativeMetadataJavaClient.cleanMeta();
-            if (!AuthZEnforcer.authZEnabled()) {
-                namespaceDao.insert(NamespaceDao.DEFAULT_NAMESPACE);
-            }
+            namespaceDao.insert(NamespaceDao.DEFAULT_NAMESPACE);
             return;
         }
         namespaceDao.clean();
-        if (!AuthZEnforcer.authZEnabled()) {
-            namespaceDao.insert(NamespaceDao.DEFAULT_NAMESPACE);
-        }
+        namespaceDao.insert(NamespaceDao.DEFAULT_NAMESPACE);
         dataCommitInfoDao.clean();
         tableInfoDao.clean();
         tablePathIdDao.clean();
