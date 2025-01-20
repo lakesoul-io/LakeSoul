@@ -50,12 +50,6 @@ public class NativeMetadataJavaClient implements AutoCloseable {
 
     private final ReentrantReadWriteLock lock;
 
-    private static DataBaseProperty dataBaseProperty = null;
-
-    public static void setDataBaseProperty(DataBaseProperty dataBaseProperty) {
-        NativeMetadataJavaClient.dataBaseProperty = dataBaseProperty;
-    }
-
     public NativeMetadataJavaClient() {
         this(5000L, 1 << 12);
     }
@@ -71,17 +65,16 @@ public class NativeMetadataJavaClient implements AutoCloseable {
         initialize();
     }
 
-    public static NativeMetadataJavaClient getInstance() {
+    public static synchronized NativeMetadataJavaClient getInstance() {
         if (instance == null) {
             instance = new NativeMetadataJavaClient();
         }
         return instance;
     }
 
-    public static void shutDownInstance() {
-        instance = null;
+    public static synchronized void shutDownInstance() {
+        closeAll();
     }
-
 
     public Pointer getTokioPostgresClient() {
         return tokioPostgresClient;
@@ -182,10 +175,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
 
     private void initialize() {
         libLakeSoulMetaData.rust_logger_init();
-        DataBaseProperty dataBaseProperty = NativeMetadataJavaClient.dataBaseProperty;
-        if (dataBaseProperty == null) {
-            dataBaseProperty = DBUtil.getDBInfo();
-        }
+        DataBaseProperty dataBaseProperty = DBUtil.getDBInfo();
         tokioRuntime = libLakeSoulMetaData.create_tokio_runtime();
 
         String config = String.format(
@@ -195,6 +185,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                 dataBaseProperty.getDbName(),
                 dataBaseProperty.getUsername(),
                 dataBaseProperty.getPassword());
+        System.out.println("initialize native metadata client: " + config);
         final CompletableFuture<Boolean> future = new CompletableFuture<>();
         tokioPostgresClient = libLakeSoulMetaData.create_tokio_postgres_client(
                 new ReferencedBooleanCallback((bool, msg) -> {
@@ -522,7 +513,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
         }
     }
 
-    public static void closeAll() {
+    public static synchronized void closeAll() {
         if (instance != null) {
             instance.close();
             instance = null;

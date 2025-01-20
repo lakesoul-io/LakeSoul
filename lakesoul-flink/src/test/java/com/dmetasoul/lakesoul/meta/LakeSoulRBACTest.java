@@ -10,9 +10,8 @@ import org.apache.flink.lakesoul.test.LakeSoulFlinkTestBase;
 import org.apache.flink.table.catalog.exceptions.CatalogException;
 import org.apache.flink.table.catalog.exceptions.DatabaseNotExistException;
 import org.apache.hadoop.security.UserGroupInformation;
-import org.junit.Assert;
+import org.junit.After;
 import org.junit.Test;
-import org.junit.jupiter.api.AfterEach;
 
 public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
     final String ADMIN1 = "admin1";
@@ -26,11 +25,10 @@ public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
     final String DOMAIN1 = "domain1";
     final String DOMAIN2 = "domain2";
 
-    @AfterEach
+    @After
     public void cleanMeta() throws Exception {
         resetMetaConn("lakesoul_test", "lakesoul_test", "public");
         dbManager.cleanMeta();
-        LakeSoulFlinkTestBase.catalog = null;
     }
 
     private static void resetMetaConn(String username, String password, String domain) {
@@ -211,7 +209,7 @@ public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
         login(USER1, USER1_PASS, DOMAIN1);
         // create table
         sql("use database1");
-        Path tablePath = new Path("hdfs://localhost:9000/lakesoul-test-bucket/database1/table1");
+        Path tablePath = new Path("hdfs://chenxu-dev:9000/lakesoul-test-bucket/database1/table1");
         sql("create table if not exists table1 ( id int, foo string, bar string )"
                 + " with ('format' = 'lakesoul', 'path' = '"
                 + tablePath.toString()
