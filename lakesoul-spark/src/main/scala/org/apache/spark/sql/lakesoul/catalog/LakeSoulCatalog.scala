@@ -77,7 +77,6 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
     val tableProperties = properties.asScala.filterKeys {
       case TableCatalog.PROP_LOCATION => false
       case TableCatalog.PROP_PROVIDER => false
-      case TableCatalog.PROP_COMMENT => false
       case TableCatalog.PROP_OWNER => false
       case "path" => false
       case _ => true

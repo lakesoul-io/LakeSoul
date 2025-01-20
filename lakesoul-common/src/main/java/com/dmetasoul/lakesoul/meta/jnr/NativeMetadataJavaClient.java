@@ -185,7 +185,6 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                 dataBaseProperty.getDbName(),
                 dataBaseProperty.getUsername(),
                 dataBaseProperty.getPassword());
-        System.out.println("initialize native metadata client: " + config);
         final CompletableFuture<Boolean> future = new CompletableFuture<>();
         tokioPostgresClient = libLakeSoulMetaData.create_tokio_postgres_client(
                 new ReferencedBooleanCallback((bool, msg) -> {

@@ -11,23 +11,17 @@ import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.Namespace;
 import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.table.LakeSoulDynamicTableFactory;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
+import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.api.TableColumn;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.api.constraints.UniqueConstraint;
-import org.apache.flink.table.catalog.Catalog;
-import org.apache.flink.table.catalog.CatalogBaseTable;
-import org.apache.flink.table.catalog.CatalogDatabase;
-import org.apache.flink.table.catalog.CatalogFunction;
-import org.apache.flink.table.catalog.CatalogPartition;
-import org.apache.flink.table.catalog.CatalogPartitionSpec;
-import org.apache.flink.table.catalog.ObjectPath;
-import org.apache.flink.table.catalog.ResolvedCatalogTable;
-import org.apache.flink.table.catalog.ResolvedCatalogView;
+import org.apache.flink.table.catalog.*;
 import org.apache.flink.table.catalog.exceptions.CatalogException;
 import org.apache.flink.table.catalog.exceptions.DatabaseNotEmptyException;
 import org.apache.flink.table.catalog.exceptions.DatabaseNotExistException;
@@ -48,6 +42,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.*;
+import java.util.stream.Collectors;
 
 import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_HASH_PARTITION_SPLITTER;
 import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH;
@@ -271,6 +266,8 @@ public class LakeSoulCatalog implements Catalog {
         checkNotNull(table);
         TableSchema schema = table.getSchema();
         schema.getTableColumns().forEach(this::validateType);
+        List<Optional<String>> comments = table.getUnresolvedSchema().getColumns().stream()
+                .map(Schema.UnresolvedColumn::getComment).collect(Collectors.toList());
 
         if (!databaseExists(tablePath.getDatabaseName())) {
             throw new DatabaseNotExistException(CATALOG_NAME, tablePath.getDatabaseName());
@@ -316,7 +313,7 @@ public class LakeSoulCatalog implements Catalog {
         }
         String tableId = TABLE_ID_PREFIX + UUID.randomUUID();
         String qualifiedPath = "";
-        String sparkSchema = FlinkUtil.toArrowSchema(schema, cdcColumn).toJson();
+        String sparkSchema = FlinkUtil.toArrowSchema(schema, comments, cdcColumn).toJson();
         List<String> partitionKeys = Collections.emptyList();
         if (table instanceof ResolvedCatalogTable) {
             partitionKeys = ((ResolvedCatalogTable) table).getPartitionKeys();
@@ -328,11 +325,12 @@ public class LakeSoulCatalog implements Catalog {
                 String flinkWarehouseDir = GlobalConfiguration.loadConfiguration().get(FLINK_WAREHOUSE_DIR);
                 if (null != flinkWarehouseDir) {
                     path = String.join("/", flinkWarehouseDir, tablePath.getDatabaseName(), tablePath.getObjectName());
+                } else {
+                    throw new CatalogException("Cannot determine table path");
                 }
             }
             try {
-                FileSystem fileSystem = new Path(path).getFileSystem();
-                Path qp = new Path(path).makeQualified(fileSystem);
+                Path qp = FlinkUtil.makeQualifiedPath(path);
                 FlinkUtil.createAndSetTableDirPermission(qp, false);
                 qualifiedPath = qp.toUri().toString();
             } catch (IOException e) {
@@ -349,6 +347,9 @@ public class LakeSoulCatalog implements Catalog {
         }
         if (!schema.getWatermarkSpecs().isEmpty()) {
             tableOptions.put(WATERMARK_SPEC_JSON, FlinkUtil.serializeWatermarkSpec(schema.getWatermarkSpecs()));
+        }
+        if (!StringUtils.isEmpty(table.getComment())) {
+            tableOptions.put("comment", table.getComment());
         }
 
         Map<String, String> computedColumns = new HashMap<>();

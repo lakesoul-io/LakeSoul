@@ -16,6 +16,8 @@ import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.catalog.Catalog;
 import org.apache.flink.table.catalog.exceptions.DatabaseAlreadyExistException;
+import org.apache.flink.types.Row;
+import org.apache.flink.util.CollectionUtil;
 import org.apache.spark.sql.arrow.ArrowUtils;
 import org.apache.spark.sql.types.StructType;
 import org.assertj.core.api.Assertions;
@@ -23,6 +25,7 @@ import org.junit.Before;
 import org.junit.Test;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.apache.spark.sql.types.DataTypes.LongType;
@@ -105,6 +108,29 @@ public class LakeSoulCatalogTest extends AbstractTestBase {
 
         tEnvs.executeSql("DROP TABLE user_behaviorgg");
         tEnvs.executeSql("DROP TABLE like_table");
+    }
+
+    @Test
+    public void createTableWithComments() {
+        tEnvs.executeSql("create table table_with_comments (" +
+                "user_id BIGINT PRIMARY KEY NOT ENFORCED COMMENT 'user id'," +
+                "name STRING COMMENT 'user name') " +
+                "COMMENT 'this is user table' " +
+                "WITH (" +
+                "'connector'='lakesoul'," +
+                "'hashBucketNum'='2'," +
+                "'path'='file:///tmp/table_with_comments')");
+        List<Row> showCreateTableResult = CollectionUtil.iteratorToList(
+            tEnvs.executeSql("show create table table_with_comments").collect());
+        Assertions.assertThat(showCreateTableResult.get(0).getField(0).toString())
+                        .contains("COMMENT 'this is user table'");
+        List<Row> descTableResult = CollectionUtil.iteratorToList(
+            tEnvs.executeSql("desc table_with_comments").collect());
+        Assertions.assertThat(descTableResult.get(0).getField(6).toString())
+                .contains("user id");
+        Assertions.assertThat(descTableResult.get(1).getField(6).toString())
+                .contains("user name");
+        tEnvs.executeSql("drop table table_with_comments").print();
     }
 
     @Test
