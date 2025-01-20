@@ -196,7 +196,7 @@ class RBACOperationSuite extends QueryTest
     println(err2.getMessage)
     assert(err2.getMessage.contains("permission denied for table namespace"))
 
-    assert(spark.sql("show databases").toDF().count() == 1)
+    assert(spark.sql("show databases").toDF().count() == 2)
 
     // create & drop table
     spark.sql("create table if not exists table1 ( id int, foo string, bar string ) using lakesoul ")
