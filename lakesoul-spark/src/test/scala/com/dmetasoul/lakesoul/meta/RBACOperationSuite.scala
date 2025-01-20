@@ -75,7 +75,7 @@ class RBACOperationSuite extends QueryTest
     spark.sql("create database if not exists database1")
     val df = spark.sql("show databases").toDF()
     df.show
-    checkAnswer(df, Seq(Row("default"), Row("databases1")))
+    checkAnswer(df, Seq(Row("default"), Row("database1")))
     // drop: coming soon
     //    spark.sql("drop database database1").collect()
     //    val df2 = spark.sql("show databases").toDF()
