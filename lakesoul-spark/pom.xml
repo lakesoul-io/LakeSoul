@@ -80,7 +80,7 @@ SPDX-License-Identifier: Apache-2.0
             <exclusions>
                 <exclusion>
                     <groupId>org.slf4j</groupId>
-                    <artifactId>slf4j-log4j12</artifactId>
+                    <artifactId>*</artifactId>
                 </exclusion>
                 <exclusion>
                     <groupId>log4j</groupId>
@@ -147,6 +147,7 @@ SPDX-License-Identifier: Apache-2.0
             <groupId>io.jhdf</groupId>
             <artifactId>jhdf</artifactId>
             <version>0.6.10</version>
+            <scope>${local.scope}</scope>
         </dependency>
 
 
@@ -453,6 +454,9 @@ SPDX-License-Identifier: Apache-2.0
                 <groupId>net.alchim31.maven</groupId>
                 <artifactId>scala-maven-plugin</artifactId>
                 <version>4.9.0</version>
+                <configuration>
+                    <addScalacArgs>-Ylog-classpath</addScalacArgs>
+                </configuration>
                 <executions>
                     <execution>
                         <id>scala-compile-first</id>
