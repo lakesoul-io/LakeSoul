@@ -55,6 +55,8 @@ services:
     hostname: minio
     networks:
       - lakesoul-ann
+    volumes:
+      - ./data/embeddings:/data/embeddings
 
   spark:
     image: bitnami/spark:3.3.1
@@ -62,7 +64,8 @@ services:
     privileged: true
     user: root
     volumes:
-      - ./packages/jars/lakesoul-spark-3.3-2.6.1.jar:/opt/bitnami/spark/jars/lakesoul-spark-3.3-2.6.1.jar
+      - ./packages/jars/lakesoul-spark-3.3-2.6.2-SNAPSHOT.jar:/opt/bitnami/spark/jars/lakesoul-spark-3.3-2.6.2-SNAPSHOT.jar
+      # - ./packages/jars/lakesoul-spark-3.3-2.6.2-SNAPSHOT-tests.jar:/opt/bitnami/spark/jars/lakesoul-spark-3.3-2.6.2-SNAPSHOT-tests.jar
       - ./data/spark-conf:/opt/bitnami/spark/conf
       - ./sql/prepare_ann_benchmark.sql:/opt/sql/prepare_ann_benchmark.sql
       - ./data/embeddings:/data/embeddings

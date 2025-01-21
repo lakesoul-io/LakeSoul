@@ -513,6 +513,7 @@ SPDX-License-Identifier: Apache-2.0
                             <include>org.postgresql:postgresql</include>
                             <include>com.alibaba:fastjson</include>
                             <include>mysql:mysql-connector-java</include>
+                            <include>io.jhdf:jhdf</include>
 
                             <!-- casbin & aspectj -->
                             <include>org.casbin:jdbc-adapter</include>

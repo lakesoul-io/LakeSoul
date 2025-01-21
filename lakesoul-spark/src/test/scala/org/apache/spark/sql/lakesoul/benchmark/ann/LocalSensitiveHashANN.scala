@@ -28,6 +28,7 @@ object LocalSensitiveHashANN {
   def main(args: Array[String]): Unit = {
 
     val parameter = ParametersTool.fromArgs(args)
+    println(s"parameter=$parameter")
     if (parameter.has(HDF5_FILE)) {
       filePath = parameter.get(HDF5_FILE)
     }
