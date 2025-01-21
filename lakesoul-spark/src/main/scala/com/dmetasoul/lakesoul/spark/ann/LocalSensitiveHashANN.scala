@@ -1,16 +1,17 @@
 package com.dmetasoul.lakesoul.spark.ann
 
-import com.dmetasoul.lakesoul.meta.LakeSoulOptions
 import com.dmetasoul.lakesoul.spark.ParametersTool
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import io.jhdf.HdfFile
 import org.apache.spark.sql.functions.{collect_list, udf}
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.lakesoul.LakeSoulOptions
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.{Row, SparkSession}
 
 import java.nio.file.Paths
+import scala.concurrent.duration.DurationLong
 import scala.math.{pow, sqrt}
 
 object LocalSensitiveHashANN {
