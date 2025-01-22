@@ -1,4 +1,4 @@
-echo "Start prepare data for LSH ANN benchmark..."
+echo "Start query data for LSH ANN benchmark..."
 
 docker exec -it lakesoul-ann-spark spark-submit \
   --class com.dmetasoul.lakesoul.spark.ann.LocalSensitiveHashANN \
@@ -12,4 +12,4 @@ docker exec -it lakesoul-ann-spark spark-submit \
   --conf spark.hadoop.fs.s3a.secret.key=password \
   --conf spark.hadoop.fs.s3a.connection.ssl.enabled=false \
   --conf spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem \
-  /opt/bitnami/spark/jars/lakesoul-spark-3.3-2.6.2-SNAPSHOT.jar load --hdf5-file /data/embeddings/fashion-mnist-784-euclidean.hdf5 --warehouse s3://lakesoul-test-bucket --table-name ann_table --embedding-dim 784 --bit-width 512
+  /opt/bitnami/spark/jars/lakesoul-spark-3.3-2.6.2-SNAPSHOT.jar query --hdf5-file /data/embeddings/fashion-mnist-784-euclidean.hdf5 --table-name ann_table --query-limit 100 --topk 100 --n-factor 3

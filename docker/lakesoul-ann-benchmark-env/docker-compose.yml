@@ -48,15 +48,12 @@ services:
       - ${MINIO_API_PORT}:9000
       - ${MINIO_UI_PORT}:9001
     environment:
-      MINIO_DEFAULT_BUCKETS: lakesoul-test-bucket:public
       MINIO_ROOT_USER: admin
       MINIO_ROOT_PASSWORD: password
-      MINIO_DOMAIN: minio
     hostname: minio
     networks:
       - lakesoul-ann
-    volumes:
-      - ./data/embeddings:/data/embeddings
+    command: /opt/bitnami/minio/bin/minio server /data --console-address ":9001"
 
   spark:
     image: bitnami/spark:3.3.1
@@ -69,6 +66,7 @@ services:
       - ./data/spark-conf:/opt/bitnami/spark/conf
       - ./sql/prepare_ann_benchmark.sql:/opt/sql/prepare_ann_benchmark.sql
       - ./data/embeddings:/data/embeddings
+      - ./python:/opt/bitnami/spark/python
     depends_on:
       - postgres
       - minio
