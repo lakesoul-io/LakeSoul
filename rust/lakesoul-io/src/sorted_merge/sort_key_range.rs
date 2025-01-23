@@ -112,6 +112,10 @@ impl SortKeyBatchRange {
             array: self.batch.column(idx).clone(),
         }
     }
+
+    pub fn array(&self, idx: usize) -> ArrayRef {
+        self.batch.column(idx).clone()
+    }
 }
 
 impl Debug for SortKeyBatchRange {
@@ -250,4 +254,89 @@ impl SortKeyBatchRanges {
     }
 }
 
+// A range in one arrow::array::Array with same sorted primary key
+#[derive(Debug)]
+pub struct UseLastSortKeyArrayRange {
+    pub(crate) row_idx: usize,
+    pub(crate) batch_idx: usize,
+    pub(crate) array: ArrayRef,
+}
+
+impl UseLastSortKeyArrayRange {
+    pub fn array(&self) -> ArrayRef {
+        self.array.clone()
+    }
+}
+
+impl Clone for UseLastSortKeyArrayRange {
+    fn clone(&self) -> Self {
+        UseLastSortKeyArrayRange {
+            row_idx: self.row_idx,
+            batch_idx: self.batch_idx,
+            array: self.array.clone(),
+        }
+    }
+}
+
+
+
+#[derive(Debug, Clone)]
+pub struct UseLastSortKeyBatchRanges {
+
+    // fields_index_map from source schemas to target schema which vector index = stream_idx
+    fields_map: Arc<Vec<Vec<usize>>>,   
+
+    current_batch_range: Option<SortKeyBatchRange>,
+
+    // UseLastSortKeyArrayRange for each field of source schema
+    last_index_of_array: Vec<Option<UseLastSortKeyArrayRange>>,
+}
+
+impl UseLastSortKeyBatchRanges {
+    pub fn new(schema: SchemaRef, fields_map: Arc<Vec<Vec<usize>>>) -> UseLastSortKeyBatchRanges {
+        UseLastSortKeyBatchRanges {
+            fields_map,
+            current_batch_range: None,
+            last_index_of_array: vec![None; schema.fields().len()],
+        }
+    }
+
+    pub fn match_row(&self, range: &SortKeyBatchRange) -> bool {
+        match &self.current_batch_range {
+            None => true,
+            Some(batch_range) => batch_range.current() == range.current(),
+        }
+    }
+
+    // insert one SortKeyBatchRange into UseLastSortKeyBatchRanges
+    pub fn add_range_in_batch(&mut self, range: SortKeyBatchRange) {
+        if self.is_empty() {
+            self.set_batch_range(Some(range.clone()));
+        }
+        let schema = range.schema();
+        for column_idx in 0..schema.fields().len() {
+            let target_schema_idx = self.fields_map[range.stream_idx()][column_idx];
+            self.last_index_of_array[target_schema_idx] = Some(UseLastSortKeyArrayRange {
+                row_idx: range.end_row - 1,
+                batch_idx: range.batch_idx,
+                array: range.array(column_idx),
+            });
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.current_batch_range.is_none()
+    }
+
+    pub fn set_batch_range(&mut self, batch_range: Option<SortKeyBatchRange>) {
+        self.current_batch_range = batch_range
+    }
+
+    pub fn column(&self, column_idx: usize) -> Option<UseLastSortKeyArrayRange> {
+        self.last_index_of_array[column_idx].clone()
+    }
+    
+}
+
 pub type SortKeyBatchRangesRef = Arc<SortKeyBatchRanges>;
+pub type UseLastSortKeyBatchRangesRef = Arc<UseLastSortKeyBatchRanges>;

@@ -674,9 +674,11 @@ mod tests {
             ]
         );
         let mut lakesoulconfigbuilder = LakeSoulIOConfigBuilder::from(conf.clone());
-        let conf = lakesoulconfigbuilder.with_d(32 as u64).with_nbits(64 as u64).build();
-        assert_eq!(conf.seed,1234 as u64);
-        assert_eq!(conf.d,Some(32));
-        assert_eq!(conf.nbits,Some(64));
+        let conf = lakesoulconfigbuilder.build();
+        assert_eq!(conf.max_file_size,None);
+        assert_eq!(conf.max_row_group_size,250000);
+        assert_eq!(conf.max_row_group_num_values,2147483647);
+        assert_eq!(conf.prefetch_size,1);
+        assert_eq!(conf.parquet_filter_pushdown,false);
     }
 }

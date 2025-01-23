@@ -342,8 +342,6 @@ impl SyncSendableMutableLakeSoulWriter {
 mod tests {
     use arrow_array::builder;
     use datafusion::catalog::schema;
-    use hdf5::File as OtherFile;
-    use hdf5::Group;
     use parquet::arrow::ArrowWriter;
     use parquet::column;
     use parquet::file::properties::WriterProperties;

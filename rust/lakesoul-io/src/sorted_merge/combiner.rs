@@ -25,8 +25,11 @@ use arrow_array::types::*;
 use dary_heap::QuaternaryHeap;
 use smallvec::SmallVec;
 
+use super::sort_key_range::{UseLastSortKeyBatchRanges, UseLastSortKeyBatchRangesRef};
+
 #[derive(Debug)]
 pub enum RangeCombiner {
+    DefaultUseLastRangeCombiner(UseLastRangeCombiner),
     MinHeapSortKeyBatchRangeCombiner(MinHeapSortKeyBatchRangeCombiner),
 }
 
@@ -38,24 +41,36 @@ impl RangeCombiner {
         target_batch_size: usize,
         merge_operator: Vec<MergeOperator>,
     ) -> Self {
-        RangeCombiner::MinHeapSortKeyBatchRangeCombiner(MinHeapSortKeyBatchRangeCombiner::new(
-            schema,
-            streams_num,
-            fields_map,
-            target_batch_size,
-            merge_operator,
-        ))
+        if merge_operator.is_empty() || merge_operator.iter().all(|op| *op == MergeOperator::UseLast) {
+        // if false {
+            RangeCombiner::DefaultUseLastRangeCombiner(UseLastRangeCombiner::new(
+                schema,
+                streams_num,
+                fields_map,
+                target_batch_size,
+            ))
+        } else {
+            RangeCombiner::MinHeapSortKeyBatchRangeCombiner(MinHeapSortKeyBatchRangeCombiner::new(
+                schema,
+                streams_num,
+                fields_map,
+                target_batch_size,
+                merge_operator,
+            ))
+        }
     }
 
     pub fn push_range(&mut self, range: Reverse<SortKeyBatchRange>) {
         match self {
             RangeCombiner::MinHeapSortKeyBatchRangeCombiner(combiner) => combiner.push(range),
+            RangeCombiner::DefaultUseLastRangeCombiner(combiner) => combiner.push(range),
         };
     }
 
     pub fn poll_result(&mut self) -> RangeCombinerResult {
         match self {
             RangeCombiner::MinHeapSortKeyBatchRangeCombiner(combiner) => combiner.poll_result(),
+            RangeCombiner::DefaultUseLastRangeCombiner(combiner) => combiner.poll_result(),
         }
     }
 }
@@ -145,6 +160,7 @@ impl MinHeapSortKeyBatchRangeCombiner {
     }
 
     fn build_record_batch(&mut self) -> ArrowResult<RecordBatch> {
+        // construct record batch by columnarly merging
         let columns = self
             .schema
             .fields()
@@ -152,13 +168,15 @@ impl MinHeapSortKeyBatchRangeCombiner {
             .enumerate()
             .map(|(column_idx, field)| {
                 let capacity = self.in_progress.len();
-                let ranges_per_col: Vec<&SmallVec<[SortKeyArrayRange; 4]>> = self
+                // collect all array ranges of current column_idx for each row
+                let ranges_per_row: Vec<&SmallVec<[SortKeyArrayRange; 4]>> = self
                     .in_progress
                     .iter()
                     .map(|ranges_per_row| ranges_per_row.column(column_idx))
                     .collect::<Vec<_>>();
 
-                let mut flatten_array_ranges = ranges_per_col
+                // flatten all array ranges of current column_idx for interleave
+                let mut flatten_array_ranges = ranges_per_row
                     .iter()
                     .flat_map(|ranges| *ranges)
                     .collect::<Vec<&SortKeyArrayRange>>();
@@ -181,7 +199,7 @@ impl MinHeapSortKeyBatchRangeCombiner {
                 merge_sort_key_array_ranges(
                     capacity,
                     field,
-                    ranges_per_col,
+                    ranges_per_row,
                     &mut flatten_dedup_arrays,
                     &batch_idx_to_flatten_array_idx,
                     unsafe { self.merge_operator.get_unchecked(column_idx) },
@@ -265,4 +283,122 @@ fn merge_sort_key_array_ranges(
             .as_slice(),
         extend_list.as_slice(),
     )
+}
+
+#[derive(Debug)]
+pub struct UseLastRangeCombiner {
+    schema: SchemaRef,
+    fields_map: Arc<Vec<Vec<usize>>>,
+    heap: QuaternaryHeap<Reverse<SortKeyBatchRange>>,
+    in_progress: Vec<UseLastSortKeyBatchRangesRef>,
+    target_batch_size: usize,
+    current_sort_key_range: UseLastSortKeyBatchRangesRef,
+    const_null_array: ConstNullArray,
+}
+
+impl UseLastRangeCombiner {
+    pub fn new(schema: SchemaRef, streams_num: usize, fields_map: Arc<Vec<Vec<usize>>>, target_batch_size: usize) -> Self {
+        Self { 
+            schema: schema.clone(), 
+            fields_map: fields_map.clone(), 
+            heap: QuaternaryHeap::with_capacity(streams_num), 
+            in_progress: Vec::with_capacity(target_batch_size), 
+            target_batch_size, 
+            current_sort_key_range: Arc::new(UseLastSortKeyBatchRanges::new(schema, fields_map)),
+            const_null_array: ConstNullArray::new(),
+        }
+    }
+
+    pub fn push(&mut self, range: Reverse<SortKeyBatchRange>) {
+        self.heap.push(range)
+    }
+
+    pub fn poll_result(&mut self) -> RangeCombinerResult {
+        if self.in_progress.len() == self.target_batch_size {
+            RangeCombinerResult::RecordBatch(self.build_record_batch())
+        } else {
+            match self.heap.pop() {
+                Some(Reverse(range)) => {
+                    if self.current_sort_key_range.match_row(&range) {
+                        self.get_mut_current_sort_key_range().add_range_in_batch(range.clone());
+                    } else {
+                        self.in_progress.push(self.current_sort_key_range.clone());
+                        self.init_current_sort_key_range();
+                        self.get_mut_current_sort_key_range().add_range_in_batch(range.clone());
+                    }
+                    RangeCombinerResult::Range(Reverse(range))
+                }
+                None => {
+                    if self.current_sort_key_range.is_empty() && self.in_progress.is_empty() {
+                        RangeCombinerResult::None
+                    } else {
+                        if !self.current_sort_key_range.is_empty() {
+                            self.in_progress.push(self.current_sort_key_range.clone());
+                            self.get_mut_current_sort_key_range().set_batch_range(None);
+                        }
+                        RangeCombinerResult::RecordBatch(self.build_record_batch())
+                    }
+                }
+            }
+        }
+    }
+
+    fn build_record_batch(&mut self) -> ArrowResult<RecordBatch> {
+        // construct record batch by columnarly merging
+        let columns = self
+            .schema
+            .fields()
+            .iter()
+            .enumerate()
+            .map(|(column_idx, field)| {
+                let capacity = self.in_progress.len();
+                // collect all array ranges of current column_idx for each row
+                let array_and_idx_per_row = self
+                    .in_progress
+                    .iter()
+                    .map(|ranges| ranges.column(column_idx))
+                    .collect::<Vec<_>>();
+
+                let mut batch_idx_to_flatten_array_idx = HashMap::<usize, usize>::with_capacity(16);
+                let mut flatten_arrays = vec![self.const_null_array.get(field.data_type())];
+                let mut interleave_idx = Vec::with_capacity(capacity);
+
+                for range in array_and_idx_per_row.iter() {
+                    if let Some(range) = range {
+                        if batch_idx_to_flatten_array_idx.contains_key(&range.batch_idx) {
+                            let flatten_array_idx = batch_idx_to_flatten_array_idx.get(&range.batch_idx).unwrap();
+                        interleave_idx.push((*flatten_array_idx, range.row_idx));
+                    } else {
+                        flatten_arrays.push(range.array());
+                            batch_idx_to_flatten_array_idx.insert(range.batch_idx, flatten_arrays.len() - 1);
+                            interleave_idx.push((flatten_arrays.len() - 1, range.row_idx));
+                        }
+                    } else {
+                        interleave_idx.push((0, 0));
+                    }
+                }
+                
+                interleave(
+                    flatten_arrays
+                        .iter()
+                        .map(|array_ref| array_ref.as_ref())
+                        .collect::<Vec<_>>()
+                        .as_slice(),
+                    interleave_idx.as_slice(),
+                )
+            })
+            .collect::<ArrowResult<Vec<ArrayRef>>>()?;
+
+        self.in_progress.clear();
+
+        RecordBatch::try_new(self.schema.clone(), columns)
+    }
+
+    fn get_mut_current_sort_key_range(&mut self) -> &mut UseLastSortKeyBatchRanges {
+        Arc::make_mut(&mut self.current_sort_key_range)
+    }
+
+    fn init_current_sort_key_range(&mut self) {
+        self.current_sort_key_range = Arc::new(UseLastSortKeyBatchRanges::new(self.schema.clone(), self.fields_map.clone()));
+    }
 }

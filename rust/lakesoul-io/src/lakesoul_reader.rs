@@ -155,7 +155,7 @@ impl SyncSendableMutableLakeSoulReader {
 mod tests {
     use super::*;
     use arrow::array::as_primitive_array;
-    use arrow_array::ArrayRef;
+    use arrow_array::{ArrayRef, Int64Array, StringArray};
     use rand::prelude::*;
     use std::mem::ManuallyDrop;
     use std::ops::Not;
@@ -165,6 +165,8 @@ mod tests {
 
     use arrow::datatypes::{DataType, Field, Schema, TimestampSecondType};
     use arrow::util::pretty::print_batches;
+
+    use rand::{distributions::DistString, Rng};
 
     #[tokio::test]
     async fn test_reader_local() -> Result<()> {
@@ -360,6 +362,7 @@ mod tests {
     }
 
     use crate::lakesoul_io_config::LakeSoulIOConfigBuilder;
+    use crate::lakesoul_writer::SyncSendableMutableLakeSoulWriter;
     use datafusion::logical_expr::{col, Expr};
     use datafusion_common::ScalarValue;
 
@@ -681,6 +684,154 @@ mod tests {
         assert_eq!(primitive_array.value(1), 1627846261);
         assert!(primitive_array.is_null(2));
         assert_eq!(primitive_array.value(3), 1627846263);
+        Ok(())
+    }
+
+    #[test]
+    fn test_primary_key_generator() -> Result<()> {
+        let mut generator = LinearPKGenerator::new(2, 3);
+        assert_eq!(generator.next_pk(), 3); // x=0: 2*0 + 3
+        assert_eq!(generator.next_pk(), 5); // x=1: 2*1 + 3
+        assert_eq!(generator.next_pk(), 7); // x=2: 2*2 + 3
+        Ok(())
+    }
+
+    struct LinearPKGenerator {
+        a: i64,
+        b: i64,
+        current: i64,
+    }
+
+    impl LinearPKGenerator {
+        fn new(a: i64, b: i64) -> Self {
+            LinearPKGenerator { 
+                a,
+                b,
+                current: 0
+            }
+        }
+
+        fn next_pk(&mut self) -> i64 {
+            let pk = self.a * self.current + self.b;
+            self.current += 1;
+            pk
+        }
+    }
+
+    fn create_batch(num_columns: usize, num_rows: usize, str_len: usize, pk_generator:  &mut Option<LinearPKGenerator>) -> RecordBatch {
+        let mut rng = rand::thread_rng();
+        let mut len_rng = rand::thread_rng();
+        let mut iter = vec![];
+        if let Some(generator) = pk_generator {
+            let pk_iter = (0..num_rows).map(|_| generator.next_pk());
+            iter.push((
+                "pk".to_string(),
+                Arc::new(Int64Array::from_iter_values(pk_iter)) as ArrayRef,
+                true,
+            ));
+        }
+        for i in 0..num_columns {
+            iter.push((
+                format!("col_{}", i),
+                Arc::new(StringArray::from(
+                    (0..num_rows)
+                        .into_iter()
+                        .map(|_| {
+                            rand::distributions::Alphanumeric
+                                .sample_string(&mut rng, len_rng.gen_range(str_len..str_len * 3))
+                        })
+                        .collect::<Vec<_>>(),
+                )) as ArrayRef,
+                true,
+            ));
+        }
+        RecordBatch::try_from_iter_with_nullable(iter).unwrap()
+    }
+
+    fn create_schema(num_columns: usize, with_pk: bool) -> Schema {
+        let mut fields = vec![];
+        if with_pk {
+            fields.push(Field::new("pk", DataType::Int64, true));
+        }
+        for i in 0..num_columns {
+            fields.push(Field::new(format!("col_{}", i), DataType::Utf8, true));
+        }
+        Schema::new(fields)
+    }
+
+
+    #[test]
+    fn profiling_2ways_merge_on_read() -> Result<()> {
+        let num_batch = 10;
+        let num_rows = 1000;
+        let num_columns = 100;
+        let str_len = 4;
+        let temp_dir = tempfile::tempdir()?.into_path();
+        let temp_dir = std::env::current_dir()?.join("temp_dir");
+        let with_pk = true;
+        let to_write_schema = create_schema(num_columns, with_pk);
+        
+        for i in 0..2 {
+
+            let mut generator = if with_pk { Some(LinearPKGenerator::new(i + 2, 0)) } else { None } ;
+            let to_write = create_batch(num_columns, num_rows, str_len, &mut generator);
+            let path = temp_dir
+                .clone()
+                .join(format!("test{}.parquet", i))
+                .into_os_string()
+                .into_string()
+                .unwrap();
+            dbg!(&path);
+            let writer_conf = LakeSoulIOConfigBuilder::new()
+                .with_files(vec![path.clone()])
+                // .with_prefix(tempfile::tempdir()?.into_path().into_os_string().into_string().unwrap())
+                .with_thread_num(2)
+                .with_batch_size(num_rows)
+                // .with_max_row_group_size(2000)
+                // .with_max_row_group_num_values(4_00_000)
+                .with_schema(to_write.schema())
+                .with_primary_keys(
+                    vec!["pk".to_string()]
+                )
+                // .with_aux_sort_column("col2".to_string())
+                // .with_option(OPTION_KEY_MEM_LIMIT, format!("{}", 1024 * 1024 * 48))
+                // .set_dynamic_partition(true)
+                .with_hash_bucket_num(4)
+                // .with_max_file_size(1024 * 1024 * 32)
+                .build();
+
+            let mut writer = SyncSendableMutableLakeSoulWriter::try_new(
+                writer_conf, 
+                Builder::new_multi_thread().enable_all().build().unwrap()
+            )?;
+
+            let start = Instant::now();
+            for _ in 0..num_batch {
+                let once_start = Instant::now();
+                writer.write_batch(create_batch(num_columns, num_rows, str_len, &mut generator))?;
+                println!("write batch once cost: {}", once_start.elapsed().as_millis());
+            }
+            let flush_start = Instant::now();
+            writer.flush_and_close()?;
+        }
+
+        let reader_conf = LakeSoulIOConfigBuilder::new()
+            .with_files((0..2).map(|i| temp_dir.join(format!("test{}.parquet", i)).into_os_string().into_string().unwrap()).collect::<Vec<_>>())
+            .with_thread_num(2)
+            .with_batch_size(num_rows)
+            .with_schema(Arc::new(to_write_schema))
+            .with_primary_keys(vec!["pk".to_string()])
+            .build();
+
+        let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
+        let lakesoul_reader = LakeSoulReader::new(reader_conf)?;
+        let mut reader = SyncSendableMutableLakeSoulReader::new(lakesoul_reader, runtime);
+        reader.start_blocked();
+        let start = Instant::now();
+        while let Some(rb) = reader.next_rb_blocked() {
+            dbg!(&rb.unwrap().num_rows());
+        }
+        println!("time cost: {:?}ms", start.elapsed().as_millis()); // ms
         Ok(())
     }
 

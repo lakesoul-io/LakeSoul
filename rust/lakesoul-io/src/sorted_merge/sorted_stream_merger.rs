@@ -10,7 +10,7 @@ use std::task::{Context, Poll};
 
 use crate::sorted_merge::combiner::{RangeCombiner, RangeCombinerResult};
 use crate::sorted_merge::merge_operator::MergeOperator;
-use crate::sorted_merge::sort_key_range::SortKeyBatchRange;
+use crate::sorted_merge::sort_key_range::{SortKeyBatchRange};
 
 use arrow::record_batch::RecordBatch;
 use arrow::row::{RowConverter, SortField};
