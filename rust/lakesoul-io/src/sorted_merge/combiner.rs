@@ -5,6 +5,7 @@
 use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::hash::BuildHasherDefault;
 use std::sync::Arc;
 
 use crate::constant::{ConstEmptyArray, ConstNullArray};
@@ -23,6 +24,7 @@ use arrow::{
 };
 use arrow_array::types::*;
 use dary_heap::QuaternaryHeap;
+use nohash::BuildNoHashHasher;
 use smallvec::SmallVec;
 
 use super::sort_key_range::{UseLastSortKeyBatchRanges, UseLastSortKeyBatchRangesRef};
@@ -42,7 +44,7 @@ impl RangeCombiner {
         merge_operator: Vec<MergeOperator>,
     ) -> Self {
         if merge_operator.is_empty() || merge_operator.iter().all(|op| *op == MergeOperator::UseLast) {
-        // if false {
+            // if false {
             RangeCombiner::DefaultUseLastRangeCombiner(UseLastRangeCombiner::new(
                 schema,
                 streams_num,
@@ -297,13 +299,18 @@ pub struct UseLastRangeCombiner {
 }
 
 impl UseLastRangeCombiner {
-    pub fn new(schema: SchemaRef, streams_num: usize, fields_map: Arc<Vec<Vec<usize>>>, target_batch_size: usize) -> Self {
-        Self { 
-            schema: schema.clone(), 
-            fields_map: fields_map.clone(), 
-            heap: QuaternaryHeap::with_capacity(streams_num), 
-            in_progress: Vec::with_capacity(target_batch_size), 
-            target_batch_size, 
+    pub fn new(
+        schema: SchemaRef,
+        streams_num: usize,
+        fields_map: Arc<Vec<Vec<usize>>>,
+        target_batch_size: usize,
+    ) -> Self {
+        Self {
+            schema: schema.clone(),
+            fields_map: fields_map.clone(),
+            heap: QuaternaryHeap::with_capacity(streams_num),
+            in_progress: Vec::with_capacity(target_batch_size),
+            target_batch_size,
             current_sort_key_range: Arc::new(UseLastSortKeyBatchRanges::new(schema, fields_map)),
             const_null_array: ConstNullArray::new(),
         }
@@ -359,25 +366,30 @@ impl UseLastRangeCombiner {
                     .map(|ranges| ranges.column(column_idx))
                     .collect::<Vec<_>>();
 
-                let mut batch_idx_to_flatten_array_idx = HashMap::<usize, usize>::with_capacity(16);
-                let mut flatten_arrays = vec![self.const_null_array.get(field.data_type())];
+                let mut batch_idx_to_flatten_array_idx =
+                    HashMap::<usize, usize, BuildNoHashHasher<usize>>::with_capacity_and_hasher(
+                        capacity,
+                        BuildNoHashHasher::default(),
+                    );
+                let mut flatten_arrays = Vec::with_capacity(capacity);
+                flatten_arrays.push(self.const_null_array.get(field.data_type()));
                 let mut interleave_idx = Vec::with_capacity(capacity);
 
                 for range in array_and_idx_per_row.iter() {
                     if let Some(range) = range {
-                        if batch_idx_to_flatten_array_idx.contains_key(&range.batch_idx) {
-                            let flatten_array_idx = batch_idx_to_flatten_array_idx.get(&range.batch_idx).unwrap();
-                        interleave_idx.push((*flatten_array_idx, range.row_idx));
-                    } else {
-                        flatten_arrays.push(range.array());
-                            batch_idx_to_flatten_array_idx.insert(range.batch_idx, flatten_arrays.len() - 1);
-                            interleave_idx.push((flatten_arrays.len() - 1, range.row_idx));
+                        match batch_idx_to_flatten_array_idx.get(&range.batch_idx) {
+                            Some(flatten_array_idx) => interleave_idx.push((*flatten_array_idx, range.row_idx)),
+                            None => {
+                                flatten_arrays.push(range.array());
+                                batch_idx_to_flatten_array_idx.insert(range.batch_idx, flatten_arrays.len() - 1);
+                                interleave_idx.push((flatten_arrays.len() - 1, range.row_idx));
+                            }
                         }
                     } else {
                         interleave_idx.push((0, 0));
                     }
                 }
-                
+
                 interleave(
                     flatten_arrays
                         .iter()
@@ -399,6 +411,9 @@ impl UseLastRangeCombiner {
     }
 
     fn init_current_sort_key_range(&mut self) {
-        self.current_sort_key_range = Arc::new(UseLastSortKeyBatchRanges::new(self.schema.clone(), self.fields_map.clone()));
+        self.current_sort_key_range = Arc::new(UseLastSortKeyBatchRanges::new(
+            self.schema.clone(),
+            self.fields_map.clone(),
+        ));
     }
 }
