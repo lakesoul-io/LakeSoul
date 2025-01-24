@@ -104,7 +104,7 @@ impl MultiPartAsyncWriter {
                     .set_max_row_group_size(max_row_group_size)
                     .set_write_batch_size(config.batch_size)
                     .set_compression(Compression::SNAPPY)
-                    // .set_statistics_enabled(parquet::file::properties::EnabledStatistics::None)
+                    .set_dictionary_enabled(false)
                     .build(),
             ),
         )?;
