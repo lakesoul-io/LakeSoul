@@ -332,8 +332,8 @@ impl UseLastSortKeyBatchRanges {
         self.current_batch_range = batch_range
     }
 
-    pub fn column(&self, column_idx: usize) -> Option<UseLastSortKeyArrayRange> {
-        self.last_index_of_array[column_idx].clone()
+    pub fn column(&self, column_idx: usize) -> &Option<UseLastSortKeyArrayRange> {
+        &self.last_index_of_array[column_idx]
     }
     
 }
