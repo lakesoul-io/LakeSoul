@@ -5,7 +5,6 @@
 use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::hash::BuildHasherDefault;
 use std::sync::Arc;
 
 use crate::constant::{ConstEmptyArray, ConstNullArray};
@@ -360,7 +359,7 @@ impl UseLastRangeCombiner {
             .map(|(column_idx, field)| {
                 let capacity = self.in_progress.len();
                 // collect all array ranges of current column_idx for each row
-                let mut flatten_arrays = Vec::with_capacity(capacity);
+                let mut flatten_arrays = Vec::with_capacity(capacity + 1);
                 flatten_arrays.push(self.const_null_array.get(field.data_type()));
                 let mut interleave_idx = Vec::<(usize, usize)>::with_capacity(capacity);
                 interleave_idx.resize(capacity, (0, 0));
@@ -374,12 +373,16 @@ impl UseLastRangeCombiner {
                 for (idx, range) in self.in_progress.iter().enumerate() {
                     let array = range.column(column_idx);
                     if let Some(array) = array {
-                        match batch_idx_to_flatten_array_idx.get(&array.batch_idx) {
-                            Some(flatten_array_idx) => interleave_idx[idx] = (*flatten_array_idx, array.row_idx),
-                            None => {
-                                flatten_arrays.push(array.array());
-                                batch_idx_to_flatten_array_idx.insert(array.batch_idx, flatten_arrays.len() - 1);
-                                interleave_idx[idx] = (flatten_arrays.len() - 1, array.row_idx);
+                        unsafe {
+                            match batch_idx_to_flatten_array_idx.get(&array.batch_idx) {
+                                Some(flatten_array_idx) => {
+                                    *interleave_idx.get_unchecked_mut(idx) = (*flatten_array_idx, array.row_idx)
+                                }
+                                None => {
+                                    flatten_arrays.push(array.array());
+                                    batch_idx_to_flatten_array_idx.insert(array.batch_idx, flatten_arrays.len() - 1);
+                                    *interleave_idx.get_unchecked_mut(idx) = (flatten_arrays.len() - 1, array.row_idx);
+                                }
                             }
                         }
                     }

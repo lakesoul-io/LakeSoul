@@ -314,13 +314,17 @@ impl UseLastSortKeyBatchRanges {
             self.set_batch_range(Some(range.clone()));
         }
         let schema = range.schema();
-        for column_idx in 0..schema.fields().len() {
-            let target_schema_idx = self.fields_map[range.stream_idx()][column_idx];
-            self.last_index_of_array[target_schema_idx] = Some(UseLastSortKeyArrayRange {
-                row_idx: range.end_row - 1,
-                batch_idx: range.batch_idx,
-                array: range.array(column_idx),
-            });
+        unsafe {
+            let range_col = &self.fields_map.get_unchecked(range.stream_idx());
+            for column_idx in 0..schema.fields().len() {
+                let target_schema_idx = range_col.get_unchecked(column_idx);
+                *self.last_index_of_array.get_unchecked_mut(*target_schema_idx) =
+                    Some(UseLastSortKeyArrayRange {
+                        row_idx: range.end_row - 1,
+                        batch_idx: range.batch_idx,
+                        array: range.array(column_idx),
+                    });
+            }
         }
     }
 
