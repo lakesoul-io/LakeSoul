@@ -910,17 +910,17 @@ mod tests {
         let conf = LakeSoulIOConfigBuilder::new()
             .with_primary_keys(vec!["uuid".to_string()])
             .with_files(vec![
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-c2c3071b-e566-4b2f-a67c-6648c311b9f5_00000.c000.parquet".to_string(),
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-bde11c74-f264-40cc-aa71-be7d61c2ed78_00000.c000.parquet".to_string(),
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-84dd2e3f-3bce-4dd3-b612-81791cbc701f_00000.c000.parquet".to_string(),
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-5813797f-8d93-420f-af9f-75ebeb655af9_00000.c000.parquet".to_string(),
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-659b7074-3547-43cb-b858-3867624c0236_00000.c000.parquet".to_string(),
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-ab29b003-5438-4b19-ba9d-067c0bf82800_00000.c000.parquet".to_string(),
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-c6efa765-91cc-4393-a7ef-6a53f1f0d777_00000.c000.parquet".to_string(),
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-391c2a2d-7c8c-4193-9539-ec881e046a23_00000.c000.parquet".to_string(),
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-44b1bdd7-6501-4056-aa1b-1851a40192ac_00000.c000.parquet".to_string(),
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-2c7f8088-cf5b-4418-94f1-41aece595c6b_00000.c000.parquet".to_string(),
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-4c90050a-6d97-423e-a90b-3385872a03a9_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table/part--0001-58cc8454-3efe-4924-967e-8d5e72ac8c7d_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table/part--0001-40a5a836-69ab-4967-9371-9f26cc8e479d_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table/part--0001-c9b7d23d-0777-4d4d-be88-588075e3f252_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table/part--0001-cc1a3160-ae4e-47a5-b311-4d9555961bcd_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table/part--0001-790fae8b-2d13-4193-9b86-fdeaecad1250_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table/part--0001-2a856ba2-493d-4088-b618-ce36c7c6a1a7_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table/part--0001-c36606c4-243c-4c35-9396-ca1a30990c75_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table/part--0001-4eb3a3ee-b776-404c-a3aa-d18071bf6534_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table/part--0001-c7da169c-26b5-473f-ba99-04e76d770189_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table/part--0001-b11bb4b2-5911-4dfc-b175-5b569a4ff01b_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table/part--0001-20ed7cfb-84c5-4c6f-8307-3f29db7f40d3_00000.c000.parquet".to_string(),
             ])
             .with_schema(Arc::new(schema))
             .with_thread_num(2)
