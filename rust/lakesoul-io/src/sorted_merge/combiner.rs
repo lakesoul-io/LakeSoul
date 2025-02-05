@@ -41,14 +41,15 @@ impl RangeCombiner {
         fields_map: Arc<Vec<Vec<usize>>>,
         target_batch_size: usize,
         merge_operator: Vec<MergeOperator>,
+        is_partial_merge: bool,
     ) -> Self {
         if merge_operator.is_empty() || merge_operator.iter().all(|op| *op == MergeOperator::UseLast) {
-            // if false {
             RangeCombiner::DefaultUseLastRangeCombiner(UseLastRangeCombiner::new(
                 schema,
                 streams_num,
                 fields_map,
                 target_batch_size,
+                is_partial_merge,
             ))
         } else {
             RangeCombiner::MinHeapSortKeyBatchRangeCombiner(MinHeapSortKeyBatchRangeCombiner::new(
@@ -350,6 +351,7 @@ pub struct UseLastRangeCombiner {
     target_batch_size: usize,
     current_sort_key_range: UseLastSortKeyBatchRangesRef,
     const_null_array: ConstNullArray,
+    is_partial_merge: bool,
 }
 
 impl UseLastRangeCombiner {
@@ -358,6 +360,7 @@ impl UseLastRangeCombiner {
         streams_num: usize,
         fields_map: Arc<Vec<Vec<usize>>>,
         target_batch_size: usize,
+        is_partial_merge: bool,
     ) -> Self {
         Self {
             schema: schema.clone(),
@@ -365,12 +368,13 @@ impl UseLastRangeCombiner {
             streams_num,
             in_progress: Vec::with_capacity(target_batch_size),
             target_batch_size,
-            current_sort_key_range: Arc::new(UseLastSortKeyBatchRanges::new(schema, fields_map)),
+            current_sort_key_range: Arc::new(UseLastSortKeyBatchRanges::new(schema, fields_map, is_partial_merge)),
             const_null_array: ConstNullArray::new(),
             ranges: (0..streams_num).map(|_| None).collect(),
             loser_tree: vec![],
             ranges_counter: 0,
             loser_tree_has_updated: false,
+            is_partial_merge,
         }
     }
 
@@ -435,35 +439,43 @@ impl UseLastRangeCombiner {
 
     fn build_record_batch(&mut self) -> ArrowResult<RecordBatch> {
         // construct record batch by columnarly merging
+        let capacity = self.in_progress.len();
+        let mut interleave_idx = Vec::<(usize, usize)>::with_capacity(capacity);
+        let mut batch_idx_to_flatten_array_idx =
+            HashMap::<usize, usize, BuildNoHashHasher<usize>>::with_capacity_and_hasher(
+                capacity * 2,
+                BuildNoHashHasher::default(),
+            );
+        // collect all array ranges of current column_idx for each row
         let columns = self
             .schema
             .fields()
             .iter()
             .enumerate()
             .map(|(column_idx, field)| {
-                let capacity = self.in_progress.len();
-                // collect all array ranges of current column_idx for each row
                 let mut flatten_arrays = Vec::with_capacity(capacity + 1);
-                flatten_arrays.push(self.const_null_array.get(field.data_type()));
-                let mut interleave_idx = Vec::<(usize, usize)>::with_capacity(capacity);
+                flatten_arrays.push(self.const_null_array.get_ref(field.data_type()));
+                batch_idx_to_flatten_array_idx.clear();
+                interleave_idx.clear();
                 interleave_idx.resize(capacity, (0, 0));
 
-                let mut batch_idx_to_flatten_array_idx =
-                    HashMap::<usize, usize, BuildNoHashHasher<usize>>::with_capacity_and_hasher(
-                        capacity,
-                        BuildNoHashHasher::default(),
-                    );
-
                 for (idx, range) in self.in_progress.iter().enumerate() {
-                    let array = range.column(column_idx);
-                    if let Some(array) = array {
-                        unsafe {
+                    unsafe {
+                        let array = range.column(column_idx);
+                        if let Some(array) = array {
                             match batch_idx_to_flatten_array_idx.get(&array.batch_idx) {
                                 Some(flatten_array_idx) => {
                                     *interleave_idx.get_unchecked_mut(idx) = (*flatten_array_idx, array.row_idx)
                                 }
                                 None => {
-                                    flatten_arrays.push(array.array());
+                                    if self.is_partial_merge {
+                                        flatten_arrays.push(array.array_ref());
+                                    } else {
+                                        flatten_arrays.push(array.array_ref_by_col(
+                                            *self.fields_map.get_unchecked(array.stream_idx)
+                                                .get_unchecked(column_idx)
+                                        ));
+                                    }
                                     batch_idx_to_flatten_array_idx.insert(array.batch_idx, flatten_arrays.len() - 1);
                                     *interleave_idx.get_unchecked_mut(idx) = (flatten_arrays.len() - 1, array.row_idx);
                                 }
@@ -472,14 +484,7 @@ impl UseLastRangeCombiner {
                     }
                 }
 
-                interleave(
-                    flatten_arrays
-                        .iter()
-                        .map(|array_ref| array_ref.as_ref())
-                        .collect::<Vec<_>>()
-                        .as_slice(),
-                    interleave_idx.as_slice(),
-                )
+                interleave(flatten_arrays.as_slice(), interleave_idx.as_slice())
             })
             .collect::<ArrowResult<Vec<ArrayRef>>>()?;
 
@@ -496,6 +501,7 @@ impl UseLastRangeCombiner {
         self.current_sort_key_range = Arc::new(UseLastSortKeyBatchRanges::new(
             self.schema.clone(),
             self.fields_map.clone(),
+            self.is_partial_merge,
         ));
     }
 

@@ -146,6 +146,11 @@ impl SortedStreamMerger {
             .collect::<Result<Vec<_>>>()?;
         let fields_map = Arc::new(fields_map);
 
+        // this is a partial merge when any one of stream has columns less than target
+        let is_partial_merge = fields_map.iter()
+            .any(|f| f.len() != target_schema.fields().len());
+        println!("is_partial_merge {:?}", is_partial_merge);
+
         let wrappers: Vec<Fuse<SendableRecordBatchStream>> = streams.into_iter().map(|s| s.stream.fuse()).collect();
 
         let combiner = RangeCombiner::new(
@@ -154,6 +159,7 @@ impl SortedStreamMerger {
             fields_map,
             batch_size,
             merge_operator,
+            is_partial_merge,
         );
 
         Ok(Self {
@@ -478,8 +484,8 @@ mod tests {
 
     async fn create_stream(batches: Vec<RecordBatch>, context: Arc<TaskContext>) -> Result<SortedStream> {
         let schema = batches[0].schema();
-        let exec = MemoryExec::try_new(&[batches], schema.clone(), None).unwrap();
-        let stream = exec.execute(0, context.clone()).unwrap();
+        let exec = MemoryExec::try_new(&[batches], schema.clone(), None)?;
+        let stream = exec.execute(0, context.clone())?;
         Ok(SortedStream::new(stream))
     }
 

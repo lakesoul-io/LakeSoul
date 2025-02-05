@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use arrow::array::ArrayRef;
 use arrow::compute::CastOptions;
-use arrow_array::{new_empty_array, new_null_array};
+use arrow_array::{new_empty_array, new_null_array, Array};
 use arrow_cast::display::FormatOptions;
 use arrow_schema::DataType;
 
@@ -56,6 +56,12 @@ impl ConstNullArray {
                 array.clone()
             }
         }
+    }
+
+    pub fn get_ref(&mut self, datatype: &DataType) -> &dyn Array {
+        self.inner.entry(datatype.clone()).or_insert_with(|| {
+            new_null_array(datatype, 1)
+        })
     }
 }
 

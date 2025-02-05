@@ -11,6 +11,7 @@ use datafusion::{datasource::listing::ListingTableUrl, execution::{object_store:
 use datafusion_common::{project_schema, DataFusionError, Result};
 use object_store::{path::Path, MultipartId, ObjectStore};
 use parquet::{arrow::ArrowWriter, basic::Compression, file::properties::WriterProperties};
+use parquet::basic::ZstdLevel;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use url::Url;
 
@@ -103,7 +104,7 @@ impl MultiPartAsyncWriter {
                 WriterProperties::builder()
                     .set_max_row_group_size(max_row_group_size)
                     .set_write_batch_size(config.batch_size)
-                    .set_compression(Compression::SNAPPY)
+                    .set_compression(Compression::ZSTD(ZstdLevel::default()))
                     .set_dictionary_enabled(false)
                     .build(),
             ),
