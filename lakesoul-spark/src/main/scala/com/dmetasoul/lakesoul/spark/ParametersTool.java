@@ -364,4 +364,13 @@ public class ParametersTool {
         }
 
     }
+
+    @Override
+    public String toString() {
+        return "ParametersTool{" +
+                "data=" + data +
+                ", defaultData=" + defaultData +
+                ", unrequestedParameters=" + unrequestedParameters +
+                '}';
+    }
 }

@@ -132,4 +132,10 @@ object LakeSoulOptions {
     val SNAPSHOT_READ = "snapshot"
     val INCREMENTAL_READ = "incremental"
   }
+
+  object SchemaFieldMetadata {
+    val LSH_EMBEDDING_DIMENSION = "lsh_embedding_dimension"
+    val LSH_BIT_WIDTH = "lsh_bit_width"
+    val LSH_RNG_SEED = "lsh_rng_seed"
+  }
 }
