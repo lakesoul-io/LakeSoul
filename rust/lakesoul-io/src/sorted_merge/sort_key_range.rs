@@ -309,7 +309,7 @@ impl UseLastSortKeyBatchRanges {
     }
 
     // insert one SortKeyBatchRange into UseLastSortKeyBatchRanges
-    pub fn add_range_in_batch(&mut self, range: SortKeyBatchRange) {
+    pub fn add_range_in_batch(&mut self, range: &SortKeyBatchRange) {
         if self.is_empty() {
             self.set_batch_range(Some(range.clone()));
         }

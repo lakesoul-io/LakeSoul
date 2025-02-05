@@ -2,7 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::cmp::Reverse;
 use std::fmt::{Debug, Formatter};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -10,7 +9,7 @@ use std::task::{Context, Poll};
 
 use crate::sorted_merge::combiner::{RangeCombiner, RangeCombinerResult};
 use crate::sorted_merge::merge_operator::MergeOperator;
-use crate::sorted_merge::sort_key_range::{SortKeyBatchRange};
+use crate::sorted_merge::sort_key_range::SortKeyBatchRange;
 
 use arrow::record_batch::RecordBatch;
 use arrow::row::{RowConverter, SortField};
@@ -211,7 +210,7 @@ impl SortedStreamMerger {
 
                         self.range_finished[idx] = false;
 
-                        self.range_combiner.push_range(Reverse(range));
+                        self.range_combiner.push_range(range);
                     } else {
                         empty_batch = true;
                     }
@@ -265,12 +264,12 @@ impl SortedStreamMerger {
                 RangeCombinerResult::None => {
                     return Poll::Ready(None);
                 }
-                RangeCombinerResult::Range(Reverse(mut range)) => {
+                RangeCombinerResult::Range(range) => {
                     let stream_idx = range.stream_idx();
-                    range.advance();
+                    // range.advance();
 
                     if !range.is_finished() {
-                        self.range_combiner.push_range(Reverse(range))
+                        self.range_combiner.push_range(range)
                     } else {
                         // we should mark this stream uninitialized
                         // since its polling may return pending

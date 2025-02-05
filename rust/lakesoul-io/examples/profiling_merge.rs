@@ -36,10 +36,10 @@ fn create_batch(num_columns: usize, num_rows: usize, str_len: usize, pk_generato
     let mut len_rng = rand::thread_rng();
     let mut iter = vec![];
     if let Some(generator) = pk_generator {
-        let pk_iter = (0..num_rows).map(|_| generator.next_pk());
+        let pk_iter = (0..num_rows).map(|_| uuid::Builder::from_bytes_le((generator.next_pk() as u128).to_le_bytes()).as_uuid().to_string());
         iter.push((
             "pk".to_string(),
-            Arc::new(Int64Array::from_iter_values(pk_iter)) as ArrayRef,
+            Arc::new(StringArray::from_iter_values(pk_iter)) as ArrayRef,
             true,
         ));
     }
@@ -65,7 +65,7 @@ fn create_batch(num_columns: usize, num_rows: usize, str_len: usize, pk_generato
 fn create_schema(num_columns: usize, with_pk: bool) -> SchemaRef {
     let mut fields = vec![];
     if with_pk {
-        fields.push(Field::new("pk", DataType::Int64, true));
+        fields.push(Field::new("pk", DataType::Utf8, true));
     }
     for i in 0..num_columns {
         fields.push(Field::new(format!("col_{}", i), DataType::Utf8, true));
@@ -74,15 +74,16 @@ fn create_schema(num_columns: usize, with_pk: bool) -> SchemaRef {
 }
 
 fn main() -> Result<()> {
-    let num_batch = 512;
+    let num_batch = 128;
     let num_rows = 512;
-    let num_columns = 100;
+    let num_columns = 16;
     let str_len = 4;
     let temp_dir = std::env::current_dir()?.join("temp_dir");
     let with_pk = true;
+    let file_num = 50;
     let to_write_schema = create_schema(num_columns, with_pk);
     
-    for i in 0..2 {
+    for i in 0..file_num {
 
         let mut generator = if with_pk { Some(LinearPKGenerator::new(i + 2, 0)) } else { None } ;
         // let to_write = create_batch(num_columns, num_rows, str_len, &mut generator);
@@ -128,7 +129,7 @@ fn main() -> Result<()> {
     }
 
     let reader_conf = LakeSoulIOConfigBuilder::new()
-        .with_files((0..2).map(|i| temp_dir.join(format!("test{}.parquet", i)).into_os_string().into_string().unwrap()).collect::<Vec<_>>())
+        .with_files((0..file_num).map(|i| temp_dir.join(format!("test{}.parquet", i)).into_os_string().into_string().unwrap()).collect::<Vec<_>>())
         .with_thread_num(2)
         .with_batch_size(num_rows)
         .with_schema(to_write_schema.clone())
@@ -146,7 +147,9 @@ fn main() -> Result<()> {
         rb_count += rb.num_rows();
         // dbg!(&rb.column_by_name("pk").unwrap());
     }
-    assert_eq!(rb_count, num_rows * num_batch * 2 - num_rows * num_batch / 3 - 1);
+    if file_num == 2 {
+        assert_eq!(rb_count, num_rows * num_batch * 2 - num_rows * num_batch / 3 - 1);
+    } 
     println!("time cost: {:?}ms", start.elapsed().as_millis()); // ms
     
     Ok(())
