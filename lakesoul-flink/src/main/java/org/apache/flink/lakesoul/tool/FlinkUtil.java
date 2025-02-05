@@ -372,7 +372,7 @@ public class FlinkUtil {
             return p;
         } else if (uriString.startsWith("file:/")) {
             FileSystem fileSystem = p.getFileSystem();
-            return new Path(uriString.substring("file:/".length())).makeQualified(fileSystem);
+            return new Path(uriString.substring("file:/".length() - 1)).makeQualified(fileSystem);
         } else {
             FileSystem fileSystem = p.getFileSystem();
             return p.makeQualified(fileSystem);
