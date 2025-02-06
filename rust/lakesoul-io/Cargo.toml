@@ -49,7 +49,8 @@ dhat = { version="0.3.3", optional = true }
 async-recursion = "1.1.1"
 ndarray = "0.15.6"
 #hdf5 = {version = "0.8.1"}
-rayon = "1.10.0"
+nohash = "0.2.0"
+uuid = { workspace = true }
 
 
 [features]

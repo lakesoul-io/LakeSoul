@@ -2,7 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::cmp::Reverse;
 use std::fmt::{Debug, Formatter};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -147,6 +146,9 @@ impl SortedStreamMerger {
             .collect::<Result<Vec<_>>>()?;
         let fields_map = Arc::new(fields_map);
 
+        // this is a partial merge when any one of stream has columns less than target
+        let is_partial_merge = fields_map.iter().any(|f| f.len() != target_schema.fields().len());
+
         let wrappers: Vec<Fuse<SendableRecordBatchStream>> = streams.into_iter().map(|s| s.stream.fuse()).collect();
 
         let combiner = RangeCombiner::new(
@@ -155,6 +157,7 @@ impl SortedStreamMerger {
             fields_map,
             batch_size,
             merge_operator,
+            is_partial_merge,
         );
 
         Ok(Self {
@@ -211,7 +214,7 @@ impl SortedStreamMerger {
 
                         self.range_finished[idx] = false;
 
-                        self.range_combiner.push_range(Reverse(range));
+                        self.range_combiner.push_range(range);
                     } else {
                         empty_batch = true;
                     }
@@ -265,12 +268,12 @@ impl SortedStreamMerger {
                 RangeCombinerResult::None => {
                     return Poll::Ready(None);
                 }
-                RangeCombinerResult::Range(Reverse(mut range)) => {
+                RangeCombinerResult::Range(range) => {
                     let stream_idx = range.stream_idx();
-                    range.advance();
+                    // range.advance();
 
                     if !range.is_finished() {
-                        self.range_combiner.push_range(Reverse(range))
+                        self.range_combiner.push_range(range)
                     } else {
                         // we should mark this stream uninitialized
                         // since its polling may return pending
@@ -479,8 +482,8 @@ mod tests {
 
     async fn create_stream(batches: Vec<RecordBatch>, context: Arc<TaskContext>) -> Result<SortedStream> {
         let schema = batches[0].schema();
-        let exec = MemoryExec::try_new(&[batches], schema.clone(), None).unwrap();
-        let stream = exec.execute(0, context.clone()).unwrap();
+        let exec = MemoryExec::try_new(&[batches], schema.clone(), None)?;
+        let stream = exec.execute(0, context.clone())?;
         Ok(SortedStream::new(stream))
     }
 
@@ -911,17 +914,17 @@ mod tests {
         let conf = LakeSoulIOConfigBuilder::new()
             .with_primary_keys(vec!["uuid".to_string()])
             .with_files(vec![
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-c2c3071b-e566-4b2f-a67c-6648c311b9f5_00000.c000.parquet".to_string(),
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-bde11c74-f264-40cc-aa71-be7d61c2ed78_00000.c000.parquet".to_string(),
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-84dd2e3f-3bce-4dd3-b612-81791cbc701f_00000.c000.parquet".to_string(),
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-5813797f-8d93-420f-af9f-75ebeb655af9_00000.c000.parquet".to_string(),
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-659b7074-3547-43cb-b858-3867624c0236_00000.c000.parquet".to_string(),
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-ab29b003-5438-4b19-ba9d-067c0bf82800_00000.c000.parquet".to_string(),
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-c6efa765-91cc-4393-a7ef-6a53f1f0d777_00000.c000.parquet".to_string(),
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-391c2a2d-7c8c-4193-9539-ec881e046a23_00000.c000.parquet".to_string(),
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-44b1bdd7-6501-4056-aa1b-1851a40192ac_00000.c000.parquet".to_string(),
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-2c7f8088-cf5b-4418-94f1-41aece595c6b_00000.c000.parquet".to_string(),
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-4c90050a-6d97-423e-a90b-3385872a03a9_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table_bak_zstd/part--0001-6cb26ff7-d7b5-4997-a5df-d6450b6f4eae_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table_bak_zstd/part--0001-180d1486-f26e-4bf3-9816-5fae2f302f7b_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table_bak_zstd/part--0001-6e5c2082-d0ff-4995-9eae-4ebae5587d2e_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table_bak_zstd/part--0001-400e7944-1250-44ce-8781-8e7b39ec4ac9_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table_bak_zstd/part--0001-c8968e46-2331-40dd-8279-923197ffd4a0_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table_bak_zstd/part--0001-c06dff75-a09a-4c9b-b1ad-10fa522c9e40_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table_bak_zstd/part--0001-9af5eaed-95ac-4276-bbe2-0db2ce1f9b88_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table_bak_zstd/part--0001-4f2def3c-4cab-4fc5-b12c-e4e8aef6c723_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table_bak_zstd/part--0001-e149a62e-cef3-42ef-a6b4-9253985e2584_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table_bak_zstd/part--0001-4cd85802-f60e-450a-8e52-04e627f933fc_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table_bak_zstd/part--0001-1596e006-cd78-4d68-8c4c-88d0fff02e7b_00000.c000.parquet".to_string(),
             ])
             .with_schema(Arc::new(schema))
             .with_thread_num(2)

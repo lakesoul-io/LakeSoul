@@ -23,31 +23,16 @@ import scala.util.Random
 /**
   * Writes out the files to `path` and returns a list of them in `addedStatuses`.
   */
-class DelayedCopyCommitProtocol(jobId: String,
+class DelayedCopyCommitProtocol(srcFiles: Seq[DataFileInfo],
+                                jobId: String,
                                 dstPath: String,
                                 randomPrefixLength: Option[Int])
   extends DelayedCommitProtocol(jobId, dstPath, randomPrefixLength)
     with Serializable with Logging {
 
-  @transient private var copyFiles: ArrayBuffer[(String, String)] = _
-
-  override def setupJob(jobContext: JobContext): Unit = {
-
-  }
-
-  override def abortJob(jobContext: JobContext): Unit = {
-    // TODO: Best effort cleanup
-  }
-
-  override def setupTask(taskContext: TaskAttemptContext): Unit = {
-    copyFiles = new ArrayBuffer[(String, String)]
-  }
-
-
   override def newTaskTempFile(taskContext: TaskAttemptContext, dir: Option[String], ext: String): String = {
-    val (srcCompactDir, srcBasePath) = splitCompactFilePath(ext)
-    copyFiles += dir.getOrElse("-5") -> ext
-    new Path(dstPath, srcBasePath).toString
+    throw new UnsupportedOperationException(
+      s"$this does not support adding files with an absolute path")
   }
 
   override def newTaskTempFileAbsPath(taskContext: TaskAttemptContext, absoluteDir: String, ext: String): String = {
@@ -57,15 +42,14 @@ class DelayedCopyCommitProtocol(jobId: String,
 
   override def commitTask(taskContext: TaskAttemptContext): TaskCommitMessage = {
 
-    if (copyFiles.nonEmpty) {
-      val fs = new Path(copyFiles.head._2).getFileSystem(taskContext.getConfiguration)
-      val statuses = copyFiles.map { f =>
-        val (partitionDesc, srcPath) = f
-        val (srcCompactDir, srcBasePath) = splitCompactFilePath(srcPath)
+    if (srcFiles.nonEmpty) {
+      val fs = new Path(srcFiles.head.path).getFileSystem(taskContext.getConfiguration)
+      val statuses = srcFiles.map { srcFile =>
+        val (srcCompactDir, srcBasePath) = splitCompactFilePath(srcFile.path)
         val dstFile = new Path(dstPath, srcBasePath)
-        FileUtil.copy(fs, new Path(srcPath), fs, new Path(dstPath, srcBasePath), false, taskContext.getConfiguration)
+        FileUtil.copy(fs, new Path(srcFile.path), fs, new Path(dstPath, srcBasePath), false, taskContext.getConfiguration)
         val status = fs.getFileStatus(dstFile)
-        DataFileInfo(partitionDesc, fs.makeQualified(dstFile).toString, "add", status.getLen, status.getModificationTime)
+        DataFileInfo(srcFile.range_partitions, fs.makeQualified(dstFile).toString, "add", status.getLen, status.getModificationTime)
       }
 
       new TaskCommitMessage(statuses)

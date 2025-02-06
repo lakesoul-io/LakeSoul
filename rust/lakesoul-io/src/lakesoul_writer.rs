@@ -76,6 +76,11 @@ impl SyncSendableMutableLakeSoulWriter {
             
             let writer = Self::create_writer(writer_config).await?;
             let schema = writer.schema();
+
+            if let Some(max_file_size) = config.max_file_size_option() {
+                config.max_file_size = Some(max_file_size);
+            }
+
             if let Some(mem_limit) = config.mem_limit() {
                 if config.use_dynamic_partition {
                     config.max_file_size = Some((mem_limit as f64 * 0.15) as u64);
@@ -342,8 +347,6 @@ impl SyncSendableMutableLakeSoulWriter {
 mod tests {
     use arrow_array::builder;
     use datafusion::catalog::schema;
-    use hdf5::File as OtherFile;
-    use hdf5::Group;
     use parquet::arrow::ArrowWriter;
     use parquet::column;
     use parquet::file::properties::WriterProperties;

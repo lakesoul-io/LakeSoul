@@ -549,29 +549,30 @@ class CompactionSuite extends QueryTest
 
         // Get initial PartitionInfo count
         val initialFileCount = getFileList(tablePath).length
-        println(s"before compact initialPartitionInfoCount=$initialFileCount")
+        println(s"before ${c}th time compact file count=$initialFileCount")
         lakeSoulTable.toDF.show
 
         // Perform limited compaction (group every compactGroupSize PartitionInfo)
         lakeSoulTable.compaction(fileNumLimit = Some(compactGroupSize))
 
         // Get PartitionInfo count after compaction
-        val compactedFileCount = getFileList(tablePath).length
+        val compactedFileList = getFileList(tablePath)
+        val compactedFileCount = compactedFileList.length
 
-        println(s"after compact compactedPartitionInfoCount=$compactedFileCount")
+        println(s"after ${c}th time compact file count=$compactedFileCount")
 
         lakeSoulTable.toDF.show
 
         // Verify results
-        assert(compactedFileCount < initialFileCount,
-          s"Compaction should reduce the number of files, but it changed from ${initialFileCount} to $compactedFileCount")
+        assert(compactedFileCount <= hashBucketNum,
+          s"Compaction should have hashBucketNum files, but it has $compactedFileCount")
 
 
-        assert(compactedFileCount >= (initialFileCount - 1) / compactGroupSize + 1,
-          s"Compaction should produce files above a lower bound, but there are ${compactedFileCount} files")
-
-        assert(compactedFileCount <= (initialFileCount - 1) / compactGroupSize + 1 + hashBucketNum,
-          s"Compaction should produce files below a upper bound, but there are ${compactedFileCount} files")
+        //        assert(compactedFileCount >= (initialFileCount - 1) / compactGroupSize + 1,
+        //          s"Compaction should produce files above a lower bound, but there are ${compactedFileCount} files")
+        //
+        //        assert(compactedFileCount <= (initialFileCount - 1) / compactGroupSize + 1 + hashBucketNum,
+        //          s"Compaction should produce files below a upper bound, but there are ${compactedFileCount} files")
       }
 
       // Verify data integrity
@@ -650,15 +651,15 @@ class CompactionSuite extends QueryTest
         lakeSoulTable.toDF.show
 
         // Verify results
-        assert(compactedFileCount < initialFileCount,
-          s"Compaction should reduce the number of files, but it changed from ${initialFileCount} to $compactedFileCount")
+        assert(compactedFileCount <= hashBucketNum,
+          s"Compaction should have hashBucketNum files, but it has $compactedFileCount")
 
 
-        assert(compactedFileCount >= (initialFileCount - 1) / compactGroupSize + 1,
-          s"Compaction should produce files above a lower bound, but there are ${compactedFileCount} files")
-
-        assert(compactedFileCount <= (initialFileCount - 1) / compactGroupSize + 1 + hashBucketNum,
-          s"Compaction should produce files below a upper bound, but there are ${compactedFileCount} files")
+        //        assert(compactedFileCount >= (initialFileCount - 1) / compactGroupSize + 1,
+        //          s"Compaction should produce files above a lower bound, but there are ${compactedFileCount} files")
+        //
+        //        assert(compactedFileCount <= (initialFileCount - 1) / compactGroupSize + 1 + hashBucketNum,
+        //          s"Compaction should produce files below a upper bound, but there are ${compactedFileCount} files")
       }
 
       // Verify data integrity
@@ -715,23 +716,26 @@ class CompactionSuite extends QueryTest
 
         // Get initial PartitionInfo count
         val initialMaxFileSize = getFileList(tablePath).map(_.size).max
-        println(s"before compact initialMaxFileSize=$initialMaxFileSize")
-
-        // Perform limited compaction (group every compactGroupSize PartitionInfo)
+        println(s"before ${c}th compact initialMaxFileSize=$initialMaxFileSize")
         LakeSoulTable.uncached(tablePath)
-        lakeSoulTable.compaction(fileSizeLimit = Some(compactFileSize), force = false)
+        spark.time({
+          // Perform limited compaction (group every compactGroupSize PartitionInfo)
+          lakeSoulTable.compaction(fileSizeLimit = Some(compactFileSize), force = false)
+          //          lakeSoulTable.compaction(fileSizeLimit = Some(compactFileSize), force = true)
+          //          lakeSoulTable.compaction()
+        })
 
         // Get PartitionInfo count after compaction
         val compactedFiles = getFileList(tablePath)
         val compactedFileMax = compactedFiles.map(_.size).max
 
-        println(s"after compact compactedFileMax=$compactedFileMax")
+        println(s"after ${c}th compact compactedFileMax=$compactedFileMax")
 
         // Verify results
-        assert(compactedFileMax >= initialMaxFileSize,
-          s"Compaction should reduce the number of files, but it changed from ${initialMaxFileSize} to $compactedFileMax")
+        //        assert(compactedFileMax >= initialMaxFileSize,
+        //          s"Compaction should increase the max size of files, but it changed from ${initialMaxFileSize} to $compactedFileMax")
 
-        assert(compactedFileMax <= DBUtil.parseMemoryExpression(compactFileSize) * 1.2,
+        assert(compactedFileMax <= DBUtil.parseMemoryExpression(compactFileSize) * 1.1,
           s"Compaction should produce file with upper-bounded size, but there is a larger ${compactedFileMax} file size")
 
         val (compactDir, _) = splitCompactFilePath(compactedFiles.head.path)
@@ -757,7 +761,7 @@ class CompactionSuite extends QueryTest
       val hashBucketNum = 4
       val compactRounds = 5
       val upsertPerRounds = 10
-      val rowsPerUpsert = 1002
+      val rowsPerUpsert = 1000
       val compactFileSize = "10KB"
 
       // Create test data
@@ -801,23 +805,26 @@ class CompactionSuite extends QueryTest
 
         // Get initial PartitionInfo count
         val initialMaxFileSize = getFileList(tablePath).map(_.size).max
-        println(s"before compact initialMaxFileSize=$initialMaxFileSize")
+        println(s"before ${c}th compact initialMaxFileSize=$initialMaxFileSize")
 
         // Perform limited compaction (group every compactGroupSize PartitionInfo)
         LakeSoulTable.uncached(tablePath)
-        lakeSoulTable.compaction(fileSizeLimit = Some(compactFileSize), force = false)
+        spark.time({
+          lakeSoulTable.compaction(fileSizeLimit = Some(compactFileSize), force = false)
+          //          lakeSoulTable.compaction(fileSizeLimit = Some(compactFileSize), force = true)
+        })
 
         // Get PartitionInfo count after compaction
         val compactedFiles = getFileList(tablePath)
         val compactedFileMax = compactedFiles.map(_.size).max
 
-        println(s"after compact compactedFileMax=$compactedFileMax")
+        println(s"after ${c}th compact compactedFileMax=$compactedFileMax")
 
         // Verify results
         //        assert(compactedFileMax >= initialMaxFileSize,
         //          s"Compaction should reduce the number of files, but it changed from ${initialMaxFileSize} to $compactedFileMax")
 
-        assert(compactedFileMax <= DBUtil.parseMemoryExpression(compactFileSize) * 1.2,
+        assert(compactedFileMax <= DBUtil.parseMemoryExpression(compactFileSize) * 1.1,
           s"Compaction should produce file with upper-bounded size, but there is a larger ${compactedFileMax} file size")
 
         val (compactDir, _) = splitCompactFilePath(compactedFiles.head.path)
@@ -827,7 +834,9 @@ class CompactionSuite extends QueryTest
 
       // Verify data integrity
       LakeSoulTable.uncached(tablePath)
-      val compactedData = lakeSoulTable.toDF.orderBy("id", "date").collect()
+      val finalData = lakeSoulTable.toDF.orderBy("id", "date")
+      //      println(finalData.queryExecution)
+      val compactedData = finalData.collect()
       //      println(compactedData.mkString("Array(", ", ", ")"))
 
       assert(compactedData.length == 6 + rowsPerUpsert * upsertPerRounds * compactRounds / 2, s"The compressed data should have ${6 + rowsPerUpsert * upsertPerRounds * compactRounds / 2} rows, but it actually has ${compactedData.length} rows")

@@ -179,6 +179,10 @@ impl LakeSoulIOConfig {
         self.option(OPTION_KEY_MEM_LIMIT).map(|x| x.parse().unwrap())
     }
 
+    pub fn max_file_size_option(&self) -> Option<u64> {
+        self.option(OPTION_KEY_MAX_FILE_SIZE).map(|x| x.parse().unwrap())
+    }
+
     pub fn pool_size(&self) -> Option<usize> {
         self.option(OPTION_KEY_POOL_SIZE).map(|x| x.parse().unwrap())
     }
@@ -577,6 +581,7 @@ pub fn create_session_context_with_planner(
     sess_conf.options_mut().optimizer.prefer_hash_join = false; //if true, panicked at 'range end out of bounds'
     sess_conf.options_mut().execution.parquet.pushdown_filters = config.parquet_filter_pushdown;
     sess_conf.options_mut().execution.target_partitions = 1;
+    sess_conf.options_mut().execution.parquet.dictionary_enabled = Some(false);
     // sess_conf.options_mut().execution.sort_in_place_threshold_bytes = 16 * 1024;
     // sess_conf.options_mut().execution.sort_spill_reservation_bytes = 2 * 1024 * 1024;
     // sess_conf.options_mut().catalog.default_catalog = "lakesoul".into();
@@ -674,9 +679,11 @@ mod tests {
             ]
         );
         let mut lakesoulconfigbuilder = LakeSoulIOConfigBuilder::from(conf.clone());
-        let conf = lakesoulconfigbuilder.with_d(32 as u64).with_nbits(64 as u64).build();
-        assert_eq!(conf.seed,1234 as u64);
-        assert_eq!(conf.d,Some(32));
-        assert_eq!(conf.nbits,Some(64));
+        let conf = lakesoulconfigbuilder.build();
+        assert_eq!(conf.max_file_size,None);
+        assert_eq!(conf.max_row_group_size,250000);
+        assert_eq!(conf.max_row_group_num_values,2147483647);
+        assert_eq!(conf.prefetch_size,1);
+        assert_eq!(conf.parquet_filter_pushdown,false);
     }
 }

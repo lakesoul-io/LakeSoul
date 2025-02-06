@@ -15,6 +15,7 @@ import org.apache.hadoop.hdfs.DistributedFileSystem
 import org.apache.hadoop.mapreduce.TaskAttemptContext
 import org.apache.parquet.hadoop.ParquetInputFormat
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.execution.datasources.LakeSoulFileWriter.{HASH_BUCKET_ID_KEY, MAX_FILE_SIZE_KEY}
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetReadSupport, ParquetWriteSupport}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructType
@@ -32,10 +33,11 @@ class NativeIOOptions(val s3Bucket: String,
                       val s3Region: String,
                       val fsUser: String,
                       val defaultFS: String,
-                      val virtual_path_style: Boolean
+                      val virtual_path_style: Boolean,
+                      val others: Map[String, String] = Map.empty
                      )
 
-object NativeIOUtils{
+object NativeIOUtils {
 
   def asArrayColumnVector(vectorSchemaRoot: VectorSchemaRoot): Array[ColumnVector] = {
     asScalaIteratorConverter(vectorSchemaRoot.getFieldVectors.iterator())
@@ -62,6 +64,13 @@ object NativeIOUtils{
     var defaultFS = taskAttemptContext.getConfiguration.get("fs.defaultFS")
     if (defaultFS == null) defaultFS = taskAttemptContext.getConfiguration.get("fs.default.name")
     val fileSystem = file.getFileSystem(taskAttemptContext.getConfiguration)
+    var otherOptions = Map[String, String]()
+    if (taskAttemptContext.getConfiguration.get(HASH_BUCKET_ID_KEY, "").nonEmpty) {
+      otherOptions += HASH_BUCKET_ID_KEY -> taskAttemptContext.getConfiguration.get(HASH_BUCKET_ID_KEY)
+    }
+    if (taskAttemptContext.getConfiguration.get(MAX_FILE_SIZE_KEY, "").nonEmpty) {
+      otherOptions += MAX_FILE_SIZE_KEY -> taskAttemptContext.getConfiguration.get(MAX_FILE_SIZE_KEY)
+    }
     if (hasS3AFileSystemClass) {
       fileSystem match {
         case s3aFileSystem: S3AFileSystem =>
@@ -71,11 +80,11 @@ object NativeIOUtils{
           val s3aAccessKey = taskAttemptContext.getConfiguration.get("fs.s3a.access.key")
           val s3aSecretKey = taskAttemptContext.getConfiguration.get("fs.s3a.secret.key")
           val virtualPathStyle = taskAttemptContext.getConfiguration.getBoolean("fs.s3a.path.style.access", false)
-          return new NativeIOOptions(awsS3Bucket, s3aAccessKey, s3aSecretKey, s3aEndpoint, s3aRegion, user, defaultFS, virtualPathStyle)
+          return new NativeIOOptions(awsS3Bucket, s3aAccessKey, s3aSecretKey, s3aEndpoint, s3aRegion, user, defaultFS, virtualPathStyle, otherOptions)
         case _ =>
       }
     }
-    new NativeIOOptions(null, null, null, null, null, user, defaultFS, false)
+    new NativeIOOptions(null, null, null, null, null, user, defaultFS, false, otherOptions)
   }
 
   def setNativeIOOptions(nativeIO: NativeIOBase, options: NativeIOOptions): Unit = {
@@ -89,6 +98,7 @@ object NativeIOUtils{
       options.defaultFS,
       options.virtual_path_style
     )
+    options.others.foreach(options => nativeIO.setOption(options._1, options._2))
   }
 
   def setParquetConfigurations(sparkSession: SparkSession, hadoopConf: Configuration, readDataSchema: StructType): Unit = {
