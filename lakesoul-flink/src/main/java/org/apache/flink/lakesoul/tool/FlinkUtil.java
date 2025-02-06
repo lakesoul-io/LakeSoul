@@ -16,6 +16,7 @@ import com.dmetasoul.lakesoul.meta.PartitionInfoScala;
 import com.dmetasoul.lakesoul.meta.dao.TableInfoDao;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.arrow.vector.types.pojo.Field;
+import org.apache.arrow.vector.types.pojo.FieldType;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.GlobalConfiguration;
@@ -120,6 +121,7 @@ public class FlinkUtil {
     }
 
     public static org.apache.arrow.vector.types.pojo.Schema toArrowSchema(TableSchema tableSchema,
+                                                                          List<Optional<String>> comments,
                                                                           Optional<String> cdcColumn)
             throws CatalogException {
         List<Field> fields = new ArrayList<>();
@@ -128,6 +130,14 @@ public class FlinkUtil {
             cdcColName = cdcColumn.get();
             Field cdcField = ArrowUtils.toArrowField(cdcColName, new VarCharType(false, 16));
             fields.add(cdcField);
+        }
+
+        java.lang.reflect.Field metaField;
+        try {
+            metaField = FieldType.class.getDeclaredField("metadata");
+            metaField.setAccessible(true);
+        } catch (NoSuchFieldException e) {
+            throw new CatalogException(e);
         }
 
         for (int i = 0; i < tableSchema.getFieldCount(); i++) {
@@ -153,6 +163,16 @@ public class FlinkUtil {
                             fields.get(0).toString());
                 }
             } else {
+                if (comments.get(i).isPresent()) {
+                    try {
+                        Map<String, String> metadata = new HashMap<>();
+                        metadata.put("spark_comment", comments.get(i).get());
+                        metadata.putAll(arrowField.getMetadata());
+                        metaField.set(arrowField.getFieldType(), metadata);
+                    } catch (IllegalAccessException e) {
+                        throw new CatalogException(e);
+                    }
+                }
                 fields.add(arrowField);
             }
         }
@@ -236,13 +256,15 @@ public class FlinkUtil {
         Builder bd = Schema.newBuilder();
 
         String lakesoulCdcColumnName = properties.getString(CDC_CHANGE_COLUMN);
-        boolean contains = (lakesoulCdcColumnName != null && !lakesoulCdcColumnName.isEmpty());
+        boolean containsCdc = (lakesoulCdcColumnName != null && !lakesoulCdcColumnName.isEmpty());
 
         for (RowType.RowField field : rowType.getFields()) {
-            if (contains && field.getName().equals(lakesoulCdcColumnName)) {
+            if (containsCdc && field.getName().equals(lakesoulCdcColumnName)) {
                 continue;
             }
-            bd.column(field.getName(), field.getType().asSerializableString());
+            bd.column(field.getName(), field.getType().asSerializableString())
+                    .withComment(arrowSchema.findField(field.getName())
+                            .getMetadata().getOrDefault("spark_comment", null));
         }
         if (properties.getString(COMPUTE_COLUMN_JSON) != null) {
             JSONObject computeColumnJson = JSONObject.parseObject(properties.getString(COMPUTE_COLUMN_JSON));
@@ -259,16 +281,20 @@ public class FlinkUtil {
             watermarkJson.forEach((column, watermarkExpr) -> bd.watermark(column, (String) watermarkExpr));
         }
 
-
         List<String> parKeys = partitionKeys.rangeKeys;
         HashMap<String, String> conf = new HashMap<>();
         properties.forEach((key, value) -> conf.put(key, value.toString()));
+
+        String comment = "";
+        if (properties.containsKey("comment")) {
+            comment = properties.getString("comment");
+        }
+
         if (FlinkUtil.isView(tableInfo)) {
-            return CatalogView.of(bd.build(), "", properties.getString(VIEW_ORIGINAL_QUERY),
+            return CatalogView.of(bd.build(), comment, properties.getString(VIEW_ORIGINAL_QUERY),
                     properties.getString(VIEW_EXPANDED_QUERY), conf);
         } else {
-            return CatalogTable.of(bd.build(), "", parKeys, conf);
-
+            return CatalogTable.of(bd.build(), comment, parKeys, conf);
         }
     }
 
@@ -337,13 +363,20 @@ public class FlinkUtil {
 
     public static Path makeQualifiedPath(String path) throws IOException {
         Path p = new Path(path);
-        FileSystem fileSystem = p.getFileSystem();
-        return p.makeQualified(fileSystem);
+        return makeQualifiedPath(p);
     }
 
     public static Path makeQualifiedPath(Path p) throws IOException {
-        FileSystem fileSystem = p.getFileSystem();
-        return p.makeQualified(fileSystem);
+        String uriString = p.toUri().toString();
+        if (uriString.startsWith("file:///")) {
+            return p;
+        } else if (uriString.startsWith("file:/")) {
+            FileSystem fileSystem = p.getFileSystem();
+            return new Path(uriString.substring("file:/".length() - 1)).makeQualified(fileSystem);
+        } else {
+            FileSystem fileSystem = p.getFileSystem();
+            return p.makeQualified(fileSystem);
+        }
     }
 
     public static String getDatabaseName(String fullDatabaseName) {

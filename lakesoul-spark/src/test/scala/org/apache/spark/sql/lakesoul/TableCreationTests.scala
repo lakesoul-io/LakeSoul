@@ -1322,4 +1322,20 @@ class TableCreationSuite
       }
     }
   }
+
+  test("create table with comment") {
+    withTempDir { dir =>
+      withTable("lakesoul_test") {
+        sql(
+          s"""CREATE TABLE lakesoul_test
+             |(a string comment 'this is a string')
+             |USING lakesoul
+             |comment 'this is a table'
+               """.stripMargin)
+        val createSql = sql("show create table lakesoul_test").collect()(0).getString(0)
+        assert(createSql.contains("a STRING COMMENT 'this is a string'"))
+        assert(createSql.contains("COMMENT 'this is a table'"))
+      }
+    }
+  }
 }
