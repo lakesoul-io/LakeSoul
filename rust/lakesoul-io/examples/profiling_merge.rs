@@ -81,7 +81,7 @@ fn main() -> Result<()> {
     let str_len = 4;
     let temp_dir = std::env::current_dir()?.join("temp_dir");
     let with_pk = true;
-    let file_num = 1;
+    let file_num = 50;
     let to_write_schema = create_schema(num_columns, with_pk);
     
     for i in 0..file_num {
@@ -128,24 +128,25 @@ fn main() -> Result<()> {
 
 
     let reader_conf = LakeSoulIOConfigBuilder::new()
-        // .with_files((0..file_num).map(|i| temp_dir.join(format!("test{}.parquet", i)).into_os_string().into_string().unwrap()).collect::<Vec<_>>())
-        .with_files(vec![
-            "file:///Users/ceng/Desktop/user/part-AQsUZHJtSBeZNEEb_0000.parquet".to_string(), 
-            "file:///Users/ceng/Desktop/user/part-b71CCbFTr0vx6GZK_0000.parquet".to_string(),
-            "file:///Users/ceng/Desktop/user/part-ZMbzBvkaJCGnh7iJ_0000.parquet".to_string(),
-            "file:///Users/ceng/Desktop/user/part-bn8GKq1YAjF7cN1H_0000.parquet".to_string(),
-            "file:///Users/ceng/Desktop/user/part-BrRLeHtqE7RqgaTC_0000.parquet".to_string(),
-            ])
         .with_thread_num(2)
         .with_batch_size(num_rows)
-        // .with_schema(to_write_schema.clone())
-        .with_schema(Arc::new(Schema::new(vec![
-            Field::new("order_id", DataType::Int32, true),
-            Field::new("name", DataType::Utf8, true),
-            Field::new("score", DataType::Decimal128(10, 2), true),
-        ])))
-        // .with_primary_keys(vec!["order_id".to_string()])
-        .with_primary_keys(vec!["name".to_string()])
+        .with_files((0..file_num).map(|i| temp_dir.join(format!("test{}.parquet", i)).into_os_string().into_string().unwrap()).collect::<Vec<_>>())
+        .with_primary_keys(vec!["pk".to_string()])
+        .with_schema(to_write_schema.clone())
+
+        // .with_files(vec![
+        //     "file:///Users/ceng/Desktop/user/part-AQsUZHJtSBeZNEEb_0000.parquet".to_string(), 
+        //     "file:///Users/ceng/Desktop/user/part-b71CCbFTr0vx6GZK_0000.parquet".to_string(),
+        //     "file:///Users/ceng/Desktop/user/part-ZMbzBvkaJCGnh7iJ_0000.parquet".to_string(),
+        //     "file:///Users/ceng/Desktop/user/part-bn8GKq1YAjF7cN1H_0000.parquet".to_string(),
+        //     "file:///Users/ceng/Desktop/user/part-BrRLeHtqE7RqgaTC_0000.parquet".to_string(),
+        //     ])
+        // .with_schema(Arc::new(Schema::new(vec![
+        //     Field::new("order_id", DataType::Int32, true),
+        //     Field::new("name", DataType::Utf8, true),
+        //     Field::new("score", DataType::Decimal128(10, 2), true),
+        // ])))
+        // .with_primary_keys(vec!["name".to_string()])
         .build();
 
     let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
@@ -157,7 +158,7 @@ fn main() -> Result<()> {
     while let Some(rb) = reader.next_rb_blocked() {
         let rb = rb.unwrap();
         rb_count += rb.num_rows();
-        let _ = print_batches(&[rb]);
+        // let _ = print_batches(&[rb]);
         // dbg!(&rb.column_by_name("pk").unwrap());
     }
     if file_num == 2 {

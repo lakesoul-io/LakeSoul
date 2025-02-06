@@ -566,28 +566,6 @@ impl UseLastRangeCombiner {
         node_idx / 2
     }
 
-    /// Returns `true` if the cursor at index `a` is greater than at index `b`.
-    /// In an equality case, it compares the stream indices given.
-    #[inline]
-    fn loser_tree_is_gt(&self, a: usize, b: usize) -> bool {
-        match (&self.ranges[a], &self.ranges[b]) {
-            (None, _) => false,
-            (_, None) => true,
-            (Some(ac), Some(bc)) => ac.cmp(bc).is_gt(),
-        }
-    }
-
-    /// Returns `true` if the cursor at index `a` is less than at index `b`.
-    /// In an equality case, it compares the stream indices given.
-    #[inline]
-    fn loser_tree_is_lt(&self, a: usize, b: usize) -> bool {
-        match (&self.ranges[a], &self.ranges[b]) {
-            (None, _) => false,
-            (_, None) => true,
-            (Some(ac), Some(bc)) => ac.cmp(bc).is_lt(),
-        }
-    }
-
 
     /// Updates the loser tree to reflect the new winner after the previous winner is consumed.
     /// This function adjusts the tree by comparing the current winner with challengers from
