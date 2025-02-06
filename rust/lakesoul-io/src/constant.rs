@@ -59,9 +59,9 @@ impl ConstNullArray {
     }
 
     pub fn get_ref(&mut self, datatype: &DataType) -> &dyn Array {
-        self.inner.entry(datatype.clone()).or_insert_with(|| {
-            new_null_array(datatype, 1)
-        })
+        self.inner
+            .entry(datatype.clone())
+            .or_insert_with(|| new_null_array(datatype, 1))
     }
 }
 

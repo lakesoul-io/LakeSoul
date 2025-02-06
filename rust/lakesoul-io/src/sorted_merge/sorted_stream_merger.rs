@@ -149,7 +149,6 @@ impl SortedStreamMerger {
         // this is a partial merge when any one of stream has columns less than target
         let is_partial_merge = fields_map.iter()
             .any(|f| f.len() != target_schema.fields().len());
-        println!("is_partial_merge {:?}", is_partial_merge);
 
         let wrappers: Vec<Fuse<SendableRecordBatchStream>> = streams.into_iter().map(|s| s.stream.fuse()).collect();
 
@@ -916,17 +915,17 @@ mod tests {
         let conf = LakeSoulIOConfigBuilder::new()
             .with_primary_keys(vec!["uuid".to_string()])
             .with_files(vec![
-                "/opt/spark/work-dir/result/table/part--0001-58cc8454-3efe-4924-967e-8d5e72ac8c7d_00000.c000.parquet".to_string(),
-                "/opt/spark/work-dir/result/table/part--0001-40a5a836-69ab-4967-9371-9f26cc8e479d_00000.c000.parquet".to_string(),
-                "/opt/spark/work-dir/result/table/part--0001-c9b7d23d-0777-4d4d-be88-588075e3f252_00000.c000.parquet".to_string(),
-                "/opt/spark/work-dir/result/table/part--0001-cc1a3160-ae4e-47a5-b311-4d9555961bcd_00000.c000.parquet".to_string(),
-                "/opt/spark/work-dir/result/table/part--0001-790fae8b-2d13-4193-9b86-fdeaecad1250_00000.c000.parquet".to_string(),
-                "/opt/spark/work-dir/result/table/part--0001-2a856ba2-493d-4088-b618-ce36c7c6a1a7_00000.c000.parquet".to_string(),
-                "/opt/spark/work-dir/result/table/part--0001-c36606c4-243c-4c35-9396-ca1a30990c75_00000.c000.parquet".to_string(),
-                "/opt/spark/work-dir/result/table/part--0001-4eb3a3ee-b776-404c-a3aa-d18071bf6534_00000.c000.parquet".to_string(),
-                "/opt/spark/work-dir/result/table/part--0001-c7da169c-26b5-473f-ba99-04e76d770189_00000.c000.parquet".to_string(),
-                "/opt/spark/work-dir/result/table/part--0001-b11bb4b2-5911-4dfc-b175-5b569a4ff01b_00000.c000.parquet".to_string(),
-                "/opt/spark/work-dir/result/table/part--0001-20ed7cfb-84c5-4c6f-8307-3f29db7f40d3_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table_bak_zstd/part--0001-6cb26ff7-d7b5-4997-a5df-d6450b6f4eae_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table_bak_zstd/part--0001-180d1486-f26e-4bf3-9816-5fae2f302f7b_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table_bak_zstd/part--0001-6e5c2082-d0ff-4995-9eae-4ebae5587d2e_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table_bak_zstd/part--0001-400e7944-1250-44ce-8781-8e7b39ec4ac9_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table_bak_zstd/part--0001-c8968e46-2331-40dd-8279-923197ffd4a0_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table_bak_zstd/part--0001-c06dff75-a09a-4c9b-b1ad-10fa522c9e40_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table_bak_zstd/part--0001-9af5eaed-95ac-4276-bbe2-0db2ce1f9b88_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table_bak_zstd/part--0001-4f2def3c-4cab-4fc5-b12c-e4e8aef6c723_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table_bak_zstd/part--0001-e149a62e-cef3-42ef-a6b4-9253985e2584_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table_bak_zstd/part--0001-4cd85802-f60e-450a-8e52-04e627f933fc_00000.c000.parquet".to_string(),
+                "/opt/spark/work-dir/result/table_bak_zstd/part--0001-1596e006-cd78-4d68-8c4c-88d0fff02e7b_00000.c000.parquet".to_string(),
             ])
             .with_schema(Arc::new(schema))
             .with_thread_num(2)

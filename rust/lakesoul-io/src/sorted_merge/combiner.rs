@@ -139,10 +139,10 @@ impl MinHeapSortKeyBatchRangeCombiner {
     }
 
     /// if in_progress is full, we should build record batch by merge all ranges in in_progress
-    /// otherwise, 
+    /// otherwise,
     /// if heap is not empty, we should pop from heap and add to in_progress
     /// then return the advanced popped range
-    /// if heap is empty, 
+    /// if heap is empty,
     /// check if in_progress is empty, if so, return None, which the RangeCombiner is finished
     /// otherwise, build record batch by merge all the remaining ranges in in_progress
     pub fn poll_result(&mut self) -> RangeCombinerResult {
@@ -395,15 +395,18 @@ impl UseLastRangeCombiner {
     }
 
     /// if in_progress is full, we should build record batch by merge all ranges in in_progress
-    /// otherwise, 
+    /// otherwise,
     /// if heap is not empty, we should pop from heap and add to in_progress
     /// then return the advanced popped range
-    /// if heap is empty, 
+    /// if heap is empty,
     /// check if in_progress is empty, if so, return None, which the RangeCombiner is finished
     /// otherwise, build record batch by merge all the remaining ranges in in_progress
     pub fn poll_result(&mut self) -> RangeCombinerResult {
         if self.ranges_counter < self.streams_num {
-            return RangeCombinerResult::Err(ArrowError::InvalidArgumentError(format!("Not all streams have been initialized, ranges_counter: {}, streams_num: {}", self.ranges_counter, self.streams_num)));
+            return RangeCombinerResult::Err(ArrowError::InvalidArgumentError(format!(
+                "Not all streams have been initialized, ranges_counter: {}, streams_num: {}",
+                self.ranges_counter, self.streams_num
+            )));
         }
         if self.in_progress.len() == self.target_batch_size {
             RangeCombinerResult::RecordBatch(self.build_record_batch())
@@ -437,7 +440,75 @@ impl UseLastRangeCombiner {
         }
     }
 
+    // for full column merge, all columns of each row have same batch idx
+    // so we only need to build indices once and reuse them for all columns
+    fn build_record_batch_full_merge(&mut self) -> ArrowResult<RecordBatch> {
+        let capacity = self.in_progress.len();
+        let mut interleave_idx = Vec::<(usize, usize)>::with_capacity(capacity);
+        interleave_idx.resize(capacity, (0, 0));
+        let mut batch_idx_to_flatten_array_idx =
+            HashMap::<usize, usize, BuildNoHashHasher<usize>>::with_capacity_and_hasher(
+                capacity * 2,
+                BuildNoHashHasher::default(),
+            );
+        let mut array_count = 1usize;
+        let mut flatten_arrays: Vec<Vec<ArrayRef>> = Vec::with_capacity(self.schema.fields().len());
+        flatten_arrays.resize(self.schema.fields().len(), vec![]);
+        for column_idx in 0..self.schema.fields().len() {
+            unsafe {
+                let flatten_array = flatten_arrays.get_unchecked_mut(column_idx);
+                flatten_array.reserve(capacity + 1);
+                flatten_array.push(self.const_null_array.get(self.schema.field(column_idx).data_type()));
+            }
+        }
+        for (idx, ranges) in self.in_progress.iter().enumerate() {
+            if let Some(range) = ranges.column(0) {
+                let batch_idx = range.batch_idx;
+                unsafe {
+                    match batch_idx_to_flatten_array_idx.get(&batch_idx) {
+                        Some(flatten_array_idx) => {
+                            *interleave_idx.get_unchecked_mut(idx) = (*flatten_array_idx, range.row_idx)
+                        }
+                        None => {
+                            batch_idx_to_flatten_array_idx.insert(batch_idx, array_count);
+                            *interleave_idx.get_unchecked_mut(idx) = (array_count, range.row_idx);
+                            array_count += 1;
+                            // fill all column arrays for interleaving
+                            for column_idx in 0..self.schema.fields().len() {
+                                let flatten_array = flatten_arrays.get_unchecked_mut(column_idx);
+                                flatten_array.push(
+                                    range.array_ref_by_col(
+                                        *self
+                                            .fields_map
+                                            .get_unchecked(range.stream_idx)
+                                            .get_unchecked(column_idx),
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let columns = flatten_arrays
+            .iter()
+            .map(|array| {
+                interleave(
+                    array.iter().map(|a| a.as_ref()).collect::<Vec<&dyn Array>>().as_slice(),
+                    interleave_idx.as_slice(),
+                )
+            })
+            .collect::<ArrowResult<Vec<ArrayRef>>>()?;
+
+        self.in_progress.clear();
+
+        RecordBatch::try_new(self.schema.clone(), columns)
+    }
+
     fn build_record_batch(&mut self) -> ArrowResult<RecordBatch> {
+        if !self.is_partial_merge {
+            return self.build_record_batch_full_merge();
+        }
         // construct record batch by columnarly merging
         let capacity = self.in_progress.len();
         let mut interleave_idx = Vec::<(usize, usize)>::with_capacity(capacity);
@@ -468,14 +539,7 @@ impl UseLastRangeCombiner {
                                     *interleave_idx.get_unchecked_mut(idx) = (*flatten_array_idx, array.row_idx)
                                 }
                                 None => {
-                                    if self.is_partial_merge {
-                                        flatten_arrays.push(array.array_ref());
-                                    } else {
-                                        flatten_arrays.push(array.array_ref_by_col(
-                                            *self.fields_map.get_unchecked(array.stream_idx)
-                                                .get_unchecked(column_idx)
-                                        ));
-                                    }
+                                    flatten_arrays.push(array.array_ref());
                                     batch_idx_to_flatten_array_idx.insert(array.batch_idx, flatten_arrays.len() - 1);
                                     *interleave_idx.get_unchecked_mut(idx) = (flatten_arrays.len() - 1, array.row_idx);
                                 }
@@ -522,7 +586,7 @@ impl UseLastRangeCombiner {
                     (Some(ac), Some(bc)) => {
                         if ac.cmp(bc).is_gt() {
                             self.update_winner(cmp_node, &mut winner, challenger);
-                        } 
+                        }
                     }
                 }
 
@@ -572,7 +636,6 @@ impl UseLastRangeCombiner {
         node_idx / 2
     }
 
-
     /// Updates the loser tree to reflect the new winner after the previous winner is consumed.
     /// This function adjusts the tree by comparing the current winner with challengers from
     /// other partitions.
@@ -592,7 +655,7 @@ impl UseLastRangeCombiner {
                 (Some(ac), Some(bc)) => {
                     if ac.cmp(bc).is_gt() {
                         self.update_winner(cmp_node, &mut winner, challenger);
-                    } 
+                    }
                 }
             }
             cmp_node = self.loser_tree_parent_node_index(cmp_node);
@@ -606,6 +669,4 @@ impl UseLastRangeCombiner {
         self.loser_tree[cmp_node] = *winner;
         *winner = challenger;
     }
-
-
 }

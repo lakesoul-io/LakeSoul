@@ -12,8 +12,8 @@ use arrow::{
     record_batch::RecordBatch,
     row::{Row, Rows},
 };
-use arrow_cast::pretty::pretty_format_batches;
 use arrow_array::Array;
+use arrow_cast::pretty::pretty_format_batches;
 use smallvec::{smallvec, SmallVec};
 
 /// A range in one arrow::record_batch::RecordBatch with same sorted primary key
@@ -120,9 +120,7 @@ impl SortKeyBatchRange {
     }
 
     pub fn array(&self, idx: usize) -> ArrayRef {
-        unsafe {
-            self.batch.columns().get_unchecked(idx).clone()
-        }
+        unsafe { self.batch.columns().get_unchecked(idx).clone() }
     }
 
     pub fn batch(&self) -> Arc<RecordBatch> {
@@ -132,13 +130,16 @@ impl SortKeyBatchRange {
 
 impl Debug for SortKeyBatchRange {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        write!(f, "SortKeyBatchRange: \nbegin_row: {}, end_row: {}, stream_idx: {}, batch_idx: {}\n", self.begin_row, self.end_row, self.stream_idx, self.batch_idx)?;
-        write!(f, "batch: \n{}", &pretty_format_batches(&[self.batch.slice(self.begin_row, self.end_row - self.begin_row)]).unwrap())
-        // f.debug_struct("SortKeyBatchRange")
-        //     .field("begin_row", &self.begin_row)
-        //     .field("end_row", &self.end_row)
-        //     .field("batch", &self.batch)
-        //     .finish()
+        write!(
+            f,
+            "SortKeyBatchRange: \nbegin_row: {}, end_row: {}, stream_idx: {}, batch_idx: {}\n",
+            self.begin_row, self.end_row, self.stream_idx, self.batch_idx
+        )?;
+        write!(
+            f,
+            "batch: \n{}",
+            &pretty_format_batches(&[self.batch.slice(self.begin_row, self.end_row - self.begin_row)]).unwrap()
+        )
     }
 }
 
@@ -281,21 +282,15 @@ pub struct UseLastSortKeyArrayRange {
 
 impl UseLastSortKeyArrayRange {
     pub fn array(&self) -> ArrayRef {
-        unsafe {
-            self.batch.columns().get_unchecked(self.column_idx).clone()
-        }
+        unsafe { self.batch.columns().get_unchecked(self.column_idx).clone() }
     }
 
     pub fn array_ref(&self) -> &dyn Array {
-        unsafe {
-            self.batch.columns().get_unchecked(self.column_idx).as_ref()
-        }
+        unsafe { self.batch.columns().get_unchecked(self.column_idx).as_ref() }
     }
 
-    pub fn array_ref_by_col(&self, column_idx: usize) -> &dyn Array {
-        unsafe {
-            self.batch.columns().get_unchecked(column_idx).as_ref()
-        }
+    pub fn array_ref_by_col(&self, column_idx: usize) -> ArrayRef {
+        unsafe { self.batch.columns().get_unchecked(column_idx).clone() }
     }
 }
 
@@ -313,9 +308,8 @@ impl Clone for UseLastSortKeyArrayRange {
 
 #[derive(Debug, Clone)]
 pub struct UseLastSortKeyBatchRanges {
-
     // fields_index_map from source schemas to target schema which vector index = stream_idx
-    fields_map: Arc<Vec<Vec<usize>>>,   
+    fields_map: Arc<Vec<Vec<usize>>>,
 
     current_batch_range: Option<SortKeyBatchRange>,
 
@@ -326,7 +320,11 @@ pub struct UseLastSortKeyBatchRanges {
 }
 
 impl UseLastSortKeyBatchRanges {
-    pub fn new(schema: SchemaRef, fields_map: Arc<Vec<Vec<usize>>>, is_partial_merge: bool) -> UseLastSortKeyBatchRanges {
+    pub fn new(
+        schema: SchemaRef,
+        fields_map: Arc<Vec<Vec<usize>>>,
+        is_partial_merge: bool,
+    ) -> UseLastSortKeyBatchRanges {
         let last_index_of_array = if is_partial_merge {
             vec![None; schema.fields().len()]
         } else {
@@ -358,25 +356,23 @@ impl UseLastSortKeyBatchRanges {
                 let range_col = self.fields_map.get_unchecked(range.stream_idx());
                 for column_idx in 0..range.columns() {
                     let target_schema_idx = range_col.get_unchecked(column_idx);
-                    *self.last_index_of_array.get_unchecked_mut(*target_schema_idx) =
-                        Some(UseLastSortKeyArrayRange {
-                            row_idx: range.end_row - 1,
-                            batch_idx: range.batch_idx,
-                            batch: range.batch(),
-                            column_idx,
-                            stream_idx: range.stream_idx(),
-                        });
-                }
-            } else {
-                // full column merge. we just need to record batch idx of this row
-                *self.last_index_of_array.get_unchecked_mut(0) =
-                    Some(UseLastSortKeyArrayRange {
+                    *self.last_index_of_array.get_unchecked_mut(*target_schema_idx) = Some(UseLastSortKeyArrayRange {
                         row_idx: range.end_row - 1,
                         batch_idx: range.batch_idx,
                         batch: range.batch(),
-                        column_idx: 0,
+                        column_idx,
                         stream_idx: range.stream_idx(),
                     });
+                }
+            } else {
+                // full column merge. we just need to record batch idx of this row
+                *self.last_index_of_array.get_unchecked_mut(0) = Some(UseLastSortKeyArrayRange {
+                    row_idx: range.end_row - 1,
+                    batch_idx: range.batch_idx,
+                    batch: range.batch(),
+                    column_idx: 0,
+                    stream_idx: range.stream_idx(),
+                });
             }
         }
     }
