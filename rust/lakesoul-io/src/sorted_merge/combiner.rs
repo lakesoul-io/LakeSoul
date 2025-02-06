@@ -339,11 +339,10 @@ pub struct UseLastRangeCombiner {
     /// reference: <https://en.wikipedia.org/wiki/K-way_merge_algorithm#Tournament_Tree>
     loser_tree: Vec<usize>,
 
-    /// If the most recently yielded overall winner has been replaced
-    /// within the loser tree. A value of `false` indicates that the
-    /// overall winner has been yielded but the loser tree has not
-    /// been updated
-    loser_tree_adjusted: bool,
+    ranges_counter: usize,
+
+    loser_tree_has_updated: bool,
+
     /// ranges for each input source. `None` means the input is exhausted
     ranges: Vec<Option<SortKeyBatchRange>>,
 
@@ -368,19 +367,27 @@ impl UseLastRangeCombiner {
             target_batch_size,
             current_sort_key_range: Arc::new(UseLastSortKeyBatchRanges::new(schema, fields_map)),
             const_null_array: ConstNullArray::new(),
-            ranges: vec![],
+            ranges: (0..streams_num).map(|_| None).collect(),
             loser_tree: vec![],
-            loser_tree_adjusted: false,
+            ranges_counter: 0,
+            loser_tree_has_updated: false,
         }
     }
 
     pub fn push(&mut self, range: SortKeyBatchRange) {
-        if self.loser_tree.is_empty() {
-            self.init_loser_tree();
-        }
         let stream_idx = range.stream_idx;
         self.ranges[stream_idx] = Some(range);
-        self.loser_tree_adjusted = false;
+        self.ranges_counter += 1;
+    }
+
+    pub fn update(&mut self) {
+        if self.loser_tree.is_empty() {
+            if self.ranges_counter >= self.streams_num {
+                self.init_loser_tree();
+            }
+        } else {
+            self.update_loser_tree();
+        }
     }
 
     /// if in_progress is full, we should build record batch by merge all ranges in in_progress
@@ -391,16 +398,18 @@ impl UseLastRangeCombiner {
     /// check if in_progress is empty, if so, return None, which the RangeCombiner is finished
     /// otherwise, build record batch by merge all the remaining ranges in in_progress
     pub fn poll_result(&mut self) -> RangeCombinerResult {
+        if self.ranges_counter < self.streams_num {
+            return RangeCombinerResult::Err(ArrowError::InvalidArgumentError(format!("Not all streams have been initialized, ranges_counter: {}, streams_num: {}", self.ranges_counter, self.streams_num)));
+        }
         if self.in_progress.len() == self.target_batch_size {
             RangeCombinerResult::RecordBatch(self.build_record_batch())
         } else {
-            if !self.loser_tree_adjusted {
-                self.update_loser_tree();
+            if !self.loser_tree_has_updated {
+                self.update();
             }
             let winner = self.loser_tree[0];
             if let Some(mut range) = self.ranges[winner].take() {
-                self.loser_tree_adjusted = false;
-
+                self.loser_tree_has_updated = false;
                 if self.current_sort_key_range.match_row(&range) {
                     self.get_mut_current_sort_key_range().add_range_in_batch(&range);
                 } else {
@@ -421,7 +430,6 @@ impl UseLastRangeCombiner {
                     RangeCombinerResult::RecordBatch(self.build_record_batch())
                 }
             }
-
         }
     }
 
@@ -496,22 +504,27 @@ impl UseLastRangeCombiner {
     fn init_loser_tree(&mut self) {
         // Init loser tree
         self.loser_tree = vec![usize::MAX; self.streams_num];
-        self.ranges = (0..self.streams_num).map(|_| None).collect();
         for i in 0..self.streams_num {
             let mut winner = i;
             let mut cmp_node = self.loser_tree_leaf_node_index(i);
             while cmp_node != 0 && self.loser_tree[cmp_node] != usize::MAX {
                 let challenger = self.loser_tree[cmp_node];
-                if self.loser_tree_is_gt(winner, challenger) {
-                    self.loser_tree[cmp_node] = winner;
-                    winner = challenger;
+                match (&self.ranges[winner], &self.ranges[challenger]) {
+                    // None means the stream is exhausted, always mark None as loser
+                    (None, _) => self.update_winner(cmp_node, &mut winner, challenger),
+                    (_, None) => (),
+                    (Some(ac), Some(bc)) => {
+                        if ac.cmp(bc).is_gt() {
+                            self.update_winner(cmp_node, &mut winner, challenger);
+                        } 
+                    }
                 }
 
                 cmp_node = self.loser_tree_parent_node_index(cmp_node);
             }
             self.loser_tree[cmp_node] = winner;
         }
-        self.loser_tree_adjusted = true;
+        self.loser_tree_has_updated = true;
     }
 
     /// Find the leaf node index in the loser tree for the given cursor index
@@ -558,11 +571,23 @@ impl UseLastRangeCombiner {
     #[inline]
     fn loser_tree_is_gt(&self, a: usize, b: usize) -> bool {
         match (&self.ranges[a], &self.ranges[b]) {
-            (None, _) => true,
-            (_, None) => false,
-            (Some(ac), Some(bc)) => ac.cmp(bc).then_with(|| a.cmp(&b)).is_gt(),
+            (None, _) => false,
+            (_, None) => true,
+            (Some(ac), Some(bc)) => ac.cmp(bc).is_gt(),
         }
     }
+
+    /// Returns `true` if the cursor at index `a` is less than at index `b`.
+    /// In an equality case, it compares the stream indices given.
+    #[inline]
+    fn loser_tree_is_lt(&self, a: usize, b: usize) -> bool {
+        match (&self.ranges[a], &self.ranges[b]) {
+            (None, _) => false,
+            (_, None) => true,
+            (Some(ac), Some(bc)) => ac.cmp(bc).is_lt(),
+        }
+    }
+
 
     /// Updates the loser tree to reflect the new winner after the previous winner is consumed.
     /// This function adjusts the tree by comparing the current winner with challengers from
@@ -571,22 +596,25 @@ impl UseLastRangeCombiner {
     /// If `enable_round_robin_tie_breaker` is true and a tie occurs at the final level, the
     /// tie-breaker logic will be applied to ensure fair selection among equal elements.
     fn update_loser_tree(&mut self) {
-        // Start with the current winner
         let mut winner = self.loser_tree[0];
-
-        // Find the leaf node index of the winner in the loser tree.
         let mut cmp_node = self.loser_tree_leaf_node_index(winner);
 
-        // Traverse up the tree to adjust comparisons until reaching the root.
         while cmp_node != 0 {
             let challenger = self.loser_tree[cmp_node];
-            if self.loser_tree_is_gt(winner, challenger) {
-                self.update_winner(cmp_node, &mut winner, challenger);
+            // None means the stream is exhausted, always mark None as loser
+            match (&self.ranges[winner], &self.ranges[challenger]) {
+                (None, _) => self.update_winner(cmp_node, &mut winner, challenger),
+                (_, None) => (),
+                (Some(ac), Some(bc)) => {
+                    if ac.cmp(bc).is_gt() {
+                        self.update_winner(cmp_node, &mut winner, challenger);
+                    } 
+                }
             }
             cmp_node = self.loser_tree_parent_node_index(cmp_node);
         }
         self.loser_tree[0] = winner;
-        self.loser_tree_adjusted = true;
+        self.loser_tree_has_updated = true;
     }
 
     #[inline]

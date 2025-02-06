@@ -12,6 +12,7 @@ use arrow::{
     record_batch::RecordBatch,
     row::{Row, Rows},
 };
+use arrow_cast::pretty::pretty_format_batches;
 use smallvec::{smallvec, SmallVec};
 
 /// A range in one arrow::record_batch::RecordBatch with same sorted primary key
@@ -120,11 +121,13 @@ impl SortKeyBatchRange {
 
 impl Debug for SortKeyBatchRange {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        f.debug_struct("SortKeyBatchRange")
-            .field("begin_row", &self.begin_row)
-            .field("end_row", &self.end_row)
-            .field("batch", &self.batch)
-            .finish()
+        write!(f, "SortKeyBatchRange: \nbegin_row: {}, end_row: {}, stream_idx: {}, batch_idx: {}\n", self.begin_row, self.end_row, self.stream_idx, self.batch_idx)?;
+        write!(f, "batch: \n{}", &pretty_format_batches(&[self.batch.slice(self.begin_row, self.end_row - self.begin_row)]).unwrap())
+        // f.debug_struct("SortKeyBatchRange")
+        //     .field("begin_row", &self.begin_row)
+        //     .field("end_row", &self.end_row)
+        //     .field("batch", &self.batch)
+        //     .finish()
     }
 }
 
@@ -248,6 +251,7 @@ impl SortKeyBatchRanges {
 
     pub fn match_row(&self, range: &SortKeyBatchRange) -> bool {
         match &self.batch_range {
+            // return true if no current batch range
             None => true,
             Some(batch_range) => batch_range.current() == range.current(),
         }
@@ -303,6 +307,7 @@ impl UseLastSortKeyBatchRanges {
 
     pub fn match_row(&self, range: &SortKeyBatchRange) -> bool {
         match &self.current_batch_range {
+            // return true if no current batch range
             None => true,
             Some(batch_range) => batch_range.current() == range.current(),
         }
