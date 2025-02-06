@@ -4,7 +4,7 @@ import com.dmetasoul.lakesoul.meta.jnr.NativeMetadataJavaClient
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.sql._
 import org.apache.spark.sql.lakesoul.RandomStringGenerator.generateRandomString
-import org.apache.spark.sql.lakesoul.test.LakeSoulTestUtils
+import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestUtils}
 import org.apache.spark.sql.test.SharedSparkSession
 import org.junit.runner.RunWith
 import org.scalatestplus.junit.JUnitRunner
@@ -15,7 +15,7 @@ import scala.util.Random
 @RunWith(classOf[JUnitRunner])
 class SplitDescSuite extends QueryTest
   with SharedSparkSession
-  with LakeSoulTestUtils {
+  with LakeSoulSQLCommandTest {
 
   import testImplicits._
 

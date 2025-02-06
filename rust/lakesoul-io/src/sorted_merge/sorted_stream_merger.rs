@@ -147,8 +147,7 @@ impl SortedStreamMerger {
         let fields_map = Arc::new(fields_map);
 
         // this is a partial merge when any one of stream has columns less than target
-        let is_partial_merge = fields_map.iter()
-            .any(|f| f.len() != target_schema.fields().len());
+        let is_partial_merge = fields_map.iter().any(|f| f.len() != target_schema.fields().len());
 
         let wrappers: Vec<Fuse<SendableRecordBatchStream>> = streams.into_iter().map(|s| s.stream.fuse()).collect();
 
