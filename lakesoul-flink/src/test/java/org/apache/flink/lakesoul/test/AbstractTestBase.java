@@ -6,7 +6,6 @@ package org.apache.flink.lakesoul.test;
 
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.HeartbeatManagerOptions;
-import org.apache.flink.configuration.TaskManagerOptions;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.fs.local.LocalFileSystem;
@@ -39,7 +38,7 @@ public abstract class AbstractTestBase {
 
     static {
         fsConfig = new org.apache.flink.configuration.Configuration();
-        fsConfig.set(HeartbeatManagerOptions.HEARTBEAT_TIMEOUT, 1000000L);
+        fsConfig.set(HeartbeatManagerOptions.HEARTBEAT_TIMEOUT, Duration.ofSeconds(1000));
         if (!LOCAL_FS) {
             fsConfig.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
             fsConfig.set(S3_ENDPOINT, "http://localhost:9002");
@@ -57,7 +56,7 @@ public abstract class AbstractTestBase {
         config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
         config.set(ExecutionCheckpointingOptions.TOLERABLE_FAILURE_NUMBER, 5);
         config.set(ExecutionCheckpointingOptions.CHECKPOINTING_INTERVAL, Duration.ofSeconds(3));
-        config.set(HeartbeatManagerOptions.HEARTBEAT_TIMEOUT, 1000000L);
+        fsConfig.set(HeartbeatManagerOptions.HEARTBEAT_TIMEOUT, Duration.ofSeconds(1000));
         config.setString("state.backend.type", "hashmap");
         config.setString("state.checkpoint.dir", getTempDirUri("/flinkchk"));
         return config;
