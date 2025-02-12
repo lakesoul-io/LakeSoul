@@ -8,10 +8,10 @@ use anyhow::anyhow;
 use arrow::error::ArrowError;
 use arrow_schema::{Schema, SchemaRef};
 pub use datafusion::error::{DataFusionError, Result};
-use datafusion::execution::context::{QueryPlanner, SessionState};
+use datafusion::execution::context::QueryPlanner;
 use datafusion::execution::memory_pool::FairSpillPool;
 use datafusion::execution::object_store::ObjectStoreUrl;
-use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
+use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::logical_expr::Expr;
 use datafusion::optimizer::analyzer::type_coercion::TypeCoercion;
@@ -25,7 +25,7 @@ use datafusion_substrait::substrait::proto::Plan;
 use derivative::Derivative;
 use log::info;
 use object_store::aws::AmazonS3Builder;
-use object_store::{ClientOptions, ObjectStore, RetryConfig};
+use object_store::{ClientOptions, RetryConfig};
 use tracing::debug;
 use url::{ParseError, Url};
 
@@ -52,7 +52,6 @@ pub static OPTION_KEY_CDC_COLUMN: &str = "cdc_column";
 pub static OPTION_KEY_IS_COMPACTED: &str = "is_compacted";
 pub static OPTION_KEY_MAX_FILE_SIZE: &str = "max_file_size";
 pub static OPTION_KEY_COMPUTE_LSH: &str = "compute_lsh";
-
 
 #[derive(Debug, Derivative)]
 #[derivative(Default, Clone)]
@@ -200,9 +199,8 @@ impl LakeSoulIOConfig {
     }
 
     pub fn compute_lsh(&self) -> bool {
-        self.option(OPTION_KEY_COMPUTE_LSH).map_or(true,|x| x.eq("true"))
+        self.option(OPTION_KEY_COMPUTE_LSH).map_or(true, |x| x.eq("true"))
     }
-
 }
 
 #[derive(Derivative, Debug)]
@@ -369,7 +367,7 @@ impl LakeSoulIOConfigBuilder {
         self
     }
 
-    pub fn with_seed(mut self,seed:u64) -> Self {
+    pub fn with_seed(mut self, seed: u64) -> Self {
         self.config.seed = seed;
         self
     }
@@ -445,9 +443,10 @@ pub fn register_s3_object_store(url: &Url, config: &LakeSoulIOConfig, runtime: &
     }
 
     if bucket.is_none() {
-        return Err(DataFusionError::ArrowError(ArrowError::InvalidArgumentError(
-            "missing fs.s3a.bucket".to_string(),
-        ), None));
+        return Err(DataFusionError::ArrowError(
+            ArrowError::InvalidArgumentError("missing fs.s3a.bucket".to_string()),
+            None,
+        ));
     }
 
     let mut retry_config = RetryConfig::default();
@@ -551,8 +550,8 @@ fn register_object_store(path: &str, config: &mut LakeSoulIOConfig, runtime: &Ru
             // Support Windows drive letter paths like "c:" or "d:"
             scheme if scheme.len() == 1 && scheme.chars().next().unwrap().is_ascii_alphabetic() => {
                 Ok(format!("file://{}", path))
-            },
-            _ => Err(ObjectStore(object_store::Error::NotSupported {
+            }
+            _ => Err(DataFusionError::ObjectStore(object_store::Error::NotSupported {
                 source: "FileSystem not supported".into(),
             })),
         },
@@ -591,17 +590,15 @@ pub fn create_session_context_with_planner(
     sess_conf.options_mut().execution.parquet.pushdown_filters = config.parquet_filter_pushdown;
     sess_conf.options_mut().execution.target_partitions = 1;
     sess_conf.options_mut().execution.parquet.dictionary_enabled = Some(false);
-    // sess_conf.options_mut().execution.sort_in_place_threshold_bytes = 16 * 1024;
-    // sess_conf.options_mut().execution.sort_spill_reservation_bytes = 2 * 1024 * 1024;
-    // sess_conf.options_mut().catalog.default_catalog = "lakesoul".into();
+    sess_conf.options_mut().execution.parquet.schema_force_view_types = false;
 
-    let mut runtime_conf = RuntimeConfig::new();
+    let mut runtime_conf = RuntimeEnvBuilder::new();
     if let Some(pool_size) = config.pool_size() {
         let memory_pool = FairSpillPool::new(pool_size);
         dbg!(&memory_pool);
         runtime_conf = runtime_conf.with_memory_pool(Arc::new(memory_pool));
     }
-    let runtime = RuntimeEnv::try_new(runtime_conf)?;
+    let runtime = runtime_conf.build()?;
 
     // firstly parse default fs if exist
     let default_fs = config
@@ -614,7 +611,6 @@ pub fn create_session_context_with_planner(
         info!("NativeIO register default fs {}", fs);
         register_object_store(&fs, config, &runtime)?;
     };
-
 
     if !config.prefix.is_empty() {
         let prefix = config.prefix.clone();
@@ -686,10 +682,10 @@ mod tests {
         );
         let mut lakesoulconfigbuilder = LakeSoulIOConfigBuilder::from(conf.clone());
         let conf = lakesoulconfigbuilder.build();
-        assert_eq!(conf.max_file_size,None);
-        assert_eq!(conf.max_row_group_size,250000);
-        assert_eq!(conf.max_row_group_num_values,2147483647);
-        assert_eq!(conf.prefetch_size,1);
-        assert_eq!(conf.parquet_filter_pushdown,false);
+        assert_eq!(conf.max_file_size, None);
+        assert_eq!(conf.max_row_group_size, 250000);
+        assert_eq!(conf.max_row_group_num_values, 2147483647);
+        assert_eq!(conf.prefetch_size, 1);
+        assert_eq!(conf.parquet_filter_pushdown, false);
     }
 }

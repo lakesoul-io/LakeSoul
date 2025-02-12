@@ -16,15 +16,19 @@ use datafusion::{
         memory_pool::{MemoryConsumer, MemoryReservation},
         TaskContext,
     },
-    physical_expr::{EquivalenceProperties, LexOrderingRef, PhysicalSortExpr},
+    physical_expr::EquivalenceProperties,
     physical_plan::{
-        metrics::{ExecutionPlanMetricsSet, MetricBuilder}, DisplayAs, DisplayFormatType, ExecutionMode, ExecutionPlan, ExecutionPlanProperties, Partitioning, PhysicalExpr, PlanProperties, RecordBatchStream, SendableRecordBatchStream
+        metrics::{ExecutionPlanMetricsSet, MetricBuilder},
+        DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, Partitioning, PhysicalExpr,
+        PlanProperties, RecordBatchStream, SendableRecordBatchStream,
     },
 };
 use datafusion::{physical_expr::physical_exprs_equal, physical_plan::metrics};
 use datafusion_common::{DataFusionError, Result, Statistics};
 
 use arrow_array::{builder::UInt64Builder, ArrayRef, RecordBatch};
+use datafusion::physical_expr::LexOrdering;
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use futures::{FutureExt, Stream, StreamExt};
 use tokio::task::JoinHandle;
 
@@ -57,7 +61,6 @@ struct RepartitionByRangeAndHashExecState {
             SharedMemoryReservation,
         ),
     >,
-
 }
 
 /// A utility that can be used to partition batches based on [`Partitioning`]
@@ -186,7 +189,10 @@ impl BatchPartitioner {
                     let columns = batch
                         .columns()
                         .iter()
-                        .map(|c| arrow::compute::take(c.as_ref(), &indices, None).map_err(|e| DataFusionError::ArrowError(e, None)))
+                        .map(|c| {
+                            arrow::compute::take(c.as_ref(), &indices, None)
+                                .map_err(|e| DataFusionError::ArrowError(e, None))
+                        })
                         .collect::<Result<Vec<ArrayRef>>>()?;
 
                     let batch = RecordBatch::try_new(batch.schema(), columns)?;
@@ -357,7 +363,7 @@ impl RepartitionByRangeAndHashExec {
     }
 
     /// Return the sort expressions that are used to merge
-    fn sort_exprs(&self) -> Option<&[PhysicalSortExpr]> {
+    fn sort_exprs(&self) -> Option<&LexOrdering> {
         self.input.output_ordering()
     }
 
@@ -446,10 +452,7 @@ impl RepartitionByRangeAndHashExec {
     /// each of the output tx channels to signal one of the inputs is
     /// complete. Upon error, propagates the errors to all output tx
     /// channels.
-    async fn wait_for_task(
-        input_task: JoinHandle<Result<()>>,
-        txs: HashMap<usize, DistributionSender<MaybeBatch>>,
-    ) {
+    async fn wait_for_task(input_task: JoinHandle<Result<()>>, txs: HashMap<usize, DistributionSender<MaybeBatch>>) {
         // wait for completion, and propagate error
         // note we ignore errors on send (.ok) as that means the receiver has already shutdown.
         match input_task.await {
@@ -490,18 +493,21 @@ impl ExecutionPlanProperties for RepartitionByRangeAndHashExec {
         &self.hash_partitioning
     }
 
-    fn execution_mode(&self) -> ExecutionMode {
-        // Inherit execution mode from input since repartitioning doesn't change boundedness
-        self.input.properties().execution_mode()
-    }
-
-    fn output_ordering(&self) -> Option<LexOrderingRef> {
+    fn output_ordering(&self) -> Option<&LexOrdering> {
         // Only preserve ordering if input has single partition
         if self.input.output_partitioning().partition_count() <= 1 {
             self.input.properties().output_ordering()
         } else {
             None
         }
+    }
+
+    fn boundedness(&self) -> Boundedness {
+        Boundedness::Bounded
+    }
+
+    fn pipeline_behavior(&self) -> EmissionType {
+        EmissionType::Incremental
     }
 
     fn equivalence_properties(&self) -> &EquivalenceProperties {
@@ -511,7 +517,6 @@ impl ExecutionPlanProperties for RepartitionByRangeAndHashExec {
 }
 
 impl ExecutionPlan for RepartitionByRangeAndHashExec {
-
     fn name(&self) -> &str {
         self.name()
     }
@@ -526,6 +531,9 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
         self.input.schema()
     }
 
+    fn properties(&self) -> &PlanProperties {
+        self.input.properties()
+    }
 
     fn maintains_input_order(&self) -> Vec<bool> {
         // We preserve ordering when input partitioning is 1
@@ -616,7 +624,6 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
                 ));
                 join_handles.push(join_handle);
             }
-
         }
 
         trace!(
@@ -679,11 +686,6 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
     fn statistics(&self) -> Result<Statistics> {
         self.input.statistics()
     }
-
-    fn properties(&self) -> &PlanProperties {
-        self.input.properties()
-    }
-
 }
 
 struct RepartitionStream {
@@ -698,7 +700,6 @@ struct RepartitionStream {
 
     /// channel containing the repartitioned batches
     input: DistributionReceiver<MaybeBatch>,
-
 
     /// Memory reservation.
     reservation: SharedMemoryReservation,
@@ -754,7 +755,6 @@ struct PerPartitionStream {
 
     /// channel containing the repartitioned batches
     receiver: DistributionReceiver<MaybeBatch>,
-
 
     /// Memory reservation.
     reservation: SharedMemoryReservation,

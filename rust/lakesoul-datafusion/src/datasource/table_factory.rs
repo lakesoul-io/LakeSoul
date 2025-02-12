@@ -1,13 +1,14 @@
-// ... 在文件开头添加以下代码 ...
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
-use std::sync::Arc;
 use datafusion::catalog::{Session, TableProviderFactory};
+use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
-use datafusion::sql::TableReference;
+use datafusion::logical_expr::logical_plan::CreateExternalTable;
 use lakesoul_metadata::MetaDataClientRef;
 use log::info;
-use datafusion::datasource::TableProvider;
-use datafusion::logical_expr::logical_plan::CreateExternalTable;
+use std::sync::Arc;
 
 use crate::datasource::table_provider::LakeSoulTableProvider;
 
@@ -28,17 +29,19 @@ impl LakeSoulTableProviderFactory {
     pub fn metadata_client(&self) -> MetaDataClientRef {
         self.metadata_client.clone()
     }
-
 }
 
 #[async_trait::async_trait]
 impl TableProviderFactory for LakeSoulTableProviderFactory {
     async fn create(
-        &self, 
+        &self,
         state: &dyn Session,
-        cmd: &CreateExternalTable
+        cmd: &CreateExternalTable,
     ) -> datafusion::error::Result<Arc<dyn TableProvider>> {
-        info!("LakeSoulTableProviderFactory::create: {:?}, {:?}, {:?}, {:?}", cmd.name, cmd.location, cmd.schema, cmd.constraints);
+        info!(
+            "LakeSoulTableProviderFactory::create: {:?}, {:?}, {:?}, {:?}",
+            cmd.name, cmd.location, cmd.schema, cmd.constraints
+        );
 
         let mut cmd = cmd.clone();
         if let Some(warehouse_prefix) = &self.warehouse_prefix {
@@ -46,8 +49,10 @@ impl TableProviderFactory for LakeSoulTableProviderFactory {
             let table_name = cmd.name.table();
             cmd.location = format!("{}/{}/{}", warehouse_prefix, schema, table_name);
         }
-        Ok(Arc::new(LakeSoulTableProvider::new_from_create_external_table(state, self.metadata_client(), &cmd)
-            .await
-            .map_err(|e| DataFusionError::External(Box::new(e)))?))
+        Ok(Arc::new(
+            LakeSoulTableProvider::new_from_create_external_table(state, self.metadata_client(), &cmd)
+                .await
+                .map_err(|e| DataFusionError::External(Box::new(e)))?,
+        ))
     }
 }

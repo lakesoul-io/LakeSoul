@@ -13,7 +13,7 @@ use proto::proto::entity::Namespace;
 use log::info;
 use std::any::Any;
 use std::fmt::{Debug, Formatter};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use tokio::runtime::Handle;
 
 /// A metadata wrapper

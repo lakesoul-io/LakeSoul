@@ -18,7 +18,7 @@ use datafusion::execution::context::SessionState;
 use datafusion::physical_expr::LexRequirement;
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::{ExecutionPlan, PhysicalExpr};
-use datafusion_common::{project_schema, DataFusionError, FileType, Result, Statistics};
+use datafusion_common::{project_schema, DataFusionError, Result, Statistics};
 
 use object_store::{ObjectMeta, ObjectStore};
 
@@ -152,13 +152,7 @@ impl FileFormat for LakeSoulParquetFormat {
         objects: &[ObjectMeta],
     ) -> Result<SchemaRef> {
         let schemas: Vec<_> = futures::stream::iter(objects)
-            .map(|object| {
-                fetch_schema(
-                    store.as_ref(),
-                    object,
-                    self.parquet_format.metadata_size_hint(state.config_options()),
-                )
-            })
+            .map(|object| fetch_schema(store.as_ref(), object, self.parquet_format.metadata_size_hint()))
             .boxed() // Workaround https://github.com/rust-lang/rust/issues/64552
             .buffered(state.config_options().execution.meta_fetch_concurrency)
             .try_collect()
@@ -173,10 +167,13 @@ impl FileFormat for LakeSoulParquetFormat {
             for (key, value) in metadata.into_iter() {
                 if let Some(old_val) = out_meta.get(&key) {
                     if old_val != &value {
-                        return Err(DataFusionError::ArrowError(ArrowError::SchemaError(format!(
-                            "Fail to merge schema due to conflicting metadata. \
+                        return Err(DataFusionError::ArrowError(
+                            ArrowError::SchemaError(format!(
+                                "Fail to merge schema due to conflicting metadata. \
                                          Key '{key}' has different values '{old_val}' and '{value}'"
-                        ))));
+                            )),
+                            None,
+                        ));
                     }
                 }
                 out_meta.insert(key, value);
@@ -209,11 +206,7 @@ impl FileFormat for LakeSoulParquetFormat {
         // If enable pruning then combine the filters to build the predicate.
         // If disable pruning then set the predicate to None, thus readers
         // will not prune data based on the statistics.
-        let predicate = self
-            .parquet_format
-            .enable_pruning()
-            .then(|| filters.cloned())
-            .flatten();
+        let predicate = self.parquet_format.enable_pruning().then(|| filters.cloned()).flatten();
 
         let table_schema = LakeSoulListingTable::compute_table_schema(conf.file_schema.clone(), &self.conf)?;
         // projection for Table instead of File
@@ -272,7 +265,6 @@ impl FileFormat for LakeSoulParquetFormat {
             .create_writer_physical_plan(input, state, conf, order_requirements)
             .await
     }
-
 }
 
 pub async fn flatten_file_scan_config(
@@ -314,6 +306,7 @@ pub async fn flatten_file_scan_config(
                 object_store_url: object_store_url.clone(),
                 file_schema,
                 file_groups,
+                constraints: Default::default(),
                 statistics,
                 projection,
                 limit,

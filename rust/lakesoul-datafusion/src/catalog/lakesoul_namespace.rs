@@ -2,21 +2,16 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::catalog::create_io_config_builder;
 use crate::datasource::table_provider::LakeSoulTableProvider;
 use crate::lakesoul_table::helpers::case_fold_table_name;
 use crate::lakesoul_table::LakeSoulTable;
 use crate::LakeSoulError;
 use async_trait::async_trait;
 use datafusion::catalog::SchemaProvider;
-use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
 use datafusion::error::Result;
-use datafusion::execution::context::SessionState;
 use datafusion::prelude::SessionContext;
-use lakesoul_io::datasource::file_format::LakeSoulParquetFormat;
-use lakesoul_io::datasource::listing::LakeSoulListingTable;
 use lakesoul_metadata::error::LakeSoulMetaDataError;
 use lakesoul_metadata::MetaDataClientRef;
 use log::{info, debug};
@@ -24,9 +19,6 @@ use std::any::Any;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use tokio::runtime::Handle;
-
-use crate::catalog::create_table;
-use lakesoul_io::lakesoul_io_config::LakeSoulIOConfigBuilder;
 
 /// A [`SchemaProvider`] that query pg to automatically discover tables.
 /// Due to the restriction of datafusion 's api, "CREATE [EXTERNAL] Table ... " is not supported.

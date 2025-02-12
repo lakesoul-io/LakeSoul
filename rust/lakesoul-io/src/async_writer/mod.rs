@@ -26,11 +26,14 @@ use std::{
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use atomic_refcell::AtomicRefCell;
+use datafusion::physical_expr::LexOrdering;
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::{
     execution::{SendableRecordBatchStream, TaskContext},
-    physical_expr::{EquivalenceProperties, PhysicalSortExpr},
+    physical_expr::EquivalenceProperties,
     physical_plan::{
-        stream::RecordBatchReceiverStreamBuilder, DisplayAs, DisplayFormatType, ExecutionMode, ExecutionPlan, ExecutionPlanProperties, Partitioning, PlanProperties
+        stream::RecordBatchReceiverStreamBuilder, DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties,
+        Partitioning, PlanProperties,
     },
 };
 use datafusion_common::{DataFusionError, Result};
@@ -96,7 +99,12 @@ impl ReceiverStreamExec {
         Self {
             receiver_stream_builder: AtomicRefCell::new(Some(receiver_stream_builder)),
             schema: schema.clone(),
-            properties: PlanProperties::new(EquivalenceProperties::new(schema), Partitioning::UnknownPartitioning(1), ExecutionMode::Bounded),
+            properties: PlanProperties::new(
+                EquivalenceProperties::new(schema),
+                Partitioning::UnknownPartitioning(1),
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            ),
         }
     }
 }
@@ -118,27 +126,26 @@ impl ExecutionPlanProperties for ReceiverStreamExec {
         &self.properties.partitioning
     }
 
-    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
+    fn output_ordering(&self) -> Option<&LexOrdering> {
         None
     }
 
-    fn execution_mode(&self) -> ExecutionMode {
-        self.properties.execution_mode
+    fn boundedness(&self) -> Boundedness {
+        Boundedness::Bounded
+    }
+
+    fn pipeline_behavior(&self) -> EmissionType {
+        EmissionType::Incremental
     }
 
     fn equivalence_properties(&self) -> &EquivalenceProperties {
         &self.properties.eq_properties
     }
-
 }
 
 impl ExecutionPlan for ReceiverStreamExec {
     fn name(&self) -> &str {
         "ReceiverStreamExec"
-    }
-
-    fn properties(&self) -> &PlanProperties {
-        &self.properties
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -147,6 +154,10 @@ impl ExecutionPlan for ReceiverStreamExec {
 
     fn schema(&self) -> SchemaRef {
         Arc::clone(&self.schema)
+    }
+
+    fn properties(&self) -> &PlanProperties {
+        &self.properties
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {

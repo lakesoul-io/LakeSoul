@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use datafusion::sql::TableReference;
-use lakesoul_io::async_writer::WriterFlushResult;
 use log::info;
 use std::collections::HashMap;
 use std::env;
@@ -17,7 +16,6 @@ use proto::proto::entity::{CommitOp, DataCommitInfo, DataFileOp, FileOp, TableIn
 
 use crate::lakesoul_table::helpers::create_io_config_builder_from_table_info;
 use crate::serialize::arrow_java::ArrowJavaSchema;
-// use crate::transaction::TransactionMetaInfo;
 use crate::error::{LakeSoulError, Result};
 
 // pub mod lakesoul_sink;

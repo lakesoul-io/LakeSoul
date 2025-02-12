@@ -18,33 +18,19 @@ resolver = "2"
 #lto = true
 
 [workspace.dependencies]
-datafusion = { version = "43.0.0"}
-datafusion-common = { version = "43.0.0"}
-datafusion-substrait = { version = "43.0.0"}
-arrow = { version = "53.2.0"}
-arrow-schema = { version = "53.2.0"}
-arrow-array = { version = "53.2.0"}
-arrow-buffer = { version = "53.2.0"}
-arrow-cast = { version = "53.2.0"}
-arrow-arith = { version = "53.2.0"}
-arrow-ipc = { version = "53.2.0"}
-arrow-flight = { version = "53.2.0", features = ["flight-sql-experimental"]}
-parquet = { version = "53.2.0"}
+datafusion = { version = "45.0.0"}
+datafusion-common = { version = "45.0.0"}
+datafusion-substrait = { version = "45.0.0"}
+arrow = { version = "54.1.0"}
+arrow-schema = { version = "54.1.0"}
+arrow-array = { version = "54.1.0"}
+arrow-buffer = { version = "54.1.0"}
+arrow-cast = { version = "54.1.0"}
+arrow-arith = { version = "54.1.0"}
+arrow-ipc = { version = "54.1.0"}
+arrow-flight = { version = "54.1.0", features = ["flight-sql-experimental"]}
+parquet = { version = "54.1.0"}
 object_store = { version = "0.11.0", features = ["aws", "http"] }
-substrait = { version = "0.45.0"}
-# datafusion = { git = "https://github.com/lakesoul-io/arrow-datafusion.git", branch = "datafusion-33-parquet-prefetch" }
-# datafusion-common = { git = "https://github.com/lakesoul-io/arrow-datafusion.git", branch = "datafusion-33-parquet-prefetch" }
-# datafusion-substrait = { git = "https://github.com/lakesoul-io/arrow-datafusion.git", branch = "datafusion-33-parquet-prefetch" }
-# arrow = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-48-parquet-bufferred" }
-# arrow-schema = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-48-parquet-bufferred" }
-# arrow-array = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-48-parquet-bufferred" }
-# arrow-buffer = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-48-parquet-bufferred" }
-# arrow-cast = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-48-parquet-bufferred" }
-# arrow-arith = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-48-parquet-bufferred" }
-# arrow-ipc = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-48-parquet-bufferred" }
-# arrow-flight = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-48-parquet-bufferred", features = ["flight-sql-experimental"]}
-# parquet = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-48-parquet-bufferred" }
-# object_store = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "object_store_0.7_opt", features = ["aws", "http"] }
 
 tokio-stream = "0.1.9"
 tokio = { version = "1", features = ["full"] }

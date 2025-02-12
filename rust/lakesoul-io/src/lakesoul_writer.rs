@@ -5,23 +5,24 @@
 use std::borrow::Borrow;
 use std::collections::HashMap;
 
+use arrow::array::{Array as OtherArray, ListArray};
 use arrow::datatypes::{DataType, Field};
 use arrow_array::RecordBatch;
 use arrow_schema::{SchemaBuilder, SchemaRef};
 use datafusion_common::{DataFusionError, Result};
 use rand::distributions::DistString;
+use std::sync::Arc;
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 use tracing::debug;
-use arrow::array::{Array as OtherArray, ListArray};
-use std::sync::Arc;
 
-
-use crate::async_writer::{AsyncBatchWriter, MultiPartAsyncWriter, PartitioningAsyncWriter, SortAsyncWriter, WriterFlushResult};
+use crate::async_writer::{
+    AsyncBatchWriter, MultiPartAsyncWriter, PartitioningAsyncWriter, SortAsyncWriter, WriterFlushResult,
+};
 use crate::helpers::{get_batch_memory_size, get_file_exist_col};
 use crate::lakesoul_io_config::{IOSchema, LakeSoulIOConfig};
-use crate::transform::uniform_schema;
 use crate::local_sensitive_hash::LSH;
+use crate::transform::uniform_schema;
 
 pub type SendableWriter = Box<dyn AsyncBatchWriter + Send>;
 
@@ -35,7 +36,11 @@ pub async fn create_writer(config: LakeSoulIOConfig) -> Result<Box<dyn AsyncBatc
             .fields
             .iter()
             .filter(|f| !config.aux_sort_cols.contains(f.name()))
-            .map(|f| schema.index_of(f.name().as_str()).map_err(|e| DataFusionError::ArrowError(e, Some("index_of".to_string()))))
+            .map(|f| {
+                schema
+                    .index_of(f.name().as_str())
+                    .map_err(|e| DataFusionError::ArrowError(e, Some("index_of".to_string())))
+            })
             .collect::<Result<Vec<usize>>>()?;
         Arc::new(schema.project(proj_indices.borrow())?)
     } else {
@@ -75,7 +80,6 @@ pub async fn create_writer(config: LakeSoulIOConfig) -> Result<Box<dyn AsyncBatc
     Ok(writer)
 }
 
-
 // inner is sort writer
 // multipart writer
 pub struct SyncSendableMutableLakeSoulWriter {
@@ -85,7 +89,7 @@ pub struct SyncSendableMutableLakeSoulWriter {
     /// The in-progress file writer if any
     in_progress: Option<Arc<Mutex<SendableWriter>>>,
     flush_results: WriterFlushResult,
-    lsh_computers: HashMap<String, LSH>
+    lsh_computers: HashMap<String, LSH>,
 }
 
 impl SyncSendableMutableLakeSoulWriter {
@@ -94,38 +98,40 @@ impl SyncSendableMutableLakeSoulWriter {
         runtime.clone().block_on(async move {
             let mut config = config.clone();
             let writer_config = config.clone();
-            
+
             // Initialize HashMap instead of Vec
             let mut lsh_computers = HashMap::new();
-            
+
             if config.compute_lsh() {
                 let mut target_schema_builder = SchemaBuilder::from(&config.target_schema().fields);
-                
+
                 for field in config.target_schema().fields.iter() {
                     if let Some(lsh_bit_width) = field.metadata().get("lsh_bit_width") {
                         let lsh_column_name = format!("{}_LSH", field.name());
                         let lsh_column = Arc::new(Field::new(
                             lsh_column_name.clone(),
                             DataType::List(Arc::new(Field::new("element", DataType::Int64, true))),
-                            true
+                            true,
                         ));
                         target_schema_builder.try_merge(&lsh_column)?;
-                        
+
                         // Store LSH computer with column name as key
                         let lsh = LSH::new(
                             lsh_bit_width.parse().unwrap(),
-                            field.metadata().get("lsh_embedding_dimension")
+                            field
+                                .metadata()
+                                .get("lsh_embedding_dimension")
                                 .map(|d| d.parse().unwrap())
                                 .unwrap_or(0),
-                            config.seed
+                            config.seed,
                         );
                         lsh_computers.insert(field.name().to_string(), lsh);
                     }
                 }
                 config.target_schema = IOSchema(Arc::new(target_schema_builder.finish()));
             }
-            
-            let writer = Self::create_writer(writer_config).await?;
+
+            let writer = create_writer(writer_config).await?;
             let schema = writer.schema();
 
             if let Some(max_file_size) = config.max_file_size_option() {
@@ -151,7 +157,6 @@ impl SyncSendableMutableLakeSoulWriter {
         })
     }
 
-
     pub fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }
@@ -171,36 +176,28 @@ impl SyncSendableMutableLakeSoulWriter {
         } else {
             if self.config.compute_lsh() {
                 let mut new_columns = record_batch.columns().to_vec();
-                
+
                 for (field_name, lsh_computer) in self.lsh_computers.iter() {
                     let lsh_column_name = format!("{}_LSH", field_name);
-                    
+
                     if let Some(array) = record_batch.column_by_name(field_name) {
-                        let embedding = array.as_any().downcast_ref::<ListArray>()
-                            .ok_or_else(|| DataFusionError::Internal(
-                                format!("Column {} is not a ListArray", field_name)
-                            ))?;
-                        
+                        let embedding = array.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
+                            DataFusionError::Internal(format!("Column {} is not a ListArray", field_name))
+                        })?;
+
                         let lsh_array = lsh_computer.compute_lsh(&Some(embedding.clone()))?;
-                        
+
                         if let Ok(index) = record_batch.schema().index_of(lsh_column_name.as_str()) {
                             new_columns[index] = Arc::new(lsh_array);
                         }
                     }
                 }
-                
-                let new_record_batch = RecordBatch::try_new(
-                    self.config.target_schema(),
-                    new_columns
-                )?;
-                
-                runtime.block_on(async move { 
-                    self.write_batch_async(new_record_batch, false).await 
-                })
+
+                let new_record_batch = RecordBatch::try_new(self.config.target_schema(), new_columns)?;
+
+                runtime.block_on(async move { self.write_batch_async(new_record_batch, false).await })
             } else {
-                runtime.block_on(async move { 
-                    self.write_batch_async(record_batch, false).await 
-                })
+                runtime.block_on(async move { self.write_batch_async(record_batch, false).await })
             }
         }
     }
@@ -342,16 +339,10 @@ impl SyncSendableMutableLakeSoulWriter {
     pub fn get_schema(&self) -> SchemaRef {
         self.schema.clone()
     }
-
 }
 
 #[cfg(test)]
 mod tests {
-    use arrow_array::builder;
-    use datafusion::catalog::schema;
-    use parquet::arrow::ArrowWriter;
-    use parquet::column;
-    use parquet::file::properties::WriterProperties;
     use crate::{
         lakesoul_io_config::{LakeSoulIOConfigBuilder, OPTION_KEY_MEM_LIMIT},
         lakesoul_reader::LakeSoulReader,
@@ -359,28 +350,19 @@ mod tests {
     };
 
     use arrow::{
-        array::{ArrayRef, Int64Array,FixedSizeListArray,ArrayData},
+        array::{ArrayRef, Int64Array},
         record_batch::RecordBatch,
     };
     use arrow_array::{Array, StringArray};
     use arrow_schema::{DataType, Field, Schema};
-    use datafusion::{error::Result, physical_expr::math_expressions};
+    use datafusion::error::Result;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use rand::{distributions::DistString, Rng};
     use std::{fs::File, sync::Arc};
     use tokio::{runtime::Builder, time::Instant};
     use tracing_subscriber::layer::SubscriberExt;
-    use arrow::buffer::{Buffer, NullBuffer};
 
     use super::SortAsyncWriter;
-    use std::env;
-    use std::path::Path;
-    use ndarray::{Array2,s,Dim};
-    use crate::helpers::get_batch_memory_size;
-    use parquet::file::reader::{FileReader,SerializedFileReader};
-    use arrow::compute::sort;
-    use arrow::compute::sort_to_indices;
-    use arrow::compute::SortOptions;
 
     #[test]
     fn test_parquet_async_write() -> Result<()> {
@@ -825,5 +807,4 @@ mod tests {
         // assert_eq!(num_rows * num_batch, actual_batch.num_rows());
         Ok(())
     }
-
 }

@@ -6,14 +6,11 @@ use std::sync::Arc;
 
 use arrow::datatypes::Schema;
 
-use datafusion::common::{DFSchema, SchemaExt, plan_err, not_impl_err, ScalarValue};
+use datafusion::common::{DFSchema, SchemaExt};
 use datafusion::error::{DataFusionError, Result};
-use datafusion::execution::context::{ExecutionProps, SessionState};
-use datafusion::logical_expr::expr::*;
+use datafusion::execution::context::SessionState;
 use datafusion::logical_expr::{Expr, LogicalPlan};
 use datafusion::physical_expr::{create_physical_expr, LexOrdering, PhysicalExpr};
-use datafusion::physical_expr::expressions::Literal;
-use datafusion::physical_plan::expressions::{binary, like};
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
@@ -24,12 +21,9 @@ use async_trait::async_trait;
 use datafusion::logical_expr::{DmlStatement, WriteOp};
 use lakesoul_io::helpers::{column_names_to_physical_expr, column_names_to_physical_sort_expr};
 use lakesoul_io::repartition::RepartitionByRangeAndHashExec;
-use log::{debug, info};
+use log::info;
 
 use crate::lakesoul_table::LakeSoulTable;
-
-use datafusion::logical_expr::{binary_expr, Operator};
-use datafusion::physical_plan::expressions::{self, Column};
 
 pub struct LakeSoulPhysicalPlanner {
     default_planner: DefaultPhysicalPlanner,
@@ -61,11 +55,7 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                 info!("input_schema: {:?}", &input_schema);
                 info!("input_dfschema: {:?}", &input_dfschema);
 
-                let runtime_expr = self.create_physical_expr(
-                    &filter.predicate,
-                    input_dfschema,
-                    session_state,
-                )?;
+                let runtime_expr = self.create_physical_expr(&filter.predicate, input_dfschema, session_state)?;
                 Ok(Arc::new(FilterExec::try_new(runtime_expr, physical_input)?))
             }
             LogicalPlan::Dml(DmlStatement {
@@ -143,7 +133,7 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
             LogicalPlan::Statement(statement) => {
                 // DataFusion is a read-only query engine, but also a library, so consumers may implement this
                 let name = statement.name();
-                
+
                 Err(DataFusionError::NotImplemented(format!(
                     "Unsupported logical plan: Statement({name})"
                 )))
@@ -174,4 +164,3 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
         create_physical_expr(expr, input_dfschema, session_state.execution_props())
     }
 }
-

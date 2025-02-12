@@ -6,11 +6,12 @@ use std::sync::Arc;
 use std::{any::Any, collections::HashMap};
 
 use arrow_schema::SchemaRef;
-use datafusion::physical_expr::EquivalenceProperties;
-use datafusion::physical_plan::{ExecutionMode, ExecutionPlanProperties, Partitioning, PlanProperties};
+use datafusion::physical_expr::{EquivalenceProperties, LexOrdering};
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::{ExecutionPlanProperties, Partitioning, PlanProperties};
 use datafusion::{
-    execution::TaskContext,
-    physical_expr::PhysicalSortExpr,
+    execution::TaskContext
+    ,
     physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, SendableRecordBatchStream},
 };
 use datafusion_common::{DataFusionError, Result};
@@ -35,7 +36,12 @@ impl DefaultColumnExec {
             input,
             target_schema: target_schema.clone(),
             default_column_value,
-            properties: PlanProperties::new(EquivalenceProperties::new(target_schema), Partitioning::UnknownPartitioning(1), ExecutionMode::Bounded),
+            properties: PlanProperties::new(
+                EquivalenceProperties::new(target_schema),
+                Partitioning::UnknownPartitioning(1),
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            ),
         })
     }
 }
@@ -47,20 +53,24 @@ impl DisplayAs for DefaultColumnExec {
 }
 
 impl ExecutionPlanProperties for DefaultColumnExec {
-    fn equivalence_properties(&self) -> &EquivalenceProperties {
-        &self.properties.eq_properties
-    }
-
     fn output_partitioning(&self) -> &Partitioning {
         &self.properties.partitioning
     }
 
-    fn execution_mode(&self) -> ExecutionMode {
-        self.properties.execution_mode
+    fn output_ordering(&self) -> Option<&LexOrdering> {
+        None
     }
 
-    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
-        None
+    fn boundedness(&self) -> Boundedness {
+        Boundedness::Bounded
+    }
+
+    fn pipeline_behavior(&self) -> EmissionType {
+        EmissionType::Incremental
+    }
+
+    fn equivalence_properties(&self) -> &EquivalenceProperties {
+        &self.properties.eq_properties
     }
 }
 
@@ -75,6 +85,10 @@ impl ExecutionPlan for DefaultColumnExec {
 
     fn schema(&self) -> SchemaRef {
         self.target_schema.clone()
+    }
+
+    fn properties(&self) -> &PlanProperties {
+        &self.properties
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -102,9 +116,5 @@ impl ExecutionPlan for DefaultColumnExec {
             self.schema(),
             self.default_column_value.clone(),
         )))
-    }
-
-    fn properties(&self) -> &PlanProperties {
-        &self.properties
     }
 }

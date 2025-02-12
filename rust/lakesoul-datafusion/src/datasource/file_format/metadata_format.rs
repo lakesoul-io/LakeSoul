@@ -13,20 +13,23 @@ use async_trait::async_trait;
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaBuilder, SchemaRef};
 use datafusion::common::parsers::CompressionTypeVariant;
-use datafusion::common::{project_schema, Statistics, GetExt};
+use datafusion::common::{project_schema, GetExt, Statistics};
 use datafusion::datasource::file_format::file_compression_type::FileCompressionType;
 use datafusion::datasource::file_format::parquet::ParquetFormatFactory;
 use datafusion::datasource::listing::ListingOptions;
 use datafusion::datasource::physical_plan::parquet::ParquetExecBuilder;
-use datafusion::datasource::physical_plan::ParquetExec;
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::dml::InsertOp;
-use datafusion::physical_expr::{EquivalenceProperties, LexRequirement, PhysicalSortExpr};
+use datafusion::physical_expr::{EquivalenceProperties, LexOrdering, LexRequirement};
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::union::UnionExec;
-use datafusion::physical_plan::{DisplayAs, DisplayFormatType, Distribution, ExecutionMode, ExecutionPlanProperties, Partitioning, PlanProperties, SendableRecordBatchStream};
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, Distribution, ExecutionPlanProperties, Partitioning, PlanProperties,
+    SendableRecordBatchStream,
+};
 use datafusion::sql::TableReference;
 use datafusion::{
     datasource::{
@@ -51,9 +54,9 @@ use object_store::{ObjectMeta, ObjectStore};
 use proto::proto::entity::TableInfo;
 use rand::distributions::DistString;
 
+use log::debug;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use log::debug;
 
 use crate::catalog::{commit_data, parse_table_info_partitions};
 use crate::lakesoul_table::helpers::create_io_config_builder_from_table_info;
@@ -95,21 +98,29 @@ impl LakeSoulMetaDataParquetFormat {
     }
 
     pub async fn default_listing_options() -> Result<ListingOptions> {
-        Ok(ListingOptions::new(
-            Arc::new(Self::new(
-                Arc::new(MetaDataClient::from_env().await.map_err(|e| DataFusionError::External(Box::new(e)))?),
+        Ok(ListingOptions::new(Arc::new(
+            Self::new(
+                Arc::new(
+                    MetaDataClient::from_env()
+                        .await
+                        .map_err(|e| DataFusionError::External(Box::new(e)))?,
+                ),
                 Arc::new(ParquetFormat::new()),
                 Arc::new(TableInfo::default()),
                 LakeSoulIOConfig::default(),
             )
             .await
-            .map_err(|e| DataFusionError::External(Box::new(e)))?
+            .map_err(|e| DataFusionError::External(Box::new(e)))?,
         )))
     }
 }
 
 #[async_trait]
 impl FileFormat for LakeSoulMetaDataParquetFormat {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
     fn get_ext(&self) -> String {
         ParquetFormatFactory::new().get_ext()
     }
@@ -122,11 +133,6 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
                 "Parquet FileFormat does not support compression.".into(),
             )),
         }
-
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     async fn infer_schema(
@@ -159,11 +165,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         // If enable pruning then combine the filters to build the predicate.
         // If disable pruning then set the predicate to None, thus readers
         // will not prune data based on the statistics.
-        let predicate = self
-            .parquet_format
-            .enable_pruning()
-            .then(|| filters.cloned())
-            .flatten();
+        let predicate = self.parquet_format.enable_pruning().then(|| filters.cloned()).flatten();
 
         let file_schema = conf.file_schema.clone();
         let mut builder = SchemaBuilder::from(file_schema.fields());
@@ -287,7 +289,6 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
                 as _,
         )
     }
-
 }
 
 // /// Execution plan for writing record batches to a [`LakeSoulParquetSink`]
@@ -339,7 +340,8 @@ impl LakeSoulHashSinkExec {
             properties: PlanProperties::new(
                 EquivalenceProperties::new(make_sink_schema()),
                 Partitioning::UnknownPartitioning(1),
-                ExecutionMode::Bounded,
+                EmissionType::Incremental,
+                Boundedness::Bounded,
             ),
         })
     }
@@ -402,11 +404,12 @@ impl LakeSoulHashSinkExec {
             );
 
             if !partitioned_writer.contains_key(&partition_desc) {
-                let mut config = create_io_config_builder_from_table_info(table_info.clone(), HashMap::new(), HashMap::new())
-                    .map_err(|e| DataFusionError::External(Box::new(e)))?
-                    .with_files(vec![file_absolute_path])
-                    .with_schema(batch_excluding_range.schema())
-                    .build();
+                let mut config =
+                    create_io_config_builder_from_table_info(table_info.clone(), HashMap::new(), HashMap::new())
+                        .map_err(|e| DataFusionError::External(Box::new(e)))?
+                        .with_files(vec![file_absolute_path])
+                        .with_schema(batch_excluding_range.schema())
+                        .build();
                 dbg!(&config);
                 let writer = MultiPartAsyncWriter::try_new_with_context(&mut config, context.clone()).await?;
                 partitioned_writer.insert(partition_desc.clone(), Box::new(writer));
@@ -477,28 +480,26 @@ impl ExecutionPlanProperties for LakeSoulHashSinkExec {
         &self.properties.partitioning
     }
 
-    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
+    fn output_ordering(&self) -> Option<&LexOrdering> {
         None
     }
 
-    fn execution_mode(&self) -> ExecutionMode {
-        self.properties.execution_mode
+    fn boundedness(&self) -> Boundedness {
+        Boundedness::Bounded
+    }
+
+    fn pipeline_behavior(&self) -> EmissionType {
+        EmissionType::Incremental
     }
 
     fn equivalence_properties(&self) -> &EquivalenceProperties {
         &self.properties.eq_properties
     }
-
 }
 
 impl ExecutionPlan for LakeSoulHashSinkExec {
-
     fn name(&self) -> &str {
         "LakeSoulHashSinkExec"
-    }
-
-    fn properties(&self) -> &PlanProperties {
-        &self.properties
     }
 
     /// Return a reference to Any that can be used for downcasting
@@ -511,6 +512,9 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         self.sink_schema.clone()
     }
 
+    fn properties(&self) -> &PlanProperties {
+        &self.properties
+    }
 
     fn required_input_distribution(&self) -> Vec<Distribution> {
         // DataSink is responsible for dynamically partitioning its

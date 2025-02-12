@@ -8,12 +8,12 @@ use std::{any::Any, collections::HashMap};
 use arrow_schema::{Field, Schema, SchemaRef};
 use datafusion::dataframe::DataFrame;
 use datafusion::logical_expr::Expr;
-use datafusion::physical_expr::EquivalenceProperties;
-use datafusion::physical_plan::{ExecutionMode, ExecutionPlanProperties, Partitioning, PlanProperties};
+use datafusion::physical_expr::{EquivalenceProperties, LexOrdering};
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::{ExecutionPlanProperties, Partitioning, PlanProperties};
 use datafusion::{
     datasource::physical_plan::{FileScanConfig, ParquetExec},
     execution::TaskContext,
-    physical_expr::PhysicalSortExpr,
     physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PhysicalExpr, SendableRecordBatchStream},
 };
 use datafusion_common::{DFSchemaRef, DataFusionError, Result};
@@ -97,7 +97,12 @@ impl MergeParquetExec {
             default_column_value,
             merge_operators,
             io_config: config,
-            properties: PlanProperties::new(EquivalenceProperties::new(schema), Partitioning::UnknownPartitioning(1), ExecutionMode::Bounded),
+            properties: PlanProperties::new(
+                EquivalenceProperties::new(schema),
+                Partitioning::UnknownPartitioning(1),
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            ),
         })
     }
 
@@ -119,7 +124,12 @@ impl MergeParquetExec {
             default_column_value,
             merge_operators,
             io_config: config,
-            properties: PlanProperties::new(EquivalenceProperties::new(schema), Partitioning::UnknownPartitioning(1), ExecutionMode::Bounded),
+            properties: PlanProperties::new(
+                EquivalenceProperties::new(schema),
+                Partitioning::UnknownPartitioning(1),
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            ),
         })
     }
 
@@ -147,12 +157,16 @@ impl ExecutionPlanProperties for MergeParquetExec {
         &self.properties.partitioning
     }
 
-    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
+    fn output_ordering(&self) -> Option<&LexOrdering> {
         None
     }
 
-    fn execution_mode(&self) -> ExecutionMode {
-        self.properties.execution_mode
+    fn boundedness(&self) -> Boundedness {
+        Boundedness::Bounded
+    }
+
+    fn pipeline_behavior(&self) -> EmissionType {
+        EmissionType::Incremental
     }
 
     fn equivalence_properties(&self) -> &EquivalenceProperties {
@@ -161,7 +175,6 @@ impl ExecutionPlanProperties for MergeParquetExec {
 }
 
 impl ExecutionPlan for MergeParquetExec {
-
     fn name(&self) -> &str {
         "MergeParquetExec"
     }
@@ -172,6 +185,10 @@ impl ExecutionPlan for MergeParquetExec {
 
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
+    }
+
+    fn properties(&self) -> &PlanProperties {
+        &self.properties
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -224,10 +241,6 @@ impl ExecutionPlan for MergeParquetExec {
 
         Ok(merged_stream)
     }
-
-    fn properties(&self) -> &PlanProperties {
-        &self.properties
-    }
 }
 
 pub fn merge_stream(
@@ -251,7 +264,6 @@ pub fn merge_stream(
             default_column_value,
         ))
     } else {
-
         let merge_schema = Arc::new(Schema::new(
             schema
                 .fields

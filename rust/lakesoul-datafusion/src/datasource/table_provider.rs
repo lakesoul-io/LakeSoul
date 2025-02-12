@@ -3,31 +3,30 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::any::Any;
+use std::env;
 use std::ops::Deref;
 use std::sync::Arc;
-use std::env;
 
 use arrow::compute::SortOptions;
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
 use datafusion::catalog::Session;
-use datafusion::execution::object_store::ObjectStoreUrl;
-use datafusion::logical_expr::dml::InsertOp;
-use datafusion::logical_expr::utils::conjunction;
-use datafusion::{execution::context::SessionState, logical_expr::Expr};
 use datafusion::common::{project_schema, Constraint, Statistics, ToDFSchema};
-use datafusion::datasource::file_format::FileFormat;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
+use datafusion::datasource::file_format::FileFormat;
 use datafusion::datasource::listing::{ListingOptions, ListingTableUrl, PartitionedFile};
 use datafusion::datasource::physical_plan::{FileScanConfig, FileSinkConfig};
 use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result};
-use datafusion::logical_expr::{CreateExternalTable, TableProviderFilterPushDown, TableType};
+use datafusion::logical_expr::dml::InsertOp;
 use datafusion::logical_expr::expr::Sort;
+use datafusion::logical_expr::utils::conjunction;
+use datafusion::logical_expr::{CreateExternalTable, TableProviderFilterPushDown, TableType};
 use datafusion::physical_expr::{create_physical_expr, LexOrdering, PhysicalSortExpr};
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::scalar::ScalarValue;
+use datafusion::{execution::context::SessionState, logical_expr::Expr};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 
@@ -36,10 +35,12 @@ use lakesoul_io::lakesoul_io_config::LakeSoulIOConfig;
 use lakesoul_metadata::MetaDataClientRef;
 use log::info;
 use proto::proto::entity::TableInfo;
-use url::Url;
 
 use crate::catalog::{format_table_info_partitions, parse_table_info_partitions, LakeSoulTableProperty};
-use crate::lakesoul_table::helpers::{case_fold_column_name, case_fold_table_name, listing_partition_info, parse_partitions_for_partition_desc, prune_partitions};
+use crate::lakesoul_table::helpers::{
+    case_fold_column_name, case_fold_table_name, listing_partition_info, parse_partitions_for_partition_desc,
+    prune_partitions,
+};
 use crate::serialize::arrow_java::{schema_from_metadata_str, ArrowJavaSchema};
 
 use super::file_format::LakeSoulMetaDataParquetFormat;
@@ -122,28 +123,34 @@ impl LakeSoulTableProvider {
     }
 
     pub async fn new_from_create_external_table(
-        session_state: &dyn Session,
+        _session_state: &dyn Session,
         client: MetaDataClientRef,
         cmd: &CreateExternalTable,
     ) -> crate::error::Result<Self> {
-        
         let table_schema: SchemaRef = Arc::new(Schema::new(
             Schema::from(cmd.schema.as_ref())
                 .fields()
                 .iter()
-                .map(|field| Field::new(case_fold_column_name(field.name()), field.data_type().clone(), field.is_nullable()))
-                .collect::<Vec<_>>()
+                .map(|field| {
+                    Field::new(
+                        case_fold_column_name(field.name()),
+                        field.data_type().clone(),
+                        field.is_nullable(),
+                    )
+                })
+                .collect::<Vec<_>>(),
         ));
         let file_schema: SchemaRef = table_schema.clone();
-        let primary_keys = cmd.constraints
+        let primary_keys = cmd
+            .constraints
             .iter()
-            .flat_map(|constraint| 
-                match constraint {
-                    Constraint::PrimaryKey(pk) => 
-                        pk.iter().map(|col| table_schema.field(*col).name().to_string()).collect::<Vec<_>>(),
-                    _ => vec![],
-                }
-            )
+            .flat_map(|constraint| match constraint {
+                Constraint::PrimaryKey(pk) => pk
+                    .iter()
+                    .map(|col| table_schema.field(*col).name().to_string())
+                    .collect::<Vec<_>>(),
+                _ => vec![],
+            })
             .collect::<Vec<_>>();
         let range_partitions = cmd.table_partition_cols.clone();
 
@@ -155,10 +162,16 @@ impl LakeSoulTableProvider {
             properties: serde_json::to_string(&LakeSoulTableProperty {
                 hash_bucket_num: None,
                 datafusion_properties: Some(cmd.options.clone()),
-            }).unwrap(),
+            })
+            .unwrap(),
             partitions: format_table_info_partitions(&range_partitions, &primary_keys),
             table_path: if cmd.location.is_empty() {
-                format!("file://{}/{}/{}", env::current_dir().unwrap().to_str().unwrap(), cmd.name.schema().unwrap_or("default"), cmd.name.table())
+                format!(
+                    "file://{}/{}/{}",
+                    env::current_dir().unwrap().to_str().unwrap(),
+                    cmd.name.schema().unwrap_or("default"),
+                    cmd.name.table()
+                )
             } else {
                 cmd.location.to_string()
             },
@@ -325,6 +338,7 @@ impl LakeSoulTableProvider {
                     range: None,
                     statistics: None,
                     extensions: None,
+                    metadata_size_hint: None,
                 })
                 .collect::<Vec<_>>();
             file_groups.push(files)
@@ -399,6 +413,7 @@ impl TableProvider for LakeSoulTableProvider {
                     object_store_url,
                     file_schema: self.schema(),
                     file_groups: partitioned_file_lists,
+                    constraints: Default::default(),
                     statistics: Statistics::new_unknown(self.schema().deref()),
                     // projection for Table instead of File
                     projection: projection.cloned(),
@@ -437,7 +452,6 @@ impl TableProvider for LakeSoulTableProvider {
         // dbg!(&_store);
         let state = state.as_any().downcast_ref::<SessionState>().unwrap();
 
-
         let file_format = self.options().format.as_ref();
 
         // let file_type_writer_options = match &self.options().file_type_write_options {
@@ -452,8 +466,9 @@ impl TableProvider for LakeSoulTableProvider {
             file_groups: vec![],
             output_schema: self.schema(),
             table_partition_cols: self.options().table_partition_cols.clone(),
-            insert_op: insert_op,
+            insert_op,
             keep_partition_by_columns: false,
+            file_extension: "".to_string(),
         };
 
         let _unsorted: Vec<Vec<Expr>> = vec![];

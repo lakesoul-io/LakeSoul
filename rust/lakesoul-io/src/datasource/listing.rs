@@ -21,7 +21,7 @@ use datafusion::{datasource::TableProvider, logical_expr::Expr};
 
 use datafusion::logical_expr::{TableProviderFilterPushDown, TableType};
 use datafusion_common::{DataFusionError, Result};
-use tracing::{debug, instrument};
+use tracing::debug;
 
 use crate::helpers::listing_table_from_lakesoul_io_config;
 use crate::lakesoul_io_config::LakeSoulIOConfig;
@@ -132,12 +132,12 @@ impl TableProvider for LakeSoulListingTable {
                         && cols
                             .iter()
                             .all(|col| self.lakesoul_io_config.primary_keys.contains(&col.name))
-                        {
-                            // use primary key
-                            Ok(TableProviderFilterPushDown::Inexact)
-                        } else {
-                            Ok(TableProviderFilterPushDown::Unsupported)
-                        }
+                    {
+                        // use primary key
+                        Ok(TableProviderFilterPushDown::Inexact)
+                    } else {
+                        Ok(TableProviderFilterPushDown::Unsupported)
+                    }
                 })
                 .collect()
         }

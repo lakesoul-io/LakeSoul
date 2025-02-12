@@ -8,6 +8,7 @@ use std::{ops::Deref, sync::Arc};
 
 use arrow::datatypes::{Schema, SchemaRef};
 use arrow_cast::pretty::pretty_format_batches;
+use chrono::Utc;
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::sql::TableReference;
 use datafusion::{
@@ -18,16 +19,13 @@ use datafusion::{
 };
 use helpers::case_fold_table_name;
 use lakesoul_io::async_writer::{AsyncBatchWriter, AsyncSendableMutableLakeSoulWriter, WriterFlushResult};
-use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfigBuilder, OPTION_KEY_MAX_FILE_SIZE, OPTION_KEY_MEM_LIMIT};
-use lakesoul_io::lakesoul_writer::create_writer;
+use lakesoul_io::lakesoul_io_config::OPTION_KEY_MEM_LIMIT;
 use lakesoul_io::{lakesoul_io_config::create_session_context_with_planner, lakesoul_reader::RecordBatch};
 use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
+use log::info;
 use proto::proto::entity::{CommitOp, DataCommitInfo, DataFileOp, FileOp, TableInfo};
-use uuid::Uuid;
 use std::collections::HashMap;
-use chrono::Utc;
-use log::{debug, info};
-use datafusion::error::DataFusionError;
+use uuid::Uuid;
 
 use crate::datasource::file_format::LakeSoulMetaDataParquetFormat;
 use crate::{
@@ -97,7 +95,15 @@ impl LakeSoulTable {
 
     pub async fn upsert_dataframe(&self, dataframe: DataFrame) -> Result<()> {
         let client = Arc::new(MetaDataClient::from_env().await?);
-        let builder = create_io_config_builder(client, None, false, self.table_namespace(), Default::default(), Default::default()).await?;
+        let builder = create_io_config_builder(
+            client,
+            None,
+            false,
+            self.table_namespace(),
+            Default::default(),
+            Default::default(),
+        )
+        .await?;
         let sess_ctx =
             create_session_context_with_planner(&mut builder.clone().build(), Some(LakeSoulQueryPlanner::new_ref()))?;
 
@@ -111,21 +117,27 @@ impl LakeSoulTable {
         .build()?;
         let dataframe = DataFrame::new(sess_ctx.state(), logical_plan);
 
-        dataframe
-            .collect()
-            .await?;
+        dataframe.collect().await?;
 
         Ok(())
     }
 
     pub async fn execute_upsert(&self, record_batch: RecordBatch) -> Result<()> {
         let client = Arc::new(MetaDataClient::from_env().await?);
-        let builder = create_io_config_builder(client, None, false, self.table_namespace(), Default::default(), Default::default()).await?;
+        let builder = create_io_config_builder(
+            client,
+            None,
+            false,
+            self.table_namespace(),
+            Default::default(),
+            Default::default(),
+        )
+        .await?;
         let sess_ctx =
             create_session_context_with_planner(&mut builder.clone().build(), Some(LakeSoulQueryPlanner::new_ref()))?;
 
         let schema = record_batch.schema();
-        
+
         let logical_plan = LogicalPlanBuilder::insert_into(
             sess_ctx.read_batch(record_batch)?.into_unoptimized_plan(),
             TableReference::partial(self.table_namespace().to_string(), self.table_name().to_string()),
@@ -144,28 +156,40 @@ impl LakeSoulTable {
         Ok(())
     }
 
-    pub async fn get_writer(&self, object_store_options: HashMap<String, String>) -> Result<Box<dyn AsyncBatchWriter + Send>> {
+    pub async fn get_writer(
+        &self,
+        object_store_options: HashMap<String, String>,
+    ) -> Result<Box<dyn AsyncBatchWriter + Send>> {
         let client = Arc::new(MetaDataClient::from_env().await?);
-        let mut builder = create_io_config_builder(
-            client, 
-            Some(self.table_name()), 
-            false, 
-            self.table_namespace(), 
-            HashMap::from([
-                (OPTION_KEY_MEM_LIMIT.to_string(), format!("{}", 1u64 * 1024 * 1024 * 1024)),
-            ]),
-            object_store_options
-        ).await?.clone();
+        let builder = create_io_config_builder(
+            client,
+            Some(self.table_name()),
+            false,
+            self.table_namespace(),
+            HashMap::from([(
+                OPTION_KEY_MEM_LIMIT.to_string(),
+                format!("{}", 1u64 * 1024 * 1024 * 1024),
+            )]),
+            object_store_options,
+        )
+        .await?
+        .clone();
 
         let config = builder.build();
         let writer = AsyncSendableMutableLakeSoulWriter::try_new(config).await?;
         Ok(Box::new(writer))
     }
 
-
     pub async fn to_dataframe(&self, context: &SessionContext) -> Result<DataFrame> {
-        let config_builder =
-            create_io_config_builder(self.client(), Some(self.table_name()), true, self.table_namespace(), HashMap::new(), HashMap::new()).await?;
+        let config_builder = create_io_config_builder(
+            self.client(),
+            Some(self.table_name()),
+            true,
+            self.table_namespace(),
+            HashMap::new(),
+            HashMap::new(),
+        )
+        .await?;
         let provider = Arc::new(
             LakeSoulTableProvider::try_new(
                 &context.state(),
@@ -180,10 +204,16 @@ impl LakeSoulTable {
     }
 
     pub async fn as_sink_provider(&self, session_state: &SessionState) -> Result<Arc<dyn TableProvider>> {
-        let config_builder =
-            create_io_config_builder(self.client(), Some(self.table_name()), false, self.table_namespace(), HashMap::new(), HashMap::new())
-                .await?
-                .with_prefix(self.table_info.table_path.clone());
+        let config_builder = create_io_config_builder(
+            self.client(),
+            Some(self.table_name()),
+            false,
+            self.table_namespace(),
+            HashMap::new(),
+            HashMap::new(),
+        )
+        .await?
+        .with_prefix(self.table_info.table_path.clone());
         Ok(Arc::new(
             LakeSoulTableProvider::try_new(
                 session_state,
@@ -208,7 +238,6 @@ impl LakeSoulTable {
             range_partitions: self.range_partitions().to_vec(),
         }))
     }
-
 
     pub fn table_name(&self) -> &str {
         &self.table_name
@@ -243,12 +272,11 @@ impl LakeSoulTable {
     }
 
     pub async fn commit_flush_result(&self, result: WriterFlushResult) -> Result<()> {
-
         // 创建data commit info列表
         let mut data_commit_info_list = Vec::new();
 
         let partition_desc_and_files_map = partitioned_files_from_writer_flush_result(&result)?;
-        
+
         // 处理分区文件映射
         for (partition_desc, file_list) in partition_desc_and_files_map {
             // 创建DataCommitInfo
@@ -272,7 +300,7 @@ impl LakeSoulTable {
                 file_op.path = flush_result.file_path;
                 file_op.size = flush_result.file_size;
                 file_op.file_exist_cols = flush_result.file_exist_cols;
-                
+
                 file_ops.push(file_op);
             }
             builder.file_ops = file_ops;
@@ -290,8 +318,6 @@ impl LakeSoulTable {
 
         Ok(())
     }
-
-
 }
 
 #[derive(Debug)]
@@ -301,23 +327,29 @@ struct FlushResult {
     file_exist_cols: String,
 }
 
-
-fn partitioned_files_from_writer_flush_result(flush_result: &WriterFlushResult) -> Result<HashMap<String, Vec<FlushResult>>> {
+fn partitioned_files_from_writer_flush_result(
+    flush_result: &WriterFlushResult,
+) -> Result<HashMap<String, Vec<FlushResult>>> {
     let mut partition_desc_and_files_map = HashMap::new();
-    
+
     for (partition_desc, file_path, meta, file_meta) in flush_result {
-        let file_exist_cols = file_meta.schema.iter().map(|s| s.name.clone()).collect::<Vec<String>>().join(",");
+        let file_exist_cols = file_meta
+            .schema
+            .iter()
+            .map(|s| s.name.clone())
+            .collect::<Vec<String>>()
+            .join(",");
         let flush_result = FlushResult {
             file_path: file_path.clone(),
             file_size: meta.size as i64,
             file_exist_cols,
         };
-        
+
         partition_desc_and_files_map
             .entry(partition_desc.to_string())
             .or_insert_with(Vec::new)
             .push(flush_result);
     }
-    
+
     Ok(partition_desc_and_files_map)
 }

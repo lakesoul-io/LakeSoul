@@ -6,10 +6,15 @@ use std::any::Any;
 use std::sync::Arc;
 
 use arrow_schema::{Schema, SchemaRef};
+use datafusion::physical_expr::LexOrdering;
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::{
     execution::TaskContext,
-    physical_expr::{EquivalenceProperties, PhysicalSortExpr},
-    physical_plan::{DisplayAs, DisplayFormatType, ExecutionMode, ExecutionPlan, ExecutionPlanProperties, Partitioning, PlanProperties, SendableRecordBatchStream},
+    physical_expr::EquivalenceProperties,
+    physical_plan::{
+        DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, Partitioning, PlanProperties,
+        SendableRecordBatchStream,
+    },
 };
 use datafusion_common::Result;
 
@@ -27,7 +32,12 @@ impl EmptySchemaScanExec {
         Self {
             count,
             empty_schema: SchemaRef::new(Schema::empty()),
-            properties: PlanProperties::new(EquivalenceProperties::new(SchemaRef::new(Schema::empty())), Partitioning::UnknownPartitioning(1), ExecutionMode::Bounded)
+            properties: PlanProperties::new(
+                EquivalenceProperties::new(SchemaRef::new(Schema::empty())),
+                Partitioning::UnknownPartitioning(1),
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            ),
         }
     }
 }
@@ -43,27 +53,26 @@ impl ExecutionPlanProperties for EmptySchemaScanExec {
         &self.properties.partitioning
     }
 
-    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
+    fn output_ordering(&self) -> Option<&LexOrdering> {
         None
     }
 
-    fn execution_mode(&self) -> ExecutionMode {
-        self.properties.execution_mode
+    fn boundedness(&self) -> Boundedness {
+        Boundedness::Bounded
+    }
+
+    fn pipeline_behavior(&self) -> EmissionType {
+        EmissionType::Incremental
     }
 
     fn equivalence_properties(&self) -> &EquivalenceProperties {
         &self.properties.eq_properties
     }
-
 }
 
 impl ExecutionPlan for EmptySchemaScanExec {
     fn name(&self) -> &str {
         "EmptySchemaScanExec"
-    }
-
-    fn properties(&self) -> &PlanProperties {
-        &self.properties
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -74,6 +83,9 @@ impl ExecutionPlan for EmptySchemaScanExec {
         self.empty_schema.clone()
     }
 
+    fn properties(&self) -> &PlanProperties {
+        &self.properties
+    }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![]

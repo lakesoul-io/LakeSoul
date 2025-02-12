@@ -9,7 +9,6 @@ use arrow::datatypes::{Schema, SchemaRef};
 
 use async_trait::async_trait;
 use datafusion::catalog::Session;
-use datafusion::execution::context::SessionState;
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::{datasource::TableProvider, logical_expr::TableType};
