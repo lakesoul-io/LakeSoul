@@ -22,7 +22,7 @@ use datafusion_common::{project_schema, DataFusionError, Result, Statistics};
 
 use object_store::{ObjectMeta, ObjectStore};
 
-use crate::datasource::{listing::LakeSoulListingTable, physical_plan::MergeParquetExec};
+use crate::datasource::{listing::LakeSoulTableProvider, physical_plan::MergeParquetExec};
 use crate::lakesoul_io_config::LakeSoulIOConfig;
 use async_trait::async_trait;
 use datafusion::datasource::file_format::parquet::fetch_parquet_metadata;
@@ -208,7 +208,7 @@ impl FileFormat for LakeSoulParquetFormat {
         // will not prune data based on the statistics.
         let predicate = self.parquet_format.enable_pruning().then(|| filters.cloned()).flatten();
 
-        let table_schema = LakeSoulListingTable::compute_table_schema(conf.file_schema.clone(), &self.conf)?;
+        let table_schema = LakeSoulTableProvider::compute_table_schema(conf.file_schema.clone(), &self.conf)?;
         // projection for Table instead of File
         let projection = conf.projection.clone();
         let target_schema = project_schema(&table_schema, projection.as_ref())?;

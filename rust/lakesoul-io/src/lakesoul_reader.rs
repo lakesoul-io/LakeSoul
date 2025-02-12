@@ -22,7 +22,7 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 use crate::datasource::file_format::LakeSoulParquetFormat;
-use crate::datasource::listing::LakeSoulListingTable;
+use crate::datasource::listing::LakeSoulTableProvider;
 use crate::datasource::physical_plan::merge::convert_filter;
 use crate::datasource::physical_plan::merge::prune_filter_and_execute;
 use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfig};
@@ -56,7 +56,7 @@ impl LakeSoulReader {
                 Arc::new(ParquetFormat::new()),
                 self.config.clone(),
             ));
-            let source = LakeSoulListingTable::new_with_config_and_format(
+            let source = LakeSoulTableProvider::new_with_config_and_format(
                 &self.sess_ctx.state(),
                 self.config.clone(),
                 file_format,
