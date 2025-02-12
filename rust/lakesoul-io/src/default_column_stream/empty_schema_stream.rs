@@ -52,7 +52,7 @@ impl Stream for EmptySchemaStream {
                 vec![],
                 &RecordBatchOptions::new().with_row_count(Some(row_count)),
             );
-            Poll::Ready(Some(batch.map_err(ArrowError)))
+            Poll::Ready(Some(batch.map_err(|e| ArrowError(e, None))))
         } else {
             Poll::Ready(None)
         }

@@ -16,18 +16,19 @@ use datafusion::{
         memory_pool::{MemoryConsumer, MemoryReservation},
         TaskContext,
     },
-    physical_expr::PhysicalSortExpr,
+    physical_expr::EquivalenceProperties,
     physical_plan::{
-        common::{AbortOnDropMany, AbortOnDropSingle},
         metrics::{ExecutionPlanMetricsSet, MetricBuilder},
-        DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PhysicalExpr, RecordBatchStream,
-        SendableRecordBatchStream,
+        DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, Partitioning, PhysicalExpr,
+        PlanProperties, RecordBatchStream, SendableRecordBatchStream,
     },
 };
 use datafusion::{physical_expr::physical_exprs_equal, physical_plan::metrics};
-use datafusion_common::{DataFusionError, Result};
+use datafusion_common::{DataFusionError, Result, Statistics};
 
 use arrow_array::{builder::UInt64Builder, ArrayRef, RecordBatch};
+use datafusion::physical_expr::LexOrdering;
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use futures::{FutureExt, Stream, StreamExt};
 use tokio::task::JoinHandle;
 
@@ -60,9 +61,6 @@ struct RepartitionByRangeAndHashExecState {
             SharedMemoryReservation,
         ),
     >,
-
-    /// Helper that ensures that that background job is killed once it is no longer needed.
-    abort_helper: Arc<AbortOnDropMany<()>>,
 }
 
 /// A utility that can be used to partition batches based on [`Partitioning`]
@@ -191,7 +189,10 @@ impl BatchPartitioner {
                     let columns = batch
                         .columns()
                         .iter()
-                        .map(|c| arrow::compute::take(c.as_ref(), &indices, None).map_err(DataFusionError::ArrowError))
+                        .map(|c| {
+                            arrow::compute::take(c.as_ref(), &indices, None)
+                                .map_err(|e| DataFusionError::ArrowError(e, None))
+                        })
                         .collect::<Result<Vec<ArrayRef>>>()?;
 
                     let batch = RecordBatch::try_new(batch.schema(), columns)?;
@@ -303,7 +304,7 @@ impl DisplayAs for RepartitionByRangeAndHashExec {
                 )?;
 
                 if let Some(sort_exprs) = self.sort_exprs() {
-                    write!(f, ", sort_exprs={}", PhysicalSortExpr::format_list(sort_exprs))?;
+                    write!(f, ", sort_exprs={:?}", sort_exprs)?;
                 }
                 Ok(())
             }
@@ -346,7 +347,6 @@ impl RepartitionByRangeAndHashExec {
                     hash_partitioning,
                     state: Arc::new(Mutex::new(RepartitionByRangeAndHashExecState {
                         channels: HashMap::new(),
-                        abort_helper: Arc::new(AbortOnDropMany::<()>(vec![])),
                     })),
                     metrics: ExecutionPlanMetricsSet::new(),
                 });
@@ -363,7 +363,7 @@ impl RepartitionByRangeAndHashExec {
     }
 
     /// Return the sort expressions that are used to merge
-    fn sort_exprs(&self) -> Option<&[PhysicalSortExpr]> {
+    fn sort_exprs(&self) -> Option<&LexOrdering> {
         self.input.output_ordering()
     }
 
@@ -452,10 +452,7 @@ impl RepartitionByRangeAndHashExec {
     /// each of the output tx channels to signal one of the inputs is
     /// complete. Upon error, propagates the errors to all output tx
     /// channels.
-    async fn wait_for_task(
-        input_task: AbortOnDropSingle<Result<()>>,
-        txs: HashMap<usize, DistributionSender<MaybeBatch>>,
-    ) {
+    async fn wait_for_task(input_task: JoinHandle<Result<()>>, txs: HashMap<usize, DistributionSender<MaybeBatch>>) {
         // wait for completion, and propagate error
         // note we ignore errors on send (.ok) as that means the receiver has already shutdown.
         match input_task.await {
@@ -474,10 +471,9 @@ impl RepartitionByRangeAndHashExec {
             // Error from running input task
             Ok(Err(e)) => {
                 let e = Arc::new(e);
-
                 for (_, tx) in txs {
                     // wrap it because need to send error to all output partitions
-                    let err = Err(DataFusionError::External(Box::new(e.clone())));
+                    let err = Err(DataFusionError::External(Box::new(Arc::clone(&e))));
                     tx.send(Some(err)).await.ok();
                 }
             }
@@ -492,7 +488,39 @@ impl RepartitionByRangeAndHashExec {
     }
 }
 
+impl ExecutionPlanProperties for RepartitionByRangeAndHashExec {
+    fn output_partitioning(&self) -> &Partitioning {
+        &self.hash_partitioning
+    }
+
+    fn output_ordering(&self) -> Option<&LexOrdering> {
+        // Only preserve ordering if input has single partition
+        if self.input.output_partitioning().partition_count() <= 1 {
+            self.input.properties().output_ordering()
+        } else {
+            None
+        }
+    }
+
+    fn boundedness(&self) -> Boundedness {
+        Boundedness::Bounded
+    }
+
+    fn pipeline_behavior(&self) -> EmissionType {
+        EmissionType::Incremental
+    }
+
+    fn equivalence_properties(&self) -> &EquivalenceProperties {
+        // Repartitioning preserves equivalence properties
+        self.input.properties().equivalence_properties()
+    }
+}
+
 impl ExecutionPlan for RepartitionByRangeAndHashExec {
+    fn name(&self) -> &str {
+        self.name()
+    }
+
     /// Return a reference to Any that can be used for downcasting
     fn as_any(&self) -> &dyn Any {
         self
@@ -503,23 +531,8 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
         self.input.schema()
     }
 
-    fn output_partitioning(&self) -> Partitioning {
-        self.hash_partitioning.clone()
-    }
-
-    /// Specifies whether this plan generates an infinite stream of records.
-    /// If the plan does not support pipelining, but its input(s) are
-    /// infinite, returns an error to indicate this.
-    fn unbounded_output(&self, children: &[bool]) -> Result<bool> {
-        Ok(children[0])
-    }
-
-    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
-        if self.maintains_input_order()[0] {
-            self.input().output_ordering()
-        } else {
-            None
-        }
+    fn properties(&self) -> &PlanProperties {
+        self.input.properties()
     }
 
     fn maintains_input_order(&self) -> Vec<bool> {
@@ -527,8 +540,8 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
         vec![self.input().output_partitioning().partition_count() <= 1]
     }
 
-    fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
-        vec![self.input.clone()]
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.input]
     }
 
     fn with_new_children(self: Arc<Self>, mut children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
@@ -547,7 +560,10 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
         let mut state = self.state.lock();
 
         let num_input_partitions = self.input.output_partitioning().partition_count();
-        let num_output_partitions = self.hash_partitioning.partition_count();
+        let num_output_partitions = match &self.hash_partitioning {
+            Partitioning::Hash(_, n) => *n,
+            _ => return Err(DataFusionError::Internal("Expected hash partitioning".to_string())),
+        };
 
         // if this is the first partition to be invoked then we need to set up initial state
         if state.channels.is_empty() {
@@ -601,15 +617,13 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
                 // In a separate task, wait for each input to be done
                 // (and pass along any errors, including panic!s)
                 let join_handle = tokio::spawn(Self::wait_for_task(
-                    AbortOnDropSingle::new(input_task),
+                    input_task,
                     txs.into_iter()
                         .map(|(partition, (tx, _reservation))| (partition, tx))
                         .collect(),
                 ));
                 join_handles.push(join_handle);
             }
-
-            state.abort_helper = Arc::new(AbortOnDropMany(join_handles))
         }
 
         trace!(
@@ -664,10 +678,13 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
             num_input_partitions_processed: 0,
             schema: self.input.schema(),
             input: rx.swap_remove(0),
-            drop_helper: Arc::clone(&state.abort_helper),
             reservation,
         }))
         // }
+    }
+
+    fn statistics(&self) -> Result<Statistics> {
+        self.input.statistics()
     }
 }
 
@@ -683,10 +700,6 @@ struct RepartitionStream {
 
     /// channel containing the repartitioned batches
     input: DistributionReceiver<MaybeBatch>,
-
-    /// Handle to ensure background tasks are killed when no longer needed.
-    #[allow(dead_code)]
-    drop_helper: Arc<AbortOnDropMany<()>>,
 
     /// Memory reservation.
     reservation: SharedMemoryReservation,
@@ -742,10 +755,6 @@ struct PerPartitionStream {
 
     /// channel containing the repartitioned batches
     receiver: DistributionReceiver<MaybeBatch>,
-
-    /// Handle to ensure background tasks are killed when no longer needed.
-    #[allow(dead_code)]
-    drop_helper: Arc<AbortOnDropMany<()>>,
 
     /// Memory reservation.
     reservation: SharedMemoryReservation,

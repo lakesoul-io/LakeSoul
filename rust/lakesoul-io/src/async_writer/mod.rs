@@ -12,6 +12,9 @@ pub use sort_writer::SortAsyncWriter;
 mod partitioning_writer;
 pub use partitioning_writer::PartitioningAsyncWriter;
 
+mod sendable_writer;
+pub use sendable_writer::AsyncSendableMutableLakeSoulWriter;
+
 use std::{
     any::Any,
     collections::VecDeque,
@@ -23,11 +26,14 @@ use std::{
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use atomic_refcell::AtomicRefCell;
+use datafusion::physical_expr::LexOrdering;
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::{
     execution::{SendableRecordBatchStream, TaskContext},
-    physical_expr::PhysicalSortExpr,
+    physical_expr::EquivalenceProperties,
     physical_plan::{
-        stream::RecordBatchReceiverStreamBuilder, DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning,
+        stream::RecordBatchReceiverStreamBuilder, DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties,
+        Partitioning, PlanProperties,
     },
 };
 use datafusion_common::{DataFusionError, Result};
@@ -85,13 +91,20 @@ impl Write for InMemBuf {
 pub struct ReceiverStreamExec {
     receiver_stream_builder: AtomicRefCell<Option<RecordBatchReceiverStreamBuilder>>,
     schema: SchemaRef,
+    properties: PlanProperties,
 }
 
 impl ReceiverStreamExec {
     pub fn new(receiver_stream_builder: RecordBatchReceiverStreamBuilder, schema: SchemaRef) -> Self {
         Self {
             receiver_stream_builder: AtomicRefCell::new(Some(receiver_stream_builder)),
-            schema,
+            schema: schema.clone(),
+            properties: PlanProperties::new(
+                EquivalenceProperties::new(schema),
+                Partitioning::UnknownPartitioning(1),
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            ),
         }
     }
 }
@@ -108,7 +121,33 @@ impl DisplayAs for ReceiverStreamExec {
     }
 }
 
+impl ExecutionPlanProperties for ReceiverStreamExec {
+    fn output_partitioning(&self) -> &Partitioning {
+        &self.properties.partitioning
+    }
+
+    fn output_ordering(&self) -> Option<&LexOrdering> {
+        None
+    }
+
+    fn boundedness(&self) -> Boundedness {
+        Boundedness::Bounded
+    }
+
+    fn pipeline_behavior(&self) -> EmissionType {
+        EmissionType::Incremental
+    }
+
+    fn equivalence_properties(&self) -> &EquivalenceProperties {
+        &self.properties.eq_properties
+    }
+}
+
 impl ExecutionPlan for ReceiverStreamExec {
+    fn name(&self) -> &str {
+        "ReceiverStreamExec"
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -117,15 +156,11 @@ impl ExecutionPlan for ReceiverStreamExec {
         Arc::clone(&self.schema)
     }
 
-    fn output_partitioning(&self) -> Partitioning {
-        Partitioning::UnknownPartitioning(1)
+    fn properties(&self) -> &PlanProperties {
+        &self.properties
     }
 
-    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
-        None
-    }
-
-    fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         unimplemented!()
     }
 
