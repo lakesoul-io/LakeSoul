@@ -67,7 +67,6 @@ impl SchemaProvider for LakeSoulNamespace {
 
     /// query table_name_id by namespace
     fn table_names(&self) -> Vec<String> {
-        dbg!("table_names");
         let client = self.metadata_client.clone();
         let np = self.namespace.clone();
         futures::executor::block_on(async move {

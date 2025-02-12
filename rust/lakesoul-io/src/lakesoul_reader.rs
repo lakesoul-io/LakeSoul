@@ -615,7 +615,6 @@ mod tests {
 
         let start = Instant::now();
         while let Some(rb) = reader.next_rb().await {
-            dbg!(&rb);
             let num_rows = &rb.unwrap().num_rows();
             unsafe {
                 ROW_CNT += num_rows;
@@ -653,7 +652,6 @@ mod tests {
 
         let start = Instant::now();
         while let Some(rb) = reader.next_rb().await {
-            dbg!(&rb);
             let num_rows = &rb.unwrap().num_rows();
             unsafe {
                 ROW_CNT += num_rows;
@@ -781,7 +779,6 @@ mod tests {
                 .into_os_string()
                 .into_string()
                 .unwrap();
-            dbg!(&path);
             let writer_conf = LakeSoulIOConfigBuilder::new()
                 .with_files(vec![path.clone()])
                 // .with_prefix(tempfile::tempdir()?.into_path().into_os_string().into_string().unwrap())

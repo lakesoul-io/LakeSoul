@@ -239,7 +239,6 @@ impl SyncSendableMutableLakeSoulWriter {
             })?;
 
             if do_spill {
-                dbg!(format!("spilling writer with size: {}", guard.buffered_size()));
                 drop(guard);
                 if let Some(writer) = self.in_progress.take() {
                     let inner_writer = match Arc::try_unwrap(writer) {
@@ -669,7 +668,6 @@ mod tests {
             .into_os_string()
             .into_string()
             .unwrap();
-        dbg!(&path);
         let writer_conf = LakeSoulIOConfigBuilder::new()
             .with_files(vec![path.clone()])
             .with_thread_num(2)

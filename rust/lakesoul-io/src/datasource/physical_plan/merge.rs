@@ -60,7 +60,6 @@ impl MergeParquetExec {
                 }
                 builder.build()
             });
-            dbg!(&single_exec);
             inputs.push(single_exec);
         }
         // O(nml), n = number of schema fields, m = number of file schema fields, l = number of files
@@ -319,15 +318,13 @@ pub fn convert_filter(df: &DataFrame, filter_str: Vec<String>, filter_protos: Ve
     let arrow_schema = Arc::new(Schema::from(df.schema()));
     debug!("schema:{:?}", arrow_schema);
     let mut str_filters = vec![];
-    let mut proto_filters = vec![];
     for f in &filter_str {
         let filter = FilterParser::parse(f.clone(), arrow_schema.clone())?;
         str_filters.push(filter);
     }
-    for p in &filter_protos {
-        let e = FilterParser::parse_proto(p, df.schema())?;
-        proto_filters.push(e);
-    }
+    let proto_filters = filter_protos.into_iter().map(|plan| {
+        FilterParser::parse_substrait_plan(plan, df.schema())
+    }).collect::<Result<Vec<_>>>()?;
     debug!("str filters: {:#?}", str_filters);
     debug!("proto filters: {:#?}", proto_filters);
     if proto_filters.is_empty() {

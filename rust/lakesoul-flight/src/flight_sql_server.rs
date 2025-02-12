@@ -267,7 +267,6 @@ impl FlightSqlService for FlightSqlServiceImpl {
         let plan = self.get_plan(handle)?;
 
         let state = ctx.state();
-        // dbg!(&plan);
         let df = DataFrame::new(state, plan);
         let result = df.collect().await.map_err(|e| status!("Error executing query", e))?;
 
@@ -589,7 +588,6 @@ impl FlightSqlService for FlightSqlServiceImpl {
     ) -> Result<i64, Status> {
         self.verify_token(request.metadata())?;
         info!("do_put_statement_update - query: {}", query.query);
-        dbg!(&query);
         let sql = &query.query;
         let sql = normalize_sql(sql)?;
         info!("execute SQL: {}", sql);
@@ -597,7 +595,6 @@ impl FlightSqlService for FlightSqlServiceImpl {
         let ctx = self.get_ctx(&request)?;
         let df = ctx.sql(&sql).await.map_err(|e| status!("Error executing query", e))?;
         let result = df.collect().await.map_err(|e| status!("Error executing query", e))?;
-        dbg!(&result);
         Ok(0)
     }
 
@@ -612,7 +609,6 @@ impl FlightSqlService for FlightSqlServiceImpl {
             "do_put_prepared_statement_query - handle: {:?}",
             std::str::from_utf8(&query.prepared_statement_handle).unwrap_or("invalid utf8")
         );
-        dbg!(&query);
 
         let handle =
             std::str::from_utf8(&query.prepared_statement_handle).map_err(|e| status!("Unable to parse uuid", e))?;
@@ -631,7 +627,6 @@ impl FlightSqlService for FlightSqlServiceImpl {
             "do_put_prepared_statement_update - handle: {:?}",
             std::str::from_utf8(&query.prepared_statement_handle).unwrap_or("invalid utf8")
         );
-        dbg!(&query);
         info!("do_put_prepared_statement_update");
         let handle =
             std::str::from_utf8(&query.prepared_statement_handle).map_err(|e| status!("Unable to parse uuid", e))?;
@@ -684,7 +679,6 @@ impl FlightSqlService for FlightSqlServiceImpl {
             let new_schema = Arc::new(Schema::new(fields));
             let batch = RecordBatch::try_new(new_schema, batch.columns().to_vec())
                 .map_err(|e| status!("Error creating record batch with case folded column names", e))?;
-            dbg!(&batch);
             table
                 .execute_upsert(batch)
                 .await
@@ -701,7 +695,6 @@ impl FlightSqlService for FlightSqlServiceImpl {
     ) -> Result<ActionCreatePreparedStatementResult, Status> {
         self.verify_token(request.metadata())?;
         info!("do_action_create_prepared_statement - query: {}", query.query);
-        // dbg!(&query, &request);
         let user_query = query.query.as_str();
         // 使用独立的函数转换查询中的占位符
         let normalized_query = normalize_sql(user_query)?;
@@ -710,11 +703,9 @@ impl FlightSqlService for FlightSqlServiceImpl {
         let ctx = self.get_ctx(&request)?;
 
         let plan = ctx.sql(&normalized_query).await;
-        // dbg!(&plan);
         let plan = plan
             .and_then(|df| df.into_optimized_plan())
             .map_err(|e| Status::internal(format!("Error building plan: {e}")))?;
-        // dbg!(&user_query, &plan);
 
         // store a copy of the plan,  it will be used for execution
         let plan_uuid = Uuid::new_v4().hyphenated().to_string();
@@ -755,7 +746,6 @@ impl FlightSqlService for FlightSqlServiceImpl {
             "do_action_close_prepared_statement - handle: {:?}",
             std::str::from_utf8(&handle.prepared_statement_handle).unwrap_or("invalid utf8")
         );
-        dbg!(&handle);
         let handle = std::str::from_utf8(&handle.prepared_statement_handle);
         if let Ok(handle) = handle {
             info!("do_action_close_prepared_statement: removing plan and results for {handle}");
@@ -1037,8 +1027,6 @@ impl FlightSqlServiceImpl {
     }
 
     fn get_plan(&self, handle: &str) -> Result<LogicalPlan, Status> {
-        // dbg!(&handle);
-        // dbg!(&self.statements);
         if let Some(plan) = self.statements.get(handle) {
             Ok(plan.clone())
         } else {

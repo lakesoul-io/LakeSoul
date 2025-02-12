@@ -49,7 +49,6 @@ fn main() -> Result<()> {
         .into_os_string()
         .into_string()
         .unwrap();
-    dbg!(&path);
     let writer_conf = LakeSoulIOConfigBuilder::new()
         .with_files(vec![path.clone()])
         .with_thread_num(2)

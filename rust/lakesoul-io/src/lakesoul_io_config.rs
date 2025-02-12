@@ -595,7 +595,6 @@ pub fn create_session_context_with_planner(
     let mut runtime_conf = RuntimeEnvBuilder::new();
     if let Some(pool_size) = config.pool_size() {
         let memory_pool = FairSpillPool::new(pool_size);
-        dbg!(&memory_pool);
         runtime_conf = runtime_conf.with_memory_pool(Arc::new(memory_pool));
     }
     let runtime = runtime_conf.build()?;

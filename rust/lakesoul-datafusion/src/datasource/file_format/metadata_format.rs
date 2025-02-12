@@ -410,7 +410,6 @@ impl LakeSoulHashSinkExec {
                         .with_files(vec![file_absolute_path])
                         .with_schema(batch_excluding_range.schema())
                         .build();
-                dbg!(&config);
                 let writer = MultiPartAsyncWriter::try_new_with_context(&mut config, context.clone()).await?;
                 partitioned_writer.insert(partition_desc.clone(), Box::new(writer));
             }

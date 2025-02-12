@@ -466,7 +466,7 @@ pub fn apply_partition_filter(wrapper: JniWrapper, schema: SchemaRef, filter: Pl
         let batch = batch_from_partition(&wrapper, schema, index_filed)?;
 
         let dataframe = context.read_batch(batch)?;
-        let df_filter = Parser::parse_proto(&filter, dataframe.schema())?;
+        let df_filter = Parser::parse_substrait_plan(filter, dataframe.schema())?;
 
         let results = dataframe.filter(df_filter)?.collect().await?;
 
@@ -562,7 +562,6 @@ pub fn get_batch_memory_size(batch: &RecordBatch) -> Result<usize> {
 
 pub fn get_file_size(metadata: &FileMetaData) -> usize {
     let footer_size = metadata.footer_signing_key_metadata.as_ref().map_or(0, |f| f.len());
-    dbg!(&metadata);
     let rg_size = metadata
         .row_groups
         .iter()

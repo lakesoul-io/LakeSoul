@@ -94,7 +94,6 @@ impl CatalogProvider for LakeSoulCatalog {
     /// If a schema of the same name existed before, it is replaced in
     /// the catalog and returned.
     fn register_schema(&self, name: &str, schema: Arc<dyn SchemaProvider>) -> Result<Option<Arc<dyn SchemaProvider>>> {
-        dbg!("register_schema");
         let client = self.metadata_client.clone();
         let schema: Option<Arc<dyn SchemaProvider>> = {
             match self.get_all_namespace() {
@@ -131,7 +130,6 @@ impl CatalogProvider for LakeSoulCatalog {
     /// Implementations of this method should return None if schema with `name`
     /// does not exist.
     fn deregister_schema(&self, _name: &str, _cascade: bool) -> Result<Option<Arc<dyn SchemaProvider>>> {
-        dbg!("deregister_schema");
         Err(DataFusionError::NotImplemented("Not supported".into()))
     }
 }
@@ -163,8 +161,6 @@ mod tests {
         let test_namespace = "test_namespace";
         let schema = Arc::new(LakeSoulNamespace::new(client.clone(), ctx.clone(), test_namespace));
         // catalog.register_schema(test_namespace, schema)?;
-        dbg!(ctx.state().catalog_list().catalog_names());
-
 
         // 执行show tables命令
         let sql = "SHOW CATALOGS";
