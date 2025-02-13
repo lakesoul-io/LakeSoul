@@ -151,7 +151,6 @@ SPDX-License-Identifier: Apache-2.0
         </dependency>
 
 
-
         <dependency>
             <groupId>org.apache.spark</groupId>
             <artifactId>spark-sql_${scala.binary.version}</artifactId>
@@ -330,6 +329,13 @@ SPDX-License-Identifier: Apache-2.0
             <scope>test</scope>
         </dependency>
 
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-mllib_${scala.binary.version}</artifactId>
+            <version>${spark.version}</version>
+            <scope>test</scope>
+        </dependency>
+        
         <!-- for test only. we don't rely on gluten during package and runtime -->
         <!--        <dependency>-->
         <!--            <groupId>io.glutenproject</groupId>-->
