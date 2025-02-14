@@ -10,12 +10,17 @@ import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
 import org.apache.flink.lakesoul.metadata.LakesoulCatalogDatabase;
 import org.apache.flink.lakesoul.table.LakeSoulCatalogFactory;
+import org.apache.flink.lakesoul.test.flinkSource.TestUtils;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.catalog.Catalog;
+import org.apache.flink.table.catalog.CatalogPartitionSpec;
+import org.apache.flink.table.catalog.ObjectPath;
 import org.apache.flink.table.catalog.exceptions.DatabaseAlreadyExistException;
+import org.apache.flink.table.catalog.exceptions.TableNotExistException;
+import org.apache.flink.table.catalog.exceptions.TableNotPartitionedException;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.CollectionUtil;
 import org.apache.spark.sql.arrow.ArrowUtils;
@@ -27,7 +32,9 @@ import org.junit.Test;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutionException;
 
+import static org.apache.flink.lakesoul.test.flinkSource.TestUtils.BATCH_TYPE;
 import static org.apache.spark.sql.types.DataTypes.LongType;
 import static org.apache.spark.sql.types.DataTypes.StringType;
 import static org.junit.Assert.assertEquals;
@@ -132,6 +139,46 @@ public class LakeSoulCatalogTest extends AbstractTestBase {
                 .contains("user name");
         tEnvs.executeSql("drop table table_with_comments").print();
     }
+
+    @Test
+    public void testListPartitions()
+            throws TableNotPartitionedException, TableNotExistException, ExecutionException, InterruptedException {
+        LakeSoulCatalogFactory catalogFactory = new LakeSoulCatalogFactory();
+        Catalog lakesoulCatalog = catalogFactory.createCatalog(LAKESOUL, props);
+        TableEnvironment streamTableEnv = TestUtils.createTableEnv(BATCH_TYPE);
+        String createUserSql = "create table test_table (" +
+                "    id INT," +
+                "    val STRING" +
+                ") WITH (" +
+                "    'connector'='lakesoul'," +
+                "    'path'='" + getTempDirUri("/lakeSource/time_test") +
+                "' )";
+        streamTableEnv.executeSql(createUserSql);
+        streamTableEnv.executeSql("INSERT INTO test_table VALUES " +
+                "(1, '1'), (2, '2')").await();
+        assertTrue("empty partition", lakesoulCatalog.listPartitions(ObjectPath.fromString("default.test_table")).isEmpty());
+        streamTableEnv.executeSql("DROP TABLE if exists test_table");
+        createUserSql = "create table test_table (" +
+                "    id INT," +
+                "    val STRING" +
+                ") PARTITIONED BY (id) WITH (" +
+                "    'connector'='lakesoul'," +
+                "    'path'='" + getTempDirUri("/lakeSource/time_test") +
+                "' )";
+        streamTableEnv.executeSql(createUserSql);
+        streamTableEnv.executeSql("INSERT INTO test_table VALUES " +
+                "(1, '1'), (2, '2')").await();
+        List<CatalogPartitionSpec> partitionSpecs = lakesoulCatalog
+                .listPartitions(ObjectPath.fromString("default.test_table"));
+        assertEquals(2, partitionSpecs.size());
+        for (CatalogPartitionSpec partitionSpec : partitionSpecs) {
+            assertEquals(1, partitionSpec.getPartitionSpec().size());
+            assertTrue(partitionSpec.getPartitionSpec().get("id").equals("1") ||
+                    partitionSpec.getPartitionSpec().get("id").equals("2"));
+        }
+        streamTableEnv.executeSql("DROP TABLE if exists test_table");
+    }
+
 
     @Test
     public void dropTable() {

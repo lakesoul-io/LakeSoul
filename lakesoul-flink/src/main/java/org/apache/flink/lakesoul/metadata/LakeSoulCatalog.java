@@ -398,7 +398,17 @@ public class LakeSoulCatalog implements Catalog {
             if (null == item || "".equals(item)) {
                 throw new CatalogException("partition not exist");
             } else {
-                al.add(new CatalogPartitionSpec(DBUtil.parsePartitionDesc(item)));
+                Map<String, String> partitionSpec = DBUtil.parsePartitionDesc(item);
+                if (catalogPartitionSpec == null) {
+                    al.add(new CatalogPartitionSpec(partitionSpec));
+                } else {
+                    if (catalogPartitionSpec.getPartitionSpec().entrySet().stream()
+                            .allMatch(entry -> partitionSpec.containsKey(entry.getKey())
+                            && partitionSpec.get(entry.getKey()).equals(entry.getValue()))) {
+                        // matched partition spec
+                        al.add(new CatalogPartitionSpec(partitionSpec));
+                    }
+                }
             }
         }
         return al;

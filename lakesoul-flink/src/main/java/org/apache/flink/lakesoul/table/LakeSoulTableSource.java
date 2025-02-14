@@ -4,7 +4,6 @@
 
 package org.apache.flink.lakesoul.table;
 
-import com.dmetasoul.lakesoul.meta.DBConfig;
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.JniWrapper;
@@ -121,7 +120,12 @@ public class LakeSoulTableSource
         DBManager dbManager = new DBManager();
         TableInfo tableInfo =
                 dbManager.getTableInfoByNameAndNamespace(tableId.table(), tableId.schema());
-        List<PartitionInfo> allPartitionInfo = dbManager.getAllPartitionInfo(tableInfo.getTableId());
+        List<String> allPartitionDesc = dbManager.getTableAllPartitionDesc(tableInfo.getTableId());
+        List<PartitionInfo> allPartitionInfo = allPartitionDesc.stream().map(
+                desc -> PartitionInfo.newBuilder()
+                        .setPartitionDesc(desc)
+                .build())
+                .collect(Collectors.toList());
 
         DBUtil.TablePartitionKeys partitionKeys = DBUtil.parseTableInfoPartitions(tableInfo.getPartitions());
         Set<String> partitionCols = new HashSet<>(partitionKeys.rangeKeys);
@@ -212,22 +216,6 @@ public class LakeSoulTableSource
         for (PartitionInfo info : partitionInfoList) {
             String partitionDesc = info.getPartitionDesc();
             partitions.add(DBUtil.parsePartitionDesc(partitionDesc));
-        }
-        return partitions;
-    }
-
-    private List<Map<String, String>> complementPartition(List<Map<String, String>> remainingPartitions) {
-        List<PartitionInfo> allPartitionInfo = listPartitionInfo();
-        Set<String>
-                remainingPartitionDesc =
-                remainingPartitions.stream().map(DBUtil::formatPartitionDesc).collect(Collectors.toSet());
-        List<Map<String, String>> partitions = new ArrayList<>();
-        for (PartitionInfo info : allPartitionInfo) {
-            String partitionDesc = info.getPartitionDesc();
-            if (!partitionDesc.equals(DBConfig.LAKESOUL_NON_PARTITION_TABLE_PART_DESC) &&
-                    !remainingPartitionDesc.contains(partitionDesc)) {
-                partitions.add(DBUtil.parsePartitionDesc(partitionDesc));
-            }
         }
         return partitions;
     }

@@ -71,8 +71,7 @@ public abstract class LakeSoulPartitionFetcherContextBase<P> implements Partitio
         List<ComparablePartitionValue> partitionValueList = new ArrayList<>();
         TableInfo tableInfo =
                 DataOperation.dbManager().getTableInfoByNameAndNamespace(tableId.table(), tableId.schema());
-        List<String> partitionDescs = this.dbManager.getAllPartitionInfo(tableInfo.getTableId()).stream()
-                .map(PartitionInfo::getPartitionDesc).collect(Collectors.toList());
+        List<String> partitionDescs = this.dbManager.getTableAllPartitionDesc(tableInfo.getTableId());
         for (String partitionDesc : partitionDescs) {
             partitionValueList.add(getComparablePartitionByName(partitionDesc));
         }

@@ -17,6 +17,7 @@ import org.slf4j.LoggerFactory;
 import java.util.*;
 import java.util.stream.Collectors;
 
+import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH;
 import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_RANGE_PARTITION_SPLITTER;
 
 public class DBManager {
@@ -177,7 +178,7 @@ public class DBManager {
     }
 
     public List<PartitionInfo> getAllPartitionInfo(String tableId) {
-        return partitionInfoDao.getPartitionDescByTableId(tableId);
+        return partitionInfoDao.getPartitionInfoByTableId(tableId);
     }
 
     public List<PartitionInfo> getOnePartitionVersions(String tableId, String partitionDesc) {
@@ -317,7 +318,7 @@ public class DBManager {
     }
 
     public void logicDeletePartitionInfoByTableId(String tableId) {
-        List<PartitionInfo> curPartitionInfoList = partitionInfoDao.getPartitionDescByTableId(tableId);
+        List<PartitionInfo> curPartitionInfoList = partitionInfoDao.getPartitionInfoByTableId(tableId);
         List<PartitionInfo> deletingPartitionInfoList = curPartitionInfoList.stream().map(p -> {
             int version = p.getVersion();
             return p.toBuilder()
@@ -931,6 +932,10 @@ public class DBManager {
     }
 
     public List<String> getTableAllPartitionDesc(String tableId) {
+        TableInfo tableInfo = tableInfoDao.selectByTableId(tableId);
+        if (tableInfo.getPartitions().equals(LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH)) {
+            return Collections.emptyList();
+        }
         return partitionInfoDao.getAllPartitionDescByTableId(tableId);
     }
 
