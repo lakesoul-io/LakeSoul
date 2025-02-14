@@ -175,7 +175,9 @@ public class LakeSoulTableSource
             this.pushedFilters = substraitExprToProto(pushDownResultAndSubstraitExpr.f1, tableInfo.getTableName());
             setModificationContextNonPartitionFilter(this.pushedFilters);
 
-            return pushDownResultAndSubstraitExpr.f0;
+            // add accepted non-partition filters to completePartitionFilters as all accepted filters
+            completePartitionFilters.addAll(pushDownResultAndSubstraitExpr.f0.getAcceptedFilters());
+            return Result.of(completePartitionFilters, pushDownResultAndSubstraitExpr.f0.getRemainingFilters());
         } else {
             // for streaming scan, we cannot pushdown any non-complete-partition filters
             return Result.of(completePartitionFilters, nonPartitionFilters);
