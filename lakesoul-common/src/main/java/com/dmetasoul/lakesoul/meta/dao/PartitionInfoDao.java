@@ -400,7 +400,7 @@ public class PartitionInfoDao {
         return rsList;
     }
 
-    public List<PartitionInfo> getPartitionDescByTableId(String tableId) {
+    public List<PartitionInfo> getPartitionInfoByTableId(String tableId) {
         if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
             JniWrapper jniWrapper = NativeMetadataJavaClient.query(
                     NativeUtils.CodedDaoType.ListPartitionByTableId,
@@ -496,24 +496,19 @@ public class PartitionInfoDao {
     }
 
     public List<String> getAllPartitionDescByTableId(String tableId) {
-        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
-            JniWrapper jniWrapper = NativeMetadataJavaClient.query(
-                    NativeUtils.CodedDaoType.ListPartitionByTableId,
-                    Collections.singletonList(tableId));
-            if (jniWrapper == null) return null;
-            return jniWrapper.getPartitionInfoList().stream().map(PartitionInfo::getPartitionDesc).collect(Collectors.toList());
-        }
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
         List<String> rsList = new ArrayList<>();
-        String sql = "select different(partition_desc) from partition_info";
+        String sql = String.format(
+                "select distinct(partition_desc) from partition_info where table_id='%s'",
+                tableId);
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sql);
             rs = pstmt.executeQuery();
             while (rs.next()) {
-                rsList.add(rs.getString(1));
+                rsList.add(rs.getString(0));
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);

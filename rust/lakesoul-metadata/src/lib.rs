@@ -522,28 +522,6 @@ pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string
             }
         }
         DaoType::ListPartitionDescByTableIdAndParList if params.len() == 2 => {
-            /*
-            let partitions = "'".to_owned()
-                + &params[1]
-                    .replace('\'', "''")
-                    .split(PARTITION_DESC_DELIM)
-                    .collect::<Vec<&str>>()
-                    .join("','")
-                + "'";
-            let statement = format!("select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.timestamp, m.expression, m.domain from (
-                select table_id,partition_desc,max(version) from partition_info
-                where table_id = $1::TEXT and partition_desc in ({})
-                group by table_id,partition_desc) t
-                left join partition_info m on t.table_id = m.table_id and t.partition_desc = m.partition_desc and t.max = m.version", partitions);
-            let result = {
-                let statement = client.prepare(&statement).await?;
-                client.query(&statement, &[&params[0]]).await
-            };
-            match result {
-                Ok(rows) => rows,
-                Err(e) => return Err(LakeSoulMetaDataError::from(e)),
-            }
-            */
             let statement = "\
                 select
                     m.table_id,

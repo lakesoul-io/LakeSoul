@@ -280,10 +280,6 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
                     DataOperation.dbManager().getTableInfoByNameAndNamespace(tableId.table(),
                             tableId.schema());
             if (partValues.isEmpty()) {
-                List<PartitionInfo> partitionInfos =
-                        DataOperation.dbManager().getAllPartitionInfo(tableInfo.getTableId());
-                if (partitionInfos.isEmpty()) return Optional.empty();
-
                 DataFileInfo[] dataFileInfos = FlinkUtil.getTargetDataFileInfo(tableInfo,
                         null);
                 List<Path> paths = new ArrayList<>();
