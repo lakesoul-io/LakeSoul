@@ -679,7 +679,7 @@ mod tests {
                 "file:///some/absolute/local/file2".to_string(),
             ]
         );
-        let mut lakesoulconfigbuilder = LakeSoulIOConfigBuilder::from(conf.clone());
+        let lakesoulconfigbuilder = LakeSoulIOConfigBuilder::from(conf.clone());
         let conf = lakesoulconfigbuilder.build();
         assert_eq!(conf.max_file_size, None);
         assert_eq!(conf.max_row_group_size, 250000);

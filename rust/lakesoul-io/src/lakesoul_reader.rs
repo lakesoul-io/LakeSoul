@@ -667,7 +667,6 @@ mod tests {
     #[tokio::test]
     async fn test_as_primitive_array_timestamp_second_type() -> Result<()> {
         use arrow_array::{Array, TimestampSecondArray};
-        use arrow_schema::DataType;
         use std::sync::Arc;
 
         // 创建一个 TimestampSecondArray
@@ -764,7 +763,7 @@ mod tests {
         let num_rows = 1000;
         let num_columns = 100;
         let str_len = 4;
-        let temp_dir = tempfile::tempdir()?.into_path();
+        let _temp_dir = tempfile::tempdir()?.into_path();
         let temp_dir = std::env::current_dir()?.join("temp_dir");
         let with_pk = true;
         let to_write_schema = create_schema(num_columns, with_pk);
@@ -802,13 +801,13 @@ mod tests {
                 Builder::new_multi_thread().enable_all().build().unwrap()
             )?;
 
-            let start = Instant::now();
+            let _start = Instant::now();
             for _ in 0..num_batch {
                 let once_start = Instant::now();
                 writer.write_batch(create_batch(num_columns, num_rows, str_len, &mut generator))?;
                 println!("write batch once cost: {}", once_start.elapsed().as_millis());
             }
-            let flush_start = Instant::now();
+            let _flush_start = Instant::now();
             writer.flush_and_close()?;
         }
 
