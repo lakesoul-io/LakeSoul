@@ -52,10 +52,7 @@ public class SubstraitFlinkUtil {
         } else if (expression instanceof CallExpression) {
             return expression.getResolvedChildren().stream().allMatch(child -> filterAllPartitionColumn(child, partitionCols));
 
-        } else if (expression instanceof ValueLiteralExpression) {
-            return true;
-        }
-        return false;
+        } else return expression instanceof ValueLiteralExpression;
     }
 
     public static boolean filterContainsPartitionColumn(ResolvedExpression expression, Set<String> partitionCols) {
