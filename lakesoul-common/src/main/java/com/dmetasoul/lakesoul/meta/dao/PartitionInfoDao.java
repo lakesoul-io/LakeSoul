@@ -508,7 +508,7 @@ public class PartitionInfoDao {
             pstmt = conn.prepareStatement(sql);
             rs = pstmt.executeQuery();
             while (rs.next()) {
-                rsList.add(rs.getString(0));
+                rsList.add(rs.getString(1));
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);

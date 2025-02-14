@@ -17,7 +17,7 @@ import org.slf4j.LoggerFactory;
 import java.util.*;
 import java.util.stream.Collectors;
 
-import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_NON_PARTITION_TABLE_PART_DESC;
+import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH;
 import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_RANGE_PARTITION_SPLITTER;
 
 public class DBManager {
@@ -933,8 +933,8 @@ public class DBManager {
 
     public List<String> getTableAllPartitionDesc(String tableId) {
         TableInfo tableInfo = tableInfoDao.selectByTableId(tableId);
-        if (tableInfo.getPartitions().contains(LAKESOUL_NON_PARTITION_TABLE_PART_DESC)) {
-            return Collections.singletonList(LAKESOUL_NON_PARTITION_TABLE_PART_DESC);
+        if (tableInfo.getPartitions().equals(LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH)) {
+            return Collections.emptyList();
         }
         return partitionInfoDao.getAllPartitionDescByTableId(tableId);
     }
