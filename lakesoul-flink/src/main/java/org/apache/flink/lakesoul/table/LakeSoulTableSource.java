@@ -117,7 +117,6 @@ public class LakeSoulTableSource
         // first we filter out partition filter conditions
         LOG.info("Applying filters to native io: {}", filters);
         List<ResolvedExpression> completePartitionFilters = new ArrayList<>();
-        List<ResolvedExpression> partialPartitionFilters = new ArrayList<>();
         List<ResolvedExpression> nonPartitionFilters = new ArrayList<>();
         DBManager dbManager = new DBManager();
         TableInfo tableInfo =
@@ -134,20 +133,7 @@ public class LakeSoulTableSource
             }
         }
         LOG.info("completePartitionFilters: {}", completePartitionFilters);
-        LOG.info("partialPartitionFilters: {}", partialPartitionFilters);
         LOG.info("nonPartitionFilters: {}", nonPartitionFilters);
-
-        // find acceptable non partition filters
-        Tuple2<Result, Expression> pushDownResultAndSubstraitExpr = SubstraitFlinkUtil.flinkExprToSubStraitExpr(
-                nonPartitionFilters
-        );
-
-        LOG.info("Applied filters to native io: {}, accepted {}, remaining {}", this.pushedFilters,
-                pushDownResultAndSubstraitExpr.f0.getAcceptedFilters(),
-                pushDownResultAndSubstraitExpr.f0.getRemainingFilters());
-
-        this.pushedFilters = substraitExprToProto(pushDownResultAndSubstraitExpr.f1, tableInfo.getTableName());
-        setModificationContextNonPartitionFilter(this.pushedFilters);
 
         if (!completePartitionFilters.isEmpty()) {
 
@@ -175,7 +161,27 @@ public class LakeSoulTableSource
             setModificationContextPartitionFilter(this.partitionFilters);
         }
 
-        return pushDownResultAndSubstraitExpr.f0;
+        if (isBounded) {
+            // pushdown all filters for batch scan
+            // find acceptable non partition filters
+            Tuple2<Result, Expression> pushDownResultAndSubstraitExpr = SubstraitFlinkUtil.flinkExprToSubStraitExpr(
+                    nonPartitionFilters
+            );
+
+            LOG.info("Applied filters to native io: {}, accepted {}, remaining {}", this.pushedFilters,
+                    pushDownResultAndSubstraitExpr.f0.getAcceptedFilters(),
+                    pushDownResultAndSubstraitExpr.f0.getRemainingFilters());
+
+            this.pushedFilters = substraitExprToProto(pushDownResultAndSubstraitExpr.f1, tableInfo.getTableName());
+            setModificationContextNonPartitionFilter(this.pushedFilters);
+
+            // add accepted non-partition filters to completePartitionFilters as all accepted filters
+            completePartitionFilters.addAll(pushDownResultAndSubstraitExpr.f0.getAcceptedFilters());
+            return Result.of(completePartitionFilters, pushDownResultAndSubstraitExpr.f0.getRemainingFilters());
+        } else {
+            // for streaming scan, we cannot pushdown any non-complete-partition filters
+            return Result.of(completePartitionFilters, nonPartitionFilters);
+        }
     }
 
     private boolean isDelete() {
