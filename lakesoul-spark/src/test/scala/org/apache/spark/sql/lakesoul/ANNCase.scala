@@ -5,7 +5,7 @@
 package org.apache.spark.sql.lakesoul
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
-import com.linkedin.nn.algorithm.L2ScalarRandomProjectionNNS
+//import com.linkedin.nn.algorithm.L2ScalarRandomProjectionNNS
 import io.jhdf.HdfFile
 import org.apache.spark.sql._
 import org.apache.spark.sql.internal.SQLConf
@@ -25,12 +25,12 @@ import scala.math.{pow, sqrt}
 import java.nio.file.Paths
 
 @RunWith(classOf[JUnitRunner])
-class AnnCase extends QueryTest
+class ANNCase extends QueryTest
   with SharedSparkSession with LakeSoulTestBeforeAndAfterEach
   with LakeSoulTestUtils with LakeSoulSQLCommandTest {
 
   val testDatasetSize = 10000
-  val numQuery = 10
+  val numQuery = 5
   val topK = 100
   val sampleIndices = scala.util.Random.shuffle((0 until testDatasetSize).toList).take(numQuery)
 
@@ -393,18 +393,64 @@ class AnnCase extends QueryTest
     val testData = testDataset.getData()
     val neighborData = neighborDataset.getData()
 
+    // 将数据转换为向量格式
     val trainVectors = trainData.asInstanceOf[Array[Array[Float]]]
     val testVectors = testData.asInstanceOf[Array[Array[Float]]]
     val trueNeighbors = neighborData.asInstanceOf[Array[Array[Int]]]
 
     val numFeatures = trainVectors(0).length
 
-    
-    val trainDF = spark.createDataFrame(spark.sparkContext.parallelize(trainVectors.zipWithIndex.map { case (vec, idx) =>
-      
-      Row(idx.toLong, vec)
-    }), StructType(Array(StructField("id", LongType, true), StructField("features", VectorUDT, true))))
+    val brp = new org.apache.spark.ml.lakesoul.feature.BucketedRandomProjectionLSH()
+      .setInputCol("features")
+      .setOutputCol("hashes")
+      .setNumHashTables(10)
+      .setSeed(1234)
+      .setBucketLength(numFeatures)
 
-    
+
+    // 将sampledTestVectors转换为RDD[(Long, Vector)]格式
+    val sampledTestRDD = spark.sparkContext.parallelize(
+      sampleIndices.map { case idx =>
+        (idx.toLong, org.apache.spark.ml.linalg.Vectors.dense(testVectors(idx).map(_.toDouble)))
+      }
+    )
+
+    // 将candidatePool转换为RDD[(Long, Vector)]格式
+    val candidateRDD = spark.sparkContext.parallelize(
+      trainVectors.zipWithIndex.map { case (vec, idx) =>
+        (idx.toLong, org.apache.spark.ml.linalg.Vectors.dense(vec.map(_.toDouble)))
+      }
+    )
+
+    // 将数据转换为DataFrame格式
+    val sampledTestDF = sampledTestRDD.toDF("id", "features")
+    val candidateDF = candidateRDD.toDF("id", "features")
+    //    sampledTestDF.show(truncate = false)
+    //    candidateDF.show(truncate = false)
+
+    // 训练LSH模型
+    val model = brp.fit(candidateDF.union(sampledTestDF))
+
+    // 定义k值（最近邻的数量）
+
+
+    val predictedNeighbors =
+      spark.time({
+        // 使用模型进行近似最近邻搜索
+        val predictedNeighborsDF = model.approxSimilarityJoin(
+          sampledTestDF,
+          candidateDF,
+          numFeatures * 3, // threshold
+          "distCol"
+        ).select($"datasetA.id", $"datasetB.id", $"distCol")
+          .orderBy($"distCol")
+
+        //    predictedNeighborsDF.show()
+        predictedNeighborsDF.collect()
+      })
+
+    // 使用新的通用函数计算召回率
+    val avgRecall = calculateRecall(sampleIndices, trueNeighbors, predictedNeighbors, topK, numQuery)
+    println(s"Average recall@$topK = $avgRecall")
   }
 }

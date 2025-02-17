@@ -333,9 +333,8 @@ SPDX-License-Identifier: Apache-2.0
             <groupId>org.apache.spark</groupId>
             <artifactId>spark-mllib_${scala.binary.version}</artifactId>
             <version>${spark.version}</version>
-            <scope>test</scope>
         </dependency>
-        
+
         <!-- for test only. we don't rely on gluten during package and runtime -->
         <!--        <dependency>-->
         <!--            <groupId>io.glutenproject</groupId>-->
