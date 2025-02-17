@@ -64,7 +64,7 @@ mod integration_tests {
     #[tokio::test]
     async fn load_tpch_data() -> Result<()> {
         let client = Arc::new(MetaDataClient::from_env().await?);
-        let builder = create_io_config_builder(client.clone(), None, false, "default").await?;
+        let builder = create_io_config_builder(client.clone(), None, false, "default", Default::default(), Default::default()).await?;
         let ctx =
             create_session_context_with_planner(&mut builder.clone().build(), Some(LakeSoulQueryPlanner::new_ref()))?;
 
