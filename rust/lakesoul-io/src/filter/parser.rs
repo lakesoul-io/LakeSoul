@@ -24,6 +24,7 @@ use datafusion_substrait::substrait::proto::plan_rel::RelType::Root;
 use datafusion_substrait::substrait::proto::r#type::Nullability;
 use datafusion_substrait::substrait::proto::rel::RelType::Read;
 use datafusion_substrait::substrait::proto::{Expression, FunctionArgument, Plan, PlanRel, Rel, RelRoot};
+use datafusion_substrait::variation_const::TIMESTAMP_MICRO_TYPE_VARIATION_REF;
 use tokio::runtime::{Builder, Handle};
 use tokio::task;
 
@@ -232,6 +233,16 @@ impl Parser {
                 })) => {
                     Self::modify_substrait_argument(&mut f.arguments, df_schema);
                 }
+                Some(ArgType::Value(Expression {
+                    rex_type: Some(RexType::Literal(literal)),
+                })) => match literal.literal_type {
+                    // for compatibility with substrait old java version
+                    // where type variation ref field is not filled in java
+                    Some(LiteralType::Timestamp(_)) | Some(LiteralType::TimestampTz(_)) => {
+                        literal.type_variation_reference = TIMESTAMP_MICRO_TYPE_VARIATION_REF;
+                    }
+                    _ => {}
+                },
                 _ => {}
             }
         }
