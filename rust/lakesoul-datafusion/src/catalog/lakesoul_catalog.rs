@@ -137,7 +137,7 @@ impl CatalogProvider for LakeSoulCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{catalog::lakesoul_namespace::LakeSoulNamespace, LakeSoulQueryPlanner};
+    use crate::LakeSoulQueryPlanner;
     use datafusion::{execution::{context::{SessionContext, SessionState}, runtime_env::RuntimeEnv}, prelude::SessionConfig};
     use lakesoul_metadata::MetaDataClient;
     use datafusion::arrow::util::pretty::print_batches;
@@ -157,19 +157,19 @@ mod tests {
         ctx.register_catalog("LAKESOUL".to_string(), Arc::new(catalog));
         
         
-        // 创建测试用的namespace
-        let test_namespace = "test_namespace";
-        let schema = Arc::new(LakeSoulNamespace::new(client.clone(), ctx.clone(), test_namespace));
+        // // 创建测试用的namespace
+        // let test_namespace = "test_namespace";
+        // let schema = Arc::new(LakeSoulNamespace::new(client.clone(), ctx.clone(), test_namespace));
         // catalog.register_schema(test_namespace, schema)?;
 
         // 执行show tables命令
-        let sql = "SHOW CATALOGS";
+        // let sql = "SHOW CATALOGS";
         let sql = "SHOW TABLES";
         // let sql = "CREATE SCHEMA LAKESOUL.DEFAULT";
         let df = ctx.sql(sql).await?;
         // print_batches(&df.clone().explain(true, false)?.collect().await?);
         let results = df.collect().await?;
-        print_batches(&results);
+        let _ = print_batches(&results);
         
         // 验证结果
         // assert!(!results.is_empty());

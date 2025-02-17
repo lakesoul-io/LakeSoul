@@ -20,9 +20,8 @@ mod catalog_tests {
     use rand_chacha::ChaCha8Rng;
     use std::env;
     use std::sync::Arc;
-    use test_log::test;
     use tokio::runtime::Runtime;
-    use tracing::debug;
+    use log::debug;
 
     fn create_batch_i32(names: Vec<&str>, values: Vec<&[i32]>) -> RecordBatch {
         let values = values
@@ -54,6 +53,7 @@ mod catalog_tests {
                 },
                 properties: serde_json::to_string(&LakeSoulTableProperty {
                     hash_bucket_num: Some(hash_bucket_num),
+                    datafusion_properties: None,
                 })
                 .unwrap(),
                 comment: "this is comment".to_string(),

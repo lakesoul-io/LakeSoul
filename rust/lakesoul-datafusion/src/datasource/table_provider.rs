@@ -445,14 +445,11 @@ impl TableProvider for LakeSoulTableProvider {
         input: Arc<dyn ExecutionPlan>,
         insert_op: InsertOp,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let table_path = &self.table_paths()[0];
         // Get the object store for the table path.
         // let url = Url::parse(table_path.as_str()).unwrap();
         // let _store = state.runtime_env().object_store(ObjectStoreUrl::parse(&url[..url::Position::BeforePath])?);
         // dbg!(&_store);
         let state = state.as_any().downcast_ref::<SessionState>().unwrap();
-
-        let file_format = self.options().format.as_ref();
 
         // let file_type_writer_options = match &self.options().file_type_write_options {
         //     Some(opt) => opt.clone(),

@@ -172,7 +172,6 @@ impl SyncSendableMutableLakeSoulWriter {
     pub fn write_batch(&mut self, record_batch: RecordBatch) -> Result<()> {
         let runtime = self.runtime.clone();
         
-        println!("at SyncSendableMutableLakeSoulWriter::write_batch\n{}", arrow_cast::pretty::pretty_format_batches(&[record_batch.clone()])?);
         if record_batch.num_rows() == 0 {
             runtime.block_on(async move { self.write_batch_async(record_batch, false).await })
         } else {
