@@ -9,18 +9,20 @@ use std::sync::Arc;
 use arrow::datatypes::SchemaRef;
 use arrow_cast::can_cast_types;
 use arrow_schema::{ArrowError, FieldRef, Fields, Schema, SchemaBuilder};
+
+use datafusion::datasource::file_format::file_compression_type::FileCompressionType;
 use datafusion::datasource::file_format::{parquet::ParquetFormat, FileFormat};
 use datafusion::datasource::physical_plan::{FileScanConfig, FileSinkConfig};
 use datafusion::execution::context::SessionState;
 
-use datafusion::physical_expr::PhysicalSortRequirement;
+use datafusion::physical_expr::LexRequirement;
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::{ExecutionPlan, PhysicalExpr};
-use datafusion_common::{project_schema, DataFusionError, FileType, Result, Statistics};
+use datafusion_common::{project_schema, DataFusionError, Result, Statistics};
 
 use object_store::{ObjectMeta, ObjectStore};
 
-use crate::datasource::{listing::LakeSoulListingTable, physical_plan::MergeParquetExec};
+use crate::datasource::{listing::LakeSoulTableProvider, physical_plan::MergeParquetExec};
 use crate::lakesoul_io_config::LakeSoulIOConfig;
 use async_trait::async_trait;
 use datafusion::datasource::file_format::parquet::fetch_parquet_metadata;
@@ -135,6 +137,14 @@ impl FileFormat for LakeSoulParquetFormat {
         self
     }
 
+    fn get_ext(&self) -> String {
+        self.parquet_format.get_ext()
+    }
+
+    fn get_ext_with_compression(&self, file_compression_type: &FileCompressionType) -> Result<String> {
+        self.parquet_format.get_ext_with_compression(file_compression_type)
+    }
+
     async fn infer_schema(
         &self,
         state: &SessionState,
@@ -142,13 +152,7 @@ impl FileFormat for LakeSoulParquetFormat {
         objects: &[ObjectMeta],
     ) -> Result<SchemaRef> {
         let schemas: Vec<_> = futures::stream::iter(objects)
-            .map(|object| {
-                fetch_schema(
-                    store.as_ref(),
-                    object,
-                    self.parquet_format.metadata_size_hint(state.config_options()),
-                )
-            })
+            .map(|object| fetch_schema(store.as_ref(), object, self.parquet_format.metadata_size_hint()))
             .boxed() // Workaround https://github.com/rust-lang/rust/issues/64552
             .buffered(state.config_options().execution.meta_fetch_concurrency)
             .try_collect()
@@ -163,10 +167,13 @@ impl FileFormat for LakeSoulParquetFormat {
             for (key, value) in metadata.into_iter() {
                 if let Some(old_val) = out_meta.get(&key) {
                     if old_val != &value {
-                        return Err(DataFusionError::ArrowError(ArrowError::SchemaError(format!(
-                            "Fail to merge schema due to conflicting metadata. \
+                        return Err(DataFusionError::ArrowError(
+                            ArrowError::SchemaError(format!(
+                                "Fail to merge schema due to conflicting metadata. \
                                          Key '{key}' has different values '{old_val}' and '{value}'"
-                        ))));
+                            )),
+                            None,
+                        ));
                     }
                 }
                 out_meta.insert(key, value);
@@ -199,13 +206,9 @@ impl FileFormat for LakeSoulParquetFormat {
         // If enable pruning then combine the filters to build the predicate.
         // If disable pruning then set the predicate to None, thus readers
         // will not prune data based on the statistics.
-        let predicate = self
-            .parquet_format
-            .enable_pruning(state.config_options())
-            .then(|| filters.cloned())
-            .flatten();
+        let predicate = self.parquet_format.enable_pruning().then(|| filters.cloned()).flatten();
 
-        let table_schema = LakeSoulListingTable::compute_table_schema(conf.file_schema.clone(), &self.conf)?;
+        let table_schema = LakeSoulTableProvider::compute_table_schema(conf.file_schema.clone(), &self.conf)?;
         // projection for Table instead of File
         let projection = conf.projection.clone();
         let target_schema = project_schema(&table_schema, projection.as_ref())?;
@@ -233,7 +236,7 @@ impl FileFormat for LakeSoulParquetFormat {
             merged_schema.clone(),
             flatten_conf,
             predicate,
-            self.parquet_format.metadata_size_hint(state.config_options()),
+            self.parquet_format.metadata_size_hint(),
             self.conf.clone(),
         )?);
 
@@ -256,15 +259,11 @@ impl FileFormat for LakeSoulParquetFormat {
         input: Arc<dyn ExecutionPlan>,
         state: &SessionState,
         conf: FileSinkConfig,
-        order_requirements: Option<Vec<PhysicalSortRequirement>>,
+        order_requirements: Option<LexRequirement>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         self.parquet_format
             .create_writer_physical_plan(input, state, conf, order_requirements)
             .await
-    }
-
-    fn file_type(&self) -> FileType {
-        FileType::PARQUET
     }
 }
 
@@ -303,17 +302,16 @@ pub async fn flatten_file_scan_config(
             let limit = conf.limit;
             let table_partition_cols = conf.table_partition_cols.clone();
             let output_ordering = conf.output_ordering.clone();
-            let infinite_source = conf.infinite_source;
             let config = FileScanConfig {
                 object_store_url: object_store_url.clone(),
                 file_schema,
                 file_groups,
+                constraints: Default::default(),
                 statistics,
                 projection,
                 limit,
                 table_partition_cols,
                 output_ordering,
-                infinite_source,
             };
             flatten_configs.push(config);
         }

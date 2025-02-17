@@ -136,7 +136,7 @@ pub fn transform_record_batch(
         transform_arrays,
         &RecordBatchOptions::new().with_row_count(Some(num_rows)),
     )
-    .map_err(ArrowError)
+    .map_err(|e| ArrowError(e, None))
 }
 
 pub fn transform_array(
@@ -158,7 +158,7 @@ pub fn transform_array(
             };
 
             let casted_array = cast_with_options(&make_array(array), &DataType::Timestamp(target_unit.clone(), Some(target_tz.clone())), &ARROW_CAST_OPTIONS)
-                .map_err(ArrowError)?;
+                .map_err(|e| DataFusionError::ArrowError(e, None))?;
             casted_array
         },
         DataType::Struct(target_child_fields) => {
@@ -199,7 +199,8 @@ pub fn transform_array(
         }
         target_datatype => {
             if target_datatype != *array.data_type() {
-                cast_with_options(&array, &target_datatype, &ARROW_CAST_OPTIONS).map_err(ArrowError)?
+                cast_with_options(&array, &target_datatype, &ARROW_CAST_OPTIONS)
+                    .map_err(|e| DataFusionError::ArrowError(e, None))?
             } else {
                 array.clone()
             }

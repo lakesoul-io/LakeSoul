@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::sync::Arc;
+use std::collections::HashMap;
 
 use arrow::{
     array::{Array, ArrayRef, AsArray, StringBuilder},
@@ -14,7 +15,7 @@ use arrow_arith::boolean::and;
 use arrow_cast::cast;
 
 use datafusion::{
-    common::{DFField, DFSchema},
+    common::DFSchema,
     error::DataFusionError,
     execution::context::ExecutionProps,
     logical_expr::Expr,
@@ -22,7 +23,7 @@ use datafusion::{
 };
 use lakesoul_metadata::MetaDataClientRef;
 use object_store::{path::Path, ObjectMeta, ObjectStore};
-use tracing::{debug, trace};
+use log::{debug, trace};
 use url::Url;
 
 use crate::error::Result;
@@ -34,15 +35,30 @@ use crate::{
     serialize::arrow_java::schema_from_metadata_str,
 };
 
-pub(crate) fn create_io_config_builder_from_table_info(table_info: Arc<TableInfo>) -> Result<LakeSoulIOConfigBuilder> {
+pub(crate) fn create_io_config_builder_from_table_info(
+    table_info: Arc<TableInfo>,
+    options: HashMap<String, String>,
+    object_store_options: HashMap<String, String>,
+) -> Result<LakeSoulIOConfigBuilder> {
     let (range_partitions, hash_partitions) = parse_table_info_partitions(table_info.partitions.clone())?;
     let properties = serde_json::from_str::<LakeSoulTableProperty>(&table_info.properties)?;
-    Ok(LakeSoulIOConfigBuilder::new()
+    
+    let mut builder = LakeSoulIOConfigBuilder::new()
         .with_schema(schema_from_metadata_str(&table_info.table_schema))
         .with_prefix(table_info.table_path.clone())
         .with_primary_keys(hash_partitions)
         .with_range_partitions(range_partitions)
-        .with_hash_bucket_num(properties.hash_bucket_num.unwrap_or(1)))
+        .with_hash_bucket_num(properties.hash_bucket_num.unwrap_or(1));
+
+    for (key, value) in options {
+        builder = builder.with_option(key, value);
+    }
+
+    for (key, value) in object_store_options {
+        builder = builder.with_object_store_option(key, value);
+    }
+
+    Ok(builder)
 }
 
 pub async fn prune_partitions(
@@ -87,7 +103,7 @@ pub async fn prune_partitions(
     let df_schema = DFSchema::new_with_metadata(
         partition_cols
             .iter()
-            .map(|(n, d)| DFField::new_unqualified(n, d.clone(), true))
+            .map(|(n, d)| (None, Arc::new(Field::new(n, d.clone(), true))))
             .collect(),
         Default::default(),
     )?;
@@ -99,7 +115,7 @@ pub async fn prune_partitions(
 
     // Applies `filter` to `batch` returning `None` on error
     let do_filter = |filter| -> Option<ArrayRef> {
-        let expr = create_physical_expr(filter, &df_schema, &schema, &props).ok()?;
+        let expr = create_physical_expr(filter, &df_schema, &props).ok()?;
         expr.evaluate(&batch).ok()?.into_array(all_partition_info.len()).ok()
     };
 
@@ -178,4 +194,12 @@ pub async fn listing_partition_info(
         files.push(result);
     }
     Ok((partition_info, files))
+}
+
+pub fn case_fold_table_name(name: &str) -> String {
+    name.to_ascii_lowercase()
+}
+
+pub fn case_fold_column_name(name: &str) -> String {
+    name.to_ascii_lowercase()
 }

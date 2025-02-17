@@ -4,7 +4,7 @@
 
 use arrow::array::RecordBatch;
 use std::sync::Arc;
-use tracing::debug;
+use log::debug;
 
 use lakesoul_metadata::MetaDataClient;
 

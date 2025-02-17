@@ -1,0 +1,36 @@
+[package]
+name = "lakesoul-flight"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+lakesoul-datafusion = { path = "../lakesoul-datafusion" }
+lakesoul-metadata = { path = "../lakesoul-metadata" }
+lakesoul-io = { path = "../lakesoul-io" }
+arrow-flight = { workspace = true }
+tokio = { workspace = true }
+chrono = { version = "0.4" }
+tonic = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+arrow = { workspace = true } 
+prost = { workspace = true }
+uuid = { workspace = true }
+dashmap = "5.5.3"
+datafusion = { workspace = true }
+object_store = { workspace = true }
+log = "0.4"
+url = { workspace = true }
+http = { workspace = true }
+jsonwebtoken = {version = "9", default-features = false }
+serde = { workspace = true }
+metrics = "0.21"
+metrics-exporter-prometheus = "0.12"
+tower = { version = "0.4", features = ["full"] }
+tower-http = { version = "0.4", features = ["trace"] }
+clap = { version = "4.4", features = ["derive"] }
+
+
+[features]
+hdfs = ["lakesoul-io/hdfs"]
+default = []

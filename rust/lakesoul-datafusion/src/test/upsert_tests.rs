@@ -1462,10 +1462,10 @@ mod upsert_with_io_config_tests {
             .and_hms_micro_opt(8, 28, 53, 123456)
             .unwrap();
 
-        let val1 = dt1.timestamp_micros();
-        let val2 = dt2.timestamp_micros();
-        let val3 = dt3.timestamp_micros();
-        let val4 = dt4.timestamp_micros();
+        let val1 = dt1.and_utc().timestamp_micros();
+        let val2 = dt2.and_utc().timestamp_micros();
+        let val3 = dt3.and_utc().timestamp_micros();
+        let val4 = dt4.and_utc().timestamp_micros();
 
         let table_name = "test_merge_same_column_with_timestamp_type_i64_time";
         let builder = init_table(
@@ -1519,10 +1519,10 @@ mod upsert_with_io_config_tests {
             .and_hms_micro_opt(8, 28, 53, 123456)
             .unwrap();
 
-        let val1 = dt1.timestamp_micros();
-        let _val2 = _dt2.timestamp_micros();
-        let val3 = dt3.timestamp_micros();
-        let val4 = dt4.timestamp_micros();
+        let val1 = dt1.and_utc().timestamp_micros();
+        let _val2 = _dt2.and_utc().timestamp_micros();
+        let val3 = dt3.and_utc().timestamp_micros();
+        let val4 = dt4.and_utc().timestamp_micros();
 
         let table_name = "merge_different_columns_with_timestamp_type_i32_time";
         let builder = init_table(
@@ -1691,7 +1691,7 @@ mod upsert_with_metadata_tests {
     ) -> Result<()> {
         let lakesoul_table = LakeSoulTable::for_name(table_name).await?;
         lakesoul_table.execute_upsert(batch).await?;
-        let builder = create_io_config_builder(client, None, false, "default").await?;
+        let builder = create_io_config_builder(client, None, false, "default", Default::default(), Default::default()).await?;
         let sess_ctx = create_session_context(&mut builder.clone().build())?;
 
         let dataframe = lakesoul_table.to_dataframe(&sess_ctx).await?;
@@ -1746,7 +1746,7 @@ mod upsert_with_metadata_tests {
     ) -> Result<()> {
         let lakesoul_table = LakeSoulTable::for_name(table_name).await?;
         lakesoul_table.execute_upsert(batch).await?;
-        let builder = create_io_config_builder(client, None, false, "default").await?;
+        let builder = create_io_config_builder(client, None, false, "default", Default::default(), Default::default()).await?;
         let sess_ctx = create_session_context(&mut builder.clone().build())?;
 
         let dataframe = lakesoul_table.to_dataframe(&sess_ctx).await?;
@@ -3232,10 +3232,10 @@ mod upsert_with_metadata_tests {
             .and_hms_micro_opt(8, 28, 53, 123456)
             .unwrap();
 
-        let val1 = dt1.timestamp_micros();
-        let val2 = dt2.timestamp_micros();
-        let val3 = dt3.timestamp_micros();
-        let val4 = dt4.timestamp_micros();
+        let val1 = dt1.and_utc().timestamp_micros();
+        let val2 = dt2.and_utc().timestamp_micros();
+        let val3 = dt3.and_utc().timestamp_micros();
+        let val4 = dt4.and_utc().timestamp_micros();
 
         let table_name = "test_merge_same_column_with_timestamp_type_i64_time";
         let client = Arc::new(MetaDataClient::from_env().await?);
@@ -3307,10 +3307,10 @@ mod upsert_with_metadata_tests {
             .and_hms_micro_opt(8, 28, 53, 123456)
             .unwrap();
 
-        let val1 = dt1.timestamp_micros();
-        let _val2 = _dt2.timestamp_micros();
-        let val3 = dt3.timestamp_micros();
-        let val4 = dt4.timestamp_micros();
+        let val1 = dt1.and_utc().timestamp_micros();
+        let _val2 = _dt2.and_utc().timestamp_micros();
+        let val3 = dt3.and_utc().timestamp_micros();
+        let val4 = dt4.and_utc().timestamp_micros();
 
         let table_name = "merge_different_columns_with_timestamp_type_i32_time";
         let client = Arc::new(MetaDataClient::from_env().await?);

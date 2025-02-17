@@ -22,7 +22,7 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 use crate::datasource::file_format::LakeSoulParquetFormat;
-use crate::datasource::listing::LakeSoulListingTable;
+use crate::datasource::listing::LakeSoulTableProvider;
 use crate::datasource::physical_plan::merge::convert_filter;
 use crate::datasource::physical_plan::merge::prune_filter_and_execute;
 use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfig};
@@ -56,7 +56,7 @@ impl LakeSoulReader {
                 Arc::new(ParquetFormat::new()),
                 self.config.clone(),
             ));
-            let source = LakeSoulListingTable::new_with_config_and_format(
+            let source = LakeSoulTableProvider::new_with_config_and_format(
                 &self.sess_ctx.state(),
                 self.config.clone(),
                 file_format,
@@ -615,7 +615,6 @@ mod tests {
 
         let start = Instant::now();
         while let Some(rb) = reader.next_rb().await {
-            dbg!(&rb);
             let num_rows = &rb.unwrap().num_rows();
             unsafe {
                 ROW_CNT += num_rows;
@@ -653,7 +652,6 @@ mod tests {
 
         let start = Instant::now();
         while let Some(rb) = reader.next_rb().await {
-            dbg!(&rb);
             let num_rows = &rb.unwrap().num_rows();
             unsafe {
                 ROW_CNT += num_rows;
@@ -669,7 +667,6 @@ mod tests {
     #[tokio::test]
     async fn test_as_primitive_array_timestamp_second_type() -> Result<()> {
         use arrow_array::{Array, TimestampSecondArray};
-        use arrow_schema::DataType;
         use std::sync::Arc;
 
         // 创建一个 TimestampSecondArray
@@ -766,7 +763,7 @@ mod tests {
         let num_rows = 1000;
         let num_columns = 100;
         let str_len = 4;
-        let temp_dir = tempfile::tempdir()?.into_path();
+        let _temp_dir = tempfile::tempdir()?.into_path();
         let temp_dir = std::env::current_dir()?.join("temp_dir");
         let with_pk = true;
         let to_write_schema = create_schema(num_columns, with_pk);
@@ -781,7 +778,6 @@ mod tests {
                 .into_os_string()
                 .into_string()
                 .unwrap();
-            dbg!(&path);
             let writer_conf = LakeSoulIOConfigBuilder::new()
                 .with_files(vec![path.clone()])
                 // .with_prefix(tempfile::tempdir()?.into_path().into_os_string().into_string().unwrap())
@@ -805,13 +801,13 @@ mod tests {
                 Builder::new_multi_thread().enable_all().build().unwrap()
             )?;
 
-            let start = Instant::now();
+            let _start = Instant::now();
             for _ in 0..num_batch {
                 let once_start = Instant::now();
                 writer.write_batch(create_batch(num_columns, num_rows, str_len, &mut generator))?;
                 println!("write batch once cost: {}", once_start.elapsed().as_millis());
             }
-            let flush_start = Instant::now();
+            let _flush_start = Instant::now();
             writer.flush_and_close()?;
         }
 

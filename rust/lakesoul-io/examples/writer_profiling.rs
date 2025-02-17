@@ -49,7 +49,6 @@ fn main() -> Result<()> {
         .into_os_string()
         .into_string()
         .unwrap();
-    dbg!(&path);
     let writer_conf = LakeSoulIOConfigBuilder::new()
         .with_files(vec![path.clone()])
         .with_thread_num(2)
@@ -67,7 +66,7 @@ fn main() -> Result<()> {
         // .with_aux_sort_column("col2".to_string())
         .build();
 
-    let writer = SyncSendableMutableLakeSoulWriter::try_new(writer_conf, runtime)?;
+    let mut writer = SyncSendableMutableLakeSoulWriter::try_new(writer_conf, runtime)?;
 
     let start = Instant::now();
     for _ in 0..num_batch {

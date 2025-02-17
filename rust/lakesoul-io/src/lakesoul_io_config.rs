@@ -8,19 +8,19 @@ use anyhow::anyhow;
 use arrow::error::ArrowError;
 use arrow_schema::{Schema, SchemaRef};
 pub use datafusion::error::{DataFusionError, Result};
-use datafusion::execution::context::{QueryPlanner, SessionState};
+use datafusion::execution::context::QueryPlanner;
 use datafusion::execution::memory_pool::FairSpillPool;
 use datafusion::execution::object_store::ObjectStoreUrl;
-use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
+use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
+use datafusion::execution::SessionStateBuilder;
 use datafusion::logical_expr::Expr;
 use datafusion::optimizer::analyzer::type_coercion::TypeCoercion;
 use datafusion::optimizer::push_down_filter::PushDownFilter;
-use datafusion::optimizer::push_down_projection::PushDownProjection;
-use datafusion::optimizer::rewrite_disjunctive_predicate::RewriteDisjunctivePredicate;
 use datafusion::optimizer::simplify_expressions::SimplifyExpressions;
 use datafusion::optimizer::unwrap_cast_in_comparison::UnwrapCastInComparison;
+use datafusion::physical_optimizer::projection_pushdown::ProjectionPushdown;
 use datafusion::prelude::{SessionConfig, SessionContext};
-use datafusion_common::DataFusionError::{External, ObjectStore};
+use datafusion_common::DataFusionError::External;
 use datafusion_substrait::substrait::proto::Plan;
 use derivative::Derivative;
 use log::info;
@@ -52,7 +52,6 @@ pub static OPTION_KEY_CDC_COLUMN: &str = "cdc_column";
 pub static OPTION_KEY_IS_COMPACTED: &str = "is_compacted";
 pub static OPTION_KEY_MAX_FILE_SIZE: &str = "max_file_size";
 pub static OPTION_KEY_COMPUTE_LSH: &str = "compute_lsh";
-
 
 #[derive(Debug, Derivative)]
 #[derivative(Default, Clone)]
@@ -200,9 +199,8 @@ impl LakeSoulIOConfig {
     }
 
     pub fn compute_lsh(&self) -> bool {
-        self.option(OPTION_KEY_COMPUTE_LSH).map_or(true,|x| x.eq("true"))
+        self.option(OPTION_KEY_COMPUTE_LSH).map_or(true, |x| x.eq("true"))
     }
-
 }
 
 #[derive(Derivative, Debug)]
@@ -216,6 +214,12 @@ impl LakeSoulIOConfigBuilder {
         LakeSoulIOConfigBuilder {
             config: LakeSoulIOConfig::default(),
         }
+    }
+
+    pub fn new_with_object_store_options(options: HashMap<String, String>) -> Self {
+        let mut builder = LakeSoulIOConfigBuilder::new();
+        builder.config.object_store_options = options;
+        builder
     }
 
     pub fn with_prefix(mut self, prefix: String) -> Self {
@@ -363,7 +367,7 @@ impl LakeSoulIOConfigBuilder {
         self
     }
 
-    pub fn with_seed(mut self,seed:u64) -> Self {
+    pub fn with_seed(mut self, seed: u64) -> Self {
         self.config.seed = seed;
         self
     }
@@ -417,7 +421,7 @@ pub fn register_s3_object_store(url: &Url, config: &LakeSoulIOConfig, runtime: &
         .or_else(|| config.object_store_options.get("fs.s3a.endpoint").cloned());
     let bucket = config.object_store_options.get("fs.s3a.bucket").cloned();
     let virtual_path_style = config.object_store_options.get("fs.s3a.path.style.access").cloned();
-    let virtual_path_style = virtual_path_style.is_some_and(|s| s == "true");
+    let virtual_path_style = !virtual_path_style.is_some_and(|s| s != "true");
     if !virtual_path_style {
         if let (Some(endpoint_str), Some(bucket)) = (&endpoint, &bucket) {
             // for host style access with endpoint defined, we need to check endpoint contains bucket name
@@ -439,12 +443,16 @@ pub fn register_s3_object_store(url: &Url, config: &LakeSoulIOConfig, runtime: &
     }
 
     if bucket.is_none() {
-        return Err(DataFusionError::ArrowError(ArrowError::InvalidArgumentError(
-            "missing fs.s3a.bucket".to_string(),
-        )));
+        return Err(DataFusionError::ArrowError(
+            ArrowError::InvalidArgumentError("missing fs.s3a.bucket".to_string()),
+            None,
+        ));
     }
 
-    let retry_config = RetryConfig::default();
+    let mut retry_config = RetryConfig::default();
+    retry_config.backoff.base = 2.5;
+    retry_config.backoff.max_backoff = Duration::from_secs(20);
+
     let mut s3_store_builder = AmazonS3Builder::new()
         .with_region(region.unwrap_or_else(|| "us-east-1".to_owned()))
         .with_bucket_name(bucket.unwrap())
@@ -453,9 +461,9 @@ pub fn register_s3_object_store(url: &Url, config: &LakeSoulIOConfig, runtime: &
         .with_client_options(
             ClientOptions::new()
                 .with_allow_http(true)
-                .with_connect_timeout(Duration::from_secs(10))
-                .with_pool_idle_timeout(Duration::from_secs(300))
-                .with_timeout(Duration::from_secs(10)),
+                .with_connect_timeout(Duration::from_secs(30))
+                .with_pool_idle_timeout(Duration::from_secs(600))
+                .with_timeout(Duration::from_secs(30)),
         )
         .with_allow_http(true);
     if let (Some(k), Some(s)) = (key, secret) {
@@ -464,12 +472,12 @@ pub fn register_s3_object_store(url: &Url, config: &LakeSoulIOConfig, runtime: &
     if let Some(ep) = endpoint {
         s3_store_builder = s3_store_builder.with_endpoint(ep);
     }
-    let s3_store = Arc::new(s3_store_builder.build()?);
+    let s3_store = Arc::new(s3_store_builder.build().map_err(|e| DataFusionError::ObjectStore(e))?);
     runtime.register_object_store(url, s3_store);
     Ok(())
 }
 
-fn register_hdfs_object_store(
+pub fn register_hdfs_object_store(
     _url: &Url,
     _host: &str,
     _config: &LakeSoulIOConfig,
@@ -542,8 +550,8 @@ fn register_object_store(path: &str, config: &mut LakeSoulIOConfig, runtime: &Ru
             // Support Windows drive letter paths like "c:" or "d:"
             scheme if scheme.len() == 1 && scheme.chars().next().unwrap().is_ascii_alphabetic() => {
                 Ok(format!("file://{}", path))
-            },
-            _ => Err(ObjectStore(object_store::Error::NotSupported {
+            }
+            _ => Err(DataFusionError::ObjectStore(object_store::Error::NotSupported {
                 source: "FileSystem not supported".into(),
             })),
         },
@@ -573,7 +581,7 @@ pub fn create_session_context_with_planner(
     let mut sess_conf = SessionConfig::default()
         .with_batch_size(config.batch_size)
         .with_parquet_pruning(true)
-        .with_prefetch(config.prefetch_size)
+        // .with_prefetch(config.prefetch_size)
         .with_information_schema(true)
         .with_create_default_catalog_and_schema(true);
 
@@ -582,17 +590,14 @@ pub fn create_session_context_with_planner(
     sess_conf.options_mut().execution.parquet.pushdown_filters = config.parquet_filter_pushdown;
     sess_conf.options_mut().execution.target_partitions = 1;
     sess_conf.options_mut().execution.parquet.dictionary_enabled = Some(false);
-    // sess_conf.options_mut().execution.sort_in_place_threshold_bytes = 16 * 1024;
-    // sess_conf.options_mut().execution.sort_spill_reservation_bytes = 2 * 1024 * 1024;
-    // sess_conf.options_mut().catalog.default_catalog = "lakesoul".into();
+    sess_conf.options_mut().execution.parquet.schema_force_view_types = false;
 
-    let mut runtime_conf = RuntimeConfig::new();
+    let mut runtime_conf = RuntimeEnvBuilder::new();
     if let Some(pool_size) = config.pool_size() {
         let memory_pool = FairSpillPool::new(pool_size);
-        dbg!(&memory_pool);
         runtime_conf = runtime_conf.with_memory_pool(Arc::new(memory_pool));
     }
-    let runtime = RuntimeEnv::new(runtime_conf)?;
+    let runtime = runtime_conf.build()?;
 
     // firstly parse default fs if exist
     let default_fs = config
@@ -611,6 +616,10 @@ pub fn create_session_context_with_planner(
         info!("NativeIO register prefix fs {}", prefix);
         let normalized_prefix = register_object_store(&prefix, config, &runtime)?;
         config.prefix = normalized_prefix;
+    } else if let Ok(warehouse_prefix) = std::env::var("LAKESOUL_WAREHOUSE_PREFIX") {
+        info!("NativeIO register warehouse prefix {}", warehouse_prefix);
+        let normalized_prefix = register_object_store(&warehouse_prefix, config, &runtime)?;
+        config.prefix = normalized_prefix;
     }
     debug!("{}", &config.prefix);
 
@@ -625,35 +634,27 @@ pub fn create_session_context_with_planner(
     info!("NativeIO normalized file names: {:?}", config.files);
     info!("NativeIO final config: {:?}", config);
 
-    // create session context
-    let mut state = if let Some(planner) = planner {
-        SessionState::new_with_config_rt(sess_conf, Arc::new(runtime)).with_query_planner(planner)
+    let builder = SessionStateBuilder::new()
+        .with_config(sess_conf)
+        .with_runtime_env(Arc::new(runtime));
+    let builder = if let Some(planner) = planner {
+        builder.with_query_planner(planner)
     } else {
-        SessionState::new_with_config_rt(sess_conf, Arc::new(runtime))
+        builder
     };
+    // create session context
     // only keep projection/filter rules as others are unnecessary
-    let physical_opt_rules = state
-        .physical_optimizers()
-        .iter()
-        .filter_map(|r| {
-            // this rule is private mod in datafusion, so we use name to filter out it
-            if r.name() == "ProjectionPushdown" {
-                Some(r.clone())
-            } else {
-                None
-            }
-        })
-        .collect();
-    state = state
+    let state = builder
         .with_analyzer_rules(vec![Arc::new(TypeCoercion {})])
         .with_optimizer_rules(vec![
             Arc::new(PushDownFilter {}),
-            Arc::new(PushDownProjection {}),
+            // Arc::new(ProjectionPushdown {}),
             Arc::new(SimplifyExpressions {}),
             Arc::new(UnwrapCastInComparison {}),
-            Arc::new(RewriteDisjunctivePredicate {}),
+            // Arc::new(RewriteDisjunctivePredicate {}),
         ])
-        .with_physical_optimizer_rules(physical_opt_rules);
+        .with_physical_optimizer_rules(vec![Arc::new(ProjectionPushdown {})])
+        .build();
 
     Ok(SessionContext::new_with_state(state))
 }
@@ -678,12 +679,12 @@ mod tests {
                 "file:///some/absolute/local/file2".to_string(),
             ]
         );
-        let mut lakesoulconfigbuilder = LakeSoulIOConfigBuilder::from(conf.clone());
+        let lakesoulconfigbuilder = LakeSoulIOConfigBuilder::from(conf.clone());
         let conf = lakesoulconfigbuilder.build();
-        assert_eq!(conf.max_file_size,None);
-        assert_eq!(conf.max_row_group_size,250000);
-        assert_eq!(conf.max_row_group_num_values,2147483647);
-        assert_eq!(conf.prefetch_size,1);
-        assert_eq!(conf.parquet_filter_pushdown,false);
+        assert_eq!(conf.max_file_size, None);
+        assert_eq!(conf.max_row_group_size, 250000);
+        assert_eq!(conf.max_row_group_num_values, 2147483647);
+        assert_eq!(conf.prefetch_size, 1);
+        assert_eq!(conf.parquet_filter_pushdown, false);
     }
 }
