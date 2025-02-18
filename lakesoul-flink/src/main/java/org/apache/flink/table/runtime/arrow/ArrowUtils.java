@@ -18,30 +18,11 @@
 
 package org.apache.flink.table.runtime.arrow;
 
-import org.apache.arrow.flatbuf.MessageHeader;
-import org.apache.arrow.memory.BufferAllocator;
-import org.apache.arrow.memory.RootAllocator;
-import org.apache.arrow.vector.*;
-import org.apache.arrow.vector.complex.ListVector;
-import org.apache.arrow.vector.complex.MapVector;
-import org.apache.arrow.vector.complex.StructVector;
-import org.apache.arrow.vector.ipc.ArrowStreamWriter;
-import org.apache.arrow.vector.ipc.ReadChannel;
-import org.apache.arrow.vector.ipc.WriteChannel;
-import org.apache.arrow.vector.ipc.message.MessageMetadataResult;
-import org.apache.arrow.vector.ipc.message.MessageSerializer;
-import org.apache.arrow.vector.types.DateUnit;
-import org.apache.arrow.vector.types.FloatingPointPrecision;
-import org.apache.arrow.vector.types.pojo.ArrowType;
-import org.apache.arrow.vector.types.pojo.Field;
-import org.apache.arrow.vector.types.pojo.FieldType;
-import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.api.java.typeutils.TypeExtractor;
 import org.apache.flink.configuration.ExecutionOptions;
 import org.apache.flink.core.memory.ByteArrayOutputStreamWithPos;
-import org.apache.flink.shaded.guava30.com.google.common.collect.LinkedHashMultiset;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.internal.TableEnvironmentImpl;
@@ -61,6 +42,48 @@ import org.apache.flink.table.types.utils.TypeConversions;
 import org.apache.flink.types.Row;
 import org.apache.flink.types.RowKind;
 import org.apache.flink.util.Preconditions;
+
+import org.apache.flink.shaded.guava31.com.google.common.collect.LinkedHashMultiset;
+
+import org.apache.arrow.flatbuf.MessageHeader;
+import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.memory.RootAllocator;
+import org.apache.arrow.vector.BigIntVector;
+import org.apache.arrow.vector.BitVector;
+import org.apache.arrow.vector.DateDayVector;
+import org.apache.arrow.vector.DecimalVector;
+import org.apache.arrow.vector.FieldVector;
+import org.apache.arrow.vector.FixedSizeBinaryVector;
+import org.apache.arrow.vector.Float4Vector;
+import org.apache.arrow.vector.Float8Vector;
+import org.apache.arrow.vector.IntVector;
+import org.apache.arrow.vector.NullVector;
+import org.apache.arrow.vector.SmallIntVector;
+import org.apache.arrow.vector.TimeMicroVector;
+import org.apache.arrow.vector.TimeMilliVector;
+import org.apache.arrow.vector.TimeNanoVector;
+import org.apache.arrow.vector.TimeSecVector;
+import org.apache.arrow.vector.TimeStampVector;
+import org.apache.arrow.vector.TinyIntVector;
+import org.apache.arrow.vector.ValueVector;
+import org.apache.arrow.vector.VarBinaryVector;
+import org.apache.arrow.vector.VarCharVector;
+import org.apache.arrow.vector.VectorSchemaRoot;
+import org.apache.arrow.vector.complex.ListVector;
+import org.apache.arrow.vector.complex.MapVector;
+import org.apache.arrow.vector.complex.StructVector;
+import org.apache.arrow.vector.ipc.ArrowStreamWriter;
+import org.apache.arrow.vector.ipc.ReadChannel;
+import org.apache.arrow.vector.ipc.WriteChannel;
+import org.apache.arrow.vector.ipc.message.MessageMetadataResult;
+import org.apache.arrow.vector.ipc.message.MessageSerializer;
+import org.apache.arrow.vector.types.DateUnit;
+import org.apache.arrow.vector.types.FloatingPointPrecision;
+import org.apache.arrow.vector.types.TimeUnit;
+import org.apache.arrow.vector.types.pojo.ArrowType;
+import org.apache.arrow.vector.types.pojo.Field;
+import org.apache.arrow.vector.types.pojo.FieldType;
+import org.apache.arrow.vector.types.pojo.Schema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -78,9 +101,7 @@ import java.util.stream.Collectors;
 
 import static org.apache.arrow.vector.types.TimeUnit.*;
 
-/**
- * Utilities for Arrow.
- */
+/** Utilities for Arrow. */
 @Internal
 public final class ArrowUtils {
 
@@ -184,9 +205,7 @@ public final class ArrowUtils {
         return new Field(fieldName, fieldType, children);
     }
 
-    /**
-     * Creates an {@link ArrowWriter} for the specified {@link VectorSchemaRoot}.
-     */
+    /** Creates an {@link ArrowWriter} for the specified {@link VectorSchemaRoot}. */
     public static ArrowWriter<RowData> createRowDataArrowWriter(
             VectorSchemaRoot root, RowType rowType) {
         ArrowFieldWriter<RowData>[] fieldWriters =
@@ -354,9 +373,7 @@ public final class ArrowUtils {
         }
     }
 
-    /**
-     * Creates an {@link ArrowReader} for the specified {@link VectorSchemaRoot}.
-     */
+    /** Creates an {@link ArrowReader} for the specified {@link VectorSchemaRoot}. */
     public static ArrowReader createArrowReader(VectorSchemaRoot root, RowType rowType) {
         List<ColumnVector> columnVectors = new ArrayList<>();
         List<FieldVector> fieldVectors = root.getFieldVectors();
@@ -485,9 +502,7 @@ public final class ArrowUtils {
         }
     }
 
-    /**
-     * Fills a buffer with data read from the channel.
-     */
+    /** Fills a buffer with data read from the channel. */
     private static void readFully(ReadableByteChannel channel, ByteBuffer dst) throws IOException {
         int expected = dst.remaining();
         while (dst.hasRemaining()) {
@@ -498,9 +513,7 @@ public final class ArrowUtils {
         }
     }
 
-    /**
-     * Convert Flink table to Pandas DataFrame.
-     */
+    /** Convert Flink table to Pandas DataFrame. */
     public static CustomIterator<byte[]> collectAsPandasDataFrame(
             Table table, int maxArrowBatchSize) throws Exception {
         checkArrowUsable();
