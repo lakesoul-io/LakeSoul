@@ -5,6 +5,7 @@
 package org.apache.spark.sql.lakesoul
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
+import org.apache.spark.ml.lakesoul.scanns.algorithm.L2ScalarRandomProjectionNNS
 //import org.apache.spark.ml.lakesoul.scanns.algorithm.L2ScalarRandomProjectionNNS
 import io.jhdf.HdfFile
 import org.apache.spark.sql._
@@ -30,7 +31,7 @@ class ANNCase extends QueryTest
   with LakeSoulTestUtils with LakeSoulSQLCommandTest {
 
   val testDatasetSize = 10000
-  val numQuery = 5
+  val numQuery = 10
   val topK = 100
   val sampleIndices = scala.util.Random.shuffle((0 until testDatasetSize).toList).take(numQuery)
 
@@ -330,54 +331,57 @@ class ANNCase extends QueryTest
     println(s"Average recall@$topK = $avgRecall")
   }
 
-  // test("test LinkedIn LSH on MNIST") {
-  //   val hdfFile = new HdfFile(Paths.get("/Users/ceng/Downloads/fashion-mnist-784-euclidean.hdf5"))
+  test("test LinkedIn LSH on MNIST") {
+    val hdfFile = new HdfFile(Paths.get("/Users/ceng/Downloads/fashion-mnist-784-euclidean.hdf5"))
 
-  //   val trainDataset = hdfFile.getDatasetByPath("train")
-  //   val testDataset = hdfFile.getDatasetByPath("test")
-  //   val neighborDataset = hdfFile.getDatasetByPath("neighbors")
-  //   val trainData = trainDataset.getData()
-  //   val testData = testDataset.getData()
-  //   val neighborData = neighborDataset.getData()
+    val trainDataset = hdfFile.getDatasetByPath("train")
+    val testDataset = hdfFile.getDatasetByPath("test")
+    val neighborDataset = hdfFile.getDatasetByPath("neighbors")
+    val trainData = trainDataset.getData()
+    val testData = testDataset.getData()
+    val neighborData = neighborDataset.getData()
 
-  //   // 将数据转换为向量格式
-  //   val trainVectors = trainData.asInstanceOf[Array[Array[Float]]]
-  //   val testVectors = testData.asInstanceOf[Array[Array[Float]]]
-  //   val trueNeighbors = neighborData.asInstanceOf[Array[Array[Int]]]
+    // 将数据转换为向量格式
+    val trainVectors = trainData.asInstanceOf[Array[Array[Float]]]
+    val testVectors = testData.asInstanceOf[Array[Array[Float]]]
+    val trueNeighbors = neighborData.asInstanceOf[Array[Array[Int]]]
 
-  //   val sampledTestRDD = spark.sparkContext.parallelize(
-  //     sampleIndices.map { case idx =>
-  //       (idx.toLong, org.apache.spark.ml.linalg.Vectors.dense(testVectors(idx).map(_.toDouble)))
-  //     }
-  //   )
+    val sampledTestRDD = spark.sparkContext.parallelize(
+      sampleIndices.map { case idx =>
+        (idx.toLong, org.apache.spark.ml.linalg.Vectors.dense(testVectors(idx).map(_.toDouble)))
+      }
+    )
 
-  //   val candidateRDD = spark.sparkContext.parallelize(
-  //     trainVectors.zipWithIndex.map { case (vec, idx) =>
-  //       (idx.toLong, org.apache.spark.ml.linalg.Vectors.dense(vec.map(_.toDouble)))
-  //     }
-  //   )
+    val candidateRDD = spark.sparkContext.parallelize(
+      trainVectors.zipWithIndex.map { case (vec, idx) =>
+        (idx.toLong, org.apache.spark.ml.linalg.Vectors.dense(vec.map(_.toDouble)))
+      }
+    )
 
-  //   val numFeatures = trainVectors(0).length
+    val numFeatures = trainVectors(0).length
 
-  //   val model = new L2ScalarRandomProjectionNNS()
-  //     .setNumHashes(numFeatures)
-  //     .setSignatureLength(15)
-  //     .setJoinParallelism(5000)
-  //     .setBucketLimit(1000)
-  //     .setShouldSampleBuckets(true)
-  //     .setNumOutputPartitions(100)
-  //     .createModel(numFeatures)
+    val model = new L2ScalarRandomProjectionNNS()
+      .setNumHashes(512)
+      .setSignatureLength(16)
+      //      .setJoinParallelism(5000)
+      //      .setBucketLimit(1000)
+      .setBucketWidth(trainVectors.length / 8)
+      //      .setShouldSampleBuckets(true)
+      //      .setNumOutputPartitions(100)
+      .createModel(numFeatures)
 
-  //   val result: Array[(Long, Long, Double)] = model.getAllNearestNeighbors(sampledTestRDD, candidateRDD, topK).collect()
-  //   // 将结果转换为Row格式
-  //   val predictedNeighborsAsRows = result.map { case (queryId, neighborId, distance) =>
-  //     Row(queryId, neighborId, distance)
-  //   }
+    val result: Array[(Long, Long, Double)] = spark.time(
+      model.getAllNearestNeighbors(sampledTestRDD, candidateRDD, topK).collect()
+    )
+    // 将结果转换为Row格式
+    val predictedNeighborsAsRows = result.map { case (queryId, neighborId, distance) =>
+      Row(queryId, neighborId, distance)
+    }
 
-  //   // 计算召回率
-  //   val avgRecall = calculateRecall(sampleIndices, trueNeighbors, predictedNeighborsAsRows, topK, numQuery)
-  //   println(s"Average recall@$topK = $avgRecall")
-  // }
+    // 计算召回率
+    val avgRecall = calculateRecall(sampleIndices, trueNeighbors, predictedNeighborsAsRows, topK, numQuery)
+    println(s"Average recall@$topK = $avgRecall")
+  }
 
   test("test LakeSoul BucketedRandomProjectionLSH on MNIST") {
     val hdfFile = new HdfFile(Paths.get("/Users/ceng/Downloads/fashion-mnist-784-euclidean.hdf5"))
