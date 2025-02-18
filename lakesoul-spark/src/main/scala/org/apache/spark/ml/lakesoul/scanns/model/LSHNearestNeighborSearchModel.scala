@@ -1,7 +1,7 @@
 /**
- * Copyright 2018 LinkedIn Corporation. All rights reserved. Licensed under the BSD-2 Clause license.
- * See LICENSE in the project root for license information.
- */
+  * Copyright 2018 LinkedIn Corporation. All rights reserved. Licensed under the BSD-2 Clause license.
+  * See LICENSE in the project root for license information.
+  */
 package org.apache.spark.ml.lakesoul.scanns.model
 
 import org.apache.spark.ml.lakesoul.scanns.Types.{BandedHashes, Item, ItemId, ItemIdDistancePair}
@@ -46,19 +46,19 @@ abstract class LSHNearestNeighborSearchModel[T <: LSHNearestNeighborSearchModel[
     * The primary purpose of this structure is to produce the results one at a time rather than materialize all of them
     * in memory. Materializing all together leads to GC overhead errors.
     *
-    * @param bucketsIt Iterator of the tuples of the two item id arrays
-    * @param itemVectors For computation of jaccard similarity, we need to know the attributes of the item
-    *                         given the item id. This map contains a mapping from the item id [[Long]] to
-    *                         [[Set]] of attributes
+    * @param bucketsIt           Iterator of the tuples of the two item id arrays
+    * @param itemVectors         For computation of jaccard similarity, we need to know the attributes of the item
+    *                            given the item id. This map contains a mapping from the item id [[Long]] to
+    *                            [[Set]] of attributes
     * @param numNearestNeighbors Maximum number of candidates required for each item
     */
   private[model] class NearestNeighborIterator(bucketsIt: Iterator[Array[mutable.ArrayBuffer[ItemId]]],
-                                itemVectors: mutable.Map[ItemId, Vector],
-                                numNearestNeighbors: Int) extends Iterator[(ItemId, Iterator[ItemIdDistancePair])]
+                                               itemVectors: mutable.Map[ItemId, Vector],
+                                               numNearestNeighbors: Int) extends Iterator[(ItemId, IndexedSeq[ItemIdDistancePair])]
     with Serializable {
 
     // this will be the next element that the iterator returns on a call to next()
-    private var nextResult: Option[(ItemId, Iterator[ItemIdDistancePair])] = None
+    private var nextResult: Option[(ItemId, IndexedSeq[ItemIdDistancePair])] = None
 
     // this is the current tuple in the bucketsIt iterator that is being scanned
     private var currentTuple = if (bucketsIt.hasNext) Some(bucketsIt.next) else None
@@ -77,7 +77,7 @@ abstract class LSHNearestNeighborSearchModel[T <: LSHNearestNeighborSearchModel[
                 .map(c => (c, distance.compute(itemVectors(c), itemVectors(x(0)(currentIndex)))))
                 .foreach(queue.enqueue(_))
               if (queue.nonEmpty()) {
-                nextResult = Some((x(0)(currentIndex), queue.iterator()))
+                nextResult = Some((x(0)(currentIndex), queue.iterator().toIndexedSeq))
                 done = true
               }
               currentIndex += 1
@@ -98,7 +98,7 @@ abstract class LSHNearestNeighborSearchModel[T <: LSHNearestNeighborSearchModel[
 
     override def hasNext: Boolean = nextResult.isDefined
 
-    override def next(): (ItemId, Iterator[ItemIdDistancePair]) = {
+    override def next(): (ItemId, IndexedSeq[ItemIdDistancePair]) = {
       if (hasNext) {
         val ret = nextResult.get
         populateNext()
@@ -156,7 +156,7 @@ abstract class LSHNearestNeighborSearchModel[T <: LSHNearestNeighborSearchModel[
     */
   def explodeData(transformedData: RDD[(ItemId, (Vector, BandedHashes))]): RDD[(Int, Item)] = {
     transformedData.flatMap { case (id, (vector, bandedHashes)) =>
-      bandedHashes.zipWithIndex.map(getHashCode).map{ x => (x, (id, vector)) }
+      bandedHashes.zipWithIndex.map(getHashCode).map { x => (x, (id, vector)) }
     }
   }
 
@@ -179,7 +179,7 @@ abstract class LSHNearestNeighborSearchModel[T <: LSHNearestNeighborSearchModel[
     System.out.println(s"Partition id [$partitionId] stats:")
     System.out.println(s"Size of item vectors map: [${itemVectors.size}]")
     System.out.println(s"Number of hash buckets: [${hashBuckets.size}]")
-    hashBuckets.foreach{ case (bucketId, items) =>
+    hashBuckets.foreach { case (bucketId, items) =>
       System.out.println(s"Bucket id [$bucketId] has [${items(0).size}] src items and [${items(1).size}] candidates")
     }
   }
@@ -187,19 +187,19 @@ abstract class LSHNearestNeighborSearchModel[T <: LSHNearestNeighborSearchModel[
   /**
     * This method updates the given hashBuckets map using the provided item iterator.
     *
-    * @param itemIt iterator over bucket ids and the contained items with their vector representations
-    * @param itemVectors item vector map that will be updated to keep a map of item ids to vectors
-    * @param hashBuckets map of bucket ids to items that fall in that bucket
+    * @param itemIt                iterator over bucket ids and the contained items with their vector representations
+    * @param itemVectors           item vector map that will be updated to keep a map of item ids to vectors
+    * @param hashBuckets           map of bucket ids to items that fall in that bucket
     * @param shouldReservoirSample boolean to decide whether for large buckets, reservoir sampling should be used for
     *                              populating them or simply the first encountered items till the limit is reached
-    * @param isCandidatePoolIt The updating of the hashBuckets map is identical for src and candidate items except for
-    *                          a small difference. This boolean is helpful in avoiding copying of code
+    * @param isCandidatePoolIt     The updating of the hashBuckets map is identical for src and candidate items except for
+    *                              a small difference. This boolean is helpful in avoiding copying of code
     */
   private def updateHashBuckets(itemIt: Iterator[(Int, (ItemId, Vector))],
-                        itemVectors: mutable.Map[ItemId, Vector],
-                        hashBuckets: mutable.Map[Int, Array[mutable.ArrayBuffer[ItemId]]],
-                        shouldReservoirSample: Boolean = false,
-                        isCandidatePoolIt: Boolean): Unit = {
+                                itemVectors: mutable.Map[ItemId, Vector],
+                                hashBuckets: mutable.Map[Int, Array[mutable.ArrayBuffer[ItemId]]],
+                                shouldReservoirSample: Boolean = false,
+                                isCandidatePoolIt: Boolean): Unit = {
     // Maintain number of elements seen by both arrays, to perform streaming reservoir sampling. If a bucket
     // has more than `bucketLimit` items, we use reservoir sampling to decide whether to keep the incoming items
     // or not so that we have a uniform sample of `bucketLimit` items at the end of processing the entire stream
@@ -221,7 +221,7 @@ abstract class LSHNearestNeighborSearchModel[T <: LSHNearestNeighborSearchModel[
               // Unfortunately, we can't remove the item vector for `hashBuckets(h)(selector)(index)` from itemVectors
               // map because some other bucket might still contain that item
               hashBuckets(h)(selector)(index) = id
-              if (! itemVectors.contains(id)) {
+              if (!itemVectors.contains(id)) {
                 itemVectors.put(id, vector)
               }
             }
@@ -229,14 +229,14 @@ abstract class LSHNearestNeighborSearchModel[T <: LSHNearestNeighborSearchModel[
           // if reservoir sampling is disabled, we just ignore everything else
         } else {
           hashBuckets(h)(selector) += id
-          if (! itemVectors.contains(id)) {
+          if (!itemVectors.contains(id)) {
             itemVectors.put(id, vector)
           }
         }
       } else {
-        if (! isCandidatePoolIt) {
+        if (!isCandidatePoolIt) {
           hashBuckets.put(h, Array(mutable.ArrayBuffer[ItemId](id), mutable.ArrayBuffer[ItemId]()))
-          if (! itemVectors.contains(id)) {
+          if (!itemVectors.contains(id)) {
             itemVectors.put(id, vector)
           }
         }
@@ -247,9 +247,9 @@ abstract class LSHNearestNeighborSearchModel[T <: LSHNearestNeighborSearchModel[
   /**
     * Get k nearest neighbors to all items in srcItems dataset from the candidatePool dataset
     *
-    * @param srcItems Items for which neighbors are to be found
+    * @param srcItems      Items for which neighbors are to be found
     * @param candidatePool Items which are potential candidates
-    * @param k number of nearest neighbors needed
+    * @param k             number of nearest neighbors needed
     * @return nearest neighbors in the form (srcItemId, candidateItemId, distance)
     */
   override def getAllNearestNeighbors(srcItems: RDD[Item], candidatePool: RDD[Item], k: Int):
@@ -261,44 +261,50 @@ abstract class LSHNearestNeighborSearchModel[T <: LSHNearestNeighborSearchModel[
     } else {
       explodeData(transform(candidatePool)).partitionBy(hashPartitioner)
     }
+    val zero: TopNQueue = new TopNQueue(k)
+
+    def seqOp(U: TopNQueue, V: IndexedSeq[ItemIdDistancePair]): TopNQueue = {
+      U.enqueue(V: _*);
+      U
+    }
+
+    def combOp(X: TopNQueue, Y: TopNQueue): TopNQueue = {
+      X.enqueue(Y.iterator().toSeq: _*);
+      X
+    }
+
     srcItemsExploded.zipPartitions(candidatePoolExploded) {
-        case (srcIt, candidateIt) => {
-          val itemVectors = mutable.Map[ItemId, Vector]()
-          val hashBuckets = mutable.Map[Int, Array[mutable.ArrayBuffer[ItemId]]]()
+      case (srcIt, candidateIt) => {
+        val itemVectors = mutable.Map[ItemId, Vector]()
+        val hashBuckets = mutable.Map[Int, Array[mutable.ArrayBuffer[ItemId]]]()
 
-          updateHashBuckets(
-            srcIt,
-            itemVectors,
-            hashBuckets,
-            shouldReservoirSample = $(shouldSampleBuckets),
-            isCandidatePoolIt = false)
-          updateHashBuckets(
-            candidateIt,
-            itemVectors,
-            hashBuckets,
-            shouldReservoirSample = $(shouldSampleBuckets),
-            isCandidatePoolIt = true)
+        updateHashBuckets(
+          srcIt,
+          itemVectors,
+          hashBuckets,
+          shouldReservoirSample = $(shouldSampleBuckets),
+          isCandidatePoolIt = false)
+        updateHashBuckets(
+          candidateIt,
+          itemVectors,
+          hashBuckets,
+          shouldReservoirSample = $(shouldSampleBuckets),
+          isCandidatePoolIt = true)
 
-          // TODO Start using loggers to log useful info
-          // logStats(TaskContext.getPartitionId(), itemVectors, hashBuckets)
-          new NearestNeighborIterator(hashBuckets.valuesIterator, itemVectors, k)
-        }
+        // TODO Start using loggers to log useful info
+        // logStats(TaskContext.getPartitionId(), itemVectors, hashBuckets)
+        new NearestNeighborIterator(hashBuckets.valuesIterator, itemVectors, k)
       }
-      .groupByKey()
-      .mapValues { candidateIter =>
-        val topN = new TopNQueue(k)
-        candidateIter.flatten.foreach(topN.enqueue(_))
-        topN.iterator()
-      }
-      .flatMap{ x => x._2.map(z => (x._1, z._1, z._2)) }
-      .repartition($(numOutputPartitions))
+    }
+      .aggregateByKey(zero, $(numOutputPartitions))(seqOp, combOp)
+      .flatMap { x => x._2.iterator().map(z => (x._1, z._1, z._2)) }
   }
 
   /**
     * Get k nearest neighbors for all input items from within itself
     *
     * @param items Set of items
-    * @param k number of nearest neighbors needed
+    * @param k     number of nearest neighbors needed
     * @return nearest neighbors in the form (srcItemId, candidateItemId, distance)
     */
   def getSelfAllNearestNeighbors(items: RDD[Item], k: Int): RDD[(ItemId, ItemId, Double)] = {
@@ -309,16 +315,16 @@ abstract class LSHNearestNeighborSearchModel[T <: LSHNearestNeighborSearchModel[
   /**
     * Get k nearest neighbors to the query vector from the given items
     *
-    * @param key query vector
+    * @param key   query vector
     * @param items items to be searched for nearest neighbors
-    * @param k number of nearest neighbors needed
+    * @param k     number of nearest neighbors needed
     * @return array of (itemId, distance) tuples
     */
   override def getNearestNeighbors(key: Vector, items: RDD[Item], k: Int): Array[ItemIdDistancePair] = {
     val hashes = items.sparkContext.broadcast(
       getBandedHashes(key).zipWithIndex.map(getHashCode).toSet)
     explodeData(transform(items))
-      .filter{ case (hash, _) => hashes.value.contains(hash) }
+      .filter { case (hash, _) => hashes.value.contains(hash) }
       .map { case (_, (id, vector)) =>
         (id, distance.compute(key.toSparse, vector))
       }
