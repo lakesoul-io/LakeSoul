@@ -5,7 +5,7 @@
 package org.apache.spark.sql.lakesoul
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
-//import com.linkedin.nn.algorithm.L2ScalarRandomProjectionNNS
+//import org.apache.spark.ml.lakesoul.scanns.algorithm.L2ScalarRandomProjectionNNS
 import io.jhdf.HdfFile
 import org.apache.spark.sql._
 import org.apache.spark.sql.internal.SQLConf
@@ -225,10 +225,6 @@ class ANNCase extends QueryTest
                   println(s"average recall = $recall")
 
               }
-            case _ =>
-              println("unexpected data type")
-            case _ =>
-              println("unexpected data type")
           }
         }
         finally {
