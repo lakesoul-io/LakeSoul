@@ -24,7 +24,7 @@ class L2ScalarRandomProjectionModel(val uid: String = Identifiable.randomUID("Sc
 
   override val distance: Distance = L2Distance
 
-  override private[scanns] def getHashFunctions: Array[ScalarRandomProjectionHashFunction] = hashFunctions
+  override private[ml] def getHashFunctions: Array[ScalarRandomProjectionHashFunction] = hashFunctions
 
   /**
    * Given an input vector, get the banded hashes by hashing it using the hash functions

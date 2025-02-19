@@ -14,7 +14,7 @@ trait LSHNNSParams extends Params {
    * reduced false negative rate, at the expense of added computational complexity. Should ideally be set to be a
    * multiple of [[signatureLength]]
    */
-  private[scanns] val numHashes:  IntParam =
+  private[ml] val numHashes:  IntParam =
     new IntParam(this, "numHashes", "Number of hashes to use for estimation", ParamValidators.gt(0))
 
   final def getNumHashes: Int = $(numHashes)
@@ -27,7 +27,7 @@ trait LSHNNSParams extends Params {
    * LSH AND-amplification can be used to reduce the false-positive rate. Upper bounded by value of [[numHashes]].
    * Should ideally be set to a divisor of [[numHashes]].
    */
-  private[scanns] val signatureLength: IntParam =
+  private[ml] val signatureLength: IntParam =
     new IntParam(
       this,
       "signatureLength",
@@ -45,7 +45,7 @@ trait LSHNNSParams extends Params {
    * Higher values ensure that a single partition does not process too much data but at the same time, higher values
    * increase task management overhead for Spark. Must be set carefully depending on the volume of data being processed
    */
-  private[scanns] val joinParallelism: IntParam = new IntParam(this, "joinParallelism",
+  private[ml] val joinParallelism: IntParam = new IntParam(this, "joinParallelism",
     "Paralellism of the join for nearest neighbor search", ParamValidators.gt(0))
 
   /** @group getParam */
@@ -62,7 +62,7 @@ trait LSHNNSParams extends Params {
    * This is crucial because within a bucket, we perform brute force search to calculate nearest neighbors and so we
    * cannot allow buckets to grow arbitrarily large without affecting performance drastically
    */
-  private[scanns] val bucketLimit: IntParam =
+  private[ml] val bucketLimit: IntParam =
     new IntParam(
       this,
       "bucketLimit",
@@ -84,7 +84,7 @@ trait LSHNNSParams extends Params {
     * For 1, set the parameter to false
     * For 2, set the parameter to true
     */
-  private[scanns] val shouldSampleBuckets: BooleanParam =
+  private[ml] val shouldSampleBuckets: BooleanParam =
     new BooleanParam(
       this,
       "shouldSampleBuckets",
@@ -105,7 +105,7 @@ trait LSHNNSParams extends Params {
    * partitions the output of the join be repartitioned. This is so that if the user tried to directly write the output
    * of nearest neighbors to HDFS, the number of files it will be split into will be a reasonable number.
    */
-  private[scanns] val numOutputPartitions: IntParam =
+  private[ml] val numOutputPartitions: IntParam =
     new IntParam(this, "numOutputPartitions", "Number of partitions in the output", ParamValidators.gt(0))
 
   /** @group getParam */

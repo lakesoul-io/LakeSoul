@@ -7,7 +7,7 @@ package org.apache.spark.ml.lakesoul.scanns.params
 import org.apache.spark.ml.param.{Param, ParamValidators, Params}
 
 trait BruteForceNNSParams extends Params {
-  private[scanns] val distanceMetric:  Param[String] = new Param(
+  private[ml] val distanceMetric:  Param[String] = new Param(
     this,
     "distanceMetric",
     "Distance metric for brute force search",

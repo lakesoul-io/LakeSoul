@@ -17,12 +17,12 @@ import org.apache.spark.ml.util.Identifiable
  * @param hashFunctions Array of pairs of integers that will be used for implementing minwise independent permutations
  */
 class JaccardMinHashModel(val uid: String = Identifiable.randomUID("MinhashLSH"),
-                          private[scanns] val hashFunctions: Array[MinHashFunction])
+                          private[ml] val hashFunctions: Array[MinHashFunction])
   extends LSHNearestNeighborSearchModel[JaccardMinHashModel] {
 
   override val distance: Distance = JaccardDistance
 
-  override private[scanns] def getHashFunctions: Array[MinHashFunction] = hashFunctions
+  override private[ml] def getHashFunctions: Array[MinHashFunction] = hashFunctions
 
   /**
    * Given an input vector, get the banded hashes by hashing it using the hash functions

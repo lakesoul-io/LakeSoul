@@ -6,7 +6,7 @@ package org.apache.spark.ml.lakesoul.scanns.lsh
 
 import org.apache.spark.ml.linalg.Vector
 
-private[scanns] abstract class HashFunction extends Serializable {
+private[ml] abstract class HashFunction extends Serializable {
 
   /**
     * Compute the hash signature of the supplied vector

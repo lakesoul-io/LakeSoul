@@ -17,12 +17,12 @@ import org.apache.spark.ml.util.Identifiable
  * @param hashFunctions Array of random projections that will be used for performing LSH
  */
 class CosineSignRandomProjectionModel(val uid: String = Identifiable.randomUID("SignRandomProjectionLSH"),
-                                      private[scanns] val hashFunctions: Array[SignRandomProjectionHashFunction])
+                                      private[ml] val hashFunctions: Array[SignRandomProjectionHashFunction])
   extends LSHNearestNeighborSearchModel[CosineSignRandomProjectionModel] {
 
   override val distance: Distance = CosineDistance
 
-  override private[scanns] def getHashFunctions: Array[SignRandomProjectionHashFunction] = hashFunctions
+  override private[ml] def getHashFunctions: Array[SignRandomProjectionHashFunction] = hashFunctions
 
   /**
    * Given an input vector, get the banded hashes by hashing it using the hash functions

@@ -453,4 +453,69 @@ class ANNCase extends QueryTest
     val avgRecall = calculateRecall(sampleIndices, trueNeighbors, predictedNeighbors, topK, numQuery)
     println(s"Average recall@$topK = $avgRecall")
   }
+
+  test("test LakeSoul ANN on MNIST") {
+    withTempDir { dir =>
+
+      val hdfFile = new HdfFile(Paths.get("/Users/ceng/Downloads/fashion-mnist-784-euclidean.hdf5"))
+
+      val trainDataset = hdfFile.getDatasetByPath("train")
+      val testDataset = hdfFile.getDatasetByPath("test")
+      val neighborDataset = hdfFile.getDatasetByPath("neighbors")
+      val trainData = trainDataset.getData()
+      val testData = testDataset.getData()
+      val neighborData = neighborDataset.getData()
+
+      // 将数据转换为向量格式
+      val trainVectors = trainData.asInstanceOf[Array[Array[Float]]]
+      val testVectors = testData.asInstanceOf[Array[Array[Float]]]
+      val trueNeighbors = neighborData.asInstanceOf[Array[Array[Int]]]
+
+      val trainDf = spark.createDataFrame(
+        spark.sparkContext.parallelize(trainVectors.zipWithIndex.map { case (vec, idx) =>
+          (idx.toLong, vec)
+        })
+      ).toDF("id", "features")
+      trainDf.write.format("lakesoul")
+        .option("hashPartitions", "id")
+        .option("hashBucketNum", 4)
+        .option(LakeSoulOptions.SHORT_TABLE_NAME, "trainData")
+        .mode("Overwrite")
+        .save(dir.getCanonicalPath)
+
+      val sampledTestRDD = spark.sparkContext.parallelize(
+        sampleIndices.map { case idx =>
+          (idx.toLong, org.apache.spark.ml.linalg.Vectors.dense(testVectors(idx).map(_.toDouble)))
+        }
+      )
+
+
+      val candidateRDD = spark.sparkContext.parallelize(
+        trainVectors.zipWithIndex.map { case (vec, idx) =>
+          (idx.toLong, org.apache.spark.ml.linalg.Vectors.dense(vec.map(_.toDouble)))
+        }
+      )
+
+
+      val numFeatures = trainVectors(0).length
+
+      val ann = new org.apache.spark.ml.lakesoul.feature.LakeSoulANN(spark)
+        .setSourceTable("trainData")
+        .setNumFeatures(numFeatures)
+
+
+      val result: Array[(Long, Long, Double)] = spark.time(
+        ann.getAllNearestNeighbors(sampledTestRDD, topK).collect()
+      )
+
+      // 将结果转换为Row格式
+      val predictedNeighborsAsRows = result.map { case (queryId, neighborId, distance) =>
+        Row(queryId, neighborId, distance)
+      }
+
+      // 计算召回率
+      val avgRecall = calculateRecall(sampleIndices, trueNeighbors, predictedNeighborsAsRows, topK, numQuery)
+      println(s"Average recall@$topK = $avgRecall")
+    }
+  }
 }

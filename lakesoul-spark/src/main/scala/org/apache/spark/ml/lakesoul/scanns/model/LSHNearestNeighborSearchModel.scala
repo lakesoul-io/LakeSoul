@@ -27,7 +27,7 @@ abstract class LSHNearestNeighborSearchModel[T <: LSHNearestNeighborSearchModel[
   /* Metric that will be used to compute pair-wise distances */
   val distance: Distance
 
-  private[scanns] def getHashFunctions: Array[_ <: HashFunction]
+  private[ml] def getHashFunctions: Array[_ <: HashFunction]
 
   /**
     * The input here is an iterator over a tuple of two [[mutable.ArrayBuffer]]. Both arrays contain item ids and
