@@ -71,9 +71,12 @@ mod integration_tests {
         for table in TPCH_TABLES {
             let table_provider = get_table(&ctx, table).await?;
             ctx.register_table(*table, table_provider)?;
-            let dataframe = ctx.sql(format!("select * from {}", table).as_str()).await?;
-
             let schema = get_tpch_table_schema(table);
+            let columns = schema.fields().iter().map(|f| f.name().as_str()).collect::<Vec<_>>().join(",");
+            let sql = format!("select {} from {}", columns, table);
+            let dataframe = ctx.sql(&sql).await?;
+
+            
 
             let builder = LakeSoulIOConfigBuilder::new()
                 .with_schema(Arc::new(schema))
