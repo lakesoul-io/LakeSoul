@@ -21,7 +21,7 @@ pub fn get_tbl_tpch_table_primary_keys(table: &str) -> Vec<String> {
 
         "orders" => vec![String::from("o_orderkey"), String::from("o_custkey")],
 
-        "lineitem" => vec![String::from("l_orderkey"), String::from("l_partkey")],
+        "lineitem" => vec![String::from("l_orderkey"), String::from("l_partkey"), String::from("l_suppkey"), String::from("l_linenumber")],
 
         "nation" => vec![String::from("n_nationkey"), String::from("n_name")],
 

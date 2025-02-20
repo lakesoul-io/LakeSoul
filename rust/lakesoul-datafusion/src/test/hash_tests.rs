@@ -3,13 +3,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 mod hash_tests {
+    use chrono::DateTime;
     use lakesoul_io::hash_utils::{HashValue, HASH_SEED};
 
     #[test]
     fn chrono_test() {
         let date = chrono::NaiveDate::parse_from_str("0001-01-01", "%Y-%m-%d").unwrap();
         let datetime = date.and_hms_opt(12, 12, 12).unwrap();
-        let epoch_time = chrono::NaiveDateTime::from_timestamp_millis(0).unwrap();
+        let epoch_time = DateTime::from_timestamp_millis(0).unwrap().naive_utc();
 
         println!("{}", datetime.signed_duration_since(epoch_time).num_days() as i32);
         println!(
@@ -27,7 +28,7 @@ mod hash_tests {
             lakesoul_io::constant::FLINK_TIMESTAMP_FORMAT,
         )
         .unwrap();
-        let epoch_time = chrono::NaiveDateTime::from_timestamp_millis(0).unwrap();
+        let epoch_time = DateTime::from_timestamp_millis(0).unwrap().naive_utc();
 
         println!("{}", datetime.signed_duration_since(epoch_time).num_days() as i32);
         println!(

@@ -13,7 +13,7 @@ use tokio_postgres::{Error, Row};
 
 use crate::pooled_client::PgConnection;
 pub use crate::pooled_client::PooledClient;
-use error::{LakeSoulMetaDataError, Result};
+pub use error::{LakeSoulMetaDataError, Result};
 pub use metadata_client::{MetaDataClient, MetaDataClientRef};
 use proto::proto::entity;
 
@@ -57,7 +57,8 @@ impl DataFileOp {
     fn from_proto_data_file_op(data_file_op: &entity::DataFileOp) -> Result<Self> {
         Ok(DataFileOp {
             path: data_file_op.path.clone(),
-            file_op: entity::FileOp::try_from(data_file_op.file_op)?
+            file_op: entity::FileOp::try_from(data_file_op.file_op)
+                .map_err(|e| LakeSoulMetaDataError::Internal(e.to_string()))?
                 .as_str_name()
                 .to_string(),
             size: data_file_op.size,
@@ -91,6 +92,7 @@ pub enum DaoType {
     SelectPartitionVersionByTableIdAndDescAndVersion = DAO_TYPE_QUERY_ONE_OFFSET + 8,
 
     SelectOneDataCommitInfoByTableIdAndPartitionDescAndCommitId = DAO_TYPE_QUERY_ONE_OFFSET + 9,
+    SelectTableDomainById = DAO_TYPE_QUERY_ONE_OFFSET + 10,
 
     // ==== Query List ====
     ListNamespaces = DAO_TYPE_QUERY_LIST_OFFSET,
@@ -252,6 +254,10 @@ async fn get_prepared_statement<'a>(
             from data_commit_info
             where table_id = $1::TEXT and partition_desc = $2::TEXT and commit_id = $3::UUID",
 
+        // Select Table Domain by id
+        DaoType::SelectTableDomainById =>
+            "select table_name, table_id, table_namespace, domain
+             from table_name_id where table_id = $1::TEXT",
 
         // Insert
         DaoType::InsertNamespace =>
@@ -501,6 +507,15 @@ pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
+        DaoType::SelectTableDomainById if params.len() == 1 => {
+            let result = client
+                .query(&statement, &[&params[0]])
+                .await;
+            match result {
+                Ok(rows) => rows,
+                Err(e) => return Err(LakeSoulMetaDataError::from(e)),
+            }
+        }
         DaoType::ListCommitOpsBetweenVersions
         | DaoType::ListPartitionVersionByTableIdAndPartitionDescAndVersionRange
             if params.len() == 4 =>
@@ -624,7 +639,9 @@ pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string
 
         DaoType::SelectTablePathIdByTablePath | DaoType::ListAllTablePath => ResultType::TablePathId,
 
-        DaoType::SelectTableNameIdByTableName | DaoType::ListTableNameByNamespace => ResultType::TableNameId,
+        DaoType::SelectTableNameIdByTableName
+        | DaoType::ListTableNameByNamespace
+        | DaoType::SelectTableDomainById => ResultType::TableNameId,
 
         DaoType::ListPartitionByTableId
         | DaoType::ListPartitionDescByTableIdAndParList

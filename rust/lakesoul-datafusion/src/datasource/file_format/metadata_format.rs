@@ -12,15 +12,24 @@ use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaBuilder, SchemaRef};
-use datafusion::common::{project_schema, FileType, Statistics};
-use datafusion::datasource::physical_plan::ParquetExec;
+use datafusion::common::parsers::CompressionTypeVariant;
+use datafusion::common::{project_schema, GetExt, Statistics};
+use datafusion::datasource::file_format::file_compression_type::FileCompressionType;
+use datafusion::datasource::file_format::parquet::ParquetFormatFactory;
+use datafusion::datasource::listing::ListingOptions;
+use datafusion::datasource::physical_plan::parquet::ParquetExecBuilder;
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
-use datafusion::physical_expr::PhysicalSortExpr;
+use datafusion::logical_expr::dml::InsertOp;
+use datafusion::physical_expr::{EquivalenceProperties, LexOrdering, LexRequirement};
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::union::UnionExec;
-use datafusion::physical_plan::{DisplayAs, DisplayFormatType, Distribution, Partitioning, SendableRecordBatchStream};
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, Distribution, ExecutionPlanProperties, Partitioning, PlanProperties,
+    SendableRecordBatchStream,
+};
 use datafusion::sql::TableReference;
 use datafusion::{
     datasource::{
@@ -29,7 +38,6 @@ use datafusion::{
     },
     error::Result,
     execution::context::SessionState,
-    physical_expr::PhysicalSortRequirement,
     physical_plan::{ExecutionPlan, PhysicalExpr},
 };
 use futures::StreamExt;
@@ -41,14 +49,14 @@ use lakesoul_io::helpers::{
     partition_desc_from_file_scan_config,
 };
 use lakesoul_io::lakesoul_io_config::LakeSoulIOConfig;
-use lakesoul_metadata::MetaDataClientRef;
+use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 use object_store::{ObjectMeta, ObjectStore};
 use proto::proto::entity::TableInfo;
 use rand::distributions::DistString;
 
+use log::debug;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use tracing::debug;
 
 use crate::catalog::{commit_data, parse_table_info_partitions};
 use crate::lakesoul_table::helpers::create_io_config_builder_from_table_info;
@@ -88,12 +96,43 @@ impl LakeSoulMetaDataParquetFormat {
     pub fn table_info(&self) -> Arc<TableInfo> {
         self.table_info.clone()
     }
+
+    pub async fn default_listing_options() -> Result<ListingOptions> {
+        Ok(ListingOptions::new(Arc::new(
+            Self::new(
+                Arc::new(
+                    MetaDataClient::from_env()
+                        .await
+                        .map_err(|e| DataFusionError::External(Box::new(e)))?,
+                ),
+                Arc::new(ParquetFormat::new()),
+                Arc::new(TableInfo::default()),
+                LakeSoulIOConfig::default(),
+            )
+            .await
+            .map_err(|e| DataFusionError::External(Box::new(e)))?,
+        )))
+    }
 }
 
 #[async_trait]
 impl FileFormat for LakeSoulMetaDataParquetFormat {
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    fn get_ext(&self) -> String {
+        ParquetFormatFactory::new().get_ext()
+    }
+
+    fn get_ext_with_compression(&self, file_compression_type: &FileCompressionType) -> Result<String> {
+        let ext = self.get_ext();
+        match file_compression_type.get_variant() {
+            CompressionTypeVariant::UNCOMPRESSED => Ok(ext),
+            _ => Err(DataFusionError::Internal(
+                "Parquet FileFormat does not support compression.".into(),
+            )),
+        }
     }
 
     async fn infer_schema(
@@ -126,11 +165,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         // If enable pruning then combine the filters to build the predicate.
         // If disable pruning then set the predicate to None, thus readers
         // will not prune data based on the statistics.
-        let predicate = self
-            .parquet_format
-            .enable_pruning(state.config_options())
-            .then(|| filters.cloned())
-            .flatten();
+        let predicate = self.parquet_format.enable_pruning().then(|| filters.cloned()).flatten();
 
         let file_schema = conf.file_schema.clone();
         let mut builder = SchemaBuilder::from(file_schema.fields());
@@ -169,11 +204,13 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
             let (partition_desc, partition_columnar_value) = partition_desc_from_file_scan_config(config)?;
             let partition_columnar_value = Arc::new(partition_columnar_value);
 
-            let parquet_exec = Arc::new(ParquetExec::new(
-                config.clone(),
-                predicate.clone(),
-                self.parquet_format.metadata_size_hint(state.config_options()),
-            ));
+            let parquet_exec = Arc::new({
+                let mut builder = ParquetExecBuilder::new(config.clone());
+                if let Some(predicate) = predicate.clone() {
+                    builder = builder.with_predicate(predicate);
+                }
+                builder.build()
+            });
             for field in parquet_exec.schema().fields().iter() {
                 if field.is_nullable() {
                     column_nullable.insert(field.name().clone());
@@ -239,9 +276,9 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         input: Arc<dyn ExecutionPlan>,
         _state: &SessionState,
         conf: FileSinkConfig,
-        order_requirements: Option<Vec<PhysicalSortRequirement>>,
+        order_requirements: Option<LexRequirement>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        if conf.overwrite {
+        if conf.insert_op == InsertOp::Overwrite {
             return Err(DataFusionError::NotImplemented(
                 "Overwrites are not implemented yet for Parquet".to_string(),
             ));
@@ -251,10 +288,6 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
             Arc::new(LakeSoulHashSinkExec::new(input, order_requirements, self.table_info(), self.client()).await?)
                 as _,
         )
-    }
-
-    fn file_type(&self) -> FileType {
-        FileType::PARQUET
     }
 }
 
@@ -269,13 +302,15 @@ pub struct LakeSoulHashSinkExec {
     sink_schema: SchemaRef,
 
     /// Optional required sort order for output data.
-    sort_order: Option<Vec<PhysicalSortRequirement>>,
+    sort_order: Option<LexRequirement>,
 
     table_info: Arc<TableInfo>,
 
     metadata_client: MetaDataClientRef,
 
     range_partitions: Arc<Vec<String>>,
+
+    properties: PlanProperties,
 }
 
 impl Debug for LakeSoulHashSinkExec {
@@ -288,7 +323,7 @@ impl LakeSoulHashSinkExec {
     /// Create a plan to write to `sink`
     pub async fn new(
         input: Arc<dyn ExecutionPlan>,
-        sort_order: Option<Vec<PhysicalSortRequirement>>,
+        sort_order: Option<LexRequirement>,
         table_info: Arc<TableInfo>,
         metadata_client: MetaDataClientRef,
     ) -> Result<Self> {
@@ -302,6 +337,12 @@ impl LakeSoulHashSinkExec {
             table_info,
             metadata_client,
             range_partitions,
+            properties: PlanProperties::new(
+                EquivalenceProperties::new(make_sink_schema()),
+                Partitioning::UnknownPartitioning(1),
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            ),
         })
     }
 
@@ -311,7 +352,7 @@ impl LakeSoulHashSinkExec {
     }
 
     /// Optional sort order for output data
-    pub fn sort_order(&self) -> &Option<Vec<PhysicalSortRequirement>> {
+    pub fn sort_order(&self) -> &Option<LexRequirement> {
         &self.sort_order
     }
 
@@ -363,12 +404,12 @@ impl LakeSoulHashSinkExec {
             );
 
             if !partitioned_writer.contains_key(&partition_desc) {
-                let mut config = create_io_config_builder_from_table_info(table_info.clone())
-                    .map_err(|e| DataFusionError::External(Box::new(e)))?
-                    .with_files(vec![file_absolute_path])
-                    .with_schema(batch_excluding_range.schema())
-                    .build();
-
+                let mut config =
+                    create_io_config_builder_from_table_info(table_info.clone(), HashMap::new(), HashMap::new())
+                        .map_err(|e| DataFusionError::External(Box::new(e)))?
+                        .with_files(vec![file_absolute_path])
+                        .with_schema(batch_excluding_range.schema())
+                        .build();
                 let writer = MultiPartAsyncWriter::try_new_with_context(&mut config, context.clone()).await?;
                 partitioned_writer.insert(partition_desc.clone(), Box::new(writer));
             }
@@ -433,7 +474,33 @@ impl DisplayAs for LakeSoulHashSinkExec {
     }
 }
 
+impl ExecutionPlanProperties for LakeSoulHashSinkExec {
+    fn output_partitioning(&self) -> &Partitioning {
+        &self.properties.partitioning
+    }
+
+    fn output_ordering(&self) -> Option<&LexOrdering> {
+        None
+    }
+
+    fn boundedness(&self) -> Boundedness {
+        Boundedness::Bounded
+    }
+
+    fn pipeline_behavior(&self) -> EmissionType {
+        EmissionType::Incremental
+    }
+
+    fn equivalence_properties(&self) -> &EquivalenceProperties {
+        &self.properties.eq_properties
+    }
+}
+
 impl ExecutionPlan for LakeSoulHashSinkExec {
+    fn name(&self) -> &str {
+        "LakeSoulHashSinkExec"
+    }
+
     /// Return a reference to Any that can be used for downcasting
     fn as_any(&self) -> &dyn Any {
         self
@@ -444,16 +511,8 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         self.sink_schema.clone()
     }
 
-    fn output_partitioning(&self) -> Partitioning {
-        Partitioning::UnknownPartitioning(1)
-    }
-
-    fn unbounded_output(&self, _children: &[bool]) -> Result<bool> {
-        Ok(_children[0])
-    }
-
-    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
-        None
+    fn properties(&self) -> &PlanProperties {
+        &self.properties
     }
 
     fn required_input_distribution(&self) -> Vec<Distribution> {
@@ -462,7 +521,7 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         vec![Distribution::SinglePartition; self.children().len()]
     }
 
-    fn required_input_ordering(&self) -> Vec<Option<Vec<PhysicalSortRequirement>>> {
+    fn required_input_ordering(&self) -> Vec<Option<LexRequirement>> {
         // The input order is either explicitly set (such as by a ListingTable),
         // or require that the [FileSinkExec] gets the data in the order the
         // input produced it (otherwise the optimizer may choose to reorder
@@ -472,10 +531,7 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         // https://github.com/apache/arrow-datafusion/pull/6354#discussion_r1195284178
         match &self.sort_order {
             Some(requirements) => vec![Some(requirements.clone())],
-            None => vec![self
-                .input
-                .output_ordering()
-                .map(PhysicalSortRequirement::from_sort_exprs)],
+            None => vec![],
         }
     }
 
@@ -489,8 +545,8 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         vec![false]
     }
 
-    fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
-        vec![self.input.clone()]
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.input]
     }
 
     fn with_new_children(self: Arc<Self>, children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
@@ -501,6 +557,7 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
             table_info: self.table_info.clone(),
             range_partitions: self.range_partitions.clone(),
             metadata_client: self.metadata_client.clone(),
+            properties: self.properties.clone(),
         }))
     }
 

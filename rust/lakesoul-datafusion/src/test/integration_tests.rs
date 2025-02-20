@@ -64,16 +64,17 @@ mod integration_tests {
     #[tokio::test]
     async fn load_tpch_data() -> Result<()> {
         let client = Arc::new(MetaDataClient::from_env().await?);
-        let builder = create_io_config_builder(client.clone(), None, false, "default").await?;
+        let builder = create_io_config_builder(client.clone(), None, false, "default", Default::default(), Default::default()).await?;
         let ctx =
             create_session_context_with_planner(&mut builder.clone().build(), Some(LakeSoulQueryPlanner::new_ref()))?;
 
         for table in TPCH_TABLES {
             let table_provider = get_table(&ctx, table).await?;
             ctx.register_table(*table, table_provider)?;
-            let dataframe = ctx.sql(format!("select * from {}", table).as_str()).await?;
-
             let schema = get_tpch_table_schema(table);
+            let columns = schema.fields().iter().map(|f| f.name().as_str()).collect::<Vec<_>>().join(",");
+            let sql = format!("select {} from {}", columns, table);
+            let dataframe = ctx.sql(&sql).await?;
 
             let builder = LakeSoulIOConfigBuilder::new()
                 .with_schema(Arc::new(schema))

@@ -1,6 +1,7 @@
 package org.apache.spark.sql.lakesoul.benchmark
 
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.functions.column
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.types._
@@ -102,12 +103,13 @@ object ConsistencyCI {
         StructField("l_shipmode", StringType, nullable = false),
         StructField("l_comment", StringType, nullable = false),
       )),
-      "l_orderkey, l_partkey", Option.empty),
+      "l_orderkey, l_partkey, l_suppkey, l_linenumber", Option.empty),
   )
 
   def load_data(spark: SparkSession): Unit = {
 
     val tpchPath = System.getenv("TPCH_DATA")
+    //    val tpchPath = "/Users/ceng/Documents/GitHub/LakeSoul/test_files/tpch/data"
     val lakeSoulPath = "/tmp/lakesoul/tpch"
     tpchTable.foreach(tup => {
       val (name, schema, hashPartitions, rangePartitions) = tup
@@ -167,10 +169,14 @@ object ConsistencyCI {
       val diff2 = rustDF.rdd.subtract(sparkDF.rdd)
       val result = diff1.count() == 0 && diff2.count() == 0
       if (!result) {
-        println("sparkDF: ")
-        println(sparkDF.collectAsList())
-        println("rustDF: ")
-        println(rustDF.collectAsList())
+        println("diff1: ")
+        spark.createDataFrame(diff1, sparkDF.schema)
+          .orderBy(tup._3.split(",").map(_.trim).map(column): _*)
+          .show(100)
+        println("diff2: ")
+        spark.createDataFrame(diff2, sparkDF.schema)
+          .orderBy(tup._3.split(",").map(_.trim).map(column): _*)
+          .show(100)
         System.exit(1)
       }
     })

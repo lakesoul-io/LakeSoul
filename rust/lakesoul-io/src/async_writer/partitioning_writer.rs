@@ -9,12 +9,11 @@ use arrow_schema::{SchemaRef, SortOptions};
 use datafusion::{
     execution::TaskContext,
     physical_expr::{
-        expressions::{col, Column},
-        PhysicalSortExpr,
+        expressions::{col, Column}, LexOrdering, PhysicalSortExpr
     },
     physical_plan::{
         projection::ProjectionExec, sorts::sort::SortExec, stream::RecordBatchReceiverStream, ExecutionPlan,
-        Partitioning, PhysicalExpr,
+        Partitioning, PhysicalExpr, ExecutionPlanProperties
     },
 };
 use datafusion_common::{DataFusionError, Result};
@@ -65,6 +64,7 @@ impl PartitioningAsyncWriter {
         let write_id = rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
 
         // let partitioned_file_path_and_row_count = Arc::new(Mutex::new(HashMap::<String, (Vec<String>, u64)>::new()));
+        
         for i in 0..partitioning_exec.output_partitioning().partition_count() {
             let sink_task = tokio::spawn(Self::pull_and_sink(
                 partitioning_exec.clone(),
@@ -113,7 +113,7 @@ impl PartitioningAsyncWriter {
             return Ok(Arc::new(input));
         }
 
-        let sort_exec = Arc::new(SortExec::new(sort_exprs, Arc::new(input)));
+        let sort_exec = Arc::new(SortExec::new(LexOrdering::new(sort_exprs), Arc::new(input)));
 
         // see if we need to prune aux sort cols
         let sort_exec: Arc<dyn ExecutionPlan> = if config.aux_sort_cols.is_empty() {
@@ -296,7 +296,6 @@ impl PartitioningAsyncWriter {
 #[async_trait::async_trait]
 impl AsyncBatchWriter for PartitioningAsyncWriter {
     async fn write_record_batch(&mut self, batch: RecordBatch) -> Result<()> {
-        // arrow_cast::pretty::print_batches(&[batch.clone()]);
         if let Some(err) = &self.err {
             return Err(DataFusionError::Internal(format!(
                 "PartitioningAsyncWriter already failed with error {:?}",

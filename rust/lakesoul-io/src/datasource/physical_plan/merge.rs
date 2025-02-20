@@ -8,15 +8,17 @@ use std::{any::Any, collections::HashMap};
 use arrow_schema::{Field, Schema, SchemaRef};
 use datafusion::dataframe::DataFrame;
 use datafusion::logical_expr::Expr;
+use datafusion::physical_expr::{EquivalenceProperties, LexOrdering};
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::{ExecutionPlanProperties, Partitioning, PlanProperties};
 use datafusion::{
     datasource::physical_plan::{FileScanConfig, ParquetExec},
     execution::TaskContext,
-    physical_expr::PhysicalSortExpr,
     physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PhysicalExpr, SendableRecordBatchStream},
 };
 use datafusion_common::{DFSchemaRef, DataFusionError, Result};
 use datafusion_substrait::substrait::proto::Plan;
-use log::debug;
+use log::{debug, info};
 
 use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;
 use crate::default_column_stream::DefaultColumnStream;
@@ -33,6 +35,7 @@ pub struct MergeParquetExec {
     merge_operators: Arc<HashMap<String, String>>,
     inputs: Vec<Arc<dyn ExecutionPlan>>,
     io_config: LakeSoulIOConfig,
+    properties: PlanProperties,
 }
 
 impl MergeParquetExec {
@@ -47,7 +50,16 @@ impl MergeParquetExec {
         // source file parquet scan
         let mut inputs = Vec::<Arc<dyn ExecutionPlan>>::new();
         for config in flatten_configs {
-            let single_exec = Arc::new(ParquetExec::new(config, predicate.clone(), metadata_size_hint));
+            let single_exec = Arc::new({
+                let mut builder = ParquetExec::builder(config);
+                if let Some(predicate) = predicate.clone() {
+                    builder = builder.with_predicate(predicate.clone());
+                }
+                if let Some(metadata_size_hint) = metadata_size_hint {
+                    builder = builder.with_metadata_size_hint(metadata_size_hint);
+                }
+                builder.build()
+            });
             inputs.push(single_exec);
         }
         // O(nml), n = number of schema fields, m = number of file schema fields, l = number of files
@@ -78,12 +90,18 @@ impl MergeParquetExec {
         let merge_operators: Arc<HashMap<String, String>> = Arc::new(io_config.merge_operators);
 
         Ok(Self {
-            schema,
+            schema: schema.clone(),
             inputs,
             primary_keys,
             default_column_value,
             merge_operators,
-            io_config: config
+            io_config: config,
+            properties: PlanProperties::new(
+                EquivalenceProperties::new(schema),
+                Partitioning::UnknownPartitioning(1),
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            ),
         })
     }
 
@@ -93,17 +111,24 @@ impl MergeParquetExec {
         io_config: LakeSoulIOConfig,
         default_column_value: Arc<HashMap<String, String>>,
     ) -> Result<Self> {
+        info!("MergeParquetExec::new_with_inputs: {:?}, {:?}", schema, io_config);
         let config = io_config.clone();
         let primary_keys = Arc::new(io_config.primary_keys);
         let merge_operators = Arc::new(io_config.merge_operators);
 
         Ok(Self {
-            schema,
+            schema: schema.clone(),
             inputs,
             primary_keys,
             default_column_value,
             merge_operators,
-            io_config: config
+            io_config: config,
+            properties: PlanProperties::new(
+                EquivalenceProperties::new(schema),
+                Partitioning::UnknownPartitioning(1),
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            ),
         })
     }
 
@@ -126,7 +151,33 @@ impl DisplayAs for MergeParquetExec {
     }
 }
 
+impl ExecutionPlanProperties for MergeParquetExec {
+    fn output_partitioning(&self) -> &Partitioning {
+        &self.properties.partitioning
+    }
+
+    fn output_ordering(&self) -> Option<&LexOrdering> {
+        None
+    }
+
+    fn boundedness(&self) -> Boundedness {
+        Boundedness::Bounded
+    }
+
+    fn pipeline_behavior(&self) -> EmissionType {
+        EmissionType::Incremental
+    }
+
+    fn equivalence_properties(&self) -> &EquivalenceProperties {
+        &self.properties.eq_properties
+    }
+}
+
 impl ExecutionPlan for MergeParquetExec {
+    fn name(&self) -> &str {
+        "MergeParquetExec"
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -135,16 +186,12 @@ impl ExecutionPlan for MergeParquetExec {
         self.schema.clone()
     }
 
-    fn output_partitioning(&self) -> datafusion::physical_plan::Partitioning {
-        datafusion::physical_plan::Partitioning::UnknownPartitioning(1)
+    fn properties(&self) -> &PlanProperties {
+        &self.properties
     }
 
-    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
-        None
-    }
-
-    fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
-        self.inputs.clone()
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        self.inputs.iter().map(|p| p).collect()
     }
 
     fn with_new_children(self: Arc<Self>, inputs: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
@@ -154,7 +201,8 @@ impl ExecutionPlan for MergeParquetExec {
             primary_keys: self.primary_keys(),
             default_column_value: self.default_column_value(),
             merge_operators: self.merge_operators(),
-            io_config: self.io_config.clone()
+            io_config: self.io_config.clone(),
+            properties: self.properties.clone(),
         }))
     }
 
@@ -168,6 +216,7 @@ impl ExecutionPlan for MergeParquetExec {
         let mut stream_init_futs = Vec::with_capacity(self.inputs.len());
         for i in 0..self.inputs.len() {
             let input = &self.inputs[i];
+            // dbg!(&input);
             let input_partition_count = input.output_partitioning().partition_count();
             if input_partition_count != 1 {
                 return Err(DataFusionError::Internal(format!(
@@ -202,14 +251,10 @@ pub fn merge_stream(
     batch_size: usize,
     config: LakeSoulIOConfig,
 ) -> Result<SendableRecordBatchStream> {
-    let merge_on_read = if config.files.len() == 1 {
-        if config.primary_keys.is_empty() {
-            false
-        } else {
-            !config.merge_operators.is_empty() || !config.is_compacted()
-        }
+    let merge_on_read = if config.primary_keys.is_empty() {
+        false
     } else {
-        true
+        !(config.files.len() == 1 && config.merge_operators.is_empty() && config.is_compacted())
     };
     let merge_stream = if !merge_on_read {
         Box::pin(DefaultColumnStream::new_from_streams_with_default(
@@ -273,15 +318,13 @@ pub fn convert_filter(df: &DataFrame, filter_str: Vec<String>, filter_protos: Ve
     let arrow_schema = Arc::new(Schema::from(df.schema()));
     debug!("schema:{:?}", arrow_schema);
     let mut str_filters = vec![];
-    let mut proto_filters = vec![];
     for f in &filter_str {
         let filter = FilterParser::parse(f.clone(), arrow_schema.clone())?;
         str_filters.push(filter);
     }
-    for p in &filter_protos {
-        let e = FilterParser::parse_proto(p, df.schema())?;
-        proto_filters.push(e);
-    }
+    let proto_filters = filter_protos.into_iter().map(|plan| {
+        FilterParser::parse_substrait_plan(plan, df.schema())
+    }).collect::<Result<Vec<_>>>()?;
     debug!("str filters: {:#?}", str_filters);
     debug!("proto filters: {:#?}", proto_filters);
     if proto_filters.is_empty() {

@@ -9,7 +9,8 @@ members = [
     "proto",
     "lakesoul-io",
     "lakesoul-io-c",
-    "lakesoul-datafusion"
+    "lakesoul-datafusion",
+    "lakesoul-examples"
 ]
 resolver = "2"
 
@@ -17,22 +18,25 @@ resolver = "2"
 #lto = true
 
 [workspace.dependencies]
-datafusion = { git = "https://github.com/lakesoul-io/arrow-datafusion.git", branch = "datafusion-33-parquet-prefetch" }
-datafusion-common = { git = "https://github.com/lakesoul-io/arrow-datafusion.git", branch = "datafusion-33-parquet-prefetch" }
-datafusion-substrait = { git = "https://github.com/lakesoul-io/arrow-datafusion.git", branch = "datafusion-33-parquet-prefetch" }
-arrow = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-48-parquet-bufferred" }
-arrow-schema = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-48-parquet-bufferred" }
-arrow-array = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-48-parquet-bufferred" }
-arrow-buffer = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-48-parquet-bufferred" }
-arrow-cast = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-48-parquet-bufferred" }
-arrow-arith = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-48-parquet-bufferred" }
-arrow-ipc = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-48-parquet-bufferred" }
-parquet = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-48-parquet-bufferred" }
-object_store = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "object_store_0.7_opt", features = ["aws", "http"] }
+datafusion = { version = "45.0.0"}
+datafusion-common = { version = "45.0.0"}
+datafusion-substrait = { version = "45.0.0"}
+arrow = { version = "54.1.0"}
+arrow-schema = { version = "54.1.0"}
+arrow-array = { version = "54.1.0"}
+arrow-buffer = { version = "54.1.0"}
+arrow-cast = { version = "54.1.0"}
+arrow-arith = { version = "54.1.0"}
+arrow-ipc = { version = "54.1.0"}
+arrow-flight = { version = "54.1.0", features = ["flight-sql-experimental"]}
+parquet = { version = "54.1.0"}
+object_store = { version = "0.11.0", features = ["aws", "http"] }
 
 tokio-stream = "0.1.9"
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io", "compat"] }
+tonic = "0.12.3"
+tonic-build = "0.12.3"
 derivative = "2.2.0"
 atomic_refcell = "0.1.8"
 futures = "0.3"
@@ -40,8 +44,8 @@ url = "2.2"
 async-trait = "0.1"
 serde_json = "1.0"
 log = "^0.4"
-prost = "0.12.3"
-prost-build = "0.12.3"
+prost = "0.13.4"
+prost-build = "0.13.4"
 uuid = { version = "1.4.0", features = ["v4", "fast-rng", "macro-diagnostics"] }
 serde = { version = "1.0", features = ["derive", "std", "rc"] }
 rand = "^0.8"
@@ -50,3 +54,7 @@ half = "^2.1"
 tracing = "0.1.40"
 thiserror = "1.0"
 anyhow = "1.0.79"
+env_logger = "0.11"
+http = "1.2.0"
+tower = "0.4.13"
+metrics = "0.21"

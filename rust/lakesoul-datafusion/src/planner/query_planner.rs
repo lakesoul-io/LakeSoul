@@ -16,6 +16,7 @@ use async_trait::async_trait;
 
 use lakesoul_io::datafusion;
 
+#[derive(Debug)]
 pub struct LakeSoulQueryPlanner {}
 
 impl LakeSoulQueryPlanner {

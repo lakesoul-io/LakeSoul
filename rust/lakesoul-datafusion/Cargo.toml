@@ -15,6 +15,8 @@ object_store = { workspace = true }
 arrow = { workspace = true }
 arrow-cast = { workspace = true }
 arrow-arith = { workspace = true }
+arrow-ipc = { workspace = true }
+arrow-flight = { workspace = true }
 parquet = { workspace = true }
 lakesoul-io = { path = "../lakesoul-io" }
 lakesoul-metadata = { path = "../lakesoul-metadata" }
@@ -30,10 +32,11 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 rand = { workspace = true }
 bytes = { workspace = true }
-tracing = "0.1.40"
+log = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 url = { workspace = true }
+tonic = {workspace = true}
 
 
 [dev-dependencies]

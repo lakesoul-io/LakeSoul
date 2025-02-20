@@ -9,7 +9,8 @@ use std::{collections::HashMap, env, fs, vec};
 
 use prost::Message;
 use tokio::sync::Mutex;
-use tracing::debug;
+use log::{debug, info};
+use postgres::Config;
 use url::Url;
 
 use proto::proto::entity::{
@@ -26,6 +27,7 @@ use crate::{
 pub struct MetaDataClient {
     client: Arc<Mutex<PooledClient>>,
     max_retry: usize,
+    secret: String,
 }
 
 impl Debug for MetaDataClient {
@@ -70,24 +72,50 @@ impl MetaDataClient {
                 .await
             }
             Err(_) => {
-                Self::from_config(
-                    "host=127.0.0.1 port=5432 dbname=lakesoul_test user=lakesoul_test password=lakesoul_test"
-                        .to_string(),
-                )
-                .await
+                match env::var("LAKESOUL_PG_URL") {
+                    Ok(pg_url) => {
+                        info!("create metadata client from env LAKESOUL_PG_URL= {}", pg_url);
+                        let url = Url::parse(&pg_url[5..])?;
+                        Self::from_config(format!(
+                            "host={} port={} dbname={} user={} password={}",
+                            url.host_str()
+                                .ok_or(LakeSoulMetaDataError::Internal("url host missing".to_string()))?,
+                            url.port()
+                                .ok_or(LakeSoulMetaDataError::Internal("url port missing".to_string()))?,
+                            url.path_segments()
+                                .ok_or(LakeSoulMetaDataError::Internal("url path missing".to_string()))?
+                                .next()
+                                .ok_or(LakeSoulMetaDataError::Internal("url path missing".to_string()))?,
+                            env::var("LAKESOUL_PG_USERNAME").unwrap_or_else(|_| "lakesoul_test".to_string()),
+                            env::var("LAKESOUL_PG_PASSWORD").unwrap_or_else(|_| "lakesoul_test".to_string())    
+                        ))
+                        .await
+                    }
+                    Err(_) => {
+                        Self::from_config(
+                            "host=127.0.0.1 port=5432 dbname=lakesoul_test user=lakesoul_test password=lakesoul_test"
+                                .to_string(),
+                        )
+                        .await
+                    }
+                }
             }
         }
     }
 
     pub async fn from_config(config: String) -> Result<Self> {
+        info!("create metadata client from config: {}", config);
         Self::from_config_and_max_retry(config, 3).await
     }
 
     pub async fn from_config_and_max_retry(config: String, max_retry: usize) -> Result<Self> {
-        let client = Arc::new(Mutex::new(create_connection(config).await?));
+        let client = Arc::new(Mutex::new(create_connection(config.clone()).await?));
+        let config = config.parse::<Config>()?;
         Ok(Self {
             client,
             max_retry,
+            secret: format!("{:x}", md5::compute(
+                format!("!@{}#${:?}&*", config.get_user().unwrap(), config.get_password().unwrap()).as_bytes()))
         })
     }
 
@@ -97,6 +125,7 @@ impl MetaDataClient {
     }
 
     pub async fn create_table(&self, table_info: TableInfo) -> Result<()> {
+        info!("create_table: {:?}", &table_info);
         self.insert_table_path_id(&table_path_id_from_table_info(&table_info))
             .await?;
         self.insert_table_name_id(&table_name_id_from_table_info(&table_info))
@@ -219,6 +248,7 @@ impl MetaDataClient {
     }
 
     async fn insert_table_info(&self, table_info: &TableInfo) -> Result<i32> {
+        info!("insert_table_info: {:?}", &table_info);
         self.execute_insert(
             DaoType::InsertTableInfo as i32,
             JniWrapper {
@@ -289,17 +319,13 @@ impl MetaDataClient {
             .table_info
             .ok_or(LakeSoulMetaDataError::Internal("table info missing".to_string()))?;
 
-        if !table_info.table_name.is_empty() {
-            // todo: updateTableShortName
-        }
-        // todo: updateTableProperties
 
-        // conflict handling
-        let _raw_map = meta_info
-            .list_partition
-            .iter()
-            .map(|partition_info| (partition_info.partition_desc.clone(), partition_info.clone()))
-            .collect::<HashMap<String, PartitionInfo>>();
+        // if !table_info.table_name.is_empty() {
+        //     self.update_table_short_name(&table_info.table_path, &table_info.table_id, 
+        //         &table_info.table_name, &table_info.table_namespace).await?;
+        // }
+        
+        // self.update_table_properties(&table_info.table_id, &table_info.properties).await?;
 
         let partition_desc_list = meta_info
             .list_partition
@@ -313,10 +339,10 @@ impl MetaDataClient {
             .flat_map(|partition_info| partition_info.snapshot.clone())
             .collect::<Vec<entity::Uuid>>();
 
-        // conflict handling
         let cur_map = self
             .get_cur_partition_map(&table_info.table_id, &partition_desc_list)
             .await?;
+        let domain = self.get_table_domain(table_info.table_id.as_str()).await?.domain;
 
         match commit_op {
             CommitOp::AppendCommit | CommitOp::MergeCommit => {
@@ -328,7 +354,7 @@ impl MetaDataClient {
                         match cur_map.get(partition_desc) {
                             Some(cur_partition_info) => {
                                 let mut cur_partition_info = cur_partition_info.clone();
-                                cur_partition_info.domain = self.get_table_domain(&table_info.table_id)?;
+                                cur_partition_info.domain = domain.clone();
                                 cur_partition_info
                                     .snapshot
                                     .extend_from_slice(&partition_info.snapshot[..]);
@@ -342,7 +368,7 @@ impl MetaDataClient {
                                 partition_desc: partition_desc.clone(),
                                 version: 0,
                                 snapshot: Vec::from(&partition_info.snapshot[..]),
-                                domain: self.get_table_domain(&table_info.table_id)?,
+                                domain: domain.clone(),
                                 commit_op: commit_op as i32,
                                 expression: partition_info.expression.clone(),
                                 ..Default::default()
@@ -351,13 +377,88 @@ impl MetaDataClient {
                     })
                     .collect::<Result<Vec<PartitionInfo>>>()?;
                 new_partition_list.push(PartitionInfo { ..Default::default() });
-                let val = self.transaction_insert_partition_info(new_partition_list).await?;
-                let vec = self.get_all_partition_info(table_info.table_id.as_str()).await?;
-                debug!("val = {val} ,get partition list after finished: {:?}", vec);
+                let partition_version = new_partition_list.iter().map(|p| p.version).max().unwrap_or(0);
+                self.transaction_insert_partition_info(new_partition_list).await?;
+                info!("Commit Done for {:?}, partition_version={:?}", commit_op, partition_version);
                 Ok(())
             }
-            _ => {
-                todo!()
+            
+            CommitOp::CompactionCommit | CommitOp::UpdateCommit => {
+                let read_partition_map: HashMap<String, PartitionInfo> = meta_info
+                    .read_partition_info
+                    .iter()
+                    .map(|p| (p.partition_desc.clone(), p.clone()))
+                    .collect();
+
+                let mut new_partition_list = Vec::new();
+                
+                for partition_info in &meta_info.list_partition {
+                    let partition_desc = &partition_info.partition_desc;
+                    let mut cur_partition_info = match cur_map.get(partition_desc) {
+                        Some(info) => info.clone(),
+                        None => PartitionInfo {
+                            table_id: table_info.table_id.clone(),
+                            partition_desc: partition_desc.clone(),
+                            version: 0,
+                            domain: self.get_table_domain(&table_info.table_id).await?.domain,
+                            ..Default::default()
+                        }
+                    };
+
+                    let read_version = read_partition_map
+                        .get(partition_desc)
+                        .map(|p| p.version)
+                        .unwrap_or(0);
+
+                    if read_version == cur_partition_info.version {
+                        cur_partition_info.snapshot = partition_info.snapshot.clone();
+                    } else {
+                        // 处理版本冲突
+                        // TODO: 实现版本冲突检查逻辑
+                    }
+
+                    cur_partition_info.version += 1;
+                    cur_partition_info.commit_op = commit_op as i32;
+                    cur_partition_info.expression = partition_info.expression.clone();
+
+                    new_partition_list.push(cur_partition_info);
+                }
+
+                self.transaction_insert_partition_info(new_partition_list).await?;
+                Ok(())
+            }
+
+            CommitOp::DeleteCommit => {
+                let read_partition_map: HashMap<String, PartitionInfo> = meta_info
+                    .read_partition_info
+                    .iter()
+                    .map(|p| (p.partition_desc.clone(), p.clone()))
+                    .collect();
+
+                let mut new_partition_list = Vec::new();
+
+                for partition_info in &meta_info.list_partition {
+                    let partition_desc = &partition_info.partition_desc;
+                    
+                    if !read_partition_map.contains_key(partition_desc) {
+                        continue;
+                    }
+
+                    let mut cur_partition_info = match cur_map.get(partition_desc) {
+                        Some(info) => info.clone(),
+                        None => continue,
+                    };
+
+                    cur_partition_info.version += 1;
+                    cur_partition_info.commit_op = commit_op as i32;
+                    cur_partition_info.expression = partition_info.expression.clone();
+                    cur_partition_info.snapshot.clear();
+
+                    new_partition_list.push(cur_partition_info);
+                }
+
+                self.transaction_insert_partition_info(new_partition_list).await?;
+                Ok(())
             }
         }
     }
@@ -397,7 +498,7 @@ impl MetaDataClient {
             _ => {}
         };
         let table_info = Some(self.get_table_info_by_table_id(table_id).await?);
-        let domain = self.get_table_domain(table_id)?;
+        let domain = self.get_table_domain(table_id).await?.domain;
         self.commit_data(
             MetaInfo {
                 table_info,
@@ -417,9 +518,17 @@ impl MetaDataClient {
         .await
     }
 
-    pub fn get_table_domain(&self, _table_id: &str) -> Result<String> {
-        // todo: get property table_domain
-        Ok("public".to_string())
+    pub async fn get_table_domain(&self, table_id: &str) -> Result<TableNameId> {
+        match self
+            .execute_query(
+                DaoType::SelectTableDomainById as i32,
+                [table_id].join(PARAM_DELIM),
+            )
+            .await
+        {
+            Ok(wrapper) => Ok(wrapper.table_name_id[0].clone()),
+            Err(err) => Err(err),
+        }
     }
 
     pub async fn get_all_table_name_id_by_namespace(&self, namespace: &str) -> Result<Vec<TableNameId>> {
@@ -615,6 +724,76 @@ impl MetaDataClient {
             Ok(wrapper) => Ok(wrapper.partition_info),
             Err(e) => Err(e),
         }
+    }
+
+    pub fn get_client_secret(&self) -> &String {
+        &self.secret
+    }
+
+    pub async fn update_table_properties(&self, table_id: &str, properties: &str) -> Result<i32> {
+        // 获取现有表信息
+        let table_info = self.get_table_info_by_table_id(table_id).await?;
+        
+        // 解析新的和原始的properties
+        let new_properties: serde_json::Value = serde_json::from_str(properties)?;
+        let mut new_properties = new_properties.as_object()
+            .ok_or(LakeSoulMetaDataError::Internal("Invalid properties format".to_string()))?
+            .clone();
+
+        if let Ok(origin_properties) = serde_json::from_str::<serde_json::Value>(&table_info.properties) {
+            if let Some(origin_obj) = origin_properties.as_object() {
+                // 如果原始properties中包含domain,保留它
+                if let Some(domain) = origin_obj.get("domain") {
+                    new_properties.insert("domain".to_string(), domain.clone());
+                }
+            }
+        }
+
+        // 更新properties
+        self.execute_update(
+            DaoType::UpdateTableInfoById as i32,
+            [table_id, &serde_json::to_string(&new_properties)?].join(PARAM_DELIM),
+        )
+        .await
+    }
+
+    pub async fn update_table_short_name(
+        &self,
+        table_path: &str,
+        table_id: &str,
+        table_name: &str,
+        table_namespace: &str,
+    ) -> Result<()> {
+        let table_info = self.get_table_info_by_table_id(table_id).await?;
+        
+        // 检查现有表名
+        if !table_info.table_name.is_empty() {
+            if table_info.table_name != table_name {
+                return Err(LakeSoulMetaDataError::Internal(format!(
+                    "Table name already exists {} for table id {}",
+                    table_info.table_name, table_id
+                )));
+            }
+            return Ok(());
+        }
+
+        // 更新表信息
+        self.execute_update(
+            DaoType::UpdateTableInfoById as i32,
+            [table_id, table_name, table_path, ""].join(PARAM_DELIM),
+        )
+        .await?;
+
+        // 插入新的表名ID映射
+        self.insert_table_name_id(&TableNameId {
+            table_name: table_name.to_string(),
+            table_id: table_id.to_string(),
+            table_namespace: table_namespace.to_string(),
+            domain: table_info.domain,
+        })
+        .await?;
+
+        Ok(())
     }
 }
 

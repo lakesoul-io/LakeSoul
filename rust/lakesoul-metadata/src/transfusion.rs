@@ -303,7 +303,7 @@ impl DataFileInfo {
         Ok(Self {
             partition_desc: partition_info.partition_desc.clone(),
             path: data_file_op.path.clone(),
-            file_op: FileOp::try_from(data_file_op.file_op)?.as_str_name().to_string(),
+            file_op: FileOp::try_from(data_file_op.file_op).map_err(|e| LakeSoulMetaDataError::Internal(e.to_string()))?.as_str_name().to_string(),
             size: data_file_op.size,
             bucket_id: Self::parse_bucket_id(&data_file_op.path),
             modification_time: data_commit_info.timestamp,
