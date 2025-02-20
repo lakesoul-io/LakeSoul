@@ -1,6 +1,7 @@
 package org.apache.spark.sql.lakesoul.benchmark
 
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.functions.column
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.types._
@@ -168,9 +169,9 @@ object ConsistencyCI {
       val result = diff1.count() == 0 && diff2.count() == 0
       if (!result) {
         println("sparkDF: ")
-        println(sparkDF.collectAsList())
+        println(sparkDF.orderBy(column(tup._3)).limit(100).collectAsList())
         println("rustDF: ")
-        println(rustDF.collectAsList())
+        println(rustDF.orderBy(column(tup._3)).limit(100).collectAsList())
         System.exit(1)
       }
     })
