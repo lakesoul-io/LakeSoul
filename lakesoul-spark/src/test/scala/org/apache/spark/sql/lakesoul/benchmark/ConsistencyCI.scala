@@ -103,7 +103,7 @@ object ConsistencyCI {
         StructField("l_shipmode", StringType, nullable = false),
         StructField("l_comment", StringType, nullable = false),
       )),
-      "l_orderkey, l_partkey, l_suppkey", Option.empty),
+      "l_orderkey, l_partkey, l_suppkey, l_linenumber", Option.empty),
   )
 
   def load_data(spark: SparkSession): Unit = {
