@@ -108,10 +108,9 @@ object ConsistencyCI {
 
   def load_data(spark: SparkSession): Unit = {
 
-    //    val tpchPath = System.getenv("TPCH_DATA")
-    val tpchPath = "/Users/ceng/Documents/GitHub/LakeSoul/test_files/tpch/data"
+    val tpchPath = System.getenv("TPCH_DATA")
+    //    val tpchPath = "/Users/ceng/Documents/GitHub/LakeSoul/test_files/tpch/data"
     val lakeSoulPath = "/tmp/lakesoul/tpch"
-    //    val lakeSoulPath = "/Users/ceng/Documents/GitHub/LakeSoul/test_files/tpch/data"
     tpchTable.foreach(tup => {
       val (name, schema, hashPartitions, rangePartitions) = tup
       val df = spark.read.option("delimiter", "|")
