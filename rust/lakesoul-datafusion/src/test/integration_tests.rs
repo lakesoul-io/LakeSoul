@@ -76,8 +76,6 @@ mod integration_tests {
             let sql = format!("select {} from {}", columns, table);
             let dataframe = ctx.sql(&sql).await?;
 
-            
-
             let builder = LakeSoulIOConfigBuilder::new()
                 .with_schema(Arc::new(schema))
                 .with_primary_keys(get_tbl_tpch_table_primary_keys(table))
