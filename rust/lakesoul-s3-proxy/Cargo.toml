@@ -8,6 +8,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+lakesoul-metadata = { path = "../lakesoul-metadata" }
 pingora = { version = "0.4.0", features = ["lb"] }
 async-trait="0.1"
 hickory-resolver = "0.24.4"

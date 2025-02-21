@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 mod token_codec;
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -14,10 +18,6 @@ use tonic::{Request, Response, Status};
 
 use lakesoul_flight::{args::Args, FlightSqlServiceImpl, JwtServer};
 use lakesoul_metadata::MetaDataClient;
-
-fn to_tonic_err(e: lakesoul_datafusion::LakeSoulError) -> Status {
-    Status::internal(format!("{e:?}"))
-}
 
 pub mod token {
     include!(concat!(env!("OUT_DIR"), "/json.token.TokenServer.rs"));

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use arrow::error::ArrowError;
 use arrow_flight::{
     flight_service_server::{FlightService, FlightServiceServer},
@@ -11,7 +15,7 @@ use prost::Message;
 use std::task::{Context, Poll};
 use tonic::codegen::{BoxFuture, StdError};
 use tonic::{
-    codec::EnabledCompressionEncodings, codegen::Service, server::NamedService, transport::Body,
+    codec::EnabledCompressionEncodings, server::NamedService, transport::Body,
     Response,
 };
 
@@ -49,7 +53,7 @@ where
     type Response = http::Response<tonic::body::BoxBody>;
     type Error = std::convert::Infallible;
     type Future = BoxFuture<Self::Response, Self::Error>;
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<std::result::Result<(), Self::Error>> {
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<std::result::Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
 

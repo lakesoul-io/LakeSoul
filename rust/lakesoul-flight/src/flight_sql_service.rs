@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::ipc::writer::IpcWriteOptions;
 use arrow_flight::decode::FlightRecordBatchStream;
@@ -47,7 +51,6 @@ use datafusion::logical_expr::{DdlStatement, DmlStatement, LogicalPlan, WriteOp}
 use datafusion::prelude::*;
 use log::info;
 
-use datafusion::execution::context::SessionState;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use lakesoul_datafusion::catalog::lakesoul_catalog::LakeSoulCatalog;
 use object_store::local::LocalFileSystem;
@@ -63,6 +66,7 @@ use metrics::{counter, gauge, histogram};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
+use datafusion::execution::SessionStateBuilder;
 
 const LOG_INTERVAL: usize = 100; // Log every 100 batches
 const MEGABYTE: f64 = 1_048_576.0;
@@ -314,7 +318,6 @@ impl FlightSqlService for FlightSqlServiceImpl {
     ) -> Result<Response<FlightInfo>, Status> {
         info!("get_flight_info_catalogs");
         self.verify_token(request.metadata())?;
-        let ctx = self.get_ctx(&request)?;
 
         let schema = Arc::new(Schema::new(vec![Field::new("catalog_name", DataType::Utf8, false)]));
 
@@ -603,7 +606,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
 
         let ctx = self.get_ctx(&request)?;
         let df = ctx.sql(&sql).await.map_err(|e| status!("Error executing query", e))?;
-        let result = df.collect().await.map_err(|e| status!("Error executing query", e))?;
+        let _ = df.collect().await.map_err(|e| status!("Error executing query", e))?;
         Ok(0)
     }
 
@@ -627,9 +630,6 @@ impl FlightSqlService for FlightSqlServiceImpl {
         let stream = request.into_inner();
 
         // 创建 LakeSoulTable
-        // let table = Arc::new(LakeSoulTable::for_namespace_and_name(schema.unwrap_or("default".to_string()).as_str(), &table)
-        //     .await
-        //     .map_err(|e| Status::internal(format!("Error creating table: {}", e)))?);
         let table_reference = TableReference::from(match &schema {
             Some(schema) => TableReference::partial(schema.as_str(), table.as_str()),
             None => TableReference::bare(table.as_str()),
@@ -668,10 +668,10 @@ impl FlightSqlService for FlightSqlServiceImpl {
             std::str::from_utf8(&query.prepared_statement_handle).unwrap_or("invalid utf8")
         );
 
-        let handle =
-            std::str::from_utf8(&query.prepared_statement_handle).map_err(|e| status!("Unable to parse uuid", e))?;
-        let plan = self.get_plan(handle)?;
-        // let output = futures::stream::iter(vec![]).boxed();
+        // let handle =
+        //     std::str::from_utf8(&query.prepared_statement_handle).map_err(|e| status!("Unable to parse uuid", e))?;
+        // let plan = self.get_plan(handle)?;
+        // // let output = futures::stream::iter(vec![]).boxed();
         todo!()
     }
 
@@ -939,8 +939,11 @@ impl FlightSqlServiceImpl {
 
         let planner = LakeSoulQueryPlanner::new_ref();
 
-        let mut state = SessionState::new_with_config_rt(session_config, Arc::new(RuntimeEnv::default()))
-            .with_query_planner(planner);
+        let mut state = SessionStateBuilder::new()
+            .with_config(session_config)
+            .with_runtime_env(Arc::new(RuntimeEnv::default()))
+            .with_query_planner(planner)
+            .build();
         state.table_factories_mut().insert(
             "LAKESOUL".to_string(),
             Arc::new(LakeSoulTableProviderFactory::new(
@@ -1036,20 +1039,6 @@ impl FlightSqlServiceImpl {
     }
 
     fn get_ctx<T>(&self, _req: &Request<T>) -> Result<Arc<SessionContext>, Status> {
-        // get the token from the authorization header on Request
-        // let auth = req
-        //     .metadata()
-        //     .get("authorization")
-        //     .ok_or_else(|| Status::internal("No authorization header!"))?;
-        // let str = auth
-        //     .to_str()
-        //     .map_err(|e| Status::internal(format!("Error parsing header: {e}")))?;
-        // let authorization = str.to_string();
-        // let bearer = "Bearer ";
-        // if !authorization.starts_with(bearer) {
-        //     Err(Status::internal("Invalid auth header!"))?;
-        // }
-        // let auth = authorization[bearer.len()..].to_string();
         let auth = "1".to_string();
 
         if let Some(context) = self.contexts.get(&auth) {
@@ -1220,7 +1209,6 @@ impl FlightSqlServiceImpl {
             .await
             .map_err(lakesoul_error_to_status)?;
 
-        let mut total_bytes = 0u64;
         // 创建 FlightRecordBatchStream 来解码数据
         let mut batch_stream = FlightRecordBatchStream::new_from_flight_data(stream.map_err(|e| e.into()));
 
@@ -1237,7 +1225,6 @@ impl FlightSqlServiceImpl {
             let batch_rows = batch.num_rows();
             record_count += batch_rows as i64;
             let batch_bytes = get_batch_memory_size(&batch).map_err(datafusion_error_to_status)? as u64;
-            total_bytes += batch_bytes;
             batch_count += 1;
 
             writer

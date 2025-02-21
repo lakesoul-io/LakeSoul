@@ -1,12 +1,15 @@
+// SPDX-FileCopyrightText: LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 mod flight_sql_service;
 mod jwt;
-mod rbac;
 pub mod args;
 mod flight_sever_wrapper;
 
 pub use flight_sql_service::FlightSqlServiceImpl;
 use datafusion::error::DataFusionError;
-pub use jwt::{JwtServer, Claims};
+pub use jwt::{Claims, JwtServer};
 
 use lakesoul_metadata::LakeSoulMetaDataError;
 use lakesoul_datafusion::LakeSoulError;

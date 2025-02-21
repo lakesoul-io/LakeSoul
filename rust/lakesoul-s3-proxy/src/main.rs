@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+// SPDX-FileCopyrightText: LakeSoul Contributors
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use async_trait::async_trait;
 use aws_config::default_provider::credentials::DefaultCredentialsChain;
 use aws_config::Region;
@@ -13,6 +13,8 @@ use aws_smithy_runtime_api::client::identity::Identity;
 use hickory_resolver::TokioAsyncResolver;
 use http::header::HOST;
 use http::{HeaderValue, Uri};
+use lakesoul_metadata::rbac::verify_permission_by_table_path;
+use lakesoul_metadata::MetaDataClient;
 use log::{debug, error, info};
 use pingora::lb::discovery::ServiceDiscovery;
 use pingora::lb::selection::{BackendIter, BackendSelection};
@@ -35,7 +37,17 @@ fn main() {
     let endpoint = std::env::var("AWS_ENDPOINT").expect("need AWS_ENDPOINT env");
     let region = std::env::var("AWS_REGION").expect("need AWS_REGION env");
     let virtual_host = std::env::var("AWS_VIRTUAL_HOST").map_or(false, |v| v.to_lowercase() == "true");
-    info!("endpoint {}, region {}, virtual_host {}", endpoint, region, virtual_host);
+    let (user, group, verify_meta) = match (
+        std::env::var("LAKESOUL_PG_USER"),
+        std::env::var("LAKESOUL_CURRENT_DOMAIN"),
+    ) {
+        (Ok(user), Ok(group)) => (user, group, true),
+        _ => (String::new(), String::new(), false),
+    };
+    info!(
+        "endpoint {}, region {}, virtual_host {}",
+        endpoint, region, virtual_host
+    );
 
     let uri = Uri::from_str(endpoint.as_str()).unwrap();
     let host = uri.host().unwrap();
@@ -53,9 +65,13 @@ fn main() {
 
     let background_s3_credentials = background_service(
         "s3 credentials",
-        S3Credentials {
+        Credentials {
             region,
             identity: ArcSwap::new(Arc::new(Identity::new(0, None))),
+            metadata_client: ArcSwapOption::new(None),
+            user,
+            group,
+            verify_meta,
         },
     );
     let cred = background_s3_credentials.task();
@@ -85,19 +101,45 @@ fn main() {
 
 pub struct S3Proxy {
     lb: Arc<LoadBalancer<RoundRobin>>,
-    cred: Arc<S3Credentials>,
+    cred: Arc<Credentials>,
     host: String,
     tls: bool,
     virtual_host: bool,
 }
 
-pub struct S3Credentials {
+pub struct Credentials {
     region: String,
     identity: ArcSwap<Identity>,
+    metadata_client: ArcSwapOption<MetaDataClient>,
+    user: String,
+    group: String,
+    verify_meta: bool,
 }
 
-impl S3Credentials {
-    fn sign(&self, headers: &mut RequestHeader, host: &String, virtual_host: bool) -> Result<(), anyhow::Error> {
+impl Credentials {
+    async fn verify_rbac(&self, headers: &RequestHeader, bucket: &Option<&str>) -> Result<(), anyhow::Error> {
+        if !self.verify_meta {
+            Ok(())
+        } else {
+            let binding = self.metadata_client.load();
+            if let Some(client) = binding.as_ref() {
+                verify_permission_by_table_path(
+                    self.user.as_str(),
+                    self.group.as_str(),
+                    parse_table_path(&headers.uri, bucket).as_str(),
+                    client.clone(),
+                ).await?;
+            }
+            Ok(())
+        }
+    }
+
+    fn sign_aws_v4(
+        &self,
+        headers: &mut RequestHeader,
+        host: &String,
+        bucket: &Option<&str>,
+    ) -> Result<(), anyhow::Error> {
         let mut signing_settings = SigningSettings::default();
         signing_settings.payload_checksum_kind = PayloadChecksumKind::XAmzSha256;
         let binding = self.identity.load();
@@ -115,30 +157,20 @@ impl S3Credentials {
 
         // for virtual host addressing, we need to replace host header
         // with format bucket-name.endpoint-host before signing
-        if virtual_host {
-            // replace host header
-            if let Some(host_header) = headers.headers.get(HOST) {
-                let s = host_header.to_str()?;
-                if let Some(first_dot) = s.find(".") {
-                    let bucket = &s[0..first_dot];
-                    let new_host = format!("{}.{}", bucket, host);
-                    info!("new host {}", new_host);
-                    headers.insert_header(HOST, HeaderValue::try_from(new_host)?)?;
-                }
-            }
+        if let Some(bucket_name) = bucket {
+            let new_host = format!("{}.{}", bucket_name, host);
+            info!("new host {}", new_host);
+            headers.insert_header(HOST, HeaderValue::try_from(new_host)?)?;
         }
+
+        // construct request for signing by aws_sigv4
         let signable_request = SignableRequest::new(
             headers.method.as_str(),
             &uri,
-            headers
-                .headers
-                .iter()
-                .filter_map(|(name, value)| {
-                    match value.to_str() {
-                        Ok(v) => Some((name.as_str(), v)),
-                        Err(_) => None,
-                    }
-                }),
+            headers.headers.iter().filter_map(|(name, value)| match value.to_str() {
+                Ok(v) => Some((name.as_str(), v)),
+                Err(_) => None,
+            }),
             SignableBody::UnsignedPayload,
         )?;
         let (signing_instructions, _signature) = sign(signable_request, &signing_params)?.into_parts();
@@ -162,8 +194,16 @@ impl S3Credentials {
 }
 
 #[async_trait]
-impl BackgroundService for S3Credentials {
+impl BackgroundService for Credentials {
     async fn start(&self, shutdown: ShutdownWatch) {
+        if self.verify_meta {
+            // create metadata client
+            let metadata_client = Arc::new(MetaDataClient::from_env().await
+                .expect("cannot create meta data client"));
+            self.metadata_client.store(Some(metadata_client));
+        }
+
+        // s3 credential is updated periodically
         let mut now = Instant::now();
         // run update and health check once
         let mut next_update = now;
@@ -219,7 +259,38 @@ impl ProxyHttp for S3Proxy {
     {
         let header = session.req_header_mut();
         info!("request_filter original header: {header:?}");
-        match self.cred.sign(header, &self.host, self.virtual_host) {
+        let mut bucket = None;
+        if self.virtual_host {
+            // replace host header
+            if let Some(host_header) = header.headers.get(HOST) {
+                match host_header.to_str() {
+                    Ok(s) => {
+                        if let Some(first_dot) = s.find(".") {
+                            bucket = Some(s[0..first_dot].to_string());
+                        }
+                    }
+                    Err(_) => {
+                        error!("failed to parse host header");
+                        session.respond_error(500).await?;
+                        return Ok(true);
+                    }
+                }
+            }
+        };
+        let bucket = bucket.as_ref().map(|b| b.as_str());
+
+        // verify meta permission
+        match self.cred.verify_rbac(header, &bucket).await {
+            Err(e) => {
+                error!("rbac error {:?}", e);
+                session.respond_error(403).await?;
+                return Ok(true);
+            }
+            _ => {}
+        }
+
+        // signing
+        match self.cred.sign_aws_v4(header, &self.host, &bucket) {
             Ok(_) => Ok(false),
             Err(e) => {
                 error!("sign error {:?}", e);
@@ -306,5 +377,158 @@ where
 {
     fn from(value: DnsDiscovery) -> Self {
         LoadBalancer::from_backends(value.into())
+    }
+}
+
+fn assemble_table_path<'a, Iter>(split: Iter, bucket_name: &str, partition_equal: &str) -> String
+where
+    Iter: Iterator<Item = &'a str>,
+{
+    let mut path = String::with_capacity(256);
+    path.push_str("s3://");
+    path.push_str(bucket_name);
+    split
+        .take_while(|s| !(s.ends_with(".parquet") || s.contains(partition_equal)))
+        .for_each(|s| {
+            path.push_str("/");
+            path.push_str(s);
+        });
+    path.push_str("/");
+    path
+}
+
+fn parse_table_path_from_query(query: &str, bucket_name: &str) -> String {
+    let query_parts_iter = query.split("&");
+    for query_part in query_parts_iter {
+        let mut query_part_iter = query_part.split("=");
+        if let Some(key) = query_part_iter.next() {
+            if key == "prefix" {
+                if let Some(value) = query_part_iter.next() {
+                    return assemble_table_path(value.split("%2F"), bucket_name, "%3D");
+                }
+            }
+        }
+    }
+    format!("s3://{}/", bucket_name)
+}
+
+fn parse_table_path(uri: &Uri, bucket: &Option<&str>) -> String {
+    let path = uri.path();
+    let mut path_parts_iter = path.split("/").filter(|s| !s.is_empty()).peekable();
+
+    let bucket_name = match bucket {
+        Some(b) => b,
+        None => {
+            // get first part of path as bucket name
+            path_parts_iter.next().unwrap()
+        }
+    };
+    if let None = path_parts_iter.peek() {
+        // a list request without path
+        // retrieve path from query string
+        let query = uri.query().unwrap_or("");
+        if query.is_empty() {
+            format!("s3://{}/", bucket.unwrap())
+        } else {
+            parse_table_path_from_query(query, bucket_name)
+        }
+    } else {
+        assemble_table_path(path_parts_iter, bucket_name, "=")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_table_path() {
+        assert_eq!(
+            parse_table_path(&Uri::from_static("/lakesoul-test-bucket/test/test.parquet"), &None),
+            "s3://lakesoul-test-bucket/test/"
+        );
+
+        assert_eq!(
+            parse_table_path(
+                &Uri::from_static("/lakesoul-test-bucket/test/default/abc/test.parquet"),
+                &None
+            ),
+            "s3://lakesoul-test-bucket/test/default/abc/"
+        );
+
+        assert_eq!(
+            parse_table_path(
+                &Uri::from_static("/lakesoul-test-bucket/test/default/abc/test.parquet"),
+                &None
+            ),
+            "s3://lakesoul-test-bucket/test/default/abc/"
+        );
+
+        assert_eq!(
+            parse_table_path(
+                &Uri::from_static("/lakesoul-test-bucket/test/default/abc/date=20250221/type=1/test.parquet"),
+                &None
+            ),
+            "s3://lakesoul-test-bucket/test/default/abc/"
+        );
+
+        // virtual host style
+        assert_eq!(
+            parse_table_path(&Uri::from_static("/test/test.parquet"), &Some("lakesoul-test-bucket")),
+            "s3://lakesoul-test-bucket/test/"
+        );
+
+        assert_eq!(
+            parse_table_path(
+                &Uri::from_static("/test/default/abc/test.parquet"),
+                &Some("lakesoul-test-bucket")
+            ),
+            "s3://lakesoul-test-bucket/test/default/abc/"
+        );
+
+        assert_eq!(
+            parse_table_path(
+                &Uri::from_static("/test/default/abc/test.parquet"),
+                &Some("lakesoul-test-bucket")
+            ),
+            "s3://lakesoul-test-bucket/test/default/abc/"
+        );
+
+        assert_eq!(
+            parse_table_path(
+                &Uri::from_static("/test/default/abc/date=20250221/type=1/test.parquet"),
+                &Some("lakesoul-test-bucket")
+            ),
+            "s3://lakesoul-test-bucket/test/default/abc/"
+        );
+
+        // list request parse from query
+        assert_eq!(
+            parse_table_path(
+                &Uri::from_static(
+                    "/lakesoul-test-bucket?list-type=2&prefix=test%2Fdefault%2Fabc%2Ftest.parquet&delimiter=%2F&encoding-type=url"
+                ),
+                &None
+            ),
+            "s3://lakesoul-test-bucket/test/default/abc/"
+        );
+        assert_eq!(
+            parse_table_path(
+                &Uri::from_static(
+                    "/lakesoul-test-bucket?list-type=2&prefix=test%2Fdefault%2Fabc%2Fdate%3D20250221%2Ftype=1%2Ftest.parquet&delimiter=%2F&encoding-type=url"
+                ),
+                &None
+            ),
+            "s3://lakesoul-test-bucket/test/default/abc/"
+        );
+        assert_eq!(
+            parse_table_path(
+                &Uri::from_static(
+                    "/?list-type=2&prefix=test%2Fdefault%2Fabc%2Ftest.parquet&delimiter=%2F&encoding-type=url"
+                ),
+                &Some("lakesoul-test-bucket")
+            ),
+            "s3://lakesoul-test-bucket/test/default/abc/"
+        );
     }
 }
