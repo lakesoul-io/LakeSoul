@@ -215,11 +215,9 @@ impl LakeSoulTableProvider {
 
     fn is_partition_filter(&self, f: &Expr) -> bool {
         // O(nm), n = number of expr fields, m = number of range partitions
-        if let Ok(cols) = f.to_columns() {
-            cols.iter().all(|col| self.range_partitions.contains(&col.name))
-        } else {
-            false
-        }
+        f.column_refs()
+            .iter()
+            .all(|col| self.range_partitions.contains(&col.name))
     }
 
     pub fn options(&self) -> &ListingOptions {
@@ -247,27 +245,21 @@ impl LakeSoulTableProvider {
             let sort_exprs = exprs
                 .iter()
                 .map(|sort| {
-                    if let Sort { expr, asc, nulls_first } = sort {
-                        if let Expr::Column(col) = expr {
-                            let expr = datafusion::physical_plan::expressions::col(&col.name, self.schema().as_ref())?;
-                            Ok(PhysicalSortExpr {
-                                expr,
-                                options: SortOptions {
-                                    descending: !asc,
-                                    nulls_first: *nulls_first,
-                                },
-                            })
-                        } else {
-                            Err(DataFusionError::Plan(
-                                // Return an error if schema of the input query does not match with the table schema.
-                                format!("Expected single column references in output_ordering, got {}", expr),
-                            ))
-                        }
+                    let Sort { expr, asc, nulls_first } = sort;
+                    if let Expr::Column(col) = expr {
+                        let expr = datafusion::physical_plan::expressions::col(&col.name, self.schema().as_ref())?;
+                        Ok(PhysicalSortExpr {
+                            expr,
+                            options: SortOptions {
+                                descending: !asc,
+                                nulls_first: *nulls_first,
+                            },
+                        })
                     } else {
-                        Err(DataFusionError::Plan(format!(
-                            "Expected Expr::Sort in output_ordering, but got {}",
-                            sort
-                        )))
+                        Err(DataFusionError::Plan(
+                            // Return an error if schema of the input query does not match with the table schema.
+                            format!("Expected single column references in output_ordering, got {}", expr),
+                        ))
                     }
                 })
                 .collect::<Result<Vec<_>>>()?;

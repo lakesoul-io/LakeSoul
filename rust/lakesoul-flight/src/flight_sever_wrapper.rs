@@ -1,5 +1,8 @@
+// SPDX-FileCopyrightText: LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use arrow::error::ArrowError;
-use arrow_flight::sql::server::FlightSqlService;
 use arrow_flight::{
     flight_service_server::{FlightService, FlightServiceServer},
     sql::{Any, Command},
@@ -9,12 +12,10 @@ use http::Request;
 use lakesoul_datafusion::serialize::arrow_java::schema_from_metadata_str;
 use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 use prost::Message;
-use std::{
-    task::{Context, Poll},
-};
+use std::task::{Context, Poll};
 use tonic::codegen::{BoxFuture, StdError};
 use tonic::{
-    body::BoxBody, codec::EnabledCompressionEncodings, codegen::Service, server::NamedService, transport::Body,
+    codec::EnabledCompressionEncodings, server::NamedService, transport::Body,
     Response,
 };
 
@@ -52,7 +53,7 @@ where
     type Response = http::Response<tonic::body::BoxBody>;
     type Error = std::convert::Infallible;
     type Future = BoxFuture<Self::Response, Self::Error>;
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<std::result::Result<(), Self::Error>> {
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<std::result::Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
 
@@ -149,4 +150,3 @@ impl<T: FlightService> Clone for FlightServiceServerWrapper<T> {
 impl<T: FlightService> NamedService for FlightServiceServerWrapper<T> {
     const NAME: &'static str = "arrow.flight.protocol.FlightService";
 }
-

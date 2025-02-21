@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
 [package]
 name = "lakesoul-flight"
 version = "0.1.0"
@@ -25,7 +29,7 @@ http = { workspace = true }
 jsonwebtoken = {version = "9", default-features = false }
 serde = { workspace = true }
 metrics = "0.21"
-metrics-exporter-prometheus = "0.12"
+#metrics-exporter-prometheus = "0.16"
 tower = { version = "0.4", features = ["full"] }
 tower-http = { version = "0.4", features = ["trace"] }
 clap = { version = "4.4", features = ["derive"] }
