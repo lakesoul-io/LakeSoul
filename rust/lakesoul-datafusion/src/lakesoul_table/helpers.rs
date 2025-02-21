@@ -23,7 +23,7 @@ use datafusion::{
 };
 use lakesoul_metadata::MetaDataClientRef;
 use object_store::{path::Path, ObjectMeta, ObjectStore};
-use log::{debug, info, trace};
+use log::{debug, info};
 use url::Url;
 
 use crate::error::Result;

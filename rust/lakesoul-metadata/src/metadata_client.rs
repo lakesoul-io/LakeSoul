@@ -569,6 +569,19 @@ impl MetaDataClient {
         }
     }
 
+    pub async fn get_table_path_id_by_table_path(&self, table_path: &str) -> Result<TablePathId> {
+        match self
+            .execute_query(
+                DaoType::SelectTablePathIdByTablePath as i32,
+                [table_path].join(PARAM_DELIM),
+            )
+            .await
+        {
+            Ok(wrapper) => Ok(wrapper.table_path_id[0].clone()),
+            Err(err) => Err(err),
+        }
+    }
+
     pub async fn get_table_info_by_table_name(&self, table_name: &str, namespace: &str) -> Result<Option<TableInfo>> {
         match self
             .execute_query(

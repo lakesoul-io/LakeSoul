@@ -22,7 +22,7 @@ use lakesoul_io::async_writer::{AsyncBatchWriter, AsyncSendableMutableLakeSoulWr
 use lakesoul_io::lakesoul_io_config::OPTION_KEY_MEM_LIMIT;
 use lakesoul_io::{lakesoul_io_config::create_session_context_with_planner, lakesoul_reader::RecordBatch};
 use lakesoul_metadata::{LakeSoulMetaDataError, MetaDataClient, MetaDataClientRef};
-use log::{debug, info};
+use log::info;
 use proto::proto::entity::{CommitOp, DataCommitInfo, DataFileOp, FileOp, TableInfo};
 use std::collections::HashMap;
 use uuid::Uuid;

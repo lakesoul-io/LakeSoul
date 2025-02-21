@@ -2,7 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::sql::TableReference;
 use log::info;
 use serde::Deserialize;
