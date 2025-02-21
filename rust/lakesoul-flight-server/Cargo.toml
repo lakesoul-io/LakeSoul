@@ -1,17 +1,13 @@
 [package]
-name = "lakesoul-examples"
+name = "lakesoul-flight-server"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[[example]]
-name = "flight_sql_server"
-path = "examples/flight/flight_sql_server.rs"
-
 [[bin]]
-name = "flight_sql_server"
-path = "examples/flight/flight_sql_server.rs"
+name = "lakesoul_arrow_flight_sql_server"
+path = "src/flight/flight_sql_server.rs"
 
 [dependencies]
 tokio = {workspace = true}

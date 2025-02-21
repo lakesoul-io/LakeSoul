@@ -2,7 +2,6 @@ use std::collections::HashMap;
 
 use clap::Parser;
 
-
 // 添加命令行参数结构体
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -14,7 +13,6 @@ pub struct Args {
     /// Prometheus 指标监听地址
     #[arg(short, long, default_value = "0.0.0.0:19000")]
     pub metrics_addr: String,
-
 
     /// LakeSoul Meta 文件路径
     #[arg(long, default_value = "")]
