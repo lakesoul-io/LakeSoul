@@ -10,7 +10,8 @@ members = [
     "lakesoul-io",
     "lakesoul-io-c",
     "lakesoul-datafusion",
-    "lakesoul-examples",
+    "lakesoul-flight",
+    "lakesoul-flight-server",
     "lakesoul-s3-proxy"]
 resolver = "2"
 
