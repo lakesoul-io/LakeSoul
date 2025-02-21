@@ -1,20 +1,19 @@
 mod token_codec;
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use arrow_flight::flight_service_server::FlightServiceServer;
+use clap::Parser;
 use log::info;
-use tonic::transport::Server;
-use tonic::{Request, Response, Status};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use tonic::service::Interceptor;
-use clap::Parser;
+use tonic::transport::Server;
+use tonic::{Request, Response, Status};
 
-use lakesoul_flight::{FlightSqlServiceImpl, JwtServer, args::Args};
+use lakesoul_flight::{args::Args, FlightSqlServiceImpl, JwtServer};
 use lakesoul_metadata::MetaDataClient;
-
 
 pub mod token {
     include!(concat!(env!("OUT_DIR"), "/json.token.TokenServer.rs"));
@@ -63,20 +62,20 @@ impl Default for GrpcInterceptor {
 impl Interceptor for GrpcInterceptor {
     fn call(&mut self, mut request: tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> {
         let start = Instant::now();
-        let path = request.metadata()
+        let path = request
+            .metadata()
             .get("grpc-path")
             .map(|v| v.to_str().unwrap_or("unknown"))
             .unwrap_or("unknown")
             .to_string();
-        
-        let request_size = request.metadata()
-            .len() as u64;
-        
+
+        let request_size = request.metadata().len() as u64;
+
         let total_bytes = self.total_bytes_in.fetch_add(request_size, Ordering::SeqCst);
-        
+
         self.total_requests.fetch_add(1, Ordering::SeqCst);
         let active = self.active_requests.fetch_add(1, Ordering::SeqCst);
-        
+
         let elapsed_secs = self.start_time.elapsed().as_secs_f64();
         let throughput_bytes = if elapsed_secs > 0.0 {
             (total_bytes + request_size) as f64 / elapsed_secs
@@ -88,18 +87,18 @@ impl Interceptor for GrpcInterceptor {
         } else {
             0.0
         };
-        
+
         info!(
             "请求开始 - 路径: {}, 当前活跃请求数: {}, 请求大小: {} 字节, 总接收字节数: {}, 吞吐量: {:.2} 字节/秒, {:.2} 请求/秒",
             path, active + 1, request_size, total_bytes + request_size, throughput_bytes, throughput_requests
         );
-        
+
         request.extensions_mut().insert(CallbackOnDrop {
             path,
             start,
             active_requests: self.active_requests.clone(),
         });
-        
+
         Ok(request)
     }
 }
@@ -115,10 +114,12 @@ impl Drop for CallbackOnDrop {
     fn drop(&mut self) {
         let duration = self.start.elapsed();
         let active = self.active_requests.fetch_sub(1, Ordering::SeqCst);
-        
+
         info!(
             "请求结束 - 路径: {}, 耗时: {:?}, 剩余活跃请求数: {}",
-            self.path, duration, active - 1
+            self.path,
+            duration,
+            active - 1
         );
     }
 }
@@ -156,7 +157,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let (host, port) = if let Some(caps) = re.captures(&args.metrics_addr) {
                 (
                     caps.get(1).unwrap().as_str().parse()?,
-                    caps.get(2).unwrap().as_str().parse()?
+                    caps.get(2).unwrap().as_str().parse()?,
                 )
             } else {
                 return Err("Invalid metrics_addr format".into());
@@ -170,19 +171,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .add_global_label("service", "lakesoul_flight")
             .install()?;
 
-        let service = FlightSqlServiceImpl::new(metadata_client.clone(), args)
-            .await?;
+        let service = FlightSqlServiceImpl::new(metadata_client.clone(), args).await?;
         service.init().await?;
         let jwt_server = service.get_jwt_server();
 
         let token_service = TokenService { jwt_server };
 
         let interceptor = GrpcInterceptor::default();
-        
+
         let svc = FlightServiceServer::with_interceptor(service, interceptor);
 
         info!("Listening on {addr:?}");
-        info!("Metrics server listening on {:?}", std::net::SocketAddr::from(([0, 0, 0, 0], 19000)));
+        info!(
+            "Metrics server listening on {:?}",
+            std::net::SocketAddr::from(([0, 0, 0, 0], 19000))
+        );
 
         Server::builder()
             .add_service(svc)

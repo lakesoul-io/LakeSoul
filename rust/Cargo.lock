@@ -3052,30 +3052,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lakesoul-examples"
-version = "0.1.0"
-dependencies = [
- "arrow-flight",
- "bytes",
- "clap 4.5.30",
- "env_logger",
- "lakesoul-datafusion",
- "lakesoul-flight",
- "lakesoul-metadata",
- "log",
- "metrics",
- "metrics-exporter-prometheus",
- "regex",
- "serde",
- "serde_json",
- "tokio",
- "tonic",
- "tonic-build",
- "tower 0.4.13",
- "tower-http",
-]
-
-[[package]]
 name = "lakesoul-flight"
 version = "0.1.0"
 dependencies = [
@@ -3104,6 +3080,30 @@ dependencies = [
  "tower-http",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "lakesoul-flight-server"
+version = "0.1.0"
+dependencies = [
+ "arrow-flight",
+ "bytes",
+ "clap 4.5.30",
+ "env_logger",
+ "lakesoul-datafusion",
+ "lakesoul-flight",
+ "lakesoul-metadata",
+ "log",
+ "metrics",
+ "metrics-exporter-prometheus",
+ "regex",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tonic",
+ "tonic-build",
+ "tower 0.4.13",
+ "tower-http",
 ]
 
 [[package]]

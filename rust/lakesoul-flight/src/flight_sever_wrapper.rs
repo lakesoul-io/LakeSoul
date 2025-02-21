@@ -1,5 +1,4 @@
 use arrow::error::ArrowError;
-use arrow_flight::sql::server::FlightSqlService;
 use arrow_flight::{
     flight_service_server::{FlightService, FlightServiceServer},
     sql::{Any, Command},
@@ -9,12 +8,10 @@ use http::Request;
 use lakesoul_datafusion::serialize::arrow_java::schema_from_metadata_str;
 use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 use prost::Message;
-use std::{
-    task::{Context, Poll},
-};
+use std::task::{Context, Poll};
 use tonic::codegen::{BoxFuture, StdError};
 use tonic::{
-    body::BoxBody, codec::EnabledCompressionEncodings, codegen::Service, server::NamedService, transport::Body,
+    codec::EnabledCompressionEncodings, codegen::Service, server::NamedService, transport::Body,
     Response,
 };
 
@@ -149,4 +146,3 @@ impl<T: FlightService> Clone for FlightServiceServerWrapper<T> {
 impl<T: FlightService> NamedService for FlightServiceServerWrapper<T> {
     const NAME: &'static str = "arrow.flight.protocol.FlightService";
 }
-
