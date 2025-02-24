@@ -73,6 +73,7 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
     }
 
     public void setHashBucketNum(Integer hashBucketNum) {
+        hashBucketNum = hashBucketNum < 1 ? 1 : hashBucketNum;
         ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_hash_bucket_num(ioConfigBuilder, hashBucketNum);
     }
 

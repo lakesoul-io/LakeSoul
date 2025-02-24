@@ -33,7 +33,7 @@ public final class DefaultOneTableBulkFormatBuilder
         super(basePath, conf, new DefaultLakeSoulWriterBucketFactory(conf));
         this.identity = identity;
     }
-    public TableSchemaIdentity getIdentity(){
+    public TableSchemaIdentity getIdentity() {
         return this.identity;
     }
 
@@ -41,7 +41,7 @@ public final class DefaultOneTableBulkFormatBuilder
     public AbstractLakeSoulMultiTableSinkWriter<RowData, RowData> createWriter(Sink.InitContext context, int subTaskId) throws
             IOException {
         int hashBucketNum = conf.getInteger(LakeSoulSinkOptions.HASH_BUCKET_NUM);
-        int hashBucketId = hashBucketNum == -1 ? subTaskId : subTaskId % hashBucketNum;
+        int hashBucketId = hashBucketNum == -1 ? 0 : subTaskId % hashBucketNum;
         System.out.printf("DefaultOneTableBulkFormatBuilder::createWriter, subTaskId=%d, hashBucketId=%d\n", subTaskId, hashBucketId);
         return new LakeSoulRowDataOneTableSinkWriter(
                 hashBucketId,
