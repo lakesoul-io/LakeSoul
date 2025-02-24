@@ -60,9 +60,9 @@ object DateTimeUtils {
   }
 
   def microsToInstant(us: Long): Instant = {
-    val secs = Math.floorDiv(us, MICROS_PER_SECOND)
-    val mos = Math.floorMod(us, MICROS_PER_SECOND)
-    Instant.ofEpochSecond(secs, mos * NANOS_PER_MICROS)
+    val secs = Math.floorDiv(us, NANOS_PER_MICROS)
+    val mos = Math.floorMod(us, NANOS_PER_MICROS)
+    Instant.ofEpochSecond(secs, mos * NANOS_PER_MILLIS)
   }
 
   def instantToDays(instant: Instant): Int = {

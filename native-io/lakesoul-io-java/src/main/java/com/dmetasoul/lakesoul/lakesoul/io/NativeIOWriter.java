@@ -150,7 +150,7 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
 
         final String fileExistCols;
 
-        FlushResult(String filePath, Long fileSize, String fileExistCols) {
+        public FlushResult(String filePath, Long fileSize, String fileExistCols) {
             this.filePath = filePath;
             this.fileSize = fileSize;
             this.fileExistCols = fileExistCols;
