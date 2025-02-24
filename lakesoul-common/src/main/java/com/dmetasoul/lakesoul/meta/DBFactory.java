@@ -4,12 +4,7 @@
 
 package com.dmetasoul.lakesoul.meta;
 
-import com.dmetasoul.lakesoul.meta.dao.DataCommitInfoDao;
-import com.dmetasoul.lakesoul.meta.dao.NamespaceDao;
-import com.dmetasoul.lakesoul.meta.dao.PartitionInfoDao;
-import com.dmetasoul.lakesoul.meta.dao.TableInfoDao;
-import com.dmetasoul.lakesoul.meta.dao.TablePathIdDao;
-import com.dmetasoul.lakesoul.meta.dao.TableNameIdDao;
+import com.dmetasoul.lakesoul.meta.dao.*;
 
 public class DBFactory {
 
@@ -19,6 +14,7 @@ public class DBFactory {
     private static volatile TablePathIdDao tablePathIdDao;
     private static volatile DataCommitInfoDao dataCommitInfoDao;
     private static volatile PartitionInfoDao partitionInfoDao;
+    private static volatile DiscardCompressedFileDao discardCompressedFileDao;
 
     private DBFactory(){}
 
@@ -86,5 +82,16 @@ public class DBFactory {
             }
         }
         return partitionInfoDao;
+    }
+
+    public static DiscardCompressedFileDao getDiscardCompressedFileDao() {
+        if (discardCompressedFileDao == null) {
+            synchronized (DiscardCompressedFileDao.class) {
+                if (discardCompressedFileDao == null) {
+                    discardCompressedFileDao = new DiscardCompressedFileDao();
+                }
+            }
+        }
+        return discardCompressedFileDao;
     }
 }

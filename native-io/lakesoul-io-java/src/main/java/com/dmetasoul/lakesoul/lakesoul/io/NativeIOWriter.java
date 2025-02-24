@@ -73,6 +73,7 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
     }
 
     public void setHashBucketNum(Integer hashBucketNum) {
+        hashBucketNum = hashBucketNum < 1 ? 1 : hashBucketNum;
         ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_hash_bucket_num(ioConfigBuilder, hashBucketNum);
     }
 
@@ -149,7 +150,7 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
 
         final String fileExistCols;
 
-        FlushResult(String filePath, Long fileSize, String fileExistCols) {
+        public FlushResult(String filePath, Long fileSize, String fileExistCols) {
             this.filePath = filePath;
             this.fileSize = fileSize;
             this.fileExistCols = fileExistCols;

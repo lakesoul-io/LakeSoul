@@ -39,6 +39,7 @@ public class NativeUtils {
         SelectOneDataCommitInfoByTableIdAndPartitionDescAndCommitId(DAO_TYPE_QUERY_ONE_OFFSET + 9, 3),
         SelectOneDataCommitInfoByTableId(DAO_TYPE_QUERY_ONE_OFFSET + 10, 3),
 
+        SelectDiscardCompressedFileInfoByFilePath(DAO_TYPE_QUERY_ONE_OFFSET + 11, 1),
         // ==== Query List ====
 
         ListNamespaces(DAO_TYPE_QUERY_LIST_OFFSET),
@@ -57,6 +58,10 @@ public class NativeUtils {
         // Query DataCommitInfo List
         ListDataCommitInfoByTableIdAndPartitionDescAndCommitList(DAO_TYPE_QUERY_LIST_OFFSET + 10, 3),
 
+        ListAllDiscardCompressedFileInfo(DAO_TYPE_QUERY_LIST_OFFSET + 11),
+        ListDiscardCompressedFileInfoBeforeTimestamp(DAO_TYPE_QUERY_LIST_OFFSET + 12, 1),
+        ListDiscardCompressedFileByFilterCondition(DAO_TYPE_QUERY_LIST_OFFSET + 13, 3),
+
         // ==== Insert One ====
         InsertNamespace(DAO_TYPE_INSERT_ONE_OFFSET),
         InsertTablePathId(DAO_TYPE_INSERT_ONE_OFFSET + 1),
@@ -64,10 +69,12 @@ public class NativeUtils {
         InsertTableInfo(DAO_TYPE_INSERT_ONE_OFFSET + 3),
         InsertPartitionInfo(DAO_TYPE_INSERT_ONE_OFFSET + 4),
         InsertDataCommitInfo(DAO_TYPE_INSERT_ONE_OFFSET + 5),
+        InsertDiscardCompressedFileInfo(DAO_TYPE_INSERT_ONE_OFFSET + 6),
 
         // ==== Transaction Insert List ====
         TransactionInsertPartitionInfo(DAO_TYPE_TRANSACTION_INSERT_LIST_OFFSET),
         TransactionInsertDataCommitInfo(DAO_TYPE_TRANSACTION_INSERT_LIST_OFFSET + 1),
+        TransactionInsertDiscardCompressedFile(DAO_TYPE_TRANSACTION_INSERT_LIST_OFFSET + 2),
 
         // ==== Query SCALAR ====
         GetLatestTimestampFromPartitionInfo(DAO_TYPE_QUERY_SCALAR_OFFSET, 2),
@@ -100,6 +107,9 @@ public class NativeUtils {
         DeleteDataCommitInfoByTableIdAndPartitionDescAndCommitIdList(DAO_TYPE_UPDATE_OFFSET + 13, 3),
         DeleteDataCommitInfoByTableIdAndPartitionDesc(DAO_TYPE_UPDATE_OFFSET + 14, 2),
         DeleteDataCommitInfoByTableId(DAO_TYPE_UPDATE_OFFSET + 15, 1),
+
+        DeleteDiscardCompressedFileInfoByFilePath(DAO_TYPE_UPDATE_OFFSET + 16, 1),
+        DeleteDiscardCompressedFileByFilterCondition(DAO_TYPE_UPDATE_OFFSET + 17, 3)
         ;
 
         private final int code;

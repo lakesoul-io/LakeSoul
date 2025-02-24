@@ -186,4 +186,22 @@ object LakeSoulSQLConf {
         """.stripMargin)
       .booleanConf
       .createWithDefault(false)
+
+  val COMPACTION_FILE_NUM_LIMIT: ConfigEntry[Int] =
+    buildConf("compaction.level.file.number.limit")
+      .doc(
+        """
+          |COMPACTION LEVEL SINGLE TASK READ FILE NUMBER SIZE, DEFAULT IS 20.
+        """.stripMargin)
+      .intConf
+      .createWithDefault(20)
+
+  val COMPACTION_LEVEL_MAX_FILE_SIZE: ConfigEntry[Long] =
+    buildConf("compaction.level.file.size")
+      .doc(
+        """
+          |COMPACTION SINGLE TASK READ FILE SIZE, DEFAULT IS 5G.
+        """.stripMargin)
+      .longConf
+      .createWithDefault(5 * 1024 * 1024 * 1024l)
 }
