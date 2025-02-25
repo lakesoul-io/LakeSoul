@@ -60,62 +60,53 @@ object NewCompactionTask {
     val spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("WARN")
 
-    new Listener().start()
-
-    import java.util.concurrent.CountDownLatch
-    val countDownLatch = new CountDownLatch(1)
-    countDownLatch.await()
-
+    listenTriggerCompactTask()
+    spark.stop()
   }
 
-  class Listener extends Thread {
-    private var conn = DBConnector.getConn
-    private var pgconn = conn.unwrap(classOf[PGConnection])
-
+  private def listenTriggerCompactTask(): Unit = {
+    var conn = DBConnector.getConn
+    var pgconn = conn.unwrap(classOf[PGConnection])
     val threadPool: ExecutorService = Executors.newFixedThreadPool(threadPoolSize)
+    val stmt = conn.createStatement
+    stmt.execute("LISTEN " + NOTIFY_CHANNEL_NAME)
+    stmt.close()
 
-    override def run(): Unit = {
-      val stmt = conn.createStatement
-      stmt.execute("LISTEN " + NOTIFY_CHANNEL_NAME)
-      stmt.close()
-
-      val jsonParser = new JsonParser()
-      while (true) {
-        try {
-          if (!conn.isValid(5000)) {
-            conn.close()
-            conn = DBConnector.getConn
-            pgconn = conn.unwrap(classOf[PGConnection])
-            val stmt = conn.createStatement
-            stmt.execute("LISTEN " + NOTIFY_CHANNEL_NAME)
-            stmt.close()
-          }
-          val notifications = pgconn.getNotifications
-          if (notifications.nonEmpty) {
-            notifications.foreach(notification => {
-              val notificationParameter = notification.getParameter
-              if (threadMap.get(notificationParameter) != 1) {
-                threadMap.put(notificationParameter, 1)
-                val jsonObj = jsonParser.parse(notificationParameter).asInstanceOf[JsonObject]
-                println("========== " + dateFormat.format(new Date()) + " start processing notification: " + jsonObj + " ==========")
-                val tablePath = jsonObj.get("table_path").getAsString
-                if (!tablePath.contains("10.64.219.26")) {
-                  val partitionDesc = jsonObj.get("table_partition_desc").getAsString
-                  val tableNamespace = jsonObj.get("table_namespace").getAsString
-                  if (tableNamespace.equals(database) || database.equals("")) {
-                    val rsPartitionDesc = if (partitionDesc.equals(MetaUtils.DEFAULT_RANGE_PARTITION_VALUE)) "" else partitionDesc
-                    threadPool.execute(new CompactionTableInfo(tablePath, rsPartitionDesc, notificationParameter))
-                  }
+    val jsonParser = new JsonParser()
+    while (true) {
+      try {
+        if (!conn.isValid(5000)) {
+          conn = DBConnector.getConn
+          pgconn = conn.unwrap(classOf[PGConnection])
+          val stmt = conn.createStatement
+          stmt.execute("LISTEN " + NOTIFY_CHANNEL_NAME)
+          stmt.close()
+        }
+        val notifications = pgconn.getNotifications
+        if (notifications.nonEmpty) {
+          notifications.foreach(notification => {
+            val notificationParameter = notification.getParameter
+            if (threadMap.get(notificationParameter) != 1) {
+              threadMap.put(notificationParameter, 1)
+              val jsonObj = jsonParser.parse(notificationParameter).asInstanceOf[JsonObject]
+              println("========== " + dateFormat.format(new Date()) + " start processing notification: " + jsonObj + " ==========")
+              val tablePath = jsonObj.get("table_path").getAsString
+              if (!tablePath.contains("10.64.219.26")) {
+                val partitionDesc = jsonObj.get("table_partition_desc").getAsString
+                val tableNamespace = jsonObj.get("table_namespace").getAsString
+                if (tableNamespace.equals(database) || database.equals("")) {
+                  val rsPartitionDesc = if (partitionDesc.equals(MetaUtils.DEFAULT_RANGE_PARTITION_VALUE)) "" else partitionDesc
+                  threadPool.execute(new CompactionTableInfo(tablePath, rsPartitionDesc, notificationParameter))
                 }
               }
-            })
-          }
-          Thread.sleep(10000)
-        } catch {
-          case e: Exception => {
-            println("** " + dateFormat.format(new Date()) + " find exception in while codes **")
-            throw e
-          }
+            }
+          })
+        }
+        Thread.sleep(10000)
+      } catch {
+        case e: Exception => {
+          println("** " + dateFormat.format(new Date()) + " find exception in while codes **")
+          println(e.toString)
         }
       }
     }
@@ -139,8 +130,8 @@ object NewCompactionTask {
         }
       } catch {
         case e: Exception => {
-          println("****** " + threadName + " throw exception, table path is: " + path + " ******")
-          throw e
+          println("****** " + dateFormat.format(new Date()) + " threadName is: " + threadName + " throw exception, table path is: " + path + " ******")
+          println(e.toString)
         }
       } finally {
         threadMap.put(setValue, 0)

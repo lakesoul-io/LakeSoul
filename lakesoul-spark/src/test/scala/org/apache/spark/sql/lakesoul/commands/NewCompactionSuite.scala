@@ -5,7 +5,7 @@
 package org.apache.spark.sql.lakesoul.commands
 
 import com.dmetasoul.lakesoul.meta.LakeSoulOptions.SHORT_TABLE_NAME
-import com.dmetasoul.lakesoul.meta.{DataFileInfo, DataOperation, SparkMetaVersion}
+import com.dmetasoul.lakesoul.meta.{DBUtil, DataFileInfo, DataOperation, SparkMetaVersion}
 import com.dmetasoul.lakesoul.spark.clean.CleanOldCompaction.splitCompactFilePath
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.hadoop.fs.Path
@@ -646,9 +646,10 @@ class NewCompactionSuite extends QueryTest
   }
 
   test("new compaction with limited file size") {
-    val maxFileSize = 30960
-    withSQLConf(LakeSoulSQLConf.COMPACTION_FILE_NUM_LIMIT.key -> "5",
-      LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE.key -> maxFileSize.toString) {
+    val maxFileSize = "30KB"
+    val maxFileSizeValue = DBUtil.parseMemoryExpression(maxFileSize)
+    withSQLConf(LakeSoulSQLConf.COMPACTION_LEVEL_FILE_NUM_LIMIT.key -> "5",
+      LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE.key -> maxFileSize) {
       withTempDir { tempDir =>
         val tablePath = tempDir.getCanonicalPath
         val spark = SparkSession.active
@@ -703,9 +704,9 @@ class NewCompactionSuite extends QueryTest
 
           println(s"after ${c}th compact compactedFileMax=$compactedFileMax")
 
-          assert(compactedFileMax <= maxFileSize + Math.min(initialMaxFileSize, maxFileSize),
+          assert(compactedFileMax <= maxFileSizeValue + Math.min(initialMaxFileSize, maxFileSizeValue),
             s"Compaction should produce file with upper-bounded size:" +
-              s"${maxFileSize + Math.min(initialMaxFileSize, maxFileSize)}, " +
+              s"${maxFileSizeValue + Math.min(initialMaxFileSize, maxFileSizeValue)}, " +
               s"but there is a larger $compactedFileMax file size")
 
           val (compactDir, _) = splitCompactFilePath(compactedFiles.head.path)
@@ -723,10 +724,11 @@ class NewCompactionSuite extends QueryTest
     }
   }
 
-  test("compaction cdc table with limited file size") {
-    val maxFileSize = 30960
-    withSQLConf(LakeSoulSQLConf.COMPACTION_FILE_NUM_LIMIT.key -> "5",
-      LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE.key -> maxFileSize.toString) {
+  test("new compaction cdc table with limited file size") {
+    val maxFileSize = "30KB"
+    val maxFileSizeValue = DBUtil.parseMemoryExpression(maxFileSize)
+    withSQLConf(LakeSoulSQLConf.COMPACTION_LEVEL_FILE_NUM_LIMIT.key -> "5",
+      LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE.key -> maxFileSize) {
       withTempDir { tempDir =>
         val tablePath = tempDir.getCanonicalPath
         val spark = SparkSession.active
@@ -785,9 +787,9 @@ class NewCompactionSuite extends QueryTest
 
           println(s"after ${c}th compact compactedFileMax=$compactedFileMax")
 
-          assert(compactedFileMax <= maxFileSize + Math.min(initialMaxFileSize, maxFileSize),
+          assert(compactedFileMax <= maxFileSizeValue + Math.min(initialMaxFileSize, maxFileSizeValue),
             s"Compaction should produce file with upper-bounded size:" +
-              s"${maxFileSize + Math.min(initialMaxFileSize, maxFileSize)}, " +
+              s"${maxFileSizeValue + Math.min(initialMaxFileSize, maxFileSizeValue)}, " +
               s"but there is a larger $compactedFileMax file size")
 
           val (compactDir, _) = splitCompactFilePath(compactedFiles.head.path)
@@ -882,9 +884,9 @@ class NewCompactionSuite extends QueryTest
   }
 
   test("new compaction with newBucketNum、limited file size and limited file number") {
-    val maxFileSize = 30960
-    withSQLConf(LakeSoulSQLConf.COMPACTION_FILE_NUM_LIMIT.key -> "5",
-      LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE.key -> maxFileSize.toString) {
+    val maxFileSize = "30KB"
+    withSQLConf(LakeSoulSQLConf.COMPACTION_LEVEL_FILE_NUM_LIMIT.key -> "5",
+      LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE.key -> maxFileSize) {
       withTempDir { tempDir =>
         //      val tempDir = org.apache.spark.util.Utils.createDirectory(System.getProperty("java.io.tmpdir"))
         val tablePath = tempDir.getCanonicalPath
@@ -955,8 +957,8 @@ class NewCompactionSuite extends QueryTest
   }
 
   test("check new compaction data with newBucketNum、limited file size and limited file number") {
-    withSQLConf(LakeSoulSQLConf.COMPACTION_FILE_NUM_LIMIT.key -> "3",
-      LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE.key -> "10240") {
+    withSQLConf(LakeSoulSQLConf.COMPACTION_LEVEL_FILE_NUM_LIMIT.key -> "3",
+      LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE.key -> "10KB") {
       withTempDir(dir => {
         val tablePath = dir.getCanonicalPath
         val hashBucketNum = 1
