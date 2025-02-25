@@ -9,6 +9,7 @@ import org.apache.spark.ml.param.{IntParam, Param, ParamMap, Params}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.ml.linalg.Vector
+import org.apache.spark.ml.util.Identifiable
 
 import java.util.UUID
 
@@ -17,7 +18,7 @@ trait LakeSoulANNParams extends LSHNNSParams with ScalarRandomProjectionLSHNNSPa
   final val sourceTable: Param[String] = new Param[String](this, "sourceTable", "LakeSoul table name, LakeSoulANNModel will be fit by the persisted data of this table")
 
   final def getSourceTable: String = $(sourceTable)
-  
+
 
   val idColumnName: Param[String] = new Param[String](this, "idColumnName", "The column name of the id column from the source table")
 
@@ -36,15 +37,17 @@ trait LakeSoulANNParams extends LSHNNSParams with ScalarRandomProjectionLSHNNSPa
   final def getNumFeatures: Int = $(numFeatures)
 }
 
-class LakeSoulANN(val spark: SparkSession) extends LakeSoulANNParams {
+class LakeSoulANN(val spark: SparkSession, override val uid: String) extends LakeSoulANNParams {
 
-  def setNumFeatures(value: Int): this.type = set(numFeatures, value)
+  def this() = this(spark, Identifiable.randomUID("lakesoul-ann"))
+
+  def setNumFeatures(value: Int): this.type = super.set(numFeatures, value)
 
   /** @group setParam */
-  def setSourceTable(value: String): this.type = set(sourceTable, value)
+  def setSourceTable(value: String): this.type = super.set(sourceTable, value)
 
   /** @group setParam */
-  def setIdColumnName(value: String): this.type = set(idColumnName, value)
+  def setIdColumnName(value: String): this.type = super.set(idColumnName, value)
 
   lazy val model: LSHNearestNeighborSearchModel[_] = createModel($(numFeatures))
 
@@ -77,5 +80,4 @@ class LakeSoulANN(val spark: SparkSession) extends LakeSoulANNParams {
 
   override def copy(extra: ParamMap): Params = defaultCopy(extra)
 
-  override val uid: String = UUID.randomUUID().toString
 }
