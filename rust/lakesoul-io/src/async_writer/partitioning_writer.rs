@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{collections::HashMap, sync::Arc};
+use std::{borrow::Borrow, collections::HashMap, sync::Arc};
 
 use arrow_array::RecordBatch;
 use arrow_schema::{SchemaRef, SortOptions};
@@ -27,8 +27,8 @@ use crate::{
     helpers::{
         columnar_values_to_partition_desc, columnar_values_to_sub_path, get_batch_memory_size, get_columnar_values,
     },
-    lakesoul_io_config::{create_session_context, LakeSoulIOConfig, LakeSoulIOConfigBuilder},
-    repartition::RepartitionByRangeAndHashExec,
+    lakesoul_io_config::{create_session_context, IOSchema, LakeSoulIOConfig, LakeSoulIOConfigBuilder},
+    repartition::RepartitionByRangeAndHashExec, transform::uniform_schema,
 };
 
 use super::{AsyncBatchWriter, MultiPartAsyncWriter, ReceiverStreamExec, WriterFlushResult};
@@ -64,13 +64,26 @@ impl PartitioningAsyncWriter {
         let write_id = rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
 
         // let partitioned_file_path_and_row_count = Arc::new(Mutex::new(HashMap::<String, (Vec<String>, u64)>::new()));
+        let mut writer_config = config.clone();
+        if !config.aux_sort_cols.is_empty() {
+            let schema = config.target_schema.0.clone();
+            // O(nm), n = number of target schema fields, m = number of aux sort cols
+            let proj_indices = schema
+                .fields
+                .iter()
+                .filter(|f| !config.aux_sort_cols.contains(f.name()))
+                .map(|f| schema.index_of(f.name().as_str()).map_err(|e| DataFusionError::ArrowError(e, None)))
+                .collect::<Result<Vec<usize>>>()?;
+            let writer_schema = Arc::new(schema.project(proj_indices.borrow())?);
+            writer_config.target_schema = IOSchema(uniform_schema(writer_schema));
+        }
         
         for i in 0..partitioning_exec.output_partitioning().partition_count() {
             let sink_task = tokio::spawn(Self::pull_and_sink(
                 partitioning_exec.clone(),
                 i,
                 task_context.clone(),
-                config.clone().into(),
+                writer_config.clone().into(),
                 Arc::new(config.range_partitions.clone()),
                 write_id.clone(),
             ));
@@ -101,8 +114,8 @@ impl PartitioningAsyncWriter {
             .chain(config.primary_keys.iter())
             // add aux sort cols to sort expr
             .chain(config.aux_sort_cols.iter())
-            .map(|pk| {
-                let col = Column::new_with_schema(pk.as_str(), &config.target_schema.0)?;
+            .map(|sort_column| {
+                let col = Column::new_with_schema(sort_column.as_str(), &config.target_schema.0)?;
                 Ok(PhysicalSortExpr {
                     expr: Arc::new(col),
                     options: SortOptions::default(),
