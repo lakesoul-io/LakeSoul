@@ -88,7 +88,7 @@ public class SubstraitUtil {
             try {
                 NATIVE_IO_BASE.close();
             } catch (Exception e) {
-                throw new RuntimeException(e);
+                e.printStackTrace();
             }
         }));
     }

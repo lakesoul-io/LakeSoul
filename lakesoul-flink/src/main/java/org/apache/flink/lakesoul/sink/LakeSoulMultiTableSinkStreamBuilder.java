@@ -55,7 +55,7 @@ public class LakeSoulMultiTableSinkStreamBuilder {
     }
 
     public DataStreamSink<BinarySourceRecord> buildLakeSoulDMLSink(DataStream<BinarySourceRecord> stream) {
-        context.conf.set(DYNAMIC_BUCKETING, false);
+        Boolean dynamicBucketing = context.conf.get(DYNAMIC_BUCKETING);
         if (!context.conf.contains(AUTO_SCHEMA_CHANGE)) {
             context.conf.set(AUTO_SCHEMA_CHANGE, true);
         }
@@ -71,8 +71,12 @@ public class LakeSoulMultiTableSinkStreamBuilder {
                         .withRollingPolicy(rollingPolicy)
                         .withOutputFileConfig(fileNameConfig)
                         .build();
-        return stream.sinkTo(sink).name("LakeSoul MultiTable DML Sink")
-                .setParallelism(context.conf.getInteger(BUCKET_PARALLELISM));
+        if (dynamicBucketing) {
+            return stream.sinkTo(sink).name("LakeSoul MultiTable DML Sink");
+        } else {
+            return stream.sinkTo(sink).name("LakeSoul MultiTable DML Sink")
+                    .setParallelism(context.conf.getInteger(BUCKET_PARALLELISM));
+        }
     }
 
     public static DataStreamSink<LakeSoulArrowWrapper> buildArrowSink(Context context,

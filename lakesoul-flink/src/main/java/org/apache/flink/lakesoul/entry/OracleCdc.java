@@ -76,6 +76,7 @@ public class OracleCdc {
         conf.set(LakeSoulSinkOptions.isMultiTableSource, true);
         conf.set(SOURCE_PARALLELISM, sourceParallelism);
         conf.set(BUCKET_PARALLELISM, bucketParallelism);
+        conf.set(HASH_BUCKET_NUM, bucketParallelism);
         conf.set(SERVER_TIME_ZONE, serverTimezone);
         conf.set(WAREHOUSE_PATH, databasePrefixPath);
         conf.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
