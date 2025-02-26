@@ -385,7 +385,12 @@ public class FlinkUtil {
     }
 
     public static void setIOConfigs(Configuration conf, NativeIOBase io) {
-        conf.addAll(GlobalConfiguration.loadConfiguration());
+        Configuration globalConf = GlobalConfiguration.loadConfiguration();
+        globalConf.keySet().forEach(key -> {
+            if (!conf.containsKey(key)) {
+                conf.setString(key, globalConf.getString(key, null));
+            }
+        });
         try {
             FlinkUtil.class.getClassLoader().loadClass("org.apache.hadoop.hdfs.HdfsConfiguration");
             org.apache.hadoop.conf.Configuration

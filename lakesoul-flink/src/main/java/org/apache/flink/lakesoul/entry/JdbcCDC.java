@@ -107,6 +107,7 @@ public class JdbcCDC {
         conf.set(LakeSoulSinkOptions.WAREHOUSE_PATH, databasePrefixPath);
         conf.set(LakeSoulSinkOptions.SOURCE_PARALLELISM, sourceParallelism);
         conf.set(LakeSoulSinkOptions.BUCKET_PARALLELISM, bucketParallelism);
+        conf.set(LakeSoulSinkOptions.HASH_BUCKET_NUM, bucketParallelism);
         conf.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(conf);
         env.getConfig().registerTypeWithKryoSerializer(BinarySourceRecord.class, BinarySourceRecordSerializer.class);

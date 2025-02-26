@@ -153,7 +153,7 @@ public class LakeSoulSinkGlobalCommitter
                         identity.tableLocation, msgSchema, identity.useCDC, identity.cdcColumn, partition);
                 JSONObject properties = new JSONObject();
                 if (!identity.primaryKeys.isEmpty()) {
-                    properties.put(HASH_BUCKET_NUM.key(), Integer.toString(conf.getInteger(BUCKET_PARALLELISM)));
+                    properties.put(HASH_BUCKET_NUM.key(), Integer.toString(conf.getInteger(HASH_BUCKET_NUM)));
                     properties.put(HASH_PARTITIONS,
                             String.join(LAKESOUL_HASH_PARTITION_SPLITTER, identity.primaryKeys));
                     if (isCdc) {

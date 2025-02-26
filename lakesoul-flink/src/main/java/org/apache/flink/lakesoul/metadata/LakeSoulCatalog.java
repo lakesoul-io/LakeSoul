@@ -307,7 +307,7 @@ public class LakeSoulCatalog implements Catalog {
             }
         } else {
             // for non-primary key table, hashBucketNum properties should not be set
-            if (tableOptions.containsKey(HASH_BUCKET_NUM.key())) {
+            if (tableOptions.containsKey(HASH_BUCKET_NUM.key()) && !tableOptions.get(HASH_BUCKET_NUM.key()).equals("-1")) {
                 throw new CatalogException("hashBucketNum property should not be set for table without primary key");
             }
         }

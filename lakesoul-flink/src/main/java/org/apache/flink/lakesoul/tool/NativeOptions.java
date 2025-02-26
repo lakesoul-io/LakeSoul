@@ -15,7 +15,7 @@ public class NativeOptions {
                     .withDescription("Option to set memory limit of native writer");
 
     public static final ConfigOption<String> HASH_BUCKET_ID =
-            key("lakesoul.native_writer.hash_bucket_id")
+            key("hash_bucket_id")
                     .stringType()
                     .defaultValue("0")
                     .withDescription("Option to set hash bucket id of native writer");
