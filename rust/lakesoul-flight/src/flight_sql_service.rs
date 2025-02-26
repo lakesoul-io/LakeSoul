@@ -62,14 +62,13 @@ use url::Url;
 
 use crate::args::Args;
 use crate::jwt::JwtServer;
-use crate::{
-    datafusion_error_to_status, lakesoul_error_to_status, lakesoul_metadata_error_to_status,
-};
+use crate::{datafusion_error_to_status, lakesoul_error_to_status, lakesoul_metadata_error_to_status, Claims};
+use datafusion::execution::SessionStateBuilder;
+use lakesoul_metadata::rbac::verify_permission_by_table_name;
 use metrics::{counter, gauge, histogram};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
-use datafusion::execution::SessionStateBuilder;
 
 const LOG_INTERVAL: usize = 100; // Log every 100 batches
 const MEGABYTE: f64 = 1_048_576.0;
@@ -91,6 +90,7 @@ pub struct FlightSqlServiceImpl {
     metrics: Arc<StreamWriteMetrics>,
     jwt_server: Arc<JwtServer>,
     auth_enabled: bool,
+    rbac_enabled: bool,
 }
 
 struct StreamWriteMetrics {
@@ -140,12 +140,9 @@ impl StreamWriteMetrics {
     }
 
     fn start_stream(&self) {
-        counter!("stream_write_total", 1);
+        counter!("stream_write_total").increment(1);
         self.active_streams.fetch_add(1, Ordering::SeqCst);
-        gauge!(
-            "stream_write_active_stream",
-            self.active_streams.load(Ordering::SeqCst) as f64
-        );
+        gauge!("stream_write_active_stream").set(self.active_streams.load(Ordering::SeqCst) as f64);
         if self.active_streams.load(Ordering::SeqCst) == 1 {
             let mut start_time = self.start_time.lock().unwrap();
             if start_time.is_none() {
@@ -158,10 +155,7 @@ impl StreamWriteMetrics {
         self.add_batch_metrics(0, 0);
         self.report_metrics("end_stream_write");
         self.active_streams.fetch_sub(1, Ordering::SeqCst);
-        gauge!(
-            "stream_write_active_stream",
-            self.active_streams.load(Ordering::SeqCst) as f64
-        );
+        gauge!("stream_write_active_stream").set(self.active_streams.load(Ordering::SeqCst) as f64);
 
         if self.active_streams.load(Ordering::SeqCst) == 0 {
             let mut start_time = self.start_time.lock().unwrap();
@@ -177,10 +171,10 @@ impl StreamWriteMetrics {
         self.total_rows.fetch_add(rows, Ordering::SeqCst);
         self.total_bytes.fetch_add(bytes, Ordering::SeqCst);
         self.bytes_since_last_check.fetch_add(bytes, Ordering::SeqCst);
-        histogram!("stream_write_rows_of_batch", rows as f64);
-        histogram!("stream_write_bytes_of_batch", bytes as f64 / MEGABYTE);
-        counter!("stream_write_rows_total", rows);
-        counter!("stream_write_bytes_total", bytes);
+        histogram!("stream_write_rows_of_batch").record(rows as f64);
+        histogram!("stream_write_bytes_of_batch").record(bytes as f64 / MEGABYTE);
+        counter!("stream_write_rows_total").increment(rows);
+        counter!("stream_write_bytes_total").increment(bytes);
     }
 
     fn report_metrics(&self, prefix: &str) {
@@ -194,8 +188,8 @@ impl StreamWriteMetrics {
             let mb_per_second = (total_bytes as f64 / MEGABYTE) / duration;
             info!("{} active_streams: {}, total_bytes: {:.2}MB, total_rows: {:.2}K, rows_per_second: {:.2}K, mb_per_second: {:.2}MB", prefix, active_streams, total_bytes as f64 / MEGABYTE, total_rows as f64 / 1000.0, rows_per_second, mb_per_second);
 
-            histogram!("stream_write_rows_per_second", rows_per_second);
-            histogram!("stream_write_mb_per_second", mb_per_second);
+            histogram!("stream_write_rows_per_second").record(rows_per_second);
+            histogram!("stream_write_mb_per_second").record(mb_per_second);
         }
     }
 }
@@ -651,9 +645,13 @@ impl FlightSqlService for FlightSqlServiceImpl {
         let (flush_result, record_count) = self.write_stream(table_reference, stream).await?;
 
         let table = Arc::new(
-            LakeSoulTable::for_namespace_and_name(schema.unwrap_or("default".to_string()).as_str(), table.as_str())
-                .await
-                .map_err(|e| Status::internal(format!("Error creating table: {}", e)))?,
+            LakeSoulTable::for_namespace_and_name(
+                schema.unwrap_or("default".to_string()).as_str(),
+                table.as_str(),
+                Some(self.client.clone()),
+            )
+            .await
+            .map_err(|e| Status::internal(format!("Error creating table: {}", e)))?,
         );
 
         if let Some(transaction_id) = transaction_id {
@@ -682,10 +680,6 @@ impl FlightSqlService for FlightSqlServiceImpl {
             std::str::from_utf8(&query.prepared_statement_handle).unwrap_or("invalid utf8")
         );
 
-        // let handle =
-        //     std::str::from_utf8(&query.prepared_statement_handle).map_err(|e| status!("Unable to parse uuid", e))?;
-        // let plan = self.get_plan(handle)?;
-        // // let output = futures::stream::iter(vec![]).boxed();
         todo!()
     }
 
@@ -709,15 +703,26 @@ impl FlightSqlService for FlightSqlServiceImpl {
                 op: WriteOp::Insert(_),
                 table_name,
                 ..
-            }) => Arc::new(LakeSoulTable::for_table_reference(table_name).await.unwrap()),
-            LogicalPlan::Ddl(DdlStatement::CreateExternalTable(cmd)) => {
-                info!("create external table: {}, {:?}", cmd.name, cmd.definition);
-                Arc::new(LakeSoulTable::for_table_reference(&cmd.name).await.unwrap())
-            }
-            LogicalPlan::EmptyRelation(_) => Arc::new(
-                LakeSoulTable::for_table_reference(&TableReference::from("test_table"))
+            }) => Arc::new(
+                LakeSoulTable::for_table_reference(table_name, Some(self.get_metadata_client()))
                     .await
                     .unwrap(),
+            ),
+            LogicalPlan::Ddl(DdlStatement::CreateExternalTable(cmd)) => {
+                info!("create external table: {}, {:?}", cmd.name, cmd.definition);
+                Arc::new(
+                    LakeSoulTable::for_table_reference(&cmd.name, Some(self.get_metadata_client()))
+                        .await
+                        .unwrap(),
+                )
+            }
+            LogicalPlan::EmptyRelation(_) => Arc::new(
+                LakeSoulTable::for_table_reference(
+                    &TableReference::from("test_table"),
+                    Some(self.get_metadata_client()),
+                )
+                .await
+                .unwrap(),
             ),
             _ => Err(Status::internal(
                 "Not a valid insert into or create external table plan",
@@ -855,9 +860,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         match action {
             1 => self.commit_transactional_data(transaction_id).await,
             2 => self.clear_transactional_data(transaction_id),
-            _ => {
-                return Err(Status::internal("Invalid action"));
-            }
+            _ => Err(Status::internal("Invalid action")),
         }
     }
 
@@ -949,8 +952,14 @@ impl FlightSqlServiceImpl {
     pub async fn new(metadata_client: MetaDataClientRef, args: Args) -> Result<Self> {
         let secret = metadata_client.get_client_secret();
         let jwt_server = Arc::new(JwtServer::new(secret.as_str()));
-        let auth_enabled = std::env::var("JWT_AUTH_ENABLED")
+        let auth_enabled = env::var("JWT_AUTH_ENABLED")
             .unwrap_or("false".to_string())
+            .to_lowercase()
+            .parse::<bool>()
+            .unwrap();
+        let rbac_enabled = env::var("RBAC_AUTH_ENABLED")
+            .unwrap_or("false".to_string())
+            .to_lowercase()
             .parse::<bool>()
             .unwrap();
         // 从环境变量或配置中获取目标速率
@@ -964,6 +973,7 @@ impl FlightSqlServiceImpl {
             transactional_data: Default::default(),
             jwt_server,
             auth_enabled,
+            rbac_enabled,
             metrics: Arc::new(StreamWriteMetrics::new(throughput_limit)),
         })
     }
@@ -975,19 +985,19 @@ impl FlightSqlServiceImpl {
     }
 
     pub async fn create_ctx(&self) -> Result<String, Status> {
-        // let uuid = Uuid::new_v4().hyphenated().to_string();
         let uuid = "1".to_string();
         let mut session_config = SessionConfig::from_env()
             .map_err(|e| Status::internal(format!("Error building plan: {e}")))?
             .with_information_schema(true)
             .with_create_default_catalog_and_schema(false)
-            // .with_batch_size(100)
+            .with_batch_size(128)
             .with_default_catalog_and_schema("LAKESOUL".to_string(), "default".to_string());
         session_config.options_mut().sql_parser.dialect = "postgresql".to_string();
         session_config.options_mut().optimizer.enable_round_robin_repartition = false; // if true, the record_batches poll from stream become unordered
         session_config.options_mut().optimizer.prefer_hash_join = false; //if true, panicked at 'range end out of bounds'
         session_config.options_mut().execution.parquet.pushdown_filters = true;
         session_config.options_mut().execution.target_partitions = 1;
+        session_config.options_mut().execution.parquet.schema_force_view_types = false;
 
         let planner = LakeSoulQueryPlanner::new_ref();
 
@@ -1217,9 +1227,9 @@ impl FlightSqlServiceImpl {
         self.jwt_server.clone()
     }
 
-    fn verify_token(&self, metadata: &MetadataMap) -> Result<(), Status> {
+    fn verify_token(&self, metadata: &MetadataMap) -> Result<Claims, Status> {
         if !self.auth_enabled {
-            return Ok(());
+            return Ok(Claims::default());
         }
         let authorization = metadata
             .get("Authorization")
@@ -1239,11 +1249,18 @@ impl FlightSqlServiceImpl {
                 "Invalid authorization token: {token}"
             )));
         }
-        let _ = self
-            .jwt_server
+        self.jwt_server
             .decode_token(token)
-            .map_err(|e| Status::permission_denied(format!("Invalid authorization token: {e}")))?;
-        Ok(())
+            .map_err(|e| Status::permission_denied(format!("Invalid authorization token: {e}")))
+    }
+
+    async fn verify_rbac(&self, claims: &Claims, ns: &str, table: &str) -> Result<(), Status> {
+        if !self.rbac_enabled {
+            return Ok(());
+        }
+        verify_permission_by_table_name(&claims.sub, &claims.group, ns, table, self.client.clone())
+            .await
+            .map_err(|e| Status::permission_denied(e.to_string()))
     }
 
     fn get_io_config_builder(&self) -> LakeSoulIOConfigBuilder {
@@ -1263,7 +1280,7 @@ impl FlightSqlServiceImpl {
         let table_name = table_reference.table();
 
         let table = Arc::new(
-            LakeSoulTable::for_namespace_and_name(schema.unwrap_or("default"), &table_name)
+            LakeSoulTable::for_namespace_and_name(schema.unwrap_or("default"), &table_name, Some(self.client.clone()))
                 .await
                 .map_err(|e| Status::internal(format!("Error creating table: {}", e)))?,
         );

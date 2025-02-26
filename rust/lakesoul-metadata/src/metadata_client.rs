@@ -7,10 +7,10 @@ use std::ops::DerefMut;
 use std::sync::Arc;
 use std::{collections::HashMap, env, fs, vec};
 
-use prost::Message;
-use tokio::sync::Mutex;
 use log::{debug, info};
 use postgres::Config;
+use prost::Message;
+use tokio::sync::Mutex;
 use url::Url;
 
 use proto::proto::entity::{
@@ -20,8 +20,8 @@ use proto::proto::entity::{
 use crate::error::{LakeSoulMetaDataError, Result};
 use crate::pooled_client::PooledClient;
 use crate::{
-    clean_meta_for_test, create_connection, execute_insert, execute_query, execute_update, DaoType,
-    PARAM_DELIM, PARTITION_DESC_DELIM,
+    clean_meta_for_test, create_connection, execute_insert, execute_query, execute_update, DaoType, PARAM_DELIM,
+    PARTITION_DESC_DELIM,
 };
 
 pub struct MetaDataClient {
@@ -71,51 +71,58 @@ impl MetaDataClient {
                 ))
                 .await
             }
-            Err(_) => {
-                match env::var("LAKESOUL_PG_URL") {
-                    Ok(pg_url) => {
-                        info!("create metadata client from env LAKESOUL_PG_URL= {}", pg_url);
-                        let url = Url::parse(&pg_url[5..])?;
-                        Self::from_config(format!(
-                            "host={} port={} dbname={} user={} password={}",
-                            url.host_str()
-                                .ok_or(LakeSoulMetaDataError::Internal("url host missing".to_string()))?,
-                            url.port()
-                                .ok_or(LakeSoulMetaDataError::Internal("url port missing".to_string()))?,
-                            url.path_segments()
-                                .ok_or(LakeSoulMetaDataError::Internal("url path missing".to_string()))?
-                                .next()
-                                .ok_or(LakeSoulMetaDataError::Internal("url path missing".to_string()))?,
-                            env::var("LAKESOUL_PG_USERNAME").unwrap_or_else(|_| "lakesoul_test".to_string()),
-                            env::var("LAKESOUL_PG_PASSWORD").unwrap_or_else(|_| "lakesoul_test".to_string())    
-                        ))
-                        .await
-                    }
-                    Err(_) => {
-                        Self::from_config(
-                            "host=127.0.0.1 port=5432 dbname=lakesoul_test user=lakesoul_test password=lakesoul_test"
-                                .to_string(),
-                        )
-                        .await
-                    }
+            Err(_) => match env::var("LAKESOUL_PG_URL") {
+                Ok(pg_url) => {
+                    info!("create metadata client from env LAKESOUL_PG_URL= {}", pg_url);
+                    let url = Url::parse(&pg_url[5..])?;
+                    Self::from_config(format!(
+                        "host={} port={} dbname={} user={} password={}",
+                        url.host_str()
+                            .ok_or(LakeSoulMetaDataError::Internal("url host missing".to_string()))?,
+                        url.port()
+                            .ok_or(LakeSoulMetaDataError::Internal("url port missing".to_string()))?,
+                        url.path_segments()
+                            .ok_or(LakeSoulMetaDataError::Internal("url path missing".to_string()))?
+                            .next()
+                            .ok_or(LakeSoulMetaDataError::Internal("url path missing".to_string()))?,
+                        env::var("LAKESOUL_PG_USERNAME").unwrap_or_else(|_| "lakesoul_test".to_string()),
+                        env::var("LAKESOUL_PG_PASSWORD").unwrap_or_else(|_| "lakesoul_test".to_string())
+                    ))
+                    .await
                 }
-            }
+                Err(_) => {
+                    Self::from_config(
+                        "host=127.0.0.1 port=5432 dbname=lakesoul_test user=lakesoul_test password=lakesoul_test"
+                            .to_string(),
+                    )
+                    .await
+                }
+            },
         }
     }
 
     pub async fn from_config(config: String) -> Result<Self> {
-        info!("create metadata client from config: {}", config);
         Self::from_config_and_max_retry(config, 3).await
     }
 
     pub async fn from_config_and_max_retry(config: String, max_retry: usize) -> Result<Self> {
         let client = Arc::new(Mutex::new(create_connection(config.clone()).await?));
         let config = config.parse::<Config>()?;
+        info!("Metadata client connected to: {:?}", config);
         Ok(Self {
             client,
             max_retry,
-            secret: format!("{:x}", md5::compute(
-                format!("!@{}#${:?}&*", config.get_user().unwrap(), config.get_password().unwrap()).as_bytes()))
+            secret: format!(
+                "{:x}",
+                md5::compute(
+                    format!(
+                        "!@{}#${:?}&*",
+                        config.get_user().unwrap(),
+                        config.get_password().unwrap()
+                    )
+                    .as_bytes()
+                )
+            ),
         })
     }
 
@@ -187,13 +194,7 @@ impl MetaDataClient {
 
     async fn execute_insert(&self, insert_type: i32, wrapper: JniWrapper) -> Result<i32> {
         for times in 0..self.max_retry as i64 {
-            match execute_insert(
-                self.client.lock().await.deref_mut(),
-                insert_type,
-                wrapper.clone(),
-            )
-            .await
-            {
+            match execute_insert(self.client.lock().await.deref_mut(), insert_type, wrapper.clone()).await {
                 Ok(count) => return Ok(count),
                 Err(_) if times < self.max_retry as i64 - 1 => continue,
                 Err(e) => return Err(e),
@@ -204,13 +205,7 @@ impl MetaDataClient {
 
     async fn execute_update(&self, update_type: i32, joined_string: String) -> Result<i32> {
         for times in 0..self.max_retry as i64 {
-            match execute_update(
-                self.client.lock().await.deref_mut(),
-                update_type,
-                joined_string.clone(),
-            )
-            .await
-            {
+            match execute_update(self.client.lock().await.deref_mut(), update_type, joined_string.clone()).await {
                 Ok(count) => return Ok(count),
                 Err(_) if times < self.max_retry as i64 - 1 => continue,
                 Err(e) => return Err(e),
@@ -221,13 +216,7 @@ impl MetaDataClient {
 
     async fn execute_query(&self, query_type: i32, joined_string: String) -> Result<JniWrapper> {
         for times in 0..self.max_retry as i64 {
-            match execute_query(
-                self.client.lock().await.deref_mut(),
-                query_type,
-                joined_string.clone(),
-            )
-            .await
-            {
+            match execute_query(self.client.lock().await.deref_mut(), query_type, joined_string.clone()).await {
                 Ok(encoded) => return Ok(JniWrapper::decode(prost::bytes::Bytes::from(encoded))?),
                 Err(_) if times < self.max_retry as i64 - 1 => continue,
                 Err(e) => return Err(e),
@@ -319,12 +308,11 @@ impl MetaDataClient {
             .table_info
             .ok_or(LakeSoulMetaDataError::Internal("table info missing".to_string()))?;
 
-
         // if !table_info.table_name.is_empty() {
-        //     self.update_table_short_name(&table_info.table_path, &table_info.table_id, 
+        //     self.update_table_short_name(&table_info.table_path, &table_info.table_id,
         //         &table_info.table_name, &table_info.table_namespace).await?;
         // }
-        
+
         // self.update_table_properties(&table_info.table_id, &table_info.properties).await?;
 
         let partition_desc_list = meta_info
@@ -379,10 +367,13 @@ impl MetaDataClient {
                 new_partition_list.push(PartitionInfo { ..Default::default() });
                 let partition_version = new_partition_list.iter().map(|p| p.version).max().unwrap_or(0);
                 self.transaction_insert_partition_info(new_partition_list).await?;
-                info!("Commit Done for {:?}, partition_version={:?}", commit_op, partition_version);
+                info!(
+                    "Commit Done for {:?}, partition_version={:?}",
+                    commit_op, partition_version
+                );
                 Ok(())
             }
-            
+
             CommitOp::CompactionCommit | CommitOp::UpdateCommit => {
                 let read_partition_map: HashMap<String, PartitionInfo> = meta_info
                     .read_partition_info
@@ -391,7 +382,7 @@ impl MetaDataClient {
                     .collect();
 
                 let mut new_partition_list = Vec::new();
-                
+
                 for partition_info in &meta_info.list_partition {
                     let partition_desc = &partition_info.partition_desc;
                     let mut cur_partition_info = match cur_map.get(partition_desc) {
@@ -402,13 +393,10 @@ impl MetaDataClient {
                             version: 0,
                             domain: self.get_table_domain(&table_info.table_id).await?.domain,
                             ..Default::default()
-                        }
+                        },
                     };
 
-                    let read_version = read_partition_map
-                        .get(partition_desc)
-                        .map(|p| p.version)
-                        .unwrap_or(0);
+                    let read_version = read_partition_map.get(partition_desc).map(|p| p.version).unwrap_or(0);
 
                     if read_version == cur_partition_info.version {
                         cur_partition_info.snapshot = partition_info.snapshot.clone();
@@ -439,7 +427,7 @@ impl MetaDataClient {
 
                 for partition_info in &meta_info.list_partition {
                     let partition_desc = &partition_info.partition_desc;
-                    
+
                     if !read_partition_map.contains_key(partition_desc) {
                         continue;
                     }
@@ -520,10 +508,7 @@ impl MetaDataClient {
 
     pub async fn get_table_domain(&self, table_id: &str) -> Result<TableNameId> {
         match self
-            .execute_query(
-                DaoType::SelectTableDomainById as i32,
-                [table_id].join(PARAM_DELIM),
-            )
+            .execute_query(DaoType::SelectTableDomainById as i32, [table_id].join(PARAM_DELIM))
             .await
         {
             Ok(wrapper) => Ok(wrapper.table_name_id[0].clone()),
@@ -757,6 +742,7 @@ impl MetaDataClient {
     pub async fn update_table_properties(&self, table_id: &str, properties: &str) -> Result<i32> {
         // 获取现有表信息
         let table_info = self.get_table_info_by_table_id(table_id).await?;
+
         if let Some(table_info) = table_info {
             
             // 解析新的和原始的properties
@@ -796,6 +782,7 @@ impl MetaDataClient {
         table_namespace: &str,
     ) -> Result<()> {
         let table_info = self.get_table_info_by_table_id(table_id).await?;
+<<<<<<< HEAD
         if let Some(table_info) = table_info {
             // 检查现有表名
             if !table_info.table_name.is_empty() {
@@ -806,6 +793,16 @@ impl MetaDataClient {
                     )));
                 }
                 return Ok(());
+=======
+
+        // 检查现有表名
+        if !table_info.table_name.is_empty() {
+            if table_info.table_name != table_name {
+                return Err(LakeSoulMetaDataError::Internal(format!(
+                    "Table name already exists {} for table id {}",
+                    table_info.table_name, table_id
+                )));
+>>>>>>> 0b30ce3a (small fixes)
             }
 
             // 更新表信息

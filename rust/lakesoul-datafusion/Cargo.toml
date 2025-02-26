@@ -37,6 +37,7 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 url = { workspace = true }
 tonic = {workspace = true}
+serde-aux = "4.6.0"
 
 
 [dev-dependencies]

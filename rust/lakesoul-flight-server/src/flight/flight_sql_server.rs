@@ -11,6 +11,7 @@ use std::time::Instant;
 use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::Parser;
 use log::info;
+use metrics::{counter, gauge};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use tonic::service::Interceptor;
 use tonic::transport::Server;
@@ -64,7 +65,7 @@ impl Default for GrpcInterceptor {
 }
 
 impl Interceptor for GrpcInterceptor {
-    fn call(&mut self, mut request: tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> {
+    fn call(&mut self, mut request: Request<()>) -> Result<Request<()>, Status> {
         let start = Instant::now();
         let path = request
             .metadata()
@@ -91,6 +92,12 @@ impl Interceptor for GrpcInterceptor {
         } else {
             0.0
         };
+
+        counter!("grpc.flight.total_requests", "path" => path.clone()).increment(1);
+        counter!("grpc.flight.total_request_bytes", "path" => path.clone()).increment(request_size);
+        gauge!("grpc.flight.active_requests", "path" => path.clone()).set((active + 1) as f64);
+        gauge!("grpc.flight.throughput_requests", "path" => path.clone()).set(throughput_requests);
+        gauge!("grpc.flight.throughput_bytes", "path" => path.clone()).set(throughput_bytes);
 
         info!(
             "请求开始 - 路径: {}, 当前活跃请求数: {}, 请求大小: {} 字节, 总接收字节数: {}, 吞吐量: {:.2} 字节/秒, {:.2} 请求/秒",
@@ -128,9 +135,6 @@ impl Drop for CallbackOnDrop {
     }
 }
 
-/// This example shows how to wrap DataFusion with `FlightService` to support looking up schema information for
-/// Parquet files and executing SQL queries against them on a remote server.
-/// This example is run along-side the example `flight_client`.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 解析命令行参数
     let args = Args::parse();
@@ -151,9 +155,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let metadata_client = Arc::new(MetaDataClient::from_env().await?);
         info!("Metadata server connected");
-        // info!("Cleaning up metadata server");
-        // metadata_client.meta_cleanup().await?;
-        // info!("Metadata server cleaned up");
 
         // 使用参数中的 metrics_addr
         let metrics_addr = {
@@ -185,10 +186,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let svc = FlightServiceServer::with_interceptor(service, interceptor);
 
-        info!("Listening on {addr:?}");
+        info!("LakeSoul Arrow Flight SQL Server Listening on {addr:?}");
         info!(
-            "Metrics server listening on {:?}",
-            std::net::SocketAddr::from(([0, 0, 0, 0], 19000))
+            "Metrics Server Listening on {:?}",
+            metrics_addr
         );
 
         Server::builder()

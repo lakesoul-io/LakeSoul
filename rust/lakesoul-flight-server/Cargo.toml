@@ -24,8 +24,8 @@ env_logger = {workspace = true}
 log = {workspace = true}
 tower = "0.4"
 tower-http = { version = "0.4", features = ["trace"] }
-metrics-exporter-prometheus = "0.12"
-metrics = "0.21"
+metrics-exporter-prometheus = "0.16"
+metrics = "0.24"
 bytes = "1.7.1"
 serde = { version = "1.0.216", features = ["derive"] }
 serde_json = "1.0.133"

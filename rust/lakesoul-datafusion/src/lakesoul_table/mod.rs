@@ -38,6 +38,7 @@ use crate::{
 
 use crate::datasource::table_provider::LakeSoulTableProvider;
 
+#[derive(Debug)]
 pub struct LakeSoulTable {
     client: MetaDataClientRef,
     table_info: Arc<TableInfo>,
@@ -67,18 +68,25 @@ impl LakeSoulTable {
     }
 
     pub async fn for_name(table_name: &str) -> Result<Self> {
-        Self::for_namespace_and_name("default", table_name).await
+        Self::for_namespace_and_name("default", table_name, None).await
     }
 
-    pub async fn for_table_reference(table_ref: &TableReference) -> Result<Self> {
+    pub async fn for_table_reference(table_ref: &TableReference, client: Option<MetaDataClientRef>) -> Result<Self> {
         let schema = table_ref.schema().unwrap_or("default");
         let table_name = case_fold_table_name(table_ref.table());
         info!("for_table_reference: {:?}, {:?}", schema, table_name);
-        Self::for_namespace_and_name(schema, &table_name).await
+        Self::for_namespace_and_name(schema, &table_name, client).await
     }
 
-    pub async fn for_namespace_and_name(namespace: &str, table_name: &str) -> Result<Self> {
-        let client = Arc::new(MetaDataClient::from_env().await?);
+    pub async fn for_namespace_and_name(
+        namespace: &str,
+        table_name: &str,
+        client: Option<MetaDataClientRef>,
+    ) -> Result<Self> {
+        let client = match client {
+            Some(client) => client,
+            None => Arc::new(MetaDataClient::from_env().await?),
+        };
         let table_info = client.get_table_info_by_table_name(table_name, namespace).await?;
         if let Some(table_info) = table_info {
             Self::try_new_with_client_and_table_info(client, table_info).await
@@ -109,9 +117,8 @@ impl LakeSoulTable {
     }
 
     pub async fn upsert_dataframe(&self, dataframe: DataFrame) -> Result<()> {
-        let client = Arc::new(MetaDataClient::from_env().await?);
         let builder = create_io_config_builder(
-            client,
+            self.client.clone(),
             None,
             false,
             self.table_namespace(),
@@ -138,9 +145,8 @@ impl LakeSoulTable {
     }
 
     pub async fn execute_upsert(&self, record_batch: RecordBatch) -> Result<()> {
-        let client = Arc::new(MetaDataClient::from_env().await?);
         let builder = create_io_config_builder(
-            client,
+            self.client.clone(),
             None,
             false,
             self.table_namespace(),
@@ -175,9 +181,8 @@ impl LakeSoulTable {
         &self,
         object_store_options: HashMap<String, String>,
     ) -> Result<Box<dyn AsyncBatchWriter + Send>> {
-        let client = Arc::new(MetaDataClient::from_env().await?);
         let builder = create_io_config_builder(
-            client,
+            self.client.clone(),
             Some(self.table_name()),
             false,
             self.table_namespace(),

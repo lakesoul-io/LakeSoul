@@ -50,10 +50,24 @@ fn main() {
     );
 
     let uri = Uri::from_str(endpoint.as_str()).unwrap();
+    let tls: bool = if let Some(scheme) = uri.scheme_str() {
+        scheme == "https"
+    } else {
+        false
+    };
     let host = uri.host().unwrap();
+    let port = if let Some(port) = uri.port() {
+        port.as_u16()
+    } else {
+        if tls {
+            443
+        } else {
+            80
+        }
+    };
     let mut upstreams = LoadBalancer::from(DnsDiscovery::new(
         host,
-        80,
+        port,
         Arc::new(TokioAsyncResolver::tokio_from_system_conf().unwrap()),
     ));
     upstreams.health_check_frequency = Some(Duration::from_secs(600));
@@ -76,11 +90,6 @@ fn main() {
     );
     let cred = background_s3_credentials.task();
 
-    let tls: bool = if let Some(scheme) = uri.scheme_str() {
-        scheme == "https"
-    } else {
-        false
-    };
     let mut lb = http_proxy_service(
         &proxy_server.configuration,
         S3Proxy {
