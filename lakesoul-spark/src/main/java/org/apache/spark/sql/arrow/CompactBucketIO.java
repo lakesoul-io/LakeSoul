@@ -101,7 +101,6 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
     private void initializeReader(List<FlushResult> filePath) throws IOException {
         nativeIOReader = new NativeIOReader();
         for (FlushResult path : filePath) {
-            // nativeIOReader.addFile(SparkUtil.makeQualifiedPath(path).toString());
             nativeIOReader.addFile(path.getFilePath());
         }
         nativeIOReader.setSchema(this.schema);

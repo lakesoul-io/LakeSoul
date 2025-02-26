@@ -40,9 +40,7 @@ object NewCompactionTask {
     val parameter = ParametersTool.fromArgs(args)
     threadPoolSize = parameter.getInt(THREADPOOL_SIZE_PARAMETER, 8)
     database = parameter.get(DATABASE_PARAMETER, "")
-    if (parameter.has(CLEAN_OLD_COMPACTION)) {
-      cleanOldCompaction = Some(parameter.getBoolean(CLEAN_OLD_COMPACTION))
-    }
+
     if (parameter.has(FILE_NUM_LIMIT_PARAMETER)) {
       fileNumLimit = Some(parameter.getInt(FILE_NUM_LIMIT_PARAMETER))
     }
@@ -91,13 +89,11 @@ object NewCompactionTask {
               val jsonObj = jsonParser.parse(notificationParameter).asInstanceOf[JsonObject]
               println("========== " + dateFormat.format(new Date()) + " start processing notification: " + jsonObj + " ==========")
               val tablePath = jsonObj.get("table_path").getAsString
-              if (!tablePath.contains("10.64.219.26")) {
-                val partitionDesc = jsonObj.get("table_partition_desc").getAsString
-                val tableNamespace = jsonObj.get("table_namespace").getAsString
-                if (tableNamespace.equals(database) || database.equals("")) {
-                  val rsPartitionDesc = if (partitionDesc.equals(MetaUtils.DEFAULT_RANGE_PARTITION_VALUE)) "" else partitionDesc
-                  threadPool.execute(new CompactionTableInfo(tablePath, rsPartitionDesc, notificationParameter))
-                }
+              val partitionDesc = jsonObj.get("table_partition_desc").getAsString
+              val tableNamespace = jsonObj.get("table_namespace").getAsString
+              if (tableNamespace.equals(database) || database.equals("")) {
+                val rsPartitionDesc = if (partitionDesc.equals(MetaUtils.DEFAULT_RANGE_PARTITION_VALUE)) "" else partitionDesc
+                threadPool.execute(new CompactionTableInfo(tablePath, rsPartitionDesc, notificationParameter))
               }
             }
           })
