@@ -26,14 +26,13 @@ use log::info;
 use proto::proto::entity::{CommitOp, DataCommitInfo, DataFileOp, FileOp, TableInfo};
 use std::collections::HashMap;
 use uuid::Uuid;
-
+use crate::serialize::arrow_java::schema_from_metadata_str;
 use crate::datasource::file_format::LakeSoulMetaDataParquetFormat;
 use crate::LakeSoulError;
 use crate::{
     catalog::{create_io_config_builder, parse_table_info_partitions, LakeSoulTableProperty},
     error::Result,
     planner::query_planner::LakeSoulQueryPlanner,
-    serialize::arrow_java::schema_from_metadata_str,
 };
 
 use crate::datasource::table_provider::LakeSoulTableProvider;

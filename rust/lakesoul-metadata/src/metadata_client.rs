@@ -153,11 +153,16 @@ impl MetaDataClient {
 
     // Use transaction?
     pub async fn delete_table_by_table_info_cascade(&self, table_info: &TableInfo) -> Result<()> {
-        self.delete_table_name_id_by_table_id(&table_info.table_id).await?;
-        self.delete_table_path_id_by_table_id(&table_info.table_id).await?;
-        self.delete_partition_info_by_table_id(&table_info.table_id).await?;
-        self.delete_data_commit_info_by_table_id(&table_info.table_id).await?;
-        self.delete_table_info_by_id_and_path(&table_info.table_id, &table_info.table_path)
+        self.delete_table_by_table_id_cascade(table_info.table_id.as_str(),
+                                              table_info.table_path.as_str()).await
+    }
+
+    pub async fn delete_table_by_table_id_cascade(&self, table_id: &str, table_path: &str) -> Result<()> {
+        self.delete_table_name_id_by_table_id(table_id).await?;
+        self.delete_table_path_id_by_table_id(table_id).await?;
+        self.delete_partition_info_by_table_id(table_id).await?;
+        self.delete_data_commit_info_by_table_id(table_id).await?;
+        self.delete_table_info_by_id_and_path(table_id, table_path)
             .await?;
         Ok(())
     }
@@ -782,7 +787,6 @@ impl MetaDataClient {
         table_namespace: &str,
     ) -> Result<()> {
         let table_info = self.get_table_info_by_table_id(table_id).await?;
-<<<<<<< HEAD
         if let Some(table_info) = table_info {
             // 检查现有表名
             if !table_info.table_name.is_empty() {
@@ -793,16 +797,6 @@ impl MetaDataClient {
                     )));
                 }
                 return Ok(());
-=======
-
-        // 检查现有表名
-        if !table_info.table_name.is_empty() {
-            if table_info.table_name != table_name {
-                return Err(LakeSoulMetaDataError::Internal(format!(
-                    "Table name already exists {} for table id {}",
-                    table_info.table_name, table_id
-                )));
->>>>>>> 0b30ce3a (small fixes)
             }
 
             // 更新表信息
@@ -810,15 +804,15 @@ impl MetaDataClient {
                 DaoType::UpdateTableInfoById as i32,
                 [table_id, table_name, table_path, ""].join(PARAM_DELIM),
             )
-            .await?;
+                .await?;
 
             // 插入新的表名ID映射
             self.insert_table_name_id(&TableNameId {
                 table_name: table_name.to_string(),
                 table_id: table_id.to_string(),
-                    table_namespace: table_namespace.to_string(),
-                    domain: table_info.domain,
-                })
+                table_namespace: table_namespace.to_string(),
+                domain: table_info.domain,
+            })
                 .await?;
             Ok(())
         } else {

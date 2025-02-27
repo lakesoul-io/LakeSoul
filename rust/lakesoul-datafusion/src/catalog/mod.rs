@@ -25,7 +25,6 @@ pub mod lakesoul_catalog;
 pub use lakesoul_catalog::*;
 mod lakesoul_namespace;
 pub use lakesoul_namespace::*;
-use serde_aux::prelude::*;
 
 fn deserialize_hash_bucket_num<'de, D>(deserializer: D) -> std::result::Result<Option<usize>, D::Error>
 where

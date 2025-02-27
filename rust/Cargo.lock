@@ -3357,6 +3357,7 @@ dependencies = [
  "bytes",
  "cached",
  "chrono",
+ "env_logger",
  "log",
  "md5",
  "num_enum",

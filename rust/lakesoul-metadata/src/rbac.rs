@@ -74,11 +74,74 @@ pub async fn verify_permission_by_table_path(
 mod tests {
     use super::*;
     use crate::MetaDataClient;
+    use cached::Cached;
+    use proto::proto::entity::TableInfo;
     use std::sync::Arc;
+
+    async fn create_table(
+        table_name: &str,
+        path: &str,
+        domain: &str,
+        meta_data_client: MetaDataClientRef,
+    ) -> crate::Result<String> {
+        let table_id = format!("table_{}", uuid::Uuid::new_v4());
+        let ti = TableInfo {
+            table_id: table_id.clone(),
+            table_name: table_name.to_string(),
+            table_path: path.to_string(),
+            table_schema: String::new(),
+            table_namespace: "default".to_string(),
+            properties: "{}".to_string(),
+            partitions: "id;range".to_string(),
+            domain: domain.to_string(),
+        };
+        meta_data_client.create_table(ti).await?;
+        Ok(table_id)
+    }
+
+    async fn drop_table(table_id: &str, path: &str, meta_data_client: MetaDataClientRef) -> crate::Result<()> {
+        meta_data_client.delete_table_by_table_id_cascade(table_id, path).await
+    }
+
+    async fn clear_cache() {
+        let mut cache = VERIFY_PERMISSION_BY_TABLE_NAME.lock().await;
+        cache.cache_clear();
+    }
+
     #[tokio::test]
     async fn test_verify_permission() -> crate::Result<()> {
+        env_logger::init();
         let metadata_client = Arc::new(MetaDataClient::from_env().await?);
-        verify_permission_by_table_name("lake-iam-001", "lake-czods", "default", "sink_table", metadata_client).await?;
+        let table_name = "test_rbac_table";
+        let table_path = "file:///tmp/table";
+        let uuid = create_table(table_name, table_path, "lake-public", metadata_client.clone()).await?;
+        let r = verify_permission_by_table_name(
+            "lake-iam-001",
+            "lake-czods",
+            "default",
+            table_name,
+            metadata_client.clone(),
+        )
+        .await;
+        assert!(r.is_ok());
+        drop_table(uuid.as_str(), table_path, metadata_client.clone()).await?;
+
+        clear_cache().await;
+
+        let uuid = create_table(table_name, table_path, "lake-czads", metadata_client.clone()).await?;
+        let r = verify_permission_by_table_name(
+            "lake-iam-001",
+            "lake-czods",
+            "default",
+            table_name,
+            metadata_client.clone(),
+        )
+        .await;
+        assert!(r.is_err());
+        assert!(r.err().unwrap().to_string().contains(
+            "permission denied to access default.test_rbac_table from user lake-iam-001 in group lake-czods"
+        ));
+        drop_table(uuid.as_str(), table_path, metadata_client).await?;
         Ok(())
     }
 }
