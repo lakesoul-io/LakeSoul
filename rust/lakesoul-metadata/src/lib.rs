@@ -226,7 +226,7 @@ async fn get_prepared_statement<'a>(
         // Select PartitionInfo
         DaoType::SelectPartitionVersionByTableIdAndDescAndVersion =>
             "select table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain
-            from partition_info_max_version
+            from partition_info
             where table_id = $1::TEXT and partition_desc = $2::TEXT and version = $3::INT",
         DaoType::SelectOnePartitionVersionByTableIdAndDesc =>
             "select m.table_id, m.partition_desc, m.version, m.commit_op, m.snapshot, m.timestamp, m.expression, m.domain from
@@ -358,7 +358,7 @@ async fn get_prepared_statement<'a>(
         DaoType::GetLatestVersionUpToTimeFromPartitionInfo =>
             "select max(version) as version
             from partition_info
-            where table_id = $1::TEXT and partition_desc = $2::TEXT and timestamp < $3::BIGINT",
+            where table_id = $1::TEXT and partition_desc = $2::TEXT and timestamp <= $3::BIGINT",
         DaoType::GetLatestVersionTimestampUpToTimeFromPartitionInfo =>
             "select max(timestamp) as timestamp
             from partition_info
