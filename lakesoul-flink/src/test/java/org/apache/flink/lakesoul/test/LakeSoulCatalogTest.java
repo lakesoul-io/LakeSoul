@@ -121,7 +121,7 @@ public class LakeSoulCatalogTest extends AbstractTestBase {
     public void createTableWithComments() {
         tEnvs.executeSql("create table table_with_comments (" +
                 "user_id BIGINT PRIMARY KEY NOT ENFORCED COMMENT 'user id'," +
-                "name STRING COMMENT 'user name') " +
+                "name STRING COMMENT 'a用b户c名d') " +
                 "COMMENT 'this is user table' " +
                 "WITH (" +
                 "'connector'='lakesoul'," +
@@ -136,7 +136,7 @@ public class LakeSoulCatalogTest extends AbstractTestBase {
         Assertions.assertThat(descTableResult.get(0).getField(6).toString())
                 .contains("user id");
         Assertions.assertThat(descTableResult.get(1).getField(6).toString())
-                .contains("user name");
+                .contains("a用b户c名d");
         tEnvs.executeSql("drop table table_with_comments").print();
     }
 
