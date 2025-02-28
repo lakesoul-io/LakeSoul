@@ -8,19 +8,24 @@ import com.dmetasoul.lakesoul.LakeSoulArrowReader;
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOReader;
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOWriter;
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOWriter.FlushResult;
+import com.dmetasoul.lakesoul.meta.BucketingUtils;
+import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_NON_PARTITION_TABLE_PART_DESC;
 import com.dmetasoul.lakesoul.meta.DBUtil;
+import com.dmetasoul.lakesoul.meta.MetaUtils;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
+import org.apache.spark.sql.execution.datasources.LakeSoulFileWriter;
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf;
 import org.apache.spark.sql.lakesoul.utils.TableInfo;
 import org.apache.spark.sql.vectorized.NativeIOOptions;
 import org.apache.spark.sql.vectorized.NativeIOUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import scala.Option;
 import scala.collection.JavaConverters;
 
 import java.io.IOException;
@@ -33,8 +38,8 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
     private static final Logger LOG = LoggerFactory.getLogger(CompactBucketIO.class);
 
     public static String  DISCARD_FILE_LIST_KEY = "discard_file";
-    private String COMPACT_DIR = "compact_dir";
-    private String INCREMENTAL_FILE = "incremental_file";
+    public static String COMPACT_DIR = "compact_dir";
+    public static String INCREMENTAL_FILE = "incremental_file";
 
     // private TableInfo tableInfo;
     private NativeIOReader nativeIOReader;
@@ -48,7 +53,7 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
     private NativeIOOptions nativeIOOptions;
 
     List<FlushResult> fileInfo;
-    LinkedHashMap<String, String> partition;
+    String metaPartitionExpr;
 
     private NativeIOWriter nativeWriter;
     private final int maxRowGroupRows;
@@ -65,12 +70,12 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
     private long batchIncrementalFileSizeLimit;
     private final boolean tableHashBucketNumChanged;
 
-    public CompactBucketIO(Configuration conf, List<FlushResult> fileInfo, TableInfo tableInfo, String tablePath, LinkedHashMap<String, String> partition,
+    public CompactBucketIO(Configuration conf, List<FlushResult> fileInfo, TableInfo tableInfo, String tablePath, String metaPartitionExpr,
                            int tableHashBucketNum, int readFileNumLimit, long batchIncrementalFileSizeLimit, boolean tableHashBucketNumChanged)
             throws IOException {
 
         this.fileInfo = fileInfo;
-        this.partition = partition;
+        this.metaPartitionExpr = metaPartitionExpr;
         this.schema = Schema.fromJSON(tableInfo.table_schema());
         this.primaryKeys = JavaConverters.seqAsJavaList(tableInfo.hash_partition_columns().toSeq());
         this.hashBucketNum = tableHashBucketNum;
@@ -111,7 +116,9 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
         if (this.primaryKeys != null) {
             nativeIOReader.setPrimaryKeys(this.primaryKeys);
         }
-        for (Map.Entry<String, String> entry : this.partition.entrySet()) {
+        scala.collection.immutable.Map<String, String> partitionMapFromKey = MetaUtils.getPartitionMapFromKey(
+                metaPartitionExpr);
+        for (Map.Entry<String, String> entry : JavaConverters.mapAsJavaMapConverter(partitionMapFromKey).asJava().entrySet()) {
             nativeIOReader.setDefaultColumnValue(entry.getKey(), entry.getValue());
         }
         // nativeIOReader.setRangePartitions(rangeColumns);
@@ -129,10 +136,27 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
         nativeWriter = new NativeIOWriter(this.schema);
         nativeWriter.setRowGroupRowNumber(this.maxRowGroupRows);
         nativeWriter.setPrimaryKeys(this.primaryKeys);
-        nativeWriter.setRangePartitions(this.rangeColumns);
-        nativeWriter.withPrefix(outPath);
-        nativeWriter.useDynamicPartition(true);
+
         nativeWriter.setHashBucketNum(this.hashBucketNum);
+        if (this.tableHashBucketNumChanged) {
+            nativeWriter.setRangePartitions(rangeColumns);
+            nativeWriter.useDynamicPartition(true);
+            nativeWriter.withPrefix(outPath);
+        } else {
+            if (!this.metaPartitionExpr.equals(LAKESOUL_NON_PARTITION_TABLE_PART_DESC)) {
+                nativeWriter.withPrefix(String.format("%s/%s", outPath, metaPartitionExpr.replace(",", "/")));
+            } else {
+                nativeWriter.withPrefix(outPath);
+            }
+            Option<Object> hashBucketId = BucketingUtils.getBucketId(this.fileInfo.get(0).getFilePath());
+            if (hashBucketId.isEmpty()) {
+                nativeWriter.setOption(LakeSoulFileWriter.HASH_BUCKET_ID_KEY(), "0");
+            } else {
+                nativeWriter.setOption(LakeSoulFileWriter.HASH_BUCKET_ID_KEY(),
+                        String.valueOf(hashBucketId.get()));
+            }
+
+        }
 
         nativeWriter.setRowGroupRowNumber(this.maxRowGroupRows);
 
@@ -170,13 +194,11 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
             List<FlushResult> fileList = this.fileInfo;
             int index = 0;
             while (index < fileList.size()) {
-                int batchFileNum = 0;
                 long batchFileSize = 0;
                 List<FlushResult> batchFileList = new ArrayList<>();
-                while (index < fileList.size() && batchFileNum < readFileNumLimit) {
+                while (index < fileList.size() && batchFileList.size() < readFileNumLimit) {
                     FlushResult curFile = fileList.get(index);
                     batchFileList.add(curFile);
-                    batchFileNum++;
                     batchFileSize += curFile.getFileSize();
                     index++;
                     if (batchFileSize > compactionReadFileSize) {
