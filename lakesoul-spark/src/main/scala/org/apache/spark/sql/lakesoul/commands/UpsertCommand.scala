@@ -140,7 +140,7 @@ case class UpsertCommand(source: LogicalPlan,
         }
 
         val newFiles = tc.writeFiles(resultDF)
-        tc.commit(newFiles, dataSkippedFiles, targetSnapshotManagement.snapshot.getPartitionInfoArray)
+        tc.commit(newFiles, dataSkippedFiles, targetSnapshotManagement.snapshot.readPartitionInfo.toArray)
       }
     }
     spark.sharedState.cacheManager.recacheByPlan(spark, target)

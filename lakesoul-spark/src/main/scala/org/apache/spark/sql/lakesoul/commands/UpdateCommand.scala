@@ -110,7 +110,7 @@ case class UpdateCommand(snapshotManagement: SnapshotManagement,
 
     if (addFiles.nonEmpty || expireFiles.nonEmpty) {
       // clear previously read files
-      tc.commit(addFiles, expireFiles, snapshotManagement.snapshot.getPartitionInfoArray)
+      tc.commit(addFiles, expireFiles, snapshotManagement.snapshot.readPartitionInfo.toArray)
     }
 
   }

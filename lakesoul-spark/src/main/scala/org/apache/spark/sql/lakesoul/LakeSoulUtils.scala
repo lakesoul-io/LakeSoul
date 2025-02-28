@@ -115,7 +115,7 @@ object LakeSoulUtils extends PredicateHelper {
                                       partitionColumns: Seq[String],
                                       spark: SparkSession): Boolean = {
     val nameEquality = spark.sessionState.analyzer.resolver
-    condition.references.forall { r =>
+    condition.references.nonEmpty && condition.references.forall { r =>
       partitionColumns.exists(nameEquality(r.name, _))
     }
   }

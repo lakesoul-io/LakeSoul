@@ -289,12 +289,15 @@ trait Transaction extends TransactionalWrite with Logging {
         delete_file_set.add(file.path)
       })
 
-      val partition_list = snapshotManagement.snapshot.getPartitionInfoArray
       depend_partitions.foreach(range_key => {
         val filter_files = new ArrayBuffer[DataFileInfo]()
-        val partition_info = partition_list.filter(_.range_value.equalsIgnoreCase(range_key))
-        if (partition_info.length > 0) {
-          val partition_files = DataOperation.getSinglePartitionDataInfo(partition_info.head)
+        val partition_info = SparkMetaVersion.getSinglePartitionInfo(
+          snapshotTableInfo.table_id,
+          range_key,
+          ""
+        )
+        if (partition_info != null) {
+          val partition_files = DataOperation.getSinglePartitionDataInfo(partition_info)
           partition_files.foreach(partition_file => {
             if (!delete_file_set.contains(partition_file.path)) {
               filter_files += partition_file

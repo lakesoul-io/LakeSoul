@@ -36,21 +36,17 @@ class SnapshotManagement(path: String, namespace: String) extends Logging {
 
   private def createSnapshot: Snapshot = {
     val table_info = SparkMetaVersion.getTableInfoByPath(table_path)
-    val partition_info_arr = SparkMetaVersion.getAllPartitionInfo(table_info.table_id)
 
     if (table_info.table_schema.isEmpty) {
       throw LakeSoulErrors.schemaNotSetException
     }
-    new Snapshot(table_info, partition_info_arr)
+    new Snapshot(table_info)
   }
 
   private def initSnapshot: Snapshot = {
     val table_id = "table_" + UUID.randomUUID().toString
     val table_info = TableInfo(table_namespace, Some(table_path), table_id)
-    val partition_arr = Array(
-      PartitionInfoScala(table_id, MetaUtils.DEFAULT_RANGE_PARTITION_VALUE, 0)
-    )
-    new Snapshot(table_info, partition_arr, true)
+    new Snapshot(table_info, true)
   }
 
 
@@ -174,7 +170,7 @@ object SnapshotManagement {
 
   def apply(path: String): SnapshotManagement = apply(path, LakeSoulCatalog.showCurrentNamespace().mkString("."))
 
-  def apply(path: String, namespace: String): SnapshotManagement = {
+  def apply(path: String, namespace: String): SnapshotManagement = this.synchronized {
     try {
       val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toUri.toString
       snapshotManagementCache.get(qualifiedPath, () => {

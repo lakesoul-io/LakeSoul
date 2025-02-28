@@ -815,10 +815,12 @@ public class DBManager {
         return dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, snapshotList);
     }
 
-    public List<DataCommitInfo> getPartitionSnapshot(String tableId, String partitionDesc, int version) {
+    public Map.Entry<List<DataCommitInfo>, PartitionInfo> getPartitionSnapshot(String tableId, String partitionDesc, int version) {
         PartitionInfo partitionInfo = partitionInfoDao.findByKey(tableId, partitionDesc, version);
         List<Uuid> commitList = partitionInfo.getSnapshotList();
-        return dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, commitList);
+        return new AbstractMap.SimpleEntry<>(
+                dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, commitList),
+                partitionInfo);
     }
 
     public List<PartitionInfo> getIncrementalPartitions(String tableId, String partitionDesc, int startVersion,

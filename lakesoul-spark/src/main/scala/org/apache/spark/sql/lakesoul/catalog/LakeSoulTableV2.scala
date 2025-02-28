@@ -192,7 +192,7 @@ case class LakeSoulTableV2(spark: SparkSession,
     assert(names.length == ident.numFields,
       s"Number of partition names (${names.length}) must be equal to " +
         s"the number of partition values (${ident.numFields}).")
-    val schema = partitionSchema
+    val schema = partitionSchema()
     assert(names.forall(fieldName => schema.fieldNames.contains(fieldName)),
       s"Some partition names ${names.mkString("[", ", ", "]")} don't belong to " +
         s"the partition schema '${schema.sql}'.")
@@ -212,7 +212,7 @@ case class LakeSoulTableV2(spark: SparkSession,
     })
 
     val ss = mapTablePartitionSpec.keySet().asScala.filter { key =>
-      for (i <- 0 until names.length) {
+      for (i <- names.indices) {
         currentRow.values(i) = key.get(indexes(i), dataTypes(i))
       }
       currentRow == ident
