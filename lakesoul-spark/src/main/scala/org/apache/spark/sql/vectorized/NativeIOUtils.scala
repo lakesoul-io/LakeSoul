@@ -87,6 +87,36 @@ object NativeIOUtils {
     new NativeIOOptions(null, null, null, null, null, user, defaultFS, false, otherOptions)
   }
 
+  def getNativeIOOptions(configuration: Configuration, file: Path): NativeIOOptions = {
+    var user: String = null
+    val userConf = configuration.get("fs.hdfs.user")
+    if (userConf != null) user = userConf
+    var defaultFS = configuration.get("fs.defaultFS")
+    if (defaultFS == null) defaultFS = configuration.get("fs.default.name")
+    val fileSystem = file.getFileSystem(configuration)
+    var otherOptions = Map[String, String]()
+    //    if (configuration.get(HASH_BUCKET_ID_KEY, "").nonEmpty) {
+    //      otherOptions += HASH_BUCKET_ID_KEY -> configuration.get(HASH_BUCKET_ID_KEY)
+    //    }
+    if (configuration.get(MAX_FILE_SIZE_KEY, "").nonEmpty) {
+      otherOptions += MAX_FILE_SIZE_KEY -> configuration.get(MAX_FILE_SIZE_KEY)
+    }
+    if (hasS3AFileSystemClass) {
+      fileSystem match {
+        case s3aFileSystem: S3AFileSystem =>
+          val awsS3Bucket = s3aFileSystem.getBucket
+          val s3aEndpoint = configuration.get("fs.s3a.endpoint")
+          val s3aRegion = configuration.get("fs.s3a.endpoint.region")
+          val s3aAccessKey = configuration.get("fs.s3a.access.key")
+          val s3aSecretKey = configuration.get("fs.s3a.secret.key")
+          val virtualPathStyle = configuration.getBoolean("fs.s3a.path.style.access", false)
+          return new NativeIOOptions(awsS3Bucket, s3aAccessKey, s3aSecretKey, s3aEndpoint, s3aRegion, user, defaultFS, virtualPathStyle, otherOptions)
+        case _ =>
+      }
+    }
+    new NativeIOOptions(null, null, null, null, null, user, defaultFS, false, otherOptions)
+  }
+
   def setNativeIOOptions(nativeIO: NativeIOBase, options: NativeIOOptions): Unit = {
     nativeIO.setObjectStoreOptions(
       options.s3Ak,
