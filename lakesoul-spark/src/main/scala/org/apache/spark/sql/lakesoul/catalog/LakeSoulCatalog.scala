@@ -8,12 +8,13 @@ import com.dmetasoul.lakesoul.meta.SparkMetaVersion
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.catalyst.TableIdentifier
-import org.apache.spark.sql.catalyst.analysis.{NoSuchNamespaceException, NoSuchTableException, UnresolvedAttribute}
+import org.apache.spark.sql.catalyst.analysis.{NoSuchFunctionException, NoSuchNamespaceException, NoSuchTableException, UnresolvedAttribute}
 import org.apache.spark.sql.catalyst.catalog._
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.connector.catalog.TableCapability._
 import org.apache.spark.sql.connector.catalog.TableChange._
 import org.apache.spark.sql.connector.catalog._
+import org.apache.spark.sql.connector.catalog.functions.UnboundFunction
 import org.apache.spark.sql.connector.expressions.{BucketTransform, FieldReference, IdentityTransform, Transform}
 import org.apache.spark.sql.connector.write.{LogicalWriteInfo, V1Write, WriteBuilder}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
@@ -22,6 +23,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.LakeSoulConfig
 import org.apache.spark.sql.lakesoul.commands._
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
+import org.apache.spark.sql.lakesoul.functions.SparkFunctions
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
 import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.sources.InsertableRelation
@@ -41,7 +43,8 @@ import scala.language.postfixOps
 class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
   with StagingTableCatalog
   with SupportsPathIdentifier
-  with SupportsNamespaces {
+  with SupportsNamespaces
+  with FunctionCatalog {
 
   def this() = {
     this(SparkSession.active)
@@ -561,6 +564,17 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
 
   override def initialize(name: String, options: CaseInsensitiveStringMap): Unit = {
     catalogName = name
+  }
+
+  override def listFunctions(namespace: Array[String]): Array[Identifier] = {
+    SparkFunctions.functionNames.map(n => Identifier.of(namespace, n)).toArray
+  }
+
+  override def loadFunction(identifier: Identifier): UnboundFunction = {
+    SparkFunctions.load(identifier.name()) match {
+      case Some(f) => f
+      case None => throw new NoSuchFunctionException(identifier)
+    }
   }
 }
 
