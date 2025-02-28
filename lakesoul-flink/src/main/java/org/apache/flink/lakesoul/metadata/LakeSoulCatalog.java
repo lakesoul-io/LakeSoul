@@ -12,6 +12,7 @@ import com.dmetasoul.lakesoul.meta.entity.Namespace;
 import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.text.StringEscapeUtils;
 import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
@@ -268,6 +269,21 @@ public class LakeSoulCatalog implements Catalog {
         schema.getTableColumns().forEach(this::validateType);
         List<Optional<String>> comments = table.getUnresolvedSchema().getColumns().stream()
                 .map(Schema.UnresolvedColumn::getComment).collect(Collectors.toList());
+        comments = comments.stream().map(c -> {
+            if (c.isPresent()) {
+                String comment = c.get();
+                // comment with at least one non-ascii char will be escaped in format
+                // u&'\4e2d\6587
+                // not sure why flink sql parser produce this.
+                // we have to convert it back to utf8 string
+                if (comment.startsWith("u&'")) {
+                    comment = comment.substring(3);
+                    comment = comment.replace("\\", "\\u");
+                    return Optional.of(StringEscapeUtils.unescapeJava(comment));
+                }
+            }
+            return c;
+        }).collect(Collectors.toList());
 
         if (!databaseExists(tablePath.getDatabaseName())) {
             throw new DatabaseNotExistException(CATALOG_NAME, tablePath.getDatabaseName());
