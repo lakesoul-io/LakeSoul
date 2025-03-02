@@ -22,7 +22,6 @@ object NewCompactionTask {
   val dateFormat: SimpleDateFormat = new SimpleDateFormat("yyyy/MM/dd HH:mm:ss")
   val THREADPOOL_SIZE_PARAMETER = "threadpool.size"
   val DATABASE_PARAMETER = "database"
-  val CLEAN_OLD_COMPACTION = "clean_old_compaction"
   val FILE_NUM_LIMIT_PARAMETER = "file_num_limit"
   val FILE_SIZE_LIMIT_PARAMETER = "file_size_limit"
 

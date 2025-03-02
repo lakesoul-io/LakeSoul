@@ -155,7 +155,6 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
                 nativeWriter.setOption(LakeSoulFileWriter.HASH_BUCKET_ID_KEY(),
                         String.valueOf(hashBucketId.get()));
             }
-
         }
 
         nativeWriter.setRowGroupRowNumber(this.maxRowGroupRows);
