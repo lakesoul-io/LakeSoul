@@ -21,13 +21,14 @@ use helpers::case_fold_table_name;
 use lakesoul_io::async_writer::{AsyncBatchWriter, AsyncSendableMutableLakeSoulWriter, WriterFlushResult};
 use lakesoul_io::lakesoul_io_config::OPTION_KEY_MEM_LIMIT;
 use lakesoul_io::{lakesoul_io_config::create_session_context_with_planner, lakesoul_reader::RecordBatch};
-use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
-use log::info;
+use lakesoul_metadata::{LakeSoulMetaDataError, MetaDataClient, MetaDataClientRef};
+use log::{debug, info};
 use proto::proto::entity::{CommitOp, DataCommitInfo, DataFileOp, FileOp, TableInfo};
 use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::datasource::file_format::LakeSoulMetaDataParquetFormat;
+use crate::LakeSoulError;
 use crate::{
     catalog::{create_io_config_builder, parse_table_info_partitions, LakeSoulTableProperty},
     error::Result,
@@ -55,7 +56,14 @@ impl LakeSoulTable {
     pub async fn for_path_snapshot(path: String) -> Result<Self> {
         let client = Arc::new(MetaDataClient::from_env().await?);
         let table_info = client.get_table_info_by_table_path(&path).await?;
-        Self::try_new_with_client_and_table_info(client, table_info).await
+        if let Some(table_info) = table_info {
+            Self::try_new_with_client_and_table_info(client, table_info).await
+        } else {
+            Err(LakeSoulError::MetaDataError(LakeSoulMetaDataError::NotFound(format!(
+                "Table '{}' not found",
+                path
+            ))))
+        }
     }
 
     pub async fn for_name(table_name: &str) -> Result<Self> {
@@ -72,7 +80,14 @@ impl LakeSoulTable {
     pub async fn for_namespace_and_name(namespace: &str, table_name: &str) -> Result<Self> {
         let client = Arc::new(MetaDataClient::from_env().await?);
         let table_info = client.get_table_info_by_table_name(table_name, namespace).await?;
-        Self::try_new_with_client_and_table_info(client, table_info).await
+        if let Some(table_info) = table_info {
+            Self::try_new_with_client_and_table_info(client, table_info).await
+        } else {
+            Err(LakeSoulError::MetaDataError(LakeSoulMetaDataError::NotFound(format!(
+                "Table '{}' not found",
+                table_name
+            ))))
+        }
     }
 
     pub async fn try_new_with_client_and_table_info(client: MetaDataClientRef, table_info: TableInfo) -> Result<Self> {
@@ -152,7 +167,7 @@ impl LakeSoulTable {
             .collect()
             .await?;
 
-        info!("{}", pretty_format_batches(&results)?);
+        info!("execute_upsert result: {}", pretty_format_batches(&results)?);
         Ok(())
     }
 

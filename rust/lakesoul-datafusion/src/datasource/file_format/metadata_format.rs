@@ -54,7 +54,7 @@ use object_store::{ObjectMeta, ObjectStore};
 use proto::proto::entity::TableInfo;
 use rand::distributions::DistString;
 
-use log::debug;
+use log::{debug, info};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
@@ -162,6 +162,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         conf: FileScanConfig,
         filters: Option<&Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        info!("LakeSoulMetaDataParquetFormat::create_physical_plan with conf= {:?}, filters= {:?}", &conf, &filters);
         // If enable pruning then combine the filters to build the predicate.
         // If disable pruning then set the predicate to None, thus readers
         // will not prune data based on the statistics.
@@ -205,6 +206,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
             let partition_columnar_value = Arc::new(partition_columnar_value);
 
             let parquet_exec = Arc::new({
+                debug!("create parquet exec with config= {:?}, predicate= {:?}", &config, &predicate);
                 let mut builder = ParquetExecBuilder::new(config.clone());
                 if let Some(predicate) = predicate.clone() {
                     builder = builder.with_predicate(predicate);

@@ -105,14 +105,17 @@ impl AsyncSendableMutableLakeSoulWriter {
 #[async_trait::async_trait]
 impl AsyncBatchWriter for AsyncSendableMutableLakeSoulWriter {
     async fn write_record_batch(&mut self, batch: RecordBatch) -> Result<()> {
+        let _ = arrow::util::pretty::print_batches(&[batch.clone()]);
         self.write_batch_async(batch, false).await
     }
 
     async fn flush_and_close(self: Box<Self>) -> Result<WriterFlushResult> {
+        debug!("flush_and_close: {:?}", self.flush_results);
         if let Some(inner_writer) = self.in_progress {
             let inner_writer = Arc::try_unwrap(inner_writer)
                 .map_err(|_| DataFusionError::Internal("Cannot get ownership of inner writer".to_string()))?;
             let writer = inner_writer.into_inner();
+            debug!("writer schema: {:?}", writer.schema());
             let mut results = writer
                 .flush_and_close()
                 .await

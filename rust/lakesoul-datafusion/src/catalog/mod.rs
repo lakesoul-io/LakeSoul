@@ -2,8 +2,10 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::sql::TableReference;
 use log::info;
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::env;
 use std::fmt::Debug;
@@ -11,7 +13,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
-use lakesoul_metadata::MetaDataClientRef;
+use lakesoul_metadata::{LakeSoulMetaDataError, MetaDataClientRef};
 use proto::proto::entity::{CommitOp, DataCommitInfo, DataFileOp, FileOp, TableInfo, Uuid};
 use crate::error::{LakeSoulError, Result};
 use crate::lakesoul_table::helpers::create_io_config_builder_from_table_info;
@@ -25,12 +27,44 @@ pub use lakesoul_catalog::*;
 mod lakesoul_namespace;
 pub use lakesoul_namespace::*;
 
+fn deserialize_hash_bucket_num<'de, D>(deserializer: D) -> std::result::Result<Option<usize>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrNum {
+        String(String),
+        Number(usize),
+    }
+
+    let opt = Option::deserialize(deserializer)?;
+    match opt {
+        None => Ok(None),
+        Some(StringOrNum::String(s)) => {
+            s.parse::<usize>().map(Some).map_err(serde::de::Error::custom)
+        }
+        Some(StringOrNum::Number(n)) => Ok(Some(n)),
+    }
+}
+
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LakeSoulTableProperty {
-    #[serde(rename = "hashBucketNum", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "hashBucketNum",
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_hash_bucket_num"
+    )]
     pub hash_bucket_num: Option<usize>,
     #[serde(rename = "datafusionProperties", skip_serializing_if = "Option::is_none")] 
     pub datafusion_properties: Option<HashMap<String, String>>,
+    #[serde(rename = "partitions", default, skip_serializing_if = "Option::is_none")]
+    pub partitions: Option<String>,
+    #[serde(rename = "lakesoul_cdc_change_column", default, skip_serializing_if = "Option::is_none")]
+    pub cdc_change_column: Option<String>,
+    #[serde(rename = "use_cdc", default, skip_serializing_if = "Option::is_none")]
+    pub use_cdc: Option<String>,
 }
 
 pub(crate) async fn create_table(client: MetaDataClientRef, table_name: &str, config: LakeSoulIOConfig) -> Result<()> {
@@ -84,12 +118,19 @@ pub(crate) async fn create_io_config_builder(
 ) -> Result<LakeSoulIOConfigBuilder> {
     if let Some(table_name) = table_name {
         let table_info = client.get_table_info_by_table_name(table_name, namespace).await?;
-        let data_files = if fetch_files {
-            client.get_data_files_by_table_name(table_name, namespace).await?
+        if let Some(table_info) = table_info {
+            let data_files = if fetch_files {
+                client.get_data_files_by_table_name(table_name, namespace).await?
+            } else {
+                vec![]
+            };
+            create_io_config_builder_from_table_info(Arc::new(table_info), options, object_store_options).map(|builder| builder.with_files(data_files))
         } else {
-            vec![]
-        };
-        create_io_config_builder_from_table_info(Arc::new(table_info), options, object_store_options).map(|builder| builder.with_files(data_files))
+            Err(LakeSoulError::MetaDataError(LakeSoulMetaDataError::NotFound(format!(
+                "Table '{}' not found",
+                table_name
+            ))))
+        }
     } else {
         Ok(LakeSoulIOConfigBuilder::new())
     }
@@ -125,6 +166,7 @@ pub(crate) fn format_table_info_partitions(range_keys: &[String], hash_keys: &[S
         hash_keys.join(",")
     )
 }
+
 
 pub(crate) async fn commit_data(
     client: MetaDataClientRef,

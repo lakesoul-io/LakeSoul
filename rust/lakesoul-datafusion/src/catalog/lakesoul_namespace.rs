@@ -31,7 +31,7 @@ pub struct LakeSoulNamespace {
 
 impl LakeSoulNamespace {
     pub fn new(meta_data_client_ref: MetaDataClientRef, context: Arc<SessionContext>, namespace: &str) -> Self {
-        info!("new namespace: {:?}", namespace);
+        debug!("LakeSoulNamespace::new - Creating new namespace: {}", namespace);
         Self {
             metadata_client: meta_data_client_ref,
             context,
@@ -40,14 +40,17 @@ impl LakeSoulNamespace {
     }
 
     pub fn metadata_client(&self) -> MetaDataClientRef {
+        debug!("LakeSoulNamespace::metadata_client - Getting metadata client");
         self.metadata_client.clone()
     }
 
     pub fn context(&self) -> Arc<SessionContext> {
+        debug!("LakeSoulNamespace::context - Getting session context");
         self.context.clone()
     }
 
     pub fn namespace(&self) -> &str {
+        debug!("LakeSoulNamespace::namespace - Getting namespace: {}", &self.namespace);
         &self.namespace
     }
 
@@ -62,20 +65,24 @@ impl Debug for LakeSoulNamespace {
 #[async_trait]
 impl SchemaProvider for LakeSoulNamespace {
     fn as_any(&self) -> &dyn Any {
+        debug!("LakeSoulNamespace::as_any called");
         self
     }
 
     /// query table_name_id by namespace
     fn table_names(&self) -> Vec<String> {
+        debug!("LakeSoulNamespace::table_names - Getting all tables for namespace: {}", &self.namespace);
         let client = self.metadata_client.clone();
         let np = self.namespace.clone();
         futures::executor::block_on(async move {
             Handle::current()
                 .spawn(async move {
-                    client
+                    let table_name_ids = client
                         .get_all_table_name_id_by_namespace(&np)
                         .await
-                        .expect("get all table name failed")
+                        .expect("get all table name failed");
+                    debug!("table_name_ids: {:?}", table_name_ids);
+                    table_name_ids
                 })
                 .await
                 .expect("spawn failed")
@@ -88,12 +95,13 @@ impl SchemaProvider for LakeSoulNamespace {
     /// Search table by name
     /// return LakeSoulListing table
     async fn table(&self, name: &str) -> Result<Option<Arc<dyn TableProvider>>> {
+        debug!("LakeSoulNamespace::table - Looking up table '{}' in namespace '{}'", name, &self.namespace);
         let name = case_fold_table_name(name);
-        info!("table: {:?} {:?}", name, &self.namespace);
         let table = match LakeSoulTable::for_namespace_and_name(&self.namespace, &name).await {
             Ok(t) => t,
             Err(_) => return Ok(None),
         };
+        debug!("LakeSoulNamespace::table - Table found: {:?}", table.table_info());
         Ok(table.as_sink_provider(&self.context.state()).await.ok())
     }
 
@@ -101,7 +109,7 @@ impl SchemaProvider for LakeSoulNamespace {
     /// If a table of the same name existed before, it returns "Table already exists" error.
     #[allow(unused_variables)]
     fn register_table(&self, name: String, table: Arc<dyn TableProvider>) -> Result<Option<Arc<dyn TableProvider>>> {
-        info!("register_table: {:?} {:?}", name, &self.namespace);
+        debug!("LakeSoulNamespace::register_table - Registering table '{}' in namespace '{}'", name, &self.namespace);
         // 获取表的 schema
         let schema = table.schema();
 
@@ -125,6 +133,7 @@ impl SchemaProvider for LakeSoulNamespace {
     /// If no table of that name exists, returns Ok(None).
     #[allow(unused_variables)]
     fn deregister_table(&self, name: &str) -> Result<Option<Arc<dyn TableProvider>>> {
+        debug!("LakeSoulNamespace::deregister_table - Deregistering table '{}' from namespace '{}'", name, &self.namespace);
         let name = case_fold_table_name(name);
         info!("deregister_table: {:?} {:?}", name, &self.namespace);
         let client = self.metadata_client.clone();
@@ -157,6 +166,7 @@ impl SchemaProvider for LakeSoulNamespace {
     }
 
     fn table_exist(&self, name: &str) -> bool {
+        debug!("LakeSoulNamespace::table_exist - Checking existence of table '{}' in namespace '{}'", name, &self.namespace);
         info!("table_exist: {:?} {:?}", name, &self.namespace);
         // table name is primary key for `table_name_id`
         let client = self.metadata_client.clone();
@@ -169,7 +179,10 @@ impl SchemaProvider for LakeSoulNamespace {
                         .get_all_table_name_id_by_namespace(&np)
                         .await
                         .expect("get table name failed");
-                    table_name_ids.into_iter().map(|v| v.table_name).any(|s| s.eq_ignore_ascii_case(&name))
+                    debug!("table_name_ids: {:?}, target: {}", table_name_ids, &name);
+                    let found = table_name_ids.into_iter().map(|v| v.table_name).any(|s| s.eq_ignore_ascii_case(&name));
+                    debug!("table_exist: {:?} {:?}", name, found);
+                    found
                 })
                 .await
                 .expect("spawn failed")

@@ -23,7 +23,7 @@ use datafusion::{
 };
 use lakesoul_metadata::MetaDataClientRef;
 use object_store::{path::Path, ObjectMeta, ObjectStore};
-use log::{debug, trace};
+use log::{debug, info, trace};
 use url::Url;
 
 use crate::error::Result;
@@ -42,13 +42,15 @@ pub(crate) fn create_io_config_builder_from_table_info(
 ) -> Result<LakeSoulIOConfigBuilder> {
     let (range_partitions, hash_partitions) = parse_table_info_partitions(table_info.partitions.clone())?;
     let properties = serde_json::from_str::<LakeSoulTableProperty>(&table_info.properties)?;
+    let dynamic_partition = hash_partitions.len() + range_partitions.len() > 0;
     
     let mut builder = LakeSoulIOConfigBuilder::new()
         .with_schema(schema_from_metadata_str(&table_info.table_schema))
         .with_prefix(table_info.table_path.clone())
         .with_primary_keys(hash_partitions)
         .with_range_partitions(range_partitions)
-        .with_hash_bucket_num(properties.hash_bucket_num.unwrap_or(1));
+        .with_hash_bucket_num(properties.hash_bucket_num.unwrap_or(1))
+        .set_dynamic_partition(dynamic_partition);
 
     for (key, value) in options {
         builder = builder.with_option(key, value);
@@ -177,7 +179,7 @@ pub async fn listing_partition_info(
     store: &dyn ObjectStore,
     client: MetaDataClientRef,
 ) -> datafusion::error::Result<(PartitionInfo, Vec<ObjectMeta>)> {
-    trace!("Listing partition {:?}", partition_info);
+    info!("Listing partition {:?}", partition_info);
     let paths = client
         .get_data_files_of_single_partition(&partition_info)
         .await

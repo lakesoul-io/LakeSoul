@@ -474,4 +474,14 @@ public class DMLSuite extends AbstractTestBase {
         tEnvs.executeSql(createUserSql);
     }
 
+    @Test
+    public void testFlightData() {
+        TableEnvironment tEnv = TestUtils.createTableEnv(BATCH_TYPE);
+        StreamTableEnvironment streamEnv = TestUtils.createStreamTableEnv(BATCH_TYPE);
+        String testSelect = "select * from lakesoul_test_table";
+        TableImpl flinkTable = (TableImpl) streamEnv.sqlQuery(testSelect);
+        List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
+        streamEnv.executeSql("select count(1) from lakesoul_test_table").print();
+        System.out.println(results);
+    }
 }

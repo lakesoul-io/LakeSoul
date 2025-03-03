@@ -110,8 +110,8 @@ impl ReceiverStreamExec {
 }
 
 impl Debug for ReceiverStreamExec {
-    fn fmt(&self, _f: &mut Formatter<'_>) -> std::fmt::Result {
-        todo!()
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ReceiverStreamExec")
     }
 }
 

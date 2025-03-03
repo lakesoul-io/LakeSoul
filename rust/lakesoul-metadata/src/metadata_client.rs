@@ -497,7 +497,7 @@ impl MetaDataClient {
             }
             _ => {}
         };
-        let table_info = Some(self.get_table_info_by_table_id(table_id).await?);
+        let table_info = self.get_table_info_by_table_id(table_id).await?;
         let domain = self.get_table_domain(table_id).await?.domain;
         self.commit_data(
             MetaInfo {
@@ -569,7 +569,7 @@ impl MetaDataClient {
         }
     }
 
-    pub async fn get_table_info_by_table_name(&self, table_name: &str, namespace: &str) -> Result<TableInfo> {
+    pub async fn get_table_info_by_table_name(&self, table_name: &str, namespace: &str) -> Result<Option<TableInfo>> {
         match self
             .execute_query(
                 DaoType::SelectTableInfoByTableNameAndNameSpace as i32,
@@ -577,49 +577,50 @@ impl MetaDataClient {
             )
             .await
         {
-            Ok(wrapper) if wrapper.table_info.is_empty() => Err(LakeSoulMetaDataError::NotFound(format!(
-                "Table '{}' not found",
-                table_name
-            ))),
-            Ok(wrapper) => Ok(wrapper.table_info[0].clone()),
+            Ok(wrapper) if wrapper.table_info.is_empty() => Ok(None),
+            Ok(wrapper) => Ok(Some(wrapper.table_info[0].clone())),
             Err(err) => Err(err),
         }
     }
 
-    pub async fn get_table_info_by_table_path(&self, table_path: &str) -> Result<TableInfo> {
+    pub async fn get_table_info_by_table_path(&self, table_path: &str) -> Result<Option<TableInfo>> {
         match self
             .execute_query(DaoType::SelectTablePathIdByTablePath as i32, table_path.to_string())
             .await
         {
-            Ok(wrapper) if wrapper.table_info.is_empty() => Err(LakeSoulMetaDataError::NotFound(format!(
-                "Table '{}' not found",
-                table_path
-            ))),
-            Ok(wrapper) => Ok(wrapper.table_info[0].clone()),
+            Ok(wrapper) if wrapper.table_info.is_empty() => Ok(None),
+            Ok(wrapper) => Ok(Some(wrapper.table_info[0].clone())),
             Err(err) => Err(err),
         }
     }
 
-    pub async fn get_table_info_by_table_id(&self, table_id: &str) -> Result<TableInfo> {
+    pub async fn get_table_info_by_table_id(&self, table_id: &str) -> Result<Option<TableInfo>> {
         match self
             .execute_query(DaoType::SelectTableInfoByTableId as i32, table_id.to_string())
             .await
         {
-            Ok(wrapper) => Ok(wrapper.table_info[0].clone()),
+            Ok(wrapper) if wrapper.table_info.is_empty() => Ok(None),
+            Ok(wrapper) => Ok(Some(wrapper.table_info[0].clone())),
             Err(err) => Err(err),
         }
     }
 
     pub async fn get_data_files_by_table_name(&self, table_name: &str, namespace: &str) -> Result<Vec<String>> {
         let table_info = self.get_table_info_by_table_name(table_name, namespace).await?;
-        debug!("table_info: {:?}", table_info);
-        let partition_list = self.get_all_partition_info(table_info.table_id.as_str()).await?;
-        debug!(
-            "{} 's partition_list: {:?}",
-            table_info.table_id.as_str(),
-            partition_list
-        );
-        self.get_data_files_of_partitions(partition_list).await
+        if let Some(table_info) = table_info {
+            let partition_list = self.get_all_partition_info(table_info.table_id.as_str()).await?;
+            debug!(
+                "{} 's partition_list: {:?}",
+                table_info.table_id.as_str(),
+                partition_list
+            );
+            self.get_data_files_of_partitions(partition_list).await
+        } else {
+            Err(LakeSoulMetaDataError::NotFound(format!(
+                "Table '{}' not found",
+                table_name
+            )))
+        }
     }
 
     pub async fn get_data_files_of_partitions(&self, partition_list: Vec<PartitionInfo>) -> Result<Vec<String>> {
@@ -651,6 +652,9 @@ impl MetaDataClient {
         &self,
         partition_info: &PartitionInfo,
     ) -> Result<Vec<DataCommitInfo>> {
+        if partition_info.snapshot.is_empty() {
+            return Ok(Vec::new());
+        }
         let table_id = &partition_info.table_id;
         let partition_desc = &partition_info.partition_desc;
         let joined_commit_id = &partition_info
@@ -674,7 +678,14 @@ impl MetaDataClient {
 
     pub async fn get_schema_by_table_name(&self, table_name: &str, namespace: &str) -> Result<String> {
         let table_info = self.get_table_info_by_table_name(table_name, namespace).await?;
-        Ok(table_info.table_schema)
+        if let Some(table_info) = table_info {
+            Ok(table_info.table_schema)
+        } else {
+            Err(LakeSoulMetaDataError::NotFound(format!(
+                "Table '{}' not found",
+                table_name
+            )))
+        }
     }
 
     pub async fn get_all_partition_info(&self, table_id: &str) -> Result<Vec<PartitionInfo>> {
@@ -733,28 +744,35 @@ impl MetaDataClient {
     pub async fn update_table_properties(&self, table_id: &str, properties: &str) -> Result<i32> {
         // 获取现有表信息
         let table_info = self.get_table_info_by_table_id(table_id).await?;
-        
-        // 解析新的和原始的properties
-        let new_properties: serde_json::Value = serde_json::from_str(properties)?;
-        let mut new_properties = new_properties.as_object()
-            .ok_or(LakeSoulMetaDataError::Internal("Invalid properties format".to_string()))?
-            .clone();
+        if let Some(table_info) = table_info {
+            
+            // 解析新的和原始的properties
+            let new_properties: serde_json::Value = serde_json::from_str(properties)?;
+            let mut new_properties = new_properties.as_object()
+                .ok_or(LakeSoulMetaDataError::Internal("Invalid properties format".to_string()))?
+                .clone();
 
-        if let Ok(origin_properties) = serde_json::from_str::<serde_json::Value>(&table_info.properties) {
-            if let Some(origin_obj) = origin_properties.as_object() {
-                // 如果原始properties中包含domain,保留它
-                if let Some(domain) = origin_obj.get("domain") {
-                    new_properties.insert("domain".to_string(), domain.clone());
+            if let Ok(origin_properties) = serde_json::from_str::<serde_json::Value>(&table_info.properties) {
+                if let Some(origin_obj) = origin_properties.as_object() {
+                    // 如果原始properties中包含domain,保留它
+                    if let Some(domain) = origin_obj.get("domain") {
+                        new_properties.insert("domain".to_string(), domain.clone());
+                    }
                 }
             }
-        }
 
-        // 更新properties
-        self.execute_update(
-            DaoType::UpdateTableInfoById as i32,
-            [table_id, &serde_json::to_string(&new_properties)?].join(PARAM_DELIM),
-        )
-        .await
+            // 更新properties
+            self.execute_update(
+                DaoType::UpdateTableInfoById as i32,
+                [table_id, &serde_json::to_string(&new_properties)?].join(PARAM_DELIM),
+            )
+            .await
+        } else {
+            Err(LakeSoulMetaDataError::NotFound(format!(
+                "Table '{}' not found",
+                table_id
+            )))
+        }
     }
 
     pub async fn update_table_short_name(
@@ -765,35 +783,40 @@ impl MetaDataClient {
         table_namespace: &str,
     ) -> Result<()> {
         let table_info = self.get_table_info_by_table_id(table_id).await?;
-        
-        // 检查现有表名
-        if !table_info.table_name.is_empty() {
-            if table_info.table_name != table_name {
-                return Err(LakeSoulMetaDataError::Internal(format!(
-                    "Table name already exists {} for table id {}",
-                    table_info.table_name, table_id
-                )));
+        if let Some(table_info) = table_info {
+            // 检查现有表名
+            if !table_info.table_name.is_empty() {
+                if table_info.table_name != table_name {
+                    return Err(LakeSoulMetaDataError::Internal(format!(
+                        "Table name already exists {} for table id {}",
+                        table_info.table_name, table_id
+                    )));
+                }
+                return Ok(());
             }
-            return Ok(());
+
+            // 更新表信息
+            self.execute_update(
+                DaoType::UpdateTableInfoById as i32,
+                [table_id, table_name, table_path, ""].join(PARAM_DELIM),
+            )
+            .await?;
+
+            // 插入新的表名ID映射
+            self.insert_table_name_id(&TableNameId {
+                table_name: table_name.to_string(),
+                table_id: table_id.to_string(),
+                    table_namespace: table_namespace.to_string(),
+                    domain: table_info.domain,
+                })
+                .await?;
+            Ok(())
+        } else {
+            Err(LakeSoulMetaDataError::NotFound(format!(
+                "Table '{}' not found",
+                table_id
+            )))
         }
-
-        // 更新表信息
-        self.execute_update(
-            DaoType::UpdateTableInfoById as i32,
-            [table_id, table_name, table_path, ""].join(PARAM_DELIM),
-        )
-        .await?;
-
-        // 插入新的表名ID映射
-        self.insert_table_name_id(&TableNameId {
-            table_name: table_name.to_string(),
-            table_id: table_id.to_string(),
-            table_namespace: table_namespace.to_string(),
-            domain: table_info.domain,
-        })
-        .await?;
-
-        Ok(())
     }
 }
 

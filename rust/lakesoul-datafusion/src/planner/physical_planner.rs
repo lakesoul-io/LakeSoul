@@ -6,10 +6,13 @@ use std::sync::Arc;
 
 use arrow::datatypes::Schema;
 
+use datafusion::catalog::TableProvider;
 use datafusion::common::{DFSchema, SchemaExt};
+use datafusion::datasource::source_as_provider;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::SessionState;
-use datafusion::logical_expr::{Expr, LogicalPlan};
+use datafusion::logical_expr::expr_rewriter::unnormalize_cols;
+use datafusion::logical_expr::{Expr, LogicalPlan, TableScan};
 use datafusion::physical_expr::{create_physical_expr, LexOrdering, PhysicalExpr};
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
@@ -23,6 +26,7 @@ use lakesoul_io::helpers::{column_names_to_physical_expr, column_names_to_physic
 use lakesoul_io::repartition::RepartitionByRangeAndHashExec;
 use log::info;
 
+use crate::datasource::table_provider::LakeSoulTableProvider;
 use crate::lakesoul_table::LakeSoulTable;
 
 pub struct LakeSoulPhysicalPlanner {
@@ -57,6 +61,36 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
 
                 let runtime_expr = self.create_physical_expr(&filter.predicate, input_dfschema, session_state)?;
                 Ok(Arc::new(FilterExec::try_new(runtime_expr, physical_input)?))
+            }
+            LogicalPlan::TableScan(TableScan {
+                source,
+                projection,
+                filters,
+                fetch,
+                ..
+            }) => {
+                let source = source_as_provider(source)?;
+                info!("create_physical_plan source: {:?}", &source);
+                if let Some(table_provider) = source.as_any().downcast_ref::<LakeSoulTableProvider>() {
+                    let filters = unnormalize_cols(filters.iter().cloned());
+                    // Remove all qualifiers from the scan as the provider
+                    // doesn't know (nor should care) how the relation was
+                    // referred to in the query
+                    let scan_exec = table_provider
+                        .scan(session_state, projection.as_ref(), &filters, *fetch)
+                        .await?;
+                    if let Some(cdc_filter) = table_provider.cdc_filter().await? {
+                        let input_dfschema = DFSchema::try_from(scan_exec.as_ref().schema().as_ref().clone())?;
+                        let runtime_expr = self.create_physical_expr(&cdc_filter, &input_dfschema, session_state)?;
+                        Ok(Arc::new(FilterExec::try_new(runtime_expr, scan_exec)?))
+                    } else {
+                        Ok(scan_exec)
+                    }
+                } else {
+                    self.default_planner
+                        .create_physical_plan(logical_plan, session_state)
+                    .await
+                }
             }
             LogicalPlan::Dml(DmlStatement {
                 table_name,
