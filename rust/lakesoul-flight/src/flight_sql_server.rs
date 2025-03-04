@@ -560,7 +560,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         self.verify_token(request.metadata())?;
         let table_names = self
             .get_metadata_client()
-            .get_all_table_name_id_by_namespace(query.catalog())
+            .get_all_table_name_id_by_namespace(query.db_schema_filter_pattern())
             .await
             .map_err(lakesoul_metadata_error_to_status)?;
         let schema = Arc::new(Schema::new(vec![
