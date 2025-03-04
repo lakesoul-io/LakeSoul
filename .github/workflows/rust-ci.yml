@@ -47,6 +47,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          components: rustfmt, clippy
       - name: Install requirement
         uses: ConorMacBride/install-package@v1
         with:
