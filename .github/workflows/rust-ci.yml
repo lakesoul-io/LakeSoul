@@ -63,10 +63,10 @@ jobs:
         uses: arduino/setup-protoc@v2
         with:
           version: "23.x"
-      - name: Update Cargo.lock
+      - name: Generate Cargo.lock
         working-directory: ./rust
-        run: cargo update
+        run: cargo generate-lockfile
       - name: Run tests
         working-directory: ./rust
-        run: sudo cargo test --package lakesoul-datafusion
+        run: sudo cargo test --package lakesoul-datafusion --locked
 
