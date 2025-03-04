@@ -156,9 +156,12 @@ pub fn transform_array(
                 DataType::Timestamp(TimeUnit::Nanosecond, _) => as_primitive_array::<TimestampNanosecondType>(&array).clone().into_data(),
                 _ => return Err(DataFusionError::Internal("Unsupported timestamp type".to_string())),
             };
+            let array_ref = make_array(array);
+            let source_datatype = array_ref.data_type();
+            let target_datatype = DataType::Timestamp(target_unit.clone(), Some(target_tz.clone()));
 
-            let casted_array = cast_with_options(&make_array(array), &DataType::Timestamp(target_unit.clone(), Some(target_tz.clone())), &ARROW_CAST_OPTIONS)
-                .map_err(|e| DataFusionError::ArrowError(e, None))?;
+            let casted_array = cast_with_options(&array_ref, &DataType::Timestamp(target_unit.clone(), Some(target_tz.clone())), &ARROW_CAST_OPTIONS)
+                .map_err(|e| DataFusionError::ArrowError(e, Some(format!("Failed to cast timestamp type from {} to {}", source_datatype, target_datatype))))?;
             casted_array
         },
         DataType::Struct(target_child_fields) => {
@@ -200,7 +203,7 @@ pub fn transform_array(
         target_datatype => {
             if target_datatype != *array.data_type() {
                 cast_with_options(&array, &target_datatype, &ARROW_CAST_OPTIONS)
-                    .map_err(|e| DataFusionError::ArrowError(e, None))?
+                    .map_err(|e| DataFusionError::ArrowError(e, Some(format!("Failed to cast type from {} to {}", array.data_type(), target_datatype))))?
             } else {
                 array.clone()
             }

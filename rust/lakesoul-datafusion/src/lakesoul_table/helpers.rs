@@ -27,7 +27,7 @@ use log::{debug, info, trace};
 use url::Url;
 
 use crate::error::Result;
-use lakesoul_io::lakesoul_io_config::LakeSoulIOConfigBuilder;
+use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfigBuilder, OPTION_KEY_CDC_COLUMN, OPTION_KEY_STABLE_SORT};
 use proto::proto::entity::{PartitionInfo, TableInfo};
 
 use crate::{
@@ -42,6 +42,8 @@ pub(crate) fn create_io_config_builder_from_table_info(
 ) -> Result<LakeSoulIOConfigBuilder> {
     let (range_partitions, hash_partitions) = parse_table_info_partitions(table_info.partitions.clone())?;
     let properties = serde_json::from_str::<LakeSoulTableProperty>(&table_info.properties)?;
+    let use_cdc = properties.use_cdc.map_or("false".to_string(), |use_cdc| use_cdc.clone());
+    let cdc_column = properties.cdc_change_column.map_or("".to_string(), |cdc_column| cdc_column.clone());
     let dynamic_partition = hash_partitions.len() + range_partitions.len() > 0;
     
     let mut builder = LakeSoulIOConfigBuilder::new()
@@ -50,7 +52,9 @@ pub(crate) fn create_io_config_builder_from_table_info(
         .with_primary_keys(hash_partitions)
         .with_range_partitions(range_partitions)
         .with_hash_bucket_num(properties.hash_bucket_num.unwrap_or(1))
-        .set_dynamic_partition(dynamic_partition);
+        .set_dynamic_partition(dynamic_partition)
+        .with_option(OPTION_KEY_STABLE_SORT, use_cdc)
+        .with_option(OPTION_KEY_CDC_COLUMN, cdc_column);
 
     for (key, value) in options {
         builder = builder.with_option(key, value);

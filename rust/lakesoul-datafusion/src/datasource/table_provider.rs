@@ -11,7 +11,7 @@ use arrow::compute::SortOptions;
 use arrow::datatypes::{DataType, Field, Schema, SchemaBuilder, SchemaRef};
 use async_trait::async_trait;
 use datafusion::catalog::Session;
-use datafusion::common::{project_schema, Constraint, Statistics, ToDFSchema};
+use datafusion::common::{project_schema, Constraint, DFSchema, Statistics, ToDFSchema};
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::file_format::FileFormat;
 use datafusion::datasource::listing::{ListingOptions, ListingTableUrl, PartitionedFile};
@@ -25,6 +25,8 @@ use datafusion::logical_expr::{CreateExternalTable, TableProviderFilterPushDown,
 use datafusion::logical_expr::{col, lit, ident};
 use datafusion::physical_expr::{create_physical_expr, LexOrdering, PhysicalSortExpr};
 use datafusion::physical_plan::empty::EmptyExec;
+use datafusion::physical_plan::filter::FilterExec;
+use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::scalar::ScalarValue;
 use datafusion::{execution::context::SessionState, logical_expr::Expr};
@@ -380,19 +382,6 @@ impl LakeSoulTableProvider {
         Ok((file_groups, Statistics::new_unknown(self.schema().deref())))
     }
 
-    pub async fn cdc_filter(
-        &self,
-    ) -> Result<Option<Expr>> {
-        info!("table_info properties: {:?}", self.table_info().properties);
-        let properties = serde_json::from_str::<LakeSoulTableProperty>(&self.table_info().properties).map_err(|e| {
-            DataFusionError::External(format!("Failed to parse table properties: {}", e).into())
-        })?;
-        if let Some(cdc_column) = properties.cdc_change_column {
-            Ok(Some(ident(cdc_column).not_eq(lit("delete"))))
-        } else {
-            Ok(None)
-        }
-    }
 }
 
 #[async_trait]

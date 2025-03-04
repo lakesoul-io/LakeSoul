@@ -21,14 +21,12 @@ use datafusion_common::{DataFusionError, Result};
 use rand::distributions::DistString;
 use tokio::{sync::mpsc::Sender, task::JoinHandle};
 use tokio_stream::StreamExt;
-use tracing::debug;
+use log::{info, debug};
 
 use crate::{
-    helpers::{
+    datasource::physical_plan::self_incremental_index_column::SelfIncrementalIndexColumnExec, helpers::{
         columnar_values_to_partition_desc, columnar_values_to_sub_path, get_batch_memory_size, get_columnar_values,
-    },
-    lakesoul_io_config::{create_session_context, IOSchema, LakeSoulIOConfig, LakeSoulIOConfigBuilder},
-    repartition::RepartitionByRangeAndHashExec, transform::uniform_schema,
+    }, lakesoul_io_config::{create_session_context, LakeSoulIOConfig, LakeSoulIOConfigBuilder}, repartition::RepartitionByRangeAndHashExec
 };
 
 use super::{AsyncBatchWriter, MultiPartAsyncWriter, ReceiverStreamExec, WriterFlushResult};
@@ -77,7 +75,7 @@ impl PartitioningAsyncWriter {
             let writer_schema = Arc::new(schema.project(proj_indices.borrow())?);
             writer_config.target_schema = IOSchema(uniform_schema(writer_schema));
         }
-        
+
         for i in 0..partitioning_exec.output_partitioning().partition_count() {
             let sink_task = tokio::spawn(Self::pull_and_sink(
                 partitioning_exec.clone(),
@@ -108,14 +106,23 @@ impl PartitioningAsyncWriter {
     }
 
     fn get_partitioning_exec(input: ReceiverStreamExec, config: LakeSoulIOConfig) -> Result<Arc<dyn ExecutionPlan>> {
+        let mut aux_sort_cols = config.aux_sort_cols.clone();
+        let input : Arc<dyn ExecutionPlan> = if config.stable_sort() {
+            aux_sort_cols.push("__self_incremental_index__".to_string());
+            info!("input schema of self incremental index exec: {:?}", input.schema());
+            Arc::new(SelfIncrementalIndexColumnExec::new(Arc::new(input)))
+        } else {
+            Arc::new(input)
+        };
+        let input_schema = input.schema();
         let sort_exprs: Vec<PhysicalSortExpr> = config
             .range_partitions
             .iter()
             .chain(config.primary_keys.iter())
             // add aux sort cols to sort expr
-            .chain(config.aux_sort_cols.iter())
+            .chain(aux_sort_cols.iter())
             .map(|sort_column| {
-                let col = Column::new_with_schema(sort_column.as_str(), &config.target_schema.0)?;
+                let col = Column::new_with_schema(sort_column.as_str(), input_schema.as_ref())?;
                 Ok(PhysicalSortExpr {
                     expr: Arc::new(col),
                     options: SortOptions::default(),
@@ -123,13 +130,13 @@ impl PartitioningAsyncWriter {
             })
             .collect::<Result<Vec<PhysicalSortExpr>>>()?;
         if sort_exprs.is_empty() {
-            return Ok(Arc::new(input));
+            return Ok(input);
         }
 
-        let sort_exec = Arc::new(SortExec::new(LexOrdering::new(sort_exprs), Arc::new(input)));
+        let sort_exec = Arc::new(SortExec::new(LexOrdering::new(sort_exprs), input));
 
         // see if we need to prune aux sort cols
-        let sort_exec: Arc<dyn ExecutionPlan> = if config.aux_sort_cols.is_empty() {
+        let sort_exec: Arc<dyn ExecutionPlan> = if aux_sort_cols.is_empty() {
             sort_exec
         } else {
             // O(nm), n = number of target schema fields, m = number of aux sort cols
@@ -139,7 +146,7 @@ impl PartitioningAsyncWriter {
                 .fields
                 .iter()
                 .filter_map(|f| {
-                    if config.aux_sort_cols.contains(f.name()) {
+                    if aux_sort_cols.contains(f.name()) {
                         // exclude aux sort cols
                         None
                     } else {
