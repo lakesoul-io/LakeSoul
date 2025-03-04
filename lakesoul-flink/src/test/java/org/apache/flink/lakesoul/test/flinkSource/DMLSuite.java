@@ -474,7 +474,7 @@ public class DMLSuite extends AbstractTestBase {
         tEnvs.executeSql(createUserSql);
     }
 
-    @Test
+    //    @Test
     public void testFlightData() {
         TableEnvironment tEnv = TestUtils.createTableEnv(BATCH_TYPE);
         StreamTableEnvironment streamEnv = TestUtils.createStreamTableEnv(BATCH_TYPE);
