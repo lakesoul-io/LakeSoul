@@ -19,7 +19,7 @@ on:
 name: Rust CI
 
 env:
-  RUSTFLAGS: "-Awarnings"
+  RUSTFLAGS: "-Awarnings -Znext-lockfile-bump"
 
 jobs:
   rust_ci:
@@ -65,8 +65,8 @@ jobs:
           version: "23.x"
       - name: Generate Cargo.lock
         working-directory: ./rust
-        run: RUSTFLAGS="-Znext-lockfile-bump" cargo +nightly generate-lockfile
+        run: cargo +nightly generate-lockfile
       - name: Run tests
         working-directory: ./rust
-        run: sudo RUSTFLAGS="-Znext-lockfile-bump" cargo +nightly test --package lakesoul-datafusion
+        run: sudo cargo +nightly test --package lakesoul-datafusion
 
