@@ -6,7 +6,7 @@ import java.util.Locale
 
 object SparkFunctions {
 
-  private val unboundFunctions = Map("hamming_distance" -> (new HammingDistFunc).asInstanceOf[UnboundFunction])
+  private val unboundFunctions = Map(HammingDistFunc.name -> (new HammingDistFunc).asInstanceOf[UnboundFunction])
 
   def load(name: String): Option[UnboundFunction] = unboundFunctions.get(name.toLowerCase(Locale.ROOT))
 

@@ -18,7 +18,7 @@ class HammingDistFunc extends UnboundFunction {
 
   override def description(): String = "Returns hamming distance of two embedding vector"
 
-  override def name(): String = "lsh_hamming_distance"
+  override def name(): String = HammingDistFunc.name
 
   private def checkFieldType(d: DataType) = {
     d match {
@@ -33,15 +33,19 @@ class HammingDistFunc extends UnboundFunction {
 
     override def resultType(): DataType = IntegerType
 
-    override def name(): String = "lsh_hamming_distance"
+    override def name(): String = HammingDistFunc.name
 
     override def produceResult(input: InternalRow): Int = {
       val a0 = input.getArray(0).toLongArray
       val a1 = input.getArray(1).toLongArray
-      require (a0.length != a1.length, "The input sequences must have the same length")
-      a0.zip(a1).map { case (l, r) =>
-        java.lang.Long.bitCount(l ^ r)
+      require (a0.length == a1.length, "The input sequences must have the same length")
+      a0.zip(a1).map { zipped =>
+        java.lang.Long.bitCount(zipped._1 ^ zipped._2)
       }.sum
     }
   }
+}
+
+object HammingDistFunc {
+  val name = "lakesoul_hamming_distance"
 }
