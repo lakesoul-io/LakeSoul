@@ -88,5 +88,9 @@ class LakeSoulCatalogDatabaseTest extends LakeSoulCatalogTestBase
     sql("SHOW TABLES FROM default").show()
   }
 
+  test("catalog udfs") {
+      sql("select lakesoul_hamming_distance(array(1L,2L,3L), array(4L,5L,6L))").show()
+  }
+
 }
 
