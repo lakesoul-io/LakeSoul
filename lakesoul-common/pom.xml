@@ -268,7 +268,7 @@ SPDX-License-Identifier: Apache-2.0
         <dependency>
             <groupId>com.google.protobuf</groupId>
             <artifactId>protobuf-java</artifactId>
-            <version>3.22.0</version>
+            <version>3.25.5</version>
         </dependency>
 
         <!-- jnr-ffi deps-->
