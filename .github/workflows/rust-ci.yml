@@ -50,7 +50,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2024-03-01
+          toolchain: nightly
           components: rustfmt, clippy
       - name: Install requirement
         uses: ConorMacBride/install-package@v1
@@ -65,8 +65,8 @@ jobs:
           version: "23.x"
       - name: Generate Cargo.lock
         working-directory: ./rust
-        run: cargo generate-lockfile
+        run: RUSTFLAGS="-Znext-lockfile-bump" cargo +nightly generate-lockfile
       - name: Run tests
         working-directory: ./rust
-        run: sudo cargo test --package lakesoul-datafusion --locked
+        run: sudo RUSTFLAGS="-Znext-lockfile-bump" cargo +nightly test --package lakesoul-datafusion
 
