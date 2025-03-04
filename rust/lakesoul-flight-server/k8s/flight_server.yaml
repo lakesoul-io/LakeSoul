@@ -37,11 +37,11 @@ spec:
         - name: LAKESOUL_PG_DRIVER
           value: com.lakesoul.shaded.org.postgresql.Driver
         - name: LAKESOUL_PG_URL
-          value: jdbc:postgres://root:eH9hdJkqYORNsNN6OGjF@192.168.24.180:5432/flight_test?stringtype=unspecified
+          value: jdbc:postgres://localhost:5432/flight_test?stringtype=unspecified
         - name: LAKESOUL_PG_USERNAME
-          value: root
+          value: postgres
         - name: LAKESOUL_PG_PASSWORD
-          value: eH9hdJkqYORNsNN6OGjF
+          value: postgres
         # - name: JWT_AUTH_ENABLED
         #   value: "true"
         volumeMounts:
