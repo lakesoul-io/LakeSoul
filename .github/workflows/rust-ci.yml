@@ -19,7 +19,7 @@ on:
 name: Rust CI
 
 env:
-  RUSTFLAGS: "-Awarnings -Znext-lockfile-bump"
+  RUSTFLAGS: "-Awarnings"
 
 jobs:
   rust_ci:
@@ -63,10 +63,16 @@ jobs:
         uses: arduino/setup-protoc@v2
         with:
           version: "23.x"
+      - name: Fix Cargo.lock version
+        working-directory: ./rust
+        run: |
+          if [ -f "Cargo.lock" ]; then
+            sed -i 's/^version = 4/version = 3/' Cargo.lock
+          fi
       - name: Generate Cargo.lock
         working-directory: ./rust
-        run: cargo +nightly generate-lockfile
+        run: cargo generate-lockfile
       - name: Run tests
         working-directory: ./rust
-        run: sudo cargo +nightly test --package lakesoul-datafusion
+        run: sudo cargo test --package lakesoul-datafusion
 
