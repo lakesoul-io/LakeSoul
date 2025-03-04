@@ -16,10 +16,6 @@ use lakesoul_flight::{FlightSqlServiceImpl, JwtServer, args::Args};
 use lakesoul_metadata::MetaDataClient;
 
 
-fn to_tonic_err(e: lakesoul_datafusion::LakeSoulError) -> Status {
-    Status::internal(format!("{e:?}"))
-}
-
 pub mod token {
     include!(concat!(env!("OUT_DIR"), "/json.token.TokenServer.rs"));
 }

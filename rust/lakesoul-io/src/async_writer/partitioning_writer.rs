@@ -26,7 +26,7 @@ use log::{info, debug};
 use crate::{
     datasource::physical_plan::self_incremental_index_column::SelfIncrementalIndexColumnExec, helpers::{
         columnar_values_to_partition_desc, columnar_values_to_sub_path, get_batch_memory_size, get_columnar_values,
-    }, lakesoul_io_config::{create_session_context, LakeSoulIOConfig, LakeSoulIOConfigBuilder}, repartition::RepartitionByRangeAndHashExec
+    }, lakesoul_io_config::{create_session_context, IOSchema, LakeSoulIOConfig, LakeSoulIOConfigBuilder}, repartition::RepartitionByRangeAndHashExec, transform::uniform_schema
 };
 
 use super::{AsyncBatchWriter, MultiPartAsyncWriter, ReceiverStreamExec, WriterFlushResult};
