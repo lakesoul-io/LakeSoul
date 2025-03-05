@@ -50,7 +50,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly
+          toolchain: 1.81.0
           components: rustfmt, clippy
       - name: Install requirement
         uses: ConorMacBride/install-package@v1
@@ -63,12 +63,10 @@ jobs:
         uses: arduino/setup-protoc@v2
         with:
           version: "23.x"
-      - name: Clean Cargo cache
+      - name: Build and test
         working-directory: ./rust
         run: |
           rm -f Cargo.lock
           cargo clean
-      - name: Build and test
-        working-directory: ./rust
-        run: sudo -E cargo test --package lakesoul-datafusion
+          cargo test --package lakesoul-datafusion
 
