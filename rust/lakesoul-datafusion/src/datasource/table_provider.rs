@@ -8,10 +8,10 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use arrow::compute::SortOptions;
-use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use arrow::datatypes::{DataType, Field, Schema, SchemaBuilder, SchemaRef};
 use async_trait::async_trait;
 use datafusion::catalog::Session;
-use datafusion::common::{project_schema, Constraint, Statistics, ToDFSchema};
+use datafusion::common::{project_schema, Constraint, DFSchema, Statistics, ToDFSchema};
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::file_format::FileFormat;
 use datafusion::datasource::listing::{ListingOptions, ListingTableUrl, PartitionedFile};
@@ -22,8 +22,11 @@ use datafusion::logical_expr::dml::InsertOp;
 use datafusion::logical_expr::expr::Sort;
 use datafusion::logical_expr::utils::conjunction;
 use datafusion::logical_expr::{CreateExternalTable, TableProviderFilterPushDown, TableType};
+use datafusion::logical_expr::{col, lit, ident};
 use datafusion::physical_expr::{create_physical_expr, LexOrdering, PhysicalSortExpr};
 use datafusion::physical_plan::empty::EmptyExec;
+use datafusion::physical_plan::filter::FilterExec;
+use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::scalar::ScalarValue;
 use datafusion::{execution::context::SessionState, logical_expr::Expr};
@@ -64,6 +67,7 @@ pub struct LakeSoulTableProvider {
     pub(crate) listing_table_paths: Vec<ListingTableUrl>,
     pub(crate) client: MetaDataClientRef,
     pub(crate) table_info: Arc<TableInfo>,
+    // table schema is the normalized schema of TableProvider
     pub(crate) table_schema: SchemaRef,
     pub(crate) file_schema: SchemaRef,
     pub(crate) primary_keys: Vec<String>,
@@ -119,6 +123,7 @@ impl LakeSoulTableProvider {
             file_schema,
             primary_keys: hash_partitions,
             range_partitions,
+            
         })
     }
 
@@ -127,32 +132,46 @@ impl LakeSoulTableProvider {
         client: MetaDataClientRef,
         cmd: &CreateExternalTable,
     ) -> crate::error::Result<Self> {
-        let table_schema: SchemaRef = Arc::new(Schema::new(
-            Schema::from(cmd.schema.as_ref())
-                .fields()
-                .iter()
-                .map(|field| {
-                    Field::new(
-                        case_fold_column_name(field.name()),
-                        field.data_type().clone(),
-                        field.is_nullable(),
-                    )
-                })
-                .collect::<Vec<_>>(),
-        ));
-        let file_schema: SchemaRef = table_schema.clone();
         let primary_keys = cmd
             .constraints
             .iter()
             .flat_map(|constraint| match constraint {
                 Constraint::PrimaryKey(pk) => pk
                     .iter()
-                    .map(|col| table_schema.field(*col).name().to_string())
+                    .map(|col| cmd.schema.as_ref().field(*col).name().to_string())
                     .collect::<Vec<_>>(),
                 _ => vec![],
             })
             .collect::<Vec<_>>();
+        
+
         let range_partitions = cmd.table_partition_cols.clone();
+
+        info!("LakeSoulTableProvider::new_from_create_external_table cmd.options: {:?}", cmd.options);
+
+        let mut schema_builder = SchemaBuilder::new();
+        for field in cmd.schema.as_ref().fields() {
+            schema_builder.push(Field::new(
+                case_fold_column_name(field.name()),
+                field.data_type().clone(),
+                field.is_nullable() && !primary_keys.contains(&field.name()),
+            ));
+        }
+
+
+        let (cdc_column, use_cdc) = if cmd.options.contains_key("format.use_cdc") {
+            let cdc_column = cmd.options.get("format.cdc_column").unwrap_or(&"rowKinds".to_string()).to_string();
+            let use_cdc = cmd.options.get("format.use_cdc").unwrap_or(&"false".to_string()).to_string();
+            let cdc_field = Arc::new(Field::new(cdc_column.clone(), DataType::Utf8, true));
+            schema_builder.try_merge(&cdc_field)?;
+            (Some(cdc_column), Some(use_cdc))
+        } else {
+            (None, None)
+        };
+
+        let table_schema = Arc::new(schema_builder.finish());
+        
+        let file_schema: SchemaRef = table_schema.clone();
 
         let table_info = Arc::new(TableInfo {
             table_id: format!("table_{}", uuid::Uuid::new_v4()),
@@ -160,8 +179,11 @@ impl LakeSoulTableProvider {
             table_name: case_fold_table_name(cmd.name.table()),
             table_schema: serde_json::to_string::<ArrowJavaSchema>(&table_schema.clone().into())?,
             properties: serde_json::to_string(&LakeSoulTableProperty {
-                hash_bucket_num: None,
+                hash_bucket_num: if primary_keys.is_empty() { None } else { Some(4) },
                 datafusion_properties: Some(cmd.options.clone()),
+                cdc_change_column: cdc_column,
+                use_cdc,
+                ..Default::default()
             })
             .unwrap(),
             partitions: format_table_info_partitions(&range_partitions, &primary_keys),
@@ -186,6 +208,7 @@ impl LakeSoulTableProvider {
             file_schema,
             primary_keys,
             range_partitions,
+
         })
     }
 
@@ -214,6 +237,7 @@ impl LakeSoulTableProvider {
     }
 
     fn is_partition_filter(&self, f: &Expr) -> bool {
+        info!("is_partition_filter: {:?}", f);
         // O(nm), n = number of expr fields, m = number of range partitions
         if let Ok(cols) = f.to_columns() {
             cols.iter().all(|col| self.range_partitions.contains(&col.name))
@@ -288,27 +312,37 @@ impl LakeSoulTableProvider {
             return Ok((vec![], Statistics::new_unknown(&self.file_schema())));
         };
 
-        let all_partition_info = self.client.get_all_partition_info(self.table_id()).await.map_err(|_| {
+        let all_partition_info = self.client.get_all_partition_info(self.table_id()).await.map_err(|e| {
             DataFusionError::External(
                 format!(
-                    "get all partition_info of table {} failed",
+                    "get all partition_info of table {} failed: {}",
+                    &self.table_info().table_name,
+                    e
+                )
+                .into(),
+            )
+        })?;
+        let partition_filters = filters
+            .iter()
+            .filter(|f| self.is_partition_filter(f))
+            .cloned()
+            .collect::<Vec<Expr>>();
+
+        let prune_partition_info = prune_partitions(
+            all_partition_info,
+            partition_filters.as_slice(),
+            self.table_partition_cols(),
+        )
+        .await
+        .map_err(|_| {
+            DataFusionError::External(
+                format!(
+                    "prune partitions for all partitions of table {} failed",
                     &self.table_info().table_name
                 )
                 .into(),
             )
         })?;
-
-        let prune_partition_info = prune_partitions(all_partition_info, filters, self.table_partition_cols())
-            .await
-            .map_err(|_| {
-                DataFusionError::External(
-                    format!(
-                        "get all partition_info of table {} failed",
-                        &self.table_info().table_name
-                    )
-                    .into(),
-                )
-            })?;
 
         info!("prune_partition_info: {:?}", prune_partition_info);
 
@@ -347,6 +381,7 @@ impl LakeSoulTableProvider {
 
         Ok((file_groups, Statistics::new_unknown(self.schema().deref())))
     }
+
 }
 
 #[async_trait]
@@ -427,6 +462,7 @@ impl TableProvider for LakeSoulTableProvider {
     }
 
     fn supports_filters_pushdown(&self, filters: &[&Expr]) -> Result<Vec<TableProviderFilterPushDown>> {
+        info!("supports_filters_pushdown: {:?}", filters);
         filters
             .iter()
             .map(|f| {

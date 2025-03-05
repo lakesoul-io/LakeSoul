@@ -15,9 +15,11 @@ use arrow_flight::{
 use datafusion::error::DataFusionError;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::sql::parser::{DFParser, Statement};
-use datafusion::sql::sqlparser::ast::CreateTable;
+use datafusion::sql::sqlparser::ast::{CreateTable, SqlOption};
+use datafusion::sql::sqlparser::dialect::PostgreSqlDialect;
 use datafusion::sql::TableReference;
 use futures::{Stream, StreamExt, TryStreamExt};
+use lakesoul_datafusion::catalog::LakeSoulTableProperty;
 use lakesoul_datafusion::datasource::table_factory::LakeSoulTableProviderFactory;
 use lakesoul_datafusion::lakesoul_table::helpers::case_fold_column_name;
 use lakesoul_datafusion::lakesoul_table::LakeSoulTable;
@@ -25,6 +27,7 @@ use lakesoul_datafusion::planner::query_planner::LakeSoulQueryPlanner;
 use lakesoul_datafusion::serialize::arrow_java::schema_from_metadata_str;
 use lakesoul_io::helpers::get_batch_memory_size;
 use lakesoul_io::lakesoul_io_config::{register_s3_object_store, register_hdfs_object_store, LakeSoulIOConfigBuilder};
+use lakesoul_io::serde_json;
 use tonic::{Request, Response, Status, metadata::MetadataValue, Streaming};
 use prost::Message;
 
@@ -368,7 +371,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         info!("get_flight_info_tables - catalog: {:?}", query);
 
         let ctx = self.get_ctx(&request)?;
-        let data = self.tables(ctx).await;
+        let data = self.tables(ctx).await.map_err(|e| status!("Error executing query", e))?;
         let schema = data.schema();
 
         let ticket = Ticket {
@@ -404,21 +407,45 @@ impl FlightSqlService for FlightSqlServiceImpl {
             .get_table_info_by_table_name(&query.table, query.db_schema())
             .await
             .map_err(lakesoul_metadata_error_to_status)?;
-        let schema = schema_from_metadata_str(&table_info.table_schema);
-        let ticket = Ticket {
-            ticket: Command::CommandGetPrimaryKeys(query).into_any().encode_to_vec().into(),
-        };
+        if let Some(table_info) = table_info {
+            info!("get_flight_info_primary_keys table_info: {:?}", table_info);
+            let schema = schema_from_metadata_str(&table_info.table_schema);
+            info!("get_flight_info_primary_keys schema: {:?}", schema);
+            let ticket = Ticket {
+                ticket: Command::CommandGetPrimaryKeys(query).into_any().encode_to_vec().into(),
+            };
+            let metadata = create_app_metadata(table_info.properties.clone(), table_info.partitions.clone());
 
-        let info = FlightInfo::new()
-            .try_with_schema(&schema)
-            .expect("encoding failed")
-            .with_endpoint(FlightEndpoint::new().with_ticket(ticket))
-            .with_descriptor(FlightDescriptor {
-                r#type: DescriptorType::Cmd.into(),
-                cmd: Default::default(),
-                path: vec![],
-            });
-        Ok(Response::new(info))
+            let info = FlightInfo::new()
+                .try_with_schema(&schema)
+                .expect("encoding failed")
+                .with_endpoint(FlightEndpoint::new().with_ticket(ticket))
+                .with_descriptor(FlightDescriptor {
+                    r#type: DescriptorType::Cmd.into(),
+                    cmd: Default::default(),
+                    path: vec![],
+                })
+                .with_app_metadata(metadata);
+            Ok(Response::new(info))
+        } else {
+            Err(Status::internal(format!(
+                "Table '{}' not found",
+                query.table
+            )))
+        }
+    }
+
+    async fn do_get_primary_keys(
+        &self,
+        query: CommandGetPrimaryKeys,
+        request: Request<Ticket>,
+    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        self.verify_token(request.metadata())?;
+        info!(
+            "do_get_primary_keys - catalog: {:?}, schema: {:?}, table: {:?}",
+            query.catalog, query.db_schema, query.table
+        );
+        Ok(Response::new(Box::pin(futures::stream::iter(vec![]))))
     }
 
     async fn do_get_statement(
@@ -533,7 +560,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         self.verify_token(request.metadata())?;
         let table_names = self
             .get_metadata_client()
-            .get_all_table_name_id_by_namespace(query.catalog())
+            .get_all_table_name_id_by_namespace(query.db_schema_filter_pattern())
             .await
             .map_err(lakesoul_metadata_error_to_status)?;
         let schema = Arc::new(Schema::new(vec![
@@ -568,18 +595,6 @@ impl FlightSqlService for FlightSqlServiceImpl {
         Ok(Response::new(Box::pin(stream)))
     }
 
-    async fn do_get_primary_keys(
-        &self,
-        query: CommandGetPrimaryKeys,
-        request: Request<Ticket>,
-    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
-        self.verify_token(request.metadata())?;
-        info!(
-            "do_get_primary_keys - catalog: {:?}, schema: {:?}, table: {:?}",
-            query.catalog, query.db_schema, query.table
-        );
-        Ok(Response::new(Box::pin(futures::stream::iter(vec![]))))
-    }
 
     async fn do_put_statement_update(
         &self,
@@ -593,8 +608,8 @@ impl FlightSqlService for FlightSqlServiceImpl {
         info!("execute SQL: {}", sql);
 
         let ctx = self.get_ctx(&request)?;
-        let df = ctx.sql(&sql).await.map_err(|e| status!("Error executing query", e))?;
-        let result = df.collect().await.map_err(|e| status!("Error executing query", e))?;
+        let plan = ctx.sql(&sql).await.and_then(|df| df.into_optimized_plan()).map_err(|e| status!("Error executing query", e))?;
+        
         Ok(0)
     }
 
@@ -847,26 +862,64 @@ fn convert_placeholders(query: &str) -> String {
 
 fn normalize_sql(sql: &str) -> Result<String, Status> {
     let sql = convert_placeholders(sql);
-    let statements = DFParser::parse_sql(&sql).map_err(|e| status!("Error parsing SQL", e))?;
+    let statements = DFParser::parse_sql_with_dialect(&sql, &PostgreSqlDialect {}).map_err(|e| status!("Error parsing SQL", e))?;
 
     if let Some(Statement::Statement(stmt)) = statements.front() {
         // info!("stmt: {:?}", stmt);
         match stmt.as_ref() {
-            datafusion::sql::sqlparser::ast::Statement::CreateTable(CreateTable { name, columns, .. }) => Ok(format!(
-                "CREATE EXTERNAL TABLE {} ({}) STORED AS LAKESOUL LOCATION ''",
-                name,
-                columns
+            datafusion::sql::sqlparser::ast::Statement::CreateTable(
+                CreateTable { name, 
+                    columns, 
+                    partition_by, 
+                    with_options,
+                    .. }
+            ) => {
+                info!("create table: {}, {:?}, {:?}", name, partition_by, with_options);
+                
+                let mut create_table_sql = format!(
+                    "CREATE EXTERNAL TABLE {} ({}) STORED AS LAKESOUL LOCATION ''",
+                    name,
+                    columns
                     .iter()
                     .map(|c| c.to_string())
                     .collect::<Vec<String>>()
                     .join(", ")
-            )),
+                );
+                if let Some(partition_by) = partition_by {
+                    create_table_sql = format!(
+                        "{} PARTITIONED BY {}",
+                        create_table_sql,
+                        partition_by
+                    );
+                }
+                if !with_options.is_empty() {
+                    create_table_sql = format!(
+                        "{} OPTIONS ({})",
+                        create_table_sql,
+                        with_options.iter()
+                            .map(|opt| match opt {
+                                SqlOption::KeyValue { key, value } => format!("'{}' {}", key, value),
+                                _ => format!("{:}", opt),
+                            })
+                            .collect::<Vec<String>>()
+                            .join(", ")
+                    );
+                }
+                Ok(create_table_sql)
+            }
             _ => Ok(sql.to_string()),
         }
     } else {
         Ok(sql.to_string())
     }
 }
+
+pub fn create_app_metadata(properties: String, partitions: String) -> String {
+    let mut properties = serde_json::from_str::<LakeSoulTableProperty>(&properties).unwrap();
+    properties.partitions = Some(partitions);
+    serde_json::to_string(&properties).unwrap()
+}
+
 
 impl FlightSqlServiceImpl {
     pub async fn new(metadata_client: MetaDataClientRef, args: Args) -> Result<Self> {
@@ -998,6 +1051,10 @@ impl FlightSqlServiceImpl {
             .catalog_list()
             .register_catalog("LAKESOUL".to_string(), catalog);
 
+        // let df = ctx.sql("select * from user_info_1").await.map_err(datafusion_error_to_status)?;
+        // let batch = df.collect().await.map_err(datafusion_error_to_status)?;
+        // info!("batch: {}", arrow::util::pretty::pretty_format_batches(&batch).unwrap());
+
         self.contexts.insert(uuid.clone(), ctx);
         Ok(uuid)
     }
@@ -1034,10 +1091,10 @@ impl FlightSqlServiceImpl {
         }
     }
 
-    async fn tables(&self, ctx: Arc<SessionContext>) -> RecordBatch {
+    async fn tables(&self, ctx: Arc<SessionContext>) -> Result<RecordBatch, Status> {
         let schema = Arc::new(Schema::new(vec![
             Field::new("catalog_name", DataType::Utf8, true),
-            Field::new("db_schema_name", DataType::Utf8, true),
+            Field::new("db_schema_name", DataType::Utf8, true), 
             Field::new("table_name", DataType::Utf8, false),
             Field::new("table_type", DataType::Utf8, false),
             Field::new("table_schema", DataType::Binary, false),
@@ -1050,16 +1107,23 @@ impl FlightSqlServiceImpl {
         let mut table_schemas: Vec<Vec<u8>> = vec![];
 
         for catalog in ctx.catalog_names() {
-            let catalog_provider = ctx.catalog(&catalog).unwrap();
+            let catalog_provider = ctx.catalog(&catalog)
+                .ok_or_else(|| Status::internal(format!("Catalog not found: {}", catalog)))?;
+            
             for schema in catalog_provider.schema_names() {
-                let schema_provider = catalog_provider.schema(&schema).unwrap();
+                let schema_provider = catalog_provider.schema(&schema)
+                    .ok_or_else(|| Status::internal(format!("Schema not found: {}", schema)))?;
+                
                 for table in schema_provider.table_names() {
-                    let table_provider = schema_provider.table(&table).await.unwrap().unwrap();
+                    let table_provider = schema_provider.table(&table).await
+                        .map_err(|e| Status::internal(format!("Error getting table: {}", e)))?
+                        .ok_or_else(|| Status::internal(format!("Table not found: {}", table)))?;
+                    
                     let table_schema = table_provider.schema();
 
                     let message = SchemaAsIpc::new(&table_schema, &IpcWriteOptions::default())
                         .try_into()
-                        .unwrap();
+                        .map_err(|e| Status::internal(format!("Error converting schema to IPC: {}", e)))?;
                     let IpcMessage(schema_bytes) = message;
 
                     catalogs.push(catalog.clone());
@@ -1081,12 +1145,13 @@ impl FlightSqlServiceImpl {
         let arrays: Vec<ArrayRef> = vec![
             Arc::new(StringArray::from(catalogs)),
             Arc::new(StringArray::from(schemas)),
-            Arc::new(StringArray::from(names)),
+            Arc::new(StringArray::from(names)), 
             Arc::new(StringArray::from(types)),
             Arc::new(binary_array),
         ];
 
-        RecordBatch::try_new(schema, arrays).unwrap()
+        RecordBatch::try_new(schema, arrays)
+            .map_err(|e| Status::internal(format!("Error creating record batch: {}", e)))
     }
 
     fn remove_plan(&self, handle: &str) -> Result<(), Status> {
@@ -1197,6 +1262,7 @@ impl FlightSqlServiceImpl {
             .map_err(|e| Status::internal(format!("Error getting next batch: {}", e)))? 
         {
             let batch_rows = batch.num_rows();
+            info!("write_stream batch_rows: {}", batch_rows);
             record_count += batch_rows as i64;
             let batch_bytes = get_batch_memory_size(&batch).map_err(datafusion_error_to_status)? as u64;
             total_bytes += batch_bytes;

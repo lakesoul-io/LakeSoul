@@ -52,6 +52,7 @@ pub static OPTION_KEY_CDC_COLUMN: &str = "cdc_column";
 pub static OPTION_KEY_IS_COMPACTED: &str = "is_compacted";
 pub static OPTION_KEY_MAX_FILE_SIZE: &str = "max_file_size";
 pub static OPTION_KEY_COMPUTE_LSH: &str = "compute_lsh";
+pub static OPTION_KEY_STABLE_SORT: &str = "stable_sort";
 
 #[derive(Debug, Derivative)]
 #[derivative(Default, Clone)]
@@ -190,8 +191,8 @@ impl LakeSoulIOConfig {
         self.option(OPTION_KEY_HASH_BUCKET_ID).map_or(0, |x| x.parse().unwrap())
     }
 
-    pub fn cdc_column(&self) -> Option<String> {
-        self.option(OPTION_KEY_CDC_COLUMN).map(|x| x.to_string())
+    pub fn cdc_column(&self) -> String {
+        self.option(OPTION_KEY_CDC_COLUMN).map_or_else(|| String::new(), |x| x.to_string())
     }
 
     pub fn is_compacted(&self) -> bool {
@@ -200,6 +201,10 @@ impl LakeSoulIOConfig {
 
     pub fn compute_lsh(&self) -> bool {
         self.option(OPTION_KEY_COMPUTE_LSH).map_or(true, |x| x.eq("true"))
+    }
+
+    pub fn stable_sort(&self) -> bool {
+        self.option(OPTION_KEY_STABLE_SORT).map_or(false, |x| x.eq("true"))
     }
 }
 

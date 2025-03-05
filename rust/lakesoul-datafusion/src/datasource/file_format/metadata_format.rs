@@ -13,7 +13,7 @@ use async_trait::async_trait;
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaBuilder, SchemaRef};
 use datafusion::common::parsers::CompressionTypeVariant;
-use datafusion::common::{project_schema, GetExt, Statistics};
+use datafusion::common::{project_schema, DFSchema, GetExt, Statistics};
 use datafusion::datasource::file_format::file_compression_type::FileCompressionType;
 use datafusion::datasource::file_format::parquet::ParquetFormatFactory;
 use datafusion::datasource::listing::ListingOptions;
@@ -21,8 +21,9 @@ use datafusion::datasource::physical_plan::parquet::ParquetExecBuilder;
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::dml::InsertOp;
-use datafusion::physical_expr::{EquivalenceProperties, LexOrdering, LexRequirement};
+use datafusion::physical_expr::{create_physical_expr, EquivalenceProperties, LexOrdering, LexRequirement};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::union::UnionExec;
@@ -30,6 +31,7 @@ use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, Distribution, ExecutionPlanProperties, Partitioning, PlanProperties,
     SendableRecordBatchStream,
 };
+use datafusion::prelude::{ident, lit};
 use datafusion::sql::TableReference;
 use datafusion::{
     datasource::{
@@ -54,7 +56,7 @@ use object_store::{ObjectMeta, ObjectStore};
 use proto::proto::entity::TableInfo;
 use rand::distributions::DistString;
 
-use log::debug;
+use log::{debug, info};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
@@ -81,6 +83,7 @@ impl LakeSoulMetaDataParquetFormat {
         table_info: Arc<TableInfo>,
         conf: LakeSoulIOConfig,
     ) -> crate::error::Result<Self> {
+        debug!("LakeSoulMetaDataParquetFormat::new, conf: {:?}", conf);
         Ok(Self {
             parquet_format,
             client,
@@ -162,6 +165,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         conf: FileScanConfig,
         filters: Option<&Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        info!("LakeSoulMetaDataParquetFormat::create_physical_plan with conf= {:?}, filters= {:?}", &conf, &filters);
         // If enable pruning then combine the filters to build the predicate.
         // If disable pruning then set the predicate to None, thus readers
         // will not prune data based on the statistics.
@@ -182,6 +186,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
             table_schema.clone(),
             target_schema.clone(),
             self.conf.primary_keys_slice(),
+            &self.conf.cdc_column(),
         );
         let merged_schema = project_schema(&table_schema, merged_projection.as_ref())?;
 
@@ -191,6 +196,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
             self.parquet_format.clone(),
             conf,
             self.conf.primary_keys_slice(),
+            &self.conf.cdc_column(),
             self.conf.partition_schema(),
             target_schema.clone(),
         )
@@ -205,6 +211,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
             let partition_columnar_value = Arc::new(partition_columnar_value);
 
             let parquet_exec = Arc::new({
+                debug!("create parquet exec with config= {:?}, predicate= {:?}", &config, &predicate);
                 let mut builder = ParquetExecBuilder::new(config.clone());
                 if let Some(predicate) = predicate.clone() {
                     builder = builder.with_predicate(predicate);
@@ -255,6 +262,17 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
             Arc::new(UnionExec::new(partitioned_exec)) as Arc<dyn ExecutionPlan>
         } else {
             partitioned_exec.first().unwrap().clone()
+        };
+
+        let cdc_column = self.conf.cdc_column();
+        let exec = if !cdc_column.is_empty() {
+            let dfschema = DFSchema::try_from(exec.schema().as_ref().clone())?;
+            let cdc_filter = ident(cdc_column).not_eq(lit("delete"));
+            let expr = create_physical_expr(&cdc_filter, &dfschema, state.execution_props())?;
+
+            Arc::new(FilterExec::try_new(expr, exec)?)
+        } else {
+            exec
         };
 
         if target_schema.fields().len() < merged_schema.fields().len() {

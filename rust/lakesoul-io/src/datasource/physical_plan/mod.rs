@@ -8,3 +8,5 @@ pub use merge::MergeParquetExec;
 pub mod defatul_column;
 mod empty_schema;
 pub mod merge;
+
+pub mod self_incremental_index_column;

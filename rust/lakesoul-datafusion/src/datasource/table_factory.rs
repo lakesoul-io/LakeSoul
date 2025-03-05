@@ -39,8 +39,8 @@ impl TableProviderFactory for LakeSoulTableProviderFactory {
         cmd: &CreateExternalTable,
     ) -> datafusion::error::Result<Arc<dyn TableProvider>> {
         info!(
-            "LakeSoulTableProviderFactory::create: {:?}, {:?}, {:?}, {:?}",
-            cmd.name, cmd.location, cmd.schema, cmd.constraints
+            "LakeSoulTableProviderFactory::create: {:?}, {:?}, {:?}, {:?}, {:?}",
+            cmd.name, cmd.location, cmd.schema, cmd.constraints, cmd.options
         );
 
         let mut cmd = cmd.clone();

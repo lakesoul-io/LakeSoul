@@ -54,6 +54,7 @@ mod catalog_tests {
                 properties: serde_json::to_string(&LakeSoulTableProperty {
                     hash_bucket_num: Some(hash_bucket_num),
                     datafusion_properties: None,
+                    ..Default::default()
                 })
                 .unwrap(),
                 comment: "this is comment".to_string(),

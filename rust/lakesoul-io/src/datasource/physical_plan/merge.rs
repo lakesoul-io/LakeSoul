@@ -111,7 +111,7 @@ impl MergeParquetExec {
         io_config: LakeSoulIOConfig,
         default_column_value: Arc<HashMap<String, String>>,
     ) -> Result<Self> {
-        info!("MergeParquetExec::new_with_inputs: {:?}, {:?}", schema, io_config);
+        info!("MergeParquetExec::new_with_inputs: {:?}, {:?}, {:?}", schema, io_config, default_column_value);
         let config = io_config.clone();
         let primary_keys = Arc::new(io_config.primary_keys);
         let merge_operators = Arc::new(io_config.merge_operators);
@@ -251,6 +251,7 @@ pub fn merge_stream(
     batch_size: usize,
     config: LakeSoulIOConfig,
 ) -> Result<SendableRecordBatchStream> {
+    debug!("merge_stream with config= {:?}", &config);
     let merge_on_read = if config.primary_keys.is_empty() {
         false
     } else {

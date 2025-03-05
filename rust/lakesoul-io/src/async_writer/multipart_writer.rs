@@ -13,6 +13,7 @@ use datafusion::{
     execution::{object_store::ObjectStoreUrl, TaskContext},
 };
 use datafusion_common::{project_schema, DataFusionError, Result};
+use log::debug;
 use object_store::{path::Path, ObjectStore, WriteMultipart};
 use parquet::basic::ZstdLevel;
 use parquet::{arrow::ArrowWriter, basic::Compression, file::properties::WriterProperties};
@@ -184,6 +185,7 @@ impl AsyncBatchWriter for MultiPartAsyncWriter {
     }
 
     async fn flush_and_close(self: Box<Self>) -> Result<WriterFlushResult> {
+        debug!("MultiPartAsyncWriter::flush_and_close: {:?}", self.arrow_writer);
         // close arrow writer to flush remaining rows
         let mut this = *self;
         let arrow_writer = this.arrow_writer;

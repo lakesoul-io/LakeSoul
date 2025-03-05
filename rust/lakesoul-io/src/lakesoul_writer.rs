@@ -39,7 +39,7 @@ pub async fn create_writer(config: LakeSoulIOConfig) -> Result<Box<dyn AsyncBatc
             .map(|f| {
                 schema
                     .index_of(f.name().as_str())
-                    .map_err(|e| DataFusionError::ArrowError(e, Some("index_of".to_string())))
+                    .map_err(|e| DataFusionError::ArrowError(e, Some(format!("Failed to find index of column: {}", f.name()))))
             })
             .collect::<Result<Vec<usize>>>()?;
         Arc::new(schema.project(proj_indices.borrow())?)
