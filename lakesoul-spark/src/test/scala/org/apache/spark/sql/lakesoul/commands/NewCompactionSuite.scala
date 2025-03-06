@@ -956,6 +956,124 @@ class NewCompactionSuite extends QueryTest
     }
   }
 
+  test("check new compaction data") {
+    withTempDir(dir => {
+      val tablePath = dir.getCanonicalPath
+      val df = Seq(("2021-01-01", 1, "rice", "insert"), ("2021-01-01", 2, "bread", "insert")).toDF("date", "id", "name", "op")
+      df.write
+        .mode("append")
+        .format("lakesoul")
+        .option("hashPartitions", "id")
+        .option("hashBucketNum", "4")
+        .option("lakesoul_cdc_change_column", "op")
+        .save(tablePath)
+
+      val df1 = Seq(("2021-01-01", 11, "rice", "insert"), ("2021-01-01", 21, "bread", "insert")).toDF("date", "id", "name", "op")
+      val df2 = Seq(("2021-01-01", 12, "rice", "insert"), ("2021-01-01", 22, "bread", "insert")).toDF("date", "id", "name", "op")
+      val df3 = Seq(("2021-01-01", 13, "rice", "insert"), ("2021-01-01", 23, "bread", "insert")).toDF("date", "id", "name", "op")
+
+      val df4 = Seq(("2021-01-01", 14, "rice", "insert"), ("2021-01-01", 24, "bread", "insert")).toDF("date", "id", "name", "op")
+      val df5 = Seq(("2021-01-01", 15, "rice", "insert"), ("2021-01-01", 25, "bread", "insert")).toDF("date", "id", "name", "op")
+      val df6 = Seq(("2021-01-01", 16, "rice", "insert"), ("2021-01-01", 26, "bread", "insert")).toDF("date", "id", "name", "op")
+      val df7 = Seq(("2021-01-01", 17, "rice", "insert"), ("2021-01-01", 27, "bread", "insert")).toDF("date", "id", "name", "op")
+      val df8 = Seq(("2021-01-01", 18, "rice", "insert"), ("2021-01-01", 28, "bread", "insert")).toDF("date", "id", "name", "op")
+      val lake = LakeSoulTable.forPath(tablePath)
+
+      lake.upsert(df1)
+      lake.newCompaction()
+      val data1 = lake.toDF
+      checkAnswer(data1, Seq(
+        ("2021-01-01", 1, "rice", "insert"), ("2021-01-01", 2, "bread", "insert"),
+        ("2021-01-01", 11, "rice", "insert"), ("2021-01-01", 21, "bread", "insert")
+      ).toDF("date", "id", "name", "op"))
+
+      lake.upsert(df2)
+      lake.newCompaction()
+      val data2 = lake.toDF
+      checkAnswer(data2, Seq(
+        ("2021-01-01", 1, "rice", "insert"), ("2021-01-01", 2, "bread", "insert"),
+        ("2021-01-01", 11, "rice", "insert"), ("2021-01-01", 21, "bread", "insert"),
+        ("2021-01-01", 12, "rice", "insert"), ("2021-01-01", 22, "bread", "insert")
+      ).toDF("date", "id", "name", "op"))
+
+
+      lake.upsert(df3)
+      lake.newCompaction()
+      val data3 = lake.toDF
+      checkAnswer(data3, Seq(
+        ("2021-01-01", 1, "rice", "insert"), ("2021-01-01", 2, "bread", "insert"),
+        ("2021-01-01", 11, "rice", "insert"), ("2021-01-01", 21, "bread", "insert"),
+        ("2021-01-01", 12, "rice", "insert"), ("2021-01-01", 22, "bread", "insert"),
+        ("2021-01-01", 13, "rice", "insert"), ("2021-01-01", 23, "bread", "insert")
+      ).toDF("date", "id", "name", "op"))
+
+      lake.upsert(df4)
+      lake.newCompaction()
+      val data4 = lake.toDF
+      checkAnswer(data4, Seq(
+        ("2021-01-01", 1, "rice", "insert"), ("2021-01-01", 2, "bread", "insert"),
+        ("2021-01-01", 11, "rice", "insert"), ("2021-01-01", 21, "bread", "insert"),
+        ("2021-01-01", 12, "rice", "insert"), ("2021-01-01", 22, "bread", "insert"),
+        ("2021-01-01", 13, "rice", "insert"), ("2021-01-01", 23, "bread", "insert"),
+        ("2021-01-01", 14, "rice", "insert"), ("2021-01-01", 24, "bread", "insert")
+      ).toDF("date", "id", "name", "op"))
+
+      lake.upsert(df5)
+      lake.newCompaction()
+      val data5 = lake.toDF
+      checkAnswer(data5, Seq(
+        ("2021-01-01", 1, "rice", "insert"), ("2021-01-01", 2, "bread", "insert"),
+        ("2021-01-01", 11, "rice", "insert"), ("2021-01-01", 21, "bread", "insert"),
+        ("2021-01-01", 12, "rice", "insert"), ("2021-01-01", 22, "bread", "insert"),
+        ("2021-01-01", 13, "rice", "insert"), ("2021-01-01", 23, "bread", "insert"),
+        ("2021-01-01", 14, "rice", "insert"), ("2021-01-01", 24, "bread", "insert"),
+        ("2021-01-01", 15, "rice", "insert"), ("2021-01-01", 25, "bread", "insert")
+      ).toDF("date", "id", "name", "op"))
+
+      lake.upsert(df6)
+      lake.newCompaction()
+      val data6 = lake.toDF
+      checkAnswer(data6, Seq(
+        ("2021-01-01", 1, "rice", "insert"), ("2021-01-01", 2, "bread", "insert"),
+        ("2021-01-01", 11, "rice", "insert"), ("2021-01-01", 21, "bread", "insert"),
+        ("2021-01-01", 12, "rice", "insert"), ("2021-01-01", 22, "bread", "insert"),
+        ("2021-01-01", 13, "rice", "insert"), ("2021-01-01", 23, "bread", "insert"),
+        ("2021-01-01", 14, "rice", "insert"), ("2021-01-01", 24, "bread", "insert"),
+        ("2021-01-01", 15, "rice", "insert"), ("2021-01-01", 25, "bread", "insert"),
+        ("2021-01-01", 16, "rice", "insert"), ("2021-01-01", 26, "bread", "insert")
+      ).toDF("date", "id", "name", "op"))
+
+      lake.upsert(df7)
+      lake.newCompaction()
+      val data7 = lake.toDF
+      checkAnswer(data7, Seq(
+        ("2021-01-01", 1, "rice", "insert"), ("2021-01-01", 2, "bread", "insert"),
+        ("2021-01-01", 11, "rice", "insert"), ("2021-01-01", 21, "bread", "insert"),
+        ("2021-01-01", 12, "rice", "insert"), ("2021-01-01", 22, "bread", "insert"),
+        ("2021-01-01", 13, "rice", "insert"), ("2021-01-01", 23, "bread", "insert"),
+        ("2021-01-01", 14, "rice", "insert"), ("2021-01-01", 24, "bread", "insert"),
+        ("2021-01-01", 15, "rice", "insert"), ("2021-01-01", 25, "bread", "insert"),
+        ("2021-01-01", 16, "rice", "insert"), ("2021-01-01", 26, "bread", "insert"),
+        ("2021-01-01", 17, "rice", "insert"), ("2021-01-01", 27, "bread", "insert")
+      ).toDF("date", "id", "name", "op"))
+
+      lake.upsert(df8)
+      lake.newCompaction()
+      val data8 = lake.toDF
+      checkAnswer(data8, Seq(
+        ("2021-01-01", 1, "rice", "insert"), ("2021-01-01", 2, "bread", "insert"),
+        ("2021-01-01", 11, "rice", "insert"), ("2021-01-01", 21, "bread", "insert"),
+        ("2021-01-01", 12, "rice", "insert"), ("2021-01-01", 22, "bread", "insert"),
+        ("2021-01-01", 13, "rice", "insert"), ("2021-01-01", 23, "bread", "insert"),
+        ("2021-01-01", 14, "rice", "insert"), ("2021-01-01", 24, "bread", "insert"),
+        ("2021-01-01", 15, "rice", "insert"), ("2021-01-01", 25, "bread", "insert"),
+        ("2021-01-01", 16, "rice", "insert"), ("2021-01-01", 26, "bread", "insert"),
+        ("2021-01-01", 17, "rice", "insert"), ("2021-01-01", 27, "bread", "insert"),
+        ("2021-01-01", 18, "rice", "insert"), ("2021-01-01", 28, "bread", "insert")
+      ).toDF("date", "id", "name", "op"))
+    })
+  }
+
   test("check new compaction data with newBucketNum、limited file size and limited file number") {
     withSQLConf(LakeSoulSQLConf.COMPACTION_LEVEL_FILE_NUM_LIMIT.key -> "3",
       LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE.key -> "10KB") {

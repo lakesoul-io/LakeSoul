@@ -37,7 +37,7 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
 
     private static final Logger LOG = LoggerFactory.getLogger(CompactBucketIO.class);
 
-    public static String  DISCARD_FILE_LIST_KEY = "discard_file";
+    public static String DISCARD_FILE_LIST_KEY = "discard_file";
     public static String COMPACT_DIR = "compact_dir";
     public static String INCREMENTAL_FILE = "incremental_file";
 
@@ -52,8 +52,8 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
 
     private NativeIOOptions nativeIOOptions;
 
-    List<FlushResult> fileInfo;
-    String metaPartitionExpr;
+    private List<FlushResult> fileInfo;
+    private String metaPartitionExpr;
 
     private NativeIOWriter nativeWriter;
     private final int maxRowGroupRows;
@@ -98,7 +98,6 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
                 (int) LakeSoulSQLConf.COMPACTION_LEVEL_FILE_NUM_LIMIT().defaultValue().get());
         this.compactionReadFileSize = DBUtil.parseMemoryExpression(conf.get(LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE().key(),
                 LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE().defaultValue().get()));
-
 
         this.readFileNumLimit = readFileNumLimit;
         this.batchIncrementalFileSizeLimit = Math.min(batchIncrementalFileSizeLimit, compactionReadFileSize);
@@ -188,7 +187,6 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
     public HashMap<String, List<FlushResult>> startCompactTask() throws Exception {
         List<FlushResult> resultList = new ArrayList<>();
         HashMap<String, List<FlushResult>> rsMap = new HashMap<>();
-        String partitionKey = null;
         if (this.tableHashBucketNumChanged) {
             List<FlushResult> fileList = this.fileInfo;
             int index = 0;
@@ -214,11 +212,10 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
                     throw new IllegalStateException("change tableHashBucketNum task: after compaction, without out file info, read file list is: " + batchFileList);
                 }
                 for (Map.Entry<String, List<FlushResult>> entry : outFile.entrySet()) {
-                    partitionKey = entry.getKey();
                     resultList.addAll(entry.getValue());
                 }
             }
-            rsMap.put(partitionKey, resultList);
+            rsMap.put(this.metaPartitionExpr, resultList);
             if (levelFileMap.containsKey(COMPACT_DIR)) {
                 rsMap.put(DISCARD_FILE_LIST_KEY, levelFileMap.get(COMPACT_DIR));
             }
@@ -248,7 +245,6 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
                         throw new IllegalStateException("incremental level compaction task: after compaction, without out file info, read file list is: " + batchFileList);
                     }
                     for (Map.Entry<String, List<FlushResult>> entry : outFile.entrySet()) {
-                        partitionKey = entry.getKey();
                         levelFileMap.computeIfAbsent(COMPACT_DIR, COMPACT_DIR -> new ArrayList<>()).addAll(entry.getValue());
                     }
                 }
@@ -277,7 +273,6 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
                             throw new IllegalStateException("COMPACT_DIR level compaction task: after compaction, without out file info, read file list is: " + curMergeList);
                         }
                         for (Map.Entry<String, List<FlushResult>> entry : outFile.entrySet()) {
-                            partitionKey = entry.getKey();
                             resultList.addAll(entry.getValue());
                         }
                         curMergeList.clear();
@@ -288,17 +283,13 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
                     resultList.addAll(curMergeList);
                     discardFileList.removeAll(curMergeList);
                 }
-                rsMap.put(partitionKey, resultList);
+                rsMap.put(this.metaPartitionExpr, resultList);
                 rsMap.put(DISCARD_FILE_LIST_KEY, discardFileList);
             } else {
-                rsMap.put(partitionKey, oriCompactFileList);
+                rsMap.put(this.metaPartitionExpr, oriCompactFileList);
             }
         }
-        if (partitionKey != null) {
-            return rsMap;
-        } else {
-            return new HashMap<>();
-        }
+        return rsMap;
     }
 
     @Override
