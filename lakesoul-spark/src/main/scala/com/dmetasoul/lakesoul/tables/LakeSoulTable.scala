@@ -14,7 +14,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.SerializableWritable
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
-import org.apache.spark.sql.arrow.CompactBucketIO
+import org.apache.spark.sql.arrow.{CompactBucketIO, CompressDataFileInfo}
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
 import org.apache.spark.sql.functions.expr
@@ -409,7 +409,7 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
           val compactResult = fileRDD.map {
             dataFileInfo => {
               val needDealFileInfo = dataFileInfo.map(file => {
-                new NativeIOWriter.FlushResult(file.path, file.size, file.file_exist_cols)
+                new CompressDataFileInfo(file.path, file.size, file.file_exist_cols, file.modification_time)
               }).toList.asJava
               val radAndWriteIO = new CompactBucketIO(
                 configuration.value,
@@ -425,7 +425,7 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
               val partitionDescAndFilesMap = radAndWriteIO.startCompactTask().asScala
               partitionDescAndFilesMap.map(result => {
                 val (partitionDesc, flushResult) = result
-                val array = flushResult.asScala.map(f => DataFileInfo(partitionDesc, f.getFilePath, "add", f.getFileSize, -1, f.getFileExistCols))
+                val array = flushResult.asScala.map(f => DataFileInfo(partitionDesc, f.getFilePath, "add", f.getFileSize, f.getTimestamp, f.getFileExistCols))
                 array
               }).flatMap(f => f).toSeq
             }
@@ -455,7 +455,7 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
           val compactResult = fileRDD.map {
             dataFileInfo => {
               val needDealFileInfo = dataFileInfo.map(file => {
-                new NativeIOWriter.FlushResult(file.path, file.size, file.file_exist_cols)
+                new CompressDataFileInfo(file.path, file.size, file.file_exist_cols, file.modification_time)
               }).toList.asJava
               val radAndWriteIO = new CompactBucketIO(
                 configuration.value,
@@ -471,7 +471,7 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
               val partitionDescAndFilesMap = radAndWriteIO.startCompactTask().asScala
               partitionDescAndFilesMap.map(result => {
                 val (partitionDesc, flushResult) = result
-                val array = flushResult.asScala.map(f => DataFileInfo(partitionDesc, f.getFilePath, "add", f.getFileSize, -1, f.getFileExistCols))
+                val array = flushResult.asScala.map(f => DataFileInfo(partitionDesc, f.getFilePath, "add", f.getFileSize, f.getTimestamp, f.getFileExistCols))
                 array
               }).flatMap(f => f).toSeq
             }
@@ -500,15 +500,14 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
       val timestampVale = System.currentTimeMillis()
       val timestampFormatter =
         TimestampFormatter("yyy-MM-dd", java.util.TimeZone.getDefault)
-      val dateString = timestampFormatter.format(timestampVale)
       val discardFileInfo = dataFileInfo.filter(file => file.range_partitions.equals(CompactBucketIO.DISCARD_FILE_LIST_KEY))
       val discardCompressedFileList = discardFileInfo.map { file =>
         DiscardCompressedFileInfo.newBuilder()
           .setFilePath(file.path)
           .setTablePath(tableInfo.table_path_s.get)
           .setPartitionDesc(rangePartition)
-          .setTimestamp(timestampVale)
-          .setTDate(dateString)
+          .setTimestamp(file.modification_time)
+          .setTDate(timestampFormatter.format(file.modification_time))
           .build()
       }
       val dataFileInfoAfterFilter = dataFileInfo.filter(file => !file.range_partitions.equals(CompactBucketIO.DISCARD_FILE_LIST_KEY))
