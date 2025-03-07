@@ -91,3 +91,4 @@ class DaoType:
 
     DeleteDiscardCompressedFileInfoByFilePath = DAO_TYPE_UPDATE_OFFSET + 16,
     DeleteDiscardCompressedFileByFilterCondition = DAO_TYPE_UPDATE_OFFSET + 17,
+    DeleteDiscardCompressedFileInfoByTablePath = DAO_TYPE_UPDATE_OFFSET + 18,

@@ -166,7 +166,8 @@ pub enum DaoType {
     DeleteDataCommitInfoByTableId = DAO_TYPE_UPDATE_OFFSET + 15,
 
     DeleteDiscardCompressedFileInfoByFilePath = DAO_TYPE_UPDATE_OFFSET + 16,
-    DeleteDiscardCompressedFileByFilterCondition = DAO_TYPE_UPDATE_OFFSET + 17
+    DeleteDiscardCompressedFileByFilterCondition = DAO_TYPE_UPDATE_OFFSET + 17,
+    DeleteDiscardCompressedFileInfoByTablePath = DAO_TYPE_UPDATE_OFFSET + 18,
 }
 
 async fn get_prepared_statement<'a>(
@@ -426,6 +427,9 @@ async fn get_prepared_statement<'a>(
         DaoType::DeleteDiscardCompressedFileInfoByFilePath =>
             "delete from discard_compressed_file_info
             where file_path = $1::TEXT",
+        DaoType::DeleteDiscardCompressedFileInfoByTablePath =>
+            "delete from discard_compressed_file_info
+            where table_path = $1::TEXT",
         DaoType::DeleteDiscardCompressedFileByFilterCondition =>
             "delete from discard_compressed_file_info
             where table_path = $1::TEXT and partition_desc = $2::TEXT and timestamp <= $3::BIGINT",
@@ -1277,6 +1281,7 @@ pub async fn execute_update(client: &mut PooledClient, update_type: i32, joined_
         | DaoType::DeleteTablePathIdByTableId
         | DaoType::DeleteTablePathIdByTablePath
         | DaoType::DeleteDiscardCompressedFileInfoByFilePath
+        | DaoType::DeleteDiscardCompressedFileInfoByTablePath
             if params.len() == 1 =>
         {
             client.execute(&statement, &[&params[0]]).await
