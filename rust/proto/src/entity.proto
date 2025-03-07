@@ -139,6 +139,20 @@ message TableNameId {
   string domain = 4;
 }
 
+// Meta Information for LakeSoul DiscardCompressedFile
+message DiscardCompressedFileInfo {
+  //  File path
+  string file_path = 1;
+  //  Table path of this file belong to
+  string table_path = 2;
+  //  Partition info
+  string partition_desc = 3;
+  // Creation timestamp when the date created
+  int64 timestamp = 4;
+  // Date
+  string t_date = 5;
+}
+
 //  Relationship between 'TableNamespace.TablePath' and TableId
 message TablePathId {
   //  Physical qualified path of table
@@ -164,4 +178,5 @@ message JniWrapper {
   repeated TableNameId table_name_id = 4;
   repeated PartitionInfo partition_info = 5;
   repeated DataCommitInfo data_commit_info = 6;
+  repeated DiscardCompressedFileInfo discard_compressed_file_info = 7;
 }

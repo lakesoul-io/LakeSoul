@@ -30,6 +30,7 @@ public class DBManager {
     private final TablePathIdDao tablePathIdDao;
     private final DataCommitInfoDao dataCommitInfoDao;
     private final PartitionInfoDao partitionInfoDao;
+    private final DiscardCompressedFileDao discardCompressedFileDao;
 
     public DBManager() {
         namespaceDao = DBFactory.getNamespaceDao();
@@ -38,6 +39,7 @@ public class DBManager {
         tablePathIdDao = DBFactory.getTablePathIdDao();
         dataCommitInfoDao = DBFactory.getDataCommitInfoDao();
         partitionInfoDao = DBFactory.getPartitionInfoDao();
+        discardCompressedFileDao = DBFactory.getDiscardCompressedFileDao();
     }
 
     public boolean isNamespaceExists(String table_namespace) {
@@ -941,6 +943,42 @@ public class DBManager {
 
     public void deleteNamespace(String namespace) {
         namespaceDao.deleteByNamespace(namespace);
+    }
+
+    public void insertDiscardCompressedFile(DiscardCompressedFileInfo discardCompressedFileInfo) {
+        discardCompressedFileDao.insert(discardCompressedFileInfo);
+    }
+
+    public void batchInsertDiscardCompressedFile(List<DiscardCompressedFileInfo> discardCompressedFileInfoList) {
+        discardCompressedFileDao.batchInsert(discardCompressedFileInfoList);
+    }
+
+    public DiscardCompressedFileInfo getDiscardCompressedFileByFilePath(String filePath) {
+        return discardCompressedFileDao.findByFilePath(filePath);
+    }
+
+    public void deleteDiscardCompressedFileByFilePath(String filePath) {
+        discardCompressedFileDao.deleteByFilePath(filePath);
+    }
+
+    public void deleteDiscardCompressedFileByByFilterCondition(String tablePath, String partition, long timestamp) {
+        discardCompressedFileDao.deleteDiscardCompressedFileByFilterCondition(tablePath, partition, timestamp);
+    }
+
+    public List<DiscardCompressedFileInfo> getOutOfDateDiscardCompressedFile(long timestamp) {
+        return discardCompressedFileDao.getDiscardCompressedFileBeforeTimestamp(timestamp);
+    }
+
+    public List<DiscardCompressedFileInfo> getDiscardCompressedFileByFilterCondition(String tablePath, String partition, long timestamp) {
+        return discardCompressedFileDao.getDiscardCompressedFileByFilterCondition(tablePath, partition, timestamp);
+    }
+
+    public List<DiscardCompressedFileInfo> getAllDiscardCompressedFile() {
+        return discardCompressedFileDao.listAllDiscardCompressedFile();
+    }
+
+    public void cleanMetaDiscardCompressedFile() {
+        discardCompressedFileDao.clean();
     }
 
     // just for test

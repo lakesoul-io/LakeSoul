@@ -5,7 +5,7 @@
 package com.dmetasoul.lakesoul.meta
 
 import com.alibaba.fastjson.JSONObject
-import com.dmetasoul.lakesoul.meta.entity.Uuid
+import com.dmetasoul.lakesoul.meta.entity.{DiscardCompressedFileInfo, Uuid}
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.utils._
@@ -113,6 +113,10 @@ object MetaCommit extends Logging {
       metaDataCommitInfoList.add(metaDataCommitInfo.build)
     }
     SparkMetaVersion.dbManager.batchCommitDataCommitInfo(metaDataCommitInfoList)
+  }
+
+  def recordDiscardFileInfo(discardCompressedFileList: util.List[DiscardCompressedFileInfo]): Unit = {
+    SparkMetaVersion.dbManager.batchInsertDiscardCompressedFile(discardCompressedFileList)
   }
 
 }

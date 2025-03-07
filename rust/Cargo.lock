@@ -2642,6 +2642,7 @@ dependencies = [
  "async-trait",
  "bb8-postgres",
  "bytes",
+ "chrono",
  "log",
  "md5",
  "num_enum",
@@ -3454,6 +3455,7 @@ checksum = "02048d9e032fb3cc3413bbf7b83a15d84a5d419778e2628751896d856498eee9"
 dependencies = [
  "array-init",
  "bytes",
+ "chrono",
  "fallible-iterator",
  "postgres-derive",
  "postgres-protocol",

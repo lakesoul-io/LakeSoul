@@ -4,21 +4,27 @@
 
 package com.dmetasoul.lakesoul.tables
 
-import com.dmetasoul.lakesoul.meta.DBConfig.{LAKESOUL_HASH_PARTITION_SPLITTER, LAKESOUL_RANGE_PARTITION_SPLITTER}
-import com.dmetasoul.lakesoul.meta.{DBUtil, SparkMetaVersion}
+import com.alibaba.fastjson.JSON
+import com.dmetasoul.lakesoul.lakesoul.io.NativeIOWriter
+import com.dmetasoul.lakesoul.meta.DBConfig.{LAKESOUL_HASH_PARTITION_SPLITTER, LAKESOUL_RANGE_PARTITION_SPLITTER, TableInfoProperty}
+import com.dmetasoul.lakesoul.meta.entity.{CommitOp, DataCommitInfo, DataFileOp, DiscardCompressedFileInfo, FileOp, Uuid}
+import com.dmetasoul.lakesoul.meta.{CommitType, DBUtil, DataFileInfo, DataOperation, MetaCommit, MetaUtils, PartitionInfoScala, SparkMetaVersion}
 import com.dmetasoul.lakesoul.tables.execution.LakeSoulTableOperations
 import org.apache.hadoop.fs.Path
+import org.apache.spark.SerializableWritable
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
+import org.apache.spark.sql.arrow.{CompactBucketIO, CompressDataFileInfo}
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
+import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
-import org.apache.spark.sql.lakesoul.utils.{SparkUtil, TimestampFormatter}
-import org.apache.spark.sql.lakesoul.{LakeSoulOptions, LakeSoulUtils, SnapshotManagement}
+import org.apache.spark.sql.lakesoul.utils.{MetaInfo, PartitionFilterInfo, SparkUtil, TableInfo, TimestampFormatter}
+import org.apache.spark.sql.lakesoul.{LakeSoulOptions, LakeSoulUtils, PartitionFilter, SnapshotManagement}
 
-import java.util.TimeZone
+import java.util.{TimeZone, UUID}
 import scala.collection.JavaConverters._
 
 class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
@@ -333,6 +339,216 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
 
     val parsedFileSizeLimit = fileSizeLimit.map(DBUtil.parseMemoryExpression)
     executeCompaction(df, snapshotManagement, condition, force, newMergeOpInfo, hiveTableName, hivePartitionName, cleanOldCompaction, fileNumLimit, newBucketNum, parsedFileSizeLimit)
+  }
+
+  def newCompaction(conditionStr: String = "",
+                    hiveTableName: String = "",
+                    hivePartitionName: String = "",
+                    cleanOldCompaction: Boolean = false,
+                    fileNumLimit: Option[Int] = None,
+                    fileSizeLimit: Option[String] = None,
+                    newBucketNum: Option[Int] = None
+                   ): Unit = {
+    val tableInfo = snapshotManagement.getTableInfoOnly
+    val tablePath = tableInfo.table_path.toString
+    val tableHashBucketNum = if (newBucketNum.isDefined) newBucketNum.get else tableInfo.bucket_num
+    val parsedFileNumLimit = if (fileNumLimit.isDefined) fileNumLimit.get else Int.MaxValue
+    val parsedFileSizeLimit = if (fileSizeLimit.isDefined) fileSizeLimit.map(DBUtil.parseMemoryExpression).get else Long.MaxValue
+    val condition = conditionStr match {
+      case "" => None
+      case _: String => Option(expr(conditionStr).expr)
+    }
+    val spark = SparkSession.active
+    import spark.implicits._
+
+    if (condition.isDefined) {
+      val partitionFilters = Seq(condition.get).flatMap { filter =>
+        LakeSoulUtils.splitMetadataAndDataPredicates(filter, tableInfo.range_partition_columns, spark)._1
+      }
+      if (partitionFilters.isEmpty) {
+        throw LakeSoulErrors.partitionColumnNotFoundException(condition.get, 0)
+      }
+      val partitionInfoArr = SparkMetaVersion.getAllPartitionInfo(tableInfo.table_id).toSeq
+      if (partitionInfoArr.nonEmpty) {
+        val partitionFilterInfo = partitionInfoArr.map(p => PartitionFilterInfo(
+          p.range_value,
+          MetaUtils.getPartitionMapFromKey(p.range_value),
+          0
+        ))
+        val partitionFilterDF = spark.createDataFrame(partitionFilterInfo)
+
+        val partitionsMatched = PartitionFilter.filterFileList(
+            tableInfo.partition_schema,
+            partitionFilterDF,
+            partitionFilters)
+          .as[PartitionFilterInfo]
+          .collect()
+        val filterPartition = partitionInfoArr.filter(
+          allPar => partitionsMatched.exists(p => p.range_value == allPar.range_value)
+        )
+        if (filterPartition.length < 1) {
+          throw LakeSoulErrors.partitionColumnNotFoundException(condition.get, 0)
+        } else if (filterPartition.length > 1) {
+          throw LakeSoulErrors.partitionColumnNotFoundException(condition.get, filterPartition.size)
+        }
+        val partitionInfo = SparkMetaVersion.getSinglePartitionInfo(
+          tableInfo.table_id,
+          filterPartition.head.range_value,
+          ""
+        )
+        val files = DataOperation.getTableDataInfo(filterPartition.toArray)
+        if (files.nonEmpty) {
+          val bucketToFiles = if (tableInfo.hash_partition_columns.isEmpty) {
+            Seq(files)
+          } else {
+            files.groupBy(_.file_bucket_id).map(_._2).toSeq
+          }
+          val fileRDD = spark.sparkContext.parallelize(bucketToFiles)
+          val configuration = new SerializableWritable(spark.sessionState.newHadoopConf())
+          val partitionValues = partitionInfo.range_value
+          val compactResult = fileRDD.map {
+            dataFileInfo => {
+              val needDealFileInfo = dataFileInfo.map(file => {
+                new CompressDataFileInfo(file.path, file.size, file.file_exist_cols, file.modification_time)
+              }).toList.asJava
+              val radAndWriteIO = new CompactBucketIO(
+                configuration.value,
+                needDealFileInfo,
+                tableInfo,
+                tablePath,
+                partitionValues,
+                tableHashBucketNum,
+                parsedFileNumLimit,
+                parsedFileSizeLimit,
+                tableInfo.bucket_num != tableHashBucketNum
+              )
+              val partitionDescAndFilesMap = radAndWriteIO.startCompactTask().asScala
+              partitionDescAndFilesMap.map(result => {
+                val (partitionDesc, flushResult) = result
+                val array = flushResult.asScala.map(f => DataFileInfo(partitionDesc, f.getFilePath, "add", f.getFileSize, f.getTimestamp, f.getFileExistCols))
+                array
+              }).flatMap(f => f).toSeq
+            }
+          }
+          val dataFileInfoSeq = compactResult.flatMap(ff => ff).collect().toSeq
+          if (dataFileInfoSeq.nonEmpty) {
+            commitMetadata(dataFileInfoSeq, partitionValues, tableInfo, partitionInfo)
+          } else {
+            println(s"[WARN] read file size is ${files.length}, but without file created after compaction")
+          }
+        }
+      }
+    } else {
+      val allInfo = SparkMetaVersion.getAllPartitionInfo(tableInfo.table_id)
+      val partitionsNeedCompact = allInfo.filter(_.read_files.length >= 1)
+      partitionsNeedCompact.foreach(part => {
+        val files = DataOperation.getSinglePartitionDataInfo(part)
+        if (files.nonEmpty) {
+          val bucketToFiles = if (tableInfo.hash_partition_columns.isEmpty) {
+            Seq(files)
+          } else {
+            files.groupBy(_.file_bucket_id).map(_._2).toSeq
+          }
+          val fileRDD = spark.sparkContext.parallelize(bucketToFiles)
+          val configuration = new SerializableWritable(spark.sessionState.newHadoopConf())
+          val partitionValues = part.range_value
+          val compactResult = fileRDD.map {
+            dataFileInfo => {
+              val needDealFileInfo = dataFileInfo.map(file => {
+                new CompressDataFileInfo(file.path, file.size, file.file_exist_cols, file.modification_time)
+              }).toList.asJava
+              val radAndWriteIO = new CompactBucketIO(
+                configuration.value,
+                needDealFileInfo,
+                tableInfo,
+                tablePath,
+                partitionValues,
+                tableHashBucketNum,
+                parsedFileNumLimit,
+                parsedFileSizeLimit,
+                tableInfo.bucket_num != tableHashBucketNum
+              )
+              val partitionDescAndFilesMap = radAndWriteIO.startCompactTask().asScala
+              partitionDescAndFilesMap.map(result => {
+                val (partitionDesc, flushResult) = result
+                val array = flushResult.asScala.map(f => DataFileInfo(partitionDesc, f.getFilePath, "add", f.getFileSize, f.getTimestamp, f.getFileExistCols))
+                array
+              }).flatMap(f => f).toSeq
+            }
+          }
+          val dataFileInfoSeq = compactResult.flatMap(ff => ff).collect().toSeq
+          if (dataFileInfoSeq.nonEmpty) {
+            commitMetadata(dataFileInfoSeq, partitionValues, tableInfo, part)
+          } else {
+            println(s"[WARN] read file size is ${files.length}, but without file created after compaction")
+          }
+        }
+      })
+    }
+
+    if (newBucketNum.isDefined) {
+      val properties = SparkMetaVersion.dbManager.getTableInfoByTableId(tableInfo.table_id).getProperties
+      val newProperties = JSON.parseObject(properties);
+      newProperties.put(TableInfoProperty.HASH_BUCKET_NUM, newBucketNum.get.toString)
+      SparkMetaVersion.dbManager.updateTableProperties(tableInfo.table_id, newProperties.toJSONString)
+      snapshotManagement.updateSnapshot()
+    }
+
+    def commitMetadata(dataFileInfo: Seq[DataFileInfo], rangePartition: String, tableInfo: TableInfo, readPartitionInfo: PartitionInfoScala): Unit = {
+      val add_file_arr_buf = List.newBuilder[DataCommitInfo]
+      val addUUID = UUID.randomUUID()
+      val timestampVale = System.currentTimeMillis()
+      val timestampFormatter =
+        TimestampFormatter("yyy-MM-dd", java.util.TimeZone.getDefault)
+      val discardFileInfo = dataFileInfo.filter(file => file.range_partitions.equals(CompactBucketIO.DISCARD_FILE_LIST_KEY))
+      val discardCompressedFileList = discardFileInfo.map { file =>
+        DiscardCompressedFileInfo.newBuilder()
+          .setFilePath(file.path)
+          .setTablePath(tableInfo.table_path_s.get)
+          .setPartitionDesc(rangePartition)
+          .setTimestamp(file.modification_time)
+          .setTDate(timestampFormatter.format(file.modification_time))
+          .build()
+      }
+      val dataFileInfoAfterFilter = dataFileInfo.filter(file => !file.range_partitions.equals(CompactBucketIO.DISCARD_FILE_LIST_KEY))
+      val fileOps = dataFileInfoAfterFilter.map { file =>
+        DataFileOp.newBuilder()
+          .setPath(file.path)
+          .setFileOp(FileOp.add)
+          .setSize(file.size)
+          .setFileExistCols(file.file_exist_cols)
+          .build()
+      }
+      add_file_arr_buf += DataCommitInfo.newBuilder()
+        .setTableId(tableInfo.table_id)
+        .setPartitionDesc(rangePartition)
+        .setCommitId(Uuid.newBuilder().setHigh(addUUID.getMostSignificantBits).setLow(addUUID.getLeastSignificantBits).build())
+        .addAllFileOps(fileOps.toList.asJava)
+        .setCommitOp(CommitOp.CompactionCommit)
+        .setTimestamp(System.currentTimeMillis())
+        .setCommitted(false)
+        .build()
+
+      val add_partition_info_arr_buf = List.newBuilder[PartitionInfoScala]
+      add_partition_info_arr_buf += PartitionInfoScala(
+        table_id = tableInfo.table_id,
+        range_value = rangePartition,
+        read_files = Array(addUUID)
+      )
+
+      val meta_info = MetaInfo(
+        table_info = tableInfo,
+        dataCommitInfo = add_file_arr_buf.result().toArray,
+        partitionInfoArray = add_partition_info_arr_buf.result().toArray,
+        commit_type = CommitType("compaction"),
+        query_id = "",
+        batch_id = -1,
+        readPartitionInfo = Array(readPartitionInfo)
+      )
+
+      MetaCommit.doMetaCommit(meta_info, false)
+      MetaCommit.recordDiscardFileInfo(discardCompressedFileList.toList.asJava)
+    }
   }
 
   def setCompactionTtl(days: Int): LakeSoulTable = {

@@ -5,6 +5,7 @@
 use std::io::ErrorKind;
 use std::str::FromStr;
 
+use chrono::NaiveDate;
 use postgres_types::{FromSql, ToSql};
 use prost::Message;
 pub use tokio::runtime::{Builder, Runtime};
@@ -42,6 +43,7 @@ enum ResultType {
     DataCommitInfo,
     TablePathIdWithOnlyPath,
     PartitionInfoWithOnlyCommitOp,
+    DiscardCompressedFileInfo,
 }
 
 #[derive(FromSql, ToSql, Debug, PartialEq)]
@@ -93,6 +95,7 @@ pub enum DaoType {
 
     SelectOneDataCommitInfoByTableIdAndPartitionDescAndCommitId = DAO_TYPE_QUERY_ONE_OFFSET + 9,
     SelectTableDomainById = DAO_TYPE_QUERY_ONE_OFFSET + 10,
+    SelectDiscardCompressedFileInfoByFilePath = DAO_TYPE_QUERY_ONE_OFFSET + 11,
 
     // ==== Query List ====
     ListNamespaces = DAO_TYPE_QUERY_LIST_OFFSET,
@@ -111,6 +114,10 @@ pub enum DaoType {
     // Query DataCommitInfo List
     ListDataCommitInfoByTableIdAndPartitionDescAndCommitList = DAO_TYPE_QUERY_LIST_OFFSET + 10,
 
+    ListAllDiscardCompressedFileInfo = DAO_TYPE_QUERY_LIST_OFFSET + 11,
+    ListDiscardCompressedFileInfoBeforeTimestamp = DAO_TYPE_QUERY_LIST_OFFSET + 12,
+    ListDiscardCompressedFileByFilterCondition = DAO_TYPE_QUERY_LIST_OFFSET + 13,
+
     // ==== Insert One ====
     InsertNamespace = DAO_TYPE_INSERT_ONE_OFFSET,
     InsertTablePathId = DAO_TYPE_INSERT_ONE_OFFSET + 1,
@@ -118,10 +125,12 @@ pub enum DaoType {
     InsertTableInfo = DAO_TYPE_INSERT_ONE_OFFSET + 3,
     InsertPartitionInfo = DAO_TYPE_INSERT_ONE_OFFSET + 4,
     InsertDataCommitInfo = DAO_TYPE_INSERT_ONE_OFFSET + 5,
+    InsertDiscardCompressedFileInfo = DAO_TYPE_INSERT_ONE_OFFSET + 6,
 
     // ==== Transaction Insert List ====
     TransactionInsertPartitionInfo = DAO_TYPE_TRANSACTION_INSERT_LIST_OFFSET,
     TransactionInsertDataCommitInfo = DAO_TYPE_TRANSACTION_INSERT_LIST_OFFSET + 1,
+    TransactionInsertDiscardCompressedFile = DAO_TYPE_TRANSACTION_INSERT_LIST_OFFSET + 2,
 
     // ==== Query SCALAR ====
     GetLatestTimestampFromPartitionInfo = DAO_TYPE_QUERY_SCALAR_OFFSET,
@@ -154,6 +163,9 @@ pub enum DaoType {
     DeleteDataCommitInfoByTableIdAndPartitionDescAndCommitIdList = DAO_TYPE_UPDATE_OFFSET + 13,
     DeleteDataCommitInfoByTableIdAndPartitionDesc = DAO_TYPE_UPDATE_OFFSET + 14,
     DeleteDataCommitInfoByTableId = DAO_TYPE_UPDATE_OFFSET + 15,
+
+    DeleteDiscardCompressedFileInfoByFilePath = DAO_TYPE_UPDATE_OFFSET + 16,
+    DeleteDiscardCompressedFileByFilterCondition = DAO_TYPE_UPDATE_OFFSET + 17
 }
 
 async fn get_prepared_statement<'a>(
@@ -254,6 +266,23 @@ async fn get_prepared_statement<'a>(
             from data_commit_info
             where table_id = $1::TEXT and partition_desc = $2::TEXT and commit_id = $3::UUID",
 
+        // Select DiscardCompressedFileInfo
+        DaoType::SelectDiscardCompressedFileInfoByFilePath =>
+            "select file_path, table_path, partition_desc, timestamp, t_date
+            from discard_compressed_file_info
+            where file_path = $1::TEXT",
+        DaoType::ListAllDiscardCompressedFileInfo =>
+            "select file_path, table_path, partition_desc, timestamp, t_date
+            from discard_compressed_file_info",
+        DaoType::ListDiscardCompressedFileInfoBeforeTimestamp =>
+            "select file_path, table_path, partition_desc, timestamp, t_date
+            from discard_compressed_file_info
+            where timestamp < $1::BIGINT",
+        DaoType::ListDiscardCompressedFileByFilterCondition =>
+            "select file_path, table_path, partition_desc, timestamp, t_date
+            from discard_compressed_file_info
+            where table_path = $1::TEXT and partition_desc = $2::TEXT and timestamp < $3::BIGINT",
+
         // Select Table Domain by id
         DaoType::SelectTableDomainById =>
             "select table_name, table_id, table_namespace, domain
@@ -315,6 +344,16 @@ async fn get_prepared_statement<'a>(
                 domain
             )
             values($1::TEXT, $2::TEXT, $3::UUID, $4::_data_file_op, $5::TEXT, $6::BIGINT, $7::BOOL, $8::TEXT)",
+
+        DaoType::InsertDiscardCompressedFileInfo =>
+            "insert into discard_compressed_file_info(
+                file_path,
+                table_path,
+                partition_desc,
+                timestamp,
+                t_date
+            )
+            values($1::TEXT, $2::TEXT, $3::TEXT, $4::BIGINT, $5::DATE)",
 
         // Query Scalar
         DaoType::GetLatestTimestampFromPartitionInfo =>
@@ -383,11 +422,18 @@ async fn get_prepared_statement<'a>(
             "delete from partition_info
             where table_id = $1::TEXT and partition_desc = $2::TEXT and timestamp <= $3::BIGINT",
 
+        DaoType::DeleteDiscardCompressedFileInfoByFilePath =>
+            "delete from discard_compressed_file_info
+            where file_path = $1::TEXT",
+        DaoType::DeleteDiscardCompressedFileByFilterCondition =>
+            "delete from discard_compressed_file_info
+            where table_path = $1::TEXT and partition_desc = $2::TEXT and timestamp <= $3::BIGINT",
 
         // not prepared
         DaoType::UpdateTableInfoById |
         DaoType::TransactionInsertDataCommitInfo |
         DaoType::TransactionInsertPartitionInfo |
+        DaoType::TransactionInsertDiscardCompressedFile |
         DaoType::ListDataCommitInfoByTableIdAndPartitionDescAndCommitList |
         DaoType::DeleteDataCommitInfoByTableIdAndPartitionDescAndCommitIdList |
         DaoType::ListPartitionDescByTableIdAndParList => "",
@@ -430,24 +476,48 @@ pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string
     let params = get_params(joined_string);
 
     let rows = match query_type {
-        DaoType::ListNamespaces | DaoType::ListAllTablePath if params.len() == 1 && params[0].is_empty() => {
+        DaoType::ListNamespaces
+        | DaoType::ListAllTablePath
+        | DaoType::ListAllDiscardCompressedFileInfo
+            if params.len() == 1 && params[0].is_empty() =>
+        {
             let result = client.query(&statement, &[]).await;
             match result {
                 Ok(rows) => rows,
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
-        DaoType::ListTableNameByNamespace if params.len() == 1 => {
+        DaoType::ListTableNameByNamespace if params.len() == 1 =>
+        {
             let result = client.query(&statement, &[&params[0]]).await;
             match result {
                 Ok(rows) => rows,
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
+        DaoType::ListDiscardCompressedFileInfoBeforeTimestamp if params.len() == 1 =>
+            {
+                let result = client.query(&statement, &[&i64::from_str(&params[0])?]).await;
+                match result {
+                    Ok(rows) => rows,
+                    Err(e) => return Err(LakeSoulMetaDataError::from(e)),
+                }
+            }
+        DaoType::ListDiscardCompressedFileByFilterCondition if params.len() == 3 =>
+            {
+                let result = client
+                    .query(&statement, &[&params[0], &params[1], &i64::from_str(&params[2])?])
+                    .await;
+                match result {
+                    Ok(rows) => rows,
+                    Err(e) => return Err(LakeSoulMetaDataError::from(e)),
+                }
+            }
         DaoType::SelectNamespaceByNamespace
         | DaoType::SelectTableInfoByTableId
         | DaoType::SelectTablePathIdByTablePath
         | DaoType::SelectTableInfoByTablePath
+        | DaoType::SelectDiscardCompressedFileInfoByFilePath
             if params.len() == 1 =>
         {
             let result = client.query_opt(&statement, &[&params[0]]).await;
@@ -657,6 +727,11 @@ pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string
         DaoType::ListAllPathTablePathByNamespace => ResultType::TablePathIdWithOnlyPath,
 
         DaoType::ListCommitOpsBetweenVersions => ResultType::PartitionInfoWithOnlyCommitOp,
+
+        DaoType::SelectDiscardCompressedFileInfoByFilePath
+        | DaoType::ListAllDiscardCompressedFileInfo
+        | DaoType::ListDiscardCompressedFileInfoBeforeTimestamp
+        | DaoType::ListDiscardCompressedFileByFilterCondition => ResultType::DiscardCompressedFileInfo,
         _ => {
             eprintln!("Invalid query_type={:?} when parsing query result type", query_type);
             return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
@@ -809,6 +884,22 @@ pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string
                 .collect::<Result<Vec<entity::DataCommitInfo>>>()?;
             entity::JniWrapper {
                 data_commit_info,
+                ..Default::default()
+            }
+        }
+        ResultType::DiscardCompressedFileInfo => {
+            let discard_compressed_file_info: Vec<entity::DiscardCompressedFileInfo> = rows
+                .iter()
+                .map(|row| entity::DiscardCompressedFileInfo {
+                    file_path: row.get(0),
+                    table_path: row.get(1),
+                    partition_desc: row.get(2),
+                    timestamp: row.get(3),
+                    t_date: row.get::<_, NaiveDate>(4).format("%Y-%m-%d").to_string(),
+                })
+                .collect();
+            entity::JniWrapper {
+                discard_compressed_file_info,
                 ..Default::default()
             }
         }
@@ -1085,6 +1176,72 @@ pub async fn execute_insert(client: &mut PooledClient, insert_type: i32, wrapper
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
+        DaoType::InsertDiscardCompressedFileInfo if wrapper.discard_compressed_file_info.len() == 1 => {
+            let discard_compressed_file_info = wrapper.discard_compressed_file_info.first().unwrap();
+            client
+                .execute(
+                    &statement,
+                    &[
+                        &discard_compressed_file_info.file_path,
+                        &discard_compressed_file_info.table_path,
+                        &discard_compressed_file_info.partition_desc,
+                        &discard_compressed_file_info.timestamp,
+                        &NaiveDate::parse_from_str(&discard_compressed_file_info.t_date, "%Y-%m-%d").unwrap(),
+                    ],
+                )
+                .await
+        }
+        DaoType::TransactionInsertDiscardCompressedFile => {
+            let discard_compressed_file_list = wrapper.discard_compressed_file_info;
+            let result = {
+                let transaction = client.transaction().await?;
+                let insert_statement = match transaction
+                    .prepare(
+                        "insert into discard_compressed_file_info (
+                            file_path,
+                            table_path,
+                            partition_desc,
+                            timestamp,
+                            t_date
+                        ) values ($1::TEXT, $2::TEXT, $3::TEXT, $4::BIGINT, $5::DATE)"
+                    )
+                    .await
+                {
+                    Ok(statement) => statement,
+                    Err(e) => return Err(LakeSoulMetaDataError::from(e)),
+                };
+                for discard_compressed_file_info in &discard_compressed_file_list {
+                    let result = transaction
+                        .execute(
+                            &insert_statement,
+                            &[
+                                &discard_compressed_file_info.file_path,
+                                &discard_compressed_file_info.table_path,
+                                &discard_compressed_file_info.partition_desc,
+                                &discard_compressed_file_info.timestamp,
+                                &NaiveDate::parse_from_str(&discard_compressed_file_info.t_date, "%Y-%m-%d").unwrap(),
+                            ],
+                        )
+                        .await;
+
+                    if let Some(e) = result.err() {
+                        eprintln!("transaction insert error, err = {:?}", e);
+                        return match transaction.rollback().await {
+                            Ok(()) => Ok(0i32),
+                            Err(e) => Err(LakeSoulMetaDataError::from(e)),
+                        };
+                    };
+                }
+                match transaction.commit().await {
+                    Ok(()) => Ok(discard_compressed_file_list.len() as u64),
+                    Err(e) => Err(e),
+                }
+            };
+            match result {
+                Ok(count) => Ok(count),
+                Err(e) => return Err(LakeSoulMetaDataError::from(e)),
+            }
+        }
         _ => {
             eprintln!("InvalidInput of type={:?}: {:?}", insert_type, wrapper);
             return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
@@ -1118,9 +1275,15 @@ pub async fn execute_update(client: &mut PooledClient, update_type: i32, joined_
         | DaoType::DeleteTableNameIdByTableId
         | DaoType::DeleteTablePathIdByTableId
         | DaoType::DeleteTablePathIdByTablePath
+        | DaoType::DeleteDiscardCompressedFileInfoByFilePath
             if params.len() == 1 =>
         {
             client.execute(&statement, &[&params[0]]).await
+        }
+        | DaoType::DeleteDiscardCompressedFileByFilterCondition
+            if params.len() == 3 =>
+        {
+            client.execute(&statement, &[&params[0], &params[1], &i64::from_str(&params[2])?]).await
         }
         DaoType::DeleteTableInfoByIdAndPath
         | DaoType::DeleteTableNameIdByTableNameAndNamespace
@@ -1296,7 +1459,8 @@ pub async fn clean_meta_for_test(client: &PooledClient) -> Result<i32> {
             delete from table_info;
             delete from table_path_id;
             delete from table_name_id;
-            delete from partition_info;",
+            delete from partition_info;
+            delete from discard_compressed_file_info",
         )
         .await;
     match result {
