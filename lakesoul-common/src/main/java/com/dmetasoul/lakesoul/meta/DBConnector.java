@@ -16,6 +16,7 @@ import java.sql.Statement;
 public class DBConnector {
     private final HikariConfig config = new HikariConfig();
     private HikariDataSource ds;
+    private HikariDataSource standByDS;
 
     private static DBConnector instance = null;
 
@@ -28,6 +29,11 @@ public class DBConnector {
             config.setPassword(dataBaseProperty.getPassword());
             DBUtil.fillDataSourceConfig(config);
             ds = new HikariDataSource( config );
+            if (!dataBaseProperty.getStandByUrl().equals(dataBaseProperty.getUrl())) {
+                // specified standby url, create an extra ds
+                config.setJdbcUrl(dataBaseProperty.getStandByUrl());
+                standByDS = new HikariDataSource( config );
+            }
         } catch (Throwable t) {
             System.err.println("Failed to connect to PostgreSQL Server with configs: " +
                     "driver=" + dataBaseProperty.getDriver() +
@@ -58,9 +64,24 @@ public class DBConnector {
         return instance.ds.getConnection();
     }
 
+    public static synchronized Connection getStandByConn() throws SQLException {
+        if (instance == null) {
+            instance = new DBConnector();
+            instance.createDataSource();
+        }
+        if (instance.standByDS == null) {
+            return instance.ds.getConnection();
+        } else {
+            return instance.standByDS.getConnection();
+        }
+    }
+
     public static synchronized void closeAllConnections()  {
         if (instance != null) {
             instance.ds.close();
+            if (instance.standByDS != null) {
+                instance.standByDS.close();
+            }
             instance = null;
         }
     }
@@ -71,11 +92,11 @@ public class DBConnector {
 
     public static void closeConn(Connection conn) {
         if (conn != null) {
-           try {
-               conn.close();
-           } catch (SQLException e) {
-               e.printStackTrace();
-           }
+            try {
+                conn.close();
+            } catch (SQLException e) {
+                e.printStackTrace();
+            }
         }
     }
 

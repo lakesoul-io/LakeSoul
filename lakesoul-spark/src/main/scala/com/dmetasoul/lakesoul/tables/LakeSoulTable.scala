@@ -5,7 +5,6 @@
 package com.dmetasoul.lakesoul.tables
 
 import com.alibaba.fastjson.JSON
-import com.dmetasoul.lakesoul.lakesoul.io.NativeIOWriter
 import com.dmetasoul.lakesoul.meta.DBConfig.{LAKESOUL_HASH_PARTITION_SPLITTER, LAKESOUL_RANGE_PARTITION_SPLITTER, TableInfoProperty}
 import com.dmetasoul.lakesoul.meta.entity.{CommitOp, DataCommitInfo, DataFileOp, DiscardCompressedFileInfo, FileOp, Uuid}
 import com.dmetasoul.lakesoul.meta.{CommitType, DBUtil, DataFileInfo, DataOperation, MetaCommit, MetaUtils, PartitionInfoScala, SparkMetaVersion}
@@ -497,7 +496,6 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
     def commitMetadata(dataFileInfo: Seq[DataFileInfo], rangePartition: String, tableInfo: TableInfo, readPartitionInfo: PartitionInfoScala): Unit = {
       val add_file_arr_buf = List.newBuilder[DataCommitInfo]
       val addUUID = UUID.randomUUID()
-      val timestampVale = System.currentTimeMillis()
       val timestampFormatter =
         TimestampFormatter("yyy-MM-dd", java.util.TimeZone.getDefault)
       val discardFileInfo = dataFileInfo.filter(file => file.range_partitions.equals(CompactBucketIO.DISCARD_FILE_LIST_KEY))

@@ -222,6 +222,27 @@ public class DiscardCompressedFileDao {
         }
     }
 
+    public void deleteByTablePath(String tablePath) {
+        if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
+            Integer count = NativeMetadataJavaClient.update(
+                    NativeUtils.CodedDaoType.DeleteDiscardCompressedFileInfoByTablePath,
+                    Collections.singletonList(tablePath));
+            return;
+        }
+        Connection conn = null;
+        PreparedStatement pstmt = null;
+        String sql = String.format("delete from discard_compressed_file_info where table_path = '%s' ", tablePath);
+        try {
+            conn = DBConnector.getConn();
+            pstmt = conn.prepareStatement(sql);
+            pstmt.execute();
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        } finally {
+            DBConnector.closeConn(pstmt, conn);
+        }
+    }
+
     public void deleteDiscardCompressedFileByFilterCondition(String tablePath, String partition, long timestamp) {
         if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
             Integer count = NativeMetadataJavaClient.update(
