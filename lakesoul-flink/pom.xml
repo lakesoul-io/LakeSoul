@@ -18,9 +18,9 @@ SPDX-License-Identifier: Apache-2.0
     <name>LakeSoul Flink</name>
 
     <artifactId>lakesoul-flink</artifactId>
-    <version>1.17-${revision}</version>
+    <version>1.20-${revision}</version>
     <properties>
-        <flink.version>1.17.1</flink.version>
+        <flink.version>1.20.0</flink.version>
         <log4j.version>2.17.2</log4j.version>
         <cdc.version>3.0.0</cdc.version>
     </properties>
@@ -92,7 +92,7 @@ SPDX-License-Identifier: Apache-2.0
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-connector-kafka</artifactId>
-            <version>${flink.version}</version>
+            <version>3.4.0-1.20</version>
             <scope>${local.scope}</scope>
         </dependency>
 
