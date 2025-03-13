@@ -890,8 +890,6 @@ class CompactionSuite extends QueryTest
         .save(tablePath)
 
       val lakeSoulTable = LakeSoulTable.forPath(tablePath)
-      println(s"save table, show")
-      lakeSoulTable.toDF.show(100000, false)
 
       for (i <- 1 to 100) {
         val appendDf = Seq(
@@ -901,19 +899,16 @@ class CompactionSuite extends QueryTest
         //          (i * 10, s"2023-02-0$i", i * 100, 1, "insert")
         //        ).toDF("id", "date", "value", "range", "op")
         lakeSoulTable.upsert(appendDf)
-        println(s"upsert time: $i, show")
-        lakeSoulTable.toDF.show(100000, false)
       }
       assert(getFileList(tablePath).groupBy(_.file_bucket_id).keys.toSet.size == hashBucketNum)
       assert(getTableInfo(tablePath).bucket_num == hashBucketNum)
 
       lakeSoulTable.compaction(newBucketNum = Some(newHashBucketNum))
-      println(s"after compaction, show")
-      lakeSoulTable.toDF.show(100000, false)
 
       assert(getFileList(tablePath).groupBy(_.file_bucket_id).keys.toSet.size == newHashBucketNum)
       assert(getTableInfo(tablePath).bucket_num == newHashBucketNum)
 
+      LakeSoulTable.uncached(tablePath)
       val compactedData = lakeSoulTable.toDF.orderBy("id", "date").collect()
       println(compactedData.mkString("Array(", ", ", ")"))
       assert(compactedData.length == 105, s"The compressed data should have ${105} rows, but it actually has ${compactedData.length} rows")
