@@ -4,7 +4,6 @@
 
 package org.apache.spark.sql.lakesoul.test
 
-import com.dmetasoul.lakesoul.meta.DBManager
 import com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.SparkConf
@@ -53,7 +52,6 @@ trait LakeSoulTestUtils extends Logging {
       Utils.deleteRecursively(dir)
       try {
         LakeSoulTable.forPath(dir.getCanonicalPath).dropTable()
-        new DBManager().cleanMetaDiscardCompressedFile()
       } catch {
         case e: Exception =>
       }

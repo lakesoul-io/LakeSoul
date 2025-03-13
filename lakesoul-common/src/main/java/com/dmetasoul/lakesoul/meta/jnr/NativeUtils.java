@@ -109,7 +109,8 @@ public class NativeUtils {
         DeleteDataCommitInfoByTableId(DAO_TYPE_UPDATE_OFFSET + 15, 1),
 
         DeleteDiscardCompressedFileInfoByFilePath(DAO_TYPE_UPDATE_OFFSET + 16, 1),
-        DeleteDiscardCompressedFileByFilterCondition(DAO_TYPE_UPDATE_OFFSET + 17, 3)
+        DeleteDiscardCompressedFileByFilterCondition(DAO_TYPE_UPDATE_OFFSET + 17, 3),
+        DeleteDiscardCompressedFileInfoByTablePath(DAO_TYPE_UPDATE_OFFSET + 18, 1)
         ;
 
         private final int code;

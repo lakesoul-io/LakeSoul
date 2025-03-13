@@ -53,7 +53,7 @@ object CleanOldCompaction {
          |        AND table_id= '$tableId'
          |    ORDER BY
          |        table_id,
-         |        timestamp DESC
+         |        version DESC
          |)
          |SELECT file_op.path AS path
          |FROM (
