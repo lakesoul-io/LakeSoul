@@ -37,17 +37,15 @@ public class DBUtil {
 
     private static final String driverNameKey = "lakesoul.pg.driver";
     public static final String urlKey = "lakesoul.pg.url";
-    public static final String standByUrlKey = "lakesoul.pg.standby.url";
     public static final String usernameKey = "lakesoul.pg.username";
     public static final String passwordKey = "lakesoul.pg.password";
+    public static final String domainKey = "lakesoul.current.domain";
 
     private static final String driverNameEnv = "LAKESOUL_PG_DRIVER";
     private static final String urlEnv = "LAKESOUL_PG_URL";
-    private static final String standByUrlEnv = "LAKESOUL_PG_STANDBY_URL";
     private static final String usernameEnv = "LAKESOUL_PG_USERNAME";
     private static final String passwordEnv = "LAKESOUL_PG_PASSWORD";
     private static final String domainENV = "LAKESOUL_CURRENT_DOMAIN";
-    public static final String domainKey = "lakesoul.current.domain";
 
     private static final String lakeSoulHomeEnv = "LAKESOUL_HOME";
 
@@ -94,14 +92,12 @@ public class DBUtil {
         } else {
             properties.setProperty(driverNameKey, getConfigValue(driverNameEnv, driverNameKey, driverNameDefault));
             properties.setProperty(urlKey, getConfigValue(urlEnv, urlKey, urlDefault));
-            properties.setProperty(standByUrlKey, getConfigValue(standByUrlEnv, standByUrlKey, urlDefault));
             properties.setProperty(usernameKey, getConfigValue(usernameEnv, usernameKey, usernameDefault));
             properties.setProperty(passwordKey, getConfigValue(passwordEnv, passwordKey, passwordDefault));
         }
         DataBaseProperty dataBaseProperty = new DataBaseProperty();
         dataBaseProperty.setDriver(properties.getProperty(driverNameKey, driverNameDefault));
         dataBaseProperty.setUrl(properties.getProperty(urlKey, urlDefault));
-        dataBaseProperty.setStandByUrl(properties.getProperty(standByUrlKey, urlDefault));
         dataBaseProperty.setUsername(properties.getProperty(usernameKey, usernameDefault));
         dataBaseProperty.setPassword(properties.getProperty(passwordKey, passwordDefault));
         try {

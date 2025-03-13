@@ -80,7 +80,7 @@ object CleanUtils {
   }
 
   def sqlToDataframe(sql: String, spark: SparkSession): DataFrame = {
-    tryWithResource(DBConnector.getStandByConn) { conn =>
+    tryWithResource(DBConnector.getConn) { conn =>
       tryWithResource(conn.prepareStatement(sql)) { stmt =>
         val resultSet = stmt.executeQuery()
         createResultSetToDF(resultSet, spark)

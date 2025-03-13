@@ -9,7 +9,6 @@ import java.io.Serializable;
 public class DataBaseProperty implements Serializable {
     private String driver;
     private String url;
-    private String standByUrl;
     private String username;
     private String password;
     private String dbName;
@@ -31,14 +30,6 @@ public class DataBaseProperty implements Serializable {
 
     public void setUrl(String url) {
         this.url = url;
-    }
-
-    public String getStandByUrl() {
-        return standByUrl;
-    }
-
-    public void setStandByUrl(String standByUrl) {
-        this.standByUrl = standByUrl;
     }
 
     public String getUsername() {
