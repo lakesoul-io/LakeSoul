@@ -39,7 +39,7 @@ trait LakeSoulANNParams extends LSHNNSParams with ScalarRandomProjectionLSHNNSPa
 
 class LakeSoulANN(val spark: SparkSession, override val uid: String) extends LakeSoulANNParams {
 
-  def this() = this(spark, Identifiable.randomUID("lakesoul-ann"))
+  def this(spark: SparkSession) = this(spark, Identifiable.randomUID("lakesoul-ann"))
 
   def setNumFeatures(value: Int): this.type = super.set(numFeatures, value)
 

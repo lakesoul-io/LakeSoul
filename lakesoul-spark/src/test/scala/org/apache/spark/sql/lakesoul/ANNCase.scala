@@ -19,7 +19,7 @@ import org.junit.runner.RunWith
 import org.scalatest._
 import org.scalatestplus.junit.JUnitRunner
 import org.apache.spark.ml.feature.BucketedRandomProjectionLSH
-import org.apache.spark.sql.functions.{collect_list, sum, udf}
+import org.apache.spark.sql.functions.{collect_list, sum, udf, col, lit}
 import org.apache.spark.sql.types.{ArrayType, ByteType, FloatType, IntegerType, LongType, MetadataBuilder, StructField, StructType}
 
 import scala.math.{pow, sqrt}
@@ -31,7 +31,7 @@ class ANNCase extends QueryTest
   with LakeSoulTestUtils with LakeSoulSQLCommandTest {
 
   val testDatasetSize = 10000
-  val numQuery = 10
+  val numQuery = 50
   val topK = 100
   val sampleIndices = scala.util.Random.shuffle((0 until testDatasetSize).toList).take(numQuery)
 
@@ -454,7 +454,7 @@ class ANNCase extends QueryTest
     println(s"Average recall@$topK = $avgRecall")
   }
 
-  test("test LakeSoul ANN on MNIST") {
+  test("test LakeSoul training data by BucketedRandomProjectionLSH on MNIST") {
     withTempDir { dir =>
 
       val hdfFile = new HdfFile(Paths.get("/Users/ceng/Downloads/fashion-mnist-784-euclidean.hdf5"))
@@ -489,33 +489,157 @@ class ANNCase extends QueryTest
         }
       )
 
-
       val candidateRDD = spark.sparkContext.parallelize(
         trainVectors.zipWithIndex.map { case (vec, idx) =>
           (idx.toLong, org.apache.spark.ml.linalg.Vectors.dense(vec.map(_.toDouble)))
         }
       )
 
+      val scanDf = LakeSoulTable.forPath(dir.getCanonicalPath).toDF
+
+      // Create a UDF to convert array to vector
+      val arrayToVector = udf { array: Seq[Float] =>
+        org.apache.spark.ml.linalg.Vectors.dense(array.map(_.toDouble).toArray)
+      }
+
+      // Convert the features column from array to vector
+      val scanDfWithVectors = scanDf.withColumn("features", arrayToVector(col("features")))
+
+      // Create BRP LSH model
+      val brp = new BucketedRandomProjectionLSH()
+        .setInputCol("features")
+        .setOutputCol("hashes")
+        .setBucketLength(784)
+        .setNumHashTables(10)
+
+      // Transform candidate data with LSH
+      val model = brp.fit(scanDfWithVectors)
+      val transformedCandidates = model.transform(scanDfWithVectors)
+      transformedCandidates.persist()
+
+      // Create a DataFrame with all sampled test vectors at once
+      val predictedNeighbors = spark.time({
+        val sampledTestDF = spark.createDataFrame(
+          spark.sparkContext.parallelize(
+            sampleIndices.map { idx =>
+              (idx.toLong, org.apache.spark.ml.linalg.Vectors.dense(testVectors(idx).map(_.toDouble)))
+            }
+          )
+        ).toDF("indexIdTest", "features")
+
+        // Transform the sampled test data with LSH for batch processing
+        val transformedTestVectors = model.transform(sampledTestDF)
+
+        // Use approxSimilarityJoin to find nearest neighbors for all test vectors at once
+        val allResultsDF = model.approxSimilarityJoin(
+          transformedTestVectors,
+          transformedCandidates,
+          5000.0 // Using a large threshold to ensure we get enough candidates
+        )
+          .select(
+            col("datasetA.indexIdTest").as("indexIdTest"),
+            col("datasetB.id").as("indexIdTrain"),
+            col("distCol").as("distance")
+          )
+
+        // Import Window functions for ranking
+        import org.apache.spark.sql.expressions.Window
+        val windowSpec = Window.partitionBy("indexIdTest").orderBy("distance")
+
+        // Apply ranking and filter to get top-K for each test vector
+        val topKNeighborsDF = allResultsDF
+          .withColumn("rank", org.apache.spark.sql.functions.row_number().over(windowSpec))
+          .filter(col("rank") <= topK)
+          .drop("rank")
+
+        // Collect the final results
+        topKNeighborsDF.collect()
+
+      })
+
+      // Calculate and print recall
+      val avgRecall = calculateRecall(sampleIndices, trueNeighbors, predictedNeighbors, topK, numQuery)
+      println(s"BRP LSH Average recall@$topK = $avgRecall")
+
+    }
+  }
+
+  test("test LakeSoul training data by LinkedIn LSH on MNIST") {
+    withTempDir { dir =>
+
+      val hdfFile = new HdfFile(Paths.get("/Users/ceng/Downloads/fashion-mnist-784-euclidean.hdf5"))
+
+      val trainDataset = hdfFile.getDatasetByPath("train")
+      val testDataset = hdfFile.getDatasetByPath("test")
+      val neighborDataset = hdfFile.getDatasetByPath("neighbors")
+      val trainData = trainDataset.getData()
+      val testData = testDataset.getData()
+      val neighborData = neighborDataset.getData()
+
+      // 将数据转换为向量格式
+      val trainVectors = trainData.asInstanceOf[Array[Array[Float]]]
+      val testVectors = testData.asInstanceOf[Array[Array[Float]]]
+      val trueNeighbors = neighborData.asInstanceOf[Array[Array[Int]]]
+
+      // Write train data to LakeSoul
+      val trainDf = spark.createDataFrame(
+        spark.sparkContext.parallelize(trainVectors.zipWithIndex.map { case (vec, idx) =>
+          (idx.toLong, vec)
+        })
+      ).toDF("id", "features")
+
+      trainDf.write.format("lakesoul")
+        .option("hashPartitions", "id")
+        .option("hashBucketNum", 4)
+        .option(LakeSoulOptions.SHORT_TABLE_NAME, "trainData")
+        .mode("Overwrite")
+        .save(dir.getCanonicalPath)
+
+      // Read data back from LakeSoul
+      val scanDf = LakeSoulTable.forPath(dir.getCanonicalPath).toDF
+
+      // Create a UDF to convert array to vector
+      val arrayToVector = udf { array: Seq[Float] =>
+        org.apache.spark.ml.linalg.Vectors.dense(array.map(_.toDouble).toArray)
+      }
+
+      // Convert the features column from array to vector
+      val scanDfWithVectors = scanDf.withColumn("features", arrayToVector(col("features")))
+
+      // Prepare candidate RDD from LakeSoul data
+      val candidateRDD = scanDfWithVectors.rdd.map { row =>
+        (row.getAs[Long]("id"), row.getAs[org.apache.spark.ml.linalg.Vector]("features"))
+      }
+
+      // Prepare test data
+      val sampledTestRDD = spark.sparkContext.parallelize(
+        sampleIndices.map { case idx =>
+          (idx.toLong, org.apache.spark.ml.linalg.Vectors.dense(testVectors(idx).map(_.toDouble)))
+        }
+      )
 
       val numFeatures = trainVectors(0).length
 
-      val ann = new org.apache.spark.ml.lakesoul.feature.LakeSoulANN(spark)
-        .setSourceTable("trainData")
-        .setNumFeatures(numFeatures)
+      // Create LinkedIn LSH model
+      val model = new L2ScalarRandomProjectionNNS()
+        .setNumHashes(512)
+        .setSignatureLength(16)
+        .setBucketWidth(trainVectors.length / 8)
+        .createModel(numFeatures)
 
-
+      // Run similarity search and time it
       val result: Array[(Long, Long, Double)] = spark.time(
-        ann.getAllNearestNeighbors(sampledTestRDD, topK).collect()
+        model.getAllNearestNeighbors(sampledTestRDD, candidateRDD, topK).collect()
       )
 
-      // 将结果转换为Row格式
+      // Convert the results to Row format for recall calculation
       val predictedNeighborsAsRows = result.map { case (queryId, neighborId, distance) =>
         Row(queryId, neighborId, distance)
       }
 
-      // 计算召回率
+      // Calculate and print recall
       val avgRecall = calculateRecall(sampleIndices, trueNeighbors, predictedNeighborsAsRows, topK, numQuery)
-      println(s"Average recall@$topK = $avgRecall")
+      println(s"LinkedIn LSH with LakeSoul Storage Average recall@$topK = $avgRecall")
     }
   }
 }
