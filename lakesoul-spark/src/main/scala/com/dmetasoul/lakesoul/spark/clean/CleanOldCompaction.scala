@@ -32,14 +32,7 @@ object CleanOldCompaction {
         cleanSinglePartitionCompactionDataInDisk(table_id, partition_desc, spark)
       })
     } else {
-      println("--111---")
-      println(tablePath)
-      println(partitionDesc)
-      partitionRows.foreach(row => println(row))
-      println("--222---")
-      if (partitionRows.size > 0) {
-        cleanSinglePartitionCompactionDataInDisk(partitionRows.head.get(0).toString, partitionDesc, spark)
-      }
+      cleanSinglePartitionCompactionDataInDisk(partitionRows.head.get(0).toString, partitionDesc, spark)
     }
   }
 
