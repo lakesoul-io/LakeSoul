@@ -32,7 +32,6 @@ import scala.collection.JavaConverters;
 
 import java.io.IOException;
 import java.io.Serializable;
-import java.net.URI;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -91,7 +90,7 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
             this.partitionSchema = new Schema(partitionFields);
         }
         this.nativeIOOptions = NativeIOUtils.getNativeIOOptions(conf, new Path(this.fileInfo.get(0).getFilePath()));
-        this.fileSystem = FileSystem.get(URI.create(this.fileInfo.get(0).getFilePath()), conf);
+        this.fileSystem = FileSystem.get(conf);
 
         this.maxRowGroupRows = conf.getInt(LakeSoulSQLConf.NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE().key(),
                 (int) LakeSoulSQLConf.NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE().defaultValue().get());
