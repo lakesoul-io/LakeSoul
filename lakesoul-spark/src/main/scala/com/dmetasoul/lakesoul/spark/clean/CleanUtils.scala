@@ -174,12 +174,7 @@ object CleanUtils {
   }
 
   def executeMetaSql(sql: String): Unit = {
-    val conn = if (sql.toLowerCase().startsWith("select"))
-      DBConnector.getConn
-    else
-      DBConnector.getConn
-    tryWithResource(conn)
-    { conn =>
+    tryWithResource(DBConnector.getConn) { conn =>
       tryWithResource(conn.prepareStatement(sql)) { stmt =>
         stmt.execute()
       }
