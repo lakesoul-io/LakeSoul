@@ -6,6 +6,9 @@ package org.apache.spark.sql.lakesoul
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.ml.lakesoul.scanns.algorithm.L2ScalarRandomProjectionNNS
+import org.apache.spark.ml.lakesoul.scanns.algorithm.LakeSoulRandomProjectionNNS
+import org.apache.spark.ml.lakesoul.scanns.model.LakeSoulRandomProjectionModel
+import org.apache.spark.ml.lakesoul.scanns.model.LakeSoulLSHNearestNeighborSearchModel
 //import org.apache.spark.ml.lakesoul.scanns.algorithm.L2ScalarRandomProjectionNNS
 import io.jhdf.HdfFile
 import org.apache.spark.sql._
@@ -31,7 +34,7 @@ class ANNCase extends QueryTest
   with LakeSoulTestUtils with LakeSoulSQLCommandTest {
 
   val testDatasetSize = 10000
-  val numQuery = 50
+  val numQuery = 10
   val topK = 100
   val sampleIndices = scala.util.Random.shuffle((0 until testDatasetSize).toList).take(numQuery)
 
@@ -640,6 +643,84 @@ class ANNCase extends QueryTest
       // Calculate and print recall
       val avgRecall = calculateRecall(sampleIndices, trueNeighbors, predictedNeighborsAsRows, topK, numQuery)
       println(s"LinkedIn LSH with LakeSoul Storage Average recall@$topK = $avgRecall")
+    }
+  }
+
+  test("test LakeSoul training data by LakeSoul LSH on MNIST") {
+    withTempDir { dir =>
+      val hdfFile = new HdfFile(Paths.get("/Users/ceng/Downloads/fashion-mnist-784-euclidean.hdf5"))
+
+      val trainDataset = hdfFile.getDatasetByPath("train")
+      val testDataset = hdfFile.getDatasetByPath("test")
+      val neighborDataset = hdfFile.getDatasetByPath("neighbors")
+      val trainData = trainDataset.getData()
+      val testData = testDataset.getData()
+      val neighborData = neighborDataset.getData()
+
+      // 将数据转换为向量格式
+      val trainVectors = trainData.asInstanceOf[Array[Array[Float]]]
+      val testVectors = testData.asInstanceOf[Array[Array[Float]]]
+      val trueNeighbors = neighborData.asInstanceOf[Array[Array[Int]]]
+
+      // Write train data to LakeSoul
+      val trainDf = spark.createDataFrame(
+        spark.sparkContext.parallelize(trainVectors.zipWithIndex.map { case (vec, idx) =>
+          (idx.toLong, vec)
+        })
+      ).toDF("id", "features")
+
+      trainDf.write.format("lakesoul")
+        .option("hashPartitions", "id")
+        .option("hashBucketNum", 4)
+        .option(LakeSoulOptions.SHORT_TABLE_NAME, "trainData")
+        .mode("Overwrite")
+        .save(dir.getCanonicalPath)
+
+      // Read data back from LakeSoul
+      val scanDf = LakeSoulTable.forPath(dir.getCanonicalPath).toDF
+
+      // Create a UDF to convert array to vector
+      val arrayToVector = udf { array: Seq[Float] =>
+        org.apache.spark.ml.linalg.Vectors.dense(array.map(_.toDouble).toArray)
+      }
+
+      // Convert the features column from array to vector
+      val scanDfWithVectors = scanDf.withColumn("features", arrayToVector(col("features")))
+
+      // Prepare candidate RDD from LakeSoul data
+      val candidateRDD = scanDfWithVectors.rdd.map { row => 
+        (row.getAs[Long]("id"), row.getAs[org.apache.spark.ml.linalg.Vector]("features"))
+      }
+
+      // Prepare test data
+      val sampledTestRDD = spark.sparkContext.parallelize(
+        sampleIndices.map { case idx =>
+          (idx.toLong, org.apache.spark.ml.linalg.Vectors.dense(testVectors(idx).map(_.toDouble)))
+        }
+      )
+
+      val numFeatures = trainVectors(0).length
+
+      // Create LakeSoulRandomProjectionNNS model
+      val model = new LakeSoulRandomProjectionNNS()
+        .setNumHashes(512)
+        .setSignatureLength(16)
+        .setBucketWidth(trainVectors.length / 8)
+        .createModel(numFeatures)
+
+      // Run similarity search and time it
+      val result: Array[(Long, Long, Double)] = spark.time(
+        model.getAllNearestNeighbors(sampledTestRDD, candidateRDD, topK).collect()
+      )
+
+      // Convert the results to Row format for recall calculation
+      val predictedNeighborsAsRows = result.map { case (queryId, neighborId, distance) =>
+        Row(queryId, neighborId, distance)
+      }
+
+      // Calculate and print recall
+      val avgRecall = calculateRecall(sampleIndices, trueNeighbors, predictedNeighborsAsRows, topK, numQuery)
+      println(s"LakeSoul LSH with LakeSoul Storage Average recall@$topK = $avgRecall")
     }
   }
 }
