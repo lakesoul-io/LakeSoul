@@ -18,6 +18,7 @@ import org.apache.spark.sql.lakesoul.{BatchDataSoulFileIndexV2, PartitionFilter,
 import org.apache.spark.sql.sources.BaseRelation
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
+import org.jetbrains.annotations.TestOnly
 
 import scala.collection.JavaConverters._
 
@@ -29,13 +30,18 @@ object SparkUtil {
       PartitionFilterInfo(
         part.range_value,
         MetaUtils.getPartitionMapFromKey(part.range_value),
-        part.version))
+        part.version,
+        part.table_id,
+        part.read_files.map(_.toString),
+        part.expression,
+        part.commit_op))
 
     val spark = SparkSession.active
     import spark.implicits._
     spark.sparkContext.parallelize(allPartition).toDF.persist()
   }
 
+  @TestOnly
   def allDataInfo(snapshot: Snapshot): Array[DataFileInfo] = {
     val spark = SparkSession.active
     import spark.implicits._

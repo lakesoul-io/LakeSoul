@@ -115,6 +115,7 @@ object SparkMetaVersion {
 
   def getSinglePartitionInfo(table_id: String, range_value: String, range_id: String): PartitionInfoScala = {
     val info = dbManager.getSinglePartitionInfo(table_id, range_value)
+    if (info == null) return null
     PartitionInfoScala(
       table_id = info.getTableId,
       range_value = range_value,

@@ -149,8 +149,10 @@ object DataOperation {
   private def getSinglePartitionDataInfo(table_id: String, partition_desc: String,
                                          version: Int): ArrayBuffer[DataFileInfo] = {
     val file_arr_buf = new ArrayBuffer[DataFileInfo]()
-    val dataCommitInfoList = dbManager.getPartitionSnapshot(table_id, partition_desc, version).asScala.toArray
-    fillFiles(file_arr_buf, dataCommitInfoList)
+    val snapshotInfo = dbManager.getPartitionSnapshot(table_id, partition_desc, version)
+    val dataCommitInfoList = snapshotInfo.getKey
+    val partitionInfo = snapshotInfo.getValue
+    fillFiles(file_arr_buf, dataCommitInfoList.asScala.toArray)
   }
 
   def getIncrementalPartitionDataInfo(table_id: String, partition_desc: String, startTimestamp: Long,

@@ -115,10 +115,6 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
       hasNoDeltaFile = fileInfo.forall(f => f._2.size <= 1)
     }
     val writableOptions = mutable.Map.empty[String, String] ++ options.asScala
-    if (fileIndex.snapshotManagement.snapshot.getPartitionInfoArray.forall(p => p.commit_op.equals("CompactionCommit"))) {
-      log.info(s"set NATIVE_IO_IS_COMPACTED with ${fileIndex.snapshotManagement.snapshot.getPartitionInfoArray.mkString("Array(", ", ", ")")}")
-      writableOptions.put(NATIVE_IO_IS_COMPACTED.key, "true")
-    }
     val updatedOptions = new CaseInsensitiveStringMap(writableOptions.asJava)
     if (fileInfo.isEmpty) {
       EmptyParquetScan(sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),

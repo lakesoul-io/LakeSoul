@@ -4,14 +4,39 @@
 
 package org.apache.spark.sql.lakesoul
 
-import com.dmetasoul.lakesoul.meta.{DataFileInfo, DataOperation, MetaUtils}
+import com.dmetasoul.lakesoul.meta.{DBConfig, DataFileInfo, DataOperation, MetaUtils, PartitionInfoScala, SparkMetaVersion}
 import org.apache.spark.sql.catalyst.analysis.{Resolver, UnresolvedAttribute}
-import org.apache.spark.sql.catalyst.expressions.{And, Attribute, Cast, Expression, Literal}
-import org.apache.spark.sql.lakesoul.utils.{PartitionFilterInfo, SparkUtil}
+import org.apache.spark.sql.catalyst.expressions.{And, Attribute, Cast, Equality, Expression, Literal, NamedExpression}
+import org.apache.spark.sql.lakesoul.utils.{PartitionFilterInfo, SparkUtil, TableInfo}
 import org.apache.spark.sql.types.{StructField, StructType}
 import org.apache.spark.sql.{Column, DataFrame, Dataset, SparkSession}
 
+import java.util.UUID
+
 object PartitionFilter {
+
+  def filterFromAllPartitionInfo(snapshot: Snapshot, table_info: TableInfo, filters: Seq[Expression]): Seq[PartitionFilterInfo] = {
+    val spark = SparkSession.active
+    val allPartitions = SparkUtil.allPartitionFilterInfoDF(snapshot)
+
+    import spark.implicits._
+
+    val filteredParts = filterFileList(
+      table_info.range_partition_schema,
+      allPartitions,
+      filters).as[PartitionFilterInfo].collect()
+    filteredParts.foreach(p => {
+      snapshot.recordPartitionInfoRead(PartitionInfoScala(
+        p.table_id,
+        p.range_value,
+        p.read_version,
+        p.read_files.map(UUID.fromString),
+        p.expression,
+        p.commit_op
+      ))
+    })
+    filteredParts
+  }
 
   def partitionsForScan(snapshot: Snapshot, filters: Seq[Expression]): Seq[PartitionFilterInfo] = {
     val table_info = snapshot.getTableInfo
@@ -20,25 +45,64 @@ object PartitionFilter {
     val partitionFilters = filters.flatMap { filter =>
       LakeSoulUtils.splitMetadataAndDataPredicates(filter, table_info.range_partition_columns, spark)._1
     }
-    val allPartitions = SparkUtil.allPartitionFilterInfoDF(snapshot)
-
-    import spark.implicits._
-
-    filterFileList(
-      table_info.range_partition_schema,
-      allPartitions,
-      partitionFilters).as[PartitionFilterInfo].collect()
+    if (partitionFilters.isEmpty) {
+      filterFromAllPartitionInfo(snapshot, table_info, partitionFilters)
+    } else {
+      val equalExprs = partitionFilters.collect {
+        case Equality(UnresolvedAttribute(nameParts), lit@Literal(_, _)) =>
+          val colName = nameParts.last
+          val colValue = lit.toString()
+          colName -> colValue
+        case Equality(NamedExpression(n), lit@Literal(_, _)) =>
+          val colName = n._1
+          val colValue = lit.toString()
+          colName -> colValue
+      }.toMap
+      if (table_info.range_partition_columns.nonEmpty && table_info.range_partition_columns.forall(p => {
+        equalExprs.contains(p)
+      })) {
+        // optimize for all partition equality filter
+        val partDesc = table_info.range_partition_columns.map(p => {
+          val colValue = equalExprs(p)
+          s"$p=$colValue"
+        }).mkString(DBConfig.LAKESOUL_RANGE_PARTITION_SPLITTER)
+        val partInfo = SparkMetaVersion.getSinglePartitionInfo(table_info.table_id, partDesc, "")
+        if (partInfo == null) return Seq.empty
+        snapshot.recordPartitionInfoRead(partInfo)
+        Seq(PartitionFilterInfo(
+          partDesc,
+          equalExprs,
+          partInfo.version,
+          table_info.table_id,
+          partInfo.read_files.map(u => u.toString),
+          partInfo.expression,
+          partInfo.commit_op
+        ))
+      } else {
+        // non-equality filter, we still need to get all partitions from meta
+        filterFromAllPartitionInfo(snapshot, table_info, partitionFilters)
+      }
+    }
   }
 
 
   def filesForScan(snapshot: Snapshot,
                    filters: Seq[Expression]): Array[DataFileInfo] = {
-    val partitionArray = snapshot.getPartitionInfoArray
     if (filters.length < 1) {
+      val partitionArray = snapshot.getPartitionInfoArray
       DataOperation.getTableDataInfo(partitionArray)
     } else {
-      val partitionRangeValues = partitionsForScan(snapshot, filters).map(_.range_value).toSet
-      val partitionInfo = partitionArray.filter(p => partitionRangeValues.contains(p.range_value))
+      val partitionFiltered = partitionsForScan(snapshot, filters)
+      val partitionInfo = partitionFiltered.map(p => {
+        PartitionInfoScala(
+          p.table_id,
+          p.range_value,
+          p.read_version,
+          p.read_files.map(UUID.fromString),
+          p.expression,
+          p.commit_op
+        )
+      }).toArray
       DataOperation.getTableDataInfo(partitionInfo)
     }
   }
@@ -52,7 +116,8 @@ object PartitionFilter {
       files.map(f => PartitionFilterInfo(
         f.range_partitions,
         MetaUtils.getPartitionMapFromKey(f.range_partitions),
-        0
+        0,
+        ""
       )).toDF,
       partitionFilters).as[PartitionFilterInfo].collect()
     files.filter(f => partitionsMatched.exists(p => p.range_value == f.range_partitions))

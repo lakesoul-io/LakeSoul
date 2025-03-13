@@ -373,7 +373,11 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
         val partitionFilterInfo = partitionInfoArr.map(p => PartitionFilterInfo(
           p.range_value,
           MetaUtils.getPartitionMapFromKey(p.range_value),
-          0
+          0,
+          p.table_id,
+          p.read_files.map(_.toString),
+          p.expression,
+          p.commit_op
         ))
         val partitionFilterDF = spark.createDataFrame(partitionFilterInfo)
 
@@ -401,7 +405,7 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
           val bucketToFiles = if (tableInfo.hash_partition_columns.isEmpty) {
             Seq(files)
           } else {
-            files.groupBy(_.file_bucket_id).map(_._2).toSeq
+            files.groupBy(_.file_bucket_id).values.toSeq
           }
           val fileRDD = spark.sparkContext.parallelize(bucketToFiles)
           val configuration = new SerializableWritable(spark.sessionState.newHadoopConf())
@@ -423,11 +427,13 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
                 tableInfo.bucket_num != tableHashBucketNum
               )
               val partitionDescAndFilesMap = radAndWriteIO.startCompactTask().asScala
-              partitionDescAndFilesMap.map(result => {
+              partitionDescAndFilesMap.flatMap(result => {
                 val (partitionDesc, flushResult) = result
-                val array = flushResult.asScala.map(f => DataFileInfo(partitionDesc, f.getFilePath, "add", f.getFileSize, f.getTimestamp, f.getFileExistCols))
+                val array = flushResult.asScala.map(
+                  f => DataFileInfo(partitionDesc, f.getFilePath, "add", f.getFileSize, f.getTimestamp,
+                    f.getFileExistCols))
                 array
-              }).flatMap(f => f).toSeq
+              }).toSeq
             }
           }
           val dataFileInfoSeq = compactResult.flatMap(ff => ff).collect().toSeq
@@ -447,7 +453,7 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
           val bucketToFiles = if (tableInfo.hash_partition_columns.isEmpty) {
             Seq(files)
           } else {
-            files.groupBy(_.file_bucket_id).map(_._2).toSeq
+            files.groupBy(_.file_bucket_id).values.toSeq
           }
           val fileRDD = spark.sparkContext.parallelize(bucketToFiles)
           val configuration = new SerializableWritable(spark.sessionState.newHadoopConf())
@@ -469,11 +475,13 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
                 tableInfo.bucket_num != tableHashBucketNum
               )
               val partitionDescAndFilesMap = radAndWriteIO.startCompactTask().asScala
-              partitionDescAndFilesMap.map(result => {
+              partitionDescAndFilesMap.flatMap(result => {
                 val (partitionDesc, flushResult) = result
-                val array = flushResult.asScala.map(f => DataFileInfo(partitionDesc, f.getFilePath, "add", f.getFileSize, f.getTimestamp, f.getFileExistCols))
+                val array = flushResult.asScala.map(
+                  f => DataFileInfo(partitionDesc, f.getFilePath, "add", f.getFileSize, f.getTimestamp,
+                    f.getFileExistCols))
                 array
-              }).flatMap(f => f).toSeq
+              }).toSeq
             }
           }
           val dataFileInfoSeq = compactResult.flatMap(ff => ff).collect().toSeq

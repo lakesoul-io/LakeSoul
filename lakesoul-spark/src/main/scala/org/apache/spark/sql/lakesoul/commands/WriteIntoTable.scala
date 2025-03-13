@@ -56,7 +56,7 @@ case class WriteIntoTable(snapshotManagement: SnapshotManagement,
   override def run(sparkSession: SparkSession): Seq[Row] = {
     snapshotManagement.withNewTransaction { tc =>
       val (addFiles, expireFiles) = write(tc, sparkSession)
-      tc.commit(addFiles, expireFiles, snapshotManagement.snapshot.getPartitionInfoArray)
+      tc.commit(addFiles, expireFiles, snapshotManagement.snapshot.readPartitionInfo.toArray)
     }
     Seq.empty
   }

@@ -229,24 +229,15 @@ async fn get_prepared_statement<'a>(
             from partition_info
             where table_id = $1::TEXT and partition_desc = $2::TEXT and version = $3::INT",
         DaoType::SelectOnePartitionVersionByTableIdAndDesc =>
-            "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.timestamp, m.expression, m.domain from (
-                select table_id,partition_desc,max(version) from partition_info
-                where table_id = $1::TEXT and partition_desc = $2::TEXT group by table_id, partition_desc) t
-                left join partition_info m on t.table_id = m.table_id
-                and t.partition_desc = m.partition_desc and t.max = m.version",
+            "select m.table_id, m.partition_desc, m.version, m.commit_op, m.snapshot, m.timestamp, m.expression, m.domain from
+            partition_info_max_version m where m.table_id = $1::TEXT and m.partition_desc = $2::TEXT",
         DaoType::ListPartitionByTableIdAndDesc =>
             "select table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain
-            from partition_info
+            from partition_info_max_version
             where table_id = $1::TEXT and partition_desc = $2::TEXT ",
         DaoType::ListPartitionByTableId =>
-            "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.timestamp, m.expression, m.domain
-            from (
-                select table_id,partition_desc,max(version)
-                from partition_info
-                where table_id = $1::TEXT
-                group by table_id,partition_desc) t
-            left join partition_info m
-            on t.table_id = m.table_id and t.partition_desc = m.partition_desc and t.max = m.version",
+            "select m.table_id, m.partition_desc, m.version, m.commit_op, m.snapshot, m.timestamp, m.expression, m.domain
+            from partition_info_max_version m where m.table_id = $1::TEXT",
         DaoType::ListPartitionVersionByTableIdAndPartitionDescAndTimestampRange =>
             "select table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain
             from partition_info
@@ -357,17 +348,17 @@ async fn get_prepared_statement<'a>(
 
         // Query Scalar
         DaoType::GetLatestTimestampFromPartitionInfo =>
-            "select max(timestamp) as timestamp
-            from partition_info
+            "select timestamp
+            from partition_info_max_version
             where table_id = $1::TEXT and partition_desc = $2::TEXT",
         DaoType::GetLatestTimestampFromPartitionInfoWithoutPartitionDesc =>
-            "select max(timestamp) as timestamp
-            from partition_info
+            "select timestamp
+            from partition_info_max_version
             where table_id = $1::TEXT",
         DaoType::GetLatestVersionUpToTimeFromPartitionInfo =>
             "select max(version) as version
             from partition_info
-            where table_id = $1::TEXT and partition_desc = $2::TEXT and timestamp < $3::BIGINT",
+            where table_id = $1::TEXT and partition_desc = $2::TEXT and timestamp <= $3::BIGINT",
         DaoType::GetLatestVersionTimestampUpToTimeFromPartitionInfo =>
             "select max(timestamp) as timestamp
             from partition_info
@@ -618,16 +609,7 @@ pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string
                     m.expression,
                     m.domain
                 from
-                    (
-                        select
-                            max(version)
-                        from
-                            partition_info
-                        where
-                            table_id = $1::text
-                            and partition_desc = $2::text
-                    ) t
-                    left join partition_info m on t.max = m.version
+                    partition_info_max_version m
                 where
                     m.table_id = $1::text
                     and m.partition_desc = $2::text;

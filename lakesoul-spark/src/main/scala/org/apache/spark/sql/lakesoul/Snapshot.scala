@@ -4,7 +4,7 @@
 
 package org.apache.spark.sql.lakesoul
 
-import com.dmetasoul.lakesoul.meta.PartitionInfoScala
+import com.dmetasoul.lakesoul.meta.{PartitionInfoScala, SparkMetaVersion}
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.execution.datasources.FileFormat
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
@@ -14,15 +14,17 @@ import org.apache.spark.sql.lakesoul.LakeSoulOptions.ReadType
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.lakesoul.utils._
 
+import scala.collection.mutable
+
 
 class Snapshot(table_info: TableInfo,
-               partition_info_arr: Array[PartitionInfoScala],
                is_first_commit: Boolean = false
               ) {
   private var partitionDesc: String = ""
   private var startPartitionTimestamp: Long = -1
   private var endPartitionTimestamp: Long = -1
   private var readType: String = ReadType.FULL_READ
+  var readPartitionInfo: mutable.HashSet[PartitionInfoScala] = mutable.HashSet.empty
 
   def setPartitionDescAndVersion(parDesc: String, startParVer: Long, endParVer: Long, readType: String): Unit = {
     this.partitionDesc = parDesc
@@ -54,7 +56,11 @@ class Snapshot(table_info: TableInfo,
 
   def isFirstCommit: Boolean = is_first_commit
 
-  def getPartitionInfoArray: Array[PartitionInfoScala] = partition_info_arr
+  lazy val getPartitionInfoArray: Array[PartitionInfoScala] = SparkMetaVersion.getAllPartitionInfo(table_info.table_id)
 
-  override def toString: String = table_info + partition_info_arr.mkString(",")
+  def recordPartitionInfoRead(p: PartitionInfoScala): Unit = {
+    readPartitionInfo.add(p)
+  }
+
+  override def toString: String = table_info.toString
 }

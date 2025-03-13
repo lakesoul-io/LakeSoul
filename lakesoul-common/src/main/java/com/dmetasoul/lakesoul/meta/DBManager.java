@@ -179,6 +179,15 @@ public class DBManager {
         return partitionInfoDao.findByKey(tableId, partitionDesc, version);
     }
 
+    public PartitionInfo getSinglePartitionInfoUptoTime(String tableId, String partitionDesc, long utcMillis) {
+        if (utcMillis == Long.MAX_VALUE) {
+            return getSinglePartitionInfo(tableId, partitionDesc);
+        } else {
+            int version = getLastedVersionUptoTime(tableId, partitionDesc, utcMillis);
+            return getSinglePartitionInfo(tableId, partitionDesc, version);
+        }
+    }
+
     public List<PartitionInfo> getAllPartitionInfo(String tableId) {
         return partitionInfoDao.getPartitionInfoByTableId(tableId);
     }
@@ -192,6 +201,9 @@ public class DBManager {
     }
 
     public int getLastedVersionUptoTime(String tableId, String partitionDesc, long utcMills) {
+        if (utcMills == Long.MAX_VALUE) {
+            return getSinglePartitionInfo(tableId, partitionDesc).getVersion();
+        }
         return partitionInfoDao.getLastedVersionUptoTime(tableId, partitionDesc, utcMills);
     }
 
@@ -803,10 +815,12 @@ public class DBManager {
         return dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, snapshotList);
     }
 
-    public List<DataCommitInfo> getPartitionSnapshot(String tableId, String partitionDesc, int version) {
+    public Map.Entry<List<DataCommitInfo>, PartitionInfo> getPartitionSnapshot(String tableId, String partitionDesc, int version) {
         PartitionInfo partitionInfo = partitionInfoDao.findByKey(tableId, partitionDesc, version);
         List<Uuid> commitList = partitionInfo.getSnapshotList();
-        return dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, commitList);
+        return new AbstractMap.SimpleEntry<>(
+                dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, commitList),
+                partitionInfo);
     }
 
     public List<PartitionInfo> getIncrementalPartitions(String tableId, String partitionDesc, int startVersion,

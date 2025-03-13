@@ -11,7 +11,8 @@ create table if not exists namespace
     primary key (namespace)
 );
 
-insert into namespace(namespace, properties, comment) values ('default', '{}', '')
+insert into namespace(namespace, properties, comment)
+values ('default', '{}', '')
 ON CONFLICT DO NOTHING;
 
 create table if not exists table_info
@@ -26,6 +27,8 @@ create table if not exists table_info
     domain          text default 'public',
     primary key (table_id)
 );
+CREATE INDEX CONCURRENTLY IF NOT EXISTS table_info_name_index ON table_info (table_namespace, table_name);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS table_info_path_index ON table_info (table_path);
 
 create table if not exists table_name_id
 (
@@ -35,6 +38,7 @@ create table if not exists table_name_id
     domain          text default 'public',
     primary key (table_name, table_namespace)
 );
+CREATE INDEX CONCURRENTLY IF NOT EXISTS table_name_id_id_index ON table_name_id (table_id);
 
 create table if not exists table_path_id
 (
@@ -44,6 +48,7 @@ create table if not exists table_path_id
     domain          text default 'public',
     primary key (table_path)
 );
+CREATE INDEX CONCURRENTLY IF NOT EXISTS table_path_id_id_index ON table_path_id (table_id);
 
 DO
 $$
@@ -69,9 +74,10 @@ create table if not exists data_commit_info
     commit_op      text,
     committed      boolean default 'false',
     timestamp      bigint,
-    domain         text default 'public',
+    domain         text    default 'public',
     primary key (table_id, partition_desc, commit_id)
 );
+CREATE INDEX CONCURRENTLY IF NOT EXISTS data_commit_info_commit_id ON data_commit_info (commit_id);
 
 create table if not exists partition_info
 (
@@ -82,8 +88,22 @@ create table if not exists partition_info
     timestamp      bigint DEFAULT (date_part('epoch'::text, now()) * (1000)::double precision),
     snapshot       UUID[],
     expression     text,
-    domain         text default 'public',
+    domain         text   default 'public',
     primary key (table_id, partition_desc, version)
+);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS partition_info_timestamp ON partition_info (timestamp);
+
+create table if not exists partition_info_max_version
+(
+    table_id       text,
+    partition_desc text,
+    version        int,
+    commit_op      text,
+    timestamp      bigint DEFAULT (date_part('epoch'::text, now()) * (1000)::double precision),
+    snapshot       UUID[],
+    expression     text,
+    domain         text   default 'public',
+    primary key (table_id, partition_desc)
 );
 
 CREATE OR REPLACE FUNCTION partition_insert() RETURNS TRIGGER AS
@@ -93,38 +113,63 @@ DECLARE
     rs_table_path      text;
     rs_table_namespace text;
 BEGIN
-    if NEW.commit_op <> 'CompactionCommit' then
-        select version
-        INTO rs_version
-        from partition_info
-        where table_id = NEW.table_id
-          and partition_desc = NEW.partition_desc
-          and version != NEW.version
-          and commit_op = 'CompactionCommit'
-        order by version desc
-        limit 1;
-        if rs_version >= 0 then
-            if NEW.version - rs_version >= 10 then
-                select table_path, table_namespace
-                into rs_table_path, rs_table_namespace
-                from table_info
-                where table_id = NEW.table_id;
-                perform pg_notify('lakesoul_compaction_notify',
-                                  concat('{"table_path":"', rs_table_path, '","table_partition_desc":"',
-                                         NEW.partition_desc, '","table_namespace":"', rs_table_namespace, '"}'));
-            end if;
-        else
-            if NEW.version >= 10 then
-                select table_path, table_namespace
-                into rs_table_path, rs_table_namespace
-                from table_info
-                where table_id = NEW.table_id;
-                perform pg_notify('lakesoul_compaction_notify',
-                                  concat('{"table_path":"', rs_table_path, '","table_partition_desc":"',
-                                         NEW.partition_desc, '","table_namespace":"', rs_table_namespace, '"}'));
+    if (tg_op = 'INSERT') then
+        -- update max version
+        insert into partition_info_max_version
+        values (NEW.table_id,
+                NEW.partition_desc,
+                NEW.version,
+                NEW.commit_op,
+                NEW.timestamp,
+                NEW.snapshot,
+                NEW.expression,
+                NEW.domain)
+        on conflict (table_id, partition_desc) do update set version=NEW.version,
+                                                             commit_op=NEW.commit_op,
+                                                             timestamp=NEW.timestamp,
+                                                             snapshot=NEW.snapshot,
+                                                             expression=NEW.expression,
+                                                             domain=NEW.domain;
+        -- notify compaction service
+        if NEW.commit_op <> 'CompactionCommit' then
+            select version
+            INTO rs_version
+            from partition_info
+            where table_id = NEW.table_id
+              and partition_desc = NEW.partition_desc
+              and version != NEW.version
+              and commit_op = 'CompactionCommit'
+            order by version desc
+            limit 1;
+            if rs_version >= 0 then
+                if NEW.version - rs_version >= 10 then
+                    select table_path, table_namespace
+                    into rs_table_path, rs_table_namespace
+                    from table_info
+                    where table_id = NEW.table_id;
+                    perform pg_notify('lakesoul_compaction_notify',
+                                      concat('{"table_path":"', rs_table_path, '","table_partition_desc":"',
+                                             NEW.partition_desc, '","table_namespace":"', rs_table_namespace, '"}'));
+                end if;
+            else
+                if NEW.version >= 10 then
+                    select table_path, table_namespace
+                    into rs_table_path, rs_table_namespace
+                    from table_info
+                    where table_id = NEW.table_id;
+                    perform pg_notify('lakesoul_compaction_notify',
+                                      concat('{"table_path":"', rs_table_path, '","table_partition_desc":"',
+                                             NEW.partition_desc, '","table_namespace":"', rs_table_namespace, '"}'));
+                end if;
             end if;
         end if;
-        RETURN NULL;
+    elsif (tg_op = 'DELETE') then
+        -- trigger delete and only when timestamp also match
+        delete
+        from partition_info_max_version
+        where table_id = OLD.table_id
+          and partition_desc = OLD.partition_desc
+          and timestamp = OLD.timestamp;
     end if;
     RETURN NULL;
 END;
@@ -132,13 +177,14 @@ $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE TRIGGER partition_table_change
     AFTER INSERT
+        OR DELETE
     ON partition_info
     FOR EACH ROW
 EXECUTE PROCEDURE partition_insert();
 
 create table if not exists global_config
 (
-    key  text,
+    key   text,
     value text,
     primary key (key)
 );

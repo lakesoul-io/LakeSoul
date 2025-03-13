@@ -10,3 +10,4 @@ delete from table_path_id;
 delete from table_name_id;
 delete from partition_info;
 delete from discard_compressed_file_info;
+delete from partition_info_max_version;

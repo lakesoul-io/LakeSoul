@@ -118,7 +118,12 @@ case class DataCommitInfo(table_id: String,
 case class PartitionFilterInfo(
                                 range_value: String,
                                 range_partitions: Map[String, String],
-                                read_version: Long)
+                                read_version: Int,
+                                table_id: String,
+                                read_files: Array[String] = Array.empty[String],
+                                expression: String = "",
+                                commit_op: String = ""
+                              )
 
 
 /**
