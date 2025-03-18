@@ -23,9 +23,7 @@ trait LakeSoulANNParams extends LSHNNSParams with ScalarRandomProjectionLSHNNSPa
   val idColumnName: Param[String] = new Param[String](this, "idColumnName", "The column name of the id column from the source table")
 
   final def getIdColumnName: String = $(idColumnName)
-
-  val seed: IntParam = new IntParam(this, "seed", "The seed for the random number generator")
-
+  
   val algorithm: Param[String] = new Param[String](this, "algorithm", "The algorithm to use for the ANN model")
 
   final def getAlgorithm: String = $(algorithm)

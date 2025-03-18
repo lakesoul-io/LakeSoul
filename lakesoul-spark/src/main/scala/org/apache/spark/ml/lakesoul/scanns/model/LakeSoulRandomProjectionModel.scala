@@ -1,10 +1,10 @@
 /**
- * Copyright 2023 LakeSoul Contributors. Licensed under the Apache License, Version 2.0.
- */
+  * Copyright 2023 LakeSoul Contributors. Licensed under the Apache License, Version 2.0.
+  */
 package org.apache.spark.ml.lakesoul.scanns.model
 
 import org.apache.spark.ml.lakesoul.scanns.Types.BandedHashes
-import org.apache.spark.ml.lakesoul.scanns.distance.{Distance, L2Distance}
+import org.apache.spark.ml.lakesoul.scanns.distance.{Distance, L2Distance, NormalizedL2Distance}
 import org.apache.spark.ml.lakesoul.scanns.lsh.ScalarRandomProjectionHashFunction
 import org.apache.spark.ml.lakesoul.scanns.params.ScalarRandomProjectionLSHNNSParams
 import org.apache.spark.ml.linalg.Vector
@@ -12,28 +12,32 @@ import org.apache.spark.ml.param.{ParamMap, Params}
 import org.apache.spark.ml.util.Identifiable
 
 /**
- * LakeSoul model to perform nearest neighbor search in the L2 distance space.
- * This is a fork of L2ScalarRandomProjectionModel customized for LakeSoul's requirements.
- *
- * @param hashFunctions The random projections that will be used for LSH
- */
+  * LakeSoul model to perform nearest neighbor search in the L2 distance space.
+  * This is a fork of L2ScalarRandomProjectionModel customized for LakeSoul's requirements.
+  *
+  * @param hashFunctions The random projections that will be used for LSH
+  */
 class LakeSoulRandomProjectionModel(val uid: String = Identifiable.randomUID("LakeSoulRandomProjectionLSH"),
-                                   private val hashFunctions: Array[ScalarRandomProjectionHashFunction])
+                                    private val hashFunctions: Array[ScalarRandomProjectionHashFunction])
   extends LakeSoulLSHNearestNeighborSearchModel[LakeSoulRandomProjectionModel]
     with ScalarRandomProjectionLSHNNSParams {
 
-  override val distance: Distance = L2Distance
+  override val distance: Distance = NormalizedL2Distance
 
   override private[ml] def getHashFunctions: Array[ScalarRandomProjectionHashFunction] = hashFunctions
 
   /**
-   * Given an input vector, get the banded hashes by hashing it using the hash functions
-   *
-   * @param x input vector
-   * @return banded hashes
-   */
+    * Given an input vector, get the banded hashes by hashing it using the hash functions
+    *
+    * @param x input vector
+    * @return banded hashes
+    */
   override def getBandedHashes(x: Vector): BandedHashes = {
     hashFunctions.map(_.compute(x))
+  }
+
+  override def getBandedHashesWithBias(x: Vector, bias: Int): BandedHashes = {
+    hashFunctions.map(_.computeWithBias(x, bias))
   }
 
   override def copy(extra: ParamMap): Params = defaultCopy(extra)

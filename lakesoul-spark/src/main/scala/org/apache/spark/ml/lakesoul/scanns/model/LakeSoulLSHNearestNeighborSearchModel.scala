@@ -4,7 +4,7 @@
   */
 package org.apache.spark.ml.lakesoul.scanns.model
 
-import org.apache.spark.HashPartitioner
+import org.apache.spark.{HashPartitioner, TaskContext}
 import org.apache.spark.ml.lakesoul.scanns.Types.{BandedHashes, Item, ItemId, ItemIdDistancePair}
 import org.apache.spark.ml.lakesoul.scanns.distance.Distance
 import org.apache.spark.ml.lakesoul.scanns.lsh.HashFunction
@@ -137,13 +137,33 @@ abstract class LakeSoulLSHNearestNeighborSearchModel[T <: LakeSoulLSHNearestNeig
   def getBandedHashes(x: Vector): BandedHashes
 
   /**
+    * Given an input vector and a bias, get the banded hashes by hashing it using the hash functions. A band itself performs
+    * AND-amplification but the idea of multiple bands is to allow OR-amplification
+    *
+    * @param x    input vector
+    * @param bias bias
+    * @return banded hashes
+    */
+  def getBandedHashesWithBias(x: Vector, bias: Int): BandedHashes
+
+  /**
     * Apply [[getBandedHashes()]] to each row in the dataset
     *
     * @param data input data
     * @return row containing the id, vector representation and the banded hashes
     */
-  def transform(data: RDD[Item]): RDD[(ItemId, (Vector, BandedHashes))] = {
-    data.mapValues(x => (x, getBandedHashes(x)))
+  def transform(data: RDD[Item], lowerBias: Int = 0, upperBias: Int = 0): RDD[(ItemId, (Vector, BandedHashes))] = {
+    var transformedData = data.mapValues(x => (x, getBandedHashesWithBias(x, -lowerBias)))
+    for (bias <- -upperBias until -lowerBias) {
+      transformedData = transformedData.union(data.mapValues(x => (x, getBandedHashesWithBias(x, bias))))
+    }
+    for (bias <- lowerBias to upperBias) {
+      if (bias != 0) {
+        transformedData = transformedData.union(data.mapValues(x => (x, getBandedHashesWithBias(x, bias))))
+      }
+    }
+    println(s"transformedData count = ${transformedData.count()}")
+    transformedData
   }
 
   /**
@@ -199,7 +219,7 @@ abstract class LakeSoulLSHNearestNeighborSearchModel[T <: LakeSoulLSHNearestNeig
                                 itemVectors: mutable.Map[ItemId, Vector],
                                 hashBuckets: mutable.Map[Int, Array[mutable.ArrayBuffer[ItemId]]],
                                 shouldReservoirSample: Boolean = false,
-                                isCandidatePoolIt: Boolean): Unit = {
+                                isCandidatePoolIt: Boolean): Int = {
     // Maintain number of elements seen by both arrays, to perform streaming reservoir sampling. If a bucket
     // has more than `bucketLimit` items, we use reservoir sampling to decide whether to keep the incoming items
     // or not so that we have a uniform sample of `bucketLimit` items at the end of processing the entire stream
@@ -207,7 +227,9 @@ abstract class LakeSoulLSHNearestNeighborSearchModel[T <: LakeSoulLSHNearestNeig
 
     val selector = if (isCandidatePoolIt) 1 else 0
 
+    var count = 0
     itemIt.foreach { case (h, (id, vector)) =>
+      count += 1
       if (hashBuckets.contains(h)) {
         if (hashBuckets(h)(selector).size == $(bucketLimit)) {
           if (shouldReservoirSample) {
@@ -242,20 +264,13 @@ abstract class LakeSoulLSHNearestNeighborSearchModel[T <: LakeSoulLSHNearestNeig
         }
       }
     }
+    count
   }
 
-  /**
-    * Get k nearest neighbors to all items in srcItems dataset from the candidatePool dataset
-    *
-    * @param srcItems      Items for which neighbors are to be found
-    * @param candidatePool Items which are potential candidates
-    * @param k             number of nearest neighbors needed
-    * @return nearest neighbors in the form (srcItemId, candidateItemId, distance)
-    */
-  override def getAllNearestNeighbors(srcItems: RDD[Item], candidatePool: RDD[Item], k: Int):
+  def getAllNearestNeighborsWithBucketBias(srcItems: RDD[Item], candidatePool: RDD[Item], k: Int, lowerBias: Int = 0, upperBias: Int = 0):
   RDD[(ItemId, ItemId, Double)] = {
     val hashPartitioner = new HashPartitioner($(joinParallelism))
-    val srcItemsExploded = explodeData(transform(srcItems)).partitionBy(hashPartitioner)
+    val srcItemsExploded = explodeData(transform(srcItems, lowerBias, upperBias)).partitionBy(hashPartitioner)
     val candidatePoolExploded = if (srcItems.id == candidatePool.id) {
       srcItemsExploded
     } else {
@@ -278,27 +293,43 @@ abstract class LakeSoulLSHNearestNeighborSearchModel[T <: LakeSoulLSHNearestNeig
         val itemVectors = mutable.Map[ItemId, Vector]()
         val hashBuckets = mutable.Map[Int, Array[mutable.ArrayBuffer[ItemId]]]()
 
-        updateHashBuckets(
+        val srcCount = updateHashBuckets(
           srcIt,
           itemVectors,
           hashBuckets,
           shouldReservoirSample = $(shouldSampleBuckets),
           isCandidatePoolIt = false)
-        updateHashBuckets(
+        val candidateCount = updateHashBuckets(
           candidateIt,
           itemVectors,
           hashBuckets,
           shouldReservoirSample = $(shouldSampleBuckets),
           isCandidatePoolIt = true)
+        println(s"taskId = ${TaskContext.getPartitionId()}, srcCount = $srcCount, candidateCount = $candidateCount")
 
         // TODO Start using loggers to log useful info
-        // logStats(TaskContext.getPartitionId(), itemVectors, hashBuckets)
+        //        logStats(TaskContext.getPartitionId(), itemVectors, hashBuckets)
         new NearestNeighborIterator(hashBuckets.valuesIterator, itemVectors, k)
       }
     }
       .aggregateByKey(zero, $(numOutputPartitions))(seqOp, combOp)
       .flatMap { x => x._2.iterator().map(z => (x._1, z._1, z._2)) }
   }
+
+
+  /**
+    * Get k nearest neighbors to all items in srcItems dataset from the candidatePool dataset
+    *
+    * @param srcItems      Items for which neighbors are to be found
+    * @param candidatePool Items which are potential candidates
+    * @param k             number of nearest neighbors needed
+    * @return nearest neighbors in the form (srcItemId, candidateItemId, distance)
+    */
+  override def getAllNearestNeighbors(srcItems: RDD[Item], candidatePool: RDD[Item], k: Int):
+  RDD[(ItemId, ItemId, Double)] = {
+    getAllNearestNeighborsWithBucketBias(srcItems, candidatePool, k, 0, 0)
+  }
+
 
   /**
     * Get k nearest neighbors for all input items from within itself
