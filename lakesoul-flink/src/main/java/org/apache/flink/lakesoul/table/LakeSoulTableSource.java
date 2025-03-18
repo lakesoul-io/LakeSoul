@@ -44,6 +44,7 @@ import java.util.stream.IntStream;
 import static com.dmetasoul.lakesoul.lakesoul.io.substrait.SubstraitUtil.applyPartitionFilters;
 import static com.dmetasoul.lakesoul.lakesoul.io.substrait.SubstraitUtil.not;
 import static com.dmetasoul.lakesoul.lakesoul.io.substrait.SubstraitUtil.substraitExprToProto;
+import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_RANGE_PARTITION_SPLITTER;
 
 public class LakeSoulTableSource
         implements SupportsFilterPushDown, SupportsProjectionPushDown, ScanTableSource,
@@ -114,21 +115,16 @@ public class LakeSoulTableSource
     @Override
     public Result applyFilters(List<ResolvedExpression> filters) {
         // first we filter out partition filter conditions
-        LOG.info("Applying filters to native io: {}", filters);
+        LOG.info("Applying filters to native io: {}, table {}", filters, tableId);
+        long startTime = System.currentTimeMillis();
         List<ResolvedExpression> completePartitionFilters = new ArrayList<>();
         List<ResolvedExpression> nonPartitionFilters = new ArrayList<>();
         DBManager dbManager = new DBManager();
         TableInfo tableInfo =
                 dbManager.getTableInfoByNameAndNamespace(tableId.table(), tableId.schema());
-        List<String> allPartitionDesc = dbManager.getTableAllPartitionDesc(tableInfo.getTableId());
-        List<PartitionInfo> allPartitionInfo = allPartitionDesc.stream().map(
-                desc -> PartitionInfo.newBuilder()
-                        .setPartitionDesc(desc)
-                .build())
-                .collect(Collectors.toList());
 
         DBUtil.TablePartitionKeys partitionKeys = DBUtil.parseTableInfoPartitions(tableInfo.getPartitions());
-        Set<String> partitionCols = new HashSet<>(partitionKeys.rangeKeys);
+        Set<String> partitionCols = new LinkedHashSet<>(partitionKeys.rangeKeys);
         for (ResolvedExpression filter : filters) {
             if (SubstraitFlinkUtil.filterAllPartitionColumn(filter, partitionCols)) {
                 completePartitionFilters.add(filter);
@@ -136,34 +132,68 @@ public class LakeSoulTableSource
                 nonPartitionFilters.add(filter);
             }
         }
-        LOG.info("completePartitionFilters: {}", completePartitionFilters);
-        LOG.info("nonPartitionFilters: {}", nonPartitionFilters);
+        LOG.info("completePartitionFilters: {}, table {}", completePartitionFilters, tableId);
+        LOG.info("nonPartitionFilters: {}, table {}", nonPartitionFilters, tableId);
 
         if (!completePartitionFilters.isEmpty()) {
+            List<PartitionInfo> remainingPartitionInfo = Collections.emptyList();
+            Map<String, String> remainingPartitionKeys =
+                    SubstraitFlinkUtil.equalityFilterFieldNames(completePartitionFilters);
+            if (remainingPartitionKeys.size() == completePartitionFilters.size()) {
+                // all partition filters are equality literal filter
+                if (partitionKeys.rangeKeys.stream().allMatch(remainingPartitionKeys::containsKey)) {
+                    // 1. equality partition filters contains all partition cols
+                    // for this case we directly get one partition by partition_info's primary key
+                    String partitionDesc = partitionKeys.rangeKeys.stream()
+                            .map(rangeCol -> {
+                                String value = remainingPartitionKeys.get(rangeCol);
+                                return rangeCol + "=" + value;
+                            })
+                            .collect(Collectors.joining(LAKESOUL_RANGE_PARTITION_SPLITTER));
+                    LOG.info("Apply all equality partition filter with partitionDesc: {}, table {}", partitionDesc, tableId);
+                    List<PartitionInfo> pInfo = dbManager.getOnePartition(tableInfo.getTableId(), partitionDesc);
+                    if (pInfo != null && !pInfo.isEmpty()) {
+                        remainingPartitionInfo = pInfo;
+                    }
+                } else {
+                    // construct ts_query
+                    String paritionQuery = remainingPartitionKeys.entrySet().stream()
+                                    .map(entry -> entry.getKey() + "=" + entry.getValue())
+                            .collect(Collectors.joining(" & "));
+                    LOG.info("Apply partial equality partition filter with query: {}, table {}", paritionQuery, tableId);
+                    remainingPartitionInfo = dbManager.getPartitionInfosByPartialFilter(tableInfo.getTableId(), paritionQuery);
+                }
+            } else {
+                List<String> allPartitionDesc = dbManager.getTableAllPartitionDesc(tableInfo.getTableId());
+                List<PartitionInfo> allPartitionInfo = allPartitionDesc.stream().map(
+                                desc -> PartitionInfo.newBuilder()
+                                        .setPartitionDesc(desc)
+                                        .build())
+                        .collect(Collectors.toList());
+                Tuple2<Result, Expression> substraitPartitionExpr = SubstraitFlinkUtil.flinkExprToSubStraitExpr(
+                        completePartitionFilters
+                );
+                Expression partitionFilter = substraitPartitionExpr.f1;
+                if (isDelete()) {
+                    partitionFilter = not(partitionFilter);
+                }
+                this.partitionFilters = substraitExprToProto(partitionFilter, tableInfo.getTableName());
+                Schema tableSchema = ArrowUtils.toArrowSchema(tableRowType);
+                List<Field>
+                        partitionFields =
+                        partitionColumns.stream().map(tableSchema::findField).collect(Collectors.toList());
 
-            Tuple2<Result, Expression> substraitPartitionExpr = SubstraitFlinkUtil.flinkExprToSubStraitExpr(
-                    completePartitionFilters
-            );
-            Expression partitionFilter = substraitPartitionExpr.f1;
-            if (isDelete()) {
-                partitionFilter = not(partitionFilter);
+                Schema partitionSchema = new Schema(partitionFields);
+                remainingPartitionInfo =
+                        applyPartitionFilters(allPartitionInfo, partitionSchema, this.partitionFilters);
             }
-            this.partitionFilters = substraitExprToProto(partitionFilter, tableInfo.getTableName());
-            Schema tableSchema = ArrowUtils.toArrowSchema(tableRowType);
-            List<Field>
-                    partitionFields =
-                    partitionColumns.stream().map(tableSchema::findField).collect(Collectors.toList());
-
-            Schema partitionSchema = new Schema(partitionFields);
-            List<PartitionInfo>
-                    remainingPartitionInfo =
-                    applyPartitionFilters(allPartitionInfo, partitionSchema, this.partitionFilters);
             remainingPartitions = partitionInfoToPartitionMap(remainingPartitionInfo);
-
             setModificationContextSourcePartitions(
                     JniWrapper.newBuilder().addAllPartitionInfo(remainingPartitionInfo).build());
             setModificationContextPartitionFilter(this.partitionFilters);
         }
+        long endTime = System.currentTimeMillis();
+        LOG.info("Finished applying filters for table {}, time {}ms", tableId, endTime - startTime);
 
         if (isBounded) {
             // pushdown all filters for batch scan
@@ -172,18 +202,21 @@ public class LakeSoulTableSource
                     nonPartitionFilters
             );
 
-            LOG.info("Applied filters to native io: {}, accepted {}, remaining {}", this.pushedFilters,
-                    pushDownResultAndSubstraitExpr.f0.getAcceptedFilters(),
-                    pushDownResultAndSubstraitExpr.f0.getRemainingFilters());
-
             this.pushedFilters = substraitExprToProto(pushDownResultAndSubstraitExpr.f1, tableInfo.getTableName());
             setModificationContextNonPartitionFilter(this.pushedFilters);
 
             // add accepted non-partition filters to completePartitionFilters as all accepted filters
             completePartitionFilters.addAll(pushDownResultAndSubstraitExpr.f0.getAcceptedFilters());
+            LOG.info("Applied filters to native io in batch mode: {}, accepted {}, remaining {}, table {}", this.pushedFilters,
+                    completePartitionFilters,
+                    pushDownResultAndSubstraitExpr.f0.getRemainingFilters(), tableId);
+
             return Result.of(completePartitionFilters, pushDownResultAndSubstraitExpr.f0.getRemainingFilters());
         } else {
             // for streaming scan, we cannot pushdown any non-complete-partition filters
+            LOG.info("Applied filters to native io in streaming mode: {}, accepted {}, remaining {}, table {}", this.pushedFilters,
+                    completePartitionFilters,
+                    nonPartitionFilters, tableId);
             return Result.of(completePartitionFilters, nonPartitionFilters);
         }
     }

@@ -820,6 +820,14 @@ public class DBManager {
         return partitionInfoDao.getOnePartition(tableId, partitionDesc);
     }
 
+    public List<String> getPartitionDescByPartialFilter(String tableId, String filter) {
+        return partitionInfoDao.getAllPartitionDescByTableIdAndPartialFilter(tableId, filter);
+    }
+
+    public List<PartitionInfo> getPartitionInfosByPartialFilter(String tableId, String filter) {
+        return partitionInfoDao.getAllPartitionInfoByTableIdAndPartialFilter(tableId, filter);
+    }
+
     public List<PartitionInfo> getIncrementalPartitionsFromTimestamp(String tableId, String partitionDesc,
                                                                      long startTimestamp, long endTimestamp) {
         return partitionInfoDao.getPartitionsFromTimestamp(tableId, partitionDesc, startTimestamp, endTimestamp);

@@ -26,6 +26,8 @@ create table if not exists table_info
     domain          text default 'public',
     primary key (table_id)
 );
+CREATE INDEX CONCURRENTLY IF NOT EXISTS table_info_name_index ON table_info (table_namespace, table_name);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS table_info_path_index ON table_info (table_path);
 
 create table if not exists table_name_id
 (
@@ -35,6 +37,7 @@ create table if not exists table_name_id
     domain          text default 'public',
     primary key (table_name, table_namespace)
 );
+CREATE INDEX CONCURRENTLY IF NOT EXISTS table_name_id_id_index ON table_name_id (table_id);
 
 create table if not exists table_path_id
 (
@@ -44,6 +47,7 @@ create table if not exists table_path_id
     domain          text default 'public',
     primary key (table_path)
 );
+CREATE INDEX CONCURRENTLY IF NOT EXISTS table_path_id_id_index ON table_path_id (table_id);
 
 DO
 $$
@@ -72,6 +76,7 @@ create table if not exists data_commit_info
     domain         text default 'public',
     primary key (table_id, partition_desc, commit_id)
 );
+CREATE INDEX CONCURRENTLY IF NOT EXISTS data_commit_info_commit_id ON data_commit_info (commit_id);
 
 create table if not exists partition_info
 (
@@ -85,6 +90,8 @@ create table if not exists partition_info
     domain         text default 'public',
     primary key (table_id, partition_desc, version)
 );
+CREATE INDEX CONCURRENTLY IF NOT EXISTS partition_info_timestamp ON partition_info (timestamp);
+CREATE INDEX partition_info_desc_gin_tsvector_index ON partition_info USING GIN (to_tsvector('english', partition_desc));
 
 CREATE OR REPLACE FUNCTION partition_insert() RETURNS TRIGGER AS
 $$

@@ -518,6 +518,46 @@ public class PartitionInfoDao {
         return rsList;
     }
 
+    public List<String> getAllPartitionDescByTableIdAndPartialFilter(String tableId, String filter) {
+        Connection conn = null;
+        PreparedStatement pstmt = null;
+        ResultSet rs = null;
+        List<String> rsList = new ArrayList<>();
+        String sql = String.format(
+                "select distinct(partition_desc) from partition_info where table_id='%s' and " +
+                        "to_tsvector('english', partition_desc) @@ to_tsquery('%s')",
+                tableId, filter);
+        try {
+            conn = DBConnector.getConn();
+            pstmt = conn.prepareStatement(sql);
+            rs = pstmt.executeQuery();
+            while (rs.next()) {
+                rsList.add(rs.getString(1));
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        } finally {
+            DBConnector.closeConn(rs, pstmt, conn);
+        }
+        return rsList;
+    }
+
+    public List<PartitionInfo> getAllPartitionInfoByTableIdAndPartialFilter(String tableId, String filter) {
+        String sql = String.format(
+                "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.timestamp, m.expression, m.domain\n" +
+                        "            from (\n" +
+                        "                select table_id,partition_desc,max(version)\n" +
+                        "                from partition_info\n" +
+                        "                where table_id = '%s'\n" +
+                        "                and to_tsvector('english', partition_desc) @@ to_tsquery('%s')" +
+                        "                group by table_id, partition_desc) t\n" +
+                        "            left join partition_info m\n" +
+                        "            on t.table_id = m.table_id and t.partition_desc = m.partition_desc and t.max = m.version",
+                tableId, filter);
+        System.out.println(sql);
+        return getPartitionInfos(sql);
+    }
+
     public Set<CommitOp> getCommitOpsBetweenVersions(String tableId, String partitionDesc, int firstVersion,
                                                      int secondVersion) {
         if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
@@ -555,7 +595,6 @@ public class PartitionInfoDao {
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
-        PartitionInfo partitionInfo;
         List<PartitionInfo> partitions = new ArrayList<>();
         try {
             conn = DBConnector.getConn();

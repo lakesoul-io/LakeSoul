@@ -31,6 +31,7 @@ use object_store::ObjectMeta;
 use parquet::format::FileMetaData;
 use proto::proto::entity::JniWrapper;
 use rand::distributions::DistString;
+use tokio::runtime::Builder;
 use url::Url;
 
 use crate::{
@@ -458,7 +459,10 @@ pub async fn infer_schema(
 }
 
 pub fn apply_partition_filter(wrapper: JniWrapper, schema: SchemaRef, filter: Plan) -> Result<JniWrapper> {
-    tokio::runtime::Runtime::new()?.block_on(async {
+    let runtime = Builder::new_current_thread()
+        .build()
+        .map_err(|e| External(Box::new(e)))?;
+    runtime.block_on(async {
         let context = SessionContext::default();
         let index_filed_name = rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 8);
         let index_filed = Field::new(index_filed_name, DataType::UInt32, false);

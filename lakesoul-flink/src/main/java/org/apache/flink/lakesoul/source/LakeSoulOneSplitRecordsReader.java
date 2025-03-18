@@ -81,6 +81,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
     private final Plan filter;
 
     private long totalRead = 0;
+    private long startTime;
     private long limit = Long.MAX_VALUE;
 
     public LakeSoulOneSplitRecordsReader(Configuration conf,
@@ -104,6 +105,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
         this.isBounded = isBounded;
         this.cdcColumn = cdcColumn;
         this.finishedSplit = Collections.singleton(splitId);
+        this.startTime = System.currentTimeMillis();
         Schema tableSchema = ArrowUtils.toArrowSchema(tableRowType);
         List<Field> partitionFields = partitionColumns.stream().map(tableSchema::findField).collect(Collectors.toList());
 
@@ -157,6 +159,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
         reader.initializeReader();
         this.reader = new LakeSoulArrowReader(reader,
                 10000);
+        LOG.info("Initialized reader for split {}, time {}ms", split, System.currentTimeMillis() - startTime);
     }
 
     // final returned row should only contain requested schema in query
@@ -287,7 +290,8 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
 
     @Override
     public void close() throws Exception {
-        LOG.info("Close reader split {}, read num {}", splitId, totalRead);
+        long endTime = System.currentTimeMillis();
+        LOG.info("Close reader split {}, read num {}, time {}ms", split, totalRead, endTime - startTime);
         if (this.currentVCR != null) {
             this.currentVCR.close();
             this.currentVCR = null;

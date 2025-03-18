@@ -232,8 +232,10 @@ public class SubstraitUtil {
             );
             Integer len = null;
             len = filterFuture.get(TIMEOUT, TimeUnit.MILLISECONDS);
-            if (len < 0) return null;
-            Integer lenWithTail = len + 1;
+            if (len < 0) {
+                throw new RuntimeException("applyPartitionFilters filterFuture returned a negative result");
+            }
+            int lenWithTail = len + 1;
             Pointer exportBuffer = Runtime.getRuntime(LIB).getMemoryManager().allocateDirect(lenWithTail, true);
 
             final CompletableFuture<Boolean> importFuture = new CompletableFuture<>();
@@ -250,19 +252,15 @@ public class SubstraitUtil {
                     exportBuffer.address()
             );
             Boolean b = importFuture.get(TIMEOUT, TimeUnit.MILLISECONDS);
-            if (!b) return null;
+            if (!b) {
+                throw new RuntimeException("applyPartitionFilters importFuture returned false");
+            }
 
             byte[] bytes = new byte[len];
             exportBuffer.get(0, bytes, 0, len);
             resultPartitionInfo = JniWrapper.parseFrom(bytes).getPartitionInfoList();
             LIB.free_bytes_result(filterResult);
-        } catch (InterruptedException e) {
-            throw new RuntimeException(e);
-        } catch (ExecutionException e) {
-            throw new RuntimeException(e);
-        } catch (TimeoutException e) {
-            throw new RuntimeException(e);
-        } catch (InvalidProtocolBufferException e) {
+        } catch (InterruptedException | ExecutionException | TimeoutException | InvalidProtocolBufferException e) {
             throw new RuntimeException(e);
         } finally {
             tmpProvider.close();
