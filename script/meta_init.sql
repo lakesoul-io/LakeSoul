@@ -91,7 +91,7 @@ create table if not exists partition_info
     primary key (table_id, partition_desc, version)
 );
 CREATE INDEX CONCURRENTLY IF NOT EXISTS partition_info_timestamp ON partition_info (timestamp);
-CREATE INDEX partition_info_desc_gin_tsvector_index ON partition_info USING GIN (to_tsvector('english', partition_desc));
+CREATE INDEX CONCURRENTLY IF NOT EXISTS partition_info_desc_gin_tsvector_index ON partition_info USING GIN (to_tsvector('english', partition_desc));
 
 CREATE OR REPLACE FUNCTION partition_insert() RETURNS TRIGGER AS
 $$

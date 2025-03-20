@@ -92,19 +92,17 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
     StructType((readDataSchema() ++ tableInfo.hash_partition_schema).distinct)
   }
 
-  override def build(): Scan = {
-    //check and redo commit before read
-    //MetaCommit.checkAndRedoCommit(fileIndex.snapshotManagement.snapshot)
-
-    var files: Seq[DataFileInfo] = Seq.empty
-
+  lazy val files: Seq[DataFileInfo] = {
     val isPartitionVersionRead = SparkUtil.isPartitionVersionRead(fileIndex.snapshotManagement)
 
     if (isPartitionVersionRead) {
-      files = fileIndex.getFileInfoForPartitionVersion()
+      fileIndex.getFileInfoForPartitionVersion()
     } else {
-      files = fileIndex.matchingFiles(partitionFilters, dataFilters)
+      fileIndex.matchingFiles(partitionFilters, dataFilters)
     }
+  }
+
+  override def build(): Scan = {
     val fileInfo = files.groupBy(_.range_partitions)
     val onlyOnePartition = fileInfo.size <= 1
 

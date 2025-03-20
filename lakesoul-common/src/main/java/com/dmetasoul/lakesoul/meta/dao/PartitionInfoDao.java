@@ -554,7 +554,6 @@ public class PartitionInfoDao {
                         "            left join partition_info m\n" +
                         "            on t.table_id = m.table_id and t.partition_desc = m.partition_desc and t.max = m.version",
                 tableId, filter);
-        System.out.println(sql);
         return getPartitionInfos(sql);
     }
 

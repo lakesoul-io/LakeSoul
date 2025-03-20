@@ -102,8 +102,6 @@ class UpsertSuiteBase extends QueryTest
     val lakesoulDF = readLakeSoulTable(tempPath)
       .filter(filter)
       .select(colNames.map(col): _*)
-      .persist()
-    lakesoulDF.show()
     checkAnswer(lakesoulDF, expectedResults)
   }
 
@@ -136,6 +134,21 @@ class UpsertSuiteBase extends QueryTest
       Seq("range", "hash", "value"))
   }
 
+  test("merge - same column - partition filter") {
+    initTable(
+      Seq((20201101, 1, 1), (20201101, 2, 2), (20201101, 3, 3), (20201102, 4, 4))
+        .toDF("range", "hash", "value"),
+      "range",
+      "hash")
+
+    checkUpsertByFilter(
+      Seq((20201101, 1, 11), (20201101, 3, 33), (20201102, 4, 44))
+        .toDF("range", "hash", "value"),
+      None,
+      Row(20201101, 1, 11) :: Row(20201101, 2, 2) :: Row(20201101, 3, 33) :: Nil,
+      "range=20201101",
+      Seq("range", "hash", "value"))
+  }
 
   test("merge - different columns") {
     initTable(

@@ -4,18 +4,20 @@
 
 package org.apache.spark.sql.lakesoul
 
-import com.dmetasoul.lakesoul.meta.{DBConfig, DataFileInfo, DataOperation, MetaUtils, PartitionInfoScala, SparkMetaVersion}
+import com.dmetasoul.lakesoul.meta.{DBConfig, DBUtil, DataFileInfo, DataOperation, MetaUtils, PartitionInfoScala, SparkMetaVersion}
+import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.analysis.{Resolver, UnresolvedAttribute}
-import org.apache.spark.sql.catalyst.expressions.{And, Attribute, Cast, Equality, Expression, Literal, NamedExpression}
+import org.apache.spark.sql.catalyst.expressions.{And, Attribute, AttributeReference, Cast, Equality, Expression, IsNotNull, Literal, NamedExpression}
 import org.apache.spark.sql.lakesoul.utils.{PartitionFilterInfo, SparkUtil, TableInfo}
-import org.apache.spark.sql.types.{StructField, StructType}
+import org.apache.spark.sql.types.{BooleanType, StructField, StructType}
 import org.apache.spark.sql.{Column, DataFrame, Dataset, SparkSession}
 
 import java.util.UUID
+import scala.collection.JavaConverters.mapAsScalaMapConverter
 
-object PartitionFilter {
+object PartitionFilter extends Logging {
 
-  def filterFromAllPartitionInfo(snapshot: Snapshot, table_info: TableInfo, filters: Seq[Expression]): Seq[PartitionFilterInfo] = {
+  private def filterFromAllPartitionInfo(snapshot: Snapshot, table_info: TableInfo, filters: Seq[Expression]): Seq[PartitionFilterInfo] = {
     val spark = SparkSession.active
     val allPartitions = SparkUtil.allPartitionFilterInfoDF(snapshot)
 
@@ -45,43 +47,78 @@ object PartitionFilter {
     val partitionFilters = filters.flatMap { filter =>
       LakeSoulUtils.splitMetadataAndDataPredicates(filter, table_info.range_partition_columns, spark)._1
     }
-    if (partitionFilters.isEmpty) {
-      filterFromAllPartitionInfo(snapshot, table_info, partitionFilters)
-    } else {
-      val equalExprs = partitionFilters.collect {
-        case Equality(UnresolvedAttribute(nameParts), lit@Literal(_, _)) =>
-          val colName = nameParts.last
-          val colValue = lit.toString()
-          colName -> colValue
-        case Equality(NamedExpression(n), lit@Literal(_, _)) =>
-          val colName = n._1
-          val colValue = lit.toString()
-          colName -> colValue
-      }.toMap
-      if (table_info.range_partition_columns.nonEmpty && table_info.range_partition_columns.forall(p => {
-        equalExprs.contains(p)
-      })) {
-        // optimize for all partition equality filter
-        val partDesc = table_info.range_partition_columns.map(p => {
-          val colValue = equalExprs(p)
-          s"$p=$colValue"
-        }).mkString(DBConfig.LAKESOUL_RANGE_PARTITION_SPLITTER)
-        val partInfo = SparkMetaVersion.getSinglePartitionInfo(table_info.table_id, partDesc, "")
-        if (partInfo == null) return Seq.empty
-        snapshot.recordPartitionInfoRead(partInfo)
-        Seq(PartitionFilterInfo(
-          partDesc,
-          equalExprs,
-          partInfo.version,
-          table_info.table_id,
-          partInfo.read_files.map(u => u.toString),
-          partInfo.expression,
-          partInfo.commit_op
-        ))
-      } else {
-        // non-equality filter, we still need to get all partitions from meta
-        filterFromAllPartitionInfo(snapshot, table_info, partitionFilters)
-      }
+    snapshot.getPartitionInfoFromCache(partitionFilters) match {
+      case Some(info) => info.toSeq
+      case None =>
+        val infos = if (partitionFilters.isEmpty) {
+          logInfo(s"no partition filter for table ${table_info.table_path}")
+          filterFromAllPartitionInfo(snapshot, table_info, partitionFilters)
+        } else {
+          val equalExprs = partitionFilters.collect {
+            case Equality(UnresolvedAttribute(nameParts), lit@Literal(_, _)) =>
+              val colName = nameParts.last
+              val colValue = lit.toString()
+              colName -> colValue
+            case Equality(NamedExpression(n), lit@Literal(_, _)) =>
+              val colName = n._1
+              val colValue = lit.toString()
+              colName -> colValue
+          }.toMap
+          // remove useless isnotnull/true expr
+          val newPartitionFilters = partitionFilters.filter({
+            case IsNotNull(AttributeReference(name, _, _, _)) => !equalExprs.contains(name)
+            case Literal(v, BooleanType) if v.asInstanceOf[Boolean] => false
+            case _ => true
+          })
+
+          if (table_info.range_partition_columns.nonEmpty && table_info.range_partition_columns.forall(p => {
+            equalExprs.contains(p)
+          })) {
+            // optimize for all partition equality filter
+            val partDesc = table_info.range_partition_columns.map(p => {
+              val colValue = equalExprs(p)
+              s"$p=$colValue"
+            }).mkString(DBConfig.LAKESOUL_RANGE_PARTITION_SPLITTER)
+            val partInfo = SparkMetaVersion.getSinglePartitionInfo(table_info.table_id, partDesc, "")
+            logInfo(s"All equality partition filters $equalExprs for table ${table_info.table_path}, using" +
+              s" desc $partDesc")
+            if (partInfo == null) return Seq.empty
+            snapshot.recordPartitionInfoRead(partInfo)
+            Seq(PartitionFilterInfo(
+              partDesc,
+              equalExprs,
+              partInfo.version,
+              table_info.table_id,
+              partInfo.read_files.map(u => u.toString),
+              partInfo.expression,
+              partInfo.commit_op
+            ))
+          } else if (equalExprs.size == newPartitionFilters.size) {
+            // optimize for partial equality filter (no non-eq filter)
+            // using ts query
+            val partQuery = equalExprs.map({ case (k, v) => s"$k=$v" }).mkString(" & ")
+            logInfo(s"Partial equality partition filters $equalExprs for table ${table_info.table_path}, using" +
+              s" query $partQuery")
+            SparkMetaVersion.getPartitionInfoByEqFilters(table_info.table_id, partQuery)
+              .map(partInfo => {
+                PartitionFilterInfo(
+                  partInfo.range_value,
+                  DBUtil.parsePartitionDesc(partInfo.range_value).asScala.toMap,
+                  partInfo.version,
+                  table_info.table_id,
+                  partInfo.read_files.map(u => u.toString),
+                  partInfo.expression,
+                  partInfo.commit_op
+                )
+              })
+          } else {
+            // non-equality filter, we still need to get all partitions from meta
+            logInfo(s"at least one non-equality filter exist $partitionFilters, read all partition info")
+            filterFromAllPartitionInfo(snapshot, table_info, partitionFilters)
+          }
+        }
+        snapshot.putPartitionInfoCache(partitionFilters, infos)
+        infos
     }
   }
 

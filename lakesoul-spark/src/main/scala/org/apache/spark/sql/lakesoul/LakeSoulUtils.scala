@@ -140,7 +140,7 @@ object LakeSoulUtils extends PredicateHelper {
                        files: Seq[DataFileInfo]): LogicalPlan = {
     target transform {
       case l@LogicalRelation(egbr: LakeSoulBaseRelation, _, _, _) =>
-        l.copy(relation = egbr.copy(files = files)(egbr.sparkSession))
+        l.copy(relation = egbr.copy(files = Some(files))(egbr.sparkSession))
     }
   }
 
