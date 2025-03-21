@@ -12,10 +12,13 @@ import org.apache.spark.ml.lakesoul.scanns.params.{HasSeed, LSHNNSParams}
 import org.apache.spark.ml.lakesoul.scanns.utils.TopNQueue
 import org.apache.spark.ml.linalg.Vector
 import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.DataFrame
+import org.apache.spark.sql.types.{ArrayType, FloatType}
 
 import scala.collection.mutable
 import scala.util.Random
 import scala.util.hashing.MurmurHash3
+import scala.collection.JavaConverters._
 
 /**
   * Abstract class with most of the implementation of an LSH based model. The implementing classes only need
@@ -123,8 +126,31 @@ abstract class LakeSoulLSHNearestNeighborSearchModel[T <: LakeSoulLSHNearestNeig
     * @param hashesWithBucketIndex hash bucket to be "integer-ized"
     * @return integer hash of the bucket
     */
+  private def getMur3HashCode(bandedHashes: Array[Int]): Int = {
+    MurmurHash3.arrayHash(bandedHashes)
+  }
+
+  /**
+    * Firstly, note that this hash has nothing to do with the hashes of locality sensitive hashing. Think of this more
+    * in the flavor of the feature hashing "trick". See https://en.wikipedia.org/wiki/Feature_hashing
+    *
+    * This method is used so that we need not maintain the meaty (hashes, index) tuple that will be shuffled around
+    * during joins. It is important to note that we want the hash based on the content of the array and the integer
+    * value itself rather than the object identity of the tuple. This is why we cannot use scala object.hashCode
+    * directly but have to rely on [[MurmurHash3]]
+    *
+    * 37 is just a prime number.
+    * Refer https://stackoverflow.com/questions/113511/best-implementation-for-hashcode-method/113600#113600
+    *
+    * @param hashesWithBucketIndex hash bucket to be "integer-ized"
+    * @return integer hash of the bucket
+    */
   private def getHashCode(hashesWithBucketIndex: (Array[Int], Int)): Int = {
     37 * (37 * 1 + MurmurHash3.arrayHash(hashesWithBucketIndex._1)) + hashesWithBucketIndex._2
+  }
+
+  private def getHashCode(bucketId: Int, index: Int): Int = {
+    37 * (37 * 1 + bucketId) + index
   }
 
   /**
@@ -153,17 +179,26 @@ abstract class LakeSoulLSHNearestNeighborSearchModel[T <: LakeSoulLSHNearestNeig
     * @return row containing the id, vector representation and the banded hashes
     */
   def transform(data: RDD[Item], lowerBias: Int = 0, upperBias: Int = 0): RDD[(ItemId, (Vector, BandedHashes))] = {
-    var transformedData = data.mapValues(x => (x, getBandedHashesWithBias(x, -lowerBias)))
-    for (bias <- -upperBias until -lowerBias) {
-      transformedData = transformedData.union(data.mapValues(x => (x, getBandedHashesWithBias(x, bias))))
+    data.mapValues(x => (x, getBandedHashes(x)))
+  }
+
+
+  /**
+    * Explode the data into multiple rows, one for each bucket that gets created. This allows us to frame the problem
+    * of figuring out matching buckets as that of a join on the bucket id, created using [[getHashCode()]]. Note that the
+    * item id and the vector representation gets replicated as many times as the number of bands in the output
+    *
+    * @param transformedData input data transformed using [[transform()]]
+    * @return data containing bucket id and (item id, vector) tuples
+    */
+  def explodeData(transformedData: RDD[(ItemId, (Vector, BandedHashes))]): RDD[((Int, Int), Item)] = {
+    transformedData.flatMap { case (id, (vector, bandedHashes)) =>
+      bandedHashes.zipWithIndex.map { case (hash, index) => ((getMur3HashCode(hash), index), (id, vector)) }
     }
-    for (bias <- lowerBias to upperBias) {
-      if (bias != 0) {
-        transformedData = transformedData.union(data.mapValues(x => (x, getBandedHashesWithBias(x, bias))))
-      }
-    }
-    println(s"transformedData count = ${transformedData.count()}")
-    transformedData
+  }
+
+  def hashExplodeData(explodedData: RDD[((Int, Int), Item)]): RDD[(Int, Item)] = {
+    explodedData.map { case ((hash, index), (id, vector)) => (getHashCode(hash, index), (id, vector)) }
   }
 
   /**
@@ -174,7 +209,7 @@ abstract class LakeSoulLSHNearestNeighborSearchModel[T <: LakeSoulLSHNearestNeig
     * @param transformedData input data transformed using [[transform()]]
     * @return data containing bucket id and (item id, vector) tuples
     */
-  def explodeData(transformedData: RDD[(ItemId, (Vector, BandedHashes))]): RDD[(Int, Item)] = {
+  def explodeDataAndHash(transformedData: RDD[(ItemId, (Vector, BandedHashes))]): RDD[(Int, Item)] = {
     transformedData.flatMap { case (id, (vector, bandedHashes)) =>
       bandedHashes.zipWithIndex.map(getHashCode).map { x => (x, (id, vector)) }
     }
@@ -270,11 +305,11 @@ abstract class LakeSoulLSHNearestNeighborSearchModel[T <: LakeSoulLSHNearestNeig
   def getAllNearestNeighborsWithBucketBias(srcItems: RDD[Item], candidatePool: RDD[Item], k: Int, lowerBias: Int = 0, upperBias: Int = 0):
   RDD[(ItemId, ItemId, Double)] = {
     val hashPartitioner = new HashPartitioner($(joinParallelism))
-    val srcItemsExploded = explodeData(transform(srcItems, lowerBias, upperBias)).partitionBy(hashPartitioner)
+    val srcItemsExploded = explodeDataAndHash(transform(srcItems, lowerBias, upperBias)).partitionBy(hashPartitioner)
     val candidatePoolExploded = if (srcItems.id == candidatePool.id) {
       srcItemsExploded
     } else {
-      explodeData(transform(candidatePool)).partitionBy(hashPartitioner)
+      explodeDataAndHash(transform(candidatePool)).partitionBy(hashPartitioner)
     }
     val zero: TopNQueue = new TopNQueue(k)
 
@@ -290,26 +325,39 @@ abstract class LakeSoulLSHNearestNeighborSearchModel[T <: LakeSoulLSHNearestNeig
 
     srcItemsExploded.zipPartitions(candidatePoolExploded) {
       case (srcIt, candidateIt) => {
-        val itemVectors = mutable.Map[ItemId, Vector]()
-        val hashBuckets = mutable.Map[Int, Array[mutable.ArrayBuffer[ItemId]]]()
+        // This check is still necessary for handling empty partitions
+        if (!srcIt.hasNext) {
+          Iterator.empty
+        } else {
+          val itemVectors = mutable.Map[ItemId, Vector]()
+          val hashBuckets = mutable.Map[Int, Array[mutable.ArrayBuffer[ItemId]]]()
 
-        val srcCount = updateHashBuckets(
-          srcIt,
-          itemVectors,
-          hashBuckets,
-          shouldReservoirSample = $(shouldSampleBuckets),
-          isCandidatePoolIt = false)
-        val candidateCount = updateHashBuckets(
-          candidateIt,
-          itemVectors,
-          hashBuckets,
-          shouldReservoirSample = $(shouldSampleBuckets),
-          isCandidatePoolIt = true)
-        println(s"taskId = ${TaskContext.getPartitionId()}, srcCount = $srcCount, candidateCount = $candidateCount")
+          val srcCount = updateHashBuckets(
+            srcIt,
+            itemVectors,
+            hashBuckets,
+            shouldReservoirSample = $(shouldSampleBuckets),
+            isCandidatePoolIt = false)
 
-        // TODO Start using loggers to log useful info
-        //        logStats(TaskContext.getPartitionId(), itemVectors, hashBuckets)
-        new NearestNeighborIterator(hashBuckets.valuesIterator, itemVectors, k)
+          // Only process candidate items if we have source items
+          val candidateCount = if (srcCount > 0) {
+            updateHashBuckets(
+              candidateIt,
+              itemVectors,
+              hashBuckets,
+              shouldReservoirSample = $(shouldSampleBuckets),
+              isCandidatePoolIt = true)
+          } else 0
+
+          println(s"taskId = ${TaskContext.getPartitionId()}, srcCount = $srcCount, candidateCount = $candidateCount")
+
+          // If we have no source items or no hash buckets, return an empty iterator
+          if (srcCount == 0 || hashBuckets.isEmpty) {
+            Iterator.empty
+          } else {
+            new NearestNeighborIterator(hashBuckets.valuesIterator, itemVectors, k)
+          }
+        }
       }
     }
       .aggregateByKey(zero, $(numOutputPartitions))(seqOp, combOp)
@@ -343,6 +391,106 @@ abstract class LakeSoulLSHNearestNeighborSearchModel[T <: LakeSoulLSHNearestNeig
     getAllNearestNeighbors(items, items, k)
   }
 
+  def getAllNearestNeighborsWithIndex(srcItems: RDD[Item], candidateIndex: DataFrame, k: Int, lowerBias: Int = 0, upperBias: Int = 0):
+  RDD[(ItemId, ItemId, Double)] = {
+    val hashPartitioner = new HashPartitioner($(joinParallelism))
+
+    // Collect all (bucketId, hashIndex) pairs from srcItems
+    val srcSelectedBucket = explodeData(transform(srcItems, lowerBias, upperBias)).map {
+      case ((bucketId, hashIndex), _) => (bucketId, hashIndex)
+    }.distinct().collect()
+
+
+    // Create a broadcast variable with a set of all (bucketId, hashIndex) pairs
+    val bucketHashSet = srcItems.sparkContext.broadcast(srcSelectedBucket.toSet)
+
+    // Transform srcItems to the format needed for nearest neighbor search
+    val srcItemsExploded = explodeDataAndHash(transform(srcItems, lowerBias, upperBias)).partitionBy(hashPartitioner)
+
+    // Filter the DataFrame directly using the bucket information
+    import org.apache.spark.sql.functions._
+
+    // Build a more efficient filter condition using OR combinations
+    // This allows for better predicate pushdown
+    val bucketPairs = srcSelectedBucket
+    val bucketConditions = bucketPairs.map { case (bucketId, hashIndex) =>
+      (col("bucket_id") === bucketId) && (col("hash_index") === hashIndex)
+    }
+
+    // Combine all conditions with OR
+    val filterCondition = bucketConditions.reduce(_ || _)
+    val filteredCandidateIndex = candidateIndex.filter(filterCondition)
+
+    // Convert filtered DataFrame to key-value pair RDD before partitioning
+    val candidatePoolExploded = filteredCandidateIndex.rdd
+      .map(row => {
+        // Extract values based on the specific column names
+        val bucketId = row.getAs[Int]("bucket_id")
+        val hashIndex = row.getAs[Int]("hash_index")
+        val vectorId = row.getAs[Long]("vector_id")
+
+        // Convert vector array to Vector
+        val vectorArray = row.getAs[Seq[Float]]("vector").map(_.toDouble).toArray
+        val vector = org.apache.spark.ml.linalg.Vectors.dense(vectorArray)
+
+        // Hash the bucket information and return the tuple for partitioning
+        (getHashCode(bucketId, hashIndex), (vectorId, vector))
+      })
+      .partitionBy(hashPartitioner)
+
+    val zero: TopNQueue = new TopNQueue(k)
+
+    def seqOp(U: TopNQueue, V: IndexedSeq[ItemIdDistancePair]): TopNQueue = {
+      U.enqueue(V: _*);
+      U
+    }
+
+    def combOp(X: TopNQueue, Y: TopNQueue): TopNQueue = {
+      X.enqueue(Y.iterator().toSeq: _*);
+      X
+    }
+
+    srcItemsExploded.zipPartitions(candidatePoolExploded) {
+      case (srcIt, candidateIt) => {
+        // This check is still necessary for handling empty partitions
+        if (!srcIt.hasNext) {
+          Iterator.empty
+        } else {
+          val itemVectors = mutable.Map[ItemId, Vector]()
+          val hashBuckets = mutable.Map[Int, Array[mutable.ArrayBuffer[ItemId]]]()
+
+          val srcCount = updateHashBuckets(
+            srcIt,
+            itemVectors,
+            hashBuckets,
+            shouldReservoirSample = $(shouldSampleBuckets),
+            isCandidatePoolIt = false)
+
+          // Only process candidate items if we have source items
+          val candidateCount = if (srcCount > 0) {
+            updateHashBuckets(
+              candidateIt,
+              itemVectors,
+              hashBuckets,
+              shouldReservoirSample = $(shouldSampleBuckets),
+              isCandidatePoolIt = true)
+          } else 0
+
+          println(s"taskId = ${TaskContext.getPartitionId()}, srcCount = $srcCount, candidateCount = $candidateCount")
+
+          // If we have no source items or no hash buckets, return an empty iterator
+          if (srcCount == 0 || hashBuckets.isEmpty) {
+            Iterator.empty
+          } else {
+            new NearestNeighborIterator(hashBuckets.valuesIterator, itemVectors, k)
+          }
+        }
+      }
+    }
+      .aggregateByKey(zero, $(numOutputPartitions))(seqOp, combOp)
+      .flatMap { x => x._2.iterator().map(z => (x._1, z._1, z._2)) }
+  }
+
   /**
     * Get k nearest neighbors to the query vector from the given items
     *
@@ -354,7 +502,7 @@ abstract class LakeSoulLSHNearestNeighborSearchModel[T <: LakeSoulLSHNearestNeig
   override def getNearestNeighbors(key: Vector, items: RDD[Item], k: Int): Array[ItemIdDistancePair] = {
     val hashes = items.sparkContext.broadcast(
       getBandedHashes(key).zipWithIndex.map(getHashCode).toSet)
-    explodeData(transform(items))
+    explodeDataAndHash(transform(items))
       .filter { case (hash, _) => hashes.value.contains(hash) }
       .map { case (_, (id, vector)) =>
         (id, distance.compute(key.toSparse, vector))

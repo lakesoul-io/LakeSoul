@@ -243,8 +243,7 @@ class ANNCase extends QueryTest
                                trueNeighbors: Array[Array[Int]],
                                predictedNeighbors: Array[Row],
                                k: Int,
-                               numSamples: Int,
-                               bias: Int = 0): Double = {
+                               numSamples: Int): Double = {
     var totalRecall = 0.0
     for (i <- sampleIndices.indices) {
       println(sampleIndices(i))
@@ -785,7 +784,7 @@ class ANNCase extends QueryTest
             val normalizedTrainVectors = trainVectors.map { vec =>
               vec.zipWithIndex.map { case (value, i) =>
                 if (stdDevs(i) > 0.0001) {
-                  // First convert to standard z-score (mean=0, stdDev=1), 
+                  // First convert to standard z-score (mean=0, stdDev=1),
                   // then scale to target stdDev and shift to target mean
                   ((value - means(i)) / stdDevs(i) * zScoreTargetStdDev + zScoreTargetMean).toFloat
                 } else {
@@ -872,7 +871,7 @@ class ANNCase extends QueryTest
                   val mean = broadcastFeatureMeans.value(i)
                   val stdDev = broadcastFeatureStdDevs.value(i)
                   if (stdDev > 0.0001) {
-                    // First convert to standard z-score (mean=0, stdDev=1), 
+                    // First convert to standard z-score (mean=0, stdDev=1),
                     // then scale to target stdDev and shift to target mean
                     ((value - mean) / stdDev * zScoreTargetStdDev + zScoreTargetMean).toFloat
                   } else {
@@ -904,7 +903,7 @@ class ANNCase extends QueryTest
           //          .setNumOutputPartitions(50)
           .createModel(numFeatures)
 
-        val bias = 20
+        val bias = 0
         // Run similarity search and time it
         val result: Array[(Long, Long, Double)] = spark.time({
           val res = model.getAllNearestNeighborsWithBucketBias(sampledTestRDD, candidateRDD, topK, 0, bias).collect()
@@ -918,7 +917,7 @@ class ANNCase extends QueryTest
         }
 
         // Calculate and print recall
-        val avgRecall = calculateRecall(sampleIndices, trueNeighbors, predictedNeighborsAsRows, topK, numQuery, bias)
+        val avgRecall = calculateRecall(sampleIndices, trueNeighbors, predictedNeighborsAsRows, topK, numQuery)
         println(s"LakeSoul LSH with $normName: Average recall@$topK = $avgRecall")
 
         // Print a sample vector normalization example
@@ -981,4 +980,174 @@ class ANNCase extends QueryTest
     println("\n==== Normalization Comparison Complete ====")
     println("Compare the recall results above to determine the best normalization strategy")
   }
+
+  test("test LakeSoul persist LSH Index") {
+    withTempDir { dir =>
+      //
+      val tableName = "test_lsh_index"
+      val numHashes = 256
+      val signatureLength = 8
+
+      val hdfFile = new HdfFile(Paths.get("/Users/ceng/Downloads/fashion-mnist-784-euclidean.hdf5"))
+      val trainDataset = hdfFile.getDatasetByPath("train")
+      val trainData = trainDataset.getData()
+      val trainVectors = trainData.asInstanceOf[Array[Array[Float]]]
+
+      val testDataset = hdfFile.getDatasetByPath("test")
+      val testData = testDataset.getData()
+      val testVectors = testData.asInstanceOf[Array[Array[Float]]]
+
+      // Load neighbors dataset for ground truth
+      val neighborDataset = hdfFile.getDatasetByPath("neighbors")
+      val neighborData = neighborDataset.getData()
+      val trueNeighbors = neighborData.asInstanceOf[Array[Array[Int]]]
+
+      // Apply min-max normalization to training vectors
+      println("Calculating global min-max normalization parameters")
+      val numFeatures = trainVectors(0).length
+      val bucketWidth = numFeatures / 32
+
+      val featureMin = Array.fill(numFeatures)(Float.MaxValue)
+      val featureMax = Array.fill(numFeatures)(Float.MinValue)
+
+      // Find min and max for each feature across all training vectors
+      trainVectors.foreach { vec =>
+        for (i <- 0 until numFeatures) {
+          featureMin(i) = math.min(featureMin(i), vec(i))
+          featureMax(i) = math.max(featureMax(i), vec(i))
+        }
+      }
+
+      // Broadcast min and max values to make them available to all executors
+      val broadcastFeatureMin = spark.sparkContext.broadcast(featureMin)
+      val broadcastFeatureMax = spark.sparkContext.broadcast(featureMax)
+
+      println(s"Min-max parameters calculated and broadcast to executors")
+      println(s"Sample min values (first 5): ${featureMin.take(5).mkString(", ")}")
+      println(s"Sample max values (first 5): ${featureMax.take(5).mkString(", ")}")
+
+      // Create normalized versions of train vectors using min-max scaling
+      val normalizedTrainVectors = trainVectors.map { vec =>
+        vec.zipWithIndex.map { case (value, i) =>
+          if (featureMax(i) - featureMin(i) > 0.0001f) {
+            (value - featureMin(i)) / (featureMax(i) - featureMin(i))
+          } else {
+            0.0f // Handle case where max = min (constant feature)
+          }
+        }
+      }
+
+      // Convert training vectors to RDD format
+      val trainRDD = spark.sparkContext.parallelize(
+        normalizedTrainVectors.zipWithIndex.map { case (vec, idx) =>
+          (idx.toLong, org.apache.spark.ml.linalg.Vectors.dense(vec.map(_.toDouble)))
+        }
+      )
+
+      // Create a model using LakeSoulRandomProjectionNNS
+      val model = new LakeSoulRandomProjectionNNS()
+        .setSeed(1234)
+        .setNumHashes(numHashes)
+        .setSignatureLength(signatureLength)
+        .setBucketWidth(bucketWidth)
+        .setBucketLimit(2000)
+        .createModel(numFeatures)
+
+      // Transform the data to get hashed values
+      val transformedData = model.transform(trainRDD)
+
+      // Explode the data into bucket-to-vector mappings
+      val explodedData = model.explodeData(transformedData)
+
+      // Convert exploded data to DataFrame with schema
+      val explodedSchema = StructType(Seq(
+        StructField("bucket_id", IntegerType, false),
+        StructField("hash_index", IntegerType, false),
+        StructField("vector_id", LongType, false),
+        StructField("vector", ArrayType(FloatType), true)
+      ))
+
+      // Convert the exploded RDD to a DataFrame suitable for storage
+      val explodedDF = explodedData.map { case ((bucketId, hashIndex), (vectorId, vector)) =>
+        // Get the raw float array from the Vector
+        val floatArray = vector.toArray.map(_.toFloat)
+        (bucketId, hashIndex, vectorId, floatArray)
+      }.toDF("bucket_id", "hash_index", "vector_id", "vector")
+
+
+      // Debug: Print the schema of explodedDF to understand its structure better
+      println("Schema of explodedDF before saving:")
+      explodedDF.printSchema()
+
+      // Calculate some statistics about the exploded data
+      val totalBuckets = explodedDF.select("bucket_id").distinct().count()
+      val totalVectors = explodedDF.select("vector_id").distinct().count()
+      val totalRows = explodedDF.count()
+
+      println(s"Generated LSH Index statistics:")
+      println(s"- Total unique buckets: $totalBuckets")
+      println(s"- Total unique vectors: $totalVectors")
+      println(s"- Total exploded rows: $totalRows")
+      println(s"- Average vectors per bucket: ${totalRows.toDouble / totalBuckets}")
+
+      // Save as LakeSoul table
+      explodedDF.write.format("lakesoul")
+        .option("hashPartitions", "bucket_id")
+        .option("hashBucketNum", 16)
+        .option("rangePartitions", "hash_index")
+        .option(LakeSoulOptions.SHORT_TABLE_NAME, tableName)
+        .mode("Overwrite")
+        .save(dir.getCanonicalPath)
+
+      println(s"LSH Index saved as LakeSoul table at ${dir.getCanonicalPath}")
+
+      // Read back the data to verify
+      val readBackDF = LakeSoulTable.forPath(dir.getCanonicalPath).toDF
+      //      val readRowCount = readBackDF.count()
+      //      val hashIndex = 0
+      //
+      //      val bucketInHashIndex = readBackDF.where(col("hash_index") === 0).select("bucket_id").distinct().count()
+      //
+      //      println(s"Verified saved LSH Index:")
+      //      println(s"- Sample hash index $hashIndex contains $bucketInHashIndex buckets")
+      //
+      //      // Debug: Print the schema of readBackDF to understand its structure better
+      //      println("Schema of readBackDF:")
+      //      readBackDF.printSchema()
+
+      val sampledTestRDD = spark.sparkContext.parallelize(
+        sampleIndices.map { case idx =>
+          val testVec = testVectors(idx)
+          val normalizedTestVec = testVec.zipWithIndex.map { case (value, i) =>
+            val min = broadcastFeatureMin.value(i)
+            val max = broadcastFeatureMax.value(i)
+            if (max - min > 0.0001f) {
+              (value - min) / (max - min)
+            } else {
+              0.0f
+            }
+          }
+          (idx.toLong, org.apache.spark.ml.linalg.Vectors.dense(normalizedTestVec.map(_.toDouble)))
+        }
+      )
+
+      val result: Array[(Long, Long, Double)] = spark.time({
+        model.getAllNearestNeighborsWithIndex(sampledTestRDD, readBackDF, topK).collect()
+      })
+
+      println(s"result = ${result.take(5).mkString("; ")}...")
+
+      // Convert the results to Row format for recall calculation
+      val predictedNeighborsAsRows = result.map { case (queryId, neighborId, distance) =>
+        Row(queryId, neighborId, distance)
+      }
+
+      // Calculate and print recall
+      val avgRecall = calculateRecall(sampleIndices, trueNeighbors, predictedNeighborsAsRows, topK, numQuery)
+      println(s"LakeSoul LSH : Average recall@$topK = $avgRecall")
+
+
+    }
+  }
+
 }

@@ -272,6 +272,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
         if (mergeOps != null) {
             reader.addMergeOps(mergeOps);
         }
+        reader.setOption("skip_merge_on_read", "true");
 
         reader.initializeReader();
 
