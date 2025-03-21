@@ -459,7 +459,8 @@ pub async fn infer_schema(
 }
 
 pub fn apply_partition_filter(wrapper: JniWrapper, schema: SchemaRef, filter: Plan) -> Result<JniWrapper> {
-    let runtime = Builder::new_current_thread()
+    let runtime = Builder::new_multi_thread()
+        .worker_threads(1)
         .build()
         .map_err(|e| External(Box::new(e)))?;
     runtime.block_on(async {
