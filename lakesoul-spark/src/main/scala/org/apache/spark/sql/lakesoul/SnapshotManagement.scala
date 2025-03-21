@@ -143,7 +143,7 @@ object SnapshotManagement {
       LakeSoulSQLConf.SNAPSHOT_CACHE_EXPIRE.defaultValue.get
     }
     val builder = CacheBuilder.newBuilder()
-      .expireAfterWrite(expireMin, TimeUnit.SECONDS)
+      .expireAfterWrite(expireMin, TimeUnit.MINUTES)
       .removalListener((removalNotification: RemovalNotification[String, SnapshotManagement]) => {
         val snapshotManagement = removalNotification.getValue
         try snapshotManagement.snapshot catch {

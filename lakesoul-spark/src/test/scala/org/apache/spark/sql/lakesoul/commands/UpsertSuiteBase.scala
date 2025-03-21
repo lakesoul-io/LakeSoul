@@ -150,6 +150,23 @@ class UpsertSuiteBase extends QueryTest
       Seq("range", "hash", "value"))
   }
 
+  test("merge - same column - partial partition filter") {
+    initTable(
+      Seq((20201101, 1, 1, "a"), (20201101, 2, 2, "a"), (20201101, 3, 3, "b"), (20201102, 4, 4, "b"))
+        .toDF("range", "hash", "value1", "value2"),
+      "range, value2",
+      "hash")
+
+    checkUpsertByFilter(
+      Seq((20201101, 1, 11, "a"), (20201101, 3, 33, "c"), (20201102, 4, 44, "b"))
+        .toDF("range", "hash", "value1", "value2"),
+      None,
+      Row(20201101, 1, 11, "a") :: Row(20201101, 2, 2, "a") :: Row(20201101, 3, 3, "b") ::
+        Row(20201101, 3, 33, "c") :: Nil,
+      "range=20201101",
+      Seq("range", "hash", "value1", "value2"))
+  }
+
   test("merge - different columns") {
     initTable(
       Seq((20201101, 1, 1), (20201101, 2, 2), (20201101, 3, 3), (20201102, 4, 4))
