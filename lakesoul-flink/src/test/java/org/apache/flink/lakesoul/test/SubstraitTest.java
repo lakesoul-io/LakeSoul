@@ -20,11 +20,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 public class SubstraitTest extends AbstractTestBase {
 
-    public static void main(String[] args) {
-        TableEnvironment createTableEnv = TestUtils.createTableEnv(BATCH_TYPE);
-        createTableEnv.executeSql("select * from nation where n_regionkey = 0 or n_nationkey > 14").print();
-    }
-
     @Test
     public void loadSubStrait() throws IOException {
         SimpleExtension.ExtensionCollection extensionCollection = SimpleExtension.loadDefaults();
@@ -127,7 +122,7 @@ public class SubstraitTest extends AbstractTestBase {
                 "    createTime TIMESTAMP, " +
                 "    modifyTime TIMESTAMP_LTZ " +
                 ") " +
-                "PARTITIONED BY (`zone`,`country`,`money`)" +
+                "PARTITIONED BY (`zone`,`country`,`birthday`)" +
 
                 "WITH (" +
                 "    'connector'='lakesoul'," +
