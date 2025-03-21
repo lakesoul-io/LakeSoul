@@ -28,15 +28,15 @@ class Snapshot(table_info: TableInfo,
   private var readType: String = ReadType.FULL_READ
   var readPartitionInfo: mutable.HashSet[PartitionInfoScala] = mutable.HashSet.empty
 
-  private val partitionInfoCache: scala.collection.concurrent.Map[Array[Expression], Array[PartitionFilterInfo]]
-    = new ConcurrentHashMap[Array[Expression], Array[PartitionFilterInfo]]().asScala
+  private val partitionInfoCache: scala.collection.concurrent.Map[String, Array[PartitionFilterInfo]]
+    = new ConcurrentHashMap[String, Array[PartitionFilterInfo]]().asScala
 
   def putPartitionInfoCache(filter: Seq[Expression], partitionFilterInfo: Seq[PartitionFilterInfo]): Unit = {
-    partitionInfoCache(filter.toArray) = partitionFilterInfo.toArray
+    partitionInfoCache(filter.toString()) = partitionFilterInfo.toArray
   }
 
   def getPartitionInfoFromCache(filter: Seq[Expression]): Option[Array[PartitionFilterInfo]] = {
-    partitionInfoCache.get(filter.toArray)
+    partitionInfoCache.get(filter.toString())
   }
 
   def setPartitionDescAndVersion(parDesc: String, startParVer: Long, endParVer: Long, readType: String): Unit = {
