@@ -134,6 +134,14 @@ public class LakeSoulTableSource
         }
         LOG.info("completePartitionFilters: {}, table {}", completePartitionFilters, tableId);
         LOG.info("nonPartitionFilters: {}, table {}", nonPartitionFilters, tableId);
+        Tuple2<Result, Expression> substraitPartitionExpr = SubstraitFlinkUtil.flinkExprToSubStraitExpr(
+                completePartitionFilters
+        );
+        Expression partitionFilter = substraitPartitionExpr.f1;
+        if (isDelete()) {
+            partitionFilter = not(partitionFilter);
+        }
+        this.partitionFilters = substraitExprToProto(partitionFilter, tableInfo.getTableName());
 
         if (!completePartitionFilters.isEmpty()) {
             List<PartitionInfo> remainingPartitionInfo = Collections.emptyList();
@@ -170,14 +178,6 @@ public class LakeSoulTableSource
                                         .setPartitionDesc(desc)
                                         .build())
                         .collect(Collectors.toList());
-                Tuple2<Result, Expression> substraitPartitionExpr = SubstraitFlinkUtil.flinkExprToSubStraitExpr(
-                        completePartitionFilters
-                );
-                Expression partitionFilter = substraitPartitionExpr.f1;
-                if (isDelete()) {
-                    partitionFilter = not(partitionFilter);
-                }
-                this.partitionFilters = substraitExprToProto(partitionFilter, tableInfo.getTableName());
                 Schema tableSchema = ArrowUtils.toArrowSchema(tableRowType);
                 List<Field>
                         partitionFields =
