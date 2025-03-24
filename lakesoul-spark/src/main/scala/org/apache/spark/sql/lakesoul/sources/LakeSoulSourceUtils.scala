@@ -17,7 +17,7 @@ import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.sources.{BaseRelation, Filter, InsertableRelation, PrunedFilteredScan}
 import org.apache.spark.sql.lakesoul.commands.WriteIntoTable
 import org.apache.spark.sql.lakesoul.utils.{SparkUtil, TableInfo}
-import org.apache.spark.sql.lakesoul.{LakeSoulOptions, SnapshotManagement}
+import org.apache.spark.sql.lakesoul.{LakeSoulOptions, PartitionFilter, SnapshotManagement}
 import org.apache.spark.sql.types.StructType
 
 object LakeSoulSourceUtils {
@@ -109,7 +109,7 @@ object LakeSoulSourceUtils {
 
 }
 
-case class LakeSoulBaseRelation(files: Seq[DataFileInfo],
+case class LakeSoulBaseRelation(files: Option[Seq[DataFileInfo]],
                                 snapshotManagement: SnapshotManagement)(val sparkSession: SparkSession)
   extends BaseRelation with InsertableRelation with PrunedFilteredScan {
 
@@ -136,8 +136,14 @@ case class LakeSoulBaseRelation(files: Seq[DataFileInfo],
       case _ => LakeSoulSourceUtils.translateFilters(filters)
     }
 
+    val readFiles = files match {
+      case Some(f) => f.toArray
+      case None =>
+        PartitionFilter.filesForScan(snapshotManagement.snapshot, Seq(predicts))
+    }
+
     SparkUtil
-      .createDataFrame(files, requiredColumns, snapshotManagement, Option(predicts))
+      .createDataFrame(readFiles, requiredColumns, snapshotManagement, Option(predicts))
       .filter(Column(predicts))
       .select(requiredColumns.map(col): _*)
       .rdd

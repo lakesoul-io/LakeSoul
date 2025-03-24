@@ -72,8 +72,8 @@ case class LakeSoulTableV2(spark: SparkSession,
 
   private lazy val snapshot: Snapshot = snapshotManagement.snapshot
 
-  private val mapTablePartitionSpec: util.Map[InternalRow, PartitionInfoScala] =
-    new ConcurrentHashMap[InternalRow, PartitionInfoScala]()
+  private val mapTablePartitionSpec: util.Map[InternalRow, String] =
+    new ConcurrentHashMap[InternalRow, String]()
 
   override def schema(): StructType =
     StructType(snapshot.getTableInfo.data_schema ++ snapshot.getTableInfo.range_partition_schema)
@@ -162,9 +162,9 @@ case class LakeSoulTableV2(spark: SparkSession,
 
   override def dropPartition(ident: InternalRow): Boolean = {
     if (mapTablePartitionSpec.containsKey(ident)) {
-      val partitionInfoScala = mapTablePartitionSpec.get(ident)
-      val deleteFilePaths = SparkMetaVersion.dropPartitionInfoByRangeId(partitionInfoScala.table_id, partitionInfoScala.range_value)
-      if (null != deleteFilePaths && deleteFilePaths.length > 0) {
+      val partitionDesc = mapTablePartitionSpec.get(ident)
+      val deleteFilePaths = SparkMetaVersion.dropPartitionInfoByRangeId(snapshot.getTableInfo.table_id, partitionDesc)
+      if (null != deleteFilePaths && deleteFilePaths.nonEmpty) {
         val sessionHadoopConf = SparkSession.active.sessionState.newHadoopConf()
         val fs = path.getFileSystem(sessionHadoopConf)
         for (item <- deleteFilePaths) {
@@ -199,16 +199,15 @@ case class LakeSoulTableV2(spark: SparkSession,
     val indexes = names.map(schema.fieldIndex)
     val dataTypes = names.map(schema(_).dataType)
     val currentRow = new GenericInternalRow(new Array[Any](names.length))
-    val partitionInfoArray = snapshot.getPartitionInfoArray
+    val partitionInfoArray = SparkMetaVersion.getAllPartitionDesc(snapshot.getTableInfo.table_id)
 
-    partitionInfoArray.foreach(partition => {
-      val range_value = partition.range_value
+    partitionInfoArray.foreach(range_value => {
       val map = range_value.split(LAKESOUL_RANGE_PARTITION_SPLITTER).map(p => {
         val strings = p.split(LAKESOUL_PARTITION_DESC_KV_DELIM)
         strings(0) -> strings(1)
       }).toMap
       val row = ResolvePartitionSpec.convertToPartIdent(map, schema)
-      mapTablePartitionSpec.put(row, partition)
+      mapTablePartitionSpec.put(row, range_value)
     })
 
     val ss = mapTablePartitionSpec.keySet().asScala.filter { key =>

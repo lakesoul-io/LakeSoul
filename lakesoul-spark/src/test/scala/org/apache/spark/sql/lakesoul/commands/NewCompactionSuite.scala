@@ -876,7 +876,9 @@ class NewCompactionSuite extends QueryTest
       assert(getFileList(tablePath).groupBy(_.file_bucket_id).keys.toSet.size == newHashBucketNum)
       assert(getTableInfo(tablePath).bucket_num == newHashBucketNum)
 
-      val compactedData = lakeSoulTable.toDF.orderBy("id", "date").collect()
+      LakeSoulTable.uncached(tablePath)
+      val lakeSoulTable2 = LakeSoulTable.forPath(tablePath)
+      val compactedData = lakeSoulTable2.toDF.orderBy("id", "date").collect()
       println(compactedData.mkString("Array(", ", ", ")"))
       assert(compactedData.length == 105, s"The compressed data should have ${105} rows, but it actually has ${compactedData.length} rows")
 

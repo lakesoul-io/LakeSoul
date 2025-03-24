@@ -31,7 +31,8 @@ import java.util.stream.Collectors;
 
 import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_NON_PARTITION_TABLE_PART_DESC;
 
-public class LakeSoulAllPartitionDynamicSplitEnumerator implements SplitEnumerator<LakeSoulPartitionSplit, LakeSoulPendingSplits> {
+public class LakeSoulAllPartitionDynamicSplitEnumerator
+        implements SplitEnumerator<LakeSoulPartitionSplit, LakeSoulPendingSplits> {
     private static final Logger LOG = LoggerFactory.getLogger(LakeSoulAllPartitionDynamicSplitEnumerator.class);
 
     private final SplitEnumeratorContext<LakeSoulPartitionSplit> context;
@@ -45,12 +46,16 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator implements SplitEnumerat
     private final TableInfo tableInfo;
     protected Schema partitionArrowSchema;
     String tableId;
+    String fullTableName;
     private long startTime;
     private long nextStartTime;
     private int hashBucketNum = -1;
-    String fullTableName;
 
-    public LakeSoulAllPartitionDynamicSplitEnumerator(SplitEnumeratorContext<LakeSoulPartitionSplit> context, LakeSoulDynSplitAssigner splitAssigner, RowType rowType, long discoveryInterval, long startTime, String tableId, String hashBucketNum, List<String> partitionColumns, Plan partitionFilters) {
+    public LakeSoulAllPartitionDynamicSplitEnumerator(SplitEnumeratorContext<LakeSoulPartitionSplit> context,
+                                                      LakeSoulDynSplitAssigner splitAssigner, RowType rowType,
+                                                      long discoveryInterval, long startTime, String tableId,
+                                                      String hashBucketNum, List<String> partitionColumns,
+                                                      Plan partitionFilters) {
         this.context = context;
         this.splitAssigner = splitAssigner;
         this.discoveryInterval = discoveryInterval;
@@ -62,7 +67,9 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator implements SplitEnumerat
         this.partitionColumns = partitionColumns;
 
         Schema tableSchema = ArrowUtils.toArrowSchema(rowType);
-        List<Field> partitionFields = partitionColumns.stream().map(tableSchema::findField).collect(Collectors.toList());
+        List<Field>
+                partitionFields =
+                partitionColumns.stream().map(tableSchema::findField).collect(Collectors.toList());
 
         this.partitionArrowSchema = new Schema(partitionFields);
         this.partitionFilters = partitionFilters;

@@ -82,7 +82,7 @@ trait Command {
                                   nameToFileMap: Map[String, DataFileInfo]): LakeSoulBaseRelation = {
     val scannedFiles = inputLeafFiles.map(f => getTouchedFile(f, nameToFileMap))
 
-    LakeSoulBaseRelation(scannedFiles, tc.snapshotManagement)(spark)
+    LakeSoulBaseRelation(Some(scannedFiles), tc.snapshotManagement)(spark)
   }
 
   /**

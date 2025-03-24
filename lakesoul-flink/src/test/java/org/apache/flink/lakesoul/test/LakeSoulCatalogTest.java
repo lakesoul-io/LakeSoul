@@ -133,6 +133,7 @@ public class LakeSoulCatalogTest extends AbstractTestBase {
                         .contains("COMMENT 'this is user table'");
         List<Row> descTableResult = CollectionUtil.iteratorToList(
             tEnvs.executeSql("desc table_with_comments").collect());
+        System.out.println(descTableResult);
         Assertions.assertThat(descTableResult.get(0).getField(6).toString())
                 .contains("user id");
         Assertions.assertThat(descTableResult.get(1).getField(6).toString())

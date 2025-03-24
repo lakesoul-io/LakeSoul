@@ -209,7 +209,7 @@ abstract class InsertIntoTests(
     }
   }
 
-  test("insertInto: append partitioned table and read with partition filter") {
+  test("insertInto: append partitioned table and read with partition filter int type") {
     val t1 = "default.tbl" + System.currentTimeMillis()
     withTable(t1) {
       sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY(id)")
@@ -217,6 +217,81 @@ abstract class InsertIntoTests(
       doInsert(t1, df)
       val expected = Seq((1L, "a"), (2L, "b")).toDF("id", "data")
       checkAnswer(spark.table(t1).filter("id <= 2").select("id", "data"), expected)
+    }
+  }
+
+  test("insertInto: append partitioned table and read with partition filter string type") {
+    val t1 = "default.tbl" + System.currentTimeMillis()
+    withTable(t1) {
+      sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY(data)")
+      val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data")
+      doInsert(t1, df)
+      val expected = Seq((1L, "a")).toDF("id", "data")
+      checkAnswer(spark.table(t1).filter("data = 'a'").select("id", "data"), expected)
+    }
+  }
+
+  test("insertInto: append partitioned table and read with partition filter date type") {
+    val t1 = "default.tbl" + System.currentTimeMillis()
+    withTable(t1) {
+      sql(s"CREATE TABLE $t1 (id bigint, data date) USING $v2Format PARTITIONED BY(data)")
+      val df = Seq((1L, "2025-01-01"), (2L, "2025-01-01"), (3L, "2025-01-02")).toDF("id", "data")
+        .withColumn("data", col("data").cast(DateType))
+      doInsert(t1, df)
+      val expected = Seq((1L, "2025-01-01"), (2L, "2025-01-01")).toDF("id", "data")
+        .withColumn("data", col("data").cast(DateType))
+      checkAnswer(spark.table(t1).filter("data = to_date('2025-01-01')").select("id", "data"), expected)
+    }
+  }
+
+  test("insertInto: append partitioned table and read with partition all eq filter") {
+    val t1 = "default.tbl" + System.currentTimeMillis()
+    withTable(t1) {
+      sql(s"CREATE TABLE $t1 (id bigint, data string, `date` date) USING $v2Format PARTITIONED BY(data, `date`)")
+      val df = Seq((1L, "a", "2025-01-01"), (2L, "b", "2025-01-01"), (3L, "b", "2025-01-02")).toDF("id", "data", "date")
+        .withColumn("date", col("date").cast(DateType))
+      doInsert(t1, df)
+      val expected = Seq((2L, "b", "2025-01-01")).toDF("id", "data", "date")
+        .withColumn("date", col("date").cast(DateType))
+      checkAnswer(spark.table(t1).filter("data = 'b' and `date` = to_date('2025-01-01')").select("id", "data", "date"), expected)
+    }
+  }
+
+  test("insertInto: append partitioned table and read with partition partial filter string type") {
+    val t1 = "default.tbl" + System.currentTimeMillis()
+    withTable(t1) {
+      sql(s"CREATE TABLE $t1 (id bigint, data string, `date` date) USING $v2Format PARTITIONED BY(data, `date`)")
+      val df = Seq((1L, "a", "2025-01-01"), (2L, "b", "2025-01-01"), (3L, "c", "2025-01-02")).toDF("id", "data", "date")
+        .withColumn("date", col("date").cast(DateType))
+      doInsert(t1, df)
+      val expected = Seq((2L, "b", "2025-01-01")).toDF("id", "data", "date")
+        .withColumn("date", col("date").cast(DateType))
+      checkAnswer(spark.table(t1).filter("data = 'b'").select("id", "data", "date"), expected)
+    }
+  }
+
+  test("insertInto: append partitioned table and read with partition partial filter date type") {
+    val t1 = "default.tbl" + System.currentTimeMillis()
+    withTable(t1) {
+      sql(s"CREATE TABLE $t1 (id bigint, data string, `date` date) USING $v2Format PARTITIONED BY(data, `date`)")
+      val df = Seq((1L, "a", "2025-01-01"), (2L, "b", "2025-01-02"), (3L, "c", "2025-01-03")).toDF("id", "data", "date")
+        .withColumn("date", col("date").cast(DateType))
+      doInsert(t1, df)
+      val expected = Seq((2L, "b", "2025-01-02")).toDF("id", "data", "date")
+        .withColumn("date", col("date").cast(DateType))
+      checkAnswer(spark.table(t1).filter("`date` = to_date('2025-01-02')").select("id", "data", "date"), expected)
+      val df2 = Seq((2L, "a", "2025-01-01")).toDF("id", "data", "date")
+        .withColumn("date", col("date").cast(DateType))
+      doInsert(t1, df2)
+      val expected2 = Seq((1L, "a", "2025-01-01"), (2L, "a", "2025-01-01")).toDF("id", "data", "date")
+        .withColumn("date", col("date").cast(DateType))
+      checkAnswer(spark.table(t1).filter("`date` = to_date('2025-01-01')").select("id", "data", "date"), expected2)
+      val expected3 = Seq((2L, "b", "2025-01-02")).toDF("id", "data", "date")
+        .withColumn("date", col("date").cast(DateType))
+      checkAnswer(spark.table(t1).filter("`date` = to_date('2025-01-02')").select("id", "data", "date"), expected3)
+      val expected4 = Seq((3L, "c", "2025-01-03")).toDF("id", "data", "date")
+        .withColumn("date", col("date").cast(DateType))
+      checkAnswer(spark.table(t1).filter("`date` = to_date('2025-01-03')").select("id", "data", "date"), expected4)
     }
   }
 

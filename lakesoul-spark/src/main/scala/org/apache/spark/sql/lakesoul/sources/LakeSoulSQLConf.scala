@@ -93,7 +93,7 @@ object LakeSoulSQLConf {
           |Expire snapshot cache in seconds
         """.stripMargin)
       .intConf
-      .createWithDefault(10)
+      .createWithDefault(1)
 
   val NATIVE_IO_ENABLE: ConfigEntry[Boolean] =
     buildConf("native.io.enable")

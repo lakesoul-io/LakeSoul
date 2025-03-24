@@ -5,6 +5,7 @@
 package com.dmetasoul.lakesoul.meta
 
 import com.alibaba.fastjson.JSONObject
+import org.apache.spark.internal.Logging
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.utils.{SparkUtil, TableInfo}
 
@@ -12,7 +13,7 @@ import java.util
 import scala.collection.JavaConverters._
 import scala.collection.mutable.ArrayBuffer
 
-object SparkMetaVersion {
+object SparkMetaVersion extends Logging {
 
   val dbManager = new DBManager()
 
@@ -126,6 +127,25 @@ object SparkMetaVersion {
     )
   }
 
+  def getAllPartitionDesc(table_id: String): Seq[String] = {
+    dbManager.getTableAllPartitionDesc(table_id).asScala
+  }
+
+  def getPartitionInfoByEqFilters(table_id: String, filter: String): Seq[PartitionInfoScala] = {
+    val infos = dbManager.getPartitionInfosByPartialFilter(table_id, filter)
+    if (infos == null) return null
+    infos.asScala.map(info => {
+      PartitionInfoScala(
+        table_id = info.getTableId,
+        range_value = info.getPartitionDesc,
+        version = info.getVersion,
+        read_files = info.getSnapshotList.asScala.map(uuid => DBUtil.toJavaUUID(uuid)).toArray,
+        expression = info.getExpression,
+        commit_op = info.getCommitOp.name()
+      )
+    }).toSeq
+  }
+
   def getSinglePartitionInfoForVersion(table_id: String, range_value: String, version: Int): Array[PartitionInfoScala] = {
     val partitionVersionBuffer = new ArrayBuffer[PartitionInfoScala]()
     val info = dbManager.getSinglePartitionInfo(table_id, range_value, version)
@@ -179,6 +199,7 @@ object SparkMetaVersion {
   }
 
   def getAllPartitionInfo(table_id: String): Array[PartitionInfoScala] = {
+    logInfo(s"get all partition info for $table_id")
     val partitionVersionBuffer = new ArrayBuffer[PartitionInfoScala]()
     val res_itr = dbManager.getAllPartitionInfo(table_id).iterator()
     while (res_itr.hasNext) {
