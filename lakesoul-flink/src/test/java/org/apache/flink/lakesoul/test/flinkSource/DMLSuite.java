@@ -317,7 +317,8 @@ public class DMLSuite extends AbstractTestBase {
             // LakeSoulTableSource::applyPartition will be called and LakeSoulTableSource::applyFilters will not be called
             tEnv.executeSql("DELETE FROM user_info_1 where order_id = 3 and score > 60").await();
         } catch (Throwable e) {
-            System.out.println("Unsupported DELETE SQL");
+            e.printStackTrace();
+            throw e;
         }
         StreamTableEnvironment streamEnv = TestUtils.createStreamTableEnv(BATCH_TYPE);
         String testSelect = "select * from user_info_1";
