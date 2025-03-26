@@ -59,7 +59,7 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           pip install pymysql cryptography jproperties --no-cache-dir
           wget https://repo1.maven.org/maven2/org/apache/flink/flink-s3-fs-hadoop/1.20.1/flink-s3-fs-hadoop-1.20.1.jar -O $HOME/flink-s3-fs-hadoop-1.20.1.jar
-          wget https://repo1.maven.org/maven2/org/apache/parquet/parquet-hadoop-bundle/1.12.3/parquet-hadoop-bundle-1.12.3.jar -O $HOME/parquet-hadoop-bundle-1.12.3.jar
+          wget https://repo1.maven.org/maven2/org/apache/parquet/parquet-hadoop-bundle/1.13.1/parquet-hadoop-bundle-1.13.1.jar -O $HOME/parquet-hadoop-bundle-1.13.1.jar
           wget https://repo1.maven.org/maven2/org/apache/flink/flink-parquet/1.20.1/flink-parquet-1.20.1.jar -O $HOME/flink-parquet-1.20.1.jar
       - name: Install Protoc
         uses: arduino/setup-protoc@v2
@@ -224,17 +224,20 @@ jobs:
       - name: Print Flink Log
         if: always()
         run: |
-          docker logs lakesoul-docker-compose-env-jobmanager-1 > flink-session-cluster.log
+          docker logs lakesoul-docker-compose-env-jobmanager-1 > flink-job-manager.log
+          docker logs lakesoul-docker-compose-env-taskmanager-1 > flink-task-manager-1.log
+          docker logs lakesoul-docker-compose-env-taskmanager-2 > flink-task-manager-2.log
       - name: Upload Log
         if: always()
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: flink-cluster-log
-          path: flink-session-cluster.log
+          path: flink-*.log
           retention-days: 5
           if-no-files-found: error
       - name: Upload Compaction Log
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: lakesoul-compaction-log

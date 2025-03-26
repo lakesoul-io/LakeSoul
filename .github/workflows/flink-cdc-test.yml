@@ -213,17 +213,20 @@ jobs:
       - name: Print Flink Log
         if: always()
         run: |
-          docker logs lakesoul-docker-compose-env-jobmanager-1 > flink-session-cluster.log
+          docker logs lakesoul-docker-compose-env-jobmanager-1 > flink-job-manager.log
+          docker logs lakesoul-docker-compose-env-taskmanager-1 > flink-task-manager-1.log
+          docker logs lakesoul-docker-compose-env-taskmanager-2 > flink-task-manager-2.log
       - name: Upload Flink Log
         if: always()
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: flink-cluster-log
-          path: flink-session-cluster.log
+          path: flink-*.log
           retention-days: 5
           if-no-files-found: error
       - name: Upload Compaction Log
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: lakesoul-compaction-log
