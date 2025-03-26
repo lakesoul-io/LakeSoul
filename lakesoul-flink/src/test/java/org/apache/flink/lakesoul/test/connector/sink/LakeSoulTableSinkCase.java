@@ -310,6 +310,7 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
         System.out.println(plan);
         assertEquals(expected, plan);
 
+        tEnv.executeSql("use `default`");
         tEnv.executeSql("drop database db1 cascade");
     }
 
@@ -349,6 +350,7 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
         System.out.println(plan);
         assertEquals(expected, plan);
 
+        tEnv.executeSql("use `default`");
         tEnv.executeSql("drop database db1 cascade");
     }
 
@@ -408,6 +410,7 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
             rows.sort(Comparator.comparingInt(o -> (int) o.getField(0)));
             Assert.assertEquals(Arrays.asList(Row.of(1, 1), Row.of(2, 2)), rows);
         } finally {
+            tEnv.executeSql("use `default`");
             tEnv.executeSql("drop database db1 cascade");
         }
     }
@@ -546,6 +549,7 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                                             .get("path"))
                             .getPath());
         } finally {
+            tEnv.executeSql("use `default`");
             tEnv.executeSql("drop database db1 cascade");
         }
     }

@@ -60,9 +60,9 @@ jobs:
           pip install pymysql cryptography jproperties --no-cache-dir
           wget https://dlcdn.apache.org/hadoop/common/hadoop-3.3.5/hadoop-3.3.5.tar.gz -O $HOME/hadoop-3.3.5.tar.gz && tar xf $HOME/hadoop-3.3.5.tar.gz -C $HOME
           echo "HADOOP_HOME=$HOME/hadoop-3.3.5" >> $GITHUB_ENV
-          wget https://repo1.maven.org/maven2/org/apache/flink/flink-s3-fs-hadoop/1.17.1/flink-s3-fs-hadoop-1.17.1.jar -O $HOME/flink-s3-fs-hadoop-1.17.1.jar
-          wget https://repo1.maven.org/maven2/org/apache/parquet/parquet-hadoop-bundle/1.12.3/parquet-hadoop-bundle-1.12.3.jar -O $HOME/parquet-hadoop-bundle-1.12.3.jar
-          wget https://repo1.maven.org/maven2/org/apache/flink/flink-parquet/1.17.1/flink-parquet-1.17.1.jar -O $HOME/flink-parquet-1.17.1.jar
+          wget https://repo1.maven.org/maven2/org/apache/flink/flink-s3-fs-hadoop/1.20.1/flink-s3-fs-hadoop-1.20.1.jar -O $HOME/flink-s3-fs-hadoop-1.20.1.jar
+          wget https://repo1.maven.org/maven2/org/apache/parquet/parquet-hadoop-bundle/1.13.1/parquet-hadoop-bundle-1.13.1.jar -O $HOME/parquet-hadoop-bundle-1.13.1.jar
+          wget https://repo1.maven.org/maven2/org/apache/flink/flink-parquet/1.20.1/flink-parquet-1.20.1.jar -O $HOME/flink-parquet-1.20.1.jar
       - name: Install Protoc
         uses: arduino/setup-protoc@v2
         with:
@@ -131,7 +131,7 @@ jobs:
         run: |
           cd ./script/benchmark/work-dir
           if [ ! -e mysql-connector-java-8.0.30.jar ]; then wget -q https://repo1.maven.org/maven2/mysql/mysql-connector-java/8.0.30/mysql-connector-java-8.0.30.jar; fi
-          if [ ! -e flink-connector-jdbc-3.1.1-1.17.jar ]; then wget -q https://repo1.maven.org/maven2/org/apache/flink/flink-connector-jdbc/3.1.1-1.17/flink-connector-jdbc-3.1.1-1.17.jar; fi
+          if [ ! -e flink-connector-jdbc-3.2.0-1.19.jar ]; then wget -q https://repo1.maven.org/maven2/org/apache/flink/flink-connector-jdbc/3.2.0-1.19/flink-connector-jdbc-3.2.0-1.19.jar; fi
           if [ ! -e assertj-core-3.23.1.jar ]; then wget -q https://repo1.maven.org/maven2/org/assertj/assertj-core/3.23.1/assertj-core-3.23.1.jar; fi
       - name: Create table and insert data
         run: |
@@ -141,7 +141,7 @@ jobs:
           sleep 30s
       - name: Start flink engine data check task
         run: |
-          docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.test.benchmark.LakeSoulFlinkDataCheck -C file:///opt/flink/work-dir/$FLINK_JAR_NAME -C file:///opt/flink/work-dir/mysql-connector-java-8.0.30.jar -C file:///opt/flink/work-dir/flink-connector-jdbc-3.1.1-1.17.jar -C file:///opt/flink/work-dir/assertj-core-3.23.1.jar /opt/flink/work-dir/$FLINK_TEST_JAR_NAME --mysql.hostname mysql --mysql.database.name test_cdc --mysql.table.name default_init_1 --mysql.username root --mysql.password root --mysql.port 3306 --server.time.zone UTC --single.table.contract true --lakesoul.database.name test_cdc --lakesoul.table.name default_init_1 --flink.checkpoint s3://lakesoul-test-bucket/flink-engine/chk
+          docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.test.benchmark.LakeSoulFlinkDataCheck -C file:///opt/flink/work-dir/$FLINK_JAR_NAME -C file:///opt/flink/work-dir/mysql-connector-java-8.0.30.jar -C file:///opt/flink/work-dir/flink-connector-jdbc-3.2.0-1.19.jar -C file:///opt/flink/work-dir/assertj-core-3.23.1.jar /opt/flink/work-dir/$FLINK_TEST_JAR_NAME --mysql.hostname mysql --mysql.database.name test_cdc --mysql.table.name default_init_1 --mysql.username root --mysql.password root --mysql.port 3306 --server.time.zone UTC --single.table.contract true --lakesoul.database.name test_cdc --lakesoul.table.name default_init_1 --flink.checkpoint s3://lakesoul-test-bucket/flink-engine/chk
           sleep 30s
       - name: Mysql cdc data accuracy verification task
         run: |
@@ -160,7 +160,7 @@ jobs:
           sleep 30s
       - name: Start flink engine data check task
         run: |
-          docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.test.benchmark.LakeSoulFlinkDataCheck -C file:///opt/flink/work-dir/$FLINK_JAR_NAME -C file:///opt/flink/work-dir/mysql-connector-java-8.0.30.jar -C file:///opt/flink/work-dir/flink-connector-jdbc-3.1.1-1.17.jar -C file:///opt/flink/work-dir/assertj-core-3.23.1.jar /opt/flink/work-dir/$FLINK_TEST_JAR_NAME --mysql.hostname mysql --mysql.database.name test_cdc --mysql.table.name default_init_1 --mysql.username root --mysql.password root --mysql.port 3306 --server.time.zone UTC --single.table.contract true --lakesoul.database.name test_cdc --lakesoul.table.name default_init_1 --flink.checkpoint s3://lakesoul-test-bucket/flink-engine/chk
+          docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.test.benchmark.LakeSoulFlinkDataCheck -C file:///opt/flink/work-dir/$FLINK_JAR_NAME -C file:///opt/flink/work-dir/mysql-connector-java-8.0.30.jar -C file:///opt/flink/work-dir/flink-connector-jdbc-3.2.0-1.19.jar -C file:///opt/flink/work-dir/assertj-core-3.23.1.jar /opt/flink/work-dir/$FLINK_TEST_JAR_NAME --mysql.hostname mysql --mysql.database.name test_cdc --mysql.table.name default_init_1 --mysql.username root --mysql.password root --mysql.port 3306 --server.time.zone UTC --single.table.contract true --lakesoul.database.name test_cdc --lakesoul.table.name default_init_1 --flink.checkpoint s3://lakesoul-test-bucket/flink-engine/chk
           sleep 30s
       - name: Mysql cdc data accuracy verification task
         run: |
@@ -177,7 +177,7 @@ jobs:
           sleep 30s
       - name: Start flink engine data check task
         run: |
-          docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.test.benchmark.LakeSoulFlinkDataCheck -C file:///opt/flink/work-dir/$FLINK_JAR_NAME -C file:///opt/flink/work-dir/mysql-connector-java-8.0.30.jar -C file:///opt/flink/work-dir/flink-connector-jdbc-3.1.1-1.17.jar -C file:///opt/flink/work-dir/assertj-core-3.23.1.jar /opt/flink/work-dir/$FLINK_TEST_JAR_NAME --mysql.hostname mysql --mysql.database.name test_cdc --mysql.table.name default_init_1 --mysql.username root --mysql.password root --mysql.port 3306 --server.time.zone UTC --single.table.contract true --lakesoul.database.name test_cdc --lakesoul.table.name default_init_1 --flink.checkpoint s3://lakesoul-test-bucket/flink-engine/chk
+          docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.test.benchmark.LakeSoulFlinkDataCheck -C file:///opt/flink/work-dir/$FLINK_JAR_NAME -C file:///opt/flink/work-dir/mysql-connector-java-8.0.30.jar -C file:///opt/flink/work-dir/flink-connector-jdbc-3.2.0-1.19.jar -C file:///opt/flink/work-dir/assertj-core-3.23.1.jar /opt/flink/work-dir/$FLINK_TEST_JAR_NAME --mysql.hostname mysql --mysql.database.name test_cdc --mysql.table.name default_init_1 --mysql.username root --mysql.password root --mysql.port 3306 --server.time.zone UTC --single.table.contract true --lakesoul.database.name test_cdc --lakesoul.table.name default_init_1 --flink.checkpoint s3://lakesoul-test-bucket/flink-engine/chk
           sleep 30s
       - name: Mysql cdc data accuracy verification task
         run: |
@@ -196,7 +196,7 @@ jobs:
           sleep 30s
       - name: Start flink engine data check task
         run: |
-          docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.test.benchmark.LakeSoulFlinkDataCheck -C file:///opt/flink/work-dir/$FLINK_JAR_NAME -C file:///opt/flink/work-dir/mysql-connector-java-8.0.30.jar -C file:///opt/flink/work-dir/flink-connector-jdbc-3.1.1-1.17.jar -C file:///opt/flink/work-dir/assertj-core-3.23.1.jar /opt/flink/work-dir/$FLINK_TEST_JAR_NAME --mysql.hostname mysql --mysql.database.name test_cdc --mysql.table.name default_init_1 --mysql.username root --mysql.password root --mysql.port 3306 --server.time.zone UTC --single.table.contract true --lakesoul.database.name test_cdc --lakesoul.table.name default_init_1 --flink.checkpoint s3://lakesoul-test-bucket/flink-engine/chk
+          docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.test.benchmark.LakeSoulFlinkDataCheck -C file:///opt/flink/work-dir/$FLINK_JAR_NAME -C file:///opt/flink/work-dir/mysql-connector-java-8.0.30.jar -C file:///opt/flink/work-dir/flink-connector-jdbc-3.2.0-1.19.jar -C file:///opt/flink/work-dir/assertj-core-3.23.1.jar /opt/flink/work-dir/$FLINK_TEST_JAR_NAME --mysql.hostname mysql --mysql.database.name test_cdc --mysql.table.name default_init_1 --mysql.username root --mysql.password root --mysql.port 3306 --server.time.zone UTC --single.table.contract true --lakesoul.database.name test_cdc --lakesoul.table.name default_init_1 --flink.checkpoint s3://lakesoul-test-bucket/flink-engine/chk
           sleep 30s
       - name: Mysql cdc data accuracy verification task
         run: |
@@ -213,17 +213,20 @@ jobs:
       - name: Print Flink Log
         if: always()
         run: |
-          docker logs lakesoul-docker-compose-env-jobmanager-1 > flink-session-cluster.log
+          docker logs lakesoul-docker-compose-env-jobmanager-1 > flink-job-manager.log
+          docker logs lakesoul-docker-compose-env-taskmanager-1 > flink-task-manager-1.log
+          docker logs lakesoul-docker-compose-env-taskmanager-2 > flink-task-manager-2.log
       - name: Upload Flink Log
         if: always()
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: flink-cluster-log
-          path: flink-session-cluster.log
+          path: flink-*.log
           retention-days: 5
           if-no-files-found: error
       - name: Upload Compaction Log
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: lakesoul-compaction-log

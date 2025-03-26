@@ -40,7 +40,7 @@ public final class ArrowReader {
     public ArrowReader(ColumnVector[] columnVectors) {
         this.columnVectors = Preconditions.checkNotNull(columnVectors);
         this.reuseRow = new ColumnarRowData();
-        reuseRow.setVectorizedColumnBatch(new VectorizedColumnBatch(columnVectors));
+        this.reuseRow.setVectorizedColumnBatch(new VectorizedColumnBatch(columnVectors));
     }
 
     /** Gets the column vectors. */

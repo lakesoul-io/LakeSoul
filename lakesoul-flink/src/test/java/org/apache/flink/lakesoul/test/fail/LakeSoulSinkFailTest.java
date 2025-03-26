@@ -398,8 +398,8 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
             throw new RuntimeException(e);
         } catch (TimeoutException e) {
             System.out.println("streaming executeSql timeout");
-            List<String> results = TestValuesTableFactory.getResults("test_sink");
-            results.sort(Comparator.comparing(String::toString));
+            List<Row> results = TestValuesTableFactory.getResults("test_sink");
+            results.stream().map(Row::toString).sorted(Comparator.comparing(String::toString));
             System.out.println(results);
         }
     }

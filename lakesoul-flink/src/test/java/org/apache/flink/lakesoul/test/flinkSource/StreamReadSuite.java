@@ -194,12 +194,6 @@ public class StreamReadSuite extends AbstractTestBase {
                     testMultiRangeSelect,
                     "    `id` INT," +
                             "    name STRING",
-
-//                            "    name STRING," +
-//                            "    score INT," +
-//                            "    `date` DATE," +
-//                            "    region STRING," +
-//                            "PRIMARY KEY (`id`,`name`) NOT ENFORCED",
                     (s) -> {
                         try {
                             createTableEnv.executeSql(

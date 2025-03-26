@@ -60,7 +60,7 @@ services:
     profiles: ["s3"]
 
   jobmanager:
-    image: flink:1.17.1-scala_2.12-java8
+    image: flink:1.20.1-scala_2.12-java11
     ports:
       - "8081:8081"
     command: jobmanager
@@ -69,7 +69,7 @@ services:
         FLINK_PROPERTIES=
         jobmanager.rpc.address: jobmanager
         taskmanager.memory.process.size: 3000m
-        taskmanager.memory.flink.size: 2048m
+        taskmanager.memory.flink.size: 2748m
         s3.endpoint: http://minio:9000
         s3.access-key: minioadmin1
         s3.secret-key: minioadmin1
@@ -84,24 +84,27 @@ services:
     volumes:
       - ../../script/benchmark/work-dir/:/opt/flink/work-dir/
       - "$HADOOP_HOME:/opt/hadoop"
-      - "$HOME/flink-s3-fs-hadoop-1.17.1.jar:/opt/flink/plugins/s3/flink-s3-fs-hadoop-1.17.1.jar"
-      - "$HOME/flink-parquet-1.17.1.jar:/opt/flink/lib/flink-parquet-1.17.1.jar"
-      - "$HOME/parquet-hadoop-bundle-1.12.3.jar:/opt/flink/lib/parquet-hadoop-bundle-1.12.3.jar"
+      - "$HOME/flink-s3-fs-hadoop-1.20.1.jar:/opt/flink/plugins/s3/flink-s3-fs-hadoop-1.20.1.jar"
+      - "$HOME/flink-parquet-1.20.1.jar:/opt/flink/lib/flink-parquet-1.20.1.jar"
+      - "$HOME/parquet-hadoop-bundle-1.13.1.jar:/opt/flink/lib/parquet-hadoop-bundle-1.13.1.jar"
 
   taskmanager:
-    image: flink:1.17.1-scala_2.12-java8
+    image: flink:1.20.1-scala_2.12-java11
     depends_on:
       - jobmanager
     command: taskmanager
     deploy:
-      replicas: 4
+      replicas: 2
     environment:
       - |
         FLINK_PROPERTIES=
         jobmanager.rpc.address: jobmanager
-        taskmanager.memory.process.size: 3000m
-        taskmanager.memory.flink.size: 2048m
-        taskmanager.numberOfTaskSlots: 6
+        taskmanager.memory.process.size: 3400m
+        taskmanager.memory.flink.size: 2800m
+        taskmanager.memory.task.off-heap.size: 500m
+        taskmanager.memory.jvm-overhead.min: 40m
+        taskmanager.memory.jvm-metaspace.size: 512m
+        taskmanager.numberOfTaskSlots: 4
         s3.endpoint: http://minio:9000
         s3.access-key: minioadmin1
         s3.secret-key: minioadmin1
@@ -116,9 +119,9 @@ services:
     volumes:
       - ../../script/benchmark/work-dir/:/opt/flink/work-dir/
       - "$HADOOP_HOME:/opt/hadoop"
-      - "$HOME/flink-s3-fs-hadoop-1.17.1.jar:/opt/flink/plugins/s3/flink-s3-fs-hadoop-1.17.1.jar"
-      - "$HOME/flink-parquet-1.17.1.jar:/opt/flink/lib/flink-parquet-1.17.1.jar"
-      - "$HOME/parquet-hadoop-bundle-1.12.3.jar:/opt/flink/lib/parquet-hadoop-bundle-1.12.3.jar"
+      - "$HOME/flink-s3-fs-hadoop-1.20.1.jar:/opt/flink/plugins/s3/flink-s3-fs-hadoop-1.20.1.jar"
+      - "$HOME/flink-parquet-1.20.1.jar:/opt/flink/lib/flink-parquet-1.20.1.jar"
+      - "$HOME/parquet-hadoop-bundle-1.13.1.jar:/opt/flink/lib/parquet-hadoop-bundle-1.13.1.jar"
 
 networks:
   default:

@@ -26,18 +26,11 @@ import org.apache.flink.util.Preconditions;
 
 import org.apache.arrow.vector.types.pojo.ArrowType;
 
-import java.time.*;
-import java.time.zone.ZoneRules;
-
-/**
- * Arrow column vector for Timestamp.
- */
+/** Arrow column vector for Timestamp. */
 @Internal
 public final class ArrowTimestampColumnVector implements TimestampColumnVector {
 
-    /**
-     * Container which is used to store the sequence of timestamp values of a column to read.
-     */
+    /** Container which is used to store the sequence of timestamp values of a column to read. */
     private final ValueVector valueVector;
 
     public ArrowTimestampColumnVector(ValueVector valueVector) {

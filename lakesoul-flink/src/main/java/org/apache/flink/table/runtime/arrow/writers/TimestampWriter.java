@@ -46,8 +46,7 @@ public abstract class TimestampWriter<T> extends ArrowFieldWriter<T> {
     private TimestampWriter(ValueVector valueVector, int precision) {
         super(valueVector);
         Preconditions.checkState(
-                valueVector instanceof TimeStampVector
-                        );
+                valueVector instanceof TimeStampVector);
         this.precision = precision;
     }
 

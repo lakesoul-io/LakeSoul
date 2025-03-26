@@ -18,9 +18,9 @@ SPDX-License-Identifier: Apache-2.0
     <name>LakeSoul Flink</name>
 
     <artifactId>lakesoul-flink</artifactId>
-    <version>1.17-${revision}</version>
+    <version>1.20-${revision}</version>
     <properties>
-        <flink.version>1.17.1</flink.version>
+        <flink.version>1.20.0</flink.version>
         <log4j.version>2.17.2</log4j.version>
         <cdc.version>3.0.0</cdc.version>
     </properties>
@@ -72,6 +72,10 @@ SPDX-License-Identifier: Apache-2.0
                     <groupId>org.slf4j</groupId>
                     <artifactId>slf4j-api</artifactId>
                 </exclusion>
+                <exclusion>
+                    <groupId>com.fasterxml.jackson.core</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
             </exclusions>
         </dependency>
         <!--flink-->
@@ -92,7 +96,7 @@ SPDX-License-Identifier: Apache-2.0
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-connector-kafka</artifactId>
-            <version>${flink.version}</version>
+            <version>3.4.0-1.20</version>
             <scope>${local.scope}</scope>
         </dependency>
 
@@ -153,6 +157,23 @@ SPDX-License-Identifier: Apache-2.0
             <scope>test</scope>
             <type>test-jar</type>
         </dependency>
+        <!-- scala deps -->
+        <dependency>
+            <groupId>org.scala-lang</groupId>
+            <artifactId>scala-library</artifactId>
+            <version>${scala.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.scala-lang</groupId>
+            <artifactId>scala-compiler</artifactId>
+            <version>${scala.version}</version>
+            <scope>${local.scope}</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.scala-lang</groupId>
+            <artifactId>scala-reflect</artifactId>
+            <version>${scala.version}</version>
+        </dependency>
 
         <dependency>
             <groupId>com.ververica</groupId>
@@ -191,14 +212,14 @@ SPDX-License-Identifier: Apache-2.0
         </dependency>
         <dependency>
             <groupId>org.apache.doris</groupId>
-            <artifactId>flink-doris-connector-1.17</artifactId>
-            <version>1.5.0</version>
+            <artifactId>flink-doris-connector-1.20</artifactId>
+            <version>25.0.0</version>
             <scope>${local.scope}</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-connector-jdbc</artifactId>
-            <version>3.1.1-1.17</version>
+            <version>3.2.0-1.19</version>
         </dependency>
         <dependency>
             <groupId>org.apache.flink</groupId>

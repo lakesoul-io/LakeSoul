@@ -11,6 +11,7 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.*;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.planner.factories.TestValuesTableFactory;
+import org.apache.flink.types.Row;
 
 import java.util.Comparator;
 import java.util.List;
@@ -18,6 +19,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 import static org.apache.flink.table.api.config.ExecutionConfigOptions.TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -131,13 +133,15 @@ public class LakeSoulTestUtils {
         } catch (InterruptedException e) {
             throw new RuntimeException(e);
         }
-        List<String> results = TestValuesTableFactory.getResults(String.format("%s_sink", sourceTable));
+        List<Row> results = TestValuesTableFactory.getResults(String.format("%s_sink", sourceTable));
+        System.out.println(results);
         if (expectedAnswer.isEmpty()) {
             System.out.println(results);
         } else {
-            results.sort(Comparator.comparing(
-                    row -> Integer.valueOf(row.substring(3, (row.contains(",")) ? row.indexOf(",") : row.length() - 1))));
-            assertThat(results.toString()).isEqualTo(expectedAnswer);
+            List<String> sorted = results.stream().map(Row::toString).sorted(Comparator.comparing(
+                    row -> Integer.valueOf(row.substring(3, (row.contains(",")) ? row.indexOf(",") : row.length() - 1))))
+                    .collect(Collectors.toList());
+            assertThat(sorted.toString()).isEqualTo(expectedAnswer);
         }
     }
 
