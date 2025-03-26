@@ -121,7 +121,7 @@ Download flink-s3-fs-hadoop.jar: https://repo1.maven.org/maven2/org/apache/flink
 Download flink-shaded-hadoop-2-uber-2.6.5-10.0.jar: https://repo1.maven.org/maven2/org/apache/flink/flink-shaded-hadoop-2-uber/2.6.5-10.0/flink-shaded-hadoop-2-uber-2.6.5-10.0.jar
 
 ## 2. Start on Hadoop, Spark and Flink cluster environments
-To deploy LakeSoul in a Hadoop cluster, you only need to add the relevant configuration information to the environment variables and Spark and FLink cluster configurations. For the Spark environment, please refer to [1.3](#13-Installation-spark-environment) for installation and deployment. For the Flink environment, please refer to [1.4](#14-flink-Local Environment Construction) for installation and deployment. It is recommended that the environments of Spark and Flink do not include Hadoop dependencies. Use the `SPARK_DIST_CLASSPATH` and `HADOOP_CLASSPATH` environment variables to introduce the Hadoop environment to avoid dependence on the Hadoop version.
+To deploy LakeSoul in a Hadoop cluster, you only need to add the relevant configuration information to the environment variables and Spark and FLink cluster configurations. For the Spark environment, please refer to [1.4](#14-install-an-apache-spark-environment) for installation and deployment. For the Flink environment, please refer to [1.5](#15-setup-flink-environment) for installation and deployment. It is recommended that the environments of Spark and Flink do not include Hadoop dependencies. Use the `SPARK_DIST_CLASSPATH` and `HADOOP_CLASSPATH` environment variables to introduce the Hadoop environment to avoid dependence on the Hadoop version.
 
 The detailed configurations are as follows:
 
