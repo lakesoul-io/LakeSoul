@@ -139,6 +139,7 @@ public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
 
         // clear test
         login(ADMIN1, ADMIN1_PASS, DOMAIN1);
+        sql("use default");
         sql("drop database if exists database1 cascade");
     }
 
@@ -194,6 +195,7 @@ public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
         // clear test
         sql("drop table table1");
         login(ADMIN1, ADMIN1_PASS, DOMAIN1);
+        sql("use default");
         sql("drop database if exists database1 cascade");
         sql("drop database if exists database2 cascade");
         sql("drop database if exists database3 cascade");
@@ -221,6 +223,7 @@ public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
         // user in same domain can read
         sql("select * from table1");
         login(ADMIN1, ADMIN1_PASS, DOMAIN1);
+        sql("use default");
         sql("drop database if exists database1 cascade");
     }
 }

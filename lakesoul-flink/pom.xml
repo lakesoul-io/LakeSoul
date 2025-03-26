@@ -191,14 +191,14 @@ SPDX-License-Identifier: Apache-2.0
         </dependency>
         <dependency>
             <groupId>org.apache.doris</groupId>
-            <artifactId>flink-doris-connector-1.17</artifactId>
-            <version>1.5.0</version>
+            <artifactId>flink-doris-connector-1.20</artifactId>
+            <version>25.0.0</version>
             <scope>${local.scope}</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-connector-jdbc</artifactId>
-            <version>3.1.1-1.17</version>
+            <version>3.2.0-1.19</version>
         </dependency>
         <dependency>
             <groupId>org.apache.flink</groupId>
