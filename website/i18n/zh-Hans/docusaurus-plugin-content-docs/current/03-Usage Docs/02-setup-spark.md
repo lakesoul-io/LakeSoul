@@ -162,6 +162,6 @@ export HADOOP_CLASSPATH=`$HADOOP_HOME/bin/hadoop classpath`
 <dependency>
      <groupId>com.dmetasoul</groupId>
      <artifactId>lakesoul-flink</artifactId>
-     <version>1.17-VAR::VERSION</version>
+     <version>1.20-VAR::VERSION</version>
 </dependency>
 ```

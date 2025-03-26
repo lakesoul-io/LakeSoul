@@ -25,7 +25,7 @@ In order to use Flink to create LakeSoul tables, it is recommended to use Flink 
 Switch to the flink folder and execute the command to start the SQLclient client.
 ```bash
 # Start Flink SQL Client
-bin/sql-client.sh embedded -j lakesoul-flink-1.17-VAR::VERSION.jar
+bin/sql-client.sh embedded -j lakesoul-flink-1.20-VAR::VERSION.jar
 ```
 
 ## 2. DDL

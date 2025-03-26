@@ -101,7 +101,7 @@ Enter the Flink installation directory and execute the following command:
 ```shell
 export lakesoul_home=/opt/soft/pg.property && ./bin/start-cluster.sh
 
-export lakesoul_home=/opt/soft/pg.property && ./bin/sql-client.sh embedded -j lakesoul-flink-1.17-VAR::VERSION.jar
+export lakesoul_home=/opt/soft/pg.property && ./bin/sql-client.sh embedded -j lakesoul-flink-1.20-VAR::VERSION.jar
 ```
 
 #### 1.5.2 Write data to object storage service
@@ -167,8 +167,8 @@ export HADOOP_CONF_DIR="/usr/hdp/3.1.4.0-315/hadoop/conf"
 export SPARK_HOME=/usr/hdp/spark-3.3.2-bin-without-hadoop-ddf
 export SPARK_CONF_DIR=/home/lakesoul/lakesoul_hadoop_ci/LakeSoul-main/LakeSoul/script/benchmark/hadoop/spark-conf
 
-export FLINK_HOME=/opt/flink-1.17.2
-export FLINK_CONF_DIR=/opt/flink-1.17.2/conf
+export FLINK_HOME=/opt/flink-1.20.1
+export FLINK_CONF_DIR=/opt/flink-1.20.1/conf
 export PATH=$HADOOP_HOME/bin:$SPARK_HOME/bin:$FLINK_HOME/bin:$JAVA_HOME/bin:$PATH
 export HADOOP_CLASSPATH=$(hadoop classpath)
 export SPARK_DIST_CLASSPATH=$HADOOP_CLASSPATH

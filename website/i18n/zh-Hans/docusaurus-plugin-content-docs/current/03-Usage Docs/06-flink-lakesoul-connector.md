@@ -9,7 +9,7 @@ SPDX-License-Identifier: Apache-2.0
 :::tip
 该功能于 2.3.0 版本起提供。
 
-2.3.0 版本适配的是 Flink 1.14，2.4.0 版本起升级到了 Flink 1.17。
+2.3.0 版本适配的是 Flink 1.14，2.4.0 版本起升级到了 Flink 1.17, 3.0.0 版本起升级到了 Flink 1.20。
 :::
 
 LakeSoul 提供了 Flink Connector，实现了 Flink Dynamic Table 接口，可以使用 Flink 的 DataStream API， Table API 或 SQL 来执行对 LakeSoul 数据的读写，读和写均支持流式和批式两种模式。在 Flink 流式读、写时君支持 Flink Changelog Stream 语义。
@@ -24,14 +24,14 @@ flink.warehouse.dir: "s3://bucket/path"
 ```
 如果指定了 warehouse 路径，则表路径默认为 `warehouse_dir/table_name`。如果建表时在属性中指定了 `path` 属性，则优先使用该属性作为表的存储路径。
 
-Flink 引入 LakeSoul 依赖的方法：下載 lakesoul-flink-1.17-VAR::VERSION.jar，放入 `$FLINK_HOME/lib` ，或在启动时指定 jar 的路径。
+Flink 引入 LakeSoul 依赖的方法：下載 lakesoul-flink-1.20-VAR::VERSION.jar，放入 `$FLINK_HOME/lib` ，或在启动时指定 jar 的路径。
 
 为了使用 Flink 创建 LakeSoul 表，推荐使用 Flink SQL Client，支持直接使用 Flink SQL 命令操作 LakeSoul 表，本文档中 Flink SQL 是在 Flink SQL Client 界面直接输入语句；Table API 需要在 Java 项目中编写使用。
 
 切换到 Flink 文件夹下，执行命令开启 SQL Client 客户端。
 ```bash
 # 启动 Flink SQL Client
-bin/sql-client.sh embedded -j lakesoul-flink-1.17-VAR::VERSION.jar
+bin/sql-client.sh embedded -j lakesoul-flink-1.20-VAR::VERSION.jar
 ```
 
 ## 2. DDL
@@ -150,7 +150,7 @@ set 'execution.checkpointing.interval' = '2min';
     ```
 
 ### 3.3 批量更新或删除
-LakeSoul 自 2.4 版本，升级到了 Flink 1.17，并支持了 Flink Batch SQL 的 RowLevelUpdate 和 RowLevelDelete 功能。对于非主键表、有主键表（包括 CDC 格式表），在批模式执行 `update` 或 `delete` SQL 语句，会将待修改/待删除数据读出并使用 `Upsert` 的方式写入表中。
+LakeSoul 自 2.4 版本，升级到了 Flink 1.20并支持了 Flink Batch SQL 的 RowLevelUpdate 和 RowLevelDelete 功能。对于非主键表、有主键表（包括 CDC 格式表），在批模式执行 `update` 或 `delete` SQL 语句，会将待修改/待删除数据读出并使用 `Upsert` 的方式写入表中。
 
 注意 `update` 情况下，不允许更新主键、分区列的值。`delete` 情况下，不允许条件中带有分区列。
 
