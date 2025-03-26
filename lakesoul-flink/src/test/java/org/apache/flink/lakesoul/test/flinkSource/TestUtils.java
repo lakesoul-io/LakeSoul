@@ -131,7 +131,7 @@ public class TestUtils {
                         "INSERT INTO user_info1 VALUES (1, 'Bob', 91), (2, 'Alice', 81), (3, 'Jack', 76), (3, 'Amy', " +
                                 "96), (4, 'Mike', 71)")
                 .await();
-        String createViewSql = "create view if not exists user_info_view as select a.name,a.score,b.score from user_info as a join user_info1 as b on a.name = b.name where a.score > 80 ";
+        String createViewSql = "create view if not exists user_info_view as select a.name,a.score as a_score,b.score as b_score from user_info as a join user_info1 as b on a.name = b.name where a.score > 80 ";
         tEnvs.executeSql("DROP view if exists user_info_view");
         tEnvs.executeSql(createViewSql);
     }

@@ -5,6 +5,7 @@
 package org.apache.flink.lakesoul.test;
 
 import com.dmetasoul.lakesoul.meta.entity.Namespace;
+import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.catalog.ObjectPath;
 import org.apache.flink.table.catalog.exceptions.DatabaseNotExistException;
@@ -149,11 +150,12 @@ public class LakeSoulCatalogDatabaseTest extends LakeSoulCatalogTestBase {
         Assert.assertEquals("Only 1 table", 1, tables.size());
         Assert.assertEquals("Table name should match", flinkTable, tables.get(0).getField(0));
 
-        Assert.assertThrows(ValidationException.class, () -> sql("DROP DATABASE %s", DATABASE));
+        Assert.assertThrows(TableException.class, () -> sql("DROP DATABASE %s", DATABASE));
         Assert.assertTrue(
                 "Namespace should not be dropped",
                 validationCatalog.databaseExists(DATABASE));
 
+        sql("use `default`");
         sql("DROP DATABASE %s CASCADE", DATABASE);
         Assert.assertFalse(
                 "Namespace should have been dropped",
@@ -179,6 +181,7 @@ public class LakeSoulCatalogDatabaseTest extends LakeSoulCatalogTestBase {
                 "Should have db database",
                 databases.stream().anyMatch(d -> Objects.equals(d.getField(0), DATABASE)));
 
+        sql("use `default`");
         sql("DROP DATABASE %s", DATABASE);
 
         Assert.assertFalse(
@@ -208,6 +211,7 @@ public class LakeSoulCatalogDatabaseTest extends LakeSoulCatalogTestBase {
             throw new RuntimeException(e);
         }
 
+        sql("use `default`");
         sql("DROP DATABASE %s", DATABASE);
 
         Assert.assertFalse(
@@ -238,6 +242,7 @@ public class LakeSoulCatalogDatabaseTest extends LakeSoulCatalogTestBase {
             throw new RuntimeException(e);
         }
 
+        sql("use `default`");
         sql("DROP DATABASE %s", DATABASE);
 
         Assert.assertFalse(
@@ -274,6 +279,7 @@ public class LakeSoulCatalogDatabaseTest extends LakeSoulCatalogTestBase {
             throw new RuntimeException(e);
         }
 
+        sql("use `default`");
         sql("DROP DATABASE %s", DATABASE);
 
         Assert.assertFalse(
@@ -315,6 +321,7 @@ public class LakeSoulCatalogDatabaseTest extends LakeSoulCatalogTestBase {
             throw new RuntimeException(e);
         }
 
+        sql("use `default`");
         sql("DROP DATABASE %s", DATABASE);
 
         Assert.assertFalse(
