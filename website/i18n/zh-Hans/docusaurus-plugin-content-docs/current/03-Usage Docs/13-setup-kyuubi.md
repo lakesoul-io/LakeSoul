@@ -15,13 +15,13 @@ LakeSoul实现了Flink/Spark Connector。我们可以通过Kyuubi使用Spark/Fli
 
 ## 环境要求
 
-|组件 | 版本|
-|-----------|--------|
-| Kyuubi | 1.8  |
-| Spark  | 3.3  |
-| Flink  | 1.17 |
+|组件 | 版本           |
+|-----------|--------------|
+| Kyuubi | 1.8          |
+| Spark  | 3.3          |
+| Flink  | 1.20          |
 | LakeSoul | VAR::VERSION |
-| Java     | 1.8 |
+| Java     | 1.8          |
 
 运行环境为Linux环境，并已安装Spark, Flink, Kyuubi，推荐Kyuubi Engine以Hadoop Yarn作为执行环境，当然也可以本地启动Spark/Flink Local集群。
 
@@ -32,14 +32,14 @@ LakeSoul实现了Flink/Spark Connector。我们可以通过Kyuubi使用Spark/Fli
 
 ### 1. 依赖
 
-下载LakeSoul Flink Jar: https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-1.17-VAR::VERSION.jar
+下载LakeSoul Flink Jar: https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-1.20-VAR::VERSION.jar
 
 将该jar拷贝至 `$FLINK_HOME/lib`.
 
 ### 2. Flink配置项
 
 请根据如下文档来设置连接LakeSoul元数据库需要的PG参数: 
-[Setup Metadata Database Connection for Flink](02-setup-spark.md#setup-metadata-database-connection-for-flink)
+[Setup Metadata Database Connection for Flink](02-setup-spark.md#%E4%B8%BA-flink-%E8%AE%BE%E7%BD%AE%E5%85%83%E6%95%B0%E6%8D%AE%E6%95%B0%E6%8D%AE%E5%BA%93%E8%BF%9E%E6%8E%A5)
 
 在此之后，您可以像往常一样启动 Flink Session集群或Flink Application。
 
@@ -82,7 +82,7 @@ drop table `lakesoul`.`default`.test_lakesoul_table_v1;
 
 ### 2. Spark配置项
 1. 请根据如下文档来配置连接LakeSoul元数据需要的PG参数: 
-[Setup Metadata Database Connection for Spark](02-setup-spark.md#pass-lakesoul_home-environment-variable-to-your-spark-job)
+[Setup Metadata Database Connection for Spark](02-setup-spark.md#%E4%B8%BA-spark-%E4%BD%9C%E4%B8%9A%E8%AE%BE%E7%BD%AE-lakesoul_home-%E7%8E%AF%E5%A2%83%E5%8F%98%E9%87%8F)
 
 2. Add spark conf to `$SPARK_CONF_DIR/spark-defaults.conf`
 
@@ -123,4 +123,4 @@ drop table test_lakesoul_table_v2;
 
 可以将数据存储路径中的`hdfs://`替换为`file://` 。
 
-详细的Spark SQL操作Lakesoul的内容参阅 : [Operate LakeSoulTable by Spark SQL](./03-spark-api-docs.md#7-operate-lakesoultable-by-spark-sql) 
+详细的Spark SQL操作Lakesoul的内容参阅 : [Operate LakeSoulTable by Spark SQL](./03-spark-api-docs.md#7-%E4%BD%BF%E7%94%A8-spark-sql-%E6%93%8D%E4%BD%9C-lakesoultable) 

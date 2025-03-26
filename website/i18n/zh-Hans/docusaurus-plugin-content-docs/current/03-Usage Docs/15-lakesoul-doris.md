@@ -45,7 +45,7 @@ LakeSoul 是由数元灵开发的云原生湖仓框架，并在 2023 年 5 月�
 | LakeSoul | 2.6.1 |
 | Postgres | 14.5 |
 | Apache Spark | 3.3.1 |
-| Apache Flink | 1.17 |
+| Apache Flink | 1.20 |
 | MinIO | RELEASE.2024-04-29T09-56-05Z |
 
 
