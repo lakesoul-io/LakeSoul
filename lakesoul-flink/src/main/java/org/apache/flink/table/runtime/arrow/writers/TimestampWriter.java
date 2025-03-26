@@ -18,18 +18,13 @@
 
 package org.apache.flink.table.runtime.arrow.writers;
 
+import org.apache.arrow.vector.*;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.data.ArrayData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.util.Preconditions;
 
-import org.apache.arrow.vector.TimeStampMicroVector;
-import org.apache.arrow.vector.TimeStampMilliVector;
-import org.apache.arrow.vector.TimeStampNanoVector;
-import org.apache.arrow.vector.TimeStampSecVector;
-import org.apache.arrow.vector.TimeStampVector;
-import org.apache.arrow.vector.ValueVector;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 
 /** {@link ArrowFieldWriter} for Timestamp. */
@@ -51,9 +46,7 @@ public abstract class TimestampWriter<T> extends ArrowFieldWriter<T> {
     private TimestampWriter(ValueVector valueVector, int precision) {
         super(valueVector);
         Preconditions.checkState(
-                valueVector instanceof TimeStampVector
-                        && ((ArrowType.Timestamp) valueVector.getField().getType()).getTimezone()
-                                == null);
+                valueVector instanceof TimeStampVector);
         this.precision = precision;
     }
 
@@ -69,18 +62,36 @@ public abstract class TimestampWriter<T> extends ArrowFieldWriter<T> {
         } else {
             TimestampData timestamp = readTimestamp(in, ordinal);
 
-            if (valueVector instanceof TimeStampSecVector) {
+            if (valueVector instanceof TimeStampSecTZVector) {
+                ((TimeStampSecTZVector) valueVector)
+                        .setSafe(getCount(), timestamp.getMillisecond() / 1000);
+            } else if (valueVector instanceof TimeStampSecVector) {
                 ((TimeStampSecVector) valueVector)
                         .setSafe(getCount(), timestamp.getMillisecond() / 1000);
+            } else if (valueVector instanceof TimeStampMilliTZVector) {
+                ((TimeStampMilliTZVector) valueVector)
+                        .setSafe(getCount(), timestamp.getMillisecond());
             } else if (valueVector instanceof TimeStampMilliVector) {
                 ((TimeStampMilliVector) valueVector)
                         .setSafe(getCount(), timestamp.getMillisecond());
+            } else if (valueVector instanceof TimeStampMicroTZVector) {
+                ((TimeStampMicroTZVector) valueVector)
+                        .setSafe(
+                                getCount(),
+                                timestamp.getMillisecond() * 1000
+                                        + timestamp.getNanoOfMillisecond() / 1000);
             } else if (valueVector instanceof TimeStampMicroVector) {
                 ((TimeStampMicroVector) valueVector)
                         .setSafe(
                                 getCount(),
                                 timestamp.getMillisecond() * 1000
                                         + timestamp.getNanoOfMillisecond() / 1000);
+            } else if (valueVector instanceof TimeStampNanoTZVector){
+                ((TimeStampNanoTZVector) valueVector)
+                        .setSafe(
+                                getCount(),
+                                timestamp.getMillisecond() * 1_000_000
+                                        + timestamp.getNanoOfMillisecond());
             } else {
                 ((TimeStampNanoVector) valueVector)
                         .setSafe(
