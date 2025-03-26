@@ -171,7 +171,6 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
       .asInstanceOf[MergeOperator[Any]]
     val nativeIOEnable = sparkSession.sessionState.conf.getConf(LakeSoulSQLConf.NATIVE_IO_ENABLE)
     if (nativeIOEnable) {
-      println(s"createReaderFactory ${pushedFilters.mkString("Array(", ", ", ")")}")
       NativeMergeParquetPartitionReaderFactory(sparkSession.sessionState.conf, broadcastedConf,
         dataSchema, readDataSchema, readPartitionSchema, pushedFilters, mergeOperatorInfo, defaultMergeOp, options.asScala.toMap)
     } else {

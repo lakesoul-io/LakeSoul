@@ -4,7 +4,7 @@
 package org.apache.spark.ml.lakesoul.scanns.model
 
 import org.apache.spark.ml.lakesoul.scanns.Types.BandedHashes
-import org.apache.spark.ml.lakesoul.scanns.distance.{Distance, L2Distance, NormalizedL2Distance}
+import org.apache.spark.ml.lakesoul.scanns.distance.{CosineDistance, Distance, DistanceMetric, L2Distance, NormalizedL2Distance}
 import org.apache.spark.ml.lakesoul.scanns.lsh.ScalarRandomProjectionHashFunction
 import org.apache.spark.ml.lakesoul.scanns.params.ScalarRandomProjectionLSHNNSParams
 import org.apache.spark.ml.linalg.Vector
@@ -22,7 +22,8 @@ class LakeSoulRandomProjectionModel(val uid: String = Identifiable.randomUID("La
   extends LakeSoulLSHNearestNeighborSearchModel[LakeSoulRandomProjectionModel]
     with ScalarRandomProjectionLSHNNSParams {
 
-  override val distance: Distance = NormalizedL2Distance
+  //  override val distance: Distance = NormalizedL2Distance
+  lazy val distance: Distance = DistanceMetric.getDistance($(distanceMetric))
 
   override private[ml] def getHashFunctions: Array[ScalarRandomProjectionHashFunction] = hashFunctions
 

@@ -8,7 +8,7 @@ import org.apache.spark.{HashPartitioner, TaskContext}
 import org.apache.spark.ml.lakesoul.scanns.Types.{BandedHashes, Item, ItemId, ItemIdDistancePair}
 import org.apache.spark.ml.lakesoul.scanns.distance.Distance
 import org.apache.spark.ml.lakesoul.scanns.lsh.HashFunction
-import org.apache.spark.ml.lakesoul.scanns.params.{HasSeed, LSHNNSParams}
+import org.apache.spark.ml.lakesoul.scanns.params.{DistanceParams, HasSeed, LSHNNSParams}
 import org.apache.spark.ml.lakesoul.scanns.utils.TopNQueue
 import org.apache.spark.ml.linalg.Vector
 import org.apache.spark.rdd.RDD
@@ -25,7 +25,7 @@ import scala.collection.JavaConverters._
   * implement [[getBandedHashes()]] and define the distance metric
   */
 abstract class LakeSoulLSHNearestNeighborSearchModel[T <: LakeSoulLSHNearestNeighborSearchModel[T]]
-  extends NearestNeighborModel[LakeSoulLSHNearestNeighborSearchModel[T]] with LSHNNSParams with HasSeed {
+  extends NearestNeighborModel[LakeSoulLSHNearestNeighborSearchModel[T]] with LSHNNSParams with HasSeed with DistanceParams {
 
   /* Metric that will be used to compute pair-wise distances */
   val distance: Distance
@@ -178,7 +178,7 @@ abstract class LakeSoulLSHNearestNeighborSearchModel[T <: LakeSoulLSHNearestNeig
     * @param data input data
     * @return row containing the id, vector representation and the banded hashes
     */
-  def transform(data: RDD[Item], lowerBias: Int = 0, upperBias: Int = 0): RDD[(ItemId, (Vector, BandedHashes))] = {
+  def transform(data: RDD[Item]): RDD[(ItemId, (Vector, BandedHashes))] = {
     data.mapValues(x => (x, getBandedHashes(x)))
   }
 
@@ -305,7 +305,7 @@ abstract class LakeSoulLSHNearestNeighborSearchModel[T <: LakeSoulLSHNearestNeig
   def getAllNearestNeighborsWithBucketBias(srcItems: RDD[Item], candidatePool: RDD[Item], k: Int, lowerBias: Int = 0, upperBias: Int = 0):
   RDD[(ItemId, ItemId, Double)] = {
     val hashPartitioner = new HashPartitioner($(joinParallelism))
-    val srcItemsExploded = explodeDataAndHash(transform(srcItems, lowerBias, upperBias)).partitionBy(hashPartitioner)
+    val srcItemsExploded = explodeDataAndHash(transform(srcItems)).partitionBy(hashPartitioner)
     val candidatePoolExploded = if (srcItems.id == candidatePool.id) {
       srcItemsExploded
     } else {
@@ -391,12 +391,12 @@ abstract class LakeSoulLSHNearestNeighborSearchModel[T <: LakeSoulLSHNearestNeig
     getAllNearestNeighbors(items, items, k)
   }
 
-  def getAllNearestNeighborsWithIndex(srcItems: RDD[Item], candidateIndex: DataFrame, k: Int, lowerBias: Int = 0, upperBias: Int = 0):
+  def getAllNearestNeighborsWithIndex(srcItems: RDD[Item], candidateIndex: DataFrame, k: Int):
   RDD[(ItemId, ItemId, Double)] = {
     val hashPartitioner = new HashPartitioner($(joinParallelism))
 
     // Collect all (bucketId, hashIndex) pairs from srcItems
-    val srcSelectedBucket = explodeData(transform(srcItems, lowerBias, upperBias)).map {
+    val srcSelectedBucket = explodeData(transform(srcItems)).map {
       case ((bucketId, hashIndex), _) => (bucketId, hashIndex)
     }.distinct().collect()
 
@@ -405,7 +405,7 @@ abstract class LakeSoulLSHNearestNeighborSearchModel[T <: LakeSoulLSHNearestNeig
     val bucketHashSet = srcItems.sparkContext.broadcast(srcSelectedBucket.toSet)
 
     // Transform srcItems to the format needed for nearest neighbor search
-    val srcItemsExploded = explodeDataAndHash(transform(srcItems, lowerBias, upperBias)).partitionBy(hashPartitioner)
+    val srcItemsExploded = explodeDataAndHash(transform(srcItems)).partitionBy(hashPartitioner)
 
     // Filter the DataFrame directly using the bucket information
     import org.apache.spark.sql.functions._
@@ -429,8 +429,7 @@ abstract class LakeSoulLSHNearestNeighborSearchModel[T <: LakeSoulLSHNearestNeig
         val hashIndex = row.getAs[Int]("hash_index")
         val vectorId = row.getAs[Long]("vector_id")
 
-        // Convert vector array to Vector
-        val vectorArray = row.getAs[Seq[Float]]("vector").map(_.toDouble).toArray
+        val vectorArray = row.getAs[Seq[Double]]("vector").toArray
         val vector = org.apache.spark.ml.linalg.Vectors.dense(vectorArray)
 
         // Hash the bucket information and return the tuple for partitioning

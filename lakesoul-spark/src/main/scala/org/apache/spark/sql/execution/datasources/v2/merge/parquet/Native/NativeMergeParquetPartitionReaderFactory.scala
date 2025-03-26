@@ -24,7 +24,7 @@ import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_o
 import org.apache.spark.sql.execution.datasources.{DataSourceUtils, RecordReaderIterator}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf._
-import org.apache.spark.sql.sources.Filter
+import org.apache.spark.sql.sources.{EqualTo, Filter}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
@@ -33,6 +33,7 @@ import java.net.URI
 import java.time.ZoneId
 import scala.collection.JavaConverters._
 import scala.collection.mutable
+import scala.collection.mutable.ArrayBuffer
 
 
 /**
@@ -181,6 +182,8 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
       options += ("cdc_column" -> nativeIOCdcColumn)
     }
     options += ("is_compacted" -> nativeIOIsCompacted)
+    options += ("hash_bucket_num" -> "32")
+    options += ("skip_merge_on_read" -> "true")
     vectorizedReader.setOptions(options.asJava)
 
     // multi files
@@ -209,6 +212,62 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
         null)
         .asInstanceOf[InputSplit]
     )
+    // Collect all components from OR-conjunctive filters
+    val processedFilters = if (enableParquetFilterPushDown && filters.nonEmpty) {
+      val orComponents = {
+        val components = new ArrayBuffer[Filter]()
+
+
+        def collectComponents(filter: Filter): Unit = filter match {
+          case org.apache.spark.sql.sources.Or(left, right) =>
+            collectComponents(left)
+            collectComponents(right)
+          case other =>
+            components += other
+        }
+
+        filters.foreach(collectComponents)
+        components.distinct.toArray
+      }
+
+
+      // Process each component from the OR-conjunctive filters
+      orComponents.filter {
+        case org.apache.spark.sql.sources.And(left, right) =>
+          def matchPartitionValue(attribute: String, value: Any): Boolean = {
+            val fieldIndex = partitionSchema.fieldIndex(attribute)
+            if (fieldIndex >= 0) {
+              val partitionValue = file.partitionValues.get(fieldIndex,
+                partitionSchema.fields(fieldIndex).dataType)
+              if (partitionValue == null && value == null) {
+                true
+              } else if (partitionValue == null || value == null) {
+                false
+              } else {
+                partitionValue == value
+              }
+            } else {
+              false
+            }
+          }
+
+          // Check if either left or right is a partition filter
+          def matchPartitionFilter(filter: Filter): Boolean = filter match {
+            case EqualTo(attribute, value) =>
+              if (partitionSchema.fieldNames.contains(attribute)) {
+                matchPartitionValue(attribute, value)
+              } else {
+                false
+              }
+            case _ => false
+          }
+
+          matchPartitionFilter(left) || matchPartitionFilter(right)
+        case _ => false
+      }
+    } else {
+      filters
+    }
 
     lazy val footerFileMetaData =
       ParquetFileReader.readFooter(conf, filePath, SKIP_ROW_GROUPS).getFileMetaData
@@ -226,12 +285,12 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
         pushDownDecimal, pushDownStringStartWith, pushDownInFilterThreshold, isCaseSensitive,
         datetimeRebaseSpec
       )
-      filters
+      processedFilters
         // Collects all converted Parquet filter predicates. Notice that not all predicates can be
         // converted (`ParquetFilters.createFilter` returns an `Option`). That's why a `flatMap`
         // is used here.
         .flatMap(parquetFilters.createFilter)
-        .reduceOption(FilterApi.and)
+        .reduceOption(FilterApi.or)
     } else {
       None
     }

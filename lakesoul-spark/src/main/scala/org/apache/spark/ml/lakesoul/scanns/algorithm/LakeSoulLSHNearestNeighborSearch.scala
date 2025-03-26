@@ -5,7 +5,7 @@
 package org.apache.spark.ml.lakesoul.scanns.algorithm
 
 import org.apache.spark.ml.lakesoul.scanns.model.{LSHNearestNeighborSearchModel, LakeSoulLSHNearestNeighborSearchModel}
-import org.apache.spark.ml.lakesoul.scanns.params.{HasSeed, LSHNNSParams}
+import org.apache.spark.ml.lakesoul.scanns.params.{BruteForceNNSParams, DistanceParams, HasSeed, LSHNNSParams}
 
 
 /**
@@ -16,7 +16,7 @@ import org.apache.spark.ml.lakesoul.scanns.params.{HasSeed, LSHNNSParams}
   * @tparam T
   */
 abstract class LakeSoulLSHNearestNeighborSearch[T <: LakeSoulLSHNearestNeighborSearchModel[T]]
-  extends LSHNNSParams with Serializable with HasSeed {
+  extends LSHNNSParams with Serializable with HasSeed with DistanceParams {
   /**
     * Create a new instance of concrete [[LakeSoulLSHNearestNeighborSearchModel]]
     *
@@ -38,4 +38,6 @@ abstract class LakeSoulLSHNearestNeighborSearch[T <: LakeSoulLSHNearestNeighborS
   def setNumOutputPartitions(n: Int): this.type = set(numOutputPartitions, n)
 
   def setSeed(value: Long): this.type = set(seed, value)
+
+  def setDistanceMetric(value: String): this.type = set(distanceMetric, value)
 }

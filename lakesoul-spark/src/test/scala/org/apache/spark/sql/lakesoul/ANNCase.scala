@@ -21,8 +21,10 @@ import org.junit.runner.RunWith
 import org.scalatest._
 import org.scalatestplus.junit.JUnitRunner
 import org.apache.spark.ml.feature.BucketedRandomProjectionLSH
-import org.apache.spark.sql.functions.{collect_list, sum, udf, col, lit}
-import org.apache.spark.sql.types.{ArrayType, ByteType, FloatType, IntegerType, LongType, MetadataBuilder, StructField, StructType}
+import org.apache.spark.sql.functions.{col, collect_list, lit, sum, udf}
+import org.apache.spark.sql.types.{ArrayType, ByteType, DoubleType, FloatType, IntegerType, LongType, MetadataBuilder, StructField, StructType}
+import org.apache.spark.ml.lakesoul.utils.DataNormalizer
+import org.apache.spark.ml.lakesoul.utils.DataNormalizer._
 
 import scala.math.{pow, sqrt}
 import java.nio.file.Paths
@@ -32,11 +34,71 @@ class ANNCase extends QueryTest
   with SharedSparkSession with LakeSoulTestBeforeAndAfterEach
   with LakeSoulTestUtils with LakeSoulSQLCommandTest {
 
+  //  val dataset = "fashion-mnist"
+  // val dataset = "glove-50-angular"
+  // val dataset = "nytimes-256-angular"
+  val dataset = "coco-i2i-512-angular"
+  var numHashes = 256
+  var signatureLength = 8
+  var bucketLimit = 100000
+  var bucketWidth = 16
+  var filePath = "/Users/ceng/Downloads/ann-data/glove-50-angular.hdf5"
+  var distanceType = "l2"
+
+  var normType = "NORM_NONE"
+  var minMaxLowerLimit = 0.0
+  var minMaxUpperLimit = 1.0
+  var zScoreTargetMean = 0.0
+  var zScoreTargetStdDev = 1.0
+
+
+  val seed = 1234567890
+  if (dataset == "fashion-mnist") {
+    filePath = "/Users/ceng/Downloads/ann-data/fashion-mnist-784-euclidean.hdf5"
+    numHashes = 256
+    signatureLength = 8
+    bucketLimit = 2000
+    bucketWidth = 25
+    normType = "NORM_MINMAX"
+    minMaxLowerLimit = 0.0
+    minMaxUpperLimit = 1.0
+    distanceType = "l2"
+  } else if (dataset == "glove-50-angular") {
+    filePath = "/Users/ceng/Downloads/ann-data/glove-50-angular.hdf5"
+    numHashes = 256
+    signatureLength = 8
+    bucketLimit = 100000
+    bucketWidth = 16
+    normType = "NORM_NONE"
+    distanceType = "cosine"
+  } else if (dataset == "nytimes-256-angular") {
+    filePath = "/Users/ceng/Downloads/ann-data/nytimes-256-angular.hdf5"
+    numHashes = 128
+    signatureLength = 4
+    bucketLimit = 20000
+    bucketWidth = 16
+    normType = "NORM_NONE"
+    minMaxLowerLimit = -1.0
+    minMaxUpperLimit = 1.0
+    distanceType = "cosine"
+  } else if (dataset == "coco-i2i-512-angular") {
+    filePath = "/Users/ceng/Downloads/ann-data/coco-i2i-512-angular.hdf5"
+    numHashes = 128
+    signatureLength = 4
+    bucketLimit = 10000
+    bucketWidth = 16
+    normType = "NORM_NONE"
+    distanceType = "cosine"
+  }
+
+
   val testDatasetSize = 10000
-  val numQuery = 10
+  val numQuery = 50
   val topK = 100
   //  val sampleIndices = scala.util.Random.shuffle((0 until testDatasetSize).toList).take(numQuery)
   val sampleIndices = (0 until testDatasetSize).take(numQuery)
+  //  val filePath = "/Users/ceng/Downloads/ann-data/fashion-mnist-784-euclidean.hdf5"
+
 
   override protected def createSparkSession: TestSparkSession = {
     SparkSession.cleanupAnyExistingSession()
@@ -85,14 +147,11 @@ class ANNCase extends QueryTest
   test("test LakeSoulHammingDistanceLSH") {
     withTempDir { trainDir =>
       withTempDir { testDir =>
-        val filepath = "/Users/ceng/Downloads/fashion-mnist-784-euclidean.hdf5"
         val trainPath = trainDir.getCanonicalPath
         val testPath = testDir.getCanonicalPath
 
-        println(filepath)
-
         try {
-          val hdfFile = new HdfFile(Paths.get(filepath))
+          val hdfFile = new HdfFile(Paths.get(filePath))
 
           val trainDataset = hdfFile.getDatasetByPath("train")
           val testDataset = hdfFile.getDatasetByPath("test")
@@ -125,9 +184,16 @@ class ANNCase extends QueryTest
           //the greater the Cosine distance,the greater the similarity
           val calculateCosineDistanceUDF = udf((trainEmbedding: Seq[Float], testEmbedding: Seq[Float]) => {
             require(testEmbedding.length == trainEmbedding.length, "The input sequences must have the same length")
-            trainEmbedding.zip(testEmbedding).map { case (train, test) =>
-              train * test
-            }.sum / (sqrt(trainEmbedding.map { train => train * train }.sum) * sqrt(testEmbedding.map { test => test * test }.sum))
+
+            // Calculate dot product
+            val dotProduct = trainEmbedding.zip(testEmbedding).map { case (a, b) => a * b }.sum
+
+            // Calculate L2 norms
+            val normA = math.sqrt(trainEmbedding.map(x => x * x).sum)
+            val normB = math.sqrt(testEmbedding.map(x => x * x).sum)
+
+            // Return 1.0 minus the absolute cosine similarity
+            1.0 - (math.abs(dotProduct) / (normA * normB))
           })
           //the smaller the Jaccard distance,the greater the similarity
           val calculateJaccardDistanceUDF = udf((trainEmbedding: Seq[Float], testEmbedding: Seq[Float]) => {
@@ -145,8 +211,8 @@ class ANNCase extends QueryTest
           val schema = StructType(Array(
             StructField("IndexId", IntegerType, true),
             StructField("Embedding", ArrayType(FloatType), true, new MetadataBuilder()
-              .putString(LakeSoulOptions.SchemaFieldMetadata.LSH_EMBEDDING_DIMENSION, "784")
-              .putString(LakeSoulOptions.SchemaFieldMetadata.LSH_BIT_WIDTH, "784")
+              .putString(LakeSoulOptions.SchemaFieldMetadata.LSH_EMBEDDING_DIMENSION, "50")
+              .putString(LakeSoulOptions.SchemaFieldMetadata.LSH_BIT_WIDTH, "256")
               .putString(LakeSoulOptions.SchemaFieldMetadata.LSH_RNG_SEED, "1234567890").build()),
             StructField("Embedding_LSH", ArrayType(LongType), true)
           ))
@@ -160,12 +226,15 @@ class ANNCase extends QueryTest
                   //                  Row(indexId, embedding)
                   Row(indexId, embedding, null)
               }
-              val df = spark.createDataFrame(spark.sparkContext.parallelize(rows), schema)
-              df.write.format("lakesoul")
-                .option("hashPartitions", "IndexId")
-                .option("hashBucketNum", 4)
-                .option(LakeSoulOptions.SHORT_TABLE_NAME, "trainData")
-                .mode("Overwrite").save(trainPath)
+              println(s"================ Saving train data to LakeSoul table: trainData ==================")
+              spark.time({
+                val df = spark.createDataFrame(spark.sparkContext.parallelize(rows), schema)
+                df.write.format("lakesoul")
+                  .option("hashPartitions", "IndexId")
+                  .option("hashBucketNum", 4)
+                  .option(LakeSoulOptions.SHORT_TABLE_NAME, "trainData")
+                  .mode("Overwrite").save(trainPath)
+              })
 
               //            val startTime1 = System.nanoTime()
               val lakeSoulTable = LakeSoulTable.forPath(trainPath)
@@ -188,6 +257,7 @@ class ANNCase extends QueryTest
                   val n = 30
                   val topkFirst = trainSize / 5
 
+                  println(s"================ Querying with LakeSoul LSH ==================")
                   val result = spark.time({
 
                     val rank = spark.sql(
@@ -214,7 +284,7 @@ class ANNCase extends QueryTest
                         SELECT
                           rank.indexIdTest,
                           rank.indexIDTrain,
-                          calculateEuclideanDistance(rank.EmbeddingTest,rank.EmbeddingTrain) as distance
+                          calculateCosineDistance(rank.EmbeddingTest,rank.EmbeddingTrain) as distance
                         FROM rank
                      ) reRanked
                     ORDER BY distance asc
@@ -244,11 +314,10 @@ class ANNCase extends QueryTest
                                predictedNeighbors: Array[Row],
                                k: Int,
                                numSamples: Int): Double = {
+    println(s"================ Calculating Recall ==================")
     var totalRecall = 0.0
     for (i <- sampleIndices.indices) {
-      println(sampleIndices(i))
       val trueSet = trueNeighbors(sampleIndices(i)).take(k).toSet
-      println(trueSet)
       val predictedSet = predictedNeighbors
         .filter(_.getAs[Long](0) == sampleIndices(i))
         .map(_.getAs[Long](1).toInt)
@@ -256,14 +325,17 @@ class ANNCase extends QueryTest
         .toSet
 
       val intersection = trueSet.intersect(predictedSet)
-      println(intersection)
+
+      println(s"sampleIndex: ${sampleIndices(i)}\n trueSet: $trueSet, predictedSet: $predictedSet \n intersection: $intersection")
       totalRecall += intersection.size.toDouble / k
     }
-    totalRecall / numSamples
+    val recall = totalRecall / numSamples
+    println(s"================ Recall: ${recall * 100}% ==================")
+    recall
   }
 
   test("test spark BucketedRandomProjectionLSH on MNIST") {
-    val hdfFile = new HdfFile(Paths.get("/Users/ceng/Downloads/fashion-mnist-784-euclidean.hdf5"))
+    val hdfFile = new HdfFile(Paths.get(filePath))
 
     val trainDataset = hdfFile.getDatasetByPath("train")
     val testDataset = hdfFile.getDatasetByPath("test")
@@ -273,8 +345,8 @@ class ANNCase extends QueryTest
     val neighborData = neighborDataset.getData()
 
     // 将数据转换为向量格式
-    val trainVectors = trainData.asInstanceOf[Array[Array[Float]]]
-    val testVectors = testData.asInstanceOf[Array[Array[Float]]]
+    val trainVectors = trainData.asInstanceOf[Array[Array[Float]]].map(_.map(_.toDouble))
+    val testVectors = testData.asInstanceOf[Array[Array[Float]]].map(_.map(_.toDouble))
     val trueNeighbors = neighborData.asInstanceOf[Array[Array[Int]]]
 
     val numFeatures = trainVectors(0).length
@@ -334,7 +406,7 @@ class ANNCase extends QueryTest
   }
 
   test("test LinkedIn LSH on MNIST") {
-    val hdfFile = new HdfFile(Paths.get("/Users/ceng/Downloads/fashion-mnist-784-euclidean.hdf5"))
+    val hdfFile = new HdfFile(Paths.get(filePath))
 
     val trainDataset = hdfFile.getDatasetByPath("train")
     val testDataset = hdfFile.getDatasetByPath("test")
@@ -344,8 +416,8 @@ class ANNCase extends QueryTest
     val neighborData = neighborDataset.getData()
 
     // 将数据转换为向量格式
-    val trainVectors = trainData.asInstanceOf[Array[Array[Float]]]
-    val testVectors = testData.asInstanceOf[Array[Array[Float]]]
+    val trainVectors = trainData.asInstanceOf[Array[Array[Float]]].map(_.map(_.toDouble))
+    val testVectors = testData.asInstanceOf[Array[Array[Float]]].map(_.map(_.toDouble))
     val trueNeighbors = neighborData.asInstanceOf[Array[Array[Int]]]
 
     val sampledTestRDD = spark.sparkContext.parallelize(
@@ -386,7 +458,7 @@ class ANNCase extends QueryTest
   }
 
   test("test LakeSoul BucketedRandomProjectionLSH on MNIST") {
-    val hdfFile = new HdfFile(Paths.get("/Users/ceng/Downloads/fashion-mnist-784-euclidean.hdf5"))
+    val hdfFile = new HdfFile(Paths.get(filePath))
 
     val trainDataset = hdfFile.getDatasetByPath("train")
     val testDataset = hdfFile.getDatasetByPath("test")
@@ -396,8 +468,8 @@ class ANNCase extends QueryTest
     val neighborData = neighborDataset.getData()
 
     // 将数据转换为向量格式
-    val trainVectors = trainData.asInstanceOf[Array[Array[Float]]]
-    val testVectors = testData.asInstanceOf[Array[Array[Float]]]
+    val trainVectors = trainData.asInstanceOf[Array[Array[Float]]].map(_.map(_.toDouble))
+    val testVectors = testData.asInstanceOf[Array[Array[Float]]].map(_.map(_.toDouble))
     val trueNeighbors = neighborData.asInstanceOf[Array[Array[Int]]]
 
     val numFeatures = trainVectors(0).length
@@ -459,7 +531,7 @@ class ANNCase extends QueryTest
   test("test LakeSoul training data by BucketedRandomProjectionLSH on MNIST") {
     withTempDir { dir =>
 
-      val hdfFile = new HdfFile(Paths.get("/Users/ceng/Downloads/fashion-mnist-784-euclidean.hdf5"))
+      val hdfFile = new HdfFile(Paths.get(filePath))
 
       val trainDataset = hdfFile.getDatasetByPath("train")
       val testDataset = hdfFile.getDatasetByPath("test")
@@ -469,8 +541,8 @@ class ANNCase extends QueryTest
       val neighborData = neighborDataset.getData()
 
       // 将数据转换为向量格式
-      val trainVectors = trainData.asInstanceOf[Array[Array[Float]]]
-      val testVectors = testData.asInstanceOf[Array[Array[Float]]]
+      val trainVectors = trainData.asInstanceOf[Array[Array[Float]]].map(_.map(_.toDouble))
+      val testVectors = testData.asInstanceOf[Array[Array[Float]]].map(_.map(_.toDouble))
       val trueNeighbors = neighborData.asInstanceOf[Array[Array[Int]]]
 
       val trainDf = spark.createDataFrame(
@@ -569,7 +641,7 @@ class ANNCase extends QueryTest
   test("test LakeSoul training data by LinkedIn LSH on MNIST") {
     withTempDir { dir =>
 
-      val hdfFile = new HdfFile(Paths.get("/Users/ceng/Downloads/fashion-mnist-784-euclidean.hdf5"))
+      val hdfFile = new HdfFile(Paths.get(filePath))
 
       val trainDataset = hdfFile.getDatasetByPath("train")
       val testDataset = hdfFile.getDatasetByPath("test")
@@ -579,8 +651,8 @@ class ANNCase extends QueryTest
       val neighborData = neighborDataset.getData()
 
       // 将数据转换为向量格式
-      val trainVectors = trainData.asInstanceOf[Array[Array[Float]]]
-      val testVectors = testData.asInstanceOf[Array[Array[Float]]]
+      val trainVectors = trainData.asInstanceOf[Array[Array[Float]]].map(_.map(_.toDouble))
+      val testVectors = testData.asInstanceOf[Array[Array[Float]]].map(_.map(_.toDouble))
       val trueNeighbors = neighborData.asInstanceOf[Array[Array[Int]]]
 
       // Write train data to LakeSoul
@@ -645,397 +717,164 @@ class ANNCase extends QueryTest
     }
   }
 
-  test("test LakeSoul training data by LakeSoul LSH on MNIST") {
-    // Define normalization types
-    val NORM_NONE = 0
-    val NORM_MINMAX = 1
-    val NORM_ZSCORE = 2
+  test("test LakeSoul non-persistent LSH Index") {
 
-    // Z-score normalization parameters
-    val zScoreTargetMean = 0
-    val zScoreTargetStdDev = 1.0
+    println(s"\n==== Running test with $normType ====\n")
 
-    // Configure which normalization methods to test
-    // Options: NORM_NONE, NORM_MINMAX, NORM_ZSCORE
-    val normalizationTypes = Seq(
-      //      NORM_ZSCORE,
-      NORM_MINMAX,
-      //      NORM_NONE
-    )
+    withTempDir { dir =>
+      val hdfFile = new HdfFile(Paths.get(filePath))
 
-    normalizationTypes.foreach { normType =>
-      val normName = normType match {
-        case NORM_NONE => "No Normalization"
-        case NORM_MINMAX => "Min-Max Normalization"
-        case NORM_ZSCORE => s"Z-Score Normalization(mean=$zScoreTargetMean, stdDev=$zScoreTargetStdDev)"
+      val trainDataset = hdfFile.getDatasetByPath("train")
+      val testDataset = hdfFile.getDatasetByPath("test")
+      val neighborDataset = hdfFile.getDatasetByPath("neighbors")
+      val trainData = trainDataset.getData()
+      val testData = testDataset.getData()
+      val neighborData = neighborDataset.getData()
+
+      // Convert data to vectors
+      val trainVectors = trainData.asInstanceOf[Array[Array[Float]]].map(_.map(_.toDouble))
+      val testVectors = testData.asInstanceOf[Array[Array[Float]]].map(_.map(_.toDouble))
+      val trueNeighbors = if (dataset == "coco-i2i-512-angular") {
+        neighborData.asInstanceOf[Array[Array[Long]]].map(_.map(_.toInt))
+      } else {
+        neighborData.asInstanceOf[Array[Array[Int]]]
       }
 
-      println(s"\n==== Running test with $normName ====\n")
 
-      withTempDir { dir =>
-        val hdfFile = new HdfFile(Paths.get("/Users/ceng/Downloads/fashion-mnist-784-euclidean.hdf5"))
+      // Compute normalization parameters using DataNormalizer
+      val normParams = DataNormalizer.computeNormalizationParams(
+        trainVectors,
+        normType,
+        minMaxLower = minMaxLowerLimit,
+        minMaxUpper = minMaxUpperLimit,
+        zScoreTargetMean = zScoreTargetMean,
+        zScoreTargetStdDev = zScoreTargetStdDev
+      )
 
-        val trainDataset = hdfFile.getDatasetByPath("train")
-        val testDataset = hdfFile.getDatasetByPath("test")
-        val neighborDataset = hdfFile.getDatasetByPath("neighbors")
-        val trainData = trainDataset.getData()
-        val testData = testDataset.getData()
-        val neighborData = neighborDataset.getData()
+      // Apply normalization to training vectors
+      val finalTrainVectors = DataNormalizer.normalizeData(trainVectors, normParams)
 
-        // 将数据转换为向量格式
-        val trainVectors = trainData.asInstanceOf[Array[Array[Float]]]
-        val testVectors = testData.asInstanceOf[Array[Array[Float]]]
-        val trueNeighbors = neighborData.asInstanceOf[Array[Array[Int]]]
+      // Write train data to LakeSoul (normalized or original)
+      val trainDf = spark.createDataFrame(
+        spark.sparkContext.parallelize(finalTrainVectors.zipWithIndex.map { case (vec, idx) =>
+          (idx.toLong, vec)
+        })
+      ).toDF("id", "features")
 
-        // Memory variables for normalization parameters
-        var broadcastFeatureMeans: org.apache.spark.broadcast.Broadcast[Array[Double]] = null
-        var broadcastFeatureStdDevs: org.apache.spark.broadcast.Broadcast[Array[Double]] = null
-        var broadcastFeatureMin: org.apache.spark.broadcast.Broadcast[Array[Float]] = null
-        var broadcastFeatureMax: org.apache.spark.broadcast.Broadcast[Array[Float]] = null
+      val tableName = normType match {
+        case "NORM_NONE" => "trainDataOriginal"
+        case "NORM_MINMAX" => "trainDataMinMax"
+        case "NORM_ZSCORE" => "trainDataZScore"
+      }
 
-        // Store original vectors for the non-normalized version
-        val finalTrainVectors = normType match {
-          case NORM_NONE =>
-            // Use original vectors without normalization
-            println("Using original vectors without normalization")
-            trainVectors
-
-          case NORM_MINMAX =>
-            // Calculate global min-max normalization parameters
-            println("Calculating global min-max normalization parameters")
-            val numFeatures = trainVectors(0).length
-            val featureMin = Array.fill(numFeatures)(Float.MaxValue)
-            val featureMax = Array.fill(numFeatures)(Float.MinValue)
-
-            // Find min and max for each feature across all training vectors
-            trainVectors.foreach { vec =>
-              for (i <- 0 until numFeatures) {
-                featureMin(i) = math.min(featureMin(i), vec(i))
-                featureMax(i) = math.max(featureMax(i), vec(i))
-              }
-            }
-
-            // Broadcast min and max values to make them available to all executors
-            broadcastFeatureMin = spark.sparkContext.broadcast(featureMin)
-            broadcastFeatureMax = spark.sparkContext.broadcast(featureMax)
-
-            println(s"Min-max parameters calculated and broadcast to executors")
-            println(s"Sample min values (first 5): ${featureMin.take(5).mkString(", ")}")
-            println(s"Sample max values (first 5): ${featureMax.take(5).mkString(", ")}")
-
-            // Create normalized versions of train vectors using min-max scaling
-            val normalizedTrainVectors = trainVectors.map { vec =>
-              vec.zipWithIndex.map { case (value, i) =>
-                if (featureMax(i) - featureMin(i) > 0.0001f) {
-                  (value - featureMin(i)) / (featureMax(i) - featureMin(i))
-                } else {
-                  0.0f // Handle case where max = min (constant feature)
-                }
-              }
-            }
-
-            normalizedTrainVectors
-
-          case NORM_ZSCORE =>
-            // Calculate global normalization parameters for custom normal distribution
-            println(s"Calculating normalization parameters for norm($zScoreTargetMean, $zScoreTargetStdDev)")
-            val numFeatures = trainVectors(0).length
-            val numVectors = trainVectors.length
-
-            // Step 1: Calculate means for each dimension
-            val means = Array.fill(numFeatures)(0.0)
-            trainVectors.foreach { vec =>
-              for (i <- 0 until numFeatures) {
-                means(i) += vec(i)
-              }
-            }
-
-            // Divide sums by count to get means
-            for (i <- 0 until numFeatures) {
-              means(i) /= numVectors
-            }
-
-            // Step 2: Calculate variances for each dimension
-            val variances = Array.fill(numFeatures)(0.0)
-            trainVectors.foreach { vec =>
-              for (i <- 0 until numFeatures) {
-                val diff = vec(i) - means(i)
-                variances(i) += diff * diff
-              }
-            }
-
-            // Divide sum of squared differences by count to get variances
-            for (i <- 0 until numFeatures) {
-              variances(i) /= numVectors
-            }
-
-            // Step 3: Calculate standard deviations
-            val stdDevs = variances.map(variance => math.sqrt(variance))
-
-            // Broadcast means and stdDevs values to make them available to all executors
-            broadcastFeatureMeans = spark.sparkContext.broadcast(means)
-            broadcastFeatureStdDevs = spark.sparkContext.broadcast(stdDevs)
-
-            println(s"Normalization parameters calculated and broadcast to executors")
-            println(s"Sample means (first 5): ${means.take(5).mkString(", ")}")
-            println(s"Sample stdDevs (first 5): ${stdDevs.take(5).mkString(", ")}")
-
-            // Create normalized versions of train vectors with target mean and stdDev
-            val normalizedTrainVectors = trainVectors.map { vec =>
-              vec.zipWithIndex.map { case (value, i) =>
-                if (stdDevs(i) > 0.0001) {
-                  // First convert to standard z-score (mean=0, stdDev=1),
-                  // then scale to target stdDev and shift to target mean
-                  ((value - means(i)) / stdDevs(i) * zScoreTargetStdDev + zScoreTargetMean).toFloat
-                } else {
-                  zScoreTargetMean.toFloat // Handle case where stdDev is near zero (constant feature)
-                }
-              }
-            }
-
-            normalizedTrainVectors
-        }
-
-        // Write train data to LakeSoul (either normalized or original)
-        val trainDf = spark.createDataFrame(
-          spark.sparkContext.parallelize(finalTrainVectors.zipWithIndex.map { case (vec, idx) =>
-            (idx.toLong, vec)
-          })
-        ).toDF("id", "features")
-
-        val tableName = normType match {
-          case NORM_NONE => "trainDataOriginal"
-          case NORM_MINMAX => "trainDataMinMax"
-          case NORM_ZSCORE => "trainDataZScore"
-        }
-
+      println(s"================ Saving train data to LakeSoul table: $tableName ==================")
+      spark.time({
         trainDf.write.format("lakesoul")
           .option("hashPartitions", "id")
           .option("hashBucketNum", 4)
           .option(LakeSoulOptions.SHORT_TABLE_NAME, tableName)
           .mode("Overwrite")
           .save(dir.getCanonicalPath)
+      })
 
-        // Read data back from LakeSoul
-        val scanDf = LakeSoulTable.forPath(dir.getCanonicalPath).toDF
+      // Read data back from LakeSoul
+      val scanDf = LakeSoulTable.forPath(dir.getCanonicalPath).toDF
 
-        // Create a UDF to convert array to vector
-        val arrayToVector = udf { array: Seq[Float] =>
-          org.apache.spark.ml.linalg.Vectors.dense(array.map(_.toDouble).toArray)
-        }
-
-        // Convert the features column from array to vector
-        val scanDfWithVectors = scanDf.withColumn("features", arrayToVector(col("features")))
-
-        // Prepare candidate RDD from LakeSoul data
-        val candidateRDD = scanDfWithVectors.rdd.map { row =>
-          (row.getAs[Long]("id"), row.getAs[org.apache.spark.ml.linalg.Vector]("features"))
-        }
-
-        // Prepare test data (either normalized or original)
-        val sampledTestRDD = normType match {
-          case NORM_NONE =>
-            // Use original test vectors
-            spark.sparkContext.parallelize(
-              sampleIndices.map { case idx =>
-                (idx.toLong, org.apache.spark.ml.linalg.Vectors.dense(testVectors(idx).map(_.toDouble)))
-              }
-            )
-
-          case NORM_MINMAX =>
-            // Use the broadcast variables of min-max normalization parameters
-            spark.sparkContext.parallelize(
-              sampleIndices.map { case idx =>
-                // Normalize the test vector using broadcast min/max values directly
-                val testVec = testVectors(idx)
-                val normalizedTestVec = testVec.zipWithIndex.map { case (value, i) =>
-                  val min = broadcastFeatureMin.value(i)
-                  val max = broadcastFeatureMax.value(i)
-                  if (max - min > 0.0001f) {
-                    (value - min) / (max - min)
-                  } else {
-                    0.0f
-                  }
-                }
-                (idx.toLong, org.apache.spark.ml.linalg.Vectors.dense(normalizedTestVec.map(_.toDouble)))
-              }
-            )
-
-          case NORM_ZSCORE =>
-            // Use the broadcast variables of z-score normalization parameters
-            spark.sparkContext.parallelize(
-              sampleIndices.map { case idx =>
-                // Normalize the test vector using broadcast means/stdDevs values directly
-                val testVec = testVectors(idx)
-                val normalizedTestVec = testVec.zipWithIndex.map { case (value, i) =>
-                  val mean = broadcastFeatureMeans.value(i)
-                  val stdDev = broadcastFeatureStdDevs.value(i)
-                  if (stdDev > 0.0001) {
-                    // First convert to standard z-score (mean=0, stdDev=1),
-                    // then scale to target stdDev and shift to target mean
-                    ((value - mean) / stdDev * zScoreTargetStdDev + zScoreTargetMean).toFloat
-                  } else {
-                    zScoreTargetMean.toFloat
-                  }
-                }
-                (idx.toLong, org.apache.spark.ml.linalg.Vectors.dense(normalizedTestVec.map(_.toDouble)))
-              }
-            )
-        }
-
-        val numFeatures = trainVectors(0).length
-        // Adjust bucket width based on normalization method
-        val bucketWidth = normType match {
-          case NORM_NONE => trainVectors.length / 8
-          case NORM_MINMAX => numFeatures / 32
-          case NORM_ZSCORE => numFeatures / 4 * zScoreTargetStdDev.toFloat // Adjust based on target stdDev
-        }
-
-        // Create LakeSoulRandomProjectionNNS model
-        val model = new LakeSoulRandomProjectionNNS()
-          .setShouldSampleBuckets(true)
-          .setSeed(1234)
-          .setNumHashes(256)
-          .setSignatureLength(8)
-          .setBucketWidth(bucketWidth)
-          .setBucketLimit(2000)
-          //          .setJoinParallelism(50)
-          //          .setNumOutputPartitions(50)
-          .createModel(numFeatures)
-
-        val bias = 0
-        // Run similarity search and time it
-        val result: Array[(Long, Long, Double)] = spark.time({
-          val res = model.getAllNearestNeighborsWithBucketBias(sampledTestRDD, candidateRDD, topK, 0, bias).collect()
-          println(s"res = ${res.take(5).mkString("; ")}...")
-          res
-        })
-
-        // Convert the results to Row format for recall calculation
-        val predictedNeighborsAsRows = result.map { case (queryId, neighborId, distance) =>
-          Row(queryId, neighborId, distance)
-        }
-
-        // Calculate and print recall
-        val avgRecall = calculateRecall(sampleIndices, trueNeighbors, predictedNeighborsAsRows, topK, numQuery)
-        println(s"LakeSoul LSH with $normName: Average recall@$topK = $avgRecall")
-
-        // Print a sample vector normalization example
-        if (normType != NORM_NONE) {
-          // Demonstrate using the broadcast normalization parameters
-          println("Demonstrating normalization using in-memory parameters")
-
-          // Get a sample test vector
-          val sampleTestVector = testVectors(0)
-
-          // Apply the appropriate normalization
-          val normalizedSampleTest = normType match {
-            case NORM_MINMAX =>
-              sampleTestVector.zipWithIndex.map { case (value, i) =>
-                val min = broadcastFeatureMin.value(i)
-                val max = broadcastFeatureMax.value(i)
-                if (max - min > 0.0001f) {
-                  (value - min) / (max - min)
-                } else {
-                  0.0f
-                }
-              }
-
-            case NORM_ZSCORE =>
-              sampleTestVector.zipWithIndex.map { case (value, i) =>
-                val mean = broadcastFeatureMeans.value(i)
-                val stdDev = broadcastFeatureStdDevs.value(i)
-                if (stdDev > 0.0001) {
-                  ((value - mean) / stdDev * zScoreTargetStdDev + zScoreTargetMean).toFloat
-                } else {
-                  zScoreTargetMean.toFloat
-                }
-              }
-
-            case _ => sampleTestVector // This won't be reached due to the if condition
-          }
-
-          println(s"Original test vector first 5 values: ${sampleTestVector.take(5).mkString(", ")}")
-          println(s"$normName vector first 5 values: ${normalizedSampleTest.take(5).mkString(", ")}")
-
-          // For min-max normalization, verify values are in [0,1]
-          if (normType == NORM_MINMAX) {
-            val minNormalized = normalizedSampleTest.min
-            val maxNormalized = normalizedSampleTest.max
-            println(s"Min-max normalized range: [$minNormalized, $maxNormalized] (should be close to [0,1])")
-          }
-
-          // For z-score normalization, check mean and std
-          if (normType == NORM_ZSCORE) {
-            val meanNormalized = normalizedSampleTest.sum / normalizedSampleTest.length
-            val varianceNormalized = normalizedSampleTest.map(x => math.pow(x - meanNormalized, 2)).sum / normalizedSampleTest.length
-            val stdNormalized = math.sqrt(varianceNormalized)
-            println(s"Z-score normalized stats: mean = $meanNormalized, std = $stdNormalized (should be close to $zScoreTargetMean and $zScoreTargetStdDev)")
-          }
-        }
+      // Create a UDF to convert array to vector
+      val arrayToVector = udf { array: Seq[Double] =>
+        org.apache.spark.ml.linalg.Vectors.dense(array.toArray)
       }
+
+      // Convert the features column from array to vector
+      val scanDfWithVectors = scanDf.withColumn("features", arrayToVector(col("features")))
+
+      // Prepare candidate RDD from LakeSoul data
+      val candidateRDD = scanDfWithVectors.rdd.map { row =>
+        (row.getAs[Long]("id"), row.getAs[org.apache.spark.ml.linalg.Vector]("features"))
+      }
+
+      // Apply normalization to sampled test vectors
+      val sampledTestVectors = sampleIndices.map(idx => testVectors(idx))
+      val normalizedTestVectors = DataNormalizer.normalizeData(sampledTestVectors.toArray, normParams)
+
+      // Prepare test data RDD
+      val sampledTestRDD = spark.sparkContext.parallelize(
+        sampleIndices.zip(normalizedTestVectors).map { case (idx, vec) =>
+          (idx.toLong, org.apache.spark.ml.linalg.Vectors.dense(vec.map(_.toDouble)))
+        }
+      )
+
+      val numFeatures = trainVectors(0).length
+      // Adjust bucket width based on normalization method
+
+
+      // Create LakeSoulRandomProjectionNNS model
+      val model = new LakeSoulRandomProjectionNNS()
+        .setShouldSampleBuckets(true)
+        .setSeed(seed)
+        .setNumHashes(numHashes)
+        .setSignatureLength(signatureLength)
+        .setBucketWidth(bucketWidth)
+        .setBucketLimit(bucketLimit)
+        .setDistanceMetric(distanceType)
+        .createModel(numFeatures)
+
+      val bias = 0
+      // Run similarity search and time it
+      val result: Array[(Long, Long, Double)] = spark.time({
+        val res = model.getAllNearestNeighborsWithBucketBias(sampledTestRDD, candidateRDD, topK, 0, bias).collect()
+        println(s"res = ${res.take(5).mkString("; ")}...")
+        res
+      })
+
+      // Convert the results to Row format for recall calculation
+      val predictedNeighborsAsRows = result.map { case (queryId, neighborId, distance) =>
+        Row(queryId, neighborId, distance)
+      }
+
+      // Calculate and print recall
+      val avgRecall = calculateRecall(sampleIndices, trueNeighbors, predictedNeighborsAsRows, topK, numQuery)
+      println(s"LakeSoul LSH with $normType: Average recall@$topK = $avgRecall")
     }
+
 
     // After running all tests, print a summary message
     println("\n==== Normalization Comparison Complete ====")
     println("Compare the recall results above to determine the best normalization strategy")
   }
 
-  test("test LakeSoul persist LSH Index") {
+  test("test LakeSoul persistent LSH Index") {
     withTempDir { dir =>
-      //
       val tableName = "test_lsh_index"
-      val numHashes = 256
-      val signatureLength = 8
 
-      val hdfFile = new HdfFile(Paths.get("/Users/ceng/Downloads/fashion-mnist-784-euclidean.hdf5"))
+      val hdfFile = new HdfFile(Paths.get(filePath))
       val trainDataset = hdfFile.getDatasetByPath("train")
-      val trainData = trainDataset.getData()
-      val trainVectors = trainData.asInstanceOf[Array[Array[Float]]]
-
       val testDataset = hdfFile.getDatasetByPath("test")
-      val testData = testDataset.getData()
-      val testVectors = testData.asInstanceOf[Array[Array[Float]]]
-
-      // Load neighbors dataset for ground truth
       val neighborDataset = hdfFile.getDatasetByPath("neighbors")
+      val trainData = trainDataset.getData()
+      val testData = testDataset.getData()
       val neighborData = neighborDataset.getData()
-      val trueNeighbors = neighborData.asInstanceOf[Array[Array[Int]]]
+
+
+      // Convert data to vectors
+      val trainVectors = trainData.asInstanceOf[Array[Array[Float]]].map(_.map(_.toDouble))
+      val testVectors = testData.asInstanceOf[Array[Array[Float]]].map(_.map(_.toDouble))
+      val trueNeighbors = if (dataset == "coco-i2i-512-angular") {
+        neighborData.asInstanceOf[Array[Array[Long]]].map(_.map(_.toInt))
+      } else {
+        neighborData.asInstanceOf[Array[Array[Int]]]
+      }
+
+      val numFeatures = trainVectors(0).length
+
+      // Use DataNormalizer to compute min-max normalization parameters
+      val normParams = DataNormalizer.computeNormalizationParams(
+        trainVectors,
+        normType
+      )
 
       // Apply min-max normalization to training vectors
-      println("Calculating global min-max normalization parameters")
-      val numFeatures = trainVectors(0).length
-      val bucketWidth = numFeatures / 32
-
-      val featureMin = Array.fill(numFeatures)(Float.MaxValue)
-      val featureMax = Array.fill(numFeatures)(Float.MinValue)
-
-      // Find min and max for each feature across all training vectors
-      trainVectors.foreach { vec =>
-        for (i <- 0 until numFeatures) {
-          featureMin(i) = math.min(featureMin(i), vec(i))
-          featureMax(i) = math.max(featureMax(i), vec(i))
-        }
-      }
-
-      // Broadcast min and max values to make them available to all executors
-      val broadcastFeatureMin = spark.sparkContext.broadcast(featureMin)
-      val broadcastFeatureMax = spark.sparkContext.broadcast(featureMax)
-
-      println(s"Min-max parameters calculated and broadcast to executors")
-      println(s"Sample min values (first 5): ${featureMin.take(5).mkString(", ")}")
-      println(s"Sample max values (first 5): ${featureMax.take(5).mkString(", ")}")
-
-      // Create normalized versions of train vectors using min-max scaling
-      val normalizedTrainVectors = trainVectors.map { vec =>
-        vec.zipWithIndex.map { case (value, i) =>
-          if (featureMax(i) - featureMin(i) > 0.0001f) {
-            (value - featureMin(i)) / (featureMax(i) - featureMin(i))
-          } else {
-            0.0f // Handle case where max = min (constant feature)
-          }
-        }
-      }
+      val normalizedTrainVectors = DataNormalizer.normalizeData(trainVectors, normParams)
 
       // Convert training vectors to RDD format
       val trainRDD = spark.sparkContext.parallelize(
@@ -1046,11 +885,14 @@ class ANNCase extends QueryTest
 
       // Create a model using LakeSoulRandomProjectionNNS
       val model = new LakeSoulRandomProjectionNNS()
-        .setSeed(1234)
+        .setJoinParallelism(500)
+        .setSeed(seed)
+        .setShouldSampleBuckets(true)
         .setNumHashes(numHashes)
         .setSignatureLength(signatureLength)
         .setBucketWidth(bucketWidth)
-        .setBucketLimit(2000)
+        .setBucketLimit(bucketLimit)
+        .setDistanceMetric(distanceType)
         .createModel(numFeatures)
 
       // Transform the data to get hashed values
@@ -1059,94 +901,69 @@ class ANNCase extends QueryTest
       // Explode the data into bucket-to-vector mappings
       val explodedData = model.explodeData(transformedData)
 
-      // Convert exploded data to DataFrame with schema
-      val explodedSchema = StructType(Seq(
-        StructField("bucket_id", IntegerType, false),
-        StructField("hash_index", IntegerType, false),
-        StructField("vector_id", LongType, false),
-        StructField("vector", ArrayType(FloatType), true)
-      ))
-
       // Convert the exploded RDD to a DataFrame suitable for storage
       val explodedDF = explodedData.map { case ((bucketId, hashIndex), (vectorId, vector)) =>
         // Get the raw float array from the Vector
-        val floatArray = vector.toArray.map(_.toFloat)
-        (bucketId, hashIndex, vectorId, floatArray)
+        val doubleArray = vector.toArray
+        (bucketId, hashIndex, vectorId, doubleArray)
       }.toDF("bucket_id", "hash_index", "vector_id", "vector")
 
-
-      // Debug: Print the schema of explodedDF to understand its structure better
+      // Debug: Print the schema of explodedDF
       println("Schema of explodedDF before saving:")
       explodedDF.printSchema()
 
-      // Calculate some statistics about the exploded data
-      val totalBuckets = explodedDF.select("bucket_id").distinct().count()
-      val totalVectors = explodedDF.select("vector_id").distinct().count()
-      val totalRows = explodedDF.count()
-
-      println(s"Generated LSH Index statistics:")
-      println(s"- Total unique buckets: $totalBuckets")
-      println(s"- Total unique vectors: $totalVectors")
-      println(s"- Total exploded rows: $totalRows")
-      println(s"- Average vectors per bucket: ${totalRows.toDouble / totalBuckets}")
-
-      // Save as LakeSoul table
-      explodedDF.write.format("lakesoul")
-        .option("hashPartitions", "bucket_id")
-        .option("hashBucketNum", 16)
-        .option("rangePartitions", "hash_index")
-        .option(LakeSoulOptions.SHORT_TABLE_NAME, tableName)
-        .mode("Overwrite")
-        .save(dir.getCanonicalPath)
+      println("================ Saving LSH Index ==================")
+      spark.time({
+        // Save as LakeSoul table
+        explodedDF.write.format("lakesoul")
+          .option("hashPartitions", "bucket_id")
+          .option("hashBucketNum", 32)
+          .option("rangePartitions", "hash_index")
+          .option(LakeSoulOptions.SHORT_TABLE_NAME, tableName)
+          .mode("Overwrite")
+          .save(dir.getCanonicalPath)
+      })
 
       println(s"LSH Index saved as LakeSoul table at ${dir.getCanonicalPath}")
 
       // Read back the data to verify
       val readBackDF = LakeSoulTable.forPath(dir.getCanonicalPath).toDF
-      //      val readRowCount = readBackDF.count()
-      //      val hashIndex = 0
-      //
-      //      val bucketInHashIndex = readBackDF.where(col("hash_index") === 0).select("bucket_id").distinct().count()
-      //
-      //      println(s"Verified saved LSH Index:")
-      //      println(s"- Sample hash index $hashIndex contains $bucketInHashIndex buckets")
-      //
-      //      // Debug: Print the schema of readBackDF to understand its structure better
-      //      println("Schema of readBackDF:")
-      //      readBackDF.printSchema()
 
+      // Normalize test vectors for query
+      val sampledTestVectors = sampleIndices.map(idx => testVectors(idx))
+      val normalizedTestVectors = DataNormalizer.normalizeData(sampledTestVectors.toArray, normParams)
+
+      // Create RDD of normalized test vectors
       val sampledTestRDD = spark.sparkContext.parallelize(
-        sampleIndices.map { case idx =>
-          val testVec = testVectors(idx)
-          val normalizedTestVec = testVec.zipWithIndex.map { case (value, i) =>
-            val min = broadcastFeatureMin.value(i)
-            val max = broadcastFeatureMax.value(i)
-            if (max - min > 0.0001f) {
-              (value - min) / (max - min)
-            } else {
-              0.0f
-            }
-          }
-          (idx.toLong, org.apache.spark.ml.linalg.Vectors.dense(normalizedTestVec.map(_.toDouble)))
+        sampleIndices.zip(normalizedTestVectors).map { case (idx, vec) =>
+          (idx.toLong, org.apache.spark.ml.linalg.Vectors.dense(vec))
         }
       )
 
-      val result: Array[(Long, Long, Double)] = spark.time({
-        model.getAllNearestNeighborsWithIndex(sampledTestRDD, readBackDF, topK).collect()
+      println("================ Querying with LSH Index ==================")
+      val batchSize = 25 // Process batchSize queries at a time
+      val results = spark.time({
+        // Split sampledTestRDD into batches
+        val batches = sampledTestRDD.collect().grouped(batchSize).toSeq
+
+        // Process each batch and collect results
+        batches.flatMap { batchData =>
+          val batchRDD = spark.sparkContext.parallelize(batchData)
+          println(s"Processing batch of ${batchData.length} queries...")
+          model.getAllNearestNeighborsWithIndex(batchRDD, readBackDF, topK).collect()
+        }.toArray
       })
 
-      println(s"result = ${result.take(5).mkString("; ")}...")
+      println(s"result = ${results.take(5).mkString("; ")}...")
 
       // Convert the results to Row format for recall calculation
-      val predictedNeighborsAsRows = result.map { case (queryId, neighborId, distance) =>
+      val predictedNeighborsAsRows = results.map { case (queryId, neighborId, distance) =>
         Row(queryId, neighborId, distance)
       }
 
       // Calculate and print recall
       val avgRecall = calculateRecall(sampleIndices, trueNeighbors, predictedNeighborsAsRows, topK, numQuery)
       println(s"LakeSoul LSH : Average recall@$topK = $avgRecall")
-
-
     }
   }
 
