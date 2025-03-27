@@ -94,6 +94,7 @@ spark.sql.sources.default lakesoul
 
 ### Required Flink Version
 Since 2.4.0, Flink version 1.17 is supported.
+Since 3.0.0, Flink version 1.20 is supported.
 
 ### Setup Metadata Database Connection for Flink
 
@@ -133,7 +134,7 @@ If access to the Hadoop environment is required, the Hadoop Classpath environmen
 ```bash
 export HADOOP_CLASSPATH=`$HADOOP_HOME/bin/hadoop classpath`
 ```
-For details, please refer to: [Flink on Hadoop](https://nightlies.apache.org/flink/flink-docs-release-1.17/docs/deployment/resource-providers/yarn/)
+For details, please refer to: [Flink on Hadoop](https://nightlies.apache.org/flink/flink-docs-release-1.20/docs/deployment/resource-providers/yarn/)
 :::
 
 :::tip
@@ -144,7 +145,7 @@ taskmanager.memory.task.off-heap.size: 3000m
 :::
 
 ### Add LakeSoul Jar to Flink's directory
-Download LakeSoul Flink Jar from: https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-1.17-VAR::VERSION.jar
+Download LakeSoul Flink Jar from: https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-1.20-VAR::VERSION.jar
 
 And put the jar file under `$FLINK_HOME/lib`. After this, you could start flink session cluster or application as usual.
 
@@ -155,6 +156,6 @@ Add the following to your project's pom.xml
 <dependency>
     <groupId>com.dmetasoul</groupId>
     <artifactId>lakesoul-flink</artifactId>
-    <version>1.17-VAR::VERSION</version>
+    <version>1.20-VAR::VERSION</version>
 </dependency>
 ```

@@ -97,7 +97,8 @@ spark.sql.sources.default lakesoul
 ## Flink 工程/作业的配置
 
 ### 所需的 Flink 版本
-目前 2.4 版本，支持 Flink 1.17。
+3.0 以上版本，支持 Flink 1.20.
+2.4 以上版本，支持 Flink 1.17。
 
 ### 为 Flink 设置元数据数据库连接
 
@@ -139,9 +140,9 @@ taskmanager.memory.task.off-heap.size: 3000m
 
 
 ### 添加 LakeSoul Jar 到 Flink 部署的目录
-从以下地址下载 LakeSoul Flink Jar：https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-1.17-VAR::VERSION.jar
+从以下地址下载 LakeSoul Flink Jar：https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-1.20-VAR::VERSION.jar
 
-或者从国内地址下载：https://mirrors.huaweicloud.com/repository/maven/com/dmetasoul/lakesoul-flink/1.17-VAR::VERSION/lakesoul-flink-1.17-VAR::VERSION.jar
+或者从国内地址下载：https://mirrors.huaweicloud.com/repository/maven/com/dmetasoul/lakesoul-flink/1.20-VAR::VERSION/lakesoul-flink-1.20-VAR::VERSION.jar
 
 并将 jar 文件放在 `$FLINK_HOME/lib` 下。在此之后，您可以像往常一样启动 flink 会话集群或应用程序。
 
@@ -152,7 +153,7 @@ taskmanager.memory.task.off-heap.size: 3000m
 ```bash
 export HADOOP_CLASSPATH=`$HADOOP_HOME/bin/hadoop classpath`
 ```
-具体可以参考：[Flink on Hadoop](https://nightlies.apache.org/flink/flink-docs-release-1.17/docs/deployment/resource-providers/yarn/)
+具体可以参考：[Flink on Hadoop](https://nightlies.apache.org/flink/flink-docs-release-1.20/docs/deployment/resource-providers/yarn/)
 :::
 
 ### 在你的 Java 项目中添加 LakeSoul Flink Maven 依赖
@@ -162,6 +163,6 @@ export HADOOP_CLASSPATH=`$HADOOP_HOME/bin/hadoop classpath`
 <dependency>
      <groupId>com.dmetasoul</groupId>
      <artifactId>lakesoul-flink</artifactId>
-     <version>1.17-VAR::VERSION</version>
+     <version>1.20-VAR::VERSION</version>
 </dependency>
 ```

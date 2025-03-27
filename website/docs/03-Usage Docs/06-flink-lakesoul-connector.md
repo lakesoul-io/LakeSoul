@@ -9,7 +9,7 @@ SPDX-License-Identifier: Apache-2.0
 :::tip
 Since 2.3.0
 
-LakeSoul with version 2.3.0 is targeting Flink 1.14 while 2.4.0 and above is targeting Flink 1.17。
+LakeSoul with version 2.3.0 is targeting Flink 1.14 while 2.4.0 and above is targeting Flink 1.17, and 3.0.0 above is targeting Flink 1.20.
 :::
 
 LakeSoul provides Flink Connector which implements the Dynamic Table interface, through which developers can use Flink's DataStream API, Table API or SQL to read and write LakeSoul data, and supports both streaming and batch modes for read and write. Read and Write in Flink streaming both support Flink Changelog Stream semantics.
@@ -18,14 +18,14 @@ LakeSoul provides Flink Connector which implements the Dynamic Table interface, 
 
 To setup Flink environment, please refer to [Setup Spark/Flink Job/Project](../03-Usage%20Docs/02-setup-spark.md)
 
-Introduce LakeSoul dependency: download lakesoul-flink-1.17-VAR::VERSION.jar.
+Introduce LakeSoul dependency: download lakesoul-flink-1.20-VAR::VERSION.jar.
 
 In order to use Flink to create LakeSoul tables, it is recommended to use Flink SQL Client, which supports direct use of Flink SQL commands to operate LakeSoul tables. In this document, the Flink SQL is to directly enter statements on the Flink SQL Client cli interface; whereas the Table API needs to be used in a Java projects.
 
 Switch to the flink folder and execute the command to start the SQLclient client.
 ```bash
 # Start Flink SQL Client
-bin/sql-client.sh embedded -j lakesoul-flink-1.17-VAR::VERSION.jar
+bin/sql-client.sh embedded -j lakesoul-flink-1.20-VAR::VERSION.jar
 ```
 
 ## 2. DDL

@@ -10,7 +10,7 @@ export HADOOP_HOME=$HOME/hadoop-3.3.5
 2. Download flink-s3-hadoop:
 
 ```bash
-wget https://repo1.maven.org/maven2/org/apache/flink/flink-s3-fs-hadoop/1.17.0/flink-s3-fs-hadoop-1.17.0.jar -O $HOME/flink-s3-fs-hadoop-1.17.0.jar
+wget https://repo1.maven.org/maven2/org/apache/flink/flink-s3-fs-hadoop/1.20.1/flink-s3-fs-hadoop-1.20.1.jar -O $HOME/flink-s3-fs-hadoop-1.20.1.jar
 ```
 
 3. Start docker compose

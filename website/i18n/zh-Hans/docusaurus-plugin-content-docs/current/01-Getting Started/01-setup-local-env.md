@@ -93,11 +93,11 @@ spark.sql.catalog.lakesoul | org.apache.spark.sql.lakesoul.catalog.LakeSoulCatal
 spark.sql.defaultCatalog | lakesoul
 
 ### 1.4 Flink 本地环境搭建
-以当前发布最新版本为例，LakeSoul Flink jar 包下载地址为：https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-1.17-VAR::VERSION.jar
+以当前发布最新版本为例，LakeSoul Flink jar 包下载地址为：https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-1.20-VAR::VERSION.jar
 
-如果访问 Github 有问题，也可以从如下链接下载：https://mirrors.huaweicloud.com/repository/maven/com/dmetasoul/lakesoul-flink/1.17-VAR::VERSION/lakesoul-flink-1.17-VAR::VERSION.jar
+如果访问 Github 有问题，也可以从如下链接下载：https://mirrors.huaweicloud.com/repository/maven/com/dmetasoul/lakesoul-flink/1.20-VAR::VERSION/lakesoul-flink-1.20-VAR::VERSION.jar
 
-最新版本支持 flink 集群为1.17，Flink jar下载地址为：https://dlcdn.apache.org/flink/flink-1.17.2/flink-1.17.2-bin-scala_2.12.tgz
+最新版本支持 flink 集群为1.20 jar下载地址为：https://dlcdn.apache.org/flink/flink-1.20.1/flink-1.20.1-bin-scala_2.12.tgz
 
 #### 1.4.1 启动Flink SQL shell
 在创建好 pg 数据库和 `lakesoul_home` 配置文件后，通过以下方式可以进入 SQL Client 客户端，将LakeSoul Flink jar放在 FLink 目录下，
@@ -107,7 +107,7 @@ spark.sql.defaultCatalog | lakesoul
 export lakesoul_home=/opt/soft/pg.property && ./bin/start-cluster.sh
 
 # 启动 flink sql client
-export lakesoul_home=/opt/soft/pg.property && ./bin/sql-client.sh embedded -j lakesoul-flink-1.17-VAR::VERSION.jar
+export lakesoul_home=/opt/soft/pg.property && ./bin/sql-client.sh embedded -j lakesoul-flink-1.20-VAR::VERSION.jar
 ```
 
 #### 1.4.2 将数据写入对象存储服务
@@ -123,7 +123,7 @@ s3.path.style.access: true
 ```
 
 将flink-s3-fs-hadoop.jar 和 flink-shaded-hadoop-2-uber-2.6.5-10.0.jar 放到 Flink/lib 下
-flink-s3-fs-hadoop.jar 下载地址为：https://repo1.maven.org/maven2/org/apache/flink/flink-s3-fs-hadoop/1.17.2/flink-s3-fs-hadoop-1.17.2.jar
+flink-s3-fs-hadoop.jar 下载地址为：https://repo1.maven.org/maven2/org/apache/flink/flink-s3-fs-hadoop/1.20.1/flink-s3-fs-hadoop-1.20.1.jar
 flink-shaded-hadoop-2-uber-2.6.5-10.0.jar 下载地址为：https://repo1.maven.org/maven2/org/apache/flink/flink-shaded-hadoop-2-uber/2.6.5-10.0/flink-shaded-hadoop-2-uber-2.6.5-10.0.jar
 
 ## 2. 在 Hadoop、Spark 和 FLink 集群环境下运行
@@ -162,11 +162,11 @@ containerized.taskmanager.env.LAKESOUL_PG_URL: jdbc:postgresql://127.0.0.1:5432/
 :::tip
 如果需要在 Hadoop 环境中访问 S3 等对象存储，也需要添加 `spark.hadoop.fs.s3a.*`(Spark)、`s3.*`(Flink) 等相应配置项。
 * Spark 环境中需要 `hadoop-aws-$hadoop_version.jar` 及其依赖(建议放在 `$SPARK_HOME/jars` 目录下)。可以从 https://mvnrepository.com/artifact/org.apache.hadoop/hadoop-aws 这里根据 Hadoop 版本下载，与 Spark 版本无关。同时还需要下载 `aws-java-sdk-bundle`：https://mvnrepository.com/artifact/com.amazonaws/aws-java-sdk-bundle
-* Flink 环境中需要 `flink-s3-hadoop-$flink_version.jar`(建议放在 `$FLINK_HOME/plugins/s3` 目录下)。可以从 https://mvnrepository.com/artifact/org.apache.flink/flink-s3-fs-hadoop 这里根据 Flink 版本下载(LakeSoul 目前最新版本对 Flink 版本要求是 1.17)。
+* Flink 环境中需要 `flink-s3-hadoop-$flink_version.jar`(建议放在 `$FLINK_HOME/plugins/s3` 目录下)。可以从 https://mvnrepository.com/artifact/org.apache.flink/flink-s3-fs-hadoop 这里根据 Flink 版本下载(LakeSoul 目前最新版本对 Flink 版本要求是 1.20)。
 :::
 
 ### 2.3 在客户端机器上配置全局环境变量信息
-这里需要用到变量信息写到一个 env.sh 文件中，这里 Hadoop 版本为 3.1.4.0-315，Spark 版本为 spark-3.3.2， Flink 版本为 flink-1.17.2，Hadoop 环境可以根据实际情况配置。如果客户机上已经有默认的 Hadoop 环境变量配置，则前面 Hadoop 的变量可以省去：
+这里需要用到变量信息写到一个 env.sh 文件中，这里 Hadoop 版本为 3.1.4.0-315，Spark 版本为 spark-3.3.2， Flink 版本为 flink-1.20.1，Hadoop 环境可以根据实际情况配置。如果客户机上已经有默认的 Hadoop 环境变量配置，则前面 Hadoop 的变量可以省去：
 ```shell
 export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64
 export HADOOP_HOME="/usr/hdp/3.1.4.0-315/hadoop"
@@ -179,8 +179,8 @@ export HADOOP_CONF_DIR="/usr/hdp/3.1.4.0-315/hadoop/conf"
 export SPARK_HOME=/usr/hdp/spark-3.3.2-bin-without-hadoop-ddf
 export SPARK_CONF_DIR=/home/lakesoul/lakesoul_hadoop_ci/LakeSoul-main/LakeSoul/script/benchmark/hadoop/spark-conf
 
-export FLINK_HOME=/opt/flink-1.17.2
-export FLINK_CONF_DIR=/opt/flink-1.17.2/conf
+export FLINK_HOME=/opt/flink-1.20.1
+export FLINK_CONF_DIR=/opt/flink-1.20.1/conf
 export PATH=$HADOOP_HOME/bin:$SPARK_HOME/bin:$FLINK_HOME/bin:$JAVA_HOME/bin:$PATH
 export HADOOP_CLASSPATH=$(hadoop classpath)
 export SPARK_DIST_CLASSPATH=$HADOOP_CLASSPATH
