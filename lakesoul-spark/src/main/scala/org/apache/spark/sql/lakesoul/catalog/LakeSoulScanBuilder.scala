@@ -113,6 +113,7 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
     }
     val writableOptions = mutable.Map.empty[String, String] ++ options.asScala ++ tableInfo.configuration
     val updatedOptions = new CaseInsensitiveStringMap(writableOptions.asJava)
+    println(s"LakeSoulScanBuilder writableOptions=$writableOptions")
     if (fileInfo.isEmpty) {
       EmptyParquetScan(sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
         readPartitionSchema(), pushedParquetFilters, updatedOptions, partitionFilters, dataFilters)

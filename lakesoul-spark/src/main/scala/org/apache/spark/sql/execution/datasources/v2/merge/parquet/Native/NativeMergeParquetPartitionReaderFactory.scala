@@ -289,15 +289,25 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
         pushDownDecimal, pushDownStringStartWith, pushDownInFilterThreshold, isCaseSensitive,
         datetimeRebaseSpec
       )
-      processedFilters
-        // Collects all converted Parquet filter predicates. Notice that not all predicates can be
-        // converted (`ParquetFilters.createFilter` returns an `Option`). That's why a `flatMap`
-        // is used here.
-        .flatMap(parquetFilters.createFilter)
-        .reduceOption(FilterApi.or)
+      if (nativeIOSkipMOR.eq("true")) {
+        processedFilters
+          // Collects all converted Parquet filter predicates. Notice that not all predicates can be
+          // converted (`ParquetFilters.createFilter` returns an `Option`). That's why a `flatMap`
+          // is used here.
+          .flatMap(parquetFilters.createFilter)
+          .reduceOption(FilterApi.or)
+      } else {
+        filters
+          // Collects all converted Parquet filter predicates. Notice that not all predicates can be
+          // converted (`ParquetFilters.createFilter` returns an `Option`). That's why a `flatMap`
+          // is used here.
+          .flatMap(parquetFilters.createFilter)
+          .reduceOption(FilterApi.and)
+      }
     } else {
       None
     }
+
 
     // PARQUET_INT96_TIMESTAMP_CONVERSION says to apply timezone conversions to int96 timestamps'
     // *only* if the file was created by something other than "parquet-mr", so check the actual
