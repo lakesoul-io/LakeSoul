@@ -73,8 +73,10 @@ impl LakeSoulReader {
                 self.config.filter_strs.clone(),
                 self.config.filter_protos.clone(),
             )?;
+
+
             // Check if filters are or-conjunction of primary column
-            let (skip_reader, filters) =if !self.config.primary_keys.is_empty() && !filters.is_empty() {
+            let skip_reader= if self.config.skip_merge_on_read() && !self.config.primary_keys.is_empty() && !filters.is_empty() {
                 // Refactored approach for OR-conjunction optimization
                 let or_conjunctive_filter = collect_or_conjunctive_filter_expressions(&filters, &self.config.primary_keys);
                 
@@ -105,20 +107,20 @@ impl LakeSoulReader {
                     if let Some(hash_bucket_id) = extract_hash_bucket_id(&self.config.files[0]) {
                         debug!("matching_scalar_values: {:?}, hash_bucket_id: {}", &matching_scalar_values, hash_bucket_id);
                         if !matching_scalar_values.contains(&hash_bucket_id) {
-                            (true, filters)
+                            true
                         } else {
-                            (false, filters)
+                            false
                         }
                     } else {
                         debug!("Found optimizable expressions with primary keys, but couldn't extract hash_bucket_id");
-                        (false, filters)
+                        false
                     }
                 } else {
                     debug!("No optimizable expressions found with primary keys");
-                    (false, filters)
+                    false
                 }
             } else {
-                (false, filters)
+                false
             };
             
             

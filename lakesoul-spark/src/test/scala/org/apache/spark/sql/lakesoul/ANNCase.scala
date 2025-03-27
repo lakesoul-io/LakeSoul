@@ -25,6 +25,7 @@ import org.apache.spark.sql.functions.{col, collect_list, lit, sum, udf}
 import org.apache.spark.sql.types.{ArrayType, ByteType, DoubleType, FloatType, IntegerType, LongType, MetadataBuilder, StructField, StructType}
 import org.apache.spark.ml.lakesoul.utils.DataNormalizer
 import org.apache.spark.ml.lakesoul.utils.DataNormalizer._
+import org.apache.spark.sql.lakesoul.LakeSoulTableProperties.skipMergeOnRead
 
 import scala.math.{pow, sqrt}
 import java.nio.file.Paths
@@ -34,10 +35,10 @@ class ANNCase extends QueryTest
   with SharedSparkSession with LakeSoulTestBeforeAndAfterEach
   with LakeSoulTestUtils with LakeSoulSQLCommandTest {
 
-  //  val dataset = "fashion-mnist"
+  val dataset = "fashion-mnist"
   // val dataset = "glove-50-angular"
   // val dataset = "nytimes-256-angular"
-  val dataset = "coco-i2i-512-angular"
+  //  val dataset = "coco-i2i-512-angular"
   var numHashes = 256
   var signatureLength = 8
   var bucketLimit = 100000
@@ -919,6 +920,7 @@ class ANNCase extends QueryTest
           .option("hashPartitions", "bucket_id")
           .option("hashBucketNum", 32)
           .option("rangePartitions", "hash_index")
+          .option(skipMergeOnRead, "true")
           .option(LakeSoulOptions.SHORT_TABLE_NAME, tableName)
           .mode("Overwrite")
           .save(dir.getCanonicalPath)

@@ -23,6 +23,7 @@ import org.apache.spark.sql.execution.datasources.v2.merge.MergePartitionedFile
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
 import org.apache.spark.sql.execution.datasources.{DataSourceUtils, RecordReaderIterator}
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.lakesoul.LakeSoulTableProperties
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf._
 import org.apache.spark.sql.sources.{EqualTo, Filter}
 import org.apache.spark.sql.types.StructType
@@ -74,6 +75,7 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
   private val nativeIOAwaitTimeout = sqlConf.getConf(NATIVE_IO_READER_AWAIT_TIMEOUT)
   private val nativeIOCdcColumn = options.getOrElse(NATIVE_IO_CDC_COLUMN.key, "")
   private val nativeIOIsCompacted = options.getOrElse(NATIVE_IO_IS_COMPACTED.key, "false")
+  private val nativeIOSkipMOR = options.getOrElse(LakeSoulTableProperties.skipMergeOnRead, "false")
 
   // schemea: path->schema    source: path->file|path->file|path->file
   private val requestSchemaMap: mutable.Map[String, String] = broadcastedConf.value.value
@@ -183,7 +185,9 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
     }
     options += ("is_compacted" -> nativeIOIsCompacted)
     options += ("hash_bucket_num" -> "32")
-    options += ("skip_merge_on_read" -> "true")
+    if (nativeIOSkipMOR.nonEmpty) {
+      options += ("skip_merge_on_read" -> nativeIOSkipMOR)
+    }
     vectorizedReader.setOptions(options.asJava)
 
     // multi files
