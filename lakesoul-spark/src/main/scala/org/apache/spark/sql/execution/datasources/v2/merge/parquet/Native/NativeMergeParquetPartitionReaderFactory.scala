@@ -217,7 +217,7 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
         .asInstanceOf[InputSplit]
     )
     // Collect all components from OR-conjunctive filters
-    val processedFilters = if (enableParquetFilterPushDown && filters.nonEmpty) {
+    val processedFilters = if (nativeIOSkipMOR.equals("true") && enableParquetFilterPushDown && filters.nonEmpty) {
       val orComponents = {
         val components = new ArrayBuffer[Filter]()
 
@@ -289,7 +289,7 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
         pushDownDecimal, pushDownStringStartWith, pushDownInFilterThreshold, isCaseSensitive,
         datetimeRebaseSpec
       )
-      if (nativeIOSkipMOR.eq("true")) {
+      if (nativeIOSkipMOR.equals("true")) {
         processedFilters
           // Collects all converted Parquet filter predicates. Notice that not all predicates can be
           // converted (`ParquetFilters.createFilter` returns an `Option`). That's why a `flatMap`
@@ -307,7 +307,6 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
     } else {
       None
     }
-
 
     // PARQUET_INT96_TIMESTAMP_CONVERSION says to apply timezone conversions to int96 timestamps'
     // *only* if the file was created by something other than "parquet-mr", so check the actual
