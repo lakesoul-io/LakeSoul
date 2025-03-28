@@ -59,7 +59,7 @@ class ANNCase extends QueryTest
     numHashes = 256
     signatureLength = 8
     bucketLimit = 2000
-    bucketWidth = 25
+    bucketWidth = 20
     normType = "NORM_MINMAX"
     minMaxLowerLimit = 0.0
     minMaxUpperLimit = 1.0
@@ -942,6 +942,7 @@ class ANNCase extends QueryTest
         }
       )
 
+      val bias = 0
       println("================ Querying with LSH Index ==================")
       val batchSize = 25 // Process batchSize queries at a time
       val results = spark.time({
@@ -952,7 +953,7 @@ class ANNCase extends QueryTest
         batches.flatMap { batchData =>
           val batchRDD = spark.sparkContext.parallelize(batchData)
           println(s"Processing batch of ${batchData.length} queries...")
-          model.getAllNearestNeighborsWithIndex(batchRDD, readBackDF, topK).collect()
+          model.getAllNearestNeighborsWithIndex(batchRDD, readBackDF, topK, bias).collect()
         }.toArray
       })
 

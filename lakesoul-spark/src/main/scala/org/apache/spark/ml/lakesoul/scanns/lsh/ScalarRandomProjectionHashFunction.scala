@@ -22,16 +22,12 @@ class ScalarRandomProjectionHashFunction(rp: RandomProjection, width: Double) ex
   override def compute(v: Vector): Array[Int] = {
     val project = rp.project(v)
 
-    if (maxPrints > 0 && printCount < maxPrints) {
-      //      println(s"========== ScalarRandomProjectionHashFunction compute printCount=$printCount ========== \n $project")
-      printCount += 1
-    }
+    //    if (maxPrints > 0 && printCount < maxPrints) {
+    //      println(s"========== ScalarRandomProjectionHashFunction compute printCount=$printCount ========== \n $project")
+    //      printCount += 1
+    //    }
 
     project.toArray.map(_ / width).map(math.floor).map(_.toInt)
-  }
-
-  def computeWithBias(v: Vector, bias: Int): Array[Int] = {
-    compute(v).map(_ + bias)
   }
 }
 

@@ -25,6 +25,8 @@ class LakeSoulRandomProjectionModel(val uid: String = Identifiable.randomUID("La
   //  override val distance: Distance = NormalizedL2Distance
   lazy val distance: Distance = DistanceMetric.getDistance($(distanceMetric))
 
+  val r = new scala.util.Random()
+
   override private[ml] def getHashFunctions: Array[ScalarRandomProjectionHashFunction] = hashFunctions
 
   /**
@@ -38,7 +40,20 @@ class LakeSoulRandomProjectionModel(val uid: String = Identifiable.randomUID("La
   }
 
   override def getBandedHashesWithBias(x: Vector, bias: Int): BandedHashes = {
-    hashFunctions.map(_.computeWithBias(x, bias))
+    hashFunctions.flatMap { h =>
+      val original = h.compute(x)
+      val results = new Array[Array[Int]](bias + 1)
+      results(0) = original
+      
+      for (i <- 1 to bias) {
+        val modified = results(i-1).clone()
+        val pos = r.nextInt(modified.length) // Random position
+        modified(pos) += (if (r.nextBoolean()) 1 else -1) // Randomly add or subtract 1
+        results(i) = modified
+      }
+      
+      results
+    }
   }
 
   override def copy(extra: ParamMap): Params = defaultCopy(extra)
