@@ -4,7 +4,9 @@
 
 use atomic_refcell::AtomicRefCell;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::SendableRecordBatchStream;
+use log::debug;
 use std::sync::Arc;
 
 use arrow_schema::SchemaRef;
@@ -25,6 +27,7 @@ use crate::datasource::file_format::LakeSoulParquetFormat;
 use crate::datasource::listing::LakeSoulTableProvider;
 use crate::datasource::physical_plan::merge::convert_filter;
 use crate::datasource::physical_plan::merge::prune_filter_and_execute;
+use crate::helpers::{extract_hash_bucket_id, collect_or_conjunctive_filter_expressions, extract_scalar_value_from_expr, compute_scalar_hash};
 use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfig};
 
 pub struct LakeSoulReader {
@@ -70,8 +73,69 @@ impl LakeSoulReader {
                 self.config.filter_strs.clone(),
                 self.config.filter_protos.clone(),
             )?;
-            let stream =
-                prune_filter_and_execute(dataframe, target_schema.clone(), filters, self.config.batch_size).await?;
+
+
+            // Check if filters are or-conjunction of primary column
+            let skip_reader= if self.config.skip_merge_on_read() && !self.config.primary_keys.is_empty() && !filters.is_empty() {
+                // Refactored approach for OR-conjunction optimization
+                let or_conjunctive_filter = collect_or_conjunctive_filter_expressions(&filters, &self.config.primary_keys);
+                
+                if !or_conjunctive_filter.is_empty() {
+                    debug!("Found {} optimizable expressions with primary keys",  or_conjunctive_filter.len());
+
+                    let hash_bucket_num = self.config.hash_bucket_num() as u32;
+                    // Collect all scalar values from optimizable expressions that match the hash bucket
+                    let mut matching_scalar_values = std::collections::HashSet::new();
+                    
+                    for expr in &or_conjunctive_filter {
+                        if let Some(scalar_value) = extract_scalar_value_from_expr(expr) {
+                            // Calculate the hash bucket for this scalar value
+                            let hash_value = compute_scalar_hash(scalar_value) % hash_bucket_num;
+                            
+                            // Add the scalar value to our set
+                            matching_scalar_values.insert(hash_value);
+                            
+                            debug!("Found scalar value with hash {} (mod {}) = {}", 
+                                   scalar_value, hash_bucket_num, hash_value);
+                        }
+                    }
+                    
+                    if !matching_scalar_values.is_empty() {
+                        debug!("Collected {} scalar values for hash bucket optimization", 
+                               matching_scalar_values.len());
+                    }
+                    if let Some(hash_bucket_id) = extract_hash_bucket_id(&self.config.files[0]) {
+                        debug!("matching_scalar_values: {:?}, hash_bucket_id: {}", &matching_scalar_values, hash_bucket_id);
+                        if !matching_scalar_values.contains(&hash_bucket_id) {
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        debug!("Found optimizable expressions with primary keys, but couldn't extract hash_bucket_id");
+                        false
+                    }
+                } else {
+                    debug!("No optimizable expressions found with primary keys");
+                    false
+                }
+            } else {
+                false
+            };
+            
+            
+            let stream = if skip_reader {
+                // Create an empty stream with the target schema
+                debug!("Skipping reader due to hash bucket optimization");
+                let empty_batch = RecordBatch::new_empty(target_schema.clone());
+                // Use the same stream type as prune_filter_and_execute returns
+                Box::pin(RecordBatchStreamAdapter::new(
+                    target_schema.clone(),
+                    futures::stream::once(async move { Ok(empty_batch) }).boxed()
+                )) as SendableRecordBatchStream
+            } else {
+                prune_filter_and_execute(dataframe, target_schema.clone(), filters, self.config.batch_size).await?
+            };
             self.schema = Some(stream.schema());
             self.stream = Some(stream);
 
