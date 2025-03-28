@@ -1,17 +1,17 @@
+# SPDX-FileCopyrightText: LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
 [package]
-name = "lakesoul-examples"
+name = "lakesoul-flight-server"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[[example]]
-name = "flight_sql_server"
-path = "examples/flight/flight_sql_server.rs"
-
 [[bin]]
-name = "flight_sql_server"
-path = "examples/flight/flight_sql_server.rs"
+name = "lakesoul_arrow_flight_sql_server"
+path = "src/flight/flight_sql_server.rs"
 
 [dependencies]
 tokio = {workspace = true}
@@ -24,8 +24,8 @@ env_logger = {workspace = true}
 log = {workspace = true}
 tower = "0.4"
 tower-http = { version = "0.4", features = ["trace"] }
-metrics-exporter-prometheus = "0.12"
-metrics = "0.21"
+metrics-exporter-prometheus = "0.16"
+metrics = "0.24"
 bytes = "1.7.1"
 serde = { version = "1.0.216", features = ["derive"] }
 serde_json = "1.0.133"

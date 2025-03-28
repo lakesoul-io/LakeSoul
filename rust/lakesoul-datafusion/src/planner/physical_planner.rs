@@ -68,7 +68,7 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                 let name = table_name.table();
                 let schema = table_name.schema();
                 // let schema = session_state.schema_for_ref(table_name)?;
-                let lakesoul_table = LakeSoulTable::for_namespace_and_name(schema.unwrap_or("default"), name)
+                let lakesoul_table = LakeSoulTable::for_namespace_and_name(schema.unwrap_or("default"), name, None)
                     .await
                     .map_err(|e| DataFusionError::External(Box::new(e)))?;
 

@@ -14,7 +14,7 @@ use datafusion::error::Result;
 use datafusion::prelude::SessionContext;
 use lakesoul_metadata::error::LakeSoulMetaDataError;
 use lakesoul_metadata::MetaDataClientRef;
-use log::{info, debug};
+use log::{debug, error, info};
 use std::any::Any;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
@@ -53,7 +53,6 @@ impl LakeSoulNamespace {
         debug!("LakeSoulNamespace::namespace - Getting namespace: {}", &self.namespace);
         &self.namespace
     }
-
 }
 
 impl Debug for LakeSoulNamespace {
@@ -97,11 +96,16 @@ impl SchemaProvider for LakeSoulNamespace {
     async fn table(&self, name: &str) -> Result<Option<Arc<dyn TableProvider>>> {
         debug!("LakeSoulNamespace::table - Looking up table '{}' in namespace '{}'", name, &self.namespace);
         let name = case_fold_table_name(name);
-        let table = match LakeSoulTable::for_namespace_and_name(&self.namespace, &name).await {
-            Ok(t) => t,
-            Err(_) => return Ok(None),
-        };
-        debug!("LakeSoulNamespace::table - Table found: {:?}", table.table_info());
+        info!("table: {:?} {:?}", name, &self.namespace);
+        let table =
+            match LakeSoulTable::for_namespace_and_name(&self.namespace, &name, Some(self.metadata_client())).await {
+                Ok(t) => t,
+                Err(e) => {
+                    error!("table {}.{} not found: {:?}", self.namespace, name, e);
+                    return Ok(None);
+                },
+            };
+        info!("table: {:?} {:?}, table {:?}", name, &self.namespace, table);
         Ok(table.as_sink_provider(&self.context.state()).await.ok())
     }
 
@@ -117,17 +121,20 @@ impl SchemaProvider for LakeSoulNamespace {
             .as_any()
             .downcast_ref::<LakeSoulTableProvider>()
             .ok_or_else(|| DataFusionError::Internal("Table is not a LakeSoulTableProvider".to_string()))?;
-        
+
         // 调用 create_table 创建表
         let client = self.metadata_client.clone();
-        tokio::task::block_in_place(|| 
+        tokio::task::block_in_place(|| {
             match futures::executor::block_on(async move {
-                client.create_table(lakesoul_table.table_info().as_ref().clone()).await.map_err(|e| DataFusionError::External(Box::new(e)))
+                client
+                    .create_table(lakesoul_table.table_info().as_ref().clone())
+                    .await
+                    .map_err(|e| DataFusionError::External(Box::new(e)))
             }) {
                 Ok(_) => Ok(None),
-                Err(e) => Err(e)
+                Err(e) => Err(e),
             }
-        )
+        })
     }
     /// If supported by the implementation, removes an existing table from this schema and returns it.
     /// If no table of that name exists, returns Ok(None).
@@ -140,29 +147,40 @@ impl SchemaProvider for LakeSoulNamespace {
         let table_name = name.to_string();
         let namespace = self.namespace.clone();
         let ctx = self.context.clone();
-        tokio::task::block_in_place(|| {    
+        tokio::task::block_in_place(|| {
             futures::executor::block_on(async move {
                 Handle::current()
-                .spawn(async move {
-                    match LakeSoulTable::for_namespace_and_name(&namespace, &table_name).await {
-                        Ok(table) => {
-                            debug!("get table provider success");
-                            let _ =client
-                                .delete_table_by_table_info_cascade(&table.table_info())
-                                .await
-                                .map_err(|_| DataFusionError::External("delete table info failed".into()))?;
-                            Ok(Some(table.as_provider().await.map_err(|e| DataFusionError::External(Box::new(e)))?)) 
+                    .spawn(async move {
+                        match LakeSoulTable::for_namespace_and_name(
+                            &namespace,
+                            &table_name,
+                            Some(client.clone()),
+                        )
+                        .await
+                        {
+                            Ok(table) => {
+                                debug!("get table provider success");
+                                let _ = client
+                                    .delete_table_by_table_info_cascade(&table.table_info())
+                                    .await
+                                    .map_err(|_| DataFusionError::External("delete table info failed".into()))?;
+                                Ok(Some(
+                                    table
+                                        .as_provider()
+                                        .await
+                                        .map_err(|e| DataFusionError::External(Box::new(e)))?,
+                                ))
+                            }
+                            Err(e) => match e {
+                                LakeSoulError::MetaDataError(LakeSoulMetaDataError::NotFound(_)) => Ok(None),
+                                _ => Err(DataFusionError::External("get table info failed".into())),
+                            },
                         }
-                        Err(e) => match e {
-                            LakeSoulError::MetaDataError(LakeSoulMetaDataError::NotFound(_)) => Ok(None),
-                            _ => Err(DataFusionError::External("get table info failed".into())),
-                        },
-                    }
-                })
-                .await
-                .map_err(|e| DataFusionError::External(Box::new(e)))?
-        })    
-    })
+                    })
+                    .await
+                    .map_err(|e| DataFusionError::External(Box::new(e)))?
+            })
+        })
     }
 
     fn table_exist(&self, name: &str) -> bool {
@@ -179,10 +197,10 @@ impl SchemaProvider for LakeSoulNamespace {
                         .get_all_table_name_id_by_namespace(&np)
                         .await
                         .expect("get table name failed");
-                    debug!("table_name_ids: {:?}, target: {}", table_name_ids, &name);
-                    let found = table_name_ids.into_iter().map(|v| v.table_name).any(|s| s.eq_ignore_ascii_case(&name));
-                    debug!("table_exist: {:?} {:?}", name, found);
-                    found
+                    table_name_ids
+                        .into_iter()
+                        .map(|v| v.table_name)
+                        .any(|s| s.eq_ignore_ascii_case(&name))
                 })
                 .await
                 .expect("spawn failed")

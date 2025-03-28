@@ -14,6 +14,7 @@ mod catalog_tests {
     use lakesoul_io::lakesoul_io_config::create_session_context;
     use lakesoul_io::lakesoul_io_config::LakeSoulIOConfigBuilder;
     use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
+    use log::debug;
     use proto::proto::entity::{Namespace, TableInfo};
     use rand::distributions::Alphanumeric;
     use rand::{thread_rng, Rng, SeedableRng};
@@ -21,7 +22,6 @@ mod catalog_tests {
     use std::env;
     use std::sync::Arc;
     use tokio::runtime::Runtime;
-    use log::debug;
 
     fn create_batch_i32(names: Vec<&str>, values: Vec<&[i32]>) -> RecordBatch {
         let values = values
@@ -164,9 +164,10 @@ mod catalog_tests {
                 assert!(old.is_none());
                 for t in tables {
                     client.create_table(t.clone()).await.unwrap();
-                    let lakesoul_table = LakeSoulTable::for_namespace_and_name(&np.namespace, &t.table_name)
-                        .await
-                        .unwrap();
+                    let lakesoul_table =
+                        LakeSoulTable::for_namespace_and_name(&np.namespace, &t.table_name, Some(client.clone()))
+                            .await
+                            .unwrap();
                     lakesoul_table.execute_upsert(batch.clone()).await.unwrap();
                 }
             }
@@ -247,9 +248,10 @@ mod catalog_tests {
                 }
                 for t in tables {
                     client.create_table(t.clone()).await.unwrap();
-                    let lakesoul_table = LakeSoulTable::for_namespace_and_name(&np.namespace, &t.table_name)
-                        .await
-                        .unwrap();
+                    let lakesoul_table =
+                        LakeSoulTable::for_namespace_and_name(&np.namespace, &t.table_name, Some(client.clone()))
+                            .await
+                            .unwrap();
                     lakesoul_table.execute_upsert(batch.clone()).await.unwrap();
                 }
             }

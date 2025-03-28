@@ -35,10 +35,12 @@ serde = { workspace = true }
 async-trait = "0.1.82"
 log = { workspace = true }
 md5 = "0.7.0"
+cached = { workspace = true }
 
 [dev-dependencies]
 test-log = "0.2.14"
 tracing-subscriber = "0.3.18"
 rand = "0.8.5"
 rand_chacha = "0.3.1"
+env_logger = { workspace = true }
 

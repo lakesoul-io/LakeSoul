@@ -23,6 +23,7 @@ pub mod transfusion;
 pub mod error;
 mod metadata_client;
 mod pooled_client;
+pub mod rbac;
 
 pub const DAO_TYPE_QUERY_ONE_OFFSET: i32 = 0;
 pub const DAO_TYPE_QUERY_LIST_OFFSET: i32 = 100;

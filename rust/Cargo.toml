@@ -10,8 +10,9 @@ members = [
     "lakesoul-io",
     "lakesoul-io-c",
     "lakesoul-datafusion",
-    "lakesoul-examples"
-]
+    "lakesoul-flight",
+    "lakesoul-flight-server",
+    "lakesoul-s3-proxy"]
 resolver = "2"
 
 [profile.release]
@@ -58,3 +59,7 @@ env_logger = "0.11"
 http = "1.2.0"
 tower = "0.4.13"
 metrics = "0.21"
+cached = { version = "0.54.0", features = ["async_tokio_rt_multi_thread"] }
+
+[patch.crates-io]
+sfv = { git = "https://github.com/undef1nd/sfv.git", tag = "v0.9.4" }

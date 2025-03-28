@@ -23,17 +23,15 @@ use datafusion::{
 };
 use lakesoul_metadata::MetaDataClientRef;
 use object_store::{path::Path, ObjectMeta, ObjectStore};
-use log::{debug, info, trace};
+use log::{debug, info};
 use url::Url;
 
 use crate::error::Result;
 use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfigBuilder, OPTION_KEY_CDC_COLUMN, OPTION_KEY_STABLE_SORT};
+use crate::serialize::arrow_java::schema_from_metadata_str;
 use proto::proto::entity::{PartitionInfo, TableInfo};
 
-use crate::{
-    catalog::{parse_table_info_partitions, LakeSoulTableProperty},
-    serialize::arrow_java::schema_from_metadata_str,
-};
+use crate::catalog::{parse_table_info_partitions, LakeSoulTableProperty};
 
 pub(crate) fn create_io_config_builder_from_table_info(
     table_info: Arc<TableInfo>,

@@ -93,7 +93,7 @@ impl CatalogProvider for LakeSoulCatalog {
     ///
     /// If a schema of the same name existed before, it is replaced in
     /// the catalog and returned.
-    fn register_schema(&self, name: &str, schema: Arc<dyn SchemaProvider>) -> Result<Option<Arc<dyn SchemaProvider>>> {
+    fn register_schema(&self, name: &str, _schema: Arc<dyn SchemaProvider>) -> Result<Option<Arc<dyn SchemaProvider>>> {
         let client = self.metadata_client.clone();
         let schema: Option<Arc<dyn SchemaProvider>> = {
             match self.get_all_namespace() {
