@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::LakeSoulMetaDataError;
 use crate::MetaDataClientRef;
 use cached::proc_macro::cached;

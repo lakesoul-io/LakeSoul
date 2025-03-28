@@ -441,19 +441,6 @@ impl FlightSqlService for FlightSqlServiceImpl {
         }
     }
 
-    async fn do_get_primary_keys(
-        &self,
-        query: CommandGetPrimaryKeys,
-        request: Request<Ticket>,
-    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
-        self.verify_token(request.metadata())?;
-        info!(
-            "do_get_primary_keys - catalog: {:?}, schema: {:?}, table: {:?}",
-            query.catalog, query.db_schema, query.table
-        );
-        Ok(Response::new(Box::pin(futures::stream::iter(vec![]))))
-    }
-
     async fn do_get_statement(
         &self,
         query: TicketStatementQuery,
@@ -599,6 +586,19 @@ impl FlightSqlService for FlightSqlServiceImpl {
             .build(futures::stream::iter(vec![Ok(data)]))
             .map_err(|e| Status::internal(format!("Error creating flight data encoder: {e}")));
         Ok(Response::new(Box::pin(stream)))
+    }
+
+    async fn do_get_primary_keys(
+        &self,
+        query: CommandGetPrimaryKeys,
+        request: Request<Ticket>,
+    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        self.verify_token(request.metadata())?;
+        info!(
+            "do_get_primary_keys - catalog: {:?}, schema: {:?}, table: {:?}",
+            query.catalog, query.db_schema, query.table
+        );
+        Ok(Response::new(Box::pin(futures::stream::iter(vec![]))))
     }
 
 
