@@ -4,7 +4,7 @@
 
 package org.apache.spark.sql.lakesoul
 
-import com.dmetasoul.lakesoul.meta.{PartitionInfoScala, SparkMetaVersion}
+import com.dmetasoul.lakesoul.meta.{DataFileInfo, PartitionInfoScala, SparkMetaVersion}
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.execution.datasources.FileFormat
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
@@ -31,12 +31,23 @@ class Snapshot(table_info: TableInfo,
   private val partitionInfoCache: scala.collection.concurrent.Map[String, Array[PartitionFilterInfo]]
     = new ConcurrentHashMap[String, Array[PartitionFilterInfo]]().asScala
 
+  private val dataCommitInfoCache: scala.collection.concurrent.Map[PartitionInfoScala, Array[DataFileInfo]]
+  = new ConcurrentHashMap[PartitionInfoScala, Array[DataFileInfo]]().asScala
+
   def putPartitionInfoCache(filter: Seq[Expression], partitionFilterInfo: Seq[PartitionFilterInfo]): Unit = {
     partitionInfoCache(filter.toString()) = partitionFilterInfo.toArray
   }
 
   def getPartitionInfoFromCache(filter: Seq[Expression]): Option[Array[PartitionFilterInfo]] = {
     partitionInfoCache.get(filter.toString())
+  }
+
+  def putDataFileInfoCache(partitionInfo: PartitionInfoScala, dataFileInfo: Array[DataFileInfo]): Unit = {
+    dataCommitInfoCache(partitionInfo) = dataFileInfo
+  }
+
+  def getDataFileInfoCache(partitionInfo: PartitionInfoScala): Option[Array[DataFileInfo]] = {
+    dataCommitInfoCache.get(partitionInfo)
   }
 
   def setPartitionDescAndVersion(parDesc: String, startParVer: Long, endParVer: Long, readType: String): Unit = {

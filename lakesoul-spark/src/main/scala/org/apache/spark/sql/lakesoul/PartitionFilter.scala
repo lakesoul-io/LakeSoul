@@ -128,8 +128,8 @@ object PartitionFilter extends Logging {
     val t0 = System.currentTimeMillis()
     if (filters.length < 1) {
       val partitionArray = snapshot.getPartitionInfoArray
-      val ret = DataOperation.getTableDataInfo(partitionArray)
-      logInfo(s"get all table data info1 ${System.currentTimeMillis() - t0}ms")
+      val ret = SparkMetaVersion.getTableDataInfoCached(partitionArray, snapshot)
+      logInfo(s"get all table data info ${System.currentTimeMillis() - t0}ms")
       ret
     } else {
       val partitionFiltered = partitionsForScan(snapshot, filters)
@@ -144,8 +144,8 @@ object PartitionFilter extends Logging {
           p.commit_op
         )
       }).toArray
-      val ret = DataOperation.getTableDataInfo(partitionInfo)
-      logInfo(s"get all table data info2 ${System.currentTimeMillis() - t0}ms")
+      val ret = SparkMetaVersion.getTableDataInfoCached(partitionInfo, snapshot)
+      logInfo(s"get table filtered partition's data info ${System.currentTimeMillis() - t0}ms")
       ret
     }
   }
