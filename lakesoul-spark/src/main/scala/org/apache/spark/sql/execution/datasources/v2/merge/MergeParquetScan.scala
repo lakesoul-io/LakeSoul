@@ -194,11 +194,16 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
   }
 
   override def planInputPartitions(): Array[InputPartition] = {
-    partitions(false).toArray
+    val t0 = System.currentTimeMillis()
+    val ret = partitions(false).toArray
+    logInfo(s"planInputPartitions took ${System.currentTimeMillis() - t0}ms")
+    ret.asInstanceOf[Array[InputPartition]]
   }
 
   protected def partitions(isStreaming: Boolean): Seq[MergeFilePartition] = {
+    val t0 = System.currentTimeMillis()
     val selectedPartitions = newFileIndex.listFiles(partitionFilters, dataFilters)
+    logInfo(s"\tpartitions list files took ${System.currentTimeMillis() - t0}ms")
     val partitionAttributes = newFileIndex.partitionSchema.toAttributes
     val attributeMap = partitionAttributes.map(a => normalizeName(a.name) -> a).toMap
     val readPartitionAttributes = readPartitionSchema.map { readField =>
@@ -290,6 +295,7 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
           readPartitionSchema.fieldNames)
       }
     }
+    logInfo(s"\tpartitions split files took ${System.currentTimeMillis() - t0}ms")
 
     if (splitFiles.length == 1) {
       val path = new Path(splitFiles.head.filePath)
@@ -300,7 +306,9 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
       }
     }
 
-    getFilePartitions(sparkSession.sessionState.conf, splitFiles, tableInfo.bucket_num)
+    val ret = getFilePartitions(sparkSession.sessionState.conf, splitFiles, tableInfo.bucket_num)
+    logInfo(s"\tpartitions split files to file partitions took ${System.currentTimeMillis() - t0}ms")
+    ret
   }
 
   def getFilePartitions(conf: SQLConf,

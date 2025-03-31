@@ -24,9 +24,12 @@ abstract class LakeSoulFileIndexV2(val spark: SparkSession,
   lazy val tableName: String = snapshotManagement.table_path
 
   def getFileInfo(filters: Seq[Expression]): Seq[DataFileInfo] = {
+    val t0 = System.currentTimeMillis()
     val (partitionFilters, dataFilters) = LakeSoulUtils.splitMetadataAndDataPredicates(filters,
       snapshotManagement.snapshot.getTableInfo.range_partition_columns, spark)
-    matchingFiles(partitionFilters, dataFilters)
+    val ret = matchingFiles(partitionFilters, dataFilters)
+    logInfo(s"getFileInfo took ${System.currentTimeMillis() - t0}ms, fileNum ${ret.size}")
+    ret
   }
 
   def getFileInfoForPartitionVersion(): Seq[DataFileInfo] = {

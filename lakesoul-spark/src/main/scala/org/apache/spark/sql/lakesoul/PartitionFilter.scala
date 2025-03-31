@@ -125,11 +125,15 @@ object PartitionFilter extends Logging {
 
   def filesForScan(snapshot: Snapshot,
                    filters: Seq[Expression]): Array[DataFileInfo] = {
+    val t0 = System.currentTimeMillis()
     if (filters.length < 1) {
       val partitionArray = snapshot.getPartitionInfoArray
-      DataOperation.getTableDataInfo(partitionArray)
+      val ret = DataOperation.getTableDataInfo(partitionArray)
+      logInfo(s"get all table data info1 ${System.currentTimeMillis() - t0}ms")
+      ret
     } else {
       val partitionFiltered = partitionsForScan(snapshot, filters)
+      logInfo(s"partitionsForScan ${System.currentTimeMillis() - t0}ms")
       val partitionInfo = partitionFiltered.map(p => {
         PartitionInfoScala(
           p.table_id,
@@ -140,7 +144,9 @@ object PartitionFilter extends Logging {
           p.commit_op
         )
       }).toArray
-      DataOperation.getTableDataInfo(partitionInfo)
+      val ret = DataOperation.getTableDataInfo(partitionInfo)
+      logInfo(s"get all table data info2 ${System.currentTimeMillis() - t0}ms")
+      ret
     }
   }
 
