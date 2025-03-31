@@ -6,6 +6,7 @@ package com.dmetasoul.lakesoul.meta
 
 import com.alibaba.fastjson.JSONObject
 import org.apache.spark.internal.Logging
+import org.apache.spark.sql.lakesoul.Snapshot
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.utils.{SparkUtil, TableInfo}
 
@@ -214,6 +215,20 @@ object SparkMetaVersion extends Logging {
       )
     }
     partitionVersionBuffer.toArray
+  }
+
+  def getTableDataInfoCached(partition_info_arr: Array[PartitionInfoScala], snapshot: Snapshot): Array[DataFileInfo] = {
+    partition_info_arr.flatMap(info => {
+      snapshot.getDataFileInfoCache(info) match {
+        case Some(dataFileInfo) => dataFileInfo
+        case None =>
+          val t0 = System.currentTimeMillis()
+          val dataFileInfos = DataOperation.getSinglePartitionDataInfo(info).toArray
+          logInfo(s"Query data commit info for partition $info, time ${System.currentTimeMillis() - t0}ms")
+          snapshot.putDataFileInfoCache(info, dataFileInfos)
+          dataFileInfos
+      }
+    }).toArray
   }
 
   def rollbackPartitionInfoByVersion(table_id: String, range_value: String, toVersion: Int): Unit = {

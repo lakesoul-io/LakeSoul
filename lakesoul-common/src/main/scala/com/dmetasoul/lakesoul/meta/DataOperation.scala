@@ -51,7 +51,9 @@ case class DataFileInfo(range_partitions: String, path: String, file_op: String,
 case class PartitionInfoScala(table_id: String, range_value: String, version: Int = -1,
                               read_files: Array[UUID] = Array.empty[UUID], expression: String = "", commit_op: String = "") {
   override def toString: String = {
-    s"partition info: {\ntable_name: $table_id,\nrange_value: $range_value}"
+    s"partition info: {\ntable_name: $table_id,\nrange_value: $range_value,\nversion: $version,\nfiles: ${
+      read_files.length
+    }}"
   }
 }
 

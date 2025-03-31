@@ -63,7 +63,9 @@ case class BucketParquetScan(sparkSession: SparkSession,
   }
 
   override def partitions: Seq[FilePartition] = {
+    val t0 = System.currentTimeMillis()
     val selectedPartitions = fileIndex.listFiles(partitionFilters, dataFilters)
+    logInfo(s"\tpartitions list files took ${System.currentTimeMillis() - t0}ms")
     val partitionAttributes = fileIndex.partitionSchema.toAttributes
     val attributeMap = partitionAttributes.map(a => normalizeName(a.name) -> a).toMap
     val readPartitionAttributes = readPartitionSchema.map { readField =>
@@ -94,7 +96,10 @@ case class BucketParquetScan(sparkSession: SparkSession,
       }.toSeq
         //.sortBy(_.length)(implicitly[Ordering[Long]].reverse)
     }
-    getFilePartitions(splitFiles)
+    logInfo(s"\tpartitions split files took ${System.currentTimeMillis() - t0}ms")
+    val ret = getFilePartitions(splitFiles)
+    logInfo(s"\tpartitions split files to file partitions took ${System.currentTimeMillis() - t0}ms")
+    ret
   }
 
   private def getFilePartitions(partitionedFiles: Seq[PartitionedFile]): Seq[FilePartition] = {
