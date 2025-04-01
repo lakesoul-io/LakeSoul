@@ -48,4 +48,13 @@ public class CompressDataFileInfo {
     public void setTimestamp(long timestamp) {
         this.timestamp = timestamp;
     }
+
+    @Override public String toString() {
+        return "CompressDataFileInfo{" +
+                "filePath='" + filePath + '\'' +
+                ", fileSize=" + fileSize +
+                ", fileExistsCols='" + fileExistsCols + '\'' +
+                ", timestamp=" + timestamp +
+                '}';
+    }
 }

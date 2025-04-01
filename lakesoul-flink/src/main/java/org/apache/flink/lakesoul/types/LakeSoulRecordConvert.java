@@ -4,7 +4,6 @@
 
 package org.apache.flink.lakesoul.types;
 
-import com.amazonaws.services.dynamodbv2.xspec.S;
 import com.ververica.cdc.connectors.mongodb.internal.MongoDBEnvelope;
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Decimal;
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Field;
@@ -37,7 +36,6 @@ import org.apache.flink.table.data.*;
 import org.apache.flink.table.data.binary.BinaryRowData;
 import org.apache.flink.table.data.writer.BinaryRowWriter;
 import org.apache.flink.table.runtime.typeutils.ArrayDataSerializer;
-import org.apache.flink.table.runtime.typeutils.BinaryRowDataSerializer;
 import org.apache.flink.table.runtime.typeutils.RowDataSerializer;
 import org.apache.flink.table.types.logical.*;
 import org.apache.flink.types.RowKind;
@@ -175,7 +173,6 @@ public class LakeSoulRecordConvert implements Serializable {
                 Schema afterSchema = valueSchema.field(Envelope.FieldName.AFTER).schema();
                 Struct after = value.getStruct(Envelope.FieldName.AFTER);
                 RowData insert = convert(after, afterSchema, RowKind.INSERT, sortField);
-                //boolean afterNullable = afterSchema.isOptional();
                 RowType rt = toFlinkRowType(afterSchema,false);
                 insert.setRowKind(RowKind.INSERT);
                 builder.setOperation("insert").setAfterRowData(insert).setAfterType(rt);
@@ -183,7 +180,6 @@ public class LakeSoulRecordConvert implements Serializable {
                 Schema beforeSchema = valueSchema.field(Envelope.FieldName.BEFORE).schema();
                 Struct before = value.getStruct(Envelope.FieldName.BEFORE);
                 RowData delete = convert(before, beforeSchema, RowKind.DELETE, sortField);
-//                boolean nullable = beforeSchema.isOptional();
                 RowType rt = toFlinkRowType(beforeSchema,false);
                 delete.setRowKind(RowKind.DELETE);
                 builder.setOperation("delete").setBeforeRowData(delete).setBeforeRowType(rt);
@@ -198,7 +194,6 @@ public class LakeSoulRecordConvert implements Serializable {
                 Schema afterSchema = valueSchema.field(Envelope.FieldName.AFTER).schema();
                 Struct after = value.getStruct(Envelope.FieldName.AFTER);
                 RowData afterData = convert(after, afterSchema, RowKind.UPDATE_AFTER, sortField);
-                //boolean afterNullable = afterSchema.isOptional();
                 RowType afterRT = toFlinkRowType(afterSchema,false);
                 afterData.setRowKind(RowKind.UPDATE_AFTER);
                 if (partitionFieldsChanged(beforeRT, beforeData, afterRT, afterData)) {
@@ -245,8 +240,6 @@ public class LakeSoulRecordConvert implements Serializable {
                 colTypes[i] = convertToLogical(item.schema(), item.schema().isOptional());
             }
         }
-//        colNames[useCDC ? arity - 3 : arity - 2] = BINLOG_FILE_INDEX;
-//        colTypes[useCDC ? arity - 3 : arity - 2] = new BigIntType();
         colNames[useCDC ? arity - 2 : arity - 1] = SORT_FIELD;
         colTypes[useCDC ? arity - 2 : arity - 1] = new BigIntType();
         if (useCDC) {

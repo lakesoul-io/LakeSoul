@@ -95,9 +95,6 @@ object NativeIOUtils {
     if (defaultFS == null) defaultFS = configuration.get("fs.default.name")
     val fileSystem = file.getFileSystem(configuration)
     var otherOptions = Map[String, String]()
-    //    if (configuration.get(HASH_BUCKET_ID_KEY, "").nonEmpty) {
-    //      otherOptions += HASH_BUCKET_ID_KEY -> configuration.get(HASH_BUCKET_ID_KEY)
-    //    }
     if (configuration.get(MAX_FILE_SIZE_KEY, "").nonEmpty) {
       otherOptions += MAX_FILE_SIZE_KEY -> configuration.get(MAX_FILE_SIZE_KEY)
     }

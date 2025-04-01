@@ -6,6 +6,7 @@ package org.apache.spark.sql.lakesoul.utils
 
 import com.dmetasoul.lakesoul.meta.{DataFileInfo, DataOperation, MetaUtils}
 import org.apache.hadoop.fs.{FileSystem, Path}
+import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.connector.catalog.Identifier
@@ -18,12 +19,13 @@ import org.apache.spark.sql.lakesoul.{BatchDataSoulFileIndexV2, PartitionFilter,
 import org.apache.spark.sql.sources.BaseRelation
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
+import org.apache.spark.util.Utils.logWarning
 import org.jetbrains.annotations.TestOnly
 
 import scala.collection.JavaConverters._
 
 
-object SparkUtil {
+object SparkUtil extends Logging {
 
   def allPartitionFilterInfoDF(snapshot: Snapshot): DataFrame = {
     val allPartition = snapshot.getPartitionInfoArray.map(part =>
@@ -139,4 +141,37 @@ object SparkUtil {
       )
     ).select(requiredColumns.map(col): _*)
   }
+
+
+  def tryWithSafeFinally[T](block: => T)(finallyBlock: => Unit): T = {
+    var originalThrowable: Throwable = null
+    try {
+      block
+    } catch {
+      case t: Throwable =>
+        // Purposefully not using NonFatal, because even fatal exceptions
+        // we don't want to have our finallyBlock suppress
+        originalThrowable = t
+        throw originalThrowable
+    } finally {
+      try {
+        finallyBlock
+      } catch {
+        case t: Throwable if (originalThrowable != null && originalThrowable != t) =>
+          originalThrowable.addSuppressed(t)
+          logWarning(s"Suppressing exception in finally: ${t.getMessage}", t)
+          throw originalThrowable
+      }
+    }
+  }
+
+  def tryWithResource[R <: AutoCloseable, T](createResource: => R)(f: R => T): T = {
+    val resource = createResource
+    tryWithSafeFinally({
+      f.apply(resource)
+    }) {
+      resource.close()
+    }
+  }
+
 }
