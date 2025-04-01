@@ -18,7 +18,6 @@ import org.apache.spark.sql.execution.datasources.v2.merge.{MultiPartitionMergeB
 import org.apache.spark.sql.execution.datasources.v2.parquet.{EmptyParquetScan, NativeParquetScan, ParquetScan, StreamParquetScan}
 import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
-import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf.NATIVE_IO_IS_COMPACTED
 import org.apache.spark.sql.lakesoul.utils.{SparkUtil, TableInfo}
 import org.apache.spark.sql.lakesoul.{LakeSoulFileIndexV2, LakeSoulUtils}
 import org.apache.spark.sql.sources.Filter
@@ -112,7 +111,7 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
     } else {
       hasNoDeltaFile = fileInfo.forall(f => f._2.size <= 1)
     }
-    val writableOptions = mutable.Map.empty[String, String] ++ options.asScala
+    val writableOptions = mutable.Map.empty[String, String] ++ options.asScala ++ tableInfo.configuration
     val updatedOptions = new CaseInsensitiveStringMap(writableOptions.asJava)
     if (fileInfo.isEmpty) {
       EmptyParquetScan(sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),

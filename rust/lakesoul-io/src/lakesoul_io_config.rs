@@ -48,8 +48,10 @@ pub static OPTION_DEFAULT_VALUE_KEEP_ORDERS: &str = "false";
 pub static OPTION_KEY_MEM_LIMIT: &str = "mem_limit";
 pub static OPTION_KEY_POOL_SIZE: &str = "pool_size";
 pub static OPTION_KEY_HASH_BUCKET_ID: &str = "hash_bucket_id";
+pub static OPTION_KEY_HASH_BUCKET_NUM: &str = "hash_bucket_num";
 pub static OPTION_KEY_CDC_COLUMN: &str = "cdc_column";
 pub static OPTION_KEY_IS_COMPACTED: &str = "is_compacted";
+pub static OPTION_KEY_SKIP_MERGE_ON_READ: &str = "skip_merge_on_read";
 pub static OPTION_KEY_MAX_FILE_SIZE: &str = "max_file_size";
 pub static OPTION_KEY_COMPUTE_LSH: &str = "compute_lsh";
 pub static OPTION_KEY_STABLE_SORT: &str = "stable_sort";
@@ -191,12 +193,20 @@ impl LakeSoulIOConfig {
         self.option(OPTION_KEY_HASH_BUCKET_ID).map_or(0, |x| x.parse().unwrap())
     }
 
+    pub fn hash_bucket_num(&self) -> usize {
+        self.option(OPTION_KEY_HASH_BUCKET_NUM).map_or(1, |x| x.parse().unwrap())
+    }
+
     pub fn cdc_column(&self) -> String {
         self.option(OPTION_KEY_CDC_COLUMN).map_or_else(|| String::new(), |x| x.to_string())
     }
 
     pub fn is_compacted(&self) -> bool {
         self.option(OPTION_KEY_IS_COMPACTED).map_or(false, |x| x.eq("true"))
+    }
+
+    pub fn skip_merge_on_read(&self) -> bool {
+        self.option(OPTION_KEY_SKIP_MERGE_ON_READ).map_or(false, |x| x.eq("true"))
     }
 
     pub fn compute_lsh(&self) -> bool {

@@ -137,7 +137,8 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE TRIGGER partition_table_change
+DROP TRIGGER IF EXISTS partition_table_change ON partition_info;
+CREATE TRIGGER partition_table_change
     AFTER INSERT
     ON partition_info
     FOR EACH ROW

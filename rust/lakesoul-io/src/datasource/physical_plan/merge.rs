@@ -252,7 +252,9 @@ pub fn merge_stream(
     config: LakeSoulIOConfig,
 ) -> Result<SendableRecordBatchStream> {
     debug!("merge_stream with config= {:?}", &config);
-    let merge_on_read = if config.primary_keys.is_empty() {
+    let merge_on_read = if config.skip_merge_on_read() {
+        false
+    } else if config.primary_keys.is_empty() {
         false
     } else {
         !(config.files.len() == 1 && config.merge_operators.is_empty() && config.is_compacted())

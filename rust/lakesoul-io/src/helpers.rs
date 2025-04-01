@@ -583,3 +583,166 @@ pub fn get_file_exist_col(metadata: &FileMetaData) -> String {
         .collect::<Vec<_>>()
         .join(",")
 }
+
+/// Extracts the hash bucket ID from a file path.
+///
+/// File paths are formatted as: "{prefix}/part-{random_string}_{hash_bucket_id:0>4}.parquet"
+/// This function extracts and returns the hash bucket ID as a usize.
+///
+/// # Arguments
+///
+/// * `file_path` - The file path to extract the hash bucket ID from
+///
+/// # Returns
+///
+/// Returns the hash bucket ID as a usize, or None if the path doesn't match the expected format.
+///
+/// # Examples
+///
+/// ```
+/// use lakesoul_io::helpers::extract_hash_bucket_id;
+///
+/// let path = "/some/prefix/part-AbCdEfGhIjKlMnOp_0042.parquet";
+/// assert_eq!(extract_hash_bucket_id(path), Some(42));
+/// ```
+pub fn extract_hash_bucket_id(file_path: &str) -> Option<u32> {
+    use regex::Regex;
+    
+    // Get the file name from the path
+    let file_name = file_path.split('/').last()?;
+    
+    // Regex pattern to extract the hash bucket id between the last underscore and any suffix
+    // This pattern matches filenames starting with "part-" and containing an underscore
+    // followed by digits before any optional suffix
+    let re = Regex::new(r"part-.*_(\d+)(?:\..+)?$").ok()?;
+    
+    if let Some(captures) = re.captures(file_name) {
+        if let Some(id_match) = captures.get(1) {
+            return id_match.as_str().parse::<u32>().ok();
+        }
+    }
+    
+    None
+}
+
+/// Represents a column equality comparison (column_name = scalar_value)
+#[derive(Debug)]
+pub struct ColumnEquality {
+    pub column_name: String,
+    pub scalar_value: ScalarValue,
+}
+
+/// Checks if an expression is an OR-conjunctive expression.
+pub fn is_or_conjunctive(expr: &datafusion::logical_expr::Expr) -> bool {
+    match expr {
+        datafusion::logical_expr::Expr::BinaryExpr(binary_expr) => binary_expr.op == datafusion::logical_expr::Operator::Or,
+        _ => false,
+    }
+}
+
+/// Collects filter expressions that can be optimized.
+/// 
+/// This function looks for OR-conjunctive expressions where all components
+/// are equality comparisons on primary key columns.
+pub fn collect_or_conjunctive_filter_expressions(
+    filters: &[datafusion::logical_expr::Expr], 
+    primary_keys: &[String]
+) -> Vec<ColumnEquality> {
+    let mut result = Vec::new();
+    
+    for filter in filters {
+        if is_or_conjunctive(filter) {
+            // Collect all equality expressions from this OR-conjunctive expression
+            let mut equalities = Vec::new();
+            collect_column_equalities(filter, &mut equalities);
+            
+            // Check if all collected equalities are on primary key columns
+            let all_primary = equalities.iter()
+                .all(|eq| primary_keys.contains(&eq.column_name));
+            
+            if all_primary && !equalities.is_empty() {
+                result.extend(equalities);
+            }
+        }
+    }
+    
+    result
+}
+
+/// Collects column equality comparisons from an expression.
+/// 
+/// Recursively traverses OR expressions to find all column = value comparisons.
+pub fn collect_column_equalities(expr: &datafusion::logical_expr::Expr, equalities: &mut Vec<ColumnEquality>) {
+    use datafusion::logical_expr::{Expr, Operator};
+    
+    match expr {
+        // If it's an OR expression, process both sides
+        Expr::BinaryExpr(binary_expr) if binary_expr.op == Operator::Or => {
+            collect_column_equalities(&binary_expr.left, equalities);
+            collect_column_equalities(&binary_expr.right, equalities);
+        },
+        // If it's an equality comparison with a literal, extract the column name and scalar value
+        Expr::BinaryExpr(binary_expr) if binary_expr.op == Operator::Eq => {
+            if let (Expr::Column(col), Expr::Literal(scalar)) = (&binary_expr.left.as_ref(), &binary_expr.right.as_ref()) {
+                equalities.push(ColumnEquality {
+                    column_name: col.name.clone(),
+                    scalar_value: scalar.clone(),
+                });
+            } else if let (Expr::Literal(scalar), Expr::Column(col)) = (&binary_expr.left.as_ref(), &binary_expr.right.as_ref()) {
+                equalities.push(ColumnEquality {
+                    column_name: col.name.clone(),
+                    scalar_value: scalar.clone(),
+                });
+            }
+        },
+        _ => {}
+    }
+}
+
+/// Computes the hash value for a ScalarValue.
+/// 
+/// # Arguments
+/// 
+/// * `scalar` - The scalar value to hash
+/// * `seed` - The seed to use for hashing
+/// 
+/// # Returns
+/// 
+/// Returns the hash value as a u32
+pub fn compute_scalar_hash(scalar: &ScalarValue) -> u32 {
+    use crate::hash_utils::{HashValue, HASH_SEED};
+    
+    match scalar {
+        ScalarValue::Int8(Some(v)) => HashValue::hash_one(v, HASH_SEED) as u32,
+        ScalarValue::Int16(Some(v)) => HashValue::hash_one(v, HASH_SEED) as u32,
+        ScalarValue::Int32(Some(v)) => HashValue::hash_one(v, HASH_SEED) as u32,
+        ScalarValue::Int64(Some(v)) => HashValue::hash_one(v, HASH_SEED) as u32,
+        ScalarValue::UInt8(Some(v)) => HashValue::hash_one(v, HASH_SEED) as u32,
+        ScalarValue::UInt16(Some(v)) => HashValue::hash_one(v, HASH_SEED) as u32,
+        ScalarValue::UInt32(Some(v)) => HashValue::hash_one(v, HASH_SEED) as u32,
+        ScalarValue::UInt64(Some(v)) => HashValue::hash_one(v, HASH_SEED) as u32,
+        ScalarValue::Float32(Some(v)) => HashValue::hash_one(v, HASH_SEED) as u32,
+        ScalarValue::Float64(Some(v)) => HashValue::hash_one(v, HASH_SEED) as u32,
+        ScalarValue::Utf8(Some(v)) => HashValue::hash_one(v.as_bytes(), HASH_SEED) as u32,
+        ScalarValue::LargeUtf8(Some(v)) => HashValue::hash_one(v.as_bytes(), HASH_SEED) as u32,
+        ScalarValue::Binary(Some(v)) => HashValue::hash_one(v.as_slice(), HASH_SEED) as u32,
+        ScalarValue::LargeBinary(Some(v)) => HashValue::hash_one(v.as_slice(), HASH_SEED) as u32,
+        ScalarValue::Boolean(Some(v)) => HashValue::hash_one(v, HASH_SEED) as u32,
+        // For other types or None values, use a default hash
+        _ => HASH_SEED, // Use seed itself as fallback
+    }
+}
+
+/// Extracts the scalar value from a ColumnEquality.
+/// 
+/// # Arguments
+/// 
+/// * `equality` - The ColumnEquality to extract the scalar value from
+/// 
+/// # Returns
+/// 
+/// Returns Some(scalar_value) if successful, None otherwise
+pub fn extract_scalar_value_from_expr(equality: &ColumnEquality) -> Option<&ScalarValue> {
+    Some(&equality.scalar_value)
+}
+
