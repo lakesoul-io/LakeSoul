@@ -200,11 +200,21 @@ abstract class LakeSoulLSHNearestNeighborSearchModel[T <: LakeSoulLSHNearestNeig
     * @param bias            bias
     * @return data containing bucket id and (item id, vector) tuples
     */
-  def explodeData(transformedData: RDD[(ItemId, (Vector, BandedHashes))], bias: Int = 0): RDD[((Int, Int), Item)] = {
+  def explodeData(transformedData: RDD[(ItemId, (Vector, BandedHashes))], bias: Int = 0, mod: Int = -1): RDD[((Int, Int, Int), Item)] = {
     transformedData.flatMap { case (id, (vector, bandedHashes)) =>
       bandedHashes.zipWithIndex.map { case (hash, index) => {
-        //        println(s"explodeData index=$index, bias = $bias, index / (bias + 1)= ${index / (bias + 1)}")
-        ((getMur3HashCode(hash), index / (bias + 1)), (id, vector))
+        val bucketId = getMur3HashCode(hash)
+        val bucketedBucketId = if (mod == -1) {
+          bucketId
+        } else  {
+          val bucketedBucketId = bucketId % mod
+          if (bucketedBucketId < 0) {
+            bucketedBucketId + mod
+          } else {
+            bucketedBucketId
+          }
+        }
+        ((bucketId, index / (bias + 1), bucketedBucketId), (id, vector))
       }
       }
     }
@@ -311,7 +321,15 @@ abstract class LakeSoulLSHNearestNeighborSearchModel[T <: LakeSoulLSHNearestNeig
     count
   }
 
-  def getAllNearestNeighborsWithBucketBias(srcItems: RDD[Item], candidatePool: RDD[Item], k: Int, lowerBias: Int = 0, upperBias: Int = 0):
+  /**
+    * Get k nearest neighbors to all items in srcItems dataset from the candidatePool dataset
+    *
+    * @param srcItems      Items for which neighbors are to be found
+    * @param candidatePool Items which are potential candidates
+    * @param k             number of nearest neighbors needed
+    * @return nearest neighbors in the form (srcItemId, candidateItemId, distance)
+    */
+  override def getAllNearestNeighbors(srcItems: RDD[Item], candidatePool: RDD[Item], k: Int):
   RDD[(ItemId, ItemId, Double)] = {
     val hashPartitioner = new HashPartitioner($(joinParallelism))
     val srcItemsExploded = explodeDataAndHash(transform(srcItems)).partitionBy(hashPartitioner)
@@ -375,20 +393,6 @@ abstract class LakeSoulLSHNearestNeighborSearchModel[T <: LakeSoulLSHNearestNeig
 
 
   /**
-    * Get k nearest neighbors to all items in srcItems dataset from the candidatePool dataset
-    *
-    * @param srcItems      Items for which neighbors are to be found
-    * @param candidatePool Items which are potential candidates
-    * @param k             number of nearest neighbors needed
-    * @return nearest neighbors in the form (srcItemId, candidateItemId, distance)
-    */
-  override def getAllNearestNeighbors(srcItems: RDD[Item], candidatePool: RDD[Item], k: Int):
-  RDD[(ItemId, ItemId, Double)] = {
-    getAllNearestNeighborsWithBucketBias(srcItems, candidatePool, k, 0, 0)
-  }
-
-
-  /**
     * Get k nearest neighbors for all input items from within itself
     *
     * @param items Set of items
@@ -400,7 +404,7 @@ abstract class LakeSoulLSHNearestNeighborSearchModel[T <: LakeSoulLSHNearestNeig
     getAllNearestNeighbors(items, items, k)
   }
 
-  def getAllNearestNeighborsWithIndex(srcItems: RDD[Item], candidateIndex: DataFrame, k: Int, bias: Int = 0):
+  def getAllNearestNeighborsWithIndex(srcItems: RDD[Item], candidateIndex: DataFrame, k: Int, bias: Int = 0, mod: Int = -1):
   RDD[(ItemId, ItemId, Double)] = {
     val hashPartitioner = new HashPartitioner($(joinParallelism))
 
@@ -408,8 +412,8 @@ abstract class LakeSoulLSHNearestNeighborSearchModel[T <: LakeSoulLSHNearestNeig
     transformSrcItems.persist()
 
     // Collect all (bucketId, hashIndex) pairs from srcItems
-    val srcSelectedBucket = explodeData(transformSrcItems, bias).map {
-      case ((bucketId, hashIndex), _) => (bucketId, hashIndex)
+    val srcSelectedBucket = explodeData(transformSrcItems, bias, mod).map {
+      case ((bucketId, hashIndex, bucketedBucketId), _) => (bucketId, hashIndex, bucketedBucketId)
     }.distinct().collect()
 
 
@@ -425,8 +429,12 @@ abstract class LakeSoulLSHNearestNeighborSearchModel[T <: LakeSoulLSHNearestNeig
     // Build a more efficient filter condition using OR combinations
     // This allows for better predicate pushdown
     val bucketPairs = srcSelectedBucket
-    val bucketConditions = bucketPairs.map { case (bucketId, hashIndex) =>
-      (col("bucket_id") === bucketId) && (col("hash_index") === hashIndex)
+    val bucketConditions = bucketPairs.map { case (bucketId, hashIndex, bucketedBucketId) =>
+      if (mod == -1) {
+        (col("bucket_id") === bucketId) && (col("hash_index") === hashIndex)
+      } else {
+        (col("bucketed_bucket_id") === bucketedBucketId) && (col("hash_index") === hashIndex) && (col("bucket_id") === bucketId)
+      }
     }
 
     // Combine all conditions with OR
