@@ -8,6 +8,7 @@ import com.dmetasoul.lakesoul.meta.{DBConfig, DBUtil, DataFileInfo, DataOperatio
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.analysis.{Resolver, UnresolvedAttribute}
 import org.apache.spark.sql.catalyst.expressions.{And, Attribute, AttributeReference, Cast, Equality, Expression, IsNotNull, Literal, NamedExpression}
+import org.apache.spark.sql.functions.lit
 import org.apache.spark.sql.lakesoul.utils.{PartitionFilterInfo, SparkUtil, TableInfo}
 import org.apache.spark.sql.types.{BooleanType, StructField, StructType}
 import org.apache.spark.sql.{Column, DataFrame, Dataset, SparkSession}
@@ -66,7 +67,7 @@ object PartitionFilter extends Logging {
           }.toMap
           // remove useless isnotnull/true expr
           val newPartitionFilters = partitionFilters.filter({
-            case IsNotNull(AttributeReference(name, _, _, _)) => !equalExprs.contains(name)
+            case IsNotNull(AttributeReference(name, _, _, _)) => equalExprs.nonEmpty && !equalExprs.contains(name)
             case Literal(v, BooleanType) if v.asInstanceOf[Boolean] => false
             case _ => true
           })
@@ -113,8 +114,8 @@ object PartitionFilter extends Logging {
               })
           } else {
             // non-equality filter, we still need to get all partitions from meta
-            logInfo(s"at least one non-equality filter exist $partitionFilters, read all partition info")
-            filterFromAllPartitionInfo(snapshot, table_info, partitionFilters)
+            logInfo(s"at least one non-equality filter exist $newPartitionFilters, read all partition info")
+            filterFromAllPartitionInfo(snapshot, table_info, newPartitionFilters)
           }
         }
         snapshot.putPartitionInfoCache(partitionFilters, infos)
@@ -180,8 +181,95 @@ object PartitionFilter extends Logging {
       partitionSchema,
       files.sparkSession.sessionState.conf.resolver,
       partitionFilters)
-    val columnFilter = new Column(rewrittenFilters.reduceLeftOption(And).getOrElse(Literal(true)))
-    files.filter(columnFilter)
+
+    // If there are no filters, return all files
+    if (rewrittenFilters.isEmpty) {
+      logInfo("No partition filters, returning all files")
+      return files
+    }
+
+    // Function to extract OR components from an expression
+    def extractOrComponents(expr: Expression): Seq[Expression] = expr match {
+      case org.apache.spark.sql.catalyst.expressions.Or(left, right) =>
+        extractOrComponents(left) ++ extractOrComponents(right)
+      case other => Seq(other)
+    }
+
+    // Combine all filters with AND
+    val combinedFilter = rewrittenFilters.reduceLeftOption(And).getOrElse(Literal(true))
+
+    // Extract all OR components
+    val orComponents = extractOrComponents(combinedFilter)
+
+    // Get the spark session and import implicits once to avoid scoping issues
+    val spark = SparkSession.active
+    import spark.implicits._
+
+    if (orComponents.length > 1) {
+      // We have OR components, process them separately
+      logInfo(s"Processing ${orComponents.length} OR components separately for better performance")
+
+      // For very large number of OR components, process in batches to avoid overwhelming the query optimizer
+      val batchSize = 50 // Adjust based on testing for optimal performance
+      if (orComponents.length > batchSize) {
+        logInfo(s"Large number of OR components detected (${orComponents.length}), processing in batches of $batchSize")
+
+        // Process OR components in batches, but avoid using distinct() on map columns
+        val batches = orComponents.grouped(batchSize).toSeq
+
+        // Apply each batch filter and collect just the range_value (partition key)
+        // This avoids the problem with map type in set operations
+        val allRangeValues = batches.zipWithIndex.flatMap { case (batch, idx) =>
+          logInfo(s"Processing batch ${idx + 1}/${batches.length} with ${batch.length} OR components")
+
+          // Combine batch components with OR
+          val batchFilter = batch.reduce((left, right) =>
+            org.apache.spark.sql.catalyst.expressions.Or(left, right))
+          val columnFilter = new Column(batchFilter)
+
+          // Only select range_value column for deduplication to avoid map type issues
+          files.filter(columnFilter)
+            .select("range_value")
+            .distinct()
+            .collect()
+            .map(_.getString(0))
+        }.distinct
+
+        // Now filter the original dataframe by the collected range_values
+        logInfo(s"Found ${allRangeValues.length} unique partition values after filtering")
+        if (allRangeValues.isEmpty) {
+          // Return empty DataFrame with the same schema
+          files.filter(lit(false))
+        } else {
+          files.filter($"range_value".isin(allRangeValues: _*))
+        }
+      } else {
+        // For smaller number of OR components, use a similar approach to avoid map issues
+        val allRangeValues = orComponents.flatMap { comp =>
+          logDebug(s"Processing OR component: $comp")
+          val columnFilter = new Column(comp)
+          files.filter(columnFilter)
+            .select("range_value")
+            .distinct()
+            .collect()
+            .map(_.getString(0))
+        }.distinct
+
+        // Now filter the original dataframe by the collected range_values
+        logInfo(s"Found ${allRangeValues.length} unique partition values after filtering")
+        if (allRangeValues.isEmpty) {
+          // Return empty DataFrame with the same schema
+          files.filter(lit(false))
+        } else {
+          files.filter($"range_value".isin(allRangeValues: _*))
+        }
+      }
+    } else {
+      // No OR components, process as normal AND filter
+      logInfo("No OR components detected, processing with normal filter")
+      val columnFilter = new Column(combinedFilter)
+      files.filter(columnFilter)
+    }
   }
 
   /**
