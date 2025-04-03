@@ -4,7 +4,8 @@
 
 use std::{result, sync::Arc};
 
-use lakesoul_io::lakesoul_reader::{ArrowError, DataFusionError};
+use datafusion::error::DataFusionError;
+use arrow::error::ArrowError;
 use lakesoul_metadata::error::LakeSoulMetaDataError;
 
 /// Result type for operations that could result in an [LakeSoulMetaDataError]

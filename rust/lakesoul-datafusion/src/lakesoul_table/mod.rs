@@ -12,6 +12,7 @@ use chrono::Utc;
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::sql::TableReference;
 use datafusion::{
+    arrow::record_batch::RecordBatch,
     dataframe::DataFrame,
     datasource::TableProvider,
     execution::context::{SessionContext, SessionState},
@@ -20,7 +21,7 @@ use datafusion::{
 use helpers::case_fold_table_name;
 use lakesoul_io::async_writer::{AsyncBatchWriter, AsyncSendableMutableLakeSoulWriter, WriterFlushResult};
 use lakesoul_io::lakesoul_io_config::OPTION_KEY_MEM_LIMIT;
-use lakesoul_io::{lakesoul_io_config::create_session_context_with_planner, lakesoul_reader::RecordBatch};
+use lakesoul_io::lakesoul_io_config::create_session_context_with_planner;
 use lakesoul_metadata::{LakeSoulMetaDataError, MetaDataClient, MetaDataClientRef};
 use log::info;
 use proto::proto::entity::{CommitOp, DataCommitInfo, DataFileOp, FileOp, TableInfo};

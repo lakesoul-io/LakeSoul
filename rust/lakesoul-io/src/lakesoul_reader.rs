@@ -2,6 +2,32 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! LakeSoul Reader Module
+//! 
+//! This module provides functionality for reading data from LakeSoul tables.
+//! It supports reading from various file formats (currently Parquet) and includes
+//! features like filtering, partitioning, and optimized reading with primary keys.
+//!
+//! # Examples
+//! ```rust
+//! use lakesoul_io::lakesoul_reader::LakeSoulReader;
+//! use lakesoul_io::lakesoul_io_config::LakeSoulIOConfigBuilder;
+//! 
+//! let config = LakeSoulIOConfigBuilder::new()
+//!     .with_files(vec!["path/to/file.parquet"])
+//!     .with_thread_num(1)
+//!     .with_batch_size(256)
+//!     .build();
+//! 
+//! let mut reader = LakeSoulReader::new(config)?;
+//! reader.start().await?;
+//! 
+//! while let Some(batch) = reader.next_rb().await {
+//!     let record_batch = batch?;
+//!     // Process the record batch
+//! }
+//! ```
+
 use atomic_refcell::AtomicRefCell;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
@@ -11,10 +37,8 @@ use std::sync::Arc;
 
 use arrow_schema::SchemaRef;
 
-pub use datafusion::arrow::error::ArrowError;
-pub use datafusion::arrow::error::Result as ArrowResult;
-pub use datafusion::arrow::record_batch::RecordBatch;
-pub use datafusion::error::{DataFusionError, Result};
+use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::error::{DataFusionError, Result};
 
 use datafusion::prelude::SessionContext;
 
@@ -30,6 +54,40 @@ use crate::datasource::physical_plan::merge::prune_filter_and_execute;
 use crate::helpers::{extract_hash_bucket_id, collect_or_conjunctive_filter_expressions, extract_scalar_value_from_expr, compute_scalar_hash};
 use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfig};
 
+/// A reader for LakeSoul tables that supports efficient reading of data with various optimizations.
+/// 
+/// This reader provides functionality to:
+/// - Read data from Parquet files
+/// - Apply filters during reading
+/// - Support partitioned tables
+/// - Optimize reads using primary keys
+/// - Handle both local and S3 storage
+/// 
+/// # Thread Safety
+/// 
+/// The reader is designed to be used in both synchronous and asynchronous contexts.
+/// For synchronous usage, consider using `SyncSendableMutableLakeSoulReader`.
+/// 
+/// # Examples
+/// 
+/// ```rust
+/// use lakesoul_io::lakesoul_reader::LakeSoulReader;
+/// use lakesoul_io::lakesoul_io_config::LakeSoulIOConfigBuilder;
+/// 
+/// let config = LakeSoulIOConfigBuilder::new()
+///     .with_files(vec!["path/to/file.parquet"])
+///     .with_thread_num(1)
+///     .with_batch_size(256)
+///     .build();
+/// 
+/// let mut reader = LakeSoulReader::new(config)?;
+/// reader.start().await?;
+/// 
+/// while let Some(batch) = reader.next_rb().await {
+///     let record_batch = batch?;
+///     // Process the record batch
+/// }
+/// ```
 pub struct LakeSoulReader {
     sess_ctx: SessionContext,
     config: LakeSoulIOConfig,
@@ -38,6 +96,15 @@ pub struct LakeSoulReader {
 }
 
 impl LakeSoulReader {
+    /// Creates a new LakeSoulReader with the given configuration.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `config` - The configuration for the reader, including file paths, thread count, and batch size
+    /// 
+    /// # Returns
+    /// 
+    /// A Result containing the new LakeSoulReader instance
     pub fn new(mut config: LakeSoulIOConfig) -> Result<Self> {
         let sess_ctx = create_session_context(&mut config)?;
         Ok(LakeSoulReader {
@@ -48,6 +115,16 @@ impl LakeSoulReader {
         })
     }
 
+    /// Initializes the reader and prepares it for reading data.
+    /// 
+    /// This method:
+    /// - Sets up the file format and table provider
+    /// - Applies any configured filters
+    /// - Optimizes the read operation if primary keys are configured
+    /// 
+    /// # Returns
+    /// 
+    /// A Result indicating success or failure of the initialization
     pub async fn start(&mut self) -> Result<()> {
         let target_schema: SchemaRef = self.config.target_schema.0.clone();
         if self.config.files.is_empty() {
@@ -143,6 +220,11 @@ impl LakeSoulReader {
         }
     }
 
+    /// Retrieves the next record batch from the reader.
+    /// 
+    /// # Returns
+    /// 
+    /// An Option containing a Result with the next RecordBatch, or None if there are no more batches
     pub async fn next_rb(&mut self) -> Option<Result<RecordBatch>> {
         if let Some(stream) = &mut self.stream {
             stream.next().await
@@ -152,8 +234,32 @@ impl LakeSoulReader {
     }
 }
 
-// Reader will be used in async closure sent to tokio
-// while accessing its mutable methods.
+/// A thread-safe wrapper for LakeSoulReader that can be used in synchronous contexts.
+/// 
+/// This wrapper provides methods to:
+/// - Start the reader in a blocking fashion
+/// - Read record batches using callbacks
+/// - Access the reader's schema
+/// 
+/// # Thread Safety
+/// 
+/// This wrapper ensures thread-safe access to the underlying reader using Arc and Mutex.
+/// 
+/// # Examples
+/// 
+/// ```rust
+/// use lakesoul_io::lakesoul_reader::SyncSendableMutableLakeSoulReader;
+/// use tokio::runtime::Runtime;
+/// 
+/// let runtime = Runtime::new()?;
+/// let reader = SyncSendableMutableLakeSoulReader::new(lake_soul_reader, runtime);
+/// reader.start_blocked()?;
+/// 
+/// let (tx, rx) = std::sync::mpsc::channel(1);
+/// reader.next_rb_callback(Box::new(move |batch| {
+///     tx.send(batch).unwrap();
+/// }));
+/// ```
 pub struct SyncSendableMutableLakeSoulReader {
     inner: Arc<AtomicRefCell<Mutex<LakeSoulReader>>>,
     runtime: Arc<Runtime>,
@@ -161,6 +267,12 @@ pub struct SyncSendableMutableLakeSoulReader {
 }
 
 impl SyncSendableMutableLakeSoulReader {
+    /// Creates a new SyncSendableMutableLakeSoulReader with the given reader and runtime.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `reader` - The LakeSoulReader instance to wrap
+    /// * `runtime` - The Tokio runtime to use for async operations
     pub fn new(reader: LakeSoulReader, runtime: Runtime) -> Self {
         SyncSendableMutableLakeSoulReader {
             inner: Arc::new(AtomicRefCell::new(Mutex::new(reader))),
@@ -169,6 +281,11 @@ impl SyncSendableMutableLakeSoulReader {
         }
     }
 
+    /// Starts the reader in a blocking fashion.
+    /// 
+    /// # Returns
+    /// 
+    /// A Result indicating success or failure of the initialization
     pub fn start_blocked(&mut self) -> Result<()> {
         let inner_reader = self.inner.clone();
         let runtime = self.get_runtime();
@@ -181,6 +298,15 @@ impl SyncSendableMutableLakeSoulReader {
         })
     }
 
+    /// Registers a callback to be called with the next record batch.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `f` - The callback function to be called with the next batch
+    /// 
+    /// # Returns
+    /// 
+    /// A JoinHandle that can be used to wait for the callback to complete
     pub fn next_rb_callback(&self, f: Box<dyn FnOnce(Option<Result<RecordBatch>>) + Send + Sync>) -> JoinHandle<()> {
         let inner_reader = self.get_inner_reader();
         let runtime = self.get_runtime();
@@ -192,6 +318,11 @@ impl SyncSendableMutableLakeSoulReader {
         })
     }
 
+    /// Retrieves the next record batch in a blocking fashion.
+    /// 
+    /// # Returns
+    /// 
+    /// An Option containing a Result with the next RecordBatch, or None if there are no more batches
     pub fn next_rb_blocked(&self) -> Option<std::result::Result<RecordBatch, DataFusionError>> {
         let inner_reader = self.get_inner_reader();
         let runtime = self.get_runtime();
@@ -202,6 +333,11 @@ impl SyncSendableMutableLakeSoulReader {
         })
     }
 
+    /// Gets the schema of the reader.
+    /// 
+    /// # Returns
+    /// 
+    /// An Option containing the SchemaRef, or None if the schema is not yet available
     pub fn get_schema(&self) -> Option<SchemaRef> {
         self.schema.clone()
     }

@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! Module for the [datafusion::datasource::file_format] implementation of LakeSoul.
+
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;

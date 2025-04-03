@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! Implementation of the partitioning writer, which repartitions the record batches by primary keys and range partitions before writing.
+
 use std::{borrow::Borrow, collections::HashMap, sync::Arc};
 
 use arrow_array::RecordBatch;
@@ -36,11 +38,17 @@ use super::{AsyncBatchWriter, MultiPartAsyncWriter, ReceiverStreamExec, WriterFl
 /// Wrap the above async writer with a RepartitionExec to
 /// dynamic repartitioning the batches before write to async writer
 pub struct PartitioningAsyncWriter {
+    /// The schema of the partitioning writer.
     schema: SchemaRef,
+    /// The sender to async multi-part file writer.
     sorter_sender: Sender<Result<RecordBatch>>,
+    /// The partitioning execution plan of the partitioning writer for repartitioning.
     _partitioning_exec: Arc<dyn ExecutionPlan>,
+    /// The join handle of the partitioning execution plan.
     join_handle: Option<JoinHandle<Result<WriterFlushResult>>>,
+    /// The external error of the partitioning execution plan.
     err: Option<DataFusionError>,
+    /// The buffered size of the partitioning writer.
     buffered_size: u64,
 }
 

@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! Module for the async writer implementation of LakeSoul.
+
 mod multipart_writer;
 pub use multipart_writer::MultiPartAsyncWriter;
 
@@ -39,19 +41,25 @@ use datafusion::{
 use datafusion_common::{DataFusionError, Result};
 use parquet::format::FileMetaData;
 
-// The result of a flush operation with format (partition_desc, file_path, object_meta, file_meta)
+/// The result of a flush operation with format (partition_desc, file_path, object_meta, file_meta)
 pub type WriterFlushResult = Vec<(String, String, ObjectMeta, FileMetaData)>;
 
+/// The trait for the async batch writer.
 #[async_trait::async_trait]
 pub trait AsyncBatchWriter {
+    /// Write a record batch to the writer.
     async fn write_record_batch(&mut self, batch: RecordBatch) -> Result<()>;
 
+    /// Flush the writer and close it.
     async fn flush_and_close(self: Box<Self>) -> Result<WriterFlushResult>;
 
+    /// Abort the writer and close it when an error occurs.
     async fn abort_and_close(self: Box<Self>) -> Result<()>;
 
+    /// Get the schema of the writer.
     fn schema(&self) -> SchemaRef;
 
+    /// Get the buffered size of rows in the writer.
     fn buffered_size(&self) -> u64 {
         0
     }
@@ -88,6 +96,7 @@ impl Write for InMemBuf {
     }
 }
 
+/// A [`datafusion::physical_plan::execution_plan::ExecutionPlan`] implementation for the receiver stream.
 pub struct ReceiverStreamExec {
     receiver_stream_builder: AtomicRefCell<Option<RecordBatchReceiverStreamBuilder>>,
     schema: SchemaRef,

@@ -24,8 +24,10 @@ use tokio::runtime::{Builder, Runtime};
 
 use lakesoul_io::helpers;
 use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
-use lakesoul_io::lakesoul_reader::{LakeSoulReader, RecordBatch, Result, SyncSendableMutableLakeSoulReader};
+use lakesoul_io::lakesoul_reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
 use lakesoul_io::lakesoul_writer::SyncSendableMutableLakeSoulWriter;
+use lakesoul_io::datafusion::arrow::record_batch::RecordBatch;
+use lakesoul_io::datafusion::error::Result;
 use log::debug;
 use proto::proto::entity;
 

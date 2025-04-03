@@ -2,6 +2,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+
+//! This module provides definition and utilities for sort key ranges.
+
 use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
@@ -17,17 +20,24 @@ use arrow_cast::pretty::pretty_format_batches;
 use smallvec::{smallvec, SmallVec};
 
 /// A range in one arrow::record_batch::RecordBatch with same sorted primary key
-/// This is the unit to be sorted in min heap
+/// The minimum unit at SortedStreamMerger
 pub struct SortKeyBatchRange {
-    pub(crate) begin_row: usize, // begin row in this batch, included
-    pub(crate) end_row: usize,   // not included
+    /// The begin row in this batch, included
+    pub(crate) begin_row: usize,
+    /// The end row in this batch, not included
+    pub(crate) end_row: usize,
+    /// The stream index
     pub(crate) stream_idx: usize,
+    /// The batch index counting at SortedStreamMerger
     pub(crate) batch_idx: usize,
+    /// The source reference batch
     pub(crate) batch: Arc<RecordBatch>,
+    /// The reference of rows in this batch
     pub(crate) rows: Arc<Rows>,
 }
 
 impl SortKeyBatchRange {
+    /// Create a new SortKeyBatchRange
     pub fn new(
         begin_row: usize,
         end_row: usize,
@@ -46,6 +56,7 @@ impl SortKeyBatchRange {
         }
     }
 
+    /// Create a new SortKeyBatchRange and initialize it
     pub fn new_and_init(
         begin_row: usize,
         stream_idx: usize,
@@ -70,10 +81,12 @@ impl SortKeyBatchRange {
         self.batch.schema()
     }
 
+    /// Return the number of columns in this batch
     pub fn columns(&self) -> usize {
         self.batch.num_columns()
     }
 
+    /// Return the current row of this range
     pub(crate) fn current(&self) -> Row<'_> {
         self.rows.row(self.begin_row)
     }
@@ -91,7 +104,7 @@ impl SortKeyBatchRange {
     }
 
     #[inline(always)]
-    /// Returns the current batch range, and advances the next range with next sort key
+    /// Returns the cloned current batch range, and advances the current range to the next range with next sort key
     pub fn advance(&mut self) -> SortKeyBatchRange {
         let current = self.clone();
         self.begin_row = self.end_row;
@@ -108,7 +121,7 @@ impl SortKeyBatchRange {
         current
     }
 
-    /// create a SortKeyArrayRange with specific column index of SortKeyBatchRange
+    /// create a SortKeyArrayRange of specific column index of SortKeyBatchRange
     pub fn column(&self, idx: usize) -> SortKeyArrayRange {
         SortKeyArrayRange {
             begin_row: self.begin_row,
@@ -119,10 +132,12 @@ impl SortKeyBatchRange {
         }
     }
 
+    /// Return the reference of array of specific column index of SortKeyBatchRange
     pub fn array(&self, idx: usize) -> ArrayRef {
         unsafe { self.batch.columns().get_unchecked(idx).clone() }
     }
 
+    /// Return the reference of batch
     pub fn batch(&self) -> Arc<RecordBatch> {
         self.batch.clone()
     }
@@ -178,13 +193,18 @@ impl Ord for SortKeyBatchRange {
     }
 }
 
-// A range in one arrow::array::Array with same sorted primary key
+/// A range in one arrow::array::Array with same sorted primary key
 #[derive(Debug)]
 pub struct SortKeyArrayRange {
-    pub(crate) begin_row: usize, // begin row in this batch, included
-    pub(crate) end_row: usize,   // not included
+    /// The begin row in this batch, included
+    pub(crate) begin_row: usize,
+    /// The end row in this batch, not included
+    pub(crate) end_row: usize,
+    /// The stream index
     pub(crate) stream_idx: usize,
+    /// The batch index counting at SortedStreamMerger
     pub(crate) batch_idx: usize,
+    /// The reference of array
     pub(crate) array: ArrayRef,
 }
 
@@ -210,14 +230,17 @@ impl Clone for SortKeyArrayRange {
 /// These ranges will be merged into ONE row of target record_batch finally.
 #[derive(Debug, Clone)]
 pub struct SortKeyBatchRanges {
-    // vector with length=column_num that holds a Vector of SortKeyArrayRange to be merged for each column
+    /// vector with length=column_num 
+    /// each element of this vector is a collection corresponding to the specific column of SortKeyArrayRange to be merged
     pub(crate) sort_key_array_ranges: Vec<SmallVec<[SortKeyArrayRange; 4]>>,
 
-    // fields_index_map from source schemas to target schema which vector index = stream_idx
+    /// fields_index_map from source schemas to target schema which vector index = stream_idx
     fields_map: Arc<Vec<Vec<usize>>>,
 
+    /// The schema of the record batch
     pub(crate) schema: SchemaRef,
 
+    /// The current batch range for collecting SortKeyArrayRange of current primary key
     pub(crate) batch_range: Option<SortKeyBatchRange>,
 }
 
@@ -240,7 +263,7 @@ impl SortKeyBatchRanges {
         &self.sort_key_array_ranges[column_idx]
     }
 
-    // insert one SortKeyBatchRange into SortKeyArrayRanges
+    /// add one SortKeyBatchRange into SortKeyBatchRanges, collect SortKeyArrayRange of each column into sort_key_array_ranges
     pub fn add_range_in_batch(&mut self, range: SortKeyBatchRange) {
         if self.is_empty() {
             self.set_batch_range(Some(range.clone()));
@@ -257,10 +280,12 @@ impl SortKeyBatchRanges {
         self.batch_range.is_none()
     }
 
+    /// update the current batch range
     pub fn set_batch_range(&mut self, batch_range: Option<SortKeyBatchRange>) {
         self.batch_range = batch_range
     }
 
+    /// check if the current batch range matches the given range
     pub fn match_row(&self, range: &SortKeyBatchRange) -> bool {
         match &self.batch_range {
             // return true if no current batch range
@@ -270,13 +295,18 @@ impl SortKeyBatchRanges {
     }
 }
 
-// A range in one arrow::array::Array with same sorted primary key
+/// A range in one arrow::array::Array with same sorted primary key, which is used for UseLast MergeOperator
 #[derive(Debug)]
 pub struct UseLastSortKeyArrayRange {
+    /// The row index in the batch
     pub(crate) row_idx: usize,
+    /// The batch index
     pub(crate) batch_idx: usize,
+    /// The reference of batch
     pub(crate) batch: Arc<RecordBatch>,
+    /// The column index
     pub(crate) column_idx: usize,
+    /// The stream index
     pub(crate) stream_idx: usize,
 }
 
@@ -306,16 +336,22 @@ impl Clone for UseLastSortKeyArrayRange {
     }
 }
 
+
+/// Multiple ranges with same sorted primary key from variant source record_batch.
+/// These ranges will be merged into ONE row of target record_batch finally.
+/// This is used for case of UseLast MergeOperator.
 #[derive(Debug, Clone)]
 pub struct UseLastSortKeyBatchRanges {
-    // fields_index_map from source schemas to target schema which vector index = stream_idx
+    /// fields_index_map from source schemas to target schema which vector index = stream_idx
     fields_map: Arc<Vec<Vec<usize>>>,
 
+    /// The current batch range for collecting UseLastSortKeyArrayRange of current primary key
     current_batch_range: Option<SortKeyBatchRange>,
 
-    // UseLastSortKeyArrayRange for each field of source schema
+    /// UseLastSortKeyArrayRange for each column of source schema
     last_index_of_array: Vec<Option<UseLastSortKeyArrayRange>>,
 
+    /// whether the current batch range is partial merge
     is_partial_merge: bool,
 }
 
@@ -346,7 +382,8 @@ impl UseLastSortKeyBatchRanges {
         }
     }
 
-    // insert one SortKeyBatchRange into UseLastSortKeyBatchRanges
+    /// add one SortKeyBatchRange into UseLastSortKeyBatchRanges,
+    /// collect UseLastSortKeyArrayRange of each column into last_index_of_array
     pub fn add_range_in_batch(&mut self, range: &SortKeyBatchRange) {
         if self.is_empty() {
             self.set_batch_range(Some(range.clone()));
@@ -381,10 +418,12 @@ impl UseLastSortKeyBatchRanges {
         self.current_batch_range.is_none()
     }
 
+    /// update the current batch range
     pub fn set_batch_range(&mut self, batch_range: Option<SortKeyBatchRange>) {
         self.current_batch_range = batch_range
     }
 
+    /// return the UseLastSortKeyArrayRange of specific column
     pub fn column(&self, column_idx: usize) -> &Option<UseLastSortKeyArrayRange> {
         unsafe {
             if self.is_partial_merge {

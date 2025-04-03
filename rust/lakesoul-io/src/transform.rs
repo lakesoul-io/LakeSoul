@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! Transform Module for uniformizing schema and record batches
+
 use std::collections::HashMap;
 use std::sync::Arc;
 

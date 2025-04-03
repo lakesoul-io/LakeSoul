@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! This module provides the implementation of the repartition operator.
+
 use std::{
     any::Any,
     collections::HashMap,
@@ -161,11 +163,16 @@ pub struct BatchPartitioner {
     timer: metrics::Time,
 }
 
+
+/// The state of the [`BatchPartitioner`].
 struct BatchPartitionerState {
-    // random_state: ahash::RandomState,
+    /// The range partitioning expressions.
     range_exprs: Vec<Arc<dyn PhysicalExpr>>,
+    /// The hash partitioning expressions.
     hash_exprs: Vec<Arc<dyn PhysicalExpr>>,
+    /// The number of partitions.
     num_partitions: usize,
+    /// The hash buffer.
     hash_buffer: Vec<u32>,
 }
 
@@ -351,7 +358,13 @@ impl RepartitionMetrics {
     }
 }
 
-
+/// The repartition operator that repartitions the input batches into the specified number of output partitions.
+/// 
+/// It uses the range partitioning and hash partitioning schemes to repartition the input batches.
+/// Each input batch is repartitioned into output batches which will first be sorted by both range partitioning and hash partitioning,
+/// then rows of the same range hash value will be grouped together into output batches.
+/// Output batches are emitted in the order of the hash partitioning.
+/// 
 #[derive(Debug)]
 pub struct RepartitionByRangeAndHashExec {
     /// Input execution plan
@@ -678,7 +691,7 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
         partition: usize, 
         context: Arc<TaskContext>
     ) -> Result<SendableRecordBatchStream> {
-        // 在进入 async block 之前克隆所有需要的数据
+        // clone all data that needs to be used in async block
         let metrics = self.metrics.clone();
         let lazy_state = self.state.clone();
         let preserve_order = self.preserve_order;
@@ -782,6 +795,8 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
     }
 }
 
+
+/// [`RepartitionStream`] is executed stream for [`RepartitionByRangeAndHashExec`].
 struct RepartitionStream {
     /// Number of input partitions that will be sending batches to this output channel
     num_input_partitions: usize,

@@ -1,6 +1,13 @@
-// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
 //
 // SPDX-License-Identifier: Apache-2.0
+
+//! Helper Module for LakeSoul IO
+//! 
+//! This module provides helper functions for LakeSoul IO operations.
+//! It includes functions for formatting scalar values, converting partition descriptions,
+//! and applying partition filters.
+
 
 use arrow::datatypes::UInt32Type;
 use arrow_array::{Array, RecordBatch, UInt32Array};
@@ -45,6 +52,17 @@ use crate::{
     transform::uniform_schema,
 };
 
+/// Converts column names to [`datafusion::physical_expr::PhysicalSortExpr`].
+/// 
+/// # Arguments
+/// 
+/// * `columns` - A slice of column names to convert
+/// * `input_dfschema` - The input DataFusion schema
+/// * `session_state` - The session state
+/// 
+/// # Returns
+/// 
+/// Returns a vector of [`datafusion::physical_expr::PhysicalSortExpr`]
 pub fn column_names_to_physical_sort_expr(
     columns: &[String],
     input_dfschema: &DFSchema,
@@ -62,6 +80,17 @@ pub fn column_names_to_physical_sort_expr(
         .collect::<Result<Vec<_>>>()
 }
 
+/// Converts column names to [`datafusion::physical_expr::PhysicalExpr`].
+/// 
+/// # Arguments
+/// 
+/// * `columns` - A slice of column names to convert
+/// * `input_dfschema` - The input DataFusion schema
+/// * `session_state` - The session state
+/// 
+/// # Returns
+/// 
+/// Returns a vector of [`datafusion::physical_expr::PhysicalExpr`]
 pub fn column_names_to_physical_expr(
     columns: &[String],
     input_dfschema: &DFSchema,
@@ -80,7 +109,17 @@ pub fn column_names_to_physical_expr(
     Ok(runtime_expr)
 }
 
-fn range_partition_to_partition_cols(
+/// Converts range partitions to partition columns of (Column Name, [`arrow::datatypes::DataType`]).
+/// 
+/// # Arguments
+/// 
+/// * `schema` - The schema of the table
+/// * `range_partitions` - The range partitions
+/// 
+/// # Returns
+/// 
+/// Returns a vector of partition columns of (Column Name, [`arrow::datatypes::DataType`])
+pub fn range_partition_to_partition_cols(
     schema: SchemaRef,
     range_partitions: &[String],
 ) -> Result<Vec<(String, DataType)>> {
@@ -90,6 +129,16 @@ fn range_partition_to_partition_cols(
         .collect::<Result<Vec<_>>>()
 }
 
+/// Gets the [`datafusion::scalar::ScalarValue`] of the partition columns from a record batch.
+/// 
+/// # Arguments
+/// 
+/// * `batch` - The record batch
+/// * `range_partitions` - The range partitions
+/// 
+/// # Returns
+/// 
+/// Returns a vector of (Column Name, [`datafusion::scalar::ScalarValue`])
 pub fn get_columnar_values(
     batch: &RecordBatch,
     range_partitions: Arc<Vec<String>>,
@@ -109,6 +158,15 @@ pub fn get_columnar_values(
         .collect::<Result<Vec<_>>>()
 }
 
+/// Formats a [`datafusion::scalar::ScalarValue`] to a string.
+/// 
+/// # Arguments
+/// 
+/// * `v` - The [`datafusion::scalar::ScalarValue`] to format
+/// 
+/// # Returns
+/// 
+/// Returns a string representation of the [`datafusion::scalar::ScalarValue`]
 pub fn format_scalar_value(v: &ScalarValue) -> String {
     match v {
         ScalarValue::Date32(Some(days)) => format!(
@@ -175,6 +233,16 @@ pub fn format_scalar_value(v: &ScalarValue) -> String {
     }
 }
 
+/// Converts a string to a [`datafusion::scalar::ScalarValue`].
+/// 
+/// # Arguments
+/// 
+/// * `val` - The string to convert
+/// * `data_type` - The data type of the [`arrow::datatypes::DataType`]
+///
+/// # Returns
+/// 
+/// Returns a [`datafusion::scalar::ScalarValue`] of the given string
 pub fn into_scalar_value(val: &str, data_type: &DataType) -> Result<ScalarValue> {
     if val.eq(LAKESOUL_NULL_STRING) {
         match data_type {
@@ -270,6 +338,15 @@ pub fn into_scalar_value(val: &str, data_type: &DataType) -> Result<ScalarValue>
     }
 }
 
+/// Converts a vector of (Column Name, [`datafusion::scalar::ScalarValue`]) to a sub path.
+/// 
+/// # Arguments
+/// 
+/// * `columnar_values` - The vector of (Column Name, [`datafusion::scalar::ScalarValue`])
+/// 
+/// # Returns
+/// 
+/// Returns a sub path by concatenating the column names and [`datafusion::scalar::ScalarValue`]
 pub fn columnar_values_to_sub_path(columnar_values: &Vec<(String, ScalarValue)>) -> String {
     if columnar_values.is_empty() {
         "/".to_string()
@@ -285,6 +362,15 @@ pub fn columnar_values_to_sub_path(columnar_values: &Vec<(String, ScalarValue)>)
     }
 }
 
+/// Converts a vector of (Column Name, [`datafusion::scalar::ScalarValue`]) to a partition description.
+/// 
+/// # Arguments
+/// 
+/// * `columnar_values` - The vector of (Column Name, [`datafusion::scalar::ScalarValue`])
+/// 
+/// # Returns
+/// 
+/// Returns a partition description by concatenating the column names and [`datafusion::scalar::ScalarValue`]
 pub fn columnar_values_to_partition_desc(columnar_values: &Vec<(String, ScalarValue)>) -> String {
     if columnar_values.is_empty() {
         "-5".to_string()
@@ -297,6 +383,16 @@ pub fn columnar_values_to_partition_desc(columnar_values: &Vec<(String, ScalarVa
     }
 }
 
+/// Converts a partition description to a vector of scalar values.
+/// 
+/// # Arguments
+/// 
+/// * `schema` - The schema of the table
+/// * `partition_desc` - The partition description
+///
+/// # Returns
+/// 
+/// Returns a vector of [`datafusion::scalar::ScalarValue`] of the given partition description
 pub fn partition_desc_to_scalar_values(schema: SchemaRef, partition_desc: String) -> Result<Vec<ScalarValue>> {
     if partition_desc == "-5" {
         Ok(vec![])
@@ -324,6 +420,15 @@ pub fn partition_desc_to_scalar_values(schema: SchemaRef, partition_desc: String
     }
 }
 
+/// Extracts a partition description and a map of column names to file paths from a file scan config.
+/// 
+/// # Arguments
+/// 
+/// * `conf` - The [`datafusion::datasource::physical_plan::FileScanConfig`]
+/// 
+/// # Returns
+/// 
+/// Returns a tuple of (Partition Description, Map of Column Names to File Paths)
 pub fn partition_desc_from_file_scan_config(conf: &FileScanConfig) -> Result<(String, HashMap<String, String>)> {
     if conf.table_partition_cols.is_empty() {
         Ok(("-5".to_string(), HashMap::default()))
@@ -348,6 +453,18 @@ pub fn partition_desc_from_file_scan_config(conf: &FileScanConfig) -> Result<(St
     }
 }
 
+/// Creates a [`datafusion::datasource::listing::ListingTable`] from a [`LakeSoulIOConfig`].
+/// 
+/// # Arguments
+/// 
+/// * `session_state` - The session state
+/// * `lakesoul_io_config` - The [`LakeSoulIOConfig`]
+/// * `file_format` - The file format
+/// * `as_sink` - Whether to create a sink
+/// 
+/// # Returns
+/// 
+/// Returns a tuple of (Option<[`arrow::datatypes::SchemaRef`]>, Arc<[`datafusion::datasource::listing::ListingTable`]>)
 pub async fn listing_table_from_lakesoul_io_config(
     session_state: &SessionState,
     lakesoul_io_config: LakeSoulIOConfig,
@@ -420,6 +537,16 @@ pub async fn listing_table_from_lakesoul_io_config(
     Ok((config.file_schema.clone(), Arc::new(ListingTable::try_new(config)?)))
 }
 
+/// Gets the [`ObjectMeta`] for a list of table paths.
+/// 
+/// # Arguments
+/// 
+/// * `sc` - The session state
+/// * `table_paths` - The list of table paths
+/// 
+/// # Returns
+/// 
+/// Returns a vector of [`ObjectMetadata`]
 pub async fn get_file_object_meta(sc: &SessionState, table_paths: &[ListingTableUrl]) -> Result<Vec<ObjectMeta>> {
     let object_store_url = table_paths
         .first()
@@ -442,6 +569,18 @@ pub async fn get_file_object_meta(sc: &SessionState, table_paths: &[ListingTable
         .map_err(DataFusionError::from)
 }
 
+/// Infers the schema of files from a list of [`ListingTableUrl`] and [`ObjectMeta`].
+/// 
+/// # Arguments
+/// 
+/// * `sc` - The session state
+/// * `table_paths` - The list of table paths
+/// * `object_metas` - The list of object metadata
+/// * `file_format` - The file format
+/// 
+/// # Returns
+/// 
+/// Returns the inferred schema
 pub async fn infer_schema(
     sc: &SessionState,
     table_paths: &[ListingTableUrl],
@@ -458,6 +597,17 @@ pub async fn infer_schema(
     file_format.infer_schema(sc, &store, &object_metas).await
 }
 
+/// Applies a partition filter to a [`JniWrapper`].
+/// 
+/// # Arguments
+/// 
+/// * `wrapper` - The [`JniWrapper`]
+/// * `schema` - The [`arrow::datatypes::SchemaRef`] of the table
+/// * `filter` - The [`datafusion_substrait::substrait::proto::Plan`]
+/// 
+/// # Returns
+/// 
+/// Returns the [`JniWrapper`] of filtered partition info
 pub fn apply_partition_filter(wrapper: JniWrapper, schema: SchemaRef, filter: Plan) -> Result<JniWrapper> {
     let runtime = Builder::new_multi_thread()
         .worker_threads(1)
@@ -492,6 +642,17 @@ pub fn apply_partition_filter(wrapper: JniWrapper, schema: SchemaRef, filter: Pl
     })
 }
 
+/// Creates a [`RecordBatch`] of partition info from a [`JniWrapper`].
+/// 
+/// # Arguments
+/// 
+/// * `wrapper` - The [`JniWrapper`]
+/// * `schema` - The [`arrow::datatypes::SchemaRef`] of the table
+/// * `index_field` - The [`arrow::datatypes::Field`] of the index field
+/// 
+/// # Returns
+/// 
+/// Returns a [`RecordBatch`] of partition info for partition filter
 fn batch_from_partition(wrapper: &JniWrapper, schema: SchemaRef, index_field: Field) -> Result<RecordBatch> {
     let scalar_values = wrapper
         .partition_info
@@ -522,6 +683,8 @@ fn batch_from_partition(wrapper: &JniWrapper, schema: SchemaRef, index_field: Fi
     Ok(RecordBatch::try_new(schema_with_index, columns)?)
 }
 
+
+/// Converts a date string to epoch days.
 pub fn date_str_to_epoch_days(value: &str) -> Result<i32> {
     let date = chrono::NaiveDate::parse_from_str(value, DATE32_FORMAT).map_err(|e| External(Box::new(e)))?;
     let datetime = date
@@ -534,6 +697,7 @@ pub fn date_str_to_epoch_days(value: &str) -> Result<i32> {
     Ok(datetime.signed_duration_since(epoch_time.naive_utc()).num_days() as i32)
 }
 
+/// Converts a timestamp string to unix time.
 pub fn timestamp_str_to_unix_time(value: &str, fmt: &str) -> Result<Duration> {
     let datetime = chrono::NaiveDateTime::parse_from_str(value, fmt).map_err(|e| External(Box::new(e)))?;
     let epoch_time = DateTime::from_timestamp_millis(0).ok_or(Internal(
@@ -543,6 +707,7 @@ pub fn timestamp_str_to_unix_time(value: &str, fmt: &str) -> Result<Duration> {
     Ok(datetime.signed_duration_since(epoch_time.naive_utc()))
 }
 
+/// Gets the column index and field from a schema.
 pub fn column_with_name_and_name2index<'a>(
     schema: &'a SchemaRef,
     name: &str,
@@ -555,6 +720,7 @@ pub fn column_with_name_and_name2index<'a>(
     }
 }
 
+/// Gets the memory size of a [`RecordBatch`].
 pub fn get_batch_memory_size(batch: &RecordBatch) -> Result<usize> {
     Ok(batch
         .columns()
@@ -565,6 +731,7 @@ pub fn get_batch_memory_size(batch: &RecordBatch) -> Result<usize> {
         .sum())
 }
 
+/// Gets the file size of a [`FileMetaData`].
 pub fn get_file_size(metadata: &FileMetaData) -> usize {
     let footer_size = metadata.footer_signing_key_metadata.as_ref().map_or(0, |f| f.len());
     let rg_size = metadata
@@ -575,6 +742,7 @@ pub fn get_file_size(metadata: &FileMetaData) -> usize {
     footer_size + rg_size
 }
 
+/// Gets the file exist columns of a [`FileMetaData`].
 pub fn get_file_exist_col(metadata: &FileMetaData) -> String {
     metadata
         .schema
