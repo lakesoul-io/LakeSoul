@@ -196,8 +196,26 @@ object LakeSoulSQLConf {
       .intConf
       .createWithDefault(20)
 
+  val COMPACTION_LEVEL_FILE_MERGE_SIZE_LIMIT: ConfigEntry[String] =
+    buildConf("compaction.level.file.merge.size.limit")
+      .doc(
+        """
+          |COMPACTION LEVEL SINGLE TASK MERGE SIZE. Default is 1GB.
+        """.stripMargin)
+      .stringConf
+      .createWithDefault("1GB")
+
+  val COMPACTION_LEVEL_FILE_MERGE_NUM_LIMIT: ConfigEntry[Int] =
+    buildConf("compaction.level.file.merge.num.limit")
+      .doc(
+        """
+          |COMPACTION LEVEL SINGLE TASK MERGE NUM. Default is 5.
+        """.stripMargin)
+      .intConf
+      .createWithDefault(5)
+
   val COMPACTION_LEVEL_MAX_FILE_SIZE: ConfigEntry[String] =
-    buildConf("compaction.level.file.size")
+    buildConf("compaction.level.max.file.size")
       .doc(
         """
           |COMPACTION LEVEL FILE SIZE, DEFAULT IS 5G.

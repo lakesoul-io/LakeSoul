@@ -5,6 +5,7 @@
 package com.dmetasoul.lakesoul.spark.clean
 
 import com.dmetasoul.lakesoul.meta.DBConnector
+import org.apache.spark.sql.lakesoul.utils.SparkUtil.tryWithResource
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.apache.spark.sql.types.{BooleanType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, StringType, StructField, StructType, TimestampType}
 
@@ -160,11 +161,6 @@ object CleanUtils {
          |WHERE table_id = '$tableId'
          |""".stripMargin
     sqlToDataframe(sql, spark)
-  }
-
-  def tryWithResource[R <: AutoCloseable, T](createResource: => R)(f: R => T): T = {
-    val resource = createResource
-    try f.apply(resource) finally resource.close()
   }
 
   def executeMetaSql(sql: String): Unit = {
