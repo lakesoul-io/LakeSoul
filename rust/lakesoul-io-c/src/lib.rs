@@ -164,6 +164,7 @@ pub extern "C" fn lakesoul_config_builder_add_single_file(
 
 /// Add a single column to the IO config.
 #[no_mangle]
+#[allow(deprecated)]
 pub extern "C" fn lakesoul_config_builder_add_single_column(
     builder: NonNull<IOConfigBuilder>,
     column: *const c_char,

@@ -368,6 +368,13 @@ impl LakeSoulIOConfigBuilder {
         self
     }
 
+    /// Adds a column to the list of columns to select
+    /// 
+    /// # Arguments
+    /// 
+    /// * `col` - The column to add
+    #[deprecated(since = "2.5.0", note = "This method is deprecated. Use target_schema instead.")]
+    #[allow(deprecated)]
     pub fn with_column(mut self, col: String) -> Self {
         self.config.columns.push(String::from(&col));
         self
@@ -433,6 +440,9 @@ impl LakeSoulIOConfigBuilder {
         self
     }
 
+
+    #[deprecated(since = "2.5.0", note = "This method is deprecated. Use target_schema instead.")]
+    #[allow(deprecated)]
     pub fn with_columns(mut self, cols: Vec<String>) -> Self {
         self.config.columns = cols;
         self
@@ -478,6 +488,8 @@ impl LakeSoulIOConfigBuilder {
         self
     }
 
+    #[deprecated(since = "2.5.0", note = "This method is deprecated. Use with_filter_str and with_filter_proto instead.")]
+    #[allow(deprecated)]
     pub fn with_filters(mut self, filters: Vec<Expr>) -> Self {
         self.config.filters = filters;
         self
