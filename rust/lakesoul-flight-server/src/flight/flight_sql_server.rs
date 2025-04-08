@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! The entry point of the LakeSoul Flight SQL Server.
+
 mod token_codec;
 
 use std::sync::atomic::{AtomicU64, Ordering};

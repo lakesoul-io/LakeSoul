@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! The pooled client for the postgres database.
+
 use crate::error::Result;
 use async_trait::async_trait;
 use bb8_postgres::bb8::{Pool, PooledConnection, QueueStrategy};
@@ -16,8 +18,12 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio_postgres::{Client, Config, Error, NoTls, Row, Statement, ToStatement};
 
+
+/// The pooled client for the postgres database.
 pub struct PooledClient {
+    /// The pool of [`PgConnectionManager`] for the postgres database.
     pool: Pool<PgConnectionManager>,
+    /// The statement cache for the postgres database.
     pub statement_cache: Arc<StatementCache>,
 }
 
@@ -92,11 +98,15 @@ impl PooledClient {
 
 // wrap a managed connection with statement cache
 pub struct PgConnectionManager {
+    /// The postgres connection manager.
     pg_conn: PostgresConnectionManager<NoTls>,
 }
 
+/// The postgres connection with statement cache.
 pub struct PgConnWithStmtCache {
+    /// The postgres client.
     client: Client,
+    /// The statement cache for the postgres database.
     statement_cache: Arc<StatementCache>,
 }
 
@@ -158,7 +168,7 @@ impl Deref for PgConnectionManager {
     }
 }
 
-/// copied and modified from https://github.com/bikeshedder/deadpool/blob/master/postgres/src/lib.rs
+/// copied and modified from <https://github.com/bikeshedder/deadpool/blob/master/postgres/src/lib.rs>
 impl fmt::Debug for StatementCache {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ClientWrapper")

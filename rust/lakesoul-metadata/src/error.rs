@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! The error type for the LakeSoul metadata.
+
 use std::{io, num, result, sync::Arc};
 use bb8_postgres::bb8::RunError;
 use thiserror::Error;

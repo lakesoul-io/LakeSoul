@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! The [`datafusion::datasource::TableProvider`] implementation for LakeSoul table.
+
 use std::any::Any;
 use std::env;
 use std::ops::Deref;

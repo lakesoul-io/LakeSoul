@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! The [`datafusion::datasource::file_format::FileFormat`] implementation for the LakeSoul Parquet format with metadata.
+
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Debug};
@@ -63,10 +65,16 @@ use tokio::task::JoinHandle;
 use crate::catalog::{commit_data, parse_table_info_partitions};
 use crate::lakesoul_table::helpers::create_io_config_builder_from_table_info;
 
+
+/// The wrapper of the [`ParquetFormat`] with LakeSoul metadata. It is used to read and write data files while interacting with LakeSoul metadata.
 pub struct LakeSoulMetaDataParquetFormat {
+    /// The inner [`ParquetFormat`].
     parquet_format: Arc<ParquetFormat>,
+    /// The metadata client.
     client: MetaDataClientRef,
+    /// The table info.
     table_info: Arc<TableInfo>,
+    /// The io config.
     conf: LakeSoulIOConfig,
 }
 
@@ -159,6 +167,13 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
             .await
     }
 
+    /// Create a physical plan for the scan LakeSoul table.
+    /// The overall process is as follows:
+    /// 1. Get the predicate from the filters.
+    /// 2. Get each file metadata from the file scan config.
+    /// 3. Create [`datafusion::datasource::physical_plan::parquet::ParquetExec`] for each file.
+    /// 4. Merge the [`datafusion::datasource::physical_plan::parquet::ParquetExec`]s according to the partition columns.
+    /// 5. Apply the operations on the merged [`datafusion::physical_plan::ExecutionPlan`].
     async fn create_physical_plan(
         &self,
         state: &SessionState,
@@ -289,6 +304,11 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         }
     }
 
+    /// Create a physical plan for the write LakeSoul table.
+    /// The overall process is as follows:
+    /// 1. Check if the insert operation is overwrite.
+    /// 2. Create a [`LakeSoulHashSinkExec`] for the input plan.
+    /// 3. Return the physical plan.
     async fn create_writer_physical_plan(
         &self,
         input: Arc<dyn ExecutionPlan>,
@@ -309,9 +329,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
     }
 }
 
-// /// Execution plan for writing record batches to a [`LakeSoulParquetSink`]
-// ///
-// /// Returns a single row with the number of values written
+/// Execution plan for writing record batches to a [`LakeSoulParquetSink`]
 pub struct LakeSoulHashSinkExec {
     /// Input plan that produces the record batches to be written.
     input: Arc<dyn ExecutionPlan>,
@@ -322,12 +340,16 @@ pub struct LakeSoulHashSinkExec {
     /// Optional required sort order for output data.
     sort_order: Option<LexRequirement>,
 
+    /// The table info of LakeSoul table.
     table_info: Arc<TableInfo>,
 
+    /// The metadata client.
     metadata_client: MetaDataClientRef,
 
+    /// The range partitions.
     range_partitions: Arc<Vec<String>>,
 
+    /// The properties of the plan.
     properties: PlanProperties,
 }
 

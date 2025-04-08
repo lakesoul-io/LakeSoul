@@ -60,7 +60,7 @@ pub(crate) type SharedMemoryReservation = Arc<Mutex<MemoryReservation>>;
 ///  (e.g. removing channels on completion) where the overhead of `await` is not warranted.
 type LazyState = Arc<tokio::sync::OnceCell<Mutex<RepartitionByRangeAndHashExecState>>>;
 
-/// Inner state of [`RepartitionExec`].
+/// Inner state of [`RepartitionByRangeAndHashExec`].
 #[derive(Debug)]
 struct RepartitionByRangeAndHashExecState {
     /// Channels for sending batches from input partitions to output partitions.
@@ -435,7 +435,7 @@ impl DisplayAs for RepartitionByRangeAndHashExec {
 
 impl RepartitionByRangeAndHashExec {
     /// Create a new RepartitionExec, that produces output `partitioning`, and
-    /// does not preserve the order of the input (see [`Self::with_preserve_order`]
+    /// does not preserve the order of the input (see [`datafusion::physical_plan::repartition::RepartitionExec::preserve_order`]
     /// for more details)
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,

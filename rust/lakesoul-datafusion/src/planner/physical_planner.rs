@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! The physical planner for LakeSoul table.
+
 use std::sync::Arc;
 
 use arrow::datatypes::Schema;

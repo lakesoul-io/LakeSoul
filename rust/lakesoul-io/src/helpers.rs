@@ -537,7 +537,7 @@ pub async fn listing_table_from_lakesoul_io_config(
     Ok((config.file_schema.clone(), Arc::new(ListingTable::try_new(config)?)))
 }
 
-/// Gets the [`ObjectMeta`] for a list of table paths.
+/// Gets the [`object_store::ObjectMetadata`] for a list of table paths.
 /// 
 /// # Arguments
 /// 
@@ -546,7 +546,7 @@ pub async fn listing_table_from_lakesoul_io_config(
 /// 
 /// # Returns
 /// 
-/// Returns a vector of [`ObjectMetadata`]
+/// Returns a vector of [`object_store::ObjectMetadata`]
 pub async fn get_file_object_meta(sc: &SessionState, table_paths: &[ListingTableUrl]) -> Result<Vec<ObjectMeta>> {
     let object_store_url = table_paths
         .first()

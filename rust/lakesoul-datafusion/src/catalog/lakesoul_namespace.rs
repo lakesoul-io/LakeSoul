@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! The [`datafusion::catalog::SchemaProvider`] implementation for the LakeSoul.
+
 use crate::datasource::table_provider::LakeSoulTableProvider;
 use crate::lakesoul_table::helpers::case_fold_table_name;
 use crate::lakesoul_table::LakeSoulTable;
@@ -20,9 +22,7 @@ use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use tokio::runtime::Handle;
 
-/// A [`SchemaProvider`] that query pg to automatically discover tables.
-/// Due to the restriction of datafusion 's api, "CREATE [EXTERNAL] Table ... " is not supported.
-/// May have race condition
+/// A [`SchemaProvider`] that query from LakeSoul metadata.
 pub struct LakeSoulNamespace {
     metadata_client: MetaDataClientRef,
     context: Arc<SessionContext>,
@@ -183,6 +183,7 @@ impl SchemaProvider for LakeSoulNamespace {
         })
     }
 
+    /// Check if the table exists in the namespace.
     fn table_exist(&self, name: &str) -> bool {
         debug!("LakeSoulNamespace::table_exist - Checking existence of table '{}' in namespace '{}'", name, &self.namespace);
         info!("table_exist: {:?} {:?}", name, &self.namespace);

@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! The utilities for LakeSoul table.
+
 use std::sync::Arc;
 use std::collections::HashMap;
 
@@ -33,6 +35,7 @@ use proto::proto::entity::{PartitionInfo, TableInfo};
 
 use crate::catalog::{parse_table_info_partitions, LakeSoulTableProperty};
 
+/// Create a [`LakeSoulIOConfigBuilder`] from the table info.
 pub(crate) fn create_io_config_builder_from_table_info(
     table_info: Arc<TableInfo>,
     options: HashMap<String, String>,
@@ -65,6 +68,7 @@ pub(crate) fn create_io_config_builder_from_table_info(
     Ok(builder)
 }
 
+/// Prune the partition infos according to the filters.
 pub async fn prune_partitions(
     all_partition_info: Vec<PartitionInfo>,
     filters: &[Expr],
@@ -153,6 +157,7 @@ pub async fn prune_partitions(
     Ok(filtered)
 }
 
+/// Parse the partition description and the table partition columns.
 pub fn parse_partitions_for_partition_desc<'a, I>(
     partition_desc: &'a str,
     table_partition_cols: I,
@@ -176,6 +181,7 @@ where
     Some(part_values)
 }
 
+/// Listing the partition info and the files from the metadata client.
 pub async fn listing_partition_info(
     partition_info: PartitionInfo,
     store: &dyn ObjectStore,
@@ -200,10 +206,12 @@ pub async fn listing_partition_info(
     Ok((partition_info, files))
 }
 
+/// Case fold the table name.
 pub fn case_fold_table_name(name: &str) -> String {
     name.to_ascii_lowercase()
 }
 
+/// Case fold the column name.
 pub fn case_fold_column_name(name: &str) -> String {
     name.to_ascii_lowercase()
 }

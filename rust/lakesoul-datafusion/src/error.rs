@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! The error module for LakeSoul DataFusion.
+
 use std::{result, sync::Arc};
 
 use datafusion::error::DataFusionError;

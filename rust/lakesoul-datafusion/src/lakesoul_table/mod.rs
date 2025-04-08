@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! The interface of LakeSoul table.
+
 pub mod helpers;
 
 use std::{ops::Deref, sync::Arc};
@@ -340,13 +342,19 @@ impl LakeSoulTable {
     }
 }
 
+/// The result of the flush operation.
+/// todo: maybe define in unproper place.
 #[derive(Debug)]
 struct FlushResult {
+    /// The path of the file.
     file_path: String,
+    /// The size of the file.
     file_size: i64,
+    /// The columns of the file.
     file_exist_cols: String,
 }
 
+/// Get the partition description and the files from the writer flush result.
 fn partitioned_files_from_writer_flush_result(
     flush_result: &WriterFlushResult,
 ) -> Result<HashMap<String, Vec<FlushResult>>> {

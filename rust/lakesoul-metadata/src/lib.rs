@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! The Metadata Interface of LakeSoul.
+
 use std::io::ErrorKind;
 use std::str::FromStr;
 
@@ -25,28 +27,47 @@ mod metadata_client;
 mod pooled_client;
 pub mod rbac;
 
+/// The offset of code for the Data Access Object type for query one.
 pub const DAO_TYPE_QUERY_ONE_OFFSET: i32 = 0;
+/// The offset of code for the Data Access Object type for query list.
 pub const DAO_TYPE_QUERY_LIST_OFFSET: i32 = 100;
+/// The offset of code for the Data Access Object type for insert one.
 pub const DAO_TYPE_INSERT_ONE_OFFSET: i32 = 200;
+/// The offset of code for the Data Access Object type for transaction insert list.
 pub const DAO_TYPE_TRANSACTION_INSERT_LIST_OFFSET: i32 = 300;
+/// The offset of code for the Data Access Object type for query scalar.
 pub const DAO_TYPE_QUERY_SCALAR_OFFSET: i32 = 400;
+/// The offset of code for the Data Access Object type for update.
 pub const DAO_TYPE_UPDATE_OFFSET: i32 = 500;
 
+/// The delimiter for the Data Access Object parameters.
 pub const PARAM_DELIM: &str = "__DELIM__";
+/// The delimiter for the Data Access Object partition description.
 pub const PARTITION_DESC_DELIM: &str = "_DELIM_";
 
+/// The result type for the Data Access Object.
 enum ResultType {
+    /// The result type for the namespace.
     Namespace,
+    /// The result type for the table_info.
     TableInfo,
+    /// The result type for the table_name_id.
     TableNameId,
+    /// The result type for the table_path_id.
     TablePathId,
+    /// The result type for the partition_info.
     PartitionInfo,
+    /// The result type for the data_commit_info.
     DataCommitInfo,
+    /// The result type for the table_path_id with only table path.
     TablePathIdWithOnlyPath,
+    /// The result type for the partition_info with only commit_op.
     PartitionInfoWithOnlyCommitOp,
+    /// The result type for the discard_compressed_file_info.
     DiscardCompressedFileInfo,
 }
 
+/// The Data File Operation type, which is corresponding to the user defined type `data_file_op` in PostgreSQL.
 #[derive(FromSql, ToSql, Debug, PartialEq)]
 #[postgres(name = "data_file_op")]
 struct DataFileOp {
@@ -80,95 +101,157 @@ impl DataFileOp {
     }
 }
 
+/// The coded type for the Data Access Object.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, num_enum::TryFromPrimitive)]
 #[repr(i32)]
 pub enum DaoType {
+    // ==== Coded Query One ====
+    /// The coded type for the Data Access Object for select namespace by namespace.
     SelectNamespaceByNamespace = DAO_TYPE_QUERY_ONE_OFFSET,
+    /// The coded type for the Data Access Object for select table path id by table path.
     SelectTablePathIdByTablePath = DAO_TYPE_QUERY_ONE_OFFSET + 1,
+    /// The coded type for the Data Access Object for select table info by table id.
     SelectTableInfoByTableId = DAO_TYPE_QUERY_ONE_OFFSET + 2,
+    /// The coded type for the Data Access Object for select table name id by table name.
     SelectTableNameIdByTableName = DAO_TYPE_QUERY_ONE_OFFSET + 3,
+    /// The coded type for the Data Access Object for select table info by table name and namespace.
     SelectTableInfoByTableNameAndNameSpace = DAO_TYPE_QUERY_ONE_OFFSET + 4,
+    /// The coded type for the Data Access Object for select table info by table path.
     SelectTableInfoByTablePath = DAO_TYPE_QUERY_ONE_OFFSET + 5,
+    /// The coded type for the Data Access Object for select table info by table id and table path.
     SelectTableInfoByIdAndTablePath = DAO_TYPE_QUERY_ONE_OFFSET + 6,
 
+    /// The coded type for the Data Access Object for select one partition version by table id and partition description.
     SelectOnePartitionVersionByTableIdAndDesc = DAO_TYPE_QUERY_ONE_OFFSET + 7,
+    /// The coded type for the Data Access Object for select partition version by table id and partition description and version.
     SelectPartitionVersionByTableIdAndDescAndVersion = DAO_TYPE_QUERY_ONE_OFFSET + 8,
-
+    /// The coded type for the Data Access Object for select one data commit info by table id and partition description and commit id.
     SelectOneDataCommitInfoByTableIdAndPartitionDescAndCommitId = DAO_TYPE_QUERY_ONE_OFFSET + 9,
+    /// The coded type for the Data Access Object for select table domain by table id.
     SelectTableDomainById = DAO_TYPE_QUERY_ONE_OFFSET + 10,
+    /// The coded type for the Data Access Object for select discard compressed file info by file path.
     SelectDiscardCompressedFileInfoByFilePath = DAO_TYPE_QUERY_ONE_OFFSET + 11,
 
-    // ==== Query List ====
+    // ==== Coded Table List ====
+    /// The coded type for the Data Access Object for list namespaces.
     ListNamespaces = DAO_TYPE_QUERY_LIST_OFFSET,
+    /// The coded type for the Data Access Object for list table name by namespace.
     ListTableNameByNamespace = DAO_TYPE_QUERY_LIST_OFFSET + 1,
+    /// The coded type for the Data Access Object for list all table path.
     ListAllTablePath = DAO_TYPE_QUERY_LIST_OFFSET + 2,
+    /// The coded type for the Data Access Object for list all path table path by namespace.
     ListAllPathTablePathByNamespace = DAO_TYPE_QUERY_LIST_OFFSET + 3,
 
-    // Query Partition List
+    // ==== Coded Query Partition List ====
+    /// The coded type for the Data Access Object for list partition by table id.
     ListPartitionByTableId = DAO_TYPE_QUERY_LIST_OFFSET + 4,
+    /// The coded type for the Data Access Object for list partition description by table id and partition description.
     ListPartitionDescByTableIdAndParList = DAO_TYPE_QUERY_LIST_OFFSET + 5,
+    /// The coded type for the Data Access Object for list partition by table id and partition description.
     ListPartitionByTableIdAndDesc = DAO_TYPE_QUERY_LIST_OFFSET + 6,
+    /// The coded type for the Data Access Object for list partition version by table id and partition description and version range.
     ListPartitionVersionByTableIdAndPartitionDescAndVersionRange = DAO_TYPE_QUERY_LIST_OFFSET + 7,
+    /// The coded type for the Data Access Object for list partition version by table id and partition description and timestamp range.
     ListPartitionVersionByTableIdAndPartitionDescAndTimestampRange = DAO_TYPE_QUERY_LIST_OFFSET + 8,
+    /// The coded type for the Data Access Object for list commit ops between versions.
     ListCommitOpsBetweenVersions = DAO_TYPE_QUERY_LIST_OFFSET + 9,
 
-    // Query DataCommitInfo List
+    // ==== Coded Query DataCommitInfo List ====
+    /// The coded type for the Data Access Object for list data commit info by table id and partition description and commit id list.
     ListDataCommitInfoByTableIdAndPartitionDescAndCommitList = DAO_TYPE_QUERY_LIST_OFFSET + 10,
-
+    /// The coded type for the Data Access Object for list all discard compressed file info.
     ListAllDiscardCompressedFileInfo = DAO_TYPE_QUERY_LIST_OFFSET + 11,
+    /// The coded type for the Data Access Object for list discard compressed file info before timestamp.
     ListDiscardCompressedFileInfoBeforeTimestamp = DAO_TYPE_QUERY_LIST_OFFSET + 12,
+    /// The coded type for the Data Access Object for list discard compressed file by filter condition.
     ListDiscardCompressedFileByFilterCondition = DAO_TYPE_QUERY_LIST_OFFSET + 13,
 
-    // ==== Insert One ====
+    // ==== Coded Insert One ====
+    /// The coded type for the Data Access Object for insert namespace.
     InsertNamespace = DAO_TYPE_INSERT_ONE_OFFSET,
+    /// The coded type for the Data Access Object for insert table path id.
     InsertTablePathId = DAO_TYPE_INSERT_ONE_OFFSET + 1,
+    /// The coded type for the Data Access Object for insert table name id.
     InsertTableNameId = DAO_TYPE_INSERT_ONE_OFFSET + 2,
+    /// The coded type for the Data Access Object for insert table info.
     InsertTableInfo = DAO_TYPE_INSERT_ONE_OFFSET + 3,
+    /// The coded type for the Data Access Object for insert partition info.
     InsertPartitionInfo = DAO_TYPE_INSERT_ONE_OFFSET + 4,
+    /// The coded type for the Data Access Object for insert data commit info.
     InsertDataCommitInfo = DAO_TYPE_INSERT_ONE_OFFSET + 5,
+    /// The coded type for the Data Access Object for insert discard compressed file info.
     InsertDiscardCompressedFileInfo = DAO_TYPE_INSERT_ONE_OFFSET + 6,
 
-    // ==== Transaction Insert List ====
+    // ==== Coded Transaction Insert List ====
+    /// The coded type for the Data Access Object for transaction insert partition info.
     TransactionInsertPartitionInfo = DAO_TYPE_TRANSACTION_INSERT_LIST_OFFSET,
+    /// The coded type for the Data Access Object for transaction insert data commit info.
     TransactionInsertDataCommitInfo = DAO_TYPE_TRANSACTION_INSERT_LIST_OFFSET + 1,
+    /// The coded type for the Data Access Object for transaction insert discard compressed file.
     TransactionInsertDiscardCompressedFile = DAO_TYPE_TRANSACTION_INSERT_LIST_OFFSET + 2,
 
-    // ==== Query SCALAR ====
+    // ==== Coded Query Scalar ====
+    /// The coded type for the Data Access Object for get latest timestamp from partition info.
     GetLatestTimestampFromPartitionInfo = DAO_TYPE_QUERY_SCALAR_OFFSET,
+    /// The coded type for the Data Access Object for get latest timestamp from partition info without partition description.
     GetLatestTimestampFromPartitionInfoWithoutPartitionDesc = DAO_TYPE_QUERY_SCALAR_OFFSET + 1,
+    /// The coded type for the Data Access Object for get latest version up to time from partition info.
     GetLatestVersionUpToTimeFromPartitionInfo = DAO_TYPE_QUERY_SCALAR_OFFSET + 2,
+    /// The coded type for the Data Access Object for get latest version timestamp up to time from partition info.
     GetLatestVersionTimestampUpToTimeFromPartitionInfo = DAO_TYPE_QUERY_SCALAR_OFFSET + 3,
 
-    // ==== Update ====
-    // Update Namespace
+    // ==== Coded Update Type ====
+    /// The coded type for the Data Access Object for delete namespace by namespace.
     DeleteNamespaceByNamespace = DAO_TYPE_UPDATE_OFFSET,
+    /// The coded type for the Data Access Object for update namespace properties by namespace.
     UpdateNamespacePropertiesByNamespace = DAO_TYPE_UPDATE_OFFSET + 1,
 
-    // Update TableInfo
+    // ==== Coded Update TableInfo ====
+    /// The coded type for the Data Access Object for delete table info by table id and table path.
     DeleteTableInfoByIdAndPath = DAO_TYPE_UPDATE_OFFSET + 2,
+    /// The coded type for the Data Access Object for update table info properties by table id.
     UpdateTableInfoPropertiesById = DAO_TYPE_UPDATE_OFFSET + 3,
+    /// The coded type for the Data Access Object for update table info by table id.
     UpdateTableInfoById = DAO_TYPE_UPDATE_OFFSET + 4,
 
-    // Update TablePathId
+    // ==== Coded Update TablePathId ====
+    /// The coded type for the Data Access Object for delete table path id by table path.
     DeleteTablePathIdByTablePath = DAO_TYPE_UPDATE_OFFSET + 5,
+    /// The coded type for the Data Access Object for delete table path id by table id.
     DeleteTablePathIdByTableId = DAO_TYPE_UPDATE_OFFSET + 6,
-    // Update TableNameId
+
+    // ==== Coded Update TableNameId ====
+    /// The coded type for the Data Access Object for delete table name id by table name and namespace.
     DeleteTableNameIdByTableNameAndNamespace = DAO_TYPE_UPDATE_OFFSET + 7,
+    /// The coded type for the Data Access Object for delete table name id by table id.
     DeleteTableNameIdByTableId = DAO_TYPE_UPDATE_OFFSET + 8,
-    // Update PartitionInfo
+
+    // ==== Coded Update PartitionInfo ====
+    /// The coded type for the Data Access Object for delete partition info by table id and partition description.
     DeletePartitionInfoByTableIdAndPartitionDesc = DAO_TYPE_UPDATE_OFFSET + 9,
+    /// The coded type for the Data Access Object for delete partition info by table id.
     DeletePartitionInfoByTableId = DAO_TYPE_UPDATE_OFFSET + 10,
+    /// The coded type for the Data Access Object for delete previous version partition.
     DeletePreviousVersionPartition = DAO_TYPE_UPDATE_OFFSET + 11,
-    // Update DataCommitInfo
+
+    // ==== Coded Update DataCommitInfo ====
+    /// The coded type for the Data Access Object for delete one data commit info by table id and partition description and commit id.
     DeleteOneDataCommitInfoByTableIdAndPartitionDescAndCommitId = DAO_TYPE_UPDATE_OFFSET + 12,
+    /// The coded type for the Data Access Object for delete data commit info by table id and partition description and commit id list.
     DeleteDataCommitInfoByTableIdAndPartitionDescAndCommitIdList = DAO_TYPE_UPDATE_OFFSET + 13,
+    /// The coded type for the Data Access Object for delete data commit info by table id and partition description.
     DeleteDataCommitInfoByTableIdAndPartitionDesc = DAO_TYPE_UPDATE_OFFSET + 14,
+    /// The coded type for the Data Access Object for delete data commit info by table id.
     DeleteDataCommitInfoByTableId = DAO_TYPE_UPDATE_OFFSET + 15,
 
+    // ==== Coded Update DiscardCompressedFileInfo ====
+    /// The coded type for the Data Access Object for delete discard compressed file info by file path.
     DeleteDiscardCompressedFileInfoByFilePath = DAO_TYPE_UPDATE_OFFSET + 16,
+    /// The coded type for the Data Access Object for delete discard compressed file by filter condition.
     DeleteDiscardCompressedFileByFilterCondition = DAO_TYPE_UPDATE_OFFSET + 17
 }
 
+/// Get the prepared statement for the coded Data Access Object.
 async fn get_prepared_statement<'a>(
     client: &'a PooledClient,
     dao_type: &DaoType,
@@ -444,6 +527,7 @@ async fn get_prepared_statement<'a>(
     client.prepare_cached(statement).await
 }
 
+/// Parse the joined string to the parameters.
 fn get_params(joined_string: String) -> Vec<String> {
     joined_string
         .split(PARAM_DELIM)
@@ -453,6 +537,7 @@ fn get_params(joined_string: String) -> Vec<String> {
         .collect::<Vec<String>>()
 }
 
+/// Separate the concatenated uuid radix string to the uuid string list.
 fn separate_uuid(concated_uuid: &str) -> Result<Vec<String>> {
     let uuid_num = concated_uuid.len() / 32;
     let mut uuid_list = Vec::<String>::with_capacity(uuid_num);
@@ -466,6 +551,7 @@ fn separate_uuid(concated_uuid: &str) -> Result<Vec<String>> {
     Ok(uuid_list)
 }
 
+/// Execute the query for the coded Data Access Object.
 pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string: String) -> Result<Vec<u8>> {
     if query_type >= DAO_TYPE_INSERT_ONE_OFFSET {
         eprintln!("Invalid query_type_index: {:?}", query_type);
@@ -908,6 +994,7 @@ pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string
     Ok(wrapper.encode_to_vec())
 }
 
+/// Execute the insert for the coded Data Access Object.
 pub async fn execute_insert(client: &mut PooledClient, insert_type: i32, wrapper: entity::JniWrapper) -> Result<i32> {
     if !(DAO_TYPE_INSERT_ONE_OFFSET..DAO_TYPE_QUERY_SCALAR_OFFSET).contains(&insert_type) {
         eprintln!("Invalid insert_type_index: {:?}", insert_type);
@@ -1254,6 +1341,7 @@ pub async fn execute_insert(client: &mut PooledClient, insert_type: i32, wrapper
     }
 }
 
+/// Execute the update for the coded Data Access Object.
 pub async fn execute_update(client: &mut PooledClient, update_type: i32, joined_string: String) -> Result<i32> {
     if update_type < DAO_TYPE_UPDATE_OFFSET {
         eprintln!("Invalid update_type_index: {:?}", update_type);
@@ -1381,6 +1469,7 @@ pub async fn execute_update(client: &mut PooledClient, update_type: i32, joined_
     }
 }
 
+/// Convert the timestamp from [`tokio_postgres::Row`] to the string.
 fn ts_string(res: Result<Option<Row>, Error>) -> Result<Option<String>> {
     match res {
         Ok(Some(row)) => {
@@ -1395,6 +1484,7 @@ fn ts_string(res: Result<Option<Row>, Error>) -> Result<Option<String>> {
     }
 }
 
+/// Execute the query scalar for the coded Data Access Object.
 pub async fn execute_query_scalar(
     client: &mut PooledClient,
     query_type: i32,
@@ -1470,11 +1560,12 @@ pub async fn clean_meta_for_test(client: &PooledClient) -> Result<i32> {
     }
 }
 
-///  Create a pg connection, return pg client
+/// Create a pg connection, return pg client.
 pub async fn create_connection(config: String) -> Result<PooledClient> {
     PooledClient::try_new(config).await
 }
 
+/// Convert the uuid list from [`tokio_postgres::Row`] to the [`entity::Uuid`] list.
 fn row_to_uuid_list(row: &Row) -> Vec<entity::Uuid> {
     row.get::<_, Vec<uuid::Uuid>>(4)
         .iter()

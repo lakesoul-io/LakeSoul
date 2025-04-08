@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! The implementation of the [`FlightSqlService`] for LakeSoul.
+
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::ipc::writer::IpcWriteOptions;
 use arrow_flight::decode::FlightRecordBatchStream;
@@ -79,20 +81,32 @@ macro_rules! status {
     };
 }
 
+/// The transactional data of the commit operation on LakeSoul metadata.
 type TransactionalData = (Arc<LakeSoulTable>, WriterFlushResult);
 
+/// The implementation of the [`FlightSqlService`] for LakeSoul.
 pub struct FlightSqlServiceImpl {
+    /// The arguments of the flight sql service.
     args: Args,
+    /// The metadata client.
     client: MetaDataClientRef,
+    /// The context state.
     contexts: Arc<DashMap<String, Arc<SessionContext>>>,
+    /// The statement state.
     statements: Arc<DashMap<String, LogicalPlan>>,
+    /// The transactional data state.
     transactional_data: Arc<DashMap<String, TransactionalData>>,
+    /// The metrics of the stream write operation.
     metrics: Arc<StreamWriteMetrics>,
+    /// The jwt server for authentication.
     jwt_server: Arc<JwtServer>,
+    /// The auth switch.
     auth_enabled: bool,
+    /// The rbac authorization switch.
     rbac_enabled: bool,
 }
 
+/// The metrics of the stream write operation.
 struct StreamWriteMetrics {
     active_streams: AtomicI64,
     total_bytes: AtomicU64,
@@ -949,6 +963,7 @@ pub fn create_app_metadata(properties: String, partitions: String) -> String {
 
 
 impl FlightSqlServiceImpl {
+    /// Create a new [`FlightSqlServiceImpl`].
     pub async fn new(metadata_client: MetaDataClientRef, args: Args) -> Result<Self> {
         let secret = metadata_client.get_client_secret();
         let jwt_server = Arc::new(JwtServer::new(secret.as_str()));
@@ -978,12 +993,14 @@ impl FlightSqlServiceImpl {
         })
     }
 
+    /// Initialize the [`FlightSqlServiceImpl`].
     pub async fn init(&self) -> Result<(), Status> {
         self.create_ctx().await?;
 
         Ok(())
     }
 
+    /// Create a new [`SessionContext`] and initialize the catalog and schema.
     pub async fn create_ctx(&self) -> Result<String, Status> {
         let uuid = "1".to_string();
         let mut session_config = SessionConfig::from_env()
@@ -1104,6 +1121,7 @@ impl FlightSqlServiceImpl {
         Ok(uuid)
     }
 
+    /// Get the [`SessionContext`] from the context state.
     fn get_ctx<T>(&self, _req: &Request<T>) -> Result<Arc<SessionContext>, Status> {
         let auth = "1".to_string();
 
@@ -1114,6 +1132,7 @@ impl FlightSqlServiceImpl {
         }
     }
 
+    /// Get the [`LogicalPlan`] from the statement state.
     fn get_plan(&self, handle: &str) -> Result<LogicalPlan, Status> {
         if let Some(plan) = self.statements.get(handle) {
             Ok(plan.clone())
@@ -1185,15 +1204,18 @@ impl FlightSqlServiceImpl {
             .map_err(|e| Status::internal(format!("Error creating record batch: {}", e)))
     }
 
+    /// Remove the [`LogicalPlan`] from the statement state.
     fn remove_plan(&self, handle: &str) -> Result<(), Status> {
         self.statements.remove(&handle.to_string());
         Ok(())
     }
 
+    /// Get the [`MetaDataClient`] from the metadata client.
     fn get_metadata_client(&self) -> MetaDataClientRef {
         self.client.clone()
     }
 
+    /// Append the [`TransactionalData`] to the transactional data state.
     fn append_transactional_data(
         &self,
         transaction_id: String,
@@ -1205,11 +1227,13 @@ impl FlightSqlServiceImpl {
         Ok(())
     }
 
+    /// Clear the [`TransactionalData`] from the transactional data state.
     fn clear_transactional_data(&self, transaction_id: String) -> Result<(), Status> {
         self.transactional_data.remove(&transaction_id);
         Ok(())
     }
 
+    /// Commit the [`TransactionalData`] from the transactional data state.
     async fn commit_transactional_data(&self, transaction_id: String) -> Result<(), Status> {
         // Get returns a Ref, so we need to dereference it to get the tuple
         if let Some(ref_data) = self.transactional_data.get(&transaction_id) {
@@ -1223,10 +1247,12 @@ impl FlightSqlServiceImpl {
         Ok(())
     }
 
+    /// Get the [`JwtServer`] from the jwt server.
     pub fn get_jwt_server(&self) -> Arc<JwtServer> {
         self.jwt_server.clone()
     }
 
+    /// Verify the token from the metadata.
     fn verify_token(&self, metadata: &MetadataMap) -> Result<Claims, Status> {
         if !self.auth_enabled {
             return Ok(Claims::default());
@@ -1254,6 +1280,7 @@ impl FlightSqlServiceImpl {
             .map_err(|e| Status::permission_denied(format!("Invalid authorization token: {e}")))
     }
 
+    /// Verify the rbac authorization.
     async fn verify_rbac(&self, claims: &Claims, ns: &str, table: &str) -> Result<(), Status> {
         if !self.rbac_enabled {
             return Ok(());
@@ -1263,11 +1290,13 @@ impl FlightSqlServiceImpl {
             .map_err(|e| Status::permission_denied(e.to_string()))
     }
 
+    /// Get the [`LakeSoulIOConfigBuilder`] from the arguments.
     fn get_io_config_builder(&self) -> LakeSoulIOConfigBuilder {
         let object_store_opttions = self.args.s3_options();
         LakeSoulIOConfigBuilder::new_with_object_store_options(object_store_opttions)
     }
 
+    /// Write the stream to the table.
     async fn write_stream(
         &self,
         table_reference: TableReference,

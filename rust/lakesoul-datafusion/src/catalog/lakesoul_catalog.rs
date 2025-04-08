@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! The [`datafusion::catalog::CatalogProvider`] implementation for the LakeSoul.
+
 use crate::catalog::LakeSoulNamespace;
 use datafusion::catalog::SchemaProvider;
 use datafusion::catalog::CatalogProvider;
@@ -16,8 +18,7 @@ use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use tokio::runtime::Handle;
 
-/// A metadata wrapper
-/// may need a lock
+/// A metadata wrapper for LakeSoul metadata and DataFusion catalog.
 pub struct LakeSoulCatalog {
     metadata_client: MetaDataClientRef,
     context: Arc<SessionContext>,
