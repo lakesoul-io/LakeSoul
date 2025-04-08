@@ -282,6 +282,7 @@ public class DBManager {
     }
 
     public void deleteTableInfo(String tablePath, String tableId, String tableNamespace) {
+        discardCompressedFileDao.deleteByTablePath(tablePath);
         tablePathIdDao.delete(tablePath);
         TableInfo tableInfo = tableInfoDao.selectByTableId(tableId);
         String tableName = tableInfo.getTableName();
@@ -975,11 +976,21 @@ public class DBManager {
         discardCompressedFileDao.deleteDiscardCompressedFileByFilterCondition(tablePath, partition, timestamp);
     }
 
+    public void deleteDiscardCompressedFile(String tableId, String partition, long timestamp) {
+        String tablePath = tableInfoDao.selectByTableId(tableId).getTablePath();
+        discardCompressedFileDao.deleteDiscardCompressedFileByFilterCondition(tablePath, partition, timestamp);
+    }
+
     public List<DiscardCompressedFileInfo> getOutOfDateDiscardCompressedFile(long timestamp) {
         return discardCompressedFileDao.getDiscardCompressedFileBeforeTimestamp(timestamp);
     }
 
     public List<DiscardCompressedFileInfo> getDiscardCompressedFileByFilterCondition(String tablePath, String partition, long timestamp) {
+        return discardCompressedFileDao.getDiscardCompressedFileByFilterCondition(tablePath, partition, timestamp);
+    }
+
+    public List<DiscardCompressedFileInfo> getDiscardCompressedFileInfo(String tableId, String partition, long timestamp) {
+        String tablePath = tableInfoDao.selectByTableId(tableId).getTablePath();
         return discardCompressedFileDao.getDiscardCompressedFileByFilterCondition(tablePath, partition, timestamp);
     }
 

@@ -32,7 +32,6 @@ import scala.collection.JavaConverters;
 
 import java.io.IOException;
 import java.io.Serializable;
-import java.net.URI;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -69,6 +68,7 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
     private final long batchIncrementalFileSizeLimit;
     private final int batchSize;
     private final long taskId;
+    private long beginTime;
 
     public CompactBucketIO(Configuration conf, List<CompressDataFileInfo> fileInfo, TableInfo tableInfo,
                            String tablePath, String metaPartitionExpr,
@@ -91,11 +91,11 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
             this.partitionSchema = new Schema(partitionFields);
         }
         this.nativeIOOptions = NativeIOUtils.getNativeIOOptions(conf, new Path(this.fileInfo.get(0).getFilePath()));
-        this.fileSystem = FileSystem.get(URI.create(this.fileInfo.get(0).getFilePath()), conf);
+        this.fileSystem = FileSystem.get(conf);
 
         this.maxRowGroupRows = conf.getInt(LakeSoulSQLConf.NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE().key(),
                 (int) LakeSoulSQLConf.NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE().defaultValue().get());
-        this.batchSize = conf.getInt(SQLConf$.MODULE$.PARQUET_VECTORIZED_READER_BATCH_SIZE().key(), 256);
+        this.batchSize = conf.getInt(SQLConf$.MODULE$.PARQUET_VECTORIZED_READER_BATCH_SIZE().key(), 2048);
         this.tablePath = tablePath;
 
         this.compactionExistedFileNumberLimit = conf.getInt(LakeSoulSQLConf.COMPACTION_LEVEL_FILE_NUM_LIMIT().key(),
@@ -118,6 +118,7 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
     }
 
     private void initializeReader(List<CompressDataFileInfo> filePath) throws IOException {
+        beginTime = System.currentTimeMillis();
         nativeIOReader = new NativeIOReader();
         for (CompressDataFileInfo path : filePath) {
             nativeIOReader.addFile(path.getFilePath());
@@ -366,6 +367,10 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
         if (this.nativeWriter != null) {
             this.nativeWriter.close();
             this.nativeWriter = null;
+        }
+        if (beginTime > 0) {
+            LOG.info("Task {}, time taken {}", taskId, System.currentTimeMillis() - beginTime);
+            beginTime = 0;
         }
     }
 }
