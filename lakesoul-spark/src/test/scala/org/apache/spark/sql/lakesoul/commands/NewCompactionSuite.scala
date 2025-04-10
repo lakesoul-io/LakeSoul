@@ -795,6 +795,7 @@ class NewCompactionSuite extends QueryTest
 
       lakeSoulTable.newCompaction(newBucketNum = Some(newHashBucketNum))
 
+      LakeSoulTable.uncached(tablePath)
       assert(getFileList(tablePath).groupBy(_.file_bucket_id).keys.toSet.size == newHashBucketNum)
       assert(getTableInfo(tablePath).bucket_num == newHashBucketNum)
 

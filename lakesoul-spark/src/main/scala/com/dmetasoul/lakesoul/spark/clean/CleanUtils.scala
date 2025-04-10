@@ -9,17 +9,15 @@ import org.apache.spark.sql.lakesoul.utils.SparkUtil.tryWithResource
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.apache.spark.sql.types.{BooleanType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, StringType, StructField, StructType, TimestampType}
 
+import java.lang.reflect.Method
 import java.sql.ResultSet
 import java.util
 import scala.collection.mutable.ArrayBuffer
 
 object CleanUtils {
 
-  private val conn = DBConnector.getConn
-
   def createStructField(name: String, colType: String): StructField = {
     colType match {
-      case "java.lang.String" => StructField(name, StringType, nullable = true)
       case "java.lang.Integer" => StructField(name, IntegerType, nullable = true)
       case "java.lang.Long" => StructField(name, LongType, nullable = true)
       case "java.lang.Boolean" => StructField(name, BooleanType, nullable = true)
@@ -29,6 +27,7 @@ object CleanUtils {
       case "java.sql.Time" => StructField(name, TimestampType, nullable = true)
       case "java.sql.Timestamp" => StructField(name, TimestampType, nullable = true)
       case "java.math.BigDecimal" => StructField(name, DecimalType(10, 0), nullable = true)
+      case _ => StructField(name, StringType, nullable = true)
 
     }
   }
@@ -37,6 +36,7 @@ object CleanUtils {
    * Convert the detected ResultSet into a DataFrame
    */
   def createResultSetToDF(rs: ResultSet, sparkSession: SparkSession): DataFrame = {
+    println(System.currentTimeMillis() + "__________ get rs and begin createResultSetToDF __________")
     val rsmd = rs.getMetaData
     val columnTypeList = new util.ArrayList[String]
     val rowSchemaList = new util.ArrayList[StructField]
@@ -46,6 +46,9 @@ object CleanUtils {
       if ("Integer".equals(temp)) {
         temp = "Int"
       }
+      if ("UUID".equals(temp)) {
+        temp = "String"
+      }
       columnTypeList.add(temp)
       rowSchemaList.add(createStructField(rsmd.getColumnName(i), rsmd.getColumnClassName(i)))
     }
@@ -54,22 +57,25 @@ object CleanUtils {
     var count = 1
     val resultList = new util.ArrayList[Row]
     var totalDF = sparkSession.createDataFrame(new util.ArrayList[Row], rowSchema)
+
+    val methods = new ArrayBuffer[Method]()
+    for (i <- 0 until columnTypeList.size()) {
+      val method = rsClass.getMethod("get" + columnTypeList.get(i), "aa".getClass)
+      methods += method
+    }
+
     while (rs.next()) {
       count = count + 1
       val buffer = new ArrayBuffer[Any]()
       for (i <- 0 until columnTypeList.size()) {
-        val method = rsClass.getMethod("get" + columnTypeList.get(i), "aa".getClass)
-        buffer += method.invoke(rs, rsmd.getColumnName(i + 1))
+        buffer += methods(i).invoke(rs, rsmd.getColumnName(i + 1))
       }
       resultList.add(Row(buffer: _*))
-      if (count % 100000 == 0) {
-        val tempDF = sparkSession.createDataFrame(resultList, rowSchema)
-        totalDF = totalDF.union(tempDF).distinct()
-        resultList.clear()
-      }
     }
+    println(System.currentTimeMillis() + "__________ operated rs in createResultSetToDF __________")
     val tempDF = sparkSession.createDataFrame(resultList, rowSchema)
     totalDF = totalDF.union(tempDF)
+    println(System.currentTimeMillis() + "__________ operated union in createResultSetToDF __________")
     totalDF
   }
 
