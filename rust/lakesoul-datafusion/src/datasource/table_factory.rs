@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! The [`datafusion::catalog::TableProviderFactory`] implementation for LakeSoul table.
+//! 
 use datafusion::catalog::{Session, TableProviderFactory};
 use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;

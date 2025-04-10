@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: 2023 LakeSoul Contributors
 //
 // SPDX-License-Identifier: Apache-2.0
+
+//! The LakeSoul DataFusion module.
+
 #![allow(dead_code)]
 #![allow(clippy::type_complexity)]
 // after finished. remove above attr

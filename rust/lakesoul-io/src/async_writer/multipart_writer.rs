@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! Implementation of the multipart writer.
+
 use std::{collections::VecDeque, sync::Arc};
 
 use arrow_array::RecordBatch;
@@ -36,17 +38,25 @@ use super::{AsyncBatchWriter, InMemBuf, WriterFlushResult};
 /// The `CloudMultiPartUpload` itself would try to concurrently upload parts, and
 /// all parts will be committed to cloud storage by shutdown the `AsyncWrite` object.
 pub struct MultiPartAsyncWriter {
+    /// The in-memory buffer of the multi-part async writer.
     in_mem_buf: InMemBuf,
+    /// The task context of the multi-part async writer.
     task_context: Arc<TaskContext>,
+    /// The schema of the multi-part async writer.
     schema: SchemaRef,
-    // writer: Box<dyn AsyncWrite + Unpin + Send>,
+    /// The multi-part writer of [`object_store::WriteMultipart`] that is used to upload the data to the object store asynchronously.
     writer: WriteMultipart,
-    // multi_part_id: MultipartId,
+    /// The [`ArrowWriter`] of the multi-part async writer.
     arrow_writer: ArrowWriter<InMemBuf>,
+    /// The io config of the multi-part async writer.
     _config: LakeSoulIOConfig,
+    /// The object store of the multi-part async writer.
     object_store: Arc<dyn ObjectStore>,
+    /// The path of the multi-part async writer.
     _path: Path,
+    /// The absolute path of the multi-part async writer.
     absolute_path: String,
+    /// The number of rows of the multi-part async writer.
     num_rows: u64,
     buffered_size: u64,
 }

@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! This module provides the implementation of the projection operator, projection implementation is refer from datafusion. 
+
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -34,10 +36,13 @@ impl ProjectionStream {
     }
 }
 
-/// Projection iterator
+/// Projection iterator refer from datafusion
 pub struct ProjectionStream {
+    /// The schema of the input stream.
     pub(crate) schema: SchemaRef,
+    /// The expressions to project.
     pub(crate) expr: Vec<Arc<dyn PhysicalExpr>>,
+    /// The input stream.
     pub(crate) input: SendableRecordBatchStream,
 }
 

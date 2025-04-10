@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! The interface of LakeSoul table.
+
 pub mod helpers;
 
 use std::{ops::Deref, sync::Arc};
@@ -12,6 +14,7 @@ use chrono::Utc;
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::sql::TableReference;
 use datafusion::{
+    arrow::record_batch::RecordBatch,
     dataframe::DataFrame,
     datasource::TableProvider,
     execution::context::{SessionContext, SessionState},
@@ -20,7 +23,7 @@ use datafusion::{
 use helpers::case_fold_table_name;
 use lakesoul_io::async_writer::{AsyncBatchWriter, AsyncSendableMutableLakeSoulWriter, WriterFlushResult};
 use lakesoul_io::lakesoul_io_config::OPTION_KEY_MEM_LIMIT;
-use lakesoul_io::{lakesoul_io_config::create_session_context_with_planner, lakesoul_reader::RecordBatch};
+use lakesoul_io::lakesoul_io_config::create_session_context_with_planner;
 use lakesoul_metadata::{LakeSoulMetaDataError, MetaDataClient, MetaDataClientRef};
 use log::info;
 use proto::proto::entity::{CommitOp, DataCommitInfo, DataFileOp, FileOp, TableInfo};
@@ -339,13 +342,19 @@ impl LakeSoulTable {
     }
 }
 
+/// The result of the flush operation.
+/// todo: maybe define in unproper place.
 #[derive(Debug)]
 struct FlushResult {
+    /// The path of the file.
     file_path: String,
+    /// The size of the file.
     file_size: i64,
+    /// The columns of the file.
     file_exist_cols: String,
 }
 
+/// Get the partition description and the files from the writer flush result.
 fn partitioned_files_from_writer_flush_result(
     flush_result: &WriterFlushResult,
 ) -> Result<HashMap<String, Vec<FlushResult>>> {

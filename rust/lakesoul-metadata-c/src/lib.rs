@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! The C API for the [`lakesoul-metadata`] crate.
+
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 extern crate core;
 
@@ -24,6 +26,7 @@ pub type c_size_t = usize;
 #[allow(non_camel_case_types)]
 pub type c_ptrdiff_t = isize;
 
+/// Opaque wrapper for the result of a function call.
 #[repr(C)]
 pub struct CResult<OpaqueT> {
     ptr: *mut OpaqueT,
@@ -58,14 +61,15 @@ impl<OpaqueT> CResult<OpaqueT> {
     }
 }
 
+/// The callback function with bool result and error string.
 pub type ResultCallback = extern "C" fn(bool, *const c_char);
 
+/// The callback function with i32 result and error string.
 pub type IntegerResultCallBack = extern "C" fn(i32, *const c_char);
 
 // pub type DataResultCallback = extern "C" fn(bool, *const c_char, *const c_void);
 
-/// for jnr
-/// can use as_ptr instead of into_raw?
+/// Call the callback function with bool result and error string.
 fn call_result_callback<T>(callback: extern "C" fn(T, *const c_char), status: T, err: *const c_char) {
     callback(status, err);
     // release error string
@@ -86,41 +90,50 @@ fn _call_integer_result_callback(callback: IntegerResultCallBack, status: i32, e
     }
 }
 
+/// The opaque type for the [`PooledClient`].
 #[repr(C)]
 pub struct TokioPostgresClient {
     private: [u8; 0],
 }
 
+/// The opaque type for the [`Runtime`].
 #[repr(C)]
 pub struct TokioRuntime {
     private: [u8; 0],
 }
 
+/// The opaque type for the bytes result.
 #[repr(C)]
 pub struct BytesResult {
     private: [u8; 0],
 }
 
+/// Convert the opaque type to the raw pointer.
 fn convert_to_opaque_raw<F, T>(obj: F) -> *mut T {
     Box::into_raw(Box::new(obj)) as *mut T
 }
 
+/// Convert the opaque type to the [`NonNull`] pointer.
 fn convert_to_nonnull<T>(obj: T) -> NonNull<T> {
     unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(obj))) }
 }
 
+/// Convert the [`NonNull`] pointer to the opaque type.
 fn from_opaque<F, T>(obj: NonNull<F>) -> T {
     unsafe { *Box::from_raw(obj.as_ptr() as *mut T) }
 }
 
+/// Convert the [`NonNull`] pointer to the object.
 fn from_nonnull<T>(obj: NonNull<T>) -> T {
     unsafe { *Box::from_raw(obj.as_ptr()) }
 }
 
+/// Convert the pointer to the string.
 fn string_from_ptr(ptr: *const c_char) -> String {
     unsafe { CStr::from_ptr(ptr).to_str().unwrap().to_string() }
 }
 
+/// Execute the insert Data Access Object.
 #[no_mangle]
 pub extern "C" fn execute_insert(
     callback: extern "C" fn(i32, *const c_char),
@@ -143,6 +156,7 @@ pub extern "C" fn execute_insert(
     }
 }
 
+/// Execute the update Data Access Object.
 #[no_mangle]
 pub extern "C" fn execute_update(
     callback: extern "C" fn(i32, *const c_char),
@@ -163,6 +177,7 @@ pub extern "C" fn execute_update(
     }
 }
 
+/// Execute the query scalar Data Access Object.
 #[no_mangle]
 pub extern "C" fn execute_query_scalar(
     callback: extern "C" fn(*const c_char, *const c_char),
@@ -191,6 +206,7 @@ pub extern "C" fn execute_query_scalar(
     }
 }
 
+/// Execute the query Data Access Object.
 #[no_mangle]
 pub extern "C" fn execute_query(
     callback: extern "C" fn(i32, *const c_char),
@@ -218,6 +234,7 @@ pub extern "C" fn execute_query(
     }
 }
 
+/// Export the bytes result.
 #[no_mangle]
 pub extern "C" fn export_bytes_result(
     callback: extern "C" fn(bool, *const c_char),
@@ -248,11 +265,13 @@ pub extern "C" fn export_bytes_result(
     call_result_callback(callback, true, null());
 }
 
+/// Free the bytes result.
 #[no_mangle]
 pub extern "C" fn free_bytes_result(bytes: NonNull<CResult<BytesResult>>) {
     from_nonnull(bytes).free::<Vec<u8>>();
 }
 
+/// Clean the metadata for test.
 #[no_mangle]
 pub extern "C" fn clean_meta_for_test(
     callback: extern "C" fn(i32, *const c_char),
@@ -268,6 +287,7 @@ pub extern "C" fn clean_meta_for_test(
     }
 }
 
+/// Create the tokio runtime.
 #[no_mangle]
 pub extern "C" fn create_tokio_runtime() -> NonNull<CResult<TokioRuntime>> {
     let runtime = Builder::new_multi_thread()
@@ -279,11 +299,13 @@ pub extern "C" fn create_tokio_runtime() -> NonNull<CResult<TokioRuntime>> {
     convert_to_nonnull(CResult::<TokioRuntime>::new(runtime))
 }
 
+/// Free the tokio runtime.
 #[no_mangle]
 pub extern "C" fn free_tokio_runtime(runtime: NonNull<CResult<TokioRuntime>>) {
     from_nonnull(runtime).free::<Runtime>();
 }
 
+/// Create the tokio postgres client.
 #[no_mangle]
 pub extern "C" fn create_tokio_postgres_client(
     callback: extern "C" fn(bool, *const c_char),
@@ -312,17 +334,20 @@ pub extern "C" fn create_tokio_postgres_client(
     convert_to_nonnull(result)
 }
 
+/// Free the tokio postgres client.
 #[no_mangle]
 pub extern "C" fn free_tokio_postgres_client(client: NonNull<CResult<TokioPostgresClient>>) {
     from_nonnull(client).free::<PooledClient>();
 }
 
+/// Create the lakesoul metadata client.
 #[no_mangle]
 pub extern "C" fn create_lakesoul_metadata_client() -> NonNull<CResult<MetaDataClient>> {
     let client = MetaDataClient::from_env();
     convert_to_nonnull(CResult::<MetaDataClient>::new(client))
 }
 
+/// Free the lakesoul metadata client.
 #[no_mangle]
 pub extern "C" fn free_lakesoul_metadata_client(client: NonNull<CResult<MetaDataClient>>) {
     from_nonnull(client).free::<MetaDataClient>();

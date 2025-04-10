@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! Implementation of the sort writer, which sorts the record batches by primary keys and aux sort columns before writing.
+
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
@@ -26,11 +28,17 @@ use super::{AsyncBatchWriter, MultiPartAsyncWriter, ReceiverStreamExec, WriterFl
 /// Wrap the above async writer with a SortExec to
 /// sort the batches before write to async writer
 pub struct SortAsyncWriter {
+    /// The schema of the sort writer.
     schema: SchemaRef,
+    /// The sender to async multi-part file writer.
     sorter_sender: Sender<Result<RecordBatch>>,
+    /// The sort execution plan of the sort writer.
     _sort_exec: Arc<dyn ExecutionPlan>,
+    /// The join handle of the sort execution plan.
     join_handle: Option<JoinHandle<Result<WriterFlushResult>>>,
+    /// The external error of the sort execution plan.
     err: Option<DataFusionError>,
+    /// The buffered size of the sort writer.
     buffered_size: u64,
 }
 

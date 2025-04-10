@@ -16,6 +16,8 @@ use async_trait::async_trait;
 
 use lakesoul_io::datafusion;
 
+
+/// The wrapper of the [`QueryPlanner`] for LakeSoul table.
 #[derive(Debug)]
 pub struct LakeSoulQueryPlanner {}
 

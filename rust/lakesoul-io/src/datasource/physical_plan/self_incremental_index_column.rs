@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! Implementation of the self-incremental index column, which is used for the case of stable sort.
+
 use std::any::Any;
 use arrow_schema::{DataType, Field, SchemaBuilder};
 use datafusion::physical_plan::{ExecutionPlan, PlanProperties, DisplayAs};
@@ -21,6 +23,9 @@ use datafusion_common::{DataFusionError, Result};
 use futures::Stream;
 use futures::StreamExt;
 use log::info;
+
+/// [`ExecutionPlan`] implementation of the self-incremental index column, which is used for the case of stable sort.
+/// It appends a self-incremental index column to the input record batch for further sort.
 #[derive(Debug)]
 pub struct SelfIncrementalIndexColumnExec {
     input: Arc<dyn ExecutionPlan>,
@@ -110,7 +115,7 @@ impl ExecutionPlan for SelfIncrementalIndexColumnExec {
     }
 }
 
-/// A stream that adds a self-incremental index column to each record batch
+/// A stream that appends a self-incremental index column to each record batch
 struct SelfIncrementalIndexStream {
     input: SendableRecordBatchStream,
     schema: SchemaRef,

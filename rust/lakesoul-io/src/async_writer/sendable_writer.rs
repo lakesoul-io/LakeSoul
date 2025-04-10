@@ -1,3 +1,10 @@
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
+
+//! Implementation of async version of [`crate::sync_writer::SyncSendableMutableLakeSoulWriter`].
+
 use std::sync::Arc;
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;

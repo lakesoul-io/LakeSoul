@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! Implementation of the default column operation.
+
 use std::sync::Arc;
 use std::{any::Any, collections::HashMap};
 
@@ -18,6 +20,7 @@ use datafusion_common::{DataFusionError, Result};
 
 use crate::default_column_stream::DefaultColumnStream;
 
+/// [`ExecutionPlan`] implementation for the default column operation.
 #[derive(Debug)]
 pub struct DefaultColumnExec {
     input: Arc<dyn ExecutionPlan>,

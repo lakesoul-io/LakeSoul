@@ -2,6 +2,27 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! LakeSoul Writer Module
+//! 
+//! This module provides functionality for writing data to LakeSoul tables.
+//! It supports writing data to Parquet files and includes features like
+//! dynamic partitioning, sorting.
+//! 
+//! # Examples
+//! 
+//! ```rust
+//! use lakesoul_io::lakesoul_writer::SyncSendableMutableLakeSoulWriter;
+//! use lakesoul_io::lakesoul_io_config::LakeSoulIOConfigBuilder;
+//! 
+//! let config = LakeSoulIOConfigBuilder::new()
+//!     .with_files(vec!["path/to/file.parquet"])
+//!     .build();   
+//!
+//! let runtime = tokio::runtime::Runtime::new().unwrap();
+//! let writer = SyncSendableMutableLakeSoulWriter::try_new(config, runtime).unwrap();
+//! writer.write_batch(record_batch).unwrap();
+//! writer.flush_and_close().unwrap();
+//! ``` 
 use std::borrow::Borrow;
 use std::collections::HashMap;
 

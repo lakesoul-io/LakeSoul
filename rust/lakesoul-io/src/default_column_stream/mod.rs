@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! Module for the default column stream, which is used for the case of completing values for partition columns.
+
 pub mod empty_schema_stream;
 
 use futures::{Stream, StreamExt};

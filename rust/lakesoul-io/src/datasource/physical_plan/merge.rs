@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! Implementation of the merge on read execution plan.
+
 use std::sync::Arc;
 use std::{any::Any, collections::HashMap};
 
@@ -27,14 +29,22 @@ use crate::lakesoul_io_config::LakeSoulIOConfig;
 use crate::sorted_merge::merge_operator::MergeOperator;
 use crate::sorted_merge::sorted_stream_merger::{SortedStream, SortedStreamMerger};
 
+/// [`ExecutionPlan`] implementation for the merge on read operation.
 #[derive(Debug)]
 pub struct MergeParquetExec {
+    /// The schema of the merge on read operation.
     schema: SchemaRef,
+    /// The primary keys of the merge on read operation, which is the sorted columns.
     primary_keys: Arc<Vec<String>>,
+    /// The default column value of the merge on read operation, which is the default value for the partition columns.
     default_column_value: Arc<HashMap<String, String>>,
+    /// The merge operators of the merge on read operation.
     merge_operators: Arc<HashMap<String, String>>,
+    /// The input execution plans of the merge on read operation.
     inputs: Vec<Arc<dyn ExecutionPlan>>,
+    /// The io config of the merge on read operation.
     io_config: LakeSoulIOConfig,
+    /// The properties of the merge on read operation.
     properties: PlanProperties,
 }
 
@@ -242,6 +252,7 @@ impl ExecutionPlan for MergeParquetExec {
     }
 }
 
+/// Merge the streams into a single stream.
 pub fn merge_stream(
     streams: Vec<SendableRecordBatchStream>,
     schema: SchemaRef,
@@ -307,6 +318,7 @@ pub fn merge_stream(
     Ok(merge_stream)
 }
 
+/// Compute the intersection of the dataframe schema and the request schema.
 fn schema_intersection(df_schema: DFSchemaRef, request_schema: SchemaRef) -> Vec<Expr> {
     let mut exprs = Vec::new();
     for field in request_schema.fields() {
@@ -317,6 +329,7 @@ fn schema_intersection(df_schema: DFSchemaRef, request_schema: SchemaRef) -> Vec
     exprs
 }
 
+/// Convert the filter string from Java or [`datafusion_substrait::substrait::proto::Plan`] to the [`datafusion::logical_expr::Expr`].
 pub fn convert_filter(df: &DataFrame, filter_str: Vec<String>, filter_protos: Vec<Plan>) -> Result<Vec<Expr>> {
     let arrow_schema = Arc::new(Schema::from(df.schema()));
     debug!("schema:{:?}", arrow_schema);
@@ -337,6 +350,7 @@ pub fn convert_filter(df: &DataFrame, filter_str: Vec<String>, filter_protos: Ve
     }
 }
 
+/// Execute the dataframe by colum pruning and row filtering.
 pub async fn prune_filter_and_execute(
     df: DataFrame,
     request_schema: SchemaRef,

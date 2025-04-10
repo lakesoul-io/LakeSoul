@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! The implementation of arrow flight for LakeSoul.
+
 mod flight_sql_service;
 mod jwt;
 pub mod args;

@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! The [`datafusion::datasource::TableProvider`] implementation for LakeSoul table.
+
 use std::any::Any;
 use std::env;
 use std::ops::Deref;
@@ -54,10 +56,8 @@ use super::file_format::LakeSoulMetaDataParquetFormat;
 /// 2. Hive-style partitioning support, where a path such as
 /// `/files/date=1/1/2022/data.parquet` is injected as a `date` column.
 ///
-/// 3. Projection pushdown for formats that support it such as
-/// Parquet
+/// 3. Projection pushdown for formats that support 
 ///
-/// ```
 #[derive(Debug)]
 pub struct LakeSoulTableProvider {
     pub(crate) listing_options: ListingOptions,

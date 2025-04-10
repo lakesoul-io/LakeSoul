@@ -70,7 +70,7 @@ pub fn table_without_pk(hash_bucket_num: &str) -> bool {
 
 /// use raw ptr to create `MetadataClientRef`
 /// stay origin memory the same
-/// see https://users.rust-lang.org/t/dereferencing-a-boxed-value/86768
+/// see <https://users.rust-lang.org/t/dereferencing-a-boxed-value/86768>
 pub async fn split_desc_array(
     client: &PooledClient,
     table_name: &str,

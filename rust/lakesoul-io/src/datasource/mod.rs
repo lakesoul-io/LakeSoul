@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! Module for the [datafusion::datasource] implementation of LakeSoul.
+
 pub mod empty_schema;
 pub mod file_format;
 pub mod listing;

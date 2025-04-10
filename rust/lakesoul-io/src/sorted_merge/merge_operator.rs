@@ -10,7 +10,7 @@ use arrow_array::{builder::*, types::*, Array, ArrowPrimitiveType};
 use arrow_schema::DataType;
 use smallvec::SmallVec;
 
-use crate::lakesoul_reader::ArrowResult;
+use datafusion::arrow::error::Result as ArrowResult;
 use crate::sorted_merge::sort_key_range::SortKeyArrayRange;
 use crate::{sum_all_with_primitive_type_and_append_value, sum_last_with_primitive_type_and_append_value};
 use arrow::error::ArrowError;

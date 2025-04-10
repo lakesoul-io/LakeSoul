@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! Constant of LakeSoul IO
+
 use std::collections::HashMap;
 
 use arrow::array::ArrayRef;

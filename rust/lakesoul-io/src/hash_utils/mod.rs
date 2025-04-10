@@ -2,6 +2,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+
+//! This module provides the implementation of the hash utils.
+
 use std::io::Cursor;
 use std::sync::Arc;
 

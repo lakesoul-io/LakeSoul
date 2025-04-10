@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! The LakeSoul metadata client for the postgres database.
+
 use std::fmt::{Debug, Formatter};
 use std::ops::DerefMut;
 use std::sync::Arc;
@@ -24,9 +26,13 @@ use crate::{
     PARTITION_DESC_DELIM,
 };
 
+/// The metadata client for the postgres database.
 pub struct MetaDataClient {
+    /// The pooled client for the postgres database.
     client: Arc<Mutex<PooledClient>>,
+    /// The maximum number of retries for the postgres database.
     max_retry: usize,
+    /// The encoded secret for the postgres database.
     secret: String,
 }
 

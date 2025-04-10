@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! Module for the [datafusion::datasource::physical_plan] implementation of LakeSoul.
+
 pub use empty_schema::EmptySchemaScanExec;
 pub use merge::MergeParquetExec;
 

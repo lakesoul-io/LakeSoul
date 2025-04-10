@@ -29,6 +29,7 @@ use datafusion_substrait::variation_const::TIMESTAMP_MICRO_TYPE_VARIATION_REF;
 use tokio::runtime::{Builder, Handle};
 use tokio::task;
 
+/// The parser for parsing the filter string from Java or Subtrait Plan.
 pub struct Parser {}
 
 impl Parser {
@@ -200,9 +201,8 @@ impl Parser {
         Ok(res)
     }
 
-    // caller may only pass MapKey for field reference,
-    // we need to change it to StructField since from_substrait_field_reference
-    // only supports it
+    /// caller may only pass MapKey for field reference,
+    /// we need to change it to StructField since from_substrait_field_reference
     fn modify_substrait_argument(arguments: &mut Vec<FunctionArgument>, df_schema: &DFSchema) {
         for arg in arguments {
             match &mut arg.arg_type {
@@ -252,6 +252,7 @@ impl Parser {
         }
     }
 
+    /// Parse the [`datafusion_substrait::substrait::proto::Plan`] to the [`datafusion::logical_expr::Expr`].
     pub(crate) fn parse_substrait_plan(plan: Plan, df_schema: &DFSchema) -> Result<Expr> {
         let handle = Handle::try_current();
         let closure = async {

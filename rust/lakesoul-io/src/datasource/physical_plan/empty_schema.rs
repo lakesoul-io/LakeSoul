@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! Implementation of the empty schema scan execution plan.
+
 use std::any::Any;
 use std::sync::Arc;
 
@@ -20,6 +22,7 @@ use datafusion_common::Result;
 
 use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;
 
+/// [`ExecutionPlan`] implementation of the empty schema scan operation.
 #[derive(Debug)]
 pub struct EmptySchemaScanExec {
     count: usize,

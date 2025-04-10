@@ -2,6 +2,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! This module provides functionality for sorted stream merger. 
+//! Which is referred by `SortPreservingMergeExec` in DataFusion.
+
 use std::fmt::{Debug, Formatter};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -21,6 +24,7 @@ use datafusion_common::DataFusionError::ArrowError;
 use futures::stream::{Fuse, FusedStream};
 use futures::{Stream, StreamExt};
 
+/// A wrapper of sorted stream.
 pub(crate) struct SortedStream {
     stream: SendableRecordBatchStream,
 }
@@ -37,6 +41,7 @@ impl SortedStream {
     }
 }
 
+/// A wrapper of sorted input streams to merge together.
 struct MergingStreams {
     /// The sorted input streams to merge together
     streams: Vec<Fuse<SendableRecordBatchStream>>,
@@ -65,6 +70,7 @@ impl MergingStreams {
     }
 }
 
+/// Struct of sorted stream merger.
 #[derive(Debug)]
 pub(crate) struct SortedStreamMerger {
     /// The schema of the RecordBatches yielded by this stream
@@ -78,25 +84,35 @@ pub(crate) struct SortedStreamMerger {
     /// has finished and needs to poll from the stream
     range_finished: Vec<bool>,
 
-    // /// The accumulated row indexes for the next record batch
-    // in_progress: Vec<RowIndex>,
-    // The physical expressions to sort by
+    /// The physical expressions to sort by
     column_expressions: Vec<Vec<Arc<dyn PhysicalExpr>>>,
 
+    /// The [`RangeCombiner`] of sorted stream
     range_combiner: RangeCombiner,
 
-    // If the stream has encountered an error
+    /// If the stream has encountered an error
     aborted: bool,
 
-    // row converter
+    /// row converter for sort fields
     row_converters: Vec<RowConverter>,
 
+    /// The accumulated indexes for the next record batch
     batch_idx_counter: usize,
 
+    /// The initialized flag for each stream
     initialized: Vec<bool>,
 }
 
 impl SortedStreamMerger {
+    /// Create a new sorted stream merger from a list of sorted streams.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `streams` - A list of sorted streams to merge.
+    /// * `target_schema` - The schema of the RecordBatches yielded by this stream.
+    /// * `primary_keys` - The primary keys of the RecordBatches.
+    /// * `batch_size` - The batch size of the RecordBatches.
+    /// * `merge_operator` - The merge operator to use.
     pub(crate) fn new_from_streams(
         streams: Vec<SortedStream>,
         target_schema: SchemaRef,
