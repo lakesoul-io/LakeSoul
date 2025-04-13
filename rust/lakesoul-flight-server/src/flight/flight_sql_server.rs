@@ -48,7 +48,7 @@ impl TokenServer for TokenService {
 
 // 创建一个简单的拦截器
 #[derive(Clone)]
-struct GrpcInterceptor {
+pub struct GrpcInterceptor {
     total_requests: Arc<AtomicU64>,
     active_requests: Arc<AtomicU64>,
     total_bytes_in: Arc<AtomicU64>,
@@ -189,10 +189,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let svc = FlightServiceServer::with_interceptor(service, interceptor);
 
         info!("LakeSoul Arrow Flight SQL Server Listening on {addr:?}");
-        info!(
-            "Metrics Server Listening on {:?}",
-            metrics_addr
-        );
+        info!("Metrics Server Listening on {:?}", metrics_addr);
 
         Server::builder()
             .add_service(svc)

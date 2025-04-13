@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use clap::Parser;
 
 // 添加命令行参数结构体
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Default)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
     /// Flight SQL 服务器监听地址
