@@ -37,3 +37,5 @@ tonic-build = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = "2.0"
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
