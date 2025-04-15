@@ -2,3 +2,13 @@ copy-to-java:
   cargo build
   cp target/debug/liblakesoul_io_c.dylib ../lakesoul-common/target/classes/
   cp target/debug/liblakesoul_metadata_c.dylib ../lakesoul-common/target/classes/
+
+log_level := "info"
+
+
+flight-sql level=log_level:
+    RUST_LOG={{level}} cargo run --bin lakesoul_arrow_flight_sql_server
+
+
+console level=log_level:
+    RUST_LOG={{level}} cargo run --bin console

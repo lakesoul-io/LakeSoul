@@ -8,6 +8,10 @@ version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[[bin]]
+name = "console"
+path = "src/bin/console.rs"
+
 
 [dependencies]
 datafusion = { workspace = true }
@@ -36,8 +40,11 @@ log = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 url = { workspace = true }
-tonic = {workspace = true}
+tonic = { workspace = true }
 serde-aux = "4.6.0"
+rustyline = "15"
+tracing = "0.1"
+tracing-subscriber = "0.3"
 
 
 [dev-dependencies]
