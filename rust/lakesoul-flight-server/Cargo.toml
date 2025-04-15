@@ -39,3 +39,5 @@ tonic-build = { workspace = true }
 assert_cmd = "2.0"
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
+arrow-cast = { workspace = true }
+futures = { workspace = true }

@@ -2,13 +2,12 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-
 //! Implementation of async version of [`crate::sync_writer::SyncSendableMutableLakeSoulWriter`].
 
-use std::sync::Arc;
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use datafusion_common::{DataFusionError, Result};
+use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::debug;
 
@@ -51,7 +50,7 @@ impl AsyncSendableMutableLakeSoulWriter {
     async fn write_batch_async(&mut self, record_batch: RecordBatch, do_spill: bool) -> Result<()> {
         debug!(record_batch_row=?record_batch.num_rows(), do_spill=?do_spill, "write_batch_async");
         let config = self.config.clone();
-        
+
         if let Some(max_file_size) = self.config.max_file_size {
             let in_progress_writer = match &mut self.in_progress {
                 Some(writer) => writer,
@@ -61,7 +60,7 @@ impl AsyncSendableMutableLakeSoulWriter {
 
             let batch_memory_size = get_batch_memory_size(&record_batch)? as u64;
             let batch_rows = record_batch.num_rows() as u64;
-            
+
             if !do_spill && guard.buffered_size() + batch_memory_size > max_file_size {
                 let to_write = (batch_rows * (max_file_size - guard.buffered_size())) / batch_memory_size;
                 if to_write + 1 < batch_rows {
@@ -112,7 +111,6 @@ impl AsyncSendableMutableLakeSoulWriter {
 #[async_trait::async_trait]
 impl AsyncBatchWriter for AsyncSendableMutableLakeSoulWriter {
     async fn write_record_batch(&mut self, batch: RecordBatch) -> Result<()> {
-        let _ = arrow::util::pretty::print_batches(&[batch.clone()]);
         self.write_batch_async(batch, false).await
     }
 
@@ -151,9 +149,7 @@ impl AsyncBatchWriter for AsyncSendableMutableLakeSoulWriter {
 
     fn buffered_size(&self) -> u64 {
         if let Some(writer) = &self.in_progress {
-            futures::executor::block_on(async {
-                writer.lock().await.buffered_size()
-            })
+            futures::executor::block_on(async { writer.lock().await.buffered_size() })
         } else {
             0
         }

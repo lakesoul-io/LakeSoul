@@ -69,4 +69,5 @@ jobs:
           rm -f Cargo.lock
           cargo clean
           cargo test --package lakesoul-datafusion
+          cargo test --test flight_sql -- --color always
 

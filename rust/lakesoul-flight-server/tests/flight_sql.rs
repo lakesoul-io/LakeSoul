@@ -3,11 +3,13 @@ use arrow_array::{record_batch, RecordBatch};
 use arrow_flight::error::FlightError;
 use arrow_flight::sql::client::FlightSqlServiceClient;
 use arrow_flight::sql::CommandStatementIngest;
+use arrow_flight::FlightInfo;
+use futures::prelude::stream::StreamExt;
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tonic::codegen::tokio_stream::Stream;
 use tonic::transport::Channel;
-
 mod test_utils {
     use assert_cmd::cargo::CommandCargoExt;
     use std::process::{Child, Command};
@@ -48,24 +50,6 @@ async fn build_client() -> FlightSqlServiceClient<Channel> {
     FlightSqlServiceClient::new(channel)
 }
 
-#[tokio::test]
-async fn flight() {
-    let _server = TestServer::new(&[]);
-    let mut client = build_client().await;
-    let x = client.handshake("", "").await.unwrap();
-    // let sql = String::from("show tables");
-    // let flight_info = client.execute(sql, None).await.unwrap();
-    // // client.execute_ingest();
-    // println!("flight_info: {:?}", flight_info);
-    // for x in flight_info.endpoint {
-    //     if let Some(t) = x.ticket {
-    //         let stream = client.do_get(t).await.unwrap();
-    //         let batches = stream.collect::<Result<Vec<_>, _>>().await.unwrap();
-    //         print_batches(&batches).unwrap();
-    //     }
-    // }
-}
-
 // 定义一个结构体来表示流
 struct RecordBatchStream {
     data: Vec<RecordBatch>,
@@ -82,7 +66,8 @@ impl RecordBatchStream {
 impl Stream for RecordBatchStream {
     type Item = Result<RecordBatch, FlightError>;
 
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    // actually this strem is sync
+    fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
 
         if this.index < this.data.len() {
@@ -95,30 +80,72 @@ impl Stream for RecordBatchStream {
     }
 }
 
-#[tokio::test]
-async fn test_flight_ingest() {
-    let _server = TestServer::new(&[]);
-    let mut client = build_client().await;
-    let sql = String::from("show tables");
-    let flight_info = client.execute(sql, None).await.unwrap();
+async fn handle_flight_info(info: &FlightInfo, client: &mut FlightSqlServiceClient<Channel>) {
+    println!("flight_info: {:#?}", info);
+    for x in &info.endpoint {
+        if let Some(ref t) = x.ticket {
+            let mut stream = client.do_get(t.clone()).await.unwrap();
+            let mut batches = vec![];
+            while let Some(batch) = stream.next().await {
+                let batch = batch.unwrap();
+                batches.push(batch);
+            }
+            // print_batches(&batches).unwrap();
+        }
+    }
+}
 
-    let cmd = {
-        let mut stat = CommandStatementIngest::default();
-        stat
+async fn query_table(client: &mut FlightSqlServiceClient<Channel>) {
+    let sql = "select * from test;";
+    let cmd = client.execute(sql.to_string(), None).await.unwrap();
+    handle_flight_info(&cmd, client).await;
+}
+
+async fn ingest(client: &mut FlightSqlServiceClient<Channel>) {
+    let cmd = CommandStatementIngest {
+        table_definition_options: None,
+        table: String::from("test"),
+        schema: Some(String::from("default")),
+        catalog: None,
+        temporary: false,
+        transaction_id: None,
+        options: HashMap::new(),
     };
 
-    let batch = record_batch!(
-        ("a", Int32, [1, 2, 3]),
-        ("b", Float64, [Some(4.0), None, Some(5.0)]),
-        ("c", Utf8, ["alpha", "beta", "gamma"])
-    )
-    .unwrap();
+    let batch = record_batch!(("c1", Utf8, ["a", "b", "c"]), ("c2", Int32, [1, 2, 3])).unwrap();
 
     let batches = vec![batch];
 
     let stream = RecordBatchStream::new(batches);
 
     let num = client.execute_ingest(cmd, stream).await.unwrap();
+    println!("num: {:#?}", num);
+}
 
-    println!("flight_info: {:?}", flight_info);
+async fn init_test(client: &mut FlightSqlServiceClient<Channel>) {
+    // drop table
+    {
+        let sql = String::from("drop table if exists test");
+        let info = client.execute(sql, None).await.unwrap();
+        handle_flight_info(&info, client).await;
+        // println!("info: {:#?}", info)
+    }
+    // create table
+    {
+        let sql = String::from(
+            "CREATE EXTERNAL TABLE if not exists test (c1 VARCHAR NOT NULL , c2 INT NOT NULL) STORED AS LAKESOUL LOCATION 'file:///tmp/LAKSOUL/test_data.parquet'"
+        );
+        let info = client.execute(sql, None).await.unwrap();
+        handle_flight_info(&info, client).await;
+        // println!("info: {:#?}", info)
+    }
+}
+
+#[tokio::test]
+async fn test_flight_sql_server() {
+    let _server = TestServer::new(&[]);
+    let mut client = build_client().await;
+    init_test(&mut client).await;
+    ingest(&mut client).await;
+    query_table(&mut client).await;
 }
