@@ -1,3 +1,8 @@
+// SPDX-FileCopyrightText: LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
+//! this is expermental, not for production use
 use std::{env, sync::Arc};
 
 use datafusion::{

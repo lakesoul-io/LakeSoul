@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::test_utils::TestServer;
 use arrow_array::{record_batch, RecordBatch};
 use arrow_flight::error::FlightError;
@@ -14,23 +18,18 @@ mod test_utils {
     use assert_cmd::cargo::CommandCargoExt;
     use std::process::{Child, Command};
 
+    const BIN_NAME: &str = "lakesoul_arrow_flight_sql_server";
+
     pub struct TestServer {
         process: Child,
     }
 
     impl TestServer {
         pub fn new(args: &[&'static str]) -> Self {
-            // 启动服务器进程
             println!("test server started");
-            let process = Command::cargo_bin("lakesoul_arrow_flight_sql_server")
-                .unwrap()
-                .args(args)
-                .spawn()
-                .unwrap();
-
+            let process = Command::cargo_bin(BIN_NAME).unwrap().args(args).spawn().unwrap();
             //  wait 1 seconds
             std::thread::sleep(std::time::Duration::from_secs(1));
-
             Self { process }
         }
     }
@@ -46,11 +45,9 @@ mod test_utils {
 
 async fn build_client() -> FlightSqlServiceClient<Channel> {
     let channel = Channel::from_static("http://localhost:50051").connect().await.unwrap();
-
     FlightSqlServiceClient::new(channel)
 }
 
-// 定义一个结构体来表示流
 struct RecordBatchStream {
     data: Vec<RecordBatch>,
     index: usize,
@@ -62,11 +59,11 @@ impl RecordBatchStream {
     }
 }
 
-// 实现 Stream trait
+// Impl Stream trait
 impl Stream for RecordBatchStream {
     type Item = Result<RecordBatch, FlightError>;
 
-    // actually this strem is sync
+    // actually this stream is sync
     fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
 
@@ -75,24 +72,24 @@ impl Stream for RecordBatchStream {
             this.index += 1;
             Poll::Ready(Some(Ok(batch)))
         } else {
-            Poll::Ready(None) // 结束流
+            Poll::Ready(None)
         }
     }
 }
 
 async fn handle_flight_info(info: &FlightInfo, client: &mut FlightSqlServiceClient<Channel>) {
     println!("flight_info: {:#?}", info);
+    let mut batches = vec![];
     for x in &info.endpoint {
         if let Some(ref t) = x.ticket {
             let mut stream = client.do_get(t.clone()).await.unwrap();
-            let mut batches = vec![];
             while let Some(batch) = stream.next().await {
                 let batch = batch.unwrap();
                 batches.push(batch);
             }
-            // print_batches(&batches).unwrap();
         }
     }
+    // print_batches(&batches).unwrap();
 }
 
 async fn query_table(client: &mut FlightSqlServiceClient<Channel>) {
