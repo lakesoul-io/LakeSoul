@@ -44,6 +44,15 @@ jobs:
         ports:
           # Maps tcp port 5432 on service container to the host
           - 5432:5432
+      minio:
+        image: bitnami/minio:latest
+        ports:
+          - "9000:9000"
+          - "9001:9001"
+        env:
+          MINIO_DEFAULT_BUCKETS: lakesoul-test-bucket:public
+          MINIO_ROOT_USER: minioadmin1
+          MINIO_ROOT_PASSWORD: minioadmin1
 
     steps:
       - uses: actions/checkout@v4
@@ -69,5 +78,5 @@ jobs:
           rm -f Cargo.lock
           cargo clean
           cargo test --package lakesoul-datafusion
-          cargo test --test flight_sql -- --color always
+          cargo test --package lakesoul-flight-server --test flight_sql -- --color always
 
