@@ -40,4 +40,7 @@ assert_cmd = "2.0"
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 arrow-cast = { workspace = true }
+arrow = { workspace = true, features = ["test_utils"] }
 futures = { workspace = true }
+test-log = { version = "0.2.14" }
+datafusion = { workspace = true }

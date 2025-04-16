@@ -54,7 +54,7 @@ use arrow::record_batch::RecordBatch;
 use dashmap::DashMap;
 use datafusion::logical_expr::{DdlStatement, DmlStatement, LogicalPlan, WriteOp};
 use datafusion::prelude::*;
-use log::info;
+use log::{debug, info};
 
 use datafusion::execution::runtime_env::RuntimeEnv;
 use lakesoul_datafusion::catalog::lakesoul_catalog::LakeSoulCatalog;
@@ -1043,6 +1043,8 @@ impl FlightSqlServiceImpl {
         let catalog = Arc::new(LakeSoulCatalog::new(self.client.clone(), ctx.clone()));
 
         if let Some(warehouse_prefix) = &self.args.warehouse_prefix {
+            debug!("warehouse_prefix: {:?}", warehouse_prefix);
+            // FIXME: s3 related args will ignore local file system
             env::set_var("LAKESOUL_WAREHOUSE_PREFIX", warehouse_prefix);
             let url = Url::parse(warehouse_prefix);
             match url {

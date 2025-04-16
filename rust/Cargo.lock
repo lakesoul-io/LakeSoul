@@ -174,6 +174,8 @@ dependencies = [
  "arrow-schema",
  "arrow-select",
  "arrow-string",
+ "half",
+ "rand",
 ]
 
 [[package]]
@@ -3332,6 +3334,7 @@ dependencies = [
 name = "lakesoul-flight-server"
 version = "0.1.0"
 dependencies = [
+ "arrow",
  "arrow-array",
  "arrow-cast",
  "arrow-flight",
@@ -3339,6 +3342,7 @@ dependencies = [
  "assert_cmd",
  "bytes",
  "clap 4.5.29",
+ "datafusion",
  "env_logger",
  "futures",
  "lakesoul-datafusion",
@@ -3350,6 +3354,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "test-log",
  "tokio",
  "tonic",
  "tonic-build",
