@@ -35,7 +35,7 @@ use lakesoul_datafusion::lakesoul_table::LakeSoulTable;
 use lakesoul_datafusion::planner::query_planner::LakeSoulQueryPlanner;
 use lakesoul_datafusion::serialize::arrow_java::schema_from_metadata_str;
 use lakesoul_io::helpers::get_batch_memory_size;
-use lakesoul_io::lakesoul_io_config::{register_s3_object_store, register_hdfs_object_store, LakeSoulIOConfigBuilder};
+use lakesoul_io::lakesoul_io_config::{register_hdfs_object_store, register_s3_object_store, LakeSoulIOConfigBuilder};
 use lakesoul_io::serde_json;
 use prost::Message;
 use std::env;
@@ -54,7 +54,7 @@ use arrow::record_batch::RecordBatch;
 use dashmap::DashMap;
 use datafusion::logical_expr::{DdlStatement, DmlStatement, LogicalPlan, WriteOp};
 use datafusion::prelude::*;
-use log::info;
+use log::{debug, info};
 
 use datafusion::execution::runtime_env::RuntimeEnv;
 use lakesoul_datafusion::catalog::lakesoul_catalog::LakeSoulCatalog;
@@ -103,7 +103,7 @@ pub struct FlightSqlServiceImpl {
     /// The auth switch.
     auth_enabled: bool,
     /// The rbac authorization switch.
-    rbac_enabled: bool,
+    _rbac_enabled: bool,
 }
 
 /// The metrics of the stream write operation.
@@ -246,9 +246,16 @@ impl FlightSqlService for FlightSqlServiceImpl {
         let sql = &cmd.query;
 
         let ctx = self.get_ctx(&request)?;
-        let plan = ctx.sql(sql).await.map_err(|e| status!("Error executing query", e))?;
-        let schema = plan.schema().clone();
-        let schema = schema.into();
+
+        // only need logical plan
+
+        let plan = ctx
+            .state()
+            .create_logical_plan(sql)
+            .await
+            .map_err(|e| status!("Error creating logical plan", e))?;
+
+        let schema = plan.schema().as_arrow();
 
         let ticket = Ticket {
             ticket: Command::TicketStatementQuery(TicketStatementQuery {
@@ -391,7 +398,10 @@ impl FlightSqlService for FlightSqlServiceImpl {
         info!("get_flight_info_tables - catalog: {:?}", query);
 
         let ctx = self.get_ctx(&request)?;
-        let data = self.tables(ctx).await.map_err(|e| status!("Error executing query", e))?;
+        let data = self
+            .tables(ctx)
+            .await
+            .map_err(|e| status!("Error executing query", e))?;
         let schema = data.schema();
 
         let ticket = Ticket {
@@ -448,10 +458,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
                 .with_app_metadata(metadata);
             Ok(Response::new(info))
         } else {
-            Err(Status::internal(format!(
-                "Table '{}' not found",
-                query.table
-            )))
+            Err(Status::internal(format!("Table '{}' not found", query.table)))
         }
     }
 
@@ -564,6 +571,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         query: CommandGetTables,
         request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        info!("do_get_tables - query: {:?}, ticket: {:?}", query, request);
         self.verify_token(request.metadata())?;
         let table_names = self
             .get_metadata_client()
@@ -615,7 +623,6 @@ impl FlightSqlService for FlightSqlServiceImpl {
         Ok(Response::new(Box::pin(futures::stream::iter(vec![]))))
     }
 
-
     async fn do_put_statement_update(
         &self,
         query: CommandStatementUpdate,
@@ -628,7 +635,11 @@ impl FlightSqlService for FlightSqlServiceImpl {
         info!("execute SQL: {}", sql);
 
         let ctx = self.get_ctx(&request)?;
-        let _ = ctx.sql(&sql).await.and_then(|df| df.into_optimized_plan()).map_err(|e| status!("Error executing query", e))?;
+        let _ = ctx
+            .sql(&sql)
+            .await
+            .and_then(|df| df.into_optimized_plan())
+            .map_err(|e| status!("Error executing query", e))?;
         Ok(0)
     }
 
@@ -903,41 +914,39 @@ fn convert_placeholders(query: &str) -> String {
 
 fn normalize_sql(sql: &str) -> Result<String, Status> {
     let sql = convert_placeholders(sql);
-    let statements = DFParser::parse_sql_with_dialect(&sql, &PostgreSqlDialect {}).map_err(|e| status!("Error parsing SQL", e))?;
+    let statements =
+        DFParser::parse_sql_with_dialect(&sql, &PostgreSqlDialect {}).map_err(|e| status!("Error parsing SQL", e))?;
 
     if let Some(Statement::Statement(stmt)) = statements.front() {
         // info!("stmt: {:?}", stmt);
         match stmt.as_ref() {
-            datafusion::sql::sqlparser::ast::Statement::CreateTable(
-                CreateTable { name, 
-                    columns, 
-                    partition_by, 
-                    with_options,
-                    .. }
-            ) => {
+            datafusion::sql::sqlparser::ast::Statement::CreateTable(CreateTable {
+                name,
+                columns,
+                partition_by,
+                with_options,
+                ..
+            }) => {
                 info!("create table: {}, {:?}, {:?}", name, partition_by, with_options);
-                
+
                 let mut create_table_sql = format!(
                     "CREATE EXTERNAL TABLE {} ({}) STORED AS LAKESOUL LOCATION ''",
                     name,
                     columns
-                    .iter()
-                    .map(|c| c.to_string())
-                    .collect::<Vec<String>>()
-                    .join(", ")
+                        .iter()
+                        .map(|c| c.to_string())
+                        .collect::<Vec<String>>()
+                        .join(", ")
                 );
                 if let Some(partition_by) = partition_by {
-                    create_table_sql = format!(
-                        "{} PARTITIONED BY {}",
-                        create_table_sql,
-                        partition_by
-                    );
+                    create_table_sql = format!("{} PARTITIONED BY {}", create_table_sql, partition_by);
                 }
                 if !with_options.is_empty() {
                     create_table_sql = format!(
                         "{} OPTIONS ({})",
                         create_table_sql,
-                        with_options.iter()
+                        with_options
+                            .iter()
                             .map(|opt| match opt {
                                 SqlOption::KeyValue { key, value } => format!("'{}' {}", key, value),
                                 _ => format!("{:}", opt),
@@ -960,7 +969,6 @@ pub fn create_app_metadata(properties: String, partitions: String) -> String {
     properties.partitions = Some(partitions);
     serde_json::to_string(&properties).unwrap()
 }
-
 
 impl FlightSqlServiceImpl {
     /// Create a new [`FlightSqlServiceImpl`].
@@ -988,7 +996,7 @@ impl FlightSqlServiceImpl {
             transactional_data: Default::default(),
             jwt_server,
             auth_enabled,
-            rbac_enabled,
+            _rbac_enabled: rbac_enabled,
             metrics: Arc::new(StreamWriteMetrics::new(throughput_limit)),
         })
     }
@@ -1035,6 +1043,8 @@ impl FlightSqlServiceImpl {
         let catalog = Arc::new(LakeSoulCatalog::new(self.client.clone(), ctx.clone()));
 
         if let Some(warehouse_prefix) = &self.args.warehouse_prefix {
+            debug!("warehouse_prefix: {:?}", warehouse_prefix);
+            // FIXME: s3 related args will ignore local file system
             env::set_var("LAKESOUL_WAREHOUSE_PREFIX", warehouse_prefix);
             let url = Url::parse(warehouse_prefix);
             match url {
@@ -1144,7 +1154,7 @@ impl FlightSqlServiceImpl {
     async fn tables(&self, ctx: Arc<SessionContext>) -> Result<RecordBatch, Status> {
         let schema = Arc::new(Schema::new(vec![
             Field::new("catalog_name", DataType::Utf8, true),
-            Field::new("db_schema_name", DataType::Utf8, true), 
+            Field::new("db_schema_name", DataType::Utf8, true),
             Field::new("table_name", DataType::Utf8, false),
             Field::new("table_type", DataType::Utf8, false),
             Field::new("table_schema", DataType::Binary, false),
@@ -1157,18 +1167,22 @@ impl FlightSqlServiceImpl {
         let mut table_schemas: Vec<Vec<u8>> = vec![];
 
         for catalog in ctx.catalog_names() {
-            let catalog_provider = ctx.catalog(&catalog)
+            let catalog_provider = ctx
+                .catalog(&catalog)
                 .ok_or_else(|| Status::internal(format!("Catalog not found: {}", catalog)))?;
-            
+
             for schema in catalog_provider.schema_names() {
-                let schema_provider = catalog_provider.schema(&schema)
+                let schema_provider = catalog_provider
+                    .schema(&schema)
                     .ok_or_else(|| Status::internal(format!("Schema not found: {}", schema)))?;
-                
+
                 for table in schema_provider.table_names() {
-                    let table_provider = schema_provider.table(&table).await
+                    let table_provider = schema_provider
+                        .table(&table)
+                        .await
                         .map_err(|e| Status::internal(format!("Error getting table: {}", e)))?
                         .ok_or_else(|| Status::internal(format!("Table not found: {}", table)))?;
-                    
+
                     let table_schema = table_provider.schema();
 
                     let message = SchemaAsIpc::new(&table_schema, &IpcWriteOptions::default())
@@ -1195,7 +1209,7 @@ impl FlightSqlServiceImpl {
         let arrays: Vec<ArrayRef> = vec![
             Arc::new(StringArray::from(catalogs)),
             Arc::new(StringArray::from(schemas)),
-            Arc::new(StringArray::from(names)), 
+            Arc::new(StringArray::from(names)),
             Arc::new(StringArray::from(types)),
             Arc::new(binary_array),
         ];
@@ -1281,8 +1295,8 @@ impl FlightSqlServiceImpl {
     }
 
     /// Verify the rbac authorization.
-    async fn verify_rbac(&self, claims: &Claims, ns: &str, table: &str) -> Result<(), Status> {
-        if !self.rbac_enabled {
+    async fn _verify_rbac(&self, claims: &Claims, ns: &str, table: &str) -> Result<(), Status> {
+        if !self._rbac_enabled {
             return Ok(());
         }
         verify_permission_by_table_name(&claims.sub, &claims.group, ns, table, self.client.clone())

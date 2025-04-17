@@ -5,14 +5,14 @@
 //! The [`datafusion::catalog::CatalogProvider`] implementation for the LakeSoul.
 
 use crate::catalog::LakeSoulNamespace;
-use datafusion::catalog::SchemaProvider;
 use datafusion::catalog::CatalogProvider;
+use datafusion::catalog::SchemaProvider;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::prelude::SessionContext;
 use lakesoul_metadata::error::LakeSoulMetaDataError;
 use lakesoul_metadata::MetaDataClientRef;
-use proto::proto::entity::Namespace;
 use log::info;
+use proto::proto::entity::Namespace;
 use std::any::Any;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
@@ -46,9 +46,7 @@ impl LakeSoulCatalog {
 
     fn get_all_namespace(&self) -> crate::error::Result<Vec<Namespace>> {
         let client = self.metadata_client.clone();
-        Handle::current().block_on(async move {
-            Ok(client.get_all_namespace().await?)
-        })
+        futures::executor::block_on(async move { Ok(client.get_all_namespace().await?) })
     }
 }
 
@@ -59,11 +57,9 @@ impl CatalogProvider for LakeSoulCatalog {
 
     fn schema_names(&self) -> Vec<String> {
         tokio::task::block_in_place(|| {
-            match futures::executor::block_on(async {
-                self.metadata_client.get_all_namespace().await
-            }) {
+            match futures::executor::block_on(async { self.metadata_client.get_all_namespace().await }) {
                 Ok(v) => v.into_iter().map(|np| np.namespace).collect(),
-                Err(_) => vec![]
+                Err(_) => vec![],
             }
         })
     }
@@ -71,9 +67,7 @@ impl CatalogProvider for LakeSoulCatalog {
     fn schema(&self, name: &str) -> Option<Arc<dyn SchemaProvider>> {
         info!("schema: {:?}", name);
         tokio::task::block_in_place(|| {
-            match futures::executor::block_on(async {
-                self.metadata_client.get_all_namespace().await
-            }) {
+            match futures::executor::block_on(async { self.metadata_client.get_all_namespace().await }) {
                 Ok(v) => {
                     if v.iter().any(|np| np.namespace == name) {
                         Some(Arc::new(LakeSoulNamespace::new(
@@ -139,25 +133,28 @@ impl CatalogProvider for LakeSoulCatalog {
 mod tests {
     use super::*;
     use crate::LakeSoulQueryPlanner;
-    use datafusion::{execution::{context::{SessionContext, SessionState}, runtime_env::RuntimeEnv}, prelude::SessionConfig};
-    use lakesoul_metadata::MetaDataClient;
     use datafusion::arrow::util::pretty::print_batches;
+    use datafusion::{
+        execution::{
+            context::{SessionContext, SessionState},
+            runtime_env::RuntimeEnv,
+        },
+        prelude::SessionConfig,
+    };
+    use lakesoul_metadata::MetaDataClient;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_show_tables() -> Result<()> {
         let client = Arc::new(MetaDataClient::from_env().await.unwrap());
         let config = SessionConfig::default().with_information_schema(true);
         let planner = LakeSoulQueryPlanner::new_ref();
-        let state = SessionState::new_with_config_rt(
-            config,
-            Arc::new(RuntimeEnv::default()),
-        ).with_query_planner(planner);
+        let state =
+            SessionState::new_with_config_rt(config, Arc::new(RuntimeEnv::default())).with_query_planner(planner);
 
         let ctx = Arc::new(SessionContext::new_with_state(state));
         let catalog = LakeSoulCatalog::new(client.clone(), ctx.clone());
         ctx.register_catalog("LAKESOUL".to_string(), Arc::new(catalog));
-        
-        
+
         // // 创建测试用的namespace
         // let test_namespace = "test_namespace";
         // let schema = Arc::new(LakeSoulNamespace::new(client.clone(), ctx.clone(), test_namespace));
@@ -171,10 +168,10 @@ mod tests {
         // print_batches(&df.clone().explain(true, false)?.collect().await?);
         let results = df.collect().await?;
         let _ = print_batches(&results);
-        
+
         // 验证结果
         // assert!(!results.is_empty());
-        
+
         Ok(())
     }
 }

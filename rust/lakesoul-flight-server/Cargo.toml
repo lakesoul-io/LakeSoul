@@ -14,14 +14,14 @@ name = "lakesoul_arrow_flight_sql_server"
 path = "src/flight/flight_sql_server.rs"
 
 [dependencies]
-tokio = {workspace = true}
-tonic = {workspace = true}
+tokio = { workspace = true }
+tonic = { workspace = true }
 arrow-flight = { workspace = true }
 lakesoul-datafusion = { path = "../lakesoul-datafusion" }
 lakesoul-flight = { path = "../lakesoul-flight" }
 lakesoul-metadata = { path = "../lakesoul-metadata" }
-env_logger = {workspace = true}
-log = {workspace = true}
+env_logger = { workspace = true }
+log = { workspace = true }
 tower = "0.4"
 tower-http = { version = "0.4", features = ["trace"] }
 metrics-exporter-prometheus = "0.16"
@@ -33,4 +33,14 @@ clap = { version = "4.4", features = ["derive"] }
 regex = "1.11.0"
 
 [build-dependencies]
-tonic-build = {workspace = true}
+tonic-build = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = "2.0"
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+arrow-cast = { workspace = true }
+arrow = { workspace = true, features = ["test_utils"] }
+futures = { workspace = true }
+test-log = { version = "0.2.14" }
+datafusion = { workspace = true }
