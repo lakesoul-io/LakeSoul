@@ -1,13 +1,11 @@
-
 //
 // SPDX-License-Identifier: Apache-2.0
 
 //! Helper Module for LakeSoul IO
-//! 
+//!
 //! This module provides helper functions for LakeSoul IO operations.
 //! It includes functions for formatting scalar values, converting partition descriptions,
 //! and applying partition filters.
-
 
 use arrow::datatypes::UInt32Type;
 use arrow_array::{Array, RecordBatch, UInt32Array};
@@ -53,15 +51,15 @@ use crate::{
 };
 
 /// Converts column names to [`datafusion::physical_expr::PhysicalSortExpr`].
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `columns` - A slice of column names to convert
 /// * `input_dfschema` - The input DataFusion schema
 /// * `session_state` - The session state
-/// 
+///
 /// # Returns
-/// 
+///
 /// Returns a vector of [`datafusion::physical_expr::PhysicalSortExpr`]
 pub fn column_names_to_physical_sort_expr(
     columns: &[String],
@@ -81,15 +79,15 @@ pub fn column_names_to_physical_sort_expr(
 }
 
 /// Converts column names to [`datafusion::physical_expr::PhysicalExpr`].
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `columns` - A slice of column names to convert
 /// * `input_dfschema` - The input DataFusion schema
 /// * `session_state` - The session state
-/// 
+///
 /// # Returns
-/// 
+///
 /// Returns a vector of [`datafusion::physical_expr::PhysicalExpr`]
 pub fn column_names_to_physical_expr(
     columns: &[String],
@@ -98,26 +96,20 @@ pub fn column_names_to_physical_expr(
 ) -> Result<Vec<Arc<dyn PhysicalExpr>>> {
     let runtime_expr = columns
         .iter()
-        .map(|column| {
-            create_physical_expr(
-                &col(column),
-                input_dfschema,
-                session_state.execution_props(),
-            )
-        })
+        .map(|column| create_physical_expr(&col(column), input_dfschema, session_state.execution_props()))
         .collect::<Result<Vec<_>>>()?;
     Ok(runtime_expr)
 }
 
 /// Converts range partitions to partition columns of (Column Name, [`arrow::datatypes::DataType`]).
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `schema` - The schema of the table
 /// * `range_partitions` - The range partitions
-/// 
+///
 /// # Returns
-/// 
+///
 /// Returns a vector of partition columns of (Column Name, [`arrow::datatypes::DataType`])
 pub fn range_partition_to_partition_cols(
     schema: SchemaRef,
@@ -130,14 +122,14 @@ pub fn range_partition_to_partition_cols(
 }
 
 /// Gets the [`datafusion::scalar::ScalarValue`] of the partition columns from a record batch.
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `batch` - The record batch
 /// * `range_partitions` - The range partitions
-/// 
+///
 /// # Returns
-/// 
+///
 /// Returns a vector of (Column Name, [`datafusion::scalar::ScalarValue`])
 pub fn get_columnar_values(
     batch: &RecordBatch,
@@ -159,13 +151,13 @@ pub fn get_columnar_values(
 }
 
 /// Formats a [`datafusion::scalar::ScalarValue`] to a string.
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `v` - The [`datafusion::scalar::ScalarValue`] to format
-/// 
+///
 /// # Returns
-/// 
+///
 /// Returns a string representation of the [`datafusion::scalar::ScalarValue`]
 pub fn format_scalar_value(v: &ScalarValue) -> String {
     match v {
@@ -234,14 +226,14 @@ pub fn format_scalar_value(v: &ScalarValue) -> String {
 }
 
 /// Converts a string to a [`datafusion::scalar::ScalarValue`].
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `val` - The string to convert
 /// * `data_type` - The data type of the [`arrow::datatypes::DataType`]
 ///
 /// # Returns
-/// 
+///
 /// Returns a [`datafusion::scalar::ScalarValue`] of the given string
 pub fn into_scalar_value(val: &str, data_type: &DataType) -> Result<ScalarValue> {
     if val.eq(LAKESOUL_NULL_STRING) {
@@ -339,13 +331,13 @@ pub fn into_scalar_value(val: &str, data_type: &DataType) -> Result<ScalarValue>
 }
 
 /// Converts a vector of (Column Name, [`datafusion::scalar::ScalarValue`]) to a sub path.
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `columnar_values` - The vector of (Column Name, [`datafusion::scalar::ScalarValue`])
-/// 
+///
 /// # Returns
-/// 
+///
 /// Returns a sub path by concatenating the column names and [`datafusion::scalar::ScalarValue`]
 pub fn columnar_values_to_sub_path(columnar_values: &Vec<(String, ScalarValue)>) -> String {
     if columnar_values.is_empty() {
@@ -363,13 +355,13 @@ pub fn columnar_values_to_sub_path(columnar_values: &Vec<(String, ScalarValue)>)
 }
 
 /// Converts a vector of (Column Name, [`datafusion::scalar::ScalarValue`]) to a partition description.
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `columnar_values` - The vector of (Column Name, [`datafusion::scalar::ScalarValue`])
-/// 
+///
 /// # Returns
-/// 
+///
 /// Returns a partition description by concatenating the column names and [`datafusion::scalar::ScalarValue`]
 pub fn columnar_values_to_partition_desc(columnar_values: &Vec<(String, ScalarValue)>) -> String {
     if columnar_values.is_empty() {
@@ -384,14 +376,14 @@ pub fn columnar_values_to_partition_desc(columnar_values: &Vec<(String, ScalarVa
 }
 
 /// Converts a partition description to a vector of scalar values.
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `schema` - The schema of the table
 /// * `partition_desc` - The partition description
 ///
 /// # Returns
-/// 
+///
 /// Returns a vector of [`datafusion::scalar::ScalarValue`] of the given partition description
 pub fn partition_desc_to_scalar_values(schema: SchemaRef, partition_desc: String) -> Result<Vec<ScalarValue>> {
     if partition_desc == "-5" {
@@ -421,13 +413,13 @@ pub fn partition_desc_to_scalar_values(schema: SchemaRef, partition_desc: String
 }
 
 /// Extracts a partition description and a map of column names to file paths from a file scan config.
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `conf` - The [`datafusion::datasource::physical_plan::FileScanConfig`]
-/// 
+///
 /// # Returns
-/// 
+///
 /// Returns a tuple of (Partition Description, Map of Column Names to File Paths)
 pub fn partition_desc_from_file_scan_config(conf: &FileScanConfig) -> Result<(String, HashMap<String, String>)> {
     if conf.table_partition_cols.is_empty() {
@@ -454,16 +446,16 @@ pub fn partition_desc_from_file_scan_config(conf: &FileScanConfig) -> Result<(St
 }
 
 /// Creates a [`datafusion::datasource::listing::ListingTable`] from a [`LakeSoulIOConfig`].
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `session_state` - The session state
 /// * `lakesoul_io_config` - The [`LakeSoulIOConfig`]
 /// * `file_format` - The file format
 /// * `as_sink` - Whether to create a sink
-/// 
+///
 /// # Returns
-/// 
+///
 /// Returns a tuple of (Option<[`arrow::datatypes::SchemaRef`]>, Arc<[`datafusion::datasource::listing::ListingTable`]>)
 pub async fn listing_table_from_lakesoul_io_config(
     session_state: &SessionState,
@@ -538,14 +530,14 @@ pub async fn listing_table_from_lakesoul_io_config(
 }
 
 /// Gets the [`object_store::ObjectMetadata`] for a list of table paths.
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `sc` - The session state
 /// * `table_paths` - The list of table paths
-/// 
+///
 /// # Returns
-/// 
+///
 /// Returns a vector of [`object_store::ObjectMetadata`]
 pub async fn get_file_object_meta(sc: &SessionState, table_paths: &[ListingTableUrl]) -> Result<Vec<ObjectMeta>> {
     let object_store_url = table_paths
@@ -570,16 +562,16 @@ pub async fn get_file_object_meta(sc: &SessionState, table_paths: &[ListingTable
 }
 
 /// Infers the schema of files from a list of [`ListingTableUrl`] and [`ObjectMeta`].
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `sc` - The session state
 /// * `table_paths` - The list of table paths
 /// * `object_metas` - The list of object metadata
 /// * `file_format` - The file format
-/// 
+///
 /// # Returns
-/// 
+///
 /// Returns the inferred schema
 pub async fn infer_schema(
     sc: &SessionState,
@@ -598,15 +590,15 @@ pub async fn infer_schema(
 }
 
 /// Applies a partition filter to a [`JniWrapper`].
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `wrapper` - The [`JniWrapper`]
 /// * `schema` - The [`arrow::datatypes::SchemaRef`] of the table
 /// * `filter` - The [`datafusion_substrait::substrait::proto::Plan`]
-/// 
+///
 /// # Returns
-/// 
+///
 /// Returns the [`JniWrapper`] of filtered partition info
 pub fn apply_partition_filter(wrapper: JniWrapper, schema: SchemaRef, filter: Plan) -> Result<JniWrapper> {
     let runtime = Builder::new_multi_thread()
@@ -643,15 +635,15 @@ pub fn apply_partition_filter(wrapper: JniWrapper, schema: SchemaRef, filter: Pl
 }
 
 /// Creates a [`RecordBatch`] of partition info from a [`JniWrapper`].
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `wrapper` - The [`JniWrapper`]
 /// * `schema` - The [`arrow::datatypes::SchemaRef`] of the table
 /// * `index_field` - The [`arrow::datatypes::Field`] of the index field
-/// 
+///
 /// # Returns
-/// 
+///
 /// Returns a [`RecordBatch`] of partition info for partition filter
 fn batch_from_partition(wrapper: &JniWrapper, schema: SchemaRef, index_field: Field) -> Result<RecordBatch> {
     let scalar_values = wrapper
@@ -682,7 +674,6 @@ fn batch_from_partition(wrapper: &JniWrapper, schema: SchemaRef, index_field: Fi
 
     Ok(RecordBatch::try_new(schema_with_index, columns)?)
 }
-
 
 /// Converts a date string to epoch days.
 pub fn date_str_to_epoch_days(value: &str) -> Result<i32> {
@@ -775,21 +766,21 @@ pub fn get_file_exist_col(metadata: &FileMetaData) -> String {
 /// ```
 pub fn extract_hash_bucket_id(file_path: &str) -> Option<u32> {
     use regex::Regex;
-    
+
     // Get the file name from the path
     let file_name = file_path.split('/').last()?;
-    
+
     // Regex pattern to extract the hash bucket id between the last underscore and any suffix
     // This pattern matches filenames starting with "part-" and containing an underscore
     // followed by digits before any optional suffix
     let re = Regex::new(r"part-.*_(\d+)(?:\..+)?$").ok()?;
-    
+
     if let Some(captures) = re.captures(file_name) {
         if let Some(id_match) = captures.get(1) {
             return id_match.as_str().parse::<u32>().ok();
         }
     }
-    
+
     None
 }
 
@@ -803,83 +794,88 @@ pub struct ColumnEquality {
 /// Checks if an expression is an OR-conjunctive expression.
 pub fn is_or_conjunctive(expr: &datafusion::logical_expr::Expr) -> bool {
     match expr {
-        datafusion::logical_expr::Expr::BinaryExpr(binary_expr) => binary_expr.op == datafusion::logical_expr::Operator::Or,
+        datafusion::logical_expr::Expr::BinaryExpr(binary_expr) => {
+            binary_expr.op == datafusion::logical_expr::Operator::Or
+        }
         _ => false,
     }
 }
 
 /// Collects filter expressions that can be optimized.
-/// 
+///
 /// This function looks for OR-conjunctive expressions where all components
 /// are equality comparisons on primary key columns.
 pub fn collect_or_conjunctive_filter_expressions(
-    filters: &[datafusion::logical_expr::Expr], 
-    primary_keys: &[String]
+    filters: &[datafusion::logical_expr::Expr],
+    primary_keys: &[String],
 ) -> Vec<ColumnEquality> {
     let mut result = Vec::new();
-    
+
     for filter in filters {
         if is_or_conjunctive(filter) {
             // Collect all equality expressions from this OR-conjunctive expression
             let mut equalities = Vec::new();
             collect_column_equalities(filter, &mut equalities);
-            
+
             // Check if all collected equalities are on primary key columns
-            let all_primary = equalities.iter()
-                .all(|eq| primary_keys.contains(&eq.column_name));
-            
+            let all_primary = equalities.iter().all(|eq| primary_keys.contains(&eq.column_name));
+
             if all_primary && !equalities.is_empty() {
                 result.extend(equalities);
             }
         }
     }
-    
+
     result
 }
 
 /// Collects column equality comparisons from an expression.
-/// 
+///
 /// Recursively traverses OR expressions to find all column = value comparisons.
 pub fn collect_column_equalities(expr: &datafusion::logical_expr::Expr, equalities: &mut Vec<ColumnEquality>) {
     use datafusion::logical_expr::{Expr, Operator};
-    
+
     match expr {
         // If it's an OR expression, process both sides
         Expr::BinaryExpr(binary_expr) if binary_expr.op == Operator::Or => {
             collect_column_equalities(&binary_expr.left, equalities);
             collect_column_equalities(&binary_expr.right, equalities);
-        },
+        }
         // If it's an equality comparison with a literal, extract the column name and scalar value
         Expr::BinaryExpr(binary_expr) if binary_expr.op == Operator::Eq => {
-            if let (Expr::Column(col), Expr::Literal(scalar)) = (&binary_expr.left.as_ref(), &binary_expr.right.as_ref()) {
+            if let (Expr::Column(col), Expr::Literal(scalar)) =
+                (&binary_expr.left.as_ref(), &binary_expr.right.as_ref())
+            {
                 equalities.push(ColumnEquality {
                     column_name: col.name.clone(),
                     scalar_value: scalar.clone(),
                 });
-            } else if let (Expr::Literal(scalar), Expr::Column(col)) = (&binary_expr.left.as_ref(), &binary_expr.right.as_ref()) {
+            } else if let (Expr::Literal(scalar), Expr::Column(col)) =
+                (&binary_expr.left.as_ref(), &binary_expr.right.as_ref())
+            {
                 equalities.push(ColumnEquality {
                     column_name: col.name.clone(),
                     scalar_value: scalar.clone(),
                 });
             }
-        },
+        }
         _ => {}
     }
 }
 
 /// Computes the hash value for a ScalarValue.
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `scalar` - The scalar value to hash
 /// * `seed` - The seed to use for hashing
-/// 
+///
 /// # Returns
-/// 
+///
 /// Returns the hash value as a u32
 pub fn compute_scalar_hash(scalar: &ScalarValue) -> u32 {
     use crate::hash_utils::{HashValue, HASH_SEED};
-    
+
     match scalar {
         ScalarValue::Int8(Some(v)) => HashValue::hash_one(v, HASH_SEED) as u32,
         ScalarValue::Int16(Some(v)) => HashValue::hash_one(v, HASH_SEED) as u32,
@@ -902,15 +898,14 @@ pub fn compute_scalar_hash(scalar: &ScalarValue) -> u32 {
 }
 
 /// Extracts the scalar value from a ColumnEquality.
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `equality` - The ColumnEquality to extract the scalar value from
-/// 
+///
 /// # Returns
-/// 
+///
 /// Returns Some(scalar_value) if successful, None otherwise
 pub fn extract_scalar_value_from_expr(equality: &ColumnEquality) -> Option<&ScalarValue> {
     Some(&equality.scalar_value)
 }
-

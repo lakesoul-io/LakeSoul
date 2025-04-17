@@ -125,12 +125,10 @@ impl ObjectStore for Hdfs {
             })?
             .compat_write();
         for mut bytes in payload.into_iter() {
-            async_write.write_all_buf(&mut bytes)
-                .await
-                .map_err(|e| Generic {
-                    store: "hdfs",
-                    source: Box::new(e),
-                })?
+            async_write.write_all_buf(&mut bytes).await.map_err(|e| Generic {
+                store: "hdfs",
+                source: Box::new(e),
+            })?
         }
         async_write.flush().await.map_err(|e| Generic {
             store: "hdfs",
@@ -455,12 +453,10 @@ impl MultipartUpload for HDFSMultiPartUpload {
         async move {
             let mut writer = writer.lock().await;
             for mut bytes in data.into_iter() {
-                writer.write_all_buf(&mut bytes)
-                    .await
-                    .map_err(|e| Generic {
-                        store: "hdfs",
-                        source: Box::new(e),
-                    })?;
+                writer.write_all_buf(&mut bytes).await.map_err(|e| Generic {
+                    store: "hdfs",
+                    source: Box::new(e),
+                })?;
             }
             Ok(())
         }
@@ -549,9 +545,7 @@ mod tests {
             .with_max_row_group_size(250000)
             .with_object_store_option("fs.defaultFS".to_string(), "hdfs://chenxu-dev:9000".to_string())
             .with_object_store_option("fs.hdfs.user".to_string(), whoami::username())
-            .with_files(vec![
-                write_path.clone()
-            ])
+            .with_files(vec![write_path.clone()])
             .build();
         let sess_ctx = create_session_context(&mut conf).unwrap();
         println!("files: {:?}", conf.files);
@@ -577,12 +571,7 @@ mod tests {
         write.shutdown().await.unwrap();
         drop(write);
 
-        assert_eq!(
-            conf.files,
-            vec![
-                complete_path,
-            ]
-        );
+        assert_eq!(conf.files, vec![complete_path,]);
         let meta0 = object_store.head(&Path::from(write_path.as_str())).await.unwrap();
         assert_eq!(meta0.location, Path::from(write_path.as_str()));
         assert_eq!(meta0.size, size);

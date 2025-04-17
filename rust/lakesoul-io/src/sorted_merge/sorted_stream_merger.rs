@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! This module provides functionality for sorted stream merger. 
+//! This module provides functionality for sorted stream merger.
 //! Which is referred by `SortPreservingMergeExec` in DataFusion.
 
 use std::fmt::{Debug, Formatter};
@@ -105,9 +105,9 @@ pub(crate) struct SortedStreamMerger {
 
 impl SortedStreamMerger {
     /// Create a new sorted stream merger from a list of sorted streams.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `streams` - A list of sorted streams to merge.
     /// * `target_schema` - The schema of the RecordBatches yielded by this stream.
     /// * `primary_keys` - The primary keys of the RecordBatches.
@@ -304,7 +304,9 @@ impl SortedStreamMerger {
                         }
                     }
                 }
-                RangeCombinerResult::RecordBatch(batch) => return Poll::Ready(Some(batch.map_err(|e| ArrowError(e, None)))),
+                RangeCombinerResult::RecordBatch(batch) => {
+                    return Poll::Ready(Some(batch.map_err(|e| ArrowError(e, None))))
+                }
             }
         }
     }

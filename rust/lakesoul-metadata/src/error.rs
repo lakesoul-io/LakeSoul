@@ -4,8 +4,8 @@
 
 //! The error type for the LakeSoul metadata.
 
-use std::{io, num, result, sync::Arc};
 use bb8_postgres::bb8::RunError;
+use std::{io, num, result, sync::Arc};
 use thiserror::Error;
 
 /// Result type for operations that could result in an [LakeSoulMetaDataError]

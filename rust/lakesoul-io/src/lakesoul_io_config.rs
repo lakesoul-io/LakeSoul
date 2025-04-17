@@ -3,12 +3,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! LakeSoul IO Config Module
-//! 
+//!
 //! This module provides functionality for configuring LakeSoul IO operations.
 //! It includes configuration options for file paths, schema information, partitioning settings,
 //! and performance tuning options.
-//! 
-//! 
+//!
+//!
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use anyhow::anyhow;
@@ -78,7 +78,7 @@ pub static OPTION_KEY_STABLE_SORT: &str = "stable_sort";
 #[derive(Debug, Derivative)]
 #[derivative(Default, Clone)]
 /// Configuration for LakeSoul IO operations.
-/// 
+///
 /// This struct contains all the necessary parameters for configuring LakeSoul IO operations,
 /// including file paths, schema information, partitioning settings, and performance tuning options.
 pub struct LakeSoulIOConfig {
@@ -225,12 +225,14 @@ impl LakeSoulIOConfig {
 
     /// Returns the number of hash buckets for partitioning (defaults to 1, equvalent to not partitioning)
     pub fn hash_bucket_num(&self) -> usize {
-        self.option(OPTION_KEY_HASH_BUCKET_NUM).map_or(1, |x| x.parse().unwrap())
+        self.option(OPTION_KEY_HASH_BUCKET_NUM)
+            .map_or(1, |x| x.parse().unwrap())
     }
 
     /// Returns the CDC (Change Data Capture) column name if set
     pub fn cdc_column(&self) -> String {
-        self.option(OPTION_KEY_CDC_COLUMN).map_or_else(|| String::new(), |x| x.to_string())
+        self.option(OPTION_KEY_CDC_COLUMN)
+            .map_or_else(|| String::new(), |x| x.to_string())
     }
 
     /// Returns whether the data is compacted, default is false
@@ -240,7 +242,8 @@ impl LakeSoulIOConfig {
 
     /// Returns whether to skip merge operation during read, default is false
     pub fn skip_merge_on_read(&self) -> bool {
-        self.option(OPTION_KEY_SKIP_MERGE_ON_READ).map_or(false, |x| x.eq("true"))
+        self.option(OPTION_KEY_SKIP_MERGE_ON_READ)
+            .map_or(false, |x| x.eq("true"))
     }
 
     /// Returns whether to compute Local Sensitive Hash (defaults to true)
@@ -257,7 +260,7 @@ impl LakeSoulIOConfig {
 #[derive(Derivative, Debug)]
 #[derivative(Clone, Default)]
 /// Builder for LakeSoulIOConfig
-/// 
+///
 /// This struct provides a fluent builder interface for creating LakeSoulIOConfig instances.
 /// It allows for setting various configuration options using method chaining.
 pub struct LakeSoulIOConfigBuilder {
@@ -266,9 +269,9 @@ pub struct LakeSoulIOConfigBuilder {
 
 impl LakeSoulIOConfigBuilder {
     /// Creates a new LakeSoulIOConfigBuilder instance with default configuration
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// A new LakeSoulIOConfigBuilder instance with default configuration
     pub fn new() -> Self {
         LakeSoulIOConfigBuilder {
@@ -277,11 +280,11 @@ impl LakeSoulIOConfigBuilder {
     }
 
     /// Creates a new LakeSoulIOConfigBuilder instance with object store options
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `options` - A HashMap of string key-value pairs representing object store options
-    /// 
+    ///
     pub fn new_with_object_store_options(options: HashMap<String, String>) -> Self {
         let mut builder = LakeSoulIOConfigBuilder::new();
         builder.config.object_store_options = options;
@@ -289,9 +292,9 @@ impl LakeSoulIOConfigBuilder {
     }
 
     /// Sets the prefix for the file path
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `prefix` - The prefix for the file path
     pub fn with_prefix(mut self, prefix: String) -> Self {
         self.config.prefix = prefix;
@@ -299,9 +302,9 @@ impl LakeSoulIOConfigBuilder {
     }
 
     /// Adds a file path to the list of files to read or write
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `file` - The file path to add
     pub fn with_file(mut self, file: String) -> Self {
         self.config.files.push(file);
@@ -309,9 +312,9 @@ impl LakeSoulIOConfigBuilder {
     }
 
     /// Adds a list of file paths to the list of files to read or write
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `files` - The list of file paths to add
     pub fn with_files(mut self, files: Vec<String>) -> Self {
         self.config.files = files;
@@ -319,9 +322,9 @@ impl LakeSoulIOConfigBuilder {
     }
 
     /// Adds a primary key to the list of primary keys
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `pks` - The primary key to add
     pub fn with_primary_key(mut self, pks: String) -> Self {
         self.config.primary_keys.push(pks);
@@ -329,9 +332,9 @@ impl LakeSoulIOConfigBuilder {
     }
 
     /// Adds a list of primary keys to the list of primary keys
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `pks` - The list of primary keys to add
     pub fn with_primary_keys(mut self, pks: Vec<String>) -> Self {
         self.config.primary_keys = pks;
@@ -339,9 +342,9 @@ impl LakeSoulIOConfigBuilder {
     }
 
     /// Adds a range partition to the list of range partitions
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `range_partition` - The range partition to add
     pub fn with_range_partition(mut self, range_partition: String) -> Self {
         self.config.range_partitions.push(range_partition);
@@ -349,9 +352,9 @@ impl LakeSoulIOConfigBuilder {
     }
 
     /// Adds a list of range partitions to the list of range partitions
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `range_partitions` - The list of range partitions to add
     pub fn with_range_partitions(mut self, range_partitions: Vec<String>) -> Self {
         self.config.range_partitions = range_partitions;
@@ -359,9 +362,9 @@ impl LakeSoulIOConfigBuilder {
     }
 
     /// Sets the number of hash buckets for partitioning
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `hash_bucket_num` - The number of hash buckets for partitioning
     pub fn with_hash_bucket_num(mut self, hash_bucket_num: usize) -> Self {
         self.config.hash_bucket_num = hash_bucket_num;
@@ -369,9 +372,9 @@ impl LakeSoulIOConfigBuilder {
     }
 
     /// Adds a column to the list of columns to select
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `col` - The column to add
     #[deprecated(since = "2.5.0", note = "This method is deprecated. Use target_schema instead.")]
     #[allow(deprecated)]
@@ -381,9 +384,9 @@ impl LakeSoulIOConfigBuilder {
     }
 
     /// Adds an auxiliary sort column to the list of auxiliary sort columns
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `col` - The auxiliary sort column to add
     pub fn with_aux_sort_column(mut self, col: String) -> Self {
         self.config.aux_sort_cols.push(String::from(&col));
@@ -391,9 +394,9 @@ impl LakeSoulIOConfigBuilder {
     }
 
     /// Sets the number of rows per batch for reading/writing
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `batch_size` - The number of rows per batch for reading/writing
     pub fn with_batch_size(mut self, batch_size: usize) -> Self {
         self.config.batch_size = batch_size;
@@ -401,9 +404,9 @@ impl LakeSoulIOConfigBuilder {
     }
 
     /// Sets the maximum number of rows per row group when writing
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `max_row_group_size` - The maximum number of rows per row group when writing
     pub fn with_max_row_group_size(mut self, max_row_group_size: usize) -> Self {
         self.config.max_row_group_size = max_row_group_size;
@@ -411,9 +414,9 @@ impl LakeSoulIOConfigBuilder {
     }
 
     /// Sets the maximum number of values per row group when writing
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `max_row_group_num_values` - The maximum number of values per row group when writing
     pub fn with_max_row_group_num_values(mut self, max_row_group_num_values: usize) -> Self {
         self.config.max_row_group_num_values = max_row_group_num_values;
@@ -421,9 +424,9 @@ impl LakeSoulIOConfigBuilder {
     }
 
     /// Sets the number of batches to prefetch
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `prefetch_size` - The number of batches to prefetch
     pub fn with_prefetch_size(mut self, prefetch_size: usize) -> Self {
         self.config.prefetch_size = prefetch_size;
@@ -431,15 +434,14 @@ impl LakeSoulIOConfigBuilder {
     }
 
     /// Sets whether to enable Parquet filter pushdown
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `enable` - Whether to enable Parquet filter pushdown
     pub fn with_parquet_filter_pushdown(mut self, enable: bool) -> Self {
         self.config.parquet_filter_pushdown = enable;
         self
     }
-
 
     #[deprecated(since = "2.5.0", note = "This method is deprecated. Use target_schema instead.")]
     #[allow(deprecated)]
@@ -449,9 +451,9 @@ impl LakeSoulIOConfigBuilder {
     }
 
     /// Sets the target Arrow schema for the reader and writer
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `schema` - The target Arrow schema to set
     pub fn with_schema(mut self, schema: SchemaRef) -> Self {
         self.config.target_schema = IOSchema(schema);
@@ -459,9 +461,9 @@ impl LakeSoulIOConfigBuilder {
     }
 
     /// Sets the Arrow schema for partition columns
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `schema` - The Arrow schema for partition columns to set
     pub fn with_partition_schema(mut self, schema: SchemaRef) -> Self {
         self.config.partition_schema = IOSchema(schema);
@@ -469,9 +471,9 @@ impl LakeSoulIOConfigBuilder {
     }
 
     /// Adds a filter string to the list of filter strings
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `filter_str` - The filter string to add
     pub fn with_filter_str(mut self, filter_str: String) -> Self {
         self.config.filter_strs.push(filter_str);
@@ -479,16 +481,19 @@ impl LakeSoulIOConfigBuilder {
     }
 
     /// Adds a filter proto to the list of filter protos
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `filter_proto` - The filter proto to add
     pub fn with_filter_proto(mut self, filter_proto: Plan) -> Self {
         self.config.filter_protos.push(filter_proto);
         self
     }
 
-    #[deprecated(since = "2.5.0", note = "This method is deprecated. Use with_filter_str and with_filter_proto instead.")]
+    #[deprecated(
+        since = "2.5.0",
+        note = "This method is deprecated. Use with_filter_str and with_filter_proto instead."
+    )]
     #[allow(deprecated)]
     pub fn with_filters(mut self, filters: Vec<Expr>) -> Self {
         self.config.filters = filters;
@@ -496,9 +501,9 @@ impl LakeSoulIOConfigBuilder {
     }
 
     /// Adds a merge operator to the list of merge operators
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `field_name` - The field name to add the merge operator to
     /// * `merge_op` - The merge operator to add
     pub fn with_merge_op(mut self, field_name: String, merge_op: String) -> Self {
@@ -507,9 +512,9 @@ impl LakeSoulIOConfigBuilder {
     }
 
     /// Sets the default value for a column
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `field_name` - The field name to set the default value for
     /// * `value` - The default value to set
     pub fn with_default_column_value(mut self, field_name: String, value: String) -> Self {
@@ -518,9 +523,9 @@ impl LakeSoulIOConfigBuilder {
     }
 
     /// Adds an object store option
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `key` - The key to add the object store option for
     /// * `value` - The value to add the object store option for
     pub fn with_object_store_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
@@ -529,9 +534,9 @@ impl LakeSoulIOConfigBuilder {
     }
 
     /// Adds an option
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `key` - The key to add the option for
     /// * `value` - The value to add the option for
     pub fn with_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
@@ -540,9 +545,9 @@ impl LakeSoulIOConfigBuilder {
     }
 
     /// Sets the number of threads for parallel processing
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `thread_num` - The number of threads for parallel processing
     pub fn with_thread_num(mut self, thread_num: usize) -> Self {
         self.config.thread_num = thread_num;
@@ -550,9 +555,9 @@ impl LakeSoulIOConfigBuilder {
     }
 
     /// Sets whether to use dynamic partitioning
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `enable` - Whether to use dynamic partitioning
     pub fn set_dynamic_partition(mut self, enable: bool) -> Self {
         self.config.use_dynamic_partition = enable;
@@ -560,9 +565,9 @@ impl LakeSoulIOConfigBuilder {
     }
 
     /// Sets whether to infer schema from data
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `enable` - Whether to infer schema from data
     pub fn set_inferring_schema(mut self, enable: bool) -> Self {
         self.config.inferring_schema = enable;
@@ -570,9 +575,9 @@ impl LakeSoulIOConfigBuilder {
     }
 
     /// Sets the maximum file size
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `size` - The maximum file size to set
     pub fn with_max_file_size(mut self, size: u64) -> Self {
         self.config.max_file_size = Some(size);
@@ -580,9 +585,9 @@ impl LakeSoulIOConfigBuilder {
     }
 
     /// Sets the random number generator seed for Local Sensitive Hash
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `seed` - The random number generator seed to set
     pub fn with_seed(mut self, seed: u64) -> Self {
         self.config.seed = seed;
@@ -590,9 +595,9 @@ impl LakeSoulIOConfigBuilder {
     }
 
     /// Builds the LakeSoulIOConfig instance
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// The built LakeSoulIOConfig instance
     pub fn build(self) -> LakeSoulIOConfig {
         self.config
@@ -700,9 +705,9 @@ pub fn register_s3_object_store(url: &Url, config: &LakeSoulIOConfig, runtime: &
 }
 
 /// Registers an HDFS object store
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `url` - The URL of the HDFS object store
 /// * `host` - The host of the HDFS object store
 /// * `config` - The LakeSoulIOConfig instance
@@ -729,15 +734,15 @@ pub fn register_hdfs_object_store(
 
 /// try to register object store of this path string, and return normalized path string if
 /// this path is local path style but fs.defaultFS config exists
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `path` - The path to register the object store for
 /// * `config` - A mutable reference to the LakeSoulIOConfig instance
 /// * `runtime` - The DataFusion RuntimeEnv instance
-/// 
+///
 /// # Returns
-/// 
+///
 /// The normalized path string
 fn register_object_store(path: &str, config: &mut LakeSoulIOConfig, runtime: &RuntimeEnv) -> Result<String> {
     let url = Url::parse(path);
@@ -811,27 +816,27 @@ fn register_object_store(path: &str, config: &mut LakeSoulIOConfig, runtime: &Ru
 }
 
 /// Creates a new session context
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `config` - A mutable reference to the LakeSoulIOConfig instance
-/// 
+///
 /// # Returns
-/// 
+///
 /// A new SessionContext instance
 pub fn create_session_context(config: &mut LakeSoulIOConfig) -> Result<SessionContext> {
     create_session_context_with_planner(config, None)
 }
 
 /// Creates a new session context with a specific query planner
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `config` - A mutable reference to the LakeSoulIOConfig instance
 /// * `planner` - An optional Arc<dyn QueryPlanner + Send + Sync> instance
-/// 
+///
 /// # Returns
-/// 
+///
 /// A new SessionContext instance
 pub fn create_session_context_with_planner(
     config: &mut LakeSoulIOConfig,

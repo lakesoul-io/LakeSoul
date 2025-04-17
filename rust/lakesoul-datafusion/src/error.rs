@@ -6,8 +6,8 @@
 
 use std::{result, sync::Arc};
 
-use datafusion::error::DataFusionError;
 use arrow::error::ArrowError;
+use datafusion::error::DataFusionError;
 use lakesoul_metadata::error::LakeSoulMetaDataError;
 
 /// Result type for operations that could result in an [LakeSoulMetaDataError]

@@ -148,8 +148,7 @@ pub extern "C" fn execute_insert(
 
     let raw_parts = unsafe { std::slice::from_raw_parts(addr as *const u8, len as usize) };
     let wrapper = entity::JniWrapper::decode(prost::bytes::Bytes::from(raw_parts)).unwrap();
-    let result =
-        runtime.block_on(async { lakesoul_metadata::execute_insert(client, insert_type, wrapper).await });
+    let result = runtime.block_on(async { lakesoul_metadata::execute_insert(client, insert_type, wrapper).await });
     match result {
         Ok(count) => call_result_callback(callback, count, null()),
         Err(e) => call_result_callback(callback, -1, CString::new(e.to_string().as_str()).unwrap().into_raw()),
@@ -218,9 +217,8 @@ pub extern "C" fn execute_query(
     let runtime = unsafe { NonNull::new_unchecked(runtime.as_ref().ptr as *mut Runtime).as_ref() };
     let client = unsafe { NonNull::new_unchecked(client.as_ref().ptr as *mut PooledClient).as_ref() };
 
-    let result = runtime.block_on(async {
-        lakesoul_metadata::execute_query(client, query_type, string_from_ptr(joined_string)).await
-    });
+    let result = runtime
+        .block_on(async { lakesoul_metadata::execute_query(client, query_type, string_from_ptr(joined_string)).await });
     match result {
         Ok(u8_vec) => {
             let len = u8_vec.len();

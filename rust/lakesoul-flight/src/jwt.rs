@@ -27,19 +27,11 @@ impl JwtServer {
     }
 
     pub fn create_token(&self, claims: &Claims) -> Result<String, jsonwebtoken::errors::Error> {
-        encode(
-            &Header::default(),
-            &claims,
-            &self.encoding_key,
-        )
+        encode(&Header::default(), &claims, &self.encoding_key)
     }
 
     pub fn decode_token(&self, token: &str) -> Result<Claims, jsonwebtoken::errors::Error> {
-        let data = decode::<Claims>(
-            &token,
-            &self.decoding_key,
-            &Validation::default(),
-        )?;
+        let data = decode::<Claims>(&token, &self.decoding_key, &Validation::default())?;
         Ok(data.claims)
     }
 }
@@ -49,9 +41,9 @@ mod tests {
     use super::*;
     use crate::jwt::JwtServer;
     use chrono::Days;
+    use lakesoul_datafusion::LakeSoulError;
     use lakesoul_metadata::{LakeSoulMetaDataError, MetaDataClient};
     use std::sync::Arc;
-    use lakesoul_datafusion::LakeSoulError;
 
     #[tokio::test]
     async fn test_verify_token() -> Result<(), LakeSoulError> {

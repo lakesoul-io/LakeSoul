@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! This module provides the implementation of the projection operator, projection implementation is refer from datafusion. 
+//! This module provides the implementation of the projection operator, projection implementation is refer from datafusion.
 
 use std::pin::Pin;
 use std::sync::Arc;

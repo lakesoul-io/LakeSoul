@@ -2,7 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-
 //! This module provides the implementation of the hash utils.
 
 use std::io::Cursor;
@@ -124,7 +123,6 @@ impl HashValue for [u8] {
         spark_murmur3_32_for_bytes(&mut Cursor::new(self), seed).unwrap()
     }
 }
-
 
 // todo: check if this is correct
 impl HashValue for IntervalDayTime {

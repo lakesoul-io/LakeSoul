@@ -121,7 +121,10 @@ impl MergeParquetExec {
         io_config: LakeSoulIOConfig,
         default_column_value: Arc<HashMap<String, String>>,
     ) -> Result<Self> {
-        info!("MergeParquetExec::new_with_inputs: {:?}, {:?}, {:?}", schema, io_config, default_column_value);
+        info!(
+            "MergeParquetExec::new_with_inputs: {:?}, {:?}, {:?}",
+            schema, io_config, default_column_value
+        );
         let config = io_config.clone();
         let primary_keys = Arc::new(io_config.primary_keys);
         let merge_operators = Arc::new(io_config.merge_operators);
@@ -338,9 +341,10 @@ pub fn convert_filter(df: &DataFrame, filter_str: Vec<String>, filter_protos: Ve
         let filter = FilterParser::parse(f.clone(), arrow_schema.clone())?;
         str_filters.push(filter);
     }
-    let proto_filters = filter_protos.into_iter().map(|plan| {
-        FilterParser::parse_substrait_plan(plan, df.schema())
-    }).collect::<Result<Vec<_>>>()?;
+    let proto_filters = filter_protos
+        .into_iter()
+        .map(|plan| FilterParser::parse_substrait_plan(plan, df.schema()))
+        .collect::<Result<Vec<_>>>()?;
     debug!("str filters: {:#?}", str_filters);
     debug!("proto filters: {:#?}", proto_filters);
     if proto_filters.is_empty() {

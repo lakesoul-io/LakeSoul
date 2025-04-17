@@ -14,13 +14,20 @@ use std::{
 
 use arrow_schema::SchemaRef;
 use datafusion::{
+    common::runtime::SpawnedTask,
     common::utils::transpose,
-    common::runtime::SpawnedTask, execution::{
+    execution::{
         memory_pool::{MemoryConsumer, MemoryReservation},
         TaskContext,
-    }, physical_expr::EquivalenceProperties, physical_plan::{
-        metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricBuilder}, sorts::streaming_merge::StreamingMergeBuilder, stream::RecordBatchStreamAdapter, DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, Partitioning, PhysicalExpr, PlanProperties, RecordBatchStream, SendableRecordBatchStream
-    }
+    },
+    physical_expr::EquivalenceProperties,
+    physical_plan::{
+        metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricBuilder},
+        sorts::streaming_merge::StreamingMergeBuilder,
+        stream::RecordBatchStreamAdapter,
+        DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, Partitioning, PhysicalExpr,
+        PlanProperties, RecordBatchStream, SendableRecordBatchStream,
+    },
 };
 use datafusion::{physical_expr::physical_exprs_equal, physical_plan::metrics};
 use datafusion_common::{DataFusionError, Result, Statistics};
@@ -32,7 +39,7 @@ use futures::{FutureExt, Stream, StreamExt, TryStreamExt};
 
 use crate::{hash_utils::create_hashes, repartition::distributor_channels::channels};
 
-use self::distributor_channels::{DistributionReceiver, DistributionSender, partition_aware_channels};
+use self::distributor_channels::{partition_aware_channels, DistributionReceiver, DistributionSender};
 
 use log::trace;
 use parking_lot::Mutex;
@@ -75,7 +82,6 @@ struct RepartitionByRangeAndHashExecState {
     >,
     /// Helper that ensures that that background job is killed once it is no longer needed.
     abort_helper: Arc<Vec<SpawnedTask<()>>>,
-
 }
 
 impl RepartitionByRangeAndHashExecState {
@@ -92,8 +98,7 @@ impl RepartitionByRangeAndHashExecState {
         let num_output_partitions = hash_partitioning.partition_count();
 
         let (txs, rxs) = if preserve_order {
-            let (txs, rxs) =
-                partition_aware_channels(num_input_partitions, num_output_partitions);
+            let (txs, rxs) = partition_aware_channels(num_input_partitions, num_output_partitions);
             // Take transpose of senders and receivers. `state.channels` keeps track of entries per output partition
             let txs = transpose(txs);
             let rxs = transpose(rxs);
@@ -149,7 +154,7 @@ impl RepartitionByRangeAndHashExecState {
             ));
             spawned_tasks.push(wait_for_task);
         }
-    
+
         Self {
             channels,
             abort_helper: Arc::new(spawned_tasks),
@@ -162,7 +167,6 @@ pub struct BatchPartitioner {
     state: BatchPartitionerState,
     timer: metrics::Time,
 }
-
 
 /// The state of the [`BatchPartitioner`].
 struct BatchPartitionerState {
@@ -326,24 +330,17 @@ struct RepartitionMetrics {
 }
 
 impl RepartitionMetrics {
-    pub fn new(
-        input_partition: usize,
-        num_output_partitions: usize,
-        metrics: &ExecutionPlanMetricsSet,
-    ) -> Self {
+    pub fn new(input_partition: usize, num_output_partitions: usize, metrics: &ExecutionPlanMetricsSet) -> Self {
         // Time in nanos to execute child operator and fetch batches
-        let fetch_time =
-            MetricBuilder::new(metrics).subset_time("fetch_time", input_partition);
+        let fetch_time = MetricBuilder::new(metrics).subset_time("fetch_time", input_partition);
 
         // Time in nanos to perform repartitioning
-        let repartition_time =
-            MetricBuilder::new(metrics).subset_time("repartition_time", input_partition);
+        let repartition_time = MetricBuilder::new(metrics).subset_time("repartition_time", input_partition);
 
         // Time in nanos for sending resulting batches to channels
         let send_time = (0..num_output_partitions)
             .map(|output_partition| {
-                let label =
-                    metrics::Label::new("outputPartition", output_partition.to_string());
+                let label = metrics::Label::new("outputPartition", output_partition.to_string());
                 MetricBuilder::new(metrics)
                     .with_label(label)
                     .subset_time("send_time", input_partition)
@@ -359,12 +356,12 @@ impl RepartitionMetrics {
 }
 
 /// The repartition operator that repartitions the input batches into the specified number of output partitions.
-/// 
+///
 /// It uses the range partitioning and hash partitioning schemes to repartition the input batches.
 /// Each input batch is repartitioned into output batches which will first be sorted by both range partitioning and hash partitioning,
 /// then rows of the same range hash value will be grouped together into output batches.
 /// Output batches are emitted in the order of the hash partitioning.
-/// 
+///
 #[derive(Debug)]
 pub struct RepartitionByRangeAndHashExec {
     /// Input execution plan
@@ -537,7 +534,7 @@ impl RepartitionByRangeAndHashExec {
                 // if there is still a receiver, send to it
                 if let Some((tx, reservation)) = output_channels.get_mut(&partition) {
                     reservation.lock().try_grow(size)?;
-                    
+
                     if tx.send(Some(Ok(batch))).await.is_err() {
                         // If the other end has hung up, it was an early shutdown (e.g. LIMIT)
                         reservation.lock().shrink(size);
@@ -579,10 +576,7 @@ impl RepartitionByRangeAndHashExec {
     /// each of the output tx channels to signal one of the inputs is
     /// complete. Upon error, propagates the errors to all output tx
     /// channels.
-    async fn wait_for_task(
-        input_task: SpawnedTask<Result<()>>,
-        txs: HashMap<usize, DistributionSender<MaybeBatch>>,
-    ) {
+    async fn wait_for_task(input_task: SpawnedTask<Result<()>>, txs: HashMap<usize, DistributionSender<MaybeBatch>>) {
         // wait for completion, and propagate error
         // note we ignore errors on send (.ok) as that means the receiver has already shutdown.
 
@@ -686,11 +680,7 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
         Ok(Arc::new(repartition))
     }
 
-    fn execute(
-        &self, 
-        partition: usize, 
-        context: Arc<TaskContext>
-    ) -> Result<SendableRecordBatchStream> {
+    fn execute(&self, partition: usize, context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
         // clone all data that needs to be used in async block
         let metrics = self.metrics.clone();
         let lazy_state = self.state.clone();
@@ -703,7 +693,7 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
         let input_schema = input.schema();
         let range_partitioning_expr = self.range_partitioning_expr.clone();
         let hash_partitioning = self.hash_partitioning.clone();
-        
+
         let stream = futures::stream::once(async move {
             let metrics_captured = metrics.clone();
             let name_captured = name.clone();
@@ -735,7 +725,7 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
             let (mut rx, reservation, abort_helper) = {
                 // lock mutexes
                 let mut state = state.lock();
-                
+
                 let (_tx, rx, reservation) = state
                     .channels
                     .remove(&partition)
@@ -762,8 +752,7 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
                 // input partitions to this partition:
                 let fetch = None;
                 let merge_reservation =
-                    MemoryConsumer::new(format!("{}[Merge {partition}]", name))
-                        .register(context.memory_pool());
+                    MemoryConsumer::new(format!("{}[Merge {partition}]", name)).register(context.memory_pool());
                 StreamingMergeBuilder::new()
                     .with_streams(input_streams)
                     .with_schema(schema_captured)
@@ -785,7 +774,7 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
             }
         })
         .try_flatten();
-        
+
         let stream = RecordBatchStreamAdapter::new(schema, stream);
         Ok(Box::pin(stream))
     }
@@ -794,7 +783,6 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
         self.input.statistics()
     }
 }
-
 
 /// [`RepartitionStream`] is executed stream for [`RepartitionByRangeAndHashExec`].
 struct RepartitionStream {
@@ -820,17 +808,12 @@ struct RepartitionStream {
 impl Stream for RepartitionStream {
     type Item = Result<RecordBatch>;
 
-    fn poll_next(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
             match self.input.recv().poll_unpin(cx) {
                 Poll::Ready(Some(Some(v))) => {
                     if let Ok(batch) = &v {
-                        self.reservation
-                            .lock()
-                            .shrink(batch.get_array_memory_size());
+                        self.reservation.lock().shrink(batch.get_array_memory_size());
                     }
 
                     return Poll::Ready(Some(v));
@@ -883,16 +866,11 @@ struct PerPartitionStream {
 impl Stream for PerPartitionStream {
     type Item = Result<RecordBatch>;
 
-    fn poll_next(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match self.receiver.recv().poll_unpin(cx) {
             Poll::Ready(Some(Some(v))) => {
                 if let Ok(batch) = &v {
-                    self.reservation
-                        .lock()
-                        .shrink(batch.get_array_memory_size());
+                    self.reservation.lock().shrink(batch.get_array_memory_size());
                 }
                 Poll::Ready(Some(v))
             }
