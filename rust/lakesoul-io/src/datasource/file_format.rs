@@ -303,7 +303,8 @@ pub async fn flatten_file_scan_config(
             let statistics = format
                 .infer_stats(state, &store, file_schema.clone(), &file.object_meta)
                 .await?;
-            let projection = compute_project_column_indices(file_schema.clone(), target_schema.clone(), primary_keys, &cdc_column);
+            let projection =
+                compute_project_column_indices(file_schema.clone(), target_schema.clone(), primary_keys, &cdc_column);
             let limit = conf.limit;
             let table_partition_cols = conf.table_partition_cols.clone();
             let output_ordering = conf.output_ordering.clone();
@@ -337,7 +338,10 @@ pub fn compute_project_column_indices(
             .iter()
             .enumerate()
             .filter_map(|(idx, field)| {
-                if projected_schema.field_with_name(field.name()).is_ok() || primary_keys.contains(field.name()) || field.name().eq(&cdc_column) {
+                if projected_schema.field_with_name(field.name()).is_ok()
+                    || primary_keys.contains(field.name())
+                    || field.name().eq(&cdc_column)
+                {
                     Some(idx)
                 } else {
                     None

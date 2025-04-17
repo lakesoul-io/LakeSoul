@@ -56,7 +56,7 @@ use super::file_format::LakeSoulMetaDataParquetFormat;
 /// 2. Hive-style partitioning support, where a path such as
 /// `/files/date=1/1/2022/data.parquet` is injected as a `date` column.
 ///
-/// 3. Projection pushdown for formats that support 
+/// 3. Projection pushdown for formats that support
 ///
 #[derive(Debug)]
 pub struct LakeSoulTableProvider {
@@ -120,7 +120,6 @@ impl LakeSoulTableProvider {
             file_schema,
             primary_keys: hash_partitions,
             range_partitions,
-            
         })
     }
 
@@ -140,11 +139,13 @@ impl LakeSoulTableProvider {
                 _ => vec![],
             })
             .collect::<Vec<_>>();
-        
 
         let range_partitions = cmd.table_partition_cols.clone();
 
-        info!("LakeSoulTableProvider::new_from_create_external_table cmd.options: {:?}", cmd.options);
+        info!(
+            "LakeSoulTableProvider::new_from_create_external_table cmd.options: {:?}",
+            cmd.options
+        );
 
         let mut schema_builder = SchemaBuilder::new();
         for field in cmd.schema.as_ref().fields() {
@@ -155,10 +156,17 @@ impl LakeSoulTableProvider {
             ));
         }
 
-
         let (cdc_column, use_cdc) = if cmd.options.contains_key("format.use_cdc") {
-            let cdc_column = cmd.options.get("format.cdc_column").unwrap_or(&"rowKinds".to_string()).to_string();
-            let use_cdc = cmd.options.get("format.use_cdc").unwrap_or(&"false".to_string()).to_string();
+            let cdc_column = cmd
+                .options
+                .get("format.cdc_column")
+                .unwrap_or(&"rowKinds".to_string())
+                .to_string();
+            let use_cdc = cmd
+                .options
+                .get("format.use_cdc")
+                .unwrap_or(&"false".to_string())
+                .to_string();
             let cdc_field = Arc::new(Field::new(cdc_column.clone(), DataType::Utf8, true));
             schema_builder.try_merge(&cdc_field)?;
             (Some(cdc_column), Some(use_cdc))
@@ -167,7 +175,7 @@ impl LakeSoulTableProvider {
         };
 
         let table_schema = Arc::new(schema_builder.finish());
-        
+
         let file_schema: SchemaRef = table_schema.clone();
 
         let table_info = Arc::new(TableInfo {
@@ -205,7 +213,6 @@ impl LakeSoulTableProvider {
             file_schema,
             primary_keys,
             range_partitions,
-
         })
     }
 
@@ -370,7 +377,6 @@ impl LakeSoulTableProvider {
 
         Ok((file_groups, Statistics::new_unknown(self.schema().deref())))
     }
-
 }
 
 #[async_trait]

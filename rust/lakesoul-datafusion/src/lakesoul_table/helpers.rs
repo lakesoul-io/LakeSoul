@@ -4,8 +4,8 @@
 
 //! The utilities for LakeSoul table.
 
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use arrow::{
     array::{Array, ArrayRef, AsArray, StringBuilder},
@@ -17,20 +17,17 @@ use arrow_arith::boolean::and;
 use arrow_cast::cast;
 
 use datafusion::{
-    common::DFSchema,
-    error::DataFusionError,
-    execution::context::ExecutionProps,
-    logical_expr::Expr,
+    common::DFSchema, error::DataFusionError, execution::context::ExecutionProps, logical_expr::Expr,
     physical_expr::create_physical_expr,
 };
 use lakesoul_metadata::MetaDataClientRef;
-use object_store::{path::Path, ObjectMeta, ObjectStore};
 use log::{debug, info};
+use object_store::{path::Path, ObjectMeta, ObjectStore};
 use url::Url;
 
 use crate::error::Result;
-use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfigBuilder, OPTION_KEY_CDC_COLUMN, OPTION_KEY_STABLE_SORT};
 use crate::serialize::arrow_java::schema_from_metadata_str;
+use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfigBuilder, OPTION_KEY_CDC_COLUMN, OPTION_KEY_STABLE_SORT};
 use proto::proto::entity::{PartitionInfo, TableInfo};
 
 use crate::catalog::{parse_table_info_partitions, LakeSoulTableProperty};
@@ -43,10 +40,14 @@ pub(crate) fn create_io_config_builder_from_table_info(
 ) -> Result<LakeSoulIOConfigBuilder> {
     let (range_partitions, hash_partitions) = parse_table_info_partitions(table_info.partitions.clone())?;
     let properties = serde_json::from_str::<LakeSoulTableProperty>(&table_info.properties)?;
-    let use_cdc = properties.use_cdc.map_or("false".to_string(), |use_cdc| use_cdc.clone());
-    let cdc_column = properties.cdc_change_column.map_or("".to_string(), |cdc_column| cdc_column.clone());
+    let use_cdc = properties
+        .use_cdc
+        .map_or("false".to_string(), |use_cdc| use_cdc.clone());
+    let cdc_column = properties
+        .cdc_change_column
+        .map_or("".to_string(), |cdc_column| cdc_column.clone());
     let dynamic_partition = hash_partitions.len() + range_partitions.len() > 0;
-    
+
     let mut builder = LakeSoulIOConfigBuilder::new()
         .with_schema(schema_from_metadata_str(&table_info.table_schema))
         .with_prefix(table_info.table_path.clone())

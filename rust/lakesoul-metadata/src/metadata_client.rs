@@ -159,8 +159,8 @@ impl MetaDataClient {
 
     // Use transaction?
     pub async fn delete_table_by_table_info_cascade(&self, table_info: &TableInfo) -> Result<()> {
-        self.delete_table_by_table_id_cascade(table_info.table_id.as_str(),
-                                              table_info.table_path.as_str()).await
+        self.delete_table_by_table_id_cascade(table_info.table_id.as_str(), table_info.table_path.as_str())
+            .await
     }
 
     pub async fn delete_table_by_table_id_cascade(&self, table_id: &str, table_path: &str) -> Result<()> {
@@ -168,8 +168,7 @@ impl MetaDataClient {
         self.delete_table_path_id_by_table_id(table_id).await?;
         self.delete_partition_info_by_table_id(table_id).await?;
         self.delete_data_commit_info_by_table_id(table_id).await?;
-        self.delete_table_info_by_id_and_path(table_id, table_path)
-            .await?;
+        self.delete_table_info_by_id_and_path(table_id, table_path).await?;
         Ok(())
     }
 
@@ -755,10 +754,10 @@ impl MetaDataClient {
         let table_info = self.get_table_info_by_table_id(table_id).await?;
 
         if let Some(table_info) = table_info {
-            
             // 解析新的和原始的properties
             let new_properties: serde_json::Value = serde_json::from_str(properties)?;
-            let mut new_properties = new_properties.as_object()
+            let mut new_properties = new_properties
+                .as_object()
                 .ok_or(LakeSoulMetaDataError::Internal("Invalid properties format".to_string()))?
                 .clone();
 
@@ -810,7 +809,7 @@ impl MetaDataClient {
                 DaoType::UpdateTableInfoById as i32,
                 [table_id, table_name, table_path, ""].join(PARAM_DELIM),
             )
-                .await?;
+            .await?;
 
             // 插入新的表名ID映射
             self.insert_table_name_id(&TableNameId {
@@ -819,7 +818,7 @@ impl MetaDataClient {
                 table_namespace: table_namespace.to_string(),
                 domain: table_info.domain,
             })
-                .await?;
+            .await?;
             Ok(())
         } else {
             Err(LakeSoulMetaDataError::NotFound(format!(

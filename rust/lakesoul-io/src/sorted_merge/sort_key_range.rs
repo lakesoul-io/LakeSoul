@@ -2,7 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-
 //! This module provides definition and utilities for sort key ranges.
 
 use std::cmp::Ordering;
@@ -230,7 +229,7 @@ impl Clone for SortKeyArrayRange {
 /// These ranges will be merged into ONE row of target record_batch finally.
 #[derive(Debug, Clone)]
 pub struct SortKeyBatchRanges {
-    /// vector with length=column_num 
+    /// vector with length=column_num
     /// each element of this vector is a collection corresponding to the specific column of SortKeyArrayRange to be merged
     pub(crate) sort_key_array_ranges: Vec<SmallVec<[SortKeyArrayRange; 4]>>,
 
@@ -335,7 +334,6 @@ impl Clone for UseLastSortKeyArrayRange {
         }
     }
 }
-
 
 /// Multiple ranges with same sorted primary key from variant source record_batch.
 /// These ranges will be merged into ONE row of target record_batch finally.

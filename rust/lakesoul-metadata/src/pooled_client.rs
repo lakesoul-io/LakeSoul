@@ -18,7 +18,6 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio_postgres::{Client, Config, Error, NoTls, Row, Statement, ToStatement};
 
-
 /// The pooled client for the postgres database.
 pub struct PooledClient {
     /// The pool of [`PgConnectionManager`] for the postgres database.
@@ -70,11 +69,7 @@ impl PooledClient {
         conn.query(statement, params).await.map_err(Into::into)
     }
 
-    pub async fn query_opt<T>(
-        &self,
-        statement: &T,
-        params: &[&(dyn ToSql + Sync)],
-    ) -> Result<Option<Row>>
+    pub async fn query_opt<T>(&self, statement: &T, params: &[&(dyn ToSql + Sync)]) -> Result<Option<Row>>
     where
         T: ?Sized + ToStatement,
     {
@@ -138,8 +133,7 @@ impl PgConnectionManager {
 }
 
 #[async_trait]
-impl bb8::ManageConnection for PgConnectionManager
-{
+impl bb8::ManageConnection for PgConnectionManager {
     type Connection = PgConnWithStmtCache;
     type Error = Error;
 
@@ -286,12 +280,7 @@ impl StatementCache {
     /// explicitly using this [`StatementCache`], if possible.
     ///
     /// See [`tokio_postgres::Client::prepare_typed()`].
-    pub async fn prepare_typed<'a>(
-        &self,
-        client: &Client,
-        query: &str,
-        types: &[Type],
-    ) -> Result<Statement> {
+    pub async fn prepare_typed<'a>(&self, client: &Client, query: &str, types: &[Type]) -> Result<Statement> {
         match self.get(query, types) {
             Some(statement) => Ok(statement),
             None => {

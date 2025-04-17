@@ -10,7 +10,8 @@ use arrow_array::RecordBatch;
 use arrow_schema::{SchemaRef, SortOptions};
 use datafusion::{
     physical_expr::{
-        expressions::{col, Column}, LexOrdering, PhysicalSortExpr
+        expressions::{col, Column},
+        LexOrdering, PhysicalSortExpr,
     },
     physical_plan::{
         projection::ProjectionExec, sorts::sort::SortExec, stream::RecordBatchReceiverStream, ExecutionPlan,

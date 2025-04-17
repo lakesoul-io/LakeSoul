@@ -71,11 +71,7 @@ pub fn table_without_pk(hash_bucket_num: &str) -> bool {
 /// use raw ptr to create `MetadataClientRef`
 /// stay origin memory the same
 /// see <https://users.rust-lang.org/t/dereferencing-a-boxed-value/86768>
-pub async fn split_desc_array(
-    client: &PooledClient,
-    table_name: &str,
-    namespace: &str,
-) -> Result<SplitDescArray> {
+pub async fn split_desc_array(client: &PooledClient, table_name: &str, namespace: &str) -> Result<SplitDescArray> {
     let db = RawClient::new(client);
     let table_info = db.get_table_info_by_table_name(table_name, namespace).await?;
     let data_files = db.get_table_data_info(&table_info.table_id).await?;
@@ -151,9 +147,10 @@ impl<'a> RawClient<'_> {
             )
             .await
         {
-            Ok(wrapper) if wrapper.table_info.is_empty() => Err(LakeSoulMetaDataError::NotFound(
-                format!("Table '{}' not found", table_name),
-            )),
+            Ok(wrapper) if wrapper.table_info.is_empty() => Err(LakeSoulMetaDataError::NotFound(format!(
+                "Table '{}' not found",
+                table_name
+            ))),
             Ok(wrapper) => Ok(wrapper.table_info[0].clone()),
             Err(err) => Err(err),
         }
@@ -221,12 +218,7 @@ impl<'a> RawClient<'_> {
 
     /// maybe use AnyMap
     async fn query(&self, query_type: i32, joined_string: String) -> Result<JniWrapper> {
-        let encoded = execute_query(
-            self.client.lock().await.deref(),
-            query_type,
-            joined_string.clone(),
-        )
-        .await?;
+        let encoded = execute_query(self.client.lock().await.deref(), query_type, joined_string.clone()).await?;
         Ok(JniWrapper::decode(prost::bytes::Bytes::from(encoded))?)
     }
 
@@ -303,7 +295,10 @@ impl DataFileInfo {
         Ok(Self {
             partition_desc: partition_info.partition_desc.clone(),
             path: data_file_op.path.clone(),
-            file_op: FileOp::try_from(data_file_op.file_op).map_err(|e| LakeSoulMetaDataError::Internal(e.to_string()))?.as_str_name().to_string(),
+            file_op: FileOp::try_from(data_file_op.file_op)
+                .map_err(|e| LakeSoulMetaDataError::Internal(e.to_string()))?
+                .as_str_name()
+                .to_string(),
             size: data_file_op.size,
             bucket_id: Self::parse_bucket_id(&data_file_op.path),
             modification_time: data_commit_info.timestamp,

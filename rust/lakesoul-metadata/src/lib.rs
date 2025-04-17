@@ -568,9 +568,7 @@ pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string
     let params = get_params(joined_string);
 
     let rows = match query_type {
-        DaoType::ListNamespaces
-        | DaoType::ListAllTablePath
-        | DaoType::ListAllDiscardCompressedFileInfo
+        DaoType::ListNamespaces | DaoType::ListAllTablePath | DaoType::ListAllDiscardCompressedFileInfo
             if params.len() == 1 && params[0].is_empty() =>
         {
             let result = client.query(&statement, &[]).await;
@@ -579,32 +577,29 @@ pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
-        DaoType::ListTableNameByNamespace if params.len() == 1 =>
-        {
+        DaoType::ListTableNameByNamespace if params.len() == 1 => {
             let result = client.query(&statement, &[&params[0]]).await;
             match result {
                 Ok(rows) => rows,
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
-        DaoType::ListDiscardCompressedFileInfoBeforeTimestamp if params.len() == 1 =>
-            {
-                let result = client.query(&statement, &[&i64::from_str(&params[0])?]).await;
-                match result {
-                    Ok(rows) => rows,
-                    Err(e) => return Err(LakeSoulMetaDataError::from(e)),
-                }
+        DaoType::ListDiscardCompressedFileInfoBeforeTimestamp if params.len() == 1 => {
+            let result = client.query(&statement, &[&i64::from_str(&params[0])?]).await;
+            match result {
+                Ok(rows) => rows,
+                Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
-        DaoType::ListDiscardCompressedFileByFilterCondition if params.len() == 3 =>
-            {
-                let result = client
-                    .query(&statement, &[&params[0], &params[1], &i64::from_str(&params[2])?])
-                    .await;
-                match result {
-                    Ok(rows) => rows,
-                    Err(e) => return Err(LakeSoulMetaDataError::from(e)),
-                }
+        }
+        DaoType::ListDiscardCompressedFileByFilterCondition if params.len() == 3 => {
+            let result = client
+                .query(&statement, &[&params[0], &params[1], &i64::from_str(&params[2])?])
+                .await;
+            match result {
+                Ok(rows) => rows,
+                Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
+        }
         DaoType::SelectNamespaceByNamespace
         | DaoType::SelectTableInfoByTableId
         | DaoType::SelectTablePathIdByTablePath
@@ -670,9 +665,7 @@ pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string
             }
         }
         DaoType::SelectTableDomainById if params.len() == 1 => {
-            let result = client
-                .query(&statement, &[&params[0]])
-                .await;
+            let result = client.query(&statement, &[&params[0]]).await;
             match result {
                 Ok(rows) => rows,
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
@@ -801,9 +794,9 @@ pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string
 
         DaoType::SelectTablePathIdByTablePath | DaoType::ListAllTablePath => ResultType::TablePathId,
 
-        DaoType::SelectTableNameIdByTableName
-        | DaoType::ListTableNameByNamespace
-        | DaoType::SelectTableDomainById => ResultType::TableNameId,
+        DaoType::SelectTableNameIdByTableName | DaoType::ListTableNameByNamespace | DaoType::SelectTableDomainById => {
+            ResultType::TableNameId
+        }
 
         DaoType::ListPartitionByTableId
         | DaoType::ListPartitionDescByTableIdAndParList
@@ -1296,7 +1289,7 @@ pub async fn execute_insert(client: &mut PooledClient, insert_type: i32, wrapper
                             partition_desc,
                             timestamp,
                             t_date
-                        ) values ($1::TEXT, $2::TEXT, $3::TEXT, $4::BIGINT, $5::DATE)"
+                        ) values ($1::TEXT, $2::TEXT, $3::TEXT, $4::BIGINT, $5::DATE)",
                     )
                     .await
                 {
@@ -1375,10 +1368,10 @@ pub async fn execute_update(client: &mut PooledClient, update_type: i32, joined_
         {
             client.execute(&statement, &[&params[0]]).await
         }
-        | DaoType::DeleteDiscardCompressedFileByFilterCondition
-            if params.len() == 3 =>
-        {
-            client.execute(&statement, &[&params[0], &params[1], &i64::from_str(&params[2])?]).await
+        DaoType::DeleteDiscardCompressedFileByFilterCondition if params.len() == 3 => {
+            client
+                .execute(&statement, &[&params[0], &params[1], &i64::from_str(&params[2])?])
+                .await
         }
         DaoType::DeleteTableInfoByIdAndPath
         | DaoType::DeleteTableNameIdByTableNameAndNamespace

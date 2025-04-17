@@ -2,7 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-
 //! This module provides the implementation of the combiner for the sorted merge.
 //! It provides two types of combiners:
 //! - [`MinHeapSortKeyBatchRangeCombiner`]: a common combiner that uses a min heap to merge the sorted ranges.
@@ -142,9 +141,9 @@ pub struct MinHeapSortKeyBatchRangeCombiner {
 
 impl MinHeapSortKeyBatchRangeCombiner {
     /// Create a new MinHeapSortKeyBatchRangeCombiner.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `schema`: The schema of the record batch.
     /// * `streams_num`: The number of streams.
     /// * `fields_map`: The fields map from source schemas to target schema which vector index = stream_idx.
@@ -285,7 +284,7 @@ impl MinHeapSortKeyBatchRangeCombiner {
 }
 
 /// Merge the sort key array ranges. We flatten all array ranges of current column_idx for interleave.
-/// 
+///
 /// Before interleave, we deduplicate the array ranges by applying MergeOperator on rows from collected ranges.
 /// For computed rows by MergeOperator and null rows, we append them to the end of the flatten array.
 /// Finally, we interleave the flatten array and return the result.
@@ -425,9 +424,9 @@ pub struct UseLastRangeCombiner {
 
 impl UseLastRangeCombiner {
     /// Create a new UseLastRangeCombiner.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `schema`: The schema of the record batch.
     /// * `streams_num`: The number of streams.
     /// * `fields_map`: The fields map from source schemas to target schema which vector index = stream_idx.
@@ -479,7 +478,7 @@ impl UseLastRangeCombiner {
     /// if loser tree is empty,
     /// check if in_progress is empty, if so, return None, which the RangeCombiner is finished.
     /// otherwise, build record batch by merge all the remaining ranges in in_progress.
-    /// 
+    ///
     /// If the merge is full column merge, we use `build_record_batch_full_merge` to build the record batch.
     /// Otherwise, we use `build_record_batch` to build the record batch.
     pub fn poll_result(&mut self) -> RangeCombinerResult {
@@ -587,7 +586,7 @@ impl UseLastRangeCombiner {
     }
 
     /// Build a record batch by merging the in-progress ranges.
-    /// 
+    ///
     /// For UseLast merge operator, we still flatten all array ranges of current column_idx for interleave.
     /// However, we only need to collect last index of array ranges for each generated row, rather than compute the merge result.
     /// Finally, we interleave the flatten array and return the result.

@@ -11,24 +11,29 @@ use arrow_schema::{SchemaRef, SortOptions};
 use datafusion::{
     execution::TaskContext,
     physical_expr::{
-        expressions::{col, Column}, LexOrdering, PhysicalSortExpr
+        expressions::{col, Column},
+        LexOrdering, PhysicalSortExpr,
     },
     physical_plan::{
         projection::ProjectionExec, sorts::sort::SortExec, stream::RecordBatchReceiverStream, ExecutionPlan,
-        Partitioning, PhysicalExpr, ExecutionPlanProperties
+        ExecutionPlanProperties, Partitioning, PhysicalExpr,
     },
 };
 use datafusion_common::{DataFusionError, Result};
 
+use log::{debug, info};
 use rand::distributions::DistString;
 use tokio::{sync::mpsc::Sender, task::JoinHandle};
 use tokio_stream::StreamExt;
-use log::{info, debug};
 
 use crate::{
-    datasource::physical_plan::self_incremental_index_column::SelfIncrementalIndexColumnExec, helpers::{
+    datasource::physical_plan::self_incremental_index_column::SelfIncrementalIndexColumnExec,
+    helpers::{
         columnar_values_to_partition_desc, columnar_values_to_sub_path, get_batch_memory_size, get_columnar_values,
-    }, lakesoul_io_config::{create_session_context, IOSchema, LakeSoulIOConfig, LakeSoulIOConfigBuilder}, repartition::RepartitionByRangeAndHashExec, transform::uniform_schema
+    },
+    lakesoul_io_config::{create_session_context, IOSchema, LakeSoulIOConfig, LakeSoulIOConfigBuilder},
+    repartition::RepartitionByRangeAndHashExec,
+    transform::uniform_schema,
 };
 
 use super::{AsyncBatchWriter, MultiPartAsyncWriter, ReceiverStreamExec, WriterFlushResult};
@@ -78,7 +83,11 @@ impl PartitioningAsyncWriter {
                 .fields
                 .iter()
                 .filter(|f| !config.aux_sort_cols.contains(f.name()))
-                .map(|f| schema.index_of(f.name().as_str()).map_err(|e| DataFusionError::ArrowError(e, None)))
+                .map(|f| {
+                    schema
+                        .index_of(f.name().as_str())
+                        .map_err(|e| DataFusionError::ArrowError(e, None))
+                })
                 .collect::<Result<Vec<usize>>>()?;
             let writer_schema = Arc::new(schema.project(proj_indices.borrow())?);
             writer_config.target_schema = IOSchema(uniform_schema(writer_schema));
@@ -115,7 +124,7 @@ impl PartitioningAsyncWriter {
 
     fn get_partitioning_exec(input: ReceiverStreamExec, config: LakeSoulIOConfig) -> Result<Arc<dyn ExecutionPlan>> {
         let mut aux_sort_cols = config.aux_sort_cols.clone();
-        let input : Arc<dyn ExecutionPlan> = if config.stable_sort() {
+        let input: Arc<dyn ExecutionPlan> = if config.stable_sort() {
             aux_sort_cols.push("__self_incremental_index__".to_string());
             info!("input schema of self incremental index exec: {:?}", input.schema());
             Arc::new(SelfIncrementalIndexColumnExec::new(Arc::new(input)))
@@ -284,7 +293,9 @@ impl PartitioningAsyncWriter {
                     let writer_flush_results = writer.flush_and_close().await?;
                     Ok(writer_flush_results
                         .into_iter()
-                        .map(|(_, path, object_meta, file_metadata)| (partition_desc.clone(), path, object_meta, file_metadata))
+                        .map(|(_, path, object_meta, file_metadata)| {
+                            (partition_desc.clone(), path, object_meta, file_metadata)
+                        })
                         .collect::<Vec<_>>())
                 });
                 flush_join_handle_list.push(flush_result);

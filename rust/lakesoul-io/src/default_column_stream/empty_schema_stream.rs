@@ -17,7 +17,6 @@ use datafusion::error::Result;
 use datafusion::physical_plan::RecordBatchStream;
 use datafusion_common::DataFusionError::ArrowError;
 
-
 /// A stream that yields record batches with an empty schema and a given number of rows.
 #[derive(Debug)]
 pub(crate) struct EmptySchemaStream {

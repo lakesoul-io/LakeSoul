@@ -137,7 +137,8 @@ impl Credentials {
                     self.group.as_str(),
                     parse_table_path(&headers.uri, bucket).as_str(),
                     client.clone(),
-                ).await?;
+                )
+                .await?;
             }
             Ok(())
         }
@@ -207,8 +208,11 @@ impl BackgroundService for Credentials {
     async fn start(&self, shutdown: ShutdownWatch) {
         if self.verify_meta {
             // create metadata client
-            let metadata_client = Arc::new(MetaDataClient::from_env().await
-                .expect("cannot create meta data client"));
+            let metadata_client = Arc::new(
+                MetaDataClient::from_env()
+                    .await
+                    .expect("cannot create meta data client"),
+            );
             self.metadata_client.store(Some(metadata_client));
         }
 

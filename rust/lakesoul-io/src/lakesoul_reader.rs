@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! LakeSoul Reader Module
-//! 
+//!
 //! This module provides functionality for reading data from LakeSoul tables.
 //! It supports reading from various file formats (currently Parquet) and includes
 //! features like filtering, partitioning, and optimized reading with primary keys.
@@ -12,16 +12,16 @@
 //! ```rust
 //! use lakesoul_io::lakesoul_reader::LakeSoulReader;
 //! use lakesoul_io::lakesoul_io_config::LakeSoulIOConfigBuilder;
-//! 
+//!
 //! let config = LakeSoulIOConfigBuilder::new()
 //!     .with_files(vec!["path/to/file.parquet"])
 //!     .with_thread_num(1)
 //!     .with_batch_size(256)
 //!     .build();
-//! 
+//!
 //! let mut reader = LakeSoulReader::new(config)?;
 //! reader.start().await?;
-//! 
+//!
 //! while let Some(batch) = reader.next_rb().await {
 //!     let record_batch = batch?;
 //!     // Process the record batch
@@ -51,38 +51,41 @@ use crate::datasource::file_format::LakeSoulParquetFormat;
 use crate::datasource::listing::LakeSoulTableProvider;
 use crate::datasource::physical_plan::merge::convert_filter;
 use crate::datasource::physical_plan::merge::prune_filter_and_execute;
-use crate::helpers::{extract_hash_bucket_id, collect_or_conjunctive_filter_expressions, extract_scalar_value_from_expr, compute_scalar_hash};
+use crate::helpers::{
+    collect_or_conjunctive_filter_expressions, compute_scalar_hash, extract_hash_bucket_id,
+    extract_scalar_value_from_expr,
+};
 use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfig};
 
 /// A reader for LakeSoul tables that supports efficient reading of data with various optimizations.
-/// 
+///
 /// This reader provides functionality to:
 /// - Read data from Parquet files
 /// - Apply filters during reading
 /// - Support partitioned tables
 /// - Optimize reads using primary keys
 /// - Handle both local and S3 storage
-/// 
+///
 /// # Thread Safety
-/// 
+///
 /// The reader is designed to be used in both synchronous and asynchronous contexts.
 /// For synchronous usage, consider using `SyncSendableMutableLakeSoulReader`.
-/// 
+///
 /// # Examples
-/// 
+///
 /// ```rust
 /// use lakesoul_io::lakesoul_reader::LakeSoulReader;
 /// use lakesoul_io::lakesoul_io_config::LakeSoulIOConfigBuilder;
-/// 
+///
 /// let config = LakeSoulIOConfigBuilder::new()
 ///     .with_files(vec!["path/to/file.parquet"])
 ///     .with_thread_num(1)
 ///     .with_batch_size(256)
 ///     .build();
-/// 
+///
 /// let mut reader = LakeSoulReader::new(config)?;
 /// reader.start().await?;
-/// 
+///
 /// while let Some(batch) = reader.next_rb().await {
 ///     let record_batch = batch?;
 ///     // Process the record batch
@@ -97,13 +100,13 @@ pub struct LakeSoulReader {
 
 impl LakeSoulReader {
     /// Creates a new LakeSoulReader with the given configuration.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `config` - The configuration for the reader, including file paths, thread count, and batch size
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// A Result containing the new LakeSoulReader instance
     pub fn new(mut config: LakeSoulIOConfig) -> Result<Self> {
         let sess_ctx = create_session_context(&mut config)?;
@@ -116,14 +119,14 @@ impl LakeSoulReader {
     }
 
     /// Initializes the reader and prepares it for reading data.
-    /// 
+    ///
     /// This method:
     /// - Sets up the file format and table provider
     /// - Applies any configured filters
     /// - Optimizes the read operation if primary keys are configured
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// A Result indicating success or failure of the initialization
     pub async fn start(&mut self) -> Result<()> {
         let target_schema: SchemaRef = self.config.target_schema.0.clone();
@@ -151,38 +154,51 @@ impl LakeSoulReader {
                 self.config.filter_protos.clone(),
             )?;
 
-
             // Check if filters are or-conjunction of primary column
-            let skip_reader= if self.config.skip_merge_on_read() && !self.config.primary_keys.is_empty() && !filters.is_empty() {
+            let skip_reader = if self.config.skip_merge_on_read()
+                && !self.config.primary_keys.is_empty()
+                && !filters.is_empty()
+            {
                 // Refactored approach for OR-conjunction optimization
-                let or_conjunctive_filter = collect_or_conjunctive_filter_expressions(&filters, &self.config.primary_keys);
-                
+                let or_conjunctive_filter =
+                    collect_or_conjunctive_filter_expressions(&filters, &self.config.primary_keys);
+
                 if !or_conjunctive_filter.is_empty() {
-                    debug!("Found {} optimizable expressions with primary keys",  or_conjunctive_filter.len());
+                    debug!(
+                        "Found {} optimizable expressions with primary keys",
+                        or_conjunctive_filter.len()
+                    );
 
                     let hash_bucket_num = self.config.hash_bucket_num() as u32;
                     // Collect all scalar values from optimizable expressions that match the hash bucket
                     let mut matching_scalar_values = std::collections::HashSet::new();
-                    
+
                     for expr in &or_conjunctive_filter {
                         if let Some(scalar_value) = extract_scalar_value_from_expr(expr) {
                             // Calculate the hash bucket for this scalar value
                             let hash_value = compute_scalar_hash(scalar_value) % hash_bucket_num;
-                            
+
                             // Add the scalar value to our set
                             matching_scalar_values.insert(hash_value);
-                            
-                            debug!("Found scalar value with hash {} (mod {}) = {}", 
-                                   scalar_value, hash_bucket_num, hash_value);
+
+                            debug!(
+                                "Found scalar value with hash {} (mod {}) = {}",
+                                scalar_value, hash_bucket_num, hash_value
+                            );
                         }
                     }
-                    
+
                     if !matching_scalar_values.is_empty() {
-                        debug!("Collected {} scalar values for hash bucket optimization", 
-                               matching_scalar_values.len());
+                        debug!(
+                            "Collected {} scalar values for hash bucket optimization",
+                            matching_scalar_values.len()
+                        );
                     }
                     if let Some(hash_bucket_id) = extract_hash_bucket_id(&self.config.files[0]) {
-                        debug!("matching_scalar_values: {:?}, hash_bucket_id: {}", &matching_scalar_values, hash_bucket_id);
+                        debug!(
+                            "matching_scalar_values: {:?}, hash_bucket_id: {}",
+                            &matching_scalar_values, hash_bucket_id
+                        );
                         if !matching_scalar_values.contains(&hash_bucket_id) {
                             true
                         } else {
@@ -199,8 +215,7 @@ impl LakeSoulReader {
             } else {
                 false
             };
-            
-            
+
             let stream = if skip_reader {
                 // Create an empty stream with the target schema
                 debug!("Skipping reader due to hash bucket optimization");
@@ -208,7 +223,7 @@ impl LakeSoulReader {
                 // Use the same stream type as prune_filter_and_execute returns
                 Box::pin(RecordBatchStreamAdapter::new(
                     target_schema.clone(),
-                    futures::stream::once(async move { Ok(empty_batch) }).boxed()
+                    futures::stream::once(async move { Ok(empty_batch) }).boxed(),
                 )) as SendableRecordBatchStream
             } else {
                 prune_filter_and_execute(dataframe, target_schema.clone(), filters, self.config.batch_size).await?
@@ -221,9 +236,9 @@ impl LakeSoulReader {
     }
 
     /// Retrieves the next record batch from the reader.
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// An Option containing a Result with the next RecordBatch, or None if there are no more batches
     pub async fn next_rb(&mut self) -> Option<Result<RecordBatch>> {
         if let Some(stream) = &mut self.stream {
@@ -235,26 +250,26 @@ impl LakeSoulReader {
 }
 
 /// A thread-safe wrapper for LakeSoulReader that can be used in synchronous contexts.
-/// 
+///
 /// This wrapper provides methods to:
 /// - Start the reader in a blocking fashion
 /// - Read record batches using callbacks
 /// - Access the reader's schema
-/// 
+///
 /// # Thread Safety
-/// 
+///
 /// This wrapper ensures thread-safe access to the underlying reader using Arc and Mutex.
-/// 
+///
 /// # Examples
-/// 
+///
 /// ```rust
 /// use lakesoul_io::lakesoul_reader::SyncSendableMutableLakeSoulReader;
 /// use tokio::runtime::Runtime;
-/// 
+///
 /// let runtime = Runtime::new()?;
 /// let reader = SyncSendableMutableLakeSoulReader::new(lake_soul_reader, runtime);
 /// reader.start_blocked()?;
-/// 
+///
 /// let (tx, rx) = std::sync::mpsc::channel(1);
 /// reader.next_rb_callback(Box::new(move |batch| {
 ///     tx.send(batch).unwrap();
@@ -268,9 +283,9 @@ pub struct SyncSendableMutableLakeSoulReader {
 
 impl SyncSendableMutableLakeSoulReader {
     /// Creates a new SyncSendableMutableLakeSoulReader with the given reader and runtime.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `reader` - The LakeSoulReader instance to wrap
     /// * `runtime` - The Tokio runtime to use for async operations
     pub fn new(reader: LakeSoulReader, runtime: Runtime) -> Self {
@@ -282,9 +297,9 @@ impl SyncSendableMutableLakeSoulReader {
     }
 
     /// Starts the reader in a blocking fashion.
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// A Result indicating success or failure of the initialization
     pub fn start_blocked(&mut self) -> Result<()> {
         let inner_reader = self.inner.clone();
@@ -299,13 +314,13 @@ impl SyncSendableMutableLakeSoulReader {
     }
 
     /// Registers a callback to be called with the next record batch.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `f` - The callback function to be called with the next batch
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// A JoinHandle that can be used to wait for the callback to complete
     pub fn next_rb_callback(&self, f: Box<dyn FnOnce(Option<Result<RecordBatch>>) + Send + Sync>) -> JoinHandle<()> {
         let inner_reader = self.get_inner_reader();
@@ -319,9 +334,9 @@ impl SyncSendableMutableLakeSoulReader {
     }
 
     /// Retrieves the next record batch in a blocking fashion.
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// An Option containing a Result with the next RecordBatch, or None if there are no more batches
     pub fn next_rb_blocked(&self) -> Option<std::result::Result<RecordBatch, DataFusionError>> {
         let inner_reader = self.get_inner_reader();
@@ -334,9 +349,9 @@ impl SyncSendableMutableLakeSoulReader {
     }
 
     /// Gets the schema of the reader.
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// An Option containing the SchemaRef, or None if the schema is not yet available
     pub fn get_schema(&self) -> Option<SchemaRef> {
         self.schema.clone()
@@ -832,11 +847,17 @@ mod tests {
         let schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int32, true),
             Field::new("range", DataType::Int32, true),
-            Field::new("datetimeSec", DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, Some(Arc::from("UTC"))), true),
+            Field::new(
+                "datetimeSec",
+                DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, Some(Arc::from("UTC"))),
+                true,
+            ),
         ]));
         let partition_schema = Arc::new(Schema::new(vec![Field::new("range", DataType::Int32, true)]));
         let reader_conf = LakeSoulIOConfigBuilder::new()
-            .with_files(vec!["file:/private/tmp/test_local_java_table/range=0/part-AX31Bzzu4jGi23qY_0000.parquet".to_string()])
+            .with_files(vec![
+                "file:/private/tmp/test_local_java_table/range=0/part-AX31Bzzu4jGi23qY_0000.parquet".to_string(),
+            ])
             // .with_files(vec!["file:/var/folders/4c/34n9w2cd65n0pyjkc3n4q7pc0000gn/T/lakeSource/user1/order_id=4/part-59guLCg5R6v4oLUT_0000.parquet".to_string()])
             .with_thread_num(1)
             .with_batch_size(8192)
@@ -901,11 +922,7 @@ mod tests {
 
     impl LinearPKGenerator {
         fn new(a: i64, b: i64) -> Self {
-            LinearPKGenerator { 
-                a,
-                b,
-                current: 0
-            }
+            LinearPKGenerator { a, b, current: 0 }
         }
 
         fn next_pk(&mut self) -> i64 {
@@ -915,7 +932,12 @@ mod tests {
         }
     }
 
-    fn create_batch(num_columns: usize, num_rows: usize, str_len: usize, pk_generator:  &mut Option<LinearPKGenerator>) -> RecordBatch {
+    fn create_batch(
+        num_columns: usize,
+        num_rows: usize,
+        str_len: usize,
+        pk_generator: &mut Option<LinearPKGenerator>,
+    ) -> RecordBatch {
         let mut rng = rand::thread_rng();
         let mut len_rng = rand::thread_rng();
         let mut iter = vec![];
@@ -956,7 +978,6 @@ mod tests {
         Schema::new(fields)
     }
 
-
     #[test]
     fn profiling_2ways_merge_on_read() -> Result<()> {
         let num_batch = 10;
@@ -967,10 +988,13 @@ mod tests {
         let temp_dir = std::env::current_dir()?.join("temp_dir");
         let with_pk = true;
         let to_write_schema = create_schema(num_columns, with_pk);
-        
-        for i in 0..2 {
 
-            let mut generator = if with_pk { Some(LinearPKGenerator::new(i + 2, 0)) } else { None } ;
+        for i in 0..2 {
+            let mut generator = if with_pk {
+                Some(LinearPKGenerator::new(i + 2, 0))
+            } else {
+                None
+            };
             let to_write = create_batch(num_columns, num_rows, str_len, &mut generator);
             let path = temp_dir
                 .clone()
@@ -986,9 +1010,7 @@ mod tests {
                 // .with_max_row_group_size(2000)
                 // .with_max_row_group_num_values(4_00_000)
                 .with_schema(to_write.schema())
-                .with_primary_keys(
-                    vec!["pk".to_string()]
-                )
+                .with_primary_keys(vec!["pk".to_string()])
                 // .with_aux_sort_column("col2".to_string())
                 // .with_option(OPTION_KEY_MEM_LIMIT, format!("{}", 1024 * 1024 * 48))
                 // .set_dynamic_partition(true)
@@ -997,8 +1019,8 @@ mod tests {
                 .build();
 
             let mut writer = SyncSendableMutableLakeSoulWriter::try_new(
-                writer_conf, 
-                Builder::new_multi_thread().enable_all().build().unwrap()
+                writer_conf,
+                Builder::new_multi_thread().enable_all().build().unwrap(),
             )?;
 
             let _start = Instant::now();
@@ -1012,7 +1034,17 @@ mod tests {
         }
 
         let reader_conf = LakeSoulIOConfigBuilder::new()
-            .with_files((0..2).map(|i| temp_dir.join(format!("test{}.parquet", i)).into_os_string().into_string().unwrap()).collect::<Vec<_>>())
+            .with_files(
+                (0..2)
+                    .map(|i| {
+                        temp_dir
+                            .join(format!("test{}.parquet", i))
+                            .into_os_string()
+                            .into_string()
+                            .unwrap()
+                    })
+                    .collect::<Vec<_>>(),
+            )
             .with_thread_num(2)
             .with_batch_size(num_rows)
             .with_schema(Arc::new(to_write_schema))
@@ -1030,5 +1062,4 @@ mod tests {
         println!("time cost: {:?}ms", start.elapsed().as_millis()); // ms
         Ok(())
     }
-
 }

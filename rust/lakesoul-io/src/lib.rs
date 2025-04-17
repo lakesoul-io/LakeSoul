@@ -3,49 +3,49 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! LakeSoul IO Library
-//! 
+//!
 //! This library provides functionality for reading and writing data in the LakeSoul format.
 //! It includes support for various file formats, optimized reading with primary keys,
 //! partitioned table support, and filter pushdown capabilities.
-//! 
+//!
 //! # Dependencies
-//! 
+//!
 //! The following external crates are re-exported for convenience:
-//! 
+//!
 //! - [arrow](https://docs.rs/arrow/latest/arrow/) - Apache Arrow implementation for columnar data
 //! - [datafusion](https://docs.rs/datafusion/latest/datafusion/) - Query execution framework
 //! - [serde_json](https://docs.rs/serde_json/latest/serde_json/) - JSON serialization/deserialization
 //! - [tokio](https://docs.rs/tokio/latest/tokio/) - Asynchronous runtime
-//! 
+//!
 //! # Examples
-//! 
+//!
 //! ```rust
 //! use lakesoul_io::lakesoul_reader::LakeSoulReader;
 //! use lakesoul_io::lakesoul_io_config::LakeSoulIOConfigBuilder;
-//! 
+//!
 //! // Configure and create a reader
 //! let config = LakeSoulIOConfigBuilder::new()
 //!     .with_files(vec!["path/to/file.parquet"])
 //!     .with_thread_num(1)
 //!     .with_batch_size(256)
 //!     .build();
-//! 
+//!
 //! let mut reader = LakeSoulReader::new(config)?;
 //! reader.start().await?;
-//! 
+//!
 //! // Read data
 //! while let Some(batch) = reader.next_rb().await {
 //!     let record_batch = batch?;
 //!     // Process the record batch
 //! }
 //! ```
-//! 
+//!
 //! # Features
-//! 
+//!
 //! - `hdfs` - Enable HDFS support (disabled by default)
-//! 
+//!
 //! # Modules
-//! 
+//!
 //! - `lakesoul_reader` - Core reading functionality
 //! - `lakesoul_writer` - Core writing functionality
 //! - `lakesoul_io_config` - Configuration types

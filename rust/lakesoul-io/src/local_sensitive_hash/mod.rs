@@ -1,10 +1,10 @@
-use std::ptr;
-use arrow::array::{Int64Array,Array, Float32Array, Float64Array, GenericListArray, ListArray};
+use arrow::array::{Array, Float32Array, Float64Array, GenericListArray, Int64Array, ListArray};
 use arrow::buffer::OffsetBuffer;
 use arrow::datatypes::{DataType, Field};
 use datafusion_common::{DataFusionError, Result};
-use ndarray::{Array2, s, Axis, concatenate, ArrayView2};
+use ndarray::{concatenate, s, Array2, ArrayView2, Axis};
 use rand::{rngs::StdRng, Rng, SeedableRng};
+use std::ptr;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -29,19 +29,17 @@ impl LSH {
         if self.nbits > 0 {
             if self.d > 0 {
                 let mut rng = self.create_rng_with_seed();
-                let random_array = Array2::from_shape_fn(
-                    (self.nbits as usize, self.d as usize),
-                    |_| rng.gen_range(-1.0..1.0)
-                );
+                let random_array =
+                    Array2::from_shape_fn((self.nbits as usize, self.d as usize), |_| rng.gen_range(-1.0..1.0));
                 Ok(random_array)
             } else {
                 Err(DataFusionError::Internal(
-                    "the dimension you input in the config must be greater than 0".to_string()
+                    "the dimension you input in the config must be greater than 0".to_string(),
                 ))
             }
         } else {
             Err(DataFusionError::Internal(
-                "the number of bits used for binary encoding must be greater than 0".to_string()
+                "the number of bits used for binary encoding must be greater than 0".to_string(),
             ))
         }
     }
@@ -58,7 +56,9 @@ impl LSH {
         } else if let Some(values) = input_data.values().as_any().downcast_ref::<Float64Array>() {
             values.clone()
         } else {
-            return Err(DataFusionError::Internal("Unsupported data type in ListArray.".to_string()));
+            return Err(DataFusionError::Internal(
+                "Unsupported data type in ListArray.".to_string(),
+            ));
         };
 
         let mut re_array2 = Array2::<f64>::zeros((list_len, dimension_len));
@@ -71,9 +71,11 @@ impl LSH {
 
         match random_plans {
             Ok(random_array) => {
-                assert!(re_array2.shape()[1] == random_array.shape()[1], 
-                    "the dimension corresponding to the matrix must be the same");
-                
+                assert!(
+                    re_array2.shape()[1] == random_array.shape()[1],
+                    "the dimension corresponding to the matrix must be the same"
+                );
+
                 let batch_size = 1000;
                 let num_batches = re_array2.shape()[0] / batch_size;
                 let remaining_rows = re_array2.shape()[0] % batch_size;
@@ -83,7 +85,7 @@ impl LSH {
                     let batch_start = batch_idx * batch_size;
                     let batch_end = batch_start + batch_size;
 
-                    let current_batch = re_array2.slice(s![batch_start..batch_end,..]);
+                    let current_batch = re_array2.slice(s![batch_start..batch_end, ..]);
                     let random_projection = current_batch.dot(&random_array.t());
 
                     result.push(random_projection);
@@ -93,18 +95,15 @@ impl LSH {
                     let batch_start = num_batches * batch_size;
                     let batch_end = batch_start + remaining_rows;
 
-                    let remaining_batch = re_array2.slice(s![batch_start..batch_end,..]);
+                    let remaining_batch = re_array2.slice(s![batch_start..batch_end, ..]);
                     let random_projection = remaining_batch.dot(&random_array.t());
 
                     result.push(random_projection);
                 }
 
-                let result_views: Vec<ArrayView2<f64>> = result.iter()
-                    .map(|arr| ArrayView2::from(arr))
-                    .collect();
+                let result_views: Vec<ArrayView2<f64>> = result.iter().map(|arr| ArrayView2::from(arr)).collect();
 
-                let final_result = concatenate(Axis(0), &result_views)
-                    .expect("Failed to concatenate results");
+                let final_result = concatenate(Axis(0), &result_views).expect("Failed to concatenate results");
 
                 Ok(final_result)
             }
@@ -156,12 +155,7 @@ impl LSH {
 
         binary_encode
             .into_iter()
-            .map(|inner_vec| {
-                inner_vec
-                    .into_iter()
-                    .map(|x| T::try_from(x).unwrap())
-                    .collect()
-            })
+            .map(|inner_vec| inner_vec.into_iter().map(|x| T::try_from(x).unwrap()).collect())
             .collect()
     }
 

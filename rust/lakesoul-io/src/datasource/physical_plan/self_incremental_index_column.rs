@@ -4,25 +4,25 @@
 
 //! Implementation of the self-incremental index column, which is used for the case of stable sort.
 
-use std::any::Any;
-use arrow_schema::{DataType, Field, SchemaBuilder};
-use datafusion::physical_plan::{ExecutionPlan, PlanProperties, DisplayAs};
-use datafusion::physical_plan::display::DisplayFormatType;
+use arrow::array::{ArrayRef, UInt64Array};
 use arrow::datatypes::SchemaRef;
-use std::sync::Arc;
+use arrow::record_batch::{RecordBatch, RecordBatchOptions};
+use arrow_schema::{DataType, Field, SchemaBuilder};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::{EquivalenceProperties, LexOrdering};
+use datafusion::physical_plan::display::DisplayFormatType;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
-use datafusion::physical_plan::{ExecutionPlanProperties, Partitioning, SendableRecordBatchStream};
-use std::pin::Pin;
-use std::task::{Context, Poll};
-use arrow::array::{ArrayRef, UInt64Array};
-use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use datafusion::physical_plan::RecordBatchStream;
+use datafusion::physical_plan::{DisplayAs, ExecutionPlan, PlanProperties};
+use datafusion::physical_plan::{ExecutionPlanProperties, Partitioning, SendableRecordBatchStream};
 use datafusion_common::{DataFusionError, Result};
 use futures::Stream;
 use futures::StreamExt;
 use log::info;
+use std::any::Any;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
 
 /// [`ExecutionPlan`] implementation of the self-incremental index column, which is used for the case of stable sort.
 /// It appends a self-incremental index column to the input record batch for further sort.
@@ -47,7 +47,11 @@ impl SelfIncrementalIndexColumnExec {
             EmissionType::Incremental,
             Boundedness::Bounded,
         );
-        Self { input, target_schema, properties }
+        Self {
+            input,
+            target_schema,
+            properties,
+        }
     }
 }
 
@@ -101,17 +105,12 @@ impl ExecutionPlan for SelfIncrementalIndexColumnExec {
     }
 
     fn with_new_children(self: Arc<Self>, children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
-        Ok(Arc::new(Self::new(
-            children[0].clone(),
-        )))
+        Ok(Arc::new(Self::new(children[0].clone())))
     }
 
     fn execute(&self, partition: usize, context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
         let input = self.input.execute(partition, context)?;
-        Ok(Box::pin(SelfIncrementalIndexStream::new(
-            input,
-            self.schema(),
-        )))
+        Ok(Box::pin(SelfIncrementalIndexStream::new(input, self.schema())))
     }
 }
 
@@ -133,23 +132,24 @@ impl SelfIncrementalIndexStream {
 
     fn add_index_column(&mut self, batch: &RecordBatch) -> Result<RecordBatch> {
         let row_count = batch.num_rows();
-        
+
         // Create the index array
         let mut index_values = Vec::with_capacity(row_count);
         for i in 0..row_count {
             index_values.push(self.current_index + i as u64);
         }
         self.current_index += row_count as u64;
-        
+
         let index_array = Arc::new(UInt64Array::from(index_values)) as ArrayRef;
-        
+
         // Combine the index array with existing columns
         let mut columns = batch.columns().to_vec();
         columns.push(index_array);
-        
+
         // Create new record batch with the index column
         let options = RecordBatchOptions::new().with_row_count(Some(row_count));
-        RecordBatch::try_new_with_options(self.schema.clone(), columns, &options).map_err(|e| DataFusionError::ArrowError(e, Some(format!("Failed to apply self-incremental index column"))))
+        RecordBatch::try_new_with_options(self.schema.clone(), columns, &options)
+            .map_err(|e| DataFusionError::ArrowError(e, Some(format!("Failed to apply self-incremental index column"))))
     }
 }
 
@@ -174,6 +174,3 @@ impl RecordBatchStream for SelfIncrementalIndexStream {
         self.schema.clone()
     }
 }
-
-
-

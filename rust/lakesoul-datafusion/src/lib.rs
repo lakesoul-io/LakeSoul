@@ -18,6 +18,6 @@ pub mod lakesoul_table;
 pub mod planner;
 pub use planner::query_planner::LakeSoulQueryPlanner;
 
+pub mod serialize;
 #[cfg(test)]
 mod test;
-pub mod serialize;

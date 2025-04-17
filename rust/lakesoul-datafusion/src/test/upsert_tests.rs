@@ -134,7 +134,8 @@ mod upsert_with_metadata_tests {
     ) -> Result<()> {
         let lakesoul_table = LakeSoulTable::for_name(table_name).await?;
         lakesoul_table.execute_upsert(batch).await?;
-        let builder = create_io_config_builder(client, None, false, "default", Default::default(), Default::default()).await?;
+        let builder =
+            create_io_config_builder(client, None, false, "default", Default::default(), Default::default()).await?;
         let sess_ctx = create_session_context(&mut builder.clone().build())?;
 
         let dataframe = lakesoul_table.to_dataframe(&sess_ctx).await?;
@@ -189,7 +190,8 @@ mod upsert_with_metadata_tests {
     ) -> Result<()> {
         let lakesoul_table = LakeSoulTable::for_name(table_name).await?;
         lakesoul_table.execute_upsert(batch).await?;
-        let builder = create_io_config_builder(client, None, false, "default", Default::default(), Default::default()).await?;
+        let builder =
+            create_io_config_builder(client, None, false, "default", Default::default(), Default::default()).await?;
         let sess_ctx = create_session_context(&mut builder.clone().build())?;
 
         let dataframe = lakesoul_table.to_dataframe(&sess_ctx).await?;

@@ -24,12 +24,12 @@ use datafusion_substrait::substrait::proto::Plan;
 use prost::Message;
 use tokio::runtime::{Builder, Runtime};
 
+use lakesoul_io::datafusion::arrow::record_batch::RecordBatch;
+use lakesoul_io::datafusion::error::Result;
 use lakesoul_io::helpers;
 use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_io::lakesoul_reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
 use lakesoul_io::lakesoul_writer::SyncSendableMutableLakeSoulWriter;
-use lakesoul_io::datafusion::arrow::record_batch::RecordBatch;
-use lakesoul_io::datafusion::error::Result;
 use log::debug;
 use proto::proto::entity;
 
@@ -37,7 +37,6 @@ use proto::proto::entity;
 pub type c_size_t = usize;
 #[allow(non_camel_case_types)]
 pub type c_ptrdiff_t = isize;
-
 
 /// Opaque wrapper for the result of a function call.
 #[repr(C)]
@@ -301,7 +300,8 @@ pub extern "C" fn lakesoul_config_builder_set_max_row_group_num_values(
     max_row_group_num_values: c_size_t,
 ) -> NonNull<IOConfigBuilder> {
     convert_to_opaque(
-        from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_max_row_group_num_values(max_row_group_num_values),
+        from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
+            .with_max_row_group_num_values(max_row_group_num_values),
     )
 }
 
@@ -351,9 +351,7 @@ pub extern "C" fn lakesoul_config_builder_set_option(
     unsafe {
         let key = CStr::from_ptr(key).to_str().unwrap().to_string();
         let value = CStr::from_ptr(value).to_str().unwrap().to_string();
-        convert_to_opaque(
-            from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_option(key, value),
-        )
+        convert_to_opaque(from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_option(key, value))
     }
 }
 
@@ -847,13 +845,10 @@ pub extern "C" fn write_record_batch_ipc_blocked(
     writer: NonNull<CResult<Writer>>,
     ipc_addr: c_ptrdiff_t,
     len: i64,
-) -> *const c_char  {
-    let writer = unsafe {
-        NonNull::new_unchecked(writer.as_ref().ptr as *mut SyncSendableMutableLakeSoulWriter).as_mut()
-    }; 
-    let raw_parts = unsafe { 
-        std::slice::from_raw_parts(ipc_addr as *const u8, len as usize) 
-    };
+) -> *const c_char {
+    let writer =
+        unsafe { NonNull::new_unchecked(writer.as_ref().ptr as *mut SyncSendableMutableLakeSoulWriter).as_mut() };
+    let raw_parts = unsafe { std::slice::from_raw_parts(ipc_addr as *const u8, len as usize) };
 
     let reader = std::io::Cursor::new(raw_parts);
     let mut reader = arrow_ipc::reader::StreamReader::try_new(reader, None).unwrap();
@@ -866,9 +861,7 @@ pub extern "C" fn write_record_batch_ipc_blocked(
             Ok(Some(batch)) => {
                 let num_rows = batch.num_rows();
                 match writer.write_batch(batch) {
-                    Ok(_) => {
-                        row_count += num_rows
-                    }
+                    Ok(_) => row_count += num_rows,
                     Err(e) => return CString::new(format!("Error: {}", e).as_str()).unwrap().into_raw(),
                 }
             }

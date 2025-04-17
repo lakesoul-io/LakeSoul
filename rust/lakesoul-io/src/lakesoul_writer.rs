@@ -3,17 +3,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! LakeSoul Writer Module
-//! 
+//!
 //! This module provides functionality for writing data to LakeSoul tables.
 //! It supports writing data to Parquet files and includes features like
 //! dynamic partitioning, sorting.
-//! 
+//!
 //! # Examples
-//! 
+//!
 //! ```rust
 //! use lakesoul_io::lakesoul_writer::SyncSendableMutableLakeSoulWriter;
 //! use lakesoul_io::lakesoul_io_config::LakeSoulIOConfigBuilder;
-//! 
+//!
 //! let config = LakeSoulIOConfigBuilder::new()
 //!     .with_files(vec!["path/to/file.parquet"])
 //!     .build();   
@@ -22,7 +22,7 @@
 //! let writer = SyncSendableMutableLakeSoulWriter::try_new(config, runtime).unwrap();
 //! writer.write_batch(record_batch).unwrap();
 //! writer.flush_and_close().unwrap();
-//! ``` 
+//! ```
 use std::borrow::Borrow;
 use std::collections::HashMap;
 
@@ -58,9 +58,9 @@ pub async fn create_writer(config: LakeSoulIOConfig) -> Result<Box<dyn AsyncBatc
             .iter()
             .filter(|f| !config.aux_sort_cols.contains(f.name()))
             .map(|f| {
-                schema
-                    .index_of(f.name().as_str())
-                    .map_err(|e| DataFusionError::ArrowError(e, Some(format!("Failed to find index of column: {}", f.name()))))
+                schema.index_of(f.name().as_str()).map_err(|e| {
+                    DataFusionError::ArrowError(e, Some(format!("Failed to find index of column: {}", f.name())))
+                })
             })
             .collect::<Result<Vec<usize>>>()?;
         Arc::new(schema.project(proj_indices.borrow())?)
@@ -192,7 +192,7 @@ impl SyncSendableMutableLakeSoulWriter {
     // for ffi callers
     pub fn write_batch(&mut self, record_batch: RecordBatch) -> Result<()> {
         let runtime = self.runtime.clone();
-        
+
         if record_batch.num_rows() == 0 {
             runtime.block_on(async move { self.write_batch_async(record_batch, false).await })
         } else {
@@ -833,43 +833,48 @@ mod tests {
     #[test]
     fn test_writer_with_complex_pk_types() -> Result<()> {
         let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
-        
+
         // 创建测试数据
-        let id1 = Arc::new(Decimal128Array::from_iter_values([
-            123456000 // 1234.56000
-        ]).with_data_type(DataType::Decimal128(10, 5))) as ArrayRef;
-        
-        let id2 = Arc::new(Date32Array::from_iter_values([
-            NaiveDate::from_ymd_opt(2024, 2, 1).unwrap().signed_duration_since(NaiveDate::from_ymd_opt(1970, 1, 1).unwrap()).num_days() as i32,
-        ])) as ArrayRef;
-        
-        let id3 = Arc::new(TimestampMicrosecondArray::from_iter_values([
-            NaiveDateTime::parse_from_str("2024-03-02 17:01:01.123456", "%Y-%m-%d %H:%M:%S.%f")
-                .unwrap()
-                .and_utc()
-                .timestamp_micros(),
-        ]).with_data_type(DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC"))))) as ArrayRef;
-        
-        let v = Arc::new(StringArray::from_iter(vec![
-            Some("value2"),
-        ])) as ArrayRef;
-        
-        let row_kinds = Arc::new(StringArray::from_iter_values([
-            "insert"
-        ])) as ArrayRef;
+        let id1 = Arc::new(
+            Decimal128Array::from_iter_values([
+                123456000, // 1234.56000
+            ])
+            .with_data_type(DataType::Decimal128(10, 5)),
+        ) as ArrayRef;
+
+        let id2 = Arc::new(Date32Array::from_iter_values([NaiveDate::from_ymd_opt(2024, 2, 1)
+            .unwrap()
+            .signed_duration_since(NaiveDate::from_ymd_opt(1970, 1, 1).unwrap())
+            .num_days() as i32])) as ArrayRef;
+
+        let id3 = Arc::new(
+            TimestampMicrosecondArray::from_iter_values([NaiveDateTime::parse_from_str(
+                "2024-03-02 17:01:01.123456",
+                "%Y-%m-%d %H:%M:%S.%f",
+            )
+            .unwrap()
+            .and_utc()
+            .timestamp_micros()])
+            .with_data_type(DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC")))),
+        ) as ArrayRef;
+
+        let v = Arc::new(StringArray::from_iter(vec![Some("value2")])) as ArrayRef;
+
+        let row_kinds = Arc::new(StringArray::from_iter_values(["insert"])) as ArrayRef;
 
         let schema = Arc::new(Schema::new(vec![
             Field::new("id1", DataType::Decimal128(10, 5), false),
             Field::new("id2", DataType::Date32, false),
-            Field::new("id3", DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC"))), false),
+            Field::new(
+                "id3",
+                DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC"))),
+                false,
+            ),
             Field::new("v", DataType::Utf8, true),
             Field::new("rowKinds", DataType::Utf8, false),
         ]));
 
-        let to_write = RecordBatch::try_new(
-            schema.clone(),
-            vec![id1, id2, id3, v, row_kinds],
-        )?;
+        let to_write = RecordBatch::try_new(schema.clone(), vec![id1, id2, id3, v, row_kinds])?;
 
         let temp_dir = tempfile::tempdir()?;
         let prefix = temp_dir
@@ -884,11 +889,7 @@ mod tests {
             .with_thread_num(2)
             .with_batch_size(10240)
             .with_schema(schema)
-            .with_primary_keys(vec![
-                "id1".to_string(),
-                "id2".to_string(),
-                "id3".to_string(),
-            ])
+            .with_primary_keys(vec!["id1".to_string(), "id2".to_string(), "id3".to_string()])
             .with_hash_bucket_num(2)
             .set_dynamic_partition(true)
             .with_option(OPTION_KEY_MEM_LIMIT, format!("{}", 1024 * 1024 * 50))
@@ -899,10 +900,10 @@ mod tests {
         let result = writer.flush_and_close()?;
 
         println!("result: {:?}", result);
-        
+
         // 验证结果不为空
         assert!(result.len() > 1);
-        
+
         Ok(())
     }
 }
