@@ -31,7 +31,7 @@ jobs:
         with:
           profile: minimal
           toolchain: stable
-          components: clippy
+          components: clippy,rustfmt
           default: true
       - name: Install Protoc
         uses: arduino/setup-protoc@v2
@@ -42,6 +42,8 @@ jobs:
         with:
           workspaces: "./rust -> target"
           key: "ubuntu-latest-clippy"
+      - name: Run Format
+        run: cd rust && cargo fmt --all --check
       - name: Run Clippy
         run: cd rust && cargo clippy --no-deps --all-features --package lakesoul-io-c --package lakesoul-metadata-c
 

@@ -59,7 +59,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.81.0
+          toolchain: stable
           components: rustfmt, clippy
       - name: Install requirement
         uses: ConorMacBride/install-package@v1
