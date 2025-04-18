@@ -8,7 +8,8 @@ RUN sed -i "s@http://.*archive.ubuntu.com@http://mirrors.huaweicloud.com@g" /etc
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update -y && \
-    apt-get install net-tools procps telnet vim openjdk-11-jre-headless curl libjemalloc2 -y
+    apt-get install net-tools procps telnet vim openjdk-11-jre-headless curl libjemalloc2 -y && \
+    apt-get clean
 
 RUN curl -L -o /opt/hadoop-${HADOOP_VERSION}.tar.gz https://mirrors.huaweicloud.com/apache/hadoop/common/hadoop-${HADOOP_VERSION}/hadoop-${HADOOP_VERSION}.tar.gz && \
     HADOOP_TAR_NAME=hadoop-${HADOOP_VERSION} && \
@@ -38,9 +39,9 @@ RUN groupadd -r -g ${LAKESOUL_UID} ${LAKESOUL_USER} \
  && echo ${LAKESOUL_USER}' ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers \
  && mkdir -p /app
 
-COPY rust/target/release/flight_sql_server /app/flight_sql_server
+COPY rust/target/release/lakesoul_arrow_flight_sql_server /app/lakesoul_arrow_flight_sql_server
 RUN chown -R $LAKESOUL_USER:$LAKESOUL_USER /app \
-    && chmod +x /app/flight_sql_server 
+    && chmod +x /app/lakesoul_arrow_flight_sql_server
 
 USER ${LAKESOUL_USER}
 WORKDIR ${HOME}
