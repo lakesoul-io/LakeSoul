@@ -4,6 +4,8 @@
 
 //! The Metadata Interface of LakeSoul.
 
+#[macro_use]
+extern crate tracing;
 use std::io::ErrorKind;
 use std::str::FromStr;
 
@@ -326,11 +328,10 @@ async fn get_prepared_statement<'a>(
             where table_id = $1::TEXT and partition_desc = $2::TEXT ",
         DaoType::ListPartitionByTableId =>
             "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.timestamp, m.expression, m.domain
-            from (
-                select table_id,partition_desc,max(version)
+            from (select table_id, partition_desc,max(version)
                 from partition_info
                 where table_id = $1::TEXT
-                group by table_id,partition_desc) t
+                group by table_id, partition_desc) t
             left join partition_info m
             on t.table_id = m.table_id and t.partition_desc = m.partition_desc and t.max = m.version",
         DaoType::ListPartitionVersionByTableIdAndPartitionDescAndTimestampRange =>
@@ -415,8 +416,7 @@ async fn get_prepared_statement<'a>(
                 commit_op,
                 snapshot,
                 expression,
-                domain
-            )
+                domain)
             values($1::TEXT, $2::TEXT, $3::INT, $4::TEXT, $5::_UUID, $6::TEXT, $7::TEXT)",
         DaoType::InsertDataCommitInfo =>
             "insert into data_commit_info(
@@ -543,13 +543,13 @@ fn get_params(joined_string: String) -> Vec<String> {
 }
 
 /// Separate the concatenated uuid radix string to the uuid string list.
-fn separate_uuid(concated_uuid: &str) -> Result<Vec<String>> {
-    let uuid_num = concated_uuid.len() / 32;
+fn separate_uuid(concatenated_uuid: &str) -> Result<Vec<String>> {
+    let uuid_num = concatenated_uuid.len() / 32;
     let mut uuid_list = Vec::<String>::with_capacity(uuid_num);
     let mut idx = 0;
     for _ in 0..uuid_num {
-        let high = u64::from_str_radix(&concated_uuid[idx..idx + 16], 16)?;
-        let low = u64::from_str_radix(&concated_uuid[idx + 16..idx + 32], 16)?;
+        let high = u64::from_str_radix(&concatenated_uuid[idx..idx + 16], 16)?;
+        let low = u64::from_str_radix(&concatenated_uuid[idx + 16..idx + 32], 16)?;
         uuid_list.push(uuid::Uuid::from_u64_pair(high, low).to_string());
         idx += 32;
     }
@@ -557,6 +557,7 @@ fn separate_uuid(concated_uuid: &str) -> Result<Vec<String>> {
 }
 
 /// Execute the query for the coded Data Access Object.
+#[instrument(level = "debug")]
 pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string: String) -> Result<Vec<u8>> {
     if query_type >= DAO_TYPE_INSERT_ONE_OFFSET {
         eprintln!("Invalid query_type_index: {:?}", query_type);
@@ -993,9 +994,10 @@ pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string
 }
 
 /// Execute the insert for the coded Data Access Object.
+#[instrument(level = "debug")]
 pub async fn execute_insert(client: &mut PooledClient, insert_type: i32, wrapper: entity::JniWrapper) -> Result<i32> {
     if !(DAO_TYPE_INSERT_ONE_OFFSET..DAO_TYPE_QUERY_SCALAR_OFFSET).contains(&insert_type) {
-        eprintln!("Invalid insert_type_index: {:?}", insert_type);
+        error!("Invalid insert_type_index: {:?}", insert_type);
         return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
     }
     let insert_type = DaoType::try_from(insert_type).map_err(|e| LakeSoulMetaDataError::Other(Box::new(e)))?;
@@ -1340,9 +1342,10 @@ pub async fn execute_insert(client: &mut PooledClient, insert_type: i32, wrapper
 }
 
 /// Execute the update for the coded Data Access Object.
+#[instrument(level = "debug")]
 pub async fn execute_update(client: &mut PooledClient, update_type: i32, joined_string: String) -> Result<i32> {
     if update_type < DAO_TYPE_UPDATE_OFFSET {
-        eprintln!("Invalid update_type_index: {:?}", update_type);
+        error!("Invalid update_type_index: {:?}", update_type);
         return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
     }
     let update_type = DaoType::try_from(update_type).map_err(|e| LakeSoulMetaDataError::Other(Box::new(e)))?;
@@ -1484,13 +1487,14 @@ fn ts_string(res: Result<Option<Row>, Error>) -> Result<Option<String>> {
 }
 
 /// Execute the query scalar for the coded Data Access Object.
+#[instrument(level = "debug")]
 pub async fn execute_query_scalar(
     client: &mut PooledClient,
     query_type: i32,
     joined_string: String,
 ) -> Result<Option<String>, LakeSoulMetaDataError> {
     if !(DAO_TYPE_QUERY_SCALAR_OFFSET..DAO_TYPE_UPDATE_OFFSET).contains(&query_type) {
-        eprintln!("Invalid update_scalar_type_index: {:?}", query_type);
+        error!("Invalid update_scalar_type_index: {:?}", query_type);
         return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
     }
     let query_type = DaoType::try_from(query_type).map_err(|e| LakeSoulMetaDataError::Other(Box::new(e)))?;

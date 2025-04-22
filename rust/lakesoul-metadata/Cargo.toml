@@ -13,10 +13,9 @@ edition = "2021"
 [dependencies]
 postgres = "0.19.5"
 tokio-postgres = { version = "0.7.8", features = ["default", "with-serde_json-1", "with-uuid-1", "array-impls", "with-chrono-0_4"] }
-tokio-stream = { workspace = true }
 bb8-postgres = "0.8.1"
 postgres-types = { version = "0.2.5", features = ["derive"] }
-bytes = {version = "1.5.0"}
+bytes = { version = "1.5.0" }
 chrono = "0.4"
 
 tokio = { workspace = true }
@@ -29,18 +28,13 @@ serde_json = { workspace = true }
 url = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
-anyhow = { workspace = true }
 regex = "1.10.3"
 serde = { workspace = true }
 async-trait = "0.1.82"
-log = { workspace = true }
 md5 = "0.7.0"
 cached = { workspace = true }
 
 [dev-dependencies]
-test-log = "0.2.14"
-tracing-subscriber = "0.3.18"
-rand = "0.8.5"
-rand_chacha = "0.3.1"
-env_logger = { workspace = true }
+test-log = { workspace = true, features = ["trace"] }
+tracing-subscriber = { workspace = true }
 
