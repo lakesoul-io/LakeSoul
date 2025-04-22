@@ -10,7 +10,6 @@ use arrow_flight::{
 };
 use assert_cmd::cargo::CommandCargoExt;
 use futures::{Stream, StreamExt};
-use tracing::info;
 use std::{
     collections::HashMap,
     pin::Pin,
@@ -18,6 +17,7 @@ use std::{
     task::{Context, Poll},
 };
 use tonic::transport::Channel;
+use tracing::info;
 
 const BIN_NAME: &str = "lakesoul_arrow_flight_sql_server";
 

@@ -1,4 +1,3 @@
-#![feature(c_size_t)]
 // SPDX-FileCopyrightText: 2023 LakeSoul Contributors
 
 //

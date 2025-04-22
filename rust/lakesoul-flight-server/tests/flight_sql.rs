@@ -7,9 +7,9 @@ use std::time::Duration;
 
 use arrow_array::record_batch;
 use datafusion::assert_batches_eq;
-use tracing::info;
 use test_utils::{build_client, handle_sql, ingest, TestServer};
 use tokio::time::sleep;
+use tracing::info;
 
 mod test_utils;
 
