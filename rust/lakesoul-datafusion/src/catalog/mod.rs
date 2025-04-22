@@ -5,7 +5,6 @@
 //! The [`datafusion::catalog`] implementation for the LakeSoul.
 
 use datafusion::sql::TableReference;
-use log::info;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::env;

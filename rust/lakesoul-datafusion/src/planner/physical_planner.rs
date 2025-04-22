@@ -23,7 +23,6 @@ use async_trait::async_trait;
 use datafusion::logical_expr::{DmlStatement, WriteOp};
 use lakesoul_io::helpers::{column_names_to_physical_expr, column_names_to_physical_sort_expr};
 use lakesoul_io::repartition::RepartitionByRangeAndHashExec;
-use log::info;
 
 use crate::lakesoul_table::LakeSoulTable;
 
