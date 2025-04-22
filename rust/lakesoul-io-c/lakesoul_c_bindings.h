@@ -239,7 +239,7 @@ const char *write_record_batch_ipc_blocked(CResult<Writer> *writer,
                                            c_ptrdiff_t ipc_addr,
                                            int64_t len);
 
-/// Export the bytes result of the [`Writer`].
+/// Export the byte result of the [`Writer`].
 void export_bytes_result(void (*callback)(bool, const char*),
                          CResult<BytesResult> *bytes,
                          int32_t len,
@@ -275,6 +275,8 @@ CResult<BytesResult> *apply_partition_filter(void (*callback)(int32_t, const cha
 /// Free the [`BytesResult`].
 void free_bytes_result(CResult<BytesResult> *bytes);
 
+/// init a global logger for rust code
+/// now use RUST_LOG=LEVEL to activate
 void rust_logger_init();
 
 } // extern "C"
