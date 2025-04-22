@@ -4,6 +4,8 @@
 
 //! The entry point of the LakeSoul Flight SQL Server.
 
+#[macro_use]
+extern crate tracing;
 mod token_codec;
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,7 +14,6 @@ use std::time::Instant;
 
 use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::Parser;
-use log::info;
 use metrics::{counter, gauge};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use tonic::service::Interceptor;
@@ -150,7 +151,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 使用 runtime 运行异步代码
     runtime.block_on(async {
         // 设置日志级别
-        env_logger::init();
+        let timer = tracing_subscriber::fmt::time::ChronoLocal::rfc_3339();
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_timer(timer)
+            .init();
 
         let addr = args.addr.parse()?;
         info!("Connecting to metadata server");

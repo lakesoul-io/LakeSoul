@@ -10,7 +10,7 @@ use arrow_flight::{
 };
 use assert_cmd::cargo::CommandCargoExt;
 use futures::{Stream, StreamExt};
-use log::info;
+use tracing::info;
 use std::{
     collections::HashMap,
     pin::Pin,
