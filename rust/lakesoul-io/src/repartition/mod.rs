@@ -41,7 +41,6 @@ use crate::{hash_utils::create_hashes, repartition::distributor_channels::channe
 
 use self::distributor_channels::{partition_aware_channels, DistributionReceiver, DistributionSender};
 
-use log::trace;
 use parking_lot::Mutex;
 
 mod distributor_channels;
@@ -63,8 +62,8 @@ pub(crate) type SharedMemoryReservation = Arc<Mutex<MemoryReservation>>;
 /// Thus, use a **tokio** `OnceCell` for this initialization so as not to waste CPU cycles
 /// in a mutex lock but instead allow other threads to do something useful.
 ///
-/// Uses a parking_lot `Mutex` to control other accesses as they are very short duration
-///  (e.g. removing channels on completion) where the overhead of `await` is not warranted.
+/// Use a parking_lot `Mutex` to control other accesses as they are very short duration
+///  (e.g., removing channels on completion) where the overhead of `await` is not warranted.
 type LazyState = Arc<tokio::sync::OnceCell<Mutex<RepartitionByRangeAndHashExecState>>>;
 
 /// Inner state of [`RepartitionByRangeAndHashExec`].
@@ -108,7 +107,7 @@ impl RepartitionByRangeAndHashExecState {
             // note we use a custom channel that ensures there is always data for each receiver
             // but limits the amount of buffering if required.
             let (txs, rxs) = channels(num_output_partitions);
-            // Clone sender for each input partitions
+            // Clone sender for each input partition
             let txs = txs
                 .into_iter()
                 .map(|item| vec![item; num_input_partitions])
@@ -729,7 +728,7 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
                 let (_tx, rx, reservation) = state
                     .channels
                     .remove(&partition)
-                    .ok_or(DataFusionError::Internal("partition not used yet".to_string()))?;
+                    .ok_or(DataFusionError::Internal("partition isn't used yet".to_string()))?;
                 (rx, reservation, Arc::clone(&state.abort_helper))
             };
 
@@ -848,7 +847,7 @@ impl RecordBatchStream for RepartitionStream {
 }
 
 /// This struct converts a receiver to a stream.
-/// Receiver receives data on an SPSC channel.
+/// The Receiver receives data on an SPSC channel.
 struct PerPartitionStream {
     /// Schema wrapped by Arc
     schema: SchemaRef,

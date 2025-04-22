@@ -19,7 +19,7 @@
 //!     .build();   
 //!
 //! let runtime = tokio::runtime::Runtime::new().unwrap();
-//! let writer = SyncSendableMutableLakeSoulWriter::try_new(config, runtime).unwrap();
+//! let mut writer = SyncSendableMutableLakeSoulWriter::try_new(config, runtime).unwrap();
 //! writer.write_batch(record_batch).unwrap();
 //! writer.flush_and_close().unwrap();
 //! ```
@@ -35,7 +35,6 @@ use rand::distributions::DistString;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
-use tracing::debug;
 
 use crate::async_writer::{
     AsyncBatchWriter, MultiPartAsyncWriter, PartitioningAsyncWriter, SortAsyncWriter, WriterFlushResult,
@@ -238,7 +237,7 @@ impl SyncSendableMutableLakeSoulWriter {
 
             let batch_memory_size = get_batch_memory_size(&record_batch)? as u64;
             let batch_rows = record_batch.num_rows() as u64;
-            // If would exceed max_file_size, split batch
+            // If exceeds max_file_size, split batch
             if !do_spill && guard.buffered_size() + batch_memory_size > max_file_size {
                 let to_write = (batch_rows * (max_file_size - guard.buffered_size())) / batch_memory_size;
                 if to_write + 1 < batch_rows {
@@ -299,7 +298,7 @@ impl SyncSendableMutableLakeSoulWriter {
                 Ok(inner) => inner,
                 Err(_) => {
                     return Err(DataFusionError::Internal(
-                        "Cannot get ownership of inner writer".to_string(),
+                        "Cannot get ownership of the inner writer".to_string(),
                     ))
                 }
             };

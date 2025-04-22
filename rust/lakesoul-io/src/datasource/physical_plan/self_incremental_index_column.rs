@@ -18,7 +18,6 @@ use datafusion::physical_plan::{ExecutionPlanProperties, Partitioning, SendableR
 use datafusion_common::{DataFusionError, Result};
 use futures::Stream;
 use futures::StreamExt;
-use log::info;
 use std::any::Any;
 use std::pin::Pin;
 use std::sync::Arc;
