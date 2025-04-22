@@ -30,10 +30,18 @@ use std::time::{Duration, Instant, SystemTime};
 use tracing::{debug, error, info};
 
 fn main() {
-    tracing_subscriber::fmt()
+    let timer = tracing_subscriber::fmt::time::ChronoLocal::rfc_3339();
+    match tracing_subscriber::fmt()
         .with_max_level(tracing::Level::TRACE)
-        .with_timer(tracing_subscriber::fmt::time::ChronoLocal::rfc_3339())
-        .init();
+        .with_timer(timer)
+        .try_init()
+    {
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("Failed to set logger: {e:?}");
+        }
+    }
+
     let mut proxy_server = Server::new(None).unwrap();
     proxy_server.bootstrap();
 

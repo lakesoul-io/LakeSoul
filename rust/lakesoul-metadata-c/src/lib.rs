@@ -447,10 +447,16 @@ pub unsafe extern "C" fn free_c_string(c_string: *mut c_char) {
 pub extern "C" fn rust_logger_init() {
     // TODO add logger format
     let timer = tracing_subscriber::fmt::time::ChronoLocal::rfc_3339();
-    tracing_subscriber::fmt()
+    match tracing_subscriber::fmt()
         .with_max_level(tracing::Level::TRACE)
         .with_timer(timer)
-        .init();
+        .try_init()
+    {
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("failed to initialize tracing subscriber: {}", e);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -459,6 +465,7 @@ mod tests {
 
     #[test]
     fn log_test() {
+        rust_logger_init();
         rust_logger_init();
         error!("rust logger activate");
         info!("rust logger activate");

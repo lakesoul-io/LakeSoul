@@ -152,10 +152,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     runtime.block_on(async {
         // 设置日志级别
         let timer = tracing_subscriber::fmt::time::ChronoLocal::rfc_3339();
-        tracing_subscriber::fmt()
+        match tracing_subscriber::fmt()
             .with_max_level(tracing::Level::TRACE)
             .with_timer(timer)
-            .init();
+            .try_init()
+        {
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("Failed to set logger: {e:?}");
+            }
+        }
 
         let addr = args.addr.parse()?;
         info!("Connecting to metadata server");
