@@ -7,13 +7,13 @@ use std::time::Duration;
 
 use arrow_array::record_batch;
 use datafusion::assert_batches_eq;
-use log::info;
 use test_utils::{build_client, handle_sql, ingest, TestServer};
 use tokio::time::sleep;
+use tracing::info;
 
 mod test_utils;
 
-async fn test_fligth_sql_lfs() {
+async fn test_flight_sql_lfs() {
     let mut client = build_client().await;
     {
         let drop_sql = "
@@ -184,7 +184,7 @@ async fn test_flight_sql_server() {
     // FIXME: s3 related args will ignore local file system
     {
         let _server = TestServer::new(&[]);
-        test_fligth_sql_lfs().await;
+        test_flight_sql_lfs().await;
     }
     // wait server shutdown
     sleep(Duration::from_secs(1)).await;

@@ -15,7 +15,6 @@ use datafusion::{
     execution::{object_store::ObjectStoreUrl, TaskContext},
 };
 use datafusion_common::{project_schema, DataFusionError, Result};
-use log::debug;
 use object_store::{path::Path, ObjectStore, WriteMultipart};
 use parquet::basic::ZstdLevel;
 use parquet::{arrow::ArrowWriter, basic::Compression, file::properties::WriterProperties};

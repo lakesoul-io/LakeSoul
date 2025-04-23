@@ -21,7 +21,6 @@ use datafusion::{
     physical_expr::create_physical_expr,
 };
 use lakesoul_metadata::MetaDataClientRef;
-use log::{debug, info};
 use object_store::{path::Path, ObjectMeta, ObjectStore};
 use url::Url;
 

@@ -2309,7 +2309,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4f2c92ceda6ceec50f43169f9ee8424fe2db276791afde7b2cd8bc084cb376ab"
 dependencies = [
  "log",
- "regex",
 ]
 
 [[package]]
@@ -2321,7 +2320,6 @@ dependencies = [
  "anstream",
  "anstyle",
  "env_filter",
- "jiff",
  "log",
 ]
 
@@ -3200,30 +3198,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "jiff"
-version = "0.2.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c102670231191d07d37a35af3eb77f1f0dbf7a71be51a962dcd57ea607be7260"
-dependencies = [
- "jiff-static",
- "log",
- "portable-atomic",
- "portable-atomic-util",
- "serde",
-]
-
-[[package]]
-name = "jiff-static"
-version = "0.2.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4cdde31a9d349f1b1f51a0b3714a5940ac022976f4b49485fc04be052b183b4c"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.98",
-]
-
-[[package]]
 name = "jobserver"
 version = "0.1.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3279,7 +3253,6 @@ dependencies = [
  "json",
  "lakesoul-io",
  "lakesoul-metadata",
- "log",
  "object_store",
  "parquet",
  "prost",
@@ -3343,12 +3316,10 @@ dependencies = [
  "bytes",
  "clap 4.5.29",
  "datafusion",
- "env_logger",
  "futures",
  "lakesoul-datafusion",
  "lakesoul-flight",
  "lakesoul-metadata",
- "log",
  "metrics",
  "metrics-exporter-prometheus",
  "regex",
@@ -3360,6 +3331,8 @@ dependencies = [
  "tonic-build",
  "tower 0.4.13",
  "tower-http",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -3384,14 +3357,12 @@ dependencies = [
  "datafusion-substrait",
  "derivative",
  "dhat",
- "env_logger",
  "futures",
  "half",
  "hdfs-sys",
  "hdrs",
  "hex",
  "lazy_static",
- "log",
  "ndarray",
  "nohash",
  "object_store",
@@ -3407,6 +3378,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-stream",
+ "tokio-test",
  "tokio-util",
  "tracing",
  "tracing-subscriber",
@@ -3424,34 +3396,29 @@ dependencies = [
  "bytes",
  "cbindgen",
  "datafusion-substrait",
- "env_logger",
  "lakesoul-io",
- "log",
  "prost",
  "proto",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
 name = "lakesoul-metadata"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "bb8-postgres",
  "bytes",
  "cached",
  "chrono",
- "env_logger",
- "log",
  "md5",
  "num_enum",
  "postgres",
  "postgres-types",
  "prost",
  "proto",
- "rand",
- "rand_chacha",
  "regex",
  "serde",
  "serde_json",
@@ -3459,7 +3426,6 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tokio-postgres",
- "tokio-stream",
  "tracing",
  "tracing-subscriber",
  "url",
@@ -3470,12 +3436,12 @@ dependencies = [
 name = "lakesoul-metadata-c"
 version = "0.1.0"
 dependencies = [
- "env_logger",
  "lakesoul-metadata",
- "log",
  "prost",
  "proto",
  "serde_json",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -3490,13 +3456,13 @@ dependencies = [
  "aws-sigv4",
  "aws-smithy-http 0.60.12",
  "aws-smithy-runtime-api",
- "env_logger",
  "hickory-resolver",
  "http 1.2.0",
  "lakesoul-metadata",
- "log",
  "pingora",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -4564,15 +4530,6 @@ name = "portable-atomic"
 version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "280dc24453071f1b63954171985a0b0d30058d287960968b9b2aca264c8d4ee6"
-
-[[package]]
-name = "portable-atomic-util"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8a2f0d8d040d7848a709caf78912debcc3f33ee4b3cac47d73d1e1069e83507"
-dependencies = [
- "portable-atomic",
-]
 
 [[package]]
 name = "postgres"
@@ -5914,9 +5871,9 @@ checksum = "8f50febec83f5ee1df3015341d8bd429f2d1cc62bcba7ea2076759d315084683"
 
 [[package]]
 name = "test-log"
-version = "0.2.16"
+version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3dffced63c2b5c7be278154d76b479f9f9920ed34e7574201407f0b14e2bbb93"
+checksum = "e7f46083d221181166e5b6f6b1e5f1d499f3a76888826e6cb1d057554157cd0f"
 dependencies = [
  "env_logger",
  "test-log-macros",
@@ -6323,9 +6280,9 @@ checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
 
 [[package]]
 name = "tracing"
-version = "0.1.40"
+version = "0.1.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3523ab5a71916ccf420eebdf5521fcef02141234bbc0b8a49f2fdc4544364ef"
+checksum = "784e0ac535deb450455cbfa28a6f0df145ea1bb7ae51b821cf5e7927fdcfbdd0"
 dependencies = [
  "log",
  "pin-project-lite",
@@ -6335,9 +6292,9 @@ dependencies = [
 
 [[package]]
 name = "tracing-attributes"
-version = "0.1.27"
+version = "0.1.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34704c8d6ebcbc939824180af020566b01a7c01f80641264eba0999f6c2b6be7"
+checksum = "395ae124c09f9e6918a2310af6038fba074bcf474ac352496d5910dd59a2226d"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6346,9 +6303,9 @@ dependencies = [
 
 [[package]]
 name = "tracing-core"
-version = "0.1.32"
+version = "0.1.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c06d3da6113f116aaee68e4d601191614c9053067f9ab7f6edbcb161237daa54"
+checksum = "e672c95779cf947c5311f83787af4fa8fffd12fb27e4993211a84bdfd9610f9c"
 dependencies = [
  "once_cell",
  "valuable",
@@ -6367,10 +6324,11 @@ dependencies = [
 
 [[package]]
 name = "tracing-subscriber"
-version = "0.3.18"
+version = "0.3.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad0f048c97dbd9faa9b7df56362b8ebcaa52adb06b498c050d2f4e32f90a7a8b"
+checksum = "e8189decb5ac0fa7bc8b96b7cb9b2701d60d48805aca84a238004d665fcc4008"
 dependencies = [
+ "chrono",
  "matchers",
  "nu-ansi-term",
  "once_cell",

@@ -40,7 +40,7 @@ pub enum LakeSoulMetaDataError {
     ProstEncodeError(#[from] prost::EncodeError),
     #[error(
         "Internal error: {0}\nThis was likely caused by a bug in LakeSoul's \
-    code and we would welcome that you file an bug report in our issue tracker"
+    code, and we would welcome that you file an bug report in our issue tracker"
     )]
     Internal(String),
     #[error("Not found error: {0}")]

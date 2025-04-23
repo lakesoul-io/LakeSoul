@@ -15,6 +15,7 @@ use cached::proc_macro::cached;
     key = "String",
     convert = r##"{ format!("{}/{}@{}.{}", user, group, ns, table) }"##
 )]
+#[instrument(skip(meta_data_client))]
 pub async fn verify_permission_by_table_name(
     user: &str,
     group: &str,
@@ -28,7 +29,7 @@ pub async fn verify_permission_by_table_name(
         .as_ref()
         .get_table_name_id_by_table_name(table, ns)
         .await?;
-    log::debug!("table {}.{} in domain {}", ns, table, table_name_id.domain);
+    debug!("table {}.{} in domain {}", ns, table, table_name_id.domain);
     match table_name_id.domain.as_str() {
         "public" | "lake-public" => Ok(()),
         domain if domain == group => Ok(()),
@@ -51,6 +52,7 @@ pub async fn verify_permission_by_table_name(
     key = "String",
     convert = r##"{ format!("{}/{}@{}", user, group, path) }"##
 )]
+#[instrument(skip(meta_data_client))]
 pub async fn verify_permission_by_table_path(
     user: &str,
     group: &str,
@@ -60,7 +62,7 @@ pub async fn verify_permission_by_table_path(
     // jwt token verification has ensured user belongs to the group
     // we only need to verify this table path belongs to the group
     let table_path_id = meta_data_client.as_ref().get_table_path_id_by_table_path(path).await?;
-    log::debug!("table {} in domain {}", path, table_path_id.domain);
+    debug!("table {} in domain {}", path, table_path_id.domain);
     match table_path_id.domain.as_str() {
         "public" | "lake-public" => Ok(()),
         domain if domain == group => Ok(()),
@@ -114,7 +116,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_verify_permission() -> crate::Result<()> {
-        env_logger::init();
         let metadata_client = Arc::new(MetaDataClient::from_env().await?);
         let table_name = "test_rbac_table";
         let table_path = "file:///tmp/table";

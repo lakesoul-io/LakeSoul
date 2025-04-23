@@ -16,7 +16,6 @@ use datafusion::error::Result;
 use datafusion::prelude::SessionContext;
 use lakesoul_metadata::error::LakeSoulMetaDataError;
 use lakesoul_metadata::MetaDataClientRef;
-use log::{debug, info};
 use std::any::Any;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;

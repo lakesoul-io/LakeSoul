@@ -18,8 +18,8 @@ tokio = { version = "1", features = ["full"] }
 bytes = { workspace = true }
 proto = { path = "../proto" }
 prost = { workspace = true }
-log = "0.4.20"
-env_logger = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 
 [target.'cfg(target_os = "windows")'.dependencies]

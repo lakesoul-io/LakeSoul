@@ -10,7 +10,7 @@ edition = "2021"
 [dependencies]
 lakesoul-metadata = { path = "../lakesoul-metadata" }
 pingora = { version = "0.4.0", features = ["lb"] }
-async-trait="0.1"
+async-trait = "0.1"
 hickory-resolver = "0.24.4"
 aws-sigv4 = "1.2.9"
 aws-smithy-http = "0.60.12"
@@ -18,8 +18,8 @@ aws-smithy-runtime-api = "1.7.3"
 aws-credential-types = "1.2.1"
 aws-config = "1.5.16"
 arc-swap = "1.7.1"
-log = "0.4.25"
-env_logger = "0.11.6"
 anyhow = "1.0.96"
 http = "1.2.0"
 tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = {workspace = true}

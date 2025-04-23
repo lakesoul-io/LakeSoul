@@ -32,7 +32,6 @@ use atomic_refcell::AtomicRefCell;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::SendableRecordBatchStream;
-use log::debug;
 use std::sync::Arc;
 
 use arrow_schema::SchemaRef;
@@ -74,6 +73,7 @@ use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfig};
 /// # Examples
 ///
 /// ```rust
+/// # tokio_test::block_on(async {
 /// use lakesoul_io::lakesoul_reader::LakeSoulReader;
 /// use lakesoul_io::lakesoul_io_config::LakeSoulIOConfigBuilder;
 ///
@@ -90,6 +90,7 @@ use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfig};
 ///     let record_batch = batch?;
 ///     // Process the record batch
 /// }
+/// })
 /// ```
 pub struct LakeSoulReader {
     sess_ctx: SessionContext,
@@ -128,11 +129,12 @@ impl LakeSoulReader {
     /// # Returns
     ///
     /// A Result indicating success or failure of the initialization
+    #[instrument(level = "debug", skip(self))]
     pub async fn start(&mut self) -> Result<()> {
         let target_schema: SchemaRef = self.config.target_schema.0.clone();
         if self.config.files.is_empty() {
             Err(DataFusionError::Internal(
-                "LakeSoulReader has wrong number of file".to_string(),
+                "LakeSoulReader has the wrong number of files".to_string(),
             ))
         } else {
             let file_format = Arc::new(LakeSoulParquetFormat::new(
@@ -389,7 +391,7 @@ mod tests {
         let reader_conf = LakeSoulIOConfigBuilder::new()
             .with_files(vec![
                 project_dir.join("../lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet").into_os_string().into_string().unwrap()
-                ])
+            ])
             .with_thread_num(1)
             .with_batch_size(256)
             .build();
@@ -410,7 +412,7 @@ mod tests {
         let project_dir = std::env::current_dir()?;
         let reader_conf = LakeSoulIOConfigBuilder::new()
             .with_files(vec![
-                 project_dir.join("../lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet").into_os_string().into_string().unwrap()
+                project_dir.join("../lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet").into_os_string().into_string().unwrap()
             ])
             .with_thread_num(2)
             .with_batch_size(11)

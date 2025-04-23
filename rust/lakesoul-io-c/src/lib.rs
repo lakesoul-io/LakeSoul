@@ -1,4 +1,5 @@
 // SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
 //
 // SPDX-License-Identifier: Apache-2.0
 
@@ -6,6 +7,8 @@
 
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 extern crate core;
+#[macro_use]
+extern crate tracing;
 
 use std::ffi::{c_char, c_int, c_uchar, c_void, CStr, CString};
 use std::io::Write;
@@ -30,7 +33,6 @@ use lakesoul_io::helpers;
 use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_io::lakesoul_reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
 use lakesoul_io::lakesoul_writer::SyncSendableMutableLakeSoulWriter;
-use log::debug;
 use proto::proto::entity;
 
 #[allow(non_camel_case_types)]
@@ -72,7 +74,7 @@ impl<OpaqueT> CResult<OpaqueT> {
     }
 }
 
-/// Convert the object to an raw opaque pointer.
+/// Convert the object to a raw opaque pointer.
 fn convert_to_opaque_raw<F, T>(obj: F) -> *mut T {
     Box::into_raw(Box::new(obj)) as *mut T
 }
@@ -874,7 +876,7 @@ pub extern "C" fn write_record_batch_ipc_blocked(
     CString::new(format!("Ok: {}", row_count).as_str()).unwrap().into_raw()
 }
 
-/// Export the bytes result of the [`Writer`].
+/// Export the byte result of the [`Writer`].
 #[no_mangle]
 pub extern "C" fn export_bytes_result(
     callback: extern "C" fn(bool, *const c_char),
@@ -1042,9 +1044,28 @@ pub extern "C" fn free_bytes_result(bytes: NonNull<CResult<BytesResult>>) {
     from_nonnull(bytes).free::<Vec<u8>>();
 }
 
+/// init a global logger for rust code
+/// now use RUST_LOG=LEVEL to activate
+#[no_mangle]
+pub extern "C" fn rust_logger_init() {
+    // TODO add logger format
+    let timer = tracing_subscriber::fmt::time::ChronoLocal::rfc_3339();
+    // tracing_subscriber::fmt().with_timer(timer).init();
+    match tracing_subscriber::fmt()
+        .with_timer(timer)
+        .with_max_level(tracing::Level::TRACE)
+        .try_init()
+    {
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("failed init tracing subscriber: {e}")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use core::ffi::c_ptrdiff_t;
+    #![allow(static_mut_refs)]
     use std::ffi::{CStr, CString};
     use std::os::raw::c_char;
     use std::ptr::NonNull;
@@ -1058,7 +1079,8 @@ mod tests {
         lakesoul_config_builder_add_single_primary_key, lakesoul_config_builder_set_batch_size,
         lakesoul_config_builder_set_max_row_group_size, lakesoul_config_builder_set_object_store_option,
         lakesoul_config_builder_set_schema, lakesoul_config_builder_set_thread_num, lakesoul_reader_get_schema,
-        next_record_batch, start_reader, tokio_runtime_builder_set_thread_num, write_record_batch, IOConfigBuilder,
+        next_record_batch, rust_logger_init, start_reader, tokio_runtime_builder_set_thread_num, write_record_batch,
+        IOConfigBuilder,
     };
 
     fn set_object_store_kv(builder: NonNull<IOConfigBuilder>, key: &str, value: &str) -> NonNull<IOConfigBuilder> {
@@ -1204,14 +1226,14 @@ mod tests {
         }
 
         let schema_ffi = FFI_ArrowSchema::empty();
-        lakesoul_reader_get_schema(reader, std::ptr::addr_of!(schema_ffi) as c_ptrdiff_t);
+        lakesoul_reader_get_schema(reader, std::ptr::addr_of!(schema_ffi) as isize);
 
         let mut writer_config_builder = crate::new_lakesoul_io_config_builder();
         writer_config_builder = lakesoul_config_builder_set_batch_size(writer_config_builder, 8192);
         writer_config_builder = lakesoul_config_builder_set_thread_num(writer_config_builder, 2);
         writer_config_builder = lakesoul_config_builder_set_max_row_group_size(writer_config_builder, 250000);
         writer_config_builder =
-            lakesoul_config_builder_set_schema(writer_config_builder, std::ptr::addr_of!(schema_ffi) as c_ptrdiff_t);
+            lakesoul_config_builder_set_schema(writer_config_builder, std::ptr::addr_of!(schema_ffi) as isize);
         unsafe {
             writer_config_builder = lakesoul_config_builder_add_single_file(
                 writer_config_builder,
@@ -1250,8 +1272,8 @@ mod tests {
 
             next_record_batch(
                 reader,
-                std::ptr::addr_of!(schema_ptr) as c_ptrdiff_t,
-                std::ptr::addr_of!(array_ptr) as c_ptrdiff_t,
+                std::ptr::addr_of!(schema_ptr) as isize,
+                std::ptr::addr_of!(array_ptr) as isize,
                 reader_i32_callback,
             );
             wait_callback();
@@ -1271,8 +1293,8 @@ mod tests {
             }
             write_record_batch(
                 writer,
-                std::ptr::addr_of!(schema_ptr) as c_ptrdiff_t,
-                std::ptr::addr_of!(array_ptr) as c_ptrdiff_t,
+                std::ptr::addr_of!(schema_ptr) as isize,
+                std::ptr::addr_of!(array_ptr) as isize,
                 result_callback,
             );
             wait_callback();
@@ -1332,14 +1354,14 @@ mod tests {
         }
 
         let schema_ffi = FFI_ArrowSchema::empty();
-        lakesoul_reader_get_schema(reader, std::ptr::addr_of!(schema_ffi) as c_ptrdiff_t);
+        lakesoul_reader_get_schema(reader, std::ptr::addr_of!(schema_ffi) as isize);
 
         let mut writer_config_builder = crate::new_lakesoul_io_config_builder();
         writer_config_builder = lakesoul_config_builder_set_batch_size(writer_config_builder, 8192);
         writer_config_builder = lakesoul_config_builder_set_thread_num(writer_config_builder, 2);
         writer_config_builder = lakesoul_config_builder_set_max_row_group_size(writer_config_builder, 250000);
         writer_config_builder =
-            lakesoul_config_builder_set_schema(writer_config_builder, std::ptr::addr_of!(schema_ffi) as c_ptrdiff_t);
+            lakesoul_config_builder_set_schema(writer_config_builder, std::ptr::addr_of!(schema_ffi) as isize);
         writer_config_builder = add_pk(writer_config_builder, "str2");
         writer_config_builder = add_pk(writer_config_builder, "str3");
         writer_config_builder = add_pk(writer_config_builder, "int2");
@@ -1382,8 +1404,8 @@ mod tests {
 
             next_record_batch(
                 reader,
-                std::ptr::addr_of!(schema_ptr) as c_ptrdiff_t,
-                std::ptr::addr_of!(array_ptr) as c_ptrdiff_t,
+                std::ptr::addr_of!(schema_ptr) as isize,
+                std::ptr::addr_of!(array_ptr) as isize,
                 reader_i32_callback,
             );
             wait_callback();
@@ -1403,8 +1425,8 @@ mod tests {
             }
             write_record_batch(
                 writer,
-                std::ptr::addr_of!(schema_ptr) as c_ptrdiff_t,
-                std::ptr::addr_of!(array_ptr) as c_ptrdiff_t,
+                std::ptr::addr_of!(schema_ptr) as isize,
+                std::ptr::addr_of!(array_ptr) as isize,
                 result_callback,
             );
             wait_callback();
@@ -1422,9 +1444,14 @@ mod tests {
         flush_and_close_writer(writer, writer_callback);
         free_lakesoul_reader(reader);
     }
-}
-
-#[no_mangle]
-pub extern "C" fn rust_logger_init() {
-    let _ = env_logger::try_init();
+    #[test]
+    fn log_test() {
+        rust_logger_init();
+        rust_logger_init();
+        error!("rust logger activate");
+        info!("rust logger activate");
+        warn!("rust logger activate");
+        debug!("rust logger activate");
+        trace!("rust logger activate");
+    }
 }

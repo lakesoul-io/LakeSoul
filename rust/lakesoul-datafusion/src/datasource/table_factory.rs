@@ -9,7 +9,6 @@ use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
 use datafusion::logical_expr::logical_plan::CreateExternalTable;
 use lakesoul_metadata::MetaDataClientRef;
-use log::info;
 use std::sync::Arc;
 
 use crate::datasource::table_provider::LakeSoulTableProvider;

@@ -20,7 +20,6 @@ use datafusion::{
 };
 use datafusion_common::{DFSchemaRef, DataFusionError, Result};
 use datafusion_substrait::substrait::proto::Plan;
-use log::{debug, info};
 
 use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;
 use crate::default_column_stream::DefaultColumnStream;

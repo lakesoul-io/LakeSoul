@@ -11,7 +11,6 @@ use datafusion::error::{DataFusionError, Result};
 use datafusion::prelude::SessionContext;
 use lakesoul_metadata::error::LakeSoulMetaDataError;
 use lakesoul_metadata::MetaDataClientRef;
-use log::info;
 use proto::proto::entity::Namespace;
 use std::any::Any;
 use std::fmt::{Debug, Formatter};

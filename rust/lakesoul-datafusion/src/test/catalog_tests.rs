@@ -14,7 +14,6 @@ mod catalog_tests {
     use lakesoul_io::lakesoul_io_config::create_session_context;
     use lakesoul_io::lakesoul_io_config::LakeSoulIOConfigBuilder;
     use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
-    use log::debug;
     use proto::proto::entity::{Namespace, TableInfo};
     use rand::distributions::Alphanumeric;
     use rand::{thread_rng, Rng, SeedableRng};

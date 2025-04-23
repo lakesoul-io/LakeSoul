@@ -12,6 +12,7 @@ use postgres_types::{ToSql, Type};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
+use std::fmt::{Debug, Formatter};
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
@@ -24,6 +25,12 @@ pub struct PooledClient {
     pool: Pool<PgConnectionManager>,
     /// The statement cache for the postgres database.
     pub statement_cache: Arc<StatementCache>,
+}
+
+impl Debug for PooledClient {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PooledClient").finish()
+    }
 }
 
 pub type PgConnection<'a> = PooledConnection<'a, PgConnectionManager>;
@@ -219,7 +226,7 @@ impl StatementCache {
 
     /// Clears this [`StatementCache`].
     ///
-    /// **Important:** This only clears the [`StatementCache`] of one [`Client`]
+    /// **Important: ** This only clears the [`StatementCache`] of one [`Client`]
     /// instance. If you want to clear the [`StatementCache`] of all [`Client`]s
     /// you should be calling `pool.manager().statement_caches.clear()` instead.
     pub fn clear(&self) {

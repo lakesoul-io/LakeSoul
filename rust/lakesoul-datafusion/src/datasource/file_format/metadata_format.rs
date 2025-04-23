@@ -58,7 +58,6 @@ use object_store::{ObjectMeta, ObjectStore};
 use proto::proto::entity::TableInfo;
 use rand::distributions::DistString;
 
-use log::{debug, info};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 

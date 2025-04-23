@@ -20,6 +20,7 @@
 //! # Examples
 //!
 //! ```rust
+//! # tokio_test::block_on(async {
 //! use lakesoul_io::lakesoul_reader::LakeSoulReader;
 //! use lakesoul_io::lakesoul_io_config::LakeSoulIOConfigBuilder;
 //!
@@ -38,6 +39,7 @@
 //!     let record_batch = batch?;
 //!     // Process the record batch
 //! }
+//!})
 //! ```
 //!
 //! # Features
@@ -56,6 +58,9 @@
 //! - `helpers` - Utility functions
 //! - `hash_utils` - Hash-related utilities
 //! - `local_sensitive_hash` - Local sensitive hashing support
+
+#[macro_use]
+extern crate tracing;
 
 pub mod async_writer;
 pub mod datasource;

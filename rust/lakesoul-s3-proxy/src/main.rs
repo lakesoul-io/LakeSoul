@@ -15,7 +15,6 @@ use http::header::HOST;
 use http::{HeaderValue, Uri};
 use lakesoul_metadata::rbac::verify_permission_by_table_path;
 use lakesoul_metadata::MetaDataClient;
-use log::{debug, error, info};
 use pingora::lb::discovery::ServiceDiscovery;
 use pingora::lb::selection::{BackendIter, BackendSelection};
 use pingora::lb::{Backend, Backends, Extensions};
@@ -28,9 +27,21 @@ use std::net::{IpAddr, SocketAddrV4};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
+use tracing::{debug, error, info};
 
 fn main() {
-    env_logger::init();
+    let timer = tracing_subscriber::fmt::time::ChronoLocal::rfc_3339();
+    match tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::TRACE)
+        .with_timer(timer)
+        .try_init()
+    {
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("Failed to set logger: {e:?}");
+        }
+    }
+
     let mut proxy_server = Server::new(None).unwrap();
     proxy_server.bootstrap();
 

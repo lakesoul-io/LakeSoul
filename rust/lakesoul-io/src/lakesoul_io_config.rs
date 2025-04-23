@@ -30,7 +30,6 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_common::DataFusionError::External;
 use datafusion_substrait::substrait::proto::Plan;
 use derivative::Derivative;
-use log::info;
 use object_store::aws::AmazonS3Builder;
 use object_store::{ClientOptions, RetryConfig};
 use tracing::debug;
@@ -316,7 +315,8 @@ impl LakeSoulIOConfigBuilder {
     /// # Arguments
     ///
     /// * `files` - The list of file paths to add
-    pub fn with_files(mut self, files: Vec<String>) -> Self {
+    pub fn with_files(mut self, files: Vec<impl ToString>) -> Self {
+        let files = files.into_iter().map(|x| x.to_string()).collect();
         self.config.files = files;
         self
     }
@@ -627,7 +627,7 @@ impl From<LakeSoulIOConfig> for LakeSoulIOConfigBuilder {
 }
 
 /// First check envs for credentials, region and endpoint.
-/// Second check fs.s3a.xxx, to keep compatible with hadoop s3a.
+/// Second, check fs.s3a.xxx, to keep compatible with hadoop s3a.
 /// If no region is provided, default to us-east-1.
 /// Bucket name would be retrieved from file names.
 /// Currently only one s3 object store with one bucket is supported.
@@ -732,8 +732,8 @@ pub fn register_hdfs_object_store(
     }
 }
 
-/// try to register object store of this path string, and return normalized path string if
-/// this path is local path style but fs.defaultFS config exists
+/// Try to register object store of this path string, and return normalized path string if
+/// this path is local path style, but fs.defaultFS config exists
 ///
 /// # Arguments
 ///
@@ -797,7 +797,7 @@ fn register_object_store(path: &str, config: &mut LakeSoulIOConfig, runtime: &Ru
                 Ok(format!("file://{}", path))
             }
             _ => Err(DataFusionError::ObjectStore(object_store::Error::NotSupported {
-                source: "FileSystem not supported".into(),
+                source: "FileSystem is not supported".into(),
             })),
         },
         Err(ParseError::RelativeUrlWithoutBase) => {
@@ -863,7 +863,7 @@ pub fn create_session_context_with_planner(
     }
     let runtime = runtime_conf.build()?;
 
-    // firstly parse default fs if exist
+    // firstly, parse default fs if exist
     let default_fs = config
         .object_store_options
         .get("fs.defaultFS")
@@ -930,10 +930,7 @@ mod tests {
     #[test]
     fn test_path_normalize() {
         let mut conf = LakeSoulIOConfigBuilder::new()
-            .with_files(vec![
-                "file:///some/absolute/local/file1".into(),
-                "/some/absolute/local/file2".into(),
-            ])
+            .with_files(vec!["file:///some/absolute/local/file1", "/some/absolute/local/file2"])
             .build();
         let _sess_ctx = create_session_context(&mut conf).unwrap();
         assert_eq!(

@@ -36,7 +36,6 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 rand = { workspace = true }
 bytes = { workspace = true }
-log = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 url = { workspace = true }

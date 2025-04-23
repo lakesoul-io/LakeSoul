@@ -6,13 +6,14 @@
 
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 extern crate core;
+#[macro_use]
+extern crate tracing;
 
 use std::collections::HashMap;
 use std::ffi::{c_char, c_uchar, CStr, CString};
 use std::io::Write;
 use std::ptr::{null, null_mut, NonNull};
 
-use log::debug;
 use prost::bytes::BufMut;
 use prost::Message;
 
@@ -442,9 +443,34 @@ pub unsafe extern "C" fn free_c_string(c_string: *mut c_char) {
 
 /// init a global logger for rust code
 /// now use RUST_LOG=LEVEL to activate
-/// TODO use tokio::tracing
-/// TODO add logger format
 #[no_mangle]
 pub extern "C" fn rust_logger_init() {
-    let _ = env_logger::try_init();
+    // TODO add logger format
+    let timer = tracing_subscriber::fmt::time::ChronoLocal::rfc_3339();
+    match tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::TRACE)
+        .with_timer(timer)
+        .try_init()
+    {
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("failed to initialize tracing subscriber: {}", e);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::rust_logger_init;
+
+    #[test]
+    fn log_test() {
+        rust_logger_init();
+        rust_logger_init();
+        error!("rust logger activate");
+        info!("rust logger activate");
+        warn!("rust logger activate");
+        debug!("rust logger activate");
+        trace!("rust logger activate");
+    }
 }
