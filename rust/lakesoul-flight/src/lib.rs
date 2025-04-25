@@ -4,6 +4,9 @@
 
 //! The implementation of arrow flight for LakeSoul.
 
+#[macro_use]
+extern crate tracing;
+
 pub mod args;
 mod flight_sql_service;
 mod jwt;
@@ -14,7 +17,6 @@ pub use jwt::{Claims, JwtServer};
 
 use lakesoul_datafusion::LakeSoulError;
 use lakesoul_metadata::LakeSoulMetaDataError;
-use log::error;
 use tonic::Status;
 
 macro_rules! impl_error_to_status {

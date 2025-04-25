@@ -28,7 +28,8 @@ pub async fn verify_permission_by_table_name(
     let table_name_id = meta_data_client
         .as_ref()
         .get_table_name_id_by_table_name(table, ns)
-        .await?;
+        .await?
+        .ok_or(LakeSoulMetaDataError::Internal("table not found".to_string()))?;
     debug!("table {}.{} in domain {}", ns, table, table_name_id.domain);
     match table_name_id.domain.as_str() {
         "public" | "lake-public" => Ok(()),

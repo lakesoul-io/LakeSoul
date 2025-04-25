@@ -54,7 +54,6 @@ use arrow::record_batch::RecordBatch;
 use dashmap::DashMap;
 use datafusion::logical_expr::{DdlStatement, DmlStatement, LogicalPlan, WriteOp};
 use datafusion::prelude::*;
-use log::{debug, info};
 
 use datafusion::execution::runtime_env::RuntimeEnv;
 use lakesoul_datafusion::catalog::lakesoul_catalog::LakeSoulCatalog;
@@ -103,7 +102,7 @@ pub struct FlightSqlServiceImpl {
     /// The auth switch.
     auth_enabled: bool,
     /// The rbac authorization switch.
-    _rbac_enabled: bool,
+    rbac_enabled: bool,
 }
 
 /// The metrics of the stream write operation.
@@ -218,7 +217,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
     ) -> Result<Response<Pin<Box<dyn Stream<Item = Result<HandshakeResponse, Status>> + Send>>>, Status> {
         info!("do_handshake - starting handshake");
         // no authentication actually takes place here
-        // see Ballista implementation for example of basic auth
+        // see Ballista implementation, for example of basic auth
         // in this case, we simply accept the connection and create a new SessionContext
         // the SessionContext will be re-used within this same connection/session
         let token = self.create_ctx().await?;
@@ -236,12 +235,13 @@ impl FlightSqlService for FlightSqlServiceImpl {
         Ok(resp)
     }
 
+    #[instrument(skip(self))]
     async fn get_flight_info_statement(
         &self,
         cmd: CommandStatementQuery,
         request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
-        self.verify_token(request.metadata())?;
+        let claims = self.verify_token(request.metadata())?;
         info!("get_flight_info_statement - query: {}", cmd.query);
         let sql = &cmd.query;
 
@@ -249,11 +249,34 @@ impl FlightSqlService for FlightSqlServiceImpl {
 
         // only need logical plan
 
+        let dialect = ctx.state().config().options().sql_parser.dialect.clone();
+        let stat = ctx
+            .state()
+            .sql_to_statement(sql, &dialect)
+            .map_err(|e| status!("Error parsing SQL", e))?;
+
+        let table_refs = ctx
+            .state()
+            .resolve_table_references(&stat)
+            .map_err(|e| status!("Error validating statement", e))?;
+
+        for tf in table_refs {
+            error!("table: {:?}", tf.table());
+            // TODO fix this
+            self.verify_rbac(&claims, "default", tf.table())
+                .await
+                .map_err(|e| status!("Error validating rbac", e))?;
+        }
+
         let plan = ctx
             .state()
-            .create_logical_plan(sql)
+            .statement_to_plan(stat)
             .await
             .map_err(|e| status!("Error creating logical plan", e))?;
+
+        let opt = SQLOptions::new().with_allow_ddl(false).with_allow_statements(false);
+        opt.verify_plan(&plan)
+            .map_err(|e| status!("Error validating plan", e))?;
 
         let schema = plan.schema().as_arrow();
 
@@ -462,6 +485,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         }
     }
 
+    #[instrument(skip(self))]
     async fn do_get_statement(
         &self,
         query: TicketStatementQuery,
@@ -471,7 +495,12 @@ impl FlightSqlService for FlightSqlServiceImpl {
         info!("do_get_statement - query: {:?}", query.statement_handle);
         let sql = std::str::from_utf8(&query.statement_handle).map_err(|e| status!("Unable to parse uuid", e))?;
         let ctx = self.get_ctx(&request)?;
-        let df = ctx.sql(sql).await.map_err(|e| status!("Error executing query", e))?;
+        // forbid DDL
+        let opt = SQLOptions::new().with_allow_ddl(false).with_allow_statements(false);
+        let df = ctx
+            .sql_with_options(sql, opt)
+            .await
+            .map_err(|e| status!("Error executing query", e))?;
         let schema = Arc::new(df.schema().clone().into());
         let stream = df
             .execute_stream()
@@ -643,11 +672,14 @@ impl FlightSqlService for FlightSqlServiceImpl {
         Ok(0)
     }
 
+    #[instrument(skip(self, request))]
     async fn do_put_statement_ingest(
         &self,
         cmd: CommandStatementIngest,
         request: Request<PeekableFlightDataStream>,
     ) -> Result<i64, Status> {
+        self.verify_token(request.metadata())?;
+        info!("do_put_statement_ingest");
         let CommandStatementIngest {
             table_definition_options,
             table,
@@ -996,7 +1028,7 @@ impl FlightSqlServiceImpl {
             transactional_data: Default::default(),
             jwt_server,
             auth_enabled,
-            _rbac_enabled: rbac_enabled,
+            rbac_enabled,
             metrics: Arc::new(StreamWriteMetrics::new(throughput_limit)),
         })
     }
@@ -1035,14 +1067,14 @@ impl FlightSqlServiceImpl {
             "LAKESOUL".to_string(),
             Arc::new(LakeSoulTableProviderFactory::new(
                 self.get_metadata_client(),
-                self.args.warehouse_prefix.clone(),
+                self.args.core.warehouse_prefix.clone(),
             )),
         );
         let ctx = Arc::new(SessionContext::new_with_state(state));
 
         let catalog = Arc::new(LakeSoulCatalog::new(self.client.clone(), ctx.clone()));
 
-        if let Some(warehouse_prefix) = &self.args.warehouse_prefix {
+        if let Some(warehouse_prefix) = &self.args.core.warehouse_prefix {
             debug!("warehouse_prefix: {:?}", warehouse_prefix);
             // FIXME: s3 related args will ignore local file system
             env::set_var("LAKESOUL_WAREHOUSE_PREFIX", warehouse_prefix);
@@ -1050,13 +1082,13 @@ impl FlightSqlServiceImpl {
             match url {
                 Ok(url) => match url.scheme() {
                     "s3" | "s3a" => {
-                        if let Some(s3_secret_key) = &self.args.s3_secret_key {
+                        if let Some(s3_secret_key) = &self.args.core.s3_secret_key {
                             env::set_var("AWS_SECRET_ACCESS_KEY", s3_secret_key);
                         }
-                        if let Some(s3_access_key) = &self.args.s3_access_key {
+                        if let Some(s3_access_key) = &self.args.core.s3_access_key {
                             env::set_var("AWS_ACCESS_KEY_ID", s3_access_key);
                         }
-                        if let Some(endpoint) = &self.args.endpoint {
+                        if let Some(endpoint) = &self.args.core.endpoint {
                             env::set_var("AWS_ENDPOINT", endpoint);
                         }
 
@@ -1295,8 +1327,8 @@ impl FlightSqlServiceImpl {
     }
 
     /// Verify the rbac authorization.
-    async fn _verify_rbac(&self, claims: &Claims, ns: &str, table: &str) -> Result<(), Status> {
-        if !self._rbac_enabled {
+    async fn verify_rbac(&self, claims: &Claims, ns: &str, table: &str) -> Result<(), Status> {
+        if !self.rbac_enabled {
             return Ok(());
         }
         verify_permission_by_table_name(&claims.sub, &claims.group, ns, table, self.client.clone())
@@ -1306,8 +1338,8 @@ impl FlightSqlServiceImpl {
 
     /// Get the [`LakeSoulIOConfigBuilder`] from the arguments.
     fn get_io_config_builder(&self) -> LakeSoulIOConfigBuilder {
-        let object_store_opttions = self.args.s3_options();
-        LakeSoulIOConfigBuilder::new_with_object_store_options(object_store_opttions)
+        let object_store_options = self.args.core.s3_options();
+        LakeSoulIOConfigBuilder::new_with_object_store_options(object_store_options)
     }
 
     /// Write the stream to the table.
@@ -1329,7 +1361,7 @@ impl FlightSqlServiceImpl {
         );
 
         let mut writer = table
-            .get_writer(self.args.s3_options())
+            .get_writer(self.args.core.s3_options())
             .await
             .map_err(lakesoul_error_to_status)?;
 

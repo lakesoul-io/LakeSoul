@@ -3247,6 +3247,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "chrono",
+ "clap 4.5.29",
  "ctor",
  "datafusion",
  "futures",
@@ -3290,7 +3291,6 @@ dependencies = [
  "lakesoul-datafusion",
  "lakesoul-io",
  "lakesoul-metadata",
- "log",
  "metrics",
  "object_store",
  "prost",
@@ -3299,6 +3299,7 @@ dependencies = [
  "tonic",
  "tower 0.4.13",
  "tower-http",
+ "tracing",
  "url",
  "uuid",
 ]

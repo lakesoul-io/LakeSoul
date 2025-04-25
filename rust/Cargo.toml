@@ -12,7 +12,8 @@ members = [
     "lakesoul-datafusion",
     "lakesoul-flight",
     "lakesoul-flight-server",
-    "lakesoul-s3-proxy"]
+    "lakesoul-s3-proxy",
+]
 resolver = "2"
 
 [profile.release]
@@ -53,7 +54,11 @@ rand = "^0.8"
 bytes = "1.4.0"
 half = "^2.1"
 tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.19", features = ["default", "chrono"] }
+tracing-subscriber = { version = "0.3.19", features = [
+    "default",
+    "chrono",
+    "env-filter",
+] }
 test-log = "0.2.17"
 thiserror = "1.0"
 anyhow = "1.0.79"
@@ -61,6 +66,7 @@ http = "1.2.0"
 tower = "0.4.13"
 metrics = "0.21"
 cached = { version = "0.54.0", features = ["async_tokio_rt_multi_thread"] }
+clap = { version = "4.4", features = ["derive"] }
 
 [patch.crates-io]
 sfv = { git = "https://github.com/undef1nd/sfv.git", tag = "v0.9.4" }

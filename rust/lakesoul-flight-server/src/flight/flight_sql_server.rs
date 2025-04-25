@@ -14,14 +14,14 @@ use std::time::Instant;
 
 use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::Parser;
+use lakesoul_flight::{args::Args, FlightSqlServiceImpl, JwtServer};
+use lakesoul_metadata::MetaDataClient;
 use metrics::{counter, gauge};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use tonic::service::Interceptor;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
-
-use lakesoul_flight::{args::Args, FlightSqlServiceImpl, JwtServer};
-use lakesoul_metadata::MetaDataClient;
+use tracing_subscriber::EnvFilter;
 
 pub mod token {
     include!(concat!(env!("OUT_DIR"), "/json.token.TokenServer.rs"));
@@ -42,7 +42,7 @@ impl TokenServer for TokenService {
             .jwt_server
             .create_token(&claims)
             .map_err(|e| Status::internal(format!("Token creation failed: {e:?}")))?;
-        info!("Token created {token:?} for claims {claims:?}");
+        info!("Token created {token:} for claims {claims:?}");
         Ok(Response::new(TokenResponse { token }))
     }
 }
@@ -144,7 +144,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 创建并配置 tokio runtime
     let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(args.worker_threads)
+        .worker_threads(args.core.worker_threads)
         .enable_all()
         .build()?;
 
@@ -153,13 +153,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // 设置日志级别
         let timer = tracing_subscriber::fmt::time::ChronoLocal::rfc_3339();
         match tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::TRACE)
+            .with_env_filter(EnvFilter::from_default_env())
             .with_timer(timer)
             .try_init()
         {
             Ok(_) => {}
             Err(e) => {
-                eprintln!("Failed to set logger: {e:?}");
+                eprintln!("Failed to set logger: {e:}");
             }
         }
 
@@ -199,8 +199,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let svc = FlightServiceServer::with_interceptor(service, interceptor);
 
-        info!("LakeSoul Arrow Flight SQL Server Listening on {addr:?}");
-        info!("Metrics Server Listening on {:?}", metrics_addr);
+        info!("LakeSoul Arrow Flight SQL Server Listening on {addr:}");
+        info!("Metrics Server Listening on {:}", metrics_addr);
 
         Server::builder()
             .add_service(svc)

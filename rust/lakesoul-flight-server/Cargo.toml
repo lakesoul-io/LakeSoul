@@ -17,7 +17,6 @@ path = "src/flight/flight_sql_server.rs"
 tokio = { workspace = true }
 tonic = { workspace = true }
 arrow-flight = { workspace = true }
-lakesoul-datafusion = { path = "../lakesoul-datafusion" }
 lakesoul-flight = { path = "../lakesoul-flight" }
 lakesoul-metadata = { path = "../lakesoul-metadata" }
 tower = "0.4"
@@ -44,3 +43,4 @@ arrow = { workspace = true, features = ["test_utils"] }
 futures = { workspace = true }
 test-log = { version = "0.2.14" }
 datafusion = { workspace = true }
+lakesoul-datafusion = { path = "../lakesoul-datafusion" }

@@ -17,21 +17,21 @@ chrono = { version = "0.4" }
 tonic = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
-arrow = { workspace = true } 
+arrow = { workspace = true }
 prost = { workspace = true }
 uuid = { workspace = true }
 dashmap = "5.5.3"
 datafusion = { workspace = true }
 object_store = { workspace = true }
-log = "0.4"
+tracing = { workspace = true }
 url = { workspace = true }
 http = { workspace = true }
-jsonwebtoken = {version = "9", default-features = false }
+jsonwebtoken = { version = "9", default-features = false }
 serde = { workspace = true }
 metrics = "0.24"
 tower = { version = "0.4", features = ["full"] }
 tower-http = { version = "0.4", features = ["trace"] }
-clap = { version = "4.4", features = ["derive"] }
+clap = { workspace = true }
 
 
 [features]

@@ -58,7 +58,7 @@ impl RecordBatchStream {
 impl Stream for RecordBatchStream {
     type Item = Result<RecordBatch, FlightError>;
 
-    // actually this stream is sync
+    // actually, this stream is sync
     fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
 
