@@ -31,7 +31,7 @@ use arrow::datatypes::{DataType, Field};
 use arrow_array::RecordBatch;
 use arrow_schema::{SchemaBuilder, SchemaRef};
 use datafusion_common::{DataFusionError, Result};
-use rand::distributions::DistString;
+use rand::distr::SampleString;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
@@ -77,7 +77,7 @@ pub async fn create_writer(config: LakeSoulIOConfig) -> Result<Box<dyn AsyncBatc
             writer_config.files = vec![format!(
                 "{}/part-{}_{:0>4}.parquet",
                 writer_config.prefix(),
-                rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 16),
+                rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 16),
                 writer_config.hash_bucket_id()
             )];
         }
@@ -90,7 +90,7 @@ pub async fn create_writer(config: LakeSoulIOConfig) -> Result<Box<dyn AsyncBatc
             writer_config.files = vec![format!(
                 "{}/part-{}_{:0>4}.parquet",
                 writer_config.prefix(),
-                rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 16),
+                rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 16),
                 writer_config.hash_bucket_id()
             )];
         }

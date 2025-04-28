@@ -3,4 +3,4 @@
 # SPDX-License-Identifier: Apache-2.0
 
 edition = "2021"
-# max_width = 120
+max_width = 120

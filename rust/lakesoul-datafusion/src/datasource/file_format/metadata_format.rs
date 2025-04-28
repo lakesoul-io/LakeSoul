@@ -55,8 +55,8 @@ use lakesoul_io::helpers::{
 use lakesoul_io::lakesoul_io_config::LakeSoulIOConfig;
 use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 use object_store::{ObjectMeta, ObjectStore};
+use rand::distr::SampleString;
 use proto::proto::entity::TableInfo;
-use rand::distributions::DistString;
 
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -618,7 +618,7 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         // launch one async task per *input* partition
         let mut join_handles = vec![];
 
-        let write_id = rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
+        let write_id = rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 16);
 
         let partitioned_file_path_and_row_count = Arc::new(Mutex::new(HashMap::<String, (Vec<String>, u64)>::new()));
         for i in 0..num_input_partitions {

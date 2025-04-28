@@ -70,7 +70,7 @@ impl PartitioningAsyncWriter {
         // launch one async task per *input* partition
         let mut join_handles = vec![];
 
-        let write_id = rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
+        let write_id = rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 16);
 
         // let partitioned_file_path_and_row_count = Arc::new(Mutex::new(HashMap::<String, (Vec<String>, u64)>::new()));
         let mut writer_config = config.clone();

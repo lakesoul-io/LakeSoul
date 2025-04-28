@@ -34,9 +34,11 @@ use lakesoul_datafusion::serialize::arrow_java::schema_from_metadata_str;
 use lakesoul_io::helpers::get_batch_memory_size;
 use lakesoul_io::serde_json;
 use prost::Message;
+use std::collections::HashSet;
 use std::env;
+use std::ops::AddAssign;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tonic::{metadata::MetadataValue, Request, Response, Status, Streaming};
 
 use lakesoul_io::async_writer::WriterFlushResult;
@@ -45,9 +47,9 @@ use uuid::Uuid;
 
 use lakesoul_datafusion::{create_lakesoul_session_ctx, LakeSoulError, Result};
 
-use arrow::array::{ArrayRef, StringArray};
+use arrow::array::{ArrayRef, ArrowNativeTypeOp, StringArray};
 use arrow::record_batch::RecordBatch;
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use datafusion::logical_expr::{DdlStatement, DmlStatement, LogicalPlan, WriteOp};
 use datafusion::prelude::*;
 
