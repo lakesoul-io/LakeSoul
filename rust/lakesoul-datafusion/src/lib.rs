@@ -8,7 +8,6 @@
 #![allow(clippy::type_complexity)]
 // after finished. remove above attr
 extern crate core;
-
 #[macro_use]
 extern crate tracing;
 
@@ -145,7 +144,12 @@ pub fn create_lakesoul_session_ctx(
 
     ctx.state()
         .catalog_list()
-        .register_catalog("LAKESOUL".to_string(), catalog);
+        .register_catalog("LAKESOUL".to_string(), catalog.clone());
+
+    ctx.state()
+        .catalog_list()
+        .register_catalog("lakesoul".to_string(), catalog);
+    info!("catalogs: {:?}", ctx.catalog_names());
 
     Ok(ctx)
 }

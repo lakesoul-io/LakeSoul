@@ -35,7 +35,7 @@ use object_store::path::Path;
 use object_store::ObjectMeta;
 use parquet::format::FileMetaData;
 use proto::proto::entity::JniWrapper;
-use rand::distributions::DistString;
+use rand::distr::SampleString;
 use tokio::runtime::Builder;
 use url::Url;
 
@@ -607,7 +607,7 @@ pub fn apply_partition_filter(wrapper: JniWrapper, schema: SchemaRef, filter: Pl
         .map_err(|e| External(Box::new(e)))?;
     runtime.block_on(async {
         let context = SessionContext::default();
-        let index_filed_name = rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 8);
+        let index_filed_name = rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 8);
         let index_filed = Field::new(index_filed_name, DataType::UInt32, false);
         let schema_len = schema.fields().len();
         let batch = batch_from_partition(&wrapper, schema, index_filed)?;

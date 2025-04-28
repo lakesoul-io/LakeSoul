@@ -30,7 +30,7 @@ impl LSH {
             if self.d > 0 {
                 let mut rng = self.create_rng_with_seed();
                 let random_array =
-                    Array2::from_shape_fn((self.nbits as usize, self.d as usize), |_| rng.gen_range(-1.0..1.0));
+                    Array2::from_shape_fn((self.nbits as usize, self.d as usize), |_| rng.random_range(-1.0..1.0));
                 Ok(random_array)
             } else {
                 Err(DataFusionError::Internal(

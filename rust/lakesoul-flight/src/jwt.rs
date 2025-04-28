@@ -27,10 +27,12 @@ impl JwtServer {
     }
 
     pub fn create_token(&self, claims: &Claims) -> Result<String, jsonwebtoken::errors::Error> {
+        error!("claims is: {:?}", claims);
         encode(&Header::default(), &claims, &self.encoding_key)
     }
 
     pub fn decode_token(&self, token: &str) -> Result<Claims, jsonwebtoken::errors::Error> {
+        error!("token is: {}", token);
         let data = decode::<Claims>(&token, &self.decoding_key, &Validation::default())?;
         Ok(data.claims)
     }

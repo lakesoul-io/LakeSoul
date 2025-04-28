@@ -5,26 +5,22 @@
 
 use std::{sync::Arc, time::Duration};
 
-use arrow_array::record_batch;
+use arrow_array::{record_batch, ArrowNativeTypeOp};
 use datafusion::assert_batches_eq;
 use lakesoul_datafusion::{cli::CoreArgs, create_lakesoul_session_ctx};
+use lakesoul_flight::Claims;
 use lakesoul_metadata::MetaDataClient;
 use test_utils::{build_client, handle_sql, ingest, TestServer};
 use tokio::time::sleep;
+use tonic::{transport::Channel, Request};
 use tracing::info;
 
 mod test_utils;
-
 async fn test_flight_sql_lfs() {
     let mut client = build_client().await;
     let meta_client = Arc::new(MetaDataClient::from_env().await.unwrap());
     let core_args = CoreArgs::default();
-    let ctx = create_lakesoul_session_ctx(
-        meta_client.clone(),
-        core_args.warehouse_prefix.clone(),
-        &core_args,
-    )
-    .unwrap();
+    let ctx = create_lakesoul_session_ctx(meta_client.clone(), core_args.warehouse_prefix.clone(), &core_args).unwrap();
     // drop table
     {
         let drop_sql = "DROP TABLE IF EXISTS test_lfs";
@@ -121,12 +117,7 @@ async fn test_flight_sql_obj_store() {
         s3_secret_key: Some("minioadmin1".to_string()),
         worker_threads: 2,
     };
-    let ctx = create_lakesoul_session_ctx(
-        meta_client.clone(),
-        core_args.warehouse_prefix.clone(),
-        &core_args,
-    )
-    .unwrap();
+    let ctx = create_lakesoul_session_ctx(meta_client.clone(), core_args.warehouse_prefix.clone(), &core_args).unwrap();
 
     {
         let drop_sql = "DROP TABLE IF EXISTS test_s3";
@@ -235,4 +226,14 @@ async fn test_flight_sql_server() {
         ]);
         test_flight_sql_obj_store().await;
     }
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+async fn debug_test() {
+    let mut client = build_client().await;
+
+    let x = Channel::from_static("http://localhost:50051").connect().await.unwrap();
+
+    client.set_header("", "");
+    let batches = handle_sql(&mut client, "select * from test_lfs;").await;
 }

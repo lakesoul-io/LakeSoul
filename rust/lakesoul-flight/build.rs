@@ -14,7 +14,7 @@ fn build_json_codec_service() {
             tonic_build::manual::Method::builder()
                 .name("create_token")
                 .route_name("CreateToken")
-                .input_type("crate::token_codec::Claims")
+                .input_type("crate::Claims")
                 .output_type("crate::token_codec::TokenResponse")
                 .codec_path("crate::token_codec::JsonCodec")
                 .build(),

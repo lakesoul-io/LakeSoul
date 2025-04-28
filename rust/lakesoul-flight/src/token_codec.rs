@@ -10,8 +10,6 @@ use tonic::{
     Status,
 };
 
-pub use lakesoul_flight::Claims;
-
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TokenResponse {
     pub token: String,

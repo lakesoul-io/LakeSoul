@@ -22,6 +22,7 @@ use arrow_flight::{
     Action, FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest, HandshakeResponse, IpcMessage, SchemaAsIpc,
     Ticket,
 };
+use datafusion::common::HashMap;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::sql::parser::{DFParser, Statement};
 use datafusion::sql::sqlparser::ast::{CreateTable, SqlOption};
@@ -38,9 +39,11 @@ use lakesoul_io::helpers::get_batch_memory_size;
 use lakesoul_io::lakesoul_io_config::{register_hdfs_object_store, register_s3_object_store, LakeSoulIOConfigBuilder};
 use lakesoul_io::serde_json;
 use prost::Message;
+use std::collections::HashSet;
 use std::env;
+use std::ops::AddAssign;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tonic::{metadata::MetadataValue, Request, Response, Status, Streaming};
 
 use lakesoul_io::async_writer::WriterFlushResult;
@@ -49,9 +52,9 @@ use uuid::Uuid;
 
 use lakesoul_datafusion::Result;
 
-use arrow::array::{ArrayRef, StringArray};
+use arrow::array::{ArrayRef, ArrowNativeTypeOp, StringArray};
 use arrow::record_batch::RecordBatch;
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use datafusion::logical_expr::{DdlStatement, DmlStatement, LogicalPlan, WriteOp};
 use datafusion::prelude::*;
 
@@ -67,6 +70,8 @@ use crate::{datafusion_error_to_status, lakesoul_error_to_status, lakesoul_metad
 use datafusion::execution::SessionStateBuilder;
 use lakesoul_metadata::rbac::verify_permission_by_table_name;
 use metrics::{counter, gauge, histogram};
+use prost::bytes::{Buf, BufMut, Bytes, BytesMut};
+use rand::{rng, Rng};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
@@ -82,28 +87,6 @@ macro_rules! status {
 
 /// The transactional data of the commit operation on LakeSoul metadata.
 type TransactionalData = (Arc<LakeSoulTable>, WriterFlushResult);
-
-/// The implementation of the [`FlightSqlService`] for LakeSoul.
-pub struct FlightSqlServiceImpl {
-    /// The arguments of the flight sql service.
-    args: Args,
-    /// The metadata client.
-    client: MetaDataClientRef,
-    /// The context state.
-    contexts: Arc<DashMap<String, Arc<SessionContext>>>,
-    /// The statement state.
-    statements: Arc<DashMap<String, LogicalPlan>>,
-    /// The transactional data state.
-    transactional_data: Arc<DashMap<String, TransactionalData>>,
-    /// The metrics of the stream write operation.
-    metrics: Arc<StreamWriteMetrics>,
-    /// The jwt server for authentication.
-    jwt_server: Arc<JwtServer>,
-    /// The auth switch.
-    auth_enabled: bool,
-    /// The rbac authorization switch.
-    rbac_enabled: bool,
-}
 
 /// The metrics of the stream write operation.
 struct StreamWriteMetrics {
@@ -207,10 +190,35 @@ impl StreamWriteMetrics {
     }
 }
 
+/// The implementation of the [`FlightSqlService`] for LakeSoul.
+pub struct FlightSqlServiceImpl {
+    /// The arguments of the flight sql service.
+    args: Args,
+    /// The metadata client.
+    client: MetaDataClientRef,
+    /// The context state.
+    contexts: Arc<DashMap<String, Arc<SessionContext>>>,
+    /// The statement state.
+    statements: Arc<DashMap<String, LogicalPlan>>,
+    /// The transactional data state.
+    transactional_data: Arc<DashMap<String, TransactionalData>>,
+    /// The metrics of the stream write operation.
+    metrics: Arc<StreamWriteMetrics>,
+    /// The jwt server for authentication.
+    jwt_server: Arc<JwtServer>,
+    /// The auth switch.
+    auth_enabled: bool,
+    /// The rbac authorization switch.
+    rbac_enabled: bool,
+    // this may OOM
+    counter: DashMap<TicketWrapper, i64>,
+}
+
 #[tonic::async_trait]
 impl FlightSqlService for FlightSqlServiceImpl {
     type FlightService = Self;
 
+    #[instrument(skip(self))]
     async fn do_handshake(
         &self,
         _request: Request<Streaming<HandshakeRequest>>,
@@ -261,9 +269,28 @@ impl FlightSqlService for FlightSqlServiceImpl {
             .map_err(|e| status!("Error validating statement", e))?;
 
         for tf in table_refs {
-            error!("table: {:?}", tf.table());
-            // TODO fix this
-            self.verify_rbac(&claims, "default", tf.table())
+            // TODO may use const var
+            let mut namespace: Arc<str> = Arc::from("default");
+            #[allow(unused_assignments)]
+            let mut table_name: Arc<str> = Arc::from("");
+
+            match tf {
+                TableReference::Bare { table } => {
+                    table_name = table.clone();
+                }
+                TableReference::Partial { schema, table } => {
+                    namespace = schema.clone();
+                    table_name = table.clone();
+                }
+                TableReference::Full { catalog, schema, table } => {
+                    let catalog = &*catalog.to_lowercase();
+                    assert_eq!("lakesoul", catalog);
+                    namespace = schema.clone();
+                    table_name = table.clone();
+                }
+            }
+
+            self.verify_rbac(&claims, &*namespace, &*table_name)
                 .await
                 .map_err(|e| status!("Error validating rbac", e))?;
         }
@@ -288,6 +315,15 @@ impl FlightSqlService for FlightSqlServiceImpl {
             .encode_to_vec()
             .into(),
         };
+
+        // add ticket
+        {
+            let mut entry = self.counter.entry(TicketWrapper(ticket.ticket.clone())).or_insert(0);
+            // what if overflow
+            *entry = entry
+                .checked_add(1)
+                .ok_or_else(|| Status::cancelled("ticket counter overflow"))?;
+        }
 
         let info = FlightInfo::new()
             // Encode the Arrow schema
@@ -492,6 +528,23 @@ impl FlightSqlService for FlightSqlServiceImpl {
         request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         self.verify_token(request.metadata())?;
+        {
+            let wrapper = TicketWrapper(request.get_ref().ticket.clone());
+            let mut val = self
+                .counter
+                .get_mut(&wrapper)
+                .ok_or_else(|| Status::cancelled("Ticket not found"))?;
+
+            debug!("ticket val is {:?}", *val);
+
+            if *val <= 0 {
+                self.counter.remove(&wrapper);
+                return Err(Status::cancelled("Ticket not found"));
+            }
+            *val = val
+                .checked_sub(1)
+                .ok_or_else(|| Status::cancelled("Ticket not found"))?;
+        }
         info!("do_get_statement - query: {:?}", query.statement_handle);
         let sql = std::str::from_utf8(&query.statement_handle).map_err(|e| status!("Unable to parse uuid", e))?;
         let ctx = self.get_ctx(&request)?;
@@ -1030,6 +1083,7 @@ impl FlightSqlServiceImpl {
             auth_enabled,
             rbac_enabled,
             metrics: Arc::new(StreamWriteMetrics::new(throughput_limit)),
+            counter: DashMap::new(),
         })
     }
 
@@ -1321,6 +1375,7 @@ impl FlightSqlServiceImpl {
                 "Invalid authorization token: {token}"
             )));
         }
+        error!("token is: {}",token);
         self.jwt_server
             .decode_token(token)
             .map_err(|e| Status::permission_denied(format!("Invalid authorization token: {e}")))
@@ -1410,3 +1465,6 @@ impl FlightSqlServiceImpl {
         Ok((result, record_count))
     }
 }
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct TicketWrapper(Bytes);

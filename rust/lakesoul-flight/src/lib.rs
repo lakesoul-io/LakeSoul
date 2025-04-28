@@ -19,6 +19,17 @@ use lakesoul_datafusion::LakeSoulError;
 use lakesoul_metadata::LakeSoulMetaDataError;
 use tonic::Status;
 
+mod token_codec;
+pub use token_codec::TokenResponse;
+mod banner;
+pub use banner::BANNER;
+
+mod token {
+    include!(concat!(env!("OUT_DIR"), "/json.token.TokenServer.rs"));
+}
+pub use token::token_server_client::TokenServerClient;
+pub use token::token_server_server::{TokenServer, TokenServerServer};
+
 macro_rules! impl_error_to_status {
     ($name:ident, $err_type:ty, $status_type:ident) => {
         fn $name(err: $err_type) -> Status {

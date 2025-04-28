@@ -6,7 +6,6 @@
 
 #[macro_use]
 extern crate tracing;
-mod token_codec;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -15,6 +14,8 @@ use std::time::Instant;
 use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::Parser;
 use lakesoul_flight::{args::Args, FlightSqlServiceImpl, JwtServer};
+use lakesoul_flight::{Claims, TokenResponse, BANNER};
+use lakesoul_flight::{TokenServer, TokenServerServer};
 use lakesoul_metadata::MetaDataClient;
 use metrics::{counter, gauge};
 use metrics_exporter_prometheus::PrometheusBuilder;
@@ -23,19 +24,13 @@ use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 use tracing_subscriber::EnvFilter;
 
-pub mod token {
-    include!(concat!(env!("OUT_DIR"), "/json.token.TokenServer.rs"));
-}
-use crate::token::token_server_server::TokenServerServer;
-use crate::token_codec::{Claims, TokenResponse};
-use token::token_server_server::TokenServer;
-
 pub struct TokenService {
     jwt_server: Arc<JwtServer>,
 }
 
 #[tonic::async_trait]
 impl TokenServer for TokenService {
+    #[instrument(skip(self))]
     async fn create_token(&self, request: Request<Claims>) -> Result<Response<TokenResponse>, Status> {
         let claims = request.into_inner();
         let token = self
@@ -201,6 +196,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         info!("LakeSoul Arrow Flight SQL Server Listening on {addr:}");
         info!("Metrics Server Listening on {:}", metrics_addr);
+
+        println!("{}", BANNER);
 
         Server::builder()
             .add_service(svc)

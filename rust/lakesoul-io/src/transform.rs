@@ -257,18 +257,18 @@ pub fn make_default_array(datatype: &DataType, value: &String, num_rows: usize) 
             value
                 .as_str()
                 .parse::<i32>()
-                .map_err(|e| External(
-                    Box::new(e)
-                ))?;
+                .map_err(|e| {
+                    External(Box::new(e))
+                })?;
             num_rows
         ])),
         DataType::Int64 => Arc::new(PrimitiveArray::<Int64Type>::from(vec![
             value
                 .as_str()
                 .parse::<i64>()
-                .map_err(|e| External(
-                    Box::new(e)
-                ))?;
+                .map_err(|e| {
+                    External(Box::new(e))
+                })?;
             num_rows
         ])),
         DataType::Date32 => Arc::new(PrimitiveArray::<Date32Type>::from(vec![

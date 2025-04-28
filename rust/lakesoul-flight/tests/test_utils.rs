@@ -74,7 +74,9 @@ impl Stream for RecordBatchStream {
 
 pub async fn build_client() -> FlightSqlServiceClient<Channel> {
     let channel = Channel::from_static("http://localhost:50051").connect().await.unwrap();
-    FlightSqlServiceClient::new(channel)
+    let mut client =FlightSqlServiceClient::new(channel);
+    client.handshake("username", "").await.unwrap();
+    client
 }
 
 async fn handle_flight_info(info: &FlightInfo, client: &mut FlightSqlServiceClient<Channel>) -> Vec<RecordBatch> {
