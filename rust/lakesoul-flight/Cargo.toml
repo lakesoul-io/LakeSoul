@@ -56,3 +56,4 @@ futures = { workspace = true }
 test-log = { version = "0.2.14" }
 datafusion = { workspace = true }
 lakesoul-datafusion = { path = "../lakesoul-datafusion" }
+anyhow.workspace = true

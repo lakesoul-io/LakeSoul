@@ -93,18 +93,19 @@ impl LakeSoulTable {
             Self::try_new_with_client_and_table_info(client, table_info).await
         } else {
             Err(LakeSoulError::MetaDataError(LakeSoulMetaDataError::NotFound(format!(
-                "Table '{}' not found",
-                table_name
+                "Table '{}' in '{}' not found",
+                table_name, namespace
             ))))
         }
     }
 
+    /// Create a new LakeSoulTable from a MetaDataClient and TableInfo.
     pub async fn try_new_with_client_and_table_info(client: MetaDataClientRef, table_info: TableInfo) -> Result<Self> {
         let table_schema = schema_from_metadata_str(&table_info.table_schema);
 
         let table_name = table_info.table_name.clone();
         let properties = serde_json::from_str::<LakeSoulTableProperty>(&table_info.properties)?;
-        let (range_partitions, hash_partitions) = parse_table_info_partitions(table_info.partitions.clone())?;
+        let (range_partitions, hash_partitions) = parse_table_info_partitions(&table_info.partitions)?;
 
         Ok(Self {
             client,
@@ -292,6 +293,7 @@ impl LakeSoulTable {
         self.table_schema.clone()
     }
 
+    #[instrument(skip_all)]
     pub async fn commit_flush_result(&self, result: WriterFlushResult) -> Result<()> {
         // 创建data commit info列表
         let mut data_commit_info_list = Vec::new();
@@ -330,11 +332,11 @@ impl LakeSoulTable {
         }
 
         // 提交所有DataCommitInfo
-        info!("Committing DataCommitInfo={:?}", data_commit_info_list);
+        debug!("Committing DataCommitInfo={:?}", data_commit_info_list);
         for commit_info in data_commit_info_list {
             let commit_id = commit_info.commit_id.clone();
             self.client.commit_data_commit_info(commit_info).await?;
-            info!("Commit done for commit_id={:?}", commit_id);
+            debug!("Commit done for commit_id={:?}", commit_id);
         }
 
         Ok(())

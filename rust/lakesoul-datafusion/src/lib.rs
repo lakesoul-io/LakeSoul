@@ -38,7 +38,6 @@ pub mod cli;
 
 pub fn create_lakesoul_session_ctx(
     meta_client: MetaDataClientRef,
-    warehouse_prefix: Option<String>,
     args: &cli::CoreArgs,
 ) -> Result<Arc<SessionContext>> {
     let mut session_config = SessionConfig::from_env()?
@@ -64,7 +63,7 @@ pub fn create_lakesoul_session_ctx(
         "LAKESOUL".to_string(),
         Arc::new(LakeSoulTableProviderFactory::new(
             meta_client.clone(),
-            warehouse_prefix.clone(),
+            args.warehouse_prefix.clone(),
         )),
     );
     let ctx = Arc::new(SessionContext::new_with_state(state));

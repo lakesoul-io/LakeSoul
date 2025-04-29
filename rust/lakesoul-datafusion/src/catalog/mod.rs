@@ -149,7 +149,7 @@ pub(crate) async fn create_io_config_builder(
 }
 
 /// Parse the range and hash partitions from the defined partitions string.
-pub(crate) fn parse_table_info_partitions(partitions: String) -> Result<(Vec<String>, Vec<String>)> {
+pub(crate) fn parse_table_info_partitions(partitions: &str) -> Result<(Vec<String>, Vec<String>)> {
     let (range_keys, hash_keys) = partitions.split_at(
         partitions
             .find(';')

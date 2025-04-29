@@ -19,7 +19,7 @@ async fn main() {
 
     let meta_client = Arc::new(MetaDataClient::from_env().await.unwrap());
 
-    let ctx = create_lakesoul_session_ctx(meta_client, core_args.warehouse_prefix.clone(), &core_args).unwrap();
+    let ctx = create_lakesoul_session_ctx(meta_client, &core_args).unwrap();
 
     let sql = "
        CREATE EXTERNAL TABLE

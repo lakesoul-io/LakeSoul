@@ -22,47 +22,36 @@ use arrow_flight::{
     Action, FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest, HandshakeResponse, IpcMessage, SchemaAsIpc,
     Ticket,
 };
-use datafusion::common::HashMap;
-use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::sql::parser::{DFParser, Statement};
 use datafusion::sql::sqlparser::ast::{CreateTable, SqlOption};
 use datafusion::sql::sqlparser::dialect::PostgreSqlDialect;
 use datafusion::sql::TableReference;
 use futures::{Stream, StreamExt, TryStreamExt};
 use lakesoul_datafusion::catalog::LakeSoulTableProperty;
-use lakesoul_datafusion::datasource::table_factory::LakeSoulTableProviderFactory;
 use lakesoul_datafusion::lakesoul_table::helpers::case_fold_column_name;
 use lakesoul_datafusion::lakesoul_table::LakeSoulTable;
-use lakesoul_datafusion::planner::query_planner::LakeSoulQueryPlanner;
 use lakesoul_datafusion::serialize::arrow_java::schema_from_metadata_str;
 use lakesoul_io::helpers::get_batch_memory_size;
-use lakesoul_io::lakesoul_io_config::{register_hdfs_object_store, register_s3_object_store, LakeSoulIOConfigBuilder};
 use lakesoul_io::serde_json;
 use prost::Message;
-use std::collections::HashSet;
 use std::env;
-use std::ops::AddAssign;
 use std::pin::Pin;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use tonic::{metadata::MetadataValue, Request, Response, Status, Streaming};
 
 use lakesoul_io::async_writer::WriterFlushResult;
 use lakesoul_metadata::MetaDataClientRef;
 use uuid::Uuid;
 
-use lakesoul_datafusion::Result;
+use lakesoul_datafusion::{create_lakesoul_session_ctx, LakeSoulError, Result};
 
-use arrow::array::{ArrayRef, ArrowNativeTypeOp, StringArray};
+use arrow::array::{ArrayRef, StringArray};
 use arrow::record_batch::RecordBatch;
 use dashmap::{DashMap, DashSet};
 use datafusion::logical_expr::{DdlStatement, DmlStatement, LogicalPlan, WriteOp};
 use datafusion::prelude::*;
 
-use datafusion::execution::runtime_env::RuntimeEnv;
-use lakesoul_datafusion::catalog::lakesoul_catalog::LakeSoulCatalog;
-use object_store::local::LocalFileSystem;
 use tonic::metadata::MetadataMap;
-use url::Url;
 
 use crate::args::Args;
 use crate::jwt::JwtServer;
@@ -197,7 +186,7 @@ pub struct FlightSqlServiceImpl {
     /// The metadata client.
     client: MetaDataClientRef,
     /// The context state.
-    contexts: Arc<DashMap<String, Arc<SessionContext>>>,
+    ctx: Arc<SessionContext>,
     /// The statement state.
     statements: Arc<DashMap<String, LogicalPlan>>,
     /// The transactional data state.
@@ -218,6 +207,7 @@ pub struct FlightSqlServiceImpl {
 impl FlightSqlService for FlightSqlServiceImpl {
     type FlightService = Self;
 
+    /// in lakesoul this function should not be invoked
     #[instrument(skip(self))]
     async fn do_handshake(
         &self,
@@ -228,8 +218,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         // see Ballista implementation, for example of basic auth
         // in this case, we simply accept the connection and create a new SessionContext
         // the SessionContext will be re-used within this same connection/session
-        let token = self.create_ctx().await?;
-
+        let token = "dummy";
         let result = HandshakeResponse {
             protocol_version: 0,
             payload: token.as_bytes().to_vec().into(),
@@ -253,17 +242,17 @@ impl FlightSqlService for FlightSqlServiceImpl {
         info!("get_flight_info_statement - query: {}", cmd.query);
         let sql = &cmd.query;
 
-        let ctx = self.get_ctx(&request)?;
-
         // only need logical plan
 
-        let dialect = ctx.state().config().options().sql_parser.dialect.clone();
-        let stat = ctx
+        let dialect = self.ctx.state().config().options().sql_parser.dialect.clone();
+        let stat = self
+            .ctx
             .state()
             .sql_to_statement(sql, &dialect)
             .map_err(|e| status!("Error parsing SQL", e))?;
 
-        let table_refs = ctx
+        let table_refs = self
+            .ctx
             .state()
             .resolve_table_references(&stat)
             .map_err(|e| status!("Error validating statement", e))?;
@@ -295,7 +284,9 @@ impl FlightSqlService for FlightSqlServiceImpl {
                 .map_err(|e| status!("Error validating rbac", e))?;
         }
 
-        let plan = ctx
+        // cache plan?
+        let plan = self
+            .ctx
             .state()
             .statement_to_plan(stat)
             .await
@@ -318,8 +309,8 @@ impl FlightSqlService for FlightSqlServiceImpl {
 
         // add ticket
         {
+            // FIXME naive impl
             let mut entry = self.counter.entry(TicketWrapper(ticket.ticket.clone())).or_insert(0);
-            // what if overflow
             *entry = entry
                 .checked_add(1)
                 .ok_or_else(|| Status::cancelled("ticket counter overflow"))?;
@@ -353,10 +344,9 @@ impl FlightSqlService for FlightSqlServiceImpl {
         let handle =
             std::str::from_utf8(&cmd.prepared_statement_handle).map_err(|e| status!("Unable to parse uuid", e))?;
 
-        let ctx = self.get_ctx(&request)?;
         let plan = self.get_plan(handle)?;
 
-        let state = ctx.state();
+        let state = self.ctx.state();
         let df = DataFrame::new(state, plan);
         let result = df.collect().await.map_err(|e| status!("Error executing query", e))?;
 
@@ -456,9 +446,8 @@ impl FlightSqlService for FlightSqlServiceImpl {
         self.verify_token(request.metadata())?;
         info!("get_flight_info_tables - catalog: {:?}", query);
 
-        let ctx = self.get_ctx(&request)?;
         let data = self
-            .tables(ctx)
+            .tables(self.ctx.clone())
             .await
             .map_err(|e| status!("Error executing query", e))?;
         let schema = data.schema();
@@ -528,6 +517,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         self.verify_token(request.metadata())?;
+        // counter
         {
             let wrapper = TicketWrapper(request.get_ref().ticket.clone());
             let mut val = self
@@ -547,10 +537,11 @@ impl FlightSqlService for FlightSqlServiceImpl {
         }
         info!("do_get_statement - query: {:?}", query.statement_handle);
         let sql = std::str::from_utf8(&query.statement_handle).map_err(|e| status!("Unable to parse uuid", e))?;
-        let ctx = self.get_ctx(&request)?;
         // forbid DDL
+        // FIXME from cache
         let opt = SQLOptions::new().with_allow_ddl(false).with_allow_statements(false);
-        let df = ctx
+        let df = self
+            .ctx
             .sql_with_options(sql, opt)
             .await
             .map_err(|e| status!("Error executing query", e))?;
@@ -583,9 +574,8 @@ impl FlightSqlService for FlightSqlServiceImpl {
 
         let handle =
             std::str::from_utf8(&query.prepared_statement_handle).map_err(|e| status!("Unable to parse uuid", e))?;
-        let ctx = self.get_ctx(&request)?;
         let plan = self.get_plan(handle)?;
-        let state = ctx.state();
+        let state = self.ctx.state();
         let df = DataFrame::new(state, plan);
         let schema = Arc::new(df.schema().clone().into());
         let stream = df
@@ -716,8 +706,8 @@ impl FlightSqlService for FlightSqlServiceImpl {
         let sql = normalize_sql(sql)?;
         info!("execute SQL: {}", sql);
 
-        let ctx = self.get_ctx(&request)?;
-        let _ = ctx
+        let _ = self
+            .ctx
             .sql(&sql)
             .await
             .and_then(|df| df.into_optimized_plan())
@@ -731,7 +721,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         cmd: CommandStatementIngest,
         request: Request<PeekableFlightDataStream>,
     ) -> Result<i64, Status> {
-        self.verify_token(request.metadata())?;
+        let claims = self.verify_token(request.metadata())?;
         info!("do_put_statement_ingest");
         let CommandStatementIngest {
             table_definition_options,
@@ -742,18 +732,14 @@ impl FlightSqlService for FlightSqlServiceImpl {
             transaction_id,
             options,
         } = cmd;
+        self.verify_rbac(&claims, &schema.clone().unwrap_or("default".to_string()), &table)
+            .await?;
         info!("do_put_statement_ingest: table: {table}, schema: {schema:?}, catalog: {catalog:?}, temporary: {temporary}, transaction_id: {transaction_id:?}, options: {options:?} table_definition_options: {table_definition_options:?}");
 
         // 获取输入流
         let stream = request.into_inner();
 
         // 创建 LakeSoulTable
-        let table_reference = TableReference::from(match &schema {
-            Some(schema) => TableReference::partial(schema.as_str(), table.as_str()),
-            None => TableReference::bare(table.as_str()),
-        });
-        let (flush_result, record_count) = self.write_stream(table_reference, stream).await?;
-
         let table = Arc::new(
             LakeSoulTable::for_namespace_and_name(
                 schema.unwrap_or("default".to_string()).as_str(),
@@ -761,8 +747,9 @@ impl FlightSqlService for FlightSqlServiceImpl {
                 Some(self.client.clone()),
             )
             .await
-            .map_err(|e| Status::internal(format!("Error creating table: {}", e)))?,
+            .map_err(|e| Status::internal(format!("{}", e)))?,
         );
+        let (flush_result, record_count) = self.write_stream(table.clone(), stream).await?;
 
         if let Some(transaction_id) = transaction_id {
             // Convert Bytes to String before passing to append_transactional_data
@@ -887,9 +874,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         let normalized_query = normalize_sql(user_query)?;
         info!("do_action_create_prepared_statement: {normalized_query}");
 
-        let ctx = self.get_ctx(&request)?;
-
-        let plan = ctx.sql(&normalized_query).await;
+        let plan = self.ctx.sql(&normalized_query).await;
         let plan = plan
             .and_then(|df| df.into_optimized_plan())
             .map_err(|e| Status::internal(format!("Error building plan: {e}")))?;
@@ -1060,23 +1045,32 @@ impl FlightSqlServiceImpl {
     pub async fn new(metadata_client: MetaDataClientRef, args: Args) -> Result<Self> {
         let secret = metadata_client.get_client_secret();
         let jwt_server = Arc::new(JwtServer::new(secret.as_str()));
-        let auth_enabled = env::var("JWT_AUTH_ENABLED")
-            .unwrap_or("false".to_string())
+        let jwt_env = env::var("JWT_AUTH_ENABLED").unwrap_or("false".to_string());
+        let rbac_env = env::var("RBAC_AUTH_ENABLED").unwrap_or("false".to_string());
+        debug!("jwt: {}, rbac: {}", jwt_env, rbac_env);
+        let auth_enabled = jwt_env
             .to_lowercase()
             .parse::<bool>()
-            .unwrap();
-        let rbac_enabled = env::var("RBAC_AUTH_ENABLED")
-            .unwrap_or("false".to_string())
+            .map_err(|e| LakeSoulError::Internal(format!("{}", e)))?;
+        let rbac_enabled = rbac_env
             .to_lowercase()
             .parse::<bool>()
-            .unwrap();
+            .map_err(|e| LakeSoulError::Internal(format!("{}", e)))?;
+
+        if rbac_enabled && !auth_enabled {
+            error!("rbac enabled but auth disabled");
+            return Err(LakeSoulError::Internal("rbac enabled but auth disabled".into()));
+        }
+
         // 从环境变量或配置中获取目标速率
         let throughput_limit = args.throughput_limit.parse::<f64>().unwrap_or(100.0);
+
+        let ctx = create_lakesoul_session_ctx(metadata_client.clone(), &args.core)?;
 
         Ok(FlightSqlServiceImpl {
             client: metadata_client,
             args,
-            contexts: Default::default(),
+            ctx,
             statements: Default::default(),
             transactional_data: Default::default(),
             jwt_server,
@@ -1085,147 +1079,6 @@ impl FlightSqlServiceImpl {
             metrics: Arc::new(StreamWriteMetrics::new(throughput_limit)),
             counter: DashMap::new(),
         })
-    }
-
-    /// Initialize the [`FlightSqlServiceImpl`].
-    pub async fn init(&self) -> Result<(), Status> {
-        self.create_ctx().await?;
-
-        Ok(())
-    }
-
-    /// Create a new [`SessionContext`] and initialize the catalog and schema.
-    pub async fn create_ctx(&self) -> Result<String, Status> {
-        let uuid = "1".to_string();
-        let mut session_config = SessionConfig::from_env()
-            .map_err(|e| Status::internal(format!("Error building plan: {e}")))?
-            .with_information_schema(true)
-            .with_create_default_catalog_and_schema(false)
-            .with_batch_size(128)
-            .with_default_catalog_and_schema("LAKESOUL".to_string(), "default".to_string());
-        session_config.options_mut().sql_parser.dialect = "postgresql".to_string();
-        session_config.options_mut().optimizer.enable_round_robin_repartition = false; // if true, the record_batches poll from stream become unordered
-        session_config.options_mut().optimizer.prefer_hash_join = false; //if true, panicked at 'range end out of bounds'
-        session_config.options_mut().execution.parquet.pushdown_filters = true;
-        session_config.options_mut().execution.target_partitions = 1;
-        session_config.options_mut().execution.parquet.schema_force_view_types = false;
-
-        let planner = LakeSoulQueryPlanner::new_ref();
-
-        let mut state = SessionStateBuilder::new()
-            .with_config(session_config)
-            .with_runtime_env(Arc::new(RuntimeEnv::default()))
-            .with_query_planner(planner)
-            .build();
-        state.table_factories_mut().insert(
-            "LAKESOUL".to_string(),
-            Arc::new(LakeSoulTableProviderFactory::new(
-                self.get_metadata_client(),
-                self.args.core.warehouse_prefix.clone(),
-            )),
-        );
-        let ctx = Arc::new(SessionContext::new_with_state(state));
-
-        let catalog = Arc::new(LakeSoulCatalog::new(self.client.clone(), ctx.clone()));
-
-        if let Some(warehouse_prefix) = &self.args.core.warehouse_prefix {
-            debug!("warehouse_prefix: {:?}", warehouse_prefix);
-            // FIXME: s3 related args will ignore local file system
-            env::set_var("LAKESOUL_WAREHOUSE_PREFIX", warehouse_prefix);
-            let url = Url::parse(warehouse_prefix);
-            match url {
-                Ok(url) => match url.scheme() {
-                    "s3" | "s3a" => {
-                        if let Some(s3_secret_key) = &self.args.core.s3_secret_key {
-                            env::set_var("AWS_SECRET_ACCESS_KEY", s3_secret_key);
-                        }
-                        if let Some(s3_access_key) = &self.args.core.s3_access_key {
-                            env::set_var("AWS_ACCESS_KEY_ID", s3_access_key);
-                        }
-                        if let Some(endpoint) = &self.args.core.endpoint {
-                            env::set_var("AWS_ENDPOINT", endpoint);
-                        }
-
-                        if ctx
-                            .runtime_env()
-                            .object_store(
-                                ObjectStoreUrl::parse(&url[..url::Position::BeforePath])
-                                    .map_err(datafusion_error_to_status)?,
-                            )
-                            .is_ok()
-                        {
-                            return Err(Status::internal("Object store already registered"));
-                        }
-
-                        let config = self.get_io_config_builder().build();
-                        register_s3_object_store(&url, &config, &ctx.runtime_env())
-                            .map_err(datafusion_error_to_status)?;
-                    }
-                    "hdfs" => {
-                        if url.has_host() {
-                            if ctx
-                                .runtime_env()
-                                .object_store(
-                                    ObjectStoreUrl::parse(&url[..url::Position::BeforePath])
-                                        .map_err(datafusion_error_to_status)?,
-                                )
-                                .is_ok()
-                            {
-                                return Err(Status::internal("Object store already registered"));
-                            }
-                            let config = self.get_io_config_builder().build();
-                            register_hdfs_object_store(
-                                &url,
-                                &url[url::Position::BeforeHost..url::Position::BeforePath],
-                                &config,
-                                &ctx.runtime_env(),
-                            )
-                            .map_err(datafusion_error_to_status)?;
-                        } else {
-                            // defaultFS should have been registered with hdfs,
-                            // and we convert hdfs://user/hadoop/file to
-                            // hdfs://defaultFS/user/hadoop/file
-                            todo!()
-                        }
-                    }
-                    "file" => {
-                        ctx.runtime_env()
-                            .register_object_store(&url, Arc::new(LocalFileSystem::new()));
-                    }
-                    _ => {
-                        return Err(Status::internal("Invalid scheme of warehouse prefix"));
-                    }
-                },
-                Err(_) => {
-                    return Err(Status::internal("Invalid warehouse prefix"));
-                }
-            }
-        } else {
-            ctx.runtime_env()
-                .register_object_store(&Url::parse("file://").unwrap(), Arc::new(LocalFileSystem::new()));
-        }
-
-        ctx.state()
-            .catalog_list()
-            .register_catalog("LAKESOUL".to_string(), catalog);
-
-        // let df = ctx.sql("select * from user_info_1").await.map_err(datafusion_error_to_status)?;
-        // let batch = df.collect().await.map_err(datafusion_error_to_status)?;
-        // info!("batch: {}", arrow::util::pretty::pretty_format_batches(&batch).unwrap());
-
-        self.contexts.insert(uuid.clone(), ctx);
-        Ok(uuid)
-    }
-
-    /// Get the [`SessionContext`] from the context state.
-    fn get_ctx<T>(&self, _req: &Request<T>) -> Result<Arc<SessionContext>, Status> {
-        let auth = "1".to_string();
-
-        if let Some(context) = self.contexts.get(&auth) {
-            Ok(context.clone())
-        } else {
-            Err(Status::internal(format!("Context handle not found: {auth}")))?
-        }
     }
 
     /// Get the [`LogicalPlan`] from the statement state.
@@ -1375,14 +1228,16 @@ impl FlightSqlServiceImpl {
                 "Invalid authorization token: {token}"
             )));
         }
-        error!("token is: {}",token);
+        debug!("token: {}", token);
         self.jwt_server
             .decode_token(token)
             .map_err(|e| Status::permission_denied(format!("Invalid authorization token: {e}")))
     }
 
     /// Verify the rbac authorization.
+    #[instrument(skip(self))]
     async fn verify_rbac(&self, claims: &Claims, ns: &str, table: &str) -> Result<(), Status> {
+        info!("verify_rbac, rabc_enabled:{} ", self.rbac_enabled);
         if !self.rbac_enabled {
             return Ok(());
         }
@@ -1391,29 +1246,14 @@ impl FlightSqlServiceImpl {
             .map_err(|e| Status::permission_denied(e.to_string()))
     }
 
-    /// Get the [`LakeSoulIOConfigBuilder`] from the arguments.
-    fn get_io_config_builder(&self) -> LakeSoulIOConfigBuilder {
-        let object_store_options = self.args.core.s3_options();
-        LakeSoulIOConfigBuilder::new_with_object_store_options(object_store_options)
-    }
-
     /// Write the stream to the table.
     async fn write_stream(
         &self,
-        table_reference: TableReference,
+        table: Arc<LakeSoulTable>,
         stream: PeekableFlightDataStream,
     ) -> Result<(WriterFlushResult, i64), Status> {
         // 开始记录流式指标
         self.metrics.start_stream();
-
-        let schema = table_reference.schema();
-        let table_name = table_reference.table();
-
-        let table = Arc::new(
-            LakeSoulTable::for_namespace_and_name(schema.unwrap_or("default"), &table_name, Some(self.client.clone()))
-                .await
-                .map_err(|e| Status::internal(format!("Error creating table: {}", e)))?,
-        );
 
         let mut writer = table
             .get_writer(self.args.core.s3_options())
@@ -1434,7 +1274,7 @@ impl FlightSqlServiceImpl {
             .map_err(|e| Status::internal(format!("Error getting next batch: {}", e)))?
         {
             let batch_rows = batch.num_rows();
-            info!("write_stream batch_rows: {}", batch_rows);
+            debug!("write_stream batch_rows: {}", batch_rows);
             record_count += batch_rows as i64;
             let batch_bytes = get_batch_memory_size(&batch).map_err(datafusion_error_to_status)? as u64;
             batch_count += 1;
@@ -1450,7 +1290,8 @@ impl FlightSqlServiceImpl {
                 self.metrics.report_metrics(
                     format!(
                         "stream_write_batch_metrics at {} batches of {}",
-                        batch_count, table_name
+                        batch_count,
+                        table.table_name()
                     )
                     .as_str(),
                 );

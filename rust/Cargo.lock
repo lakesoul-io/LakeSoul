@@ -3291,6 +3291,7 @@ dependencies = [
 name = "lakesoul-flight"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "arrow",
  "arrow-array",
  "arrow-cast",

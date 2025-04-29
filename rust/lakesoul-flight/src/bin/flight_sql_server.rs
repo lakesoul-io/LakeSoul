@@ -185,7 +185,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .install()?;
 
         let service = FlightSqlServiceImpl::new(metadata_client.clone(), args).await?;
-        service.init().await?;
         let jwt_server = service.get_jwt_server();
 
         let token_service = TokenService { jwt_server };
