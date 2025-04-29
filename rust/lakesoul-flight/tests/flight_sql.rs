@@ -3,13 +3,13 @@
 // SPDX-License-Identifier: Apache-2.0
 #![allow(dead_code)]
 
-use std::{sync::Arc, time::Duration};
+use std::{cell::LazyCell, sync::Arc, time::Duration};
 
 use arrow_array::record_batch;
 use chrono::Days;
 use datafusion::assert_batches_eq;
 use lakesoul_datafusion::{cli::CoreArgs, create_lakesoul_session_ctx};
-use lakesoul_flight::Claims;
+use lakesoul_flight::{Claims, TokenServerClient};
 use lakesoul_metadata::MetaDataClient;
 use test_utils::{build_client, handle_sql, ingest, TestServer};
 use tokio::time::sleep;

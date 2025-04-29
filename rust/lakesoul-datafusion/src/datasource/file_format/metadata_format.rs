@@ -55,8 +55,8 @@ use lakesoul_io::helpers::{
 use lakesoul_io::lakesoul_io_config::LakeSoulIOConfig;
 use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 use object_store::{ObjectMeta, ObjectStore};
-use rand::distr::SampleString;
 use proto::proto::entity::TableInfo;
+use rand::distr::SampleString;
 
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
