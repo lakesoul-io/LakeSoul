@@ -447,6 +447,10 @@ async fn test_flight_sql_server() {
 
 #[test]
 #[should_panic]
-fn rabc_panic() {
-    let _server = TestServer::new(&[], vec![("JWT_AUTH_ENABLED", "false"), ("RBAC_AUTH_ENABLED", "true")]).unwrap();
+fn test_rbac_panic() {
+    let _server = TestServer::new(
+        &["-a", "0.0.0.0:50052", "-m", "0.0.0.0:19001"],
+        vec![("JWT_AUTH_ENABLED", "false"), ("RBAC_AUTH_ENABLED", "true")],
+    )
+    .unwrap();
 }
