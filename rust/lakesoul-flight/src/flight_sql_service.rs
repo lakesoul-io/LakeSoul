@@ -47,7 +47,7 @@ use lakesoul_datafusion::{create_lakesoul_session_ctx, LakeSoulError, Result};
 
 use arrow::array::{ArrayRef, StringArray};
 use arrow::record_batch::RecordBatch;
-use dashmap::{DashMap, DashSet};
+use dashmap::DashMap;
 use datafusion::logical_expr::{DdlStatement, DmlStatement, LogicalPlan, WriteOp};
 use datafusion::prelude::*;
 
