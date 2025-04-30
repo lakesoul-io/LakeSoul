@@ -4,7 +4,6 @@
 
 package com.facebook.presto.lakesoul;
 
-import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.DataFileInfo;
 import com.dmetasoul.lakesoul.meta.DataOperation;
 import com.facebook.presto.lakesoul.handle.LakeSoulTableLayoutHandle;
