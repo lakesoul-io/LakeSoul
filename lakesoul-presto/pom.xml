@@ -17,11 +17,11 @@
     <name>LakeSoul Presto</name>
 
     <artifactId>lakesoul-presto</artifactId>
-    <version>0.28-${revision}</version>
+    <version>0.29-${revision}</version>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <presto.version>0.282</presto.version>
+        <presto.version>0.292</presto.version>
         <local.scope>provided</local.scope>
     </properties>
 
@@ -69,12 +69,6 @@
         </dependency>
 
         <dependency>
-            <groupId>org.apache.commons</groupId>
-            <artifactId>commons-lang3</artifactId>
-            <version>3.3.2</version>
-        </dependency>
-
-        <dependency>
             <groupId>com.facebook.presto</groupId>
             <artifactId>presto-jdbc</artifactId>
             <version>${presto.version}</version>
@@ -83,18 +77,18 @@
         <dependency>
             <groupId>org.apache.hadoop</groupId>
             <artifactId>hadoop-client-api</artifactId>
-            <version>3.3.2</version>
+            <version>3.3.3</version>
         </dependency>
         <dependency>
             <groupId>org.apache.hadoop</groupId>
             <artifactId>hadoop-client-runtime</artifactId>
-            <version>3.3.2</version>
+            <version>3.3.3</version>
         </dependency>
 
         <dependency>
             <groupId>com.google.guava</groupId>
             <artifactId>guava</artifactId>
-            <version>32.0.0-jre</version>
+            <version>32.1.0-jre</version>
         </dependency>
     </dependencies>
 

@@ -4,7 +4,6 @@
 
 package org.apache.spark.sql.arrow
 
-import com.dmetasoul.lakesoul.meta.LakeSoulOptions
 import com.dmetasoul.lakesoul.meta.LakeSoulOptions.SchemaFieldMetadata.{LSH_BIT_WIDTH, LSH_EMBEDDING_DIMENSION, LSH_RNG_SEED}
 import org.apache.arrow.memory.RootAllocator
 import org.apache.arrow.vector.complex.MapVector
@@ -12,7 +11,7 @@ import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
 import org.apache.arrow.vector.types.{DateUnit, FloatingPointPrecision, IntervalUnit, TimeUnit}
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{TimestampType, _}
+import org.apache.spark.sql.types._
 import org.json4s.jackson.JsonMethods.mapper
 
 import java.util
