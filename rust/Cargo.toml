@@ -48,7 +48,7 @@ prost = "0.13.4"
 prost-build = "0.13.4"
 uuid = { version = "1.4.0", features = ["v4", "fast-rng", "macro-diagnostics"] }
 serde = { version = "1.0", features = ["derive", "std", "rc"] }
-rand = "0.9"
+rand = "0.8"
 bytes = "1.4.0"
 half = "^2.1"
 tracing = "0.1.40"

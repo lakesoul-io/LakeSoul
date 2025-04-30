@@ -1,9 +1,8 @@
-use std::{fs::File, sync::Arc};
+use std::sync::Arc;
 
 use arrow_array::{ArrayRef, RecordBatch, StringArray};
 use datafusion_common::Result;
 use lakesoul_io::{lakesoul_io_config::LakeSoulIOConfigBuilder, lakesoul_writer::SyncSendableMutableLakeSoulWriter};
-use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
 use rand::distributions::DistString;
 use tokio::{runtime::Builder, time::Instant};
 
@@ -72,7 +71,7 @@ fn main() -> Result<()> {
     for _ in 0..num_batch {
         let once_start = Instant::now();
         writer.write_batch(create_batch(num_columns, num_rows, str_len))?;
-        // println!("write batch once cost: {}", once_start.elapsed().as_millis());
+        println!("write batch once cost: {}", once_start.elapsed().as_millis());
     }
     let flush_start = Instant::now();
     writer.flush_and_close()?;

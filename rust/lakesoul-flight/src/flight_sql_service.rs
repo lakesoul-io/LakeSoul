@@ -47,7 +47,7 @@ use lakesoul_datafusion::{create_lakesoul_session_ctx, LakeSoulError, Result};
 
 use arrow::array::{ArrayRef, StringArray};
 use arrow::record_batch::RecordBatch;
-use dashmap::{DashMap, DashSet};
+use dashmap::DashMap;
 use datafusion::logical_expr::{DdlStatement, DmlStatement, LogicalPlan, WriteOp};
 use datafusion::prelude::*;
 
@@ -56,11 +56,9 @@ use tonic::metadata::MetadataMap;
 use crate::args::Args;
 use crate::jwt::JwtServer;
 use crate::{datafusion_error_to_status, lakesoul_error_to_status, lakesoul_metadata_error_to_status, Claims};
-use datafusion::execution::SessionStateBuilder;
 use lakesoul_metadata::rbac::verify_permission_by_table_name;
 use metrics::{counter, gauge, histogram};
-use prost::bytes::{Buf, BufMut, Bytes, BytesMut};
-use rand::{rng, Rng};
+use prost::bytes::Bytes;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
