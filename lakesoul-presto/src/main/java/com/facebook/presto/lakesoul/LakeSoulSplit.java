@@ -43,12 +43,12 @@ public class LakeSoulSplit implements ConnectorSplit {
 
     @Override
     public NodeSelectionStrategy getNodeSelectionStrategy() {
-        return NodeSelectionStrategy.NO_PREFERENCE;
+        return NodeSelectionStrategy.SOFT_AFFINITY;
     }
 
     @Override
     public List<HostAddress> getPreferredNodes(NodeProvider nodeProvider) {
-        return Collections.emptyList();
+        return nodeProvider.get(paths.get(0).toString());
     }
 
     @Override
