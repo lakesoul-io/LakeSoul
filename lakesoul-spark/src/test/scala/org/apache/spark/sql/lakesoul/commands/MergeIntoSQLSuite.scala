@@ -78,14 +78,6 @@ class MergeIntoSQLSuite extends QueryTest
       Nil,
       Seq("hash")
     )
-
-    // init one non pk table
-    val df = Seq((20201101, 1, 2), (20201101, 2, 3), (20201101, 3, 4), (20201102, 4, 6))
-      .toDF("range", "hash", "value")
-    val writer = df.write.format("lakesoul").mode("overwrite")
-    writer
-      .option("shortTableName", "temp_non_pk_table_for_merge")
-      .save("file:///tmp/lakesoul_temp_merge_table")
   }
 
   private def withViewNamed(df: DataFrame, viewName: String)(f: => Unit): Unit = {
@@ -117,17 +109,27 @@ class MergeIntoSQLSuite extends QueryTest
       checkAnswer(readLakeSoulTable(tempPath).selectExpr("range", "hash", "value"),
         Row(20201101, 1, 1) :: Row(20201101, 2, 2) :: Row(20201101, 3, 3) :: Row(20201102, 4, 5) :: Nil)
 
-      // partial upsert
-      sql(s"MERGE INTO lakesoul.default.`${snapshotManagement.table_path}` AS t USING " +
-        s" (select hash, value from temp_non_pk_table_for_merge) s" +
-        s" ON t.hash = s.hash " +
-        s" WHEN MATCHED THEN UPDATE SET " +
-        s" t.hash = s.hash, " +
-        s" t.value = s.value " +
-        s" WHEN NOT MATCHED THEN INSERT (hash, value) values (s.hash, s.value)")
-      checkAnswer(readLakeSoulTable(tempPath).selectExpr("range", "hash", "value"),
-        Row(20201101, 1, 2) :: Row(20201101, 2, 3) :: Row(20201101, 3, 4) :: Row(20201102, 4, 6) :: Nil)
-    }
+      val temp_non_pk_table_name = "temp_non_pk_table_for_merge"
+      withTable(temp_non_pk_table_name) {
+        // init one non pk table
+        val df = Seq((20201101, 1, 2), (20201101, 2, 3), (20201101, 3, 4), (20201102, 4, 6))
+          .toDF("range", "hash", "value")
+        val writer = df.write.format("lakesoul").mode("overwrite")
+        writer
+          .option("shortTableName", temp_non_pk_table_name)
+          .save("file:///tmp/lakesoul_temp_merge_table")
+        // partial upsert
+        sql(s"MERGE INTO lakesoul.default.`${snapshotManagement.table_path}` AS t USING " +
+          s" (select hash, value from $temp_non_pk_table_name) s" +
+          s" ON t.hash = s.hash " +
+          s" WHEN MATCHED THEN UPDATE SET " +
+          s" t.hash = s.hash, " +
+          s" t.value = s.value " +
+          s" WHEN NOT MATCHED THEN INSERT (hash, value) values (s.hash, s.value)")
+        checkAnswer(readLakeSoulTable(tempPath).selectExpr("range", "hash", "value"),
+          Row(20201101, 1, 2) :: Row(20201101, 2, 3) :: Row(20201101, 3, 4) :: Row(20201102, 4, 6) :: Nil)
+      }
+      }
   }
 
   test("merge into table with hash partition -- invalid merge condition") {

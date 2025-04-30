@@ -85,7 +85,7 @@ jobs:
         with:
           use-cross: true
           command: build
-          args: '--manifest-path rust/Cargo.toml --target x86_64-unknown-linux-gnu --release --all-features'
+          args: '--manifest-path rust/Cargo.toml --target x86_64-unknown-linux-gnu --package lakesoul-io-c --package lakesoul-metadata-c --release --all-features'
       - name: Build with Maven
         run: |
           mkdir -p rust/target/release
