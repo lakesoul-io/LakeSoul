@@ -5,6 +5,7 @@
 package org.apache.spark.sql.lakesoul.rules
 
 import org.apache.spark.sql.catalyst.analysis.EliminateSubqueryAliases
+import org.apache.spark.sql.catalyst.expressions.objects.AssertNotNull
 import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, EqualTo, Expression}
 import org.apache.spark.sql.catalyst.plans.logical.{Assignment, InsertAction, LakeSoulUpsert, LogicalPlan, MergeAction, MergeIntoTable, UpdateAction}
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -56,9 +57,17 @@ case class PreprocessTableMergeInto(sqlConf: SQLConf) extends Rule[LogicalPlan] 
     }
   }
 
+  private def isAttribute(value: Expression): Boolean = {
+    value match {
+      case _: AttributeReference => true
+      case AssertNotNull(child, _) => isAttribute(child)
+      case _ => false
+    }
+  }
+
   private def assignmentsIsAttributeOnly(assignments: Seq[Assignment]): Boolean = {
     assignments.forall( a => a.key.isInstanceOf[AttributeReference]
-      && a.value.isInstanceOf[AttributeReference])
+      && isAttribute(a.value))
   }
 
   private def checkMatchedActionIsOneUpdateOnly(matchedAction: Seq[MergeAction], table: LakeSoulTableV2): Unit = {

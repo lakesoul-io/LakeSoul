@@ -17,9 +17,7 @@ import com.facebook.presto.lakesoul.util.PrestoUtil;
 import com.facebook.presto.spi.*;
 import com.facebook.presto.spi.connector.ConnectorMetadata;
 import com.google.common.collect.ImmutableList;
-import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.vector.types.pojo.Schema;
-import org.apache.spark.sql.arrow.ArrowUtils;
 import org.apache.spark.sql.types.StructType;
 
 import java.io.IOException;
@@ -60,12 +58,10 @@ public class LakeSoulMetadata implements ConnectorMetadata {
             throw new RuntimeException("no such table: " + tableName);
         }
 
-        LakeSoulTableHandle lakeSoulTableHandle = new LakeSoulTableHandle(
+        return new LakeSoulTableHandle(
                 tableInfo.getTableId(),
                 tableName
         );
-
-        return lakeSoulTableHandle;
     }
 
     @Override
@@ -92,7 +88,7 @@ public class LakeSoulMetadata implements ConnectorMetadata {
         String cdcChangeColumn = properties.getString(CDC_CHANGE_COLUMN);
         for (org.apache.arrow.vector.types.pojo.Field field : arrowSchema.getFields()) {
             // drop cdc change column
-            if (cdcChangeColumn != null && field.getName().equals(cdcChangeColumn)) {
+            if (field.getName().equals(cdcChangeColumn)) {
                 continue;
             }
             LakeSoulTableColumnHandle columnHandle =
@@ -147,23 +143,21 @@ public class LakeSoulMetadata implements ConnectorMetadata {
         List<ColumnMetadata> columns = new LinkedList<>();
         String cdcChangeColumn = properties.getString(CDC_CHANGE_COLUMN);
         for (org.apache.arrow.vector.types.pojo.Field field : arrowSchema.getFields()) {
-            Map<String, Object> props = new HashMap<>();
-            for (Map.Entry<String, String> entry : field.getMetadata().entrySet()) {
-                props.put(entry.getKey(), entry.getValue());
-            }
+            Map<String, Object> props = new HashMap<>(field.getMetadata());
             // drop cdc change column
-            if (cdcChangeColumn != null && field.getName().equals(cdcChangeColumn)) {
+            if (field.getName().equals(cdcChangeColumn)) {
                 continue;
             }
-            ColumnMetadata columnMetadata = new ColumnMetadata(
-                    field.getName(),
-                    PrestoUtil.convertToPrestoType(field.getType()),
-                    field.isNullable(),
-                    "",
-                    "",
-                    false,
-                    props
-            );
+
+            ColumnMetadata columnMetadata = ColumnMetadata.builder()
+                    .setName(field.getName())
+                    .setType(PrestoUtil.convertToPrestoType(field.getType()))
+                    .setNullable(field.isNullable())
+                    .setComment("")
+                    .setExtraInfo("")
+                    .setHidden(false)
+                    .setProperties(props)
+                    .build();
             columns.add(columnMetadata);
         }
 
@@ -200,7 +194,7 @@ public class LakeSoulMetadata implements ConnectorMetadata {
         String cdcChangeColumn = properties.getString(CDC_CHANGE_COLUMN);
         for (org.apache.arrow.vector.types.pojo.Field field : arrowSchema.getFields()) {
             // drop cdc change column
-            if (cdcChangeColumn != null && field.getName().equals(cdcChangeColumn)) {
+            if (field.getName().equals(cdcChangeColumn)) {
                 continue;
             }
             LakeSoulTableColumnHandle columnHandle =
@@ -234,20 +228,17 @@ public class LakeSoulMetadata implements ConnectorMetadata {
             arrowSchema = org.apache.spark.sql.arrow.ArrowUtils.toArrowSchema(struct, ZoneId.of("UTC").toString());
         }
         for (org.apache.arrow.vector.types.pojo.Field field : arrowSchema.getFields()) {
-            Map<String, Object> properties = new HashMap<>();
-            for (Map.Entry<String, String> entry : field.getMetadata().entrySet()) {
-                properties.put(entry.getKey(), entry.getValue());
-            }
+            Map<String, Object> properties = new HashMap<>(field.getMetadata());
             if (field.getName().equals(handle.getColumnName())) {
-                return new ColumnMetadata(
-                        field.getName(),
-                        PrestoUtil.convertToPrestoType(field.getType()),
-                        field.isNullable(),
-                        "",
-                        "",
-                        false,
-                        properties
-                );
+                return ColumnMetadata.builder()
+                        .setName(field.getName())
+                        .setType(PrestoUtil.convertToPrestoType(field.getType()))
+                        .setNullable(field.isNullable())
+                        .setComment("")
+                        .setExtraInfo("")
+                        .setHidden(false)
+                        .setProperties(properties)
+                        .build();
             }
         }
 
