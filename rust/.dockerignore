@@ -1,0 +1,3 @@
+*
+!target/release/lakesoul_arrow_flight_sql_server
+!target/release/lakesoul-s3-proxy

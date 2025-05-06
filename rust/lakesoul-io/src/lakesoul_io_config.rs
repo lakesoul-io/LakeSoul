@@ -783,6 +783,7 @@ pub fn register_s3_object_store(
         .with_bucket_name(bucket.unwrap())
         .with_retry(retry_config)
         .with_virtual_hosted_style_request(!virtual_path_style)
+        .with_unsigned_payload(true)
         .with_client_options(
             ClientOptions::new()
                 .with_allow_http(true)

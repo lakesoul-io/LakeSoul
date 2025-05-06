@@ -10,6 +10,7 @@ edition = "2024"
 [dependencies]
 lakesoul-metadata = { path = "../lakesoul-metadata" }
 pingora = { version = "0.4.0", features = ["lb", "openssl"] }
+pingora-core = { version = "0.4.0", features = ["openssl"] }
 async-trait="0.1"
 hickory-resolver = "0.24.4"
 aws-sigv4 = "1.2.9"
@@ -23,3 +24,7 @@ http = "1.2.0"
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = {workspace = true}
+lazy_static = "1.5"
+tower-service = "0.3"
+prometheus = { version = "0.13", features = ["process"] }
+bytes = "1.0"
