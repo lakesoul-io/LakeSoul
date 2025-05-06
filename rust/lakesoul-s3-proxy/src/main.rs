@@ -10,12 +10,13 @@ use aws_credential_types::provider::ProvideCredentials;
 use aws_sigv4::http_request::{sign, PayloadChecksumKind, SignableBody, SignableRequest, SigningSettings};
 use aws_sigv4::sign::v4;
 use aws_smithy_runtime_api::client::identity::Identity;
+use bytes::Bytes;
 use hickory_resolver::TokioAsyncResolver;
 use http::header::HOST;
 use http::{HeaderValue, Uri};
 use lakesoul_metadata::rbac::verify_permission_by_table_path;
 use lakesoul_metadata::MetaDataClient;
-use pingora::http::ResponseHeader;
+use lazy_static::lazy_static;
 use pingora::lb::discovery::ServiceDiscovery;
 use pingora::lb::selection::{BackendIter, BackendSelection};
 use pingora::lb::{Backend, Backends, Extensions};
@@ -23,6 +24,7 @@ use pingora::prelude::*;
 use pingora::protocols::l4::socket::SocketAddr;
 use pingora::server::ShutdownWatch;
 use pingora::services::background::BackgroundService;
+use prometheus::{register_int_counter, IntCounter};
 use std::collections::{BTreeSet, HashMap};
 use std::net::{IpAddr, SocketAddrV4};
 use std::str::FromStr;
@@ -30,6 +32,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 use tracing::{debug, error, info};
 use tracing_subscriber::EnvFilter;
+
+lazy_static! {
+    static ref REQ_COUNTER: IntCounter = register_int_counter!("s3proxy_request_num", "request num").unwrap();
+    static ref REQ_BYTES: IntCounter = register_int_counter!("s3proxy_request_bytes", "request bytes").unwrap();
+    static ref RES_BYTES: IntCounter = register_int_counter!("s3proxy_response_bytes", "response bytes").unwrap();
+}
 
 fn main() {
     let timer = tracing_subscriber::fmt::time::ChronoLocal::rfc_3339();
@@ -43,20 +51,26 @@ fn main() {
             eprintln!("Failed to set logger: {e:?}");
         }
     }
-
-    let mut proxy_server = Server::new(None).unwrap();
+    let mut opt = Opt::default();
+    if std::fs::exists("/opt/proxy_conf.yaml").unwrap() {
+        info!("Use pingora config file /opt/proxy_conf.yaml");
+        opt.conf = Some("/opt/proxy_conf.yaml".to_string());
+    }
+    let mut proxy_server = Server::new(Some(opt)).unwrap();
     proxy_server.bootstrap();
 
     let endpoint = std::env::var("AWS_ENDPOINT").expect("need AWS_ENDPOINT env");
     let region = std::env::var("AWS_REGION").expect("need AWS_REGION env");
     let virtual_host = std::env::var("AWS_VIRTUAL_HOST").map_or(false, |v| v.to_lowercase() == "true");
     let (user, group, verify_meta) = match (
-        std::env::var("LAKESOUL_PG_USER"),
+        std::env::var("LAKESOUL_CURRENT_USER"),
         std::env::var("LAKESOUL_CURRENT_DOMAIN"),
     ) {
         (Ok(user), Ok(group)) => (user, group, true),
         _ => (String::new(), String::new(), false),
     };
+
+    let verify_client_signature = std::env::var("CLIENT_AWS_SECRET").is_ok() && std::env::var("CLIENT_AWS_KEY").is_ok();
 
     let uri = Uri::from_str(endpoint.as_str()).unwrap();
     let tls: bool = if let Some(scheme) = uri.scheme_str() {
@@ -75,8 +89,8 @@ fn main() {
         }
     };
     info!(
-        "endpoint {}, region {}, virtual_host {}, verify rbac {}, tls {}, port {}",
-        endpoint, region, virtual_host, verify_meta, tls, port
+        "endpoint {}, region {}, virtual_host {}, verify rbac {}, verify client {}, tls {}, port {}",
+        endpoint, region, virtual_host, verify_meta, verify_client_signature, tls, port
     );
 
     let mut upstreams = LoadBalancer::from(DnsDiscovery::new(
@@ -97,7 +111,7 @@ fn main() {
             region,
             identity: ArcSwap::new(Arc::new(Identity::new(0, None))),
             metadata_client: ArcSwapOption::new(None),
-            user,
+            user: user.clone(),
             group,
             verify_meta,
             virtual_host,
@@ -118,6 +132,11 @@ fn main() {
     proxy_server.add_service(background_dns_service);
     proxy_server.add_service(background_s3_credentials);
     proxy_server.add_service(lb);
+
+    // add prometheus endpoint
+    let mut prometheus_service_http = pingora::services::listening::Service::prometheus_http_service();
+    prometheus_service_http.add_tcp("0.0.0.0:1234");
+    proxy_server.add_service(prometheus_service_http);
 
     proxy_server.run_forever();
 }
@@ -146,24 +165,18 @@ impl Credentials {
         } else {
             let binding = self.metadata_client.load();
             if let Some(client) = binding.as_ref() {
-                verify_permission_by_table_path(
-                    self.user.as_str(),
-                    self.group.as_str(),
-                    parse_table_path(&headers.uri, bucket).as_str(),
-                    client.clone(),
-                )
-                .await?;
+                let path = parse_table_path(&headers.uri, bucket);
+                if path.starts_with(format!("s3://{}/users/{}", bucket, self.user).as_str()) {
+                    return Ok(());
+                }
+                verify_permission_by_table_path(self.user.as_str(), self.group.as_str(), path.as_str(), client.clone())
+                    .await?;
             }
             Ok(())
         }
     }
 
-    fn sign_aws_v4(
-        &self,
-        headers: &mut RequestHeader,
-        host: &String,
-        bucket: &str,
-    ) -> Result<(), anyhow::Error> {
+    fn sign_aws_v4(&self, headers: &mut RequestHeader, host: &String, bucket: &str) -> Result<(), anyhow::Error> {
         let mut signing_settings = SigningSettings::default();
         signing_settings.payload_checksum_kind = PayloadChecksumKind::XAmzSha256;
         let binding = self.identity.load();
@@ -286,7 +299,7 @@ impl ProxyHttp for S3Proxy {
             .select(b"", 256) // hash doesn't matter for round robin
             .unwrap();
 
-        info!("upstream peer is: {upstream:?}, {0}", self.tls);
+        debug!("upstream peer is: {upstream:?}, {0}", self.tls);
 
         let peer = Box::new(HttpPeer::new(upstream, self.tls, self.host.clone()));
         Ok(peer)
@@ -296,6 +309,7 @@ impl ProxyHttp for S3Proxy {
     where
         Self::CTX: Send + Sync,
     {
+        REQ_COUNTER.inc();
         let header = session.req_header_mut();
         debug!("request_filter original header: {header:?}");
         let bucket;
@@ -311,7 +325,7 @@ impl ProxyHttp for S3Proxy {
         // verify meta permission
         match self.cred.verify_rbac(header, &bucket).await {
             Err(e) => {
-                error!("rbac error {:?}", e);
+                error!("permission denied error {:?}", e);
                 session.respond_error(403).await?;
                 return Ok(true);
             }
@@ -327,6 +341,38 @@ impl ProxyHttp for S3Proxy {
                 Ok(true)
             }
         }
+    }
+
+    async fn request_body_filter(
+        &self,
+        _session: &mut Session,
+        body: &mut Option<Bytes>,
+        _end_of_stream: bool,
+        _ctx: &mut Self::CTX,
+    ) -> Result<()>
+    where
+        Self::CTX: Send + Sync,
+    {
+        if let Some(bytes) = body {
+            REQ_BYTES.inc_by(bytes.len() as u64)
+        }
+        Ok(())
+    }
+
+    fn response_body_filter(
+        &self,
+        _session: &mut Session,
+        body: &mut Option<Bytes>,
+        _end_of_stream: bool,
+        _ctx: &mut Self::CTX,
+    ) -> Result<Option<Duration>>
+    where
+        Self::CTX: Send + Sync,
+    {
+        if let Some(bytes) = body {
+            RES_BYTES.inc_by(bytes.len() as u64)
+        }
+        Ok(None)
     }
 }
 
@@ -422,7 +468,6 @@ where
             path.push_str("/");
             path.push_str(s);
         });
-    path.push_str("/");
     path
 }
 
@@ -438,7 +483,7 @@ fn parse_table_path_from_query(query: &str, bucket_name: &str) -> String {
             }
         }
     }
-    format!("s3://{}/", bucket_name)
+    format!("s3://{}", bucket_name)
 }
 
 fn parse_table_path(uri: &Uri, bucket: &str) -> String {
@@ -469,9 +514,11 @@ mod tests {
     #[test]
     fn test_parse_table_path() {
         assert_eq!(
-            parse_table_path(&Uri::from_static("/lakesoul-test-bucket/test/test.parquet"),
-                             "lakesoul-test-bucket"),
-            "s3://lakesoul-test-bucket/test/"
+            parse_table_path(
+                &Uri::from_static("/lakesoul-test-bucket/test/test.parquet"),
+                "lakesoul-test-bucket"
+            ),
+            "s3://lakesoul-test-bucket/test"
         );
 
         assert_eq!(
@@ -479,7 +526,7 @@ mod tests {
                 &Uri::from_static("/lakesoul-test-bucket/test/default/abc/test.parquet"),
                 "lakesoul-test-bucket"
             ),
-            "s3://lakesoul-test-bucket/test/default/abc/"
+            "s3://lakesoul-test-bucket/test/default/abc"
         );
 
         assert_eq!(
@@ -487,7 +534,7 @@ mod tests {
                 &Uri::from_static("/lakesoul-test-bucket/test/default/abc/test.parquet"),
                 "lakesoul-test-bucket"
             ),
-            "s3://lakesoul-test-bucket/test/default/abc/"
+            "s3://lakesoul-test-bucket/test/default/abc"
         );
 
         assert_eq!(
@@ -495,7 +542,7 @@ mod tests {
                 &Uri::from_static("/lakesoul-test-bucket/test/default/abc/date=20250221/type=1/test.parquet"),
                 "lakesoul-test-bucket"
             ),
-            "s3://lakesoul-test-bucket/test/default/abc/"
+            "s3://lakesoul-test-bucket/test/default/abc"
         );
 
         // list request parse from query
@@ -506,7 +553,7 @@ mod tests {
                 ),
                 "lakesoul-test-bucket"
             ),
-            "s3://lakesoul-test-bucket/test/default/abc/"
+            "s3://lakesoul-test-bucket/test/default/abc"
         );
         assert_eq!(
             parse_table_path(
@@ -515,7 +562,7 @@ mod tests {
                 ),
                 "lakesoul-test-bucket"
             ),
-            "s3://lakesoul-test-bucket/test/default/abc/"
+            "s3://lakesoul-test-bucket/test/default/abc"
         );
         assert_eq!(
             parse_table_path(
@@ -524,7 +571,7 @@ mod tests {
                 ),
                 "lakesoul-test-bucket"
             ),
-            "s3://lakesoul-test-bucket/test/default/abc/"
+            "s3://lakesoul-test-bucket/test/default/abc"
         );
     }
 }
