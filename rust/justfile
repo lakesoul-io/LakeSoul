@@ -7,11 +7,11 @@ log_level := "info"
 
 
 flight-sql level=log_level:
-    RUST_LOG={{level}} cargo run --bin lakesoul_arrow_flight_sql_server
+    RUST_LOG=lakesoul_flight={{level}},lakesoul_metadata={{level}} JWT_AUTH_ENABLED=false RBAC_AUTH_ENABLED=true cargo run --bin flight_sql_server
     
 flight-sql-s3 level=log_level:
     RUST_LOG={{level}} cargo run --bin \
-      lakesoul_arrow_flight_sql_server -- \
+      flight_sql_server -- \
       --warehouse-prefix "s3://lakesoul-bucket/flight-test" \
       --endpoint  "http://localhost:9000" \
       --s3-bucket  "lakesoul-test-bucket" \
@@ -20,4 +20,9 @@ flight-sql-s3 level=log_level:
 
 
 console level=log_level:
-    RUST_LOG={{level}} cargo run --bin console
+    RUST_LOG={{level}} cargo run --bin console -- \
+      --warehouse-prefix "s3://lakesoul-bucket/flight-test" \
+      --endpoint  "http://localhost:9000" \
+      --s3-bucket  "lakesoul-test-bucket" \
+      --s3-access-key "minioadmin1" \
+      --s3-secret-key "minioadmin1"

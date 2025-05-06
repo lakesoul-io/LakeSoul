@@ -28,11 +28,12 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 use tracing::{debug, error, info};
+use tracing_subscriber::EnvFilter;
 
 fn main() {
     let timer = tracing_subscriber::fmt::time::ChronoLocal::rfc_3339();
     match tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
+        .with_env_filter(EnvFilter::from_default_env())
         .with_timer(timer)
         .try_init()
     {

@@ -79,7 +79,7 @@ impl LakeSoulTableProvider {
         as_sink: bool,
     ) -> crate::error::Result<Self> {
         let table_schema = schema_from_metadata_str(&table_info.table_schema);
-        let (range_partitions, hash_partitions) = parse_table_info_partitions(table_info.partitions.clone())?;
+        let (range_partitions, hash_partitions) = parse_table_info_partitions(&table_info.partitions)?;
         let mut range_partition_projection = Vec::with_capacity(range_partitions.len());
         let mut file_schema_projection = Vec::with_capacity(table_schema.fields().len() - range_partitions.len());
         // O(nm), n = number of table fields, m = number of range partitions

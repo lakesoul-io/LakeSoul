@@ -242,7 +242,7 @@ mod catalog_tests {
                     let sql = format!("create schema test_catalog_sql.{}", np.namespace);
                     let df = sc.sql(&sql).await.unwrap();
                     df.collect().await.unwrap();
-                    let ret = client.get_namespace_by_namespace(&np.namespace).await.unwrap();
+                    let ret = client.get_namespace_by_namespace(&np.namespace).await.unwrap().unwrap();
                     assert_eq!(np.namespace, ret.namespace);
                 }
                 for t in tables {

@@ -77,7 +77,7 @@ mod insert_tests {
             dataframe.select_columns(&selected_cols)?
         };
 
-        print_batches(&dataframe.clone().explain(true, false)?.collect().await?);
+        print_batches(&dataframe.clone().explain(true, false)?.collect().await?)?;
 
         let results = dataframe.collect().await?;
 

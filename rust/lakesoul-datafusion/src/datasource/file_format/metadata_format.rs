@@ -371,7 +371,7 @@ impl LakeSoulHashSinkExec {
         table_info: Arc<TableInfo>,
         metadata_client: MetaDataClientRef,
     ) -> Result<Self> {
-        let (range_partitions, _) = parse_table_info_partitions(table_info.partitions.clone())
+        let (range_partitions, _) = parse_table_info_partitions(&table_info.partitions)
             .map_err(|_| DataFusionError::External("parse table_info.partitions failed".into()))?;
         let range_partitions = Arc::new(range_partitions);
         Ok(Self {

@@ -20,7 +20,6 @@ use datafusion::{
     },
 };
 use datafusion_common::{DataFusionError, Result};
-
 use rand::distributions::DistString;
 use tokio::{sync::mpsc::Sender, task::JoinHandle};
 use tokio_stream::StreamExt;

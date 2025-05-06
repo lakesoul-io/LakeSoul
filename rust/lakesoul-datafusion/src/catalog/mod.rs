@@ -22,7 +22,7 @@ use proto::proto::entity::{CommitOp, DataCommitInfo, DataFileOp, FileOp, TableIn
 pub mod lakesoul_catalog;
 //  used in catalog_test, but still say unused_imports, I think it is a bug about rust-lint.
 // this is a workaround
-#[cfg(test)]
+// #[cfg(test)]
 pub use lakesoul_catalog::*;
 mod lakesoul_namespace;
 pub use lakesoul_namespace::*;
@@ -149,7 +149,7 @@ pub(crate) async fn create_io_config_builder(
 }
 
 /// Parse the range and hash partitions from the defined partitions string.
-pub(crate) fn parse_table_info_partitions(partitions: String) -> Result<(Vec<String>, Vec<String>)> {
+pub(crate) fn parse_table_info_partitions(partitions: &str) -> Result<(Vec<String>, Vec<String>)> {
     let (range_keys, hash_keys) = partitions.split_at(
         partitions
             .find(';')
@@ -186,7 +186,8 @@ pub(crate) async fn commit_data(
     let table_ref = TableReference::from(table_name);
     let table_name_id = client
         .get_table_name_id_by_table_name(table_ref.table(), table_ref.schema().unwrap_or("default"))
-        .await?;
+        .await?
+        .ok_or(LakeSoulError::Internal("table not found".to_string()))?;
     client
         .commit_data_commit_info(DataCommitInfo {
             table_id: table_name_id.table_id,

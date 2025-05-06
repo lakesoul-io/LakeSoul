@@ -24,16 +24,16 @@ use arrow::datatypes::{Schema, SchemaRef};
 use arrow::ffi::from_ffi;
 pub use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
 use datafusion_substrait::substrait::proto::Plan;
-use prost::Message;
-use tokio::runtime::{Builder, Runtime};
-
 use lakesoul_io::datafusion::arrow::record_batch::RecordBatch;
 use lakesoul_io::datafusion::error::Result;
 use lakesoul_io::helpers;
 use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_io::lakesoul_reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
 use lakesoul_io::lakesoul_writer::SyncSendableMutableLakeSoulWriter;
+use prost::Message;
 use proto::proto::entity;
+use tokio::runtime::{Builder, Runtime};
+use tracing_subscriber::EnvFilter;
 
 #[allow(non_camel_case_types)]
 pub type c_size_t = usize;
@@ -1053,7 +1053,7 @@ pub extern "C" fn rust_logger_init() {
     // tracing_subscriber::fmt().with_timer(timer).init();
     match tracing_subscriber::fmt()
         .with_timer(timer)
-        .with_max_level(tracing::Level::TRACE)
+        .with_env_filter(EnvFilter::from_default_env())
         .try_init()
     {
         Ok(_) => {}

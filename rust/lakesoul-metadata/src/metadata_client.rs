@@ -541,16 +541,25 @@ impl MetaDataClient {
             .map(|wrapper| wrapper.namespace)
     }
 
-    pub async fn get_namespace_by_namespace(&self, namespace: &str) -> Result<Namespace> {
-        self.execute_query(
-            DaoType::SelectNamespaceByNamespace as i32,
-            [namespace].join(PARAM_DELIM),
-        )
-        .await
-        .map(|wrapper| wrapper.namespace[0].clone())
+    pub async fn get_namespace_by_namespace(&self, namespace: &str) -> Result<Option<Namespace>> {
+        match self
+            .execute_query(
+                DaoType::SelectNamespaceByNamespace as i32,
+                [namespace].join(PARAM_DELIM),
+            )
+            .await
+        {
+            Ok(wrapper) if wrapper.namespace.is_empty() => Ok(None),
+            Ok(wrapper) => Ok(Some(wrapper.namespace[0].clone())),
+            Err(err) => Err(err),
+        }
     }
 
-    pub async fn get_table_name_id_by_table_name(&self, table_name: &str, namespace: &str) -> Result<TableNameId> {
+    pub async fn get_table_name_id_by_table_name(
+        &self,
+        table_name: &str,
+        namespace: &str,
+    ) -> Result<Option<TableNameId>> {
         match self
             .execute_query(
                 DaoType::SelectTableNameIdByTableName as i32,
@@ -558,7 +567,8 @@ impl MetaDataClient {
             )
             .await
         {
-            Ok(wrapper) => Ok(wrapper.table_name_id[0].clone()),
+            Ok(wrapper) if wrapper.table_name_id.is_empty() => Ok(None),
+            Ok(wrapper) => Ok(Some(wrapper.table_name_id[0].clone())),
             Err(err) => Err(err),
         }
     }

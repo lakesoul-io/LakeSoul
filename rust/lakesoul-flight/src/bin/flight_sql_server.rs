@@ -6,7 +6,6 @@
 
 #[macro_use]
 extern crate tracing;
-mod token_codec;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -14,21 +13,16 @@ use std::time::Instant;
 
 use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::Parser;
+use lakesoul_flight::{args::Args, FlightSqlServiceImpl, JwtServer};
+use lakesoul_flight::{Claims, TokenResponse, BANNER};
+use lakesoul_flight::{TokenServer, TokenServerServer};
+use lakesoul_metadata::MetaDataClient;
 use metrics::{counter, gauge};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use tonic::service::Interceptor;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
-
-use lakesoul_flight::{args::Args, FlightSqlServiceImpl, JwtServer};
-use lakesoul_metadata::MetaDataClient;
-
-pub mod token {
-    include!(concat!(env!("OUT_DIR"), "/json.token.TokenServer.rs"));
-}
-use crate::token::token_server_server::TokenServerServer;
-use crate::token_codec::{Claims, TokenResponse};
-use token::token_server_server::TokenServer;
+use tracing_subscriber::EnvFilter;
 
 pub struct TokenService {
     jwt_server: Arc<JwtServer>,
@@ -36,13 +30,14 @@ pub struct TokenService {
 
 #[tonic::async_trait]
 impl TokenServer for TokenService {
+    #[instrument(skip(self))]
     async fn create_token(&self, request: Request<Claims>) -> Result<Response<TokenResponse>, Status> {
         let claims = request.into_inner();
         let token = self
             .jwt_server
             .create_token(&claims)
             .map_err(|e| Status::internal(format!("Token creation failed: {e:?}")))?;
-        info!("Token created {token:?} for claims {claims:?}");
+        info!("Token created {token:} for claims {claims:?}");
         Ok(Response::new(TokenResponse { token }))
     }
 }
@@ -144,7 +139,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 创建并配置 tokio runtime
     let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(args.worker_threads)
+        .worker_threads(args.core.worker_threads)
         .enable_all()
         .build()?;
 
@@ -153,13 +148,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // 设置日志级别
         let timer = tracing_subscriber::fmt::time::ChronoLocal::rfc_3339();
         match tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::TRACE)
+            .with_env_filter(EnvFilter::from_default_env())
             .with_timer(timer)
             .try_init()
         {
             Ok(_) => {}
             Err(e) => {
-                eprintln!("Failed to set logger: {e:?}");
+                eprintln!("Failed to set logger: {e:}");
             }
         }
 
@@ -190,7 +185,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .install()?;
 
         let service = FlightSqlServiceImpl::new(metadata_client.clone(), args).await?;
-        service.init().await?;
         let jwt_server = service.get_jwt_server();
 
         let token_service = TokenService { jwt_server };
@@ -199,8 +193,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let svc = FlightServiceServer::with_interceptor(service, interceptor);
 
-        info!("LakeSoul Arrow Flight SQL Server Listening on {addr:?}");
-        info!("Metrics Server Listening on {:?}", metrics_addr);
+        info!("LakeSoul Arrow Flight SQL Server Listening on {addr:}");
+        info!("Metrics Server Listening on {:}", metrics_addr);
+
+        println!("{}", BANNER);
 
         Server::builder()
             .add_service(svc)

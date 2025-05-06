@@ -37,7 +37,7 @@ pub(crate) fn create_io_config_builder_from_table_info(
     options: HashMap<String, String>,
     object_store_options: HashMap<String, String>,
 ) -> Result<LakeSoulIOConfigBuilder> {
-    let (range_partitions, hash_partitions) = parse_table_info_partitions(table_info.partitions.clone())?;
+    let (range_partitions, hash_partitions) = parse_table_info_partitions(&table_info.partitions)?;
     let properties = serde_json::from_str::<LakeSoulTableProperty>(&table_info.properties)?;
     let use_cdc = properties
         .use_cdc
