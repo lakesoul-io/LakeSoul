@@ -225,13 +225,15 @@ impl Credentials {
                 Err(_) => None,
             }),
             match headers.headers.get("x-amz-content-sha256") {
-                Some(value) => if value == "STREAMING-AWS4-HMAC-SHA256-PAYLOAD" {
-                    SignableBody::Precomputed("STREAMING-AWS4-HMAC-SHA256-PAYLOAD".parse()?)
-                } else {
-                    SignableBody::UnsignedPayload
+                Some(value) => {
+                    if value == "STREAMING-AWS4-HMAC-SHA256-PAYLOAD" {
+                        SignableBody::Precomputed("STREAMING-AWS4-HMAC-SHA256-PAYLOAD".parse()?)
+                    } else {
+                        SignableBody::UnsignedPayload
+                    }
                 }
                 None => SignableBody::UnsignedPayload,
-            }
+            },
         )?;
         let (signing_instructions, _signature) = sign(signable_request, &signing_params)?.into_parts();
         let (new_headers, new_query) = signing_instructions.into_parts();
@@ -242,7 +244,7 @@ impl Credentials {
             value.set_sensitive(header.sensitive());
             headers.insert_header(header.name(), value)?
         }
-        
+
         if !new_query.is_empty() {
             let mut query = aws_smithy_http::query_writer::QueryWriter::new_from_string(uri.as_str())?;
             for (name, value) in new_query {
@@ -369,7 +371,11 @@ impl ProxyHttp for S3Proxy {
         Self::CTX: Send + Sync,
     {
         if let Some(bytes) = body {
-            debug!("request_body_filter original body length: {}, content: {:?}", bytes.len(), bytes);
+            debug!(
+                "request_body_filter original body length: {}, content: {:?}",
+                bytes.len(),
+                bytes
+            );
             REQ_BYTES.inc_by(bytes.len() as u64)
         }
         Ok(())

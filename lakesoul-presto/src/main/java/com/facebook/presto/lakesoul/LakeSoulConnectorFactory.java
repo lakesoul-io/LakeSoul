@@ -35,5 +35,4 @@ public class LakeSoulConnectorFactory implements ConnectorFactory {
         LakeSoulConfig.initInstance(config);
         return new LakeSoulConnector(metadata, manager, provider);
     }
-
 }
