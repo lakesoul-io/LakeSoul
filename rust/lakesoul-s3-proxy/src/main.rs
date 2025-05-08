@@ -12,7 +12,7 @@ use aws_sigv4::sign::v4;
 use aws_smithy_runtime_api::client::identity::Identity;
 use bytes::Bytes;
 use hickory_resolver::TokioAsyncResolver;
-use http::header::HOST;
+use http::header::{CONTENT_LENGTH, HOST};
 use http::{HeaderValue, Uri};
 use lakesoul_metadata::rbac::verify_permission_by_table_path;
 use lakesoul_metadata::MetaDataClient;
@@ -209,6 +209,13 @@ impl Credentials {
             headers.insert_header(HOST, HeaderValue::try_from(host)?)?;
         }
 
+        if let Some(value) = headers.headers.get("x-amz-decoded-content-length") {
+            let value: u64 = value.to_str()?.parse()?;
+            if value == 0 {
+                headers.insert_header(CONTENT_LENGTH, HeaderValue::try_from(0)?)?;
+            }
+        }
+
         // construct request for signing by aws_sigv4
         let signable_request = SignableRequest::new(
             headers.method.as_str(),
@@ -217,7 +224,14 @@ impl Credentials {
                 Ok(v) => Some((name.as_str(), v)),
                 Err(_) => None,
             }),
-            SignableBody::UnsignedPayload,
+            match headers.headers.get("x-amz-content-sha256") {
+                Some(value) => if value == "STREAMING-AWS4-HMAC-SHA256-PAYLOAD" {
+                    SignableBody::Precomputed("STREAMING-AWS4-HMAC-SHA256-PAYLOAD".parse()?)
+                } else {
+                    SignableBody::UnsignedPayload
+                }
+                None => SignableBody::UnsignedPayload,
+            }
         )?;
         let (signing_instructions, _signature) = sign(signable_request, &signing_params)?.into_parts();
         let (new_headers, new_query) = signing_instructions.into_parts();
@@ -228,6 +242,7 @@ impl Credentials {
             value.set_sensitive(header.sensitive());
             headers.insert_header(header.name(), value)?
         }
+        
         if !new_query.is_empty() {
             let mut query = aws_smithy_http::query_writer::QueryWriter::new_from_string(uri.as_str())?;
             for (name, value) in new_query {
@@ -354,6 +369,7 @@ impl ProxyHttp for S3Proxy {
         Self::CTX: Send + Sync,
     {
         if let Some(bytes) = body {
+            debug!("request_body_filter original body length: {}, content: {:?}", bytes.len(), bytes);
             REQ_BYTES.inc_by(bytes.len() as u64)
         }
         Ok(())

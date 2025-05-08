@@ -31,6 +31,7 @@ class NativeIOOptions(val s3Bucket: String,
                       val s3Sk: String,
                       val s3Endpoint: String,
                       val s3Region: String,
+                      val s3Signer: String,
                       val fsUser: String,
                       val defaultFS: String,
                       val virtual_path_style: Boolean,
@@ -58,33 +59,7 @@ object NativeIOUtils {
   }
 
   def getNativeIOOptions(taskAttemptContext: TaskAttemptContext, file: Path): NativeIOOptions = {
-    var user: String = null
-    val userConf = taskAttemptContext.getConfiguration.get("fs.hdfs.user")
-    if (userConf != null) user = userConf
-    var defaultFS = taskAttemptContext.getConfiguration.get("fs.defaultFS")
-    if (defaultFS == null) defaultFS = taskAttemptContext.getConfiguration.get("fs.default.name")
-    val fileSystem = file.getFileSystem(taskAttemptContext.getConfiguration)
-    var otherOptions = Map[String, String]()
-    if (taskAttemptContext.getConfiguration.get(HASH_BUCKET_ID_KEY, "").nonEmpty) {
-      otherOptions += HASH_BUCKET_ID_KEY -> taskAttemptContext.getConfiguration.get(HASH_BUCKET_ID_KEY)
-    }
-    if (taskAttemptContext.getConfiguration.get(MAX_FILE_SIZE_KEY, "").nonEmpty) {
-      otherOptions += MAX_FILE_SIZE_KEY -> taskAttemptContext.getConfiguration.get(MAX_FILE_SIZE_KEY)
-    }
-    if (hasS3AFileSystemClass) {
-      fileSystem match {
-        case s3aFileSystem: S3AFileSystem =>
-          val awsS3Bucket = s3aFileSystem.getBucket
-          val s3aEndpoint = taskAttemptContext.getConfiguration.get("fs.s3a.endpoint")
-          val s3aRegion = taskAttemptContext.getConfiguration.get("fs.s3a.endpoint.region")
-          val s3aAccessKey = taskAttemptContext.getConfiguration.get("fs.s3a.access.key")
-          val s3aSecretKey = taskAttemptContext.getConfiguration.get("fs.s3a.secret.key")
-          val virtualPathStyle = taskAttemptContext.getConfiguration.getBoolean("fs.s3a.path.style.access", false)
-          return new NativeIOOptions(awsS3Bucket, s3aAccessKey, s3aSecretKey, s3aEndpoint, s3aRegion, user, defaultFS, virtualPathStyle, otherOptions)
-        case _ =>
-      }
-    }
-    new NativeIOOptions(null, null, null, null, null, user, defaultFS, false, otherOptions)
+    getNativeIOOptions(taskAttemptContext.getConfiguration, file)
   }
 
   def getNativeIOOptions(configuration: Configuration, file: Path): NativeIOOptions = {
@@ -107,11 +82,13 @@ object NativeIOUtils {
           val s3aAccessKey = configuration.get("fs.s3a.access.key")
           val s3aSecretKey = configuration.get("fs.s3a.secret.key")
           val virtualPathStyle = configuration.getBoolean("fs.s3a.path.style.access", false)
-          return new NativeIOOptions(awsS3Bucket, s3aAccessKey, s3aSecretKey, s3aEndpoint, s3aRegion, user, defaultFS, virtualPathStyle, otherOptions)
+          val s3aSigner = configuration.get("fs.s3a.s3.signing-algorithm")
+          return new NativeIOOptions(awsS3Bucket, s3aAccessKey, s3aSecretKey,
+            s3aEndpoint, s3aRegion, s3aSigner, user, defaultFS, virtualPathStyle, otherOptions)
         case _ =>
       }
     }
-    new NativeIOOptions(null, null, null, null, null, user, defaultFS, false, otherOptions)
+    new NativeIOOptions(null, null, null, null, null, null, user, defaultFS, false, otherOptions)
   }
 
   def setNativeIOOptions(nativeIO: NativeIOBase, options: NativeIOOptions): Unit = {
@@ -121,6 +98,7 @@ object NativeIOUtils {
       options.s3Region,
       options.s3Bucket,
       options.s3Endpoint,
+      options.s3Signer,
       options.fsUser,
       options.defaultFS,
       options.virtual_path_style
