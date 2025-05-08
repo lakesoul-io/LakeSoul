@@ -90,6 +90,12 @@
             <artifactId>guava</artifactId>
             <version>32.1.0-jre</version>
         </dependency>
+        <dependency>
+            <groupId>com.alibaba</groupId>
+            <artifactId>fastjson</artifactId>
+            <version>1.2.83</version>
+            <scope>compile</scope>
+        </dependency>
     </dependencies>
 
     <build>
