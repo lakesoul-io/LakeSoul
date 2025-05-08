@@ -778,7 +778,9 @@ pub fn register_s3_object_store(
     retry_config.backoff.base = 2.5;
     retry_config.backoff.max_backoff = Duration::from_secs(20);
 
-    let skip_signature = config.object_store_options.get("fs.s3a.s3.signing-algorithm")
+    let skip_signature = config
+        .object_store_options
+        .get("fs.s3a.s3.signing-algorithm")
         .is_some_and(|s| s == "NoOpSignerType");
     let mut s3_store_builder = AmazonS3Builder::new()
         .with_region(region.unwrap_or_else(|| "us-east-1".to_owned()))
