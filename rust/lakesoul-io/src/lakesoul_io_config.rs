@@ -778,12 +778,15 @@ pub fn register_s3_object_store(
     retry_config.backoff.base = 2.5;
     retry_config.backoff.max_backoff = Duration::from_secs(20);
 
+    let skip_signature = config.object_store_options.get("fs.s3a.s3.signing-algorithm")
+        .is_some_and(|s| s == "NoOpSignerType");
     let mut s3_store_builder = AmazonS3Builder::new()
         .with_region(region.unwrap_or_else(|| "us-east-1".to_owned()))
         .with_bucket_name(bucket.unwrap())
         .with_retry(retry_config)
         .with_virtual_hosted_style_request(!virtual_path_style)
         .with_unsigned_payload(true)
+        .with_skip_signature(skip_signature)
         .with_client_options(
             ClientOptions::new()
                 .with_allow_http(true)
