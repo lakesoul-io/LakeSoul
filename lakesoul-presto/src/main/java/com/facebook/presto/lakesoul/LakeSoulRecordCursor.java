@@ -96,6 +96,7 @@ public class LakeSoulRecordCursor implements RecordCursor {
                 LakeSoulConfig.getInstance().getRegion(),
                 LakeSoulConfig.getInstance().getBucketName(),
                 LakeSoulConfig.getInstance().getEndpoint(),
+                LakeSoulConfig.getInstance().getSigner(),
                 LakeSoulConfig.getInstance().getDefaultFS(),
                 LakeSoulConfig.getInstance().getUser(),
                 LakeSoulConfig.getInstance().isVirtualPathStyle()

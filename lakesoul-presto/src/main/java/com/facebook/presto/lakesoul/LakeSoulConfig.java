@@ -27,6 +27,7 @@ public class LakeSoulConfig {
         this.region = config.get("fs.s3a.endpoint.region");
         this.bucketName = config.get("fs.s3a.bucket");
         this.endpoint = config.get("fs.s3a.endpoint");
+        this.signer = config.get("fs.s3a.s3.signing-algorithm");
         this.defaultFS = config.get("fs.defaultFS");
         this.user = config.get("fs.hdfs.user");
         this.virtualPathStyle = Boolean.parseBoolean(config.getOrDefault("fs.s3a.path.style.access", "false"));
@@ -38,6 +39,7 @@ public class LakeSoulConfig {
     private String region;
     private String bucketName;
     private String endpoint;
+    private String signer;
     private String user;
     private String defaultFS;
     private String timeZone;
@@ -82,6 +84,14 @@ public class LakeSoulConfig {
 
     public void setEndpoint(String endpoint) {
         this.endpoint = endpoint;
+    }
+
+    public String getSigner() {
+        return signer;
+    }
+
+    public void setSigner(String signer) {
+        this.signer = signer;
     }
 
     public String getUser() {

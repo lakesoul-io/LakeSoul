@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: lakesoul-s3-proxy
+  name: lakesoul-s3-proxy
+  namespace: lakesoul-dashboard
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lakesoul-s3-proxy
+  template:
+    metadata:
+      labels:
+        app: lakesoul-s3-proxy
+    spec:
+      containers:
+        - image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/lakesoul-s3-proxy:v0.0.2
+          command: ["/app/lakesoul-s3-proxy"]
+          resources:
+            limits:
+              cpu: 2000m
+              memory: 1Gi
+            requests:
+              cpu: 100m
+              memory: 300m
+          imagePullPolicy: Always
+          name: lakesoul-s3-proxy
+          ports:
+            - containerPort: 6188
+              name: s3
+            - name: metrics
+              containerPort: 1234
+          env:
+            - name: AWS_VIRTUAL_HOST
+              value: "false"
+            - name: AWS_ENDPOINT
+              value: http://example.com/
+            - name: AWS_REGION
+              value: us-east-1
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: lakesoul-s3-proxy
+  name: lakesoul-s3-proxy-service
+  namespace: lake-test
+spec:
+  clusterIP: None
+  ports:
+    - port: 6188
+      protocol: TCP
+      targetPort: 6188
+  selector:
+    app: lakesoul-s3-proxy
+  type: ClusterIP
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: lakesoul-s3-proxy
+  namespace: lake-test
+spec:
+  selector:
+    matchLabels:
+      app: lakesoul-s3-proxy
+  podMetricsEndpoints:
+    - port: metrics

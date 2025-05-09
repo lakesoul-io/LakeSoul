@@ -411,6 +411,7 @@ public class FlinkUtil {
         setFSConf(conf, "fs.s3a.endpoint", "fs.s3a.endpoint", io);
         setFSConf(conf, "fs.s3a.endpoint.region", "fs.s3a.endpoint.region", io);
         setFSConf(conf, "fs.s3a.path.style.access", "fs.s3a.path.style.access", io);
+        setFSConf(conf, "fs.s3a.s3.signing-algorithm", "fs.s3a.s3.signing-algorithm", io);
         // try flink's s3 credential configs
         setFSConf(conf, S3_ACCESS_KEY.key(), "fs.s3a.access.key", io);
         setFSConf(conf, S3_SECRET_KEY.key(), "fs.s3a.secret.key", io);
