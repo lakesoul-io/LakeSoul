@@ -450,7 +450,7 @@ pub extern "C" fn rust_logger_init() {
     let timer = tracing_subscriber::fmt::time::ChronoLocal::rfc_3339();
 
     let level = EnvFilter::from_default_env();
-//     println!("{:?}", level);
+    //     println!("{:?}", level);
 
     match tracing_subscriber::fmt()
         .with_env_filter(level)
