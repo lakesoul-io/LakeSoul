@@ -46,6 +46,16 @@ public interface LibLakeSoulMetaData {
 
     void rust_logger_init();
 
+    void rust_logger_error();
+
+    void rust_logger_info();
+
+    void rust_logger_warn();
+
+    void rust_logger_debug();
+
+    void rust_logger_trace();
+
     void call_rust(@LongLong long addr, Integer len);
 
     void hello_world(Callback<byte[]> bytesCallback);

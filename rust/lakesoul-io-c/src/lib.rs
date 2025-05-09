@@ -1050,10 +1050,14 @@ pub extern "C" fn free_bytes_result(bytes: NonNull<CResult<BytesResult>>) {
 pub extern "C" fn rust_logger_init() {
     // TODO add logger format
     let timer = tracing_subscriber::fmt::time::ChronoLocal::rfc_3339();
-    // tracing_subscriber::fmt().with_timer(timer).init();
+
+    let level = EnvFilter::from_default_env();
+
+    println!("{:?}", level);
+
     match tracing_subscriber::fmt()
         .with_timer(timer)
-        .with_env_filter(EnvFilter::from_default_env())
+        .with_env_filter(level)
         .try_init()
     {
         Ok(_) => {}

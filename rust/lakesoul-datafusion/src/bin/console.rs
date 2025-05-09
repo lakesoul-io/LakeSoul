@@ -21,16 +21,21 @@ async fn main() {
 
     let ctx = create_lakesoul_session_ctx(meta_client, &core_args).unwrap();
 
-    let sql = "
-       CREATE EXTERNAL TABLE
-            IF NOT EXISTS lakesoul.default.test_lfs
-            (c1 VARCHAR NOT NULL, c2 INT NOT NULL, c3 DOUBLE , PRIMARY KEY(c1))
-            STORED AS LAKESOUL
-            PARTITIONED BY (c2)
-            LOCATION 'file:///tmp/LAKESOUL/test_lfs_data'
-";
+    // let sql = "
+    //    CREATE EXTERNAL TABLE
+    //         IF NOT EXISTS lakesoul.default.all_types_lfs
+    //         (c1 VARCHAR NOT NULL, c2 INT NOT NULL, c3 DOUBLE)
+    //         STORED AS LAKESOUL
+    //         LOCATION 'file:///tmp/LAKESOUL/test_lfs_data'
+// ";
 
-    ctx.sql(sql).await.unwrap().show().await.unwrap();
+    // ctx.sql(sql).await.unwrap().show().await.unwrap();
+    ctx.sql("select * from lakesoul.default.all_type_lfs")
+        .await
+        .unwrap()
+        .show()
+        .await
+        .unwrap();
 
     // loop {
     //     let readline = rl.readline("lakesoul >> ");
