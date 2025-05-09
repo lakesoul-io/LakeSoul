@@ -62,7 +62,6 @@ public class NativeIOBase implements AutoCloseable {
 
         setBatchSize(10240);
         setThreadNum(2);
-        libLakeSoulIO.rust_logger_init();
     }
 
     protected Runtime getRuntime() {

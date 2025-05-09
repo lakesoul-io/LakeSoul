@@ -21,6 +21,7 @@ use lakesoul_metadata::error::LakeSoulMetaDataError;
 use lakesoul_metadata::transfusion::SplitDesc;
 use lakesoul_metadata::{Builder, MetaDataClient, PooledClient, Runtime};
 use proto::proto::entity;
+use tracing_subscriber::EnvFilter;
 
 #[allow(non_camel_case_types)]
 pub type c_size_t = usize;
@@ -447,8 +448,12 @@ pub unsafe extern "C" fn free_c_string(c_string: *mut c_char) {
 pub extern "C" fn rust_logger_init() {
     // TODO add logger format
     let timer = tracing_subscriber::fmt::time::ChronoLocal::rfc_3339();
+
+    let level = EnvFilter::from_default_env();
+//     println!("{:?}", level);
+
     match tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
+        .with_env_filter(level)
         .with_timer(timer)
         .try_init()
     {
@@ -457,6 +462,28 @@ pub extern "C" fn rust_logger_init() {
             eprintln!("failed to initialize tracing subscriber: {}", e);
         }
     }
+}
+
+/// debug purpose
+#[no_mangle]
+pub extern "C" fn rust_logger_info() {
+    info!("info info info info ");
+}
+#[no_mangle]
+pub extern "C" fn rust_logger_error() {
+    error!("error error error error");
+}
+#[no_mangle]
+pub extern "C" fn rust_logger_trace() {
+    trace!("trace trace trace trace");
+}
+#[no_mangle]
+pub extern "C" fn rust_logger_debug() {
+    debug!("debug debug debug debug");
+}
+#[no_mangle]
+pub extern "C" fn rust_logger_warn() {
+    warn!("warn warn warn warn");
 }
 
 #[cfg(test)]
