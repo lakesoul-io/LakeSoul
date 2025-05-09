@@ -51,6 +51,15 @@ nohash = "0.2.0"
 uuid = { workspace = true }
 regex = "1.11.1"
 
+num_cpus = "1.16"
+filetime = "0.2.25"
+fs-err = "3.1.0"
+linked-hash-map = "0.5.6"
+moka = { version = "~0.12", features = ["future"] }
+tempfile = "3"
+sysinfo = "~0.32"
+walkdir = "2.5.0"
+zipf = "7.0.2"
 
 [features]
 hdfs = ["dep:hdrs", "dep:hdfs-sys"]
