@@ -67,6 +67,7 @@ pub mod datasource;
 pub mod filter;
 pub mod hash_utils;
 pub mod helpers;
+pub mod lakesoul_cache;
 pub mod lakesoul_io_config;
 pub mod lakesoul_reader;
 pub mod lakesoul_writer;
