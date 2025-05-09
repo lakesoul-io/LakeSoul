@@ -18,6 +18,7 @@ dependency-reduced-pom.xml
 dependency-reduced-pom.xml
 /lakesoul-spark/spark-warehouse/
 /script/benchmark/work-dir/*.jar
+/lakesoul-integ-test/**/target
 *.DS_Store
 __pycache__/
 /cpp/build/
