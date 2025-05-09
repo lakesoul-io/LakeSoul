@@ -112,7 +112,7 @@ jobs:
           cp ./lakesoul-flink/target/$FLINK_TEST_JAR_NAME ./script/ci/work-dir
           cp ./lakesoul-spark/target/$SPARK_JAR_NAME ./script/ci/work-dir
           cp ./lakesoul-spark/target/$SPARK_TEST_JAR_NAME ./script/ci/work-dir
-          mvn clean
+          rm -rf lakesoul-spark/target lakesoul-common/target native-io/lakesoul-io-java/target lakesoul-flink/target
       - name: Generate benchmark data and expected query results
         run: |
           mkdir -p lakesoul/test_files/tpch/data
