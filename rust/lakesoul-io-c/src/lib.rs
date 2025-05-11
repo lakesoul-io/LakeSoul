@@ -1116,7 +1116,9 @@ mod tests {
         unsafe {
             let mut reader_called = CALL_BACK_CV.0.lock().unwrap();
             if !status {
-                if let Some(e) = err.as_ref() { READER_FAILED = Some(CStr::from_ptr(e as *const c_char).to_str().unwrap().to_string()) }
+                if let Some(e) = err.as_ref() {
+                    READER_FAILED = Some(CStr::from_ptr(e as *const c_char).to_str().unwrap().to_string())
+                }
                 READER_FINISHED = true;
             }
             *reader_called = true;
@@ -1131,7 +1133,9 @@ mod tests {
         unsafe {
             let mut reader_called = CALL_BACK_I32_CV.0.lock().unwrap();
             if status > 0 {
-                if let Some(e) = err.as_ref() { READER_FAILED = Some(CStr::from_ptr(e as *const c_char).to_str().unwrap().to_string()) }
+                if let Some(e) = err.as_ref() {
+                    READER_FAILED = Some(CStr::from_ptr(e as *const c_char).to_str().unwrap().to_string())
+                }
                 READER_FINISHED = true;
             }
             *reader_called = status;
@@ -1156,7 +1160,9 @@ mod tests {
         unsafe {
             let mut writer_called = CALL_BACK_CV.0.lock().unwrap();
             if status < 0 {
-                if let Some(e) = err.as_ref() { WRITER_FAILED = Some(CStr::from_ptr(e as *const c_char).to_str().unwrap().to_string()) }
+                if let Some(e) = err.as_ref() {
+                    WRITER_FAILED = Some(CStr::from_ptr(e as *const c_char).to_str().unwrap().to_string())
+                }
                 WRITER_FINISHED = true;
             }
             *writer_called = true;
@@ -1169,7 +1175,9 @@ mod tests {
         unsafe {
             let mut writer_called = CALL_BACK_CV.0.lock().unwrap();
             if !status {
-                if let Some(e) = err.as_ref() { WRITER_FAILED = Some(CStr::from_ptr(e as *const c_char).to_str().unwrap().to_string()) }
+                if let Some(e) = err.as_ref() {
+                    WRITER_FAILED = Some(CStr::from_ptr(e as *const c_char).to_str().unwrap().to_string())
+                }
                 WRITER_FINISHED = true;
             }
             *writer_called = true;
@@ -1202,11 +1210,13 @@ mod tests {
         let reader = create_lakesoul_reader_from_config(reader_config, reader_runtime);
 
         unsafe {
-            if let Some(err) = reader.as_ref().err.as_ref() { assert!(
-                false,
-                "{}",
-                CStr::from_ptr(err as *const c_char).to_str().unwrap().to_string()
-            ) }
+            if let Some(err) = reader.as_ref().err.as_ref() {
+                assert!(
+                    false,
+                    "{}",
+                    CStr::from_ptr(err as *const c_char).to_str().unwrap().to_string()
+                )
+            }
         }
 
         start_reader(reader, reader_callback);
@@ -1241,11 +1251,13 @@ mod tests {
         let writer_config = create_lakesoul_io_config_from_builder(writer_config_builder);
         let writer = create_lakesoul_writer_from_config(writer_config, writer_runtime);
         unsafe {
-            if let Some(err) = writer.as_ref().err.as_ref() { assert!(
-                false,
-                "{}",
-                CStr::from_ptr(err as *const c_char).to_str().unwrap().to_string()
-            ) }
+            if let Some(err) = writer.as_ref().err.as_ref() {
+                assert!(
+                    false,
+                    "{}",
+                    CStr::from_ptr(err as *const c_char).to_str().unwrap().to_string()
+                )
+            }
         }
 
         loop {
@@ -1324,11 +1336,13 @@ mod tests {
         let reader = create_lakesoul_reader_from_config(reader_config, reader_runtime);
 
         unsafe {
-            if let Some(err) = reader.as_ref().err.as_ref() { assert!(
-                false,
-                "{}",
-                CStr::from_ptr(err as *const c_char).to_str().unwrap().to_string()
-            ) }
+            if let Some(err) = reader.as_ref().err.as_ref() {
+                assert!(
+                    false,
+                    "{}",
+                    CStr::from_ptr(err as *const c_char).to_str().unwrap().to_string()
+                )
+            }
         }
 
         start_reader(reader, reader_callback);
@@ -1367,11 +1381,13 @@ mod tests {
         let writer_config = create_lakesoul_io_config_from_builder(writer_config_builder);
         let writer = create_lakesoul_writer_from_config(writer_config, writer_runtime);
         unsafe {
-            if let Some(err) = writer.as_ref().err.as_ref() { assert!(
-                false,
-                "{}",
-                CStr::from_ptr(err as *const c_char).to_str().unwrap().to_string()
-            ) }
+            if let Some(err) = writer.as_ref().err.as_ref() {
+                assert!(
+                    false,
+                    "{}",
+                    CStr::from_ptr(err as *const c_char).to_str().unwrap().to_string()
+                )
+            }
         }
 
         loop {

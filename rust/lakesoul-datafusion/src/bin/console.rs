@@ -8,8 +8,8 @@ use std::sync::Arc;
 use clap::Parser;
 use lakesoul_datafusion::{cli::CoreArgs, create_lakesoul_session_ctx};
 use lakesoul_metadata::MetaDataClient;
-use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
+use rustyline::DefaultEditor;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
