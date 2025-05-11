@@ -9,7 +9,6 @@ import org.apache.flink.core.fs.Path;
 
 import java.io.Serializable;
 import java.util.List;
-import java.util.Map;
 import java.util.stream.Collectors;
 
 /**

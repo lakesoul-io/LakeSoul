@@ -1,0 +1,9 @@
+{
+    "flink": [
+        {
+            "mode": "cluster",
+            "name": "integ.flink",
+            "entry": "com.dmetasoul.FlinkJob"
+        }
+    ]
+}
