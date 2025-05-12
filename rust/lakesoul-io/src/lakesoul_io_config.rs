@@ -703,18 +703,14 @@ pub fn register_s3_object_store(url: &Url, config: &LakeSoulIOConfig, runtime: &
         s3_store_builder = s3_store_builder.with_endpoint(ep);
     }
     let s3_store = Arc::new(s3_store_builder.build().map_err(|e| DataFusionError::ObjectStore(e))?);
-    
+
     // add cache if env LAKESOUL_CACHE is set
     if std::env::var("LAKESOUL_CACHE").is_ok() {
         // cache size in bytes, default to 1GB
         let cache_size = {
             match std::env::var("LAKESOUL_CACHE_SIZE") {
-                Ok(s) => {
-                    s.parse::<usize>().unwrap_or(1024) * 1024 * 1024
-                }
-                _ => {
-                    1024 * 1024 * 1024
-                }
+                Ok(s) => s.parse::<usize>().unwrap_or(1024) * 1024 * 1024,
+                _ => 1024 * 1024 * 1024,
             }
         };
         let cache = Arc::new(DiskCache::new(cache_size, 4 * 1024));

@@ -9,7 +9,6 @@ pub use object_store::{Error, Result};
 
 pub use read_through::ReadThroughCache;
 
-
 #[cfg(test)]
 pub mod test {
     use datafusion::error::DataFusionError;
@@ -38,13 +37,16 @@ pub mod test {
     #[tokio::test]
     async fn test_local_s3_cache() {
         let config = SessionConfig::new()
-            .with_target_partitions(1) 
+            .with_target_partitions(1)
             .set_bool("datafusion.execution.coalesce_batches", false)
             .set_u64("datafusion.execution.batch_size", 4096)
             .with_parquet_pruning(true)
             .with_repartition_joins(false);
         let runtime = Arc::new(RuntimeEnvBuilder::new().build().unwrap());
-        let state = SessionStateBuilder::new().with_config(config).with_runtime_env(runtime).build();
+        let state = SessionStateBuilder::new()
+            .with_config(config)
+            .with_runtime_env(runtime)
+            .build();
         let ctx = SessionContext::new_with_state(state);
 
         let s3 = aws::AmazonS3Builder::new()
@@ -82,8 +84,8 @@ pub mod test {
             let mut stream = df.execute_stream().await.unwrap();
             let mut total_rows = 0usize;
             while let Some(batch) = stream.next().await {
-                    let batch = batch.unwrap();
-                    total_rows += batch.num_rows();
+                let batch = batch.unwrap();
+                total_rows += batch.num_rows();
             }
 
             let duration = start.elapsed();
@@ -108,8 +110,8 @@ pub mod test {
             let mut stream = df.execute_stream().await.unwrap();
             let mut total_rows = 0usize;
             while let Some(batch) = stream.next().await {
-                    let batch = batch.unwrap();
-                    total_rows += batch.num_rows();
+                let batch = batch.unwrap();
+                total_rows += batch.num_rows();
             }
 
             let duration = start.elapsed();
@@ -122,7 +124,7 @@ pub mod test {
     }
 
     #[test]
-    fn test_env(){
+    fn test_env() {
         use std::env;
         // for (key, value) in env::vars_os() {
         //     println!("{:?}: {:?}", key, value);
