@@ -167,7 +167,13 @@ impl DiskCache {
     fn with_params(disk_capacity: usize, page_size: usize, _time_to_idle: Duration) -> Self {
         let dir = tempdir().unwrap();
         println!("tempdir: {}", dir.path().to_str().unwrap());
-        let cache = LruDiskCache::new("path", disk_capacity.try_into().unwrap()).unwrap();
+
+        let path = match std::env::var("LAKESOUL_CACHE_PATH") {
+            Ok(path) => path,
+            _ => "lakesoul_cache".to_string(),
+        };
+
+        let cache = LruDiskCache::new(path, disk_capacity.try_into().unwrap()).unwrap();
 
         let metadata_cache = Cache::builder()
             .max_capacity(DEFAULT_METADATA_CACHE_SIZE as u64)
