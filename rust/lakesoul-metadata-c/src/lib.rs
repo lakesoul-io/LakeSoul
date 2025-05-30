@@ -14,13 +14,13 @@ use std::ffi::{c_char, c_uchar, CStr, CString};
 use std::io::Write;
 use std::ptr::{null, null_mut, NonNull};
 
-use prost::bytes::BufMut;
-use prost::Message;
-
 use lakesoul_metadata::error::LakeSoulMetaDataError;
 use lakesoul_metadata::transfusion::SplitDesc;
 use lakesoul_metadata::{Builder, MetaDataClient, PooledClient, Runtime};
+use prost::bytes::BufMut;
+use prost::Message;
 use proto::proto::entity;
+use tracing_subscriber::EnvFilter;
 
 #[allow(non_camel_case_types)]
 pub type c_size_t = usize;
@@ -448,8 +448,8 @@ pub extern "C" fn rust_logger_init() {
     // TODO add logger format
     let timer = tracing_subscriber::fmt::time::ChronoLocal::rfc_3339();
     match tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
         .with_timer(timer)
+        .with_env_filter(EnvFilter::from_default_env())
         .try_init()
     {
         Ok(_) => {}

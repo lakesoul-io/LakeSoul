@@ -39,6 +39,7 @@ public class LakeSoulMultiTablesSink<IN, OUT> implements
         TwoPhaseCommittingSink<IN, LakeSoulMultiTableSinkCommittable>,
         WithPostCommitTopology<IN, LakeSoulMultiTableSinkCommittable> {
 
+    private static final long serialVersionUID = -8359441855170394393L;
     private final BucketsBuilder<IN, OUT, ? extends BucketsBuilder<IN, OUT, ?>> bucketsBuilder;
 
     public LakeSoulMultiTablesSink(BucketsBuilder<IN, OUT, ? extends BucketsBuilder<IN, OUT, ?>> bucketsBuilder) {

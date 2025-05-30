@@ -8,6 +8,7 @@ import java.io.Serializable;
 
 public final class TableId implements Serializable {
 
+    private static final long serialVersionUID = -8318096738620312630L;
     private final String catalogName;
     private final String schemaName;
     private final String tableName;

@@ -12,8 +12,8 @@ import org.apache.flink.table.types.logical.RowType;
 import java.io.Serializable;
 
 public class RowDataProjection implements Serializable {
-  private static final long serialVersionUID = 1L;
 
+  private static final long serialVersionUID = -7834328581315598014L;
   private final RowData.FieldGetter[] fieldGetters;
 
   private RowDataProjection(LogicalType[] types, int[] positions) {

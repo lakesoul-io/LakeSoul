@@ -32,6 +32,7 @@ import java.util.Map;
 import java.util.TimeZone;
 
 public abstract class LakeSoulSource<OUT> implements Source<OUT, LakeSoulPartitionSplit, LakeSoulPendingSplits> {
+    private static final long serialVersionUID = 7549443472589852334L;
     final TableId tableId;
 
     protected final RowType projectedRowType;

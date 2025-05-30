@@ -27,6 +27,7 @@ import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_RANGE_PARTITION_SPLI
  */
 public abstract class LakeSoulPartitionFetcherContextBase<P> implements PartitionFetcher.Context<P> {
 
+    private static final long serialVersionUID = -1154378756544412521L;
     protected final List<String> partitionKeys;
     protected final String partitionOrderKeys;
     protected TableId tableId;

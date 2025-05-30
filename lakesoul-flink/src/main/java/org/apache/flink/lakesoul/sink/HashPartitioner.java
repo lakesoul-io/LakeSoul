@@ -8,6 +8,7 @@ import org.apache.flink.api.common.functions.Partitioner;
 
 public class HashPartitioner implements Partitioner<Long> {
 
+  private static final long serialVersionUID = -373210878658724827L;
   private final int hashBucketNum;
 
   public HashPartitioner(int hashBucketNum) {

@@ -22,9 +22,8 @@ import java.io.Serializable;
 public abstract class BucketsBuilder<IN, OUT, T extends BucketsBuilder<IN, OUT, T>>
         implements Serializable {
 
-    private static final long serialVersionUID = 1L;
-
     protected static final long DEFAULT_BUCKET_CHECK_INTERVAL = 60L * 1000L;
+    private static final long serialVersionUID = 2009336183670221500L;
 
     @SuppressWarnings("unchecked")
     protected T self() {

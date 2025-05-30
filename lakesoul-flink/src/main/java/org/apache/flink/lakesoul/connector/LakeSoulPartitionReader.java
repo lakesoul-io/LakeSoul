@@ -25,6 +25,7 @@ import java.util.Optional;
 
 public class LakeSoulPartitionReader implements PartitionReader<LakeSoulPartition, RowData> {
 
+    private static final long serialVersionUID = 9049145796236544669L;
     private NativeIOReader nativeIOReader;
     private transient LakeSoulArrowReader lakesoulArrowReader;
     private final List<String> filePathList;

@@ -13,6 +13,7 @@ import org.apache.flink.table.data.RowData;
 
 public class FlinkBucketAssigner implements BucketAssigner<RowData, String> {
 
+  private static final long serialVersionUID = 8820063244447502134L;
   private final PartitionComputer<RowData> computer;
 
   public FlinkBucketAssigner(PartitionComputer<RowData> computer) {
