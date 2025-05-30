@@ -16,7 +16,7 @@ use std::ptr::{null, null_mut, NonNull};
 
 use prost::bytes::BufMut;
 use prost::Message;
-
+use tracing_subscriber::EnvFilter;
 use lakesoul_metadata::error::LakeSoulMetaDataError;
 use lakesoul_metadata::transfusion::SplitDesc;
 use lakesoul_metadata::{Builder, MetaDataClient, PooledClient, Runtime};
@@ -448,8 +448,8 @@ pub extern "C" fn rust_logger_init() {
     // TODO add logger format
     let timer = tracing_subscriber::fmt::time::ChronoLocal::rfc_3339();
     match tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
         .with_timer(timer)
+        .with_env_filter(EnvFilter::from_default_env())
         .try_init()
     {
         Ok(_) => {}
