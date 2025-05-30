@@ -156,9 +156,15 @@ impl LruDiskCache {
     where
         PathBuf: From<T>,
     {
+        // temp, remove all files in path
+        let root = PathBuf::from(path).clone();
+        for (file, _) in get_all_files(root.clone()) {
+            fs::remove_file(file).unwrap();
+        }
+        // println!("drop LruDiskCache");
         LruDiskCache {
             lru: RwLock::new(LruCache::with_meter(size, FileSize)),
-            root: PathBuf::from(path),
+            root: root,
             pending_size: 0,
         }
         .init()
@@ -565,7 +571,6 @@ mod tests {
         zipf.sample(&mut rng)
     }
 
-    /// page = 1 * 1024 hit percent 0.78448486328125
     /// test lru disk cache hit percent from zipf
     /// disk cache size: 64 * 1024 * 1024
     /// page count: 1024 * 1024
