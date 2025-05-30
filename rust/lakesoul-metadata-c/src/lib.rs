@@ -14,13 +14,13 @@ use std::ffi::{c_char, c_uchar, CStr, CString};
 use std::io::Write;
 use std::ptr::{null, null_mut, NonNull};
 
-use prost::bytes::BufMut;
-use prost::Message;
-use tracing_subscriber::EnvFilter;
 use lakesoul_metadata::error::LakeSoulMetaDataError;
 use lakesoul_metadata::transfusion::SplitDesc;
 use lakesoul_metadata::{Builder, MetaDataClient, PooledClient, Runtime};
+use prost::bytes::BufMut;
+use prost::Message;
 use proto::proto::entity;
+use tracing_subscriber::EnvFilter;
 
 #[allow(non_camel_case_types)]
 pub type c_size_t = usize;
