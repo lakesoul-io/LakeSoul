@@ -769,7 +769,7 @@ pub fn register_hdfs_object_store(
     {
         let hdfs = Hdfs::try_new(_host, _config.clone())?;
 
-        // add cache if env LAKESOUL_CACHE is set 
+        // add cache if env LAKESOUL_CACHE is set
         // todo
         // if std::env::var("LAKESOUL_CACHE").is_ok() {
         //     // cache size in bytes, default to 1GB
