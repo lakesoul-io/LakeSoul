@@ -31,6 +31,7 @@ import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 
 public class TableSchemaWriterCreator implements Serializable {
     private static final Logger LOG = LoggerFactory.getLogger(TableSchemaWriterCreator.class);
+    private static final long serialVersionUID = 8653440239135694722L;
 
     public TableSchemaIdentity identity;
 

@@ -22,6 +22,7 @@ import java.io.IOException;
 @Internal
 public class DefaultLakeSoulWriterBucketFactory implements LakeSoulWriterBucketFactory<RowData> {
 
+    private static final long serialVersionUID = 8985017964533683783L;
     private final Configuration conf;
 
     public DefaultLakeSoulWriterBucketFactory(Configuration conf) {

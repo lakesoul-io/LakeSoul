@@ -20,6 +20,7 @@ import java.util.Map;
 
 public class LakeSoulArrowSource extends LakeSoulSource<LakeSoulArrowWrapper> {
 
+    private static final long serialVersionUID = -7998083232803495531L;
     private final byte[] encodedTableInfo;
 
     public static LakeSoulArrowSource create(

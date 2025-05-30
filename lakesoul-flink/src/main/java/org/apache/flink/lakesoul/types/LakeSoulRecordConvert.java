@@ -57,6 +57,7 @@ import static org.apache.flink.lakesoul.types.ParseDocument.convertBSONToStruct;
 
 public class LakeSoulRecordConvert implements Serializable {
 
+    private static final long serialVersionUID = -3907477067300265746L;
     private final ZoneId serverTimeZone;
 
     private final String cdcColumn;

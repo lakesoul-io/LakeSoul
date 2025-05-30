@@ -18,6 +18,7 @@ import java.io.IOException;
 public class DefaultMultiTablesArrowFormatBuilder
         extends BulkFormatBuilder<LakeSoulArrowWrapper, LakeSoulArrowWrapper, DefaultMultiTablesArrowFormatBuilder> {
 
+    private static final long serialVersionUID = 6191959274299641070L;
     protected final LakeSoulArrowWriterBucketFactory arrowBucketFactory;
 
     public DefaultMultiTablesArrowFormatBuilder(Path basePath, Configuration conf) {

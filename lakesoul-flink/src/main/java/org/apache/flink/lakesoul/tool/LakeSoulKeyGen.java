@@ -22,6 +22,7 @@ import static org.apache.spark.sql.types.DataTypes.*;
 
 public class LakeSoulKeyGen implements Serializable {
 
+    private static final long serialVersionUID = 6042851811029368902L;
     private boolean simpleRecordKey = false;
     private final int[] hashKeyIndex;
     private final LogicalType[] hashKeyType;
