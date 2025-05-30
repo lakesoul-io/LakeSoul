@@ -21,8 +21,8 @@ import java.util.Map;
  */
 public class LakeSoulMultiTableSinkGlobalCommittable implements Serializable {
 
-    static final long serialVersionUID = 42L;
 
+    private static final long serialVersionUID = 829830901321691453L;
     private final Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommittable;
 
     public LakeSoulMultiTableSinkGlobalCommittable(

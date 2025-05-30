@@ -28,6 +28,7 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 public abstract class BulkFormatBuilder<IN, OUT, T extends BulkFormatBuilder<IN, OUT, T>>
         extends BucketsBuilder<IN, OUT, T> {
 
+    private static final long serialVersionUID = 5528527971847083823L;
     protected final Path basePath;
 
     protected long bucketCheckInterval;

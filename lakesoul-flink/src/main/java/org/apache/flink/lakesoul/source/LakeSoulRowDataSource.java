@@ -19,6 +19,8 @@ import java.util.Map;
 
 public class LakeSoulRowDataSource extends LakeSoulSource<RowData> {
 
+    private static final long serialVersionUID = 1215469067863208679L;
+
     public LakeSoulRowDataSource(TableId tableId,
                                  RowType tableRowType,
                                  RowType projectedRowType,

@@ -23,6 +23,8 @@ import java.io.Serializable;
 @Internal
 public class LakeSoulArrowWriterBucketFactory implements Serializable {
 
+    private static final long serialVersionUID = 5869147699723014278L;
+
     public LakeSoulArrowWriterBucket getNewBucket(
             int subTaskId,
             TableSchemaIdentity tableId,

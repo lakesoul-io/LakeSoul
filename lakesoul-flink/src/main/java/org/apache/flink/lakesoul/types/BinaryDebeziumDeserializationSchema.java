@@ -12,6 +12,7 @@ import org.apache.flink.util.Collector;
 
 public class BinaryDebeziumDeserializationSchema implements DebeziumDeserializationSchema<BinarySourceRecord> {
 
+    private static final long serialVersionUID = -3248249461777452263L;
     LakeSoulRecordConvert convert;
     String basePath;
 
