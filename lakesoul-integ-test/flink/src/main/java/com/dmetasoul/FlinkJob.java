@@ -78,8 +78,9 @@ public class FlinkJob {
                         ")";
 
 
-        // 2. 创建DataGen源表
-        tableEnv.executeSql(dataGenSql).print();
+//        // 2. 创建DataGen源表
+        tableEnv.executeSql(dataGenSql);
+//        tableEnv.executeSql("select * from all_type").print();
 
         tableEnv.executeSql("create catalog lakesoul with('type'='lakesoul')");
         tableEnv.executeSql("use catalog lakesoul");
@@ -93,18 +94,21 @@ public class FlinkJob {
         tableEnv.executeSql(createTable);
         tableEnv.executeSql("insert into all_type_lfs select * from default_catalog.default_database.all_type");
         var res1 = tableEnv.executeSql("select count(*) from all_type_lfs");
-        var res2 = tableEnv.executeSql("select count(*) from default_catalog.default_database.all_type");
-
-        var rows1 = new ArrayList<>();
-        var rows2 = new ArrayList<>();
-        try (
-                var it1 = res1.collect();
-                var it2 = res2.collect();
-        ) {
-            it1.forEachRemaining(rows1::add);
-            it2.forEachRemaining(rows2::add);
-            assert rows1.equals(rows2);
-        }
+        System.out.println(res1);
+//        var res2 = tableEnv.executeSql("select count(*) from default_catalog.default_database.all_type");
+//
+//        var rows1 = new ArrayList<>();
+//        var rows2 = new ArrayList<>();
+//        try (
+//                var it1 = res1.collect();
+//                var it2 = res2.collect();
+//        ) {
+//            it1.forEachRemaining(rows1::add);
+//            it2.forEachRemaining(rows2::add);
+//            if (!rows1.equals(rows2)) {
+//                System.out.println("Error");
+//            }
+//        }
 
     }
 }

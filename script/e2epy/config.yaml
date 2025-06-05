@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: LakeSoul Contributors
+# 
+# SPDX-License-Identifier: Apache-2.0
+
+# SPDX-FileCopyrightText: LakeSoul Contributors
+# 
+# SPDX-License-Identifier: Apache-2.0
+
+version: "3.0.0-SNAPSHOT"
+
+flink:
+  deploy: "local"
+  jobs:
+    - name: "integ.flink"
+      entry: "com.dmetasoul.FlinkJob"
+      mode: "session"

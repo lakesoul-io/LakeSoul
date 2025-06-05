@@ -3,8 +3,8 @@ FLINK_BIN := FLINK_HOME + "/bin"
 TARGET := "~/dev/internship/LakeSoul/lakesoul-integ-test/flink/target/integ.flink-3.0.0-SNAPSHOT.jar"
 MAIN_CLASS := "com.dmetasoul.FlinkJob"
 
-#LAKE_SOUL_LIB := "~/dev/internship/LakeSoul/lakesoul-flink/target/lakesoul-flink-1.20-3.0.0-SNAPSHOT.jar"
-LAKE_SOUL_LIB := "~/.m2/repository/com/dmetasoul/lakesoul-flink/1.20-3.0.0-SNAPSHOT/lakesoul-flink-1.20-3.0.0-SNAPSHOT.jar"
+LAKE_SOUL_LIB := "~/dev/internship/LakeSoul/lakesoul-flink/target/lakesoul-flink-1.20-3.0.0-SNAPSHOT.jar"
+#LAKE_SOUL_LIB := "~/.m2/repository/com/dmetasoul/lakesoul-flink/1.20-3.0.0-SNAPSHOT/lakesoul-flink-1.20-3.0.0-SNAPSHOT.jar"
 
 add-lakesoul:
     cp {{LAKE_SOUL_LIB}} {{FLINK_HOME}}/lib
