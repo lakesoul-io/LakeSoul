@@ -20,6 +20,7 @@ use tokio::sync::RwLock;
 pub use self::builder::DiskCacheBuilder;
 use crate::lakesoul_cache::paging::PageCache;
 use object_store::Error;
+use object_store::Error::Generic;
 use object_store::Result;
 
 /// Default memory page size is 16 KB
@@ -42,12 +43,28 @@ pub fn from_json(json: &str) -> Result<ObjectMeta> {
     use serde_json::Value;
     let value: Value = serde_json::from_str(json).unwrap();
 
-    let location = Path::from(value["location"].as_str().ok_or("Invalid location").unwrap());
-    let last_modified =
-        DateTime::parse_from_rfc3339(value["last_modified"].as_str().ok_or("Invalid last_modified").unwrap())
-            .unwrap()
-            .with_timezone(&Utc);
-    let size = value["size"].as_u64().ok_or("Invalid size").unwrap() as usize;
+    let location = Path::from(
+        value["location"]
+            .as_str()
+            .ok_or(Generic {
+                store: "cache",
+                source: "Invalid location".into(),
+            })?
+            .to_string(),
+    );
+    let last_modified = DateTime::parse_from_rfc3339(value["last_modified"].as_str().ok_or(Generic {
+        store: "cache",
+        source: "Invalid last_modified".into(),
+    })?)
+    .map_err(|e| Generic {
+        store: "cache",
+        source: Box::new(e),
+    })?
+    .with_timezone(&Utc);
+    let size = value["size"].as_u64().ok_or(Generic {
+        store: "cache",
+        source: "Invalid size".into(),
+    })?;
     let e_tag = value["e_tag"].as_str().map(|s| s.to_string());
     let version = value["version"].as_str().map(|s| s.to_string());
 
@@ -142,7 +159,7 @@ impl DiskCache {
     ///
     /// ```
     /// # use std::time::Duration;
-    /// use ocra::memory::DiskCache;
+    /// use lakesoul_io::lakesoul_cache::cache::DiskCache;
     ///
     /// let cache = DiskCache::builder(8*1024*1024)
     ///     .page_size(4096)
@@ -248,20 +265,6 @@ impl PageCache for DiskCache {
         }
     }
 
-    /// Get a range of the page with the given page ID and location, and load it if not found.
-    async fn get_range_with(
-        &self,
-        location: &Path,
-        page_id: u32,
-        range: Range<usize>,
-        loader: impl Future<Output = Result<Bytes>> + Send,
-    ) -> Result<Bytes> {
-        // Check if the range is within the page size.
-        assert!(range.start <= range.end && range.end <= self.page_size());
-        let bytes = self.get_with(location, page_id, loader).await?;
-        Ok(bytes.slice(range))
-    }
-
     /// Get the page with the given page ID and location, and return `None` if not found.
     async fn get(&self, location: &Path, page_id: u32) -> Result<Option<Bytes>> {
         let location_id = self.location_id(location).await;
@@ -278,17 +281,23 @@ impl PageCache for DiskCache {
         // Ok(self.cache.get(&(location_id, page_id)).await.map(|bytes| bytes.unwrap().value().clone()).unwrap_or(None))
     }
 
+    /// Get a range of the page with the given page ID and location, and load it if not found.
+    async fn get_range_with(
+        &self,
+        location: &Path,
+        page_id: u32,
+        range: Range<usize>,
+        loader: impl Future<Output = Result<Bytes>> + Send,
+    ) -> Result<Bytes> {
+        // Check if the range is within the page size.
+        assert!(range.start <= range.end && range.end <= self.page_size());
+        let bytes = self.get_with(location, page_id, loader).await?;
+        Ok(bytes.slice(range))
+    }
+
     /// Get a range of the page with the given page ID and location, and return `None` if not found.
     async fn get_range(&self, location: &Path, page_id: u32, range: Range<usize>) -> Result<Option<Bytes>> {
         Ok(self.get(location, page_id).await?.map(|bytes| bytes.slice(range)))
-    }
-
-    /// Put the page with the given page ID and location.
-    async fn put(&self, location: &Path, page_id: u32, data: Bytes) -> Result<()> {
-        let location_id = self.location_id(location).await;
-        let key = format!("{}_{}", location_id, page_id);
-        self.cache.insert_bytes(key, &data).unwrap();
-        Ok(())
     }
 
     /// Get the metadata of the given location, and load it if not found.
@@ -316,6 +325,14 @@ impl PageCache for DiskCache {
                 }
             }
         }
+    }
+
+    /// Put the page with the given page ID and location.
+    async fn put(&self, location: &Path, page_id: u32, data: Bytes) -> Result<()> {
+        let location_id = self.location_id(location).await;
+        let key = format!("{}_{}", location_id, page_id);
+        self.cache.insert_bytes(key, &data).unwrap();
+        Ok(())
     }
 
     async fn invalidate(&self, location: &Path) -> Result<()> {
@@ -418,7 +435,7 @@ mod tests {
                         local_fs
                             .get_range(
                                 &location,
-                                PAGE_SIZE * (*page_id as usize)..PAGE_SIZE * (page_id + 1) as usize,
+                                PAGE_SIZE as u64 * (*page_id as u64)..PAGE_SIZE as u64 * (page_id + 1) as u64,
                             )
                             .await
                     }

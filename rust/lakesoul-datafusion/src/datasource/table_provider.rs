@@ -14,10 +14,11 @@ use arrow::datatypes::{DataType, Field, Schema, SchemaBuilder, SchemaRef};
 use async_trait::async_trait;
 use datafusion::catalog::Session;
 use datafusion::common::{project_schema, Constraint, Statistics, ToDFSchema};
+use datafusion::datasource::file_format::file_compression_type::FileCompressionType;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::file_format::FileFormat;
 use datafusion::datasource::listing::{ListingOptions, ListingTableUrl, PartitionedFile};
-use datafusion::datasource::physical_plan::{FileScanConfig, FileSinkConfig};
+use datafusion::datasource::physical_plan::{FileGroup, FileScanConfig, FileSinkConfig};
 use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::dml::InsertOp;
@@ -400,7 +401,7 @@ impl TableProvider for LakeSoulTableProvider {
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let session_state = session_state.as_any().downcast_ref::<SessionState>().unwrap();
-        let (partitioned_file_lists, _) = self.list_files_for_scan(session_state, filters, limit).await?;
+        let (partitioned_file_lists, statistics) = self.list_files_for_scan(session_state, filters, limit).await?;
 
         // if no files need to be read, return an `EmptyExec`
         if partitioned_file_lists.is_empty() {
@@ -434,6 +435,8 @@ impl TableProvider for LakeSoulTableProvider {
         };
 
         // create the execution plan
+        let statistics = Arc::new(statistics);
+        let file_source = self.options().format.file_source();
         self.options()
             .format
             .create_physical_plan(
@@ -441,14 +444,20 @@ impl TableProvider for LakeSoulTableProvider {
                 FileScanConfig {
                     object_store_url,
                     file_schema: self.schema(),
-                    file_groups: partitioned_file_lists,
+                    file_groups: partitioned_file_lists
+                        .into_iter()
+                        .map(|files| FileGroup::new(files).with_statistics(statistics.clone()))
+                        .collect(),
                     constraints: Default::default(),
-                    statistics: Statistics::new_unknown(self.schema().deref()),
                     // projection for Table instead of File
                     projection: projection.cloned(),
                     limit,
                     output_ordering: self.try_create_output_ordering()?,
+                    file_compression_type: FileCompressionType::ZSTD,
+                    new_lines_in_values: false,
+                    file_source,
                     table_partition_cols,
+                    batch_size: None,
                 },
                 filters.as_ref(),
             )
@@ -488,14 +497,15 @@ impl TableProvider for LakeSoulTableProvider {
 
         // Sink related option, apart from format
         let config = FileSinkConfig {
+            original_url: "".to_string(),
             object_store_url: self.table_paths()[0].object_store(),
             table_paths: self.table_paths().clone(),
-            file_groups: vec![],
+            file_group: FileGroup::new(vec![]),
             output_schema: self.schema(),
             table_partition_cols: self.options().table_partition_cols.clone(),
             insert_op,
             keep_partition_by_columns: false,
-            file_extension: "".to_string(),
+            file_extension: "parquet".to_string(),
         };
 
         let _unsorted: Vec<Vec<Expr>> = vec![];

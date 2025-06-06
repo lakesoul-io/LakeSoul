@@ -720,7 +720,7 @@ pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string
             ";
             let partitions = params[1].to_owned();
             let partitions = partitions.split(PARTITION_DESC_DELIM).collect::<Vec<&str>>();
-            let statement = client.prepare_cached(&statement).await?;
+            let statement = client.prepare_cached(statement).await?;
             let mut all_rows: Vec<Row> = vec![];
             for part in partitions {
                 let result = client.query(&statement, &[&params[0], &part]).await;
@@ -1559,7 +1559,7 @@ pub async fn clean_meta_for_test(client: &PooledClient) -> Result<i32> {
         .await;
     match result {
         Ok(_) => Ok(0i32),
-        Err(e) => Err(LakeSoulMetaDataError::from(e)),
+        Err(e) => Err(e),
     }
 }
 

@@ -77,6 +77,6 @@ jobs:
         run: |
           rm -f Cargo.lock
           cargo clean
-          cargo test --package lakesoul-datafusion
-          cargo test --package lakesoul-flight --test flight_sql -- --color always
+          RUST_BACKTRACE=full cargo test --package lakesoul-datafusion
+          RUST_BACKTRACE=full cargo test --package lakesoul-flight --test flight_sql -- --color always
 

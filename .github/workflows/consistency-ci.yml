@@ -93,7 +93,7 @@ jobs:
         with:
           use-cross: true
           command: build
-          args: '--manifest-path rust/Cargo.toml --target x86_64-unknown-linux-gnu --release --all-features'
+          args: '--manifest-path rust/Cargo.toml --target x86_64-unknown-linux-gnu --package lakesoul-io-c --package lakesoul-metadata-c --release --all-features'
       - name: Build with Maven
         run: |
           mkdir -p rust/target/release
@@ -112,6 +112,7 @@ jobs:
           cp ./lakesoul-flink/target/$FLINK_TEST_JAR_NAME ./script/ci/work-dir
           cp ./lakesoul-spark/target/$SPARK_JAR_NAME ./script/ci/work-dir
           cp ./lakesoul-spark/target/$SPARK_TEST_JAR_NAME ./script/ci/work-dir
+          rm -rf lakesoul-spark/target lakesoul-common/target native-io/lakesoul-io-java/target lakesoul-flink/target
       - name: Generate benchmark data and expected query results
         run: |
           mkdir -p lakesoul/test_files/tpch/data
@@ -120,12 +121,14 @@ jobs:
           make
           ./dbgen -f -s 0.1
           mv *.tbl ../lakesoul/test_files/tpch/data
+          cd ..
+          rm -rf tpch-dbgen
       - name: Verify that benchmark queries return expected results
         run: |
           export TPCH_DATA=`realpath lakesoul/test_files/tpch/data`
           cd ./rust
           # use release build for plan verificaton because debug build causes stack overflow
-          cargo test load_tpch_data --package lakesoul-datafusion --features=ci -- --nocapture
+          cargo test --release load_tpch_data --package lakesoul-datafusion --features=ci -- --nocapture
           PGPASSWORD='lakesoul_test' psql -U lakesoul_test  -h 127.0.0.1 -p 5432 -d lakesoul_test -c "select * from table_info;"
           PGPASSWORD='lakesoul_test' psql -U lakesoul_test  -h 127.0.0.1 -p 5432 -d lakesoul_test -c "select * from data_commit_info;"
       - name: Hash-Consistency Verification task
