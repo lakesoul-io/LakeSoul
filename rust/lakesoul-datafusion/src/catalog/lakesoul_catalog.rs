@@ -135,10 +135,7 @@ mod tests {
     use datafusion::arrow::util::pretty::print_batches;
     use datafusion::execution::SessionStateBuilder;
     use datafusion::{
-        execution::{
-            context::{SessionContext, SessionState},
-            runtime_env::RuntimeEnv,
-        },
+        execution::context::SessionContext,
         prelude::SessionConfig,
     };
     use lakesoul_metadata::MetaDataClient;
