@@ -503,7 +503,7 @@ impl MetaDataClient {
                     partition_desc: partition_desc.clone(),
                     commit_op,
                     domain,
-                    snapshot: vec![commit_id],
+                    snapshot: vec![*commit_id],
                     ..Default::default()
                 }],
                 ..Default::default()
