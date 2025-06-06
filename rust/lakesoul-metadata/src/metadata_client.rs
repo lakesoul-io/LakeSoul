@@ -479,7 +479,6 @@ impl MetaDataClient {
         let commit_op = data_commit_info.commit_op;
         let commit_id = &data_commit_info
             .commit_id
-            .clone()
             .ok_or(LakeSoulMetaDataError::Internal("commit_id missing".to_string()))?;
         let commit_id_str = uuid::Uuid::from_u64_pair(commit_id.high, commit_id.low).to_string();
         match self
@@ -504,7 +503,7 @@ impl MetaDataClient {
                     partition_desc: partition_desc.clone(),
                     commit_op,
                     domain,
-                    snapshot: vec![commit_id.clone()],
+                    snapshot: vec![commit_id],
                     ..Default::default()
                 }],
                 ..Default::default()

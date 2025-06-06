@@ -23,11 +23,11 @@ where
 
 /// Range requests with a gap less than or equal to this,
 /// will be coalesced into a single request by [`coalesce_ranges`]
-pub const OBJECT_STORE_COALESCE_DEFAULT: usize = 1024 * 1024;
+pub const OBJECT_STORE_COALESCE_DEFAULT: u64 = 1024 * 1024;
 
 /// Up to this number of range requests will be performed in parallel by [`coalesce_ranges`]
 pub const OBJECT_STORE_COALESCE_PARALLEL: usize = 4;
-pub const OBJECT_STORE_COALESCE_MAX: usize = 16 * 1024 * 1024;
+pub const OBJECT_STORE_COALESCE_MAX: u64 = 16 * 1024 * 1024;
 
 /// Takes a function `fetch` that can fetch a range of bytes and uses this to
 /// fetch the provided byte `ranges`
@@ -38,12 +38,12 @@ pub const OBJECT_STORE_COALESCE_MAX: usize = 16 * 1024 * 1024;
 /// * Make multiple `fetch` requests in parallel (up to maximum of 10)
 ///
 pub async fn coalesce_ranges<F, Fut>(
-    ranges: &[std::ops::Range<usize>],
+    ranges: &[std::ops::Range<u64>],
     fetch: F,
-    coalesce: usize,
+    coalesce: u64,
 ) -> object_store::Result<Vec<Bytes>>
 where
-    F: Send + FnMut(std::ops::Range<usize>) -> Fut,
+    F: Send + FnMut(std::ops::Range<u64>) -> Fut,
     Fut: std::future::Future<Output = object_store::Result<Bytes>> + Send,
 {
     let fetch_ranges = merge_ranges(ranges, coalesce, OBJECT_STORE_COALESCE_MAX);
@@ -63,17 +63,13 @@ where
 
             let start = range.start - fetch_range.start;
             let end = range.end - fetch_range.start;
-            fetch_bytes.slice(start..end)
+            fetch_bytes.slice(start as usize..end as usize)
         })
         .collect())
 }
 
 /// Returns a sorted list of ranges that cover `ranges`
-fn merge_ranges(
-    ranges: &[std::ops::Range<usize>],
-    coalesce: usize,
-    range_max_size: usize,
-) -> Vec<std::ops::Range<usize>> {
+fn merge_ranges(ranges: &[std::ops::Range<u64>], coalesce: u64, range_max_size: u64) -> Vec<std::ops::Range<u64>> {
     if ranges.is_empty() {
         return vec![];
     }

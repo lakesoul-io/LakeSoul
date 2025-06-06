@@ -78,9 +78,10 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                         let physical_input = self.create_physical_plan(input, session_state).await?;
 
                         if lakesoul_table.primary_keys().is_empty()
-                            && !lakesoul_table
+                            && lakesoul_table
                                 .schema()
                                 .logically_equivalent_names_and_types(&Schema::from(input.schema().as_ref()))
+                                .is_err()
                         {
                             return Err(DataFusionError::Plan(
                                 // Return an error if schema of the input query does not match with the table schema.

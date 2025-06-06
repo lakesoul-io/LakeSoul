@@ -14,8 +14,7 @@ use arrow_schema::{ArrowError, FieldRef, Fields, Schema, SchemaBuilder};
 
 use datafusion::datasource::file_format::file_compression_type::FileCompressionType;
 use datafusion::datasource::file_format::{parquet::ParquetFormat, FileFormat};
-use datafusion::datasource::physical_plan::{FileScanConfig, FileSinkConfig};
-use datafusion::execution::context::SessionState;
+use datafusion::datasource::physical_plan::{FileGroup, FileScanConfig, FileSinkConfig, FileSource};
 
 use datafusion::physical_expr::LexRequirement;
 use datafusion::physical_plan::projection::ProjectionExec;
@@ -27,6 +26,7 @@ use object_store::{ObjectMeta, ObjectStore};
 use crate::datasource::{listing::LakeSoulTableProvider, physical_plan::MergeParquetExec};
 use crate::lakesoul_io_config::LakeSoulIOConfig;
 use async_trait::async_trait;
+use datafusion::catalog::Session;
 use datafusion::datasource::file_format::parquet::fetch_parquet_metadata;
 use futures::{StreamExt, TryStreamExt};
 use parquet::arrow::parquet_to_arrow_schema;
@@ -149,7 +149,7 @@ impl FileFormat for LakeSoulParquetFormat {
 
     async fn infer_schema(
         &self,
-        state: &SessionState,
+        state: &dyn Session,
         store: &Arc<dyn ObjectStore>,
         objects: &[ObjectMeta],
     ) -> Result<SchemaRef> {
@@ -189,7 +189,7 @@ impl FileFormat for LakeSoulParquetFormat {
 
     async fn infer_stats(
         &self,
-        state: &SessionState,
+        state: &dyn Session,
         store: &Arc<dyn ObjectStore>,
         table_schema: SchemaRef,
         object: &ObjectMeta,
@@ -201,7 +201,7 @@ impl FileFormat for LakeSoulParquetFormat {
 
     async fn create_physical_plan(
         &self,
-        state: &SessionState,
+        state: &dyn Session,
         conf: FileScanConfig,
         filters: Option<&Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
@@ -261,7 +261,7 @@ impl FileFormat for LakeSoulParquetFormat {
     async fn create_writer_physical_plan(
         &self,
         input: Arc<dyn ExecutionPlan>,
-        state: &SessionState,
+        state: &dyn Session,
         conf: FileSinkConfig,
         order_requirements: Option<LexRequirement>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
@@ -269,10 +269,14 @@ impl FileFormat for LakeSoulParquetFormat {
             .create_writer_physical_plan(input, state, conf, order_requirements)
             .await
     }
+
+    fn file_source(&self) -> Arc<dyn FileSource> {
+        self.parquet_format.file_source()
+    }
 }
 
 pub async fn flatten_file_scan_config(
-    state: &SessionState,
+    state: &dyn Session,
     format: Arc<ParquetFormat>,
     conf: FileScanConfig,
     primary_keys: &[String],
@@ -286,9 +290,9 @@ pub async fn flatten_file_scan_config(
     let mut flatten_configs = vec![];
     for i in 0..conf.file_groups.len() {
         let files = &conf.file_groups[i];
-        for file in files {
+        for file in files.files().iter() {
             let objects = &[file.object_meta.clone()];
-            let file_groups = vec![vec![file.clone()]];
+            let files = vec![file.clone()];
             let file_schema = format.infer_schema(state, &store, objects).await?;
             let file_schema = {
                 let mut builder = SchemaBuilder::new();
@@ -311,13 +315,16 @@ pub async fn flatten_file_scan_config(
             let config = FileScanConfig {
                 object_store_url: object_store_url.clone(),
                 file_schema,
-                file_groups,
+                file_groups: vec![FileGroup::new(files).with_statistics(Arc::new(statistics))],
                 constraints: Default::default(),
-                statistics,
                 projection,
                 limit,
                 table_partition_cols,
                 output_ordering,
+                file_compression_type: FileCompressionType::ZSTD,
+                new_lines_in_values: false,
+                file_source: format.file_source(),
+                batch_size: None,
             };
             flatten_configs.push(config);
         }

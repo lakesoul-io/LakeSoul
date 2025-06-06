@@ -8,12 +8,10 @@ use std::sync::Arc;
 use clap::Parser;
 use lakesoul_datafusion::{cli::CoreArgs, create_lakesoul_session_ctx};
 use lakesoul_metadata::MetaDataClient;
-use rustyline::DefaultEditor;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
     tracing_subscriber::fmt::init();
-    let mut rl = DefaultEditor::new().unwrap();
 
     let core_args = CoreArgs::parse();
 

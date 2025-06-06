@@ -14,12 +14,15 @@ use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaBuilder, SchemaRef};
+use datafusion::catalog::Session;
 use datafusion::common::parsers::CompressionTypeVariant;
 use datafusion::common::{project_schema, DFSchema, GetExt, Statistics};
 use datafusion::datasource::file_format::file_compression_type::FileCompressionType;
 use datafusion::datasource::file_format::parquet::ParquetFormatFactory;
 use datafusion::datasource::listing::ListingOptions;
+#[allow(deprecated)]
 use datafusion::datasource::physical_plan::parquet::ParquetExecBuilder;
+use datafusion::datasource::physical_plan::FileSource;
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::dml::InsertOp;
@@ -41,7 +44,6 @@ use datafusion::{
         physical_plan::{FileScanConfig, FileSinkConfig},
     },
     error::Result,
-    execution::context::SessionState,
     physical_plan::{ExecutionPlan, PhysicalExpr},
 };
 use futures::StreamExt;
@@ -146,7 +148,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
 
     async fn infer_schema(
         &self,
-        state: &SessionState,
+        state: &dyn Session,
         store: &Arc<dyn ObjectStore>,
         objects: &[ObjectMeta],
     ) -> Result<SchemaRef> {
@@ -155,7 +157,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
 
     async fn infer_stats(
         &self,
-        state: &SessionState,
+        state: &dyn Session,
         store: &Arc<dyn ObjectStore>,
         table_schema: SchemaRef,
         object: &ObjectMeta,
@@ -174,7 +176,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
     /// 5. Apply the operations on the merged [`datafusion::physical_plan::ExecutionPlan`].
     async fn create_physical_plan(
         &self,
-        state: &SessionState,
+        state: &dyn Session,
         conf: FileScanConfig,
         filters: Option<&Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
@@ -231,6 +233,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
                     "create parquet exec with config= {:?}, predicate= {:?}",
                     &config, &predicate
                 );
+                #[allow(deprecated)]
                 let mut builder = ParquetExecBuilder::new(config.clone());
                 if let Some(predicate) = predicate.clone() {
                     builder = builder.with_predicate(predicate);
@@ -316,7 +319,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
     async fn create_writer_physical_plan(
         &self,
         input: Arc<dyn ExecutionPlan>,
-        _state: &SessionState,
+        _state: &dyn Session,
         conf: FileSinkConfig,
         order_requirements: Option<LexRequirement>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
@@ -330,6 +333,10 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
             Arc::new(LakeSoulHashSinkExec::new(input, order_requirements, self.table_info(), self.client()).await?)
                 as _,
         )
+    }
+
+    fn file_source(&self) -> Arc<dyn FileSource> {
+        self.parquet_format.file_source()
     }
 }
 
