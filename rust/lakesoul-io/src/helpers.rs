@@ -426,7 +426,7 @@ pub fn partition_desc_from_file_scan_config(conf: &FileScanConfig) -> Result<(St
     if conf.table_partition_cols.is_empty() {
         Ok(("-5".to_string(), HashMap::default()))
     } else {
-        match conf.file_groups.first().unwrap().first() {
+        match conf.file_groups.first().and_then(|g| g.files().get(0)) {
             Some(file) => Ok((
                 conf.table_partition_cols
                     .iter()

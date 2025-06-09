@@ -24,7 +24,6 @@ use datafusion::logical_expr::Expr;
 use datafusion::optimizer::analyzer::type_coercion::TypeCoercion;
 use datafusion::optimizer::push_down_filter::PushDownFilter;
 use datafusion::optimizer::simplify_expressions::SimplifyExpressions;
-use datafusion::optimizer::unwrap_cast_in_comparison::UnwrapCastInComparison;
 use datafusion::physical_optimizer::projection_pushdown::ProjectionPushdown;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_common::DataFusionError::External;
@@ -77,7 +76,7 @@ pub static OPTION_KEY_COMPUTE_LSH: &str = "compute_lsh";
 /// Key for using stable sort algorithm
 pub static OPTION_KEY_STABLE_SORT: &str = "stable_sort";
 
-#[derive(Debug, Derivative)]
+#[derive(Derivative, Debug)]
 #[derivative(Default, Clone)]
 /// Configuration for LakeSoul IO operations.
 ///
@@ -933,8 +932,6 @@ pub fn create_session_context_with_planner(
             Arc::new(PushDownFilter {}),
             // Arc::new(ProjectionPushdown {}),
             Arc::new(SimplifyExpressions {}),
-            Arc::new(UnwrapCastInComparison {}),
-            // Arc::new(RewriteDisjunctivePredicate {}),
         ])
         .with_physical_optimizer_rules(vec![Arc::new(ProjectionPushdown {})])
         .build();

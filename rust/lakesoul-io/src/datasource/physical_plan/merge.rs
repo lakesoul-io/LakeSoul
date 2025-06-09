@@ -13,6 +13,7 @@ use datafusion::logical_expr::Expr;
 use datafusion::physical_expr::{EquivalenceProperties, LexOrdering};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::{ExecutionPlanProperties, Partitioning, PlanProperties};
+#[allow(deprecated)]
 use datafusion::{
     datasource::physical_plan::{FileScanConfig, ParquetExec},
     execution::TaskContext,
@@ -60,6 +61,7 @@ impl MergeParquetExec {
         let mut inputs = Vec::<Arc<dyn ExecutionPlan>>::new();
         for config in flatten_configs {
             let single_exec = Arc::new({
+                #[allow(deprecated)]
                 let mut builder = ParquetExec::builder(config);
                 if let Some(predicate) = predicate.clone() {
                     builder = builder.with_predicate(predicate.clone());

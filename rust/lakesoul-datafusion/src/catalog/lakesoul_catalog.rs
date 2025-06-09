@@ -133,13 +133,8 @@ mod tests {
     use super::*;
     use crate::LakeSoulQueryPlanner;
     use datafusion::arrow::util::pretty::print_batches;
-    use datafusion::{
-        execution::{
-            context::{SessionContext, SessionState},
-            runtime_env::RuntimeEnv,
-        },
-        prelude::SessionConfig,
-    };
+    use datafusion::execution::SessionStateBuilder;
+    use datafusion::{execution::context::SessionContext, prelude::SessionConfig};
     use lakesoul_metadata::MetaDataClient;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -147,8 +142,10 @@ mod tests {
         let client = Arc::new(MetaDataClient::from_env().await.unwrap());
         let config = SessionConfig::default().with_information_schema(true);
         let planner = LakeSoulQueryPlanner::new_ref();
-        let state =
-            SessionState::new_with_config_rt(config, Arc::new(RuntimeEnv::default())).with_query_planner(planner);
+        let state = SessionStateBuilder::default()
+            .with_config(config)
+            .with_query_planner(planner)
+            .build();
 
         let ctx = Arc::new(SessionContext::new_with_state(state));
         let catalog = LakeSoulCatalog::new(client.clone(), ctx.clone());

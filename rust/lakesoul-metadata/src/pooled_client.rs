@@ -279,7 +279,7 @@ impl StatementCache {
     /// possible.
     ///
     /// See [`tokio_postgres::Client::prepare()`].
-    pub async fn prepare<'a>(&self, client: &Client, query: &str) -> Result<Statement> {
+    pub async fn prepare(&self, client: &Client, query: &str) -> Result<Statement> {
         self.prepare_typed(client, query, &[]).await
     }
 
@@ -287,7 +287,7 @@ impl StatementCache {
     /// explicitly using this [`StatementCache`], if possible.
     ///
     /// See [`tokio_postgres::Client::prepare_typed()`].
-    pub async fn prepare_typed<'a>(&self, client: &Client, query: &str, types: &[Type]) -> Result<Statement> {
+    pub async fn prepare_typed(&self, client: &Client, query: &str, types: &[Type]) -> Result<Statement> {
         match self.get(query, types) {
             Some(statement) => Ok(statement),
             None => {
