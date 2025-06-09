@@ -134,10 +134,7 @@ mod tests {
     use crate::LakeSoulQueryPlanner;
     use datafusion::arrow::util::pretty::print_batches;
     use datafusion::execution::SessionStateBuilder;
-    use datafusion::{
-        execution::context::SessionContext,
-        prelude::SessionConfig,
-    };
+    use datafusion::{execution::context::SessionContext, prelude::SessionConfig};
     use lakesoul_metadata::MetaDataClient;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

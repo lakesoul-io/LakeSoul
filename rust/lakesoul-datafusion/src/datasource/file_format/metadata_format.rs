@@ -336,7 +336,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
     }
 
     fn file_source(&self) -> Arc<dyn FileSource> {
-        self.parquet_format.file_source()
+        self.parquet_format.file_source().with_statistics(Statistics::default())
     }
 }
 
