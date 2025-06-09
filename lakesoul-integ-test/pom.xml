@@ -15,7 +15,8 @@
     <version>3.0.0-SNAPSHOT</version>
     <packaging>pom</packaging>
     <modules>
-        <module>flink</module>
+        <module>flink-e2e</module>
+        <module>spark-e2e</module>
     </modules>
 
     <properties>

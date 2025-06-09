@@ -2,15 +2,28 @@
 # 
 # SPDX-License-Identifier: Apache-2.0
 
-# SPDX-FileCopyrightText: LakeSoul Contributors
-# 
-# SPDX-License-Identifier: Apache-2.0
-
 version: "3.0.0-SNAPSHOT"
+
+spark: 
+  deploy: "local"
 
 flink:
   deploy: "local"
-  jobs:
-    - name: "integ.flink"
-      entry: "com.dmetasoul.FlinkJob"
-      mode: "session"
+
+init:
+  type: "flink" 
+  entry: "com.dmetasoul.e2e.FlinkDataInit"
+  mode: "session"
+
+
+# sink means write to lakesoul
+sinks:
+  - type: "flink"
+    entry: "com.dmetasoul.e2e.FlinkDataSink"
+    mode: "session"
+
+# source means read from lakesoul
+sources:
+  - type: "flink"
+    entry: "com.dmetasoul.e2e.FlinkDataSource"
+    mode: "session"

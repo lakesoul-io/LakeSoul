@@ -5,78 +5,103 @@
 import os
 import subprocess
 import shutil
-from typing import Dict, List, Optional, override
+from typing import Dict, List, Optional, override, Any
 from pathlib import Path
 import click
 import yaml
+
+from pathlib import Path
 
 
 VERSION = None
 
 LAKESOUL_GIT = "https://github.com/lakesoul-io/LakeSoul"
-TMP_DIR = "/tmp/lakesoul"
+TMP_DIR = Path("/tmp/lakesoul")
 CONFIG_FILE = "config.yaml"
-MVN_LOCAL = "~/.m2/repository/com/dmetasoul"
+MVN_LOCAL = Path("~/.m2/repository/com/dmetasoul")
+
+E2E_DATA_DIR = Path("/tmp/lakesoul/e2e/data")
 
 
-class ComputeEngine:
-    def __init__(self, typ: str):
-        self.typ = typ
-
-    @staticmethod
-    def parse_conf(conf: str) -> "ComputeEngine":
-        pass
-
-    def run(self):
+class SubTask:
+    def run(self, **conf):
         pass
 
 
-class FlinkJob:
+class CsvRenameSubTask(SubTask):
+    global E2E_DATA_DIR
+
+    def run(self, **conf):
+        all_items = os.listdir("/tmp/lakesoul/e2e/data")
+        print(all_items)
+        if len(all_items) != 1:
+            raise RuntimeError("data init failed")
+
+        os.rename(E2E_DATA_DIR / all_items[0], E2E_DATA_DIR / "data.csv")
+
+
+class FlinkSubTask(SubTask):
+
     def __init__(self, name, entry, mode):
         self.name = name
         self.entry = entry
         self.mode = mode
         self.target = os.path.expanduser(
-            f"{MVN_LOCAL}/integ.flink/{VERSION}/{name}-{VERSION}.jar"
+            f"{MVN_LOCAL}/flink-e2e/{VERSION}/flink-e2e-{VERSION}.jar"
         )
 
+    def run(self, **conf):
+        args = ["flink", "run", "-c", self.entry, self.target]
+        subprocess.run(args, check=True)
+
     def __repr__(self):
-        return f"FlinkJob {{ {self.mode} {self.name} {self.entry} {self.target}}}"
+        return f"FlinkSubTask {{ {self.mode} {self.name} {self.entry} {self.target}}}"
 
 
-class Flink(ComputeEngine):
-    def __init__(self, conf: dict[str, str]):
-        super().__init__("flink")
-        self.deploy = conf["deploy"]
-        self.jobs = Flink.parse_jobs(conf["jobs"])
-        print(self.jobs)
+class SparkSubTask(SubTask):
 
-    @override
+    def __init__(self, name, entry, mode):
+        self.name = name
+        self.entry = entry
+        self.mode = mode
+        self.target = os.path.expanduser(
+            f"{MVN_LOCAL}/spark-e2e/{VERSION}/spark-e2e-{VERSION}.jar"
+        )
+
+    def run(self, **conf):
+        args = [
+            "spark-submit",
+            "--class",
+            self.entry,
+            "--master",
+            "local[*]",
+            self.target,
+        ]
+        subprocess.run(args, check=True)
+
+    def __repr__(self):
+        return f"SparkSubTask {{ {self.mode} {self.name} {self.entry} {self.target}}}"
+
+
+class Task:
+    def __init__(self, sink: Optional[SubTask], source: Optional[SubTask]) -> None:
+        self.sink = sink
+        self.source = source
+
     def run(self):
-        for job in self.jobs:
-            self.run_job(job)
+        if self.sink:
+            self.sink.run()
+        if self.source:
+            self.source.run()
 
-    def run_job(self, job: FlinkJob):
-        if self.deploy == "local":
-            if job.mode == "application":
-                print("WARNING: local deploy only work in session mode")
-            subprocess.run(
-                ["flink", "run", "-c", job.entry, job.target],
-                check=True,
-            )
 
-    @override
-    def parse_conf(conf: dict[str, str]) -> "Flink":
-        return Flink(conf)
+class TaskRunner:
+    def __init__(self, tasks: List[Task]) -> None:
+        self.tasks = tasks
 
-    def parse_jobs(conf: List[dict[str, str]]) -> List[FlinkJob]:
-        res = []
-        for j in conf:
-            res.append(FlinkJob(j["name"], j["entry"], j["mode"]))
-        return res
-
-    def __repr__(self):
-        return f"flink:{{ {self.deploy} }}"
+    def run(self):
+        for t in self.tasks:
+            t.run()
 
 
 def clone_repo(repo_url, branch, dir) -> None:
@@ -99,7 +124,7 @@ def build(dir: str):
         dir (str): 代码目录
     """
     origin = os.getcwd()
-    os.chdir(TMP_DIR + "/LakeSoul")
+    os.chdir(TMP_DIR / "/code")
 
     # build lakesoul itself
     subprocess.run(
@@ -113,6 +138,50 @@ def build(dir: str):
         check=True,
     )
     os.chdir(origin)
+
+
+def parse_subtask(conf: Dict[str, Any]) -> SubTask:
+    print(conf)
+    if conf["type"] == "flink":
+        return FlinkSubTask(conf["name"], conf["entry"], conf["mode"])
+    elif conf["type"] == "spark":
+        return SparkSubTask(conf["name"], conf["entry"], conf["mode"])
+    else:
+        raise RuntimeError("Unsupported Engine")
+
+
+def combine_subtasks(sinks: List[SubTask], souce: List[SubTask]) -> List[Task]:
+
+    res = []
+    for sk in sinks:
+        for se in souce:
+            res.append(Task(sk, se))
+
+    return res
+
+
+def parse_subtasks(conf: List[Dict[str, Any]]) -> List[SubTask]:
+    print(conf)
+    print(type(conf))
+    res = []
+    for t in conf:
+        res.append(parse_subtask(t))
+    return res
+
+
+def parse_conf(conf: Dict[str, Any]) -> List[Task]:
+    init_data_gen = parse_subtask(conf["init"])
+    init_rename_data = CsvRenameSubTask()
+    init_task = Task(init_data_gen, init_rename_data)
+
+    sinks = parse_subtasks(conf["sources"])
+    sources = parse_subtasks(conf["sources"])
+
+    tasks = [init_task] + combine_subtasks(sinks, sources)
+    return tasks
+
+
+# cli
 
 
 @click.group()
@@ -138,8 +207,16 @@ def pre_run(ctx):
     # if ctx.obj["fresh"]:
     # remove dir
     # shutil.rmtree(ctx.obj["dir"])  # 如果临时目录已存在，先删除
+
     # os.makedirs(ctx.obj["dir"])
     # clone_repo(LAKESOUL_GIT, ctx.obj["branch"], ctx.obj["dir"])
+
+    # try:
+    #     shutil.rmtree("/tmp/lakesoul/e2e/data")
+    # except FileNotFoundError:
+    #     # ignore
+    #     pass
+    # os.makedirs("/tmp/lakesoul/e2e/data")
 
     with open(ctx.obj["conf"]) as f:
         ctx.obj["config"] = yaml.safe_load(f)
@@ -153,14 +230,12 @@ def pre_run(ctx):
 
 @click.command()
 @click.pass_context
-@click.argument("engine", type=click.Choice(["flink", "spark", "presto"]))
-def run(ctx, engine):
+def run(ctx):
     # args correct
     pre_run(ctx)
-    if engine == "flink":
-        flink = Flink.parse_conf(ctx.obj["config"]["flink"])
-        print(flink)
-        flink.run()
+    tasks = parse_conf(ctx.obj["config"])
+    runner = TaskRunner(tasks)
+    runner.run()
 
 
 if __name__ == "__main__":

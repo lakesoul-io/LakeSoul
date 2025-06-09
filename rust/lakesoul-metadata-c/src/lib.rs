@@ -457,7 +457,9 @@ pub extern "C" fn rust_logger_init() {
         .with_timer(timer)
         .try_init()
     {
-        Ok(_) => {}
+        Ok(_) => {
+            eprintln!("rust logger in metadata")
+        }
         Err(e) => {
             eprintln!("failed to initialize tracing subscriber: {}", e);
         }
