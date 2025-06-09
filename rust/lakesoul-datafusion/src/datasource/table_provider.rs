@@ -436,7 +436,11 @@ impl TableProvider for LakeSoulTableProvider {
 
         // create the execution plan
         let statistics = Arc::new(statistics);
-        let file_source = self.options().format.file_source();
+        let file_source = self
+            .options()
+            .format
+            .file_source()
+            .with_statistics(Statistics::new_unknown(&self.schema()));
         self.options()
             .format
             .create_physical_plan(

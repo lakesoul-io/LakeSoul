@@ -333,8 +333,8 @@ pub async fn flatten_file_scan_config(
                             let output_ordering = conf.output_ordering.clone();
                             let config = FileScanConfig {
                                 object_store_url: object_store_url.clone(),
-                                file_schema,
-                                file_groups: vec![FileGroup::new(files).with_statistics(Arc::new(statistics))],
+                                file_schema: file_schema.clone(),
+                                file_groups: vec![FileGroup::new(files).with_statistics(Arc::new(statistics.clone()))],
                                 constraints: Default::default(),
                                 projection,
                                 limit,
@@ -342,7 +342,7 @@ pub async fn flatten_file_scan_config(
                                 output_ordering,
                                 file_compression_type: FileCompressionType::ZSTD,
                                 new_lines_in_values: false,
-                                file_source: format.file_source(),
+                                file_source: format.file_source().with_statistics(statistics),
                                 batch_size: None,
                             };
                             // flatten_configs.push(config);
