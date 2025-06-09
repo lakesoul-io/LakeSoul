@@ -187,29 +187,29 @@ object LakeSoulSQLConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMPACTION_LEVEL_FILE_NUM_LIMIT: ConfigEntry[Int] =
-    buildConf("compaction.level.file.number.limit")
+  val LEVEL1_FILE_NUM_COMPACTION_TRIGGER_LIMIT: ConfigEntry[Int] =
+    buildConf("level1.file.number.compaction.trigger.limit")
       .doc(
         """
-          |COMPACTION LEVEL SINGLE TASK READ FILE NUMBER, DEFAULT IS 20.
+          |COMPACTION LEVEL1 SINGLE TASK READ FILE NUMBER, DEFAULT IS 20.
         """.stripMargin)
       .intConf
       .createWithDefault(20)
 
-  val COMPACTION_LEVEL_FILE_MERGE_SIZE_LIMIT: ConfigEntry[String] =
-    buildConf("compaction.level.file.merge.size.limit")
+  val LEVEL1_FILE_MERGE_SIZE_COMPACTION_TRIGGER_LIMIT: ConfigEntry[String] =
+    buildConf("level1.file.merge.size.compaction.trigger.limit")
       .doc(
         """
-          |COMPACTION LEVEL SINGLE TASK MERGE SIZE. Default is 1GB.
+          |COMPACTION LEVEL1 SINGLE TASK MERGE SIZE. Default is 1GB.
         """.stripMargin)
       .stringConf
       .createWithDefault("1GB")
 
-  val COMPACTION_LEVEL_FILE_MERGE_NUM_LIMIT: ConfigEntry[Int] =
-    buildConf("compaction.level.file.merge.num.limit")
+  val LEVEL1_FILE_MERGE_NUM_COMPACTION_TRIGGER_LIMIT: ConfigEntry[Int] =
+    buildConf("level1.file.merge.num.compaction.trigger.limit")
       .doc(
         """
-          |COMPACTION LEVEL SINGLE TASK MERGE NUM. Default is 5.
+          |COMPACTION LEVEL1 SINGLE TASK MERGE NUM. Default is 5.
         """.stripMargin)
       .intConf
       .createWithDefault(5)
