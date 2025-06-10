@@ -1,0 +1,7 @@
+debug:
+    python3 ./main.py run  
+test:
+    python3 ./main.py --fresh --repo https://github.com/mag1c1an1/LakeSoul.git --branch e2eTest run  
+
+help:
+    python3 ./main.py --help

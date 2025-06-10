@@ -12,6 +12,7 @@ flink:
 
 init:
   type: "flink" 
+  name: "DataInit"
   entry: "com.dmetasoul.e2e.FlinkDataInit"
   mode: "session"
 
@@ -19,11 +20,13 @@ init:
 # sink means write to lakesoul
 sinks:
   - type: "flink"
+    name: "DataSink"
     entry: "com.dmetasoul.e2e.FlinkDataSink"
     mode: "session"
 
 # source means read from lakesoul
 sources:
   - type: "flink"
+    name: "DataSource"
     entry: "com.dmetasoul.e2e.FlinkDataSource"
     mode: "session"

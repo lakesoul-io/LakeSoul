@@ -15,7 +15,7 @@ from pathlib import Path
 
 VERSION = None
 
-LAKESOUL_GIT = "https://github.com/lakesoul-io/LakeSoul"
+LAKESOUL_GIT = "https://github.com/lakesoul-io/LakeSoul.git"
 TMP_CODE_DIR = Path("/tmp/lakesoul/code")
 CONFIG_FILE = "config.yaml"
 MVN_LOCAL = Path("~/.m2/repository/com/dmetasoul")
@@ -124,14 +124,14 @@ def build(dir: str):
         dir (str): 代码目录
     """
     origin = os.getcwd()
-    os.chdir(TMP_CODE_DIR / "LakeSoul")
+    os.chdir(dir)
 
     # build lakesoul itself
     subprocess.run(
         ["mvn", "clean", "install", "-DskipTests"],
         check=True,
     )
-    # build eeTests
+    # build e2eTests
     os.chdir("lakesoul-integ-test")
     subprocess.run(
         ["mvn", "clean", "install", "-DskipTests"],
@@ -174,7 +174,7 @@ def parse_conf(conf: Dict[str, Any]) -> List[Task]:
     init_rename_data = CsvRenameSubTask()
     init_task = Task(init_data_gen, init_rename_data)
 
-    sinks = parse_subtasks(conf["sources"])
+    sinks = parse_subtasks(conf["sinks"])
     sources = parse_subtasks(conf["sources"])
 
     tasks = [init_task] + combine_subtasks(sinks, sources)
@@ -194,25 +194,27 @@ def parse_conf(conf: Dict[str, Any]) -> List[Task]:
     help="config path",
 )
 @click.option("--fresh", is_flag=True, help="fresh clone lakesoul repo")
-@click.option("--git", default=LAKESOUL_GIT, help="LakeSoul repo")
+@click.option("--repo", default=LAKESOUL_GIT, help="LakeSoul repo")
 @click.option(
     "--dir", default=TMP_CODE_DIR, type=click.Path(), help="dir of lakesoul code"
 )
 @click.option("-b", "--branch", default="main", help="lakesoul branch, default is main")
-def cli(ctx, conf, fresh, branch, dir):
+def cli(ctx, conf, fresh, repo, branch, dir):
     ctx.obj["conf"] = conf
     ctx.obj["fresh"] = fresh
     ctx.obj["branch"] = branch
-    ctx.obj["dir"] = dir
+    ctx.obj["dir"] = Path(dir)
+    ctx.obj["repo"] = repo
 
 
 def pre_run(ctx):
 
     if ctx.obj["fresh"]:
         # remove dir
-        shutil.rmtree(ctx.obj["dir"])  # 如果临时目录已存在，先删除
+        if ctx.obj["dir"].exists():
+            shutil.rmtree(ctx.obj["dir"])  # 如果临时目录已存在，先删除
         os.makedirs(ctx.obj["dir"])
-        clone_repo(ctx.obj['git'], ctx.obj["branch"], ctx.obj["dir"])
+        clone_repo(ctx.obj["repo"], ctx.obj["branch"], ctx.obj["dir"])
 
     try:
         shutil.rmtree("/tmp/lakesoul/e2e/data")
@@ -225,7 +227,7 @@ def pre_run(ctx):
         ctx.obj["config"] = yaml.safe_load(f)
 
     # build lakesoul
-    build(ctx.obj["dir"])
+    build(ctx.obj["dir"] / "LakeSoul")
 
     global VERSION
     VERSION = ctx.obj["config"]["version"]
