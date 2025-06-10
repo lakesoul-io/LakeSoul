@@ -16,7 +16,7 @@ from pathlib import Path
 VERSION = None
 
 LAKESOUL_GIT = "https://github.com/lakesoul-io/LakeSoul"
-TMP_DIR = Path("/tmp/lakesoul")
+TMP_CODE_DIR = Path("/tmp/lakesoul/code")
 CONFIG_FILE = "config.yaml"
 MVN_LOCAL = Path("~/.m2/repository/com/dmetasoul")
 
@@ -124,7 +124,7 @@ def build(dir: str):
         dir (str): 代码目录
     """
     origin = os.getcwd()
-    os.chdir(TMP_DIR / "/code")
+    os.chdir(TMP_CODE_DIR / "LakeSoul")
 
     # build lakesoul itself
     subprocess.run(
@@ -194,7 +194,10 @@ def parse_conf(conf: Dict[str, Any]) -> List[Task]:
     help="config path",
 )
 @click.option("--fresh", is_flag=True, help="fresh clone lakesoul repo")
-@click.option("--dir", default=TMP_DIR, type=click.Path(), help="dir of lakesoul code")
+@click.option("--git", default=LAKESOUL_GIT, help="LakeSoul repo")
+@click.option(
+    "--dir", default=TMP_CODE_DIR, type=click.Path(), help="dir of lakesoul code"
+)
 @click.option("-b", "--branch", default="main", help="lakesoul branch, default is main")
 def cli(ctx, conf, fresh, branch, dir):
     ctx.obj["conf"] = conf
@@ -204,25 +207,25 @@ def cli(ctx, conf, fresh, branch, dir):
 
 
 def pre_run(ctx):
-    # if ctx.obj["fresh"]:
-    # remove dir
-    # shutil.rmtree(ctx.obj["dir"])  # 如果临时目录已存在，先删除
 
-    # os.makedirs(ctx.obj["dir"])
-    # clone_repo(LAKESOUL_GIT, ctx.obj["branch"], ctx.obj["dir"])
+    if ctx.obj["fresh"]:
+        # remove dir
+        shutil.rmtree(ctx.obj["dir"])  # 如果临时目录已存在，先删除
+        os.makedirs(ctx.obj["dir"])
+        clone_repo(ctx.obj['git'], ctx.obj["branch"], ctx.obj["dir"])
 
-    # try:
-    #     shutil.rmtree("/tmp/lakesoul/e2e/data")
-    # except FileNotFoundError:
-    #     # ignore
-    #     pass
-    # os.makedirs("/tmp/lakesoul/e2e/data")
+    try:
+        shutil.rmtree("/tmp/lakesoul/e2e/data")
+    except FileNotFoundError:
+        # ignore
+        pass
+    os.makedirs("/tmp/lakesoul/e2e/data")
 
     with open(ctx.obj["conf"]) as f:
         ctx.obj["config"] = yaml.safe_load(f)
 
     # build lakesoul
-    # build(ctx.obj["dir"])
+    build(ctx.obj["dir"])
 
     global VERSION
     VERSION = ctx.obj["config"]["version"]
