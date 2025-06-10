@@ -98,13 +98,13 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
         this.batchSize = conf.getInt(SQLConf$.MODULE$.PARQUET_VECTORIZED_READER_BATCH_SIZE().key(), 2048);
         this.tablePath = tablePath;
 
-        this.compactLevel1ExistedFileNumberLimit = conf.getInt(LakeSoulSQLConf.LEVEL1_FILE_NUM_COMPACTION_TRIGGER_LIMIT().key(),
-                (int) LakeSoulSQLConf.LEVEL1_FILE_NUM_COMPACTION_TRIGGER_LIMIT().defaultValue().get());
+        this.compactLevel1ExistedFileNumberLimit = conf.getInt(LakeSoulSQLConf.COMPACTION_LEVEL1_FILE_NUM_LIMIT().key(),
+                (int) LakeSoulSQLConf.COMPACTION_LEVEL1_FILE_NUM_LIMIT().defaultValue().get());
         this.compactLevel1MergeFileSizeLimit =
-                DBUtil.parseMemoryExpression(conf.get(LakeSoulSQLConf.LEVEL1_FILE_MERGE_SIZE_COMPACTION_TRIGGER_LIMIT().key(),
-                        LakeSoulSQLConf.LEVEL1_FILE_MERGE_SIZE_COMPACTION_TRIGGER_LIMIT().defaultValue().get()));
-        this.compactLevel1MergeFileNumLimit = conf.getInt(LakeSoulSQLConf.LEVEL1_FILE_MERGE_NUM_COMPACTION_TRIGGER_LIMIT().key(),
-                (int) LakeSoulSQLConf.LEVEL1_FILE_MERGE_NUM_COMPACTION_TRIGGER_LIMIT().defaultValue().get());
+                DBUtil.parseMemoryExpression(conf.get(LakeSoulSQLConf.COMPACTION_LEVEL1_FILE_MERGE_SIZE_LIMIT().key(),
+                        LakeSoulSQLConf.COMPACTION_LEVEL1_FILE_MERGE_SIZE_LIMIT().defaultValue().get()));
+        this.compactLevel1MergeFileNumLimit = conf.getInt(LakeSoulSQLConf.COMPACTION_LEVEL1_FILE_MERGE_NUM_LIMIT().key(),
+                (int) LakeSoulSQLConf.COMPACTION_LEVEL1_FILE_MERGE_NUM_LIMIT().defaultValue().get());
         this.compactionReadFileMaxSize =
                 DBUtil.parseMemoryExpression(conf.get(LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE().key(),
                         LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE().defaultValue().get()));
@@ -149,8 +149,10 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
         nativeWriter = new NativeIOWriter(this.schema);
         nativeWriter.setRowGroupRowNumber(this.maxRowGroupRows);
 
+
         nativeWriter.setHashBucketNum(this.hashBucketNum);
         if (this.tableHashBucketNumChanged) {
+            nativeWriter.setPrimaryKeys(this.primaryKeys);
             nativeWriter.setRangePartitions(rangeColumns);
             nativeWriter.useDynamicPartition(true);
             nativeWriter.withPrefix(outPath);
