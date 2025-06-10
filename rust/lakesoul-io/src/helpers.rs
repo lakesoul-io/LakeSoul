@@ -12,6 +12,7 @@ use arrow_array::{Array, RecordBatch, UInt32Array};
 use arrow_buffer::i256;
 use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaBuilder, SchemaRef, TimeUnit};
 use chrono::{DateTime, Duration};
+use datafusion::physical_plan::memory::LazyBatchGenerator;
 use datafusion::{
     datasource::{
         file_format::FileFormat,
@@ -26,9 +27,6 @@ use datafusion::{
 };
 use datafusion_common::DataFusionError::{External, Internal};
 use datafusion_common::{cast::as_primitive_array, DFSchema, DataFusionError, Result, ScalarValue};
-use std::iter::zip;
-use std::{collections::HashMap, sync::Arc};
-
 use datafusion_substrait::substrait::proto::Plan;
 use futures::{StreamExt, TryStreamExt};
 use object_store::path::Path;
@@ -37,6 +35,10 @@ use parquet::format::FileMetaData;
 use proto::proto::entity::JniWrapper;
 use rand::distributions::DistString;
 use rand::thread_rng;
+use std::collections::VecDeque;
+use std::fmt::{Debug, Display, Formatter};
+use std::iter::zip;
+use std::{collections::HashMap, fmt, sync::Arc};
 use tokio::runtime::Builder;
 use url::Url;
 
@@ -909,4 +911,29 @@ pub fn compute_scalar_hash(scalar: &ScalarValue) -> u32 {
 /// Returns Some(scalar_value) if successful, None otherwise
 pub fn extract_scalar_value_from_expr(equality: &ColumnEquality) -> Option<&ScalarValue> {
     Some(&equality.scalar_value)
+}
+
+#[derive(Debug)]
+pub struct InMemGenerator {
+    batches: VecDeque<RecordBatch>,
+}
+
+impl InMemGenerator {
+    pub fn try_new(batches: Vec<RecordBatch>) -> Result<Self> {
+        Ok(Self {
+            batches: VecDeque::from(batches),
+        })
+    }
+}
+
+impl Display for InMemGenerator {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_fmt(format_args!("InMemGenerator: {}", self.batches.len()))
+    }
+}
+
+impl LazyBatchGenerator for InMemGenerator {
+    fn generate_next_batch(&mut self) -> Result<Option<RecordBatch>> {
+        Ok(self.batches.pop_front())
+    }
 }

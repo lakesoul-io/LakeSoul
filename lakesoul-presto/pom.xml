@@ -96,6 +96,12 @@
             <version>1.2.83</version>
             <scope>compile</scope>
         </dependency>
+        <dependency>
+            <groupId>com.facebook.airlift</groupId>
+            <artifactId>log</artifactId>
+            <scope>provided</scope>
+            <version>0.216</version>
+        </dependency>
     </dependencies>
 
     <build>

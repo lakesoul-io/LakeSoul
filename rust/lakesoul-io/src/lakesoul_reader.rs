@@ -269,7 +269,7 @@ impl LakeSoulReader {
 /// use tokio::runtime::Runtime;
 ///
 /// let runtime = Runtime::new()?;
-/// let reader = SyncSendableMutableLakeSoulReader::new(lake_soul_reader, runtime);
+/// let mut reader = SyncSendableMutableLakeSoulReader::new(lake_soul_reader, runtime);
 /// reader.start_blocked()?;
 ///
 /// let (tx, rx) = std::sync::mpsc::channel(1);
@@ -844,43 +844,89 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_read_file() -> Result<()> {
+        println!("hello world");
         let schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int32, true),
-            Field::new("range", DataType::Int32, true),
-            Field::new(
-                "datetimeSec",
-                DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, Some(Arc::from("UTC"))),
-                true,
-            ),
+            Field::new("l_orderkey", DataType::Int64, true),
+            Field::new("l_partkey", DataType::Int64, true),
+            Field::new("l_suppkey", DataType::Int64, true),
+            Field::new("l_linenumber", DataType::Int32, true),
+            Field::new("l_quantity", DataType::Decimal128(15, 2), true),
+            Field::new("l_extendedprice", DataType::Decimal128(15, 2), true),
+            Field::new("l_discount", DataType::Decimal128(15, 2), true),
+            // Field::new("l_tax", DataType::Decimal128(15, 2), true),
+            // Field::new("l_returnflag", DataType::Utf8, true),
+            // Field::new("l_linestatus", DataType::Utf8, true),
+            // Field::new("l_shipdate", DataType::Date32, true),
+            // Field::new("l_commitdate", DataType::Date32, true),
+            // Field::new("l_receiptdate", DataType::Date32, true),
+            // Field::new("l_shipinstruct", DataType::Utf8, true),
+            // Field::new("l_shipmode", DataType::Utf8, true),
+            // Field::new("l_comment", DataType::Utf8, true),
         ]));
-        let partition_schema = Arc::new(Schema::new(vec![Field::new("range", DataType::Int32, true)]));
         let reader_conf = LakeSoulIOConfigBuilder::new()
             .with_files(vec![
-                "file:/private/tmp/test_local_java_table/range=0/part-AX31Bzzu4jGi23qY_0000.parquet".to_string(),
+                "file:///data/tpch/sf10/lineitem/part-00000-f66b4403-0102-4168-b38b-dcffebd0fb4d-c000.parquet"
+                    .to_string(),
+                "file:///data/tpch/sf10/lineitem/part-00001-06880f87-1f57-455a-afc8-470c4f12b108-c000.parquet"
+                    .to_string(),
+                "file:///data/tpch/sf10/lineitem/part-00002-5ad96efe-eaeb-460e-83b8-036d6c766165-c000.parquet"
+                    .to_string(),
+                "file:///data/tpch/sf10/lineitem/part-00003-7fce9a7e-3eb5-4104-88b2-c93f1b73313b-c000.parquet"
+                    .to_string(),
+                "file:///data/tpch/sf10/lineitem/part-00004-3d68999c-ad19-425a-aa18-d00ee593cefd-c000.parquet"
+                    .to_string(),
+                "file:///data/tpch/sf10/lineitem/part-00005-a4bbc0a8-3dd8-42fc-895f-2d7ec0180918-c000.parquet"
+                    .to_string(),
+                "file:///data/tpch/sf10/lineitem/part-00006-989b4ecd-dda8-4ab9-8583-6924ad1ba2a0-c000.parquet"
+                    .to_string(),
+                "file:///data/tpch/sf10/lineitem/part-00007-28062768-45db-48c7-ba08-40908be7d34e-c000.parquet"
+                    .to_string(),
+                "file:///data/tpch/sf10/lineitem/part-00008-72cc45a1-a726-4f91-9c14-948eb983913a-c000.parquet"
+                    .to_string(),
+                "file:///data/tpch/sf10/lineitem/part-00009-183072c1-dc43-4db6-9570-c3d975244157-c000.parquet"
+                    .to_string(),
+                "file:///data/tpch/sf10/lineitem/part-00010-3cad5c49-7eff-4afa-8ebd-3962e6e986c0-c000.parquet"
+                    .to_string(),
+                "file:///data/tpch/sf10/lineitem/part-00011-bdc6bea3-d525-4ed4-87c1-3f17bc4a2618-c000.parquet"
+                    .to_string(),
+                "file:///data/tpch/sf10/lineitem/part-00012-99f0d434-0932-4da2-9f5d-e3a45fb126e0-c000.parquet"
+                    .to_string(),
+                "file:///data/tpch/sf10/lineitem/part-00013-60202a1d-20ec-406b-bc57-3b3490a6fd28-c000.parquet"
+                    .to_string(),
+                "file:///data/tpch/sf10/lineitem/part-00014-53cb4270-b2af-4531-a0ea-bba50221b8c9-c000.parquet"
+                    .to_string(),
+                "file:///data/tpch/sf10/lineitem/part-00015-97063302-d1bd-4359-875f-00dc1893b6ff-c000.parquet"
+                    .to_string(),
+                "file:///data/tpch/sf10/lineitem/part-00016-c8feea44-8577-4b55-8a16-f6b659c0eb05-c000.parquet"
+                    .to_string(),
+                "file:///data/tpch/sf10/lineitem/part-00017-9f627fdd-d641-493d-b4da-c2171e5163ea-c000.parquet"
+                    .to_string(),
+                "file:///data/tpch/sf10/lineitem/part-00018-fda7113d-a56a-43b4-a4cc-5e9c2411315d-c000.parquet"
+                    .to_string(),
+                "file:///data/tpch/sf10/lineitem/part-00007-28062768-45db-48c7-ba08-40908be7d34e-c000.parquet"
+                    .to_string(),
             ])
-            // .with_files(vec!["file:/var/folders/4c/34n9w2cd65n0pyjkc3n4q7pc0000gn/T/lakeSource/user1/order_id=4/part-59guLCg5R6v4oLUT_0000.parquet".to_string()])
             .with_thread_num(1)
             .with_batch_size(8192)
             .with_schema(schema)
-            .with_partition_schema(partition_schema)
-            .with_default_column_value("range".to_string(), "0".to_string())
-            // .set_inferring_schema(true)
             .build();
-        let reader = LakeSoulReader::new(reader_conf)?;
-        let mut reader = ManuallyDrop::new(reader);
+        let mut reader = LakeSoulReader::new(reader_conf)?;
+        // let mut reader = ManuallyDrop::new(reader);
         reader.start().await?;
         static mut ROW_CNT: usize = 0;
 
         let start = Instant::now();
         while let Some(rb) = reader.next_rb().await {
-            let num_rows = &rb.unwrap().num_rows();
+            let rb = rb.unwrap();
+            let num_rows = rb.num_rows();
+            let num_cols = rb.num_columns();
             unsafe {
                 ROW_CNT += num_rows;
-                println!("{}", ROW_CNT);
+                // println!("rows {}, cols {}", ROW_CNT, num_cols);
             }
-            sleep(Duration::from_millis(20)).await;
+            // sleep(Duration::from_millis(20)).await;
         }
         println!("time cost: {:?}ms", start.elapsed().as_millis()); // ms
 

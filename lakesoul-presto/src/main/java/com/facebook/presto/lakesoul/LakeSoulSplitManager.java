@@ -6,6 +6,7 @@ package com.facebook.presto.lakesoul;
 
 import com.dmetasoul.lakesoul.meta.DataFileInfo;
 import com.dmetasoul.lakesoul.meta.DataOperation;
+import com.facebook.airlift.log.Logger;
 import com.facebook.presto.lakesoul.handle.LakeSoulTableLayoutHandle;
 import com.facebook.presto.lakesoul.pojo.Path;
 import com.facebook.presto.lakesoul.util.PrestoUtil;
@@ -25,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 
 public class LakeSoulSplitManager implements ConnectorSplitManager {
+    private static final Logger log = Logger.get(LakeSoulSplitManager.class);
 
     @Override
     public ConnectorSplitSource getSplits(ConnectorTransactionHandle transactionHandle,
@@ -63,6 +65,7 @@ public class LakeSoulSplitManager implements ConnectorSplitManager {
                 splits.add(new LakeSoulSplit(tableLayout, split.getValue()));
             }
         }
+        log.info("LakeSoul splits %s", splits);
         return new LakeSoulSplitSource(splits);
     }
 
