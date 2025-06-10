@@ -138,7 +138,16 @@ impl LakeSoulReader {
             ))
         } else {
             let file_format = Arc::new(LakeSoulParquetFormat::new(
-                Arc::new(ParquetFormat::new()),
+                Arc::new(
+                    ParquetFormat::new().with_force_view_types(
+                        self.sess_ctx
+                            .state()
+                            .config_options()
+                            .execution
+                            .parquet
+                            .schema_force_view_types,
+                    ),
+                ),
                 self.config.clone(),
             ));
             let source = LakeSoulTableProvider::new_with_config_and_format(

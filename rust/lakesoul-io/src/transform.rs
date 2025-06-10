@@ -23,7 +23,6 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, FieldRef, Fields, Schema, SchemaBuilder, SchemaRef, TimeUnit};
 use datafusion::error::Result;
 use datafusion_common::DataFusionError::{self, ArrowError, External, Internal};
-use datafusion_common::ExprSchema;
 
 /// adjust time zone to UTC
 pub fn uniform_field(orig_field: &FieldRef) -> FieldRef {
