@@ -40,10 +40,12 @@ import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_NON_PARTITION_TABLE_
 public class CompactBucketIO implements AutoCloseable, Serializable {
 
     private static final Logger LOG = LoggerFactory.getLogger(CompactBucketIO.class);
+    private static final long serialVersionUID = -4118390797329510218L;
 
     public static String DISCARD_FILE_LIST_KEY = "discard_file";
     public static String COMPACT_DIR = "compact_dir";
     public static String INCREMENTAL_FILE = "incremental_file";
+    private final Configuration conf;
     private final List<String> primaryKeys;
     private final List<String> rangeColumns;
     private final int maxRowGroupRows;
@@ -59,7 +61,6 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
     private LakeSoulArrowReader lakesoulArrowReader;
     private Map<String, List<CompressDataFileInfo>> levelFileMap;
     private final String tablePath;
-    private final FileSystem fileSystem;
     private final int compactLevel1ExistedFileNumberLimit;
     private final long compactLevel1MergeFileSizeLimit;
     private final int compactLevel1MergeFileNumLimit;
@@ -76,6 +77,7 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
                            boolean tableHashBucketNumChanged, long taskId)
             throws IOException {
 
+        this.conf = conf;
         this.fileInfo = fileInfo;
         this.metaPartitionExpr = metaPartitionExpr;
         this.schema = Schema.fromJSON(tableInfo.table_schema());
@@ -91,7 +93,6 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
             this.partitionSchema = new Schema(partitionFields);
         }
         this.nativeIOOptions = NativeIOUtils.getNativeIOOptions(conf, new Path(this.fileInfo.get(0).getFilePath()));
-        this.fileSystem = FileSystem.get(conf);
 
         this.maxRowGroupRows = conf.getInt(LakeSoulSQLConf.NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE().key(),
                 (int) LakeSoulSQLConf.NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE().defaultValue().get());
@@ -348,6 +349,7 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
                 fileExistCols = fileExistCols.replace("arrow_schema,", "");
             }
             try {
+                FileSystem fileSystem = path.getFileSystem(conf);
                 FileStatus fileStatus = fileSystem.getFileStatus(path);
                 compressDataFileInfoList.add(new CompressDataFileInfo(filePath, fileStatus.getLen(), fileExistCols,
                         fileStatus.getModificationTime()));

@@ -99,8 +99,8 @@
         <dependency>
             <groupId>com.facebook.airlift</groupId>
             <artifactId>log</artifactId>
-            <scope>provided</scope>
             <version>0.216</version>
+            <scope>compile</scope>
         </dependency>
     </dependencies>
 

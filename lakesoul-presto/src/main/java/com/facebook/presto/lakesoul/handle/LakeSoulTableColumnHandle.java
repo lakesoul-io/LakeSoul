@@ -54,5 +54,13 @@ public class LakeSoulTableColumnHandle implements ColumnHandle {
     public void setColumnType(Type columnType) {
         this.columnType = columnType;
     }
+
+    @Override public String toString() {
+        return "LakeSoulTableColumnHandle{" +
+                "tableHandle=" + tableHandle +
+                ", columnName='" + columnName + '\'' +
+                ", columnType=" + columnType +
+                '}';
+    }
 }
 
