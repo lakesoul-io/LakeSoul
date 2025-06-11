@@ -13,7 +13,7 @@ members = [
     "lakesoul-flight",
     "lakesoul-s3-proxy",
 ]
-resolver = "2"
+resolver = "3"
 
 [profile.release]
 #lto = true

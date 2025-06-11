@@ -135,7 +135,7 @@ fn string_from_ptr(ptr: *const c_char) -> String {
 }
 
 /// Execute the insert Data Access Object.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn execute_insert(
     callback: extern "C" fn(i32, *const c_char),
     runtime: NonNull<CResult<TokioRuntime>>,
@@ -157,7 +157,7 @@ pub extern "C" fn execute_insert(
 }
 
 /// Execute the update Data Access Object.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn execute_update(
     callback: extern "C" fn(i32, *const c_char),
     runtime: NonNull<CResult<TokioRuntime>>,
@@ -178,7 +178,7 @@ pub extern "C" fn execute_update(
 }
 
 /// Execute the query scalar Data Access Object.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn execute_query_scalar(
     callback: extern "C" fn(*const c_char, *const c_char),
     runtime: NonNull<CResult<TokioRuntime>>,
@@ -207,7 +207,7 @@ pub extern "C" fn execute_query_scalar(
 }
 
 /// Execute the query Data Access Object.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn execute_query(
     callback: extern "C" fn(i32, *const c_char),
     runtime: NonNull<CResult<TokioRuntime>>,
@@ -234,7 +234,7 @@ pub extern "C" fn execute_query(
 }
 
 /// Export the bytes result.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn export_bytes_result(
     callback: extern "C" fn(bool, *const c_char),
     bytes: NonNull<CResult<BytesResult>>,
@@ -265,13 +265,13 @@ pub extern "C" fn export_bytes_result(
 }
 
 /// Free the bytes result.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn free_bytes_result(bytes: NonNull<CResult<BytesResult>>) {
     from_nonnull(bytes).free::<Vec<u8>>();
 }
 
 /// Clean the metadata for test.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn clean_meta_for_test(
     callback: extern "C" fn(i32, *const c_char),
     runtime: NonNull<CResult<TokioRuntime>>,
@@ -287,7 +287,7 @@ pub extern "C" fn clean_meta_for_test(
 }
 
 /// Create the tokio runtime.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn create_tokio_runtime() -> NonNull<CResult<TokioRuntime>> {
     let runtime = Builder::new_multi_thread()
         .enable_all()
@@ -299,13 +299,13 @@ pub extern "C" fn create_tokio_runtime() -> NonNull<CResult<TokioRuntime>> {
 }
 
 /// Free the tokio runtime.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn free_tokio_runtime(runtime: NonNull<CResult<TokioRuntime>>) {
     from_nonnull(runtime).free::<Runtime>();
 }
 
 /// Create the tokio postgres client.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn create_tokio_postgres_client(
     callback: extern "C" fn(bool, *const c_char),
     config: *const c_char,
@@ -334,20 +334,20 @@ pub extern "C" fn create_tokio_postgres_client(
 }
 
 /// Free the tokio postgres client.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn free_tokio_postgres_client(client: NonNull<CResult<TokioPostgresClient>>) {
     from_nonnull(client).free::<PooledClient>();
 }
 
 /// Create the lakesoul metadata client.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn create_lakesoul_metadata_client() -> NonNull<CResult<MetaDataClient>> {
     let client = MetaDataClient::from_env();
     convert_to_nonnull(CResult::<MetaDataClient>::new(client))
 }
 
 /// Free the lakesoul metadata client.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn free_lakesoul_metadata_client(client: NonNull<CResult<MetaDataClient>>) {
     from_nonnull(client).free::<MetaDataClient>();
 }
@@ -363,7 +363,7 @@ fn c_char2str<'a>(ptr: *const c_char) -> &'a str {
 
 /// USE: JNR
 /// return split(partition) desc array in json format by table_name, namespace , filter(WIP)
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn create_split_desc_array(
     callback: ResultCallback,
     client: NonNull<CResult<TokioPostgresClient>>,
@@ -397,12 +397,12 @@ pub extern "C" fn create_split_desc_array(
 
 /// # Safety
 /// caller should keep it safe
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn free_split_desc_array(json: *mut c_char) {
     free_c_string(json)
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn debug(callback: extern "C" fn(bool, *const c_char)) -> *mut c_char {
     debug!("in debug");
     let x = vec![
@@ -427,7 +427,7 @@ pub extern "C" fn debug(callback: extern "C" fn(bool, *const c_char)) -> *mut c_
 
 /// # Safety
 /// c_string should be valid
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn free_c_string(c_string: *mut c_char) {
     unsafe {
         // only check ptr is not null
@@ -443,7 +443,7 @@ pub unsafe extern "C" fn free_c_string(c_string: *mut c_char) {
 
 /// init a global logger for rust code
 /// now use RUST_LOG=LEVEL to activate
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn rust_logger_init() {
     // TODO add logger format
     let timer = tracing_subscriber::fmt::time::ChronoLocal::rfc_3339();

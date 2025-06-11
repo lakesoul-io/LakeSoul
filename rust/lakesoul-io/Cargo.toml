@@ -5,7 +5,7 @@
 [package]
 name = "lakesoul-io"
 version = "2.5.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 datafusion = { workspace = true }
