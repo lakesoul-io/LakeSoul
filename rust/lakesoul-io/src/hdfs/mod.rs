@@ -252,7 +252,7 @@ impl ObjectStore for Hdfs {
         })
     }
 
-    async fn get_range(&self, location: &Path, range: Range<usize>) -> object_store::Result<Bytes> {
+    async fn get_range(&self, location: &Path, range: Range<u64>) -> object_store::Result<Bytes> {
         let location = add_leading_slash(location);
         let client = self.client.clone();
         maybe_spawn_blocking(move || {
@@ -265,9 +265,9 @@ impl ObjectStore for Hdfs {
                     source: Box::new(e),
                 })?;
             let to_read = range.end - range.start;
-            let mut buf = vec![0; to_read];
-            let read_size = read_at(&file, &mut buf, range.start as u64)?;
-            if read_size != to_read {
+            let mut buf = vec![0; to_read as usize];
+            let read_size = read_at(&file, &mut buf, range.start)?;
+            if read_size != to_read as usize {
                 Err(Generic {
                     store: "hdfs",
                     source: format!("read file {} range not complete", location).into(),
@@ -279,7 +279,7 @@ impl ObjectStore for Hdfs {
         .await
     }
 
-    async fn get_ranges(&self, location: &Path, ranges: &[Range<usize>]) -> object_store::Result<Vec<Bytes>> {
+    async fn get_ranges(&self, location: &Path, ranges: &[Range<u64>]) -> object_store::Result<Vec<Bytes>> {
         let location = add_leading_slash(location);
         let client = self.client.clone();
         let file = Arc::new(
@@ -300,9 +300,9 @@ impl ObjectStore for Hdfs {
                 async move {
                     maybe_spawn_blocking(move || {
                         let to_read = range.end - range.start;
-                        let mut buf = vec![0; to_read];
-                        let read_size = read_at(&file, &mut buf, range.start as u64)?;
-                        if read_size != to_read {
+                        let mut buf = vec![0; to_read as usize];
+                        let read_size = read_at(&file, &mut buf, range.start)?;
+                        if read_size != to_read as usize {
                             Err(Generic {
                                 store: "hdfs",
                                 source: format!("read file {} range not complete", location).into(),
@@ -333,7 +333,7 @@ impl ObjectStore for Hdfs {
                     source: Box::new(e),
                 })?,
                 last_modified: meta.modified().into(),
-                size: meta.len() as usize,
+                size: meta.len(),
                 e_tag: None,
                 version: None,
             })
@@ -345,7 +345,7 @@ impl ObjectStore for Hdfs {
         Hdfs::delete(self.client.clone(), location).await
     }
 
-    fn list(&self, _prefix: Option<&Path>) -> BoxStream<'_, object_store::Result<ObjectMeta>> {
+    fn list(&self, _prefix: Option<&Path>) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
         todo!()
     }
 

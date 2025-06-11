@@ -16,6 +16,7 @@ import java.util.stream.Collectors;
  */
 public class LakeSoulPartitionSplit implements SourceSplit, Serializable {
 
+    private static final long serialVersionUID = -5405040572678422182L;
     private final String id;
     private long skipRecord = 0;
 

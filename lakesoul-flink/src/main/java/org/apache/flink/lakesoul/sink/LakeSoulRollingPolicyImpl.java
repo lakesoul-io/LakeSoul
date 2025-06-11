@@ -11,6 +11,7 @@ import java.io.IOException;
 
 public class LakeSoulRollingPolicyImpl<In> extends CheckpointRollingPolicy<In, String> {
 
+    private static final long serialVersionUID = -4804581693908830539L;
     private boolean rollOnCheckpoint;
 
     private long rollingSize;

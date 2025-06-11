@@ -14,8 +14,7 @@ use arrow_schema::{ArrowError, FieldRef, Fields, Schema, SchemaBuilder};
 
 use datafusion::datasource::file_format::file_compression_type::FileCompressionType;
 use datafusion::datasource::file_format::{parquet::ParquetFormat, FileFormat};
-use datafusion::datasource::physical_plan::{FileScanConfig, FileSinkConfig};
-use datafusion::execution::context::SessionState;
+use datafusion::datasource::physical_plan::{FileGroup, FileScanConfig, FileSinkConfig, FileSource};
 
 use datafusion::physical_expr::LexRequirement;
 use datafusion::physical_plan::projection::ProjectionExec;
@@ -27,6 +26,7 @@ use object_store::{ObjectMeta, ObjectStore};
 use crate::datasource::{listing::LakeSoulTableProvider, physical_plan::MergeParquetExec};
 use crate::lakesoul_io_config::LakeSoulIOConfig;
 use async_trait::async_trait;
+use datafusion::catalog::Session;
 use datafusion::datasource::file_format::parquet::fetch_parquet_metadata;
 use futures::{StreamExt, TryStreamExt};
 use parquet::arrow::parquet_to_arrow_schema;
@@ -149,7 +149,7 @@ impl FileFormat for LakeSoulParquetFormat {
 
     async fn infer_schema(
         &self,
-        state: &SessionState,
+        state: &dyn Session,
         store: &Arc<dyn ObjectStore>,
         objects: &[ObjectMeta],
     ) -> Result<SchemaRef> {
@@ -189,7 +189,7 @@ impl FileFormat for LakeSoulParquetFormat {
 
     async fn infer_stats(
         &self,
-        state: &SessionState,
+        state: &dyn Session,
         store: &Arc<dyn ObjectStore>,
         table_schema: SchemaRef,
         object: &ObjectMeta,
@@ -201,7 +201,7 @@ impl FileFormat for LakeSoulParquetFormat {
 
     async fn create_physical_plan(
         &self,
-        state: &SessionState,
+        state: &dyn Session,
         conf: FileScanConfig,
         filters: Option<&Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
@@ -261,7 +261,7 @@ impl FileFormat for LakeSoulParquetFormat {
     async fn create_writer_physical_plan(
         &self,
         input: Arc<dyn ExecutionPlan>,
-        state: &SessionState,
+        state: &dyn Session,
         conf: FileSinkConfig,
         order_requirements: Option<LexRequirement>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
@@ -269,10 +269,14 @@ impl FileFormat for LakeSoulParquetFormat {
             .create_writer_physical_plan(input, state, conf, order_requirements)
             .await
     }
+
+    fn file_source(&self) -> Arc<dyn FileSource> {
+        self.parquet_format.file_source().with_statistics(Statistics::default())
+    }
 }
 
 pub async fn flatten_file_scan_config(
-    state: &SessionState,
+    state: &dyn Session,
     format: Arc<ParquetFormat>,
     conf: FileScanConfig,
     primary_keys: &[String],
@@ -283,46 +287,80 @@ pub async fn flatten_file_scan_config(
     let object_store_url = conf.object_store_url.clone();
     let store = state.runtime_env().object_store(object_store_url.clone())?;
 
-    let mut flatten_configs = vec![];
-    for i in 0..conf.file_groups.len() {
-        let files = &conf.file_groups[i];
-        for file in files {
-            let objects = &[file.object_meta.clone()];
-            let file_groups = vec![vec![file.clone()]];
-            let file_schema = format.infer_schema(state, &store, objects).await?;
-            let file_schema = {
-                let mut builder = SchemaBuilder::new();
-                // O(nm), n = number of fields, m = number of partition columns
-                for field in file_schema.fields() {
-                    if partition_schema.field_with_name(field.name()).is_err() {
-                        builder.push(field.clone());
-                    }
-                }
-                SchemaRef::new(builder.finish())
-            };
-            let statistics = format
-                .infer_stats(state, &store, file_schema.clone(), &file.object_meta)
-                .await?;
-            let projection =
-                compute_project_column_indices(file_schema.clone(), target_schema.clone(), primary_keys, &cdc_column);
-            let limit = conf.limit;
-            let table_partition_cols = conf.table_partition_cols.clone();
-            let output_ordering = conf.output_ordering.clone();
-            let config = FileScanConfig {
-                object_store_url: object_store_url.clone(),
-                file_schema,
-                file_groups,
-                constraints: Default::default(),
-                statistics,
-                projection,
-                limit,
-                table_partition_cols,
-                output_ordering,
-            };
-            flatten_configs.push(config);
-        }
-    }
-    Ok(flatten_configs)
+    let file_groups = conf.file_groups.clone();
+    let flatten_configs = futures::stream::iter(file_groups)
+        .map(|files| {
+            let store = store.clone();
+            let format = format.clone();
+            let partition_schema = partition_schema.clone();
+            let target_schema = target_schema.clone();
+            let object_store_url = object_store_url.clone();
+            let conf = conf.clone();
+            async move {
+                let configs: Vec<FileScanConfig> = futures::stream::iter(files.files())
+                    .map(|file| {
+                        let store = store.clone();
+                        let format = format.clone();
+                        let partition_schema = partition_schema.clone();
+                        let target_schema = target_schema.clone();
+                        let object_store_url = object_store_url.clone();
+                        let conf = conf.clone();
+                        async move {
+                            let objects = &[file.object_meta.clone()];
+                            let files = vec![file.clone()];
+                            let file_schema = format.infer_schema(state, &store, objects).await?;
+                            let file_schema = {
+                                let mut builder = SchemaBuilder::new();
+                                // O(nm), n = number of fields, m = number of partition columns
+                                for field in file_schema.fields() {
+                                    if partition_schema.field_with_name(field.name()).is_err() {
+                                        builder.push(field.clone());
+                                    }
+                                }
+                                SchemaRef::new(builder.finish())
+                            };
+                            let statistics = format
+                                .infer_stats(state, &store, file_schema.clone(), &file.object_meta)
+                                .await?;
+                            let projection = compute_project_column_indices(
+                                file_schema.clone(),
+                                target_schema.clone(),
+                                primary_keys,
+                                &cdc_column,
+                            );
+                            let limit = conf.limit;
+                            let table_partition_cols = conf.table_partition_cols.clone();
+                            let output_ordering = conf.output_ordering.clone();
+                            let config = FileScanConfig {
+                                object_store_url: object_store_url.clone(),
+                                file_schema: file_schema.clone(),
+                                file_groups: vec![FileGroup::new(files).with_statistics(Arc::new(statistics.clone()))],
+                                constraints: Default::default(),
+                                projection,
+                                limit,
+                                table_partition_cols,
+                                output_ordering,
+                                file_compression_type: FileCompressionType::ZSTD,
+                                new_lines_in_values: false,
+                                file_source: format.file_source().with_statistics(statistics),
+                                batch_size: None,
+                            };
+                            // flatten_configs.push(config);
+                            Ok::<FileScanConfig, DataFusionError>(config)
+                        }
+                    })
+                    .boxed()
+                    .buffered(4)
+                    .try_collect::<Vec<_>>()
+                    .await?;
+                Ok::<Vec<FileScanConfig>, DataFusionError>(configs)
+            }
+        })
+        .boxed()
+        .buffered(4)
+        .try_collect::<Vec<_>>()
+        .await?;
+    Ok(flatten_configs.into_iter().flatten().collect())
 }
 
 pub fn compute_project_column_indices(

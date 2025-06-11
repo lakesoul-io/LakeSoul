@@ -43,7 +43,7 @@ services:
       - ../../script/benchmark/properties:/properties
 
   minio:
-    image: bitnami/minio:latest
+    image: bitnami/minio:2025.4.22-debian-12-r1
     ports:
       - "9000:9000"
       - "9001:9001"

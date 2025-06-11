@@ -77,7 +77,6 @@ async fn main() {
         .with_ansi(false)
         .with_timer(timer)
         .init();
-
     let mut rl = DefaultEditor::new().unwrap();
     let core_args = CoreArgs::parse();
     let meta_client = Arc::new(MetaDataClient::from_env().await.unwrap());

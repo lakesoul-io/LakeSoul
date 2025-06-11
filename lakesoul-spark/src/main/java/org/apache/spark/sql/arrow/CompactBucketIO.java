@@ -60,9 +60,9 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
     private Map<String, List<CompressDataFileInfo>> levelFileMap;
     private final String tablePath;
     private final FileSystem fileSystem;
-    private final int compactionExistedFileNumberLimit;
-    private final long compactionMergeFileSizeLimit;
-    private final int compactionMergeFileNumLimit;
+    private final int compactLevel1ExistedFileNumberLimit;
+    private final long compactLevel1MergeFileSizeLimit;
+    private final int compactLevel1MergeFileNumLimit;
     private final long compactionReadFileMaxSize;
     private final int readFileNumLimit;
     private final long batchIncrementalFileSizeLimit;
@@ -98,13 +98,13 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
         this.batchSize = conf.getInt(SQLConf$.MODULE$.PARQUET_VECTORIZED_READER_BATCH_SIZE().key(), 2048);
         this.tablePath = tablePath;
 
-        this.compactionExistedFileNumberLimit = conf.getInt(LakeSoulSQLConf.COMPACTION_LEVEL_FILE_NUM_LIMIT().key(),
-                (int) LakeSoulSQLConf.COMPACTION_LEVEL_FILE_NUM_LIMIT().defaultValue().get());
-        this.compactionMergeFileSizeLimit =
-                DBUtil.parseMemoryExpression(conf.get(LakeSoulSQLConf.COMPACTION_LEVEL_FILE_MERGE_SIZE_LIMIT().key(),
-                        LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE().defaultValue().get()));
-        this.compactionMergeFileNumLimit = conf.getInt(LakeSoulSQLConf.COMPACTION_LEVEL_FILE_MERGE_NUM_LIMIT().key(),
-                (int) LakeSoulSQLConf.COMPACTION_LEVEL_FILE_MERGE_NUM_LIMIT().defaultValue().get());
+        this.compactLevel1ExistedFileNumberLimit = conf.getInt(LakeSoulSQLConf.COMPACTION_LEVEL1_FILE_NUM_LIMIT().key(),
+                (int) LakeSoulSQLConf.COMPACTION_LEVEL1_FILE_NUM_LIMIT().defaultValue().get());
+        this.compactLevel1MergeFileSizeLimit =
+                DBUtil.parseMemoryExpression(conf.get(LakeSoulSQLConf.COMPACTION_LEVEL1_FILE_MERGE_SIZE_LIMIT().key(),
+                        LakeSoulSQLConf.COMPACTION_LEVEL1_FILE_MERGE_SIZE_LIMIT().defaultValue().get()));
+        this.compactLevel1MergeFileNumLimit = conf.getInt(LakeSoulSQLConf.COMPACTION_LEVEL1_FILE_MERGE_NUM_LIMIT().key(),
+                (int) LakeSoulSQLConf.COMPACTION_LEVEL1_FILE_MERGE_NUM_LIMIT().defaultValue().get());
         this.compactionReadFileMaxSize =
                 DBUtil.parseMemoryExpression(conf.get(LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE().key(),
                         LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE().defaultValue().get()));
@@ -148,10 +148,11 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
     private void initializeWriter(String outPath) throws IOException {
         nativeWriter = new NativeIOWriter(this.schema);
         nativeWriter.setRowGroupRowNumber(this.maxRowGroupRows);
-        nativeWriter.setPrimaryKeys(this.primaryKeys);
+
 
         nativeWriter.setHashBucketNum(this.hashBucketNum);
         if (this.tableHashBucketNumChanged) {
+            nativeWriter.setPrimaryKeys(this.primaryKeys);
             nativeWriter.setRangePartitions(rangeColumns);
             nativeWriter.useDynamicPartition(true);
             nativeWriter.withPrefix(outPath);
@@ -286,7 +287,7 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
             LOG.info("Task {}, Start to compact existed compact file {}, num {}",
                     taskId, oriCompactFileList, oriCompactFileList.size());
             List<CompressDataFileInfo> discardFileList = new ArrayList<>();
-            if (oriCompactFileList.size() >= compactionExistedFileNumberLimit) {
+            if (oriCompactFileList.size() >= compactLevel1ExistedFileNumberLimit) {
                 int index = 0;
                 long fileSize = 0L;
                 List<CompressDataFileInfo> curMergeList = new ArrayList<>();
@@ -301,8 +302,8 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
                         resultList.add(curFile);
                     }
 
-                    if (curMergeList.size() >= this.compactionMergeFileNumLimit ||
-                        fileSize >= this.compactionMergeFileSizeLimit) {
+                    if (curMergeList.size() >= this.compactLevel1MergeFileNumLimit||
+                        fileSize >= this.compactLevel1MergeFileSizeLimit) {
                         LOG.info("Task {}, Compacting existed compact files, curMergeList {}, size {}",
                                 taskId, curMergeList, fileSize);
                         initializeReader(curMergeList);

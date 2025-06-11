@@ -22,6 +22,7 @@ import java.util.Objects;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 
 public final class TableSchemaIdentity implements Serializable {
+    private static final long serialVersionUID = -5865395560011046650L;
     public final TableId tableId;
 
     public RowType rowType;

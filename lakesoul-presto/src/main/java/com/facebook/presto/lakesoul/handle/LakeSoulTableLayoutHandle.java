@@ -20,6 +20,7 @@ import org.apache.parquet.io.api.Binary;
 import org.apache.spark.sql.types.LongType;
 
 import java.util.*;
+import java.util.stream.Collectors;
 
 import static java.util.Objects.requireNonNull;
 
@@ -33,6 +34,8 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
     private final List<FilterPredicate> filters;
     private List<FilterPredicate> parFilters;
     private final TupleDomain<ColumnHandle> tupleDomain;
+
+    private List<String> filterStrList;
 
     @JsonCreator
     public LakeSoulTableLayoutHandle(
@@ -54,6 +57,18 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
         this.tupleDomain = requireNonNull(tupleDomain, "tupleDomain should not be null");
         this.allColumns = requireNonNull(allColumns, "allColumns should not be null");
         this.filters = buildFilters();
+        this.filterStrList = this.filters.stream().map(filterPredicate -> filterPredicate.toString())
+                .collect(Collectors.toList());
+    }
+
+    @JsonProperty("filterStrList")
+    public List<String> getFilterStrList() {
+        return this.filterStrList;
+    }
+
+    @JsonProperty("filterStrList")
+    public void setFilterStrList(List<String> filterStrList) {
+        this.filterStrList = filterStrList;
     }
 
 

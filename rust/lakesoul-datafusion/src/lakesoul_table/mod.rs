@@ -6,7 +6,7 @@
 
 pub mod helpers;
 
-use std::{ops::Deref, sync::Arc};
+use std::sync::Arc;
 
 use crate::datasource::file_format::LakeSoulMetaDataParquetFormat;
 use crate::serialize::arrow_java::schema_from_metadata_str;
@@ -16,9 +16,10 @@ use crate::{
     error::Result,
     planner::query_planner::LakeSoulQueryPlanner,
 };
-use arrow::datatypes::{Schema, SchemaRef};
+use arrow::datatypes::SchemaRef;
 use arrow_cast::pretty::pretty_format_batches;
 use chrono::Utc;
+use datafusion::datasource::provider_as_source;
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::sql::TableReference;
 use datafusion::{
@@ -137,11 +138,10 @@ impl LakeSoulTable {
         let sess_ctx =
             create_session_context_with_planner(&mut builder.clone().build(), Some(LakeSoulQueryPlanner::new_ref()))?;
 
-        let schema: Schema = dataframe.schema().into();
         let logical_plan = LogicalPlanBuilder::insert_into(
             dataframe.into_unoptimized_plan(),
             TableReference::partial(self.table_namespace().to_string(), self.table_name().to_string()),
-            &schema,
+            provider_as_source(self.as_provider().await?),
             InsertOp::Replace,
         )?
         .build()?;
@@ -165,12 +165,10 @@ impl LakeSoulTable {
         let sess_ctx =
             create_session_context_with_planner(&mut builder.clone().build(), Some(LakeSoulQueryPlanner::new_ref()))?;
 
-        let schema = record_batch.schema();
-
         let logical_plan = LogicalPlanBuilder::insert_into(
             sess_ctx.read_batch(record_batch)?.into_unoptimized_plan(),
             TableReference::partial(self.table_namespace().to_string(), self.table_name().to_string()),
-            schema.deref(),
+            provider_as_source(self.as_provider().await?),
             InsertOp::Replace,
         )?
         .build()?;

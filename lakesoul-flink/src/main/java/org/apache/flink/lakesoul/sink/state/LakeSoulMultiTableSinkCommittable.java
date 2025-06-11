@@ -23,8 +23,7 @@ import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKET;
  */
 public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparable<LakeSoulMultiTableSinkCommittable> {
 
-    static final long serialVersionUID = 42L;
-
+    private static final long serialVersionUID = -9133959041583956982L;
     private final long creationTime;
 
     private final String bucketId;

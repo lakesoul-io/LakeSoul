@@ -45,7 +45,7 @@ jobs:
           # Maps tcp port 5432 on service container to the host
           - 5432:5432
       minio:
-        image: bitnami/minio:latest
+        image: bitnami/minio:2025.4.22-debian-12-r1
         ports:
           - "9000:9000"
           - "9001:9001"
@@ -77,6 +77,6 @@ jobs:
         run: |
           rm -f Cargo.lock
           cargo clean
-          cargo test --package lakesoul-datafusion
-          cargo test --package lakesoul-flight --test flight_sql -- --color always
+          RUST_BACKTRACE=full cargo test --package lakesoul-datafusion
+          RUST_BACKTRACE=full cargo test --package lakesoul-flight --test flight_sql -- --color always
 

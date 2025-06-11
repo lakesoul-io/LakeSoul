@@ -24,7 +24,6 @@ use datafusion::logical_expr::Expr;
 use datafusion::optimizer::analyzer::type_coercion::TypeCoercion;
 use datafusion::optimizer::push_down_filter::PushDownFilter;
 use datafusion::optimizer::simplify_expressions::SimplifyExpressions;
-use datafusion::optimizer::unwrap_cast_in_comparison::UnwrapCastInComparison;
 use datafusion::physical_optimizer::projection_pushdown::ProjectionPushdown;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_common::DataFusionError::External;
@@ -37,6 +36,9 @@ use url::{ParseError, Url};
 
 #[cfg(feature = "hdfs")]
 use crate::hdfs::Hdfs;
+
+use crate::lakesoul_cache::cache::DiskCache;
+use crate::lakesoul_cache::read_through::ReadThroughCache;
 
 #[derive(Debug, Derivative)]
 #[derivative(Clone)]
@@ -74,7 +76,7 @@ pub static OPTION_KEY_COMPUTE_LSH: &str = "compute_lsh";
 /// Key for using stable sort algorithm
 pub static OPTION_KEY_STABLE_SORT: &str = "stable_sort";
 
-#[derive(Debug, Derivative)]
+#[derive(Derivative, Debug)]
 #[derivative(Default, Clone)]
 /// Configuration for LakeSoul IO operations.
 ///
@@ -700,7 +702,23 @@ pub fn register_s3_object_store(url: &Url, config: &LakeSoulIOConfig, runtime: &
         s3_store_builder = s3_store_builder.with_endpoint(ep);
     }
     let s3_store = Arc::new(s3_store_builder.build().map_err(|e| DataFusionError::ObjectStore(e))?);
-    runtime.register_object_store(url, s3_store);
+
+    // add cache if env LAKESOUL_CACHE is set
+    if std::env::var("LAKESOUL_CACHE").is_ok() {
+        // cache size in bytes, default to 1GB
+        let cache_size = {
+            match std::env::var("LAKESOUL_CACHE_SIZE") {
+                Ok(s) => s.parse::<usize>().unwrap_or(1024) * 1024 * 1024,
+                _ => 1024 * 1024 * 1024,
+            }
+        };
+        let cache = Arc::new(DiskCache::new(cache_size, 4 * 1024));
+        let cache_s3_store = Arc::new(ReadThroughCache::new(s3_store, cache));
+        // register cache store
+        runtime.register_object_store(url, cache_s3_store);
+    } else {
+        runtime.register_object_store(url, s3_store);
+    }
     Ok(())
 }
 
@@ -914,8 +932,6 @@ pub fn create_session_context_with_planner(
             Arc::new(PushDownFilter {}),
             // Arc::new(ProjectionPushdown {}),
             Arc::new(SimplifyExpressions {}),
-            Arc::new(UnwrapCastInComparison {}),
-            // Arc::new(RewriteDisjunctivePredicate {}),
         ])
         .with_physical_optimizer_rules(vec![Arc::new(ProjectionPushdown {})])
         .build();

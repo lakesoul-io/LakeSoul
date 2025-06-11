@@ -17,9 +17,10 @@ use crate::helpers::listing_table_from_lakesoul_io_config;
 use crate::lakesoul_io_config::LakeSoulIOConfig;
 use crate::transform::uniform_schema;
 use datafusion::catalog::Session;
+use datafusion::datasource::file_format::file_compression_type::FileCompressionType;
 use datafusion::datasource::file_format::FileFormat;
 use datafusion::datasource::listing::{ListingOptions, ListingTable, ListingTableUrl, PartitionedFile};
-use datafusion::datasource::physical_plan::FileScanConfig;
+use datafusion::datasource::physical_plan::{FileGroup, FileScanConfig, FileSource};
 use datafusion::execution::context::SessionState;
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::logical_expr::utils::conjunction;
@@ -40,6 +41,7 @@ pub struct LakeSoulTableProvider {
     table_schema: SchemaRef,
     listing_options: ListingOptions,
     listing_table_paths: Vec<ListingTableUrl>,
+    file_source: Arc<dyn FileSource>,
 }
 
 impl Debug for LakeSoulTableProvider {
@@ -55,6 +57,7 @@ impl LakeSoulTableProvider {
         file_format: Arc<dyn FileFormat>,
         as_sink: bool,
     ) -> Result<Self> {
+        let file_source = file_format.file_source();
         let (file_schema, listing_table) =
             listing_table_from_lakesoul_io_config(session_state, lakesoul_io_config.clone(), file_format, as_sink)
                 .await?;
@@ -69,6 +72,7 @@ impl LakeSoulTableProvider {
             table_schema,
             listing_options,
             listing_table_paths,
+            file_source,
         })
     }
 
@@ -164,13 +168,16 @@ impl TableProvider for LakeSoulTableProvider {
                 FileScanConfig {
                     object_store_url,
                     file_schema: Arc::clone(&self.schema()),
-                    file_groups: vec![partition_files?],
+                    file_groups: vec![FileGroup::new(partition_files?).with_statistics(Arc::new(statistics))],
                     constraints: Default::default(),
-                    statistics,
                     projection: projection.cloned(),
                     limit,
                     output_ordering: vec![],
+                    file_compression_type: FileCompressionType::ZSTD,
+                    new_lines_in_values: false,
+                    file_source: self.file_source.clone(),
                     table_partition_cols: vec![],
+                    batch_size: None,
                 },
                 filters.as_ref(),
             )

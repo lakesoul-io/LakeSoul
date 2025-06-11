@@ -17,6 +17,8 @@ import org.apache.flink.table.data.RowData;
 public class DefaultMultiTablesBulkFormatBuilder
         extends BulkFormatBuilder<BinarySourceRecord, RowData, DefaultMultiTablesBulkFormatBuilder> {
 
+    private static final long serialVersionUID = -6961479881213627107L;
+
     public DefaultMultiTablesBulkFormatBuilder(Path basePath, Configuration conf) {
         super(basePath, conf, new DefaultLakeSoulWriterBucketFactory(conf));
     }

@@ -425,6 +425,7 @@ impl DisplayAs for RepartitionByRangeAndHashExec {
                 }
                 Ok(())
             }
+            DisplayFormatType::TreeRender => todo!(),
         }
     }
 }
