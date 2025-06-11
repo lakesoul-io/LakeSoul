@@ -95,15 +95,18 @@ impl LakeSoulTableProvider {
         let table_schema =
             Arc::new(table_schema.project(&[file_schema_projection, range_partition_projection].concat())?);
 
-        let file_format: Arc<dyn FileFormat> = Arc::new(
-            LakeSoulMetaDataParquetFormat::new(
-                client.clone(),
-                Arc::new(ParquetFormat::new()),
-                table_info.clone(),
-                lakesoul_io_config.clone(),
-            )
-            .await?,
-        );
+        let file_format: Arc<dyn FileFormat> =
+            Arc::new(
+                LakeSoulMetaDataParquetFormat::new(
+                    client.clone(),
+                    Arc::new(ParquetFormat::new().with_force_view_types(
+                        session_state.config_options().execution.parquet.schema_force_view_types,
+                    )),
+                    table_info.clone(),
+                    lakesoul_io_config.clone(),
+                )
+                .await?,
+            );
 
         let (_, listing_table) =
             listing_table_from_lakesoul_io_config(session_state, lakesoul_io_config.clone(), file_format, as_sink)

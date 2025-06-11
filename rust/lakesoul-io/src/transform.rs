@@ -7,6 +7,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::constant::{
+    ARROW_CAST_OPTIONS, FLINK_TIMESTAMP_FORMAT, LAKESOUL_EMPTY_STRING, LAKESOUL_NULL_STRING,
+    TIMESTAMP_MICROSECOND_FORMAT, TIMESTAMP_MILLSECOND_FORMAT, TIMESTAMP_NANOSECOND_FORMAT, TIMESTAMP_SECOND_FORMAT,
+};
+use crate::helpers::{
+    column_with_name_and_name2index, date_str_to_epoch_days, into_scalar_value, timestamp_str_to_unix_time,
+};
 use arrow::array::{as_primitive_array, as_struct_array, make_array, Array};
 use arrow::compute::kernels::cast::cast_with_options;
 use arrow::record_batch::RecordBatch;
@@ -16,14 +23,6 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, FieldRef, Fields, Schema, SchemaBuilder, SchemaRef, TimeUnit};
 use datafusion::error::Result;
 use datafusion_common::DataFusionError::{self, ArrowError, External, Internal};
-
-use crate::constant::{
-    ARROW_CAST_OPTIONS, FLINK_TIMESTAMP_FORMAT, LAKESOUL_EMPTY_STRING, LAKESOUL_NULL_STRING,
-    TIMESTAMP_MICROSECOND_FORMAT, TIMESTAMP_MILLSECOND_FORMAT, TIMESTAMP_NANOSECOND_FORMAT, TIMESTAMP_SECOND_FORMAT,
-};
-use crate::helpers::{
-    column_with_name_and_name2index, date_str_to_epoch_days, into_scalar_value, timestamp_str_to_unix_time,
-};
 
 /// adjust time zone to UTC
 pub fn uniform_field(orig_field: &FieldRef) -> FieldRef {
@@ -117,8 +116,12 @@ pub fn transform_record_batch(
                         use_default,
                         default_column_value.clone(),
                     )?;
+                    fields.push(Arc::new(Field::new(
+                        target_field.name(),
+                        transformed_array.data_type().clone(),
+                        target_field.is_nullable(),
+                    )));
                     transform_arrays.push(transformed_array);
-                    fields.push(target_field.clone());
                     Ok(())
                 }
                 None if use_default => {
@@ -126,8 +129,12 @@ pub fn transform_record_batch(
                         Some(value) => make_default_array(&target_field.data_type().clone(), value, num_rows)?,
                         _ => new_null_array(&target_field.data_type().clone(), num_rows),
                     };
+                    fields.push(Arc::new(Field::new(
+                        target_field.name(),
+                        default_value_array.data_type().clone(),
+                        target_field.is_nullable(),
+                    )));
                     transform_arrays.push(default_value_array);
-                    fields.push(target_field.clone());
                     Ok(())
                 }
                 _ => Ok(()),
@@ -223,17 +230,25 @@ pub fn transform_array(
             }
         }
         target_datatype => {
+            let array_type = array.data_type();
             if target_datatype != *array.data_type() {
-                cast_with_options(&array, &target_datatype, &ARROW_CAST_OPTIONS).map_err(|e| {
-                    DataFusionError::ArrowError(
-                        e,
-                        Some(format!(
-                            "Failed to cast type from {} to {}",
-                            array.data_type(),
-                            target_datatype
-                        )),
-                    )
-                })?
+                match (target_datatype.clone(), array_type) {
+                    // skip view type cast
+                    (DataType::Utf8 | DataType::LargeUtf8, DataType::Utf8View) => array.clone(),
+                    (DataType::Binary | DataType::LargeBinary, DataType::BinaryView) => array.clone(),
+                    (DataType::List(_), DataType::ListView(_)) => array.clone(),
+                    (DataType::LargeList(_), DataType::LargeListView(_)) => array.clone(),
+                    (_, _) => cast_with_options(&array, &target_datatype, &ARROW_CAST_OPTIONS).map_err(|e| {
+                        DataFusionError::ArrowError(
+                            e,
+                            Some(format!(
+                                "Failed to cast type from {} to {}",
+                                array.data_type(),
+                                target_datatype
+                            )),
+                        )
+                    })?,
+                }
             } else {
                 array.clone()
             }

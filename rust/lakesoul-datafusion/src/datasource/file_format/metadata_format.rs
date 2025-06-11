@@ -18,7 +18,7 @@ use datafusion::catalog::Session;
 use datafusion::common::parsers::CompressionTypeVariant;
 use datafusion::common::{project_schema, DFSchema, GetExt, Statistics};
 use datafusion::datasource::file_format::file_compression_type::FileCompressionType;
-use datafusion::datasource::file_format::parquet::ParquetFormatFactory;
+use datafusion::datasource::file_format::parquet::{transform_schema_to_view, ParquetFormatFactory};
 use datafusion::datasource::listing::ListingOptions;
 #[allow(deprecated)]
 use datafusion::datasource::physical_plan::parquet::ParquetExecBuilder;
@@ -116,7 +116,7 @@ impl LakeSoulMetaDataParquetFormat {
                         .await
                         .map_err(|e| DataFusionError::External(Box::new(e)))?,
                 ),
-                Arc::new(ParquetFormat::new()),
+                Arc::new(ParquetFormat::new().with_force_view_types(false)),
                 Arc::new(TableInfo::default()),
                 LakeSoulIOConfig::default(),
             )

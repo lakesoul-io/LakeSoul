@@ -1051,16 +1051,10 @@ pub extern "C" fn rust_logger_init() {
     // TODO add logger format
     let timer = tracing_subscriber::fmt::time::ChronoLocal::rfc_3339();
     // tracing_subscriber::fmt().with_timer(timer).init();
-    match tracing_subscriber::fmt()
+    let _ = tracing_subscriber::fmt()
         .with_timer(timer)
         .with_env_filter(EnvFilter::from_default_env())
-        .try_init()
-    {
-        Ok(_) => {}
-        Err(e) => {
-            eprintln!("failed init tracing subscriber: {e}")
-        }
-    }
+        .try_init();
 }
 
 #[cfg(test)]

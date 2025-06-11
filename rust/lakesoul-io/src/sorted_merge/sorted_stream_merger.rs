@@ -343,15 +343,17 @@ mod tests {
     use datafusion::error::Result;
     use datafusion::execution::context::TaskContext;
     use datafusion::logical_expr::col as logical_col;
-    use datafusion::physical_plan::{common, memory::MemoryExec, ExecutionPlan};
+    use datafusion::physical_plan::{common, ExecutionPlan};
     use datafusion::prelude::{SessionConfig, SessionContext};
 
-    use comfy_table::{Cell, Table};
-
+    use crate::helpers::InMemGenerator;
     use crate::lakesoul_io_config::LakeSoulIOConfigBuilder;
     use crate::lakesoul_reader::LakeSoulReader;
     use crate::sorted_merge::merge_operator::MergeOperator;
     use crate::sorted_merge::sorted_stream_merger::{SortedStream, SortedStreamMerger};
+    use comfy_table::{Cell, Table};
+    use datafusion::physical_plan::memory::LazyMemoryExec;
+    use parking_lot::lock_api::RwLock;
 
     #[tokio::test]
     async fn test_multi_file_merger() {
@@ -500,7 +502,10 @@ mod tests {
 
     async fn create_stream(batches: Vec<RecordBatch>, context: Arc<TaskContext>) -> Result<SortedStream> {
         let schema = batches[0].schema();
-        let exec = MemoryExec::try_new(&[batches], schema.clone(), None)?;
+        let exec = LazyMemoryExec::try_new(
+            schema.clone(),
+            vec![Arc::new(RwLock::new(InMemGenerator::try_new(batches)?))],
+        )?;
         let stream = exec.execute(0, context.clone())?;
         Ok(SortedStream::new(stream))
     }

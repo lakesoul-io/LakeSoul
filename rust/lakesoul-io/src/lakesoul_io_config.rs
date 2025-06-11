@@ -22,6 +22,7 @@ use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::logical_expr::Expr;
 use datafusion::optimizer::analyzer::type_coercion::TypeCoercion;
+use datafusion::optimizer::optimize_projections::OptimizeProjections;
 use datafusion::optimizer::push_down_filter::PushDownFilter;
 use datafusion::optimizer::simplify_expressions::SimplifyExpressions;
 use datafusion::physical_optimizer::projection_pushdown::ProjectionPushdown;
@@ -71,6 +72,8 @@ pub static OPTION_KEY_IS_COMPACTED: &str = "is_compacted";
 pub static OPTION_KEY_SKIP_MERGE_ON_READ: &str = "skip_merge_on_read";
 /// Key for maximum file size in bytes
 pub static OPTION_KEY_MAX_FILE_SIZE: &str = "max_file_size";
+/// Key for spill dir
+pub static OPTION_KEY_SPILL_DIR: &str = "spill_dir";
 /// Key for computing Local Sensitive Hash
 pub static OPTION_KEY_COMPUTE_LSH: &str = "compute_lsh";
 /// Key for using stable sort algorithm
@@ -930,7 +933,7 @@ pub fn create_session_context_with_planner(
         .with_analyzer_rules(vec![Arc::new(TypeCoercion {})])
         .with_optimizer_rules(vec![
             Arc::new(PushDownFilter {}),
-            // Arc::new(ProjectionPushdown {}),
+            Arc::new(OptimizeProjections {}),
             Arc::new(SimplifyExpressions {}),
         ])
         .with_physical_optimizer_rules(vec![Arc::new(ProjectionPushdown {})])

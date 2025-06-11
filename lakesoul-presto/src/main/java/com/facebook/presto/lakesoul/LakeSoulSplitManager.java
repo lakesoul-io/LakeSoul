@@ -6,6 +6,7 @@ package com.facebook.presto.lakesoul;
 
 import com.dmetasoul.lakesoul.meta.DataFileInfo;
 import com.dmetasoul.lakesoul.meta.DataOperation;
+import com.facebook.airlift.log.Logger;
 import com.facebook.presto.lakesoul.handle.LakeSoulTableLayoutHandle;
 import com.facebook.presto.lakesoul.pojo.Path;
 import com.facebook.presto.lakesoul.util.PrestoUtil;
@@ -21,10 +22,12 @@ import org.apache.parquet.io.api.Binary;
 import scala.collection.JavaConverters;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
 public class LakeSoulSplitManager implements ConnectorSplitManager {
+    private static final Logger log = Logger.get(LakeSoulSplitManager.class);
 
     @Override
     public ConnectorSplitSource getSplits(ConnectorTransactionHandle transactionHandle,
@@ -35,7 +38,7 @@ public class LakeSoulSplitManager implements ConnectorSplitManager {
         LakeSoulTableLayoutHandle tableLayout = (LakeSoulTableLayoutHandle) layout;
         String tid = tableLayout.getTableHandle().getId();
         List<FilterPredicate> parFilters = tableLayout.getParFilters();
-        List partitions = new ArrayList<String>();
+        List<String> partitions = new ArrayList<>();
         for (FilterPredicate fp : parFilters) {
             if (fp instanceof Operators.Eq) {
                 Operators.Column column = ((Operators.Eq) fp).getColumn();
@@ -53,6 +56,7 @@ public class LakeSoulSplitManager implements ConnectorSplitManager {
                 break;
             }
         }
+        log.info("LakeSoul split partitions %s", partitions);
         DataFileInfo[] dfinfos = DataOperation.getTableDataInfo(tid, JavaConverters.asScalaBuffer(partitions).toList());
         ArrayList<ConnectorSplit> splits = new ArrayList<>(16);
         Map<String, Map<Integer, List<Path>>>
@@ -60,9 +64,16 @@ public class LakeSoulSplitManager implements ConnectorSplitManager {
                 PrestoUtil.splitDataInfosToRangeAndHashPartition(tid, dfinfos);
         for (Map.Entry<String, Map<Integer, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
             for (Map.Entry<Integer, List<Path>> split : entry.getValue().entrySet()) {
-                splits.add(new LakeSoulSplit(tableLayout, split.getValue()));
+                if (tableLayout.getPrimaryKeys().isEmpty()) {
+                    for (Path path : split.getValue()) {
+                        splits.add(new LakeSoulSplit(tableLayout, Collections.singletonList(path)));
+                    }
+                } else {
+                    splits.add(new LakeSoulSplit(tableLayout, split.getValue()));
+                }
             }
         }
+        log.info("LakeSoul splits %s", splits);
         return new LakeSoulSplitSource(splits);
     }
 

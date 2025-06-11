@@ -43,5 +43,10 @@ public class LakeSoulTableHandle implements ConnectorTableHandle {
         this.names = names;
     }
 
-
+    @Override public String toString() {
+        return "LakeSoulTableHandle{" +
+                "id='" + id + '\'' +
+                ", names=" + names +
+                '}';
+    }
 }
