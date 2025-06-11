@@ -47,8 +47,6 @@ tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 tracing-appender = "0.2"
 
-sqlparser = "0.53.0"
-
 [dev-dependencies]
 ctor = "0.2"
 test-log = { version = "0.2.14", features = ["trace"] }

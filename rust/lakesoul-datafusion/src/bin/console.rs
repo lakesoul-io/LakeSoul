@@ -6,15 +6,14 @@
 
 use anyhow::bail;
 use clap::Parser;
-use datafusion::catalog::Session;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::parser::Statement;
 use lakesoul_datafusion::{cli::CoreArgs, create_lakesoul_session_ctx};
 use lakesoul_metadata::MetaDataClient;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
-use sqlparser::ast::{Statement as SQLStatement, Use};
 use std::sync::Arc;
+use datafusion::logical_expr::sqlparser::ast::{Use,Statement as SQLStatement};
 use tracing::debug;
 use tracing_subscriber::EnvFilter;
 

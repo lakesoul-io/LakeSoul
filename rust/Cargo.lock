@@ -3484,7 +3484,6 @@ dependencies = [
  "serde",
  "serde-aux",
  "serde_json",
- "sqlparser",
  "test-log",
  "thiserror 1.0.69",
  "tokio",
