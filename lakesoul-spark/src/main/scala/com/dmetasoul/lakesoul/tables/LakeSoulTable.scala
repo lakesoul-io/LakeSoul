@@ -9,6 +9,7 @@ import com.dmetasoul.lakesoul.meta.DBConfig.{LAKESOUL_HASH_PARTITION_SPLITTER, L
 import com.dmetasoul.lakesoul.meta.entity._
 import com.dmetasoul.lakesoul.meta._
 import com.dmetasoul.lakesoul.tables.execution.LakeSoulTableOperations
+import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
@@ -26,6 +27,7 @@ import org.apache.spark.{SerializableWritable, TaskContext}
 
 import java.util.{TimeZone, UUID}
 import scala.collection.JavaConverters._
+import scala.collection.mutable.ArrayBuffer
 
 class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
   extends LakeSoulTableOperations with Logging {
@@ -361,6 +363,43 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
     }
     val spark = SparkSession.active
 
+    // to avoid nested lambda that cannot be serialized by spark
+    @SerialVersionUID(1L)
+    class ExecutionBucketCompaction(configuration: SerializableWritable[Configuration],
+                                    partitionValues: String)
+      extends (ArrayBuffer[DataFileInfo] => Seq[DataFileInfo])
+        with Serializable {
+
+      override def apply(v1: ArrayBuffer[DataFileInfo]): Seq[DataFileInfo] = {
+        val dataFileInfo = v1
+        val taskId = TaskContext.get().partitionId()
+        val needDealFileInfo = dataFileInfo.map(file => {
+          new CompressDataFileInfo(file.path, file.size, file.file_exist_cols, file.modification_time)
+        }).toList.asJava
+        tryWithResource(new CompactBucketIO(
+          configuration.value,
+          needDealFileInfo,
+          tableInfo,
+          tablePath,
+          partitionValues,
+          tableHashBucketNum,
+          parsedFileNumLimit,
+          parsedFileSizeLimit,
+          tableInfo.bucket_num != tableHashBucketNum,
+          taskId
+        )) { compactionBucketIO =>
+          val partitionDescAndFilesMap = compactionBucketIO.startCompactTask().asScala
+          partitionDescAndFilesMap.flatMap(result => {
+            val (partitionDesc, flushResult) = result
+            val array = flushResult.asScala.map(
+              f => DataFileInfo(partitionDesc, f.getFilePath, "add", f.getFileSize, f.getTimestamp,
+                f.getFileExistCols))
+            array
+          }).toSeq
+        }
+      }
+    }
+
     def executeCompactOnePartition(part: PartitionInfoScala): Unit = {
       val files = DataOperation.getSinglePartitionDataInfo(part)
       if (files.nonEmpty) {
@@ -373,33 +412,7 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
         val configuration = new SerializableWritable(spark.sessionState.newHadoopConf())
         val partitionValues = part.range_value
         val compactResult = fileRDD.map {
-          dataFileInfo => {
-            val taskId = TaskContext.get().partitionId()
-            val needDealFileInfo = dataFileInfo.map(file => {
-              new CompressDataFileInfo(file.path, file.size, file.file_exist_cols, file.modification_time)
-            }).toList.asJava
-            tryWithResource(new CompactBucketIO(
-              configuration.value,
-              needDealFileInfo,
-              tableInfo,
-              tablePath,
-              partitionValues,
-              tableHashBucketNum,
-              parsedFileNumLimit,
-              parsedFileSizeLimit,
-              tableInfo.bucket_num != tableHashBucketNum,
-              taskId
-            )) { compactionBucketIO =>
-              val partitionDescAndFilesMap = compactionBucketIO.startCompactTask().asScala
-              partitionDescAndFilesMap.flatMap(result => {
-                val (partitionDesc, flushResult) = result
-                val array = flushResult.asScala.map(
-                  f => DataFileInfo(partitionDesc, f.getFilePath, "add", f.getFileSize, f.getTimestamp,
-                    f.getFileExistCols))
-                array
-              }).toSeq
-            }
-          }
+          new ExecutionBucketCompaction(configuration, partitionValues)
         }
         val dataFileInfoSeq = compactResult.flatMap(ff => ff).collect().toSeq
         if (dataFileInfoSeq.nonEmpty) {
