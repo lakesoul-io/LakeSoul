@@ -20,9 +20,6 @@ use lakesoul_metadata::{LakeSoulMetaDataError, MetaDataClientRef};
 use proto::proto::entity::{CommitOp, DataCommitInfo, DataFileOp, FileOp, TableInfo, Uuid};
 
 pub mod lakesoul_catalog;
-//  used in catalog_test, but still say unused_imports, I think it is a bug about rust-lint.
-// this is a workaround
-// #[cfg(test)]
 pub use lakesoul_catalog::*;
 mod lakesoul_namespace;
 pub use lakesoul_namespace::*;
@@ -36,14 +33,17 @@ where
     #[serde(untagged)]
     enum StringOrNum {
         String(String),
-        Number(usize),
+        Number(isize),
     }
 
     let opt = Option::deserialize(deserializer)?;
     match opt {
         None => Ok(None),
-        Some(StringOrNum::String(s)) => s.parse::<usize>().map(Some).map_err(serde::de::Error::custom),
-        Some(StringOrNum::Number(n)) => Ok(Some(n)),
+        Some(StringOrNum::String(s)) => s
+            .parse::<isize>()
+            .map(|x| Some(x.max(1) as usize))
+            .map_err(serde::de::Error::custom),
+        Some(StringOrNum::Number(n)) => Ok(Some(n.max(1) as usize)),
     }
 }
 
@@ -211,4 +211,17 @@ pub(crate) async fn commit_data(
         })
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::catalog::LakeSoulTableProperty;
+
+    #[test]
+    fn de_test() {
+        let json = r#"{"hashBucketNum":"-1"}"#;
+        let prop = serde_json::from_str::<LakeSoulTableProperty>(&json).unwrap();
+        println!("{}", json);
+        println!("{:?}", prop);
+    }
 }

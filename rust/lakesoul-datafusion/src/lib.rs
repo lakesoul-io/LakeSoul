@@ -57,6 +57,7 @@ pub fn create_lakesoul_session_ctx(
     let mut state = SessionStateBuilder::new()
         .with_config(session_config)
         .with_runtime_env(Arc::new(RuntimeEnv::default()))
+        .with_default_features()
         .with_query_planner(planner)
         .build();
     state.table_factories_mut().insert(
@@ -145,9 +146,9 @@ pub fn create_lakesoul_session_ctx(
         .catalog_list()
         .register_catalog("LAKESOUL".to_string(), catalog.clone());
 
-    ctx.state()
-        .catalog_list()
-        .register_catalog("lakesoul".to_string(), catalog);
+    // ctx.state()
+    //     .catalog_list()
+    //     .register_catalog("lakesoul".to_string(), catalog);
     info!("catalogs: {:?}", ctx.catalog_names());
 
     Ok(ctx)

@@ -26,3 +26,4 @@ console level=log_level:
       --s3-bucket  "lakesoul-test-bucket" \
       --s3-access-key "minioadmin1" \
       --s3-secret-key "minioadmin1"
+

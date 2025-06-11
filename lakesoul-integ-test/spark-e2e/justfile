@@ -22,7 +22,7 @@ install:
     mvn clean install -DskipTests
 
 clean-data:
-    rm -rf /tmp/lakesoul/data/sink
+    rm -rf /tmp/lakesoul/e2e/spark/
 
 remove_mvn:
     @rm -rf ~/.m2/repository/com/dmetasoul

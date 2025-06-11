@@ -95,13 +95,14 @@ impl SchemaProvider for LakeSoulNamespace {
 
     /// Search table by name
     /// return LakeSoulListing table
+    #[instrument(skip(self))]
     async fn table(&self, name: &str) -> Result<Option<Arc<dyn TableProvider>>> {
         debug!(
             "LakeSoulNamespace::table - Looking up table '{}' in namespace '{}'",
             name, &self.namespace
         );
         let name = case_fold_table_name(name);
-        info!("table: {:?} {:?}", name, &self.namespace);
+        debug!("try to query table: {}.{}", &self.namespace, name);
         let table =
             match LakeSoulTable::for_namespace_and_name(&self.namespace, &name, Some(self.metadata_client())).await {
                 Ok(t) => t,
@@ -110,7 +111,7 @@ impl SchemaProvider for LakeSoulNamespace {
                     return Ok(None);
                 }
             };
-        info!("table: {:?} {:?}, table {:?}", name, &self.namespace, table);
+        debug!("find table: {} {}, table {:?}", name, &self.namespace, table);
         Ok(table.as_sink_provider(&self.context.state()).await.ok())
     }
 

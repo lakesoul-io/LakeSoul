@@ -104,7 +104,13 @@ impl LakeSoulTable {
         let table_schema = schema_from_metadata_str(&table_info.table_schema);
 
         let table_name = table_info.table_name.clone();
-        let properties = serde_json::from_str::<LakeSoulTableProperty>(&table_info.properties)?;
+        // let properties = serde_json::from_str::<LakeSoulTableProperty>(&table_info.properties);
+        let properties = match serde_json::from_str::<LakeSoulTableProperty>(&table_info.properties) {
+            Ok(p) => p,
+            Err(e) => {
+                panic!("{} {:?}", table_info.table_name, e);
+            }
+        };
         let (range_partitions, hash_partitions) = parse_table_info_partitions(&table_info.partitions)?;
 
         Ok(Self {

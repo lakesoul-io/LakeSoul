@@ -64,7 +64,7 @@ impl CatalogProvider for LakeSoulCatalog {
     }
 
     fn schema(&self, name: &str) -> Option<Arc<dyn SchemaProvider>> {
-        info!("schema: {:?}", name);
+        debug!("query schema by name: {}", name);
         tokio::task::block_in_place(|| {
             match futures::executor::block_on(async { self.metadata_client.get_all_namespace().await }) {
                 Ok(v) => {
