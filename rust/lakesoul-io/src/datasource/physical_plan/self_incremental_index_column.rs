@@ -14,7 +14,9 @@ use datafusion::physical_plan::RecordBatchStream;
 use datafusion::physical_plan::display::DisplayFormatType;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::{DisplayAs, ExecutionPlan, PlanProperties};
-use datafusion::physical_plan::{ExecutionPlanProperties, Partitioning, SendableRecordBatchStream};
+use datafusion::physical_plan::{
+    ExecutionPlanProperties, Partitioning, SendableRecordBatchStream,
+};
 use datafusion_common::{DataFusionError, Result};
 use futures::Stream;
 use futures::StreamExt;
@@ -38,7 +40,11 @@ impl SelfIncrementalIndexColumnExec {
         for field in input.schema().fields() {
             schema_builder.push(field.clone());
         }
-        schema_builder.push(Field::new("__self_incremental_index__", DataType::UInt64, false));
+        schema_builder.push(Field::new(
+            "__self_incremental_index__",
+            DataType::UInt64,
+            false,
+        ));
         let target_schema = Arc::new(schema_builder.finish());
         let properties = PlanProperties::new(
             EquivalenceProperties::new(target_schema.clone()),
@@ -55,7 +61,11 @@ impl SelfIncrementalIndexColumnExec {
 }
 
 impl DisplayAs for SelfIncrementalIndexColumnExec {
-    fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt_as(
+        &self,
+        _t: DisplayFormatType,
+        f: &mut std::fmt::Formatter,
+    ) -> std::fmt::Result {
         write!(f, "SelfIncrementalIndexColumnExec")
     }
 }
@@ -103,13 +113,23 @@ impl ExecutionPlan for SelfIncrementalIndexColumnExec {
         vec![&self.input]
     }
 
-    fn with_new_children(self: Arc<Self>, children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(Self::new(children[0].clone())))
     }
 
-    fn execute(&self, partition: usize, context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> Result<SendableRecordBatchStream> {
         let input = self.input.execute(partition, context)?;
-        Ok(Box::pin(SelfIncrementalIndexStream::new(input, self.schema())))
+        Ok(Box::pin(SelfIncrementalIndexStream::new(
+            input,
+            self.schema(),
+        )))
     }
 }
 
@@ -147,15 +167,24 @@ impl SelfIncrementalIndexStream {
 
         // Create new record batch with the index column
         let options = RecordBatchOptions::new().with_row_count(Some(row_count));
-        RecordBatch::try_new_with_options(self.schema.clone(), columns, &options)
-            .map_err(|e| DataFusionError::ArrowError(e, Some(format!("Failed to apply self-incremental index column"))))
+        RecordBatch::try_new_with_options(self.schema.clone(), columns, &options).map_err(
+            |e| {
+                DataFusionError::ArrowError(
+                    e,
+                    Some("Failed to apply self-incremental index column".to_string()),
+                )
+            },
+        )
     }
 }
 
 impl Stream for SelfIncrementalIndexStream {
     type Item = Result<RecordBatch>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
         match self.input.poll_next_unpin(cx) {
             Poll::Ready(Some(Ok(batch))) => {
                 info!("poll_next batch with schema: {:?}", batch.schema());

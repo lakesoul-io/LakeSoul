@@ -2,8 +2,11 @@ use std::sync::Arc;
 
 use arrow_array::{ArrayRef, RecordBatch, StringArray};
 use datafusion_common::Result;
-use lakesoul_io::{lakesoul_io_config::LakeSoulIOConfigBuilder, lakesoul_writer::SyncSendableMutableLakeSoulWriter};
-use rand::distributions::DistString;
+use lakesoul_io::{
+    lakesoul_io_config::LakeSoulIOConfigBuilder,
+    lakesoul_writer::SyncSendableMutableLakeSoulWriter,
+};
+use rand::distr::SampleString;
 use tokio::{runtime::Builder, time::Instant};
 
 #[cfg(feature = "dhat-heap")]
@@ -11,16 +14,16 @@ use tokio::{runtime::Builder, time::Instant};
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
 fn create_batch(num_columns: usize, num_rows: usize, str_len: usize) -> RecordBatch {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let iter = (0..num_columns)
-        .into_iter()
         .map(|i| {
             (
                 format!("col_{}", i),
                 Arc::new(StringArray::from(
                     (0..num_rows)
-                        .into_iter()
-                        .map(|_| rand::distributions::Alphanumeric.sample_string(&mut rng, str_len))
+                        .map(|_| {
+                            rand::distr::Alphanumeric.sample_string(&mut rng, str_len)
+                        })
                         .collect::<Vec<_>>(),
                 )) as ArrayRef,
                 true,
@@ -58,7 +61,6 @@ fn main() -> Result<()> {
         // .with_primary_keys(vec!["col_2".to_string()])
         .with_primary_keys(
             (0..num_columns - 1)
-                .into_iter()
                 .map(|i| format!("col_{}", i))
                 .collect::<Vec<String>>(),
         )
@@ -71,7 +73,10 @@ fn main() -> Result<()> {
     for _ in 0..num_batch {
         let once_start = Instant::now();
         writer.write_batch(create_batch(num_columns, num_rows, str_len))?;
-        println!("write batch once cost: {}", once_start.elapsed().as_millis());
+        println!(
+            "write batch once cost: {}",
+            once_start.elapsed().as_millis()
+        );
     }
     let flush_start = Instant::now();
     writer.flush_and_close()?;

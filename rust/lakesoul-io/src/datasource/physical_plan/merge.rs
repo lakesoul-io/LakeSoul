@@ -17,7 +17,10 @@ use datafusion::physical_plan::{ExecutionPlanProperties, Partitioning, PlanPrope
 use datafusion::{
     datasource::physical_plan::{FileScanConfig, ParquetExec},
     execution::TaskContext,
-    physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PhysicalExpr, SendableRecordBatchStream},
+    physical_plan::{
+        DisplayAs, DisplayFormatType, ExecutionPlan, PhysicalExpr,
+        SendableRecordBatchStream,
+    },
 };
 use datafusion_common::{DFSchemaRef, DataFusionError, Result};
 use datafusion_substrait::substrait::proto::Plan;
@@ -84,7 +87,9 @@ impl MergeParquetExec {
                         field.data_type().clone(),
                         field.is_nullable()
                             | inputs.iter().any(|plan| {
-                                if let Some((_, plan_field)) = plan.schema().column_with_name(field.name()) {
+                                if let Some((_, plan_field)) =
+                                    plan.schema().column_with_name(field.name())
+                                {
                                     plan_field.is_nullable()
                                 } else {
                                     true
@@ -98,7 +103,8 @@ impl MergeParquetExec {
         let config = io_config.clone();
         let primary_keys = Arc::new(io_config.primary_keys);
         let default_column_value = Arc::new(io_config.default_column_value);
-        let merge_operators: Arc<HashMap<String, String>> = Arc::new(io_config.merge_operators);
+        let merge_operators: Arc<HashMap<String, String>> =
+            Arc::new(io_config.merge_operators);
 
         Ok(Self {
             schema: schema.clone(),
@@ -160,7 +166,11 @@ impl MergeParquetExec {
 }
 
 impl DisplayAs for MergeParquetExec {
-    fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt_as(
+        &self,
+        _t: DisplayFormatType,
+        f: &mut std::fmt::Formatter,
+    ) -> std::fmt::Result {
         write!(f, "MergeParquetExec")
     }
 }
@@ -205,10 +215,13 @@ impl ExecutionPlan for MergeParquetExec {
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        self.inputs.iter().map(|p| p).collect()
+        self.inputs.iter().collect()
     }
 
-    fn with_new_children(self: Arc<Self>, inputs: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
+    fn with_new_children(
+        self: Arc<Self>,
+        inputs: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(Self {
             schema: self.schema(),
             inputs,
@@ -220,7 +233,11 @@ impl ExecutionPlan for MergeParquetExec {
         }))
     }
 
-    fn execute(&self, partition: usize, context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> Result<SendableRecordBatchStream> {
         if partition != 0 {
             return Err(DataFusionError::Internal(format!(
                 "Invalid requested partition {partition}. InsertExec requires a single input partition."
@@ -267,12 +284,12 @@ pub fn merge_stream(
     config: LakeSoulIOConfig,
 ) -> Result<SendableRecordBatchStream> {
     debug!("merge_stream with config= {:?}", &config);
-    let merge_on_read = if config.skip_merge_on_read() {
-        false
-    } else if config.primary_keys.is_empty() {
+    let merge_on_read = if config.skip_merge_on_read() || config.primary_keys.is_empty() {
         false
     } else {
-        !(config.files.len() == 1 && config.merge_operators.is_empty() && config.is_compacted())
+        !(config.files.len() == 1
+            && config.merge_operators.is_empty()
+            && config.is_compacted())
     };
     let merge_stream = if !merge_on_read {
         Box::pin(DefaultColumnStream::new_from_streams_with_default(
@@ -298,13 +315,22 @@ pub fn merge_stream(
             .fields()
             .iter()
             .map(|field| {
-                MergeOperator::from_name(merge_operators.get(field.name()).unwrap_or(&String::from("UseLast")))
+                MergeOperator::from_name(
+                    merge_operators
+                        .get(field.name())
+                        .unwrap_or(&String::from("UseLast")),
+                )
             })
             .collect::<Vec<_>>();
 
         let streams = streams
             .into_iter()
-            .map(|s| SortedStream::new(Box::pin(DefaultColumnStream::new_from_stream(s, merge_schema.clone()))))
+            .map(|s| {
+                SortedStream::new(Box::pin(DefaultColumnStream::new_from_stream(
+                    s,
+                    merge_schema.clone(),
+                )))
+            })
             .collect();
         let merge_stream = SortedStreamMerger::new_from_streams(
             streams,
@@ -327,14 +353,20 @@ fn schema_intersection(df_schema: DFSchemaRef, request_schema: SchemaRef) -> Vec
     let mut exprs = Vec::new();
     for field in request_schema.fields() {
         if df_schema.field_with_unqualified_name(field.name()).is_ok() {
-            exprs.push(Expr::Column(datafusion::common::Column::new_unqualified(field.name())));
+            exprs.push(Expr::Column(datafusion::common::Column::new_unqualified(
+                field.name(),
+            )));
         }
     }
     exprs
 }
 
 /// Convert the filter string from Java or [`datafusion_substrait::substrait::proto::Plan`] to the [`datafusion::logical_expr::Expr`].
-pub fn convert_filter(df: &DataFrame, filter_str: Vec<String>, filter_protos: Vec<Plan>) -> Result<Vec<Expr>> {
+pub fn convert_filter(
+    df: &DataFrame,
+    filter_str: Vec<String>,
+    filter_protos: Vec<Plan>,
+) -> Result<Vec<Expr>> {
     let arrow_schema = Arc::new(Schema::from(df.schema()));
     debug!("schema:{:?}", arrow_schema);
     let mut str_filters = vec![];
@@ -368,7 +400,10 @@ pub async fn prune_filter_and_execute(
     let cols = schema_intersection(Arc::new(df_schema.clone()), request_schema.clone());
     debug!("cols: {:?}", cols);
     if cols.is_empty() {
-        return Ok(Box::pin(EmptySchemaStream::new(batch_size, df.count().await?)));
+        return Ok(Box::pin(EmptySchemaStream::new(
+            batch_size,
+            df.count().await?,
+        )));
     }
     // row filtering should go first since filter column may not in the selected cols
     let df = filters.into_iter().try_fold(df, |df, f| df.filter(f))?;

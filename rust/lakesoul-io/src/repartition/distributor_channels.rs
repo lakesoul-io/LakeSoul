@@ -52,7 +52,9 @@ use std::{
 use parking_lot::Mutex;
 
 /// Create `n` empty channels.
-pub fn channels<T>(n: usize) -> (Vec<DistributionSender<T>>, Vec<DistributionReceiver<T>>) {
+pub fn channels<T>(
+    n: usize,
+) -> (Vec<DistributionSender<T>>, Vec<DistributionReceiver<T>>) {
     let channels = (0..n)
         .map(|id| Arc::new(Channel::new_with_one_sender(id)))
         .collect::<Vec<_>>();
@@ -171,7 +173,12 @@ impl<T> Drop for DistributionSender<T> {
             // senders and it will decrement the `empty_channels` counter. It will also set `data` to `None`. The sender
             // side will then see that `data` is `None` and can therefore infer that the receiver end was dropped, and
             // hence it MUST NOT decrement the `empty_channels` counter.
-            if state.data.as_ref().map(|data| data.is_empty()).unwrap_or_default() {
+            if state
+                .data
+                .as_ref()
+                .map(|data| data.is_empty())
+                .unwrap_or_default()
+            {
                 // channel is gone, so we need to clear our signal
                 self.gate.decr_empty_channels();
             }
@@ -209,7 +216,9 @@ impl<T> Future for SendFuture<'_, T> {
 
             let Some(data) = guard_channel_state.data.as_mut() else {
                 // receiver end dead
-                return Poll::Ready(Err(SendError(this.element.take().expect("just checked"))));
+                return Poll::Ready(Err(SendError(
+                    this.element.take().expect("just checked"),
+                )));
             };
 
             // does ANY receiver need data?
@@ -302,7 +311,8 @@ impl<T> Future for RecvFuture<'_, T> {
                 // change "empty" signal for this channel?
                 if data.is_empty() && channel_state.recv_wakers.is_some() {
                     // update counter
-                    let old_counter = this.gate.empty_channels.fetch_add(1, Ordering::SeqCst);
+                    let old_counter =
+                        this.gate.empty_channels.fetch_add(1, Ordering::SeqCst);
 
                     // open gate?
                     let to_wake = if old_counter == 0 {
@@ -428,7 +438,8 @@ impl Gate {
 
             if let Some(send_wakers) = guard.deref_mut() {
                 // `drain_filter` is unstable, so implement our own
-                let (wake, keep) = send_wakers.drain(..).partition(|(_waker, id2)| id == *id2);
+                let (wake, keep) =
+                    send_wakers.drain(..).partition(|(_waker, id2)| id == *id2);
 
                 *send_wakers = keep;
 

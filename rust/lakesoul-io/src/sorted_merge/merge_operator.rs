@@ -11,7 +11,10 @@ use arrow_schema::DataType;
 use smallvec::SmallVec;
 
 use crate::sorted_merge::sort_key_range::SortKeyArrayRange;
-use crate::{sum_all_with_primitive_type_and_append_value, sum_last_with_primitive_type_and_append_value};
+use crate::{
+    sum_all_with_primitive_type_and_append_value,
+    sum_last_with_primitive_type_and_append_value,
+};
 use arrow::error::ArrowError;
 use datafusion::arrow::error::Result as ArrowResult;
 
@@ -58,31 +61,65 @@ impl MergeOperator {
         let res = match &ranges.len() {
             0 => MergeResult::AppendNull,
             1 => match self {
-                MergeOperator::UseLast => MergeResult::Extend(ranges[0].batch_idx, ranges[0].end_row - 1),
+                MergeOperator::UseLast => {
+                    MergeResult::Extend(ranges[0].batch_idx, ranges[0].end_row - 1)
+                }
                 MergeOperator::UseLastNotNull => last_non_null(ranges),
                 MergeOperator::SumAll => match ranges[0].end_row - ranges[0].begin_row {
                     1 => MergeResult::Extend(ranges[0].batch_idx, ranges[0].end_row - 1),
-                    _ => sum_all_with_primitive_type(data_type, ranges, append_array_data_builder)?,
+                    _ => sum_all_with_primitive_type(
+                        data_type,
+                        ranges,
+                        append_array_data_builder,
+                    )?,
                 },
                 MergeOperator::SumLast => match ranges[0].end_row - ranges[0].begin_row {
                     1 => MergeResult::Extend(ranges[0].batch_idx, ranges[0].end_row - 1),
-                    _ => sum_last_with_primitive_type(data_type, ranges, append_array_data_builder)?,
+                    _ => sum_last_with_primitive_type(
+                        data_type,
+                        ranges,
+                        append_array_data_builder,
+                    )?,
                 },
-                MergeOperator::JoinedLastByComma => match ranges[0].end_row - ranges[0].begin_row {
+                MergeOperator::JoinedLastByComma => match ranges[0].end_row
+                    - ranges[0].begin_row
+                {
                     1 => MergeResult::Extend(ranges[0].batch_idx, ranges[0].end_row - 1),
-                    _ => concat_last_with_string_type(ranges, append_array_data_builder, ',')?,
+                    _ => concat_last_with_string_type(
+                        ranges,
+                        append_array_data_builder,
+                        ',',
+                    )?,
                 },
-                MergeOperator::JoinedLastBySemicolon => match ranges[0].end_row - ranges[0].begin_row {
+                MergeOperator::JoinedLastBySemicolon => match ranges[0].end_row
+                    - ranges[0].begin_row
+                {
                     1 => MergeResult::Extend(ranges[0].batch_idx, ranges[0].end_row - 1),
-                    _ => concat_last_with_string_type(ranges, append_array_data_builder, ';')?,
+                    _ => concat_last_with_string_type(
+                        ranges,
+                        append_array_data_builder,
+                        ';',
+                    )?,
                 },
-                MergeOperator::JoinedAllByComma => match ranges[0].end_row - ranges[0].begin_row {
+                MergeOperator::JoinedAllByComma => match ranges[0].end_row
+                    - ranges[0].begin_row
+                {
                     1 => MergeResult::Extend(ranges[0].batch_idx, ranges[0].end_row - 1),
-                    _ => concat_all_with_string_type(ranges, append_array_data_builder, ',')?,
+                    _ => concat_all_with_string_type(
+                        ranges,
+                        append_array_data_builder,
+                        ',',
+                    )?,
                 },
-                MergeOperator::JoinedAllBySemicolon => match ranges[0].end_row - ranges[0].begin_row {
+                MergeOperator::JoinedAllBySemicolon => match ranges[0].end_row
+                    - ranges[0].begin_row
+                {
                     1 => MergeResult::Extend(ranges[0].batch_idx, ranges[0].end_row - 1),
-                    _ => concat_all_with_string_type(ranges, append_array_data_builder, ';')?,
+                    _ => concat_all_with_string_type(
+                        ranges,
+                        append_array_data_builder,
+                        ';',
+                    )?,
                 },
             },
             _ => match self {
@@ -98,15 +135,25 @@ impl MergeOperator {
                         - 1,
                 ),
                 MergeOperator::UseLastNotNull => last_non_null(ranges),
-                MergeOperator::SumAll => sum_all_with_primitive_type(data_type, ranges, append_array_data_builder)?,
-                MergeOperator::SumLast => sum_last_with_primitive_type(data_type, ranges, append_array_data_builder)?,
+                MergeOperator::SumAll => sum_all_with_primitive_type(
+                    data_type,
+                    ranges,
+                    append_array_data_builder,
+                )?,
+                MergeOperator::SumLast => sum_last_with_primitive_type(
+                    data_type,
+                    ranges,
+                    append_array_data_builder,
+                )?,
                 MergeOperator::JoinedLastByComma => {
                     concat_last_with_string_type(ranges, append_array_data_builder, ',')?
                 }
                 MergeOperator::JoinedLastBySemicolon => {
                     concat_last_with_string_type(ranges, append_array_data_builder, ';')?
                 }
-                MergeOperator::JoinedAllByComma => concat_all_with_string_type(ranges, append_array_data_builder, ',')?,
+                MergeOperator::JoinedAllByComma => {
+                    concat_all_with_string_type(ranges, append_array_data_builder, ',')?
+                }
                 MergeOperator::JoinedAllBySemicolon => {
                     concat_all_with_string_type(ranges, append_array_data_builder, ';')?
                 }
@@ -186,7 +233,13 @@ fn sum_all_with_primitive_type(
             )
         }
         DataType::Int8 => {
-            sum_all_with_primitive_type_and_append_value!(Int8Type, i8, Int8Builder, append_array_data_builder, ranges)
+            sum_all_with_primitive_type_and_append_value!(
+                Int8Type,
+                i8,
+                Int8Builder,
+                append_array_data_builder,
+                ranges
+            )
         }
         DataType::Int16 => {
             sum_all_with_primitive_type_and_append_value!(
@@ -276,7 +329,13 @@ fn sum_last_with_primitive_type(
             )
         }
         DataType::Int8 => {
-            sum_last_with_primitive_type_and_append_value!(Int8Type, i8, Int8Builder, append_array_data_builder, ranges)
+            sum_last_with_primitive_type_and_append_value!(
+                Int8Type,
+                i8,
+                Int8Builder,
+                append_array_data_builder,
+                ranges
+            )
         }
         DataType::Int16 => {
             sum_last_with_primitive_type_and_append_value!(
@@ -357,7 +416,9 @@ fn concat_all_with_string_type(
             append_array_data_builder
                 .as_any_mut()
                 .downcast_mut::<StringBuilder>()
-                .ok_or(ArrowError::ExternalError(anyhow!("inner type mismatch").into()))?
+                .ok_or(ArrowError::ExternalError(
+                    anyhow!("inner type mismatch").into(),
+                ))?
                 .append_value(res);
             MergeResult::AppendValue(append_array_data_builder.len() - 1)
         }
@@ -378,7 +439,9 @@ fn concat_last_with_string_type(
         let array = range.array();
         let arr = as_string_array(array.as_ref());
         if range.end_row == range.array().len() {
-            if idx == num_ranges - 1 || ranges[idx + 1].stream_idx != ranges[idx].stream_idx {
+            if idx == num_ranges - 1
+                || ranges[idx + 1].stream_idx != ranges[idx].stream_idx
+            {
                 if !arr.is_null(range.end_row - 1) {
                     if !first {
                         res.push(delim);
@@ -409,7 +472,9 @@ fn concat_last_with_string_type(
             append_array_data_builder
                 .as_any_mut()
                 .downcast_mut::<StringBuilder>()
-                .ok_or(ArrowError::ExternalError(anyhow!("inner type mismatch").into()))?
+                .ok_or(ArrowError::ExternalError(
+                    anyhow!("inner type mismatch").into(),
+                ))?
                 .append_value(res);
             MergeResult::AppendValue(append_array_data_builder.len() - 1)
         }
@@ -430,7 +495,8 @@ macro_rules! sum_all_with_primitive_type_and_append_value {
             match null_buffer {
                 Some(buffer) => {
                     let offset = arr.offset();
-                    let null_buf_range = buffer.slice(offset + range.begin_row, range.end_row - range.begin_row);
+                    let null_buf_range = buffer
+                        .slice(offset + range.begin_row, range.end_row - range.begin_row);
                     // the entire range is null
                     if null_buf_range.null_count() > 0 {
                         is_none = true;
@@ -439,7 +505,9 @@ macro_rules! sum_all_with_primitive_type_and_append_value {
                 }
                 None => {}
             }
-            res += values[range.begin_row..range.end_row].iter().sum::<$native_ty>();
+            res += values[range.begin_row..range.end_row]
+                .iter()
+                .sum::<$native_ty>();
         }
         let res = match is_none {
             // sum result is null if null value exists
@@ -448,7 +516,9 @@ macro_rules! sum_all_with_primitive_type_and_append_value {
                 $builder
                     .as_any_mut()
                     .downcast_mut::<$primitive_builder_type>()
-                    .ok_or(ArrowError::ExternalError(anyhow!("inner type mismatch").into()))?
+                    .ok_or(ArrowError::ExternalError(
+                        anyhow!("inner type mismatch").into(),
+                    ))?
                     .append_value(res);
                 MergeResult::AppendValue($builder.len() - 1)
             }
@@ -469,7 +539,9 @@ macro_rules! sum_last_with_primitive_type_and_append_value {
             let values = arr.values();
 
             if range.end_row == range.array().len() {
-                if idx == num_ranges - 1 || $ranges[idx + 1].stream_idx != $ranges[idx].stream_idx {
+                if idx == num_ranges - 1
+                    || $ranges[idx + 1].stream_idx != $ranges[idx].stream_idx
+                {
                     if !arr.is_null(range.end_row - 1) {
                         res += values[range.end_row - 1]
                     } else {
@@ -493,7 +565,9 @@ macro_rules! sum_last_with_primitive_type_and_append_value {
                 $builder
                     .as_any_mut()
                     .downcast_mut::<$primitive_builder_type>()
-                    .ok_or(ArrowError::ExternalError(anyhow!("inner type mismatch").into()))?
+                    .ok_or(ArrowError::ExternalError(
+                        anyhow!("inner type mismatch").into(),
+                    ))?
                     .append_value(res);
                 MergeResult::AppendValue($builder.len() - 1)
             }
@@ -509,8 +583,12 @@ mod tests {
     #[test]
     fn test_timestamp_with_fixed_offset_tz_fmt_debug() {
         let arr: PrimitiveArray<TimestampMillisecondType> =
-            TimestampMillisecondArray::from(vec![1546214400000, 1546214400000, -1546214400000])
-                .with_timezone("America/Denver".to_string());
+            TimestampMillisecondArray::from(vec![
+                1546214400000,
+                1546214400000,
+                -1546214400000,
+            ])
+            .with_timezone("America/Denver".to_string());
         assert_eq!(
             "PrimitiveArray<Timestamp(Millisecond, Some(\"+08:00\"))>\n[\n  2018-12-31T08:00:00+08:00,\n  2018-12-31T08:00:00+08:00,\n  1921-01-02T08:00:00+08:00,\n]",
             format!("{arr:?}")

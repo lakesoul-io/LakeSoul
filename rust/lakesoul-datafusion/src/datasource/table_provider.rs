@@ -24,7 +24,9 @@ use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::logical_expr::expr::Sort;
 use datafusion::logical_expr::utils::conjunction;
-use datafusion::logical_expr::{CreateExternalTable, TableProviderFilterPushDown, TableType};
+use datafusion::logical_expr::{
+    CreateExternalTable, TableProviderFilterPushDown, TableType,
+};
 use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr, create_physical_expr};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::empty::EmptyExec;
@@ -38,10 +40,12 @@ use lakesoul_io::lakesoul_io_config::LakeSoulIOConfig;
 use lakesoul_metadata::MetaDataClientRef;
 use proto::proto::entity::TableInfo;
 
-use crate::catalog::{LakeSoulTableProperty, format_table_info_partitions, parse_table_info_partitions};
+use crate::catalog::{
+    LakeSoulTableProperty, format_table_info_partitions, parse_table_info_partitions,
+};
 use crate::lakesoul_table::helpers::{
-    case_fold_column_name, case_fold_table_name, listing_partition_info, parse_partitions_for_partition_desc,
-    prune_partitions,
+    case_fold_column_name, case_fold_table_name, listing_partition_info,
+    parse_partitions_for_partition_desc, prune_partitions,
 };
 use crate::serialize::arrow_java::{ArrowJavaSchema, schema_from_metadata_str};
 
@@ -54,7 +58,7 @@ use super::file_format::LakeSoulMetaDataParquetFormat;
 /// 1. Merges schemas if the files have compatible but not identical schemas
 ///
 /// 2. Hive-style partitioning support, where a path such as
-/// `/files/date=1/1/2022/data.parquet` is injected as a `date` column.
+///    `/files/date=1/1/2022/data.parquet` is injected as a `date` column.
 ///
 /// 3. Projection pushdown for formats that support
 ///
@@ -80,9 +84,11 @@ impl LakeSoulTableProvider {
         as_sink: bool,
     ) -> crate::error::Result<Self> {
         let table_schema = schema_from_metadata_str(&table_info.table_schema);
-        let (range_partitions, hash_partitions) = parse_table_info_partitions(&table_info.partitions)?;
+        let (range_partitions, hash_partitions) =
+            parse_table_info_partitions(&table_info.partitions)?;
         let mut range_partition_projection = Vec::with_capacity(range_partitions.len());
-        let mut file_schema_projection = Vec::with_capacity(table_schema.fields().len() - range_partitions.len());
+        let mut file_schema_projection =
+            Vec::with_capacity(table_schema.fields().len() - range_partitions.len());
         // O(nm), n = number of table fields, m = number of range partitions
         for (idx, field) in table_schema.fields().iter().enumerate() {
             match range_partitions.contains(field.name()) {
@@ -93,24 +99,35 @@ impl LakeSoulTableProvider {
 
         let file_schema = Arc::new(table_schema.project(&file_schema_projection)?);
         let table_schema =
-            Arc::new(table_schema.project(&[file_schema_projection, range_partition_projection].concat())?);
+            Arc::new(table_schema.project(
+                &[file_schema_projection, range_partition_projection].concat(),
+            )?);
 
-        let file_format: Arc<dyn FileFormat> =
-            Arc::new(
-                LakeSoulMetaDataParquetFormat::new(
-                    client.clone(),
-                    Arc::new(ParquetFormat::new().with_force_view_types(
-                        session_state.config_options().execution.parquet.schema_force_view_types,
-                    )),
-                    table_info.clone(),
-                    lakesoul_io_config.clone(),
-                )
-                .await?,
-            );
+        let file_format: Arc<dyn FileFormat> = Arc::new(
+            LakeSoulMetaDataParquetFormat::new(
+                client.clone(),
+                Arc::new(
+                    ParquetFormat::new().with_force_view_types(
+                        session_state
+                            .config_options()
+                            .execution
+                            .parquet
+                            .schema_force_view_types,
+                    ),
+                ),
+                table_info.clone(),
+                lakesoul_io_config.clone(),
+            )
+            .await?,
+        );
 
-        let (_, listing_table) =
-            listing_table_from_lakesoul_io_config(session_state, lakesoul_io_config.clone(), file_format, as_sink)
-                .await?;
+        let (_, listing_table) = listing_table_from_lakesoul_io_config(
+            session_state,
+            lakesoul_io_config.clone(),
+            file_format,
+            as_sink,
+        )
+        .await?;
 
         let listing_options = listing_table.options().clone();
         let listing_table_paths = listing_table.table_paths().clone();
@@ -155,7 +172,7 @@ impl LakeSoulTableProvider {
             schema_builder.push(Field::new(
                 case_fold_column_name(field.name()),
                 field.data_type().clone(),
-                field.is_nullable() && !primary_keys.contains(&field.name()),
+                field.is_nullable() && !primary_keys.contains(field.name()),
             ));
         }
 
@@ -170,7 +187,8 @@ impl LakeSoulTableProvider {
                 .get("format.use_cdc")
                 .unwrap_or(&"false".to_string())
                 .to_string();
-            let cdc_field = Arc::new(Field::new(cdc_column.clone(), DataType::Utf8, true));
+            let cdc_field =
+                Arc::new(Field::new(cdc_column.clone(), DataType::Utf8, true));
             schema_builder.try_merge(&cdc_field)?;
             (Some(cdc_column), Some(use_cdc))
         } else {
@@ -185,9 +203,15 @@ impl LakeSoulTableProvider {
             table_id: format!("table_{}", uuid::Uuid::new_v4()),
             table_namespace: cmd.name.schema().unwrap_or("default").to_string(),
             table_name: case_fold_table_name(cmd.name.table()),
-            table_schema: serde_json::to_string::<ArrowJavaSchema>(&table_schema.clone().into())?,
+            table_schema: serde_json::to_string::<ArrowJavaSchema>(
+                &table_schema.clone().into(),
+            )?,
             properties: serde_json::to_string(&LakeSoulTableProperty {
-                hash_bucket_num: if primary_keys.is_empty() { None } else { Some(4) },
+                hash_bucket_num: if primary_keys.is_empty() {
+                    None
+                } else {
+                    Some(4)
+                },
                 datafusion_properties: Some(cmd.options.clone()),
                 cdc_change_column: cdc_column,
                 use_cdc,
@@ -208,7 +232,8 @@ impl LakeSoulTableProvider {
             domain: "public".to_string(),
         });
         Ok(Self {
-            listing_options: LakeSoulMetaDataParquetFormat::default_listing_options().await?,
+            listing_options: LakeSoulMetaDataParquetFormat::default_listing_options()
+                .await?,
             listing_table_paths: vec![],
             client,
             table_info,
@@ -311,16 +336,20 @@ impl LakeSoulTableProvider {
             return Ok((vec![], Statistics::new_unknown(&self.file_schema())));
         };
 
-        let all_partition_info = self.client.get_all_partition_info(self.table_id()).await.map_err(|e| {
-            DataFusionError::External(
-                format!(
-                    "get all partition_info of table {} failed: {}",
-                    &self.table_info().table_name,
-                    e
+        let all_partition_info = self
+            .client
+            .get_all_partition_info(self.table_id())
+            .await
+            .map_err(|e| {
+                DataFusionError::External(
+                    format!(
+                        "get all partition_info of table {} failed: {}",
+                        &self.table_info().table_name,
+                        e
+                    )
+                    .into(),
                 )
-                .into(),
-            )
-        })?;
+            })?;
         let partition_filters = filters
             .iter()
             .filter(|f| self.is_partition_filter(f))
@@ -347,20 +376,27 @@ impl LakeSoulTableProvider {
 
         let mut futures = FuturesUnordered::new();
         for partition in prune_partition_info {
-            futures.push(listing_partition_info(partition, store.as_ref(), self.client()))
+            futures.push(listing_partition_info(
+                partition,
+                store.as_ref(),
+                self.client(),
+            ))
         }
 
         let mut file_groups = Vec::new();
 
         while let Some((partition, object_metas)) = futures.next().await.transpose()? {
             let cols = self.table_partition_cols().iter().map(|x| x.0.as_str());
-            let parsed = parse_partitions_for_partition_desc(&partition.partition_desc, cols);
+            let parsed =
+                parse_partitions_for_partition_desc(&partition.partition_desc, cols);
 
             let partition_values = parsed
                 .into_iter()
                 .flatten()
                 .zip(self.table_partition_cols())
-                .map(|(parsed, (_, datatype))| ScalarValue::try_from_string(parsed.to_string(), datatype))
+                .map(|(parsed, (_, datatype))| {
+                    ScalarValue::try_from_string(parsed.to_string(), datatype)
+                })
                 .collect::<Result<Vec<_>>>()?;
 
             let files = object_metas
@@ -403,8 +439,13 @@ impl TableProvider for LakeSoulTableProvider {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let session_state = session_state.as_any().downcast_ref::<SessionState>().unwrap();
-        let (partitioned_file_lists, statistics) = self.list_files_for_scan(session_state, filters, limit).await?;
+        let session_state = session_state
+            .as_any()
+            .downcast_ref::<SessionState>()
+            .unwrap();
+        let (partitioned_file_lists, statistics) = self
+            .list_files_for_scan(session_state, filters, limit)
+            .await?;
 
         // if no files need to be read, return an `EmptyExec`
         if partitioned_file_lists.is_empty() {
@@ -425,7 +466,11 @@ impl TableProvider for LakeSoulTableProvider {
         let filters = if let Some(expr) = conjunction(filters.to_vec()) {
             // NOTE: Use the table schema (NOT file schema) here because `expr` may contain references to partition columns.
             let table_df_schema = self.schema().as_ref().clone().to_dfschema()?;
-            let filters = create_physical_expr(&expr, &table_df_schema, session_state.execution_props())?;
+            let filters = create_physical_expr(
+                &expr,
+                &table_df_schema,
+                session_state.execution_props(),
+            )?;
             Some(filters)
         } else {
             None
@@ -453,7 +498,9 @@ impl TableProvider for LakeSoulTableProvider {
                     file_schema: self.schema(),
                     file_groups: partitioned_file_lists
                         .into_iter()
-                        .map(|files| FileGroup::new(files).with_statistics(statistics.clone()))
+                        .map(|files| {
+                            FileGroup::new(files).with_statistics(statistics.clone())
+                        })
                         .collect(),
                     constraints: Default::default(),
                     // projection for Table instead of File
@@ -471,7 +518,10 @@ impl TableProvider for LakeSoulTableProvider {
             .await
     }
 
-    fn supports_filters_pushdown(&self, filters: &[&Expr]) -> Result<Vec<TableProviderFilterPushDown>> {
+    fn supports_filters_pushdown(
+        &self,
+        filters: &[&Expr],
+    ) -> Result<Vec<TableProviderFilterPushDown>> {
         info!("supports_filters_pushdown: {:?}", filters);
         filters
             .iter()

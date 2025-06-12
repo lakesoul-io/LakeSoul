@@ -46,7 +46,9 @@ pub struct ConstNullArray {
 
 impl ConstNullArray {
     pub fn new() -> Self {
-        ConstNullArray { inner: HashMap::new() }
+        ConstNullArray {
+            inner: HashMap::new(),
+        }
     }
 
     pub fn get(&mut self, datatype: &DataType) -> ArrayRef {
@@ -74,7 +76,9 @@ pub struct ConstEmptyArray {
 
 impl ConstEmptyArray {
     pub fn new() -> Self {
-        ConstEmptyArray { inner: HashMap::new() }
+        ConstEmptyArray {
+            inner: HashMap::new(),
+        }
     }
 
     pub fn get(&mut self, datatype: &DataType) -> ArrayRef {

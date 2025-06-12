@@ -17,7 +17,9 @@ use datafusion::{
 use datafusion_common::{DataFusionError, Result, project_schema};
 use object_store::{ObjectStore, WriteMultipart, path::Path};
 use parquet::basic::ZstdLevel;
-use parquet::{arrow::ArrowWriter, basic::Compression, file::properties::WriterProperties};
+use parquet::{
+    arrow::ArrowWriter, basic::Compression, file::properties::WriterProperties,
+};
 use url::Url;
 
 use crate::{
@@ -61,7 +63,10 @@ pub struct MultiPartAsyncWriter {
 }
 
 impl MultiPartAsyncWriter {
-    pub async fn try_new_with_context(config: &mut LakeSoulIOConfig, task_context: Arc<TaskContext>) -> Result<Self> {
+    pub async fn try_new_with_context(
+        config: &mut LakeSoulIOConfig,
+        task_context: Arc<TaskContext>,
+    ) -> Result<Self> {
         if config.files.is_empty() {
             return Err(DataFusionError::Internal(
                 "wrong number of file names provided for writer".to_string(),
@@ -78,7 +83,9 @@ impl MultiPartAsyncWriter {
             Ok(url) => Ok((
                 task_context
                     .runtime_env()
-                    .object_store(ObjectStoreUrl::parse(&url[..url::Position::BeforePath])?)?,
+                    .object_store(ObjectStoreUrl::parse(
+                        &url[..url::Position::BeforePath],
+                    )?)?,
                 Path::from_url_path(url.path())?,
             )),
             Err(e) => Err(DataFusionError::External(Box::new(e))),
@@ -86,11 +93,13 @@ impl MultiPartAsyncWriter {
 
         // get underlying multipart uploader
         let multipart_upload = object_store.put_multipart(&path).await?;
-        let write_multi_part = WriteMultipart::new_with_chunk_size(multipart_upload, 128 * 1024 * 1024);
+        let write_multi_part =
+            WriteMultipart::new_with_chunk_size(multipart_upload, 128 * 1024 * 1024);
 
-        let in_mem_buf = InMemBuf(Arc::new(AtomicRefCell::new(VecDeque::<u8>::with_capacity(
-            16 * 1024, // 16kb
-        ))));
+        let in_mem_buf =
+            InMemBuf(Arc::new(AtomicRefCell::new(VecDeque::<u8>::with_capacity(
+                16 * 1024, // 16kb
+            ))));
         let schema = uniform_schema(config.target_schema.0.clone());
 
         // O(nm), n = number of fields, m = number of range partitions
@@ -98,14 +107,18 @@ impl MultiPartAsyncWriter {
             .fields()
             .iter()
             .enumerate()
-            .filter_map(|(idx, field)| match config.range_partitions.contains(field.name()) {
-                true => None,
-                false => Some(idx),
+            .filter_map(|(idx, field)| {
+                match config.range_partitions.contains(field.name()) {
+                    true => None,
+                    false => Some(idx),
+                }
             })
             .collect::<Vec<_>>();
-        let writer_schema = project_schema(&schema, Some(&schema_projection_excluding_range))?;
+        let writer_schema =
+            project_schema(&schema, Some(&schema_projection_excluding_range))?;
 
-        let max_row_group_size = if config.max_row_group_size * schema.fields().len() > config.max_row_group_num_values
+        let max_row_group_size = if config.max_row_group_size * schema.fields().len()
+            > config.max_row_group_num_values
         {
             config
                 .batch_size
@@ -165,7 +178,10 @@ impl MultiPartAsyncWriter {
         }
     }
 
-    pub async fn write_part(writer: &mut WriteMultipart, in_mem_buf: &mut VecDeque<u8>) -> Result<()> {
+    pub async fn write_part(
+        writer: &mut WriteMultipart,
+        in_mem_buf: &mut VecDeque<u8>,
+    ) -> Result<()> {
         let bytes = Bytes::from(in_mem_buf.drain(..).collect::<Vec<u8>>());
         writer.put(bytes);
         Ok(())
@@ -190,11 +206,20 @@ impl AsyncBatchWriter for MultiPartAsyncWriter {
         let batch = uniform_record_batch(batch)?;
         self.num_rows += batch.num_rows() as u64;
         self.buffered_size += get_batch_memory_size(&batch)? as u64;
-        MultiPartAsyncWriter::write_batch(batch, &mut self.arrow_writer, &mut self.in_mem_buf, &mut self.writer).await
+        MultiPartAsyncWriter::write_batch(
+            batch,
+            &mut self.arrow_writer,
+            &mut self.in_mem_buf,
+            &mut self.writer,
+        )
+        .await
     }
 
     async fn flush_and_close(self: Box<Self>) -> Result<WriterFlushResult> {
-        debug!("MultiPartAsyncWriter::flush_and_close: {:?}", self.arrow_writer);
+        debug!(
+            "MultiPartAsyncWriter::flush_and_close: {:?}",
+            self.arrow_writer
+        );
         // close arrow writer to flush remaining rows
         let mut this = *self;
         let arrow_writer = this.arrow_writer;
@@ -205,20 +230,30 @@ impl AsyncBatchWriter for MultiPartAsyncWriter {
             .0
             .try_borrow_mut()
             .map_err(|e| DataFusionError::Internal(format!("{:?}", e)))?;
-        if !v.is_empty(){
+        if !v.is_empty() {
             MultiPartAsyncWriter::write_part(&mut this.writer, &mut v).await?;
         }
         // shutdown multi-part async writer to complete the upload
         this.writer.finish().await?;
-        let path =
-            Path::from_url_path(<ListingTableUrl as AsRef<Url>>::as_ref(&ListingTableUrl::parse(&file_path)?).path())?;
+        let path = Path::from_url_path(
+            <ListingTableUrl as AsRef<Url>>::as_ref(&ListingTableUrl::parse(&file_path)?)
+                .path(),
+        )?;
         let object_meta = this.object_store.head(&path).await?;
-        Ok(vec![(TBD_PARTITION_DESC.to_string(), file_path, object_meta, metadata)])
+        Ok(vec![(
+            TBD_PARTITION_DESC.to_string(),
+            file_path,
+            object_meta,
+            metadata,
+        )])
     }
 
     async fn abort_and_close(self: Box<Self>) -> Result<()> {
         let this = *self;
-        this.writer.abort().await.map_err(DataFusionError::ObjectStore)?;
+        this.writer
+            .abort()
+            .await
+            .map_err(DataFusionError::ObjectStore)?;
         Ok(())
     }
 

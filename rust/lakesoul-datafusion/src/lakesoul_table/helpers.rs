@@ -17,8 +17,8 @@ use arrow_arith::boolean::and;
 use arrow_cast::cast;
 
 use datafusion::{
-    common::DFSchema, error::DataFusionError, execution::context::ExecutionProps, logical_expr::Expr,
-    physical_expr::create_physical_expr,
+    common::DFSchema, error::DataFusionError, execution::context::ExecutionProps,
+    logical_expr::Expr, physical_expr::create_physical_expr,
 };
 use lakesoul_metadata::MetaDataClientRef;
 use object_store::{ObjectMeta, ObjectStore, path::Path};
@@ -26,7 +26,9 @@ use url::Url;
 
 use crate::error::Result;
 use crate::serialize::arrow_java::schema_from_metadata_str;
-use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfigBuilder, OPTION_KEY_CDC_COLUMN, OPTION_KEY_STABLE_SORT};
+use lakesoul_io::lakesoul_io_config::{
+    LakeSoulIOConfigBuilder, OPTION_KEY_CDC_COLUMN, OPTION_KEY_STABLE_SORT,
+};
 use proto::proto::entity::{PartitionInfo, TableInfo};
 
 use crate::catalog::{LakeSoulTableProperty, parse_table_info_partitions};
@@ -37,8 +39,10 @@ pub(crate) fn create_io_config_builder_from_table_info(
     options: HashMap<String, String>,
     object_store_options: HashMap<String, String>,
 ) -> Result<LakeSoulIOConfigBuilder> {
-    let (range_partitions, hash_partitions) = parse_table_info_partitions(&table_info.partitions)?;
-    let properties = serde_json::from_str::<LakeSoulTableProperty>(&table_info.properties)?;
+    let (range_partitions, hash_partitions) =
+        parse_table_info_partitions(&table_info.partitions)?;
+    let properties =
+        serde_json::from_str::<LakeSoulTableProperty>(&table_info.properties)?;
     let use_cdc = properties
         .use_cdc
         .map_or("false".to_string(), |use_cdc| use_cdc.clone());
@@ -79,12 +83,18 @@ pub async fn prune_partitions(
     }
 
     let mut builders: Vec<_> = (0..partition_cols.len())
-        .map(|_| StringBuilder::with_capacity(all_partition_info.len(), all_partition_info.len() * 10))
+        .map(|_| {
+            StringBuilder::with_capacity(
+                all_partition_info.len(),
+                all_partition_info.len() * 10,
+            )
+        })
         .collect();
 
     for partition in &all_partition_info {
         let cols = partition_cols.iter().map(|x| x.0.as_str());
-        let parsed = parse_partitions_for_partition_desc(&partition.partition_desc, cols).unwrap_or_default();
+        let parsed = parse_partitions_for_partition_desc(&partition.partition_desc, cols)
+            .unwrap_or_default();
 
         let mut builders = builders.iter_mut();
         for (p, b) in parsed.iter().zip(&mut builders) {
@@ -124,15 +134,20 @@ pub async fn prune_partitions(
     // Applies `filter` to `batch` returning `None` on error
     let do_filter = |filter| -> Option<ArrayRef> {
         let expr = create_physical_expr(filter, &df_schema, &props).ok()?;
-        expr.evaluate(&batch).ok()?.into_array(all_partition_info.len()).ok()
+        expr.evaluate(&batch)
+            .ok()?
+            .into_array(all_partition_info.len())
+            .ok()
     };
 
     //.Compute the conjunction of the filters, ignoring errors
-    let mask = filters.iter().fold(None, |acc, filter| match (acc, do_filter(filter)) {
-        (Some(a), Some(b)) => Some(and(&a, b.as_boolean()).unwrap_or(a)),
-        (None, Some(r)) => Some(r.as_boolean().clone()),
-        (r, None) => r,
-    });
+    let mask = filters
+        .iter()
+        .fold(None, |acc, filter| match (acc, do_filter(filter)) {
+            (Some(a), Some(b)) => Some(and(&a, b.as_boolean()).unwrap_or(a)),
+            (None, Some(r)) => Some(r.as_boolean().clone()),
+            (r, None) => r,
+        });
 
     let mask = match mask {
         Some(mask) => mask,

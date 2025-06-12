@@ -52,15 +52,16 @@ pub fn from_json(json: &str) -> Result<ObjectMeta> {
             })?
             .to_string(),
     );
-    let last_modified = DateTime::parse_from_rfc3339(value["last_modified"].as_str().ok_or(Generic {
-        store: "cache",
-        source: "Invalid last_modified".into(),
-    })?)
-    .map_err(|e| Generic {
-        store: "cache",
-        source: Box::new(e),
-    })?
-    .with_timezone(&Utc);
+    let last_modified =
+        DateTime::parse_from_rfc3339(value["last_modified"].as_str().ok_or(Generic {
+            store: "cache",
+            source: "Invalid last_modified".into(),
+        })?)
+        .map_err(|e| Generic {
+            store: "cache",
+            source: Box::new(e),
+        })?
+        .with_timezone(&Utc);
     let size = value["size"].as_u64().ok_or(Generic {
         store: "cache",
         source: "Invalid size".into(),
@@ -84,7 +85,7 @@ pub fn to_json(object_meta: &ObjectMeta) -> String {
 
     // 序列化 location
     json.push_str("\"location\":\"");
-    json.push_str(&object_meta.location.to_string());
+    json.push_str(object_meta.location.as_ref());
     json.push_str("\",");
 
     // 序列化 last_modified
@@ -95,7 +96,7 @@ pub fn to_json(object_meta: &ObjectMeta) -> String {
     // 序列化 size
     json.push_str("\"size\":");
     json.push_str(&object_meta.size.to_string());
-    json.push_str(",");
+    json.push(',');
 
     // 序列化 e_tag
     if let Some(e_tag) = &object_meta.e_tag {
@@ -110,7 +111,7 @@ pub fn to_json(object_meta: &ObjectMeta) -> String {
     if let Some(version) = &object_meta.version {
         json.push_str("\"version\":\"");
         json.push_str(version);
-        json.push_str("\"");
+        json.push('"');
     } else {
         json.push_str("\"version\":null");
     }
@@ -120,7 +121,7 @@ pub fn to_json(object_meta: &ObjectMeta) -> String {
 }
 
 pub fn concat_location_with_pagid(location: &Path, page_id: u32) -> String {
-    format!("{}_{}", location.to_string(), page_id)
+    format!("{}_{}", location, page_id)
 }
 
 /// In-memory [`PageCache`] implementation.
@@ -181,7 +182,11 @@ impl DiskCache {
         Self::with_params(disk_capacity, page_size, DEFAULT_TIME_TO_IDLE)
     }
 
-    fn with_params(disk_capacity: usize, page_size: usize, _time_to_idle: Duration) -> Self {
+    fn with_params(
+        disk_capacity: usize,
+        page_size: usize,
+        _time_to_idle: Duration,
+    ) -> Self {
         let dir = tempdir().unwrap();
         println!("tempdir: {}", dir.path().to_str().unwrap());
         let cache = LruDiskCache::new("path", disk_capacity.try_into().unwrap()).unwrap();
@@ -253,7 +258,7 @@ impl PageCache for DiskCache {
                 // When the page is not found in the cache, load it from the loader.
                 match loader.await {
                     Ok(bytes) => {
-                        if bytes.len() == 0 {
+                        if bytes.is_empty() {
                             return Ok(bytes);
                         }
                         self.put(location, page_id, bytes.clone()).await?;
@@ -296,8 +301,16 @@ impl PageCache for DiskCache {
     }
 
     /// Get a range of the page with the given page ID and location, and return `None` if not found.
-    async fn get_range(&self, location: &Path, page_id: u32, range: Range<usize>) -> Result<Option<Bytes>> {
-        Ok(self.get(location, page_id).await?.map(|bytes| bytes.slice(range)))
+    async fn get_range(
+        &self,
+        location: &Path,
+        page_id: u32,
+        range: Range<usize>,
+    ) -> Result<Option<Bytes>> {
+        Ok(self
+            .get(location, page_id)
+            .await?
+            .map(|bytes| bytes.slice(range)))
     }
 
     /// Get the metadata of the given location, and load it if not found.
@@ -423,7 +436,9 @@ mod tests {
 
         let miss = Arc::new(AtomicUsize::new(0));
 
-        for (page_id, expected_miss, expected_size) in [(0, 1, 1), (0, 1, 1), (1, 2, 2), (4, 3, 2), (5, 4, 2)].iter() {
+        for (page_id, expected_miss, expected_size) in
+            [(0, 1, 1), (0, 1, 1), (1, 2, 2), (4, 3, 2), (5, 4, 2)].iter()
+        {
             println!("page_id: {}", page_id);
             let data = cache
                 .get_with(&location, *page_id, {
@@ -435,7 +450,8 @@ mod tests {
                         local_fs
                             .get_range(
                                 &location,
-                                PAGE_SIZE as u64 * (*page_id as u64)..PAGE_SIZE as u64 * (page_id + 1) as u64,
+                                PAGE_SIZE as u64 * (*page_id as u64)
+                                    ..PAGE_SIZE as u64 * (page_id + 1) as u64,
                             )
                             .await
                     }
@@ -449,7 +465,8 @@ mod tests {
             assert_eq!(cache.cache.len(), *expected_size);
 
             let mut buf = BytesMut::with_capacity(PAGE_SIZE);
-            for i in page_id * PAGE_SIZE as u32 / 8..(page_id + 1) * PAGE_SIZE as u32 / 8 {
+            for i in page_id * PAGE_SIZE as u32 / 8..(page_id + 1) * PAGE_SIZE as u32 / 8
+            {
                 buf.put_u64(i as u64);
             }
             assert_eq!(data, buf);

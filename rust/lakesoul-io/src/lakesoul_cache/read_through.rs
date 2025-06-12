@@ -6,8 +6,9 @@ use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use futures::{StreamExt, TryStreamExt, stream, stream::BoxStream};
 use object_store::{
-    Attributes, GetOptions, GetResult, GetResultPayload, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
-    PutMultipartOpts, PutOptions, PutPayload, PutResult, path::Path,
+    Attributes, GetOptions, GetResult, GetResultPayload, ListResult, MultipartUpload,
+    ObjectMeta, ObjectStore, PutMultipartOpts, PutOptions, PutPayload, PutResult,
+    path::Path,
 };
 
 use crate::lakesoul_cache::{paging::PageCache, stats::CacheStats};
@@ -26,7 +27,11 @@ pub struct ReadThroughCache<C: PageCache> {
 
 impl<C: PageCache> std::fmt::Display for ReadThroughCache<C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ReadThroughCache(inner={}, cache={:?})", self.inner, self.cache)
+        write!(
+            f,
+            "ReadThroughCache(inner={}, cache={:?})",
+            self.inner, self.cache
+        )
     }
 }
 
@@ -39,7 +44,11 @@ impl<C: PageCache> ReadThroughCache<C> {
         )
     }
 
-    pub fn new_with_stats(inner: Arc<dyn ObjectStore>, cache: Arc<C>, stats: Arc<dyn CacheStats>) -> Self {
+    pub fn new_with_stats(
+        inner: Arc<dyn ObjectStore>,
+        cache: Arc<C>,
+        stats: Arc<dyn CacheStats>,
+    ) -> Self {
         Self {
             inner,
             cache,
@@ -70,7 +79,8 @@ async fn get_range<C: PageCache>(
         .map(|offset| {
             let page_cache = cache.clone();
             let page_id = offset / page_size;
-            let intersection = std::cmp::max(offset, range.start)..std::cmp::min(offset + page_size, range.end);
+            let intersection = std::cmp::max(offset, range.start)
+                ..std::cmp::min(offset + page_size, range.end);
             let range_in_page = intersection.start - offset..intersection.end - offset;
             let page_end = std::cmp::min(offset + page_size, meta.size as usize);
             let store = store.clone();
@@ -83,7 +93,9 @@ async fn get_range<C: PageCache>(
                 page_cache
                     .get_range_with(location, page_id as u32, range_in_page, async {
                         stats.inc_total_misses();
-                        store.get_range(location, offset as u64..page_end as u64).await
+                        store
+                            .get_range(location, offset as u64..page_end as u64)
+                            .await
                     })
                     .await
             }
@@ -108,13 +120,22 @@ async fn get_range<C: PageCache>(
 /// caches the results of get_range calls.
 #[async_trait]
 impl<C: PageCache> ObjectStore for ReadThroughCache<C> {
-    async fn put_opts(&self, location: &Path, payload: PutPayload, options: PutOptions) -> Result<PutResult> {
+    async fn put_opts(
+        &self,
+        location: &Path,
+        payload: PutPayload,
+        options: PutOptions,
+    ) -> Result<PutResult> {
         self.cache.invalidate(location).await?;
 
         self.inner.put_opts(location, payload, options).await
     }
 
-    async fn put_multipart_opts(&self, location: &Path, _opts: PutMultipartOpts) -> Result<Box<dyn MultipartUpload>> {
+    async fn put_multipart_opts(
+        &self,
+        location: &Path,
+        _opts: PutMultipartOpts,
+    ) -> Result<Box<dyn MultipartUpload>> {
         self.invalidate(location).await?;
 
         self.inner.put_multipart_opts(location, _opts).await
@@ -163,7 +184,11 @@ impl<C: PageCache> ObjectStore for ReadThroughCache<C> {
         })
     }
 
-    async fn get_opts(&self, _location: &Path, _options: GetOptions) -> Result<GetResult> {
+    async fn get_opts(
+        &self,
+        _location: &Path,
+        _options: GetOptions,
+    ) -> Result<GetResult> {
         todo!()
     }
 

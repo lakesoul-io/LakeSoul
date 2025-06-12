@@ -7,7 +7,9 @@ use async_trait::async_trait;
 use aws_config::Region;
 use aws_config::default_provider::credentials::DefaultCredentialsChain;
 use aws_credential_types::provider::ProvideCredentials;
-use aws_sigv4::http_request::{PayloadChecksumKind, SignableBody, SignableRequest, SigningSettings, sign};
+use aws_sigv4::http_request::{
+    PayloadChecksumKind, SignableBody, SignableRequest, SigningSettings, sign,
+};
 use aws_sigv4::sign::v4;
 use aws_smithy_runtime_api::client::identity::Identity;
 use hickory_resolver::TokioAsyncResolver;
@@ -48,7 +50,8 @@ fn main() {
 
     let endpoint = std::env::var("AWS_ENDPOINT").expect("need AWS_ENDPOINT env");
     let region = std::env::var("AWS_REGION").expect("need AWS_REGION env");
-    let virtual_host = std::env::var("AWS_VIRTUAL_HOST").is_ok_and(|v| v.to_lowercase() == "true");
+    let virtual_host =
+        std::env::var("AWS_VIRTUAL_HOST").is_ok_and(|v| v.to_lowercase() == "true");
     let (user, group, verify_meta) = match (
         std::env::var("LAKESOUL_PG_USER"),
         std::env::var("LAKESOUL_CURRENT_DOMAIN"),
@@ -136,7 +139,11 @@ pub struct Credentials {
 }
 
 impl Credentials {
-    async fn verify_rbac(&self, headers: &RequestHeader, bucket: &Option<&str>) -> Result<(), anyhow::Error> {
+    async fn verify_rbac(
+        &self,
+        headers: &RequestHeader,
+        bucket: &Option<&str>,
+    ) -> Result<(), anyhow::Error> {
         if !self.verify_meta {
             Ok(())
         } else {
@@ -187,13 +194,17 @@ impl Credentials {
         let signable_request = SignableRequest::new(
             headers.method.as_str(),
             &uri,
-            headers.headers.iter().filter_map(|(name, value)| match value.to_str() {
-                Ok(v) => Some((name.as_str(), v)),
-                Err(_) => None,
-            }),
+            headers
+                .headers
+                .iter()
+                .filter_map(|(name, value)| match value.to_str() {
+                    Ok(v) => Some((name.as_str(), v)),
+                    Err(_) => None,
+                }),
             SignableBody::UnsignedPayload,
         )?;
-        let (signing_instructions, _signature) = sign(signable_request, &signing_params)?.into_parts();
+        let (signing_instructions, _signature) =
+            sign(signable_request, &signing_params)?.into_parts();
         let (new_headers, new_query) = signing_instructions.into_parts();
         info!("new headers {:?}, new query {:?}", new_headers, new_query);
 
@@ -203,7 +214,9 @@ impl Credentials {
             headers.insert_header(header.name(), value)?
         }
         if !new_query.is_empty() {
-            let mut query = aws_smithy_http::query_writer::QueryWriter::new_from_string(uri.as_str())?;
+            let mut query = aws_smithy_http::query_writer::QueryWriter::new_from_string(
+                uri.as_str(),
+            )?;
             for (name, value) in new_query {
                 query.insert(name, &value);
             }
@@ -262,7 +275,11 @@ impl ProxyHttp for S3Proxy {
     type CTX = ();
     fn new_ctx(&self) {}
 
-    async fn upstream_peer(&self, _session: &mut Session, _ctx: &mut ()) -> Result<Box<HttpPeer>> {
+    async fn upstream_peer(
+        &self,
+        _session: &mut Session,
+        _ctx: &mut (),
+    ) -> Result<Box<HttpPeer>> {
         let upstream = self
             .lb
             .select(b"", 256) // hash doesn't matter for round robin
@@ -274,7 +291,11 @@ impl ProxyHttp for S3Proxy {
         Ok(peer)
     }
 
-    async fn request_filter(&self, session: &mut Session, _ctx: &mut Self::CTX) -> Result<bool>
+    async fn request_filter(
+        &self,
+        session: &mut Session,
+        _ctx: &mut Self::CTX,
+    ) -> Result<bool>
     where
         Self::CTX: Send + Sync,
     {
@@ -336,7 +357,11 @@ pub struct DnsDiscovery {
 }
 
 impl DnsDiscovery {
-    pub fn new<D: Into<String>>(domain: D, port: u16, resolver: Arc<TokioAsyncResolver>) -> Self {
+    pub fn new<D: Into<String>>(
+        domain: D,
+        port: u16,
+        resolver: Arc<TokioAsyncResolver>,
+    ) -> Self {
         DnsDiscovery {
             domain: domain.into(),
             port,
@@ -367,9 +392,9 @@ impl ServiceDiscovery for DnsDiscovery {
         let result: BTreeSet<_> = records
             .iter()
             .filter_map(|ip| match ip {
-                IpAddr::V4(ip) => Some(SocketAddr::Inet(std::net::SocketAddr::V4(SocketAddrV4::new(
-                    ip, self.port,
-                )))),
+                IpAddr::V4(ip) => Some(SocketAddr::Inet(std::net::SocketAddr::V4(
+                    SocketAddrV4::new(ip, self.port),
+                ))),
                 IpAddr::V6(_) => None,
             })
             .map(|addr| Backend {
@@ -399,7 +424,11 @@ where
     }
 }
 
-fn assemble_table_path<'a, Iter>(split: Iter, bucket_name: &str, partition_equal: &str) -> String
+fn assemble_table_path<'a, Iter>(
+    split: Iter,
+    bucket_name: &str,
+    partition_equal: &str,
+) -> String
 where
     Iter: Iterator<Item = &'a str>,
 {
@@ -463,7 +492,10 @@ mod tests {
     #[test]
     fn test_parse_table_path() {
         assert_eq!(
-            parse_table_path(&Uri::from_static("/lakesoul-test-bucket/test/test.parquet"), &None),
+            parse_table_path(
+                &Uri::from_static("/lakesoul-test-bucket/test/test.parquet"),
+                &None
+            ),
             "s3://lakesoul-test-bucket/test/"
         );
 
@@ -485,7 +517,9 @@ mod tests {
 
         assert_eq!(
             parse_table_path(
-                &Uri::from_static("/lakesoul-test-bucket/test/default/abc/date=20250221/type=1/test.parquet"),
+                &Uri::from_static(
+                    "/lakesoul-test-bucket/test/default/abc/date=20250221/type=1/test.parquet"
+                ),
                 &None
             ),
             "s3://lakesoul-test-bucket/test/default/abc/"
@@ -493,7 +527,10 @@ mod tests {
 
         // virtual host style
         assert_eq!(
-            parse_table_path(&Uri::from_static("/test/test.parquet"), &Some("lakesoul-test-bucket")),
+            parse_table_path(
+                &Uri::from_static("/test/test.parquet"),
+                &Some("lakesoul-test-bucket")
+            ),
             "s3://lakesoul-test-bucket/test/"
         );
 

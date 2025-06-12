@@ -22,8 +22,9 @@ use datafusion::{
     },
     physical_expr::EquivalenceProperties,
     physical_plan::{
-        DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, Partitioning, PhysicalExpr,
-        PlanProperties, RecordBatchStream, SendableRecordBatchStream,
+        DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties,
+        Partitioning, PhysicalExpr, PlanProperties, RecordBatchStream,
+        SendableRecordBatchStream,
         metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricBuilder},
         sorts::streaming_merge::StreamingMergeBuilder,
         stream::RecordBatchStreamAdapter,
@@ -39,7 +40,9 @@ use futures::{FutureExt, Stream, StreamExt, TryStreamExt};
 
 use crate::{hash_utils::create_hashes, repartition::distributor_channels::channels};
 
-use self::distributor_channels::{DistributionReceiver, DistributionSender, partition_aware_channels};
+use self::distributor_channels::{
+    DistributionReceiver, DistributionSender, partition_aware_channels,
+};
 
 use parking_lot::Mutex;
 
@@ -97,7 +100,8 @@ impl RepartitionByRangeAndHashExecState {
         let num_output_partitions = hash_partitioning.partition_count();
 
         let (txs, rxs) = if preserve_order {
-            let (txs, rxs) = partition_aware_channels(num_input_partitions, num_output_partitions);
+            let (txs, rxs) =
+                partition_aware_channels(num_input_partitions, num_output_partitions);
             // Take transpose of senders and receivers. `state.channels` keeps track of entries per output partition
             let txs = transpose(txs);
             let rxs = transpose(rxs);
@@ -119,7 +123,8 @@ impl RepartitionByRangeAndHashExecState {
         let mut channels = HashMap::new();
         for (partition, (tx, rx)) in txs.into_iter().zip(rxs).enumerate() {
             let reservation = Arc::new(Mutex::new(
-                MemoryConsumer::new(format!("{}[{partition}]", name)).register(context.memory_pool()),
+                MemoryConsumer::new(format!("{}[{partition}]", name))
+                    .register(context.memory_pool()),
             ));
             channels.insert(partition, (tx, rx, reservation));
         }
@@ -128,29 +133,33 @@ impl RepartitionByRangeAndHashExecState {
         for i in 0..num_input_partitions {
             let txs: HashMap<_, _> = channels
                 .iter()
-                .map(|(partition, (tx, _rx, reservation))| (*partition, (tx[i].clone(), Arc::clone(reservation))))
+                .map(|(partition, (tx, _rx, reservation))| {
+                    (*partition, (tx[i].clone(), Arc::clone(reservation)))
+                })
                 .collect();
 
             let r_metrics = RepartitionMetrics::new(i, num_output_partitions, &metrics);
 
-            let input_task = SpawnedTask::spawn(RepartitionByRangeAndHashExec::pull_from_input(
-                Arc::clone(&input),
-                i,
-                txs.clone(),
-                range_partitioning_expr.clone(),
-                hash_partitioning.clone(),
-                r_metrics,
-                context.clone(),
-            ));
+            let input_task =
+                SpawnedTask::spawn(RepartitionByRangeAndHashExec::pull_from_input(
+                    Arc::clone(&input),
+                    i,
+                    txs.clone(),
+                    range_partitioning_expr.clone(),
+                    hash_partitioning.clone(),
+                    r_metrics,
+                    context.clone(),
+                ));
 
             // In a separate task, wait for each input to be done
             // (and pass along any errors, including panic!s)
-            let wait_for_task = SpawnedTask::spawn(RepartitionByRangeAndHashExec::wait_for_task(
-                input_task,
-                txs.into_iter()
-                    .map(|(partition, (tx, _reservation))| (partition, tx))
-                    .collect(),
-            ));
+            let wait_for_task =
+                SpawnedTask::spawn(RepartitionByRangeAndHashExec::wait_for_task(
+                    input_task,
+                    txs.into_iter()
+                        .map(|(partition, (tx, _reservation))| (partition, tx))
+                        .collect(),
+                ));
             spawned_tasks.push(wait_for_task);
         }
 
@@ -267,11 +276,15 @@ impl BatchPartitioner {
                 // .map(|_| UInt64Builder::with_capacity(batch.num_rows()))
                 .collect();
 
-            for (index, (hash, range_hash)) in hash_buffer.iter().zip(range_buffer).enumerate() {
+            for (index, (hash, range_hash)) in
+                hash_buffer.iter().zip(range_buffer).enumerate()
+            {
                 indices[(*hash % *partitions as u32) as usize]
                     .entry(range_hash)
                     .or_insert_with(|| UInt64Builder::with_capacity(batch.num_rows()));
-                if let Some(entry) = indices[(*hash % *partitions as u32) as usize].get_mut(&range_hash) {
+                if let Some(entry) =
+                    indices[(*hash % *partitions as u32) as usize].get_mut(&range_hash)
+                {
                     entry.append_value(index as u64);
                 }
             }
@@ -329,17 +342,24 @@ struct RepartitionMetrics {
 }
 
 impl RepartitionMetrics {
-    pub fn new(input_partition: usize, num_output_partitions: usize, metrics: &ExecutionPlanMetricsSet) -> Self {
+    pub fn new(
+        input_partition: usize,
+        num_output_partitions: usize,
+        metrics: &ExecutionPlanMetricsSet,
+    ) -> Self {
         // Time in nanos to execute child operator and fetch batches
-        let fetch_time = MetricBuilder::new(metrics).subset_time("fetch_time", input_partition);
+        let fetch_time =
+            MetricBuilder::new(metrics).subset_time("fetch_time", input_partition);
 
         // Time in nanos to perform repartitioning
-        let repartition_time = MetricBuilder::new(metrics).subset_time("repartition_time", input_partition);
+        let repartition_time =
+            MetricBuilder::new(metrics).subset_time("repartition_time", input_partition);
 
         // Time in nanos for sending resulting batches to channels
         let send_time = (0..num_output_partitions)
             .map(|output_partition| {
-                let label = metrics::Label::new("outputPartition", output_partition.to_string());
+                let label =
+                    metrics::Label::new("outputPartition", output_partition.to_string());
                 MetricBuilder::new(metrics)
                     .with_label(label)
                     .subset_time("send_time", input_partition)
@@ -409,7 +429,11 @@ impl RepartitionByRangeAndHashExec {
 }
 
 impl DisplayAs for RepartitionByRangeAndHashExec {
-    fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt_as(
+        &self,
+        t: DisplayFormatType,
+        f: &mut std::fmt::Formatter,
+    ) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(
@@ -496,14 +520,20 @@ impl RepartitionByRangeAndHashExec {
     async fn pull_from_input(
         input: Arc<dyn ExecutionPlan>,
         partition: usize,
-        mut output_channels: HashMap<usize, (DistributionSender<MaybeBatch>, SharedMemoryReservation)>,
+        mut output_channels: HashMap<
+            usize,
+            (DistributionSender<MaybeBatch>, SharedMemoryReservation),
+        >,
         range_partitioning: Vec<Arc<dyn PhysicalExpr>>,
         hash_partitioning: Partitioning,
         metrics: RepartitionMetrics,
         context: Arc<TaskContext>,
     ) -> Result<()> {
-        let mut partitioner =
-            BatchPartitioner::try_new(range_partitioning, hash_partitioning, metrics.repartition_time.clone())?;
+        let mut partitioner = BatchPartitioner::try_new(
+            range_partitioning,
+            hash_partitioning,
+            metrics.repartition_time.clone(),
+        )?;
 
         // execute the child operator
         let timer = metrics.fetch_time.timer();
@@ -574,7 +604,10 @@ impl RepartitionByRangeAndHashExec {
     /// each of the output tx channels to signal one of the inputs is
     /// complete. Upon error, propagates the errors to all output tx
     /// channels.
-    async fn wait_for_task(input_task: SpawnedTask<Result<()>>, txs: HashMap<usize, DistributionSender<MaybeBatch>>) {
+    async fn wait_for_task(
+        input_task: SpawnedTask<Result<()>>,
+        txs: HashMap<usize, DistributionSender<MaybeBatch>>,
+    ) {
         // wait for completion, and propagate error
         // note we ignore errors on send (.ok) as that means the receiver has already shutdown.
 
@@ -668,7 +701,10 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
         vec![&self.input]
     }
 
-    fn with_new_children(self: Arc<Self>, mut children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
+    fn with_new_children(
+        self: Arc<Self>,
+        mut children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
         let repartition = RepartitionByRangeAndHashExec::try_new(
             children.swap_remove(0),
             self.range_partitioning_expr.clone(),
@@ -678,7 +714,11 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
         Ok(Arc::new(repartition))
     }
 
-    fn execute(&self, partition: usize, context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> Result<SendableRecordBatchStream> {
         // clone all data that needs to be used in async block
         let metrics = self.metrics.clone();
         let lazy_state = self.state.clone();
@@ -723,10 +763,9 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
                 // lock mutexes
                 let mut state = state.lock();
 
-                let (_tx, rx, reservation) = state
-                    .channels
-                    .remove(&partition)
-                    .ok_or(DataFusionError::Internal("partition isn't used yet".to_string()))?;
+                let (_tx, rx, reservation) = state.channels.remove(&partition).ok_or(
+                    DataFusionError::Internal("partition isn't used yet".to_string()),
+                )?;
                 (rx, reservation, Arc::clone(&state.abort_helper))
             };
 
@@ -749,7 +788,8 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
                 // input partitions to this partition:
                 let fetch = None;
                 let merge_reservation =
-                    MemoryConsumer::new(format!("{}[Merge {partition}]", name)).register(context.memory_pool());
+                    MemoryConsumer::new(format!("{}[Merge {partition}]", name))
+                        .register(context.memory_pool());
                 StreamingMergeBuilder::new()
                     .with_streams(input_streams)
                     .with_schema(schema_captured)
@@ -805,12 +845,17 @@ struct RepartitionStream {
 impl Stream for RepartitionStream {
     type Item = Result<RecordBatch>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
         loop {
             match self.input.recv().poll_unpin(cx) {
                 Poll::Ready(Some(Some(v))) => {
                     if let Ok(batch) = &v {
-                        self.reservation.lock().shrink(batch.get_array_memory_size());
+                        self.reservation
+                            .lock()
+                            .shrink(batch.get_array_memory_size());
                     }
 
                     return Poll::Ready(Some(v));
@@ -863,11 +908,16 @@ struct PerPartitionStream {
 impl Stream for PerPartitionStream {
     type Item = Result<RecordBatch>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
         match self.receiver.recv().poll_unpin(cx) {
             Poll::Ready(Some(Some(v))) => {
                 if let Ok(batch) = &v {
-                    self.reservation.lock().shrink(batch.get_array_memory_size());
+                    self.reservation
+                        .lock()
+                        .shrink(batch.get_array_memory_size());
                 }
                 Poll::Ready(Some(v))
             }

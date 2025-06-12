@@ -96,7 +96,8 @@ impl DataFileOp {
         Ok(entity::DataFileOp {
             path: self.path.clone(),
             file_op: entity::FileOp::from_str_name(self.file_op.as_str())
-                .ok_or(LakeSoulMetaDataError::Internal("unknown file_op".into()))? as i32,
+                .ok_or(LakeSoulMetaDataError::Internal("unknown file_op".into()))?
+                as i32,
             size: self.size,
             file_exist_cols: self.file_exist_cols.clone(),
         })
@@ -104,7 +105,9 @@ impl DataFileOp {
 }
 
 /// The coded type for the Data Access Object.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, num_enum::TryFromPrimitive)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, num_enum::TryFromPrimitive,
+)]
 #[repr(i32)]
 pub enum DaoType {
     // ==== Coded Query One ====
@@ -128,7 +131,8 @@ pub enum DaoType {
     /// The coded type for the Data Access Object for select partition version by table id and partition description and version.
     SelectPartitionVersionByTableIdAndDescAndVersion = DAO_TYPE_QUERY_ONE_OFFSET + 8,
     /// The coded type for the Data Access Object for select one data commit info by table id and partition description and commit id.
-    SelectOneDataCommitInfoByTableIdAndPartitionDescAndCommitId = DAO_TYPE_QUERY_ONE_OFFSET + 9,
+    SelectOneDataCommitInfoByTableIdAndPartitionDescAndCommitId =
+        DAO_TYPE_QUERY_ONE_OFFSET + 9,
     /// The coded type for the Data Access Object for select table domain by table id.
     SelectTableDomainById = DAO_TYPE_QUERY_ONE_OFFSET + 10,
     /// The coded type for the Data Access Object for select discard compressed file info by file path.
@@ -152,15 +156,18 @@ pub enum DaoType {
     /// The coded type for the Data Access Object for list partition by table id and partition description.
     ListPartitionByTableIdAndDesc = DAO_TYPE_QUERY_LIST_OFFSET + 6,
     /// The coded type for the Data Access Object for list partition version by table id and partition description and version range.
-    ListPartitionVersionByTableIdAndPartitionDescAndVersionRange = DAO_TYPE_QUERY_LIST_OFFSET + 7,
+    ListPartitionVersionByTableIdAndPartitionDescAndVersionRange =
+        DAO_TYPE_QUERY_LIST_OFFSET + 7,
     /// The coded type for the Data Access Object for list partition version by table id and partition description and timestamp range.
-    ListPartitionVersionByTableIdAndPartitionDescAndTimestampRange = DAO_TYPE_QUERY_LIST_OFFSET + 8,
+    ListPartitionVersionByTableIdAndPartitionDescAndTimestampRange =
+        DAO_TYPE_QUERY_LIST_OFFSET + 8,
     /// The coded type for the Data Access Object for list commit ops between versions.
     ListCommitOpsBetweenVersions = DAO_TYPE_QUERY_LIST_OFFSET + 9,
 
     // ==== Coded Query DataCommitInfo List ====
     /// The coded type for the Data Access Object for list data commit info by table id and partition description and commit id list.
-    ListDataCommitInfoByTableIdAndPartitionDescAndCommitList = DAO_TYPE_QUERY_LIST_OFFSET + 10,
+    ListDataCommitInfoByTableIdAndPartitionDescAndCommitList =
+        DAO_TYPE_QUERY_LIST_OFFSET + 10,
     /// The coded type for the Data Access Object for list all discard compressed file info.
     ListAllDiscardCompressedFileInfo = DAO_TYPE_QUERY_LIST_OFFSET + 11,
     /// The coded type for the Data Access Object for list discard compressed file info before timestamp.
@@ -196,7 +203,8 @@ pub enum DaoType {
     /// The coded type for the Data Access Object for get latest timestamp from partition info.
     GetLatestTimestampFromPartitionInfo = DAO_TYPE_QUERY_SCALAR_OFFSET,
     /// The coded type for the Data Access Object for get latest timestamp from partition info without partition description.
-    GetLatestTimestampFromPartitionInfoWithoutPartitionDesc = DAO_TYPE_QUERY_SCALAR_OFFSET + 1,
+    GetLatestTimestampFromPartitionInfoWithoutPartitionDesc =
+        DAO_TYPE_QUERY_SCALAR_OFFSET + 1,
     /// The coded type for the Data Access Object for get latest version up to time from partition info.
     GetLatestVersionUpToTimeFromPartitionInfo = DAO_TYPE_QUERY_SCALAR_OFFSET + 2,
     /// The coded type for the Data Access Object for get latest version timestamp up to time from partition info.
@@ -238,9 +246,11 @@ pub enum DaoType {
 
     // ==== Coded Update DataCommitInfo ====
     /// The coded type for the Data Access Object for delete one data commit info by table id and partition description and commit id.
-    DeleteOneDataCommitInfoByTableIdAndPartitionDescAndCommitId = DAO_TYPE_UPDATE_OFFSET + 12,
+    DeleteOneDataCommitInfoByTableIdAndPartitionDescAndCommitId =
+        DAO_TYPE_UPDATE_OFFSET + 12,
     /// The coded type for the Data Access Object for delete data commit info by table id and partition description and commit id list.
-    DeleteDataCommitInfoByTableIdAndPartitionDescAndCommitIdList = DAO_TYPE_UPDATE_OFFSET + 13,
+    DeleteDataCommitInfoByTableIdAndPartitionDescAndCommitIdList =
+        DAO_TYPE_UPDATE_OFFSET + 13,
     /// The coded type for the Data Access Object for delete data commit info by table id and partition description.
     DeleteDataCommitInfoByTableIdAndPartitionDesc = DAO_TYPE_UPDATE_OFFSET + 14,
     /// The coded type for the Data Access Object for delete data commit info by table id.
@@ -558,18 +568,25 @@ fn separate_uuid(concatenated_uuid: &str) -> Result<Vec<String>> {
 
 /// Execute the query for the coded Data Access Object.
 #[instrument(level = "debug")]
-pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string: String) -> Result<Vec<u8>> {
+pub async fn execute_query(
+    client: &PooledClient,
+    query_type: i32,
+    joined_string: String,
+) -> Result<Vec<u8>> {
     if query_type >= DAO_TYPE_INSERT_ONE_OFFSET {
         eprintln!("Invalid query_type_index: {:?}", query_type);
         return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
     }
-    let query_type = DaoType::try_from(query_type).map_err(|e| LakeSoulMetaDataError::Other(Box::new(e)))?;
+    let query_type = DaoType::try_from(query_type)
+        .map_err(|e| LakeSoulMetaDataError::Other(Box::new(e)))?;
     let (client, statement) = get_prepared_statement(client, &query_type).await?;
 
     let params = get_params(joined_string);
 
     let rows = match query_type {
-        DaoType::ListNamespaces | DaoType::ListAllTablePath | DaoType::ListAllDiscardCompressedFileInfo
+        DaoType::ListNamespaces
+        | DaoType::ListAllTablePath
+        | DaoType::ListAllDiscardCompressedFileInfo
             if params.len() == 1 && params[0].is_empty() =>
         {
             let result = client.query(&statement, &[]).await;
@@ -586,7 +603,9 @@ pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string
             }
         }
         DaoType::ListDiscardCompressedFileInfoBeforeTimestamp if params.len() == 1 => {
-            let result = client.query(&statement, &[&i64::from_str(&params[0])?]).await;
+            let result = client
+                .query(&statement, &[&i64::from_str(&params[0])?])
+                .await;
             match result {
                 Ok(rows) => rows,
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
@@ -594,7 +613,10 @@ pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string
         }
         DaoType::ListDiscardCompressedFileByFilterCondition if params.len() == 3 => {
             let result = client
-                .query(&statement, &[&params[0], &params[1], &i64::from_str(&params[2])?])
+                .query(
+                    &statement,
+                    &[&params[0], &params[1], &i64::from_str(&params[2])?],
+                )
                 .await;
             match result {
                 Ok(rows) => rows,
@@ -615,14 +637,17 @@ pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
-        DaoType::ListPartitionByTableId | DaoType::ListAllPathTablePathByNamespace if params.len() == 1 => {
+        DaoType::ListPartitionByTableId | DaoType::ListAllPathTablePathByNamespace
+            if params.len() == 1 =>
+        {
             let result = client.query(&statement, &[&params[0]]).await;
             match result {
                 Ok(rows) => rows,
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
-        DaoType::SelectOnePartitionVersionByTableIdAndDesc | DaoType::ListPartitionByTableIdAndDesc
+        DaoType::SelectOnePartitionVersionByTableIdAndDesc
+        | DaoType::ListPartitionByTableIdAndDesc
             if params.len() == 2 =>
         {
             let result = client.query(&statement, &[&params[0], &params[1]]).await;
@@ -636,14 +661,18 @@ pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string
         | DaoType::SelectTableInfoByIdAndTablePath
             if params.len() == 2 =>
         {
-            let result = client.query_opt(&statement, &[&params[0], &params[1]]).await;
+            let result = client
+                .query_opt(&statement, &[&params[0], &params[1]])
+                .await;
             match result {
                 Ok(Some(row)) => vec![row],
                 Ok(None) => vec![],
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
-        DaoType::SelectOneDataCommitInfoByTableIdAndPartitionDescAndCommitId if params.len() == 3 => {
+        DaoType::SelectOneDataCommitInfoByTableIdAndPartitionDescAndCommitId
+            if params.len() == 3 =>
+        {
             let result = client
                 .query_opt(
                     &statement,
@@ -656,9 +685,14 @@ pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
-        DaoType::SelectPartitionVersionByTableIdAndDescAndVersion if params.len() == 3 => {
+        DaoType::SelectPartitionVersionByTableIdAndDescAndVersion
+            if params.len() == 3 =>
+        {
             let result = client
-                .query(&statement, &[&params[0], &params[1], &i32::from_str(&params[2])?])
+                .query(
+                    &statement,
+                    &[&params[0], &params[1], &i32::from_str(&params[2])?],
+                )
                 .await;
             match result {
                 Ok(rows) => rows,
@@ -719,7 +753,9 @@ pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string
                     and m.partition_desc = $2::text;
             ";
             let partitions = params[1].to_owned();
-            let partitions = partitions.split(PARTITION_DESC_DELIM).collect::<Vec<&str>>();
+            let partitions = partitions
+                .split(PARTITION_DESC_DELIM)
+                .collect::<Vec<&str>>();
             let statement = client.prepare_cached(statement).await?;
             let mut all_rows: Vec<Row> = vec![];
             for part in partitions {
@@ -731,7 +767,9 @@ pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string
             }
             all_rows
         }
-        DaoType::ListPartitionVersionByTableIdAndPartitionDescAndTimestampRange if params.len() == 4 => {
+        DaoType::ListPartitionVersionByTableIdAndPartitionDescAndTimestampRange
+            if params.len() == 4 =>
+        {
             let result = client
                 .query(
                     &statement,
@@ -748,10 +786,15 @@ pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
-        DaoType::ListDataCommitInfoByTableIdAndPartitionDescAndCommitList if params.len() == 3 => {
+        DaoType::ListDataCommitInfoByTableIdAndPartitionDescAndCommitList
+            if params.len() == 3 =>
+        {
             let concated_uuid = &params[2];
             if concated_uuid.len() % 32 != 0 {
-                eprintln!("Invalid params of query_type={:?}, params={:?}", query_type, params);
+                eprintln!(
+                    "Invalid params of query_type={:?}, params={:?}",
+                    query_type, params
+                );
                 return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
             }
 
@@ -780,24 +823,31 @@ pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string
             }
         }
         _ => {
-            eprintln!("Invalid params num of query_type={:?}, params={:?}", query_type, params);
+            eprintln!(
+                "Invalid params num of query_type={:?}, params={:?}",
+                query_type, params
+            );
             return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
         }
     };
 
     let result_type = match query_type {
-        DaoType::SelectNamespaceByNamespace | DaoType::ListNamespaces => ResultType::Namespace,
+        DaoType::SelectNamespaceByNamespace | DaoType::ListNamespaces => {
+            ResultType::Namespace
+        }
 
         DaoType::SelectTableInfoByTableId
         | DaoType::SelectTableInfoByTableNameAndNameSpace
         | DaoType::SelectTableInfoByTablePath
         | DaoType::SelectTableInfoByIdAndTablePath => ResultType::TableInfo,
 
-        DaoType::SelectTablePathIdByTablePath | DaoType::ListAllTablePath => ResultType::TablePathId,
-
-        DaoType::SelectTableNameIdByTableName | DaoType::ListTableNameByNamespace | DaoType::SelectTableDomainById => {
-            ResultType::TableNameId
+        DaoType::SelectTablePathIdByTablePath | DaoType::ListAllTablePath => {
+            ResultType::TablePathId
         }
+
+        DaoType::SelectTableNameIdByTableName
+        | DaoType::ListTableNameByNamespace
+        | DaoType::SelectTableDomainById => ResultType::TableNameId,
 
         DaoType::ListPartitionByTableId
         | DaoType::ListPartitionDescByTableIdAndParList
@@ -805,21 +855,32 @@ pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string
         | DaoType::SelectOnePartitionVersionByTableIdAndDesc
         | DaoType::ListPartitionByTableIdAndDesc
         | DaoType::ListPartitionVersionByTableIdAndPartitionDescAndTimestampRange
-        | DaoType::ListPartitionVersionByTableIdAndPartitionDescAndVersionRange => ResultType::PartitionInfo,
+        | DaoType::ListPartitionVersionByTableIdAndPartitionDescAndVersionRange => {
+            ResultType::PartitionInfo
+        }
 
         DaoType::SelectOneDataCommitInfoByTableIdAndPartitionDescAndCommitId
-        | DaoType::ListDataCommitInfoByTableIdAndPartitionDescAndCommitList => ResultType::DataCommitInfo,
+        | DaoType::ListDataCommitInfoByTableIdAndPartitionDescAndCommitList => {
+            ResultType::DataCommitInfo
+        }
 
         DaoType::ListAllPathTablePathByNamespace => ResultType::TablePathIdWithOnlyPath,
 
-        DaoType::ListCommitOpsBetweenVersions => ResultType::PartitionInfoWithOnlyCommitOp,
+        DaoType::ListCommitOpsBetweenVersions => {
+            ResultType::PartitionInfoWithOnlyCommitOp
+        }
 
         DaoType::SelectDiscardCompressedFileInfoByFilePath
         | DaoType::ListAllDiscardCompressedFileInfo
         | DaoType::ListDiscardCompressedFileInfoBeforeTimestamp
-        | DaoType::ListDiscardCompressedFileByFilterCondition => ResultType::DiscardCompressedFileInfo,
+        | DaoType::ListDiscardCompressedFileByFilterCondition => {
+            ResultType::DiscardCompressedFileInfo
+        }
         _ => {
-            eprintln!("Invalid query_type={:?} when parsing query result type", query_type);
+            eprintln!(
+                "Invalid query_type={:?} when parsing query result type",
+                query_type
+            );
             return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
         }
     };
@@ -911,12 +972,14 @@ pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string
                         table_id: row.get(0),
                         partition_desc: row.get(1),
                         version: row.get::<_, i32>(2),
-                        commit_op: entity::CommitOp::from_str_name(row.get(3))
-                            .ok_or(LakeSoulMetaDataError::Internal("unknown commit_op".into()))?
-                            as i32,
+                        commit_op: entity::CommitOp::from_str_name(row.get(3)).ok_or(
+                            LakeSoulMetaDataError::Internal("unknown commit_op".into()),
+                        )? as i32,
                         snapshot: row_to_uuid_list(row),
                         timestamp: row.get::<_, i64>(5),
-                        expression: row.get::<_, Option<String>>(6).unwrap_or(String::from("")),
+                        expression: row
+                            .get::<_, Option<String>>(6)
+                            .unwrap_or(String::from("")),
                         domain: row.get(7),
                     })
                 })
@@ -931,9 +994,9 @@ pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string
                 .iter()
                 .map(|row| {
                     Ok(entity::PartitionInfo {
-                        commit_op: entity::CommitOp::from_str_name(row.get(0))
-                            .ok_or(LakeSoulMetaDataError::Internal("unknown commit_op".into()))?
-                            as i32,
+                        commit_op: entity::CommitOp::from_str_name(row.get(0)).ok_or(
+                            LakeSoulMetaDataError::Internal("unknown commit_op".into()),
+                        )? as i32,
                         ..Default::default()
                     })
                 })
@@ -959,9 +1022,9 @@ pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string
                             .iter()
                             .map(|data_file_op| data_file_op.as_proto_data_file_op())
                             .collect::<Result<Vec<entity::DataFileOp>>>()?,
-                        commit_op: entity::CommitOp::from_str_name(row.get(4))
-                            .ok_or(LakeSoulMetaDataError::Internal("unknown commit_op".into()))?
-                            as i32,
+                        commit_op: entity::CommitOp::from_str_name(row.get(4)).ok_or(
+                            LakeSoulMetaDataError::Internal("unknown commit_op".into()),
+                        )? as i32,
                         timestamp: row.get(5),
                         committed: row.get(6),
                         domain: row.get(7),
@@ -974,16 +1037,16 @@ pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string
             }
         }
         ResultType::DiscardCompressedFileInfo => {
-            let discard_compressed_file_info: Vec<entity::DiscardCompressedFileInfo> = rows
-                .iter()
-                .map(|row| entity::DiscardCompressedFileInfo {
-                    file_path: row.get(0),
-                    table_path: row.get(1),
-                    partition_desc: row.get(2),
-                    timestamp: row.get(3),
-                    t_date: row.get::<_, NaiveDate>(4).format("%Y-%m-%d").to_string(),
-                })
-                .collect();
+            let discard_compressed_file_info: Vec<entity::DiscardCompressedFileInfo> =
+                rows.iter()
+                    .map(|row| entity::DiscardCompressedFileInfo {
+                        file_path: row.get(0),
+                        table_path: row.get(1),
+                        partition_desc: row.get(2),
+                        timestamp: row.get(3),
+                        t_date: row.get::<_, NaiveDate>(4).format("%Y-%m-%d").to_string(),
+                    })
+                    .collect();
             entity::JniWrapper {
                 discard_compressed_file_info,
                 ..Default::default()
@@ -995,28 +1058,41 @@ pub async fn execute_query(client: &PooledClient, query_type: i32, joined_string
 
 /// Execute the insert for the coded Data Access Object.
 #[instrument(level = "debug")]
-pub async fn execute_insert(client: &mut PooledClient, insert_type: i32, wrapper: entity::JniWrapper) -> Result<i32> {
-    if !(DAO_TYPE_INSERT_ONE_OFFSET..DAO_TYPE_QUERY_SCALAR_OFFSET).contains(&insert_type) {
+pub async fn execute_insert(
+    client: &mut PooledClient,
+    insert_type: i32,
+    wrapper: entity::JniWrapper,
+) -> Result<i32> {
+    if !(DAO_TYPE_INSERT_ONE_OFFSET..DAO_TYPE_QUERY_SCALAR_OFFSET).contains(&insert_type)
+    {
         error!("Invalid insert_type_index: {:?}", insert_type);
         return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
     }
-    let insert_type = DaoType::try_from(insert_type).map_err(|e| LakeSoulMetaDataError::Other(Box::new(e)))?;
+    let insert_type = DaoType::try_from(insert_type)
+        .map_err(|e| LakeSoulMetaDataError::Other(Box::new(e)))?;
     let (mut client, statement) = get_prepared_statement(client, &insert_type).await?;
 
     let result = match insert_type {
         DaoType::InsertNamespace if wrapper.namespace.len() == 1 => {
             let namespace = wrapper.namespace.first().unwrap();
-            let properties: serde_json::Value = serde_json::from_str(&namespace.properties)?;
+            let properties: serde_json::Value =
+                serde_json::from_str(&namespace.properties)?;
             client
                 .execute(
                     &statement,
-                    &[&namespace.namespace, &properties, &namespace.comment, &namespace.domain],
+                    &[
+                        &namespace.namespace,
+                        &properties,
+                        &namespace.comment,
+                        &namespace.domain,
+                    ],
                 )
                 .await
         }
         DaoType::InsertTableInfo if wrapper.table_info.len() == 1 => {
             let table_info = wrapper.table_info.first().unwrap();
-            let properties: serde_json::Value = serde_json::from_str(&table_info.properties)?;
+            let properties: serde_json::Value =
+                serde_json::from_str(&table_info.properties)?;
             client
                 .execute(
                     &statement,
@@ -1225,10 +1301,9 @@ pub async fn execute_insert(client: &mut PooledClient, insert_type: i32, wrapper
                         .iter()
                         .map(DataFileOp::from_proto_data_file_op)
                         .collect::<Result<Vec<DataFileOp>>>()?;
-                    let commit_id = data_commit_info
-                        .commit_id
-                        .as_ref()
-                        .ok_or(LakeSoulMetaDataError::Internal("commit_id missing".to_string()))?;
+                    let commit_id = data_commit_info.commit_id.as_ref().ok_or(
+                        LakeSoulMetaDataError::Internal("commit_id missing".to_string()),
+                    )?;
                     let _uuid = uuid::Uuid::from_u64_pair(commit_id.high, commit_id.low);
 
                     let result = transaction
@@ -1264,8 +1339,11 @@ pub async fn execute_insert(client: &mut PooledClient, insert_type: i32, wrapper
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
-        DaoType::InsertDiscardCompressedFileInfo if wrapper.discard_compressed_file_info.len() == 1 => {
-            let discard_compressed_file_info = wrapper.discard_compressed_file_info.first().unwrap();
+        DaoType::InsertDiscardCompressedFileInfo
+            if wrapper.discard_compressed_file_info.len() == 1 =>
+        {
+            let discard_compressed_file_info =
+                wrapper.discard_compressed_file_info.first().unwrap();
             client
                 .execute(
                     &statement,
@@ -1274,7 +1352,11 @@ pub async fn execute_insert(client: &mut PooledClient, insert_type: i32, wrapper
                         &discard_compressed_file_info.table_path,
                         &discard_compressed_file_info.partition_desc,
                         &discard_compressed_file_info.timestamp,
-                        &NaiveDate::parse_from_str(&discard_compressed_file_info.t_date, "%Y-%m-%d").unwrap(),
+                        &NaiveDate::parse_from_str(
+                            &discard_compressed_file_info.t_date,
+                            "%Y-%m-%d",
+                        )
+                        .unwrap(),
                     ],
                 )
                 .await
@@ -1307,7 +1389,11 @@ pub async fn execute_insert(client: &mut PooledClient, insert_type: i32, wrapper
                                 &discard_compressed_file_info.table_path,
                                 &discard_compressed_file_info.partition_desc,
                                 &discard_compressed_file_info.timestamp,
-                                &NaiveDate::parse_from_str(&discard_compressed_file_info.t_date, "%Y-%m-%d").unwrap(),
+                                &NaiveDate::parse_from_str(
+                                    &discard_compressed_file_info.t_date,
+                                    "%Y-%m-%d",
+                                )
+                                .unwrap(),
                             ],
                         )
                         .await;
@@ -1343,12 +1429,17 @@ pub async fn execute_insert(client: &mut PooledClient, insert_type: i32, wrapper
 
 /// Execute the update for the coded Data Access Object.
 #[instrument(level = "debug")]
-pub async fn execute_update(client: &mut PooledClient, update_type: i32, joined_string: String) -> Result<i32> {
+pub async fn execute_update(
+    client: &mut PooledClient,
+    update_type: i32,
+    joined_string: String,
+) -> Result<i32> {
     if update_type < DAO_TYPE_UPDATE_OFFSET {
         error!("Invalid update_type_index: {:?}", update_type);
         return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
     }
-    let update_type = DaoType::try_from(update_type).map_err(|e| LakeSoulMetaDataError::Other(Box::new(e)))?;
+    let update_type = DaoType::try_from(update_type)
+        .map_err(|e| LakeSoulMetaDataError::Other(Box::new(e)))?;
     let (client, statement) = get_prepared_statement(client, &update_type).await?;
 
     let params = joined_string
@@ -1373,7 +1464,10 @@ pub async fn execute_update(client: &mut PooledClient, update_type: i32, joined_
         }
         DaoType::DeleteDiscardCompressedFileByFilterCondition if params.len() == 3 => {
             client
-                .execute(&statement, &[&params[0], &params[1], &i64::from_str(&params[2])?])
+                .execute(
+                    &statement,
+                    &[&params[0], &params[1], &i64::from_str(&params[2])?],
+                )
                 .await
         }
         DaoType::DeleteTableInfoByIdAndPath
@@ -1384,17 +1478,26 @@ pub async fn execute_update(client: &mut PooledClient, update_type: i32, joined_
         {
             client.execute(&statement, &[&params[0], &params[1]]).await
         }
-        DaoType::UpdateTableInfoPropertiesById | DaoType::UpdateNamespacePropertiesByNamespace if params.len() == 2 => {
+        DaoType::UpdateTableInfoPropertiesById
+        | DaoType::UpdateNamespacePropertiesByNamespace
+            if params.len() == 2 =>
+        {
             let properties: serde_json::Value = serde_json::from_str(&params[1])?;
             client.execute(&statement, &[&params[0], &properties]).await
         }
         DaoType::DeletePreviousVersionPartition if params.len() == 3 => {
             let ts = i64::from_str(&params[2])?;
-            client.execute(&statement, &[&params[0], &params[1], &ts]).await
+            client
+                .execute(&statement, &[&params[0], &params[1], &ts])
+                .await
         }
-        DaoType::DeleteOneDataCommitInfoByTableIdAndPartitionDescAndCommitId if params.len() == 3 => {
+        DaoType::DeleteOneDataCommitInfoByTableIdAndPartitionDescAndCommitId
+            if params.len() == 3 =>
+        {
             let commit_id: uuid::Uuid = uuid::Uuid::from_str(&params[2])?;
-            client.execute(&statement, &[&params[0], &params[1], &commit_id]).await
+            client
+                .execute(&statement, &[&params[0], &params[1], &commit_id])
+                .await
         }
         DaoType::UpdateTableInfoById if params.len() == 4 => {
             let mut statement = "update table_info set ".to_owned();
@@ -1423,27 +1526,44 @@ pub async fn execute_update(client: &mut PooledClient, update_type: i32, joined_
             }
             statement += " where table_id = $1::TEXT";
             match idx {
-                3 => client.execute(&statement, &[&params[0], &filter_params[0]]).await,
+                3 => {
+                    client
+                        .execute(&statement, &[&params[0], &filter_params[0]])
+                        .await
+                }
                 4 => {
                     client
-                        .execute(&statement, &[&params[0], &filter_params[0], &filter_params[1]])
+                        .execute(
+                            &statement,
+                            &[&params[0], &filter_params[0], &filter_params[1]],
+                        )
                         .await
                 }
                 5 => {
                     client
                         .execute(
                             &statement,
-                            &[&params[0], &filter_params[0], &filter_params[1], &filter_params[2]],
+                            &[
+                                &params[0],
+                                &filter_params[0],
+                                &filter_params[1],
+                                &filter_params[2],
+                            ],
                         )
                         .await
                 }
                 _ => todo!(),
             }
         }
-        DaoType::DeleteDataCommitInfoByTableIdAndPartitionDescAndCommitIdList if params.len() == 3 => {
+        DaoType::DeleteDataCommitInfoByTableIdAndPartitionDescAndCommitIdList
+            if params.len() == 3 =>
+        {
             let concated_uuid = &params[2];
             if concated_uuid.len() % 32 != 0 {
-                eprintln!("Invalid params of update_type={:?}, params={:?}", update_type, params);
+                eprintln!(
+                    "Invalid params of update_type={:?}, params={:?}",
+                    update_type, params
+                );
                 return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
             }
 
@@ -1497,18 +1617,23 @@ pub async fn execute_query_scalar(
         error!("Invalid update_scalar_type_index: {:?}", query_type);
         return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
     }
-    let query_type = DaoType::try_from(query_type).map_err(|e| LakeSoulMetaDataError::Other(Box::new(e)))?;
+    let query_type = DaoType::try_from(query_type)
+        .map_err(|e| LakeSoulMetaDataError::Other(Box::new(e)))?;
     let (client, statement) = get_prepared_statement(client, &query_type).await?;
 
     let params = get_params(joined_string);
 
     match query_type {
-        DaoType::GetLatestTimestampFromPartitionInfoWithoutPartitionDesc if params.len() == 1 => {
+        DaoType::GetLatestTimestampFromPartitionInfoWithoutPartitionDesc
+            if params.len() == 1 =>
+        {
             let result = client.query_opt(&statement, &[&params[0]]).await;
             ts_string(result)
         }
         DaoType::GetLatestTimestampFromPartitionInfo if params.len() == 2 => {
-            let result = client.query_opt(&statement, &[&params[0], &params[1]]).await;
+            let result = client
+                .query_opt(&statement, &[&params[0], &params[1]])
+                .await;
             match result {
                 Ok(Some(row)) => Ok(Some(format!("{}", row.get::<_, i64>(0)))),
                 Ok(None) => Ok(None),
@@ -1517,7 +1642,10 @@ pub async fn execute_query_scalar(
         }
         DaoType::GetLatestVersionUpToTimeFromPartitionInfo if params.len() == 3 => {
             let result = client
-                .query_opt(&statement, &[&params[0], &params[1], &i64::from_str(&params[2])?])
+                .query_opt(
+                    &statement,
+                    &[&params[0], &params[1], &i64::from_str(&params[2])?],
+                )
                 .await;
             match result {
                 Ok(Some(row)) => {
@@ -1531,9 +1659,14 @@ pub async fn execute_query_scalar(
                 Ok(None) => Ok(None),
             }
         }
-        DaoType::GetLatestVersionTimestampUpToTimeFromPartitionInfo if params.len() == 3 => {
+        DaoType::GetLatestVersionTimestampUpToTimeFromPartitionInfo
+            if params.len() == 3 =>
+        {
             let result = client
-                .query_opt(&statement, &[&params[0], &params[1], &i64::from_str(&params[2])?])
+                .query_opt(
+                    &statement,
+                    &[&params[0], &params[1], &i64::from_str(&params[2])?],
+                )
                 .await;
             ts_string(result)
         }

@@ -29,7 +29,9 @@ pub async fn verify_permission_by_table_name(
         .as_ref()
         .get_table_name_id_by_table_name(table, ns)
         .await?
-        .ok_or(LakeSoulMetaDataError::Internal("table not found".to_string()))?;
+        .ok_or(LakeSoulMetaDataError::Internal(
+            "table not found".to_string(),
+        ))?;
     debug!("table {}.{} in domain {}", ns, table, table_name_id.domain);
     match table_name_id.domain.as_str() {
         "public" | "lake-public" => Ok(()),
@@ -62,7 +64,10 @@ pub async fn verify_permission_by_table_path(
 ) -> crate::Result<()> {
     // jwt token verification has ensured user belongs to the group
     // we only need to verify this table path belongs to the group
-    let table_path_id = meta_data_client.as_ref().get_table_path_id_by_table_path(path).await?;
+    let table_path_id = meta_data_client
+        .as_ref()
+        .get_table_path_id_by_table_path(path)
+        .await?;
     debug!("table {} in domain {}", path, table_path_id.domain);
     match table_path_id.domain.as_str() {
         "public" | "lake-public" => Ok(()),
@@ -106,8 +111,14 @@ mod tests {
         Ok(table_id)
     }
 
-    async fn drop_table(table_id: &str, path: &str, meta_data_client: MetaDataClientRef) -> crate::Result<()> {
-        meta_data_client.delete_table_by_table_id_cascade(table_id, path).await
+    async fn drop_table(
+        table_id: &str,
+        path: &str,
+        meta_data_client: MetaDataClientRef,
+    ) -> crate::Result<()> {
+        meta_data_client
+            .delete_table_by_table_id_cascade(table_id, path)
+            .await
     }
 
     async fn clear_cache() {
@@ -120,7 +131,13 @@ mod tests {
         let metadata_client = Arc::new(MetaDataClient::from_env().await?);
         let table_name = "test_rbac_table";
         let table_path = "file:///tmp/table";
-        let uuid = create_table(table_name, table_path, "lake-public", metadata_client.clone()).await?;
+        let uuid = create_table(
+            table_name,
+            table_path,
+            "lake-public",
+            metadata_client.clone(),
+        )
+        .await?;
         let r = verify_permission_by_table_name(
             "lake-iam-001",
             "lake-czods",
@@ -134,7 +151,13 @@ mod tests {
 
         clear_cache().await;
 
-        let uuid = create_table(table_name, table_path, "lake-czads", metadata_client.clone()).await?;
+        let uuid = create_table(
+            table_name,
+            table_path,
+            "lake-czads",
+            metadata_client.clone(),
+        )
+        .await?;
         let r = verify_permission_by_table_name(
             "lake-iam-001",
             "lake-czods",

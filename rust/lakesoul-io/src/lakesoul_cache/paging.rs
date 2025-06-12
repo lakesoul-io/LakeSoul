@@ -72,7 +72,12 @@ pub trait PageCache: Sync + Send + Debug + 'static {
         loader: impl Future<Output = Result<Bytes>> + Send,
     ) -> Result<Bytes>;
 
-    async fn get_range(&self, location: &Path, page_id: u32, range: Range<usize>) -> Result<Option<Bytes>>;
+    async fn get_range(
+        &self,
+        location: &Path,
+        page_id: u32,
+        range: Range<usize>,
+    ) -> Result<Option<Bytes>>;
 
     /// Get metadata of the object.
     async fn head(

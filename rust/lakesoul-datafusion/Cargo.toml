@@ -48,10 +48,10 @@ clap = { workspace = true }
 
 
 [dev-dependencies]
-ctor = "0.2"
+ctor = "0.4"
 test-log = { version = "0.2.14", features = ["trace"] }
-rand = "0.8.5"
-rand_chacha = "0.3.1"
+rand = {workspace = true}
+rand_chacha = {workspace = true}
 
 [features]
 ci = []

@@ -20,7 +20,10 @@ use crate::sorted_merge::sort_key_range::{
 
 use arrow::compute::interleave;
 use arrow::{
-    array::{Array, ArrayBuilder, ArrayRef, PrimitiveBuilder, StringBuilder, make_array as make_arrow_array},
+    array::{
+        Array, ArrayBuilder, ArrayRef, PrimitiveBuilder, StringBuilder,
+        make_array as make_arrow_array,
+    },
     datatypes::{DataType, Field, SchemaRef},
     error::ArrowError,
     error::Result as ArrowResult,
@@ -50,7 +53,11 @@ impl RangeCombiner {
         merge_operator: Vec<MergeOperator>,
         is_partial_merge: bool,
     ) -> Self {
-        if merge_operator.is_empty() || merge_operator.iter().all(|op| *op == MergeOperator::UseLast) {
+        if merge_operator.is_empty()
+            || merge_operator
+                .iter()
+                .all(|op| *op == MergeOperator::UseLast)
+        {
             RangeCombiner::DefaultUseLastRangeCombiner(UseLastRangeCombiner::new(
                 schema,
                 streams_num,
@@ -59,20 +66,24 @@ impl RangeCombiner {
                 is_partial_merge,
             ))
         } else {
-            RangeCombiner::MinHeapSortKeyBatchRangeCombiner(MinHeapSortKeyBatchRangeCombiner::new(
-                schema,
-                streams_num,
-                fields_map,
-                target_batch_size,
-                merge_operator,
-            ))
+            RangeCombiner::MinHeapSortKeyBatchRangeCombiner(
+                MinHeapSortKeyBatchRangeCombiner::new(
+                    schema,
+                    streams_num,
+                    fields_map,
+                    target_batch_size,
+                    merge_operator,
+                ),
+            )
         }
     }
 
     /// Push a range into the combiner.
     pub fn push_range(&mut self, range: SortKeyBatchRange) {
         match self {
-            RangeCombiner::MinHeapSortKeyBatchRangeCombiner(combiner) => combiner.push(range),
+            RangeCombiner::MinHeapSortKeyBatchRangeCombiner(combiner) => {
+                combiner.push(range)
+            }
             RangeCombiner::DefaultUseLastRangeCombiner(combiner) => combiner.push(range),
         };
     }
@@ -80,8 +91,12 @@ impl RangeCombiner {
     /// Poll a result from the combiner.
     pub fn poll_result(&mut self) -> RangeCombinerResult {
         match self {
-            RangeCombiner::MinHeapSortKeyBatchRangeCombiner(combiner) => combiner.poll_result(),
-            RangeCombiner::DefaultUseLastRangeCombiner(combiner) => combiner.poll_result(),
+            RangeCombiner::MinHeapSortKeyBatchRangeCombiner(combiner) => {
+                combiner.poll_result()
+            }
+            RangeCombiner::DefaultUseLastRangeCombiner(combiner) => {
+                combiner.poll_result()
+            }
         }
     }
 
@@ -156,7 +171,8 @@ impl MinHeapSortKeyBatchRangeCombiner {
         target_batch_size: usize,
         merge_operator: Vec<MergeOperator>,
     ) -> Self {
-        let new_range = Arc::new(SortKeyBatchRanges::new(schema.clone(), fields_map.clone()));
+        let new_range =
+            Arc::new(SortKeyBatchRanges::new(schema.clone(), fields_map.clone()));
         let merge_op = match merge_operator.len() {
             0 => vec![MergeOperator::UseLast; schema.fields().len()],
             _ => merge_operator,
@@ -192,17 +208,21 @@ impl MinHeapSortKeyBatchRangeCombiner {
             match self.heap.pop() {
                 Some(Reverse(mut range)) => {
                     if self.current_sort_key_range.match_row(&range) {
-                        self.get_mut_current_sort_key_range().add_range_in_batch(range.clone());
+                        self.get_mut_current_sort_key_range()
+                            .add_range_in_batch(range.clone());
                     } else {
                         self.in_progress.push(self.current_sort_key_range.clone());
                         self.init_current_sort_key_range();
-                        self.get_mut_current_sort_key_range().add_range_in_batch(range.clone());
+                        self.get_mut_current_sort_key_range()
+                            .add_range_in_batch(range.clone());
                     }
                     range.advance();
                     RangeCombinerResult::Range(range)
                 }
                 None => {
-                    if self.current_sort_key_range.is_empty() && self.in_progress.is_empty() {
+                    if self.current_sort_key_range.is_empty()
+                        && self.in_progress.is_empty()
+                    {
                         RangeCombinerResult::None
                     } else {
                         if !self.current_sort_key_range.is_empty() {
@@ -243,7 +263,8 @@ impl MinHeapSortKeyBatchRangeCombiner {
                 // For the case that consecutive rows of target array are extended from the same source array
                 flatten_array_ranges.dedup_by_key(|range| range.batch_idx);
 
-                let mut batch_idx_to_flatten_array_idx = HashMap::<usize, usize>::with_capacity(16);
+                let mut batch_idx_to_flatten_array_idx =
+                    HashMap::<usize, usize>::with_capacity(16);
                 let mut flatten_dedup_arrays: Vec<ArrayRef> = flatten_array_ranges
                     .iter()
                     .enumerate()
@@ -274,7 +295,10 @@ impl MinHeapSortKeyBatchRangeCombiner {
 
     /// Initialize the current sort key range.
     fn init_current_sort_key_range(&mut self) {
-        self.current_sort_key_range = Arc::new(SortKeyBatchRanges::new(self.schema.clone(), self.fields_map.clone()));
+        self.current_sort_key_range = Arc::new(SortKeyBatchRanges::new(
+            self.schema.clone(),
+            self.fields_map.clone(),
+        ));
     }
 
     /// Get the mutable reference of the current sort key range.
@@ -300,16 +324,34 @@ fn merge_sort_key_array_ranges(
     assert_eq!(ranges.len(), capacity);
     let data_type = (*field.data_type()).clone();
     let mut append_array_data_builder: Box<dyn ArrayBuilder> = match data_type {
-        DataType::UInt8 => Box::new(PrimitiveBuilder::<UInt8Type>::with_capacity(capacity)),
-        DataType::UInt16 => Box::new(PrimitiveBuilder::<UInt16Type>::with_capacity(capacity)),
-        DataType::UInt32 => Box::new(PrimitiveBuilder::<UInt32Type>::with_capacity(capacity)),
-        DataType::UInt64 => Box::new(PrimitiveBuilder::<UInt64Type>::with_capacity(capacity)),
+        DataType::UInt8 => {
+            Box::new(PrimitiveBuilder::<UInt8Type>::with_capacity(capacity))
+        }
+        DataType::UInt16 => {
+            Box::new(PrimitiveBuilder::<UInt16Type>::with_capacity(capacity))
+        }
+        DataType::UInt32 => {
+            Box::new(PrimitiveBuilder::<UInt32Type>::with_capacity(capacity))
+        }
+        DataType::UInt64 => {
+            Box::new(PrimitiveBuilder::<UInt64Type>::with_capacity(capacity))
+        }
         DataType::Int8 => Box::new(PrimitiveBuilder::<Int8Type>::with_capacity(capacity)),
-        DataType::Int16 => Box::new(PrimitiveBuilder::<Int16Type>::with_capacity(capacity)),
-        DataType::Int32 => Box::new(PrimitiveBuilder::<Int32Type>::with_capacity(capacity)),
-        DataType::Int64 => Box::new(PrimitiveBuilder::<Int64Type>::with_capacity(capacity)),
-        DataType::Float32 => Box::new(PrimitiveBuilder::<Float32Type>::with_capacity(capacity)),
-        DataType::Float64 => Box::new(PrimitiveBuilder::<Float64Type>::with_capacity(capacity)),
+        DataType::Int16 => {
+            Box::new(PrimitiveBuilder::<Int16Type>::with_capacity(capacity))
+        }
+        DataType::Int32 => {
+            Box::new(PrimitiveBuilder::<Int32Type>::with_capacity(capacity))
+        }
+        DataType::Int64 => {
+            Box::new(PrimitiveBuilder::<Int64Type>::with_capacity(capacity))
+        }
+        DataType::Float32 => {
+            Box::new(PrimitiveBuilder::<Float32Type>::with_capacity(capacity))
+        }
+        DataType::Float64 => {
+            Box::new(PrimitiveBuilder::<Float64Type>::with_capacity(capacity))
+        }
         DataType::Utf8 => Box::new(StringBuilder::with_capacity(capacity, 256)),
         _ => {
             if *merge_operator == MergeOperator::UseLast {
@@ -326,10 +368,16 @@ fn merge_sort_key_array_ranges(
     let extend_list: Vec<(usize, usize)> = ranges
         .iter()
         .map(|ranges_per_row| {
-            let res = match merge_operator.merge(data_type.clone(), ranges_per_row, &mut append_array_data_builder)? {
+            let res = match merge_operator.merge(
+                data_type.clone(),
+                ranges_per_row,
+                &mut append_array_data_builder,
+            )? {
                 MergeResult::AppendValue(row_idx) => (append_idx, row_idx),
                 MergeResult::AppendNull => (null_idx, 0),
-                MergeResult::Extend(batch_idx, row_idx) => (batch_idx_to_flatten_array_idx[&batch_idx], row_idx),
+                MergeResult::Extend(batch_idx, row_idx) => {
+                    (batch_idx_to_flatten_array_idx[&batch_idx], row_idx)
+                }
             };
             Ok(res)
         })
@@ -445,7 +493,11 @@ impl UseLastRangeCombiner {
             streams_num,
             in_progress: Vec::with_capacity(target_batch_size),
             target_batch_size,
-            current_sort_key_range: Arc::new(UseLastSortKeyBatchRanges::new(schema, fields_map, is_partial_merge)),
+            current_sort_key_range: Arc::new(UseLastSortKeyBatchRanges::new(
+                schema,
+                fields_map,
+                is_partial_merge,
+            )),
             const_null_array: ConstNullArray::new(),
             ranges: (0..streams_num).map(|_| None).collect(),
             loser_tree: vec![],
@@ -498,24 +550,27 @@ impl UseLastRangeCombiner {
             if let Some(mut range) = self.ranges[winner].take() {
                 self.loser_tree_has_updated = false;
                 if self.current_sort_key_range.match_row(&range) {
-                    self.get_mut_current_sort_key_range().add_range_in_batch(&range);
+                    self.get_mut_current_sort_key_range()
+                        .add_range_in_batch(&range);
                 } else {
                     self.in_progress.push(self.current_sort_key_range.clone());
                     self.init_current_sort_key_range();
-                    self.get_mut_current_sort_key_range().add_range_in_batch(&range);
+                    self.get_mut_current_sort_key_range()
+                        .add_range_in_batch(&range);
                 }
                 range.advance();
                 RangeCombinerResult::Range(range)
-            } else  if self.current_sort_key_range.is_empty() && self.in_progress.is_empty() {
-                    RangeCombinerResult::None
-                } else {
-                    if !self.current_sort_key_range.is_empty() {
-                        self.in_progress.push(self.current_sort_key_range.clone());
-                        self.get_mut_current_sort_key_range().set_batch_range(None);
-                    }
-                    RangeCombinerResult::RecordBatch(self.build_record_batch())
+            } else if self.current_sort_key_range.is_empty()
+                && self.in_progress.is_empty()
+            {
+                RangeCombinerResult::None
+            } else {
+                if !self.current_sort_key_range.is_empty() {
+                    self.in_progress.push(self.current_sort_key_range.clone());
+                    self.get_mut_current_sort_key_range().set_batch_range(None);
                 }
-            
+                RangeCombinerResult::RecordBatch(self.build_record_batch())
+            }
         }
     }
 
@@ -531,13 +586,17 @@ impl UseLastRangeCombiner {
                 BuildNoHashHasher::default(),
             );
         let mut array_count = 1usize;
-        let mut flatten_arrays: Vec<Vec<ArrayRef>> = Vec::with_capacity(self.schema.fields().len());
+        let mut flatten_arrays: Vec<Vec<ArrayRef>> =
+            Vec::with_capacity(self.schema.fields().len());
         flatten_arrays.resize(self.schema.fields().len(), vec![]);
         for column_idx in 0..self.schema.fields().len() {
             unsafe {
                 let flatten_array = flatten_arrays.get_unchecked_mut(column_idx);
                 flatten_array.reserve(capacity + 1);
-                flatten_array.push(self.const_null_array.get(self.schema.field(column_idx).data_type()));
+                flatten_array.push(
+                    self.const_null_array
+                        .get(self.schema.field(column_idx).data_type()),
+                );
             }
         }
         for (idx, ranges) in self.in_progress.iter().enumerate() {
@@ -546,15 +605,18 @@ impl UseLastRangeCombiner {
                 unsafe {
                     match batch_idx_to_flatten_array_idx.get(&batch_idx) {
                         Some(flatten_array_idx) => {
-                            *interleave_idx.get_unchecked_mut(idx) = (*flatten_array_idx, range.row_idx)
+                            *interleave_idx.get_unchecked_mut(idx) =
+                                (*flatten_array_idx, range.row_idx)
                         }
                         None => {
                             batch_idx_to_flatten_array_idx.insert(batch_idx, array_count);
-                            *interleave_idx.get_unchecked_mut(idx) = (array_count, range.row_idx);
+                            *interleave_idx.get_unchecked_mut(idx) =
+                                (array_count, range.row_idx);
                             array_count += 1;
                             // fill all column arrays for interleaving
                             for column_idx in 0..self.schema.fields().len() {
-                                let flatten_array = flatten_arrays.get_unchecked_mut(column_idx);
+                                let flatten_array =
+                                    flatten_arrays.get_unchecked_mut(column_idx);
                                 flatten_array.push(
                                     range.array_ref_by_col(
                                         *self
@@ -573,7 +635,11 @@ impl UseLastRangeCombiner {
             .iter()
             .map(|array| {
                 interleave(
-                    array.iter().map(|a| a.as_ref()).collect::<Vec<&dyn Array>>().as_slice(),
+                    array
+                        .iter()
+                        .map(|a| a.as_ref())
+                        .collect::<Vec<&dyn Array>>()
+                        .as_slice(),
                     interleave_idx.as_slice(),
                 )
             })
@@ -620,12 +686,17 @@ impl UseLastRangeCombiner {
                         if let Some(array) = array {
                             match batch_idx_to_flatten_array_idx.get(&array.batch_idx) {
                                 Some(flatten_array_idx) => {
-                                    *interleave_idx.get_unchecked_mut(idx) = (*flatten_array_idx, array.row_idx)
+                                    *interleave_idx.get_unchecked_mut(idx) =
+                                        (*flatten_array_idx, array.row_idx)
                                 }
                                 None => {
                                     flatten_arrays.push(array.array_ref());
-                                    batch_idx_to_flatten_array_idx.insert(array.batch_idx, flatten_arrays.len() - 1);
-                                    *interleave_idx.get_unchecked_mut(idx) = (flatten_arrays.len() - 1, array.row_idx);
+                                    batch_idx_to_flatten_array_idx.insert(
+                                        array.batch_idx,
+                                        flatten_arrays.len() - 1,
+                                    );
+                                    *interleave_idx.get_unchecked_mut(idx) =
+                                        (flatten_arrays.len() - 1, array.row_idx);
                                 }
                             }
                         }

@@ -34,8 +34,8 @@ use datafusion::{
     execution::{SendableRecordBatchStream, TaskContext},
     physical_expr::EquivalenceProperties,
     physical_plan::{
-        DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, Partitioning, PlanProperties,
-        stream::RecordBatchReceiverStreamBuilder,
+        DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties,
+        Partitioning, PlanProperties, stream::RecordBatchReceiverStreamBuilder,
     },
 };
 use datafusion_common::{DataFusionError, Result};
@@ -104,7 +104,10 @@ pub struct ReceiverStreamExec {
 }
 
 impl ReceiverStreamExec {
-    pub fn new(receiver_stream_builder: RecordBatchReceiverStreamBuilder, schema: SchemaRef) -> Self {
+    pub fn new(
+        receiver_stream_builder: RecordBatchReceiverStreamBuilder,
+        schema: SchemaRef,
+    ) -> Self {
         Self {
             receiver_stream_builder: AtomicRefCell::new(Some(receiver_stream_builder)),
             schema: schema.clone(),
@@ -125,7 +128,11 @@ impl Debug for ReceiverStreamExec {
 }
 
 impl DisplayAs for ReceiverStreamExec {
-    fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt_as(
+        &self,
+        _t: DisplayFormatType,
+        f: &mut std::fmt::Formatter,
+    ) -> std::fmt::Result {
         write!(f, "ReceiverStreamExec")
     }
 }
@@ -173,16 +180,21 @@ impl ExecutionPlan for ReceiverStreamExec {
         unimplemented!()
     }
 
-    fn with_new_children(self: Arc<Self>, _children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
+    fn with_new_children(
+        self: Arc<Self>,
+        _children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
         unimplemented!()
     }
 
-    fn execute(&self, _partition: usize, _context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
-        let builder = self
-            .receiver_stream_builder
-            .borrow_mut()
-            .take()
-            .ok_or(DataFusionError::Internal("empty receiver stream".to_string()))?;
+    fn execute(
+        &self,
+        _partition: usize,
+        _context: Arc<TaskContext>,
+    ) -> Result<SendableRecordBatchStream> {
+        let builder = self.receiver_stream_builder.borrow_mut().take().ok_or(
+            DataFusionError::Internal("empty receiver stream".to_string()),
+        )?;
         Ok(builder.build())
     }
 }

@@ -13,7 +13,9 @@ use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::{ExecutionPlanProperties, Partitioning, PlanProperties};
 use datafusion::{
     execution::TaskContext,
-    physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, SendableRecordBatchStream},
+    physical_plan::{
+        DisplayAs, DisplayFormatType, ExecutionPlan, SendableRecordBatchStream,
+    },
 };
 use datafusion_common::{DataFusionError, Result};
 
@@ -49,7 +51,11 @@ impl DefaultColumnExec {
 }
 
 impl DisplayAs for DefaultColumnExec {
-    fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt_as(
+        &self,
+        _t: DisplayFormatType,
+        f: &mut std::fmt::Formatter,
+    ) -> std::fmt::Result {
         write!(f, "DefaultColumnExec")
     }
 }
@@ -97,26 +103,36 @@ impl ExecutionPlan for DefaultColumnExec {
         vec![&self.input]
     }
 
-    fn with_new_children(self: Arc<Self>, _: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
+    fn with_new_children(
+        self: Arc<Self>,
+        _: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(self)
     }
 
-    fn execute(&self, partition: usize, context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> Result<SendableRecordBatchStream> {
         if partition != 0 {
             return Err(DataFusionError::Internal(format!(
                 "Invalid requested partition {partition}. InsertExec requires a single input partition."
             )));
         }
 
-        let mut streams = Vec::with_capacity(self.input.output_partitioning().partition_count());
+        let mut streams =
+            Vec::with_capacity(self.input.output_partitioning().partition_count());
         for i in 0..self.input.output_partitioning().partition_count() {
             let stream = self.input.execute(i, context.clone())?;
             streams.push(stream);
         }
-        Ok(Box::pin(DefaultColumnStream::new_from_streams_with_default(
-            streams,
-            self.schema(),
-            self.default_column_value.clone(),
-        )))
+        Ok(Box::pin(
+            DefaultColumnStream::new_from_streams_with_default(
+                streams,
+                self.schema(),
+                self.default_column_value.clone(),
+            ),
+        ))
     }
 }

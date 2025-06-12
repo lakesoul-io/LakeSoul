@@ -59,7 +59,7 @@ moka = { version = "~0.12", features = ["future"] }
 tempfile = "3"
 sysinfo = "~0.32"
 walkdir = "2.5.0"
-zipf = "7.0.2"
+rand_distr = {workspace = true}
 
 [features]
 hdfs = ["dep:hdrs", "dep:hdfs-sys"]

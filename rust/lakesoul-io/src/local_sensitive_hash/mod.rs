@@ -1,4 +1,6 @@
-use arrow::array::{Array, Float32Array, Float64Array, GenericListArray, Int64Array, ListArray};
+use arrow::array::{
+    Array, Float32Array, Float64Array, GenericListArray, Int64Array, ListArray,
+};
 use arrow::buffer::OffsetBuffer;
 use arrow::datatypes::{DataType, Field};
 use datafusion_common::{DataFusionError, Result};
@@ -30,30 +32,46 @@ impl LSH {
             if self.d > 0 {
                 let mut rng = self.create_rng_with_seed();
                 let random_array =
-                    Array2::from_shape_fn((self.nbits as usize, self.d as usize), |_| rng.gen_range(-1.0..1.0));
+                    Array2::from_shape_fn((self.nbits as usize, self.d as usize), |_| {
+                        rng.random_range(-1.0..1.0)
+                    });
                 Ok(random_array)
             } else {
                 Err(DataFusionError::Internal(
-                    "the dimension you input in the config must be greater than 0".to_string(),
+                    "the dimension you input in the config must be greater than 0"
+                        .to_string(),
                 ))
             }
         } else {
             Err(DataFusionError::Internal(
-                "the number of bits used for binary encoding must be greater than 0".to_string(),
+                "the number of bits used for binary encoding must be greater than 0"
+                    .to_string(),
             ))
         }
     }
 
     // project the input data
-    fn project(&self, input_data: &ListArray, random_plans: &Result<Array2<f64>>) -> Result<Array2<f64>> {
+    fn project(
+        &self,
+        input_data: &ListArray,
+        random_plans: &Result<Array2<f64>>,
+    ) -> Result<Array2<f64>> {
         let list_len = input_data.len();
-        assert!(list_len > 0, "the length of input data must be large than 0");
+        assert!(
+            list_len > 0,
+            "the length of input data must be large than 0"
+        );
         let dimension_len = input_data.value(0).len();
 
-        let input_values = if let Some(values) = input_data.values().as_any().downcast_ref::<Float32Array>() {
-            let float64_values: Vec<f64> = values.iter().map(|x| x.unwrap() as f64).collect();
+        let input_values = if let Some(values) =
+            input_data.values().as_any().downcast_ref::<Float32Array>()
+        {
+            let float64_values: Vec<f64> =
+                values.iter().map(|x| x.unwrap() as f64).collect();
             Float64Array::from(float64_values)
-        } else if let Some(values) = input_data.values().as_any().downcast_ref::<Float64Array>() {
+        } else if let Some(values) =
+            input_data.values().as_any().downcast_ref::<Float64Array>()
+        {
             values.clone()
         } else {
             return Err(DataFusionError::Internal(
@@ -101,9 +119,11 @@ impl LSH {
                     result.push(random_projection);
                 }
 
-                let result_views: Vec<ArrayView2<f64>> = result.iter().map(|arr| ArrayView2::from(arr)).collect();
+                let result_views: Vec<ArrayView2<f64>> =
+                    result.iter().map(ArrayView2::from).collect();
 
-                let final_result = concatenate(Axis(0), &result_views).expect("Failed to concatenate results");
+                let final_result = concatenate(Axis(0), &result_views)
+                    .expect("Failed to concatenate results");
 
                 Ok(final_result)
             }
@@ -116,16 +136,22 @@ impl LSH {
 
     fn convert_vec_to_byte_u64(array: Vec<Vec<u64>>) -> ListArray {
         let field = Arc::new(Field::new("element", DataType::Int64, true));
-        let values = Int64Array::from(array.iter().flatten().map(|&x| x as i64).collect::<Vec<i64>>());
+        let values = Int64Array::from(
+            array
+                .iter()
+                .flatten()
+                .map(|&x| x as i64)
+                .collect::<Vec<i64>>(),
+        );
         let mut offsets = vec![];
         for subarray in array {
-            let current_offset = subarray.len() as usize;
+            let current_offset = subarray.len();
             offsets.push(current_offset);
         }
         let offsets_buffer = OffsetBuffer::from_lengths(offsets);
-        let list_array = GenericListArray::try_new(field, offsets_buffer, Arc::new(values), None)
-            .expect("can not create list_array");
-        list_array
+
+        GenericListArray::try_new(field, offsets_buffer, Arc::new(values), None)
+            .expect("can not create list_array")
     }
 
     fn convert_array_to_u64_vec<T>(array: &Array2<f64>) -> Vec<Vec<T>>
@@ -155,7 +181,12 @@ impl LSH {
 
         binary_encode
             .into_iter()
-            .map(|inner_vec| inner_vec.into_iter().map(|x| T::try_from(x).unwrap()).collect())
+            .map(|inner_vec| {
+                inner_vec
+                    .into_iter()
+                    .map(|x| T::try_from(x).unwrap())
+                    .collect()
+            })
             .collect()
     }
 
@@ -170,7 +201,9 @@ impl LSH {
                 let convert: Vec<Vec<u64>> = Self::convert_array_to_u64_vec(&projection);
                 Ok(Self::convert_vec_to_byte_u64(convert))
             }
-            None => Err(DataFusionError::Internal("the input data is None".to_string())),
+            None => Err(DataFusionError::Internal(
+                "the input data is None".to_string(),
+            )),
         }
     }
 }

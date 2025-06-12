@@ -69,7 +69,11 @@ where
 }
 
 /// Returns a sorted list of ranges that cover `ranges`
-fn merge_ranges(ranges: &[std::ops::Range<u64>], coalesce: u64, range_max_size: u64) -> Vec<std::ops::Range<u64>> {
+fn merge_ranges(
+    ranges: &[std::ops::Range<u64>],
+    coalesce: u64,
+    range_max_size: u64,
+) -> Vec<std::ops::Range<u64>> {
     if ranges.is_empty() {
         return vec![];
     }

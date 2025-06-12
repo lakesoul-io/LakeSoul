@@ -1,11 +1,10 @@
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
-use arrow_array::{ArrayRef, Int64Array, StringArray};
-use arrow_cast::pretty::print_batches;
+use arrow_array::{ArrayRef, StringArray};
 use arrow_schema::SchemaRef;
 use datafusion::error::Result;
 use rand::Rng;
-use rand::distributions::DistString;
+use rand::distr::SampleString;
 use std::sync::Arc;
 use tokio::runtime::Builder;
 use tokio::time::Instant;
@@ -38,8 +37,8 @@ fn create_batch(
     str_len: usize,
     pk_generator: &mut Option<LinearPKGenerator>,
 ) -> RecordBatch {
-    let mut rng = rand::thread_rng();
-    let mut len_rng = rand::thread_rng();
+    let mut rng = rand::rng();
+    let mut len_rng = rand::rng();
     let mut iter = vec![];
     if let Some(generator) = pk_generator {
         let pk_iter = (0..num_rows).map(|_| {
@@ -58,10 +57,11 @@ fn create_batch(
             format!("col_{}", i),
             Arc::new(StringArray::from(
                 (0..num_rows)
-                    .into_iter()
                     .map(|_| {
-                        rand::distributions::Alphanumeric
-                            .sample_string(&mut rng, len_rng.gen_range(str_len..str_len * 3))
+                        rand::distr::Alphanumeric.sample_string(
+                            &mut rng,
+                            len_rng.random_range(str_len..str_len * 3),
+                        )
                     })
                     .collect::<Vec<_>>(),
             )) as ArrayRef,
@@ -127,11 +127,20 @@ fn main() -> Result<()> {
         )?;
 
         for _ in 0..num_batch {
-            writer.write_batch(create_batch(num_columns, num_rows, str_len, &mut generator))?;
+            writer.write_batch(create_batch(
+                num_columns,
+                num_rows,
+                str_len,
+                &mut generator,
+            ))?;
         }
         let flush_start = Instant::now();
         writer.flush_and_close()?;
-        println!("write into file {} cost: {}ms", path, flush_start.elapsed().as_millis());
+        println!(
+            "write into file {} cost: {}ms",
+            path,
+            flush_start.elapsed().as_millis()
+        );
     }
 
     let reader_conf = LakeSoulIOConfigBuilder::new()
@@ -178,7 +187,10 @@ fn main() -> Result<()> {
         // dbg!(&rb.column_by_name("pk").unwrap());
     }
     if file_num == 2 {
-        assert_eq!(rb_count, num_rows * num_batch * 2 - num_rows * num_batch / 3 - 1);
+        assert_eq!(
+            rb_count,
+            num_rows * num_batch * 2 - num_rows * num_batch / 3 - 1
+        );
     }
     println!("time cost: {:?}ms", start.elapsed().as_millis()); // ms
 

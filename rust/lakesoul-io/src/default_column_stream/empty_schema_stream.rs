@@ -40,7 +40,10 @@ impl EmptySchemaStream {
 impl Stream for EmptySchemaStream {
     type Item = Result<RecordBatch>;
 
-    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
         if self.remaining_num_rows > 0 {
             let row_count = if self.batch_size < self.remaining_num_rows {
                 self.batch_size

@@ -26,14 +26,20 @@ impl JwtServer {
         }
     }
 
-    pub fn create_token(&self, claims: &Claims) -> Result<String, jsonwebtoken::errors::Error> {
+    pub fn create_token(
+        &self,
+        claims: &Claims,
+    ) -> Result<String, jsonwebtoken::errors::Error> {
         info!("claims is: {:?}", claims);
         encode(&Header::default(), &claims, &self.encoding_key)
     }
 
-    pub fn decode_token(&self, token: &str) -> Result<Claims, jsonwebtoken::errors::Error> {
+    pub fn decode_token(
+        &self,
+        token: &str,
+    ) -> Result<Claims, jsonwebtoken::errors::Error> {
         info!("token is: {}", token);
-        let data = decode::<Claims>(&token, &self.decoding_key, &Validation::default())?;
+        let data = decode::<Claims>(token, &self.decoding_key, &Validation::default())?;
         Ok(data.claims)
     }
 }
@@ -55,7 +61,10 @@ mod tests {
             let claims = Claims {
                 sub: "lake-iam-001".to_string(),
                 group: "lake-czods".to_string(),
-                exp: chrono::Utc::now().checked_add_days(Days::new(1)).unwrap().timestamp() as usize,
+                exp: chrono::Utc::now()
+                    .checked_add_days(Days::new(1))
+                    .unwrap()
+                    .timestamp() as usize,
             };
             let token = jwt_server.create_token(&claims).unwrap();
             let decoded_claims = jwt_server.decode_token(token.as_str()).unwrap();

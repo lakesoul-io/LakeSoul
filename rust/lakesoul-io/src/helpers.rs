@@ -10,7 +10,9 @@
 use arrow::datatypes::UInt32Type;
 use arrow_array::{Array, RecordBatch, UInt32Array};
 use arrow_buffer::i256;
-use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaBuilder, SchemaRef, TimeUnit};
+use arrow_schema::{
+    ArrowError, DataType, Field, Schema, SchemaBuilder, SchemaRef, TimeUnit,
+};
 use chrono::{DateTime, Duration};
 use datafusion::physical_plan::memory::LazyBatchGenerator;
 use datafusion::{
@@ -26,15 +28,16 @@ use datafusion::{
     physical_planner::create_physical_sort_expr,
 };
 use datafusion_common::DataFusionError::{External, Internal};
-use datafusion_common::{DFSchema, DataFusionError, Result, ScalarValue, cast::as_primitive_array};
+use datafusion_common::{
+    DFSchema, DataFusionError, Result, ScalarValue, cast::as_primitive_array,
+};
 use datafusion_substrait::substrait::proto::Plan;
 use futures::{StreamExt, TryStreamExt};
 use object_store::ObjectMeta;
 use object_store::path::Path;
 use parquet::format::FileMetaData;
 use proto::proto::entity::JniWrapper;
-use rand::distributions::DistString;
-use rand::thread_rng;
+use rand::distr::SampleString;
 use std::collections::VecDeque;
 use std::fmt::{Debug, Display, Formatter};
 use std::iter::zip;
@@ -44,8 +47,9 @@ use url::Url;
 
 use crate::{
     constant::{
-        DATE32_FORMAT, FLINK_TIMESTAMP_FORMAT, LAKESOUL_COMMA, LAKESOUL_EMPTY_STRING, LAKESOUL_EQ,
-        LAKESOUL_NULL_STRING, TIMESTAMP_MICROSECOND_FORMAT, TIMESTAMP_MILLSECOND_FORMAT, TIMESTAMP_NANOSECOND_FORMAT,
+        DATE32_FORMAT, FLINK_TIMESTAMP_FORMAT, LAKESOUL_COMMA, LAKESOUL_EMPTY_STRING,
+        LAKESOUL_EQ, LAKESOUL_NULL_STRING, TIMESTAMP_MICROSECOND_FORMAT,
+        TIMESTAMP_MILLSECOND_FORMAT, TIMESTAMP_NANOSECOND_FORMAT,
         TIMESTAMP_SECOND_FORMAT,
     },
     filter::parser::Parser,
@@ -99,7 +103,13 @@ pub fn column_names_to_physical_expr(
 ) -> Result<Vec<Arc<dyn PhysicalExpr>>> {
     let runtime_expr = columns
         .iter()
-        .map(|column| create_physical_expr(&col(column), input_dfschema, session_state.execution_props()))
+        .map(|column| {
+            create_physical_expr(
+                &col(column),
+                input_dfschema,
+                session_state.execution_props(),
+            )
+        })
         .collect::<Result<Vec<_>>>()?;
     Ok(runtime_expr)
 }
@@ -120,7 +130,12 @@ pub fn range_partition_to_partition_cols(
 ) -> Result<Vec<(String, DataType)>> {
     range_partitions
         .iter()
-        .map(|col| Ok((col.clone(), schema.field_with_name(col)?.data_type().clone())))
+        .map(|col| {
+            Ok((
+                col.clone(),
+                schema.field_with_name(col)?.data_type().clone(),
+            ))
+        })
         .collect::<Result<Vec<_>>>()
 }
 
@@ -147,7 +162,9 @@ pub fn get_columnar_values(
                     Err(e) => Err(e),
                 }
             } else {
-                Err(External(format!("Invalid partition desc of {}", range_col).into()))
+                Err(External(
+                    format!("Invalid partition desc of {}", range_col).into(),
+                ))
             }
         })
         .collect::<Result<Vec<_>>>()
@@ -220,7 +237,9 @@ pub fn format_scalar_value(v: &ScalarValue) -> String {
         }
         ScalarValue::Decimal128(Some(s), _, _) => format!("{}", s),
         ScalarValue::Decimal256(Some(s), _, _) => format!("{}", s),
-        ScalarValue::Binary(e) | ScalarValue::FixedSizeBinary(_, e) | ScalarValue::LargeBinary(e) => match e {
+        ScalarValue::Binary(e)
+        | ScalarValue::FixedSizeBinary(_, e)
+        | ScalarValue::LargeBinary(e) => match e {
             Some(bytes) => hex::encode(bytes),
             None => LAKESOUL_NULL_STRING.to_string(),
         },
@@ -244,21 +263,33 @@ pub fn into_scalar_value(val: &str, data_type: &DataType) -> Result<ScalarValue>
             DataType::Date32 => Ok(ScalarValue::Date32(None)),
             DataType::Utf8 => Ok(ScalarValue::Utf8(None)),
             DataType::Timestamp(unit, timezone) => match unit {
-                TimeUnit::Second => Ok(ScalarValue::TimestampSecond(None, timezone.clone())),
-                TimeUnit::Millisecond => Ok(ScalarValue::TimestampMillisecond(None, timezone.clone())),
-                TimeUnit::Microsecond => Ok(ScalarValue::TimestampMicrosecond(None, timezone.clone())),
-                TimeUnit::Nanosecond => Ok(ScalarValue::TimestampNanosecond(None, timezone.clone())),
+                TimeUnit::Second => {
+                    Ok(ScalarValue::TimestampSecond(None, timezone.clone()))
+                }
+                TimeUnit::Millisecond => {
+                    Ok(ScalarValue::TimestampMillisecond(None, timezone.clone()))
+                }
+                TimeUnit::Microsecond => {
+                    Ok(ScalarValue::TimestampMicrosecond(None, timezone.clone()))
+                }
+                TimeUnit::Nanosecond => {
+                    Ok(ScalarValue::TimestampNanosecond(None, timezone.clone()))
+                }
             },
             DataType::Decimal128(p, s) => Ok(ScalarValue::Decimal128(None, *p, *s)),
             DataType::Decimal256(p, s) => Ok(ScalarValue::Decimal256(None, *p, *s)),
             DataType::Binary => Ok(ScalarValue::Binary(None)),
-            DataType::FixedSizeBinary(size) => Ok(ScalarValue::FixedSizeBinary(*size, None)),
+            DataType::FixedSizeBinary(size) => {
+                Ok(ScalarValue::FixedSizeBinary(*size, None))
+            }
             DataType::LargeBinary => Ok(ScalarValue::LargeBinary(None)),
             _ => Ok(ScalarValue::Null),
         }
     } else {
         match data_type {
-            DataType::Date32 => Ok(ScalarValue::Date32(Some(date_str_to_epoch_days(val)?))),
+            DataType::Date32 => {
+                Ok(ScalarValue::Date32(Some(date_str_to_epoch_days(val)?)))
+            }
             DataType::Utf8 => {
                 if val.eq(LAKESOUL_EMPTY_STRING) {
                     Ok(ScalarValue::Utf8(Some("".to_string())))
@@ -272,62 +303,120 @@ pub fn into_scalar_value(val: &str, data_type: &DataType) -> Result<ScalarValue>
                 TimeUnit::Second => {
                     let secs = if let Ok(unix_time) = val.parse::<i64>() {
                         unix_time
-                    } else if let Ok(duration) = timestamp_str_to_unix_time(val, FLINK_TIMESTAMP_FORMAT) {
+                    } else if let Ok(duration) =
+                        timestamp_str_to_unix_time(val, FLINK_TIMESTAMP_FORMAT)
+                    {
                         duration.num_seconds()
                     } else {
-                        timestamp_str_to_unix_time(val, TIMESTAMP_SECOND_FORMAT)?.num_seconds()
+                        timestamp_str_to_unix_time(val, TIMESTAMP_SECOND_FORMAT)?
+                            .num_seconds()
                     };
                     Ok(ScalarValue::TimestampSecond(Some(secs), timezone.clone()))
                 }
                 TimeUnit::Millisecond => {
                     let millsecs = if let Ok(unix_time) = val.parse::<i64>() {
                         unix_time
-                    } else if let Ok(duration) = timestamp_str_to_unix_time(val, FLINK_TIMESTAMP_FORMAT) {
+                    } else if let Ok(duration) =
+                        timestamp_str_to_unix_time(val, FLINK_TIMESTAMP_FORMAT)
+                    {
                         duration.num_milliseconds()
                     } else {
                         // then try parsing string timestamp to epoch seconds (for flink)
-                        timestamp_str_to_unix_time(val, TIMESTAMP_MILLSECOND_FORMAT)?.num_milliseconds()
+                        timestamp_str_to_unix_time(val, TIMESTAMP_MILLSECOND_FORMAT)?
+                            .num_milliseconds()
                     };
-                    Ok(ScalarValue::TimestampMillisecond(Some(millsecs), timezone.clone()))
+                    Ok(ScalarValue::TimestampMillisecond(
+                        Some(millsecs),
+                        timezone.clone(),
+                    ))
                 }
                 TimeUnit::Microsecond => {
                     let microsecs = if let Ok(unix_time) = val.parse::<i64>() {
                         unix_time
-                    } else if let Ok(duration) = timestamp_str_to_unix_time(val, FLINK_TIMESTAMP_FORMAT) {
+                    } else if let Ok(duration) =
+                        timestamp_str_to_unix_time(val, FLINK_TIMESTAMP_FORMAT)
+                    {
                         match duration.num_microseconds() {
                             Some(microsecond) => microsecond,
-                            None => return Err(Internal("microsecond is out of range".to_string())),
+                            None => {
+                                return Err(Internal(
+                                    "microsecond is out of range".to_string(),
+                                ));
+                            }
                         }
                     } else {
-                        match timestamp_str_to_unix_time(val, TIMESTAMP_MICROSECOND_FORMAT)?.num_microseconds() {
+                        match timestamp_str_to_unix_time(
+                            val,
+                            TIMESTAMP_MICROSECOND_FORMAT,
+                        )?
+                        .num_microseconds()
+                        {
                             Some(microsecond) => microsecond,
-                            None => return Err(Internal("microsecond is out of range".to_string())),
+                            None => {
+                                return Err(Internal(
+                                    "microsecond is out of range".to_string(),
+                                ));
+                            }
                         }
                     };
-                    Ok(ScalarValue::TimestampMicrosecond(Some(microsecs), timezone.clone()))
+                    Ok(ScalarValue::TimestampMicrosecond(
+                        Some(microsecs),
+                        timezone.clone(),
+                    ))
                 }
                 TimeUnit::Nanosecond => {
                     let nanosecs = if let Ok(unix_time) = val.parse::<i64>() {
                         unix_time
-                    } else if let Ok(duration) = timestamp_str_to_unix_time(val, FLINK_TIMESTAMP_FORMAT) {
+                    } else if let Ok(duration) =
+                        timestamp_str_to_unix_time(val, FLINK_TIMESTAMP_FORMAT)
+                    {
                         match duration.num_nanoseconds() {
                             Some(nanosecond) => nanosecond,
-                            None => return Err(Internal("nanosecond is out of range".to_string())),
+                            None => {
+                                return Err(Internal(
+                                    "nanosecond is out of range".to_string(),
+                                ));
+                            }
                         }
                     } else {
-                        match timestamp_str_to_unix_time(val, TIMESTAMP_NANOSECOND_FORMAT)?.num_nanoseconds() {
+                        match timestamp_str_to_unix_time(
+                            val,
+                            TIMESTAMP_NANOSECOND_FORMAT,
+                        )?
+                        .num_nanoseconds()
+                        {
                             Some(nanosecond) => nanosecond,
-                            None => return Err(Internal("nanoseconds is out of range".to_string())),
+                            None => {
+                                return Err(Internal(
+                                    "nanoseconds is out of range".to_string(),
+                                ));
+                            }
                         }
                     };
-                    Ok(ScalarValue::TimestampNanosecond(Some(nanosecs), timezone.clone()))
+                    Ok(ScalarValue::TimestampNanosecond(
+                        Some(nanosecs),
+                        timezone.clone(),
+                    ))
                 }
             },
-            DataType::Decimal128(p, s) => Ok(ScalarValue::Decimal128(Some(val.parse::<i128>().unwrap()), *p, *s)),
-            DataType::Decimal256(p, s) => Ok(ScalarValue::Decimal256(Some(i256::from_string(val).unwrap()), *p, *s)),
+            DataType::Decimal128(p, s) => Ok(ScalarValue::Decimal128(
+                Some(val.parse::<i128>().unwrap()),
+                *p,
+                *s,
+            )),
+            DataType::Decimal256(p, s) => Ok(ScalarValue::Decimal256(
+                Some(i256::from_string(val).unwrap()),
+                *p,
+                *s,
+            )),
             DataType::Binary => Ok(ScalarValue::Binary(Some(hex::decode(val).unwrap()))),
-            DataType::FixedSizeBinary(size) => Ok(ScalarValue::FixedSizeBinary(*size, Some(hex::decode(val).unwrap()))),
-            DataType::LargeBinary => Ok(ScalarValue::LargeBinary(Some(hex::decode(val).unwrap()))),
+            DataType::FixedSizeBinary(size) => Ok(ScalarValue::FixedSizeBinary(
+                *size,
+                Some(hex::decode(val).unwrap()),
+            )),
+            DataType::LargeBinary => {
+                Ok(ScalarValue::LargeBinary(Some(hex::decode(val).unwrap())))
+            }
             _ => ScalarValue::try_from_string(val.to_string(), data_type),
         }
     }
@@ -342,7 +431,7 @@ pub fn into_scalar_value(val: &str, data_type: &DataType) -> Result<ScalarValue>
 /// # Returns
 ///
 /// Returns a sub path by concatenating the column names and [`datafusion::scalar::ScalarValue`]
-pub fn columnar_values_to_sub_path(columnar_values: &Vec<(String, ScalarValue)>) -> String {
+pub fn columnar_values_to_sub_path(columnar_values: &[(String, ScalarValue)]) -> String {
     if columnar_values.is_empty() {
         "/".to_string()
     } else {
@@ -366,7 +455,9 @@ pub fn columnar_values_to_sub_path(columnar_values: &Vec<(String, ScalarValue)>)
 /// # Returns
 ///
 /// Returns a partition description by concatenating the column names and [`datafusion::scalar::ScalarValue`]
-pub fn columnar_values_to_partition_desc(columnar_values: &Vec<(String, ScalarValue)>) -> String {
+pub fn columnar_values_to_partition_desc(
+    columnar_values: &[(String, ScalarValue)],
+) -> String {
     if columnar_values.is_empty() {
         "-5".to_string()
     } else {
@@ -388,7 +479,10 @@ pub fn columnar_values_to_partition_desc(columnar_values: &Vec<(String, ScalarVa
 /// # Returns
 ///
 /// Returns a vector of [`datafusion::scalar::ScalarValue`] of the given partition description
-pub fn partition_desc_to_scalar_values(schema: SchemaRef, partition_desc: String) -> Result<Vec<ScalarValue>> {
+pub fn partition_desc_to_scalar_values(
+    schema: SchemaRef,
+    partition_desc: String,
+) -> Result<Vec<ScalarValue>> {
     if partition_desc == "-5" {
         Ok(vec![])
     } else {
@@ -398,7 +492,11 @@ pub fn partition_desc_to_scalar_values(schema: SchemaRef, partition_desc: String
                 Some((name, val)) => {
                     part_values.push((name, val));
                 }
-                _ => return Err(External(format!("Invalid partition_desc: {}", partition_desc).into())),
+                _ => {
+                    return Err(External(
+                        format!("Invalid partition_desc: {}", partition_desc).into(),
+                    ));
+                }
             }
         }
         let mut scalar_values = Vec::with_capacity(schema.fields().len());
@@ -424,26 +522,31 @@ pub fn partition_desc_to_scalar_values(schema: SchemaRef, partition_desc: String
 /// # Returns
 ///
 /// Returns a tuple of (Partition Description, Map of Column Names to File Paths)
-pub fn partition_desc_from_file_scan_config(conf: &FileScanConfig) -> Result<(String, HashMap<String, String>)> {
+pub fn partition_desc_from_file_scan_config(
+    conf: &FileScanConfig,
+) -> Result<(String, HashMap<String, String>)> {
     if conf.table_partition_cols.is_empty() {
         Ok(("-5".to_string(), HashMap::default()))
     } else {
-        match conf.file_groups.first().and_then(|g| g.files().get(0)) {
+        match conf.file_groups.first().and_then(|g| g.files().first()) {
             Some(file) => Ok((
                 conf.table_partition_cols
                     .iter()
                     .enumerate()
-                    .map(|(idx, col)| format!("{}={}", col.name().clone(), file.partition_values[idx]))
+                    .map(|(idx, col)| {
+                        format!("{}={}", col.name().clone(), file.partition_values[idx])
+                    })
                     .collect::<Vec<_>>()
                     .join(","),
-                HashMap::from_iter(
-                    conf.table_partition_cols
-                        .iter()
-                        .enumerate()
-                        .map(|(idx, col)| (col.name().clone(), file.partition_values[idx].to_string())),
-                ),
+                HashMap::from_iter(conf.table_partition_cols.iter().enumerate().map(
+                    |(idx, col)| {
+                        (col.name().clone(), file.partition_values[idx].to_string())
+                    },
+                )),
             )),
-            None => Err(External(format!("Invalid file_group {:?}", conf.file_groups).into())),
+            None => Err(External(
+                format!("Invalid file_group {:?}", conf.file_groups).into(),
+            )),
         }
     }
 }
@@ -475,18 +578,27 @@ pub async fn listing_table_from_lakesoul_io_config(
                 .map(ListingTableUrl::parse)
                 .collect::<Result<Vec<_>>>()?;
             let object_metas = get_file_object_meta(session_state, &table_paths).await?;
-            let (table_paths, object_metas): (Vec<_>, Vec<_>) = zip(table_paths, object_metas)
-                .filter(|(_, obj_meta)| {
-                    let valid = obj_meta.size >= 8;
-                    if !valid {
-                        println!("File {}, size {}, is invalid", obj_meta.location, obj_meta.size);
-                    }
-                    valid
-                })
-                .unzip();
+            let (table_paths, object_metas): (Vec<_>, Vec<_>) =
+                zip(table_paths, object_metas)
+                    .filter(|(_, obj_meta)| {
+                        let valid = obj_meta.size >= 8;
+                        if !valid {
+                            println!(
+                                "File {}, size {}, is invalid",
+                                obj_meta.location, obj_meta.size
+                            );
+                        }
+                        valid
+                    })
+                    .unzip();
             // Resolve the schema
-            let resolved_schema =
-                infer_schema(session_state, &table_paths, &object_metas, Arc::clone(&file_format)).await?;
+            let resolved_schema = infer_schema(
+                session_state,
+                &table_paths,
+                &object_metas,
+                Arc::clone(&file_format),
+            )
+            .await?;
 
             let target_schema = if lakesoul_io_config.inferring_schema {
                 SchemaRef::new(Schema::empty())
@@ -494,8 +606,10 @@ pub async fn listing_table_from_lakesoul_io_config(
                 uniform_schema(lakesoul_io_config.target_schema())
             };
 
-            let table_partition_cols =
-                range_partition_to_partition_cols(target_schema.clone(), lakesoul_io_config.range_partitions_slice())?;
+            let table_partition_cols = range_partition_to_partition_cols(
+                target_schema.clone(),
+                lakesoul_io_config.range_partitions_slice(),
+            )?;
             let listing_options = ListingOptions::new(file_format.clone())
                 .with_file_extension(".parquet")
                 .with_table_partition_cols(table_partition_cols);
@@ -515,8 +629,10 @@ pub async fn listing_table_from_lakesoul_io_config(
         }
         true => {
             let target_schema = uniform_schema(lakesoul_io_config.target_schema());
-            let table_partition_cols =
-                range_partition_to_partition_cols(target_schema.clone(), lakesoul_io_config.range_partitions_slice())?;
+            let table_partition_cols = range_partition_to_partition_cols(
+                target_schema.clone(),
+                lakesoul_io_config.range_partitions_slice(),
+            )?;
 
             let listing_options = ListingOptions::new(file_format.clone())
                 .with_file_extension(".parquet")
@@ -529,7 +645,10 @@ pub async fn listing_table_from_lakesoul_io_config(
         }
     };
 
-    Ok((config.file_schema.clone(), Arc::new(ListingTable::try_new(config)?)))
+    Ok((
+        config.file_schema.clone(),
+        Arc::new(ListingTable::try_new(config)?),
+    ))
 }
 
 /// Gets the [`object_store::ObjectMetadata`] for a list of table paths.
@@ -542,7 +661,10 @@ pub async fn listing_table_from_lakesoul_io_config(
 /// # Returns
 ///
 /// Returns a vector of [`object_store::ObjectMetadata`]
-pub async fn get_file_object_meta(sc: &SessionState, table_paths: &[ListingTableUrl]) -> Result<Vec<ObjectMeta>> {
+pub async fn get_file_object_meta(
+    sc: &SessionState,
+    table_paths: &[ListingTableUrl],
+) -> Result<Vec<ObjectMeta>> {
     let object_store_url = table_paths
         .first()
         .ok_or(Internal("no table path".to_string()))?
@@ -552,8 +674,10 @@ pub async fn get_file_object_meta(sc: &SessionState, table_paths: &[ListingTable
         .map(|path| {
             let store = store.clone();
             async move {
-                let path = Path::from_url_path(<ListingTableUrl as AsRef<Url>>::as_ref(path).path())
-                    .map_err(object_store::Error::from)?;
+                let path = Path::from_url_path(
+                    <ListingTableUrl as AsRef<Url>>::as_ref(path).path(),
+                )
+                .map_err(object_store::Error::from)?;
                 store.head(&path).await
             }
         })
@@ -589,7 +713,7 @@ pub async fn infer_schema(
     let store = sc.runtime_env().object_store(object_store_url.clone())?;
 
     // Resolve the schema
-    file_format.infer_schema(sc, &store, &object_metas).await
+    file_format.infer_schema(sc, &store, object_metas).await
 }
 
 /// Applies a partition filter to a [`JniWrapper`].
@@ -603,14 +727,19 @@ pub async fn infer_schema(
 /// # Returns
 ///
 /// Returns the [`JniWrapper`] of filtered partition info
-pub fn apply_partition_filter(wrapper: JniWrapper, schema: SchemaRef, filter: Plan) -> Result<JniWrapper> {
+pub fn apply_partition_filter(
+    wrapper: JniWrapper,
+    schema: SchemaRef,
+    filter: Plan,
+) -> Result<JniWrapper> {
     let runtime = Builder::new_multi_thread()
         .worker_threads(1)
         .build()
         .map_err(|e| External(Box::new(e)))?;
     runtime.block_on(async {
         let context = SessionContext::default();
-        let index_filed_name = rand::distributions::Alphanumeric.sample_string(&mut thread_rng(), 8);
+        let index_filed_name =
+            rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 8);
         let index_filed = Field::new(index_filed_name, DataType::UInt32, false);
         let schema_len = schema.fields().len();
         let batch = batch_from_partition(&wrapper, schema, index_filed)?;
@@ -622,9 +751,10 @@ pub fn apply_partition_filter(wrapper: JniWrapper, schema: SchemaRef, filter: Pl
 
         let mut partition_info = vec![];
         for result_batch in results {
-            for index in as_primitive_array::<UInt32Type>(result_batch.column(schema_len))?
-                .values()
-                .iter()
+            for index in
+                as_primitive_array::<UInt32Type>(result_batch.column(schema_len))?
+                    .values()
+                    .iter()
             {
                 partition_info.push(wrapper.partition_info[*index as usize].clone());
             }
@@ -648,11 +778,20 @@ pub fn apply_partition_filter(wrapper: JniWrapper, schema: SchemaRef, filter: Pl
 /// # Returns
 ///
 /// Returns a [`RecordBatch`] of partition info for partition filter
-fn batch_from_partition(wrapper: &JniWrapper, schema: SchemaRef, index_field: Field) -> Result<RecordBatch> {
+fn batch_from_partition(
+    wrapper: &JniWrapper,
+    schema: SchemaRef,
+    index_field: Field,
+) -> Result<RecordBatch> {
     let scalar_values = wrapper
         .partition_info
         .iter()
-        .map(|partition_info| partition_desc_to_scalar_values(schema.clone(), partition_info.partition_desc.clone()))
+        .map(|partition_info| {
+            partition_desc_to_scalar_values(
+                schema.clone(),
+                partition_info.partition_desc.clone(),
+            )
+        })
         .collect::<Result<Vec<_>>>()?;
 
     let mut columns = vec![vec![]; schema.fields().len()];
@@ -668,7 +807,11 @@ fn batch_from_partition(wrapper: &JniWrapper, schema: SchemaRef, index_field: Fi
         .collect::<Result<Vec<_>>>()?;
 
     // Add index column
-    let mut fields_with_index = schema.flattened_fields().into_iter().cloned().collect::<Vec<_>>();
+    let mut fields_with_index = schema
+        .flattened_fields()
+        .into_iter()
+        .cloned()
+        .collect::<Vec<_>>();
     fields_with_index.push(index_field);
     let schema_with_index = SchemaRef::new(Schema::new(fields_with_index));
     columns.push(Arc::new(UInt32Array::from(
@@ -680,7 +823,8 @@ fn batch_from_partition(wrapper: &JniWrapper, schema: SchemaRef, index_field: Fi
 
 /// Converts a date string to epoch days.
 pub fn date_str_to_epoch_days(value: &str) -> Result<i32> {
-    let date = chrono::NaiveDate::parse_from_str(value, DATE32_FORMAT).map_err(|e| External(Box::new(e)))?;
+    let date = chrono::NaiveDate::parse_from_str(value, DATE32_FORMAT)
+        .map_err(|e| External(Box::new(e)))?;
     let datetime = date
         .and_hms_opt(12, 12, 12)
         .ok_or(Internal("invalid h/m/s".to_string()))?;
@@ -688,12 +832,15 @@ pub fn date_str_to_epoch_days(value: &str) -> Result<i32> {
         "the number of milliseconds is out of range for a NaiveDateTim".to_string(),
     ))?;
 
-    Ok(datetime.signed_duration_since(epoch_time.naive_utc()).num_days() as i32)
+    Ok(datetime
+        .signed_duration_since(epoch_time.naive_utc())
+        .num_days() as i32)
 }
 
 /// Converts a timestamp string to unix time.
 pub fn timestamp_str_to_unix_time(value: &str, fmt: &str) -> Result<Duration> {
-    let datetime = chrono::NaiveDateTime::parse_from_str(value, fmt).map_err(|e| External(Box::new(e)))?;
+    let datetime = chrono::NaiveDateTime::parse_from_str(value, fmt)
+        .map_err(|e| External(Box::new(e)))?;
     let epoch_time = DateTime::from_timestamp_millis(0).ok_or(Internal(
         "the number of milliseconds is out of range for a NaiveDateTim".to_string(),
     ))?;
@@ -708,7 +855,9 @@ pub fn column_with_name_and_name2index<'a>(
     name_to_index: &Option<HashMap<String, usize>>,
 ) -> Option<(usize, &'a Field)> {
     if let Some(name_to_index) = name_to_index {
-        name_to_index.get(name).map(|index| (*index, schema.field(*index)))
+        name_to_index
+            .get(name)
+            .map(|index| (*index, schema.field(*index)))
     } else {
         schema.column_with_name(name)
     }
@@ -727,7 +876,10 @@ pub fn get_batch_memory_size(batch: &RecordBatch) -> Result<usize> {
 
 /// Gets the file size of a [`FileMetaData`].
 pub fn get_file_size(metadata: &FileMetaData) -> usize {
-    let footer_size = metadata.footer_signing_key_metadata.as_ref().map_or(0, |f| f.len());
+    let footer_size = metadata
+        .footer_signing_key_metadata
+        .as_ref()
+        .map_or(0, |f| f.len());
     let rg_size = metadata
         .row_groups
         .iter()
@@ -771,7 +923,7 @@ pub fn extract_hash_bucket_id(file_path: &str) -> Option<u32> {
     use regex::Regex;
 
     // Get the file name from the path
-    let file_name = file_path.split('/').last()?;
+    let file_name = file_path.split('/').next_back()?;
 
     // Regex pattern to extract the hash bucket id between the last underscore and any suffix
     // This pattern matches filenames starting with "part-" and containing an underscore
@@ -821,7 +973,9 @@ pub fn collect_or_conjunctive_filter_expressions(
             collect_column_equalities(filter, &mut equalities);
 
             // Check if all collected equalities are on primary key columns
-            let all_primary = equalities.iter().all(|eq| primary_keys.contains(&eq.column_name));
+            let all_primary = equalities
+                .iter()
+                .all(|eq| primary_keys.contains(&eq.column_name));
 
             if all_primary && !equalities.is_empty() {
                 result.extend(equalities);
@@ -835,7 +989,10 @@ pub fn collect_or_conjunctive_filter_expressions(
 /// Collects column equality comparisons from an expression.
 ///
 /// Recursively traverses OR expressions to find all column = value comparisons.
-pub fn collect_column_equalities(expr: &datafusion::logical_expr::Expr, equalities: &mut Vec<ColumnEquality>) {
+pub fn collect_column_equalities(
+    expr: &datafusion::logical_expr::Expr,
+    equalities: &mut Vec<ColumnEquality>,
+) {
     use datafusion::logical_expr::{Expr, Operator};
 
     match expr {
@@ -880,21 +1037,21 @@ pub fn compute_scalar_hash(scalar: &ScalarValue) -> u32 {
     use crate::hash_utils::{HASH_SEED, HashValue};
 
     match scalar {
-        ScalarValue::Int8(Some(v)) => HashValue::hash_one(v, HASH_SEED) as u32,
-        ScalarValue::Int16(Some(v)) => HashValue::hash_one(v, HASH_SEED) as u32,
-        ScalarValue::Int32(Some(v)) => HashValue::hash_one(v, HASH_SEED) as u32,
-        ScalarValue::Int64(Some(v)) => HashValue::hash_one(v, HASH_SEED) as u32,
-        ScalarValue::UInt8(Some(v)) => HashValue::hash_one(v, HASH_SEED) as u32,
-        ScalarValue::UInt16(Some(v)) => HashValue::hash_one(v, HASH_SEED) as u32,
-        ScalarValue::UInt32(Some(v)) => HashValue::hash_one(v, HASH_SEED) as u32,
-        ScalarValue::UInt64(Some(v)) => HashValue::hash_one(v, HASH_SEED) as u32,
-        ScalarValue::Float32(Some(v)) => HashValue::hash_one(v, HASH_SEED) as u32,
-        ScalarValue::Float64(Some(v)) => HashValue::hash_one(v, HASH_SEED) as u32,
-        ScalarValue::Utf8(Some(v)) => HashValue::hash_one(v.as_bytes(), HASH_SEED) as u32,
-        ScalarValue::LargeUtf8(Some(v)) => HashValue::hash_one(v.as_bytes(), HASH_SEED) as u32,
-        ScalarValue::Binary(Some(v)) => HashValue::hash_one(v.as_slice(), HASH_SEED) as u32,
-        ScalarValue::LargeBinary(Some(v)) => HashValue::hash_one(v.as_slice(), HASH_SEED) as u32,
-        ScalarValue::Boolean(Some(v)) => HashValue::hash_one(v, HASH_SEED) as u32,
+        ScalarValue::Int8(Some(v)) => HashValue::hash_one(v, HASH_SEED),
+        ScalarValue::Int16(Some(v)) => HashValue::hash_one(v, HASH_SEED),
+        ScalarValue::Int32(Some(v)) => HashValue::hash_one(v, HASH_SEED),
+        ScalarValue::Int64(Some(v)) => HashValue::hash_one(v, HASH_SEED),
+        ScalarValue::UInt8(Some(v)) => HashValue::hash_one(v, HASH_SEED),
+        ScalarValue::UInt16(Some(v)) => HashValue::hash_one(v, HASH_SEED),
+        ScalarValue::UInt32(Some(v)) => HashValue::hash_one(v, HASH_SEED),
+        ScalarValue::UInt64(Some(v)) => HashValue::hash_one(v, HASH_SEED),
+        ScalarValue::Float32(Some(v)) => HashValue::hash_one(v, HASH_SEED),
+        ScalarValue::Float64(Some(v)) => HashValue::hash_one(v, HASH_SEED),
+        ScalarValue::Utf8(Some(v)) => HashValue::hash_one(v.as_bytes(), HASH_SEED),
+        ScalarValue::LargeUtf8(Some(v)) => HashValue::hash_one(v.as_bytes(), HASH_SEED),
+        ScalarValue::Binary(Some(v)) => HashValue::hash_one(v.as_slice(), HASH_SEED),
+        ScalarValue::LargeBinary(Some(v)) => HashValue::hash_one(v.as_slice(), HASH_SEED),
+        ScalarValue::Boolean(Some(v)) => HashValue::hash_one(v, HASH_SEED),
         // For other types or None values, use a default hash
         _ => HASH_SEED, // Use seed itself as fallback
     }
