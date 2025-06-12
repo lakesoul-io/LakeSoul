@@ -15,11 +15,11 @@ use anyhow::anyhow;
 use arrow::error::ArrowError;
 use arrow_schema::{Schema, SchemaRef};
 use datafusion::error::{DataFusionError, Result};
+use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::context::QueryPlanner;
 use datafusion::execution::memory_pool::FairSpillPool;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
-use datafusion::execution::SessionStateBuilder;
 use datafusion::logical_expr::Expr;
 use datafusion::optimizer::analyzer::type_coercion::TypeCoercion;
 use datafusion::optimizer::optimize_projections::OptimizeProjections;
@@ -204,27 +204,32 @@ impl LakeSoulIOConfig {
 
     /// Returns whether to keep row order in output
     pub fn keep_ordering(&self) -> bool {
-        self.option(OPTION_KEY_KEEP_ORDERS).map_or(false, |x| x.eq("true"))
+        self.option(OPTION_KEY_KEEP_ORDERS)
+            .is_some_and(|x| x.eq("true"))
     }
 
     /// Returns the memory limit in bytes if set
     pub fn mem_limit(&self) -> Option<usize> {
-        self.option(OPTION_KEY_MEM_LIMIT).map(|x| x.parse().unwrap())
+        self.option(OPTION_KEY_MEM_LIMIT)
+            .map(|x| x.parse().unwrap())
     }
 
     /// Returns the maximum file size in bytes if set
     pub fn max_file_size_option(&self) -> Option<u64> {
-        self.option(OPTION_KEY_MAX_FILE_SIZE).map(|x| x.parse().unwrap())
+        self.option(OPTION_KEY_MAX_FILE_SIZE)
+            .map(|x| x.parse().unwrap())
     }
 
     /// Returns the memory pool size in bytes if set
     pub fn pool_size(&self) -> Option<usize> {
-        self.option(OPTION_KEY_POOL_SIZE).map(|x| x.parse().unwrap())
+        self.option(OPTION_KEY_POOL_SIZE)
+            .map(|x| x.parse().unwrap())
     }
 
     /// Returns the hash bucket ID for partitioning (defaults to 0)
     pub fn hash_bucket_id(&self) -> usize {
-        self.option(OPTION_KEY_HASH_BUCKET_ID).map_or(0, |x| x.parse().unwrap())
+        self.option(OPTION_KEY_HASH_BUCKET_ID)
+            .map_or(0, |x| x.parse().unwrap())
     }
 
     /// Returns the number of hash buckets for partitioning (defaults to 1, equvalent to not partitioning)
@@ -236,28 +241,31 @@ impl LakeSoulIOConfig {
     /// Returns the CDC (Change Data Capture) column name if set
     pub fn cdc_column(&self) -> String {
         self.option(OPTION_KEY_CDC_COLUMN)
-            .map_or_else(|| String::new(), |x| x.to_string())
+            .map_or_else(String::new, |x| x.to_string())
     }
 
     /// Returns whether the data is compacted, default is false
     pub fn is_compacted(&self) -> bool {
-        self.option(OPTION_KEY_IS_COMPACTED).map_or(false, |x| x.eq("true"))
+        self.option(OPTION_KEY_IS_COMPACTED)
+            .is_some_and(|x| x.eq("true"))
     }
 
     /// Returns whether to skip merge operation during read, default is false
     pub fn skip_merge_on_read(&self) -> bool {
         self.option(OPTION_KEY_SKIP_MERGE_ON_READ)
-            .map_or(false, |x| x.eq("true"))
+            .is_some_and(|x| x.eq("true"))
     }
 
     /// Returns whether to compute Local Sensitive Hash (defaults to true)
     pub fn compute_lsh(&self) -> bool {
-        self.option(OPTION_KEY_COMPUTE_LSH).map_or(true, |x| x.eq("true"))
+        self.option(OPTION_KEY_COMPUTE_LSH)
+            .is_none_or(|x| x.eq("true"))
     }
 
     /// Returns whether to use stable sort algorithm
     pub fn stable_sort(&self) -> bool {
-        self.option(OPTION_KEY_STABLE_SORT).map_or(false, |x| x.eq("true"))
+        self.option(OPTION_KEY_STABLE_SORT)
+            .is_some_and(|x| x.eq("true"))
     }
 }
 
@@ -381,7 +389,10 @@ impl LakeSoulIOConfigBuilder {
     /// # Arguments
     ///
     /// * `col` - The column to add
-    #[deprecated(since = "2.5.0", note = "This method is deprecated. Use target_schema instead.")]
+    #[deprecated(
+        since = "2.5.0",
+        note = "This method is deprecated. Use target_schema instead."
+    )]
     #[allow(deprecated)]
     pub fn with_column(mut self, col: String) -> Self {
         self.config.columns.push(String::from(&col));
@@ -423,7 +434,10 @@ impl LakeSoulIOConfigBuilder {
     /// # Arguments
     ///
     /// * `max_row_group_num_values` - The maximum number of values per row group when writing
-    pub fn with_max_row_group_num_values(mut self, max_row_group_num_values: usize) -> Self {
+    pub fn with_max_row_group_num_values(
+        mut self,
+        max_row_group_num_values: usize,
+    ) -> Self {
         self.config.max_row_group_num_values = max_row_group_num_values;
         self
     }
@@ -448,7 +462,10 @@ impl LakeSoulIOConfigBuilder {
         self
     }
 
-    #[deprecated(since = "2.5.0", note = "This method is deprecated. Use target_schema instead.")]
+    #[deprecated(
+        since = "2.5.0",
+        note = "This method is deprecated. Use target_schema instead."
+    )]
     #[allow(deprecated)]
     pub fn with_columns(mut self, cols: Vec<String>) -> Self {
         self.config.columns = cols;
@@ -522,7 +539,11 @@ impl LakeSoulIOConfigBuilder {
     ///
     /// * `field_name` - The field name to set the default value for
     /// * `value` - The default value to set
-    pub fn with_default_column_value(mut self, field_name: String, value: String) -> Self {
+    pub fn with_default_column_value(
+        mut self,
+        field_name: String,
+        value: String,
+    ) -> Self {
         self.config.default_column_value.insert(field_name, value);
         self
     }
@@ -533,8 +554,14 @@ impl LakeSoulIOConfigBuilder {
     ///
     /// * `key` - The key to add the object store option for
     /// * `value` - The value to add the object store option for
-    pub fn with_object_store_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.config.object_store_options.insert(key.into(), value.into());
+    pub fn with_object_store_option(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        self.config
+            .object_store_options
+            .insert(key.into(), value.into());
         self
     }
 
@@ -544,7 +571,11 @@ impl LakeSoulIOConfigBuilder {
     ///
     /// * `key` - The key to add the option for
     /// * `value` - The value to add the option for
-    pub fn with_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn with_option(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
         self.config.options.insert(key.into(), value.into());
         self
     }
@@ -636,29 +667,46 @@ impl From<LakeSoulIOConfig> for LakeSoulIOConfigBuilder {
 /// If no region is provided, default to us-east-1.
 /// Bucket name would be retrieved from file names.
 /// Currently only one s3 object store with one bucket is supported.
-pub fn register_s3_object_store(url: &Url, config: &LakeSoulIOConfig, runtime: &RuntimeEnv) -> Result<()> {
-    let key = std::env::var("AWS_ACCESS_KEY_ID")
-        .ok()
-        .or_else(|| config.object_store_options.get("fs.s3a.access.key").cloned());
-    let secret = std::env::var("AWS_SECRET_ACCESS_KEY")
-        .ok()
-        .or_else(|| config.object_store_options.get("fs.s3a.secret.key").cloned());
+pub fn register_s3_object_store(
+    url: &Url,
+    config: &LakeSoulIOConfig,
+    runtime: &RuntimeEnv,
+) -> Result<()> {
+    let key = std::env::var("AWS_ACCESS_KEY_ID").ok().or_else(|| {
+        config
+            .object_store_options
+            .get("fs.s3a.access.key")
+            .cloned()
+    });
+    let secret = std::env::var("AWS_SECRET_ACCESS_KEY").ok().or_else(|| {
+        config
+            .object_store_options
+            .get("fs.s3a.secret.key")
+            .cloned()
+    });
     let region = std::env::var("AWS_REGION").ok().or_else(|| {
-        std::env::var("AWS_DEFAULT_REGION")
-            .ok()
-            .or_else(|| config.object_store_options.get("fs.s3a.endpoint.region").cloned())
+        std::env::var("AWS_DEFAULT_REGION").ok().or_else(|| {
+            config
+                .object_store_options
+                .get("fs.s3a.endpoint.region")
+                .cloned()
+        })
     });
     let mut endpoint = std::env::var("AWS_ENDPOINT")
         .ok()
         .or_else(|| config.object_store_options.get("fs.s3a.endpoint").cloned());
     let bucket = config.object_store_options.get("fs.s3a.bucket").cloned();
-    let virtual_path_style = config.object_store_options.get("fs.s3a.path.style.access").cloned();
-    let virtual_path_style = !virtual_path_style.is_some_and(|s| s != "true");
+    let virtual_path_style = config
+        .object_store_options
+        .get("fs.s3a.path.style.access")
+        .cloned();
+    let virtual_path_style = virtual_path_style.is_none_or(|s| s == "true");
     if !virtual_path_style {
         if let (Some(endpoint_str), Some(bucket)) = (&endpoint, &bucket) {
             // for host style access with endpoint defined, we need to check endpoint contains bucket name
             if !endpoint_str.contains(bucket) {
-                let mut endpoint_url = Url::parse(endpoint_str.as_str()).map_err(|e| External(Box::new(e)))?;
+                let mut endpoint_url = Url::parse(endpoint_str.as_str())
+                    .map_err(|e| External(Box::new(e)))?;
                 endpoint_url
                     .set_host(Some(&*format!(
                         "{}.{}",
@@ -669,7 +717,10 @@ pub fn register_s3_object_store(url: &Url, config: &LakeSoulIOConfig, runtime: &
                     )))
                     .map_err(|e| External(Box::new(e)))?;
                 let endpoint_s = endpoint_url.to_string();
-                endpoint = endpoint_s.strip_suffix('/').map(|s| s.to_string()).or(Some(endpoint_s));
+                endpoint = endpoint_s
+                    .strip_suffix('/')
+                    .map(|s| s.to_string())
+                    .or(Some(endpoint_s));
             }
         }
     }
@@ -699,12 +750,18 @@ pub fn register_s3_object_store(url: &Url, config: &LakeSoulIOConfig, runtime: &
         )
         .with_allow_http(true);
     if let (Some(k), Some(s)) = (key, secret) {
-        s3_store_builder = s3_store_builder.with_access_key_id(k).with_secret_access_key(s);
+        s3_store_builder = s3_store_builder
+            .with_access_key_id(k)
+            .with_secret_access_key(s);
     }
     if let Some(ep) = endpoint {
         s3_store_builder = s3_store_builder.with_endpoint(ep);
     }
-    let s3_store = Arc::new(s3_store_builder.build().map_err(|e| DataFusionError::ObjectStore(e))?);
+    let s3_store = Arc::new(
+        s3_store_builder
+            .build()
+            .map_err(DataFusionError::ObjectStore)?,
+    );
 
     // add cache if env LAKESOUL_CACHE is set
     if std::env::var("LAKESOUL_CACHE").is_ok() {
@@ -741,9 +798,11 @@ pub fn register_hdfs_object_store(
 ) -> Result<()> {
     #[cfg(not(feature = "hdfs"))]
     {
-        Err(DataFusionError::ObjectStore(object_store::Error::NotSupported {
-            source: "hdfs support is not enabled".into(),
-        }))
+        Err(DataFusionError::ObjectStore(
+            object_store::Error::NotSupported {
+                source: "hdfs support is not enabled".into(),
+            },
+        ))
     }
     #[cfg(feature = "hdfs")]
     {
@@ -765,13 +824,19 @@ pub fn register_hdfs_object_store(
 /// # Returns
 ///
 /// The normalized path string
-fn register_object_store(path: &str, config: &mut LakeSoulIOConfig, runtime: &RuntimeEnv) -> Result<String> {
+fn register_object_store(
+    path: &str,
+    config: &mut LakeSoulIOConfig,
+    runtime: &RuntimeEnv,
+) -> Result<String> {
     let url = Url::parse(path);
     match url {
         Ok(url) => match url.scheme() {
             "s3" | "s3a" => {
                 if runtime
-                    .object_store(ObjectStoreUrl::parse(&url[..url::Position::BeforePath])?)
+                    .object_store(ObjectStoreUrl::parse(
+                        &url[..url::Position::BeforePath],
+                    )?)
                     .is_ok()
                 {
                     return Ok(path.to_owned());
@@ -780,7 +845,9 @@ fn register_object_store(path: &str, config: &mut LakeSoulIOConfig, runtime: &Ru
                     config.object_store_options.insert(
                         "fs.s3a.bucket".to_string(),
                         url.host_str()
-                            .ok_or(DataFusionError::Internal("host str missing".to_string()))?
+                            .ok_or(DataFusionError::Internal(
+                                "host str missing".to_string(),
+                            ))?
                             .to_string(),
                     );
                 }
@@ -790,7 +857,9 @@ fn register_object_store(path: &str, config: &mut LakeSoulIOConfig, runtime: &Ru
             "hdfs" => {
                 if url.has_host() {
                     if runtime
-                        .object_store(ObjectStoreUrl::parse(&url[..url::Position::BeforePath])?)
+                        .object_store(ObjectStoreUrl::parse(
+                            &url[..url::Position::BeforePath],
+                        )?)
                         .is_ok()
                     {
                         return Ok(path.to_owned());
@@ -814,12 +883,17 @@ fn register_object_store(path: &str, config: &mut LakeSoulIOConfig, runtime: &Ru
             // "file" => Ok(path.to_owned()),
             "file" => Ok(path.to_owned()),
             // Support Windows drive letter paths like "c:" or "d:"
-            scheme if scheme.len() == 1 && scheme.chars().next().unwrap().is_ascii_alphabetic() => {
+            scheme
+                if scheme.len() == 1
+                    && scheme.chars().next().unwrap().is_ascii_alphabetic() =>
+            {
                 Ok(format!("file://{}", path))
             }
-            _ => Err(DataFusionError::ObjectStore(object_store::Error::NotSupported {
-                source: "FileSystem is not supported".into(),
-            })),
+            _ => Err(DataFusionError::ObjectStore(
+                object_store::Error::NotSupported {
+                    source: "FileSystem is not supported".into(),
+                },
+            )),
         },
         Err(ParseError::RelativeUrlWithoutBase) => {
             let path = path.trim_start_matches('/');
@@ -870,12 +944,20 @@ pub fn create_session_context_with_planner(
         .with_information_schema(true)
         .with_create_default_catalog_and_schema(true);
 
-    sess_conf.options_mut().optimizer.enable_round_robin_repartition = false; // if true, the record_batches poll from stream become unordered
+    sess_conf
+        .options_mut()
+        .optimizer
+        .enable_round_robin_repartition = false; // if true, the record_batches poll from stream become unordered
     sess_conf.options_mut().optimizer.prefer_hash_join = false; //if true, panicked at 'range end out of bounds'
-    sess_conf.options_mut().execution.parquet.pushdown_filters = config.parquet_filter_pushdown;
+    sess_conf.options_mut().execution.parquet.pushdown_filters =
+        config.parquet_filter_pushdown;
     sess_conf.options_mut().execution.target_partitions = 1;
     sess_conf.options_mut().execution.parquet.dictionary_enabled = Some(false);
-    sess_conf.options_mut().execution.parquet.schema_force_view_types = false;
+    sess_conf
+        .options_mut()
+        .execution
+        .parquet
+        .schema_force_view_types = false;
 
     let mut runtime_conf = RuntimeEnvBuilder::new();
     if let Some(pool_size) = config.pool_size() {
@@ -903,7 +985,8 @@ pub fn create_session_context_with_planner(
         config.prefix = normalized_prefix;
     } else if let Ok(warehouse_prefix) = std::env::var("LAKESOUL_WAREHOUSE_PREFIX") {
         info!("NativeIO register warehouse prefix {}", warehouse_prefix);
-        let normalized_prefix = register_object_store(&warehouse_prefix, config, &runtime)?;
+        let normalized_prefix =
+            register_object_store(&warehouse_prefix, config, &runtime)?;
         config.prefix = normalized_prefix;
     }
     debug!("{}", &config.prefix);
@@ -944,12 +1027,15 @@ pub fn create_session_context_with_planner(
 
 #[cfg(test)]
 mod tests {
-    use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfigBuilder};
+    use crate::lakesoul_io_config::{LakeSoulIOConfigBuilder, create_session_context};
 
     #[test]
     fn test_path_normalize() {
         let mut conf = LakeSoulIOConfigBuilder::new()
-            .with_files(vec!["file:///some/absolute/local/file1", "/some/absolute/local/file2"])
+            .with_files(vec![
+                "file:///some/absolute/local/file1",
+                "/some/absolute/local/file2",
+            ])
             .build();
         let _sess_ctx = create_session_context(&mut conf).unwrap();
         assert_eq!(

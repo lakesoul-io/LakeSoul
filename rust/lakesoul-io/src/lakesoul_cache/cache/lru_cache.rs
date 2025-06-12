@@ -105,7 +105,12 @@ impl<K, V> CountableMeterWithMeasure<K, V, ()> for Count {
 
 /// An LRU cache.
 #[derive(Clone, Debug)]
-pub struct LruCache<K: Eq + Hash, V, S: BuildHasher = RandomState, M: CountableMeter<K, V> = Count> {
+pub struct LruCache<
+    K: Eq + Hash,
+    V,
+    S: BuildHasher = RandomState,
+    M: CountableMeter<K, V> = Count,
+> {
     map: LinkedHashMap<K, V, S>,
     current_measure: M::Measure,
     max_capacity: u64,
@@ -321,7 +326,9 @@ impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> LruCache<K, V, S,
         let new_size = self.meter.measure(&k, &v);
         self.current_measure = self.meter.add(self.current_measure, new_size);
         if let Some(old) = self.map.get(&k) {
-            self.current_measure = self.meter.sub(self.current_measure, self.meter.measure(&k, old));
+            self.current_measure = self
+                .meter
+                .sub(self.current_measure, self.meter.measure(&k, old));
         }
         let old_val = self.map.insert(k, v);
         while self.size() > self.capacity() {
@@ -350,9 +357,10 @@ impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> LruCache<K, V, S,
     where
         K: Borrow<Q>,
     {
-        self.map.remove(k).map(|v| {
-            self.current_measure = self.meter.sub(self.current_measure, self.meter.measure(k, &v));
-            v
+        self.map.remove(k).inspect(|v| {
+            self.current_measure = self
+                .meter
+                .sub(self.current_measure, self.meter.measure(k, v));
         })
     }
 
@@ -415,7 +423,9 @@ impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> LruCache<K, V, S,
     #[inline]
     pub fn remove_lru(&mut self) -> Option<(K, V)> {
         self.map.pop_front().map(|(k, v)| {
-            self.current_measure = self.meter.sub(self.current_measure, self.meter.measure(&k, &v));
+            self.current_measure = self
+                .meter
+                .sub(self.current_measure, self.meter.measure(&k, &v));
             (k, v)
         })
     }
@@ -471,7 +481,9 @@ impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> LruCache<K, V, S,
     }
 }
 
-impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> Extend<(K, V)> for LruCache<K, V, S, M> {
+impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> Extend<(K, V)>
+    for LruCache<K, V, S, M>
+{
     fn extend<I: IntoIterator<Item = (K, V)>>(&mut self, iter: I) {
         for (k, v) in iter {
             self.insert(k, v);
@@ -487,7 +499,9 @@ impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> Extend<(K, V)> fo
 //     }
 // }
 
-impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> IntoIterator for LruCache<K, V, S, M> {
+impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> IntoIterator
+    for LruCache<K, V, S, M>
+{
     type Item = (K, V);
     type IntoIter = IntoIter<K, V>;
 
@@ -496,7 +510,9 @@ impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> IntoIterator for 
     }
 }
 
-impl<'a, K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> IntoIterator for &'a LruCache<K, V, S, M> {
+impl<'a, K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> IntoIterator
+    for &'a LruCache<K, V, S, M>
+{
     type Item = (&'a K, &'a V);
     type IntoIter = Iter<'a, K, V>;
     fn into_iter(self) -> Iter<'a, K, V> {
@@ -504,7 +520,9 @@ impl<'a, K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> IntoIterator 
     }
 }
 
-impl<'a, K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> IntoIterator for &'a mut LruCache<K, V, S, M> {
+impl<'a, K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> IntoIterator
+    for &'a mut LruCache<K, V, S, M>
+{
     type Item = (&'a K, &'a mut V);
     type IntoIter = IterMut<'a, K, V>;
     fn into_iter(self) -> IterMut<'a, K, V> {
@@ -748,7 +766,10 @@ mod tests {
         cache.insert(3, 30);
         cache.insert(4, 40);
         cache.insert(5, 50);
-        assert_eq!(cache.iter().collect::<Vec<_>>(), [(&3, &30), (&4, &40), (&5, &50)]);
+        assert_eq!(
+            cache.iter().collect::<Vec<_>>(),
+            [(&3, &30), (&4, &40), (&5, &50)]
+        );
         assert_eq!(
             cache.iter_mut().collect::<Vec<_>>(),
             [(&3, &mut 30), (&4, &mut 40), (&5, &mut 50)]

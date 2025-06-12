@@ -11,12 +11,12 @@ mod catalog_tests {
     use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
     use datafusion::assert_batches_eq;
     use datafusion::catalog::{CatalogProvider, SchemaProvider};
-    use lakesoul_io::lakesoul_io_config::create_session_context;
     use lakesoul_io::lakesoul_io_config::LakeSoulIOConfigBuilder;
+    use lakesoul_io::lakesoul_io_config::create_session_context;
     use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
     use proto::proto::entity::{Namespace, TableInfo};
-    use rand::distributions::Alphanumeric;
-    use rand::{thread_rng, Rng, SeedableRng};
+    use rand::distr::Alphanumeric;
+    use rand::{Rng, SeedableRng};
     use rand_chacha::ChaCha8Rng;
     use std::env;
     use std::sync::Arc;
@@ -40,13 +40,13 @@ mod catalog_tests {
     }
 
     fn random_namespace(prefix: &str, hash_bucket_num: usize) -> Vec<Namespace> {
-        let mut rng = ChaCha8Rng::from_rng(thread_rng()).unwrap();
-        (0..rng.gen_range(1..10))
+        let mut rng = ChaCha8Rng::from_rng(&mut rand::rng());
+        (0..rng.random_range(1..10))
             .map(|_| Namespace {
                 namespace: {
                     let mut v = String::with_capacity(5);
                     for _ in 0..10 {
-                        v.push((&mut rng).gen_range('a'..'z'));
+                        v.push(rng.random_range('a'..'z'));
                     }
                     format!("{prefix}_{v}")
                 },
@@ -62,24 +62,30 @@ mod catalog_tests {
             .collect()
     }
 
-    fn random_tables(nps: Vec<Namespace>, schema: SchemaRef) -> Vec<(Namespace, Vec<TableInfo>)> {
+    fn random_tables(
+        nps: Vec<Namespace>,
+        schema: SchemaRef,
+    ) -> Vec<(Namespace, Vec<TableInfo>)> {
         let mut ret = Vec::with_capacity(nps.len());
-        let mut rng = ChaCha8Rng::from_rng(thread_rng()).unwrap();
+        let mut rng = ChaCha8Rng::from_rng(&mut rand::rng());
         let schema = serde_json::to_string::<ArrowJavaSchema>(&schema.into()).unwrap();
         for np in nps {
-            let n = rng.gen_range(1usize..10);
+            let n = rng.random_range(1usize..10);
             let mut v = Vec::with_capacity(n);
             for _ in 0..n {
                 let table_name = {
                     let mut v = String::with_capacity(8);
                     for _ in 0..10 {
-                        v.push((&mut rng).gen_range('a'..'z'));
+                        v.push(rng.random_range('a'..'z'));
                     }
                     v
                 };
                 let path = format!(
                     "{}/test_data/{}/{}",
-                    env::current_dir().unwrap_or(env::temp_dir()).to_str().unwrap(),
+                    env::current_dir()
+                        .unwrap_or(env::temp_dir())
+                        .to_str()
+                        .unwrap(),
                     &np.namespace,
                     &table_name
                 );
@@ -110,7 +116,10 @@ mod catalog_tests {
     fn table_info(table_name: &str, namespace: &str, schema: SchemaRef) -> TableInfo {
         let path = format!(
             "{}/test_data/{}/{}",
-            env::current_dir().unwrap_or(env::temp_dir()).to_str().unwrap(),
+            env::current_dir()
+                .unwrap_or(env::temp_dir())
+                .to_str()
+                .unwrap(),
             namespace,
             table_name
         );
@@ -134,7 +143,11 @@ mod catalog_tests {
             // insert data;
             let batch = create_batch_i32(
                 vec!["range", "hash", "value"],
-                vec![&[20201101, 20201101, 20201101, 20201102], &[1, 2, 3, 4], &[1, 2, 3, 4]],
+                vec![
+                    &[20201101, 20201101, 20201101, 20201102],
+                    &[1, 2, 3, 4],
+                    &[1, 2, 3, 4],
+                ],
             );
             let pks = vec!["range".to_string(), "hash".to_string()];
             let schema = SchemaRef::new(Schema::new(
@@ -153,7 +166,8 @@ mod catalog_tests {
             let data = random_tables(random_namespace("api", 4), schema.clone());
 
             let catalog = Arc::new(LakeSoulCatalog::new(client.clone(), sc.clone()));
-            let dummy_schema_provider = Arc::new(LakeSoulNamespace::new(client.clone(), sc.clone(), "dummy"));
+            let dummy_schema_provider =
+                Arc::new(LakeSoulNamespace::new(client.clone(), sc.clone(), "dummy"));
             // id, path, name must be unique
             for (np, tables) in data.iter() {
                 // client.create_namespace(np.clone()).await.unwrap();
@@ -163,16 +177,23 @@ mod catalog_tests {
                 assert!(old.is_none());
                 for t in tables {
                     client.create_table(t.clone()).await.unwrap();
-                    let lakesoul_table =
-                        LakeSoulTable::for_namespace_and_name(&np.namespace, &t.table_name, Some(client.clone()))
-                            .await
-                            .unwrap();
+                    let lakesoul_table = LakeSoulTable::for_namespace_and_name(
+                        &np.namespace,
+                        &t.table_name,
+                        Some(client.clone()),
+                    )
+                    .await
+                    .unwrap();
                     lakesoul_table.execute_upsert(batch.clone()).await.unwrap();
                 }
             }
-            assert!(sc.register_catalog("test_catalog_api", catalog.clone()).is_none());
+            assert!(
+                sc.register_catalog("test_catalog_api", catalog.clone())
+                    .is_none()
+            );
             for (np, tables) in data.iter() {
-                let schema = LakeSoulNamespace::new(client.clone(), sc.clone(), &np.namespace);
+                let schema =
+                    LakeSoulNamespace::new(client.clone(), sc.clone(), &np.namespace);
                 let names = schema.table_names();
                 debug!("{names:?}");
                 assert_eq!(names.len(), tables.len());
@@ -192,7 +213,11 @@ mod catalog_tests {
             // insert data;
             let batch = create_batch_i32(
                 vec!["range", "hash", "value"],
-                vec![&[20201101, 20201101, 20201101, 20201102], &[1, 2, 3, 4], &[1, 2, 3, 4]],
+                vec![
+                    &[20201101, 20201101, 20201101, 20201102],
+                    &[1, 2, 3, 4],
+                    &[1, 2, 3, 4],
+                ],
             );
             let pks = vec!["range".to_string(), "hash".to_string()];
             let schema = SchemaRef::new(Schema::new(
@@ -242,41 +267,58 @@ mod catalog_tests {
                     let sql = format!("create schema test_catalog_sql.{}", np.namespace);
                     let df = sc.sql(&sql).await.unwrap();
                     df.collect().await.unwrap();
-                    let ret = client.get_namespace_by_namespace(&np.namespace).await.unwrap().unwrap();
+                    let ret = client
+                        .get_namespace_by_namespace(&np.namespace)
+                        .await
+                        .unwrap()
+                        .unwrap();
                     assert_eq!(np.namespace, ret.namespace);
                 }
                 for t in tables {
                     client.create_table(t.clone()).await.unwrap();
-                    let lakesoul_table =
-                        LakeSoulTable::for_namespace_and_name(&np.namespace, &t.table_name, Some(client.clone()))
-                            .await
-                            .unwrap();
+                    let lakesoul_table = LakeSoulTable::for_namespace_and_name(
+                        &np.namespace,
+                        &t.table_name,
+                        Some(client.clone()),
+                    )
+                    .await
+                    .unwrap();
                     lakesoul_table.execute_upsert(batch.clone()).await.unwrap();
                 }
             }
             for (np, tables) in data.iter() {
-                let schema = LakeSoulNamespace::new(client.clone(), sc.clone(), &np.namespace);
+                let schema =
+                    LakeSoulNamespace::new(client.clone(), sc.clone(), &np.namespace);
                 let names = schema.table_names();
                 debug!("{names:?}");
                 assert_eq!(names.len(), tables.len());
                 for name in names {
                     {
                         // test show columns
-                        let q = format!("show columns from test_catalog_sql.{}.{}", np.namespace, name);
+                        let q = format!(
+                            "show columns from test_catalog_sql.{}.{}",
+                            np.namespace, name
+                        );
                         let df = sc.sql(&q).await.unwrap();
                         let record = df.collect().await.unwrap();
-                        assert!(record.len() > 0);
+                        assert!(!record.is_empty());
                     }
                     {
                         // test select
-                        let q = format!("select * from test_catalog_sql.{}.{}", np.namespace, name);
+                        let q = format!(
+                            "select * from test_catalog_sql.{}.{}",
+                            np.namespace, name
+                        );
                         let df = sc.sql(&q).await.unwrap();
                         let record = df.collect().await.unwrap();
                         assert_batches_eq!(expected, &record);
                     }
                     {
                         // drop table
-                        let sql = format!("drop table test_catalog_sql.{}.{}", np.namespace, name);
+                        let sql = format!(
+                            "drop table test_catalog_sql.{}.{}",
+                            np.namespace, name
+                        );
                         let df = sc.sql(&sql).await.unwrap();
                         assert!(df.collect().await.is_ok())
                     }

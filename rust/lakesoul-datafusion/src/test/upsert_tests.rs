@@ -18,7 +18,9 @@ mod upsert_with_metadata_tests {
     use crate::lakesoul_table::LakeSoulTable;
     use crate::test::assert_batches_eq;
 
-    use lakesoul_io::lakesoul_io_config::{create_session_context, LakeSoulIOConfigBuilder};
+    use lakesoul_io::lakesoul_io_config::{
+        LakeSoulIOConfigBuilder, create_session_context,
+    };
 
     use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 
@@ -42,7 +44,10 @@ mod upsert_with_metadata_tests {
         RecordBatch::try_from_iter_with_nullable(iter).unwrap()
     }
 
-    fn create_batch_optional_i32(names: Vec<&str>, values: Vec<&[Option<i32>]>) -> RecordBatch {
+    fn create_batch_optional_i32(
+        names: Vec<&str>,
+        values: Vec<&[Option<i32>]>,
+    ) -> RecordBatch {
         let values = values
             .into_iter()
             .map(|vec| Arc::new(Int32Array::from(Vec::from(vec))) as ArrayRef)
@@ -55,7 +60,11 @@ mod upsert_with_metadata_tests {
         RecordBatch::try_from_iter_with_nullable(iter).unwrap()
     }
 
-    fn create_batch_i32_and_timestamp(names: Vec<&str>, values: Vec<&[i32]>, timestamp: Vec<i64>) -> RecordBatch {
+    fn create_batch_i32_and_timestamp(
+        names: Vec<&str>,
+        values: Vec<&[i32]>,
+        timestamp: Vec<i64>,
+    ) -> RecordBatch {
         let mut values = values
             .into_iter()
             .map(|vec| Arc::new(Int32Array::from(Vec::from(vec))) as ArrayRef)
@@ -83,7 +92,10 @@ mod upsert_with_metadata_tests {
         RecordBatch::try_from_iter_with_nullable(iter).unwrap()
     }
 
-    fn create_batch_str_or_i32(names: Vec<&str>, values: Vec<&[StrOrI32]>) -> RecordBatch {
+    fn create_batch_str_or_i32(
+        names: Vec<&str>,
+        values: Vec<&[StrOrI32]>,
+    ) -> RecordBatch {
         let values = values
             .into_iter()
             .map(|vec| match vec[0] {
@@ -119,7 +131,11 @@ mod upsert_with_metadata_tests {
         RecordBatch::try_from_iter_with_nullable(iter).unwrap()
     }
 
-    async fn execute_upsert(record_batch: RecordBatch, table_name: &str, _client: MetaDataClientRef) -> Result<()> {
+    async fn execute_upsert(
+        record_batch: RecordBatch,
+        table_name: &str,
+        _client: MetaDataClientRef,
+    ) -> Result<()> {
         let lakesoul_table = LakeSoulTable::for_name(table_name).await?;
         lakesoul_table.execute_upsert(record_batch).await
     }
@@ -134,8 +150,15 @@ mod upsert_with_metadata_tests {
     ) -> Result<()> {
         let lakesoul_table = LakeSoulTable::for_name(table_name).await?;
         lakesoul_table.execute_upsert(batch).await?;
-        let builder =
-            create_io_config_builder(client, None, false, "default", Default::default(), Default::default()).await?;
+        let builder = create_io_config_builder(
+            client,
+            None,
+            false,
+            "default",
+            Default::default(),
+            Default::default(),
+        )
+        .await?;
         let sess_ctx = create_session_context(&mut builder.clone().build())?;
 
         let dataframe = lakesoul_table.to_dataframe(&sess_ctx).await?;
@@ -190,8 +213,15 @@ mod upsert_with_metadata_tests {
     ) -> Result<()> {
         let lakesoul_table = LakeSoulTable::for_name(table_name).await?;
         lakesoul_table.execute_upsert(batch).await?;
-        let builder =
-            create_io_config_builder(client, None, false, "default", Default::default(), Default::default()).await?;
+        let builder = create_io_config_builder(
+            client,
+            None,
+            false,
+            "default",
+            Default::default(),
+            Default::default(),
+        )
+        .await?;
         let sess_ctx = create_session_context(&mut builder.clone().build())?;
 
         let dataframe = lakesoul_table.to_dataframe(&sess_ctx).await?;
@@ -225,7 +255,11 @@ mod upsert_with_metadata_tests {
         init_table(
             create_batch_i32(
                 vec!["range", "hash", "value"],
-                vec![&[20201101, 20201101, 20201101, 20201102], &[1, 2, 3, 4], &[1, 2, 3, 4]],
+                vec![
+                    &[20201101, 20201101, 20201101, 20201102],
+                    &[1, 2, 3, 4],
+                    &[1, 2, 3, 4],
+                ],
             ),
             table_name,
             SchemaRef::new(Schema::new(
@@ -271,7 +305,11 @@ mod upsert_with_metadata_tests {
         init_table(
             create_batch_i32(
                 vec!["range", "hash", "value"],
-                vec![&[20201101, 20201101, 20201101, 20201102], &[1, 2, 3, 4], &[1, 2, 3, 4]],
+                vec![
+                    &[20201101, 20201101, 20201101, 20201102],
+                    &[1, 2, 3, 4],
+                    &[1, 2, 3, 4],
+                ],
             ),
             table_name,
             SchemaRef::new(Schema::new(
@@ -310,14 +348,20 @@ mod upsert_with_metadata_tests {
         .await
     }
 
-    async fn test_merge_different_columns_and_filter_by_non_selected_columns_i32() -> Result<()> {
-        let table_name = "test_merge_different_columns_and_filter_by_non_selected_columns_i32";
+    async fn test_merge_different_columns_and_filter_by_non_selected_columns_i32()
+    -> Result<()> {
+        let table_name =
+            "test_merge_different_columns_and_filter_by_non_selected_columns_i32";
         let client = Arc::new(MetaDataClient::from_env().await?);
 
         init_table(
             create_batch_i32(
                 vec!["range", "hash", "value"],
-                vec![&[20201101, 20201101, 20201101, 20201102], &[1, 2, 3, 4], &[1, 2, 3, 4]],
+                vec![
+                    &[20201101, 20201101, 20201101, 20201102],
+                    &[1, 2, 3, 4],
+                    &[1, 2, 3, 4],
+                ],
             ),
             table_name,
             SchemaRef::new(Schema::new(
@@ -410,7 +454,11 @@ mod upsert_with_metadata_tests {
         init_table(
             create_batch_i32(
                 vec!["range", "hash", "value"],
-                vec![&[20201101, 20201101, 20201101, 20201102], &[1, 2, 3, 4], &[1, 2, 3, 4]],
+                vec![
+                    &[20201101, 20201101, 20201101, 20201102],
+                    &[1, 2, 3, 4],
+                    &[1, 2, 3, 4],
+                ],
             ),
             table_name,
             SchemaRef::new(Schema::new(
@@ -475,7 +523,10 @@ mod upsert_with_metadata_tests {
         .await?;
 
         execute_upsert(
-            create_batch_i32(vec!["range", "hash", "value"], vec![&[20201102], &[4], &[5]]),
+            create_batch_i32(
+                vec!["range", "hash", "value"],
+                vec![&[20201102], &[4], &[5]],
+            ),
             table_name,
             client.clone(),
         )
@@ -513,7 +564,11 @@ mod upsert_with_metadata_tests {
         init_table(
             create_batch_i32(
                 vec!["range", "hash", "value"],
-                vec![&[20201101, 20201101, 20201101, 20201102], &[1, 2, 3, 4], &[1, 2, 3, 4]],
+                vec![
+                    &[20201101, 20201101, 20201101, 20201102],
+                    &[1, 2, 3, 4],
+                    &[1, 2, 3, 4],
+                ],
             ),
             table_name,
             SchemaRef::new(Schema::new(
@@ -584,7 +639,11 @@ mod upsert_with_metadata_tests {
         init_table(
             create_batch_i32(
                 vec!["range", "hash", "value"],
-                vec![&[20201101, 20201101, 20201101, 20201102], &[1, 2, 3, 4], &[1, 2, 3, 4]],
+                vec![
+                    &[20201101, 20201101, 20201101, 20201102],
+                    &[1, 2, 3, 4],
+                    &[1, 2, 3, 4],
+                ],
             ),
             table_name,
             SchemaRef::new(Schema::new(
@@ -647,7 +706,8 @@ mod upsert_with_metadata_tests {
         .await
     }
 
-    async fn test_should_failed_to_upsert_external_columns_when_schema_auto_migrate_is_false() -> Result<()> {
+    async fn test_should_failed_to_upsert_external_columns_when_schema_auto_migrate_is_false()
+    -> Result<()> {
         // require metadata checker
         Ok(())
     }
@@ -669,7 +729,11 @@ mod upsert_with_metadata_tests {
         init_table(
             create_batch_i32(
                 vec!["range", "hash", "value"],
-                vec![&[20201101, 20201101, 20201101, 20201102], &[1, 2, 3, 4], &[1, 2, 3, 4]],
+                vec![
+                    &[20201101, 20201101, 20201101, 20201102],
+                    &[1, 2, 3, 4],
+                    &[1, 2, 3, 4],
+                ],
             ),
             table_name,
             SchemaRef::new(Schema::new(
@@ -990,7 +1054,8 @@ mod upsert_with_metadata_tests {
         .await
     }
 
-    async fn test_select_requested_columns_without_hash_columns_upsert_1_times_i32() -> Result<()> {
+    async fn test_select_requested_columns_without_hash_columns_upsert_1_times_i32()
+    -> Result<()> {
         let table_name = "select_requested_columns_without_hash_columns_upsert_1_times";
         let client = Arc::new(MetaDataClient::from_env().await?);
 
@@ -1022,13 +1087,15 @@ mod upsert_with_metadata_tests {
             None,
             client.clone(),
             &[
-                "+-----+", "| age |", "+-----+", "| 1   |", "| 2   |", "|     |", "|     |", "|     |", "+-----+",
+                "+-----+", "| age |", "+-----+", "| 1   |", "| 2   |", "|     |",
+                "|     |", "|     |", "+-----+",
             ],
         )
         .await
     }
 
-    async fn test_select_requested_columns_without_hash_columns_upsert_2_times_i32() -> Result<()> {
+    async fn test_select_requested_columns_without_hash_columns_upsert_2_times_i32()
+    -> Result<()> {
         let table_name = "select_requested_columns_without_hash_columns_upsert_2_times";
         let client = Arc::new(MetaDataClient::from_env().await?);
 
@@ -1075,21 +1142,30 @@ mod upsert_with_metadata_tests {
             None,
             client.clone(),
             &[
-                "+-----+", "| age |", "+-----+", "| 1   |", "| 2   |", "|     |", "|     |", "|     |", "|     |",
-                "+-----+",
+                "+-----+", "| age |", "+-----+", "| 1   |", "| 2   |", "|     |",
+                "|     |", "|     |", "|     |", "+-----+",
             ],
         )
         .await
     }
 
-    async fn test_derange_hash_key_and_data_schema_order_int_type_upsert_1_times_i32() -> Result<()> {
-        let table_name = "derange_hash_key_and_data_schema_order_int_type_upsert_1_times_i32";
+    async fn test_derange_hash_key_and_data_schema_order_int_type_upsert_1_times_i32()
+    -> Result<()> {
+        let table_name =
+            "derange_hash_key_and_data_schema_order_int_type_upsert_1_times_i32";
         let client = Arc::new(MetaDataClient::from_env().await?);
 
         init_table(
             create_batch_i32(
                 vec!["range", "hash1", "hash2", "value", "name", "age"],
-                vec![&[20201101, 20201101], &[1, 2], &[1, 2], &[1, 2], &[1, 2], &[1, 2]],
+                vec![
+                    &[20201101, 20201101],
+                    &[1, 2],
+                    &[1, 2],
+                    &[1, 2],
+                    &[1, 2],
+                    &[1, 2],
+                ],
             ),
             table_name,
             SchemaRef::new(Schema::new(
@@ -1107,7 +1183,12 @@ mod upsert_with_metadata_tests {
         check_upsert(
             create_batch_i32(
                 vec!["range", "hash1", "hash2", "value"],
-                vec![&[20201102, 20201102, 20201102], &[1, 3, 4], &[12, 32, 42], &[1, 3, 4]],
+                vec![
+                    &[20201102, 20201102, 20201102],
+                    &[1, 3, 4],
+                    &[12, 32, 42],
+                    &[1, 3, 4],
+                ],
             ),
             table_name,
             vec!["range", "hash1", "hash2", "value", "name", "age"],
@@ -1126,14 +1207,23 @@ mod upsert_with_metadata_tests {
         .await
     }
 
-    async fn test_derange_hash_key_and_data_schema_order_int_type_upsert_2_times_i32() -> Result<()> {
-        let table_name = "derange_hash_key_and_data_schema_order_int_type_upsert_2_times_i32";
+    async fn test_derange_hash_key_and_data_schema_order_int_type_upsert_2_times_i32()
+    -> Result<()> {
+        let table_name =
+            "derange_hash_key_and_data_schema_order_int_type_upsert_2_times_i32";
         let client = Arc::new(MetaDataClient::from_env().await?);
 
         init_table(
             create_batch_i32(
                 vec!["range", "hash1", "hash2", "value", "name", "age"],
-                vec![&[20201101, 20201101], &[1, 2], &[1, 2], &[1, 2], &[1, 2], &[1, 2]],
+                vec![
+                    &[20201101, 20201101],
+                    &[1, 2],
+                    &[1, 2],
+                    &[1, 2],
+                    &[1, 2],
+                    &[1, 2],
+                ],
             ),
             table_name,
             SchemaRef::new(Schema::new(
@@ -1151,7 +1241,12 @@ mod upsert_with_metadata_tests {
         execute_upsert(
             create_batch_i32(
                 vec!["range", "hash1", "hash2", "value"],
-                vec![&[20201102, 20201102, 20201102], &[1, 3, 4], &[12, 32, 42], &[1, 3, 4]],
+                vec![
+                    &[20201102, 20201102, 20201102],
+                    &[1, 3, 4],
+                    &[12, 32, 42],
+                    &[1, 3, 4],
+                ],
             ),
             table_name,
             client.clone(),
@@ -1186,14 +1281,23 @@ mod upsert_with_metadata_tests {
         .await
     }
 
-    async fn test_derange_hash_key_and_data_schema_order_int_type_upsert_3_times_i32() -> Result<()> {
-        let table_name = "derange_hash_key_and_data_schema_order_int_type_upsert_3_times_i32";
+    async fn test_derange_hash_key_and_data_schema_order_int_type_upsert_3_times_i32()
+    -> Result<()> {
+        let table_name =
+            "derange_hash_key_and_data_schema_order_int_type_upsert_3_times_i32";
         let client = Arc::new(MetaDataClient::from_env().await?);
 
         init_table(
             create_batch_i32(
                 vec!["range", "hash1", "hash2", "value", "name", "age"],
-                vec![&[20201101, 20201101], &[1, 2], &[1, 2], &[1, 2], &[1, 2], &[1, 2]],
+                vec![
+                    &[20201101, 20201101],
+                    &[1, 2],
+                    &[1, 2],
+                    &[1, 2],
+                    &[1, 2],
+                    &[1, 2],
+                ],
             ),
             table_name,
             SchemaRef::new(Schema::new(
@@ -1211,7 +1315,12 @@ mod upsert_with_metadata_tests {
         execute_upsert(
             create_batch_i32(
                 vec!["range", "hash1", "hash2", "value"],
-                vec![&[20201102, 20201102, 20201102], &[1, 3, 4], &[12, 32, 42], &[1, 3, 4]],
+                vec![
+                    &[20201102, 20201102, 20201102],
+                    &[1, 3, 4],
+                    &[12, 32, 42],
+                    &[1, 3, 4],
+                ],
             ),
             table_name,
             client.clone(),
@@ -1246,7 +1355,10 @@ mod upsert_with_metadata_tests {
             ),
             table_name,
             vec!["range", "hash1", "hash2", "value", "name", "age"],
-            Some("and(and(noteq(range, null), eq(range, 20201102)), noteq(value, null))".to_string()),
+            Some(
+                "and(and(noteq(range, null), eq(range, 20201102)), noteq(value, null))"
+                    .to_string(),
+            ),
             client.clone(),
             &[
                 "+----------+-------+-------+-------+------+------+",
@@ -1261,8 +1373,10 @@ mod upsert_with_metadata_tests {
         .await
     }
 
-    async fn test_derange_hash_key_and_data_schema_order_string_type_upsert_1_times_i32() -> Result<()> {
-        let table_name = "derange_hash_key_and_data_schema_order_string_type_upsert_1_times_i32";
+    async fn test_derange_hash_key_and_data_schema_order_string_type_upsert_1_times_i32()
+    -> Result<()> {
+        let table_name =
+            "derange_hash_key_and_data_schema_order_string_type_upsert_1_times_i32";
         let client = Arc::new(MetaDataClient::from_env().await?);
 
         init_table(
@@ -1317,8 +1431,10 @@ mod upsert_with_metadata_tests {
         .await
     }
 
-    async fn test_derange_hash_key_and_data_schema_order_string_type_upsert_2_times_i32() -> Result<()> {
-        let table_name = "derange_hash_key_and_data_schema_order_string_type_upsert_2_times_i32";
+    async fn test_derange_hash_key_and_data_schema_order_string_type_upsert_2_times_i32()
+    -> Result<()> {
+        let table_name =
+            "derange_hash_key_and_data_schema_order_string_type_upsert_2_times_i32";
         let client = Arc::new(MetaDataClient::from_env().await?);
 
         init_table(
@@ -1389,8 +1505,10 @@ mod upsert_with_metadata_tests {
         .await
     }
 
-    async fn test_derange_hash_key_and_data_schema_order_string_type_upsert_3_times_i32() -> Result<()> {
-        let table_name = "derange_hash_key_and_data_schema_order_string_type_upsert_3_times_i32";
+    async fn test_derange_hash_key_and_data_schema_order_string_type_upsert_3_times_i32()
+    -> Result<()> {
+        let table_name =
+            "derange_hash_key_and_data_schema_order_string_type_upsert_3_times_i32";
         let client = Arc::new(MetaDataClient::from_env().await?);
 
         init_table(
@@ -1483,7 +1601,11 @@ mod upsert_with_metadata_tests {
         let batch1 = create_batch_str_or_i32(
             vec!["range", "v1", "hash1", "v2", "hash2"],
             vec![
-                &[StrOrI32::V1("range"), StrOrI32::V1("range"), StrOrI32::V1("range")],
+                &[
+                    StrOrI32::V1("range"),
+                    StrOrI32::V1("range"),
+                    StrOrI32::V1("range"),
+                ],
                 &[StrOrI32::V1("a1"), StrOrI32::V1("b1"), StrOrI32::V1("c1")],
                 &[StrOrI32::V2(1), StrOrI32::V2(2), StrOrI32::V2(3)],
                 &[StrOrI32::V1("a2"), StrOrI32::V1("b2"), StrOrI32::V1("c2")],
@@ -1494,10 +1616,22 @@ mod upsert_with_metadata_tests {
         let batch2 = create_batch_str_or_i32(
             vec!["range", "hash1", "v1", "v2", "hash2"],
             vec![
-                &[StrOrI32::V1("range"), StrOrI32::V1("range"), StrOrI32::V1("range")],
+                &[
+                    StrOrI32::V1("range"),
+                    StrOrI32::V1("range"),
+                    StrOrI32::V1("range"),
+                ],
                 &[StrOrI32::V2(1), StrOrI32::V2(2), StrOrI32::V2(3)],
-                &[StrOrI32::V1("a11"), StrOrI32::V1("b11"), StrOrI32::V1("c11")],
-                &[StrOrI32::V1("a22"), StrOrI32::V1("b22"), StrOrI32::V1("c22")],
+                &[
+                    StrOrI32::V1("a11"),
+                    StrOrI32::V1("b11"),
+                    StrOrI32::V1("c11"),
+                ],
+                &[
+                    StrOrI32::V1("a22"),
+                    StrOrI32::V1("b22"),
+                    StrOrI32::V1("c22"),
+                ],
                 &[StrOrI32::V1("a"), StrOrI32::V1("b"), StrOrI32::V1("c")],
             ],
         );
@@ -1505,10 +1639,22 @@ mod upsert_with_metadata_tests {
         let batch3 = create_batch_str_or_i32(
             vec!["range", "v1", "hash1", "v2", "hash2"],
             vec![
-                &[StrOrI32::V1("range"), StrOrI32::V1("range"), StrOrI32::V1("range")],
-                &[StrOrI32::V1("d1"), StrOrI32::V1("b111"), StrOrI32::V1("c111")],
+                &[
+                    StrOrI32::V1("range"),
+                    StrOrI32::V1("range"),
+                    StrOrI32::V1("range"),
+                ],
+                &[
+                    StrOrI32::V1("d1"),
+                    StrOrI32::V1("b111"),
+                    StrOrI32::V1("c111"),
+                ],
                 &[StrOrI32::V2(4), StrOrI32::V2(2), StrOrI32::V2(3)],
-                &[StrOrI32::V1("d2"), StrOrI32::V1("b222"), StrOrI32::V1("c222")],
+                &[
+                    StrOrI32::V1("d2"),
+                    StrOrI32::V1("b222"),
+                    StrOrI32::V1("c222"),
+                ],
                 &[StrOrI32::V1("d"), StrOrI32::V1("b"), StrOrI32::V1("c")],
             ],
         );
@@ -1688,7 +1834,11 @@ mod upsert_with_metadata_tests {
         init_table(
             create_batch_i32_and_timestamp(
                 vec!["range", "hash", "value", "timestamp"],
-                vec![&[20201101, 20201101, 20201101, 20201102], &[1, 2, 3, 4], &[1, 2, 3, 4]],
+                vec![
+                    &[20201101, 20201101, 20201101, 20201102],
+                    &[1, 2, 3, 4],
+                    &[1, 2, 3, 4],
+                ],
                 vec![val1, val2, val3, val4],
             ),
             table_name,
@@ -1697,7 +1847,11 @@ mod upsert_with_metadata_tests {
                     .into_iter()
                     .map(|name| {
                         if name == "timestamp" {
-                            Field::new(name, DataType::Timestamp(TimeUnit::Microsecond, None), true)
+                            Field::new(
+                                name,
+                                DataType::Timestamp(TimeUnit::Microsecond, None),
+                                true,
+                            )
                         } else {
                             Field::new(name, DataType::Int32, true)
                         }
@@ -1763,7 +1917,11 @@ mod upsert_with_metadata_tests {
         init_table(
             create_batch_i32(
                 vec!["range", "hash", "value"],
-                vec![&[20201101, 20201101, 20201101, 20201102], &[1, 2, 3, 4], &[1, 2, 3, 4]],
+                vec![
+                    &[20201101, 20201101, 20201101, 20201102],
+                    &[1, 2, 3, 4],
+                    &[1, 2, 3, 4],
+                ],
             ),
             table_name,
             SchemaRef::new(Schema::new(
@@ -1771,7 +1929,11 @@ mod upsert_with_metadata_tests {
                     .into_iter()
                     .map(|name| {
                         if name == "timestamp" {
-                            Field::new(name, DataType::Timestamp(TimeUnit::Microsecond, None), true)
+                            Field::new(
+                                name,
+                                DataType::Timestamp(TimeUnit::Microsecond, None),
+                                true,
+                            )
                         } else {
                             Field::new(name, DataType::Int32, true)
                         }
@@ -1827,9 +1989,12 @@ mod upsert_with_metadata_tests {
         test_derange_hash_key_and_data_schema_order_int_type_upsert_1_times_i32().await?;
         test_derange_hash_key_and_data_schema_order_int_type_upsert_2_times_i32().await?;
         test_derange_hash_key_and_data_schema_order_int_type_upsert_3_times_i32().await?;
-        test_derange_hash_key_and_data_schema_order_string_type_upsert_1_times_i32().await?;
-        test_derange_hash_key_and_data_schema_order_string_type_upsert_2_times_i32().await?;
-        test_derange_hash_key_and_data_schema_order_string_type_upsert_3_times_i32().await?;
+        test_derange_hash_key_and_data_schema_order_string_type_upsert_1_times_i32()
+            .await?;
+        test_derange_hash_key_and_data_schema_order_string_type_upsert_2_times_i32()
+            .await?;
+        test_derange_hash_key_and_data_schema_order_string_type_upsert_3_times_i32()
+            .await?;
         test_create_table_with_hash_key_disordered().await?;
         test_merge_same_column_with_timestamp_type_i32_time().await?;
         test_merge_different_columns_with_timestamp_type_i32_time().await?;

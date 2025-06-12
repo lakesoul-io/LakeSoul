@@ -8,19 +8,24 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::constant::{
-    ARROW_CAST_OPTIONS, FLINK_TIMESTAMP_FORMAT, LAKESOUL_EMPTY_STRING, LAKESOUL_NULL_STRING,
-    TIMESTAMP_MICROSECOND_FORMAT, TIMESTAMP_MILLSECOND_FORMAT, TIMESTAMP_NANOSECOND_FORMAT, TIMESTAMP_SECOND_FORMAT,
+    ARROW_CAST_OPTIONS, FLINK_TIMESTAMP_FORMAT, LAKESOUL_EMPTY_STRING,
+    LAKESOUL_NULL_STRING, TIMESTAMP_MICROSECOND_FORMAT, TIMESTAMP_MILLSECOND_FORMAT,
+    TIMESTAMP_NANOSECOND_FORMAT, TIMESTAMP_SECOND_FORMAT,
 };
 use crate::helpers::{
-    column_with_name_and_name2index, date_str_to_epoch_days, into_scalar_value, timestamp_str_to_unix_time,
+    column_with_name_and_name2index, date_str_to_epoch_days, into_scalar_value,
+    timestamp_str_to_unix_time,
 };
-use arrow::array::{as_primitive_array, as_struct_array, make_array, Array};
+use arrow::array::{Array, as_primitive_array, as_struct_array, make_array};
 use arrow::compute::kernels::cast::cast_with_options;
 use arrow::record_batch::RecordBatch;
 use arrow_array::{
-    new_null_array, types::*, ArrayRef, BooleanArray, PrimitiveArray, RecordBatchOptions, StringArray, StructArray,
+    ArrayRef, BooleanArray, PrimitiveArray, RecordBatchOptions, StringArray, StructArray,
+    new_null_array, types::*,
 };
-use arrow_schema::{DataType, Field, FieldRef, Fields, Schema, SchemaBuilder, SchemaRef, TimeUnit};
+use arrow_schema::{
+    DataType, Field, FieldRef, Fields, Schema, SchemaBuilder, SchemaRef, TimeUnit,
+};
 use datafusion::error::Result;
 use datafusion_common::DataFusionError::{self, ArrowError, External, Internal};
 
@@ -30,12 +35,17 @@ pub fn uniform_field(orig_field: &FieldRef) -> FieldRef {
     match data_type {
         DataType::Timestamp(unit, Some(_)) => Arc::new(Field::new(
             orig_field.name(),
-            DataType::Timestamp(unit.clone(), Some(Arc::from(crate::constant::LAKESOUL_TIMEZONE))),
+            DataType::Timestamp(
+                *unit,
+                Some(Arc::from(crate::constant::LAKESOUL_TIMEZONE)),
+            ),
             orig_field.is_nullable(),
         )),
         DataType::Struct(fields) => Arc::new(Field::new(
             orig_field.name(),
-            DataType::Struct(Fields::from(fields.iter().map(uniform_field).collect::<Vec<_>>())),
+            DataType::Struct(Fields::from(
+                fields.iter().map(uniform_field).collect::<Vec<_>>(),
+            )),
             orig_field.is_nullable(),
         )),
         _ => orig_field.clone(),
@@ -45,7 +55,11 @@ pub fn uniform_field(orig_field: &FieldRef) -> FieldRef {
 /// adjust time zone to UTC
 pub fn uniform_schema(orig_schema: SchemaRef) -> SchemaRef {
     Arc::new(Schema::new(
-        orig_schema.fields().iter().map(uniform_field).collect::<Vec<_>>(),
+        orig_schema
+            .fields()
+            .iter()
+            .map(uniform_field)
+            .collect::<Vec<_>>(),
     ))
 }
 
@@ -58,7 +72,11 @@ pub fn uniform_record_batch(batch: RecordBatch) -> Result<RecordBatch> {
     )
 }
 
-pub fn transform_schema(target_schema: SchemaRef, schema: SchemaRef, use_default: bool) -> SchemaRef {
+pub fn transform_schema(
+    target_schema: SchemaRef,
+    schema: SchemaRef,
+    use_default: bool,
+) -> SchemaRef {
     if use_default {
         target_schema
     } else {
@@ -67,8 +85,7 @@ pub fn transform_schema(target_schema: SchemaRef, schema: SchemaRef, use_default
             target_schema
                 .fields()
                 .iter()
-                .enumerate()
-                .filter_map(|(_, target_field)| {
+                .filter_map(|target_field| {
                     schema
                         .column_with_name(target_field.name())
                         .map(|_| target_field.clone())
@@ -86,26 +103,28 @@ pub fn transform_record_batch(
 ) -> Result<RecordBatch> {
     let num_rows = batch.num_rows();
     let orig_schema = batch.schema();
-    let name_to_index = if orig_schema.fields().len() > crate::constant::NUM_COLUMN_OPTIMIZE_THRESHOLD {
-        Some(HashMap::<String, usize>::from_iter(
-            orig_schema
-                .fields()
-                .iter()
-                .enumerate()
-                .map(|(idx, field)| (field.name().clone(), idx)),
-        ))
-    } else {
-        None
-    };
+    let name_to_index =
+        if orig_schema.fields().len() > crate::constant::NUM_COLUMN_OPTIMIZE_THRESHOLD {
+            Some(HashMap::<String, usize>::from_iter(
+                orig_schema
+                    .fields()
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, field)| (field.name().clone(), idx)),
+            ))
+        } else {
+            None
+        };
     let mut transform_arrays = Vec::new();
     let mut fields = vec![];
     // O(nm) n = orig_schema.fields().len(), m = target_schema.fields().len()
-    target_schema
-        .fields()
-        .iter()
-        .enumerate()
-        .try_for_each(|(_, target_field)| -> Result<()> {
-            match column_with_name_and_name2index(&orig_schema, target_field.name(), &name_to_index) {
+    target_schema.fields().iter().enumerate().try_for_each(
+        |(_, target_field)| -> Result<()> {
+            match column_with_name_and_name2index(
+                &orig_schema,
+                target_field.name(),
+                &name_to_index,
+            ) {
                 Some((idx, _)) => {
                     let data_type = target_field.data_type();
                     let transformed_array = transform_array(
@@ -125,8 +144,14 @@ pub fn transform_record_batch(
                     Ok(())
                 }
                 None if use_default => {
-                    let default_value_array = match default_column_value.get(target_field.name()) {
-                        Some(value) => make_default_array(&target_field.data_type().clone(), value, num_rows)?,
+                    let default_value_array = match default_column_value
+                        .get(target_field.name())
+                    {
+                        Some(value) => make_default_array(
+                            &target_field.data_type().clone(),
+                            value,
+                            num_rows,
+                        )?,
                         _ => new_null_array(&target_field.data_type().clone(), num_rows),
                     };
                     fields.push(Arc::new(Field::new(
@@ -139,7 +164,8 @@ pub fn transform_record_batch(
                 }
                 _ => Ok(()),
             }
-        })?;
+        },
+    )?;
     RecordBatch::try_new_with_options(
         Arc::new(Schema::new(fields)),
         transform_arrays,
@@ -160,26 +186,39 @@ pub fn transform_array(
         DataType::Timestamp(target_unit, Some(target_tz)) => {
             let array = match array.data_type() {
                 DataType::Timestamp(TimeUnit::Second, _) => {
-                    as_primitive_array::<TimestampSecondType>(&array).clone().into_data()
+                    as_primitive_array::<TimestampSecondType>(&array)
+                        .clone()
+                        .into_data()
                 }
-                DataType::Timestamp(TimeUnit::Millisecond, _) => as_primitive_array::<TimestampMillisecondType>(&array)
-                    .clone()
-                    .into_data(),
-                DataType::Timestamp(TimeUnit::Microsecond, _) => as_primitive_array::<TimestampMicrosecondType>(&array)
-                    .clone()
-                    .into_data(),
-                DataType::Timestamp(TimeUnit::Nanosecond, _) => as_primitive_array::<TimestampNanosecondType>(&array)
-                    .clone()
-                    .into_data(),
-                _ => return Err(DataFusionError::Internal("Unsupported timestamp type".to_string())),
+                DataType::Timestamp(TimeUnit::Millisecond, _) => {
+                    as_primitive_array::<TimestampMillisecondType>(&array)
+                        .clone()
+                        .into_data()
+                }
+                DataType::Timestamp(TimeUnit::Microsecond, _) => {
+                    as_primitive_array::<TimestampMicrosecondType>(&array)
+                        .clone()
+                        .into_data()
+                }
+                DataType::Timestamp(TimeUnit::Nanosecond, _) => {
+                    as_primitive_array::<TimestampNanosecondType>(&array)
+                        .clone()
+                        .into_data()
+                }
+                _ => {
+                    return Err(DataFusionError::Internal(
+                        "Unsupported timestamp type".to_string(),
+                    ));
+                }
             };
             let array_ref = make_array(array);
             let source_datatype = array_ref.data_type();
-            let target_datatype = DataType::Timestamp(target_unit.clone(), Some(target_tz.clone()));
+            let target_datatype =
+                DataType::Timestamp(target_unit, Some(target_tz.clone()));
 
-            let casted_array = cast_with_options(
+            (cast_with_options(
                 &array_ref,
-                &DataType::Timestamp(target_unit.clone(), Some(target_tz.clone())),
+                &DataType::Timestamp(target_unit, Some(target_tz.clone())),
                 &ARROW_CAST_OPTIONS,
             )
             .map_err(|e| {
@@ -190,42 +229,53 @@ pub fn transform_array(
                         source_datatype, target_datatype
                     )),
                 )
-            })?;
-            casted_array
+            })?) as _
         }
         DataType::Struct(target_child_fields) => {
             let orig_array = as_struct_array(&array);
             let mut child_array = vec![];
-            target_child_fields.iter().try_for_each(|field| -> Result<()> {
-                match orig_array.column_by_name(field.name()) {
-                    Some(array) => {
-                        child_array.push((
-                            field.clone(),
-                            transform_array(
-                                name.as_str().to_owned() + "." + field.name(),
-                                field.data_type().clone(),
-                                array.clone(),
-                                num_rows,
-                                use_default,
-                                default_column_value.clone(),
-                            )?,
-                        ));
-                        Ok(())
+            target_child_fields
+                .iter()
+                .try_for_each(|field| -> Result<()> {
+                    match orig_array.column_by_name(field.name()) {
+                        Some(array) => {
+                            child_array.push((
+                                field.clone(),
+                                transform_array(
+                                    name.as_str().to_owned() + "." + field.name(),
+                                    field.data_type().clone(),
+                                    array.clone(),
+                                    num_rows,
+                                    use_default,
+                                    default_column_value.clone(),
+                                )?,
+                            ));
+                            Ok(())
+                        }
+                        None if use_default => {
+                            let default_value_array = match default_column_value
+                                .get(field.name())
+                            {
+                                Some(value) => make_default_array(
+                                    &field.data_type().clone(),
+                                    value,
+                                    num_rows,
+                                )?,
+                                _ => new_null_array(&field.data_type().clone(), num_rows),
+                            };
+                            child_array.push((field.clone(), default_value_array));
+                            Ok(())
+                        }
+                        _ => Ok(()),
                     }
-                    None if use_default => {
-                        let default_value_array = match default_column_value.get(field.name()) {
-                            Some(value) => make_default_array(&field.data_type().clone(), value, num_rows)?,
-                            _ => new_null_array(&field.data_type().clone(), num_rows),
-                        };
-                        child_array.push((field.clone(), default_value_array));
-                        Ok(())
-                    }
-                    _ => Ok(()),
-                }
-            })?;
+                })?;
             let (schema, arrays): (SchemaBuilder, _) = child_array.into_iter().unzip();
             match orig_array.nulls() {
-                Some(buffer) => Arc::new(StructArray::new(schema.finish().fields, arrays, Some(buffer.clone()))),
+                Some(buffer) => Arc::new(StructArray::new(
+                    schema.finish().fields,
+                    arrays,
+                    Some(buffer.clone()),
+                )),
                 None => Arc::new(StructArray::new(schema.finish().fields, arrays, None)),
             }
         }
@@ -234,20 +284,27 @@ pub fn transform_array(
             if target_datatype != *array.data_type() {
                 match (target_datatype.clone(), array_type) {
                     // skip view type cast
-                    (DataType::Utf8 | DataType::LargeUtf8, DataType::Utf8View) => array.clone(),
-                    (DataType::Binary | DataType::LargeBinary, DataType::BinaryView) => array.clone(),
+                    (DataType::Utf8 | DataType::LargeUtf8, DataType::Utf8View) => {
+                        array.clone()
+                    }
+                    (DataType::Binary | DataType::LargeBinary, DataType::BinaryView) => {
+                        array.clone()
+                    }
                     (DataType::List(_), DataType::ListView(_)) => array.clone(),
                     (DataType::LargeList(_), DataType::LargeListView(_)) => array.clone(),
-                    (_, _) => cast_with_options(&array, &target_datatype, &ARROW_CAST_OPTIONS).map_err(|e| {
-                        DataFusionError::ArrowError(
-                            e,
-                            Some(format!(
-                                "Failed to cast type from {} to {}",
-                                array.data_type(),
-                                target_datatype
-                            )),
-                        )
-                    })?,
+                    (_, _) => {
+                        cast_with_options(&array, &target_datatype, &ARROW_CAST_OPTIONS)
+                            .map_err(|e| {
+                            DataFusionError::ArrowError(
+                                e,
+                                Some(format!(
+                                    "Failed to cast type from {} to {}",
+                                    array.data_type(),
+                                    target_datatype
+                                )),
+                            )
+                        })?
+                    }
                 }
             } else {
                 array.clone()
@@ -256,7 +313,11 @@ pub fn transform_array(
     })
 }
 
-pub fn make_default_array(datatype: &DataType, value: &String, num_rows: usize) -> Result<ArrayRef> {
+pub fn make_default_array(
+    datatype: &DataType,
+    value: &String,
+    num_rows: usize,
+) -> Result<ArrayRef> {
     if value == LAKESOUL_NULL_STRING {
         return Ok(new_null_array(datatype, num_rows));
     }
@@ -272,18 +333,18 @@ pub fn make_default_array(datatype: &DataType, value: &String, num_rows: usize) 
             value
                 .as_str()
                 .parse::<i32>()
-                .map_err(|e| {
-                    External(Box::new(e))
-                })?;
+                .map_err(
+                    |e| { External(Box::new(e)) }
+                )?;
             num_rows
         ])),
         DataType::Int64 => Arc::new(PrimitiveArray::<Int64Type>::from(vec![
             value
                 .as_str()
                 .parse::<i64>()
-                .map_err(|e| {
-                    External(Box::new(e))
-                })?;
+                .map_err(
+                    |e| { External(Box::new(e)) }
+                )?;
             num_rows
         ])),
         DataType::Date32 => Arc::new(PrimitiveArray::<Date32Type>::from(vec![
@@ -302,10 +363,13 @@ pub fn make_default_array(datatype: &DataType, value: &String, num_rows: usize) 
                     PrimitiveArray::<TimestampSecondType>::from(vec![
                         if let Ok(unix_time) = value.as_str().parse::<i64>() {
                             unix_time
-                        } else if let Ok(duration) = timestamp_str_to_unix_time(value, FLINK_TIMESTAMP_FORMAT) {
+                        } else if let Ok(duration) =
+                            timestamp_str_to_unix_time(value, FLINK_TIMESTAMP_FORMAT)
+                        {
                             duration.num_seconds()
                         } else {
-                            timestamp_str_to_unix_time(value, TIMESTAMP_SECOND_FORMAT)?.num_seconds()
+                            timestamp_str_to_unix_time(value, TIMESTAMP_SECOND_FORMAT)?
+                                .num_seconds()
                         };
                         num_rows
                     ])
@@ -315,11 +379,17 @@ pub fn make_default_array(datatype: &DataType, value: &String, num_rows: usize) 
                     PrimitiveArray::<TimestampMillisecondType>::from(vec![
                         if let Ok(unix_time) = value.as_str().parse::<i64>() {
                             unix_time
-                        } else if let Ok(duration) = timestamp_str_to_unix_time(value, FLINK_TIMESTAMP_FORMAT) {
+                        } else if let Ok(duration) =
+                            timestamp_str_to_unix_time(value, FLINK_TIMESTAMP_FORMAT)
+                        {
                             duration.num_milliseconds()
                         } else {
                             // then try parsing string timestamp to epoch seconds (for flink)
-                            timestamp_str_to_unix_time(value, TIMESTAMP_MILLSECOND_FORMAT)?.num_milliseconds()
+                            timestamp_str_to_unix_time(
+                                value,
+                                TIMESTAMP_MILLSECOND_FORMAT,
+                            )?
+                            .num_milliseconds()
                         };
                         num_rows
                     ])
@@ -329,15 +399,30 @@ pub fn make_default_array(datatype: &DataType, value: &String, num_rows: usize) 
                     PrimitiveArray::<TimestampMicrosecondType>::from(vec![
                         if let Ok(unix_time) = value.as_str().parse::<i64>() {
                             unix_time
-                        } else if let Ok(duration) = timestamp_str_to_unix_time(value, FLINK_TIMESTAMP_FORMAT) {
+                        } else if let Ok(duration) =
+                            timestamp_str_to_unix_time(value, FLINK_TIMESTAMP_FORMAT)
+                        {
                             match duration.num_microseconds() {
                                 Some(microsecond) => microsecond,
-                                None => return Err(Internal("microsecond is out of range".to_string())),
+                                None => {
+                                    return Err(Internal(
+                                        "microsecond is out of range".to_string(),
+                                    ));
+                                }
                             }
                         } else {
-                            match timestamp_str_to_unix_time(value, TIMESTAMP_MICROSECOND_FORMAT)?.num_microseconds() {
+                            match timestamp_str_to_unix_time(
+                                value,
+                                TIMESTAMP_MICROSECOND_FORMAT,
+                            )?
+                            .num_microseconds()
+                            {
                                 Some(microsecond) => microsecond,
-                                None => return Err(Internal("microsecond is out of range".to_string())),
+                                None => {
+                                    return Err(Internal(
+                                        "microsecond is out of range".to_string(),
+                                    ));
+                                }
                             }
                         };
                         num_rows
@@ -348,15 +433,30 @@ pub fn make_default_array(datatype: &DataType, value: &String, num_rows: usize) 
                     PrimitiveArray::<TimestampNanosecondType>::from(vec![
                         if let Ok(unix_time) = value.as_str().parse::<i64>() {
                             unix_time
-                        } else if let Ok(duration) = timestamp_str_to_unix_time(value, FLINK_TIMESTAMP_FORMAT) {
+                        } else if let Ok(duration) =
+                            timestamp_str_to_unix_time(value, FLINK_TIMESTAMP_FORMAT)
+                        {
                             match duration.num_nanoseconds() {
                                 Some(nanosecond) => nanosecond,
-                                None => return Err(Internal("nanosecond is out of range".to_string())),
+                                None => {
+                                    return Err(Internal(
+                                        "nanosecond is out of range".to_string(),
+                                    ));
+                                }
                             }
                         } else {
-                            match timestamp_str_to_unix_time(value, TIMESTAMP_NANOSECOND_FORMAT)?.num_nanoseconds() {
+                            match timestamp_str_to_unix_time(
+                                value,
+                                TIMESTAMP_NANOSECOND_FORMAT,
+                            )?
+                            .num_nanoseconds()
+                            {
                                 Some(nanosecond) => nanosecond,
-                                None => return Err(Internal("nanoseconds is out of range".to_string())),
+                                None => {
+                                    return Err(Internal(
+                                        "nanoseconds is out of range".to_string(),
+                                    ));
+                                }
                             }
                         };
                         num_rows
@@ -369,7 +469,9 @@ pub fn make_default_array(datatype: &DataType, value: &String, num_rows: usize) 
             value
                 .as_str()
                 .parse::<bool>()
-                .map_err(|e| External(Box::new(e)))?;
+                .map_err(|e| {
+                    External(Box::new(e))
+                })?;
             num_rows
         ])),
         data_type => match into_scalar_value(value, data_type) {

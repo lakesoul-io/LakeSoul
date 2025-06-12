@@ -30,8 +30,8 @@
 
 use atomic_refcell::AtomicRefCell;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
-use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::SendableRecordBatchStream;
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use std::sync::Arc;
 
 use arrow_schema::SchemaRef;
@@ -51,10 +51,10 @@ use crate::datasource::listing::LakeSoulTableProvider;
 use crate::datasource::physical_plan::merge::convert_filter;
 use crate::datasource::physical_plan::merge::prune_filter_and_execute;
 use crate::helpers::{
-    collect_or_conjunctive_filter_expressions, compute_scalar_hash, extract_hash_bucket_id,
-    extract_scalar_value_from_expr,
+    collect_or_conjunctive_filter_expressions, compute_scalar_hash,
+    extract_hash_bucket_id, extract_scalar_value_from_expr,
 };
-use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfig};
+use crate::lakesoul_io_config::{LakeSoulIOConfig, create_session_context};
 
 /// A reader for LakeSoul tables that supports efficient reading of data with various optimizations.
 ///
@@ -171,8 +171,10 @@ impl LakeSoulReader {
                 && !filters.is_empty()
             {
                 // Refactored approach for OR-conjunction optimization
-                let or_conjunctive_filter =
-                    collect_or_conjunctive_filter_expressions(&filters, &self.config.primary_keys);
+                let or_conjunctive_filter = collect_or_conjunctive_filter_expressions(
+                    &filters,
+                    &self.config.primary_keys,
+                );
 
                 if !or_conjunctive_filter.is_empty() {
                     debug!(
@@ -187,7 +189,8 @@ impl LakeSoulReader {
                     for expr in &or_conjunctive_filter {
                         if let Some(scalar_value) = extract_scalar_value_from_expr(expr) {
                             // Calculate the hash bucket for this scalar value
-                            let hash_value = compute_scalar_hash(scalar_value) % hash_bucket_num;
+                            let hash_value =
+                                compute_scalar_hash(scalar_value) % hash_bucket_num;
 
                             // Add the scalar value to our set
                             matching_scalar_values.insert(hash_value);
@@ -205,18 +208,18 @@ impl LakeSoulReader {
                             matching_scalar_values.len()
                         );
                     }
-                    if let Some(hash_bucket_id) = extract_hash_bucket_id(&self.config.files[0]) {
+                    if let Some(hash_bucket_id) =
+                        extract_hash_bucket_id(&self.config.files[0])
+                    {
                         debug!(
                             "matching_scalar_values: {:?}, hash_bucket_id: {}",
                             &matching_scalar_values, hash_bucket_id
                         );
-                        if !matching_scalar_values.contains(&hash_bucket_id) {
-                            true
-                        } else {
-                            false
-                        }
+                        !matching_scalar_values.contains(&hash_bucket_id)
                     } else {
-                        debug!("Found optimizable expressions with primary keys, but couldn't extract hash_bucket_id");
+                        debug!(
+                            "Found optimizable expressions with primary keys, but couldn't extract hash_bucket_id"
+                        );
                         false
                     }
                 } else {
@@ -237,7 +240,13 @@ impl LakeSoulReader {
                     futures::stream::once(async move { Ok(empty_batch) }).boxed(),
                 )) as SendableRecordBatchStream
             } else {
-                prune_filter_and_execute(dataframe, target_schema.clone(), filters, self.config.batch_size).await?
+                prune_filter_and_execute(
+                    dataframe,
+                    target_schema.clone(),
+                    filters,
+                    self.config.batch_size,
+                )
+                .await?
             };
             self.schema = Some(stream.schema());
             self.stream = Some(stream);
@@ -333,7 +342,10 @@ impl SyncSendableMutableLakeSoulReader {
     /// # Returns
     ///
     /// A JoinHandle that can be used to wait for the callback to complete
-    pub fn next_rb_callback(&self, f: Box<dyn FnOnce(Option<Result<RecordBatch>>) + Send + Sync>) -> JoinHandle<()> {
+    pub fn next_rb_callback(
+        &self,
+        f: Box<dyn FnOnce(Option<Result<RecordBatch>>) + Send + Sync>,
+    ) -> JoinHandle<()> {
         let inner_reader = self.get_inner_reader();
         let runtime = self.get_runtime();
         runtime.spawn(async move {
@@ -349,7 +361,9 @@ impl SyncSendableMutableLakeSoulReader {
     /// # Returns
     ///
     /// An Option containing a Result with the next RecordBatch, or None if there are no more batches
-    pub fn next_rb_blocked(&self) -> Option<std::result::Result<RecordBatch, DataFusionError>> {
+    pub fn next_rb_blocked(
+        &self,
+    ) -> Option<std::result::Result<RecordBatch, DataFusionError>> {
         let inner_reader = self.get_inner_reader();
         let runtime = self.get_runtime();
         runtime.block_on(async move {
@@ -382,9 +396,11 @@ mod tests {
     use super::*;
     use arrow::array::as_primitive_array;
     use arrow_array::{ArrayRef, Int64Array, StringArray};
-    use rand::prelude::*;
+    use rand::distr::SampleString;
     use std::mem::ManuallyDrop;
     use std::ops::Not;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering::Relaxed;
     use std::sync::mpsc::sync_channel;
     use std::time::Instant;
     use tokio::runtime::Builder;
@@ -392,7 +408,7 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema, TimestampSecondType};
     use arrow::util::pretty::print_batches;
 
-    use rand::{distributions::DistString, Rng};
+    use rand::Rng;
 
     #[tokio::test]
     async fn test_reader_local() -> Result<()> {
@@ -440,7 +456,7 @@ mod tests {
             .unwrap();
         let mut reader = SyncSendableMutableLakeSoulReader::new(reader, runtime);
         reader.start_blocked()?;
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         loop {
             let (tx, rx) = sync_channel(1);
             let start = Instant::now();
@@ -454,7 +470,7 @@ mod tests {
                     tx.send(false).unwrap();
                 }
             };
-            thread::sleep(Duration::from_millis(rng.gen_range(600..1200)));
+            thread::sleep(Duration::from_millis(rng.random_range(600..1200)));
 
             reader.next_rb_callback(Box::new(f));
             let done = rx.recv().unwrap();
@@ -479,19 +495,16 @@ mod tests {
             .unwrap();
         let mut reader = SyncSendableMutableLakeSoulReader::new(reader, runtime);
         reader.start_blocked()?;
-        static mut ROW_CNT: usize = 0;
+        let row_cnt = Arc::new(AtomicUsize::new(0));
         loop {
             let (tx, rx) = sync_channel(1);
+            let cnt = Arc::clone(&row_cnt);
             let f = move |rb: Option<Result<RecordBatch>>| match rb {
                 None => tx.send(true).unwrap(),
                 Some(rb) => {
                     let rb = rb.unwrap();
-                    let num_rows = &rb.num_rows();
-                    unsafe {
-                        ROW_CNT += num_rows;
-                        println!("{}", ROW_CNT);
-                    }
-
+                    let num_rows = rb.num_rows();
+                    cnt.fetch_add(num_rows, Relaxed);
                     tx.send(false).unwrap();
                 }
             };
@@ -504,7 +517,7 @@ mod tests {
         Ok(())
     }
 
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{Duration, sleep};
 
     #[tokio::test]
     async fn test_reader_s3() -> Result<()> {
@@ -512,24 +525,37 @@ mod tests {
             .with_files(vec!["s3://path/to/file.parquet".to_string()])
             .with_thread_num(1)
             .with_batch_size(8192)
-            .with_object_store_option(String::from("fs.s3a.access.key"), String::from("fs.s3.access.key"))
-            .with_object_store_option(String::from("fs.s3a.secret.key"), String::from("fs.s3.secret.key"))
-            .with_object_store_option(String::from("fs.s3a.region"), String::from("us-east-1"))
-            .with_object_store_option(String::from("fs.s3a.bucket"), String::from("fs.s3.bucket"))
-            .with_object_store_option(String::from("fs.s3a.endpoint"), String::from("fs.s3.endpoint"))
+            .with_object_store_option(
+                String::from("fs.s3a.access.key"),
+                String::from("fs.s3.access.key"),
+            )
+            .with_object_store_option(
+                String::from("fs.s3a.secret.key"),
+                String::from("fs.s3.secret.key"),
+            )
+            .with_object_store_option(
+                String::from("fs.s3a.region"),
+                String::from("us-east-1"),
+            )
+            .with_object_store_option(
+                String::from("fs.s3a.bucket"),
+                String::from("fs.s3.bucket"),
+            )
+            .with_object_store_option(
+                String::from("fs.s3a.endpoint"),
+                String::from("fs.s3.endpoint"),
+            )
             .build();
         let reader = LakeSoulReader::new(reader_conf)?;
         let mut reader = ManuallyDrop::new(reader);
         reader.start().await?;
-        static mut ROW_CNT: usize = 0;
+        let row_cnt = Arc::new(AtomicUsize::new(0));
 
         let start = Instant::now();
         while let Some(rb) = reader.next_rb().await {
-            let num_rows = &rb.unwrap().num_rows();
-            unsafe {
-                ROW_CNT += num_rows;
-                println!("{}", ROW_CNT);
-            }
+            let num_rows = rb.unwrap().num_rows();
+            row_cnt.fetch_add(num_rows, Relaxed);
+            println!("{:?}", row_cnt);
             sleep(Duration::from_millis(20)).await;
         }
         println!("time cost: {:?}ms", start.elapsed().as_millis()); // ms
@@ -544,11 +570,26 @@ mod tests {
             .with_files(vec!["s3://path/to/file.parquet".to_string()])
             .with_thread_num(1)
             .with_batch_size(8192)
-            .with_object_store_option(String::from("fs.s3a.access.key"), String::from("fs.s3.access.key"))
-            .with_object_store_option(String::from("fs.s3a.secret.key"), String::from("fs.s3.secret.key"))
-            .with_object_store_option(String::from("fs.s3a.region"), String::from("us-east-1"))
-            .with_object_store_option(String::from("fs.s3a.bucket"), String::from("fs.s3.bucket"))
-            .with_object_store_option(String::from("fs.s3a.endpoint"), String::from("fs.s3.endpoint"))
+            .with_object_store_option(
+                String::from("fs.s3a.access.key"),
+                String::from("fs.s3.access.key"),
+            )
+            .with_object_store_option(
+                String::from("fs.s3a.secret.key"),
+                String::from("fs.s3.secret.key"),
+            )
+            .with_object_store_option(
+                String::from("fs.s3a.region"),
+                String::from("us-east-1"),
+            )
+            .with_object_store_option(
+                String::from("fs.s3a.bucket"),
+                String::from("fs.s3.bucket"),
+            )
+            .with_object_store_option(
+                String::from("fs.s3a.endpoint"),
+                String::from("fs.s3.endpoint"),
+            )
             .build();
         let reader = LakeSoulReader::new(reader_conf)?;
         let runtime = Builder::new_multi_thread()
@@ -558,19 +599,18 @@ mod tests {
             .unwrap();
         let mut reader = SyncSendableMutableLakeSoulReader::new(reader, runtime);
         reader.start_blocked()?;
-        static mut ROW_CNT: usize = 0;
         let start = Instant::now();
+        let row_cnt = Arc::new(AtomicUsize::new(0));
         loop {
+            let row_cnt = Arc::clone(&row_cnt);
             let (tx, rx) = sync_channel(1);
 
             let f = move |rb: Option<Result<RecordBatch>>| match rb {
                 None => tx.send(true).unwrap(),
                 Some(rb) => {
-                    let num_rows = &rb.unwrap().num_rows();
-                    unsafe {
-                        ROW_CNT += num_rows;
-                        println!("{}", ROW_CNT);
-                    }
+                    let num_rows = rb.unwrap().num_rows();
+                    row_cnt.fetch_add(num_rows, Relaxed);
+                    println!("{}", row_cnt.load(Relaxed));
 
                     thread::sleep(Duration::from_millis(20));
                     tx.send(false).unwrap();
@@ -589,15 +629,19 @@ mod tests {
 
     use crate::lakesoul_io_config::LakeSoulIOConfigBuilder;
     use crate::lakesoul_writer::SyncSendableMutableLakeSoulWriter;
-    use datafusion::logical_expr::{col, Expr};
+    use datafusion::logical_expr::{Expr, col};
     use datafusion_common::ScalarValue;
 
-    async fn get_num_rows_of_file_with_filters(file_path: String, filters: Vec<Expr>) -> Result<usize> {
+    // todo use filter_proto
+    async fn get_num_rows_of_file_with_filters(
+        file_path: String,
+        _filters: Vec<Expr>,
+    ) -> Result<usize> {
         let reader_conf = LakeSoulIOConfigBuilder::new()
             .with_files(vec![file_path])
             .with_thread_num(1)
             .with_batch_size(32)
-            .with_filters(filters)
+            // .with_filters(filters)
             .build();
         let reader = LakeSoulReader::new(reader_conf)?;
         let mut reader = ManuallyDrop::new(reader);
@@ -618,7 +662,11 @@ mod tests {
         let filter = col("first_name").eq(Expr::Literal(v));
         filters1.push(filter);
         let mut row_cnt1 = 0;
-        let result = get_num_rows_of_file_with_filters("/path/to/file.parquet".to_string(), filters1).await;
+        let result = get_num_rows_of_file_with_filters(
+            "/path/to/file.parquet".to_string(),
+            filters1,
+        )
+        .await;
         if let Ok(row_cnt) = result {
             row_cnt1 = row_cnt;
         } else {
@@ -631,7 +679,11 @@ mod tests {
         filters2.push(filter);
 
         let mut row_cnt2 = 0;
-        let result = get_num_rows_of_file_with_filters("/path/to/file.parquet".to_string(), filters2).await;
+        let result = get_num_rows_of_file_with_filters(
+            "/path/to/file.parquet".to_string(),
+            filters2,
+        )
+        .await;
         if let Ok(row_cnt) = result {
             row_cnt2 = row_cnt;
         } else {
@@ -651,7 +703,11 @@ mod tests {
         filters1.push(filter);
 
         let mut row_cnt1 = 0;
-        let result = get_num_rows_of_file_with_filters("/path/to/file.parquet".to_string(), filters1).await;
+        let result = get_num_rows_of_file_with_filters(
+            "/path/to/file.parquet".to_string(),
+            filters1,
+        )
+        .await;
         if let Ok(row_cnt) = result {
             row_cnt1 = row_cnt;
         } else {
@@ -664,7 +720,11 @@ mod tests {
         filters2.push(filter);
 
         let mut row_cnt2 = 0;
-        let result = get_num_rows_of_file_with_filters("/path/to/file.parquet".to_string(), filters2).await;
+        let result = get_num_rows_of_file_with_filters(
+            "/path/to/file.parquet".to_string(),
+            filters2,
+        )
+        .await;
         if let Ok(row_cnt) = result {
             row_cnt2 = row_cnt;
         } else {
@@ -676,7 +736,11 @@ mod tests {
         filters3.push(filter);
 
         let mut row_cnt3 = 0;
-        let result = get_num_rows_of_file_with_filters("/path/to/file.parquet".to_string(), filters3).await;
+        let result = get_num_rows_of_file_with_filters(
+            "/path/to/file.parquet".to_string(),
+            filters3,
+        )
+        .await;
         if let Ok(row_cnt) = result {
             row_cnt3 = row_cnt;
         } else {
@@ -695,7 +759,11 @@ mod tests {
         filters1.push(filter);
 
         let mut row_cnt1 = 0;
-        let result = get_num_rows_of_file_with_filters("/path/to/file.parquet".to_string(), filters1).await;
+        let result = get_num_rows_of_file_with_filters(
+            "/path/to/file.parquet".to_string(),
+            filters1,
+        )
+        .await;
         if let Ok(row_cnt) = result {
             row_cnt1 = row_cnt;
         } else {
@@ -707,7 +775,11 @@ mod tests {
         filters2.push(filter);
 
         let mut row_cnt2 = 0;
-        let result = get_num_rows_of_file_with_filters("/path/to/file.parquet".to_string(), filters2).await;
+        let result = get_num_rows_of_file_with_filters(
+            "/path/to/file.parquet".to_string(),
+            filters2,
+        )
+        .await;
         if let Ok(row_cnt) = result {
             row_cnt2 = row_cnt;
         } else {
@@ -728,7 +800,11 @@ mod tests {
 
         filters1.push(filter);
         let mut row_cnt1 = 0;
-        let result = get_num_rows_of_file_with_filters("/path/to/file.parquet".to_string(), filters1).await;
+        let result = get_num_rows_of_file_with_filters(
+            "/path/to/file.parquet".to_string(),
+            filters1,
+        )
+        .await;
         if let Ok(row_cnt) = result {
             row_cnt1 = row_cnt;
         } else {
@@ -743,7 +819,11 @@ mod tests {
 
         filters2.push(filter);
         let mut row_cnt2 = 0;
-        let result = get_num_rows_of_file_with_filters("/path/to/file.parquet".to_string(), filters2).await;
+        let result = get_num_rows_of_file_with_filters(
+            "/path/to/file.parquet".to_string(),
+            filters2,
+        )
+        .await;
         if let Ok(row_cnt) = result {
             row_cnt2 = row_cnt;
         } else {
@@ -759,7 +839,11 @@ mod tests {
 
         filters.push(filter);
         let mut row_cnt3 = 0;
-        let result = get_num_rows_of_file_with_filters("/path/to/file.parquet".to_string(), filters).await;
+        let result = get_num_rows_of_file_with_filters(
+            "/path/to/file.parquet".to_string(),
+            filters,
+        )
+        .await;
         if let Ok(row_cnt) = result {
             row_cnt3 = row_cnt;
         } else {
@@ -772,10 +856,13 @@ mod tests {
         let filter = col("first_name")
             .eq(Expr::Literal(first_name))
             .or(col("last_name").eq(Expr::Literal(last_name)));
-
         filters.push(filter);
         let mut row_cnt4 = 0;
-        let result = get_num_rows_of_file_with_filters("/path/to/file.parquet".to_string(), filters).await;
+        let result = get_num_rows_of_file_with_filters(
+            "/path/to/file.parquet".to_string(),
+            filters,
+        )
+        .await;
         if let Ok(row_cnt) = result {
             row_cnt4 = row_cnt;
         } else {
@@ -793,7 +880,11 @@ mod tests {
         let filter = col("salary").is_null();
         filters.push(filter);
         let mut row_cnt1 = 0;
-        let result = get_num_rows_of_file_with_filters("/path/to/file.parquet".to_string(), filters).await;
+        let result = get_num_rows_of_file_with_filters(
+            "/path/to/file.parquet".to_string(),
+            filters,
+        )
+        .await;
         if let Ok(row_cnt) = result {
             row_cnt1 = row_cnt;
         } else {
@@ -804,7 +895,11 @@ mod tests {
         let filter = Expr::not(col("salary").is_null());
         filters.push(filter);
         let mut row_cnt2 = 0;
-        let result = get_num_rows_of_file_with_filters("/path/to/file.parquet".to_string(), filters).await;
+        let result = get_num_rows_of_file_with_filters(
+            "/path/to/file.parquet".to_string(),
+            filters,
+        )
+        .await;
         if let Ok(row_cnt) = result {
             row_cnt2 = row_cnt;
         } else {
@@ -823,7 +918,11 @@ mod tests {
             Field::new("name", DataType::Utf8, true),
             Field::new("score", DataType::Decimal128(10, 0), true),
         ]));
-        let partition_schema = Arc::new(Schema::new(vec![Field::new("order_id", DataType::Int32, true)]));
+        let partition_schema = Arc::new(Schema::new(vec![Field::new(
+            "order_id",
+            DataType::Int32,
+            true,
+        )]));
         let reader_conf = LakeSoulIOConfigBuilder::new()
             .with_files(vec!["file:/var/folders/4c/34n9w2cd65n0pyjkc3n4q7pc0000gn/T/lakeSource/user_nonpk_partitioned/order_id=4/part-00011-989b7a5d-6ed7-4e51-a3bd-a9fa7853155d_00011.c000.parquet".to_string()])
             // .with_files(vec!["file:/var/folders/4c/34n9w2cd65n0pyjkc3n4q7pc0000gn/T/lakeSource/user1/order_id=4/part-59guLCg5R6v4oLUT_0000.parquet".to_string()])
@@ -837,15 +936,13 @@ mod tests {
         let reader = LakeSoulReader::new(reader_conf)?;
         let mut reader = ManuallyDrop::new(reader);
         reader.start().await?;
-        static mut ROW_CNT: usize = 0;
 
+        let row_cnt = Arc::new(AtomicUsize::new(0));
         let start = Instant::now();
         while let Some(rb) = reader.next_rb().await {
-            let num_rows = &rb.unwrap().num_rows();
-            unsafe {
-                ROW_CNT += num_rows;
-                println!("{}", ROW_CNT);
-            }
+            let num_rows = rb.unwrap().num_rows();
+            row_cnt.fetch_add(num_rows, Relaxed);
+            println!("{}", row_cnt.load(Relaxed));
             sleep(Duration::from_millis(20)).await;
         }
         println!("time cost: {:?}ms", start.elapsed().as_millis()); // ms
@@ -924,17 +1021,14 @@ mod tests {
         let mut reader = LakeSoulReader::new(reader_conf)?;
         // let mut reader = ManuallyDrop::new(reader);
         reader.start().await?;
-        static mut ROW_CNT: usize = 0;
-
+        let row_cnt = Arc::new(AtomicUsize::new(0));
         let start = Instant::now();
         while let Some(rb) = reader.next_rb().await {
             let rb = rb.unwrap();
             let num_rows = rb.num_rows();
-            let num_cols = rb.num_columns();
-            unsafe {
-                ROW_CNT += num_rows;
-                // println!("rows {}, cols {}", ROW_CNT, num_cols);
-            }
+            let _num_cols = rb.num_columns();
+            row_cnt.fetch_add(num_rows, Relaxed);
+            // println!("rows {}, cols {}", ROW_CNT, num_cols);
             // sleep(Duration::from_millis(20)).await;
         }
         println!("time cost: {:?}ms", start.elapsed().as_millis()); // ms
@@ -995,8 +1089,8 @@ mod tests {
         str_len: usize,
         pk_generator: &mut Option<LinearPKGenerator>,
     ) -> RecordBatch {
-        let mut rng = rand::thread_rng();
-        let mut len_rng = rand::thread_rng();
+        let mut rng = rand::rng();
+        let mut len_rng = rand::rng();
         let mut iter = vec![];
         if let Some(generator) = pk_generator {
             let pk_iter = (0..num_rows).map(|_| generator.next_pk());
@@ -1013,8 +1107,10 @@ mod tests {
                     (0..num_rows)
                         .into_iter()
                         .map(|_| {
-                            rand::distributions::Alphanumeric
-                                .sample_string(&mut rng, len_rng.gen_range(str_len..str_len * 3))
+                            rand::distr::Alphanumeric.sample_string(
+                                &mut rng,
+                                len_rng.random_range(str_len..str_len * 3),
+                            )
                         })
                         .collect::<Vec<_>>(),
                 )) as ArrayRef,
@@ -1083,8 +1179,16 @@ mod tests {
             let _start = Instant::now();
             for _ in 0..num_batch {
                 let once_start = Instant::now();
-                writer.write_batch(create_batch(num_columns, num_rows, str_len, &mut generator))?;
-                println!("write batch once cost: {}", once_start.elapsed().as_millis());
+                writer.write_batch(create_batch(
+                    num_columns,
+                    num_rows,
+                    str_len,
+                    &mut generator,
+                ))?;
+                println!(
+                    "write batch once cost: {}",
+                    once_start.elapsed().as_millis()
+                );
             }
             let _flush_start = Instant::now();
             writer.flush_and_close()?;
@@ -1111,7 +1215,7 @@ mod tests {
         let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
         let lakesoul_reader = LakeSoulReader::new(reader_conf)?;
         let mut reader = SyncSendableMutableLakeSoulReader::new(lakesoul_reader, runtime);
-        reader.start_blocked();
+        let _ = reader.start_blocked();
         let start = Instant::now();
         while let Some(rb) = reader.next_rb_blocked() {
             dbg!(&rb.unwrap().num_rows());

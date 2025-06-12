@@ -41,4 +41,8 @@ macro_rules! impl_error_to_status {
 
 impl_error_to_status!(lakesoul_error_to_status, LakeSoulError, internal);
 impl_error_to_status!(datafusion_error_to_status, DataFusionError, internal);
-impl_error_to_status!(lakesoul_metadata_error_to_status, LakeSoulMetaDataError, internal);
+impl_error_to_status!(
+    lakesoul_metadata_error_to_status,
+    LakeSoulMetaDataError,
+    internal
+);

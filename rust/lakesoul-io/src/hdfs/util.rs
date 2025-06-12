@@ -6,7 +6,7 @@
 
 //! Common logic for interacting with remote object stores
 use bytes::Bytes;
-use futures::{stream::StreamExt, TryStreamExt};
+use futures::{TryStreamExt, stream::StreamExt};
 
 #[cfg(not(target_arch = "wasm32"))]
 /// Takes a function and spawns it to a tokio blocking pool if available
@@ -69,7 +69,11 @@ where
 }
 
 /// Returns a sorted list of ranges that cover `ranges`
-fn merge_ranges(ranges: &[std::ops::Range<u64>], coalesce: u64, range_max_size: u64) -> Vec<std::ops::Range<u64>> {
+fn merge_ranges(
+    ranges: &[std::ops::Range<u64>],
+    coalesce: u64,
+    range_max_size: u64,
+) -> Vec<std::ops::Range<u64>> {
     if ranges.is_empty() {
         return vec![];
     }

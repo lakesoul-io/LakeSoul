@@ -4,18 +4,18 @@
 
 //! The [`datafusion::catalog::SchemaProvider`] implementation for the LakeSoul.
 
-use crate::datasource::table_provider::LakeSoulTableProvider;
-use crate::lakesoul_table::helpers::case_fold_table_name;
-use crate::lakesoul_table::LakeSoulTable;
 use crate::LakeSoulError;
+use crate::datasource::table_provider::LakeSoulTableProvider;
+use crate::lakesoul_table::LakeSoulTable;
+use crate::lakesoul_table::helpers::case_fold_table_name;
 use async_trait::async_trait;
 use datafusion::catalog::SchemaProvider;
 use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
 use datafusion::error::Result;
 use datafusion::prelude::SessionContext;
-use lakesoul_metadata::error::LakeSoulMetaDataError;
 use lakesoul_metadata::MetaDataClientRef;
+use lakesoul_metadata::error::LakeSoulMetaDataError;
 use std::any::Any;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
@@ -29,8 +29,15 @@ pub struct LakeSoulNamespace {
 }
 
 impl LakeSoulNamespace {
-    pub fn new(meta_data_client_ref: MetaDataClientRef, context: Arc<SessionContext>, namespace: &str) -> Self {
-        debug!("LakeSoulNamespace::new - Creating new namespace: {}", namespace);
+    pub fn new(
+        meta_data_client_ref: MetaDataClientRef,
+        context: Arc<SessionContext>,
+        namespace: &str,
+    ) -> Self {
+        debug!(
+            "LakeSoulNamespace::new - Creating new namespace: {}",
+            namespace
+        );
         Self {
             metadata_client: meta_data_client_ref,
             context,
@@ -49,7 +56,10 @@ impl LakeSoulNamespace {
     }
 
     pub fn namespace(&self) -> &str {
-        debug!("LakeSoulNamespace::namespace - Getting namespace: {}", &self.namespace);
+        debug!(
+            "LakeSoulNamespace::namespace - Getting namespace: {}",
+            &self.namespace
+        );
         &self.namespace
     }
 }
@@ -102,14 +112,19 @@ impl SchemaProvider for LakeSoulNamespace {
         );
         let name = case_fold_table_name(name);
         info!("table: {:?} {:?}", name, &self.namespace);
-        let table =
-            match LakeSoulTable::for_namespace_and_name(&self.namespace, &name, Some(self.metadata_client())).await {
-                Ok(t) => t,
-                Err(e) => {
-                    debug!("table {}.{} not found: {:?}", self.namespace, name, e);
-                    return Ok(None);
-                }
-            };
+        let table = match LakeSoulTable::for_namespace_and_name(
+            &self.namespace,
+            &name,
+            Some(self.metadata_client()),
+        )
+        .await
+        {
+            Ok(t) => t,
+            Err(e) => {
+                debug!("table {}.{} not found: {:?}", self.namespace, name, e);
+                return Ok(None);
+            }
+        };
         info!("table: {:?} {:?}, table {:?}", name, &self.namespace, table);
         Ok(table.as_sink_provider(&self.context.state()).await.ok())
     }
@@ -117,7 +132,11 @@ impl SchemaProvider for LakeSoulNamespace {
     /// If supported by the implementation, adds a new table to this schema.
     /// If a table of the same name existed before, it returns "Table already exists" error.
     #[allow(unused_variables)]
-    fn register_table(&self, name: String, table: Arc<dyn TableProvider>) -> Result<Option<Arc<dyn TableProvider>>> {
+    fn register_table(
+        &self,
+        name: String,
+        table: Arc<dyn TableProvider>,
+    ) -> Result<Option<Arc<dyn TableProvider>>> {
         debug!(
             "LakeSoulNamespace::register_table - Registering table '{}' in namespace '{}'",
             name, &self.namespace
@@ -128,7 +147,11 @@ impl SchemaProvider for LakeSoulNamespace {
         let lakesoul_table = table
             .as_any()
             .downcast_ref::<LakeSoulTableProvider>()
-            .ok_or_else(|| DataFusionError::Internal("Table is not a LakeSoulTableProvider".to_string()))?;
+            .ok_or_else(|| {
+                DataFusionError::Internal(
+                    "Table is not a LakeSoulTableProvider".to_string(),
+                )
+            })?;
 
         // 调用 create_table 创建表
         let client = self.metadata_client.clone();
@@ -162,24 +185,36 @@ impl SchemaProvider for LakeSoulNamespace {
             futures::executor::block_on(async move {
                 Handle::current()
                     .spawn(async move {
-                        match LakeSoulTable::for_namespace_and_name(&namespace, &table_name, Some(client.clone())).await
+                        match LakeSoulTable::for_namespace_and_name(
+                            &namespace,
+                            &table_name,
+                            Some(client.clone()),
+                        )
+                        .await
                         {
                             Ok(table) => {
                                 debug!("get table provider success");
-                                let _ = client
-                                    .delete_table_by_table_info_cascade(&table.table_info())
+                                client
+                                    .delete_table_by_table_info_cascade(
+                                        &table.table_info(),
+                                    )
                                     .await
-                                    .map_err(|_| DataFusionError::External("delete table info failed".into()))?;
-                                Ok(Some(
-                                    table
-                                        .as_provider()
-                                        .await
-                                        .map_err(|e| DataFusionError::External(Box::new(e)))?,
-                                ))
+                                    .map_err(|_| {
+                                        DataFusionError::External(
+                                            "delete table info failed".into(),
+                                        )
+                                    })?;
+                                Ok(Some(table.as_provider().await.map_err(|e| {
+                                    DataFusionError::External(Box::new(e))
+                                })?))
                             }
                             Err(e) => match e {
-                                LakeSoulError::MetaDataError(LakeSoulMetaDataError::NotFound(_)) => Ok(None),
-                                _ => Err(DataFusionError::External("get table info failed".into())),
+                                LakeSoulError::MetaDataError(
+                                    LakeSoulMetaDataError::NotFound(_),
+                                ) => Ok(None),
+                                _ => Err(DataFusionError::External(
+                                    "get table info failed".into(),
+                                )),
                             },
                         }
                     })

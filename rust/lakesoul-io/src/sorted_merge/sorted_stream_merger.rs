@@ -19,7 +19,9 @@ use arrow::row::{RowConverter, SortField};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::error::Result;
 use datafusion::physical_expr::PhysicalExpr;
-use datafusion::physical_plan::{expressions::col, RecordBatchStream, SendableRecordBatchStream};
+use datafusion::physical_plan::{
+    RecordBatchStream, SendableRecordBatchStream, expressions::col,
+};
 use datafusion_common::DataFusionError::ArrowError;
 use futures::stream::{Fuse, FusedStream};
 use futures::{Stream, StreamExt};
@@ -140,7 +142,8 @@ impl SortedStreamMerger {
                 let sort_fields = primary_keys
                     .iter()
                     .map(move |pk| {
-                        let data_type = schema.field_with_name(pk.as_str())?.data_type().clone();
+                        let data_type =
+                            schema.field_with_name(pk.as_str())?.data_type().clone();
                         Ok(SortField::new(data_type))
                     })
                     .collect::<Result<Vec<_>>>()?;
@@ -163,9 +166,12 @@ impl SortedStreamMerger {
         let fields_map = Arc::new(fields_map);
 
         // this is a partial merge when any one of stream has columns less than target
-        let is_partial_merge = fields_map.iter().any(|f| f.len() != target_schema.fields().len());
+        let is_partial_merge = fields_map
+            .iter()
+            .any(|f| f.len() != target_schema.fields().len());
 
-        let wrappers: Vec<Fuse<SendableRecordBatchStream>> = streams.into_iter().map(|s| s.stream.fuse()).collect();
+        let wrappers: Vec<Fuse<SendableRecordBatchStream>> =
+            streams.into_iter().map(|s| s.stream.fuse()).collect();
 
         let combiner = RangeCombiner::new(
             target_schema.clone(),
@@ -192,7 +198,11 @@ impl SortedStreamMerger {
     /// If the stream at the given index is not exhausted, and the last batch range for the
     /// stream is finished, poll the stream for the next RecordBatch and create a new
     /// batch range for the stream from the returned result
-    fn maybe_poll_stream(&mut self, cx: &mut Context<'_>, idx: usize) -> Poll<Result<()>> {
+    fn maybe_poll_stream(
+        &mut self,
+        cx: &mut Context<'_>,
+        idx: usize,
+    ) -> Poll<Result<()>> {
         if !self.range_finished[idx] {
             // Range is not finished - don't need a new RecordBatch yet
             return Poll::Ready(Ok(()));
@@ -215,7 +225,9 @@ impl SortedStreamMerger {
                         self.initialized[idx] = true;
                         let cols = self.column_expressions[idx]
                             .iter()
-                            .map(|expr| expr.evaluate(&batch)?.into_array(batch.num_rows()))
+                            .map(|expr| {
+                                expr.evaluate(&batch)?.into_array(batch.num_rows())
+                            })
                             .collect::<Result<Vec<_>>>()?;
                         let rows = match self.row_converters[idx].convert_columns(&cols) {
                             Ok(rows) => rows,
@@ -226,7 +238,13 @@ impl SortedStreamMerger {
 
                         self.batch_idx_counter += 1;
                         let (batch, rows) = (Arc::new(batch), Arc::new(rows));
-                        let range = SortKeyBatchRange::new_and_init(0, idx, self.batch_idx_counter, batch, rows);
+                        let range = SortKeyBatchRange::new_and_init(
+                            0,
+                            idx,
+                            self.batch_idx_counter,
+                            batch,
+                            rows,
+                        );
 
                         self.range_finished[idx] = false;
 
@@ -248,7 +266,10 @@ impl SortedStreamMerger {
 
 impl SortedStreamMerger {
     #[inline]
-    fn poll_next_inner(self: &mut Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<RecordBatch>>> {
+    fn poll_next_inner(
+        self: &mut Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<RecordBatch>>> {
         if self.aborted {
             return Poll::Ready(None);
         }
@@ -305,7 +326,7 @@ impl SortedStreamMerger {
                     }
                 }
                 RangeCombinerResult::RecordBatch(batch) => {
-                    return Poll::Ready(Some(batch.map_err(|e| ArrowError(e, None))))
+                    return Poll::Ready(Some(batch.map_err(|e| ArrowError(e, None))));
                 }
             }
         }
@@ -315,7 +336,10 @@ impl SortedStreamMerger {
 impl Stream for SortedStreamMerger {
     type Item = Result<RecordBatch>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
         self.poll_next_inner(cx)
     }
 }
@@ -331,8 +355,8 @@ mod tests {
     use std::ops::Index;
     use std::sync::Arc;
 
-    use arrow::array::as_primitive_array;
     use arrow::array::ArrayRef;
+    use arrow::array::as_primitive_array;
     use arrow::array::{Int32Array, StringArray};
     use arrow::datatypes::Int64Type;
     use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
@@ -343,7 +367,7 @@ mod tests {
     use datafusion::error::Result;
     use datafusion::execution::context::TaskContext;
     use datafusion::logical_expr::col as logical_col;
-    use datafusion::physical_plan::{common, ExecutionPlan};
+    use datafusion::physical_plan::{ExecutionPlan, common};
     use datafusion::prelude::{SessionConfig, SessionContext};
 
     use crate::helpers::InMemGenerator;
@@ -393,8 +417,14 @@ mod tests {
 
         let schema = get_test_file_schema();
 
-        let merge_stream =
-            SortedStreamMerger::new_from_streams(streams, schema, vec![String::from("int0")], 1024, vec![]).unwrap();
+        let merge_stream = SortedStreamMerger::new_from_streams(
+            streams,
+            schema,
+            vec![String::from("int0")],
+            1024,
+            vec![],
+        )
+        .unwrap();
         let merged_result = common::collect(Box::pin(merge_stream)).await.unwrap();
 
         let mut all_rb = Vec::new();
@@ -465,7 +495,9 @@ mod tests {
         rows.sort_by_key(|k| k[0]);
 
         for row_idx in 0..rows.len() {
-            if row_idx == rows.len() - 1 || rows.index(row_idx)[0] != rows.index(row_idx + 1)[0] {
+            if row_idx == rows.len() - 1
+                || rows.index(row_idx)[0] != rows.index(row_idx + 1)[0]
+            {
                 table.add_row(rows.index(row_idx));
             }
         }
@@ -500,7 +532,10 @@ mod tests {
         RecordBatch::try_from_iter(vec![(name, a)]).unwrap()
     }
 
-    async fn create_stream(batches: Vec<RecordBatch>, context: Arc<TaskContext>) -> Result<SortedStream> {
+    async fn create_stream(
+        batches: Vec<RecordBatch>,
+        context: Arc<TaskContext>,
+    ) -> Result<SortedStream> {
         let schema = batches[0].schema();
         let exec = LazyMemoryExec::try_new(
             schema.clone(),
@@ -540,17 +575,24 @@ mod tests {
         let s3b4 = create_batch_one_col_i32("a", &[7, 9]);
         let s3b5 = create_batch_one_col_i32("a", &[]);
         let s3b6 = create_batch_one_col_i32("a", &[10]);
-        let s3 = create_stream(vec![s3b1, s3b2, s3b3, s3b4, s3b5, s3b6], task_ctx.clone())
-            .await
-            .unwrap();
+        let s3 =
+            create_stream(vec![s3b1, s3b2, s3b3, s3b4, s3b5, s3b6], task_ctx.clone())
+                .await
+                .unwrap();
 
-        let merge_stream =
-            SortedStreamMerger::new_from_streams(vec![s1, s2, s3], schema, vec![String::from("a")], 2, vec![]).unwrap();
+        let merge_stream = SortedStreamMerger::new_from_streams(
+            vec![s1, s2, s3],
+            schema,
+            vec![String::from("a")],
+            2,
+            vec![],
+        )
+        .unwrap();
         let merged = common::collect(Box::pin(merge_stream)).await.unwrap();
         assert_batches_eq!(
             &[
-                "+----+", "| a  |", "+----+", "| 1  |", "| 3  |", "| 4  |", "| 5  |", "| 6  |", "| 7  |", "| 9  |",
-                "| 10 |", "+----+",
+                "+----+", "| a  |", "+----+", "| 1  |", "| 3  |", "| 4  |", "| 5  |",
+                "| 6  |", "| 7  |", "| 9  |", "| 10 |", "+----+",
             ],
             &merged
         );
@@ -592,7 +634,8 @@ mod tests {
         let s1b2 = create_batch_i32(vec!["id", "a"], vec![&[4, 5], &[10006, 10007]]);
         let s1b3 = create_batch_i32(vec!["id", "a"], vec![&[], &[]]);
         let s1b4 = create_batch_i32(vec!["id", "a"], vec![&[5], &[10008]]);
-        let s1b5 = create_batch_i32(vec!["id", "a"], vec![&[5, 5, 6], &[10009, 10010, 10011]]);
+        let s1b5 =
+            create_batch_i32(vec!["id", "a"], vec![&[5, 5, 6], &[10009, 10010, 10011]]);
         assert_batches_eq!(
             &[
                 "+----+-------+",
@@ -611,7 +654,13 @@ mod tests {
                 "| 6  | 10011 |",
                 "+----+-------+",
             ],
-            &[s1b1.clone(), s1b2.clone(), s1b3.clone(), s1b4.clone(), s1b5.clone()]
+            &[
+                s1b1.clone(),
+                s1b2.clone(),
+                s1b3.clone(),
+                s1b4.clone(),
+                s1b5.clone()
+            ]
         );
 
         let s2b1 = create_batch_i32(vec!["id", "b"], vec![&[3, 4], &[20001, 20002]]);
@@ -633,7 +682,13 @@ mod tests {
                 "| 7  | 20007 |",
                 "+----+-------+",
             ],
-            &[s2b1.clone(), s2b2.clone(), s2b3.clone(), s2b4.clone(), s2b5.clone()]
+            &[
+                s2b1.clone(),
+                s2b2.clone(),
+                s2b3.clone(),
+                s2b4.clone(),
+                s2b5.clone()
+            ]
         );
         let s3b1 = create_batch_i32(vec!["id", "c"], vec![&[], &[]]);
         let s3b2 = create_batch_i32(vec!["id", "c"], vec![&[5, 5], &[30001, 30002]]);
@@ -666,13 +721,25 @@ mod tests {
         );
 
         let s1 = create_stream(
-            vec![s1b1.clone(), s1b2.clone(), s1b3.clone(), s1b4.clone(), s1b5.clone()],
+            vec![
+                s1b1.clone(),
+                s1b2.clone(),
+                s1b3.clone(),
+                s1b4.clone(),
+                s1b5.clone(),
+            ],
             task_ctx.clone(),
         )
         .await
         .unwrap();
         let s2 = create_stream(
-            vec![s2b1.clone(), s2b2.clone(), s2b3.clone(), s2b4.clone(), s2b5.clone()],
+            vec![
+                s2b1.clone(),
+                s2b2.clone(),
+                s2b3.clone(),
+                s2b4.clone(),
+                s2b5.clone(),
+            ],
             task_ctx.clone(),
         )
         .await
@@ -730,7 +797,13 @@ mod tests {
             vec!["1006", "10007"],
         );
         let s1b3 = create_batch(vec!["id", "a", "b", "c"], &[], &[], vec![], vec![]);
-        let s1b4 = create_batch(vec!["id", "a", "b", "c"], &[5], &[5], vec![Some(4.4)], vec!["100008"]);
+        let s1b4 = create_batch(
+            vec!["id", "a", "b", "c"],
+            &[5],
+            &[5],
+            vec![Some(4.4)],
+            vec!["100008"],
+        );
         let s1b5 = create_batch(
             vec!["id", "a", "b", "c"],
             &[5, 5, 6],
@@ -756,7 +829,13 @@ mod tests {
                 "| 6  | 60 | 1.61 | 10011  |",
                 "+----+----+------+--------+",
             ],
-            &[s1b1.clone(), s1b2.clone(), s1b3.clone(), s1b4.clone(), s1b5.clone()]
+            &[
+                s1b1.clone(),
+                s1b2.clone(),
+                s1b3.clone(),
+                s1b4.clone(),
+                s1b5.clone()
+            ]
         );
 
         let s2b1 = create_batch(
@@ -774,7 +853,13 @@ mod tests {
             vec!["20003", "20004"],
         );
         let s2b3 = create_batch(vec!["id", "a", "b", "c"], &[], &[], vec![], vec![]);
-        let s2b4 = create_batch(vec!["id", "a", "b", "c"], &[5], &[5], vec![Some(4.4)], vec!["20005"]);
+        let s2b4 = create_batch(
+            vec!["id", "a", "b", "c"],
+            &[5],
+            &[5],
+            vec![Some(4.4)],
+            vec!["20005"],
+        );
         let s2b5 = create_batch(
             vec!["id", "a", "b", "c"],
             &[5, 7],
@@ -796,7 +881,13 @@ mod tests {
                 "| 7  | 55 |      | 20007  |",
                 "+----+----+------+--------+",
             ],
-            &[s2b1.clone(), s2b2.clone(), s2b3.clone(), s2b4.clone(), s2b5.clone()]
+            &[
+                s2b1.clone(),
+                s2b2.clone(),
+                s2b3.clone(),
+                s2b4.clone(),
+                s2b5.clone()
+            ]
         );
 
         let s3b1 = create_batch(vec!["id", "a", "b", "d"], &[], &[], vec![], vec![]);
@@ -854,13 +945,25 @@ mod tests {
         );
 
         let s1 = create_stream(
-            vec![s1b1.clone(), s1b2.clone(), s1b3.clone(), s1b4.clone(), s1b5.clone()],
+            vec![
+                s1b1.clone(),
+                s1b2.clone(),
+                s1b3.clone(),
+                s1b4.clone(),
+                s1b5.clone(),
+            ],
             task_ctx.clone(),
         )
         .await
         .unwrap();
         let s2 = create_stream(
-            vec![s2b1.clone(), s2b2.clone(), s2b3.clone(), s2b4.clone(), s2b5.clone()],
+            vec![
+                s2b1.clone(),
+                s2b2.clone(),
+                s2b3.clone(),
+                s2b4.clone(),
+                s2b5.clone(),
+            ],
             task_ctx.clone(),
         )
         .await

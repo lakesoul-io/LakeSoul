@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use clap::{builder::TypedValueParser, Parser};
+use clap::{Parser, builder::TypedValueParser};
 
 #[derive(Parser, Debug, Default)]
 pub struct CoreArgs {

@@ -5,7 +5,7 @@
 [package]
 name = "lakesoul-datafusion"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [[bin]]
@@ -48,10 +48,10 @@ clap = { workspace = true }
 
 
 [dev-dependencies]
-ctor = "0.2"
+ctor = "0.4"
 test-log = { version = "0.2.14", features = ["trace"] }
-rand = "0.8.5"
-rand_chacha = "0.3.1"
+rand = {workspace = true}
+rand_chacha = {workspace = true}
 
 [features]
 ci = []

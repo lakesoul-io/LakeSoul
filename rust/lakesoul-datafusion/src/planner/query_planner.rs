@@ -35,6 +35,8 @@ impl QueryPlanner for LakeSoulQueryPlanner {
         session_state: &SessionState,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let planner = LakeSoulPhysicalPlanner::new();
-        planner.create_physical_plan(logical_plan, session_state).await
+        planner
+            .create_physical_plan(logical_plan, session_state)
+            .await
     }
 }

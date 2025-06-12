@@ -4,20 +4,23 @@
 
 mod util;
 
-use crate::hdfs::util::{coalesce_ranges, maybe_spawn_blocking, OBJECT_STORE_COALESCE_DEFAULT};
+use crate::hdfs::util::{
+    OBJECT_STORE_COALESCE_DEFAULT, coalesce_ranges, maybe_spawn_blocking,
+};
 use crate::lakesoul_io_config::LakeSoulIOConfig;
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::error::Result;
 use datafusion_common::DataFusionError;
-use futures::stream::{empty, BoxStream};
+use futures::stream::{BoxStream, empty};
 use futures::{FutureExt, StreamExt};
 use hdrs::{Client, ClientBuilder, File};
-use object_store::path::Path;
 use object_store::Error::{Generic, Precondition};
+use object_store::path::Path;
 use object_store::{
-    Attributes, GetOptions, GetRange, GetResult, GetResultPayload, ListResult, MultipartUpload, ObjectMeta,
-    ObjectStore, PutMode, PutMultipartOpts, PutOptions, PutPayload, PutResult, UploadPart,
+    Attributes, GetOptions, GetRange, GetResult, GetResultPayload, ListResult,
+    MultipartUpload, ObjectMeta, ObjectStore, PutMode, PutMultipartOpts, PutOptions,
+    PutPayload, PutResult, UploadPart,
 };
 use std::fmt::{Debug, Display, Formatter};
 use std::io::ErrorKind::NotFound;
@@ -125,10 +128,13 @@ impl ObjectStore for Hdfs {
             })?
             .compat_write();
         for mut bytes in payload.into_iter() {
-            async_write.write_all_buf(&mut bytes).await.map_err(|e| Generic {
-                store: "hdfs",
-                source: Box::new(e),
-            })?
+            async_write
+                .write_all_buf(&mut bytes)
+                .await
+                .map_err(|e| Generic {
+                    store: "hdfs",
+                    source: Box::new(e),
+                })?
         }
         async_write.flush().await.map_err(|e| Generic {
             store: "hdfs",
@@ -172,11 +178,17 @@ impl ObjectStore for Hdfs {
         }))
     }
 
-    async fn get_opts(&self, location: &Path, options: GetOptions) -> object_store::Result<GetResult> {
+    async fn get_opts(
+        &self,
+        location: &Path,
+        options: GetOptions,
+    ) -> object_store::Result<GetResult> {
         let object_meta = self.head(location).await?;
         if options.head {
             return Ok(GetResult {
-                payload: GetResultPayload::Stream(empty::<object_store::Result<Bytes>>().boxed()),
+                payload: GetResultPayload::Stream(
+                    empty::<object_store::Result<Bytes>>().boxed(),
+                ),
                 attributes: Attributes::default(),
                 range: 0..object_meta.size,
                 meta: object_meta,
@@ -252,7 +264,11 @@ impl ObjectStore for Hdfs {
         })
     }
 
-    async fn get_range(&self, location: &Path, range: Range<u64>) -> object_store::Result<Bytes> {
+    async fn get_range(
+        &self,
+        location: &Path,
+        range: Range<u64>,
+    ) -> object_store::Result<Bytes> {
         let location = add_leading_slash(location);
         let client = self.client.clone();
         maybe_spawn_blocking(move || {
@@ -279,7 +295,11 @@ impl ObjectStore for Hdfs {
         .await
     }
 
-    async fn get_ranges(&self, location: &Path, ranges: &[Range<u64>]) -> object_store::Result<Vec<Bytes>> {
+    async fn get_ranges(
+        &self,
+        location: &Path,
+        ranges: &[Range<u64>],
+    ) -> object_store::Result<Vec<Bytes>> {
         let location = add_leading_slash(location);
         let client = self.client.clone();
         let file = Arc::new(
@@ -305,7 +325,11 @@ impl ObjectStore for Hdfs {
                         if read_size != to_read as usize {
                             Err(Generic {
                                 store: "hdfs",
-                                source: format!("read file {} range not complete", location).into(),
+                                source: format!(
+                                    "read file {} range not complete",
+                                    location
+                                )
+                                .into(),
                             })
                         } else {
                             Ok(buf.into())
@@ -345,11 +369,17 @@ impl ObjectStore for Hdfs {
         Hdfs::delete(self.client.clone(), location).await
     }
 
-    fn list(&self, _prefix: Option<&Path>) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
+    fn list(
+        &self,
+        _prefix: Option<&Path>,
+    ) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
         todo!()
     }
 
-    async fn list_with_delimiter(&self, _prefix: Option<&Path>) -> object_store::Result<ListResult> {
+    async fn list_with_delimiter(
+        &self,
+        _prefix: Option<&Path>,
+    ) -> object_store::Result<ListResult> {
         todo!()
     }
 
@@ -392,15 +422,21 @@ impl ObjectStore for Hdfs {
         let to = add_leading_slash(to);
         let client = self.client.clone();
         maybe_spawn_blocking(move || {
-            client.rename_file(from.as_str(), to.as_str()).map_err(|e| Generic {
-                store: "hdfs",
-                source: Box::new(e),
-            })
+            client
+                .rename_file(from.as_str(), to.as_str())
+                .map_err(|e| Generic {
+                    store: "hdfs",
+                    source: Box::new(e),
+                })
         })
         .await
     }
 
-    async fn copy_if_not_exists(&self, from: &Path, to: &Path) -> object_store::Result<()> {
+    async fn copy_if_not_exists(
+        &self,
+        from: &Path,
+        to: &Path,
+    ) -> object_store::Result<()> {
         let t = add_leading_slash(to);
         let file_exist = self.is_file_exist(to).await?;
         if file_exist {
@@ -413,7 +449,11 @@ impl ObjectStore for Hdfs {
         }
     }
 
-    async fn rename_if_not_exists(&self, from: &Path, to: &Path) -> object_store::Result<()> {
+    async fn rename_if_not_exists(
+        &self,
+        from: &Path,
+        to: &Path,
+    ) -> object_store::Result<()> {
         let t = add_leading_slash(to);
         let file_exist = self.is_file_exist(to).await?;
         if file_exist {
@@ -442,7 +482,10 @@ struct HDFSMultiPartUpload {
 
 impl Debug for HDFSMultiPartUpload {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("HDFS MultiPartUpload at location {}", self.location))
+        f.write_fmt(format_args!(
+            "HDFS MultiPartUpload at location {}",
+            self.location
+        ))
     }
 }
 
@@ -453,10 +496,13 @@ impl MultipartUpload for HDFSMultiPartUpload {
         async move {
             let mut writer = writer.lock().await;
             for mut bytes in data.into_iter() {
-                writer.write_all_buf(&mut bytes).await.map_err(|e| Generic {
-                    store: "hdfs",
-                    source: Box::new(e),
-                })?;
+                writer
+                    .write_all_buf(&mut bytes)
+                    .await
+                    .map_err(|e| Generic {
+                        store: "hdfs",
+                        source: Box::new(e),
+                    })?;
             }
             Ok(())
         }
@@ -492,15 +538,15 @@ fn add_leading_slash(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfigBuilder};
+    use crate::lakesoul_io_config::{LakeSoulIOConfigBuilder, create_session_context};
     use bytes::Bytes;
     use datafusion::datasource::object_store::ObjectStoreUrl;
     use futures::StreamExt;
-    use object_store::buffered::BufWriter;
-    use object_store::path::Path;
     use object_store::GetResultPayload::Stream;
     use object_store::ObjectStore;
-    use rand::distributions::{Alphanumeric, DistString};
+    use object_store::buffered::BufWriter;
+    use object_store::path::Path;
+    use rand::distr::{Alphanumeric, DistString};
     use rand::thread_rng;
     use std::sync::Arc;
     use tokio::io::AsyncWriteExt;
@@ -517,7 +563,10 @@ mod tests {
         }
     }
 
-    async fn read_file_from_hdfs(path: String, object_store: Arc<dyn ObjectStore>) -> String {
+    async fn read_file_from_hdfs(
+        path: String,
+        object_store: Arc<dyn ObjectStore>,
+    ) -> String {
         let file = object_store.get(&Path::from(path)).await.unwrap();
         match file.payload {
             Stream(s) => {
@@ -543,7 +592,10 @@ mod tests {
             .with_thread_num(2)
             .with_batch_size(8192)
             .with_max_row_group_size(250000)
-            .with_object_store_option("fs.defaultFS".to_string(), "hdfs://chenxu-dev:9000".to_string())
+            .with_object_store_option(
+                "fs.defaultFS".to_string(),
+                "hdfs://chenxu-dev:9000".to_string(),
+            )
             .with_object_store_option("fs.hdfs.user".to_string(), whoami::username())
             .with_files(vec![write_path.clone()])
             .build();
@@ -551,10 +603,13 @@ mod tests {
         println!("files: {:?}", conf.files);
         let object_store = sess_ctx
             .runtime_env()
-            .object_store(ObjectStoreUrl::parse(&url[..url::Position::BeforePath]).unwrap())
+            .object_store(
+                ObjectStoreUrl::parse(&url[..url::Position::BeforePath]).unwrap(),
+            )
             .unwrap();
 
-        let mut write = BufWriter::new(object_store.clone(), Path::from(write_path.clone()));
+        let mut write =
+            BufWriter::new(object_store.clone(), Path::from(write_path.clone()));
         let mut rng = thread_rng();
 
         let size = 64 * 1024 * 1024usize;
@@ -572,7 +627,10 @@ mod tests {
         drop(write);
 
         assert_eq!(conf.files, vec![complete_path,]);
-        let meta0 = object_store.head(&Path::from(write_path.as_str())).await.unwrap();
+        let meta0 = object_store
+            .head(&Path::from(write_path.as_str()))
+            .await
+            .unwrap();
         assert_eq!(meta0.location, Path::from(write_path.as_str()));
         assert_eq!(meta0.size, size);
 

@@ -11,7 +11,7 @@ use datafusion::assert_batches_eq;
 use lakesoul_datafusion::{cli::CoreArgs, create_lakesoul_session_ctx};
 use lakesoul_flight::Claims;
 use lakesoul_metadata::MetaDataClient;
-use test_utils::{build_client, handle_sql, ingest, TestServer};
+use test_utils::{TestServer, build_client, handle_sql, ingest};
 use tokio::time::sleep;
 use tracing::info;
 
@@ -57,11 +57,19 @@ async fn test_flight_sql_lfs() {
         };
 
         {
-            let num = ingest(&mut client, batches.clone(), "test_lfs", None).await.unwrap();
+            let num = ingest(&mut client, batches.clone(), "test_lfs", None)
+                .await
+                .unwrap();
             assert_eq!(num, 3);
             info!("ingest num: {num}");
             // can not ingest to non-exist table
-            let res = ingest(&mut client, batches.clone(), "test_lfs", Some("🤖".to_string())).await;
+            let res = ingest(
+                &mut client,
+                batches.clone(),
+                "test_lfs",
+                Some("🤖".to_string()),
+            )
+            .await;
             assert!(res.is_err());
         }
 
@@ -131,7 +139,10 @@ async fn test_jwt() {
     let claims = Claims {
         sub: "lake-iam-001".to_string(),
         group: "lake-czods".to_string(),
-        exp: chrono::Utc::now().checked_add_days(Days::new(1)).unwrap().timestamp() as usize,
+        exp: chrono::Utc::now()
+            .checked_add_days(Days::new(1))
+            .unwrap()
+            .timestamp() as usize,
     };
     let mut client = build_client(Some(claims)).await;
     let meta_client = Arc::new(MetaDataClient::from_env().await.unwrap());
@@ -172,11 +183,19 @@ async fn test_jwt() {
         };
 
         {
-            let num = ingest(&mut client, batches.clone(), "test_lfs", None).await.unwrap();
+            let num = ingest(&mut client, batches.clone(), "test_lfs", None)
+                .await
+                .unwrap();
             assert_eq!(num, 3);
             info!("ingest num: {num}");
             // can not ingest to non-exist table
-            let res = ingest(&mut client, batches.clone(), "test_lfs", Some("🤖".to_string())).await;
+            let res = ingest(
+                &mut client,
+                batches.clone(),
+                "test_lfs",
+                Some("🤖".to_string()),
+            )
+            .await;
             assert!(res.is_err());
         }
 
@@ -218,7 +237,10 @@ async fn test_rbac() {
     let claims = Claims {
         sub: "lake-iam-001".to_string(),
         group: "lake-czods".to_string(),
-        exp: chrono::Utc::now().checked_add_days(Days::new(1)).unwrap().timestamp() as usize,
+        exp: chrono::Utc::now()
+            .checked_add_days(Days::new(1))
+            .unwrap()
+            .timestamp() as usize,
     };
     let mut client = build_client(Some(claims)).await;
     let meta_client = Arc::new(MetaDataClient::from_env().await.unwrap());
@@ -259,11 +281,19 @@ async fn test_rbac() {
         };
 
         {
-            let num = ingest(&mut client, batches.clone(), "test_lfs", None).await.unwrap();
+            let num = ingest(&mut client, batches.clone(), "test_lfs", None)
+                .await
+                .unwrap();
             assert_eq!(num, 3);
             info!("ingest num: {num}");
             // can not ingest to non-exist table
-            let res = ingest(&mut client, batches.clone(), "test_lfs", Some("🤖".to_string())).await;
+            let res = ingest(
+                &mut client,
+                batches.clone(),
+                "test_lfs",
+                Some("🤖".to_string()),
+            )
+            .await;
             assert!(res.is_err());
         }
 
@@ -348,7 +378,9 @@ async fn test_flight_sql_obj_store() {
         };
 
         {
-            let num = ingest(&mut client, batches.clone(), "test_s3", None).await.unwrap();
+            let num = ingest(&mut client, batches.clone(), "test_s3", None)
+                .await
+                .unwrap();
             assert_eq!(num, 3);
             info!("ingest num: {num}");
         }
@@ -401,8 +433,14 @@ async fn test_flight_sql_server() {
     // LFS
     {
         // start server no jwt and no rbac
-        let _server =
-            TestServer::new(&[], vec![("JWT_AUTH_ENABLED", "false"), ("RBAC_AUTH_ENABLED", "false")]).unwrap();
+        let _server = TestServer::new(
+            &[],
+            vec![
+                ("JWT_AUTH_ENABLED", "false"),
+                ("RBAC_AUTH_ENABLED", "false"),
+            ],
+        )
+        .unwrap();
         test_flight_sql_lfs().await;
     }
 
@@ -423,7 +461,10 @@ async fn test_flight_sql_server() {
                 "--s3-secret-key",
                 "minioadmin1",
             ],
-            vec![("JWT_AUTH_ENABLED", "false"), ("RBAC_AUTH_ENABLED", "false")],
+            vec![
+                ("JWT_AUTH_ENABLED", "false"),
+                ("RBAC_AUTH_ENABLED", "false"),
+            ],
         );
         test_flight_sql_obj_store().await;
     }
@@ -432,7 +473,10 @@ async fn test_flight_sql_server() {
     sleep(Duration::from_secs(1)).await;
     {
         // start server with jwt
-        let _server = TestServer::new(&[], vec![("JWT_AUTH_ENABLED", "true"), ("RBAC_AUTH_ENABLED", "false")]);
+        let _server = TestServer::new(
+            &[],
+            vec![("JWT_AUTH_ENABLED", "true"), ("RBAC_AUTH_ENABLED", "false")],
+        );
         test_jwt().await;
     }
 
@@ -440,7 +484,11 @@ async fn test_flight_sql_server() {
     sleep(Duration::from_secs(1)).await;
     // rbac
     {
-        let _server = TestServer::new(&[], vec![("JWT_AUTH_ENABLED", "true"), ("RBAC_AUTH_ENABLED", "true")]).unwrap();
+        let _server = TestServer::new(
+            &[],
+            vec![("JWT_AUTH_ENABLED", "true"), ("RBAC_AUTH_ENABLED", "true")],
+        )
+        .unwrap();
         test_rbac().await;
     }
 }

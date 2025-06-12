@@ -7,7 +7,7 @@
 use crate::error::Result;
 use async_trait::async_trait;
 use bb8_postgres::bb8::{Pool, PooledConnection, QueueStrategy};
-use bb8_postgres::{bb8, PostgresConnectionManager};
+use bb8_postgres::{PostgresConnectionManager, bb8};
 use postgres_types::{ToSql, Type};
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -68,7 +68,11 @@ impl PooledClient {
         conn.prepare(query).await.map_err(Into::into)
     }
 
-    pub async fn query<T>(&self, statement: &T, params: &[&(dyn ToSql + Sync)]) -> Result<Vec<Row>>
+    pub async fn query<T>(
+        &self,
+        statement: &T,
+        params: &[&(dyn ToSql + Sync)],
+    ) -> Result<Vec<Row>>
     where
         T: ?Sized + ToStatement,
     {
@@ -76,7 +80,11 @@ impl PooledClient {
         conn.query(statement, params).await.map_err(Into::into)
     }
 
-    pub async fn query_opt<T>(&self, statement: &T, params: &[&(dyn ToSql + Sync)]) -> Result<Option<Row>>
+    pub async fn query_opt<T>(
+        &self,
+        statement: &T,
+        params: &[&(dyn ToSql + Sync)],
+    ) -> Result<Option<Row>>
     where
         T: ?Sized + ToStatement,
     {
@@ -84,7 +92,11 @@ impl PooledClient {
         conn.query_opt(statement, params).await.map_err(Into::into)
     }
 
-    pub async fn execute<T>(&self, statement: &T, params: &[&(dyn ToSql + Sync)]) -> Result<u64>
+    pub async fn execute<T>(
+        &self,
+        statement: &T,
+        params: &[&(dyn ToSql + Sync)],
+    ) -> Result<u64>
     where
         T: ?Sized + ToStatement,
     {
@@ -152,7 +164,10 @@ impl bb8::ManageConnection for PgConnectionManager {
         })
     }
 
-    async fn is_valid(&self, conn: &mut Self::Connection) -> std::result::Result<(), Self::Error> {
+    async fn is_valid(
+        &self,
+        conn: &mut Self::Connection,
+    ) -> std::result::Result<(), Self::Error> {
         self.pg_conn.is_valid(&mut conn.client).await
     }
 
@@ -287,7 +302,12 @@ impl StatementCache {
     /// explicitly using this [`StatementCache`], if possible.
     ///
     /// See [`tokio_postgres::Client::prepare_typed()`].
-    pub async fn prepare_typed(&self, client: &Client, query: &str, types: &[Type]) -> Result<Statement> {
+    pub async fn prepare_typed(
+        &self,
+        client: &Client,
+        query: &str,
+        types: &[Type],
+    ) -> Result<Statement> {
         match self.get(query, types) {
             Some(statement) => Ok(statement),
             None => {
