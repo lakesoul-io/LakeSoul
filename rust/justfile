@@ -18,10 +18,13 @@ flight-sql-s3 level=log_level:
       --s3-secret-key "minioadmin1"
 
 
-console level=log_level:
+s3_console level=log_level:
     RUST_LOG={{level}} cargo run --bin console -- \
       --warehouse-prefix "s3://lakesoul-bucket/flight-test" \
       --endpoint  "http://localhost:9000" \
       --s3-bucket  "lakesoul-test-bucket" \
       --s3-access-key "minioadmin1" \
       --s3-secret-key "minioadmin1"
+
+console level=log_level:
+    RUST_LOG={{level}} cargo run --bin console 

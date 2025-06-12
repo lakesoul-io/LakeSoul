@@ -9,6 +9,7 @@ use clap::Parser;
 use datafusion::logical_expr::sqlparser::ast::{Statement as SQLStatement, Use};
 use datafusion::prelude::SessionContext;
 use datafusion::sql::parser::Statement;
+use lakesoul_datafusion::tpch::register_tpch_udtfs;
 use lakesoul_datafusion::{cli::CoreArgs, create_lakesoul_session_ctx};
 use lakesoul_metadata::MetaDataClient;
 use rustyline::DefaultEditor;
@@ -32,7 +33,7 @@ fn parse_use(stmt: Statement) -> Option<Use> {
 
 // simple walkaround
 async fn exec_sql_and_output(ctx: &Arc<SessionContext>, sql: &str) -> anyhow::Result<()> {
-    let stmt = ctx.state().sql_to_statement(sql, "MySQL")?;
+    let stmt = ctx.state().sql_to_statement(sql, "postgresql")?;
     if let Some(u) = parse_use(stmt.clone()) {
         match u {
             Use::Object(name) => {
@@ -88,6 +89,8 @@ async fn main() {
     let meta_client = Arc::new(MetaDataClient::from_env().await.unwrap());
 
     let ctx = create_lakesoul_session_ctx(meta_client, &core_args).unwrap();
+
+    register_tpch_udtfs(&ctx).unwrap();
 
     loop {
         let readline = rl.readline("lakesoul >> ");

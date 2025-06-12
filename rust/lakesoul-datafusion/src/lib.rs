@@ -193,5 +193,8 @@ pub fn create_lakesoul_session_ctx(
     Ok(ctx)
 }
 
+
+pub mod tpch;
+
 #[cfg(test)]
 mod test;
