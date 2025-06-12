@@ -8,8 +8,8 @@ use std::ops::Range;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use object_store::path::Path;
 use object_store::ObjectMeta;
+use object_store::path::Path;
 
 use object_store::Result;
 

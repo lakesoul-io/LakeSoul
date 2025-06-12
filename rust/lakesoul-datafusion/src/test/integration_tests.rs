@@ -7,17 +7,17 @@ mod integration_tests {
 
     use datafusion::{
         datasource::{
-            file_format::{csv::CsvFormat, FileFormat},
-            listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl},
             TableProvider,
+            file_format::{FileFormat, csv::CsvFormat},
+            listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl},
         },
         execution::context::SessionContext,
     };
-    use lakesoul_io::lakesoul_io_config::{create_session_context_with_planner, LakeSoulIOConfigBuilder};
+    use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfigBuilder, create_session_context_with_planner};
     use lakesoul_metadata::MetaDataClient;
 
     use crate::test::benchmarks::tpch::{
-        get_tbl_tpch_table_primary_keys, get_tbl_tpch_table_schema, get_tpch_table_schema, TPCH_TABLES,
+        TPCH_TABLES, get_tbl_tpch_table_primary_keys, get_tbl_tpch_table_schema, get_tpch_table_schema,
     };
     use crate::{
         catalog::{create_io_config_builder, create_table},

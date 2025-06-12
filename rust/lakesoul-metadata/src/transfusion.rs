@@ -21,7 +21,7 @@ use crate::transfusion::config::{
     LAKESOUL_HASH_PARTITION_SPLITTER, LAKESOUL_NON_PARTITION_TABLE_PART_DESC,
     LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH, LAKESOUL_RANGE_PARTITION_SPLITTER,
 };
-use crate::{error::Result, execute_query, DaoType, PooledClient, PARAM_DELIM};
+use crate::{DaoType, PARAM_DELIM, PooledClient, error::Result, execute_query};
 
 mod config {
     #![allow(unused)]

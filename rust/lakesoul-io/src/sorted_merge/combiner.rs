@@ -20,7 +20,7 @@ use crate::sorted_merge::sort_key_range::{
 
 use arrow::compute::interleave;
 use arrow::{
-    array::{make_array as make_arrow_array, Array, ArrayBuilder, ArrayRef, PrimitiveBuilder, StringBuilder},
+    array::{Array, ArrayBuilder, ArrayRef, PrimitiveBuilder, StringBuilder, make_array as make_arrow_array},
     datatypes::{DataType, Field, SchemaRef},
     error::ArrowError,
     error::Result as ArrowResult,
@@ -506,8 +506,7 @@ impl UseLastRangeCombiner {
                 }
                 range.advance();
                 RangeCombinerResult::Range(range)
-            } else {
-                if self.current_sort_key_range.is_empty() && self.in_progress.is_empty() {
+            } else  if self.current_sort_key_range.is_empty() && self.in_progress.is_empty() {
                     RangeCombinerResult::None
                 } else {
                     if !self.current_sort_key_range.is_empty() {
@@ -516,7 +515,7 @@ impl UseLastRangeCombiner {
                     }
                     RangeCombinerResult::RecordBatch(self.build_record_batch())
                 }
-            }
+            
         }
     }
 

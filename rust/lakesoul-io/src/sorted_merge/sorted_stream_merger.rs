@@ -19,7 +19,7 @@ use arrow::row::{RowConverter, SortField};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::error::Result;
 use datafusion::physical_expr::PhysicalExpr;
-use datafusion::physical_plan::{expressions::col, RecordBatchStream, SendableRecordBatchStream};
+use datafusion::physical_plan::{RecordBatchStream, SendableRecordBatchStream, expressions::col};
 use datafusion_common::DataFusionError::ArrowError;
 use futures::stream::{Fuse, FusedStream};
 use futures::{Stream, StreamExt};
@@ -305,7 +305,7 @@ impl SortedStreamMerger {
                     }
                 }
                 RangeCombinerResult::RecordBatch(batch) => {
-                    return Poll::Ready(Some(batch.map_err(|e| ArrowError(e, None))))
+                    return Poll::Ready(Some(batch.map_err(|e| ArrowError(e, None))));
                 }
             }
         }
@@ -331,8 +331,8 @@ mod tests {
     use std::ops::Index;
     use std::sync::Arc;
 
-    use arrow::array::as_primitive_array;
     use arrow::array::ArrayRef;
+    use arrow::array::as_primitive_array;
     use arrow::array::{Int32Array, StringArray};
     use arrow::datatypes::Int64Type;
     use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
@@ -343,7 +343,7 @@ mod tests {
     use datafusion::error::Result;
     use datafusion::execution::context::TaskContext;
     use datafusion::logical_expr::col as logical_col;
-    use datafusion::physical_plan::{common, ExecutionPlan};
+    use datafusion::physical_plan::{ExecutionPlan, common};
     use datafusion::prelude::{SessionConfig, SessionContext};
 
     use crate::helpers::InMemGenerator;

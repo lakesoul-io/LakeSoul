@@ -6,7 +6,7 @@
 
 //! Common logic for interacting with remote object stores
 use bytes::Bytes;
-use futures::{stream::StreamExt, TryStreamExt};
+use futures::{TryStreamExt, stream::StreamExt};
 
 #[cfg(not(target_arch = "wasm32"))]
 /// Takes a function and spawns it to a tokio blocking pool if available

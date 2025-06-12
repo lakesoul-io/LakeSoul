@@ -13,13 +13,13 @@ use arrow_cast::can_cast_types;
 use arrow_schema::{ArrowError, FieldRef, Fields, Schema, SchemaBuilder};
 
 use datafusion::datasource::file_format::file_compression_type::FileCompressionType;
-use datafusion::datasource::file_format::{parquet::ParquetFormat, FileFormat};
+use datafusion::datasource::file_format::{FileFormat, parquet::ParquetFormat};
 use datafusion::datasource::physical_plan::{FileGroup, FileScanConfig, FileSinkConfig, FileSource};
 
 use datafusion::physical_expr::LexRequirement;
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::{ExecutionPlan, PhysicalExpr};
-use datafusion_common::{project_schema, DataFusionError, Result, Statistics};
+use datafusion_common::{DataFusionError, Result, Statistics, project_schema};
 
 use object_store::{ObjectMeta, ObjectStore};
 
@@ -326,7 +326,7 @@ pub async fn flatten_file_scan_config(
                                 file_schema.clone(),
                                 target_schema.clone(),
                                 primary_keys,
-                                &cdc_column,
+                                cdc_column,
                             );
                             let limit = conf.limit;
                             let table_partition_cols = conf.table_partition_cols.clone();

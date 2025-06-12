@@ -194,32 +194,30 @@ impl SyncSendableMutableLakeSoulWriter {
 
         if record_batch.num_rows() == 0 {
             runtime.block_on(async move { self.write_batch_async(record_batch, false).await })
-        } else {
-            if self.config.compute_lsh() {
-                let mut new_columns = record_batch.columns().to_vec();
+        } else if self.config.compute_lsh() {
+            let mut new_columns = record_batch.columns().to_vec();
 
-                for (field_name, lsh_computer) in self.lsh_computers.iter() {
-                    let lsh_column_name = format!("{}_LSH", field_name);
+            for (field_name, lsh_computer) in self.lsh_computers.iter() {
+                let lsh_column_name = format!("{}_LSH", field_name);
 
-                    if let Some(array) = record_batch.column_by_name(field_name) {
-                        let embedding = array.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
-                            DataFusionError::Internal(format!("Column {} is not a ListArray", field_name))
-                        })?;
+                if let Some(array) = record_batch.column_by_name(field_name) {
+                    let embedding = array.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
+                        DataFusionError::Internal(format!("Column {} is not a ListArray", field_name))
+                    })?;
 
-                        let lsh_array = lsh_computer.compute_lsh(&Some(embedding.clone()))?;
+                    let lsh_array = lsh_computer.compute_lsh(&Some(embedding.clone()))?;
 
-                        if let Ok(index) = record_batch.schema().index_of(lsh_column_name.as_str()) {
-                            new_columns[index] = Arc::new(lsh_array);
-                        }
+                    if let Ok(index) = record_batch.schema().index_of(lsh_column_name.as_str()) {
+                        new_columns[index] = Arc::new(lsh_array);
                     }
                 }
-
-                let new_record_batch = RecordBatch::try_new(self.config.target_schema(), new_columns)?;
-
-                runtime.block_on(async move { self.write_batch_async(new_record_batch, false).await })
-            } else {
-                runtime.block_on(async move { self.write_batch_async(record_batch, false).await })
             }
+
+            let new_record_batch = RecordBatch::try_new(self.config.target_schema(), new_columns)?;
+
+            runtime.block_on(async move { self.write_batch_async(new_record_batch, false).await })
+        } else {
+            runtime.block_on(async move { self.write_batch_async(record_batch, false).await })
         }
     }
 
@@ -267,7 +265,7 @@ impl SyncSendableMutableLakeSoulWriter {
                         Err(_) => {
                             return Err(DataFusionError::Internal(
                                 "Cannot get ownership of inner writer".to_string(),
-                            ))
+                            ));
                         }
                     };
                     let writer = inner_writer.into_inner();
@@ -299,7 +297,7 @@ impl SyncSendableMutableLakeSoulWriter {
                 Err(_) => {
                     return Err(DataFusionError::Internal(
                         "Cannot get ownership of the inner writer".to_string(),
-                    ))
+                    ));
                 }
             };
             let runtime = self.runtime;
@@ -343,7 +341,7 @@ impl SyncSendableMutableLakeSoulWriter {
                 Err(_) => {
                     return Err(DataFusionError::Internal(
                         "Cannot get ownership of inner writer".to_string(),
-                    ))
+                    ));
                 }
             };
             let runtime = self.runtime;
@@ -377,7 +375,7 @@ mod tests {
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
     use datafusion::error::Result;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
-    use rand::{distributions::DistString, Rng};
+    use rand::{Rng, distributions::DistString};
     use std::{fs::File, sync::Arc};
     use tokio::{runtime::Builder, time::Instant};
     use tracing_subscriber::layer::SubscriberExt;
@@ -529,7 +527,7 @@ mod tests {
         let read_conf = common_conf_builder
             .clone()
             .with_files(vec![
-                "s3://lakesoul-test-bucket/data/native-io-test/large_file.parquet".to_string()
+                "s3://lakesoul-test-bucket/data/native-io-test/large_file.parquet".to_string(),
             ])
             .build();
         let mut reader = LakeSoulReader::new(read_conf)?;
@@ -620,7 +618,7 @@ mod tests {
             let read_conf = common_conf_builder
                 .clone()
                 .with_files(vec![
-                    "s3://lakesoul-test-bucket/data/native-io-test/large_file.parquet".to_string()
+                    "s3://lakesoul-test-bucket/data/native-io-test/large_file.parquet".to_string(),
                 ])
                 .build();
             let mut reader = LakeSoulReader::new(read_conf)?;

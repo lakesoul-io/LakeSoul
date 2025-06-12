@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use arrow::array::ArrayRef;
 use arrow::compute::CastOptions;
-use arrow_array::{new_empty_array, new_null_array, Array};
+use arrow_array::{Array, new_empty_array, new_null_array};
 use arrow_cast::display::FormatOptions;
 use arrow_schema::DataType;
 

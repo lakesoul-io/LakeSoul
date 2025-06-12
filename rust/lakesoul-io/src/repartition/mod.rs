@@ -17,29 +17,29 @@ use datafusion::{
     common::runtime::SpawnedTask,
     common::utils::transpose,
     execution::{
-        memory_pool::{MemoryConsumer, MemoryReservation},
         TaskContext,
+        memory_pool::{MemoryConsumer, MemoryReservation},
     },
     physical_expr::EquivalenceProperties,
     physical_plan::{
+        DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, Partitioning, PhysicalExpr,
+        PlanProperties, RecordBatchStream, SendableRecordBatchStream,
         metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricBuilder},
         sorts::streaming_merge::StreamingMergeBuilder,
         stream::RecordBatchStreamAdapter,
-        DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, Partitioning, PhysicalExpr,
-        PlanProperties, RecordBatchStream, SendableRecordBatchStream,
     },
 };
 use datafusion::{physical_expr::physical_exprs_equal, physical_plan::metrics};
 use datafusion_common::{DataFusionError, Result, Statistics};
 
-use arrow_array::{builder::UInt64Builder, ArrayRef, RecordBatch};
+use arrow_array::{ArrayRef, RecordBatch, builder::UInt64Builder};
 use datafusion::physical_expr::LexOrdering;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt};
 
 use crate::{hash_utils::create_hashes, repartition::distributor_channels::channels};
 
-use self::distributor_channels::{partition_aware_channels, DistributionReceiver, DistributionSender};
+use self::distributor_channels::{DistributionReceiver, DistributionSender, partition_aware_channels};
 
 use parking_lot::Mutex;
 
@@ -198,7 +198,7 @@ impl BatchPartitioner {
             other => {
                 return Err(DataFusionError::NotImplemented(format!(
                     "Unsupported repartitioning scheme {other:?}"
-                )))
+                )));
             }
         };
 
@@ -453,7 +453,7 @@ impl RepartitionByRangeAndHashExec {
                         return Err(DataFusionError::Plan(format!(
                             "Invalid hash_partitioning={} for RepartitionByRangeAndHashExec",
                             hash_partitioning
-                        )))
+                        )));
                     }
                 },
             ]
@@ -476,14 +476,12 @@ impl RepartitionByRangeAndHashExec {
                 });
             }
         }
-        Err(DataFusionError::Plan(
-            format!(
-                "Input ordering {:?} mismatch for RepartitionByRangeAndHashExec with range_partitioning_expr={:?}, hash_partitioning={}", 
-                input.output_ordering(),
-                range_partitioning_expr,
-                hash_partitioning,
-            ))
-        )
+        Err(DataFusionError::Plan(format!(
+            "Input ordering {:?} mismatch for RepartitionByRangeAndHashExec with range_partitioning_expr={:?}, hash_partitioning={}",
+            input.output_ordering(),
+            range_partitioning_expr,
+            hash_partitioning,
+        )))
     }
 
     /// Return the sort expressions that are used to merge
@@ -717,8 +715,7 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
 
             trace!(
                 "Before returning stream in {}::execute for partition: {}",
-                name,
-                partition
+                name, partition
             );
 
             // lock scope

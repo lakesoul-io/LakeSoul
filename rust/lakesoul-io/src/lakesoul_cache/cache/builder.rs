@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use super::{DiskCache, DEFAULT_PAGE_SIZE, DEFAULT_TIME_TO_IDLE};
+use super::{DEFAULT_PAGE_SIZE, DEFAULT_TIME_TO_IDLE, DiskCache};
 
 /// Builder for [`DiskCache`]
 pub struct DiskCacheBuilder {

@@ -4,17 +4,17 @@
 
 mod util;
 
-use crate::hdfs::util::{coalesce_ranges, maybe_spawn_blocking, OBJECT_STORE_COALESCE_DEFAULT};
+use crate::hdfs::util::{OBJECT_STORE_COALESCE_DEFAULT, coalesce_ranges, maybe_spawn_blocking};
 use crate::lakesoul_io_config::LakeSoulIOConfig;
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::error::Result;
 use datafusion_common::DataFusionError;
-use futures::stream::{empty, BoxStream};
+use futures::stream::{BoxStream, empty};
 use futures::{FutureExt, StreamExt};
 use hdrs::{Client, ClientBuilder, File};
-use object_store::path::Path;
 use object_store::Error::{Generic, Precondition};
+use object_store::path::Path;
 use object_store::{
     Attributes, GetOptions, GetRange, GetResult, GetResultPayload, ListResult, MultipartUpload, ObjectMeta,
     ObjectStore, PutMode, PutMultipartOpts, PutOptions, PutPayload, PutResult, UploadPart,
@@ -492,14 +492,14 @@ fn add_leading_slash(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfigBuilder};
+    use crate::lakesoul_io_config::{LakeSoulIOConfigBuilder, create_session_context};
     use bytes::Bytes;
     use datafusion::datasource::object_store::ObjectStoreUrl;
     use futures::StreamExt;
-    use object_store::buffered::BufWriter;
-    use object_store::path::Path;
     use object_store::GetResultPayload::Stream;
     use object_store::ObjectStore;
+    use object_store::buffered::BufWriter;
+    use object_store::path::Path;
     use rand::distributions::{Alphanumeric, DistString};
     use rand::thread_rng;
     use std::sync::Arc;

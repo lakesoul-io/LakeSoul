@@ -15,7 +15,7 @@ use crate::{
     async_writer::{AsyncBatchWriter, WriterFlushResult},
     helpers::get_batch_memory_size,
     lakesoul_io_config::LakeSoulIOConfig,
-    lakesoul_writer::{create_writer, SendableWriter},
+    lakesoul_writer::{SendableWriter, create_writer},
 };
 
 pub struct AsyncSendableMutableLakeSoulWriter {

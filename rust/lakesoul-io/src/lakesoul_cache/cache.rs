@@ -6,7 +6,7 @@ use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use lru_disk_cache::LruDiskCache;
 use moka::future::Cache;
-use object_store::{path::Path, ObjectMeta};
+use object_store::{ObjectMeta, path::Path};
 use std::{
     collections::HashMap,
     future::Future,
@@ -352,14 +352,14 @@ mod tests {
     use std::{
         io::Write,
         sync::{
-            atomic::{AtomicUsize, Ordering},
             Arc,
+            atomic::{AtomicUsize, Ordering},
         },
     };
 
     use bytes::{BufMut, BytesMut};
     use chrono::TimeZone as _;
-    use object_store::{local::LocalFileSystem, ObjectStore};
+    use object_store::{ObjectStore, local::LocalFileSystem};
     use tempfile::tempdir;
 
     #[tokio::test]

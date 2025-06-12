@@ -4,18 +4,18 @@
 
 //! The [`datafusion::catalog::SchemaProvider`] implementation for the LakeSoul.
 
-use crate::datasource::table_provider::LakeSoulTableProvider;
-use crate::lakesoul_table::helpers::case_fold_table_name;
-use crate::lakesoul_table::LakeSoulTable;
 use crate::LakeSoulError;
+use crate::datasource::table_provider::LakeSoulTableProvider;
+use crate::lakesoul_table::LakeSoulTable;
+use crate::lakesoul_table::helpers::case_fold_table_name;
 use async_trait::async_trait;
 use datafusion::catalog::SchemaProvider;
 use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
 use datafusion::error::Result;
 use datafusion::prelude::SessionContext;
-use lakesoul_metadata::error::LakeSoulMetaDataError;
 use lakesoul_metadata::MetaDataClientRef;
+use lakesoul_metadata::error::LakeSoulMetaDataError;
 use std::any::Any;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;

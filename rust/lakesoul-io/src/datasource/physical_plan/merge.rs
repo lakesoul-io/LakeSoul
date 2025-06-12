@@ -22,8 +22,8 @@ use datafusion::{
 use datafusion_common::{DFSchemaRef, DataFusionError, Result};
 use datafusion_substrait::substrait::proto::Plan;
 
-use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;
 use crate::default_column_stream::DefaultColumnStream;
+use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;
 use crate::filter::parser::Parser as FilterParser;
 use crate::lakesoul_io_config::LakeSoulIOConfig;
 use crate::sorted_merge::merge_operator::MergeOperator;

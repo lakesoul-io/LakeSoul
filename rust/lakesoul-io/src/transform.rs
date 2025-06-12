@@ -14,11 +14,11 @@ use crate::constant::{
 use crate::helpers::{
     column_with_name_and_name2index, date_str_to_epoch_days, into_scalar_value, timestamp_str_to_unix_time,
 };
-use arrow::array::{as_primitive_array, as_struct_array, make_array, Array};
+use arrow::array::{Array, as_primitive_array, as_struct_array, make_array};
 use arrow::compute::kernels::cast::cast_with_options;
 use arrow::record_batch::RecordBatch;
 use arrow_array::{
-    new_null_array, types::*, ArrayRef, BooleanArray, PrimitiveArray, RecordBatchOptions, StringArray, StructArray,
+    ArrayRef, BooleanArray, PrimitiveArray, RecordBatchOptions, StringArray, StructArray, new_null_array, types::*,
 };
 use arrow_schema::{DataType, Field, FieldRef, Fields, Schema, SchemaBuilder, SchemaRef, TimeUnit};
 use datafusion::error::Result;
@@ -175,11 +175,11 @@ pub fn transform_array(
             };
             let array_ref = make_array(array);
             let source_datatype = array_ref.data_type();
-            let target_datatype = DataType::Timestamp(target_unit.clone(), Some(target_tz.clone()));
+            let target_datatype = DataType::Timestamp(target_unit, Some(target_tz.clone()));
 
             let casted_array = cast_with_options(
                 &array_ref,
-                &DataType::Timestamp(target_unit.clone(), Some(target_tz.clone())),
+                &DataType::Timestamp(target_unit, Some(target_tz.clone())),
                 &ARROW_CAST_OPTIONS,
             )
             .map_err(|e| {

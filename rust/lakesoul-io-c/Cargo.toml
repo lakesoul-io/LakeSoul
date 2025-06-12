@@ -34,4 +34,4 @@ hdfs = ["lakesoul-io/hdfs"]
 default = []
 
 [build-dependencies]
-cbindgen = "0.24.0"
+cbindgen = "0.29.0"

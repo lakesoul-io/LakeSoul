@@ -12,10 +12,10 @@ use atomic_refcell::AtomicRefCell;
 use bytes::Bytes;
 use datafusion::{
     datasource::listing::ListingTableUrl,
-    execution::{object_store::ObjectStoreUrl, TaskContext},
+    execution::{TaskContext, object_store::ObjectStoreUrl},
 };
-use datafusion_common::{project_schema, DataFusionError, Result};
-use object_store::{path::Path, ObjectStore, WriteMultipart};
+use datafusion_common::{DataFusionError, Result, project_schema};
+use object_store::{ObjectStore, WriteMultipart, path::Path};
 use parquet::basic::ZstdLevel;
 use parquet::{arrow::ArrowWriter, basic::Compression, file::properties::WriterProperties};
 use url::Url;
@@ -23,7 +23,7 @@ use url::Url;
 use crate::{
     constant::TBD_PARTITION_DESC,
     helpers::get_batch_memory_size,
-    lakesoul_io_config::{create_session_context, LakeSoulIOConfig},
+    lakesoul_io_config::{LakeSoulIOConfig, create_session_context},
     transform::{uniform_record_batch, uniform_schema},
 };
 
@@ -158,7 +158,7 @@ impl MultiPartAsyncWriter {
             .0
             .try_borrow_mut()
             .map_err(|e| DataFusionError::Internal(format!("{:?}", e)))?;
-        if v.len() > 0 {
+        if !v.is_empty() {
             MultiPartAsyncWriter::write_part(writer, &mut v).await
         } else {
             Ok(())
@@ -205,7 +205,7 @@ impl AsyncBatchWriter for MultiPartAsyncWriter {
             .0
             .try_borrow_mut()
             .map_err(|e| DataFusionError::Internal(format!("{:?}", e)))?;
-        if v.len() > 0 {
+        if !v.is_empty(){
             MultiPartAsyncWriter::write_part(&mut this.writer, &mut v).await?;
         }
         // shutdown multi-part async writer to complete the upload

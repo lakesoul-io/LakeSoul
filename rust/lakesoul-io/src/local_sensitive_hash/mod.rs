@@ -2,8 +2,8 @@ use arrow::array::{Array, Float32Array, Float64Array, GenericListArray, Int64Arr
 use arrow::buffer::OffsetBuffer;
 use arrow::datatypes::{DataType, Field};
 use datafusion_common::{DataFusionError, Result};
-use ndarray::{concatenate, s, Array2, ArrayView2, Axis};
-use rand::{rngs::StdRng, Rng, SeedableRng};
+use ndarray::{Array2, ArrayView2, Axis, concatenate, s};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 use std::ptr;
 use std::sync::Arc;
 

@@ -8,11 +8,11 @@ pub mod helpers;
 
 use std::sync::Arc;
 
+use crate::LakeSoulError;
 use crate::datasource::file_format::LakeSoulMetaDataParquetFormat;
 use crate::serialize::arrow_java::schema_from_metadata_str;
-use crate::LakeSoulError;
 use crate::{
-    catalog::{create_io_config_builder, parse_table_info_partitions, LakeSoulTableProperty},
+    catalog::{LakeSoulTableProperty, create_io_config_builder, parse_table_info_partitions},
     error::Result,
     planner::query_planner::LakeSoulQueryPlanner,
 };
@@ -31,8 +31,8 @@ use datafusion::{
 };
 use helpers::case_fold_table_name;
 use lakesoul_io::async_writer::{AsyncBatchWriter, AsyncSendableMutableLakeSoulWriter, WriterFlushResult};
-use lakesoul_io::lakesoul_io_config::create_session_context_with_planner;
 use lakesoul_io::lakesoul_io_config::OPTION_KEY_MEM_LIMIT;
+use lakesoul_io::lakesoul_io_config::create_session_context_with_planner;
 use lakesoul_metadata::{LakeSoulMetaDataError, MetaDataClient, MetaDataClientRef};
 use proto::proto::entity::{CommitOp, DataCommitInfo, DataFileOp, FileOp, TableInfo};
 use std::collections::HashMap;

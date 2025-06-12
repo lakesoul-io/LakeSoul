@@ -15,11 +15,11 @@ use anyhow::anyhow;
 use arrow::error::ArrowError;
 use arrow_schema::{Schema, SchemaRef};
 use datafusion::error::{DataFusionError, Result};
+use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::context::QueryPlanner;
 use datafusion::execution::memory_pool::FairSpillPool;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
-use datafusion::execution::SessionStateBuilder;
 use datafusion::logical_expr::Expr;
 use datafusion::optimizer::analyzer::type_coercion::TypeCoercion;
 use datafusion::optimizer::optimize_projections::OptimizeProjections;
@@ -944,7 +944,7 @@ pub fn create_session_context_with_planner(
 
 #[cfg(test)]
 mod tests {
-    use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfigBuilder};
+    use crate::lakesoul_io_config::{LakeSoulIOConfigBuilder, create_session_context};
 
     #[test]
     fn test_path_normalize() {

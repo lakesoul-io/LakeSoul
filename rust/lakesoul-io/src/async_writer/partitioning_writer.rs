@@ -11,12 +11,12 @@ use arrow_schema::{SchemaRef, SortOptions};
 use datafusion::{
     execution::TaskContext,
     physical_expr::{
-        expressions::{col, Column},
         LexOrdering, PhysicalSortExpr,
+        expressions::{Column, col},
     },
     physical_plan::{
-        projection::ProjectionExec, sorts::sort::SortExec, stream::RecordBatchReceiverStream, ExecutionPlan,
-        ExecutionPlanProperties, Partitioning, PhysicalExpr,
+        ExecutionPlan, ExecutionPlanProperties, Partitioning, PhysicalExpr, projection::ProjectionExec,
+        sorts::sort::SortExec, stream::RecordBatchReceiverStream,
     },
 };
 use datafusion_common::{DataFusionError, Result};
@@ -29,7 +29,7 @@ use crate::{
     helpers::{
         columnar_values_to_partition_desc, columnar_values_to_sub_path, get_batch_memory_size, get_columnar_values,
     },
-    lakesoul_io_config::{create_session_context, IOSchema, LakeSoulIOConfig, LakeSoulIOConfigBuilder},
+    lakesoul_io_config::{IOSchema, LakeSoulIOConfig, LakeSoulIOConfigBuilder, create_session_context},
     repartition::RepartitionByRangeAndHashExec,
     transform::uniform_schema,
 };
@@ -280,7 +280,7 @@ impl PartitioningAsyncWriter {
                         return Err(DataFusionError::Internal(format!(
                             "Abort failed {:?}, previous error {:?}",
                             abort_err, e
-                        )))
+                        )));
                     }
                 }
             }
@@ -303,6 +303,7 @@ impl PartitioningAsyncWriter {
     }
 
     async fn await_and_summary(
+        #[allow(clippy::type_complexity)]
         join_handles: Vec<JoinHandle<Result<Vec<JoinHandle<Result<WriterFlushResult>>>>>>,
         // partitioned_file_path_and_row_count: PartitionedWriterInfo,
     ) -> Result<WriterFlushResult> {

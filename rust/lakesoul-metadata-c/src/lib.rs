@@ -10,15 +10,15 @@ extern crate core;
 extern crate tracing;
 
 use std::collections::HashMap;
-use std::ffi::{c_char, c_uchar, CStr, CString};
+use std::ffi::{CStr, CString, c_char, c_uchar};
 use std::io::Write;
-use std::ptr::{null, null_mut, NonNull};
+use std::ptr::{NonNull, null, null_mut};
 
 use lakesoul_metadata::error::LakeSoulMetaDataError;
 use lakesoul_metadata::transfusion::SplitDesc;
 use lakesoul_metadata::{Builder, MetaDataClient, PooledClient, Runtime};
-use prost::bytes::BufMut;
 use prost::Message;
+use prost::bytes::BufMut;
 use proto::proto::entity;
 use tracing_subscriber::EnvFilter;
 
@@ -399,7 +399,7 @@ pub extern "C" fn create_split_desc_array(
 /// caller should keep it safe
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn free_split_desc_array(json: *mut c_char) {
-    free_c_string(json)
+    unsafe { free_c_string(json) }
 }
 
 #[unsafe(no_mangle)]

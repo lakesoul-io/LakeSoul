@@ -18,7 +18,7 @@ use std::{env, sync::Arc};
 
 use catalog::LakeSoulCatalog;
 use datafusion::{
-    execution::{object_store::ObjectStoreUrl, runtime_env::RuntimeEnv, SessionStateBuilder},
+    execution::{SessionStateBuilder, object_store::ObjectStoreUrl, runtime_env::RuntimeEnv},
     prelude::{SessionConfig, SessionContext},
 };
 use datasource::table_factory::LakeSoulTableProviderFactory;
@@ -26,7 +26,7 @@ pub use error::{LakeSoulError, Result};
 
 pub mod lakesoul_table;
 pub mod planner;
-use lakesoul_io::lakesoul_io_config::{register_hdfs_object_store, register_s3_object_store, LakeSoulIOConfigBuilder};
+use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfigBuilder, register_hdfs_object_store, register_s3_object_store};
 use lakesoul_metadata::MetaDataClientRef;
 use object_store::local::LocalFileSystem;
 pub use planner::query_planner::LakeSoulQueryPlanner;
@@ -73,19 +73,27 @@ pub fn create_lakesoul_session_ctx(
     if let Some(warehouse_prefix) = &args.warehouse_prefix {
         debug!("warehouse_prefix: {:?}", warehouse_prefix);
         // FIXME: s3 related args will ignore local file system
-        env::set_var("LAKESOUL_WAREHOUSE_PREFIX", warehouse_prefix);
+        unsafe {
+            env::set_var("LAKESOUL_WAREHOUSE_PREFIX", warehouse_prefix);
+        }
         let url = Url::parse(&warehouse_prefix);
         match url {
             Ok(url) => match url.scheme() {
                 "s3" | "s3a" => {
                     if let Some(s3_secret_key) = &args.s3_secret_key {
-                        env::set_var("AWS_SECRET_ACCESS_KEY", s3_secret_key);
+                        unsafe {
+                            env::set_var("AWS_SECRET_ACCESS_KEY", s3_secret_key);
+                        }
                     }
                     if let Some(s3_access_key) = &args.s3_access_key {
-                        env::set_var("AWS_ACCESS_KEY_ID", s3_access_key);
+                        unsafe {
+                            env::set_var("AWS_ACCESS_KEY_ID", s3_access_key);
+                        }
                     }
                     if let Some(endpoint) = &args.endpoint {
-                        env::set_var("AWS_ENDPOINT", endpoint);
+                        unsafe {
+                            env::set_var("AWS_ENDPOINT", endpoint);
+                        }
                     }
 
                     if ctx

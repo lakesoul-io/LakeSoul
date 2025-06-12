@@ -7,14 +7,14 @@
 #[macro_use]
 extern crate tracing;
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::Parser;
-use lakesoul_flight::{args::Args, FlightSqlServiceImpl, JwtServer};
-use lakesoul_flight::{Claims, TokenResponse, BANNER};
+use lakesoul_flight::{BANNER, Claims, TokenResponse};
+use lakesoul_flight::{FlightSqlServiceImpl, JwtServer, args::Args};
 use lakesoul_flight::{TokenServer, TokenServerServer};
 use lakesoul_metadata::MetaDataClient;
 use metrics::{counter, gauge};
@@ -99,7 +99,12 @@ impl Interceptor for GrpcInterceptor {
 
         info!(
             "请求开始 - 路径: {}, 当前活跃请求数: {}, 请求大小: {} 字节, 总接收字节数: {}, 吞吐量: {:.2} 字节/秒, {:.2} 请求/秒",
-            path, active + 1, request_size, total_bytes + request_size, throughput_bytes, throughput_requests
+            path,
+            active + 1,
+            request_size,
+            total_bytes + request_size,
+            throughput_bytes,
+            throughput_requests
         );
 
         request.extensions_mut().insert(CallbackOnDrop {

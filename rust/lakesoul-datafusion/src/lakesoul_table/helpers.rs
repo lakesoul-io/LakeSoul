@@ -21,7 +21,7 @@ use datafusion::{
     physical_expr::create_physical_expr,
 };
 use lakesoul_metadata::MetaDataClientRef;
-use object_store::{path::Path, ObjectMeta, ObjectStore};
+use object_store::{ObjectMeta, ObjectStore, path::Path};
 use url::Url;
 
 use crate::error::Result;
@@ -29,7 +29,7 @@ use crate::serialize::arrow_java::schema_from_metadata_str;
 use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfigBuilder, OPTION_KEY_CDC_COLUMN, OPTION_KEY_STABLE_SORT};
 use proto::proto::entity::{PartitionInfo, TableInfo};
 
-use crate::catalog::{parse_table_info_partitions, LakeSoulTableProperty};
+use crate::catalog::{LakeSoulTableProperty, parse_table_info_partitions};
 
 /// Create a [`LakeSoulIOConfigBuilder`] from the table info.
 pub(crate) fn create_io_config_builder_from_table_info(

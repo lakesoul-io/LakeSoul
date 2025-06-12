@@ -30,8 +30,8 @@
 
 use atomic_refcell::AtomicRefCell;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
-use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::SendableRecordBatchStream;
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use std::sync::Arc;
 
 use arrow_schema::SchemaRef;
@@ -54,7 +54,7 @@ use crate::helpers::{
     collect_or_conjunctive_filter_expressions, compute_scalar_hash, extract_hash_bucket_id,
     extract_scalar_value_from_expr,
 };
-use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfig};
+use crate::lakesoul_io_config::{LakeSoulIOConfig, create_session_context};
 
 /// A reader for LakeSoul tables that supports efficient reading of data with various optimizations.
 ///
@@ -385,6 +385,8 @@ mod tests {
     use rand::prelude::*;
     use std::mem::ManuallyDrop;
     use std::ops::Not;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering::Relaxed;
     use std::sync::mpsc::sync_channel;
     use std::time::Instant;
     use tokio::runtime::Builder;
@@ -392,7 +394,7 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema, TimestampSecondType};
     use arrow::util::pretty::print_batches;
 
-    use rand::{distributions::DistString, Rng};
+    use rand::{Rng, distributions::DistString};
 
     #[tokio::test]
     async fn test_reader_local() -> Result<()> {
@@ -479,19 +481,16 @@ mod tests {
             .unwrap();
         let mut reader = SyncSendableMutableLakeSoulReader::new(reader, runtime);
         reader.start_blocked()?;
-        static mut ROW_CNT: usize = 0;
+        let row_cnt = Arc::new(AtomicUsize::new(0));
         loop {
             let (tx, rx) = sync_channel(1);
+            let cnt = Arc::clone(&row_cnt);
             let f = move |rb: Option<Result<RecordBatch>>| match rb {
                 None => tx.send(true).unwrap(),
                 Some(rb) => {
                     let rb = rb.unwrap();
-                    let num_rows = &rb.num_rows();
-                    unsafe {
-                        ROW_CNT += num_rows;
-                        println!("{}", ROW_CNT);
-                    }
-
+                    let num_rows = rb.num_rows();
+                    cnt.fetch_add(num_rows, Relaxed);
                     tx.send(false).unwrap();
                 }
             };
@@ -504,7 +503,7 @@ mod tests {
         Ok(())
     }
 
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{Duration, sleep};
 
     #[tokio::test]
     async fn test_reader_s3() -> Result<()> {
@@ -521,14 +520,14 @@ mod tests {
         let reader = LakeSoulReader::new(reader_conf)?;
         let mut reader = ManuallyDrop::new(reader);
         reader.start().await?;
-        static mut ROW_CNT: usize = 0;
+        let row_cnt = Arc::new(AtomicUsize::new(0));
 
         let start = Instant::now();
         while let Some(rb) = reader.next_rb().await {
-            let num_rows = &rb.unwrap().num_rows();
+            let num_rows = rb.unwrap().num_rows();
             unsafe {
-                ROW_CNT += num_rows;
-                println!("{}", ROW_CNT);
+                row_cnt.fetch_add(num_rows, Relaxed);
+                println!("{:?}", row_cnt);
             }
             sleep(Duration::from_millis(20)).await;
         }
@@ -558,7 +557,6 @@ mod tests {
             .unwrap();
         let mut reader = SyncSendableMutableLakeSoulReader::new(reader, runtime);
         reader.start_blocked()?;
-        static mut ROW_CNT: usize = 0;
         let start = Instant::now();
         loop {
             let (tx, rx) = sync_channel(1);
@@ -589,7 +587,7 @@ mod tests {
 
     use crate::lakesoul_io_config::LakeSoulIOConfigBuilder;
     use crate::lakesoul_writer::SyncSendableMutableLakeSoulWriter;
-    use datafusion::logical_expr::{col, Expr};
+    use datafusion::logical_expr::{Expr, col};
     use datafusion_common::ScalarValue;
 
     async fn get_num_rows_of_file_with_filters(file_path: String, filters: Vec<Expr>) -> Result<usize> {

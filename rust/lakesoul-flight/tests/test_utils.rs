@@ -4,9 +4,9 @@
 
 use arrow_array::RecordBatch;
 use arrow_flight::{
-    error::FlightError,
-    sql::{client::FlightSqlServiceClient, CommandStatementIngest},
     FlightInfo,
+    error::FlightError,
+    sql::{CommandStatementIngest, client::FlightSqlServiceClient},
 };
 use assert_cmd::cargo::CommandCargoExt;
 use core::panic;
@@ -18,7 +18,7 @@ use std::{
     process::{Child, Command},
     task::{Context, Poll},
 };
-use tonic::{transport::Channel, Request};
+use tonic::{Request, transport::Channel};
 use tracing::info;
 
 const BIN_NAME: &str = "flight_sql_server";

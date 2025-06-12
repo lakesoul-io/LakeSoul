@@ -11,7 +11,7 @@ use datafusion::assert_batches_eq;
 use lakesoul_datafusion::{cli::CoreArgs, create_lakesoul_session_ctx};
 use lakesoul_flight::Claims;
 use lakesoul_metadata::MetaDataClient;
-use test_utils::{build_client, handle_sql, ingest, TestServer};
+use test_utils::{TestServer, build_client, handle_sql, ingest};
 use tokio::time::sleep;
 use tracing::info;
 

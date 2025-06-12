@@ -6,7 +6,7 @@ mod insert_tests {
     use std::sync::Arc;
 
     use arrow::array::*;
-    use arrow::datatypes::{i256, Int32Type};
+    use arrow::datatypes::{Int32Type, i256};
     use arrow::{
         array::{ArrayRef, Int32Array},
         datatypes::{DataType, Field, Schema, SchemaRef},
@@ -15,7 +15,7 @@ mod insert_tests {
     use arrow_cast::pretty::print_batches;
     use datafusion::logical_expr::Expr;
     use datafusion::prelude::col;
-    use lakesoul_io::lakesoul_io_config::{create_session_context, LakeSoulIOConfigBuilder};
+    use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfigBuilder, create_session_context};
     use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 
     use crate::lakesoul_table::LakeSoulTable;

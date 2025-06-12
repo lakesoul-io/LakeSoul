@@ -4,7 +4,7 @@
 
 mod hash_tests {
     use chrono::DateTime;
-    use lakesoul_io::hash_utils::{HashValue, HASH_SEED};
+    use lakesoul_io::hash_utils::{HASH_SEED, HashValue};
 
     #[test]
     fn chrono_test() {

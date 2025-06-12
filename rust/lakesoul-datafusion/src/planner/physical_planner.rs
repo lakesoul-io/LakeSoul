@@ -12,7 +12,7 @@ use datafusion::common::{DFSchema, SchemaExt};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::SessionState;
 use datafusion::logical_expr::{Expr, LogicalPlan};
-use datafusion::physical_expr::{create_physical_expr, LexOrdering, PhysicalExpr};
+use datafusion::physical_expr::{LexOrdering, PhysicalExpr, create_physical_expr};
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};

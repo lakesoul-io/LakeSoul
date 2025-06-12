@@ -11,12 +11,12 @@ mod catalog_tests {
     use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
     use datafusion::assert_batches_eq;
     use datafusion::catalog::{CatalogProvider, SchemaProvider};
-    use lakesoul_io::lakesoul_io_config::create_session_context;
     use lakesoul_io::lakesoul_io_config::LakeSoulIOConfigBuilder;
+    use lakesoul_io::lakesoul_io_config::create_session_context;
     use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
     use proto::proto::entity::{Namespace, TableInfo};
     use rand::distributions::Alphanumeric;
-    use rand::{thread_rng, Rng, SeedableRng};
+    use rand::{Rng, SeedableRng, thread_rng};
     use rand_chacha::ChaCha8Rng;
     use std::env;
     use std::sync::Arc;

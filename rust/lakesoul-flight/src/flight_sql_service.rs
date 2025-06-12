@@ -22,14 +22,14 @@ use arrow_flight::{
     Action, FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest, HandshakeResponse, IpcMessage, SchemaAsIpc,
     Ticket,
 };
+use datafusion::sql::TableReference;
 use datafusion::sql::parser::{DFParser, Statement};
 use datafusion::sql::sqlparser::ast::{CreateTable, SqlOption};
 use datafusion::sql::sqlparser::dialect::PostgreSqlDialect;
-use datafusion::sql::TableReference;
 use futures::{Stream, StreamExt, TryStreamExt};
 use lakesoul_datafusion::catalog::LakeSoulTableProperty;
-use lakesoul_datafusion::lakesoul_table::helpers::case_fold_column_name;
 use lakesoul_datafusion::lakesoul_table::LakeSoulTable;
+use lakesoul_datafusion::lakesoul_table::helpers::case_fold_column_name;
 use lakesoul_datafusion::serialize::arrow_java::schema_from_metadata_str;
 use lakesoul_io::helpers::get_batch_memory_size;
 use lakesoul_io::serde_json;
@@ -37,13 +37,13 @@ use prost::Message;
 use std::env;
 use std::pin::Pin;
 use std::sync::Arc;
-use tonic::{metadata::MetadataValue, Request, Response, Status, Streaming};
+use tonic::{Request, Response, Status, Streaming, metadata::MetadataValue};
 
 use lakesoul_io::async_writer::WriterFlushResult;
 use lakesoul_metadata::MetaDataClientRef;
 use uuid::Uuid;
 
-use lakesoul_datafusion::{create_lakesoul_session_ctx, LakeSoulError, Result};
+use lakesoul_datafusion::{LakeSoulError, Result, create_lakesoul_session_ctx};
 
 use arrow::array::{ArrayRef, StringArray};
 use arrow::record_batch::RecordBatch;
@@ -55,12 +55,12 @@ use tonic::metadata::MetadataMap;
 
 use crate::args::Args;
 use crate::jwt::JwtServer;
-use crate::{datafusion_error_to_status, lakesoul_error_to_status, lakesoul_metadata_error_to_status, Claims};
+use crate::{Claims, datafusion_error_to_status, lakesoul_error_to_status, lakesoul_metadata_error_to_status};
 use lakesoul_metadata::rbac::verify_permission_by_table_name;
 use metrics::{counter, gauge, histogram};
 use prost::bytes::Bytes;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::Instant;
 
 const LOG_INTERVAL: usize = 100; // Log every 100 batches
@@ -169,7 +169,15 @@ impl StreamWriteMetrics {
             let duration = start_time.elapsed().as_secs_f64();
             let rows_per_second = total_rows as f64 / duration;
             let mb_per_second = (total_bytes as f64 / MEGABYTE) / duration;
-            info!("{} active_streams: {}, total_bytes: {:.2}MB, total_rows: {:.2}K, rows_per_second: {:.2}K, mb_per_second: {:.2}MB", prefix, active_streams, total_bytes as f64 / MEGABYTE, total_rows as f64 / 1000.0, rows_per_second, mb_per_second);
+            info!(
+                "{} active_streams: {}, total_bytes: {:.2}MB, total_rows: {:.2}K, rows_per_second: {:.2}K, mb_per_second: {:.2}MB",
+                prefix,
+                active_streams,
+                total_bytes as f64 / MEGABYTE,
+                total_rows as f64 / 1000.0,
+                rows_per_second,
+                mb_per_second
+            );
 
             histogram!("stream_write_rows_per_second").record(rows_per_second);
             histogram!("stream_write_mb_per_second").record(mb_per_second);
@@ -732,7 +740,9 @@ impl FlightSqlService for FlightSqlServiceImpl {
         } = cmd;
         self.verify_rbac(&claims, &schema.clone().unwrap_or("default".to_string()), &table)
             .await?;
-        info!("do_put_statement_ingest: table: {table}, schema: {schema:?}, catalog: {catalog:?}, temporary: {temporary}, transaction_id: {transaction_id:?}, options: {options:?} table_definition_options: {table_definition_options:?}");
+        info!(
+            "do_put_statement_ingest: table: {table}, schema: {schema:?}, catalog: {catalog:?}, temporary: {temporary}, transaction_id: {transaction_id:?}, options: {options:?} table_definition_options: {table_definition_options:?}"
+        );
 
         // 获取输入流
         let stream = request.into_inner();

@@ -10,7 +10,7 @@ extern crate core;
 #[macro_use]
 extern crate tracing;
 
-use std::ffi::{c_char, c_int, c_uchar, c_void, CStr, CString};
+use std::ffi::{CStr, CString, c_char, c_int, c_uchar, c_void};
 use std::io::Write;
 use std::ptr::NonNull;
 use std::slice;
@@ -134,13 +134,13 @@ pub struct BytesResult {
 }
 
 /// Create a new [`IOConfigBuilder`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn new_lakesoul_io_config_builder() -> NonNull<IOConfigBuilder> {
     convert_to_opaque(LakeSoulIOConfigBuilder::new())
 }
 
 /// Set the prefix of the IO config.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn lakesoul_config_builder_with_prefix(
     builder: NonNull<IOConfigBuilder>,
     prefix: *const c_char,
@@ -152,7 +152,7 @@ pub extern "C" fn lakesoul_config_builder_with_prefix(
 }
 
 /// Add a single file to the IO config.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn lakesoul_config_builder_add_single_file(
     builder: NonNull<IOConfigBuilder>,
     file: *const c_char,
@@ -164,7 +164,7 @@ pub extern "C" fn lakesoul_config_builder_add_single_file(
 }
 
 /// Add a single column to the IO config.
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[allow(deprecated)]
 pub extern "C" fn lakesoul_config_builder_add_single_column(
     builder: NonNull<IOConfigBuilder>,
@@ -177,7 +177,7 @@ pub extern "C" fn lakesoul_config_builder_add_single_column(
 }
 
 /// Add a single aux sort column to the IO config.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn lakesoul_config_builder_add_single_aux_sort_column(
     builder: NonNull<IOConfigBuilder>,
     column: *const c_char,
@@ -189,7 +189,7 @@ pub extern "C" fn lakesoul_config_builder_add_single_aux_sort_column(
 }
 
 /// Add a filter to the IO config.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn lakesoul_config_builder_add_filter(
     builder: NonNull<IOConfigBuilder>,
     filter: *const c_char,
@@ -201,7 +201,7 @@ pub extern "C" fn lakesoul_config_builder_add_filter(
 }
 
 /// Add a filter to the IO config from a protobuf.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn lakesoul_config_builder_add_filter_proto(
     builder: NonNull<IOConfigBuilder>,
     proto_addr: c_ptrdiff_t,
@@ -217,7 +217,7 @@ pub extern "C" fn lakesoul_config_builder_add_filter_proto(
 }
 
 /// Set the schema of the IO config.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn lakesoul_config_builder_set_schema(
     builder: NonNull<IOConfigBuilder>,
     schema_addr: c_ptrdiff_t,
@@ -233,7 +233,7 @@ pub extern "C" fn lakesoul_config_builder_set_schema(
 }
 
 /// Set the partition schema of the IO config.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn lakesoul_config_builder_set_partition_schema(
     builder: NonNull<IOConfigBuilder>,
     schema_addr: c_ptrdiff_t,
@@ -249,7 +249,7 @@ pub extern "C" fn lakesoul_config_builder_set_partition_schema(
 }
 
 /// Set the thread number of the IO config.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn lakesoul_config_builder_set_thread_num(
     builder: NonNull<IOConfigBuilder>,
     thread_num: c_size_t,
@@ -258,7 +258,7 @@ pub extern "C" fn lakesoul_config_builder_set_thread_num(
 }
 
 /// Set whether to use dynamic partition of the IO config.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn lakesoul_config_builder_set_dynamic_partition(
     builder: NonNull<IOConfigBuilder>,
     enable: bool,
@@ -267,7 +267,7 @@ pub extern "C" fn lakesoul_config_builder_set_dynamic_partition(
 }
 
 /// Set whether to infer the schema of the IO config.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn lakesoul_config_builder_set_inferring_schema(
     builder: NonNull<IOConfigBuilder>,
     enable: bool,
@@ -276,7 +276,7 @@ pub extern "C" fn lakesoul_config_builder_set_inferring_schema(
 }
 
 /// Set the batch size of the IO config.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn lakesoul_config_builder_set_batch_size(
     builder: NonNull<IOConfigBuilder>,
     batch_size: c_size_t,
@@ -285,7 +285,7 @@ pub extern "C" fn lakesoul_config_builder_set_batch_size(
 }
 
 /// Set the max row group size of the IO config.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn lakesoul_config_builder_set_max_row_group_size(
     builder: NonNull<IOConfigBuilder>,
     max_row_group_size: c_size_t,
@@ -296,7 +296,7 @@ pub extern "C" fn lakesoul_config_builder_set_max_row_group_size(
 }
 
 /// Set the max row group num values of the IO config.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn lakesoul_config_builder_set_max_row_group_num_values(
     builder: NonNull<IOConfigBuilder>,
     max_row_group_num_values: c_size_t,
@@ -308,7 +308,7 @@ pub extern "C" fn lakesoul_config_builder_set_max_row_group_num_values(
 }
 
 /// Set the buffer size of the IO config.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn lakesoul_config_builder_set_buffer_size(
     builder: NonNull<IOConfigBuilder>,
     buffer_size: c_size_t,
@@ -317,7 +317,7 @@ pub extern "C" fn lakesoul_config_builder_set_buffer_size(
 }
 
 /// Set the hash bucket number of the IO config.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn lakesoul_config_builder_set_hash_bucket_num(
     builder: NonNull<IOConfigBuilder>,
     hash_bucket_num: c_size_t,
@@ -328,7 +328,7 @@ pub extern "C" fn lakesoul_config_builder_set_hash_bucket_num(
 }
 
 /// Set the object store option of the IO config.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn lakesoul_config_builder_set_object_store_option(
     builder: NonNull<IOConfigBuilder>,
     key: *const c_char,
@@ -344,7 +344,7 @@ pub extern "C" fn lakesoul_config_builder_set_object_store_option(
 }
 
 /// Add a option to the IO config.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn lakesoul_config_builder_set_option(
     builder: NonNull<IOConfigBuilder>,
     key: *const c_char,
@@ -358,7 +358,7 @@ pub extern "C" fn lakesoul_config_builder_set_option(
 }
 
 /// Add a files to the IO config.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn lakesoul_config_builder_add_files(
     builder: NonNull<IOConfigBuilder>,
     files: *const *const c_char,
@@ -377,7 +377,7 @@ pub extern "C" fn lakesoul_config_builder_add_files(
 }
 
 /// Add a single primary key to the IO config.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn lakesoul_config_builder_add_single_primary_key(
     builder: NonNull<IOConfigBuilder>,
     pk: *const c_char,
@@ -389,7 +389,7 @@ pub extern "C" fn lakesoul_config_builder_add_single_primary_key(
 }
 
 /// Add a single range partition to the IO config.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn lakesoul_config_builder_add_single_range_partition(
     builder: NonNull<IOConfigBuilder>,
     col: *const c_char,
@@ -401,7 +401,7 @@ pub extern "C" fn lakesoul_config_builder_add_single_range_partition(
 }
 
 /// Add a merge operation to the IO config.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn lakesoul_config_builder_add_merge_op(
     builder: NonNull<IOConfigBuilder>,
     field: *const c_char,
@@ -417,7 +417,7 @@ pub extern "C" fn lakesoul_config_builder_add_merge_op(
 }
 
 /// Add collection of primary keys to the IO config.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn lakesoul_config_builder_add_primary_keys(
     builder: NonNull<IOConfigBuilder>,
     pks: *const *const c_char,
@@ -436,7 +436,7 @@ pub extern "C" fn lakesoul_config_builder_add_primary_keys(
 }
 
 /// Set the default column value of the IO config.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn lakesoul_config_builder_set_default_column_value(
     builder: NonNull<IOConfigBuilder>,
     field: *const c_char,
@@ -454,13 +454,13 @@ pub extern "C" fn lakesoul_config_builder_set_default_column_value(
 // C interface for reader
 
 /// Create a new [`IOConfig`] from the [`IOConfigBuilder`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn create_lakesoul_io_config_from_builder(builder: NonNull<IOConfigBuilder>) -> NonNull<IOConfig> {
     convert_to_opaque(from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).build())
 }
 
 /// Create a new [`SyncSendableMutableLakeSoulReader`] from the [`IOConfig`] and return a [`Reader`] wrapped in [`CResult`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn create_lakesoul_reader_from_config(
     config: NonNull<IOConfig>,
     runtime: NonNull<TokioRuntime>,
@@ -475,7 +475,7 @@ pub extern "C" fn create_lakesoul_reader_from_config(
 }
 
 /// Check if the [`Reader`] is created successfully.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn check_reader_created(reader: NonNull<CResult<Reader>>) -> *const c_char {
     unsafe {
         if let Some(err) = reader.as_ref().err.as_ref() {
@@ -541,7 +541,7 @@ fn call_i32_data_result_callback(callback: I32DataResultCallback, status: i32, e
 }
 
 /// Call [`SyncSendableMutableLakeSoulReader::start_blocked`] of the [`Reader`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn start_reader(reader: NonNull<CResult<Reader>>, callback: ResultCallback) {
     unsafe {
         let mut reader = NonNull::new_unchecked(reader.as_ref().ptr as *mut SyncSendableMutableLakeSoulReader);
@@ -558,7 +558,7 @@ pub extern "C" fn start_reader(reader: NonNull<CResult<Reader>>, callback: Resul
 }
 
 /// Call [`SyncSendableMutableLakeSoulReader::start_blocked`] of the [`Reader`] with data.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn start_reader_with_data(
     reader: NonNull<CResult<Reader>>,
     data: *const c_void,
@@ -581,7 +581,7 @@ pub extern "C" fn start_reader_with_data(
 }
 
 /// Call [`SyncSendableMutableLakeSoulReader::next_rb_callback`] of the [`Reader`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn next_record_batch(
     reader: NonNull<CResult<Reader>>,
     schema_addr: c_ptrdiff_t,
@@ -631,7 +631,7 @@ pub extern "C" fn next_record_batch(
 }
 
 /// Call [`SyncSendableMutableLakeSoulReader::next_rb_blocked`] of the [`Reader`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn next_record_batch_blocked(
     reader: NonNull<CResult<Reader>>,
     array_addr: c_ptrdiff_t,
@@ -675,7 +675,7 @@ unsafe impl Send for Cvoid {}
 unsafe impl Sync for Cvoid {}
 
 /// Call [`SyncSendableMutableLakeSoulReader::next_rb_callback`] of the [`Reader`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn next_record_batch_with_data(
     reader: NonNull<CResult<Reader>>,
     schema_addr: c_ptrdiff_t,
@@ -729,7 +729,7 @@ pub extern "C" fn next_record_batch_with_data(
 }
 
 /// Export the schema of the [`Reader`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn lakesoul_reader_get_schema(reader: NonNull<CResult<Reader>>, schema_addr: c_ptrdiff_t) {
     unsafe {
         let reader = NonNull::new_unchecked(reader.as_ref().ptr as *mut SyncSendableMutableLakeSoulReader);
@@ -745,7 +745,7 @@ pub extern "C" fn lakesoul_reader_get_schema(reader: NonNull<CResult<Reader>>, s
 }
 
 /// Free the [`Reader`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn free_lakesoul_reader(reader: NonNull<CResult<Reader>>) {
     from_nonnull(reader).free::<SyncSendableMutableLakeSoulReader>();
 }
@@ -753,7 +753,7 @@ pub extern "C" fn free_lakesoul_reader(reader: NonNull<CResult<Reader>>) {
 // C interface for writer
 
 /// Create a new [`SyncSendableMutableLakeSoulWriter`] from the [`IOConfig`] and return a [`Writer`] wrapped in [`CResult`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn create_lakesoul_writer_from_config(
     config: NonNull<IOConfig>,
     runtime: NonNull<TokioRuntime>,
@@ -767,7 +767,7 @@ pub extern "C" fn create_lakesoul_writer_from_config(
     convert_to_nonnull(result)
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn check_writer_created(writer: NonNull<CResult<Reader>>) -> *const c_char {
     unsafe {
         if let Some(err) = writer.as_ref().err.as_ref() {
@@ -779,7 +779,7 @@ pub extern "C" fn check_writer_created(writer: NonNull<CResult<Reader>>) -> *con
 }
 
 /// Call [`SyncSendableMutableLakeSoulWriter::write_batch`] of the [`Writer`] with callback.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn write_record_batch(
     writer: NonNull<CResult<Writer>>,
     schema_addr: c_ptrdiff_t,
@@ -813,7 +813,7 @@ pub extern "C" fn write_record_batch(
 }
 
 /// Call [`SyncSendableMutableLakeSoulWriter::write_batch`] of the [`Writer`] by blocking mode.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn write_record_batch_blocked(
     writer: NonNull<CResult<Writer>>,
     schema_addr: c_ptrdiff_t,
@@ -842,7 +842,7 @@ pub extern "C" fn write_record_batch_blocked(
 }
 
 /// Call [`SyncSendableMutableLakeSoulWriter::write_batch`] of the [`Writer`] by blocking mode, record batch is read from ipc protocol.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn write_record_batch_ipc_blocked(
     writer: NonNull<CResult<Writer>>,
     ipc_addr: c_ptrdiff_t,
@@ -877,7 +877,7 @@ pub extern "C" fn write_record_batch_ipc_blocked(
 }
 
 /// Export the byte result of the [`Writer`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn export_bytes_result(
     callback: extern "C" fn(bool, *const c_char),
     bytes: NonNull<CResult<BytesResult>>,
@@ -908,7 +908,7 @@ pub extern "C" fn export_bytes_result(
 }
 
 /// Flush and close the [`Writer`] and return the [`BytesResult`] wrapped in [`CResult`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn flush_and_close_writer(
     writer: NonNull<CResult<Writer>>,
     callback: I32ResultCallback,
@@ -935,7 +935,7 @@ pub extern "C" fn flush_and_close_writer(
 }
 
 /// Abort and close the [`Writer`] and return the [`BytesResult`] wrapped in [`CResult`], when encountering an external error.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn abort_and_close_writer(writer: NonNull<CResult<Writer>>, callback: ResultCallback) {
     unsafe {
         let writer =
@@ -967,7 +967,7 @@ pub struct TokioRuntime {
 }
 
 /// Create a new [`TokioRuntimeBuilder`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn new_tokio_runtime_builder() -> NonNull<TokioRuntimeBuilder> {
     let mut builder = Builder::new_multi_thread();
     builder.enable_all();
@@ -977,7 +977,7 @@ pub extern "C" fn new_tokio_runtime_builder() -> NonNull<TokioRuntimeBuilder> {
 }
 
 /// Set the number of threads of the [`TokioRuntimeBuilder`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tokio_runtime_builder_set_thread_num(
     builder: NonNull<TokioRuntimeBuilder>,
     thread_num: c_size_t,
@@ -988,7 +988,7 @@ pub extern "C" fn tokio_runtime_builder_set_thread_num(
 }
 
 /// Create a new [`TokioRuntime`] from the [`TokioRuntimeBuilder`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn create_tokio_runtime_from_builder(builder: NonNull<TokioRuntimeBuilder>) -> NonNull<TokioRuntime> {
     let mut builder = from_opaque::<TokioRuntimeBuilder, Builder>(builder);
     let runtime = builder.build().unwrap();
@@ -997,13 +997,13 @@ pub extern "C" fn create_tokio_runtime_from_builder(builder: NonNull<TokioRuntim
 
 // runtime is usually moved to create reader/writer,
 // so you don't need to free it unless it's used independently
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn free_tokio_runtime(runtime: NonNull<CResult<TokioRuntime>>) {
     from_nonnull(runtime).free::<Runtime>();
 }
 
 /// Apply the partition filter to the [`entity::JniWrapper`] and return the [`BytesResult`] wrapped in [`CResult`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn apply_partition_filter(
     callback: extern "C" fn(i32, *const c_char),
     len: i32,
@@ -1039,14 +1039,14 @@ pub extern "C" fn apply_partition_filter(
 }
 
 /// Free the [`BytesResult`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn free_bytes_result(bytes: NonNull<CResult<BytesResult>>) {
     from_nonnull(bytes).free::<Vec<u8>>();
 }
 
 /// init a global logger for rust code
 /// now use RUST_LOG=LEVEL to activate
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn rust_logger_init() {
     // TODO add logger format
     let timer = tracing_subscriber::fmt::time::ChronoLocal::rfc_3339();
@@ -1068,13 +1068,13 @@ mod tests {
     use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
 
     use crate::{
-        create_lakesoul_io_config_from_builder, create_lakesoul_reader_from_config, create_lakesoul_writer_from_config,
-        flush_and_close_writer, free_lakesoul_reader, lakesoul_config_builder_add_single_file,
-        lakesoul_config_builder_add_single_primary_key, lakesoul_config_builder_set_batch_size,
-        lakesoul_config_builder_set_max_row_group_size, lakesoul_config_builder_set_object_store_option,
-        lakesoul_config_builder_set_schema, lakesoul_config_builder_set_thread_num, lakesoul_reader_get_schema,
-        next_record_batch, rust_logger_init, start_reader, tokio_runtime_builder_set_thread_num, write_record_batch,
-        IOConfigBuilder,
+        IOConfigBuilder, create_lakesoul_io_config_from_builder, create_lakesoul_reader_from_config,
+        create_lakesoul_writer_from_config, flush_and_close_writer, free_lakesoul_reader,
+        lakesoul_config_builder_add_single_file, lakesoul_config_builder_add_single_primary_key,
+        lakesoul_config_builder_set_batch_size, lakesoul_config_builder_set_max_row_group_size,
+        lakesoul_config_builder_set_object_store_option, lakesoul_config_builder_set_schema,
+        lakesoul_config_builder_set_thread_num, lakesoul_reader_get_schema, next_record_batch, rust_logger_init,
+        start_reader, tokio_runtime_builder_set_thread_num, write_record_batch,
     };
 
     fn set_object_store_kv(builder: NonNull<IOConfigBuilder>, key: &str, value: &str) -> NonNull<IOConfigBuilder> {
@@ -1101,7 +1101,7 @@ mod tests {
 
     static mut CALL_BACK_CV: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn reader_callback(status: bool, err: *const c_char) {
         unsafe {
             let mut reader_called = CALL_BACK_CV.0.lock().unwrap();
@@ -1119,7 +1119,7 @@ mod tests {
 
     static mut CALL_BACK_I32_CV: (Mutex<i32>, Condvar) = (Mutex::new(-1), Condvar::new());
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn reader_i32_callback(status: i32, err: *const c_char) {
         unsafe {
             let mut reader_called = CALL_BACK_I32_CV.0.lock().unwrap();
@@ -1147,7 +1147,7 @@ mod tests {
     static mut WRITER_FINISHED: bool = false;
     static mut WRITER_FAILED: Option<String> = None;
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn writer_callback(status: i32, err: *const c_char) {
         unsafe {
             let mut writer_called = CALL_BACK_CV.0.lock().unwrap();
@@ -1163,7 +1163,7 @@ mod tests {
         }
     }
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn result_callback(status: bool, err: *const c_char) {
         unsafe {
             let mut writer_called = CALL_BACK_CV.0.lock().unwrap();

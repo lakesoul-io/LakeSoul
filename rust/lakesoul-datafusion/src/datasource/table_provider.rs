@@ -13,37 +13,37 @@ use arrow::compute::SortOptions;
 use arrow::datatypes::{DataType, Field, Schema, SchemaBuilder, SchemaRef};
 use async_trait::async_trait;
 use datafusion::catalog::Session;
-use datafusion::common::{project_schema, Constraint, Statistics, ToDFSchema};
+use datafusion::common::{Constraint, Statistics, ToDFSchema, project_schema};
+use datafusion::datasource::TableProvider;
+use datafusion::datasource::file_format::FileFormat;
 use datafusion::datasource::file_format::file_compression_type::FileCompressionType;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
-use datafusion::datasource::file_format::FileFormat;
 use datafusion::datasource::listing::{ListingOptions, ListingTableUrl, PartitionedFile};
 use datafusion::datasource::physical_plan::{FileGroup, FileScanConfig, FileSinkConfig};
-use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::logical_expr::expr::Sort;
 use datafusion::logical_expr::utils::conjunction;
 use datafusion::logical_expr::{CreateExternalTable, TableProviderFilterPushDown, TableType};
-use datafusion::physical_expr::{create_physical_expr, LexOrdering, PhysicalSortExpr};
-use datafusion::physical_plan::empty::EmptyExec;
+use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr, create_physical_expr};
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::scalar::ScalarValue;
 use datafusion::{execution::context::SessionState, logical_expr::Expr};
-use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 
 use lakesoul_io::helpers::listing_table_from_lakesoul_io_config;
 use lakesoul_io::lakesoul_io_config::LakeSoulIOConfig;
 use lakesoul_metadata::MetaDataClientRef;
 use proto::proto::entity::TableInfo;
 
-use crate::catalog::{format_table_info_partitions, parse_table_info_partitions, LakeSoulTableProperty};
+use crate::catalog::{LakeSoulTableProperty, format_table_info_partitions, parse_table_info_partitions};
 use crate::lakesoul_table::helpers::{
     case_fold_column_name, case_fold_table_name, listing_partition_info, parse_partitions_for_partition_desc,
     prune_partitions,
 };
-use crate::serialize::arrow_java::{schema_from_metadata_str, ArrowJavaSchema};
+use crate::serialize::arrow_java::{ArrowJavaSchema, schema_from_metadata_str};
 
 use super::file_format::LakeSoulMetaDataParquetFormat;
 

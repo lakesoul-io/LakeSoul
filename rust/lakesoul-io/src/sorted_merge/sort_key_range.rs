@@ -16,7 +16,7 @@ use arrow::{
 };
 use arrow_array::Array;
 use arrow_cast::pretty::pretty_format_batches;
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 
 /// A range in one arrow::record_batch::RecordBatch with same sorted primary key
 /// The minimum unit at SortedStreamMerger

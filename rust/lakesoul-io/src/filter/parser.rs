@@ -9,20 +9,20 @@ use anyhow::anyhow;
 use arrow_schema::{DataType, Field, Fields, SchemaRef};
 use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::logical_expr::Expr;
-use datafusion::prelude::{col, SessionContext};
+use datafusion::prelude::{SessionContext, col};
 use datafusion::scalar::ScalarValue;
 use datafusion_common::DataFusionError::{External, Internal};
 use datafusion_common::{Column, DFSchema, Result};
 use datafusion_substrait::extensions::Extensions;
-use datafusion_substrait::logical_plan::consumer::{from_substrait_rex, DefaultSubstraitConsumer};
+use datafusion_substrait::logical_plan::consumer::{DefaultSubstraitConsumer, from_substrait_rex};
 use datafusion_substrait::substrait::proto::expression::field_reference::ReferenceType;
 use datafusion_substrait::substrait::proto::expression::literal::LiteralType;
 use datafusion_substrait::substrait::proto::expression::reference_segment::StructField;
-use datafusion_substrait::substrait::proto::expression::{reference_segment, Literal, RexType};
+use datafusion_substrait::substrait::proto::expression::{Literal, RexType, reference_segment};
 use datafusion_substrait::substrait::proto::function_argument::ArgType;
 use datafusion_substrait::substrait::proto::plan_rel::RelType::Root;
-use datafusion_substrait::substrait::proto::r#type::Nullability;
 use datafusion_substrait::substrait::proto::rel::RelType::Read;
+use datafusion_substrait::substrait::proto::r#type::Nullability;
 use datafusion_substrait::substrait::proto::{Expression, FunctionArgument, Plan, PlanRel, Rel, RelRoot};
 #[allow(deprecated)]
 use datafusion_substrait::variation_const::TIMESTAMP_MICRO_TYPE_VARIATION_REF;
@@ -189,11 +189,7 @@ impl Parser {
                     .map(|s| s.parse::<i16>())
                     .map(|s| {
                         let s = s.map_err(|e| External(Box::new(e)))?;
-                        if s < 0 {
-                            Ok((s + 256) as u8)
-                        } else {
-                            Ok(s as u8)
-                        }
+                        if s < 0 { Ok((s + 256) as u8) } else { Ok(s as u8) }
                     })
                     .collect::<Result<Vec<_>>>()?,
             )
@@ -268,7 +264,7 @@ impl Parser {
                     })),
             }) = plan.relations.get(0).cloned()
             {
-                if let Some(ref mut expression) = &mut read_rel.filter {
+                if let Some(expression) = &mut read_rel.filter {
                     let extensions = Extensions::try_from(&plan.extensions)?;
                     if let Some(RexType::ScalarFunction(f)) = &mut expression.rex_type {
                         Self::modify_substrait_argument(&mut f.arguments, df_schema);

@@ -18,7 +18,7 @@ mod upsert_with_metadata_tests {
     use crate::lakesoul_table::LakeSoulTable;
     use crate::test::assert_batches_eq;
 
-    use lakesoul_io::lakesoul_io_config::{create_session_context, LakeSoulIOConfigBuilder};
+    use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfigBuilder, create_session_context};
 
     use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 

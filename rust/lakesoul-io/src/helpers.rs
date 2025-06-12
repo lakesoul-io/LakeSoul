@@ -21,16 +21,16 @@ use datafusion::{
     },
     execution::context::{SessionContext, SessionState},
     logical_expr::col,
-    physical_expr::{create_physical_expr, PhysicalSortExpr},
+    physical_expr::{PhysicalSortExpr, create_physical_expr},
     physical_plan::PhysicalExpr,
     physical_planner::create_physical_sort_expr,
 };
 use datafusion_common::DataFusionError::{External, Internal};
-use datafusion_common::{cast::as_primitive_array, DFSchema, DataFusionError, Result, ScalarValue};
+use datafusion_common::{DFSchema, DataFusionError, Result, ScalarValue, cast::as_primitive_array};
 use datafusion_substrait::substrait::proto::Plan;
 use futures::{StreamExt, TryStreamExt};
-use object_store::path::Path;
 use object_store::ObjectMeta;
+use object_store::path::Path;
 use parquet::format::FileMetaData;
 use proto::proto::entity::JniWrapper;
 use rand::distributions::DistString;
@@ -877,7 +877,7 @@ pub fn collect_column_equalities(expr: &datafusion::logical_expr::Expr, equaliti
 ///
 /// Returns the hash value as a u32
 pub fn compute_scalar_hash(scalar: &ScalarValue) -> u32 {
-    use crate::hash_utils::{HashValue, HASH_SEED};
+    use crate::hash_utils::{HASH_SEED, HashValue};
 
     match scalar {
         ScalarValue::Int8(Some(v)) => HashValue::hash_one(v, HASH_SEED) as u32,
