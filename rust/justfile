@@ -5,7 +5,6 @@ copy-to-java:
 
 log_level := "info"
 
-
 flight-sql level=log_level:
     RUST_LOG=lakesoul_flight={{level}},lakesoul_metadata={{level}} JWT_AUTH_ENABLED=false RBAC_AUTH_ENABLED=true cargo run --bin flight_sql_server
     

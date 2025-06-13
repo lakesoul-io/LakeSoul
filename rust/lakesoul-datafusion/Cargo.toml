@@ -42,8 +42,9 @@ url = { workspace = true }
 tonic = { workspace = true }
 serde-aux = "4.6.0"
 rustyline = "15"
-tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = "0.2"
 clap = { workspace = true }
 
 
