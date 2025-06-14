@@ -3491,6 +3491,7 @@ dependencies = [
  "clap 4.5.29",
  "ctor",
  "datafusion",
+ "datafusion-common",
  "datafusion-expr",
  "futures",
  "json",

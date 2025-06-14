@@ -2,21 +2,43 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use datafusion::datasource::source::DataSource;
+use std::{any::Any, sync::Arc};
 
-#[derive(Debug)]
-pub struct TcphSource {
-    parts: Vec<usize>,
-    num_parts: usize,
+use arrow::datatypes::{Schema, SchemaRef};
+use datafusion::{
+    catalog::{Session, TableProvider, memory::DataSourceExec},
+    datasource::source::DataSource,
+    execution::SendableRecordBatchStream,
+    physical_expr::EquivalenceProperties,
+    physical_plan::{ExecutionPlan, stream::RecordBatchStreamAdapter},
+};
+use datafusion_common::Statistics;
+use datafusion_expr::{Expr, TableType};
+use futures::StreamExt;
+use tpchgen::generators::LineItemGenerator;
+use tpchgen_arrow::LineItemArrow;
+
+use super::TpchTableKind;
+#[derive(Debug, Clone)]
+pub(super) struct TpchSource {
+    pub scale_factor: f64,
+    pub num_parts: usize,
+    pub kind: TpchTableKind,
 }
 
-impl DataSource for TcphSource {
+impl DataSource for TpchSource {
+    #[instrument(skip(self, _context))]
     fn open(
         &self,
         partition: usize,
-        context: std::sync::Arc<datafusion::execution::TaskContext>,
+        _context: std::sync::Arc<datafusion::execution::TaskContext>,
     ) -> datafusion_common::Result<datafusion::execution::SendableRecordBatchStream> {
-        todo!()
+        let g = self
+            .kind
+            .generator(self.scale_factor, partition, self.num_parts);
+        let stream = futures::stream::iter(g).map(|rb| Ok(rb));
+        let schema = self.kind.schema();
+        Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -25,33 +47,33 @@ impl DataSource for TcphSource {
 
     fn fmt_as(
         &self,
-        t: datafusion::physical_plan::DisplayFormatType,
+        _t: datafusion::physical_plan::DisplayFormatType,
         f: &mut std::fmt::Formatter,
     ) -> std::fmt::Result {
-        todo!()
+        write!(f, "tpch - Souce")
     }
 
     fn output_partitioning(&self) -> datafusion::physical_plan::Partitioning {
-        todo!()
+        datafusion::physical_plan::Partitioning::RoundRobinBatch(self.num_parts)
     }
 
     fn eq_properties(&self) -> datafusion::physical_expr::EquivalenceProperties {
-        todo!()
+        EquivalenceProperties::new(self.kind.schema())
     }
 
     fn statistics(&self) -> datafusion_common::Result<datafusion::common::Statistics> {
-        todo!()
+        Ok(Statistics::new_unknown(&self.kind.schema()))
     }
 
     fn with_fetch(
         &self,
         _limit: Option<usize>,
     ) -> Option<std::sync::Arc<dyn DataSource>> {
-        todo!()
+        None
     }
 
     fn fetch(&self) -> Option<usize> {
-        todo!()
+        None
     }
 
     fn try_swapping_with_projection(
@@ -60,7 +82,7 @@ impl DataSource for TcphSource {
     ) -> datafusion_common::Result<
         Option<std::sync::Arc<dyn datafusion::physical_plan::ExecutionPlan>>,
     > {
-        todo!()
+        Ok(None)
     }
 
     fn repartitioned(
@@ -74,5 +96,31 @@ impl DataSource for TcphSource {
 
     fn metrics(&self) -> datafusion::physical_plan::metrics::ExecutionPlanMetricsSet {
         datafusion::physical_plan::metrics::ExecutionPlanMetricsSet::new()
+    }
+}
+
+#[async_trait::async_trait]
+impl TableProvider for TpchSource {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn schema(&self) -> SchemaRef {
+        self.kind.schema()
+    }
+
+    fn table_type(&self) -> TableType {
+        TableType::View
+    }
+
+    async fn scan(
+        &self,
+        _state: &dyn Session,
+        _projection: Option<&Vec<usize>>,
+        _filters: &[Expr],
+        _limit: Option<usize>,
+    ) -> datafusion_common::Result<Arc<dyn ExecutionPlan>> {
+        let exec = DataSourceExec::from_data_source(self.clone());
+        Ok(exec)
     }
 }
