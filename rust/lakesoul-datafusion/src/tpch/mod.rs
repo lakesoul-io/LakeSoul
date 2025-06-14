@@ -1,18 +1,32 @@
 // SPDX-FileCopyrightText: LakeSoul Contributors
-// 
+//
 // SPDX-License-Identifier: Apache-2.0
 
+use arrow::datatypes::{DataType, Field, SchemaRef};
 use datafusion::arrow::compute::concat_batches;
 use datafusion::arrow::datatypes::Schema;
-use datafusion::catalog::{TableFunctionImpl, TableProvider};
+use datafusion::catalog::{Session, TableFunctionImpl, TableProvider};
 use datafusion::common::{Result, ScalarValue, plan_err};
 use datafusion::datasource::memory::MemTable;
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::TableReference;
-use datafusion_expr::Expr;
-use std::fmt::Debug;
-use std::sync::Arc;
-use tpchgen_arrow::RecordBatchIterator;
+use datafusion_expr::{Expr, TableType};
+use std::any::Any;
+use std::fmt::{Debug, Display};
+use std::sync::{Arc, LazyLock};
+use tpchgen::generators::{
+    CustomerGenerator, LineItemGenerator, LineItemGeneratorIterator, OrderGenerator,
+    PartGenerator, PartSuppGenerator, SupplierGenerator,
+};
+use tpchgen_arrow::{LineItemArrow, RecordBatchIterator};
+
+use crate::tpch::table::TpchTable;
+
+mod stream;
+mod table;
+
+mod exec;
 
 /// Defines a table function provider and its implementation using [`tpchgen`]
 /// as the data source.
@@ -92,14 +106,14 @@ macro_rules! define_tpch_udtf_provider {
                 // Check if we have more arguments `part` and `num_parts` respectively
                 // and if they are i64 literals.
                 if args.len() > 1 {
-                    // Check if the second argument and third arguments are i64 literals and
+                    // Check if the second argument and third arguments are i32 literals and
                     // greater than 0.
                     let Some(Expr::Literal(ScalarValue::Int64(Some(part)))) = args.get(1) else {
                         return plan_err!("Second argument must be an i64 literal.");
                     };
                     let Some(Expr::Literal(ScalarValue::Int64(Some(num_parts)))) = args.get(2)
                     else {
-                        return plan_err!("Third argument must be an i64 literal.");
+                        return plan_err!("Third argument must be an i32 literal.");
                     };
                     if *part < 0 || *num_parts < 0 {
                         return plan_err!("Second and third arguments must be greater than 0.");
@@ -154,12 +168,12 @@ define_tpch_udtf_provider!(
     tpchgen_arrow::OrderArrow
 );
 
-define_tpch_udtf_provider!(
-    TpchLineitem,
-    tpch_lineitem,
-    tpchgen::generators::LineItemGenerator,
-    tpchgen_arrow::LineItemArrow
-);
+// define_tpch_udtf_provider!(
+//     TpchLineitem,
+//     tpch_lineitem,
+//     tpchgen::generators::LineItemGenerator,
+//     tpchgen_arrow::LineItemArrow
+// );
 
 define_tpch_udtf_provider!(
     TpchPart,
@@ -210,7 +224,8 @@ struct TpchTables {
 
 impl TpchTables {
     const TPCH_TABLE_NAMES: &[&str] = &[
-        "nation", "customer", "orders", "lineitem", "part", "partsupp", "supplier", "region",
+        "nation", "customer", "orders", "lineitem", "part", "partsupp", "supplier",
+        "region",
     ];
     /// Creates a new TPCH table provider.
     pub fn new(ctx: SessionContext) -> Self {
@@ -224,8 +239,9 @@ impl TpchTables {
         table_name: &str,
         scale_factor: f64,
     ) -> Result<()> {
-        let table = provider
-            .call(vec![Expr::Literal(ScalarValue::Float64(Some(scale_factor)))].as_slice())?;
+        let table = provider.call(
+            vec![Expr::Literal(ScalarValue::Float64(Some(scale_factor)))].as_slice(),
+        )?;
         self.ctx
             .register_table(TableReference::bare(table_name), table)?;
 
@@ -236,28 +252,44 @@ impl TpchTables {
     fn build_and_register_all_tables(&self, scale_factor: f64) -> Result<()> {
         for &suffix in Self::TPCH_TABLE_NAMES {
             match suffix {
-                "nation" => {
-                    self.build_and_register_tpch_table(TpchNation {}, suffix, scale_factor)?
+                "nation" => self.build_and_register_tpch_table(
+                    TpchNation {},
+                    suffix,
+                    scale_factor,
+                )?,
+                "customer" => self.build_and_register_tpch_table(
+                    TpchCustomer {},
+                    suffix,
+                    scale_factor,
+                )?,
+                "orders" => self.build_and_register_tpch_table(
+                    TpchOrders {},
+                    suffix,
+                    scale_factor,
+                )?,
+                "lineitem" => self.build_and_register_tpch_table(
+                    TpchLineitem {},
+                    suffix,
+                    scale_factor,
+                )?,
+                "part" => {
+                    self.build_and_register_tpch_table(TpchPart {}, suffix, scale_factor)?
                 }
-                "customer" => {
-                    self.build_and_register_tpch_table(TpchCustomer {}, suffix, scale_factor)?
-                }
-                "orders" => {
-                    self.build_and_register_tpch_table(TpchOrders {}, suffix, scale_factor)?
-                }
-                "lineitem" => {
-                    self.build_and_register_tpch_table(TpchLineitem {}, suffix, scale_factor)?
-                }
-                "part" => self.build_and_register_tpch_table(TpchPart {}, suffix, scale_factor)?,
-                "partsupp" => {
-                    self.build_and_register_tpch_table(TpchPartsupp {}, suffix, scale_factor)?
-                }
-                "supplier" => {
-                    self.build_and_register_tpch_table(TpchSupplier {}, suffix, scale_factor)?
-                }
-                "region" => {
-                    self.build_and_register_tpch_table(TpchRegion {}, suffix, scale_factor)?
-                }
+                "partsupp" => self.build_and_register_tpch_table(
+                    TpchPartsupp {},
+                    suffix,
+                    scale_factor,
+                )?,
+                "supplier" => self.build_and_register_tpch_table(
+                    TpchSupplier {},
+                    suffix,
+                    scale_factor,
+                )?,
+                "region" => self.build_and_register_tpch_table(
+                    TpchRegion {},
+                    suffix,
+                    scale_factor,
+                )?,
                 _ => unreachable!("Unknown TPCH table suffix: {}", suffix), // Should not happen
             }
         }
@@ -303,8 +335,8 @@ impl TableFunctionImpl for TpchTables {
         let batch = datafusion::arrow::record_batch::RecordBatch::try_new(
             Arc::new(schema.clone()),
             vec![Arc::new(datafusion::arrow::array::StringArray::from(vec![
-                "nation", "customer", "orders", "lineitem", "part", "partsupp", "supplier",
-                "region",
+                "nation", "customer", "orders", "lineitem", "part", "partsupp",
+                "supplier", "region",
             ]))],
         )?;
         let mem_table = MemTable::try_new(Arc::new(schema), vec![vec![batch]])?;
@@ -317,6 +349,159 @@ impl TableFunctionImpl for TpchTables {
 pub fn register_tpch_udtf(ctx: &SessionContext) {
     let tpch_udtf = TpchTables::new(ctx.clone());
     ctx.register_udtf("tpch", Arc::new(tpch_udtf));
+}
+
+#[derive(Debug)]
+pub struct TpchLineitem {}
+
+impl TpchLineitem {
+    /// Returns the name of the table function.
+    pub fn name() -> &'static str {
+        "tpch_lineitem"
+    }
+
+    /// Returns the name of the table generated by the table function
+    /// when used in a SQL query.
+    pub fn table_name() -> &'static str {
+        "tpch_lineitem".strip_prefix("tpch_").unwrap_or_else(|| {
+            panic!(
+                "Table function name {} does not start with tpch_",
+                "tpch_lineitem"
+            )
+        })
+    }
+}
+
+impl TableFunctionImpl for TpchLineitem {
+    /// Implementation of the UDTF invocation for TPCH table generation
+    /// using the [`tpchgen`] library.
+    ///
+    /// The first argument is a float literal that specifies the scale factor.
+    /// The second argument is the part to generate.
+    /// The third argument is the number of parts to generate.
+    ///
+    /// The second and third argument are optional and will default to 1
+    /// for both values which tells the generator to generate all parts.
+    fn call(&self, args: &[Expr]) -> Result<Arc<dyn TableProvider>> {
+        let Some(Expr::Literal(ScalarValue::Float64(Some(scale_factor)))) = args.get(0)
+        else {
+            return plan_err!("First argument must be a float literal.");
+        };
+
+        // Default values for part and num_parts.
+        let mut part = 1;
+        let mut num_parts = 1;
+
+        // Check if we have more arguments `part` and `num_parts` respectively
+        // and if they are i64 literals.
+        if args.len() > 1 {
+            // Check if the second argument and third arguments are i64 literals and
+            // greater than 0.
+            let Some(Expr::Literal(ScalarValue::Int64(Some(p)))) = args.get(1) else {
+                return plan_err!("Second argument must be an i32 literal.");
+            };
+            let Some(Expr::Literal(ScalarValue::Int64(Some(n)))) = args.get(2) else {
+                return plan_err!("Third argument must be an i32 literal.");
+            };
+            if *p < 0 || *n < 0 {
+                return plan_err!("Second and third arguments must be greater than 0.");
+            }
+            part = (*p).try_into().unwrap();
+            num_parts = (*n).try_into().unwrap();
+        }
+
+        println!("part: {part}, num_parts: {num_parts}");
+
+        let (num_parts, parts) = parallel_target_part_count(
+            TpchTableKind::Lineitem,
+            *scale_factor,
+            part,
+            num_parts,
+        );
+
+        // Build the memtable plan.
+        let provider = TpchTable {
+            schema: LINEITEM_SCHEMA.clone(),
+            parts,
+            num_parts,
+            scale_factor: *scale_factor,
+        };
+
+        Ok(Arc::new(provider))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TpchTableKind {
+    Nation,
+    Region,
+    Part,
+    Supplier,
+    Partsupp,
+    Customer,
+    Orders,
+    Lineitem,
+}
+
+/// Returns a list of "parts" (data generator chunks, not TPCH parts) to create
+///
+/// Tuple returned is `(num_parts, part_list)`:
+/// - num_parts is the total number of parts to generate
+/// - part_list is the list of parts to generate (1 based)
+fn parallel_target_part_count(
+    table: TpchTableKind,
+    scale_factor: f64,
+    part: i32,
+    num_parts: i32,
+) -> (i32, Vec<i32>) {
+    // parallel generation disabled if user specifies a part explicitly
+    if part != 1 || num_parts != 1 {
+        return (num_parts, vec![part]);
+    }
+
+    // Note use part=1, part_count=1 to calculate the total row count
+    // for the table
+    //
+    // Avg row size is an estimate of the average row size in bytes from the first 100 rows
+    // of the table in tbl format
+    let (avg_row_size_bytes, row_count) = match table {
+        TpchTableKind::Nation => (88, 1),
+        TpchTableKind::Region => (77, 1),
+        TpchTableKind::Part => {
+            (115, PartGenerator::calculate_row_count(scale_factor, 1, 1))
+        }
+        TpchTableKind::Supplier => (
+            140,
+            SupplierGenerator::calculate_row_count(scale_factor, 1, 1),
+        ),
+        TpchTableKind::Partsupp => (
+            148,
+            PartSuppGenerator::calculate_row_count(scale_factor, 1, 1),
+        ),
+        TpchTableKind::Customer => (
+            160,
+            CustomerGenerator::calculate_row_count(scale_factor, 1, 1),
+        ),
+        TpchTableKind::Orders => {
+            (114, OrderGenerator::calculate_row_count(scale_factor, 1, 1))
+        }
+        TpchTableKind::Lineitem => {
+            // there are on average 4 line items per order.
+            // For example, in SF=10,
+            // * orders has 15,000,000 rows
+            // * lineitem has around 60,000,000 rows
+            let row_count = 4 * OrderGenerator::calculate_row_count(scale_factor, 1, 1);
+            (128, row_count)
+        }
+    };
+    // target chunks of about 16MB (use 15MB to ensure we don't exceed the target size)
+    let target_chunk_size_bytes = 15 * 1024 * 1024;
+    let num_parts = ((row_count * avg_row_size_bytes) / target_chunk_size_bytes) + 1;
+
+    // convert to i32
+    let num_parts = num_parts.try_into().unwrap();
+    // generating all the parts
+    (num_parts, (1..=num_parts).collect())
 }
 
 #[cfg(test)]
@@ -480,3 +665,30 @@ mod tests {
         Ok(())
     }
 }
+
+/// Schema for the LineItem table
+static LINEITEM_SCHEMA: LazyLock<SchemaRef> = LazyLock::new(make_lineitem_schema);
+
+fn make_lineitem_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("l_orderkey", DataType::Int64, false),
+        Field::new("l_partkey", DataType::Int64, false),
+        Field::new("l_suppkey", DataType::Int64, false),
+        Field::new("l_linenumber", DataType::Int32, false),
+        Field::new("l_quantity", DataType::Decimal128(15, 2), false),
+        Field::new("l_extendedprice", DataType::Decimal128(15, 2), false),
+        Field::new("l_discount", DataType::Decimal128(15, 2), false),
+        Field::new("l_tax", DataType::Decimal128(15, 2), false),
+        Field::new("l_returnflag", DataType::Utf8View, false),
+        Field::new("l_linestatus", DataType::Utf8View, false),
+        Field::new("l_shipdate", DataType::Date32, false),
+        Field::new("l_commitdate", DataType::Date32, false),
+        Field::new("l_receiptdate", DataType::Date32, false),
+        Field::new("l_shipinstruct", DataType::Utf8View, false),
+        Field::new("l_shipmode", DataType::Utf8View, false),
+        Field::new("l_comment", DataType::Utf8View, false),
+    ]))
+}
+
+
+mod source;
