@@ -3521,6 +3521,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "lakesoul-datafusion-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap 4.5.29",
+ "datafusion",
+ "lakesoul-datafusion",
+ "tokio",
+ "tpchgen",
+ "tpchgen-arrow",
+]
+
+[[package]]
 name = "lakesoul-flight"
 version = "0.1.0"
 dependencies = [

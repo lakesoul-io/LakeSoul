@@ -4,19 +4,16 @@
 
 use std::{any::Any, sync::Arc};
 
-use arrow::datatypes::{Schema, SchemaRef};
+use arrow::datatypes::SchemaRef;
 use datafusion::{
-    catalog::{Session, TableProvider, memory::DataSourceExec},
+    catalog::{memory::DataSourceExec, Session, TableProvider},
     datasource::source::DataSource,
-    execution::SendableRecordBatchStream,
     physical_expr::EquivalenceProperties,
-    physical_plan::{ExecutionPlan, stream::RecordBatchStreamAdapter},
+    physical_plan::{stream::RecordBatchStreamAdapter, ExecutionPlan},
 };
 use datafusion_common::Statistics;
 use datafusion_expr::{Expr, TableType};
 use futures::StreamExt;
-use tpchgen::generators::LineItemGenerator;
-use tpchgen_arrow::LineItemArrow;
 
 use super::TpchTableKind;
 #[derive(Debug, Clone)]
@@ -33,6 +30,7 @@ impl DataSource for TpchSource {
         partition: usize,
         _context: std::sync::Arc<datafusion::execution::TaskContext>,
     ) -> datafusion_common::Result<datafusion::execution::SendableRecordBatchStream> {
+        println!("open TPCH SOURCE for partition #{}", partition);
         let g = self
             .kind
             .generator(self.scale_factor, partition, self.num_parts);
@@ -50,7 +48,16 @@ impl DataSource for TpchSource {
         _t: datafusion::physical_plan::DisplayFormatType,
         f: &mut std::fmt::Formatter,
     ) -> std::fmt::Result {
-        write!(f, "tpch - Souce")
+        write!(f, "tpch - Source")
+    }
+
+    fn repartitioned(
+        &self,
+        _target_partitions: usize,
+        _repartition_file_min_size: usize,
+        _output_ordering: Option<datafusion::physical_expr::LexOrdering>,
+    ) -> datafusion_common::Result<Option<std::sync::Arc<dyn DataSource>>> {
+        Ok(None)
     }
 
     fn output_partitioning(&self) -> datafusion::physical_plan::Partitioning {
@@ -76,6 +83,10 @@ impl DataSource for TpchSource {
         None
     }
 
+    fn metrics(&self) -> datafusion::physical_plan::metrics::ExecutionPlanMetricsSet {
+        datafusion::physical_plan::metrics::ExecutionPlanMetricsSet::new()
+    }
+
     fn try_swapping_with_projection(
         &self,
         _projection: &datafusion::physical_plan::projection::ProjectionExec,
@@ -83,19 +94,6 @@ impl DataSource for TpchSource {
         Option<std::sync::Arc<dyn datafusion::physical_plan::ExecutionPlan>>,
     > {
         Ok(None)
-    }
-
-    fn repartitioned(
-        &self,
-        _target_partitions: usize,
-        _repartition_file_min_size: usize,
-        _output_ordering: Option<datafusion::physical_expr::LexOrdering>,
-    ) -> datafusion_common::Result<Option<std::sync::Arc<dyn DataSource>>> {
-        Ok(None)
-    }
-
-    fn metrics(&self) -> datafusion::physical_plan::metrics::ExecutionPlanMetricsSet {
-        datafusion::physical_plan::metrics::ExecutionPlanMetricsSet::new()
     }
 }
 

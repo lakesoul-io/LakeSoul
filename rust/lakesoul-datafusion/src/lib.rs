@@ -7,7 +7,6 @@
 #![allow(dead_code)]
 #![allow(clippy::type_complexity)]
 // after finished. remove above attr
-extern crate core;
 #[macro_use]
 extern crate tracing;
 
@@ -31,7 +30,7 @@ pub mod planner;
 use lakesoul_io::lakesoul_io_config::{
     LakeSoulIOConfigBuilder, register_hdfs_object_store, register_s3_object_store,
 };
-use lakesoul_metadata::MetaDataClientRef;
+// use lakesoul_metadata::MetaDataClientRef;
 use object_store::local::LocalFileSystem;
 pub use planner::query_planner::LakeSoulQueryPlanner;
 use url::Url;
@@ -39,6 +38,8 @@ use url::Url;
 pub mod serialize;
 
 pub mod cli;
+
+pub use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 
 pub fn create_lakesoul_session_ctx(
     meta_client: MetaDataClientRef,

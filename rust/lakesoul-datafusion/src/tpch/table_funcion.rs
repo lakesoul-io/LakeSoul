@@ -1,21 +1,18 @@
-use arrow::datatypes::{DataType, Field, SchemaRef};
 use datafusion::arrow::compute::concat_batches;
 use datafusion::arrow::datatypes::Schema;
-use datafusion::catalog::{Session, TableFunctionImpl, TableProvider};
-use datafusion::common::{Result, ScalarValue, plan_err};
+use datafusion::catalog::{TableFunctionImpl, TableProvider};
+use datafusion::common::{plan_err, Result, ScalarValue};
 use datafusion::datasource::memory::MemTable;
-use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::TableReference;
-use datafusion_expr::{Expr, TableType};
-use std::any::Any;
-use std::fmt::{Debug, Display};
-use std::sync::{Arc, LazyLock};
+use datafusion_expr::Expr;
+use std::fmt::Debug;
+use std::sync::Arc;
 use tpchgen::generators::{
-    CustomerGenerator, LineItemGenerator, LineItemGeneratorIterator, OrderGenerator,
-    PartGenerator, PartSuppGenerator, SupplierGenerator,
+    CustomerGenerator, OrderGenerator, PartGenerator, PartSuppGenerator,
+    SupplierGenerator,
 };
-use tpchgen_arrow::{LineItemArrow, RecordBatchIterator};
+use tpchgen_arrow::RecordBatchIterator;
 
 use crate::tpch::TpchTableKind;
 
@@ -378,7 +375,7 @@ impl TableFunctionImpl for TpchLineitem {
         };
 
         // Default values for part and num_parts.
-        let mut part = 1;
+        // let mut part = 1;
         let mut num_parts = 1;
 
         // Check if we have more arguments `part` and `num_parts` respectively
@@ -386,20 +383,23 @@ impl TableFunctionImpl for TpchLineitem {
         if args.len() > 1 {
             // Check if the second argument and third arguments are i64 literals and
             // greater than 0.
-            let Some(Expr::Literal(ScalarValue::Int64(Some(p)))) = args.get(1) else {
+            let Some(Expr::Literal(ScalarValue::Int64(Some(n)))) = args.get(1) else {
                 return plan_err!("Second argument must be an i32 literal.");
             };
-            let Some(Expr::Literal(ScalarValue::Int64(Some(n)))) = args.get(2) else {
-                return plan_err!("Third argument must be an i32 literal.");
-            };
-            if *p < 0 || *n < 0 {
-                return plan_err!("Second and third arguments must be greater than 0.");
-            }
-            part = (*p).try_into().unwrap();
+            // let Some(Expr::Literal(ScalarValue::Int64(Some(p)))) = args.get(1) else {
+            //     return plan_err!("Second argument must be an i32 literal.");
+            // };
+            // let Some(Expr::Literal(ScalarValue::Int64(Some(n)))) = args.get(2) else {
+            //     return plan_err!("Third argument must be an i32 literal.");
+            // };
+            // if *p < 0 || *n < 0 {
+            //     return plan_err!("Second and third arguments must be greater than 0.");
+            // }
+            // part = (*p).try_into().unwrap();
             num_parts = (*n).try_into().unwrap();
         }
 
-        println!("part: {part}, num_parts: {num_parts}");
+        // println!("part: {part}, num_parts: {num_parts}");
 
         // let (num_parts, parts) = parallel_target_part_count(
         //     TpchTableKind::Lineitem,
@@ -458,7 +458,7 @@ fn parallel_target_part_count(
             140,
             SupplierGenerator::calculate_row_count(scale_factor, 1, 1),
         ),
-        TpchTableKind::Partsupp => (
+        TpchTableKind::PartSupp => (
             148,
             PartSuppGenerator::calculate_row_count(scale_factor, 1, 1),
         ),

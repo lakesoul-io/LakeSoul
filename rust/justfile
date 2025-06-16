@@ -27,4 +27,12 @@ s3_console level=log_level:
       --s3-secret-key "minioadmin1"
 
 console level=log_level:
-    RUST_LOG={{level}} cargo run --bin console 
+    RUST_LOG={{level}} cargo run --bin console
+
+
+clean-tpch:
+   rm -rf /tmp/lakesoul/tpch_data
+
+
+cli: clean-tpch
+    cargo run --bin lakesoul-datafusion-cli -- --file tpch.sql

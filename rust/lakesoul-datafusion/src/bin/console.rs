@@ -70,6 +70,7 @@ async fn exec_sql_and_output(ctx: &Arc<SessionContext>, sql: &str) -> anyhow::Re
     Ok(())
 }
 
+
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
     // init log

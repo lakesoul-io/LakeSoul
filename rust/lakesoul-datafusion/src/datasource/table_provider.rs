@@ -313,7 +313,7 @@ impl LakeSoulTableProvider {
                         })
                     } else {
                         Err(DataFusionError::Plan(
-                            // Return an error if schema of the input query does not match with the table schema.
+                            // Return an error if the schema of the input query does not match with the table schema.
                             format!("Expected single column references in output_ordering, got {}", expr),
                         ))
                     }

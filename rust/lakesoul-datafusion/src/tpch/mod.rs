@@ -2,24 +2,11 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use arrow::datatypes::{DataType, Field, SchemaRef};
-use datafusion::arrow::compute::concat_batches;
 use datafusion::arrow::datatypes::Schema;
-use datafusion::catalog::{Session, TableFunctionImpl, TableProvider};
-use datafusion::common::{Result, ScalarValue, plan_err};
-use datafusion::datasource::memory::MemTable;
-use datafusion::physical_plan::ExecutionPlan;
-use datafusion::prelude::SessionContext;
-use datafusion::sql::TableReference;
-use datafusion_expr::{Expr, TableType};
-use std::any::Any;
-use std::fmt::{Debug, Display};
-use std::sync::{Arc, LazyLock};
-use tpchgen::generators::{
-    CustomerGenerator, LineItemGenerator, LineItemGeneratorIterator, OrderGenerator,
-    PartGenerator, PartSuppGenerator, SupplierGenerator,
-};
-use tpchgen_arrow::{LineItemArrow, RecordBatchIterator};
+use std::fmt::Debug;
+use std::sync::Arc;
+use tpchgen::generators::LineItemGenerator;
+use tpchgen_arrow::LineItemArrow;
 
 use generator::TpchGenerator;
 // use crate::tpch::table::TpchTable;
@@ -46,7 +33,7 @@ enum TpchTableKind {
     Region,
     Part,
     Supplier,
-    Partsupp,
+    PartSupp,
     Customer,
     Orders,
 }
