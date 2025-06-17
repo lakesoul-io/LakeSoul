@@ -40,17 +40,17 @@ where
     #[serde(untagged)]
     enum StringOrNum {
         String(String),
-        Number(usize),
+        Number(isize),
     }
 
     let opt = Option::deserialize(deserializer)?;
     match opt {
         None => Ok(None),
         Some(StringOrNum::String(s)) => s
-            .parse::<usize>()
-            .map(Some)
+            .parse::<isize>()
+            .map(|x| Some(x.max(1) as usize))
             .map_err(serde::de::Error::custom),
-        Some(StringOrNum::Number(n)) => Ok(Some(n)),
+        Some(StringOrNum::Number(n)) => Ok(Some(n.max(1) as usize)),
     }
 }
 
