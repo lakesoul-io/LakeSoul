@@ -33,7 +33,7 @@ impl DataSource for TpchSource {
         let g = self
             .kind
             .generator(self.scale_factor, partition, self.num_parts);
-        let stream = futures::stream::iter(g).map(|rb| Ok(rb));
+        let stream = futures::stream::iter(g).map(Ok);
         let schema = self.kind.schema();
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
     }

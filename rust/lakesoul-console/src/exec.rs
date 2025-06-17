@@ -34,7 +34,7 @@ pub async fn exec_command(
             num_parts,
         } => {
             let mut all = vec![];
-            let all_targets = vec![
+            let all_targets = [
                 "part".to_string(),
                 "customer".to_string(),
                 "lineitem".to_string(),
@@ -151,7 +151,7 @@ async fn exec_and_print(
     sql: &str,
 ) -> anyhow::Result<()> {
     let now = Instant::now();
-    let stmt = ctx.state().sql_to_statement(&sql, "postgresql")?;
+    let stmt = ctx.state().sql_to_statement(sql, "postgresql")?;
     if let Some(u) = parse_use(stmt.clone()) {
         match u {
             Use::Object(name) => {
@@ -189,7 +189,7 @@ async fn exec_and_print(
             }
         }
         // use finished
-        return printer.print_batches(Arc::new(Schema::empty()), &vec![], now, 0);
+        return printer.print_batches(Arc::new(Schema::empty()), &[], now, 0);
     }
     let plan = ctx.state().statement_to_plan(stmt).await?;
     let df = ctx.execute_logical_plan(plan).await?;
