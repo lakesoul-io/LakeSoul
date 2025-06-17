@@ -24,13 +24,12 @@ pub(super) struct TpchSource {
 }
 
 impl DataSource for TpchSource {
-    #[instrument(skip(self, _context))]
     fn open(
         &self,
         partition: usize,
         _context: std::sync::Arc<datafusion::execution::TaskContext>,
     ) -> datafusion_common::Result<datafusion::execution::SendableRecordBatchStream> {
-        println!("open TPCH SOURCE for partition #{}", partition);
+        debug!("open TPCH SOURCE for partition #{}", partition);
         let g = self
             .kind
             .generator(self.scale_factor, partition, self.num_parts);

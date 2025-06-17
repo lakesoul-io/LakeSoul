@@ -3476,6 +3476,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "lakesoul-console"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap 4.5.29",
+ "datafusion",
+ "futures",
+ "lakesoul-datafusion",
+ "rustyline",
+ "tokio",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "lakesoul-datafusion"
 version = "0.1.0"
 dependencies = [
@@ -3503,7 +3519,6 @@ dependencies = [
  "proto",
  "rand 0.9.1",
  "rand_chacha 0.9.0",
- "rustyline",
  "serde",
  "serde-aux",
  "serde_json",
@@ -3514,23 +3529,9 @@ dependencies = [
  "tpchgen",
  "tpchgen-arrow",
  "tracing",
- "tracing-appender",
  "tracing-subscriber",
  "url",
  "uuid",
-]
-
-[[package]]
-name = "lakesoul-datafusion-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap 4.5.29",
- "datafusion",
- "lakesoul-datafusion",
- "tokio",
- "tpchgen",
- "tpchgen-arrow",
 ]
 
 [[package]]
@@ -4166,9 +4167,9 @@ dependencies = [
 
 [[package]]
 name = "nix"
-version = "0.29.0"
+version = "0.30.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46"
+checksum = "74523f3a35e05aba87a1d978330aef40f67b0304ac79c1c00b294c9830543db6"
 dependencies = [
  "bitflags 2.9.0",
  "cfg-if",
@@ -5689,9 +5690,9 @@ checksum = "955d28af4278de8121b7ebeb796b6a45735dc01436d898801014aced2773a3d6"
 
 [[package]]
 name = "rustyline"
-version = "15.0.0"
+version = "16.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ee1e066dc922e513bda599c6ccb5f3bb2b0ea5870a579448f2622993f0a9a2f"
+checksum = "62fd9ca5ebc709e8535e8ef7c658eb51457987e48c98ead2be482172accc408d"
 dependencies = [
  "bitflags 2.9.0",
  "cfg-if",
@@ -5701,7 +5702,7 @@ dependencies = [
  "libc",
  "log",
  "memchr",
- "nix 0.29.0",
+ "nix 0.30.1",
  "radix_trie",
  "unicode-segmentation",
  "unicode-width 0.2.0",

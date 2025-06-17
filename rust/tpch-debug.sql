@@ -5,9 +5,9 @@
 -- copy (SELECT * from tpch_lineitem(10.0,8)) to '/data/lakesoul/tpch_sf10/lineitem' STORED as CSV;
 
 --lineitem
-DROP TABLE IF EXISTS tpch_sf10.lineitem;
+DROP TABLE IF EXISTS tpch.lineitem;
 CREATE
-EXTERNAL TABLE  tpch_sf10.lineitem (
+EXTERNAL TABLE  tpch.lineitem (
     l_orderkey BIGINT NOT NULL,
     l_partkey BIGINT NOT NULL,
     l_suppkey BIGINT NOT NULL,
@@ -17,7 +17,7 @@ EXTERNAL TABLE  tpch_sf10.lineitem (
     l_discount DECIMAL(15,2) NOT NULL,
     l_tax DECIMAL(15,2) NOT NULL,
     l_returnflag STRING NOT NULL,
-    l_ilinestatus STRING NOT NULL,
+    l_linestatus STRING NOT NULL,
     l_shipdate DATE NOT NULL,
     l_commitdate DATE NOT NULL,
     l_receiptdate DATE NOT NULL,
@@ -26,7 +26,7 @@ EXTERNAL TABLE  tpch_sf10.lineitem (
     l_comment STRING NOT NULL,
 )
 STORED AS LAKESOUL
-LOCATION 'file:///data/lakesoul/tpch_sf10/lineitem';
-INSERT INTO tpch_sf10.lineitem
+LOCATION 'file:///tmp/lakesoul/tpch/lineitem';
+INSERT INTO tpch.lineitem
 SELECT *
-FROM tpch_lineitem(10.0,8);
+FROM tpch_lineitem(0.1,8);

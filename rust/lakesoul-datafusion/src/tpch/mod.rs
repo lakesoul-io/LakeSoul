@@ -17,6 +17,7 @@ use tpchgen_arrow::{
 mod schemas;
 mod source;
 mod sql;
+pub use sql::tpch_gen_sql;
 mod table_funcion;
 pub use table_funcion::register_tpch_udtfs;
 

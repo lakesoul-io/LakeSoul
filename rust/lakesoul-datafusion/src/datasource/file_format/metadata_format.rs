@@ -16,18 +16,18 @@ use std::sync::Arc;
 use arrow::datatypes::{DataType, Field, Schema, SchemaBuilder, SchemaRef};
 use datafusion::catalog::Session;
 use datafusion::common::parsers::CompressionTypeVariant;
-use datafusion::common::{project_schema, DFSchema, GetExt, Statistics};
+use datafusion::common::{DFSchema, GetExt, Statistics, project_schema};
 use datafusion::datasource::file_format::file_compression_type::FileCompressionType;
 use datafusion::datasource::file_format::parquet::ParquetFormatFactory;
 use datafusion::datasource::listing::ListingOptions;
+use datafusion::datasource::physical_plan::FileSource;
 #[allow(deprecated)]
 use datafusion::datasource::physical_plan::parquet::ParquetExecBuilder;
-use datafusion::datasource::physical_plan::FileSource;
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::physical_expr::{
-    create_physical_expr, EquivalenceProperties, LexOrdering, LexRequirement,
+    EquivalenceProperties, LexOrdering, LexRequirement, create_physical_expr,
 };
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::filter::FilterExec;
@@ -42,7 +42,7 @@ use datafusion::prelude::{ident, lit};
 use datafusion::sql::TableReference;
 use datafusion::{
     datasource::{
-        file_format::{parquet::ParquetFormat, FileFormat},
+        file_format::{FileFormat, parquet::ParquetFormat},
         physical_plan::{FileScanConfig, FileSinkConfig},
     },
     error::Result,

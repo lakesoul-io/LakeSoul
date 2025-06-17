@@ -1,5 +1,5 @@
 [package]
-name = "lakesoul-datafusion-cli"
+name = "lakesoul-console"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,7 +7,10 @@ edition = "2024"
 datafusion = { workspace = true }
 lakesoul-datafusion = { path = "../lakesoul-datafusion" }
 clap = { workspace = true }
-tpchgen = { git = "https://github.com/mag1c1an1/tpchgen-rs.git", rev = "5398e6d" }
-tpchgen-arrow = { git = "https://github.com/mag1c1an1/tpchgen-rs.git", rev = "5398e6d" }
 anyhow = { workspace = true }
 tokio = { workspace = true }
+rustyline = "16.0.0"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = "0.2"
+futures = "0.3"
