@@ -31,8 +31,8 @@ console level=log_level:
 
 
 clean-tpch:
-   rm -rf /tmp/lakesoul/tpch_data
+   rm -rf /data/lakesoul/tpch_sf10/*
 
 
 cli: clean-tpch
-    cargo run --bin lakesoul-datafusion-cli -- --file tpch.sql
+    cargo run --release --bin lakesoul-datafusion-cli -- --worker-threads 16 --file lakesoul-tpch.sql

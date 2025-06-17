@@ -103,3 +103,18 @@ fn make_supplier_schema() -> SchemaRef {
         Field::new("s_comment", DataType::Utf8View, false),
     ]))
 }
+
+/// Schema for the Customer
+pub static CUSTOMER_SCHEMA: LazyLock<SchemaRef> = LazyLock::new(make_customer_schema);
+fn make_customer_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("c_custkey", DataType::Int64, false),
+        Field::new("c_name", DataType::Utf8View, false),
+        Field::new("c_address", DataType::Utf8View, false),
+        Field::new("c_nationkey", DataType::Int64, false),
+        Field::new("c_phone", DataType::Utf8View, false),
+        Field::new("c_acctbal", DataType::Decimal128(15, 2), false),
+        Field::new("c_mktsegment", DataType::Utf8View, false),
+        Field::new("c_comment", DataType::Utf8View, false),
+    ]))
+}

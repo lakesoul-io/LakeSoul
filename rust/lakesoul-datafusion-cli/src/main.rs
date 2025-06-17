@@ -2,8 +2,9 @@ use std::{path::Path, process::ExitCode, sync::Arc};
 
 use clap::Parser;
 use lakesoul_datafusion::{
-    cli::CoreArgs, create_lakesoul_session_ctx, tpch::register_tpch_udtfs, MetaDataClient,
+    MetaDataClient, cli::CoreArgs, create_lakesoul_session_ctx, tpch::register_tpch_udtfs,
 };
+use tokio::time::Instant;
 
 #[derive(Parser)]
 struct Cli {
@@ -15,12 +16,12 @@ struct Cli {
         value_parser(parse_valid_file)
     )]
     file: Vec<String>,
-
     #[command(flatten)]
     pub core: CoreArgs,
 }
 
 mod exec;
+mod print;
 
 fn parse_valid_file(dir: &str) -> Result<String, String> {
     if Path::new(dir).is_file() {
@@ -35,14 +36,20 @@ async fn main_inner(cli: Cli) -> anyhow::Result<()> {
     let ctx = create_lakesoul_session_ctx(meta_client, &cli.core).unwrap();
     register_tpch_udtfs(&ctx).unwrap();
     let files = cli.file;
+    let start = Instant::now();
     exec::exec_from_files(&ctx, files).await?;
+    let finish = Instant::now();
+    println!(
+        "Elapsed {}",
+        finish.checked_duration_since(start).unwrap().as_secs_f64()
+    );
     Ok(())
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let Ok(rt) = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(cli.core.worker_threads)
+        .worker_threads(61)
         .enable_all()
         .build()
     else {

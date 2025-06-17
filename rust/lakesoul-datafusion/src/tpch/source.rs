@@ -6,10 +6,10 @@ use std::{any::Any, sync::Arc};
 
 use arrow::datatypes::SchemaRef;
 use datafusion::{
-    catalog::{memory::DataSourceExec, Session, TableProvider},
+    catalog::{Session, TableProvider, memory::DataSourceExec},
     datasource::source::DataSource,
     physical_expr::EquivalenceProperties,
-    physical_plan::{stream::RecordBatchStreamAdapter, ExecutionPlan},
+    physical_plan::{ExecutionPlan, stream::RecordBatchStreamAdapter},
 };
 use datafusion_common::Statistics;
 use datafusion_expr::{Expr, TableType};

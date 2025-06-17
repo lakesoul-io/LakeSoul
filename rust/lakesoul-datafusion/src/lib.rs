@@ -7,6 +7,7 @@
 #![allow(dead_code)]
 #![allow(clippy::type_complexity)]
 // after finished. remove above attr
+extern crate core;
 #[macro_use]
 extern crate tracing;
 
@@ -48,7 +49,7 @@ pub fn create_lakesoul_session_ctx(
     let mut session_config = SessionConfig::from_env()?
         .with_information_schema(true)
         .with_create_default_catalog_and_schema(false)
-        .with_batch_size(128)
+        .with_batch_size(8192)
         .with_default_catalog_and_schema("LAKESOUL".to_string(), "default".to_string());
     session_config.options_mut().sql_parser.dialect = "postgresql".to_string();
     session_config
