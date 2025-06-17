@@ -10,10 +10,12 @@ import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.dao.TableInfoDao;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
+import com.facebook.presto.common.type.TypeManager;
 import com.facebook.presto.lakesoul.handle.LakeSoulTableColumnHandle;
 import com.facebook.presto.lakesoul.handle.LakeSoulTableHandle;
 import com.facebook.presto.lakesoul.handle.LakeSoulTableLayoutHandle;
 import com.facebook.presto.lakesoul.util.PrestoUtil;
+import com.facebook.presto.lakesoul.util.TypeConverter;
 import com.facebook.presto.spi.*;
 import com.facebook.presto.spi.connector.ConnectorMetadata;
 import com.google.common.collect.ImmutableList;
@@ -30,6 +32,12 @@ import static com.facebook.presto.lakesoul.util.PrestoUtil.CDC_CHANGE_COLUMN;
 public class LakeSoulMetadata implements ConnectorMetadata {
 
     private final DBManager dbManager = new DBManager();
+
+    private final TypeConverter typeConverter;
+
+    public LakeSoulMetadata(TypeManager typeManager) {
+        this.typeConverter = new TypeConverter(typeManager);
+    }
 
     @Override
     public List<String> listSchemaNames(ConnectorSession session) {
@@ -94,7 +102,7 @@ public class LakeSoulMetadata implements ConnectorMetadata {
             LakeSoulTableColumnHandle columnHandle =
                     new LakeSoulTableColumnHandle(tableHandle,
                             field.getName(),
-                            PrestoUtil.convertToPrestoType(field.getType()));
+                            typeConverter.getPrestoTypeFromArrowField(field));
             allColumns.put(field.getName(), columnHandle);
         }
         ConnectorTableLayout layout = new ConnectorTableLayout(
@@ -151,7 +159,7 @@ public class LakeSoulMetadata implements ConnectorMetadata {
 
             ColumnMetadata columnMetadata = ColumnMetadata.builder()
                     .setName(field.getName())
-                    .setType(PrestoUtil.convertToPrestoType(field.getType()))
+                    .setType(typeConverter.getPrestoTypeFromArrowField(field))
                     .setNullable(field.isNullable())
                     .setComment("")
                     .setExtraInfo("")
@@ -200,7 +208,7 @@ public class LakeSoulMetadata implements ConnectorMetadata {
             LakeSoulTableColumnHandle columnHandle =
                     new LakeSoulTableColumnHandle(table,
                             field.getName(),
-                            PrestoUtil.convertToPrestoType(field.getType()));
+                            typeConverter.getPrestoTypeFromArrowField(field));
             map.put(field.getName(), columnHandle);
         }
         return map;
@@ -232,7 +240,7 @@ public class LakeSoulMetadata implements ConnectorMetadata {
             if (field.getName().equals(handle.getColumnName())) {
                 return ColumnMetadata.builder()
                         .setName(field.getName())
-                        .setType(PrestoUtil.convertToPrestoType(field.getType()))
+                        .setType(typeConverter.getPrestoTypeFromArrowField(field))
                         .setNullable(field.isNullable())
                         .setComment("")
                         .setExtraInfo("")
