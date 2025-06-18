@@ -1,11 +1,12 @@
 use fs::File;
-use fs_err as fs;
+// use fs_err::os::unix::fs::FileExt;
+// use fs_err as fs;
 use std::borrow::Borrow;
 use std::boxed::Box;
 use std::collections::hash_map::RandomState;
 use std::error::Error as StdError;
 use std::ffi::{OsStr, OsString};
-use std::fmt;
+use std::{fmt, fs};
 use std::hash::BuildHasher;
 use std::io;
 use std::io::prelude::*;
@@ -287,6 +288,7 @@ impl LruDiskCache {
             Some(size) => size,
             None => fs::metadata(path)?.len(),
         };
+        debug!("[lakesoul::cache::lru_cache] Inserting file {:?} of size {:?}", rel_path.to_string_lossy(), size);
         self.add_file(AddFile::RelPath(rel_path), size).map_err(|e| {
             error!("Failed to insert file `{}`: {}", rel_path.to_string_lossy(), e);
             fs::remove_file(self.rel_to_abs_path(rel_path)).expect("Failed to remove file we just created!");
@@ -303,6 +305,7 @@ impl LruDiskCache {
     pub fn insert_bytes<K: AsRef<OsStr>>(&self, key: K, bytes: &[u8]) -> Result<()> {
         self.insert_by(key, Some(bytes.len() as u64), |path| {
             let mut f = File::create(path)?;
+            // f.lock();
             f.write_all(bytes)?;
             Ok(())
         })
@@ -339,15 +342,41 @@ impl LruDiskCache {
     /// Get an opened readable and seekable handle to the file at `key`, if one exists and can
     /// be opened. Updates the LRU state of the file if present.
     pub fn get<K: AsRef<OsStr>>(&self, key: K) -> Option<Vec<u8>> {
-        match self.get_file(key).map(|f| Box::new(f) as Box<dyn ReadSeek>) {
-            Some(mut f) => {
-                let mut buf = vec![];
-                f.by_ref().read_to_end(&mut buf).unwrap();
-                // After reading, seek back to the beginning, so that the file can be read again.
-                f.seek(io::SeekFrom::Start(0)).unwrap();
-                return Some(buf);
+        if let Some(file) = self.get_file(&key) {
+            let file_size = file.metadata().unwrap().len() as usize;
+            let mut buf = vec![0;file_size];
+            // debug!("[laesoul::cache::lru_cache] read file: {:?}, size: {}", key.try_into(), file_size);
+            // let _ = file.read_at(&mut buf, 0).unwrap();            
+            #[cfg(target_family = "windows")]
+            {
+                use std::os::windows::fs::FileExt;
+                match file.seek_read(&mut buf, 0) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        error!(
+                            "[laesoul::cache::lru_cache] Error reading file from cache: `{:?}`: {}, {:?}",
+                            key,
+                            e,
+                            e.kind()
+                        );
+                        return None;
+                    },
+                }
             }
-            None => None,
+            #[cfg(target_family = "unix")]
+            {
+                use std::os::unix::fs::FileExt;
+                match file.read_at(&mut buf, 0) {
+                    Ok(_) => Some(buf),
+                    Err(_) => {
+                            error!("[laesoul::cache::lru_cache] Error reading file from cache.");
+                            return None;
+                        },
+                }
+            }
+            
+        } else {
+            None
         }
     }
 
@@ -372,6 +401,7 @@ mod tests {
     use super::{Error, LruDiskCache};
     use std::io::{self, Write};
     use std::path::{Path, PathBuf};
+    use std::thread;
     use tempfile::TempDir;
 
     struct TestFixture {
@@ -457,6 +487,9 @@ mod tests {
         {
             let c = LruDiskCache::new(f.tmp(), 25).unwrap();
             c.insert_bytes("file1", &[1; 10]).unwrap();
+            c.insert_bytes("file1", &[1; 10]).unwrap(); 
+            c.insert_bytes("file1", &[1; 10]).unwrap();    
+            c.insert_bytes("file1", &[1; 10]).unwrap(); 
             c.insert_bytes("file2", &[2; 10]).unwrap();
             // Get the file to bump its LRU status.
             c.get("file1").unwrap();
@@ -606,9 +639,33 @@ mod tests {
         }
     }
 
-    // #[test]
-    // fn test_create_file_performance() {
-    //     let file_handle = File::open("file1").unwrap();
-    //     file_handle.metadata().unwrap().len();
-    // }
+    #[test]
+    fn test_multi_thread_get_lru() {
+        let f = TestFixture::new();
+        {
+            pub const M:usize = 1024*1024*4;
+            let c = std::sync::Arc::new(LruDiskCache::new(f.tmp(), 4*M as u64).unwrap());
+            // let c = LruDiskCache::new(f.tmp(), 25).unwrap();
+            c.insert_bytes("file1", &[1; 2*M]).unwrap();
+            c.get("file1").unwrap();
+            let mut handles = vec![];
+            for _ in 0..40 {
+                let c = c.clone();
+                let handle = thread::spawn(move || {
+                    assert_eq!(c.get("file1").unwrap(), vec![1u8; 2*M]);
+                });
+                handles.push(handle);
+            }
+
+            assert_eq!(c.get("file1").unwrap(), vec![1u8; 2*M]);
+            assert_eq!(c.get("file1").unwrap(), vec![1u8; 2*M]);
+            assert_eq!(c.get("file1").unwrap(), vec![1u8; 2*M]);
+            assert_eq!(c.get("file1").unwrap(), vec![1u8; 2*M]);
+            // Adding this third file should put the cache above the limit.
+            c.insert_bytes("file3", &[3; 10]).unwrap();
+            handles.into_iter().for_each(|handle| handle.join().unwrap());
+
+        }
+    }
+
 }

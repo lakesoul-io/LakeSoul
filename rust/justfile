@@ -12,17 +12,17 @@ flight-sql level=log_level:
 flight-sql-s3 level=log_level:
     RUST_LOG={{level}} cargo run --bin \
       flight_sql_server -- \
-      --warehouse-prefix "s3://lakesoul-bucket/flight-test" \
-      --endpoint  "http://localhost:9000" \
-      --s3-bucket  "lakesoul-test-bucket" \
-      --s3-access-key "minioadmin1" \
-      --s3-secret-key "minioadmin1"
+      --warehouse-prefix "s3://lakesoul-bucket/tpch-s10" \
+      --endpoint  "http://localhost:31099" \
+      --s3-bucket  "lakesoul-bucket" \
+      --s3-access-key "minioadmin" \
+      --s3-secret-key "minioadmin"
 
 
 console level=log_level:
     RUST_LOG={{level}} cargo run --bin console -- \
-      --warehouse-prefix "s3://lakesoul-bucket/flight-test" \
-      --endpoint  "http://localhost:9000" \
-      --s3-bucket  "lakesoul-test-bucket" \
-      --s3-access-key "minioadmin1" \
-      --s3-secret-key "minioadmin1"
+      --warehouse-prefix "s3://lakesoul-bucket/tpch-s10" \
+      --endpoint  "http://localhost:31099" \
+      --s3-bucket  "lakesoul-bucket" \
+      --s3-access-key "minioadmin" \
+      --s3-secret-key "minioadmin"
