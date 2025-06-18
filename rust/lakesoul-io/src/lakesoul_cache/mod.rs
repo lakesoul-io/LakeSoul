@@ -131,7 +131,10 @@ pub mod test {
         // }
         let lakesoul_cache_env_value = env::var("LAKESOUL_CACHE").unwrap();
         println!("LAKESOUL_CACHE: {:?}", lakesoul_cache_env_value);
-        let _lakesoul_cache_size_env_value = env::var("LAKESOUL_CACHE_SIZE").unwrap().parse::<usize>().unwrap();
+        let _lakesoul_cache_size_env_value = env::var("LAKESOUL_CACHE_SIZE")
+            .unwrap()
+            .parse::<usize>()
+            .unwrap();
         // println!("LAKESOUL_CACHE_SIZE: {}", lakesoul_cache_size_env_value);
     }
 }

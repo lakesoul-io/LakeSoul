@@ -265,4 +265,13 @@ public class LakeSoulRecordCursor implements RecordCursor {
             this.currentVCR = null;
         }
     }
+
+    @Override public String toString() {
+        return "LakeSoulRecordCursor{" +
+                "recordSet=" + recordSet +
+                ", curRecordIdx=" + curRecordIdx +
+                ", desiredTypes=" + desiredTypes +
+                ", partitions=" + partitions +
+                '}';
+    }
 }

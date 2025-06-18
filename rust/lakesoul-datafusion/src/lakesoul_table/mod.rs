@@ -6,19 +6,22 @@
 
 pub mod helpers;
 
-use std::{ops::Deref, sync::Arc};
+use std::sync::Arc;
 
+use crate::LakeSoulError;
 use crate::datasource::file_format::LakeSoulMetaDataParquetFormat;
 use crate::serialize::arrow_java::schema_from_metadata_str;
-use crate::LakeSoulError;
 use crate::{
-    catalog::{create_io_config_builder, parse_table_info_partitions, LakeSoulTableProperty},
+    catalog::{
+        LakeSoulTableProperty, create_io_config_builder, parse_table_info_partitions,
+    },
     error::Result,
     planner::query_planner::LakeSoulQueryPlanner,
 };
-use arrow::datatypes::{Schema, SchemaRef};
+use arrow::datatypes::SchemaRef;
 use arrow_cast::pretty::pretty_format_batches;
 use chrono::Utc;
+use datafusion::datasource::provider_as_source;
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::sql::TableReference;
 use datafusion::{
@@ -29,9 +32,11 @@ use datafusion::{
     logical_expr::LogicalPlanBuilder,
 };
 use helpers::case_fold_table_name;
-use lakesoul_io::async_writer::{AsyncBatchWriter, AsyncSendableMutableLakeSoulWriter, WriterFlushResult};
-use lakesoul_io::lakesoul_io_config::create_session_context_with_planner;
+use lakesoul_io::async_writer::{
+    AsyncBatchWriter, AsyncSendableMutableLakeSoulWriter, WriterFlushResult,
+};
 use lakesoul_io::lakesoul_io_config::OPTION_KEY_MEM_LIMIT;
+use lakesoul_io::lakesoul_io_config::create_session_context_with_planner;
 use lakesoul_metadata::{LakeSoulMetaDataError, MetaDataClient, MetaDataClientRef};
 use proto::proto::entity::{CommitOp, DataCommitInfo, DataFileOp, FileOp, TableInfo};
 use std::collections::HashMap;
@@ -61,10 +66,9 @@ impl LakeSoulTable {
         if let Some(table_info) = table_info {
             Self::try_new_with_client_and_table_info(client, table_info).await
         } else {
-            Err(LakeSoulError::MetaDataError(LakeSoulMetaDataError::NotFound(format!(
-                "Table '{}' not found",
-                path
-            ))))
+            Err(LakeSoulError::MetaDataError(
+                LakeSoulMetaDataError::NotFound(format!("Table '{}' not found", path)),
+            ))
         }
     }
 
@@ -72,7 +76,10 @@ impl LakeSoulTable {
         Self::for_namespace_and_name("default", table_name, None).await
     }
 
-    pub async fn for_table_reference(table_ref: &TableReference, client: Option<MetaDataClientRef>) -> Result<Self> {
+    pub async fn for_table_reference(
+        table_ref: &TableReference,
+        client: Option<MetaDataClientRef>,
+    ) -> Result<Self> {
         let schema = table_ref.schema().unwrap_or("default");
         let table_name = case_fold_table_name(table_ref.table());
         info!("for_table_reference: {:?}, {:?}", schema, table_name);
@@ -88,24 +95,33 @@ impl LakeSoulTable {
             Some(client) => client,
             None => Arc::new(MetaDataClient::from_env().await?),
         };
-        let table_info = client.get_table_info_by_table_name(table_name, namespace).await?;
+        let table_info = client
+            .get_table_info_by_table_name(table_name, namespace)
+            .await?;
         if let Some(table_info) = table_info {
             Self::try_new_with_client_and_table_info(client, table_info).await
         } else {
-            Err(LakeSoulError::MetaDataError(LakeSoulMetaDataError::NotFound(format!(
-                "Table '{}' in '{}' not found",
-                table_name, namespace
-            ))))
+            Err(LakeSoulError::MetaDataError(
+                LakeSoulMetaDataError::NotFound(format!(
+                    "Table '{}' in '{}' not found",
+                    table_name, namespace
+                )),
+            ))
         }
     }
 
     /// Create a new LakeSoulTable from a MetaDataClient and TableInfo.
-    pub async fn try_new_with_client_and_table_info(client: MetaDataClientRef, table_info: TableInfo) -> Result<Self> {
+    pub async fn try_new_with_client_and_table_info(
+        client: MetaDataClientRef,
+        table_info: TableInfo,
+    ) -> Result<Self> {
         let table_schema = schema_from_metadata_str(&table_info.table_schema);
 
         let table_name = table_info.table_name.clone();
-        let properties = serde_json::from_str::<LakeSoulTableProperty>(&table_info.properties)?;
-        let (range_partitions, hash_partitions) = parse_table_info_partitions(&table_info.partitions)?;
+        let properties =
+            serde_json::from_str::<LakeSoulTableProperty>(&table_info.properties)?;
+        let (range_partitions, hash_partitions) =
+            parse_table_info_partitions(&table_info.partitions)?;
 
         Ok(Self {
             client,
@@ -128,14 +144,18 @@ impl LakeSoulTable {
             Default::default(),
         )
         .await?;
-        let sess_ctx =
-            create_session_context_with_planner(&mut builder.clone().build(), Some(LakeSoulQueryPlanner::new_ref()))?;
+        let sess_ctx = create_session_context_with_planner(
+            &mut builder.clone().build(),
+            Some(LakeSoulQueryPlanner::new_ref()),
+        )?;
 
-        let schema: Schema = dataframe.schema().into();
         let logical_plan = LogicalPlanBuilder::insert_into(
             dataframe.into_unoptimized_plan(),
-            TableReference::partial(self.table_namespace().to_string(), self.table_name().to_string()),
-            &schema,
+            TableReference::partial(
+                self.table_namespace().to_string(),
+                self.table_name().to_string(),
+            ),
+            provider_as_source(self.as_provider().await?),
             InsertOp::Replace,
         )?
         .build()?;
@@ -156,15 +176,18 @@ impl LakeSoulTable {
             Default::default(),
         )
         .await?;
-        let sess_ctx =
-            create_session_context_with_planner(&mut builder.clone().build(), Some(LakeSoulQueryPlanner::new_ref()))?;
-
-        let schema = record_batch.schema();
+        let sess_ctx = create_session_context_with_planner(
+            &mut builder.clone().build(),
+            Some(LakeSoulQueryPlanner::new_ref()),
+        )?;
 
         let logical_plan = LogicalPlanBuilder::insert_into(
             sess_ctx.read_batch(record_batch)?.into_unoptimized_plan(),
-            TableReference::partial(self.table_namespace().to_string(), self.table_name().to_string()),
-            schema.deref(),
+            TableReference::partial(
+                self.table_namespace().to_string(),
+                self.table_name().to_string(),
+            ),
+            provider_as_source(self.as_provider().await?),
             InsertOp::Replace,
         )?
         .build()?;
@@ -175,7 +198,10 @@ impl LakeSoulTable {
             .collect()
             .await?;
 
-        info!("execute_upsert result: {}", pretty_format_batches(&results)?);
+        info!(
+            "execute_upsert result: {}",
+            pretty_format_batches(&results)?
+        );
         Ok(())
     }
 
@@ -190,7 +216,7 @@ impl LakeSoulTable {
             self.table_namespace(),
             HashMap::from([(
                 OPTION_KEY_MEM_LIMIT.to_string(),
-                format!("{}", 1u64 * 1024 * 1024 * 1024),
+                format!("{}", 1024 * 1024 * 1024),
             )]),
             object_store_options,
         )
@@ -225,7 +251,10 @@ impl LakeSoulTable {
         Ok(context.read_table(provider)?)
     }
 
-    pub async fn as_sink_provider(&self, session_state: &SessionState) -> Result<Arc<dyn TableProvider>> {
+    pub async fn as_sink_provider(
+        &self,
+        session_state: &SessionState,
+    ) -> Result<Arc<dyn TableProvider>> {
         let config_builder = create_io_config_builder(
             self.client(),
             Some(self.table_name()),
@@ -250,7 +279,8 @@ impl LakeSoulTable {
 
     pub async fn as_provider(&self) -> Result<Arc<dyn TableProvider>> {
         Ok(Arc::new(LakeSoulTableProvider {
-            listing_options: LakeSoulMetaDataParquetFormat::default_listing_options().await?,
+            listing_options: LakeSoulMetaDataParquetFormat::default_listing_options()
+                .await?,
             listing_table_paths: vec![],
             client: self.client(),
             table_info: self.table_info(),
@@ -298,43 +328,42 @@ impl LakeSoulTable {
         // 创建data commit info列表
         let mut data_commit_info_list = Vec::new();
 
-        let partition_desc_and_files_map = partitioned_files_from_writer_flush_result(&result)?;
+        let partition_desc_and_files_map =
+            partitioned_files_from_writer_flush_result(&result)?;
 
         // 处理分区文件映射
         for (partition_desc, file_list) in partition_desc_and_files_map {
             // 创建DataCommitInfo
-            let mut builder = DataCommitInfo::default();
-            builder.table_id = self.table_info.table_id.clone();
-            builder.partition_desc = partition_desc;
-            builder.commit_id = {
-                let (high, low) = Uuid::new_v4().as_u64_pair();
-                Some(proto::proto::entity::Uuid { high, low })
+            let data_commit_info = DataCommitInfo {
+                table_id: self.table_info.table_id.clone(),
+                partition_desc,
+                commit_id: {
+                    let (high, low) = Uuid::new_v4().as_u64_pair();
+                    Some(proto::proto::entity::Uuid { high, low })
+                },
+                file_ops: {
+                    file_list
+                        .into_iter()
+                        .map(|res| DataFileOp {
+                            file_op: FileOp::Add.into(),
+                            path: res.file_path,
+                            size: res.file_size,
+                            file_exist_cols: res.file_exist_cols,
+                        })
+                        .collect()
+                },
+                commit_op: CommitOp::AppendCommit.into(),
+                timestamp: Utc::now().timestamp_millis(),
+                committed: false,
+                domain: String::from("public"),
             };
-            builder.committed = false;
-            builder.commit_op = CommitOp::AppendCommit.into();
-            builder.timestamp = Utc::now().timestamp_millis();
-            builder.domain = "public".to_string();
-
-            // 添加文件操作
-            let mut file_ops = Vec::new();
-            for flush_result in file_list {
-                let mut file_op = DataFileOp::default();
-                file_op.file_op = FileOp::Add.into();
-                file_op.path = flush_result.file_path;
-                file_op.size = flush_result.file_size;
-                file_op.file_exist_cols = flush_result.file_exist_cols;
-
-                file_ops.push(file_op);
-            }
-            builder.file_ops = file_ops;
-
-            data_commit_info_list.push(builder);
+            data_commit_info_list.push(data_commit_info);
         }
 
         // 提交所有DataCommitInfo
         debug!("Committing DataCommitInfo={:?}", data_commit_info_list);
         for commit_info in data_commit_info_list {
-            let commit_id = commit_info.commit_id.clone();
+            let commit_id = commit_info.commit_id;
             self.client.commit_data_commit_info(commit_info).await?;
             debug!("Commit done for commit_id={:?}", commit_id);
         }

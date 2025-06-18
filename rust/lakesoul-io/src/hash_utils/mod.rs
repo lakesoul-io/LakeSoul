@@ -12,7 +12,9 @@ use arrow::datatypes::*;
 use arrow::{downcast_dictionary_array, downcast_primitive_array};
 use arrow_buffer::i256;
 
-use datafusion_common::cast::{as_boolean_array, as_generic_binary_array, as_primitive_array, as_string_array};
+use datafusion_common::cast::{
+    as_boolean_array, as_generic_binary_array, as_primitive_array, as_string_array,
+};
 use datafusion_common::{DataFusionError, Result};
 
 // use murmur3::murmur3_32;
@@ -50,7 +52,7 @@ pub trait HashValue {
     fn hash_one(&self, seed: u32) -> u32;
 }
 
-impl<'a, T: HashValue + ?Sized> HashValue for &'a T {
+impl<T: HashValue + ?Sized> HashValue for &T {
     fn hash_one(&self, seed: u32) -> u32 {
         T::hash_one(self, seed)
     }
@@ -419,7 +421,11 @@ mod tests {
 
     #[test]
     fn create_hashes_binary() -> Result<()> {
-        let byte_array = Arc::new(BinaryArray::from_vec(vec![&[4, 3, 2], &[4, 3, 2], &[1, 2, 3]]));
+        let byte_array = Arc::new(BinaryArray::from_vec(vec![
+            &[4, 3, 2],
+            &[4, 3, 2],
+            &[1, 2, 3],
+        ]));
 
         // let random_state = RandomState::with_seeds(0, 0, 0, 0);
         let hashes_buff = &mut vec![0; byte_array.len()];
@@ -436,7 +442,8 @@ mod tests {
     #[test]
     fn create_hashes_fixed_size_binary() -> Result<()> {
         let input_arg = vec![vec![1, 2], vec![5, 6], vec![5, 6]];
-        let fixed_size_binary_array = Arc::new(FixedSizeBinaryArray::try_from_iter(input_arg.into_iter()).unwrap());
+        let fixed_size_binary_array =
+            Arc::new(FixedSizeBinaryArray::try_from_iter(input_arg.into_iter()).unwrap());
 
         // let random_state = RandomState::with_seeds(0, 0, 0, 0);
         let hashes_buff = &mut vec![0; fixed_size_binary_array.len()];
@@ -456,7 +463,12 @@ mod tests {
         let strings = [Some("foo"), None, Some("bar"), Some("foo"), None];
 
         let string_array = Arc::new(strings.iter().cloned().collect::<StringArray>());
-        let dict_array = Arc::new(strings.iter().cloned().collect::<DictionaryArray<Int8Type>>());
+        let dict_array = Arc::new(
+            strings
+                .iter()
+                .cloned()
+                .collect::<DictionaryArray<Int8Type>>(),
+        );
 
         // let random_state = RandomState::with_seeds(0, 0, 0, 0);
 
@@ -509,7 +521,8 @@ mod tests {
             None,
             Some(vec![Some(0), Some(1), Some(2)]),
         ];
-        let list_array = Arc::new(ListArray::from_iter_primitive::<Int32Type, _, _>(data)) as ArrayRef;
+        let list_array =
+            Arc::new(ListArray::from_iter_primitive::<Int32Type, _, _>(data)) as ArrayRef;
         // let random_state = RandomState::with_seeds(0, 0, 0, 0);
         let mut hashes = vec![0; list_array.len()];
         create_hashes(
@@ -530,7 +543,12 @@ mod tests {
         let strings2 = [Some("blarg"), Some("blah"), None];
 
         let string_array = Arc::new(strings1.iter().cloned().collect::<StringArray>());
-        let dict_array = Arc::new(strings2.iter().cloned().collect::<DictionaryArray<Int32Type>>());
+        let dict_array = Arc::new(
+            strings2
+                .iter()
+                .cloned()
+                .collect::<DictionaryArray<Int32Type>>(),
+        );
 
         // let random_state = RandomState::with_seeds(0, 0, 0, 0);
 

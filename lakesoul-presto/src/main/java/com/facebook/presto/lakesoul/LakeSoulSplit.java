@@ -54,12 +54,12 @@ public class LakeSoulSplit implements ConnectorSplit {
     @Override
     @JsonProperty
     public Object getInfo() {
-        return null;
+        return getInfoMap();
     }
 
     @Override
     public Map<String, String> getInfoMap() {
-        return ConnectorSplit.super.getInfoMap();
+        return Collections.emptyMap();
     }
 
     @Override
@@ -75,5 +75,12 @@ public class LakeSoulSplit implements ConnectorSplit {
     @Override
     public SplitWeight getSplitWeight() {
         return ConnectorSplit.super.getSplitWeight();
+    }
+
+    @Override public String toString() {
+        return "LakeSoulSplit{" +
+                "layout=" + layout +
+                ", paths=" + paths +
+                '}';
     }
 }

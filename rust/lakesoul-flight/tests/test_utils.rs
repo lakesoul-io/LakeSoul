@@ -4,9 +4,9 @@
 
 use arrow_array::RecordBatch;
 use arrow_flight::{
-    error::FlightError,
-    sql::{client::FlightSqlServiceClient, CommandStatementIngest},
     FlightInfo,
+    error::FlightError,
+    sql::{CommandStatementIngest, client::FlightSqlServiceClient},
 };
 use assert_cmd::cargo::CommandCargoExt;
 use core::panic;
@@ -18,7 +18,7 @@ use std::{
     process::{Child, Command},
     task::{Context, Poll},
 };
-use tonic::{transport::Channel, Request};
+use tonic::{Request, transport::Channel};
 use tracing::info;
 
 const BIN_NAME: &str = "flight_sql_server";
@@ -28,9 +28,15 @@ pub struct TestServer {
 }
 
 impl TestServer {
-    pub fn new(args: &[&'static str], envs: Vec<(&'static str, &'static str)>) -> anyhow::Result<Self> {
+    pub fn new(
+        args: &[&'static str],
+        envs: Vec<(&'static str, &'static str)>,
+    ) -> anyhow::Result<Self> {
         info!("test server started");
-        let process = Command::cargo_bin(BIN_NAME)?.args(args).envs(envs).spawn()?;
+        let process = Command::cargo_bin(BIN_NAME)?
+            .args(args)
+            .envs(envs)
+            .spawn()?;
         //  wait 1 seconds
         std::thread::sleep(std::time::Duration::from_secs(1));
         Ok(Self { process })
@@ -66,7 +72,10 @@ impl Stream for RecordBatchStream {
     type Item = Result<RecordBatch, FlightError>;
 
     // actually, this stream is sync
-    fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
 
         if this.index < this.data.len() {
@@ -80,7 +89,10 @@ impl Stream for RecordBatchStream {
 }
 
 pub async fn build_client(claims: Option<Claims>) -> FlightSqlServiceClient<Channel> {
-    let channel = Channel::from_static("http://localhost:50051").connect().await.unwrap();
+    let channel = Channel::from_static("http://localhost:50051")
+        .connect()
+        .await
+        .unwrap();
     let mut client = FlightSqlServiceClient::new(channel.clone());
     if let Some(c) = claims {
         let mut token_server = TokenServerClient::new(channel);
@@ -135,7 +147,10 @@ pub fn random_batches() -> Vec<RecordBatch> {
     todo!()
 }
 
-pub async fn handle_sql(client: &mut FlightSqlServiceClient<Channel>, sql: &str) -> anyhow::Result<Vec<RecordBatch>> {
+pub async fn handle_sql(
+    client: &mut FlightSqlServiceClient<Channel>,
+    sql: &str,
+) -> anyhow::Result<Vec<RecordBatch>> {
     let info = client.execute(sql.to_string(), None).await?;
     Ok(handle_flight_info(&info, client).await?)
 }

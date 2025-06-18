@@ -20,7 +20,10 @@ pub struct LakeSoulTableProviderFactory {
 }
 
 impl LakeSoulTableProviderFactory {
-    pub fn new(metadata_client: MetaDataClientRef, warehouse_prefix: Option<String>) -> Self {
+    pub fn new(
+        metadata_client: MetaDataClientRef,
+        warehouse_prefix: Option<String>,
+    ) -> Self {
         Self {
             metadata_client,
             warehouse_prefix,
@@ -51,9 +54,13 @@ impl TableProviderFactory for LakeSoulTableProviderFactory {
             cmd.location = format!("{}/{}/{}", warehouse_prefix, schema, table_name);
         }
         Ok(Arc::new(
-            LakeSoulTableProvider::new_from_create_external_table(state, self.metadata_client(), &cmd)
-                .await
-                .map_err(|e| DataFusionError::External(Box::new(e)))?,
+            LakeSoulTableProvider::new_from_create_external_table(
+                state,
+                self.metadata_client(),
+                &cmd,
+            )
+            .await
+            .map_err(|e| DataFusionError::External(Box::new(e)))?,
         ))
     }
 }

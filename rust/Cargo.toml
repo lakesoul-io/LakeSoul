@@ -11,27 +11,28 @@ members = [
     "lakesoul-io-c",
     "lakesoul-datafusion",
     "lakesoul-flight",
-    "lakesoul-s3-proxy",
+    "lakesoul-s3-proxy", "lakesoul-console",
 ]
-resolver = "2"
+resolver = "3"
 
 [profile.release]
 #lto = true
 
 [workspace.dependencies]
-datafusion = { version = "45.0.0" }
-datafusion-common = { version = "45.0.0" }
-datafusion-substrait = { version = "45.0.0" }
-arrow = { version = "54.1.0" }
-arrow-schema = { version = "54.1.0" }
-arrow-array = { version = "54.1.0" }
-arrow-buffer = { version = "54.1.0" }
-arrow-cast = { version = "54.1.0" }
-arrow-arith = { version = "54.1.0" }
-arrow-ipc = { version = "54.1.0" }
-arrow-flight = { version = "54.1.0", features = ["flight-sql-experimental"] }
-parquet = { version = "54.1.0" }
-object_store = { version = "0.11.0", features = ["aws", "http"] }
+datafusion = { version = "47.0.0" }
+datafusion-common = { version = "47.0.0" }
+datafusion-substrait = { version = "47.0.0" }
+datafusion-expr = {version = "47.0.0"}
+arrow = { version = "55.0.0" }
+arrow-schema = { version = "55.0.0" }
+arrow-array = { version = "55.0.0" }
+arrow-buffer = { version = "55.0.0" }
+arrow-cast = { version = "55.0.0" }
+arrow-arith = { version = "55.0.0" }
+arrow-ipc = { version = "55.0.0" }
+arrow-flight = { version = "55.0.0", features = ["flight-sql-experimental"] }
+parquet = { version = "55.0.0" }
+object_store = { version = "0.12.0", features = ["aws", "http"] }
 
 tokio-stream = "0.1.9"
 tokio = { version = "1", features = ["full"] }
@@ -48,7 +49,9 @@ prost = "0.13.4"
 prost-build = "0.13.4"
 uuid = { version = "1.4.0", features = ["v4", "fast-rng", "macro-diagnostics"] }
 serde = { version = "1.0", features = ["derive", "std", "rc"] }
-rand = "0.8"
+rand = "0.9"
+rand_distr = "0.5"
+rand_chacha = "0.9"
 bytes = "1.4.0"
 half = "^2.1"
 tracing = "0.1.40"

@@ -1,0 +1,16 @@
+[package]
+name = "lakesoul-console"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+datafusion = { workspace = true }
+lakesoul-datafusion = { path = "../lakesoul-datafusion" }
+clap = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+rustyline = "16.0.0"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = "0.2"
+futures = "0.3"

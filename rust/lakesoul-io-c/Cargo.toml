@@ -5,7 +5,7 @@
 [package]
 name = "lakesoul-io-c"
 version = "2.5.0"
-edition = "2021"
+edition = "2024"
 
 [lib]
 crate-type = ["cdylib"]
@@ -34,4 +34,4 @@ hdfs = ["lakesoul-io/hdfs"]
 default = []
 
 [build-dependencies]
-cbindgen = "0.24.0"
+cbindgen = "0.29.0"

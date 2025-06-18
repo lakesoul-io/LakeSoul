@@ -66,12 +66,7 @@ fn get_all_files<P: AsRef<Path>>(path: P) -> Box<dyn Iterator<Item = (PathBuf, u
                 // Only look at files
                 if f.file_type().is_file() {
                     // Get the last-modified time, size, and the full path.
-                    f.metadata().ok().and_then(|m| {
-                        Some((f.path().to_owned(), m.len()))
-                        // m.modified()
-                        //     .ok()
-                        //     .map(|_| )
-                    })
+                    f.metadata().ok().map(|m| (f.path().to_owned(), m.len()))
                 } else {
                     None
                 }
@@ -80,7 +75,7 @@ fn get_all_files<P: AsRef<Path>>(path: P) -> Box<dyn Iterator<Item = (PathBuf, u
         .collect();
     // Sort by last-modified-time, so oldest file first.
     // files.sort_by_key(|k| k.0);
-    Box::new(files.into_iter().map(|(path, size)| (path, size)))
+    Box::new(files.into_iter())
 }
 
 impl<S: BuildHasher> Drop for LruDiskCache<S> {
@@ -251,7 +246,9 @@ impl LruDiskCache {
     /// Add the file at `path` of size `size` to the cache.
     fn add_file(&self, addfile_path: AddFile<'_>, size: u64) -> Result<()> {
         let rel_path = match addfile_path {
-            AddFile::_AbsPath(ref p) => p.strip_prefix(&self.root).expect("Bad path?").as_os_str(),
+            AddFile::_AbsPath(ref p) => {
+                p.strip_prefix(&self.root).expect("Bad path?").as_os_str()
+            }
             AddFile::RelPath(p) => p,
         };
         self.make_space(size)?;
@@ -297,7 +294,11 @@ impl LruDiskCache {
     }
 
     /// Add a file by calling `with` with the open `File` corresponding to the cache at path `key`.
-    pub fn insert_with<K: AsRef<OsStr>, F: FnOnce(File) -> io::Result<()>>(&self, key: K, with: F) -> Result<()> {
+    pub fn insert_with<K: AsRef<OsStr>, F: FnOnce(File) -> io::Result<()>>(
+        &self,
+        key: K,
+        with: F,
+    ) -> Result<()> {
         self.insert_by(key, None, |path| with(File::create(path)?))
     }
 
@@ -312,14 +313,19 @@ impl LruDiskCache {
     }
 
     /// Add an existing file at `path` to the cache at path `key`.
-    pub fn insert_file<K: AsRef<OsStr>, P: AsRef<OsStr>>(&self, key: K, path: P) -> Result<()> {
+    pub fn insert_file<K: AsRef<OsStr>, P: AsRef<OsStr>>(
+        &self,
+        key: K,
+        path: P,
+    ) -> Result<()> {
         let size = fs::metadata(path.as_ref())?.len();
         self.insert_by(key, Some(size), |new_path| {
             fs::rename(path.as_ref(), new_path).or_else(|_| {
                 warn!("fs::rename failed, falling back to copy!");
                 fs::copy(path.as_ref(), new_path)?;
-                fs::remove_file(path.as_ref())
-                    .unwrap_or_else(|e| error!("Failed to remove original file in insert_file: {}", e));
+                fs::remove_file(path.as_ref()).unwrap_or_else(|e| {
+                    error!("Failed to remove original file in insert_file: {}", e)
+                });
                 Ok(())
             })
         })
@@ -399,6 +405,7 @@ impl LruDiskCache {
 mod tests {
     use super::fs::{self, File};
     use super::{Error, LruDiskCache};
+    use rand_distr::Zipf;
     use std::io::{self, Write};
     use std::path::{Path, PathBuf};
     use std::thread;
@@ -436,7 +443,10 @@ mod tests {
         }
 
         pub fn create_file<T: AsRef<Path>>(&self, path: T, size: usize) -> PathBuf {
-            create_file(self.tempdir.path(), path, |mut f| f.write_all(&vec![0; size])).unwrap()
+            create_file(self.tempdir.path(), path, |mut f| {
+                f.write_all(&vec![0; size])
+            })
+            .unwrap()
         }
     }
 
@@ -597,11 +607,12 @@ mod tests {
     }
 
     fn get_zipf() -> usize {
-        use rand::distributions::Distribution;
+        use rand::distr::Distribution;
 
-        let mut rng = rand::thread_rng();
-        let zipf = zipf::ZipfDistribution::new(1024 * 1024, 1.03).unwrap();
-        zipf.sample(&mut rng)
+        let mut rng = rand::rng();
+
+        let zipf: Zipf<f64> = rand_distr::Zipf::new((1024 * 1024) as f64, 1.03).unwrap();
+        zipf.sample(&mut rng) as usize
     }
 
     /// test lru disk cache hit percent from zipf
@@ -631,7 +642,8 @@ mod tests {
                     Some(_) => cache_hit += 1,
                     None => {
                         cache_miss += 1;
-                        c.insert_bytes(file_name, &[object_id as u8; 1024 * 4]).unwrap();
+                        c.insert_bytes(file_name, &[object_id as u8; 1024 * 4])
+                            .unwrap();
                     } // _ => panic!("Unexpected result"),
                 }
             }

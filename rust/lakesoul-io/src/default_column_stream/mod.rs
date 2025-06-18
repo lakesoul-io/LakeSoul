@@ -54,7 +54,10 @@ pub(crate) struct DefaultColumnStream {
 }
 
 impl DefaultColumnStream {
-    pub(crate) fn new_from_stream(stream: SendableRecordBatchStream, target_schema: SchemaRef) -> Self {
+    pub(crate) fn new_from_stream(
+        stream: SendableRecordBatchStream,
+        target_schema: SchemaRef,
+    ) -> Self {
         DefaultColumnStream {
             schema: transform_schema(target_schema, stream.schema(), false),
             inner_stream: vec![WrappedSendableRecordBatchStream::new(stream)],
@@ -86,7 +89,10 @@ impl DefaultColumnStream {
 impl Stream for DefaultColumnStream {
     type Item = Result<RecordBatch>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
         loop {
             if self.cur_stream_idx >= self.inner_stream.len() {
                 return Poll::Ready(None);

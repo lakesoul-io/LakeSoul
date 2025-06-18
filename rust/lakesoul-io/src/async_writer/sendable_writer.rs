@@ -15,7 +15,7 @@ use crate::{
     async_writer::{AsyncBatchWriter, WriterFlushResult},
     helpers::get_batch_memory_size,
     lakesoul_io_config::LakeSoulIOConfig,
-    lakesoul_writer::{create_writer, SendableWriter},
+    lakesoul_writer::{SendableWriter, create_writer},
 };
 
 pub struct AsyncSendableMutableLakeSoulWriter {
@@ -47,7 +47,11 @@ impl AsyncSendableMutableLakeSoulWriter {
     }
 
     #[async_recursion::async_recursion]
-    async fn write_batch_async(&mut self, record_batch: RecordBatch, do_spill: bool) -> Result<()> {
+    async fn write_batch_async(
+        &mut self,
+        record_batch: RecordBatch,
+        do_spill: bool,
+    ) -> Result<()> {
         debug!(record_batch_row=?record_batch.num_rows(), do_spill=?do_spill, "write_batch_async");
         let config = self.config.clone();
 
@@ -62,11 +66,13 @@ impl AsyncSendableMutableLakeSoulWriter {
             let batch_rows = record_batch.num_rows() as u64;
 
             if !do_spill && guard.buffered_size() + batch_memory_size > max_file_size {
-                let to_write = (batch_rows * (max_file_size - guard.buffered_size())) / batch_memory_size;
+                let to_write = (batch_rows * (max_file_size - guard.buffered_size()))
+                    / batch_memory_size;
                 if to_write + 1 < batch_rows {
                     let to_write = to_write as usize + 1;
                     let a = record_batch.slice(0, to_write);
-                    let b = record_batch.slice(to_write, record_batch.num_rows() - to_write);
+                    let b =
+                        record_batch.slice(to_write, record_batch.num_rows() - to_write);
                     drop(guard);
                     self.write_batch_async(a, true).await?;
                     return self.write_batch_async(b, false).await;
@@ -85,8 +91,11 @@ impl AsyncSendableMutableLakeSoulWriter {
                 debug!("spilling writer with size: {}", guard.buffered_size());
                 drop(guard);
                 if let Some(writer) = self.in_progress.take() {
-                    let inner_writer = Arc::try_unwrap(writer)
-                        .map_err(|_| DataFusionError::Internal("Cannot get ownership of inner writer".to_string()))?;
+                    let inner_writer = Arc::try_unwrap(writer).map_err(|_| {
+                        DataFusionError::Internal(
+                            "Cannot get ownership of inner writer".to_string(),
+                        )
+                    })?;
                     let writer = inner_writer.into_inner();
                     let results = writer.flush_and_close().await.map_err(|e| {
                         DataFusionError::Internal(format!(
@@ -103,7 +112,9 @@ impl AsyncSendableMutableLakeSoulWriter {
             let mut writer = inner_writer.lock().await;
             writer.write_record_batch(record_batch).await
         } else {
-            Err(DataFusionError::Internal("Invalid state of inner writer".to_string()))
+            Err(DataFusionError::Internal(
+                "Invalid state of inner writer".to_string(),
+            ))
         }
     }
 }
@@ -117,14 +128,16 @@ impl AsyncBatchWriter for AsyncSendableMutableLakeSoulWriter {
     async fn flush_and_close(self: Box<Self>) -> Result<WriterFlushResult> {
         debug!("flush_and_close: {:?}", self.flush_results);
         if let Some(inner_writer) = self.in_progress {
-            let inner_writer = Arc::try_unwrap(inner_writer)
-                .map_err(|_| DataFusionError::Internal("Cannot get ownership of inner writer".to_string()))?;
+            let inner_writer = Arc::try_unwrap(inner_writer).map_err(|_| {
+                DataFusionError::Internal(
+                    "Cannot get ownership of inner writer".to_string(),
+                )
+            })?;
             let writer = inner_writer.into_inner();
             debug!("writer schema: {:?}", writer.schema());
-            let mut results = writer
-                .flush_and_close()
-                .await
-                .map_err(|e| DataFusionError::Internal(format!("err={}, config={:?}", e, self.config)))?;
+            let mut results = writer.flush_and_close().await.map_err(|e| {
+                DataFusionError::Internal(format!("err={}, config={:?}", e, self.config))
+            })?;
             results.extend(self.flush_results);
             Ok(results)
         } else {
@@ -134,8 +147,11 @@ impl AsyncBatchWriter for AsyncSendableMutableLakeSoulWriter {
 
     async fn abort_and_close(self: Box<Self>) -> Result<()> {
         if let Some(inner_writer) = self.in_progress {
-            let inner_writer = Arc::try_unwrap(inner_writer)
-                .map_err(|_| DataFusionError::Internal("Cannot get ownership of inner writer".to_string()))?;
+            let inner_writer = Arc::try_unwrap(inner_writer).map_err(|_| {
+                DataFusionError::Internal(
+                    "Cannot get ownership of inner writer".to_string(),
+                )
+            })?;
             let writer = inner_writer.into_inner();
             writer.abort_and_close().await
         } else {

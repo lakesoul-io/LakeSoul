@@ -5,7 +5,6 @@ copy-to-java:
 
 log_level := "info"
 
-
 flight-sql level=log_level:
     RUST_LOG=lakesoul_flight={{level}},lakesoul_metadata={{level}} JWT_AUTH_ENABLED=false RBAC_AUTH_ENABLED=true cargo run --bin flight_sql_server
     
@@ -18,11 +17,31 @@ flight-sql-s3 level=log_level:
       --s3-access-key "minioadmin" \
       --s3-secret-key "minioadmin"
 
+clean-tpch:
+   #rm -rf /data/lakesoul/tpch_sf10/*
+   rm -rf /tmp/lakesoul/tpch_data/*
+
+
+console-s3 level=log_level:
+    RUST_LOG={{level}}  cargo run --release --bin lakesoul-console -- --worker-threads 16  \
+    --warehouse-prefix "s3://lakesoul-bucket/tpch" \
+      --endpoint  "http://localhost:9000" \
+      --s3-bucket  "lakesoul-test-bucket" \
+      --s3-access-key "minioadmin1" \
+      --s3-secret-key "minioadmin1"
 
 console level=log_level:
-    RUST_LOG={{level}} cargo run --bin console -- \
-      --warehouse-prefix "s3://lakesoul-bucket/tpch-s10" \
-      --endpoint  "http://localhost:31099" \
-      --s3-bucket  "lakesoul-bucket" \
-      --s3-access-key "minioadmin" \
-      --s3-secret-key "minioadmin"
+    RUST_LOG={{level}} cargo run --release --bin lakesoul-console -- --worker-threads 16
+
+tpch-gen-s3:
+   cargo run --release --bin lakesoul-console -- --worker-threads 16  \
+    --warehouse-prefix "s3://lakesoul-bucket" \
+      --endpoint  "http://localhost:9000" \
+      --s3-bucket  "lakesoul-test-bucket" \
+      --s3-access-key "minioadmin1" \
+      --s3-secret-key "minioadmin1" tpch-gen -p "s3://lakesoul-bucket" --scale-factor 0.1 -n 8
+
+tpch-gen-lfs:
+   cargo run --release --bin lakesoul-console -- --worker-threads 16  \
+      tpch-gen -p "file:///tmp/lakesoul/tpch_data" --scale-factor 0.1 -n 8
+

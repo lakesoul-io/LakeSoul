@@ -9,21 +9,27 @@ use anyhow::anyhow;
 use arrow_schema::{DataType, Field, Fields, SchemaRef};
 use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::logical_expr::Expr;
-use datafusion::prelude::{col, SessionContext};
+use datafusion::prelude::{SessionContext, col};
 use datafusion::scalar::ScalarValue;
 use datafusion_common::DataFusionError::{External, Internal};
 use datafusion_common::{Column, DFSchema, Result};
 use datafusion_substrait::extensions::Extensions;
-use datafusion_substrait::logical_plan::consumer::{from_substrait_rex, DefaultSubstraitConsumer};
+use datafusion_substrait::logical_plan::consumer::{
+    DefaultSubstraitConsumer, from_substrait_rex,
+};
 use datafusion_substrait::substrait::proto::expression::field_reference::ReferenceType;
 use datafusion_substrait::substrait::proto::expression::literal::LiteralType;
 use datafusion_substrait::substrait::proto::expression::reference_segment::StructField;
-use datafusion_substrait::substrait::proto::expression::{reference_segment, Literal, RexType};
+use datafusion_substrait::substrait::proto::expression::{
+    Literal, RexType, reference_segment,
+};
 use datafusion_substrait::substrait::proto::function_argument::ArgType;
 use datafusion_substrait::substrait::proto::plan_rel::RelType::Root;
-use datafusion_substrait::substrait::proto::r#type::Nullability;
 use datafusion_substrait::substrait::proto::rel::RelType::Read;
-use datafusion_substrait::substrait::proto::{Expression, FunctionArgument, Plan, PlanRel, Rel, RelRoot};
+use datafusion_substrait::substrait::proto::r#type::Nullability;
+use datafusion_substrait::substrait::proto::{
+    Expression, FunctionArgument, Plan, PlanRel, Rel, RelRoot,
+};
 #[allow(deprecated)]
 use datafusion_substrait::variation_const::TIMESTAMP_MICRO_TYPE_VARIATION_REF;
 use tokio::runtime::{Builder, Handle};
@@ -75,7 +81,9 @@ impl Parser {
     }
 
     fn parse_filter_str(filter: String) -> Result<(String, String, String)> {
-        let op_offset = filter.find('(').ok_or(External(anyhow!("wrong filter str").into()))?;
+        let op_offset = filter
+            .find('(')
+            .ok_or(External(anyhow!("wrong filter str").into()))?;
         let (op, filter) = filter.split_at(op_offset);
         if !filter.ends_with(')') {
             return Err(External(anyhow!("wrong filter str").into()));
@@ -102,9 +110,17 @@ impl Parser {
         }
         let (left, right) = filter.split_at(left_offset);
         let res = if op.eq("not") {
-            (op.to_string(), left.trim().to_string(), right[0..].trim().to_string())
+            (
+                op.to_string(),
+                left.trim().to_string(),
+                right[0..].trim().to_string(),
+            )
         } else {
-            (op.to_string(), left.trim().to_string(), right[1..].trim().to_string())
+            (
+                op.to_string(),
+                left.trim().to_string(),
+                right[1..].trim().to_string(),
+            )
         };
         Ok(res)
     }
@@ -136,7 +152,9 @@ impl Parser {
             DataType::Boolean => Expr::Literal(ScalarValue::Boolean(Some(
                 value.parse::<bool>().map_err(|e| External(Box::new(e)))?,
             ))),
-            DataType::Binary => Expr::Literal(ScalarValue::Binary(Parser::parse_binary_array(value.as_str())?)),
+            DataType::Binary => Expr::Literal(ScalarValue::Binary(
+                Parser::parse_binary_array(value.as_str())?,
+            )),
             DataType::Float32 => Expr::Literal(ScalarValue::Float32(Some(
                 value.parse::<f32>().map_err(|e| External(Box::new(e)))?,
             ))),
@@ -158,10 +176,12 @@ impl Parser {
             DataType::Date32 => Expr::Literal(ScalarValue::Date32(Some(
                 value.parse::<i32>().map_err(|e| External(Box::new(e)))?,
             ))),
-            DataType::Timestamp(_, _) => Expr::Literal(ScalarValue::TimestampMicrosecond(
-                Some(value.parse::<i64>().map_err(|e| External(Box::new(e)))?),
-                Some(crate::constant::LAKESOUL_TIMEZONE.into()),
-            )),
+            DataType::Timestamp(_, _) => {
+                Expr::Literal(ScalarValue::TimestampMicrosecond(
+                    Some(value.parse::<i64>().map_err(|e| External(Box::new(e)))?),
+                    Some(crate::constant::LAKESOUL_TIMEZONE.into()),
+                ))
+            }
             DataType::Utf8 => {
                 let value = value.as_str()[8..value.len() - 2].to_string();
                 Expr::Literal(ScalarValue::Utf8(Some(value)))
@@ -203,13 +223,18 @@ impl Parser {
 
     /// caller may only pass MapKey for field reference,
     /// we need to change it to StructField since from_substrait_field_reference
-    fn modify_substrait_argument(arguments: &mut Vec<FunctionArgument>, df_schema: &DFSchema) {
+    fn modify_substrait_argument(
+        arguments: &mut Vec<FunctionArgument>,
+        df_schema: &DFSchema,
+    ) {
         for arg in arguments {
             match &mut arg.arg_type {
                 Some(ArgType::Value(Expression {
                     rex_type: Some(RexType::Selection(f)),
                 })) => {
-                    if let Some(ReferenceType::DirectReference(reference_segment)) = &mut f.reference_type {
+                    if let Some(ReferenceType::DirectReference(reference_segment)) =
+                        &mut f.reference_type
+                    {
                         if let Some(reference_segment::ReferenceType::MapKey(map_key)) =
                             &mut reference_segment.reference_type
                         {
@@ -218,12 +243,17 @@ impl Parser {
                                 ..
                             }) = &map_key.map_key
                             {
-                                if let Some(idx) = df_schema.index_of_column_by_name(None, name.as_ref()) {
-                                    reference_segment.reference_type =
-                                        Some(reference_segment::ReferenceType::StructField(Box::new(StructField {
-                                            field: idx as i32,
-                                            child: None,
-                                        })));
+                                if let Some(idx) =
+                                    df_schema.index_of_column_by_name(None, name.as_ref())
+                                {
+                                    reference_segment.reference_type = Some(
+                                        reference_segment::ReferenceType::StructField(
+                                            Box::new(StructField {
+                                                field: idx as i32,
+                                                child: None,
+                                            }),
+                                        ),
+                                    );
                                 }
                             }
                         }
@@ -237,12 +267,14 @@ impl Parser {
                 Some(ArgType::Value(Expression {
                     rex_type: Some(RexType::Literal(literal)),
                 })) => match literal.literal_type {
-                    Some(LiteralType::Timestamp(_)) | Some(LiteralType::TimestampTz(_)) => {
+                    Some(LiteralType::Timestamp(_))
+                    | Some(LiteralType::TimestampTz(_)) => {
                         // for compatibility with substrait old java version
                         // where type variation ref field is not filled in java
                         #[allow(deprecated)]
                         {
-                            literal.type_variation_reference = TIMESTAMP_MICRO_TYPE_VARIATION_REF;
+                            literal.type_variation_reference =
+                                TIMESTAMP_MICRO_TYPE_VARIATION_REF;
                         }
                     }
                     _ => {}
@@ -266,9 +298,9 @@ impl Parser {
                             }),
                         ..
                     })),
-            }) = plan.relations.get(0).cloned()
+            }) = plan.relations.first().cloned()
             {
-                if let Some(ref mut expression) = &mut read_rel.filter {
+                if let Some(expression) = &mut read_rel.filter {
                     let extensions = Extensions::try_from(&plan.extensions)?;
                     if let Some(RexType::ScalarFunction(f)) = &mut expression.rex_type {
                         Self::modify_substrait_argument(&mut f.arguments, df_schema);
@@ -278,7 +310,10 @@ impl Parser {
                     return from_substrait_rex(&consumer, expression, df_schema).await;
                 }
             }
-            Err(Internal(format!("encountered wrong substrait plan {:?}", plan)))
+            Err(Internal(format!(
+                "encountered wrong substrait plan {:?}",
+                plan
+            )))
         };
         match handle {
             Ok(handle) => task::block_in_place(move || handle.block_on(closure)),
@@ -294,7 +329,10 @@ impl Parser {
 
 fn qualified_expr(expr_str: &str, schema: SchemaRef) -> Option<(Expr, Arc<Field>)> {
     if let Ok(field) = schema.field_with_name(expr_str) {
-        Some((col(Column::new_unqualified(expr_str)), Arc::new(field.clone())))
+        Some((
+            col(Column::new_unqualified(expr_str)),
+            Arc::new(field.clone()),
+        ))
     } else {
         let mut expr: Option<(Expr, Arc<Field>)> = None;
         let mut root = "".to_owned();

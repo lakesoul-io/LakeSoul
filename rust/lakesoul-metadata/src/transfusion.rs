@@ -14,14 +14,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::Mutex;
 
-use proto::proto::entity::{DataCommitInfo, DataFileOp, FileOp, JniWrapper, PartitionInfo, TableInfo};
+use proto::proto::entity::{
+    DataCommitInfo, DataFileOp, FileOp, JniWrapper, PartitionInfo, TableInfo,
+};
 
 use crate::error::LakeSoulMetaDataError;
 use crate::transfusion::config::{
     LAKESOUL_HASH_PARTITION_SPLITTER, LAKESOUL_NON_PARTITION_TABLE_PART_DESC,
     LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH, LAKESOUL_RANGE_PARTITION_SPLITTER,
 };
-use crate::{error::Result, execute_query, DaoType, PooledClient, PARAM_DELIM};
+use crate::{DaoType, PARAM_DELIM, PooledClient, error::Result, execute_query};
 
 mod config {
     #![allow(unused)]
@@ -71,9 +73,15 @@ pub fn table_without_pk(hash_bucket_num: &str) -> bool {
 /// use raw ptr to create `MetadataClientRef`
 /// stay origin memory the same
 /// see <https://users.rust-lang.org/t/dereferencing-a-boxed-value/86768>
-pub async fn split_desc_array(client: &PooledClient, table_name: &str, namespace: &str) -> Result<SplitDescArray> {
+pub async fn split_desc_array(
+    client: &PooledClient,
+    table_name: &str,
+    namespace: &str,
+) -> Result<SplitDescArray> {
     let db = RawClient::new(client);
-    let table_info = db.get_table_info_by_table_name(table_name, namespace).await?;
+    let table_info = db
+        .get_table_info_by_table_name(table_name, namespace)
+        .await?;
     let data_files = db.get_table_data_info(&table_info.table_id).await?;
 
     // create splits
@@ -109,7 +117,9 @@ pub async fn split_desc_array(client: &PooledClient, table_name: &str, namespace
             for k in keys {
                 let (k, v) = match k.split_once('=') {
                     None => {
-                        return Err(LakeSoulMetaDataError::Internal("split error".to_string()));
+                        return Err(LakeSoulMetaDataError::Internal(
+                            "split error".to_string(),
+                        ));
                     }
                     Some((k, v)) => (k.to_string(), v.to_string()),
                 };
@@ -139,7 +149,11 @@ impl<'a> RawClient<'_> {
             client: Mutex::new(client),
         }
     }
-    pub async fn get_table_info_by_table_name(&self, table_name: &str, namespace: &str) -> Result<TableInfo> {
+    pub async fn get_table_info_by_table_name(
+        &self,
+        table_name: &str,
+        namespace: &str,
+    ) -> Result<TableInfo> {
         match self
             .query(
                 DaoType::SelectTableInfoByTableNameAndNameSpace as i32,
@@ -147,10 +161,12 @@ impl<'a> RawClient<'_> {
             )
             .await
         {
-            Ok(wrapper) if wrapper.table_info.is_empty() => Err(LakeSoulMetaDataError::NotFound(format!(
-                "Table '{}' not found",
-                table_name
-            ))),
+            Ok(wrapper) if wrapper.table_info.is_empty() => {
+                Err(LakeSoulMetaDataError::NotFound(format!(
+                    "Table '{}' not found",
+                    table_name
+                )))
+            }
             Ok(wrapper) => Ok(wrapper.table_info[0].clone()),
             Err(err) => Err(err),
         }
@@ -174,12 +190,21 @@ impl<'a> RawClient<'_> {
     }
 
     /// return file info in this partition that match the current read version
-    async fn get_single_partition_data_info(&self, partition_info: &PartitionInfo) -> Result<Vec<DataFileInfo>> {
+    async fn get_single_partition_data_info(
+        &self,
+        partition_info: &PartitionInfo,
+    ) -> Result<Vec<DataFileInfo>> {
         let mut file_arr_buf = Vec::new();
-        let data_commit_info_list = self.get_data_commit_info_of_single_partition(partition_info).await?;
+        let data_commit_info_list = self
+            .get_data_commit_info_of_single_partition(partition_info)
+            .await?;
         for data_commit_info in &data_commit_info_list {
             for file in &data_commit_info.file_ops {
-                file_arr_buf.push(DataFileInfo::compose(data_commit_info, file, partition_info)?)
+                file_arr_buf.push(DataFileInfo::compose(
+                    data_commit_info,
+                    file,
+                    partition_info,
+                )?)
             }
         }
         Ok(self.filter_files(file_arr_buf))
@@ -194,19 +219,27 @@ impl<'a> RawClient<'_> {
             for i in (0..file_arr_buf.len()).rev() {
                 if file_arr_buf[i].file_op == "del" {
                     dup_check.insert(file_arr_buf[i].path.clone());
-                } else if dup_check.is_empty() || !dup_check.contains(&file_arr_buf[i].path) {
+                } else if dup_check.is_empty()
+                    || !dup_check.contains(&file_arr_buf[i].path)
+                {
                     file_res_arr_buf.push(file_arr_buf[i].clone());
                 }
             }
             file_res_arr_buf.reverse();
         } else {
-            file_res_arr_buf = file_arr_buf.into_iter().filter(|item| item.file_op == "add").collect();
+            file_res_arr_buf = file_arr_buf
+                .into_iter()
+                .filter(|item| item.file_op == "add")
+                .collect();
         }
 
         file_res_arr_buf
     }
 
-    pub async fn get_all_partition_info(&self, table_id: &str) -> Result<Vec<PartitionInfo>> {
+    pub async fn get_all_partition_info(
+        &self,
+        table_id: &str,
+    ) -> Result<Vec<PartitionInfo>> {
         match self
             .query(DaoType::ListPartitionByTableId as i32, table_id.to_string())
             .await
@@ -218,7 +251,12 @@ impl<'a> RawClient<'_> {
 
     /// maybe use AnyMap
     async fn query(&self, query_type: i32, joined_string: String) -> Result<JniWrapper> {
-        let encoded = execute_query(self.client.lock().await.deref(), query_type, joined_string.clone()).await?;
+        let encoded = execute_query(
+            self.client.lock().await.deref(),
+            query_type,
+            joined_string.clone(),
+        )
+        .await?;
         Ok(JniWrapper::decode(prost::bytes::Bytes::from(encoded))?)
     }
 
@@ -234,7 +272,12 @@ impl<'a> RawClient<'_> {
             .map(|commit_id| format!("{:0>16x}{:0>16x}", commit_id.high, commit_id.low))
             .collect::<Vec<String>>()
             .join("");
-        let joined_string = [table_id.as_str(), partition_desc.as_str(), joined_commit_id.as_str()].join(PARAM_DELIM);
+        let joined_string = [
+            table_id.as_str(),
+            partition_desc.as_str(),
+            joined_commit_id.as_str(),
+        ]
+        .join(PARAM_DELIM);
         match self
             .query(
                 DaoType::ListDataCommitInfoByTableIdAndPartitionDescAndCommitList as i32,
@@ -249,7 +292,8 @@ impl<'a> RawClient<'_> {
 }
 
 fn has_hash_partitions(table_info: &TableInfo) -> bool {
-    let properties: Value = serde_json::from_str(&table_info.properties).expect("wrong properties");
+    let properties: Value =
+        serde_json::from_str(&table_info.properties).expect("wrong properties");
     if properties["hashBucketNum"] != Value::Null && properties["hashBucketNum"] == "-1" {
         false
     } else {
@@ -321,21 +365,36 @@ impl DataFileInfo {
 
 /// COPY from lakesoul-datafusion
 pub fn parse_table_info_partitions(partitions: &str) -> (Vec<String>, Vec<String>) {
-    let (range_keys, hash_keys) =
-        partitions.split_at(partitions.find(LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH).unwrap());
+    let (range_keys, hash_keys) = partitions.split_at(
+        partitions
+            .find(LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH)
+            .unwrap(),
+    );
     let hash_keys = &hash_keys[1..];
     (
         range_keys
             .split(LAKESOUL_RANGE_PARTITION_SPLITTER)
             .collect::<Vec<&str>>()
             .iter()
-            .filter_map(|str| if str.is_empty() { None } else { Some(str.to_string()) })
+            .filter_map(|str| {
+                if str.is_empty() {
+                    None
+                } else {
+                    Some(str.to_string())
+                }
+            })
             .collect::<Vec<String>>(),
         hash_keys
             .split(LAKESOUL_HASH_PARTITION_SPLITTER)
             .collect::<Vec<&str>>()
             .iter()
-            .filter_map(|str| if str.is_empty() { None } else { Some(str.to_string()) })
+            .filter_map(|str| {
+                if str.is_empty() {
+                    None
+                } else {
+                    Some(str.to_string())
+                }
+            })
             .collect::<Vec<String>>(),
     )
 }
@@ -366,7 +425,8 @@ mod test {
 
     #[test]
     fn regex_test() {
-        let file_name = "part-r-00000-2dd664f9-d2c4-4ffe-878f-c6c70c1fb0cb_00003.gz.parquet";
+        let file_name =
+            "part-r-00000-2dd664f9-d2c4-4ffe-878f-c6c70c1fb0cb_00003.gz.parquet";
         assert_eq!(Some(3isize), DataFileInfo::parse_bucket_id(file_name));
         let file_name = "part-r-00000-2dd664f9-d2c4-4ffe-878f-431234567891.gz.parquet";
         assert_eq!(Some(-1), DataFileInfo::parse_bucket_id(file_name));

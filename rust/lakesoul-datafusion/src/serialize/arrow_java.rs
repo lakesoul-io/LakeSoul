@@ -69,7 +69,10 @@ enum ArrowJavaType {
         unit: String,
     },
     #[serde(rename = "timestamp")]
-    Timestamp { unit: String, timezone: Option<String> },
+    Timestamp {
+        unit: String,
+        timezone: Option<String>,
+    },
     #[serde(rename = "interval")]
     Interval,
     #[serde(rename = "duration")]
@@ -103,10 +106,16 @@ impl From<&FieldRef> for ArrowJavaField {
                 fields.iter().map(ArrowJavaField::from).collect::<Vec<_>>(),
             ),
 
-            DataType::List(field) => (ArrowJavaType::List, vec![ArrowJavaField::from(field)]),
-            DataType::LargeList(field) => (ArrowJavaType::LargeList, vec![ArrowJavaField::from(field)]),
+            DataType::List(field) => {
+                (ArrowJavaType::List, vec![ArrowJavaField::from(field)])
+            }
+            DataType::LargeList(field) => {
+                (ArrowJavaType::LargeList, vec![ArrowJavaField::from(field)])
+            }
             DataType::FixedSizeList(field, list_size) => (
-                ArrowJavaType::FixedSizeList { list_size: *list_size },
+                ArrowJavaType::FixedSizeList {
+                    list_size: *list_size,
+                },
                 vec![ArrowJavaField::from(field)],
             ),
 
@@ -198,7 +207,12 @@ impl From<&FieldRef> for ArrowJavaField {
 
             DataType::Binary => (ArrowJavaType::Binary, vec![]),
             DataType::LargeBinary => (ArrowJavaType::LargeBinary, vec![]),
-            DataType::FixedSizeBinary(bit_width) => (ArrowJavaType::FixedSizeBinary { bit_width: *bit_width }, vec![]),
+            DataType::FixedSizeBinary(bit_width) => (
+                ArrowJavaType::FixedSizeBinary {
+                    bit_width: *bit_width,
+                },
+                vec![],
+            ),
 
             DataType::Boolean => (ArrowJavaType::Bool, vec![]),
 
@@ -295,7 +309,11 @@ impl From<&ArrowJavaField> for Field {
         let data_type = match java_type {
             ArrowJavaType::Null => DataType::Null,
             ArrowJavaType::Struct => DataType::Struct(Fields::from(
-                field.children.iter().map(|f| f.into()).collect::<Vec<Field>>(),
+                field
+                    .children
+                    .iter()
+                    .map(|f| f.into())
+                    .collect::<Vec<Field>>(),
             )),
             ArrowJavaType::List => {
                 assert_eq!(field.children.len(), 1);
@@ -307,14 +325,23 @@ impl From<&ArrowJavaField> for Field {
             }
             ArrowJavaType::FixedSizeList { list_size } => {
                 assert_eq!(field.children.len(), 1);
-                DataType::FixedSizeList(Arc::new(field.children.first().unwrap().into()), *list_size)
+                DataType::FixedSizeList(
+                    Arc::new(field.children.first().unwrap().into()),
+                    *list_size,
+                )
             }
             ArrowJavaType::Union => todo!("Union type not supported"),
             ArrowJavaType::Map { keys_sorted } => {
                 assert_eq!(field.children.len(), 1);
-                DataType::Map(Arc::new(field.children.first().unwrap().into()), *keys_sorted)
+                DataType::Map(
+                    Arc::new(field.children.first().unwrap().into()),
+                    *keys_sorted,
+                )
             }
-            ArrowJavaType::Int { is_signed, bit_width } => {
+            ArrowJavaType::Int {
+                is_signed,
+                bit_width,
+            } => {
                 if *is_signed {
                     match bit_width {
                         8 => DataType::Int8,
@@ -343,7 +370,9 @@ impl From<&ArrowJavaField> for Field {
             ArrowJavaType::LargeUtf8 => DataType::LargeUtf8,
             ArrowJavaType::Binary => DataType::Binary,
             ArrowJavaType::LargeBinary => DataType::LargeBinary,
-            ArrowJavaType::FixedSizeBinary { bit_width } => DataType::FixedSizeBinary(*bit_width),
+            ArrowJavaType::FixedSizeBinary { bit_width } => {
+                DataType::FixedSizeBinary(*bit_width)
+            }
             ArrowJavaType::Bool => DataType::Boolean,
             ArrowJavaType::Decimal {
                 precision,
@@ -379,7 +408,8 @@ impl From<&ArrowJavaField> for Field {
                     "NANOSECOND" => TimeUnit::Nanosecond,
                     other => panic!("TimeUnit has an invalid value = {}", other),
                 };
-                let timezone: Option<Arc<str>> = timezone.as_ref().map(|t| Arc::from(t.as_str()));
+                let timezone: Option<Arc<str>> =
+                    timezone.as_ref().map(|t| Arc::from(t.as_str()));
                 DataType::Timestamp(time_unit, timezone)
             }
             ArrowJavaType::Interval => todo!("Interval type not supported"),
@@ -392,7 +422,11 @@ impl From<&ArrowJavaField> for Field {
 impl From<SchemaRef> for ArrowJavaSchema {
     fn from(schema: SchemaRef) -> Self {
         Self {
-            fields: schema.fields().iter().map(ArrowJavaField::from).collect::<Vec<_>>(),
+            fields: schema
+                .fields()
+                .iter()
+                .map(ArrowJavaField::from)
+                .collect::<Vec<_>>(),
             metadata: None,
         }
     }
@@ -401,7 +435,11 @@ impl From<SchemaRef> for ArrowJavaSchema {
 impl From<ArrowJavaSchema> for SchemaRef {
     fn from(schema: ArrowJavaSchema) -> Self {
         SchemaRef::new(Schema::new(
-            schema.fields.iter().map(|f| f.into()).collect::<Vec<Field>>(),
+            schema
+                .fields
+                .iter()
+                .map(|f| f.into())
+                .collect::<Vec<Field>>(),
         ))
     }
 }

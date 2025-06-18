@@ -7,14 +7,14 @@
 #[macro_use]
 extern crate tracing;
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::Parser;
-use lakesoul_flight::{args::Args, FlightSqlServiceImpl, JwtServer};
-use lakesoul_flight::{Claims, TokenResponse, BANNER};
+use lakesoul_flight::{BANNER, Claims, TokenResponse};
+use lakesoul_flight::{FlightSqlServiceImpl, JwtServer, args::Args};
 use lakesoul_flight::{TokenServer, TokenServerServer};
 use lakesoul_metadata::MetaDataClient;
 use metrics::{counter, gauge};
@@ -31,7 +31,10 @@ pub struct TokenService {
 #[tonic::async_trait]
 impl TokenServer for TokenService {
     #[instrument(skip(self))]
-    async fn create_token(&self, request: Request<Claims>) -> Result<Response<TokenResponse>, Status> {
+    async fn create_token(
+        &self,
+        request: Request<Claims>,
+    ) -> Result<Response<TokenResponse>, Status> {
         let claims = request.into_inner();
         let token = self
             .jwt_server
@@ -74,7 +77,9 @@ impl Interceptor for GrpcInterceptor {
 
         let request_size = request.metadata().len() as u64;
 
-        let total_bytes = self.total_bytes_in.fetch_add(request_size, Ordering::SeqCst);
+        let total_bytes = self
+            .total_bytes_in
+            .fetch_add(request_size, Ordering::SeqCst);
 
         self.total_requests.fetch_add(1, Ordering::SeqCst);
         let active = self.active_requests.fetch_add(1, Ordering::SeqCst);
@@ -92,14 +97,23 @@ impl Interceptor for GrpcInterceptor {
         };
 
         counter!("grpc.flight.total_requests", "path" => path.clone()).increment(1);
-        counter!("grpc.flight.total_request_bytes", "path" => path.clone()).increment(request_size);
-        gauge!("grpc.flight.active_requests", "path" => path.clone()).set((active + 1) as f64);
-        gauge!("grpc.flight.throughput_requests", "path" => path.clone()).set(throughput_requests);
-        gauge!("grpc.flight.throughput_bytes", "path" => path.clone()).set(throughput_bytes);
+        counter!("grpc.flight.total_request_bytes", "path" => path.clone())
+            .increment(request_size);
+        gauge!("grpc.flight.active_requests", "path" => path.clone())
+            .set((active + 1) as f64);
+        gauge!("grpc.flight.throughput_requests", "path" => path.clone())
+            .set(throughput_requests);
+        gauge!("grpc.flight.throughput_bytes", "path" => path.clone())
+            .set(throughput_bytes);
 
         info!(
             "请求开始 - 路径: {}, 当前活跃请求数: {}, 请求大小: {} 字节, 总接收字节数: {}, 吞吐量: {:.2} 字节/秒, {:.2} 请求/秒",
-            path, active + 1, request_size, total_bytes + request_size, throughput_bytes, throughput_requests
+            path,
+            active + 1,
+            request_size,
+            total_bytes + request_size,
+            throughput_bytes,
+            throughput_requests
         );
 
         request.extensions_mut().insert(CallbackOnDrop {

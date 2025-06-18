@@ -5,7 +5,7 @@
 [package]
 name = "lakesoul-io"
 version = "2.5.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 datafusion = { workspace = true }
@@ -59,7 +59,7 @@ moka = { version = "~0.12", features = ["future"] }
 tempfile = "3"
 sysinfo = "~0.32"
 walkdir = "2.5.0"
-zipf = "7.0.2"
+rand_distr = {workspace = true}
 
 [features]
 hdfs = ["dep:hdrs", "dep:hdfs-sys"]

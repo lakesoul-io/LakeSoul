@@ -389,8 +389,8 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
               parsedFileSizeLimit,
               tableInfo.bucket_num != tableHashBucketNum,
               taskId
-            )) { radAndWriteIO =>
-              val partitionDescAndFilesMap = radAndWriteIO.startCompactTask().asScala
+            )) { compactionBucketIO =>
+              val partitionDescAndFilesMap = compactionBucketIO.startCompactTask().asScala
               partitionDescAndFilesMap.flatMap(result => {
                 val (partitionDesc, flushResult) = result
                 val array = flushResult.asScala.map(
@@ -499,15 +499,14 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
       })
     }
 
-      if (newBucketNum.isDefined) {
-        val properties = SparkMetaVersion.dbManager.getTableInfoByTableId(tableInfo.table_id).getProperties
-        val newProperties = JSON.parseObject(properties);
-        newProperties.put(TableInfoProperty.HASH_BUCKET_NUM, newBucketNum.get.toString)
-        SparkMetaVersion.dbManager.updateTableProperties(tableInfo.table_id, newProperties.toJSONString)
-        snapshotManagement.updateSnapshot()
-      }
-
+    if (newBucketNum.isDefined) {
+      val properties = SparkMetaVersion.dbManager.getTableInfoByTableId(tableInfo.table_id).getProperties
+      val newProperties = JSON.parseObject(properties);
+      newProperties.put(TableInfoProperty.HASH_BUCKET_NUM, newBucketNum.get.toString)
+      SparkMetaVersion.dbManager.updateTableProperties(tableInfo.table_id, newProperties.toJSONString)
+      snapshotManagement.updateSnapshot()
     }
+  }
 
     def setCompactionTtl(days: Int): LakeSoulTable = {
       executeSetCompactionTtl(snapshotManagement, days)
