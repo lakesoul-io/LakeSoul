@@ -37,7 +37,7 @@ public class TypeConverter {
             case Date:
                 return DateType.DATE;
             case Timestamp:
-                return TimestampType.TIMESTAMP;
+                return TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
             case Utf8:
             case LargeUtf8:
                 return VarcharType.VARCHAR;
