@@ -31,7 +31,7 @@ pub mod planner;
 use lakesoul_io::lakesoul_io_config::{
     LakeSoulIOConfigBuilder, register_hdfs_object_store, register_s3_object_store,
 };
-use lakesoul_metadata::MetaDataClientRef;
+// use lakesoul_metadata::MetaDataClientRef;
 use object_store::local::LocalFileSystem;
 pub use planner::query_planner::LakeSoulQueryPlanner;
 use url::Url;
@@ -40,6 +40,8 @@ pub mod serialize;
 
 pub mod cli;
 
+pub use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
+
 pub fn create_lakesoul_session_ctx(
     meta_client: MetaDataClientRef,
     args: &cli::CoreArgs,
@@ -47,7 +49,7 @@ pub fn create_lakesoul_session_ctx(
     let mut session_config = SessionConfig::from_env()?
         .with_information_schema(true)
         .with_create_default_catalog_and_schema(false)
-        .with_batch_size(128)
+        .with_batch_size(8192)
         .with_default_catalog_and_schema("LAKESOUL".to_string(), "default".to_string());
     session_config.options_mut().sql_parser.dialect = "postgresql".to_string();
     session_config
@@ -192,6 +194,8 @@ pub fn create_lakesoul_session_ctx(
 
     Ok(ctx)
 }
+
+pub mod tpch;
 
 #[cfg(test)]
 mod test;

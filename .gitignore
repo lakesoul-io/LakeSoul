@@ -27,6 +27,7 @@ __pycache__/
 /rust/lakesoul-io-c/lakesoul_c_bindings.h
 /rust/lakesoul-io-java/target/
 /rust/lakesoul-io-java/.idea/
+/rust/console.history
 /python/lakesoul/metadata/generated/entity_pb2.py
 /python/lakesoul/metadata/generated/entity_pb2_grpc.py
 /python/build/

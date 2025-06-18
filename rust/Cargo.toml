@@ -11,7 +11,7 @@ members = [
     "lakesoul-io-c",
     "lakesoul-datafusion",
     "lakesoul-flight",
-    "lakesoul-s3-proxy",
+    "lakesoul-s3-proxy", "lakesoul-console",
 ]
 resolver = "3"
 
@@ -22,6 +22,7 @@ resolver = "3"
 datafusion = { version = "47.0.0" }
 datafusion-common = { version = "47.0.0" }
 datafusion-substrait = { version = "47.0.0" }
+datafusion-expr = {version = "47.0.0"}
 arrow = { version = "55.0.0" }
 arrow-schema = { version = "55.0.0" }
 arrow-array = { version = "55.0.0" }
