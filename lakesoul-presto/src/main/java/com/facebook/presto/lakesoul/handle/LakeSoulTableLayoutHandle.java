@@ -367,4 +367,18 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
         return null;
     }
 
+    @Override public String toString() {
+        return "LakeSoulTableLayoutHandle{" +
+                "tableHandle=" + tableHandle +
+                ", dataColumns=" + dataColumns +
+                ", primaryKeys=" + primaryKeys +
+                ", rangeKeys=" + rangeKeys +
+                ", tableParameters=" + tableParameters +
+                ", allColumns=" + allColumns +
+                ", filters=" + filters +
+                ", parFilters=" + parFilters +
+                ", tupleDomain=" + tupleDomain +
+                ", filterStrList=" + filterStrList +
+                '}';
+    }
 }

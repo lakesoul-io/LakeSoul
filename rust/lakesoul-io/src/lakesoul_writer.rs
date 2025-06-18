@@ -31,13 +31,14 @@ use arrow::datatypes::{DataType, Field};
 use arrow_array::RecordBatch;
 use arrow_schema::{SchemaBuilder, SchemaRef};
 use datafusion_common::{DataFusionError, Result};
-use rand::distributions::DistString;
+use rand::distr::SampleString;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 
 use crate::async_writer::{
-    AsyncBatchWriter, MultiPartAsyncWriter, PartitioningAsyncWriter, SortAsyncWriter, WriterFlushResult,
+    AsyncBatchWriter, MultiPartAsyncWriter, PartitioningAsyncWriter, SortAsyncWriter,
+    WriterFlushResult,
 };
 use crate::helpers::{get_batch_memory_size, get_file_exist_col};
 use crate::lakesoul_io_config::{IOSchema, LakeSoulIOConfig};
@@ -46,7 +47,9 @@ use crate::transform::uniform_schema;
 
 pub type SendableWriter = Box<dyn AsyncBatchWriter + Send>;
 
-pub async fn create_writer(config: LakeSoulIOConfig) -> Result<Box<dyn AsyncBatchWriter + Send>> {
+pub async fn create_writer(
+    config: LakeSoulIOConfig,
+) -> Result<Box<dyn AsyncBatchWriter + Send>> {
     // if aux sort cols exist, we need to adjust the schema of final writer
     // to exclude all aux sort cols
     let writer_schema: SchemaRef = if !config.aux_sort_cols.is_empty() {
@@ -58,7 +61,10 @@ pub async fn create_writer(config: LakeSoulIOConfig) -> Result<Box<dyn AsyncBatc
             .filter(|f| !config.aux_sort_cols.contains(f.name()))
             .map(|f| {
                 schema.index_of(f.name().as_str()).map_err(|e| {
-                    DataFusionError::ArrowError(e, Some(format!("Failed to find index of column: {}", f.name())))
+                    DataFusionError::ArrowError(
+                        e,
+                        Some(format!("Failed to find index of column: {}", f.name())),
+                    )
                 })
             })
             .collect::<Result<Vec<usize>>>()?;
@@ -77,7 +83,7 @@ pub async fn create_writer(config: LakeSoulIOConfig) -> Result<Box<dyn AsyncBatc
             writer_config.files = vec![format!(
                 "{}/part-{}_{:0>4}.parquet",
                 writer_config.prefix(),
-                rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 16),
+                rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 16),
                 writer_config.hash_bucket_id()
             )];
         }
@@ -90,7 +96,7 @@ pub async fn create_writer(config: LakeSoulIOConfig) -> Result<Box<dyn AsyncBatc
             writer_config.files = vec![format!(
                 "{}/part-{}_{:0>4}.parquet",
                 writer_config.prefix(),
-                rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 16),
+                rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 16),
                 writer_config.hash_bucket_id()
             )];
         }
@@ -123,14 +129,19 @@ impl SyncSendableMutableLakeSoulWriter {
             let mut lsh_computers = HashMap::new();
 
             if config.compute_lsh() {
-                let mut target_schema_builder = SchemaBuilder::from(&config.target_schema().fields);
+                let mut target_schema_builder =
+                    SchemaBuilder::from(&config.target_schema().fields);
 
                 for field in config.target_schema().fields.iter() {
                     if let Some(lsh_bit_width) = field.metadata().get("lsh_bit_width") {
                         let lsh_column_name = format!("{}_LSH", field.name());
                         let lsh_column = Arc::new(Field::new(
                             lsh_column_name.clone(),
-                            DataType::List(Arc::new(Field::new("element", DataType::Int64, true))),
+                            DataType::List(Arc::new(Field::new(
+                                "element",
+                                DataType::Int64,
+                                true,
+                            ))),
                             true,
                         ));
                         target_schema_builder.try_merge(&lsh_column)?;
@@ -193,38 +204,53 @@ impl SyncSendableMutableLakeSoulWriter {
         let runtime = self.runtime.clone();
 
         if record_batch.num_rows() == 0 {
-            runtime.block_on(async move { self.write_batch_async(record_batch, false).await })
-        } else {
-            if self.config.compute_lsh() {
-                let mut new_columns = record_batch.columns().to_vec();
+            runtime.block_on(
+                async move { self.write_batch_async(record_batch, false).await },
+            )
+        } else if self.config.compute_lsh() {
+            let mut new_columns = record_batch.columns().to_vec();
 
-                for (field_name, lsh_computer) in self.lsh_computers.iter() {
-                    let lsh_column_name = format!("{}_LSH", field_name);
+            for (field_name, lsh_computer) in self.lsh_computers.iter() {
+                let lsh_column_name = format!("{}_LSH", field_name);
 
-                    if let Some(array) = record_batch.column_by_name(field_name) {
-                        let embedding = array.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
-                            DataFusionError::Internal(format!("Column {} is not a ListArray", field_name))
+                if let Some(array) = record_batch.column_by_name(field_name) {
+                    let embedding =
+                        array.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
+                            DataFusionError::Internal(format!(
+                                "Column {} is not a ListArray",
+                                field_name
+                            ))
                         })?;
 
-                        let lsh_array = lsh_computer.compute_lsh(&Some(embedding.clone()))?;
+                    let lsh_array = lsh_computer.compute_lsh(&Some(embedding.clone()))?;
 
-                        if let Ok(index) = record_batch.schema().index_of(lsh_column_name.as_str()) {
-                            new_columns[index] = Arc::new(lsh_array);
-                        }
+                    if let Ok(index) =
+                        record_batch.schema().index_of(lsh_column_name.as_str())
+                    {
+                        new_columns[index] = Arc::new(lsh_array);
                     }
                 }
-
-                let new_record_batch = RecordBatch::try_new(self.config.target_schema(), new_columns)?;
-
-                runtime.block_on(async move { self.write_batch_async(new_record_batch, false).await })
-            } else {
-                runtime.block_on(async move { self.write_batch_async(record_batch, false).await })
             }
+
+            let new_record_batch =
+                RecordBatch::try_new(self.config.target_schema(), new_columns)?;
+
+            runtime.block_on(async move {
+                self.write_batch_async(new_record_batch, false).await
+            })
+        } else {
+            runtime.block_on(
+                async move { self.write_batch_async(record_batch, false).await },
+            )
         }
     }
 
     #[async_recursion::async_recursion(?Send)]
-    async fn write_batch_async(&mut self, record_batch: RecordBatch, do_spill: bool) -> Result<()> {
+    async fn write_batch_async(
+        &mut self,
+        record_batch: RecordBatch,
+        do_spill: bool,
+    ) -> Result<()> {
         debug!(record_batch_row=?record_batch.num_rows(), do_spill=?do_spill, "write_batch_async");
         let config = self.config().clone();
         if let Some(max_file_size) = self.config().max_file_size {
@@ -239,11 +265,13 @@ impl SyncSendableMutableLakeSoulWriter {
             let batch_rows = record_batch.num_rows() as u64;
             // If exceeds max_file_size, split batch
             if !do_spill && guard.buffered_size() + batch_memory_size > max_file_size {
-                let to_write = (batch_rows * (max_file_size - guard.buffered_size())) / batch_memory_size;
+                let to_write = (batch_rows * (max_file_size - guard.buffered_size()))
+                    / batch_memory_size;
                 if to_write + 1 < batch_rows {
                     let to_write = to_write as usize + 1;
                     let a = record_batch.slice(0, to_write);
-                    let b = record_batch.slice(to_write, record_batch.num_rows() - to_write);
+                    let b =
+                        record_batch.slice(to_write, record_batch.num_rows() - to_write);
                     drop(guard);
                     self.write_batch_async(a, true).await?;
                     return self.write_batch_async(b, false).await;
@@ -267,7 +295,7 @@ impl SyncSendableMutableLakeSoulWriter {
                         Err(_) => {
                             return Err(DataFusionError::Internal(
                                 "Cannot get ownership of inner writer".to_string(),
-                            ))
+                            ));
                         }
                     };
                     let writer = inner_writer.into_inner();
@@ -288,7 +316,9 @@ impl SyncSendableMutableLakeSoulWriter {
             let mut writer = inner_writer.lock().await;
             writer.write_record_batch(record_batch).await
         } else {
-            Err(DataFusionError::Internal("Invalid state of inner writer".to_string()))
+            Err(DataFusionError::Internal(
+                "Invalid state of inner writer".to_string(),
+            ))
         }
     }
 
@@ -299,7 +329,7 @@ impl SyncSendableMutableLakeSoulWriter {
                 Err(_) => {
                     return Err(DataFusionError::Internal(
                         "Cannot get ownership of the inner writer".to_string(),
-                    ))
+                    ));
                 }
             };
             let runtime = self.runtime;
@@ -307,12 +337,22 @@ impl SyncSendableMutableLakeSoulWriter {
                 let writer = inner_writer.into_inner();
 
                 let mut grouped_results: HashMap<String, Vec<String>> = HashMap::new();
-                let results = writer
-                    .flush_and_close()
-                    .await
-                    .map_err(|e| DataFusionError::Internal(format!("err={}, config={:?}", e, self.config.clone())))?;
-                for (partition_desc, file, object_meta, metadata) in self.flush_results.into_iter().chain(results) {
-                    let encoded = format!("{}\x03{}\x03{}", file, object_meta.size, get_file_exist_col(&metadata));
+                let results = writer.flush_and_close().await.map_err(|e| {
+                    DataFusionError::Internal(format!(
+                        "err={}, config={:?}",
+                        e,
+                        self.config.clone()
+                    ))
+                })?;
+                for (partition_desc, file, object_meta, metadata) in
+                    self.flush_results.into_iter().chain(results)
+                {
+                    let encoded = format!(
+                        "{}\x03{}\x03{}",
+                        file,
+                        object_meta.size,
+                        get_file_exist_col(&metadata)
+                    );
                     match grouped_results.get_mut(&partition_desc) {
                         Some(files) => {
                             files.push(encoded);
@@ -343,7 +383,7 @@ impl SyncSendableMutableLakeSoulWriter {
                 Err(_) => {
                     return Err(DataFusionError::Internal(
                         "Cannot get ownership of inner writer".to_string(),
-                    ))
+                    ));
                 }
             };
             let runtime = self.runtime;
@@ -366,8 +406,11 @@ mod tests {
     use crate::{
         lakesoul_io_config::{LakeSoulIOConfigBuilder, OPTION_KEY_MEM_LIMIT},
         lakesoul_reader::LakeSoulReader,
-        lakesoul_writer::{AsyncBatchWriter, MultiPartAsyncWriter, SyncSendableMutableLakeSoulWriter},
+        lakesoul_writer::{
+            AsyncBatchWriter, MultiPartAsyncWriter, SyncSendableMutableLakeSoulWriter,
+        },
     };
+    use rand::distr::SampleString;
 
     use arrow::{
         array::{ArrayRef, Int64Array},
@@ -377,7 +420,7 @@ mod tests {
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
     use datafusion::error::Result;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
-    use rand::{distributions::DistString, Rng};
+    use rand::Rng;
     use std::{fs::File, sync::Arc};
     use tokio::{runtime::Builder, time::Instant};
     use tracing_subscriber::layer::SubscriberExt;
@@ -411,7 +454,8 @@ mod tests {
             Box::new(async_writer).flush_and_close().await?;
 
             let file = File::open(path.clone())?;
-            let mut record_batch_reader = ParquetRecordBatchReader::try_new(file, 1024).unwrap();
+            let mut record_batch_reader =
+                ParquetRecordBatchReader::try_new(file, 1024).unwrap();
 
             let actual_batch = record_batch_reader
                 .next()
@@ -443,7 +487,8 @@ mod tests {
             Box::new(async_writer).flush_and_close().await?;
 
             let file = File::open(path)?;
-            let mut record_batch_reader = ParquetRecordBatchReader::try_new(file, 1024).unwrap();
+            let mut record_batch_reader =
+                ParquetRecordBatchReader::try_new(file, 1024).unwrap();
 
             let actual_batch = record_batch_reader
                 .next()
@@ -471,7 +516,8 @@ mod tests {
         let col = Arc::new(Int64Array::from_iter_values([3, 2, 3])) as ArrayRef;
         let col1 = Arc::new(Int64Array::from_iter_values([5, 3, 2])) as ArrayRef;
         let col2 = Arc::new(Int64Array::from_iter_values([3, 2, 1])) as ArrayRef;
-        let to_write = RecordBatch::try_from_iter([("col", col), ("col1", col1), ("col2", col2)])?;
+        let to_write =
+            RecordBatch::try_from_iter([("col", col), ("col1", col1), ("col2", col2)])?;
         let temp_dir = tempfile::tempdir()?;
         let path = temp_dir
             .into_path()
@@ -489,12 +535,14 @@ mod tests {
             .with_aux_sort_column("col2".to_string())
             .build();
 
-        let mut writer = SyncSendableMutableLakeSoulWriter::try_new(writer_conf, runtime)?;
+        let mut writer =
+            SyncSendableMutableLakeSoulWriter::try_new(writer_conf, runtime)?;
         writer.write_batch(to_write.clone())?;
         writer.flush_and_close()?;
 
         let file = File::open(path.clone())?;
-        let mut record_batch_reader = ParquetRecordBatchReader::try_new(file, 1024).unwrap();
+        let mut record_batch_reader =
+            ParquetRecordBatchReader::try_new(file, 1024).unwrap();
 
         let actual_batch = record_batch_reader
             .next()
@@ -522,14 +570,24 @@ mod tests {
             .with_thread_num(2)
             .with_batch_size(8192)
             .with_max_row_group_size(250000)
-            .with_object_store_option("fs.s3a.access.key".to_string(), "minioadmin1".to_string())
-            .with_object_store_option("fs.s3a.secret.key".to_string(), "minioadmin1".to_string())
-            .with_object_store_option("fs.s3a.endpoint".to_string(), "http://localhost:9000".to_string());
+            .with_object_store_option(
+                "fs.s3a.access.key".to_string(),
+                "minioadmin1".to_string(),
+            )
+            .with_object_store_option(
+                "fs.s3a.secret.key".to_string(),
+                "minioadmin1".to_string(),
+            )
+            .with_object_store_option(
+                "fs.s3a.endpoint".to_string(),
+                "http://localhost:9000".to_string(),
+            );
 
         let read_conf = common_conf_builder
             .clone()
             .with_files(vec![
-                "s3://lakesoul-test-bucket/data/native-io-test/large_file.parquet".to_string()
+                "s3://lakesoul-test-bucket/data/native-io-test/large_file.parquet"
+                    .to_string(),
             ])
             .build();
         let mut reader = LakeSoulReader::new(read_conf)?;
@@ -586,7 +644,9 @@ mod tests {
 
             let write_conf = common_conf_builder
                 .clone()
-                .with_files(vec!["/home/chenxu/program/data/large_file_written.parquet".to_string()])
+                .with_files(vec![
+                    "/home/chenxu/program/data/large_file_written.parquet".to_string(),
+                ])
                 .with_primary_key("uuid".to_string())
                 .with_schema(schema)
                 .build();
@@ -620,7 +680,7 @@ mod tests {
             let read_conf = common_conf_builder
                 .clone()
                 .with_files(vec![
-                    "s3://lakesoul-test-bucket/data/native-io-test/large_file.parquet".to_string()
+                    "s3://lakesoul-test-bucket/data/native-io-test/large_file.parquet".to_string(),
                 ])
                 .build();
             let mut reader = LakeSoulReader::new(read_conf)?;
@@ -652,8 +712,8 @@ mod tests {
     }
 
     fn create_batch(num_columns: usize, num_rows: usize, str_len: usize) -> RecordBatch {
-        let mut rng = rand::thread_rng();
-        let mut len_rng = rand::thread_rng();
+        let mut rng = rand::rng();
+        let mut len_rng = rand::rng();
         let iter = (0..num_columns)
             .into_iter()
             .map(|i| {
@@ -663,8 +723,10 @@ mod tests {
                         (0..num_rows)
                             .into_iter()
                             .map(|_| {
-                                rand::distributions::Alphanumeric
-                                    .sample_string(&mut rng, len_rng.gen_range(str_len..str_len * 3))
+                                rand::distr::Alphanumeric.sample_string(
+                                    &mut rng,
+                                    len_rng.random_range(str_len..str_len * 3),
+                                )
                             })
                             .collect::<Vec<_>>(),
                     )) as ArrayRef,
@@ -702,13 +764,17 @@ mod tests {
             // .with_aux_sort_column("col2".to_string())
             .build();
 
-        let mut writer = SyncSendableMutableLakeSoulWriter::try_new(writer_conf, runtime)?;
+        let mut writer =
+            SyncSendableMutableLakeSoulWriter::try_new(writer_conf, runtime)?;
 
         let start = Instant::now();
         for _ in 0..num_batch {
             let once_start = Instant::now();
             writer.write_batch(create_batch(num_columns, num_rows, str_len))?;
-            println!("write batch once cost: {}", once_start.elapsed().as_millis());
+            println!(
+                "write batch once cost: {}",
+                once_start.elapsed().as_millis()
+            );
         }
         let flush_start = Instant::now();
         writer.flush_and_close()?;
@@ -723,7 +789,8 @@ mod tests {
         );
 
         let file = File::open(path.clone())?;
-        let mut record_batch_reader = ParquetRecordBatchReader::try_new(file, 100_000).unwrap();
+        let mut record_batch_reader =
+            ParquetRecordBatchReader::try_new(file, 100_000).unwrap();
 
         let actual_batch = record_batch_reader
             .next()
@@ -775,7 +842,13 @@ mod tests {
             .unwrap();
         let writer_conf = LakeSoulIOConfigBuilder::new()
             .with_files(vec![path.clone()])
-            .with_prefix(tempfile::tempdir()?.into_path().into_os_string().into_string().unwrap())
+            .with_prefix(
+                tempfile::tempdir()?
+                    .into_path()
+                    .into_os_string()
+                    .into_string()
+                    .unwrap(),
+            )
             .with_thread_num(2)
             .with_batch_size(num_rows)
             // .with_max_row_group_size(2000)
@@ -795,7 +868,8 @@ mod tests {
             // .with_max_file_size(1024 * 1024 * 32)
             .build();
 
-        let mut writer = SyncSendableMutableLakeSoulWriter::try_new(writer_conf, runtime)?;
+        let mut writer =
+            SyncSendableMutableLakeSoulWriter::try_new(writer_conf, runtime)?;
 
         let start = Instant::now();
         for _ in 0..num_batch {
@@ -841,10 +915,13 @@ mod tests {
             .with_data_type(DataType::Decimal128(10, 5)),
         ) as ArrayRef;
 
-        let id2 = Arc::new(Date32Array::from_iter_values([NaiveDate::from_ymd_opt(2024, 2, 1)
-            .unwrap()
-            .signed_duration_since(NaiveDate::from_ymd_opt(1970, 1, 1).unwrap())
-            .num_days() as i32])) as ArrayRef;
+        let id2 =
+            Arc::new(Date32Array::from_iter_values([
+                NaiveDate::from_ymd_opt(2024, 2, 1)
+                    .unwrap()
+                    .signed_duration_since(NaiveDate::from_ymd_opt(1970, 1, 1).unwrap())
+                    .num_days() as i32,
+            ])) as ArrayRef;
 
         let id3 = Arc::new(
             TimestampMicrosecondArray::from_iter_values([NaiveDateTime::parse_from_str(
@@ -854,7 +931,10 @@ mod tests {
             .unwrap()
             .and_utc()
             .timestamp_micros()])
-            .with_data_type(DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC")))),
+            .with_data_type(DataType::Timestamp(
+                TimeUnit::Microsecond,
+                Some(Arc::from("UTC")),
+            )),
         ) as ArrayRef;
 
         let v = Arc::new(StringArray::from_iter(vec![Some("value2")])) as ArrayRef;
@@ -873,7 +953,8 @@ mod tests {
             Field::new("rowKinds", DataType::Utf8, false),
         ]));
 
-        let to_write = RecordBatch::try_new(schema.clone(), vec![id1, id2, id3, v, row_kinds])?;
+        let to_write =
+            RecordBatch::try_new(schema.clone(), vec![id1, id2, id3, v, row_kinds])?;
 
         let temp_dir = tempfile::tempdir()?;
         let prefix = temp_dir
@@ -888,13 +969,18 @@ mod tests {
             .with_thread_num(2)
             .with_batch_size(10240)
             .with_schema(schema)
-            .with_primary_keys(vec!["id1".to_string(), "id2".to_string(), "id3".to_string()])
+            .with_primary_keys(vec![
+                "id1".to_string(),
+                "id2".to_string(),
+                "id3".to_string(),
+            ])
             .with_hash_bucket_num(2)
             .set_dynamic_partition(true)
             .with_option(OPTION_KEY_MEM_LIMIT, format!("{}", 1024 * 1024 * 50))
             .build();
 
-        let mut writer = SyncSendableMutableLakeSoulWriter::try_new(writer_conf, runtime)?;
+        let mut writer =
+            SyncSendableMutableLakeSoulWriter::try_new(writer_conf, runtime)?;
         writer.write_batch(to_write.clone())?;
         let result = writer.flush_and_close()?;
 

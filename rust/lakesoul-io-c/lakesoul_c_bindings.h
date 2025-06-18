@@ -279,8 +279,8 @@ void free_bytes_result(CResult<BytesResult> *bytes);
 /// now use RUST_LOG=LEVEL to activate
 void rust_logger_init();
 
-} // extern "C"
+}  // extern "C"
 
-} // namespace lakesoul
+}  // namespace lakesoul
 
-#endif // LAKESOUL_C_BINDINGS_H
+#endif  // LAKESOUL_C_BINDINGS_H

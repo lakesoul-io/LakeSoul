@@ -53,4 +53,10 @@ public class LakeSoulRecordSet implements RecordSet {
         }
     }
 
+    @Override public String toString() {
+        return "LakeSoulRecordSet{" +
+                "split=" + split +
+                ", columnHandles=" + columnHandles +
+                '}';
+    }
 }

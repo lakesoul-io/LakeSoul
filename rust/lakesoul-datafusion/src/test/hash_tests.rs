@@ -4,7 +4,7 @@
 
 mod hash_tests {
     use chrono::DateTime;
-    use lakesoul_io::hash_utils::{HashValue, HASH_SEED};
+    use lakesoul_io::hash_utils::{HASH_SEED, HashValue};
 
     #[test]
     fn chrono_test() {
@@ -12,7 +12,10 @@ mod hash_tests {
         let datetime = date.and_hms_opt(12, 12, 12).unwrap();
         let epoch_time = DateTime::from_timestamp_millis(0).unwrap().naive_utc();
 
-        println!("{}", datetime.signed_duration_since(epoch_time).num_days() as i32);
+        println!(
+            "{}",
+            datetime.signed_duration_since(epoch_time).num_days() as i32
+        );
         println!(
             "{}",
             chrono::NaiveDate::from_num_days_from_ce_opt(719162)
@@ -30,7 +33,10 @@ mod hash_tests {
         .unwrap();
         let epoch_time = DateTime::from_timestamp_millis(0).unwrap().naive_utc();
 
-        println!("{}", datetime.signed_duration_since(epoch_time).num_days() as i32);
+        println!(
+            "{}",
+            datetime.signed_duration_since(epoch_time).num_days() as i32
+        );
         println!(
             "{}",
             chrono::NaiveDate::from_num_days_from_ce_opt(719162)

@@ -5,7 +5,7 @@
 [package]
 name = "lakesoul-metadata"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -30,7 +30,7 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 regex = "1.10.3"
 serde = { workspace = true }
-async-trait = "0.1.82"
+async-trait = "0.1"
 md5 = "0.7.0"
 cached = { workspace = true }
 

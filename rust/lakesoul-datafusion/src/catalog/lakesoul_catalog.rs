@@ -9,8 +9,8 @@ use datafusion::catalog::CatalogProvider;
 use datafusion::catalog::SchemaProvider;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::prelude::SessionContext;
-use lakesoul_metadata::error::LakeSoulMetaDataError;
 use lakesoul_metadata::MetaDataClientRef;
+use lakesoul_metadata::error::LakeSoulMetaDataError;
 use proto::proto::entity::Namespace;
 use std::any::Any;
 use std::fmt::{Debug, Formatter};
@@ -30,7 +30,10 @@ impl Debug for LakeSoulCatalog {
 }
 
 impl LakeSoulCatalog {
-    pub fn new(meta_data_client_ref: MetaDataClientRef, context: Arc<SessionContext>) -> Self {
+    pub fn new(
+        meta_data_client_ref: MetaDataClientRef,
+        context: Arc<SessionContext>,
+    ) -> Self {
         Self {
             metadata_client: meta_data_client_ref,
             context,
@@ -56,7 +59,9 @@ impl CatalogProvider for LakeSoulCatalog {
 
     fn schema_names(&self) -> Vec<String> {
         tokio::task::block_in_place(|| {
-            match futures::executor::block_on(async { self.metadata_client.get_all_namespace().await }) {
+            match futures::executor::block_on(async {
+                self.metadata_client.get_all_namespace().await
+            }) {
                 Ok(v) => v.into_iter().map(|np| np.namespace).collect(),
                 Err(_) => vec![],
             }
@@ -66,7 +71,9 @@ impl CatalogProvider for LakeSoulCatalog {
     fn schema(&self, name: &str) -> Option<Arc<dyn SchemaProvider>> {
         info!("schema: {:?}", name);
         tokio::task::block_in_place(|| {
-            match futures::executor::block_on(async { self.metadata_client.get_all_namespace().await }) {
+            match futures::executor::block_on(async {
+                self.metadata_client.get_all_namespace().await
+            }) {
                 Ok(v) => {
                     if v.iter().any(|np| np.namespace == name) {
                         Some(Arc::new(LakeSoulNamespace::new(
@@ -87,15 +94,21 @@ impl CatalogProvider for LakeSoulCatalog {
     ///
     /// If a schema of the same name existed before, it is replaced in
     /// the catalog and returned.
-    fn register_schema(&self, name: &str, _schema: Arc<dyn SchemaProvider>) -> Result<Option<Arc<dyn SchemaProvider>>> {
+    fn register_schema(
+        &self,
+        name: &str,
+        _schema: Arc<dyn SchemaProvider>,
+    ) -> Result<Option<Arc<dyn SchemaProvider>>> {
         let client = self.metadata_client.clone();
         let schema: Option<Arc<dyn SchemaProvider>> = {
             match self.get_all_namespace() {
-                Ok(v) if v.iter().any(|np| np.namespace == name) => Some(Arc::new(LakeSoulNamespace::new(
-                    self.metadata_client.clone(),
-                    self.context.clone(),
-                    name,
-                )) as Arc<dyn SchemaProvider>),
+                Ok(v) if v.iter().any(|np| np.namespace == name) => {
+                    Some(Arc::new(LakeSoulNamespace::new(
+                        self.metadata_client.clone(),
+                        self.context.clone(),
+                        name,
+                    )) as Arc<dyn SchemaProvider>)
+                }
                 _ => None,
             }
         };
@@ -123,7 +136,11 @@ impl CatalogProvider for LakeSoulCatalog {
     ///
     /// Implementations of this method should return None if schema with `name`
     /// does not exist.
-    fn deregister_schema(&self, _name: &str, _cascade: bool) -> Result<Option<Arc<dyn SchemaProvider>>> {
+    fn deregister_schema(
+        &self,
+        _name: &str,
+        _cascade: bool,
+    ) -> Result<Option<Arc<dyn SchemaProvider>>> {
         Err(DataFusionError::NotImplemented("Not supported".into()))
     }
 }
@@ -133,13 +150,8 @@ mod tests {
     use super::*;
     use crate::LakeSoulQueryPlanner;
     use datafusion::arrow::util::pretty::print_batches;
-    use datafusion::{
-        execution::{
-            context::{SessionContext, SessionState},
-            runtime_env::RuntimeEnv,
-        },
-        prelude::SessionConfig,
-    };
+    use datafusion::execution::SessionStateBuilder;
+    use datafusion::{execution::context::SessionContext, prelude::SessionConfig};
     use lakesoul_metadata::MetaDataClient;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -147,8 +159,10 @@ mod tests {
         let client = Arc::new(MetaDataClient::from_env().await.unwrap());
         let config = SessionConfig::default().with_information_schema(true);
         let planner = LakeSoulQueryPlanner::new_ref();
-        let state =
-            SessionState::new_with_config_rt(config, Arc::new(RuntimeEnv::default())).with_query_planner(planner);
+        let state = SessionStateBuilder::default()
+            .with_config(config)
+            .with_query_planner(planner)
+            .build();
 
         let ctx = Arc::new(SessionContext::new_with_state(state));
         let catalog = LakeSoulCatalog::new(client.clone(), ctx.clone());

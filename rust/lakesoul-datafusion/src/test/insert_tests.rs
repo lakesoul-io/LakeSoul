@@ -6,7 +6,7 @@ mod insert_tests {
     use std::sync::Arc;
 
     use arrow::array::*;
-    use arrow::datatypes::{i256, Int32Type};
+    use arrow::datatypes::{Int32Type, i256};
     use arrow::{
         array::{ArrayRef, Int32Array},
         datatypes::{DataType, Field, Schema, SchemaRef},
@@ -15,7 +15,9 @@ mod insert_tests {
     use arrow_cast::pretty::print_batches;
     use datafusion::logical_expr::Expr;
     use datafusion::prelude::col;
-    use lakesoul_io::lakesoul_io_config::{create_session_context, LakeSoulIOConfigBuilder};
+    use lakesoul_io::lakesoul_io_config::{
+        LakeSoulIOConfigBuilder, create_session_context,
+    };
     use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 
     use crate::lakesoul_table::LakeSoulTable;
@@ -25,7 +27,11 @@ mod insert_tests {
         error::Result,
     };
 
-    async fn init_table(client: MetaDataClientRef, schema: SchemaRef, table_name: &str) -> Result<()> {
+    async fn init_table(
+        client: MetaDataClientRef,
+        schema: SchemaRef,
+        table_name: &str,
+    ) -> Result<()> {
         let builder = LakeSoulIOConfigBuilder::new().with_schema(schema.clone());
         // .with_primary_keys(pks);
         create_table(client, table_name, builder.build()).await
@@ -59,8 +65,15 @@ mod insert_tests {
     ) -> Result<()> {
         let lakesoul_table = LakeSoulTable::for_name(table_name).await?;
 
-        let builder =
-            create_io_config_builder(client, None, false, "default", Default::default(), Default::default()).await?;
+        let builder = create_io_config_builder(
+            client,
+            None,
+            false,
+            "default",
+            Default::default(),
+            Default::default(),
+        )
+        .await?;
         let sess_ctx = create_session_context(&mut builder.clone().build())?;
 
         let dataframe = lakesoul_table.to_dataframe(&sess_ctx).await?;
@@ -101,7 +114,8 @@ mod insert_tests {
     async fn test_insert_into_append() -> Result<()> {
         let table_name = "test_insert_into_append";
         let client = Arc::new(MetaDataClient::from_env().await?);
-        let record_batch = create_batch_i32(vec!["id", "data"], vec![&[1, 2, 3], &[1, 2, 3]]);
+        let record_batch =
+            create_batch_i32(vec!["id", "data"], vec![&[1, 2, 3], &[1, 2, 3]]);
         init_table(client.clone(), record_batch.schema(), table_name).await?;
         do_insert(record_batch, table_name).await?;
         check_insert(
@@ -125,7 +139,8 @@ mod insert_tests {
     async fn test_insert_into_append_by_position() -> Result<()> {
         let table_name = "test_insert_into_append_by_position";
         let client = Arc::new(MetaDataClient::from_env().await?);
-        let record_batch = create_batch_i32(vec!["id", "data"], vec![&[1, 2, 3], &[1, 2, 3]]);
+        let record_batch =
+            create_batch_i32(vec!["id", "data"], vec![&[1, 2, 3], &[1, 2, 3]]);
         init_table(client.clone(), record_batch.schema(), table_name).await?;
         do_insert(record_batch, table_name).await?;
         check_insert(
@@ -149,8 +164,15 @@ mod insert_tests {
     async fn test_insert_into_append_partitioned_table() -> Result<()> {
         let table_name = "test_insert_into_append_partitioned_table";
         let client = Arc::new(MetaDataClient::from_env().await?);
-        let record_batch = create_batch_i32(vec!["id", "data"], vec![&[1, 2, 3], &[1, 2, 3]]);
-        init_partitioned_table(client.clone(), record_batch.schema(), table_name, vec!["id"]).await?;
+        let record_batch =
+            create_batch_i32(vec!["id", "data"], vec![&[1, 2, 3], &[1, 2, 3]]);
+        init_partitioned_table(
+            client.clone(),
+            record_batch.schema(),
+            table_name,
+            vec!["id"],
+        )
+        .await?;
         do_insert(record_batch, table_name).await?;
         check_insert(
             client.clone(),
@@ -170,17 +192,24 @@ mod insert_tests {
         .await
     }
 
-    async fn test_insert_into_append_non_partitioned_table_and_read_with_filter() -> Result<()> {
-        let table_name = "test_insert_into_append_non_partitioned_table_and_read_with_filter";
+    async fn test_insert_into_append_non_partitioned_table_and_read_with_filter()
+    -> Result<()> {
+        let table_name =
+            "test_insert_into_append_non_partitioned_table_and_read_with_filter";
         let client = Arc::new(MetaDataClient::from_env().await?);
-        let record_batch = create_batch_i32(vec!["id", "data"], vec![&[1, 2, 3], &[1, 2, 3]]);
+        let record_batch =
+            create_batch_i32(vec!["id", "data"], vec![&[1, 2, 3], &[1, 2, 3]]);
         init_table(client.clone(), record_batch.schema(), table_name).await?;
         do_insert(record_batch, table_name).await?;
         check_insert(
             client.clone(),
             table_name,
             vec!["data", "id"],
-            Some(col("id").lt_eq(Expr::Literal(datafusion::scalar::ScalarValue::Int32(Some(2))))),
+            Some(
+                col("id").lt_eq(Expr::Literal(datafusion::scalar::ScalarValue::Int32(
+                    Some(2),
+                ))),
+            ),
             &[
                 "+------+----+",
                 "| data | id |",
@@ -193,17 +222,30 @@ mod insert_tests {
         .await
     }
 
-    async fn test_insert_into_append_partitioned_table_and_read_with_partition_filter() -> Result<()> {
-        let table_name = "test_insert_into_append_partitioned_table_and_read_with_partition_filter";
+    async fn test_insert_into_append_partitioned_table_and_read_with_partition_filter()
+    -> Result<()> {
+        let table_name =
+            "test_insert_into_append_partitioned_table_and_read_with_partition_filter";
         let client = Arc::new(MetaDataClient::from_env().await?);
-        let record_batch = create_batch_i32(vec!["id", "data"], vec![&[1, 2, 3], &[1, 2, 3]]);
-        init_partitioned_table(client.clone(), record_batch.schema(), table_name, vec!["id"]).await?;
+        let record_batch =
+            create_batch_i32(vec!["id", "data"], vec![&[1, 2, 3], &[1, 2, 3]]);
+        init_partitioned_table(
+            client.clone(),
+            record_batch.schema(),
+            table_name,
+            vec!["id"],
+        )
+        .await?;
         do_insert(record_batch, table_name).await?;
         check_insert(
             client.clone(),
             table_name,
             vec!["data", "id"],
-            Some(col("id").lt_eq(Expr::Literal(datafusion::scalar::ScalarValue::Int32(Some(2))))),
+            Some(
+                col("id").lt_eq(Expr::Literal(datafusion::scalar::ScalarValue::Int32(
+                    Some(2),
+                ))),
+            ),
             &[
                 "+------+----+",
                 "| data | id |",
@@ -221,7 +263,8 @@ mod insert_tests {
     async fn test_insert_into_overwrite_non_partitioned_table() -> Result<()> {
         let table_name = "test_insert_into_overwrite_non_partitioned_table";
         let client = Arc::new(MetaDataClient::from_env().await?);
-        let record_batch = create_batch_i32(vec!["id", "data"], vec![&[1, 2, 3], &[1, 2, 3]]);
+        let record_batch =
+            create_batch_i32(vec!["id", "data"], vec![&[1, 2, 3], &[1, 2, 3]]);
         init_table(client.clone(), record_batch.schema(), table_name).await?;
         do_insert(record_batch, table_name).await?;
         // todo: should do_insert_overwrite
@@ -251,7 +294,8 @@ mod insert_tests {
     async fn test_insert_into_fails_when_missing_a_column() -> Result<()> {
         let table_name = "test_insert_into_fails_when_missing_a_column";
         let client = Arc::new(MetaDataClient::from_env().await?);
-        let record_batch = create_batch_i32(vec!["id", "data"], vec![&[1, 2, 3], &[1, 2, 3]]);
+        let record_batch =
+            create_batch_i32(vec!["id", "data"], vec![&[1, 2, 3], &[1, 2, 3]]);
         init_table(
             client.clone(),
             SchemaRef::new(Schema::new(
@@ -274,13 +318,22 @@ mod insert_tests {
         }
     }
 
-    async fn test_insert_into_fails_when_an_extra_column_is_present_but_can_evolve_schema() -> Result<()> {
+    async fn test_insert_into_fails_when_an_extra_column_is_present_but_can_evolve_schema()
+    -> Result<()> {
         let table_name = "test_insert_into_fails_when_an_extra_column_is_present_but_can_evolve_schema";
         let client = Arc::new(MetaDataClient::from_env().await?);
         let record_batch = RecordBatch::try_from_iter_with_nullable(vec![
             ("id", Arc::new(Int32Array::from(vec![1])) as ArrayRef, true),
-            ("data", Arc::new(StringArray::from(vec!["a"])) as ArrayRef, true),
-            ("fruit", Arc::new(StringArray::from(vec!["mango"])) as ArrayRef, true),
+            (
+                "data",
+                Arc::new(StringArray::from(vec!["a"])) as ArrayRef,
+                true,
+            ),
+            (
+                "fruit",
+                Arc::new(StringArray::from(vec!["mango"])) as ArrayRef,
+                true,
+            ),
         ])
         .unwrap();
         init_table(
@@ -322,8 +375,16 @@ mod insert_tests {
                 Arc::new(BinaryArray::from_vec(vec![&[1u8], &[2u8, 3u8]])) as ArrayRef,
                 true,
             ),
-            ("Date32", Arc::new(Date32Array::from(vec![1, -2])) as ArrayRef, true),
-            ("Date64", Arc::new(Date64Array::from(vec![1, -2])) as ArrayRef, true),
+            (
+                "Date32",
+                Arc::new(Date32Array::from(vec![1, -2])) as ArrayRef,
+                true,
+            ),
+            (
+                "Date64",
+                Arc::new(Date64Array::from(vec![1, -2])) as ArrayRef,
+                true,
+            ),
             (
                 "Decimal128",
                 Arc::new(Decimal128Array::from(vec![1, -2])) as ArrayRef,
@@ -331,7 +392,8 @@ mod insert_tests {
             ),
             (
                 "Decimal256",
-                Arc::new(Decimal256Array::from(vec![Some(i256::default()), None])) as ArrayRef,
+                Arc::new(Decimal256Array::from(vec![Some(i256::default()), None]))
+                    as ArrayRef,
                 true,
             ),
             // ParquetError(ArrowError("Converting Duration to parquet not supported"))
@@ -341,7 +403,8 @@ mod insert_tests {
             // ("Float16", Arc::new(Float16Array::from(vec![1.0])) as ArrayRef, true),
             (
                 "FixedSizeBinary",
-                Arc::new(FixedSizeBinaryArray::from(vec![&[1u8][..], &[2u8][..]])) as ArrayRef,
+                Arc::new(FixedSizeBinaryArray::from(vec![&[1u8][..], &[2u8][..]]))
+                    as ArrayRef,
                 true,
             ),
             (
@@ -367,13 +430,29 @@ mod insert_tests {
                 Arc::new(Float64Array::from(vec![3000.6, 300.6])) as ArrayRef,
                 true,
             ),
-            ("Int8", Arc::new(Int8Array::from(vec![1i8, -2i8])) as ArrayRef, true),
+            (
+                "Int8",
+                Arc::new(Int8Array::from(vec![1i8, -2i8])) as ArrayRef,
+                true,
+            ),
             // ("Int8Dictionary", Arc::new(Int8DictionaryArray::from_iter([Some("a"), None])) as ArrayRef, true),
-            ("Int16", Arc::new(Int16Array::from(vec![1i16, -2i16])) as ArrayRef, true),
+            (
+                "Int16",
+                Arc::new(Int16Array::from(vec![1i16, -2i16])) as ArrayRef,
+                true,
+            ),
             // ("Int16Dictionary", Arc::new(Int16DictionaryArray::from_iter([Some("a"), None])) as ArrayRef, true),
-            ("Int32", Arc::new(Int32Array::from(vec![1i32, -2i32])) as ArrayRef, true),
+            (
+                "Int32",
+                Arc::new(Int32Array::from(vec![1i32, -2i32])) as ArrayRef,
+                true,
+            ),
             // ("Int32Dictionary", Arc::new(Int32DictionaryArray::from_iter([Some("a"), None])) as ArrayRef, true),
-            ("Int64", Arc::new(Int64Array::from(vec![1i64, -2i64])) as ArrayRef, true),
+            (
+                "Int64",
+                Arc::new(Int64Array::from(vec![1i64, -2i64])) as ArrayRef,
+                true,
+            ),
             // ("Int64Dictionary", Arc::new(Int64DictionaryArray::from_iter([Some("a"), None])) as ArrayRef, true),
 
             // ("IntervalDayTime", Arc::new(IntervalDayTimeArray::from(vec![1, 2])) as ArrayRef, true),
@@ -406,7 +485,8 @@ mod insert_tests {
             ("Null", Arc::new(NullArray::new(2)) as ArrayRef, true),
             (
                 "LargeBinary",
-                Arc::new(LargeBinaryArray::from_vec(vec![&[1u8], &[2u8, 3u8]])) as ArrayRef,
+                Arc::new(LargeBinaryArray::from_vec(vec![&[1u8], &[2u8, 3u8]]))
+                    as ArrayRef,
                 true,
             ),
             (
@@ -426,7 +506,11 @@ mod insert_tests {
             ),
             // ParquetError(ArrowError("Converting RunEndEncodedType to parquet not supported"))
             // ("Run", Arc::new(RunArray::<Int32Type>::from_iter([Some("a"), None])) as ArrayRef, true),
-            ("String", Arc::new(StringArray::from(vec!["1", ""])) as ArrayRef, true),
+            (
+                "String",
+                Arc::new(StringArray::from(vec!["1", ""])) as ArrayRef,
+                true,
+            ),
             (
                 "Struct",
                 Arc::new(StructArray::from(vec![
@@ -481,7 +565,11 @@ mod insert_tests {
                 Arc::new(TimestampSecondArray::from(vec![1i64, -2i64])) as ArrayRef,
                 true,
             ),
-            ("UInt8", Arc::new(UInt8Array::from(vec![1u8, 2u8])) as ArrayRef, true),
+            (
+                "UInt8",
+                Arc::new(UInt8Array::from(vec![1u8, 2u8])) as ArrayRef,
+                true,
+            ),
             // ("UInt8Dictionary", Arc::new(UInt8DictionaryArray::from_iter([Some("a"), None])) as ArrayRef, true),
             (
                 "UInt16",
@@ -522,10 +610,12 @@ mod insert_tests {
         test_insert_into_append_by_position().await?;
         test_insert_into_append_partitioned_table().await?;
         test_insert_into_append_non_partitioned_table_and_read_with_filter().await?;
-        test_insert_into_append_partitioned_table_and_read_with_partition_filter().await?;
+        test_insert_into_append_partitioned_table_and_read_with_partition_filter()
+            .await?;
 
         test_insert_into_fails_when_missing_a_column().await?;
-        test_insert_into_fails_when_an_extra_column_is_present_but_can_evolve_schema().await?;
+        test_insert_into_fails_when_an_extra_column_is_present_but_can_evolve_schema()
+            .await?;
 
         test_datatypes().await?;
 

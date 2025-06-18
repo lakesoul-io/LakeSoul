@@ -14,8 +14,8 @@ use datafusion::{
     execution::TaskContext,
     physical_expr::EquivalenceProperties,
     physical_plan::{
-        DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, Partitioning, PlanProperties,
-        SendableRecordBatchStream,
+        DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties,
+        Partitioning, PlanProperties, SendableRecordBatchStream,
     },
 };
 use datafusion_common::Result;
@@ -46,7 +46,11 @@ impl EmptySchemaScanExec {
 }
 
 impl DisplayAs for EmptySchemaScanExec {
-    fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt_as(
+        &self,
+        _t: DisplayFormatType,
+        f: &mut std::fmt::Formatter,
+    ) -> std::fmt::Result {
         write!(f, "EmptySchemaScanExec")
     }
 }
@@ -94,11 +98,18 @@ impl ExecutionPlan for EmptySchemaScanExec {
         vec![]
     }
 
-    fn with_new_children(self: Arc<Self>, _: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
+    fn with_new_children(
+        self: Arc<Self>,
+        _: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(self)
     }
 
-    fn execute(&self, _partition: usize, _context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
+    fn execute(
+        &self,
+        _partition: usize,
+        _context: Arc<TaskContext>,
+    ) -> Result<SendableRecordBatchStream> {
         Ok(Box::pin(EmptySchemaStream::new(
             _context.session_config().batch_size(),
             self.count,
