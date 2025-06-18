@@ -4,7 +4,7 @@ use crate::exec::{exec_command, exec_from_files, exec_from_repl};
 use crate::print::Printer;
 use clap::{Parser, Subcommand};
 use lakesoul_datafusion::{
-    MetaDataClient, cli::CoreArgs, create_lakesoul_session_ctx, tpch::register_tpch_udtfs,
+    cli::CoreArgs, create_lakesoul_session_ctx, tpch::register_tpch_udtfs, MetaDataClient,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -62,6 +62,7 @@ async fn main_inner(cli: Cli) -> anyhow::Result<()> {
         .with_writer(non_blocking)
         .with_env_filter(level)
         .with_ansi(false)
+        .with_thread_ids(true)
         .with_timer(timer)
         .init();
 

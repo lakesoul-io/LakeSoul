@@ -11,6 +11,7 @@ use datafusion::{
     physical_expr::EquivalenceProperties,
     physical_plan::{ExecutionPlan, stream::RecordBatchStreamAdapter},
 };
+use datafusion::datasource::file_format::parquet::ParquetSink;
 use datafusion_common::Statistics;
 use datafusion_expr::{Expr, TableType};
 use futures::StreamExt;

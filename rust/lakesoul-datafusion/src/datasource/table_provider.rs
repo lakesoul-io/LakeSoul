@@ -535,6 +535,7 @@ impl TableProvider for LakeSoulTableProvider {
             .collect()
     }
 
+    #[instrument(skip(self,state))]
     async fn insert_into(
         &self,
         state: &dyn Session,
