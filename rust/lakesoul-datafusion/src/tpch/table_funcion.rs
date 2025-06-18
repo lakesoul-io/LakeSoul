@@ -9,35 +9,6 @@ use crate::tpch::TpchTableKind;
 
 macro_rules! define_tpch_udtf_provider {
     ($TABLE_FUNCTION_NAME:ident, $TABLE_FUNCTION_SQL_NAME:ident, $NAME:ident) => {
-        #[doc = concat!("A table function that generates the `",stringify!($TABLE_FUNCTION_SQL_NAME),"` table using the `tpchgen` library.")]
-        ///
-        /// The expected arguments are a float literal for the scale factor,
-        /// an i64 literal for the part, and an i64 literal for the number of parts.
-        /// The second and third arguments are optional and will default to 1
-        /// for both values which tells the generator to generate all parts.
-        ///
-        /// # Examples
-        /// ```
-        /// use std::sync::Arc;
-        /// use std::io::Error;
-        ///
-        /// use datafusion::prelude::*;
-        /// use datafusion_tpch::*;
-        ///
-        /// #[tokio::main]
-        /// async fn main() -> Result<(), Error> {
-        ///     // create local execution context
-        ///     let ctx = SessionContext::new();
-        ///     // Register all udtfs.
-        ///     register_tpch_udtfs(&ctx);
-        ///     // Generate the nation table with a scale factor of 1.
-        ///     let df = ctx
-        ///         .sql(format!("SELECT * FROM tpch_nation(1.0);").as_str())
-        ///         .await?;
-        ///     df.show().await?;
-        ///     Ok(())
-        /// }
-        /// ```
         #[derive(Debug)]
         pub struct $TABLE_FUNCTION_NAME {}
 
@@ -72,7 +43,9 @@ macro_rules! define_tpch_udtf_provider {
             /// The second and third argument are optional and will default to 1
             /// for both values which tells the generator to generate all parts.
             fn call(&self, args: &[Expr]) -> Result<Arc<dyn TableProvider>> {
-                let Some(Expr::Literal(ScalarValue::Float64(Some(scale_factor)))) = args.get(0) else {
+                let Some(Expr::Literal(ScalarValue::Float64(Some(scale_factor)))) =
+                    args.get(0)
+                else {
                     return plan_err!("First argument must be a float literal.");
                 };
 
@@ -83,7 +56,8 @@ macro_rules! define_tpch_udtf_provider {
                 if args.len() > 1 {
                     // Check if the second argument and third arguments are i32 literals and
                     // greater than 0.
-                    let Some(Expr::Literal(ScalarValue::Int64(Some(n)))) = args.get(1) else {
+                    let Some(Expr::Literal(ScalarValue::Int64(Some(n)))) = args.get(1)
+                    else {
                         return plan_err!("Second argument must be an i64 literal.");
                     };
 
@@ -91,9 +65,9 @@ macro_rules! define_tpch_udtf_provider {
                 }
 
                 let provider = super::source::TpchSource {
-                    scale_factor:*scale_factor,
+                    scale_factor: *scale_factor,
                     num_parts,
-                    kind:TpchTableKind::$NAME
+                    kind: TpchTableKind::$NAME,
                 };
 
                 Ok(Arc::new(provider))

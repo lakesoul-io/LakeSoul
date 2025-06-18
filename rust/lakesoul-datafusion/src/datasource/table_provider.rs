@@ -55,7 +55,7 @@ use super::file_format::LakeSoulMetaDataParquetFormat;
 ///
 /// # Features
 ///
-/// 1. Merges schemas if the files have compatible but not identical schemas
+/// 1. Merge schemas if the files have compatible but not identical schemas
 ///
 /// 2. Hive-style partitioning support, where a path such as
 ///    `/files/date=1/1/2022/data.parquet` is injected as a `date` column.

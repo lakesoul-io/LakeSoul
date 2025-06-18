@@ -174,23 +174,24 @@ mod tests {
     #[test]
     fn test_schema_to_sql() {
         let schema = super::LINEITEM_SCHEMA.as_ref();
-        let left = "\
-l_orderkey BIGINT NOT NULL,
-l_partkey BIGINT NOT NULL,
-l_suppkey BIGINT NOT NULL,
-l_linenumber INT NOT NULL,
-l_quantity DECIMAL(15,2) NOT NULL,
-l_extendedprice DECIMAL(15,2) NOT NULL,
-l_discount DECIMAL(15,2) NOT NULL,
-l_tax DECIMAL(15,2) NOT NULL,
-l_returnflag STRING NOT NULL,
-l_linestatus STRING NOT NULL,
-l_shipdate DATE NOT NULL,
-l_commitdate DATE NOT NULL,
-l_receiptdate DATE NOT NULL,
-l_shipinstruct STRING NOT NULL,
-l_shipmode STRING NOT NULL,
-l_comment STRING NOT NULL";
+        let left = "\n\
+\tl_orderkey BIGINT NOT NULL,
+\tl_partkey BIGINT NOT NULL,
+\tl_suppkey BIGINT NOT NULL,
+\tl_linenumber INT NOT NULL,
+\tl_quantity DECIMAL(15,2) NOT NULL,
+\tl_extendedprice DECIMAL(15,2) NOT NULL,
+\tl_discount DECIMAL(15,2) NOT NULL,
+\tl_tax DECIMAL(15,2) NOT NULL,
+\tl_returnflag STRING NOT NULL,
+\tl_linestatus STRING NOT NULL,
+\tl_shipdate DATE NOT NULL,
+\tl_commitdate DATE NOT NULL,
+\tl_receiptdate DATE NOT NULL,
+\tl_shipinstruct STRING NOT NULL,
+\tl_shipmode STRING NOT NULL,
+\tl_comment STRING NOT NULL
+";
         let right = schema_to_def(schema);
         assert_eq!(left, right.as_str());
     }
