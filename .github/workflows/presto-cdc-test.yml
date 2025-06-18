@@ -196,7 +196,9 @@ jobs:
       - name: Print Flink Log
         if: always()
         run: |
-          docker logs lakesoul-docker-compose-env-jobmanager-1 > flink-session-cluster.log
+          docker logs lakesoul-docker-compose-env-jobmanager-1 > flink-job-manager.log
+          docker logs lakesoul-docker-compose-env-taskmanager-1 > flink-task-manager-1.log
+          docker logs lakesoul-docker-compose-env-taskmanager-2 > flink-task-manager-2.log
           docker logs presto > presto-server.log
       - name: Upload Log
         if: always()
@@ -205,7 +207,7 @@ jobs:
         with:
           name: flink-presto-cluster-log
           path: |
-            flink-session-cluster.log
+            flink-*.log
             presto-server.log
           retention-days: 5
           if-no-files-found: error
