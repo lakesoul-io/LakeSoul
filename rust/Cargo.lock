@@ -3513,6 +3513,7 @@ dependencies = [
  "json",
  "lakesoul-io",
  "lakesoul-metadata",
+ "log",
  "object_store",
  "parquet",
  "prost",

@@ -31,7 +31,7 @@ enum TpchTableKind {
     Supplier,
     PartSupp,
     Customer,
-    Order,
+    Orders,
 }
 
 impl TpchTableKind {
@@ -44,7 +44,7 @@ impl TpchTableKind {
             TpchTableKind::Supplier => schemas::SUPPLIER_SCHEMA.clone(),
             TpchTableKind::PartSupp => schemas::PARTSUPP_SCHEMA.clone(),
             TpchTableKind::Customer => schemas::CUSTOMER_SCHEMA.clone(),
-            TpchTableKind::Order => schemas::ORDER_SCHEMA.clone(),
+            TpchTableKind::Orders => schemas::ORDERS_SCHEMA.clone(),
         }
     }
 
@@ -108,7 +108,7 @@ impl TpchTableKind {
 
                 Box::new(CustomerArrow::new(generator))
             }
-            TpchTableKind::Order => {
+            TpchTableKind::Orders => {
                 let generator =
                     OrderGenerator::new(scale_factor, part as i32 + 1, num_parts as i32);
 
