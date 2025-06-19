@@ -28,7 +28,7 @@ public class SparkDataSink {
             .config("spark.sql.defaultCatalog", "lakesoul")
             .getOrCreate();
     spark.sql("DROP TABLE IF EXISTS lakesoul_e2e_test");
-    String csvFile = "/tmp/lakesoul/data/data.csv";
+    String csvFile = "/tmp/lakesoul/e2e/data/data.csv";
     StructType schema =
         DataTypes.createStructType(
             new StructField[] {

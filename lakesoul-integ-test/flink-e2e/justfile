@@ -23,7 +23,7 @@ install:
     mvn install -DskipTests
 
 clean-data:
-    rm -rf /tmp/lakesoul/e2e/data/*
+    rm -rf /tmp/lakesoul/e2e/flink/*
 
 remove_mvn:
     @rm -rf ~/.m2/repository/com/dmetasoul

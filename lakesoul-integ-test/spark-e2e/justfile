@@ -27,5 +27,5 @@ clean-data:
 remove_mvn:
     @rm -rf ~/.m2/repository/com/dmetasoul
 
-run which: clean-data install
+run which: install
     {{ SPARK_BIN }}/spark-submit --class {{ MAIN_CLASS }}{{ which }} --master local[4] {{ TARGET }}
