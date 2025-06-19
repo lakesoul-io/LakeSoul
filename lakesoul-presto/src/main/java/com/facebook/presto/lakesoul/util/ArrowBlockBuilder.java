@@ -16,26 +16,7 @@ package com.facebook.presto.lakesoul.util;
 import com.facebook.presto.common.block.Block;
 import com.facebook.presto.common.block.BlockBuilder;
 import com.facebook.presto.common.block.DictionaryBlock;
-import com.facebook.presto.common.type.ArrayType;
-import com.facebook.presto.common.type.BigintType;
-import com.facebook.presto.common.type.BooleanType;
-import com.facebook.presto.common.type.CharType;
-import com.facebook.presto.common.type.DateType;
-import com.facebook.presto.common.type.DecimalType;
-import com.facebook.presto.common.type.Decimals;
-import com.facebook.presto.common.type.DoubleType;
-import com.facebook.presto.common.type.IntegerType;
-import com.facebook.presto.common.type.MapType;
-import com.facebook.presto.common.type.RealType;
-import com.facebook.presto.common.type.RowType;
-import com.facebook.presto.common.type.SmallintType;
-import com.facebook.presto.common.type.TimeType;
-import com.facebook.presto.common.type.TimestampType;
-import com.facebook.presto.common.type.TinyintType;
-import com.facebook.presto.common.type.Type;
-import com.facebook.presto.common.type.TypeManager;
-import com.facebook.presto.common.type.VarbinaryType;
-import com.facebook.presto.common.type.VarcharType;
+import com.facebook.presto.common.type.*;
 import com.google.common.base.CharMatcher;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
@@ -105,7 +86,7 @@ public class ArrowBlockBuilder
             case Date:
                 return DateType.DATE;
             case Timestamp:
-                return TimestampType.TIMESTAMP;
+                return TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
             case Utf8:
             case LargeUtf8:
                 return VarcharType.VARCHAR;
