@@ -39,28 +39,7 @@ import com.facebook.presto.common.type.VarcharType;
 import com.google.common.base.CharMatcher;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
-import org.apache.arrow.vector.BigIntVector;
-import org.apache.arrow.vector.BitVector;
-import org.apache.arrow.vector.DateDayVector;
-import org.apache.arrow.vector.DateMilliVector;
-import org.apache.arrow.vector.DecimalVector;
-import org.apache.arrow.vector.FieldVector;
-import org.apache.arrow.vector.Float4Vector;
-import org.apache.arrow.vector.Float8Vector;
-import org.apache.arrow.vector.IntVector;
-import org.apache.arrow.vector.NullVector;
-import org.apache.arrow.vector.SmallIntVector;
-import org.apache.arrow.vector.TimeMicroVector;
-import org.apache.arrow.vector.TimeMilliVector;
-import org.apache.arrow.vector.TimeSecVector;
-import org.apache.arrow.vector.TimeStampMicroVector;
-import org.apache.arrow.vector.TimeStampMilliTZVector;
-import org.apache.arrow.vector.TimeStampMilliVector;
-import org.apache.arrow.vector.TimeStampSecVector;
-import org.apache.arrow.vector.TinyIntVector;
-import org.apache.arrow.vector.ValueVector;
-import org.apache.arrow.vector.VarBinaryVector;
-import org.apache.arrow.vector.VarCharVector;
+import org.apache.arrow.vector.*;
 import org.apache.arrow.vector.complex.ListVector;
 import org.apache.arrow.vector.complex.MapVector;
 import org.apache.arrow.vector.complex.StructVector;
@@ -249,11 +228,12 @@ public class ArrowBlockBuilder
         else if (vector instanceof NullVector) {
             assignBlockFromNullVector((NullVector) vector, type, builder, startIndex, endIndex);
         }
-        else if (vector instanceof TimeStampMicroVector) {
-            assignBlockFromTimeStampMicroVector((TimeStampMicroVector) vector, type, builder, startIndex, endIndex);
+        else if (vector instanceof TimeStampMicroVector ||
+                 vector instanceof TimeStampMicroTZVector) {
+            assignBlockFromTimeStampMicroVector((TimeStampVector) vector, type, builder, startIndex, endIndex);
         }
         else if (vector instanceof TimeStampMilliVector) {
-            assignBlockFromTimeStampMilliVector((TimeStampMilliVector) vector, type, builder, startIndex, endIndex);
+            assignBlockFromTimeStampMilliVector((TimeStampVector) vector, type, builder, startIndex, endIndex);
         }
         else if (vector instanceof Float4Vector) {
             assignBlockFromFloat4Vector((Float4Vector) vector, type, builder, startIndex, endIndex);
@@ -287,8 +267,9 @@ public class ArrowBlockBuilder
         else if (vector instanceof TimeSecVector) {
             assignBlockFromTimeSecVector((TimeSecVector) vector, type, builder, startIndex, endIndex);
         }
-        else if (vector instanceof TimeStampSecVector) {
-            assignBlockFromTimeStampSecVector((TimeStampSecVector) vector, type, builder, startIndex, endIndex);
+        else if (vector instanceof TimeStampSecVector ||
+                 vector instanceof TimeStampSecTZVector) {
+            assignBlockFromTimeStampSecVector((TimeStampVector) vector, type, builder, startIndex, endIndex);
         }
         else if (vector instanceof TimeMicroVector) {
             assignBlockFromTimeMicroVector((TimeMicroVector) vector, type, builder, startIndex, endIndex);
@@ -403,7 +384,7 @@ public class ArrowBlockBuilder
         }
     }
 
-    public void assignBlockFromTimeStampMicroVector(TimeStampMicroVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
+    public void assignBlockFromTimeStampMicroVector(TimeStampVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
     {
         if (!(type instanceof TimestampType)) {
             throw new IllegalArgumentException("Expected TimestampType but got " + type.getClass().getName());
@@ -421,7 +402,7 @@ public class ArrowBlockBuilder
         }
     }
 
-    public void assignBlockFromTimeStampMilliVector(TimeStampMilliVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
+    public void assignBlockFromTimeStampMilliVector(TimeStampVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
     {
         if (!(type instanceof TimestampType)) {
             throw new IllegalArgumentException("Expected TimestampType but got " + type.getClass().getName());
@@ -582,7 +563,7 @@ public class ArrowBlockBuilder
         }
     }
 
-    public void assignBlockFromTimeStampSecVector(TimeStampSecVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
+    public void assignBlockFromTimeStampSecVector(TimeStampVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
     {
         if (!(type instanceof TimestampType)) {
             throw new IllegalArgumentException("Type must be a TimestampType for TimeStampSecVector");
