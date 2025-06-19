@@ -267,7 +267,7 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
             if (!(value instanceof Long)) {
                 throw new RuntimeException("time/timestamptype except filter value type is long, but it is " + value.getClass());
             }
-            return FilterApi.eq(FilterApi.longColumn(name), (Long) value);
+            return FilterApi.eq(FilterApi.longColumn(name), (Long) value * 1000);
         }
         return null;
     }
@@ -307,7 +307,7 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
             if (!(value instanceof Long)) {
                 throw new RuntimeException("time/timestamptype except filter value type is long, but it is " + value.getClass());
             }
-            return FilterApi.gt(FilterApi.longColumn(name), (Long) value);
+            return FilterApi.gt(FilterApi.longColumn(name), (Long) value * 1000);
         }
         return null;
     }
@@ -346,7 +346,7 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
             if (!(value instanceof Long)) {
                 throw new RuntimeException("time/timestamptype except filter value type is long, but it is " + value.getClass());
             }
-            return FilterApi.gtEq(FilterApi.longColumn(name), (Long) value);
+            return FilterApi.gtEq(FilterApi.longColumn(name), (Long) value * 1000);
         }
         return null;
     }
@@ -385,7 +385,7 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
             if (!(value instanceof Long)) {
                 throw new RuntimeException("time/timestamptype except filter value type is long, but it is " + value.getClass());
             }
-            return FilterApi.lt(FilterApi.longColumn(name), (Long) value);
+            return FilterApi.lt(FilterApi.longColumn(name), (Long) value * 1000);
         }
         return null;
     }
@@ -424,7 +424,7 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
             if (!(value instanceof Long)) {
                 throw new RuntimeException("time/timestamptype except filter value type is long, but it is " + value.getClass());
             }
-            return FilterApi.ltEq(FilterApi.longColumn(name), (Long) value);
+            return FilterApi.ltEq(FilterApi.longColumn(name), (Long) value * 1000);
         }
         return null;
     }
