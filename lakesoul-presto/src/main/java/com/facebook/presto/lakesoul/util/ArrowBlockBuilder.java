@@ -209,12 +209,11 @@ public class ArrowBlockBuilder
         else if (vector instanceof NullVector) {
             assignBlockFromNullVector((NullVector) vector, type, builder, startIndex, endIndex);
         }
-        else if (vector instanceof TimeStampMicroVector ||
-                 vector instanceof TimeStampMicroTZVector) {
-            assignBlockFromTimeStampMicroVector((TimeStampVector) vector, type, builder, startIndex, endIndex);
+        else if (vector instanceof TimeStampMicroVector) {
+            assignBlockFromTimeStampMicroVector((TimeStampMicroVector) vector, type, builder, startIndex, endIndex);
         }
         else if (vector instanceof TimeStampMilliVector) {
-            assignBlockFromTimeStampMilliVector((TimeStampVector) vector, type, builder, startIndex, endIndex);
+            assignBlockFromTimeStampMilliVector((TimeStampMilliVector) vector, type, builder, startIndex, endIndex);
         }
         else if (vector instanceof Float4Vector) {
             assignBlockFromFloat4Vector((Float4Vector) vector, type, builder, startIndex, endIndex);
@@ -248,17 +247,18 @@ public class ArrowBlockBuilder
         else if (vector instanceof TimeSecVector) {
             assignBlockFromTimeSecVector((TimeSecVector) vector, type, builder, startIndex, endIndex);
         }
-        else if (vector instanceof TimeStampSecVector ||
-                 vector instanceof TimeStampSecTZVector) {
-            assignBlockFromTimeStampSecVector((TimeStampVector) vector, type, builder, startIndex, endIndex);
+        else if (vector instanceof TimeStampSecVector) {
+            assignBlockFromTimeStampSecVector((TimeStampSecVector) vector, type, builder, startIndex, endIndex);
         }
         else if (vector instanceof TimeMicroVector) {
             assignBlockFromTimeMicroVector((TimeMicroVector) vector, type, builder, startIndex, endIndex);
-        }
-        else if (vector instanceof TimeStampMilliTZVector) {
-            assignBlockFromTimeMilliTZVector((TimeStampMilliTZVector) vector, type, builder, startIndex, endIndex);
-        }
-        else if (vector instanceof MapVector) {
+        } else if (vector instanceof TimeStampMicroTZVector) {
+            assignBlockFromTimeStampMicroTZVector((TimeStampMicroTZVector) vector, type, builder, startIndex, endIndex);
+        } else if (vector instanceof TimeStampMilliTZVector) {
+            assignBlockFromTimeStampMilliTZVector((TimeStampMilliTZVector) vector, type, builder, startIndex, endIndex);
+        } else if (vector instanceof TimeStampSecTZVector) {
+            assignBlockFromTimeStampSecTZVector((TimeStampSecTZVector) vector, type, builder, startIndex, endIndex);
+        } else if (vector instanceof MapVector) {
             // NOTE: MapVector is also instanceof ListVector, so check for Map first
             assignBlockFromMapVector((MapVector) vector, type, builder, startIndex, endIndex);
         }
@@ -365,9 +365,9 @@ public class ArrowBlockBuilder
         }
     }
 
-    public void assignBlockFromTimeStampMicroVector(TimeStampVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
+    public void assignBlockFromTimeStampMicroVector(TimeStampMicroVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
     {
-        if (!isTimestampType(type)) {
+        if (!(type instanceof TimestampType)) {
             throw new IllegalArgumentException("Expected TimestampType but got " + type.getClass().getName());
         }
 
@@ -383,9 +383,28 @@ public class ArrowBlockBuilder
         }
     }
 
-    public void assignBlockFromTimeStampMilliVector(TimeStampVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
+    public void assignBlockFromTimeStampMicroTZVector(TimeStampMicroTZVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
     {
-        if (!isTimestampType(type)) {
+        if (!(type instanceof TimestampWithTimeZoneType)) {
+            throw new IllegalArgumentException("Expected TimestampType but got " + type.getClass().getName());
+        }
+
+        for (int i = startIndex; i < endIndex; i++) {
+            if (vector.isNull(i)) {
+                builder.appendNull();
+            }
+            else {
+                long micros = vector.get(i);
+                long millis = TimeUnit.MICROSECONDS.toMillis(micros);
+                long value = DateTimeEncoding.packDateTimeWithZone(millis, TimeZoneKey.UTC_KEY);
+                type.writeLong(builder, value);
+            }
+        }
+    }
+
+    public void assignBlockFromTimeStampMilliVector(TimeStampMilliVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
+    {
+        if (!(type instanceof TimestampType)) {
             throw new IllegalArgumentException("Expected TimestampType but got " + type.getClass().getName());
         }
 
@@ -544,9 +563,9 @@ public class ArrowBlockBuilder
         }
     }
 
-    public void assignBlockFromTimeStampSecVector(TimeStampVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
+    public void assignBlockFromTimeStampSecVector(TimeStampSecVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
     {
-        if (!isTimestampType(type)) {
+        if (!(type instanceof TimestampType)) {
             throw new IllegalArgumentException("Type must be a TimestampType for TimeStampSecVector");
         }
 
@@ -558,6 +577,25 @@ public class ArrowBlockBuilder
                 long value = vector.get(i);
                 long millis = TimeUnit.SECONDS.toMillis(value);
                 type.writeLong(builder, millis);
+            }
+        }
+    }
+
+    public void assignBlockFromTimeStampSecTZVector(TimeStampSecTZVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
+    {
+        if (!(type instanceof TimestampWithTimeZoneType)) {
+            throw new IllegalArgumentException("Type must be a TimestampType for TimeStampSecVector");
+        }
+
+        for (int i = startIndex; i < endIndex; i++) {
+            if (vector.isNull(i)) {
+                builder.appendNull();
+            }
+            else {
+                long value = vector.get(i);
+                long millis = TimeUnit.SECONDS.toMillis(value);
+                long v = DateTimeEncoding.packDateTimeWithZone(millis, TimeZoneKey.UTC_KEY);
+                type.writeLong(builder, v);
             }
         }
     }
@@ -590,9 +628,9 @@ public class ArrowBlockBuilder
         }
     }
 
-    public void assignBlockFromTimeMilliTZVector(TimeStampMilliTZVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
+    public void assignBlockFromTimeStampMilliTZVector(TimeStampMilliTZVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
     {
-        if (!isTimestampType(type)) {
+        if (!(type instanceof TimestampWithTimeZoneType)) {
             throw new IllegalArgumentException("Type must be a TimestampType for TimeStampMilliTZVector");
         }
 
@@ -602,7 +640,8 @@ public class ArrowBlockBuilder
             }
             else {
                 long millis = vector.get(i);
-                type.writeLong(builder, millis);
+                long value = DateTimeEncoding.packDateTimeWithZone(millis, TimeZoneKey.UTC_KEY);
+                type.writeLong(builder, value);
             }
         }
     }
@@ -680,10 +719,6 @@ public class ArrowBlockBuilder
                 builder.closeEntry();
             }
         }
-    }
-
-    private boolean isTimestampType(Type type) {
-        return type instanceof TimestampType || type instanceof TimestampWithTimeZoneType;
     }
 
     public TypeManager getTypeManager() {
