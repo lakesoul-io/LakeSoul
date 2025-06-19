@@ -23,10 +23,10 @@ install:
     mvn install -DskipTests
 
 clean-data:
-    rm -rf /tmp/lakesoul/data/sink
+    rm -rf /tmp/lakesoul/e2e/data/*
 
 remove_mvn:
     @rm -rf ~/.m2/repository/com/dmetasoul
 
-run which: clean-data install
+run which: install
     {{ FLINK_BIN }}/flink run -c {{ MAIN_CLASS }}{{ which }} {{ TARGET }}

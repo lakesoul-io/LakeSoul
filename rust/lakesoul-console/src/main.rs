@@ -9,6 +9,7 @@ use lakesoul_datafusion::{
 use rand::Rng;
 use rand::distr::Alphanumeric;
 use tracing_subscriber::EnvFilter;
+use tracing::trace;
 
 mod exec;
 mod logo;
