@@ -31,36 +31,35 @@ public class SparkDataSource {
                 "org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog")
             .config("spark.sql.defaultCatalog", "lakesoul")
             .getOrCreate();
-    //        var df = spark.sql("select * from lakesoul_e2e_test");
-    //        df.show();
-
-    // 创建数据集合
-    List<Row> data =
-        Arrays.asList(
-            RowFactory.create("Alice", 25),
-            RowFactory.create("Bob", 30),
-            RowFactory.create("Charlie", 35));
-
-    // 定义 Schema
-    List<StructField> fields =
-        Arrays.asList(
-            DataTypes.createStructField("name", DataTypes.StringType, true),
-            DataTypes.createStructField("age", DataTypes.IntegerType, true));
-    StructType schema = DataTypes.createStructType(fields);
-
-    // 创建 DataFrame
-    Dataset<Row> df = spark.createDataFrame(data, schema);
-    df.registerTempTable("test_data");
-
-    spark.sql("drop database if exists spark");
-    spark.sql("create database spark;");
-    spark.sql(
-        "create table spark.data (name string, age int) using lakesoul location 'file:///tmp/lakesoul/e2e/spark'");
-    spark.sql("insert into spark.data select name, age from test_data");
-    spark.sql("select * from spark.data").show();
-
-    //        df.write().mode("append").format("lakesoul").option("shortTableName",
-    // "spark.lakesoul_e2e_test_from_spark").save("file:///tmp/lakesoul/e2e/spark");
+    var csvFile = "/tmp/lakesoul/e2e/data/data.csv";
+    StructType schema =
+        DataTypes.createStructType(
+            new StructField[] {
+              DataTypes.createStructField("f_int", DataTypes.IntegerType, false),
+              DataTypes.createStructField("f_bigint", DataTypes.IntegerType, false),
+              DataTypes.createStructField("f_smallint", DataTypes.IntegerType, false),
+              DataTypes.createStructField("f_tinyint", DataTypes.IntegerType, false),
+              DataTypes.createStructField("f_float", DataTypes.IntegerType, false),
+              DataTypes.createStructField("f_double", DataTypes.IntegerType, false),
+              DataTypes.createStructField("f_decimal", DataTypes.IntegerType, false),
+              DataTypes.createStructField("f_string", DataTypes.IntegerType, false),
+              DataTypes.createStructField("f_char", DataTypes.IntegerType, false),
+              DataTypes.createStructField("f_varchar", DataTypes.IntegerType, false),
+              DataTypes.createStructField("f_boolean", DataTypes.IntegerType, false),
+              DataTypes.createStructField("f_date", DataTypes.IntegerType, false),
+              DataTypes.createStructField("f_time", DataTypes.IntegerType, false),
+              DataTypes.createStructField("f_timestamp", DataTypes.IntegerType, false),
+              DataTypes.createStructField("f_bytes", DataTypes.IntegerType, false),
+              DataTypes.createStructField("f_array", DataTypes.IntegerType, false),
+              DataTypes.createStructField("f_row", DataTypes.IntegerType, false),
+            });
+    Dataset<Row> origin = spark.read().schema(schema).option("inferSchema", "true").csv(csvFile);
+    origin.registerTempTable("csv_source");
+    var df1 = spark.sql("select * from csv_source except select * from lakesoul_e2e_test;");
+    var df2 = spark.sql("select * from lakesoul_e2e_test except select * from csv_source;");
+    if (!df1.isEmpty() || !df2.isEmpty()) {
+      throw new RuntimeException("Sink data != Source Data");
+    }
     spark.stop();
   }
 }
