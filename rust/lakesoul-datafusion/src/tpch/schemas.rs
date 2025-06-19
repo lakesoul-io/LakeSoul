@@ -37,8 +37,8 @@ fn make_nation_schema() -> SchemaRef {
 }
 
 /// Schema for the Order
-pub static ORDER_SCHEMA: LazyLock<SchemaRef> = LazyLock::new(make_order_schema);
-fn make_order_schema() -> SchemaRef {
+pub static ORDERS_SCHEMA: LazyLock<SchemaRef> = LazyLock::new(make_orders_schema);
+fn make_orders_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("o_orderkey", DataType::Int64, false),
         Field::new("o_custkey", DataType::Int64, false),
@@ -126,7 +126,7 @@ pub fn tpch_schema(name: &str) -> SchemaRef {
         "part" => PART_SCHEMA.clone(),
         "supplier" => SUPPLIER_SCHEMA.clone(),
         "customer" => CUSTOMER_SCHEMA.clone(),
-        "order" => ORDER_SCHEMA.clone(),
+        "orders" => ORDERS_SCHEMA.clone(),
         "region" => REGION_SCHEMA.clone(),
         "partsupp" => PARTSUPP_SCHEMA.clone(),
         _ => unimplemented!(),

@@ -29,4 +29,4 @@ STORED AS LAKESOUL
 LOCATION 'file:///tmp/lakesoul/tpch_data/lineitem';
 INSERT INTO lineitem
 SELECT *
-FROM tpch_lineitem(10.0,8);
+FROM tpch_lineitem(0.1,8);

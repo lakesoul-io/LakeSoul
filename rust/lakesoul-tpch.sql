@@ -43,9 +43,9 @@ SELECT *
 FROM tpch_nation(10.0,8);
 
 -- order
-DROP TABLE IF EXISTS tpch_sf10.order;
+DROP TABLE IF EXISTS tpch_sf10.orders;
 CREATE
-EXTERNAL TABLE  tpch_sf10.order (
+EXTERNAL TABLE  tpch_sf10.orders (
     o_orderkey BIGINT NOT NULL,
     o_custkey BIGINT NOT NULL,
     o_orderstatus STRING NOT NULL,
@@ -57,10 +57,10 @@ EXTERNAL TABLE  tpch_sf10.order (
     o_comment STRING NOT NULL,
 )
 STORED AS LAKESOUL
-LOCATION 'file:///data/lakesoul/tpch_sf10/order';
-INSERT INTO tpch_sf10.order
+LOCATION 'file:///data/lakesoul/tpch_sf10/orders';
+INSERT INTO tpch_sf10.orders
 SELECT *
-FROM tpch_order(10.0,8);
+FROM tpch_orders(10.0,8);
 
 --PART
 DROP TABLE IF EXISTS tpch_sf10.part;

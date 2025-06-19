@@ -5,6 +5,7 @@
 use crate::Command;
 use crate::print::Printer;
 use anyhow::bail;
+use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::logical_expr::sqlparser::ast::{Statement as SQLStatement, Use};
 use datafusion::physical_plan::execute_stream;
@@ -19,12 +20,12 @@ use std::sync::Arc;
 use std::time::Instant;
 use std::{fs::File, io::BufReader};
 use tokio::signal;
-use tracing::debug;
+use tracing::{debug, trace};
 
 pub async fn exec_command(
     commands: Command,
-    ctx: &SessionContext,
     printer: &Printer,
+    ctx: &SessionContext,
 ) -> anyhow::Result<()> {
     match commands {
         Command::TpchGen {
@@ -41,7 +42,7 @@ pub async fn exec_command(
                 "nation".to_string(),
                 "supplier".to_string(),
                 "partsupp".to_string(),
-                "order".to_string(),
+                "orders".to_string(),
                 "region".to_string(),
             ];
 
@@ -63,13 +64,29 @@ pub async fn exec_command(
                 all.push(v);
             }
 
-            for table in all.iter() {
-                for sql in table.iter() {
-                    exec_and_print(ctx, printer, sql).await?;
-                }
-            }
+            exec_tpch_gen(ctx, all, printer).await?;
         }
     }
+    Ok(())
+}
+
+async fn exec_tpch_gen(
+    ctx: &SessionContext,
+    sqls: Vec<Vec<String>>,
+    printer: &Printer,
+) -> anyhow::Result<()> {
+    let start = Instant::now();
+    let mut row_counts = 0;
+    let mut res = vec![];
+    for t in sqls {
+        for sql in t {
+            let (row_count, v, _) = exec(ctx, &sql).await?;
+            trace!("add row_count {row_count}");
+            row_counts += row_count;
+           res.extend(v);
+        }
+    }
+    printer.print_batches(Arc::new(Schema::empty()), &res, start, row_counts)?;
     Ok(())
 }
 
@@ -145,12 +162,12 @@ fn parse_use(stmt: Statement) -> Option<Use> {
         _ => None,
     }
 }
-async fn exec_and_print(
+
+async fn exec(
     ctx: &SessionContext,
-    printer: &Printer,
     sql: &str,
-) -> anyhow::Result<()> {
-    let now = Instant::now();
+) -> anyhow::Result<(usize, Vec<RecordBatch>, Arc<Schema>)> {
+    trace!("begin exec sql");
     let stmt = ctx.state().sql_to_statement(sql, "postgresql")?;
     if let Some(u) = parse_use(stmt.clone()) {
         match u {
@@ -189,7 +206,7 @@ async fn exec_and_print(
             }
         }
         // use finished
-        return printer.print_batches(Arc::new(Schema::empty()), &[], now, 0);
+        return Ok((0, vec![], Arc::new(Schema::empty())));
     }
     let plan = ctx.state().statement_to_plan(stmt).await?;
     let df = ctx.execute_logical_plan(plan).await?;
@@ -204,6 +221,18 @@ async fn exec_and_print(
         res.push(batch);
         row_count += curr_num_rows;
     }
+    Ok((row_count, res, schema))
+}
+
+#[tracing::instrument(skip(ctx, printer))]
+async fn exec_and_print(
+    ctx: &SessionContext,
+    printer: &Printer,
+    sql: &str,
+) -> anyhow::Result<()> {
+    trace!("begin exec sql");
+    let now = Instant::now();
+    let (row_count, res, schema) = exec(ctx, sql).await?;
     printer.print_batches(schema, &res, now, row_count)?;
     Ok(())
 }
@@ -231,7 +260,7 @@ pub async fn exec_from_repl(
             }
             Err(ReadlineError::Interrupted) => {
                 println!("^C");
-                continue;
+                break;
             }
             Err(ReadlineError::Eof) => {
                 println!("bye bye! 🫡");

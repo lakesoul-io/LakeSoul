@@ -41,8 +41,8 @@ impl PooledClient {
         let manager = PgConnectionManager::new(config);
         let pool = Pool::builder()
             .max_size(8)
-            .min_idle(0)
-            .connection_timeout(Duration::from_secs(60))
+            .min_idle(1)
+            .connection_timeout(Duration::from_secs(10))
             .idle_timeout(Some(Duration::from_secs(30)))
             .queue_strategy(QueueStrategy::Lifo)
             .build(manager)

@@ -4,9 +4,12 @@ use crate::exec::{exec_command, exec_from_files, exec_from_repl};
 use crate::print::Printer;
 use clap::{Parser, Subcommand};
 use lakesoul_datafusion::{
-    cli::CoreArgs, create_lakesoul_session_ctx, tpch::register_tpch_udtfs, MetaDataClient,
+    MetaDataClient, cli::CoreArgs, create_lakesoul_session_ctx, tpch::register_tpch_udtfs,
 };
 use tracing_subscriber::EnvFilter;
+
+mod exec;
+mod print;
 
 #[derive(Parser)]
 struct Cli {
@@ -39,9 +42,6 @@ enum Command {
         num_parts: i32,
     },
 }
-
-mod exec;
-mod print;
 
 fn parse_valid_file(dir: &str) -> Result<String, String> {
     if Path::new(dir).is_file() {
@@ -80,7 +80,7 @@ async fn main_inner(cli: Cli) -> anyhow::Result<()> {
     let printer = Printer::default();
 
     if cli.command.is_some() {
-        return exec_command(cli.command.unwrap(), &ctx, &printer).await;
+        return exec_command(cli.command.unwrap(), &printer, &ctx).await;
     }
 
     if !files.is_empty() {
@@ -93,7 +93,7 @@ async fn main_inner(cli: Cli) -> anyhow::Result<()> {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let Ok(rt) = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(61)
+        .worker_threads(cli.core.worker_threads)
         .enable_all()
         .build()
     else {
