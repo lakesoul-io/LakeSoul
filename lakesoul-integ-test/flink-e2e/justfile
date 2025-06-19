@@ -1,0 +1,32 @@
+FLINK_HOME := '~/Downloads/flink-1.20.1'
+FLINK_BIN := FLINK_HOME + "/bin"
+TARGET := "/Users/mag1cian/.m2/repository/com/dmetasoul/flink-e2e/3.0.0-SNAPSHOT/flink-e2e-3.0.0-SNAPSHOT.jar"
+
+#TARGET := "~/dev/internship/LakeSoul/lakesoul-integ-test/flink/target/integ.flink-3.0.0-SNAPSHOT.jar"
+
+MAIN_CLASS := "com.dmetasoul.e2e.FlinkData"
+
+#LAKE_SOUL_LIB := "~/dev/internship/LakeSoul/lakesoul-flink/target/lakesoul-flink-1.20-3.0.0-SNAPSHOT.jar"
+
+LAKE_SOUL_LIB := "~/.m2/repository/com/dmetasoul/lakesoul-flink/1.20-3.0.0-SNAPSHOT/lakesoul-flink-1.20-3.0.0-SNAPSHOT.jar"
+
+add-lakesoul:
+    cp {{ LAKE_SOUL_LIB }} {{ FLINK_HOME }}/lib
+
+cluster cmd:
+    {{ FLINK_BIN }}/{{ cmd }}-cluster.sh
+
+build:
+    mvn package -DskipTests
+
+install:
+    mvn install -DskipTests
+
+clean-data:
+    rm -rf /tmp/lakesoul/data/sink
+
+remove_mvn:
+    @rm -rf ~/.m2/repository/com/dmetasoul
+
+run which: clean-data install
+    {{ FLINK_BIN }}/flink run -c {{ MAIN_CLASS }}{{ which }} {{ TARGET }}
