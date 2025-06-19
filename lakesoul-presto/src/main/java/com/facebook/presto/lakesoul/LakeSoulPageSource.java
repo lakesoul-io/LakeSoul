@@ -23,6 +23,8 @@ import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
+import org.apache.parquet.filter2.predicate.FilterApi;
+import org.apache.parquet.io.api.Binary;
 
 import java.io.IOException;
 import java.util.*;
@@ -79,6 +81,10 @@ public class LakeSoulPageSource implements ConnectorPageSource {
                 split.getLayout().getTableParameters().getString(PrestoUtil.CDC_CHANGE_COLUMN);
         if (cdcColumn != null) {
             fields.add(Field.notNullable(cdcColumn, new ArrowType.Utf8()));
+            reader.addFilter(FilterApi.notEq(
+                            FilterApi.binaryColumn(cdcColumn),
+                            Binary.fromString("delete"))
+                    .toString());
         }
 
         reader.setPrimaryKeys(prikeys);

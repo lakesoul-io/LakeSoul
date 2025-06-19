@@ -57,7 +57,7 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
         this.tupleDomain = requireNonNull(tupleDomain, "tupleDomain should not be null");
         this.allColumns = requireNonNull(allColumns, "allColumns should not be null");
         this.filters = buildFilters();
-        this.filterStrList = this.filters.stream().map(filterPredicate -> filterPredicate.toString())
+        this.filterStrList = this.filters.stream().map(Object::toString)
                 .collect(Collectors.toList());
     }
 

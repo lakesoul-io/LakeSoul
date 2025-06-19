@@ -199,7 +199,7 @@ jobs:
           docker logs lakesoul-docker-compose-env-jobmanager-1 > flink-job-manager.log
           docker logs lakesoul-docker-compose-env-taskmanager-1 > flink-task-manager-1.log
           docker logs lakesoul-docker-compose-env-taskmanager-2 > flink-task-manager-2.log
-          docker logs presto > presto-server.log
+          docker logs presto > presto-server.log 2>&1
       - name: Upload Log
         if: always()
         continue-on-error: true
