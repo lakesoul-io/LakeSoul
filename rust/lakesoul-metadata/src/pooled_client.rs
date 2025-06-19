@@ -7,7 +7,7 @@
 use crate::error::Result;
 use async_trait::async_trait;
 use bb8_postgres::bb8::{Pool, PooledConnection, QueueStrategy};
-use bb8_postgres::{PostgresConnectionManager, bb8};
+use bb8_postgres::{bb8, PostgresConnectionManager};
 use postgres_types::{ToSql, Type};
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -36,8 +36,10 @@ impl Debug for PooledClient {
 pub type PgConnection<'a> = PooledConnection<'a, PgConnectionManager>;
 
 impl PooledClient {
+    #[instrument(level = "trace")]
     pub async fn try_new(config: String) -> Result<PooledClient> {
         let config = config.parse::<Config>()?;
+        trace!("try to build pooled pg client");
         let manager = PgConnectionManager::new(config);
         let pool = Pool::builder()
             .max_size(8)
