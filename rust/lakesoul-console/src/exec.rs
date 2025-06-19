@@ -83,7 +83,7 @@ async fn exec_tpch_gen(
             let (row_count, v, _) = exec(ctx, &sql).await?;
             trace!("add row_count {row_count}");
             row_counts += row_count;
-           res.extend(v);
+            res.extend(v);
         }
     }
     printer.print_batches(Arc::new(Schema::empty()), &res, start, row_counts)?;
