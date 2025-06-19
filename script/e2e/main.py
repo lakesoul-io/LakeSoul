@@ -16,7 +16,7 @@ from pathlib import Path
 VERSION = None
 
 LAKESOUL_GIT = "https://github.com/lakesoul-io/LakeSoul.git"
-TMP_CODE_DIR = Path("/tmp/lakesoul/code")
+TMP_CODE_DIR = Path("/tmp/lakesoul/e2e/code")
 CONFIG_FILE = "config.yaml"
 MVN_LOCAL = Path("~/.m2/repository/com/dmetasoul")
 
