@@ -367,7 +367,7 @@ public class ArrowBlockBuilder
 
     public void assignBlockFromTimeStampMicroVector(TimeStampVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
     {
-        if (!(type instanceof TimestampType)) {
+        if (!isTimestampType(type)) {
             throw new IllegalArgumentException("Expected TimestampType but got " + type.getClass().getName());
         }
 
@@ -385,7 +385,7 @@ public class ArrowBlockBuilder
 
     public void assignBlockFromTimeStampMilliVector(TimeStampVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
     {
-        if (!(type instanceof TimestampType)) {
+        if (!isTimestampType(type)) {
             throw new IllegalArgumentException("Expected TimestampType but got " + type.getClass().getName());
         }
 
@@ -546,7 +546,7 @@ public class ArrowBlockBuilder
 
     public void assignBlockFromTimeStampSecVector(TimeStampVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
     {
-        if (!(type instanceof TimestampType)) {
+        if (!isTimestampType(type)) {
             throw new IllegalArgumentException("Type must be a TimestampType for TimeStampSecVector");
         }
 
@@ -592,7 +592,7 @@ public class ArrowBlockBuilder
 
     public void assignBlockFromTimeMilliTZVector(TimeStampMilliTZVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
     {
-        if (!(type instanceof TimestampType)) {
+        if (!isTimestampType(type)) {
             throw new IllegalArgumentException("Type must be a TimestampType for TimeStampMilliTZVector");
         }
 
@@ -680,6 +680,10 @@ public class ArrowBlockBuilder
                 builder.closeEntry();
             }
         }
+    }
+
+    private boolean isTimestampType(Type type) {
+        return type instanceof TimestampType || type instanceof TimestampWithTimeZoneType;
     }
 
     public TypeManager getTypeManager() {
