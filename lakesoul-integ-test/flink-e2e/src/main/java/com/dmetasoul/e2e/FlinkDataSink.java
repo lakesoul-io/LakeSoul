@@ -57,7 +57,7 @@ public class FlinkDataSink {
             "f_row ROW<f1 INT, f2 STRING>"
             + ") WITH (\n"
             + "'connector' = 'filesystem',\n"
-            + "'path' = 'file:///tmp/lakesoul/e2e/data.csv',\n"
+            + "'path' = 'file:///tmp/lakesoul/e2e/data/data.csv',\n"
             + "'format' ='csv',\n"
             + "'csv.null-literal' ='NULL'\n"
             + ")\n";
