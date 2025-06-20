@@ -22,6 +22,7 @@ import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
 import org.junit.runner.RunWith
 import org.scalatest.BeforeAndAfterEach
 import org.scalatestplus.junit.JUnitRunner
+import scala.collection.mutable.HashMap
 
 @RunWith(classOf[JUnitRunner])
 class NewCompactionSuite extends QueryTest
@@ -397,7 +398,7 @@ class NewCompactionSuite extends QueryTest
     val rand = new scala.util.Random
     val merge_num_limit = 2 + rand.nextInt(100) % 6
     println(s"merge compacted file num limit $merge_num_limit")
-    withSQLConf(LakeSoulSQLConf.COMPACTION_LEVEL1_FILE_MERGE_NUM_LIMIT.key -> merge_num_limit.toString) {
+    withSQLConf(LakeSoulSQLConf.COMPACTION_LEVEL_FILE_MERGE_NUM_LIMIT.key -> merge_num_limit.toString) {
       withTempDir { tempDir =>
         val tablePath = tempDir.getCanonicalPath
 
@@ -454,9 +455,7 @@ class NewCompactionSuite extends QueryTest
 
           val afterCompactIncrementalFileNum = (incrementalFileCount - 1) / compactGroupSize + 1
           val firstLevelCompactFileNum = afterCompactIncrementalFileNum + lastCompactedFileCount
-          val afterCompactionFileNumber = if (firstLevelCompactFileNum >= 20)
-              (firstLevelCompactFileNum) / merge_num_limit + firstLevelCompactFileNum % merge_num_limit
-            else firstLevelCompactFileNum
+          val afterCompactionFileNumber = firstLevelCompactFileNum
           println(s"first level $firstLevelCompactFileNum, after compact $afterCompactionFileNumber," +
             s"compacted files: ${compactedFileList.mkString("Array(", ", ", ")")}")
           assert(compactedFileCount == afterCompactionFileNumber,
@@ -478,7 +477,7 @@ class NewCompactionSuite extends QueryTest
     val rand = new scala.util.Random
     val merge_num_limit = 2 + rand.nextInt(100) % 6
     println(s"merge compacted file num limit $merge_num_limit")
-    withSQLConf(LakeSoulSQLConf.COMPACTION_LEVEL1_FILE_MERGE_NUM_LIMIT.key -> merge_num_limit.toString) {
+    withSQLConf(LakeSoulSQLConf.COMPACTION_LEVEL_FILE_MERGE_NUM_LIMIT.key -> merge_num_limit.toString) {
       withTempDir { tempDir =>
         val tablePath = tempDir.getCanonicalPath
 
@@ -538,9 +537,7 @@ class NewCompactionSuite extends QueryTest
 
           val afterCompactIncrementalFileNum = (incrementalFileCount - 1) / compactGroupSize + 1
           val firstLevelCompactFileNum = afterCompactIncrementalFileNum + lastCompactedFileCount
-          val afterCompactionFileNumber = if (firstLevelCompactFileNum >= 20)
-            (firstLevelCompactFileNum) / merge_num_limit + firstLevelCompactFileNum % merge_num_limit
-          else firstLevelCompactFileNum
+          val afterCompactionFileNumber = firstLevelCompactFileNum
           println("==: " + afterCompactionFileNumber)
           assert(compactedFileCount == afterCompactionFileNumber,
             s"Compaction should produce files number is , but there are $compactedFileCount files")
@@ -562,8 +559,7 @@ class NewCompactionSuite extends QueryTest
   test("new compaction with limited file size") {
     val maxFileSize = "30KB"
     val maxFileSizeValue = DBUtil.parseMemoryExpression(maxFileSize)
-    withSQLConf(LakeSoulSQLConf.COMPACTION_LEVEL1_FILE_NUM_LIMIT.key -> "5",
-      LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE.key -> maxFileSize) {
+    withSQLConf(LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE.key -> maxFileSize) {
       withTempDir { tempDir =>
         val tablePath = tempDir.getCanonicalPath
         val spark = SparkSession.active
@@ -642,11 +638,329 @@ class NewCompactionSuite extends QueryTest
     }
   }
 
+  test("every level single file size limited") {
+    withSQLConf(
+      LakeSoulSQLConf.MAX_NUM_LEVELS_LIMIT.key -> "4",
+      LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LEVEL_BASE.key -> "50KB",
+      LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LEVEL_MULTIPLIER.key -> "3",
+      LakeSoulSQLConf.COMPACTION_MIN_FILE_NEED_MOVE_FOR_LEVEL_BASE.key -> "20KB",
+      LakeSoulSQLConf.COMPACTION_MIN_FILE_NEED_MOVE_FOR_LEVEL_MULTIPLIER.key -> "3") {
+      withTempDir { tempDir =>
+        val tablePath = tempDir.getCanonicalPath
+        val spark = SparkSession.active
+
+        val hashBucketNum = 4
+        val compactRounds = 40
+        val upsertPerRounds = 40
+        val startIdGap = 500
+        val rowsPerUpsert = 1000
+
+        // Create test data
+        val df = Seq(
+          (1, "2023-01-01", 10, 1),
+          (2, "2023-01-02", 20, 1),
+          (3, "2023-01-03", 30, 1),
+          (4, "2023-01-04", 40, 1),
+          (5, "2023-01-05", 50, 1)
+        ).toDF("id", "date", "value", "range")
+
+        // Write initial data
+        df.write
+          .format("lakesoul")
+          .option("rangePartitions", "range")
+          .option("hashPartitions", "id")
+          .option(SHORT_TABLE_NAME, "new_compaction_file_size_limit_table")
+          .option("hashBucketNum", hashBucketNum.toString)
+          .save(tablePath)
+
+        val lakeSoulTable = LakeSoulTable.forPath(tablePath)
+
+        for (c <- 0 until compactRounds) {
+          // Simulate multiple append operations
+          for (i <- c * upsertPerRounds + 1 to (c + 1) * upsertPerRounds) {
+            val startId = i * startIdGap
+            val appendDf = createTestDataFrame(startId, i, rowsPerUpsert, false)
+            lakeSoulTable.upsert(appendDf)
+          }
+
+          spark.time({
+            lakeSoulTable.newCompaction()
+          })
+
+          // Get PartitionInfo count after compaction
+          val compactedFiles = getFileList(tablePath)
+
+          compactedFiles.groupBy(_.file_bucket_id).foreach { case (bucketId, dataFileInfoList) =>
+            dataFileInfoList.foreach(dataFileInfo => {
+              if (dataFileInfo.path.contains("compact_dir")) {
+                val index = dataFileInfo.path.indexOf("compact_dir")
+                val end = index + 12;
+                val level = dataFileInfo.path.substring(index + 11, end).toInt
+                if (level >= 1) {
+                  if (level >= 2) {
+                    val minFileSize = DBUtil.parseMemoryExpression(spark.conf.get("spark.dmetasoul.lakesoul.compaction.min.file.size.need.move.for.level.base"))
+                    assert(dataFileInfo.size >= minFileSize,
+                      s"This level ${level} single min file size is ${minFileSize}, but this file size is ${dataFileInfo.size}")
+                  }
+                  if (level < spark.conf.get("spark.dmetasoul.lakesoul.max.num.levels.limit").toInt) {
+                    val maxFileSize = DBUtil.parseMemoryExpression(spark.conf.get("spark.dmetasoul.lakesoul.compaction.min.file.size.need.move.for.level.base")) * Math.pow(spark.conf.get("spark.dmetasoul.lakesoul.compaction.min.file.size.need.move.for.level.multiplier").toInt, level)
+                    assert(dataFileInfo.size < maxFileSize,
+                      s"This Level ${level} single max file size is ${maxFileSize - 1}, but this file size is ${dataFileInfo.size}")
+                  }
+                }
+              }
+            })
+          }
+        }
+      }
+    }
+  }
+
+
+  test("L0 files are directly moved to L2, skipping Level 1") {
+    withSQLConf(
+      LakeSoulSQLConf.MAX_NUM_LEVELS_LIMIT.key -> "3",
+      LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LEVEL_BASE.key -> "100KB",
+      LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LEVEL_MULTIPLIER.key -> "10",
+      LakeSoulSQLConf.COMPACTION_MIN_FILE_NEED_MOVE_FOR_LEVEL_BASE.key -> "20KB",
+      LakeSoulSQLConf.COMPACTION_MIN_FILE_NEED_MOVE_FOR_LEVEL_MULTIPLIER.key -> "10",
+      LakeSoulSQLConf.COMPACTION_LEVEL_FILE_MERGE_NUM_LIMIT.key -> "2") {
+      withTempDir { tempDir =>
+        val tablePath = tempDir.getCanonicalPath
+        val spark = SparkSession.active
+        spark.sparkContext.setLogLevel("ERROR")
+
+        val hashBucketNum = 4
+        val compactRounds = 10
+        val upsertPerRounds = 100
+        val startIdGap = 501
+        val rowsPerUpsert = 1000
+
+        // Create test data
+        val df = Seq(
+          (1, "2023-01-01", 10, 1),
+          (2, "2023-01-02", 20, 1),
+          (3, "2023-01-03", 30, 1),
+          (4, "2023-01-04", 40, 1),
+          (5, "2023-01-05", 50, 1)
+        ).toDF("id", "date", "value", "range")
+
+        // Write initial data
+        df.write
+          .format("lakesoul")
+          .option("rangePartitions", "range")
+          .option("hashPartitions", "id")
+          .option(SHORT_TABLE_NAME, "new_compaction_file_directly_move_table")
+          .option("hashBucketNum", hashBucketNum.toString)
+          .save(tablePath)
+
+        val lakeSoulTable = LakeSoulTable.forPath(tablePath)
+
+        for (c <- 0 until compactRounds) {
+          // Simulate multiple append operations
+          for (i <- c * upsertPerRounds + 1 to (c + 1) * upsertPerRounds) {
+            val startId = i * startIdGap
+            val appendDf = createTestDataFrame(startId, i, rowsPerUpsert, false)
+            lakeSoulTable.upsert(appendDf)
+          }
+
+          spark.time({
+            lakeSoulTable.newCompaction()
+          })
+
+          // Get PartitionInfo count after compaction
+          val compactedFiles = getFileList(tablePath)
+          compactedFiles.groupBy(_.file_bucket_id).foreach { case (bucketId, dataFileInfoList) =>
+            dataFileInfoList.foreach(dataFileInfo => {
+              if (dataFileInfo.path.contains("compact_dir")) {
+                val index = dataFileInfo.path.indexOf("compact_dir")
+                val end = index + 12;
+                val level = dataFileInfo.path.substring(index + 11, end).toInt
+                assert(level >= 2 && level <= spark.conf.get("spark.dmetasoul.lakesoul.max.num.levels.limit").toInt,
+                  s"This Level is ${level}, but should no this level")
+                if (level >= 1) {
+                  if (level >= 2) {
+                    val minFileSize = DBUtil.parseMemoryExpression(spark.conf.get("spark.dmetasoul.lakesoul.compaction.min.file.size.need.move.for.level.base"))
+                    assert(dataFileInfo.size >= minFileSize,
+                      s"This level ${level} single min file size is ${minFileSize}, but this file size is ${dataFileInfo.size}")
+                  }
+                  if (level < spark.conf.get("spark.dmetasoul.lakesoul.max.num.levels.limit").toInt) {
+                    val maxFileSize = DBUtil.parseMemoryExpression(spark.conf.get("spark.dmetasoul.lakesoul.compaction.min.file.size.need.move.for.level.base")) * Math.pow(spark.conf.get("spark.dmetasoul.lakesoul.compaction.min.file.size.need.move.for.level.multiplier").toInt, level)
+                    assert(dataFileInfo.size < maxFileSize,
+                      s"This Level ${level} single max file size is ${maxFileSize - 1}, but this file size is ${dataFileInfo.size}")
+                  }
+                }
+              }
+            })
+          }
+        }
+      }
+    }
+  }
+
+
+  test("L0 files are directly moved to The Last Level, Other Level no files") {
+    withSQLConf(
+      LakeSoulSQLConf.MAX_NUM_LEVELS_LIMIT.key -> "5",
+      LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LEVEL_BASE.key -> "1MB",
+      LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LEVEL_MULTIPLIER.key -> "10",
+      LakeSoulSQLConf.COMPACTION_MIN_FILE_NEED_MOVE_FOR_LEVEL_BASE.key -> "1KB",
+      LakeSoulSQLConf.COMPACTION_MIN_FILE_NEED_MOVE_FOR_LEVEL_MULTIPLIER.key -> "2",
+      LakeSoulSQLConf.COMPACTION_LEVEL_FILE_MERGE_NUM_LIMIT.key -> "2") {
+      withTempDir { tempDir =>
+        val tablePath = tempDir.getCanonicalPath
+        val spark = SparkSession.active
+        spark.sparkContext.setLogLevel("ERROR")
+
+        val hashBucketNum = 4
+        val compactRounds = 10
+        val upsertPerRounds = 100
+        val startIdGap = 501
+        val rowsPerUpsert = 1000
+
+        // Create test data
+        val df = Seq(
+          (1, "2023-01-01", 10, 1),
+          (2, "2023-01-02", 20, 1),
+          (3, "2023-01-03", 30, 1),
+          (4, "2023-01-04", 40, 1),
+          (5, "2023-01-05", 50, 1)
+        ).toDF("id", "date", "value", "range")
+
+        // Write initial data
+        df.write
+          .format("lakesoul")
+          .option("rangePartitions", "range")
+          .option("hashPartitions", "id")
+          .option(SHORT_TABLE_NAME, "new_compaction_directly_move_table")
+          .option("hashBucketNum", hashBucketNum.toString)
+          .save(tablePath)
+
+        val lakeSoulTable = LakeSoulTable.forPath(tablePath)
+
+        for (c <- 0 until compactRounds) {
+          // Simulate multiple append operations
+          for (i <- c * upsertPerRounds + 1 to (c + 1) * upsertPerRounds) {
+            val startId = i * startIdGap
+            val appendDf = createTestDataFrame(startId, i, rowsPerUpsert, false)
+            lakeSoulTable.upsert(appendDf)
+          }
+
+          spark.time({
+            lakeSoulTable.newCompaction()
+          })
+
+          // Get PartitionInfo count after compaction
+          val compactedFiles = getFileList(tablePath)
+          compactedFiles.groupBy(_.file_bucket_id).foreach { case (bucketId, dataFileInfoList) =>
+            dataFileInfoList.foreach(dataFileInfo => {
+              if (dataFileInfo.path.contains("compact_dir")) {
+                val index = dataFileInfo.path.indexOf("compact_dir")
+                val end = index + 12;
+                val level = dataFileInfo.path.substring(index + 11, end).toInt
+                assert(level == spark.conf.get("spark.dmetasoul.lakesoul.max.num.levels.limit").toInt,
+                  s"This Level is ${level}, but should no this level")
+                val minFileSize = DBUtil.parseMemoryExpression(spark.conf.get("spark.dmetasoul.lakesoul.compaction.min.file.size.need.move.for.level.base"))
+                assert(dataFileInfo.size >= minFileSize,
+                  s"This level ${level} single min file size is ${minFileSize}, but this file size is ${dataFileInfo.size}")
+              }
+            })
+          }
+        }
+      }
+    }
+  }
+
+
+  test("L0 files are moved to the bottom level through multiple compactions") {
+    withSQLConf(
+      LakeSoulSQLConf.MAX_NUM_LEVELS_LIMIT.key -> "3",
+      LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LEVEL_BASE.key -> "1MB",
+      LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LEVEL_MULTIPLIER.key -> "2",
+      LakeSoulSQLConf.COMPACTION_MIN_FILE_NEED_MOVE_FOR_LEVEL_BASE.key -> "500KB",
+      LakeSoulSQLConf.COMPACTION_MIN_FILE_NEED_MOVE_FOR_LEVEL_MULTIPLIER.key -> "3",
+      LakeSoulSQLConf.COMPACTION_LEVEL_FILE_MERGE_NUM_LIMIT.key -> "3") {
+      withTempDir { tempDir =>
+        val tablePath = tempDir.getCanonicalPath
+        val spark = SparkSession.active
+        spark.sparkContext.setLogLevel("ERROR")
+
+        import scala.util.Random
+        val hashBucketNum = 4
+        val compactRounds = 9
+        val upsertPerRounds = 40
+        val startIdGap = 501
+        val rowsPerUpsert = 1000
+        val valueSize = 16 * 600
+        val chars = ('a' to 'z') ++ ('A' to 'Z') ++ ('0' to '9')
+        val random = new Random
+        val value = (1 to valueSize).map(_ => chars(random.nextInt(chars.length))).mkString
+        // Create test data
+        val df = Seq(
+          (1, value, 10, 1),
+        ).toDF("id", "data", "value", "range")
+
+        // Write initial data
+        df.write
+          .format("lakesoul")
+          .option("rangePartitions", "range")
+          .option("hashPartitions", "id")
+          .option(SHORT_TABLE_NAME, "new_compaction_multiple_compact_table")
+          .option("hashBucketNum", hashBucketNum.toString)
+          .save(tablePath)
+
+        val lakeSoulTable = LakeSoulTable.forPath(tablePath)
+        //The first three compactions generate three L1 files (one per compaction).
+        //The third compaction generates an L2 file as well.
+        //The sixth compaction generates the second L2 file.
+        //The Ninth compaction generates the third  L2 file.
+        //Then, the three L2 files are merged into L3 via compaction.
+        for (c <- 0 until compactRounds) {
+          // Simulate multiple append operations
+          for (i <- c * upsertPerRounds + 1 to (c + 1) * upsertPerRounds) {
+            val startId = i * startIdGap
+            val value = (1 to valueSize).map(_ => chars(random.nextInt(chars.length))).mkString
+            val appendDf = spark.range(startId, startId + rowsPerUpsert)
+              .withColumn("data", lit(value))
+              .withColumn("value", lit(i * 100))
+              .withColumn("range", lit(1))
+              .toDF("id", "data", "value", "range")
+            lakeSoulTable.upsert(appendDf)
+          } //L1 file 390K 3L1 file = L2 File L2 File 1.2MB
+
+          spark.time({
+            lakeSoulTable.newCompaction()
+          })
+
+          // Get PartitionInfo count after compaction
+          val compactedFiles = getFileList(tablePath)
+          compactedFiles.groupBy(_.file_bucket_id).foreach { case (bucketId, dataFileInfoList) =>
+            dataFileInfoList.foreach(dataFileInfo => {
+              if (dataFileInfo.path.contains("compact_dir")) {
+                val index = dataFileInfo.path.indexOf("compact_dir")
+                val end = index + 12;
+                val level = dataFileInfo.path.substring(index + 11, end).toInt
+                if (c < 2) { //
+                  assert(level == 1 && level <= spark.conf.get("spark.dmetasoul.lakesoul.max.num.levels.limit").toInt,
+                    s"This Level is ${level}, but should no this level")
+                } else if (c < 9) {
+                  assert((level == 1 || level == 2) && level <= spark.conf.get("spark.dmetasoul.lakesoul.max.num.levels.limit").toInt,
+                    s"This Level is ${level}, but should no this level")
+                } else {
+                  assert(level == 3, s"This Level is ${level}, but should not this level")
+                }
+              }
+            })
+          }
+        }
+      }
+    }
+  }
+
   test("new compaction cdc table with limited file size") {
     val maxFileSize = "30KB"
     val maxFileSizeValue = DBUtil.parseMemoryExpression(maxFileSize)
-    withSQLConf(LakeSoulSQLConf.COMPACTION_LEVEL1_FILE_NUM_LIMIT.key -> "5",
-      LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE.key -> maxFileSize) {
+    withSQLConf(LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE.key -> maxFileSize) {
       withTempDir { tempDir =>
         val tablePath = tempDir.getCanonicalPath
         val spark = SparkSession.active
@@ -811,8 +1125,7 @@ class NewCompactionSuite extends QueryTest
 
   test("new compaction with newBucketNum、limited file size and limited file number") {
     val maxFileSize = "30KB"
-    withSQLConf(LakeSoulSQLConf.COMPACTION_LEVEL1_FILE_NUM_LIMIT.key -> "5",
-      LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE.key -> maxFileSize) {
+    withSQLConf(LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE.key -> maxFileSize) {
       withTempDir { tempDir =>
         //      val tempDir = org.apache.spark.util.Utils.createDirectory(System.getProperty("java.io.tmpdir"))
         val tablePath = tempDir.getCanonicalPath
@@ -886,7 +1199,7 @@ class NewCompactionSuite extends QueryTest
   }
 
   test("check new compaction data") {
-    withSQLConf(LakeSoulSQLConf.COMPACTION_LEVEL1_FILE_NUM_LIMIT.key -> "4") {
+    withSQLConf() {
       withTempDir(dir => {
         val tablePath = dir.getCanonicalPath
         val df = Seq(("2021-01-01", 1, "rice", "insert"), ("2021-01-01", 2, "bread", "insert"))
@@ -1015,7 +1328,7 @@ class NewCompactionSuite extends QueryTest
   }
 
   test("check new compaction data with newBucketNum、limited file size and limited file number") {
-    withSQLConf(LakeSoulSQLConf.COMPACTION_LEVEL1_FILE_NUM_LIMIT.key -> "3",
+    withSQLConf(
       LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE.key -> "10KB") {
       withTempDir(dir => {
         val tablePath = dir.getCanonicalPath
