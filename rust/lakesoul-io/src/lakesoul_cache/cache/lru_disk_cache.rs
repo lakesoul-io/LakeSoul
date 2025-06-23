@@ -367,7 +367,7 @@ impl LruDiskCache {
             {
                 use std::os::windows::fs::FileExt;
                 match file.seek_read(&mut buf, 0) {
-                    Ok(v) => v,
+                    Ok(v) => Some(buf),
                     Err(e) => {
                         error!(
                             "[laesoul::cache::lru_cache] Error reading file from cache: `{:?}`: {}, {:?}",
