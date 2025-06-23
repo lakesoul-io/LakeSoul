@@ -370,10 +370,7 @@ impl LruDiskCache {
                     Ok(v) => Some(buf),
                     Err(e) => {
                         error!(
-                            "[laesoul::cache::lru_cache] Error reading file from cache: `{:?}`: {}, {:?}",
-                            key,
-                            e,
-                            e.kind()
+                            "[laesoul::cache::lru_cache] Error reading file from cache."
                         );
                         return None;
                     }
