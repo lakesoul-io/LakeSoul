@@ -1,0 +1,1 @@
+copy(select *from tpch_lineitem(0.1, 8)) to 'file:///tmp/lakesoul/tpch_data/lineitem' STORED AS PARQUET;

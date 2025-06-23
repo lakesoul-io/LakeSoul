@@ -63,11 +63,11 @@ use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 use object_store::{ObjectMeta, ObjectStore};
 use proto::proto::entity::TableInfo;
 
-use tokio::sync::Mutex;
-use tokio::task::JoinHandle;
-
 use crate::catalog::{commit_data, parse_table_info_partitions};
 use crate::lakesoul_table::helpers::create_io_config_builder_from_table_info;
+use log::debug;
+use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 
 /// The wrapper of the [`ParquetFormat`] with LakeSoul metadata. It is used to read and write data files while interacting with LakeSoul metadata.
 pub struct LakeSoulMetaDataParquetFormat {
@@ -443,6 +443,7 @@ impl LakeSoulHashSinkExec {
         self.metadata_client.clone()
     }
 
+    #[instrument(skip(context, input, table_info, partitioned_file_path_and_row_count))]
     async fn pull_and_sink(
         input: Arc<dyn ExecutionPlan>,
         partition: usize,
@@ -454,6 +455,7 @@ impl LakeSoulHashSinkExec {
             Mutex<HashMap<String, (Vec<String>, u64)>>,
         >,
     ) -> Result<u64> {
+        debug!("{}", input.name());
         let mut data = input.execute(partition, context.clone())?;
         // O(nm), n = number of data fields, m = number of range partitions
         let schema_projection_excluding_range = data
@@ -472,12 +474,11 @@ impl LakeSoulHashSinkExec {
         let mut row_count = 0;
         // let mut async_writer = MultiPartAsyncWriter::try_new(lakesoul_io_config).await?;
         let mut partitioned_writer = HashMap::<String, Box<MultiPartAsyncWriter>>::new();
-        let mut partitioned_file_path_and_row_count_locked =
-            partitioned_file_path_and_row_count.lock().await;
         while let Some(batch) = data.next().await.transpose()? {
             debug!("write record_batch with {} rows", batch.num_rows());
             let columnar_values = get_columnar_values(&batch, range_partitions.clone())?;
             let partition_desc = columnar_values_to_partition_desc(&columnar_values);
+            debug!("{partition_desc}");
             let batch_excluding_range =
                 batch.project(&schema_projection_excluding_range)?;
             let file_absolute_path = format!(
@@ -516,16 +517,23 @@ impl LakeSoulHashSinkExec {
 
         // TODO: apply rolling strategy
         for (partition_desc, writer) in partitioned_writer.into_iter() {
-            let file_absolute_path = writer.absolute_path();
-            let num_rows = writer.nun_rows();
-            if let Some(file_path_and_row_count) =
-                partitioned_file_path_and_row_count_locked.get_mut(&partition_desc)
             {
-                file_path_and_row_count.0.push(file_absolute_path);
-                file_path_and_row_count.1 += num_rows;
-            } else {
-                partitioned_file_path_and_row_count_locked
-                    .insert(partition_desc.clone(), (vec![file_absolute_path], num_rows));
+                let mut partitioned_file_path_and_row_count_locked =
+                    partitioned_file_path_and_row_count.lock().await;
+                let file_absolute_path = writer.absolute_path();
+                let num_rows = writer.nun_rows();
+                if let Some(file_path_and_row_count) =
+                    partitioned_file_path_and_row_count_locked.get_mut(&partition_desc)
+                {
+                    file_path_and_row_count.0.push(file_absolute_path);
+                    file_path_and_row_count.1 += num_rows;
+                } else {
+                    partitioned_file_path_and_row_count_locked.insert(
+                        partition_desc.clone(),
+                        (vec![file_absolute_path], num_rows),
+                    );
+                }
+                // release guard
             }
             writer.flush_and_close().await?;
         }
@@ -670,6 +678,7 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
 
     /// Execute the plan and return a stream of `RecordBatch`es for
     /// the specified partition.
+    #[instrument(skip(self, context))]
     fn execute(
         &self,
         partition: usize,
@@ -681,7 +690,7 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
             ));
         }
         let num_input_partitions = self.input.output_partitioning().partition_count();
-
+        debug!("num_input_partitions {}", num_input_partitions);
         // launch one async task per *input* partition
         let mut join_handles = vec![];
 
@@ -732,11 +741,11 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
             match join_handle.await {
                 Ok(Ok(count)) => Ok(make_sink_batch(count, String::from(""))),
                 Ok(Err(e)) => {
-                    debug!("{}", e.to_string());
+                    debug!("{e:?}");
                     Ok(make_sink_batch(u64::MAX, e.to_string()))
                 }
                 Err(e) => {
-                    debug!("{}", e.to_string());
+                    debug!("{e:?}");
                     Ok(make_sink_batch(u64::MAX, e.to_string()))
                 }
             }

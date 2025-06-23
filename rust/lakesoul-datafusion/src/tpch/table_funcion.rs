@@ -80,7 +80,7 @@ define_tpch_udtf_provider!(TpchNation, tpch_nation, Nation);
 
 define_tpch_udtf_provider!(TpchCustomer, tpch_customer, Customer);
 
-define_tpch_udtf_provider!(TpchOrder, tpch_order, Order);
+define_tpch_udtf_provider!(TpchOrders, tpch_orders, Orders);
 
 define_tpch_udtf_provider!(TpchLineitem, tpch_lineitem, LineItem);
 
@@ -96,7 +96,7 @@ define_tpch_udtf_provider!(TpchRegion, tpch_region, Region);
 pub fn register_tpch_udtfs(ctx: &SessionContext) -> Result<()> {
     ctx.register_udtf(TpchNation::name(), Arc::new(TpchNation {}));
     ctx.register_udtf(TpchCustomer::name(), Arc::new(TpchCustomer {}));
-    ctx.register_udtf(TpchOrder::name(), Arc::new(TpchOrder {}));
+    ctx.register_udtf(TpchOrders::name(), Arc::new(TpchOrders {}));
     ctx.register_udtf(TpchLineitem::name(), Arc::new(TpchLineitem {}));
     ctx.register_udtf(TpchPart::name(), Arc::new(TpchPart {}));
     ctx.register_udtf(TpchPartsupp::name(), Arc::new(TpchPartsupp {}));

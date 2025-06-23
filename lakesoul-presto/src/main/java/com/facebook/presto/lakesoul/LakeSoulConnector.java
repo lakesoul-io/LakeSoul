@@ -55,7 +55,7 @@ public class LakeSoulConnector implements Connector {
 
     @Override
     public ConnectorPageSourceProvider getPageSourceProvider() {
-        return Connector.super.getPageSourceProvider();
+        return new LakeSoulPagesSourceProvider(metadata.getTypeManager());
     }
 
     @Override

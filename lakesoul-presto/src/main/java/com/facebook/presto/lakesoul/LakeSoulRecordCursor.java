@@ -11,10 +11,10 @@ import com.facebook.presto.common.type.Decimals;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.lakesoul.handle.LakeSoulTableColumnHandle;
 import com.facebook.presto.lakesoul.pojo.Path;
-import com.facebook.presto.lakesoul.util.ArrowUtil;
 import com.facebook.presto.lakesoul.util.PrestoUtil;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.RecordCursor;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 import org.apache.arrow.vector.*;
@@ -36,7 +36,7 @@ public class LakeSoulRecordCursor implements RecordCursor {
     private final LakeSoulArrowReader reader;
     private int curRecordIdx = -1;
     private VectorSchemaRoot currentVCR;
-    private List<Type> desiredTypes;
+    private final List<Type> desiredTypes;
     LinkedHashMap<String, String> partitions;
 
     public LakeSoulRecordCursor(LakeSoulRecordSet recordSet) throws IOException {
@@ -52,8 +52,11 @@ public class LakeSoulRecordCursor implements RecordCursor {
 
         List<Field> fields = recordSet.getColumnHandles().stream().map(item -> {
             LakeSoulTableColumnHandle columnHandle = (LakeSoulTableColumnHandle) item;
-            return Field.nullable(columnHandle.getColumnName(),
-                    ArrowUtil.convertToArrowType(columnHandle.getColumnType()));
+            try {
+                return columnHandle.getArrowField();
+            } catch (JsonProcessingException e) {
+                throw new RuntimeException(e);
+            }
         }).collect(Collectors.toList());
         HashMap<String, ColumnHandle> allcolumns = split.getLayout().getAllColumns();
         List<String> dataCols = recordSet.getColumnHandles().stream().map(item -> {
@@ -65,8 +68,7 @@ public class LakeSoulRecordCursor implements RecordCursor {
         for (String item : prikeys) {
             if (!dataCols.contains(item)) {
                 LakeSoulTableColumnHandle columnHandle = (LakeSoulTableColumnHandle) allcolumns.get(item);
-                fields.add(Field.nullable(columnHandle.getColumnName(),
-                        ArrowUtil.convertToArrowType(columnHandle.getColumnType())));
+                fields.add(columnHandle.getArrowField());
             }
         }
         // add extra cdc column
@@ -195,7 +197,7 @@ public class LakeSoulRecordCursor implements RecordCursor {
         }
         if (fv instanceof TimeStampMicroTZVector) {
             String timeZone = LakeSoulConfig.getInstance().getTimeZone();
-            if (timeZone.equals("") || !Arrays.asList(TimeZone.getAvailableIDs()).contains(timeZone)) {
+            if (timeZone.isEmpty() || !Arrays.asList(TimeZone.getAvailableIDs()).contains(timeZone)) {
                 timeZone = TimeZone.getDefault().getID();
             }
             return DateTimeEncoding.packDateTimeWithZone(((TimeStampMicroTZVector) fv).get(curRecordIdx) / 1000,

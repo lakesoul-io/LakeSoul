@@ -111,6 +111,7 @@ impl MetaDataClient {
         Self::from_config_and_max_retry(config, 3).await
     }
 
+    #[instrument]
     pub async fn from_config_and_max_retry(
         config: String,
         max_retry: usize,
@@ -1032,18 +1033,5 @@ pub fn table_name_id_from_table_info(table_info: &TableInfo) -> TableNameId {
         table_id: table_info.table_id.clone(),
         table_namespace: table_info.table_namespace.clone(),
         domain: table_info.domain.clone(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::MetaDataClient;
-
-    #[test_log::test(tokio::test)]
-    async fn client_test() {
-        // build client
-        let client = MetaDataClient::from_env().await.unwrap();
-        client.delete_namespace_by_namespace("wwwww").await.unwrap();
-        todo!("add more tests")
     }
 }

@@ -18,9 +18,10 @@ flight-sql-s3 level=log_level:
       --s3-secret-key "minioadmin1"
 
 clean-tpch:
-   #rm -rf /data/lakesoul/tpch_sf10/*
    rm -rf /tmp/lakesoul/tpch_data/*
 
+clean-log:
+    rm -rf /tmp/lakesoul/logs/*
 
 console-s3 level=log_level:
     RUST_LOG={{level}}  cargo run --release --bin lakesoul-console -- --worker-threads 16  \
@@ -31,7 +32,7 @@ console-s3 level=log_level:
       --s3-secret-key "minioadmin1"
 
 console level=log_level:
-    RUST_LOG={{level}} cargo run --release --bin lakesoul-console -- --worker-threads 16
+    RUST_LOG={{level}} cargo run --release --bin lakesoul-console -- --worker-threads 16  
 
 tpch-gen-s3:
    cargo run --release --bin lakesoul-console -- --worker-threads 16  \
@@ -41,7 +42,12 @@ tpch-gen-s3:
       --s3-access-key "minioadmin1" \
       --s3-secret-key "minioadmin1" tpch-gen -p "s3://lakesoul-bucket" --scale-factor 0.1 -n 8
 
-tpch-gen-lfs:
-   cargo run --release --bin lakesoul-console -- --worker-threads 16  \
-      tpch-gen -p "file:///tmp/lakesoul/tpch_data" --scale-factor 0.1 -n 8
+tpch-gen-lfs level=log_level:
+   RUST_LOG={{level}} cargo run --release --bin lakesoul-console -- --worker-threads 16  \
+      tpch-gen -p "file:///tmp/lakesoul/tpch_data" --scale-factor 10.0 -n 8
 
+clean-meta:
+    cargo test -p lakesoul-datafusion test_schema_to_sql
+
+copy level=log_level:
+   RUST_LOG={{level}} cargo run --release --bin lakesoul-console -- --worker-threads 16 --file copy.sql

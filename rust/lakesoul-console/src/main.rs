@@ -8,6 +8,9 @@ use lakesoul_datafusion::{
 };
 use tracing_subscriber::EnvFilter;
 
+mod exec;
+mod print;
+
 #[derive(Parser)]
 struct Cli {
     #[clap(
@@ -40,9 +43,6 @@ enum Command {
     },
 }
 
-mod exec;
-mod print;
-
 fn parse_valid_file(dir: &str) -> Result<String, String> {
     if Path::new(dir).is_file() {
         Ok(dir.to_string())
@@ -62,6 +62,7 @@ async fn main_inner(cli: Cli) -> anyhow::Result<()> {
         .with_writer(non_blocking)
         .with_env_filter(level)
         .with_ansi(false)
+        .with_thread_ids(true)
         .with_timer(timer)
         .init();
 
@@ -79,7 +80,7 @@ async fn main_inner(cli: Cli) -> anyhow::Result<()> {
     let printer = Printer::default();
 
     if cli.command.is_some() {
-        return exec_command(cli.command.unwrap(), &ctx, &printer).await;
+        return exec_command(cli.command.unwrap(), &printer, &ctx).await;
     }
 
     if !files.is_empty() {
@@ -92,7 +93,7 @@ async fn main_inner(cli: Cli) -> anyhow::Result<()> {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let Ok(rt) = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(61)
+        .worker_threads(cli.core.worker_threads)
         .enable_all()
         .build()
     else {
