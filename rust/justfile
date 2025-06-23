@@ -11,11 +11,11 @@ flight-sql level=log_level:
 flight-sql-s3 level=log_level:
     RUST_LOG={{level}} cargo run --bin \
       flight_sql_server -- \
-      --warehouse-prefix "s3://lakesoul-bucket/tpch-s10" \
-      --endpoint  "http://localhost:31099" \
-      --s3-bucket  "lakesoul-bucket" \
-      --s3-access-key "minioadmin" \
-      --s3-secret-key "minioadmin"
+      --warehouse-prefix "s3://lakesoul-bucket/flight-test" \
+      --endpoint  "http://localhost:9000" \
+      --s3-bucket  "lakesoul-test-bucket" \
+      --s3-access-key "minioadmin1" \
+      --s3-secret-key "minioadmin1"
 
 clean-tpch:
    #rm -rf /data/lakesoul/tpch_sf10/*
@@ -34,7 +34,7 @@ console level=log_level:
     RUST_LOG={{level}} cargo run --release --bin lakesoul-console -- --worker-threads 16
 
 tpch-gen-s3:
-   cargo run --release --bin lakesoul-console -- --worker-threads 16  \
+    cargo run --release --bin lakesoul-console -- --worker-threads 16  \
     --warehouse-prefix "s3://lakesoul-bucket" \
       --endpoint  "http://localhost:9000" \
       --s3-bucket  "lakesoul-test-bucket" \
@@ -45,3 +45,10 @@ tpch-gen-lfs:
    cargo run --release --bin lakesoul-console -- --worker-threads 16  \
       tpch-gen -p "file:///tmp/lakesoul/tpch_data" --scale-factor 0.1 -n 8
 
+tpch-gen-s3-1 level=log_level:
+   RUST_LOG=trace cargo run --release --bin lakesoul-console -- --worker-threads 16  \
+    --warehouse-prefix "s3://lakesoul-bucket" \
+      --endpoint  "http://localhost:31099" \
+      --s3-bucket  "lakesoul-bucket" \
+      --s3-access-key "minioadmin" \
+      --s3-secret-key "minioadmin" tpch-gen -p "s3://lakesoul-bucket" --scale-factor 0.1 -n 8

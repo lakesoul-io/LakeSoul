@@ -557,4 +557,22 @@ mod tests {
         let location_with_pagid = concat_location_with_pagid(&location, page_id);
         assert_eq!(location_with_pagid, "test_100");
     }
+
+    #[test]
+    fn test_cache_size_format() {
+        let mut s = String::from("4GiB");
+        // let (volume, unit) = s.split_once(' ').unwrap();
+        let size = {
+            match s.split_off(s.len()-3).as_str() {
+                "KiB" => s.parse::<usize>().unwrap_or(1024) * 1024,
+                "MiB" => s.parse::<usize>().unwrap_or(1024) * 1024 * 1024,
+                "GiB" => s.parse::<usize>().unwrap_or(1024) * 1024 * 1024 * 1024,
+                "TiB" => s.parse::<usize>().unwrap_or(1024) * 1024 * 1024 * 1024 * 1024,         
+                _ => 1024 * 1024 * 1024,
+            }
+        };
+        println!("s: {}", s);
+        // let size = s.parse::<usize>().unwrap_or(1024) * size;
+        assert_eq!(size, 4 * 1024 * 1024 * 1024);
+    }
 }
