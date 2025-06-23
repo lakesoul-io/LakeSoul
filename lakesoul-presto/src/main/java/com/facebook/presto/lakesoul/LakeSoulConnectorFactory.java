@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 package com.facebook.presto.lakesoul;
+
 import com.facebook.presto.spi.ConnectorHandleResolver;
 import com.facebook.presto.spi.connector.Connector;
 import com.facebook.presto.spi.connector.ConnectorContext;
@@ -12,7 +13,7 @@ import java.util.Map;
 
 public class LakeSoulConnectorFactory implements ConnectorFactory {
     public static final String CONNECTOR_NAME = "lakesoul";
-    private final LakeSoulMetadata metadata = new LakeSoulMetadata();
+    private LakeSoulMetadata metadata;
     private final LakeSoulSplitManager manager = new LakeSoulSplitManager();
     private final LakeSoulRecordSetProvider provider = new LakeSoulRecordSetProvider();
     private final ConnectorHandleResolver handleResolver = new LakeSoulHandleResolver();
@@ -33,7 +34,7 @@ public class LakeSoulConnectorFactory implements ConnectorFactory {
             Map<String, String> config,
             ConnectorContext context) {
         LakeSoulConfig.initInstance(config);
+        metadata = new LakeSoulMetadata(context.getTypeManager());
         return new LakeSoulConnector(metadata, manager, provider);
     }
-
 }

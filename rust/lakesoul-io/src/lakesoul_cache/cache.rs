@@ -193,7 +193,10 @@ impl DiskCache {
 
         let cache = LruDiskCache::new(&path, disk_capacity.try_into().unwrap()).unwrap();
 
-        debug!("create DiskCache with path: {:?}, disk_capacity: {:?}", path, disk_capacity);
+        debug!(
+            "create DiskCache with path: {:?}, disk_capacity: {:?}",
+            path, disk_capacity
+        );
 
         let metadata_cache = Cache::builder()
             .max_capacity(DEFAULT_METADATA_CACHE_SIZE as u64)
@@ -255,7 +258,10 @@ impl PageCache for DiskCache {
     ) -> Result<Bytes> {
         let location_id = self.location_id(location).await;
         let key = format!("{}_{}", location_id, page_id);
-        debug!("[lakesoul_cache::get_with]=========get_with: {:?}===================", key);
+        debug!(
+            "[lakesoul_cache::get_with]=========get_with: {:?}===================",
+            key
+        );
         match self.cache.get(&key) {
             Some(bytes) => Ok(Bytes::from(bytes)),
             // _ => Err(format!("PageCache get_with Error:  get location {:?} ,page id {:?} ",location.to_string(),page_id).to_string())
@@ -267,12 +273,18 @@ impl PageCache for DiskCache {
                             return Ok(bytes);
                         }
                         self.put(location, page_id, bytes.clone()).await?;
-                        debug!("[lakesoul_cache::get_with]=========page {:?} miss===================",page_id);
+                        debug!(
+                            "[lakesoul_cache::get_with]=========page {:?} miss===================",
+                            page_id
+                        );
                         return Ok(bytes);
                     }
                     Err(e) => {
-                        debug!("[lakesoul_cache::get_with]=========get page {:?} error===================",page_id);
-                        return Err(e)
+                        debug!(
+                            "[lakesoul_cache::get_with]=========get page {:?} error===================",
+                            page_id
+                        );
+                        return Err(e);
                     }
                 }
             }
@@ -295,7 +307,7 @@ impl PageCache for DiskCache {
         // Ok(self.cache.get(&(location_id, page_id)).await.map(|bytes| bytes.unwrap().value().clone()).unwrap_or(None))
     }
 
-    /// Get a range of the page with the given page ID and location, and load it if not found. 
+    /// Get a range of the page with the given page ID and location, and load it if not found.
     async fn get_range_with(
         &self,
         location: &Path,
@@ -306,7 +318,12 @@ impl PageCache for DiskCache {
         // Check if the range is within the page size.
         assert!(range.start <= range.end && range.end <= self.page_size());
         let bytes = self.get_with(location, page_id, loader).await?;
-        debug!("[lakesoul::get_range_with] get bytes len is: {:?}, range start is {:?}, range end is {:?}", bytes.len(),range.start,range.end);
+        debug!(
+            "[lakesoul::get_range_with] get bytes len is: {:?}, range start is {:?}, range end is {:?}",
+            bytes.len(),
+            range.start,
+            range.end
+        );
         Ok(bytes.slice(range))
     }
 
@@ -330,13 +347,19 @@ impl PageCache for DiskCache {
         loader: impl Future<Output = Result<ObjectMeta>> + Send,
     ) -> Result<ObjectMeta> {
         let location_id = self.location_id(location).await;
-        debug!("[lakesoul::cache::head] get location {:?}", location.to_string());
+        debug!(
+            "[lakesoul::cache::head] get location {:?}",
+            location.to_string()
+        );
         match self.metadata_cache.try_get_with(location_id, loader).await {
             Ok(meta) => Ok(meta),
             Err(e) =>
             //  Err(" self.metadata_cache.try_get_with err".to_string())
             {
-                debug!("[lakesoul::cache::head] get location {:?} error", location.to_string());
+                debug!(
+                    "[lakesoul::cache::head] get location {:?} error",
+                    location.to_string()
+                );
                 match e.as_ref() {
                     // TODO: this adds an extra layer of error wrapping
                     Error::NotFound { path, .. } => Err(Error::NotFound {
@@ -563,11 +586,11 @@ mod tests {
         let mut s = String::from("4GiB");
         // let (volume, unit) = s.split_once(' ').unwrap();
         let size = {
-            match s.split_off(s.len()-3).as_str() {
+            match s.split_off(s.len() - 3).as_str() {
                 "KiB" => s.parse::<usize>().unwrap_or(1024) * 1024,
                 "MiB" => s.parse::<usize>().unwrap_or(1024) * 1024 * 1024,
                 "GiB" => s.parse::<usize>().unwrap_or(1024) * 1024 * 1024 * 1024,
-                "TiB" => s.parse::<usize>().unwrap_or(1024) * 1024 * 1024 * 1024 * 1024,         
+                "TiB" => s.parse::<usize>().unwrap_or(1024) * 1024 * 1024 * 1024 * 1024,
                 _ => 1024 * 1024 * 1024,
             }
         };

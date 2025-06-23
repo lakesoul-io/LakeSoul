@@ -133,15 +133,17 @@ public class Benchmark {
             int count3 = getCount(prestoCon.prepareStatement(sql3).executeQuery());
             int count4 = getCount(prestoCon.prepareStatement(sql4).executeQuery());
             if(count1 == 0 || count2 == 0 || count3 != 0 || count4 != 0){
-                System.out.println("count1=" + count1);
-                System.out.println("count2=" + count2);
-                System.out.println("count3=" + count3);
-                System.out.println("count4=" + count4);
+                System.out.println("lakesoul." + table + " count1=" + count1);
+                System.out.println("mysql." + table + " count2=" + count2);
+                System.out.println(table + " lakesoul - mysql count3=" + count3);
+                System.out.println(table + " mysql - lakesoul count4=" + count4);
                 throw new RuntimeException("table " + table + " is not matched");
             }
             System.out.println("table " + table + " matched");
         }catch (Exception e){
+            System.out.println("table " + table + " not matched lakesoul - mysql");
             ResultSetPrinter.printResultSet(prestoCon.prepareStatement(sql5).executeQuery());
+            System.out.println("table " + table + " not matched mysql - lakesoul");
             ResultSetPrinter.printResultSet(prestoCon.prepareStatement(sql6).executeQuery());
             throw e;
         }

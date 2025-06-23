@@ -56,7 +56,9 @@ public class LakeSoulSplitManager implements ConnectorSplitManager {
                 break;
             }
         }
-        log.info("LakeSoul split partitions %s", partitions);
+        log.info("LakeSoul table %s, split partitions %s",
+                tableLayout.getTableHandle().getNames(),
+                partitions);
         DataFileInfo[] dfinfos = DataOperation.getTableDataInfo(tid, JavaConverters.asScalaBuffer(partitions).toList());
         ArrayList<ConnectorSplit> splits = new ArrayList<>(16);
         Map<String, Map<Integer, List<Path>>>
@@ -67,13 +69,18 @@ public class LakeSoulSplitManager implements ConnectorSplitManager {
                 if (tableLayout.getPrimaryKeys().isEmpty()) {
                     for (Path path : split.getValue()) {
                         splits.add(new LakeSoulSplit(tableLayout, Collections.singletonList(path)));
+                        log.info("Add LakeSoul table split %s, path %s",
+                                tableLayout.getTableHandle().getNames(),
+                                path);
                     }
                 } else {
                     splits.add(new LakeSoulSplit(tableLayout, split.getValue()));
+                    log.info("Add LakeSoul table split %s, paths %s",
+                            tableLayout.getTableHandle().getNames(),
+                            split.getValue());
                 }
             }
         }
-        log.info("LakeSoul splits %s", splits);
         return new LakeSoulSplitSource(splits);
     }
 

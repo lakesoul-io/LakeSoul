@@ -15,7 +15,7 @@ STORED AS LAKESOUL
 LOCATION '{path}';"
     );
     let insert = format!(
-        "INSERT INTO {table_name} SELECT * FROM tpch_{tpch_name}({sf},{num_parts});"
+        "INSERT INTO {table_name} SELECT * FROM tpch_{tpch_name}({sf:?},{num_parts});"
     );
     vec![drop, create, insert]
 }
@@ -49,7 +49,7 @@ mod tests {
 STORED AS LAKESOUL
 LOCATION 'file:///tmp/lakesoul/tpch_data/lineitem';"
                 .to_string(),
-            "INSERT INTO sf10.LineITEM SELECT * FROM tpch_lineitem(10,8);".to_string(),
+            "INSERT INTO sf10.LineITEM SELECT * FROM tpch_lineitem(10.0,8);".to_string(),
         ];
         let right = tpch_gen_sql(
             "sf10.LineITEM",

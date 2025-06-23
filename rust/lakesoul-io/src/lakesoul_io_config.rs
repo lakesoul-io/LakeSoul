@@ -55,20 +55,25 @@ fn get_lakesoul_cache() -> Arc<DiskCache> {
                 match std::env::var("LAKESOUL_CACHE_SIZE") {
                     Ok(mut s) => {
                         println!("LAKESOUL_CACHE_SIZE: {}", s);
-                        match s.split_off(s.len()-3).as_str() {
+                        match s.split_off(s.len() - 3).as_str() {
                             "KiB" => s.parse::<usize>().unwrap_or(1) * 1024,
                             "MiB" => s.parse::<usize>().unwrap_or(1) * 1024 * 1024,
                             "GiB" => {
                                 println!("LAKESOUL_CACHE_SIZE: {}", s);
                                 s.parse::<usize>().unwrap_or(1) * 1024 * 1024 * 1024
-                            },
-                            "TiB" => s.parse::<usize>().unwrap_or(1) * 1024 * 1024 * 1024 * 1024,         
+                            }
+                            "TiB" => {
+                                s.parse::<usize>().unwrap_or(1)
+                                    * 1024
+                                    * 1024
+                                    * 1024
+                                    * 1024
+                            }
                             _ => {
                                 println!("LAKESOUL_CACHE_SIZE: {}", s);
                                 1024 * 1024 * 1024
-                            },
+                            }
                         }
-
                     }
                     Err(_) => 1024 * 1024 * 1024,
                 }
