@@ -6,11 +6,23 @@ package com.facebook.presto.lakesoul;
 
 
 import com.facebook.presto.testing.MaterializedRow;
+import org.h2.Driver;
+import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
+import java.sql.DriverManager;
 import java.util.List;
 
 public class LakeSoulDMLTest extends LakeSoulSmokeTest{
+
+    @BeforeClass
+    @Override
+    public void init()
+            throws Exception {
+        DriverManager.registerDriver(new Driver());
+        super.init();
+        setUp();
+    }
 
     @Test
     public void testStar(){
@@ -64,5 +76,8 @@ public class LakeSoulDMLTest extends LakeSoulSmokeTest{
         assert rows.size() == 3;
     }
 
-
+    public void testUDF() {
+        List<MaterializedRow> rows = sql("select hamming_distance_filter(array[cast(1 as bigint)], array[cast(2 as bigint)], 1)");
+        System.out.println(rows);
+    }
 }
