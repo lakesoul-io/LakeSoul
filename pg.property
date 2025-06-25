@@ -1,0 +1,4 @@
+lakesoul.pg.driver=com.lakesoul.shaded.org.postgresql.Driver
+lakesoul.pg.url=jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified
+lakesoul.pg.username=postgres
+lakesoul.pg.password=vlfs5gvt

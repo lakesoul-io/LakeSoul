@@ -9,7 +9,11 @@
 //! and performance tuning options.
 //!
 //!
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use anyhow::anyhow;
 use arrow::error::ArrowError;
@@ -40,6 +44,48 @@ use crate::hdfs::Hdfs;
 
 use crate::lakesoul_cache::cache::DiskCache;
 use crate::lakesoul_cache::read_through::ReadThroughCache;
+
+static LAKESOUL_CACHE: OnceLock<Arc<DiskCache>> = OnceLock::new();
+
+fn get_lakesoul_cache() -> Arc<DiskCache> {
+    LAKESOUL_CACHE
+        .get_or_init(|| -> Arc<DiskCache> {
+            // if std::env::var("LAKESOUL_CACHE").is_ok() {
+            let cache_size = {
+                match std::env::var("LAKESOUL_CACHE_SIZE") {
+                    Ok(mut s) => {
+                        println!("LAKESOUL_CACHE_SIZE: {}", s);
+                        match s.split_off(s.len() - 3).as_str() {
+                            "KiB" => s.parse::<usize>().unwrap_or(1) * 1024,
+                            "MiB" => s.parse::<usize>().unwrap_or(1) * 1024 * 1024,
+                            "GiB" => {
+                                println!("LAKESOUL_CACHE_SIZE: {}", s);
+                                s.parse::<usize>().unwrap_or(1) * 1024 * 1024 * 1024
+                            }
+                            "TiB" => {
+                                s.parse::<usize>().unwrap_or(1)
+                                    * 1024
+                                    * 1024
+                                    * 1024
+                                    * 1024
+                            }
+                            _ => {
+                                println!("LAKESOUL_CACHE_SIZE: {}", s);
+                                1024 * 1024 * 1024
+                            }
+                        }
+                    }
+                    Err(_) => 1024 * 1024 * 1024,
+                }
+            };
+            println!("LAKESOUL_CACHE_SIZE: {}", cache_size);
+            Arc::new(DiskCache::new(cache_size, 4 * 1024 * 1024))
+            // } else {
+            //     DiskCache::new(0, 0)
+            // }
+        })
+        .clone()
+}
 
 #[derive(Debug, Derivative)]
 #[derivative(Clone)]
@@ -764,16 +810,14 @@ pub fn register_s3_object_store(
     );
 
     // add cache if env LAKESOUL_CACHE is set
+    // set LAKESOUL_CACHE
+    // LAKESOUL_CACHE_SIZE set lakesoul cache size,
     if std::env::var("LAKESOUL_CACHE").is_ok() {
         // cache size in bytes, default to 1GB
-        let cache_size = {
-            match std::env::var("LAKESOUL_CACHE_SIZE") {
-                Ok(s) => s.parse::<usize>().unwrap_or(1024) * 1024 * 1024,
-                _ => 1024 * 1024 * 1024,
-            }
-        };
-        let cache = Arc::new(DiskCache::new(cache_size, 4 * 1024));
-        let cache_s3_store = Arc::new(ReadThroughCache::new(s3_store, cache));
+        let disk_cache = get_lakesoul_cache();
+
+        // let cache = disk_cache;
+        let cache_s3_store = Arc::new(ReadThroughCache::new(s3_store, disk_cache));
         // register cache store
         runtime.register_object_store(url, cache_s3_store);
     } else {
@@ -807,6 +851,25 @@ pub fn register_hdfs_object_store(
     #[cfg(feature = "hdfs")]
     {
         let hdfs = Hdfs::try_new(_host, _config.clone())?;
+
+        // add cache if env LAKESOUL_CACHE is set
+        // todo
+        // if std::env::var("LAKESOUL_CACHE").is_ok() {
+        //     // cache size in bytes, default to 1GB
+        //     let cache_size = {
+        //         match std::env::var("LAKESOUL_CACHE_SIZE") {
+        //             Ok(s) => s.parse::<usize>().unwrap_or(1024) * 1024 * 1024,
+        //             _ => 1024 * 1024 * 1024,
+        //         }
+        //     };
+        //     let cache = Arc::new(DiskCache::new(cache_size, 4 * 1024 * 1024));
+        //     let cache_hdfs_store = Arc::new(ReadThroughCache::new(hdfs, cache));
+        //     // register cache store
+        //     runtime.register_object_store(url, cache_hdfs_store);
+        // } else {
+        //     runtime.register_object_store(url, hdfs);
+        // }
+
         _runtime.register_object_store(_url, Arc::new(hdfs));
         Ok(())
     }

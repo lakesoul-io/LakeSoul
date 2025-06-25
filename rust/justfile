@@ -35,7 +35,7 @@ console level=log_level:
     RUST_LOG={{level}} cargo run --release --bin lakesoul-console -- --worker-threads 16  
 
 tpch-gen-s3:
-   cargo run --release --bin lakesoul-console -- --worker-threads 16  \
+    cargo run --release --bin lakesoul-console -- --worker-threads 16  \
     --warehouse-prefix "s3://lakesoul-bucket" \
       --endpoint  "http://localhost:9000" \
       --s3-bucket  "lakesoul-test-bucket" \
@@ -49,5 +49,12 @@ tpch-gen-lfs level=log_level:
 clean-meta:
     cargo test -p lakesoul-datafusion test_schema_to_sql
 
+tpch-gen-s3-1 level=log_level:
+   RUST_LOG=trace cargo run --release --bin lakesoul-console -- --worker-threads 16  \
+    --warehouse-prefix "s3://lakesoul-bucket" \
+      --endpoint  "http://localhost:31099" \
+      --s3-bucket  "lakesoul-bucket" \
+      --s3-access-key "minioadmin" \
+      --s3-secret-key "minioadmin" tpch-gen -p "s3://lakesoul-bucket" --scale-factor 0.1 -n 8
 copy level=log_level:
    RUST_LOG={{level}} cargo run --release --bin lakesoul-console -- --worker-threads 16 --file copy.sql
