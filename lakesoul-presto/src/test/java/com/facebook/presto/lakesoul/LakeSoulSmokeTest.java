@@ -33,7 +33,6 @@ public class LakeSoulSmokeTest extends AbstractTestIntegrationSmokeTest {
         return createLakeSoulQueryRunner();
     }
 
-    @BeforeClass
     public void setUp()
     {
         lakeSoulQueryRunner = (LakeSoulQueryRunner) getQueryRunner();
