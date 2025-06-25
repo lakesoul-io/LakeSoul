@@ -187,29 +187,57 @@ object LakeSoulSQLConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMPACTION_LEVEL1_FILE_NUM_LIMIT: ConfigEntry[Int] =
-    buildConf("compaction.level1.file.number.limit")
-      .doc(
-        """
-          |COMPACTION LEVEL1 SINGLE TASK READ FILE NUMBER, DEFAULT IS 20.
-        """.stripMargin)
-      .intConf
-      .createWithDefault(20)
 
-  val COMPACTION_LEVEL1_FILE_MERGE_SIZE_LIMIT: ConfigEntry[String] =
-    buildConf("compaction.level1.file.merge.size.limit")
+  val COMPACTION_MAX_BYTES_FOR_LEVEL_BASE: ConfigEntry[String] =
+    buildConf("compaction.max.bytes.for.level.base")
       .doc(
         """
-          |COMPACTION LEVEL1 SINGLE TASK MERGE SIZE. Default is 1GB.
+          |COMPACTION MAX BYTES FOR LEVEL BASE LIMIT. Default is 1GB.
         """.stripMargin)
       .stringConf
       .createWithDefault("1GB")
 
-  val COMPACTION_LEVEL1_FILE_MERGE_NUM_LIMIT: ConfigEntry[Int] =
-    buildConf("compaction.level1.file.merge.num.limit")
+  val COMPACTION_MAX_BYTES_FOR_LEVEL_MULTIPLIER: ConfigEntry[Int] =
+    buildConf("compaction.max.bytes.for.level.multiplier")
       .doc(
         """
-          |COMPACTION LEVEL1 SINGLE TASK MERGE NUM. Default is 5.
+          |COMPACTION MAX BYTES FOR LEVEL MULTIPLIER. Default is 10.
+        """.stripMargin)
+      .intConf
+      .createWithDefault(10)
+
+  val MAX_NUM_LEVELS_LIMIT: ConfigEntry[Int] =
+    buildConf("max.num.levels.limit")
+      .doc(
+        """
+          | MAX NUM LEVELS LIMIT. Default is 5.
+        """.stripMargin)
+      .intConf
+      .createWithDefault(5)
+
+  val COMPACTION_MIN_FILE_NEED_MOVE_FOR_LEVEL_BASE: ConfigEntry[String] =
+    buildConf("compaction.min.file.size.need.move.for.level.base")
+      .doc(
+        """
+          |COMPACTION GROUP MIN FILE SIZE FOR LEVEL BASE. Default is 300MB.
+        """.stripMargin)
+      .stringConf
+      .createWithDefault("300MB")
+
+  val COMPACTION_MIN_FILE_NEED_MOVE_FOR_LEVEL_MULTIPLIER: ConfigEntry[Int] =
+    buildConf("compaction.min.file.size.need.move.for.level.multiplier")
+      .doc(
+        """
+          |COMPACTION MAX BYTES FOR LEVEL MULTIPLIER. Default is 10.
+        """.stripMargin)
+      .intConf
+      .createWithDefault(10)
+
+  val COMPACTION_LEVEL_FILE_MERGE_NUM_LIMIT: ConfigEntry[Int] =
+    buildConf("compaction.level.file.merge.num.limit")
+      .doc(
+        """
+          |COMPACTION LEVEL SINGLE TASK MERGE NUM. Default is 5.
         """.stripMargin)
       .intConf
       .createWithDefault(5)
