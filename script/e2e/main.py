@@ -19,16 +19,16 @@ LAKESOUL_GIT = "https://github.com/lakesoul-io/LakeSoul.git"
 TMP_CODE_DIR = Path("/tmp/lakesoul/e2e/code")
 CONFIG_FILE = "config.yaml"
 MVN_LOCAL = Path("~/.m2/repository/com/dmetasoul")
-
 E2E_DATA_DIR = Path("/tmp/lakesoul/e2e/data")
 
+FLINK_VERSION = "1.20"
 
 class SubTask:
     def run(self, **conf):
         pass
 
 
-class CsvRenameSubTask(SubTask):
+class CheckParquetSubTask(SubTask):
     global E2E_DATA_DIR
 
     def run(self, **conf):
@@ -36,8 +36,7 @@ class CsvRenameSubTask(SubTask):
         print(all_items)
         if len(all_items) != 1:
             raise RuntimeError("data init failed")
-
-        os.rename(E2E_DATA_DIR / all_items[0], E2E_DATA_DIR / "data.csv")
+        # os.rename(E2E_DATA_DIR / all_items[0], E2E_DATA_DIR / "data.csv")
 
 
 class FlinkSubTask(SubTask):
@@ -50,8 +49,13 @@ class FlinkSubTask(SubTask):
             f"{MVN_LOCAL}/flink-e2e/{VERSION}/flink-e2e-{VERSION}.jar"
         )
 
+        p = os.path.expanduser(
+            f"{MVN_LOCAL}/lakesoul-flink/{FLINK_VERSION}-{VERSION}/lakesoul-flink-{FLINK_VERSION}-{VERSION}.jar"
+        )
+        self.lib = f"file://{p}"
+
     def run(self, **conf):
-        args = ["flink", "run", "-c", self.entry, self.target]
+        args = ["flink", "run","--classpath",self.lib, "-c", self.entry, self.target]
         subprocess.run(args, check=True)
 
     def __repr__(self):
@@ -117,7 +121,7 @@ def clone_repo(repo_url, branch, dir) -> None:
     print("Repository cloned successfully.")
 
 
-def build(dir: str):
+def build_install(dir: str):
     """编译LakeSoul
 
     Args:
@@ -171,7 +175,7 @@ def parse_subtasks(conf: List[Dict[str, Any]]) -> List[SubTask]:
 
 def parse_conf(conf: Dict[str, Any]) -> List[Task]:
     init_data_gen = parse_subtask(conf["init"])
-    init_rename_data = CsvRenameSubTask()
+    init_rename_data = CheckParquetSubTask()
     init_task = Task(init_data_gen, init_rename_data)
 
     sinks = parse_subtasks(conf["sinks"])
@@ -227,7 +231,7 @@ def pre_run(ctx):
         ctx.obj["config"] = yaml.safe_load(f)
 
     # build lakesoul
-    build(ctx.obj["dir"] / "LakeSoul")
+    # build_install(ctx.obj["dir"] / "LakeSoul")
 
     global VERSION
     VERSION = ctx.obj["config"]["version"]

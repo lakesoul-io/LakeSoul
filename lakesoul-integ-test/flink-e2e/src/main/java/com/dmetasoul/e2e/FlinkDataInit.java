@@ -124,10 +124,10 @@ public class FlinkDataInit {
             + "'connector' = 'filesystem',\n"
             + "'path' = 'file:///tmp/lakesoul/e2e/data',\n"
             + //  -- CSV 输出路径（必填，需提前创建目录）
-            "'format' = 'csv',\n"
+            "'format' = 'parquet'"
             + //        -- 指定 CSV 格式
-            "'csv.null-literal' = 'NULL'\n"
-            + //        -- 指定 CSV 格式
+            //            "'csv.null-literal' = 'NULL'\n"
+            //            + //        -- 指定 CSV 格式
             ")\n";
     tableEnv.executeSql(creatCsv);
     tableEnv.executeSql("insert into data_file select * from data_gen_source").await();

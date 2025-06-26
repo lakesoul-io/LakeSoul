@@ -65,12 +65,26 @@
             <scope>provided</scope>
         </dependency>
 
+        <!--        <dependency>-->
+        <!--            <groupId>org.apache.flink</groupId>-->
+        <!--            <artifactId>flink-csv</artifactId>-->
+        <!--            <version>1.20.0</version>-->
+        <!--            <scope>provided</scope>-->
+        <!--        </dependency>-->
+
         <dependency>
             <groupId>org.apache.flink</groupId>
-            <artifactId>flink-csv</artifactId>
+            <artifactId>flink-parquet</artifactId>
             <version>1.20.0</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-client</artifactId>
+            <version>2.10.2</version>
             <scope>provided</scope>
         </dependency>
+
 
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
@@ -97,6 +111,7 @@
             <version>1.20-3.0.0-SNAPSHOT</version>
             <scope>provided</scope>
         </dependency>
+
         <dependency>
             <groupId>ch.qos.logback</groupId>
             <artifactId>logback-core</artifactId>
@@ -104,5 +119,40 @@
             <scope>compile</scope>
         </dependency>
     </dependencies>
+
+
+    <!--    <build>-->
+    <!--        <plugins>-->
+    <!--            <plugin>-->
+    <!--                <groupId>org.apache.maven.plugins</groupId>-->
+    <!--                <artifactId>maven-shade-plugin</artifactId>-->
+    <!--                <version>3.5.2</version>-->
+    <!--                <executions>-->
+    <!--                    <execution>-->
+    <!--                        <phase>package</phase>-->
+    <!--                        <goals>-->
+    <!--                            <goal>shade</goal>-->
+    <!--                        </goals>-->
+    <!--                        <configuration>-->
+    <!--                            <artifactSet>-->
+    <!--                                <excludes>-->
+    <!--                                    &lt;!&ndash; 排除 Flink 已提供的依赖 &ndash;&gt;-->
+    <!--                                    <exclude>org.apache.flink:*</exclude>-->
+    <!--                                    <exclude>com.dmetasoul:lakesoul-flink</exclude>-->
+    <!--                                </excludes>-->
+    <!--                            </artifactSet>-->
+    <!--                            <relocations>-->
+    <!--                                <relocation>-->
+    <!--                                    <pattern>org.apache.parquet</pattern>-->
+    <!--                                    <shadedPattern>shaded.parquet</shadedPattern>-->
+    <!--                                </relocation>-->
+    <!--                            </relocations>-->
+    <!--                        </configuration>-->
+    <!--                    </execution>-->
+    <!--                </executions>-->
+    <!--            </plugin>-->
+    <!--        </plugins>-->
+    <!--    </build>-->
+
 
 </project>
