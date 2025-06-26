@@ -18,14 +18,14 @@ init:
 
 # sink means write to lakesoul
 sinks:
-  - type: "spark"
+  - type: "flink"
     name: "DataSink"
-    entry: "com.dmetasoul.e2e.SparkDataSink"
+    entry: "com.dmetasoul.e2e.FlinkDataSink"
     mode: "session"
 
 # source means read from lakesoul
 sources:
-  - type: "spark"
+  - type: "flink"
     name: "DataSource"
-    entry: "com.dmetasoul.e2e.SparkDataSource"
+    entry: "com.dmetasoul.e2e.FlinkDataSource"
     mode: "session"

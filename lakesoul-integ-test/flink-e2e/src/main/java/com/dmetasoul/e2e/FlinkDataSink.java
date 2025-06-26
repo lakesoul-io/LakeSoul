@@ -22,8 +22,8 @@ public class FlinkDataSink {
     env.setParallelism(1);
     StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env);
 
-    var csvFileTable =
-        "CREATE TABLE csv_source ("
+    var parquetFileTable =
+        "CREATE TABLE parquet_source ("
             +
             // number
             "f_int INT,"
@@ -57,25 +57,24 @@ public class FlinkDataSink {
             "f_row ROW<f1 INT, f2 STRING>"
             + ") WITH (\n"
             + "'connector' = 'filesystem',\n"
-            + "'path' = 'file:///tmp/lakesoul/e2e/data/data.csv',\n"
-            + "'format' ='csv',\n"
-            + "'csv.null-literal' ='NULL'\n"
+            + "'path' = 'file:///tmp/lakesoul/e2e/data/',\n"
+            + "'format' ='parquet'\n"
             + ")\n";
 
-    tableEnv.executeSql(csvFileTable);
+    tableEnv.executeSql(parquetFileTable);
     tableEnv.executeSql("create catalog lakesoul with('type'='lakesoul')");
     tableEnv.executeSql("use catalog lakesoul");
-    tableEnv.executeSql("drop table  if exists lakesoul_e2e_test;");
+    tableEnv.executeSql("drop table if exists lakesoul_e2e_test;");
     var createTable =
         "CREATE TABLE lakesoul_e2e_test\n"
             + "WITH (\n"
             + "'connector' = 'lakesoul',\n"
             + "'path'='file:///tmp/lakesoul/e2e/flink/sink'\n"
             + ")\n"
-            + "LIKE default_catalog.default_database.csv_source;";
+            + "LIKE default_catalog.default_database.parquet_source;";
     tableEnv.executeSql(createTable);
     tableEnv.executeSql(
-        "insert into lakesoul_e2e_test select * from default_catalog.default_database.csv_source;");
+        "insert into lakesoul_e2e_test select * from default_catalog.default_database.parquet_source;");
     tableEnv.executeSql("select * from lakesoul_e2e_test");
   }
 }
