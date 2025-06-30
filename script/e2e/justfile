@@ -1,7 +1,0 @@
-debug:
-    python3 ./main.py --dir /Users/mag1cian/dev/internship run
-test:
-    python3 ./main.py --fresh --repo https://github.com/mag1c1an1/LakeSoul.git --branch tmp_name run  
-
-help:
-    python3 ./main.py --help
