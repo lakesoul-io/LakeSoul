@@ -28,7 +28,7 @@ public class SparkDataSink {
             .config("spark.sql.defaultCatalog", "lakesoul")
             .getOrCreate();
     spark.sql("DROP TABLE IF EXISTS lakesoul_e2e_test");
-    String csvFile = "/tmp/lakesoul/e2e/data/data.csv";
+    String parquetPath = "s3://lakesoul-test-bucket/lakesoul/e2e/data";
     StructType schema =
         DataTypes.createStructType(
             new StructField[] {
@@ -50,8 +50,8 @@ public class SparkDataSink {
               DataTypes.createStructField("f_array", DataTypes.IntegerType, false),
               DataTypes.createStructField("f_row", DataTypes.IntegerType, false),
             });
-    Dataset<Row> origin = spark.read().schema(schema).option("inferSchema", "true").csv(csvFile);
-    var tablePath = "file:///tmp/lakesoul/e2e/spark/sink";
+    Dataset<Row> origin = spark.read().schema(schema).option("inferSchema", "true").parquet(parquetPath);
+    var tablePath = "s3://lakesoul-test-bucket/lakesoul/e2e/spark/sink";
     origin
         .write()
         .mode("overwrite")

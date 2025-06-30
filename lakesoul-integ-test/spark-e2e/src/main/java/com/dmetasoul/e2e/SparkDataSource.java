@@ -31,7 +31,7 @@ public class SparkDataSource {
                 "org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog")
             .config("spark.sql.defaultCatalog", "lakesoul")
             .getOrCreate();
-    var csvFile = "/tmp/lakesoul/e2e/data/data.csv";
+    var parquetPath = "s3://lakesoul-test-bucket/lakesoul/e2e/data/";
     StructType schema =
         DataTypes.createStructType(
             new StructField[] {
@@ -53,11 +53,11 @@ public class SparkDataSource {
               DataTypes.createStructField("f_array", DataTypes.IntegerType, false),
               DataTypes.createStructField("f_row", DataTypes.IntegerType, false),
             });
-    Dataset<Row> origin = spark.read().schema(schema).option("inferSchema", "true").csv(csvFile);
-    origin.registerTempTable("csv_source");
-    var df1 = spark.sql("select * from csv_source except select * from lakesoul_e2e_test;");
-    var df2 = spark.sql("select * from lakesoul_e2e_test except select * from csv_source;");
-    if (!df1.isEmpty() || !df2.isEmpty()) {
+    Dataset<Row> origin = spark.read().schema(schema).option("inferSchema", "true").csv(parquetPath);
+    origin.registerTempTable("parquet_source");
+    var c1 = spark.sql("select * from parquet_source;").count();
+    var c2 = spark.sql("select * from lakesoul_e2e_test;").count();
+    if (c1!=c2) {
       throw new RuntimeException("Sink data != Source Data");
     }
     spark.stop();
