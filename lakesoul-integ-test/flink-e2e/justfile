@@ -10,7 +10,7 @@ MAIN_CLASS := "com.dmetasoul.e2e.FlinkData"
 
 LAKE_SOUL_LIB := "file:///Users/mag1cian/.m2/repository/com/dmetasoul/lakesoul-flink/1.20-3.0.0-SNAPSHOT/lakesoul-flink-1.20-3.0.0-SNAPSHOT.jar"
 #LAKE_SOUL_LIB := "file:///Users/mag1cian/.m2/repository/com/dmetasoul/lakesoul-flink/1.20-3.0.0-SNAPSHOT"
-S3_LAKE_SOUL_LIB := "s3:///lakesoul-test-bucket/.m2/lakesoul-flink/1.20-3.0.0-SNAPSHOT"
+S3_LAKE_SOUL_LIB := "http://localhost:9000/lakesoul-test-bucket/m2/lakesoul-flink-1.20-3.0.0-SNAPSHOT.jar"
 
 add-lakesoul:
     cp {{ LAKE_SOUL_LIB }} {{ FLINK_HOME }}/lib
@@ -31,9 +31,9 @@ remove_mvn:
     @rm -rf ~/.m2/repository/com/dmetasoul
 
 run which: install
-    {{ FLINK_BIN }}/flink run --classpath {{LAKE_SOUL_LIB}} -c {{ MAIN_CLASS }}{{ which }} {{ TARGET }}
+    {{ FLINK_BIN }}/flink run --classpath {{S3_LAKE_SOUL_LIB}} -c {{ MAIN_CLASS }}{{ which }} {{ TARGET }}
 
 k8s which:
-    {{FLINK_BIN}}/flink run --classpath {{LAKE_SOUL_LIB}} --target kubernetes-session -Dkubernetes.cluster-id=my-first-flink-cluster -c{{MAIN_CLASS}}{{which}} {{TARGET}}
+    {{FLINK_BIN}}/flink run --classpath {{LAKE_SOUL_LIB}} -m localhost:8081 -c{{MAIN_CLASS}}{{which}} {{TARGET}}
 
 
