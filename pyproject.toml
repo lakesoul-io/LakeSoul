@@ -83,3 +83,8 @@ repair-wheel-command = """\
                       --exclude libarrow.so.1601 \
                       -w {dest_dir} {wheel}\
     """
+
+[tool.uv.workspace]
+members = [
+    "script/e2eTest",
+]
