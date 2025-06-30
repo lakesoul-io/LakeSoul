@@ -7,26 +7,50 @@ import subprocess
 import shutil
 from typing import Dict, List, Optional, override, Any
 from pathlib import Path
+import boto3
 import click
 import yaml
+import logging
 
 from pathlib import Path
 
 
-VERSION = None
-
+VERSION = os.getenv("LAKESOUL_VERSION",None)
 LAKESOUL_GIT = "https://github.com/lakesoul-io/LakeSoul.git"
 TMP_CODE_DIR = Path("/tmp/lakesoul/e2e/code")
 CONFIG_FILE = "config.yaml"
 MVN_LOCAL = Path("~/.m2/repository/com/dmetasoul")
-E2E_DATA_DIR = Path("/tmp/lakesoul/e2e/data")
 
 FLINK_VERSION = "1.20"
+SPARK_VERSION = "3.3"
+
+# lakesoul-flink
+LAKESOUL_FLINK_PATH = Path(os.path.expanduser( f"{MVN_LOCAL}/lakesoul-flink/{FLINK_VERSION}-{VERSION}/lakesoul-flink-{FLINK_VERSION}-{VERSION}.jar"))
+# lakesoul-spark
+LAKESOUL_SPARK_PATH = Path(os.path.expanduser( f"{MVN_LOCAL}/lakesoul-spark/{SPARK_VERSION}-{VERSION}/lakesoul-spark-{SPARK_VERSION}-{VERSION}.jar"))
+
+# s3
+END_POINT =  os.getenv("END_POINT",None)
+ACCESS_KEY =os.getenv("ACCESS_KEY",None) 
+SECRET_KEY =os.getenv("SECRET_KEY",None) 
+BUCKET = os.getenv("BUCKET",None)
+S3_CLIENT= boto3.client(  
+        's3',  
+        aws_access_key_id=ACCESS_KEY,  
+        aws_secret_access_key=SECRET_KEY,  
+        # 下面给出一个endpoint_url的例子  
+        endpoint_url=END_POINT
+        )  
+
+E2E_DATA_DIR = "lakesoul/e2e/data"
+E2E_CLASSPATH ="m2"
+E2E_CLASSPATH_WITH_ENDPOINT = f"{END_POINT}/{BUCKET}/{E2E_CLASSPATH}"
+
+
 
 class SubTask:
     def run(self, **conf):
         pass
-
 
 class CheckParquetSubTask(SubTask):
     global E2E_DATA_DIR
@@ -110,7 +134,7 @@ class TaskRunner:
 
 def clone_repo(repo_url, branch, dir) -> None:
     """从 Git 仓库拉取代码"""
-    print(f"Cloning repository from {repo_url} (branch: {branch})...")
+    logging.info(f"Cloning repository from {repo_url} (branch: {branch})...")
     origin = os.getcwd()
     os.chdir(dir)
     subprocess.run(
@@ -118,17 +142,17 @@ def clone_repo(repo_url, branch, dir) -> None:
         check=True,
     )
     os.chdir(origin)
-    print("Repository cloned successfully.")
+    logging.info("Repository cloned successfully.")
 
 
-def build_install(dir: str):
-    """编译LakeSoul
+def build_install(base_dir: str):
+    """build LakeSoul
 
     Args:
-        dir (str): 代码目录
+        dir (str): base dir of LakeSoul
     """
     origin = os.getcwd()
-    os.chdir(dir)
+    os.chdir(base_dir)
 
     # build lakesoul itself
     subprocess.run(
@@ -145,7 +169,7 @@ def build_install(dir: str):
 
 
 def parse_subtask(conf: Dict[str, Any]) -> SubTask:
-    print(conf)
+    logging.debug(conf)
     if conf["type"] == "flink":
         return FlinkSubTask(conf["name"], conf["entry"], conf["mode"])
     elif conf["type"] == "spark":
@@ -154,11 +178,11 @@ def parse_subtask(conf: Dict[str, Any]) -> SubTask:
         raise RuntimeError("Unsupported Engine")
 
 
-def combine_subtasks(sinks: List[SubTask], souce: List[SubTask]) -> List[Task]:
+def combine_subtasks(sinks: List[SubTask], source: List[SubTask]) -> List[Task]:
 
     res = []
     for sk in sinks:
-        for se in souce:
+        for se in source:
             res.append(Task(sk, se))
 
     return res
@@ -187,7 +211,6 @@ def parse_conf(conf: Dict[str, Any]) -> List[Task]:
 
 # cli
 
-
 @click.group()
 @click.pass_context
 @click.option(
@@ -203,16 +226,65 @@ def parse_conf(conf: Dict[str, Any]) -> List[Task]:
     "--dir", default=TMP_CODE_DIR, type=click.Path(), help="dir of lakesoul code"
 )
 @click.option("-b", "--branch", default="main", help="lakesoul branch, default is main")
-def cli(ctx, conf, fresh, repo, branch, dir):
+@click.option("--log", default="INFO",help="log level")
+def cli(ctx, conf, fresh, repo, branch, dir,log):
     ctx.obj["conf"] = conf
     ctx.obj["fresh"] = fresh
     ctx.obj["branch"] = branch
     ctx.obj["dir"] = Path(dir)
     ctx.obj["repo"] = repo
+    ctx.obj['log'] =log
+
+
+def s3_upload_jars():
+    """ upload installed lakesoul jars to s3
+    """
+    jars:List[Path] = [
+        LAKESOUL_FLINK_PATH,
+        LAKESOUL_SPARK_PATH
+    ]
+
+    for jar in jars:
+        with open(jar,'rb') as data:
+            S3_CLIENT.put_object(Bucket=BUCKET,Key=f"{E2E_CLASSPATH}/{jar.name}",Body=data,StorageClass='STANDARD')
+
+def s3_delete_jars():
+    """delete jars at s3
+    """
+    jars:List[Path] = [
+        LAKESOUL_FLINK_PATH,
+        LAKESOUL_SPARK_PATH
+    ]
+    for jar in jars:
+        S3_CLIENT.delete_object(Bucket=BUCKET,Key=f"{E2E_CLASSPATH}/{jar.name}")
+    
+def s3_delete_dir(dir:str):
+    """delete a dir in s3 like local file system
+
+    Args:
+        dir (str): _description_
+    """
+    resp = S3_CLIENT.list_objects(Bucket=BUCKET,Prefix=dir)
+    objs = []
+    try:
+
+        for obj in resp['Contents']:
+            objs.append({
+                'Key':obj['Key']
+            })
+        S3_CLIENT.delete_objects(Bucket=BUCKET,Delete={'Objects':objs})
+    except KeyError:
+        logging.info(f"[INFO] s3://{BUCKET}/{dir} is empty")
+
+def init_log(loglevel:str):
+    numeric_level = getattr(logging, loglevel.upper(), None)
+    if not isinstance(numeric_level, int):
+        raise ValueError('Invalid log level: %s' % loglevel)
+    logging.basicConfig(level=numeric_level)
 
 
 def pre_run(ctx):
-
+    init_log(ctx['log'])
     if ctx.obj["fresh"]:
         # remove dir
         if ctx.obj["dir"].exists():
@@ -220,27 +292,20 @@ def pre_run(ctx):
         os.makedirs(ctx.obj["dir"])
         clone_repo(ctx.obj["repo"], ctx.obj["branch"], ctx.obj["dir"])
 
-    try:
-        shutil.rmtree("/tmp/lakesoul/e2e/data")
-    except FileNotFoundError:
-        # ignore
-        pass
-    os.makedirs("/tmp/lakesoul/e2e/data")
-
+    s3_delete_dir(E2E_DATA_DIR)
+        
     with open(ctx.obj["conf"]) as f:
         ctx.obj["config"] = yaml.safe_load(f)
 
     # build lakesoul
     # build_install(ctx.obj["dir"] / "LakeSoul")
 
-    global VERSION
-    VERSION = ctx.obj["config"]["version"]
-
 
 @click.command()
 @click.pass_context
 def run(ctx):
     # args correct
+    # init log
     pre_run(ctx)
     tasks = parse_conf(ctx.obj["config"])
     runner = TaskRunner(tasks)
@@ -248,5 +313,7 @@ def run(ctx):
 
 
 if __name__ == "__main__":
-    cli.add_command(run)
-    cli(obj={})
+    print(Path('s3://lakesoul-test-bucket') / "???")
+    print(LAKESOUL_SPARK_PATH.name)
+    # cli.add_command(run)
+    # cli(obj={})
