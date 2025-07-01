@@ -11,6 +11,7 @@ MAIN_CLASS := "com.dmetasoul.e2e.SparkData"
 #LAKE_SOUL_LIB := "~/dev/internship/LakeSoul/lakesoul-flink/target/lakesoul-spark-3.3-3.0.0-SNAPSHOT.jar"
 
 LAKE_SOUL_LIB := "~/.m2/repository/com/dmetasoul/lakesoul-spark/3.3-3.0.0-SNAPSHOT/lakesoul-spark-3.3-3.0.0-SNAPSHOT.jar"
+S3_LAKESOUL_LIB := "s3://lakesoul-test-bucket/m2/lakesoul-spark-3.3-3.0.0-SNAPSHOT.jar"
 
 add-lakesoul:
     cp {{ LAKE_SOUL_LIB }} {{ SPARK_HOME }}/jars
@@ -28,4 +29,4 @@ remove_mvn:
     @rm -rf ~/.m2/repository/com/dmetasoul
 
 run which: install
-    {{ SPARK_BIN }}/spark-submit --class {{ MAIN_CLASS }}{{ which }} --master local[4] {{ TARGET }}
+    {{ SPARK_BIN }}/spark-submit --jars {{S3_LAKESOUL_LIB}} --class {{ MAIN_CLASS }}{{ which }} --master local[4] {{ TARGET }}
