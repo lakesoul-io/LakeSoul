@@ -30,27 +30,33 @@ public class SparkDataSink {
     spark.sql("DROP TABLE IF EXISTS lakesoul_e2e_test");
     String parquetPath = "s3://lakesoul-test-bucket/lakesoul/e2e/data";
     StructType schema =
-        DataTypes.createStructType(
-            new StructField[] {
-              DataTypes.createStructField("f_int", DataTypes.IntegerType, false),
-              DataTypes.createStructField("f_bigint", DataTypes.IntegerType, false),
-              DataTypes.createStructField("f_smallint", DataTypes.IntegerType, false),
-              DataTypes.createStructField("f_tinyint", DataTypes.IntegerType, false),
-              DataTypes.createStructField("f_float", DataTypes.IntegerType, false),
-              DataTypes.createStructField("f_double", DataTypes.IntegerType, false),
-              DataTypes.createStructField("f_decimal", DataTypes.IntegerType, false),
-              DataTypes.createStructField("f_string", DataTypes.IntegerType, false),
-              DataTypes.createStructField("f_char", DataTypes.IntegerType, false),
-              DataTypes.createStructField("f_varchar", DataTypes.IntegerType, false),
-              DataTypes.createStructField("f_boolean", DataTypes.IntegerType, false),
-              DataTypes.createStructField("f_date", DataTypes.IntegerType, false),
-              DataTypes.createStructField("f_time", DataTypes.IntegerType, false),
-              DataTypes.createStructField("f_timestamp", DataTypes.IntegerType, false),
-              DataTypes.createStructField("f_bytes", DataTypes.IntegerType, false),
-              DataTypes.createStructField("f_array", DataTypes.IntegerType, false),
-              DataTypes.createStructField("f_row", DataTypes.IntegerType, false),
-            });
-    Dataset<Row> origin = spark.read().schema(schema).option("inferSchema", "true").parquet(parquetPath);
+            DataTypes.createStructType(
+                    new StructField[] {
+                            DataTypes.createStructField("f_int", DataTypes.IntegerType, true),
+                            DataTypes.createStructField("f_bigint", DataTypes.LongType, true),
+                            DataTypes.createStructField("f_smallint", DataTypes.ShortType, true),
+                            DataTypes.createStructField("f_tinyint", DataTypes.ByteType, true),
+                            DataTypes.createStructField("f_float", DataTypes.FloatType, true),
+                            DataTypes.createStructField("f_double", DataTypes.DoubleType, true),
+                            DataTypes.createStructField("f_decimal", DataTypes.createDecimalType(10,2), true),
+                            DataTypes.createStructField("f_string", DataTypes.StringType, true),
+                            DataTypes.createStructField("f_char", DataTypes.StringType, true),
+                            DataTypes.createStructField("f_varchar", DataTypes.StringType, true),
+                            DataTypes.createStructField("f_boolean", DataTypes.BooleanType, true),
+                            DataTypes.createStructField("f_date", DataTypes.DateType, true),
+                            DataTypes.createStructField("f_time", DataTypes.IntegerType, true),
+                            DataTypes.createStructField("f_timestamp", DataTypes.TimestampType, true),
+                            DataTypes.createStructField("f_bytes", DataTypes.BinaryType, true),
+                            DataTypes.createStructField(
+                                    "f_array", DataTypes.createArrayType(DataTypes.IntegerType, true), true),
+                            DataTypes.createStructField("f_row", DataTypes.createStructType(new StructField[]{
+                                    DataTypes.createStructField("f1",DataTypes.IntegerType,true),
+                                    DataTypes.createStructField("f2",DataTypes.StringType,true)
+                            }), true),
+                    });
+
+    Dataset<Row> origin =
+        spark.read().schema(schema).option("inferSchema", "true").parquet(parquetPath);
     var tablePath = "s3://lakesoul-test-bucket/lakesoul/e2e/spark/sink";
     origin
         .write()
