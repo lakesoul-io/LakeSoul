@@ -87,10 +87,13 @@ class SparkSubTask(SubTask):
         self.target = os.path.expanduser(
             f"{MVN_LOCAL}/spark-e2e/{VERSION}/spark-e2e-{VERSION}.jar"
         )
+        self.lib = f"s3://{BUCKET}/{E2E_CLASSPATH}/{LAKESOUL_SPARK_PATH.name}"
 
     def run(self, **conf):
         args = [
             "spark-submit",
+            "--jars",
+            self.lib, 
             "--class",
             self.entry,
             "--master",
@@ -287,6 +290,14 @@ def s3_delete_dir(dir:str):
         S3_CLIENT.delete_objects(Bucket=BUCKET,Delete={'Objects':objs})
 
 def init_log(loglevel:str):
+    """init python logging
+
+    Args:
+        loglevel (str): log level
+
+    Raises:
+        ValueError: see source code
+    """
     numeric_level = getattr(logging, loglevel.upper(), None)
     if not isinstance(numeric_level, int):
         raise ValueError('Invalid log level: %s' % loglevel)
