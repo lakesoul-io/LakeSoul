@@ -30,15 +30,14 @@ LAKESOUL_FLINK_PATH = Path(os.path.expanduser( f"{MVN_LOCAL}/lakesoul-flink/{FLI
 LAKESOUL_SPARK_PATH = Path(os.path.expanduser( f"{MVN_LOCAL}/lakesoul-spark/{SPARK_VERSION}-{VERSION}/lakesoul-spark-{SPARK_VERSION}-{VERSION}.jar"))
 
 # s3
-END_POINT =  os.getenv("END_POINT",None)
-ACCESS_KEY =os.getenv("ACCESS_KEY",None) 
-SECRET_KEY =os.getenv("SECRET_KEY",None) 
-BUCKET = os.getenv("BUCKET",None)
+END_POINT =  os.getenv("AWS_ENDPOINT",None)
+ACCESS_KEY =os.getenv("AWS_SECRET_ACCESS_KEY",None) 
+SECRET_KEY =os.getenv("AWS_SECRET_KEY_ID",None) 
+BUCKET = os.getenv("AWS_BUCKET",None)
 S3_CLIENT= boto3.client(  
         's3',  
         aws_access_key_id=ACCESS_KEY,  
         aws_secret_access_key=SECRET_KEY,  
-        # 下面给出一个endpoint_url的例子  
         endpoint_url=END_POINT
         )  
 
@@ -53,14 +52,10 @@ class SubTask:
         pass
 
 class CheckParquetSubTask(SubTask):
-    global E2E_DATA_DIR
-
     def run(self, **conf):
-        all_items = os.listdir("/tmp/lakesoul/e2e/data")
-        print(all_items)
-        if len(all_items) != 1:
+        all_objects = s3_list_prefix(E2E_DATA_DIR)
+        if len(all_objects) != 1:
             raise RuntimeError("data init failed")
-        # os.rename(E2E_DATA_DIR / all_items[0], E2E_DATA_DIR / "data.csv")
 
 
 class FlinkSubTask(SubTask):
@@ -73,13 +68,10 @@ class FlinkSubTask(SubTask):
             f"{MVN_LOCAL}/flink-e2e/{VERSION}/flink-e2e-{VERSION}.jar"
         )
 
-        p = os.path.expanduser(
-            f"{MVN_LOCAL}/lakesoul-flink/{FLINK_VERSION}-{VERSION}/lakesoul-flink-{FLINK_VERSION}-{VERSION}.jar"
-        )
-        self.lib = f"file://{p}"
+        self.lib = f"{END_POINT}/{BUCKET}/{E2E_CLASSPATH}/{LAKESOUL_FLINK_PATH.name}"
 
     def run(self, **conf):
-        args = ["flink", "run","--classpath",self.lib, "-c", self.entry, self.target]
+        args = ["flink", "run", "--classpath", self.lib, "-c", self.entry, self.target]
         subprocess.run(args, check=True)
 
     def __repr__(self):
@@ -132,8 +124,14 @@ class TaskRunner:
             t.run()
 
 
-def clone_repo(repo_url, branch, dir) -> None:
-    """从 Git 仓库拉取代码"""
+def clone_repo(repo_url:str, branch:str, dir:str) -> None:
+    """clone repo from url
+
+    Args:
+        repo_url (str):  url used by git
+        branch (str): which branch to clone
+        dir (str): base dir of repo
+    """
     logging.info(f"Cloning repository from {repo_url} (branch: {branch})...")
     origin = os.getcwd()
     os.chdir(dir)
@@ -226,8 +224,8 @@ def parse_conf(conf: Dict[str, Any]) -> List[Task]:
     "--dir", default=TMP_CODE_DIR, type=click.Path(), help="dir of lakesoul code"
 )
 @click.option("-b", "--branch", default="main", help="lakesoul branch, default is main")
-@click.option("--log", default="INFO",help="log level")
-def cli(ctx, conf, fresh, repo, branch, dir,log):
+@click.option("--log", default="INFO", help="log level")
+def cli(ctx, conf, fresh, repo, branch, dir, log):
     ctx.obj["conf"] = conf
     ctx.obj["fresh"] = fresh
     ctx.obj["branch"] = branch
@@ -258,13 +256,13 @@ def s3_delete_jars():
     for jar in jars:
         S3_CLIENT.delete_object(Bucket=BUCKET,Key=f"{E2E_CLASSPATH}/{jar.name}")
     
-def s3_delete_dir(dir:str):
-    """delete a dir in s3 like local file system
+def s3_list_prefix(prefix: str):
+    """list objects whicih has prefix
 
     Args:
-        dir (str): _description_
+        prefix (str): prefix of ths object
     """
-    resp = S3_CLIENT.list_objects(Bucket=BUCKET,Prefix=dir)
+    resp = S3_CLIENT.list_objects(Bucket=BUCKET,Prefix=prefix)
     objs = []
     try:
 
@@ -272,9 +270,21 @@ def s3_delete_dir(dir:str):
             objs.append({
                 'Key':obj['Key']
             })
-        S3_CLIENT.delete_objects(Bucket=BUCKET,Delete={'Objects':objs})
+        return objs
     except KeyError:
-        logging.info(f"[INFO] s3://{BUCKET}/{dir} is empty")
+        logging.info(f"[INFO] s3://{BUCKET}/{prefix} is empty")
+        return []
+
+
+def s3_delete_dir(dir:str):
+    """delete a dir in s3 like local file system
+
+    Args:
+        dir (str): _description_
+    """
+    objs = s3_list_prefix(dir)
+    if len(objs) != 0:
+        S3_CLIENT.delete_objects(Bucket=BUCKET,Delete={'Objects':objs})
 
 def init_log(loglevel:str):
     numeric_level = getattr(logging, loglevel.upper(), None)
@@ -284,13 +294,13 @@ def init_log(loglevel:str):
 
 
 def pre_run(ctx):
-    init_log(ctx['log'])
+    init_log(ctx.obj['log'])
     if ctx.obj["fresh"]:
         # remove dir
         if ctx.obj["dir"].exists():
             shutil.rmtree(ctx.obj["dir"])  # 如果临时目录已存在，先删除
         os.makedirs(ctx.obj["dir"])
-        clone_repo(ctx.obj["repo"], ctx.obj["branch"], ctx.obj["dir"])
+        # clone_repo(ctx.obj["repo"], ctx.obj["branch"], ctx.obj["dir"])
 
     s3_delete_dir(E2E_DATA_DIR)
         
@@ -299,13 +309,12 @@ def pre_run(ctx):
 
     # build lakesoul
     # build_install(ctx.obj["dir"] / "LakeSoul")
+    s3_upload_jars()
 
 
 @click.command()
 @click.pass_context
 def run(ctx):
-    # args correct
-    # init log
     pre_run(ctx)
     tasks = parse_conf(ctx.obj["config"])
     runner = TaskRunner(tasks)
@@ -313,7 +322,5 @@ def run(ctx):
 
 
 if __name__ == "__main__":
-    print(Path('s3://lakesoul-test-bucket') / "???")
-    print(LAKESOUL_SPARK_PATH.name)
-    # cli.add_command(run)
-    # cli(obj={})
+    cli.add_command(run)
+    cli(obj={})
