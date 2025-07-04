@@ -22,39 +22,23 @@ SPDX-License-Identifier: Apache-2.0
     <build>
         <plugins>
             <plugin>
-                <groupId>org.xolstice.maven.plugins</groupId>
+                <groupId>io.github.ascopes</groupId>
                 <artifactId>protobuf-maven-plugin</artifactId>
-                <version>${protobuf.plugin.version}</version>
+                <version>3.6.0</version>
                 <configuration>
-                    <attachProtoSources>false</attachProtoSources>
-                    <clearOutputDirectory>false</clearOutputDirectory>
-                    <protoSourceRoot>${basedir}/../rust/proto/src</protoSourceRoot>
-                    <outputDirectory>${basedir}/target/generated-sources</outputDirectory>
+                    <protocVersion>PATH</protocVersion>
+                    <sourceDirectories>
+                        <sourceDirectory>
+                            ${basedir}/../rust/proto/src
+                        </sourceDirectory>
+                    </sourceDirectories>
                 </configuration>
+
                 <executions>
                     <execution>
                         <goals>
-                            <goal>compile</goal>
+                            <goal>generate</goal>
                         </goals>
-                    </execution>
-                </executions>
-            </plugin>
-            <plugin>
-                <groupId>org.codehaus.mojo</groupId>
-                <artifactId>build-helper-maven-plugin</artifactId>
-                <version>3.4.0</version>
-                <executions>
-                    <execution>
-                        <id>generate-proto-sources</id>
-                        <phase>generate-sources</phase>
-                        <goals>
-                            <goal>add-source</goal>
-                        </goals>
-                        <configuration>
-                            <sources>
-                                <source>${project.basedir}/target/generated-sources</source>
-                            </sources>
-                        </configuration>
                     </execution>
                 </executions>
             </plugin>
@@ -125,8 +109,7 @@ SPDX-License-Identifier: Apache-2.0
     <properties>
         <postgresql.version>42.7.3</postgresql.version>
         <local.scope>provided</local.scope>
-        <protobuf.plugin.version>0.6.1</protobuf.plugin.version>
-        <protoc.version>3.5.1</protoc.version>
+        <protobuf-java.version>4.31.1</protobuf-java.version>
     </properties>
 
     <dependencies>
@@ -184,7 +167,7 @@ SPDX-License-Identifier: Apache-2.0
         <dependency>
             <groupId>com.google.protobuf</groupId>
             <artifactId>protobuf-java</artifactId>
-            <version>3.25.5</version>
+            <version>${protobuf-java.version}</version>
         </dependency>
 
         <!-- jnr-ffi deps-->
