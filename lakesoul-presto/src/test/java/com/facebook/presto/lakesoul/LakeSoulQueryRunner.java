@@ -29,9 +29,9 @@ public class LakeSoulQueryRunner extends DistributedQueryRunner {
         try {
             queryRunner = new LakeSoulQueryRunner(createSession(), 1);
             Map<String, String> properties = new HashMap<>();
-            properties.put("fs.s3a.access.key", "0Sba95RmPuhJZoO1olnv");
-            properties.put("fs.s3a.secret.key", "N8zr0ctloiueLPcg6pbE8yhjgw3l3vIRA3BpBVon");
-            properties.put("fs.s3a.bucket", "prestotest");
+            properties.put("fs.s3a.access.key", "minioadmin1");
+            properties.put("fs.s3a.secret.key", "minioadmin1");
+            properties.put("fs.s3a.bucket", "lakesoul-test-bucket");
             properties.put("fs.s3a.endpoint", "http://localhost:9000");
             queryRunner.installPlugin(new LakeSoulPlugin());
             queryRunner.createCatalog(
