@@ -57,7 +57,7 @@ public class FlinkDataSource {
             "f_row ROW<f1 INT, f2 STRING>"
             + ") WITH (\n"
             + "'connector' = 'filesystem',\n"
-            + "'path' = 's3://lakesoul-test-bucket/lakesoul/e2e/data/',\n"
+            + "'path' = 's3://dmetasoul-bucket/jiax/lakesoul/e2e/data/',\n"
             + "'format' ='parquet'\n"
             + ")\n";
     tableEnv.executeSql(parquetFileTable).await();
