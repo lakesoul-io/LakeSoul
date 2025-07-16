@@ -57,7 +57,7 @@ public class FlinkDataSource {
             "f_row ROW<f1 INT, f2 STRING>"
             + ") WITH (\n"
             + "'connector' = 'filesystem',\n"
-            + "'path' = 's3://dmetasoul-bucket/jiax/lakesoul/e2e/data/',\n"
+            + "'path' = '/Users/mag1cian/e2e/data',\n"
             + "'format' ='parquet'\n"
             + ")\n";
     tableEnv.executeSql(parquetFileTable).await();
@@ -72,8 +72,11 @@ public class FlinkDataSource {
     var res2 = tableEnv.executeSql("select count(*) FROM lakesoul_e2e_test;");
     var c1 = Objects.requireNonNull(res1.collect().next().getField(0)).toString();
     var c2 = Objects.requireNonNull(res2.collect().next().getField(0)).toString();
+    if ("0".equals(c1) || "0".equals(c2)) {
+      throw new RuntimeException("Empty dataset is impossible");
+    }
     if (!c1.equals(c2)) {
-	var s = "Sink data != Source Data, Origin is "  + c1 + " lines, lakesoul is " + c2+" lines.";
+      var s = "Sink data != Source Data, Origin is " + c1 + " lines, lakesoul is " + c2 + " lines.";
       throw new RuntimeException(s);
     }
   }
