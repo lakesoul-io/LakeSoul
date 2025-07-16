@@ -122,7 +122,7 @@ public class FlinkDataInit {
             "f_row ROW<f1 INT, f2 STRING> )"
             + "WITH (\n"
             + "'connector' = 'filesystem',\n"
-            + "'path' = 's3://dmetasoul-bucket/jiax/lakesoul/e2e/data',\n"
+            + "'path' = 's3://dmetasoul-bucket/jiax/lakesoul/e2e/data/',\n"
             + //  -- CSV 输出路径（必填，需提前创建目录）
             "'format' = 'parquet'"
             + //        -- 指定 CSV 格式
