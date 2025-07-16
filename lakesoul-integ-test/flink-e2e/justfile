@@ -10,7 +10,12 @@ MAIN_CLASS := "com.dmetasoul.e2e.FlinkData"
 
 LAKE_SOUL_LIB := "file:///Users/mag1cian/.m2/repository/com/dmetasoul/lakesoul-flink/1.20-3.0.0-SNAPSHOT/lakesoul-flink-1.20-3.0.0-SNAPSHOT.jar"
 #LAKE_SOUL_LIB := "file:///Users/mag1cian/.m2/repository/com/dmetasoul/lakesoul-flink/1.20-3.0.0-SNAPSHOT"
-S3_LAKE_SOUL_LIB := "http://localhost:9000/lakesoul-test-bucket/m2/lakesoul-flink-1.20-3.0.0-SNAPSHOT.jar"
+
+# HTTPS_LAKE_SOUL_LIB := "http://localhost:9000/lakesoul-test-bucket/m2/lakesoul-flink-1.20-3.0.0-SNAPSHOT.jar"
+S3_LAKE_SOUL_LIB := "s3://dmetasoul-bucket/jiax/target/lakesoul-flink-1.20-3.0.0-SNAPSHOT.jar"
+E2E_JOB := "s3://dmetasoul-bucket/jiax/target/flink-e2e-3.0.0-SNAPSHOT.jar"
+
+env := "LAKESOUL_PG_URL=jdbc:postgresql://pgsvc.default.svc.cluster.local:5432/lakesoul_e2e?stringtype=unspecified LAKESOUL_PG_USERNAME=lakesoul_e2e LAKESOUL_PG_PASSWORD=lakesoul_e2e LAKESOUL_PG_DB=lakesoul_e2e" 
 
 add-lakesoul:
     cp {{ LAKE_SOUL_LIB }} {{ FLINK_HOME }}/lib
@@ -30,8 +35,8 @@ clean-data:
 remove_mvn:
     @rm -rf ~/.m2/repository/com/dmetasoul
 
-run which: install
-    {{ FLINK_BIN }}/flink run --classpath {{S3_LAKE_SOUL_LIB}} -c {{ MAIN_CLASS }}{{ which }} {{ TARGET }}
+run which: 
+    flink run --classpath {{S3_LAKE_SOUL_LIB}} -c {{ MAIN_CLASS }}{{ which }} {{E2E_JOB}}
 
 k8s which:
     {{FLINK_BIN}}/flink run --classpath {{LAKE_SOUL_LIB}} -m localhost:8081 -c{{MAIN_CLASS}}{{which}} {{TARGET}}

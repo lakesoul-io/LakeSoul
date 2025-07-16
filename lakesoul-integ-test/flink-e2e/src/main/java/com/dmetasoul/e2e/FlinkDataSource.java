@@ -73,7 +73,8 @@ public class FlinkDataSource {
     var c1 = Objects.requireNonNull(res1.collect().next().getField(0)).toString();
     var c2 = Objects.requireNonNull(res2.collect().next().getField(0)).toString();
     if (!c1.equals(c2)) {
-      throw new RuntimeException("Sink data != Source Data");
+	var s = "Sink data != Source Data, Origin is "  + c1 + " lines, lakesoul is " + c2+" lines.";
+      throw new RuntimeException(s);
     }
   }
 }

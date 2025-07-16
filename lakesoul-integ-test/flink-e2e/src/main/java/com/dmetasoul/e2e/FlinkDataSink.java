@@ -68,9 +68,7 @@ public class FlinkDataSink {
     var createTable =
         "CREATE TABLE lakesoul_e2e_test\n"
             + "WITH (\n"
-            + "'connector' = 'lakesoul',\n"
-            + "'path'='s3://dmetasoul-bucket/jiax/lakesoul/e2e/flink/sink/'\n"
-            + ")\n"
+            + "'connector' = 'lakesoul')\n"
             + "LIKE default_catalog.default_database.parquet_source;";
     tableEnv.executeSql(createTable);
     tableEnv.executeSql(
