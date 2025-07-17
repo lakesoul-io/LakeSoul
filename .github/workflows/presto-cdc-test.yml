@@ -113,6 +113,7 @@ jobs:
       - name: Deploy cluster
         run: |
           sed -i 's/if NEW.version - rs_version >= 10 then/if NEW.version - rs_version >= 1 then/' script/meta_init.sql
+          sed -i 's/if NEW.version >= 10 then/if NEW.version >= 1 then/' script/meta_init.sql
           cd ./docker/lakesoul-docker-compose-env
           docker compose pull -q
           docker compose --profile s3 up -d
