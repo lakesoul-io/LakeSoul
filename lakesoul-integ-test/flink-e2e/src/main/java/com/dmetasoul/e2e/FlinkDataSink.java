@@ -57,7 +57,7 @@ public class FlinkDataSink {
             "f_row ROW<f1 INT, f2 STRING>"
             + ") WITH (\n"
             + "'connector' = 'filesystem',\n"
-            + "'path' = 's3://dmetasoul-bucket/jiax/lakesoul/e2e/data/',\n"
+            + "'path' = 's3://dmetasoul-bucket/lakesoul/lakesoul-e2e/data/',\n"
             + "'format' ='parquet'\n"
             + ")\n";
 
@@ -69,7 +69,7 @@ public class FlinkDataSink {
         "CREATE TABLE lakesoul_e2e_test\n"
             + "WITH (\n"
             + "'connector' = 'lakesoul',\n"
-            + "'path' = 's3://dmetasoul-bucket/e2e/lakesoul/flink/'\n"
+            + "'path' = 's3://dmetasoul-bucket/lakesoul/lakesoul-e2e/flink/sink/'\n"
             + ")\n"
             + "LIKE default_catalog.default_database.parquet_source;";
     tableEnv.executeSql(createTable);
