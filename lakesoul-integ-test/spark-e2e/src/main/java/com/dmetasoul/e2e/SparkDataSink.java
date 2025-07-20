@@ -28,7 +28,7 @@ public class SparkDataSink {
             .config("spark.sql.defaultCatalog", "lakesoul")
             .getOrCreate();
     spark.sql("DROP TABLE IF EXISTS lakesoul_e2e_test");
-    String parquetPath = "s3://lakesoul-test-bucket/lakesoul/e2e/data";
+    String parquetPath = "s3://dmetasoul-bucket/lakesoul/lakesoul-e2e/data";
     StructType schema =
             DataTypes.createStructType(
                     new StructField[] {
@@ -57,7 +57,7 @@ public class SparkDataSink {
 
     Dataset<Row> origin =
         spark.read().schema(schema).option("inferSchema", "true").parquet(parquetPath);
-    var tablePath = "s3://lakesoul-test-bucket/lakesoul/e2e/spark/sink";
+    var tablePath = "s3://dmetasoul-bucket/lakesoul/lakesoul-e2e/spark/sink";
     origin
         .write()
         .mode("overwrite")
