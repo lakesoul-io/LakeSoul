@@ -22,15 +22,15 @@ spark-shell --packages com.dmetasoul:lakesoul-spark:3.3-VAR::VERSION
 可以从 [Releases](https://github.com/lakesoul-io/LakeSoul/releases) 页面下载已经打包好的 LakeSoul Jar 包。
 下载 jar 并传给 `spark-submit` 命令：
 ```bash
-spark-submit --jars "lakesoul-spark-3.3-VAR::VERSION.jar"
+spark-submit --jars "lakesoul-spark-3.5-VAR::VERSION.jar"
 ```
 
 #### 直接将 Jar 包放在 Spark 环境中
 可以将 Jar 包下载后，放在 $SPARK_HOME/jars 中。
 
-Jar 包可以从 Github Release 页面下载：https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-spark-3.3-VAR::VERSION.jar
+Jar 包可以从 Github Release 页面下载：https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-spark-3.5-VAR::VERSION.jar
 
-或者从国内地址下载：https://mirrors.huaweicloud.com/repository/maven/com/dmetasoul/lakesoul-spark/3.3-VAR::VERSION/lakesoul-spark-3.3-VAR::VERSION.jar
+或者从国内地址下载：https://mirrors.huaweicloud.com/repository/maven/com/dmetasoul/lakesoul-spark/3.3-VAR::VERSION/lakesoul-spark-3.5-VAR::VERSION.jar
 
 ### 设置 Java/Scala 项目
 增加以下 Maven 依赖项:

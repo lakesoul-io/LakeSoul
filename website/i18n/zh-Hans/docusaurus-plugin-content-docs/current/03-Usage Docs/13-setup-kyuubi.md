@@ -76,7 +76,7 @@ drop table `lakesoul`.`default`.test_lakesoul_table_v1;
 
 ### 1. 依赖
 
-下载LakeSoul Spark Jar: https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-spark-3.3-VAR::VERSION.jar
+下载LakeSoul Spark Jar: https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-spark-3.5-VAR::VERSION.jar
 
 将该jar拷贝至 `$SPARK_HOME/jars`. 
 

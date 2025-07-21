@@ -5,7 +5,8 @@
 package org.apache.spark.sql.execution.datasources.v2.parquet
 
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
+import org.apache.spark.sql.catalyst.{FileSourceOptions, InternalRow}
 import org.apache.spark.sql.connector.read.{InputPartition, PartitionReader, PartitionReaderFactory}
 import org.apache.spark.sql.execution.datasources.v2.{FilePartitionReader, PartitionedFileReader}
 import org.apache.spark.sql.execution.datasources.{FilePartition, PartitionedFile}
@@ -26,7 +27,7 @@ abstract class NativeFilePartitionReaderFactory extends PartitionReaderFactory w
     val iter = filePartition.files.toIterator.map { file =>
       PartitionedFileReader(file, buildColumnarReader(file))
     }
-    new FilePartitionReader[ColumnarBatch](iter)
+    new FilePartitionReader[ColumnarBatch](iter, new FileSourceOptions(CaseInsensitiveMap(Map[String, String]())))
   }
 
   def buildColumnarReader(partitionedFile: PartitionedFile): PartitionReader[ColumnarBatch]
