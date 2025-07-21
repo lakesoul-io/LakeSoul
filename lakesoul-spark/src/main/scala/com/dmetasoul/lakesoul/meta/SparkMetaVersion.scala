@@ -90,8 +90,8 @@ object SparkMetaVersion extends Logging {
     val short_table_name = info.getTableName
     val partitions = info.getPartitions
     val properties = info.getProperties
-    val configuration: Map[String, Any] = JsonUtils.fromJson(properties)
-    val configurationMap = configuration.toSeq.map(kv => (kv._1, kv._2.toString)).toMap
+    val configuration: java.util.Map[String, Object] = JsonUtils.mapper.readValue(properties, classOf[java.util.Map[String, Object]])
+    val configurationMap = configuration.asScala.toSeq.map(kv => (kv._1, kv._2.toString)).toMap
 
     // table may have no partition at all or only have range or hash partition
     val partitionCols = DBUtil.parseTableInfoPartitions(partitions)

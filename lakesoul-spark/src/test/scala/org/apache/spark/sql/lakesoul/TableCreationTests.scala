@@ -30,6 +30,7 @@ import org.scalatestplus.junit.JUnitRunner
 
 import java.io.File
 import java.time.{LocalDate, ZoneId}
+import java.util.concurrent.ExecutionException
 import java.util.{Date, Locale}
 import scala.language.implicitConversions
 
@@ -523,10 +524,10 @@ trait TableCreationTests
       withView(viewName) {
         Seq((1, "key")).toDF("a", "b").write.format(format).save(dir.getCanonicalPath)
         sql(s"create temporary view $viewName as select * from lakesoul.`${dir.getCanonicalPath}`")
-        val e = intercept[SparkException] {
+        val e = intercept[ExecutionException] {
           Seq((2, "key")).toDF("a", "b").write.format(format).mode("append").saveAsTable(viewName)
         }
-        assert(e.getMessage.contains("Table implementation does not support writes"))
+        assert(e.getMessage.contains("doesn't exist."))
       }
     }
     spark.sessionState.catalogManager.setCurrentCatalog("lakesoul")
@@ -999,7 +1000,7 @@ trait TableCreationTests
             val e1 = intercept[AnalysisException] {
               sql(s"CREATE TABLE src USING lakesoul LOCATION '${path.getAbsolutePath}'")
             }
-            assert(e1.getMessage.contains(s"Table $testDatabase.src already exists"))
+            assert(e1.getMessage.contains(s"Cannot create table or view `$testDatabase`.`src` because it already exists"))
 
             Seq((2, "b")).toDF("i", "p")
               .write

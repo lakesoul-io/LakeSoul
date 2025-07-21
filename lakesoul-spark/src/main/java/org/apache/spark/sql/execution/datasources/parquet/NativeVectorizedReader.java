@@ -148,6 +148,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
                            StructType requestSchema,
                            Map<String, String> mergeOperatorInfo)
             throws IOException, InterruptedException, UnsupportedOperationException {
+        taskAttemptContext.getConfiguration().set("spark.sql.parquet.inferTimestampNTZ.enabled", "true");
         super.initialize(inputSplits[0], taskAttemptContext);
         FileSplit split = (FileSplit) inputSplits[0];
         this.file = split.getPath();
