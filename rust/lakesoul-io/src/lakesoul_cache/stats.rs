@@ -1,5 +1,4 @@
 //! Cache stats
-#![feature(u128_type, u128)]
 use std::{
     fmt::Debug,
     sync::atomic::{AtomicU64, Ordering},

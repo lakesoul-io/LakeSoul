@@ -1,15 +1,13 @@
-#![feature(file_lock)]
-
 use fs::File;
 // use fs_err::os::unix::fs::FileExt;
 // use fs_err as fs;
 use std::borrow::Borrow;
 use std::boxed::Box;
 use std::collections::hash_map::RandomState;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap};
 use std::error::Error as StdError;
 use std::ffi::{OsStr, OsString};
-use std::hash::{BuildHasher, Hash};
+use std::hash::{BuildHasher};
 use std::io;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
@@ -632,7 +630,7 @@ mod tests {
     /// page size: 4 * 1024
     /// page hit percent: 0.78448486328125
     /// page miss percent: 0.21551513671875
-    // #[test]
+    #[test]
     fn test_lru_disk_cache_from_zipf() {
         let f = TestFixture::new();
         let mut cache_hit = 0;

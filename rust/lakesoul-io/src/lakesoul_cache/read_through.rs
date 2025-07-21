@@ -117,7 +117,7 @@ async fn get_range<C: PageCache>(
     let duration = Instant::now() - current_time;
     stats.inc_total_query_time(duration.as_millis() as u64);
     stats.inc_total_data_size(buf.len() as u64);
-    let current_thread = thread::current();
+    let _current_thread = thread::current();
     // info!("thread name: {:?}======thread id: {:?}========cache get data cost {} ms", current_thread.name(), current_thread.id(), stats.total_query_time());
     // println!("thread name: {:?}======thread id: {:?}========cache get data cost {} ms", current_thread.name(), current_thread.id(), stats.total_query_time());
     Ok(buf.into())

@@ -56,6 +56,7 @@ use crate::helpers::{
 };
 use crate::lakesoul_io_config::{LakeSoulIOConfig, create_session_context};
 
+/// Read data total time
 static READ_DATA_TOTAL_TIME: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
@@ -376,7 +377,7 @@ impl SyncSendableMutableLakeSoulReader {
             reader.next_rb().await
         });
         let duration = (std::time::Instant::now() - current_time).as_millis();
-        let current_thread = std::thread::current();
+        let _current_thread = std::thread::current();
         READ_DATA_TOTAL_TIME
             .fetch_add(duration as u64, std::sync::atomic::Ordering::Relaxed);
 
