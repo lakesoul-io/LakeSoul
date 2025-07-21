@@ -61,7 +61,7 @@ SPDX-License-Identifier: Apache-2.0
         <parquet.version>1.11.0</parquet.version>
         <log4j.version>2.17.2</log4j.version>
         <local.scope>provided</local.scope>
-        <spark.version>3.3.1</spark.version>
+        <spark.version>3.5.6</spark.version>
         <scala.version>2.12.15</scala.version>
         <java.version>1.8</java.version>
     </properties>

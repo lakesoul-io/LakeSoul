@@ -77,7 +77,7 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: vemonet/setup-spark@v1
         with:
-          spark-version: '3.3.1'
+          spark-version: '3.5.6'
           hadoop-version: '3'
       - run: spark-submit --version
 

@@ -21,8 +21,8 @@ import org.apache.spark.sql.execution.datasources.parquet.{NumRowGroupsAcc, Parq
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2ScanRelation
 import org.apache.spark.sql.execution.datasources.v2.parquet.{NativeParquetScan, ParquetScan}
 import org.apache.spark.sql.functions.struct
-import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.internal.SQLConf.{LegacyBehaviorPolicy, ParquetOutputTimestampType}
+import org.apache.spark.sql.internal.{LegacyBehaviorPolicy, SQLConf}
+import org.apache.spark.sql.internal.SQLConf.ParquetOutputTimestampType
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf.NATIVE_IO_ENABLE
 import org.apache.spark.sql.lakesoul.test.LakeSoulTestUtils
@@ -96,7 +96,7 @@ class ParquetNativeFilterSuite
 
       query.queryExecution.optimizedPlan.collectFirst {
         case PhysicalOperation(_, filters,
-        DataSourceV2ScanRelation(_, scan: ParquetScan, _, _)) =>
+        DataSourceV2ScanRelation(_, scan: ParquetScan, _, _, _)) =>
           assert(filters.nonEmpty, "No filter is analyzed from the given query")
           val sourceFilters = filters.flatMap(DataSourceStrategy.translateFilter(_, true)).toArray
           val pushedFilters = scan.pushedFilters
@@ -116,7 +116,7 @@ class ParquetNativeFilterSuite
 
           checker(stripSparkFilter(query), expected)
         case PhysicalOperation(_, filters,
-        DataSourceV2ScanRelation(_, scan: NativeParquetScan, _, _)) =>
+        DataSourceV2ScanRelation(_, scan: NativeParquetScan, _, _, _)) =>
           println("match case NativeParquetScan")
           //          assert(filters.nonEmpty, "No filter is analyzed from the given query")
           val sourceFilters = filters.flatMap(DataSourceStrategy.translateFilter(_, true)).toArray
@@ -169,7 +169,7 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
                                       caseSensitive: Option[Boolean] = None,
                                       datetimeRebaseSpec: RebaseSpec = RebaseSpec(LegacyBehaviorPolicy.CORRECTED)): ParquetFilters =
     new ParquetFilters(schema, conf.parquetFilterPushDownDate, conf.parquetFilterPushDownTimestamp,
-      conf.parquetFilterPushDownDecimal, conf.parquetFilterPushDownStringStartWith,
+      conf.parquetFilterPushDownDecimal, conf.parquetFilterPushDownStringPredicate,
       conf.parquetFilterPushDownInFilterThreshold,
       caseSensitive.getOrElse(conf.caseSensitiveAnalysis),
       datetimeRebaseSpec

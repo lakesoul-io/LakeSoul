@@ -8,6 +8,7 @@ import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.catalyst.expressions.codegen.GenerateUnsafeProjection
+import org.apache.spark.sql.catalyst.types.DataTypeUtils
 import org.apache.spark.sql.connector.read.PartitionReaderFactory
 import org.apache.spark.sql.execution.PartitionedFileUtil
 import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
@@ -66,7 +67,7 @@ case class BucketParquetScan(sparkSession: SparkSession,
     val t0 = System.currentTimeMillis()
     val selectedPartitions = fileIndex.listFiles(partitionFilters, dataFilters)
     logInfo(s"\tpartitions list files took ${System.currentTimeMillis() - t0}ms")
-    val partitionAttributes = fileIndex.partitionSchema.toAttributes
+    val partitionAttributes = DataTypeUtils.toAttributes(fileIndex.partitionSchema)
     val attributeMap = partitionAttributes.map(a => normalizeName(a.name) -> a).toMap
     val readPartitionAttributes = readPartitionSchema.map { readField =>
       attributeMap.getOrElse(normalizeName(readField.name),
@@ -106,7 +107,7 @@ case class BucketParquetScan(sparkSession: SparkSession,
 
     val fileWithBucketId = partitionedFiles.map(file =>
       (BucketingUtils
-        .getBucketId(new Path(file.filePath).getName)
+        .getBucketId(file.filePath.toPath.getName)
         .getOrElse(sys.error(s"Invalid bucket file ${file.filePath}")),
         Array(file))).toMap
 

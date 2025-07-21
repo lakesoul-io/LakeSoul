@@ -8,7 +8,7 @@ import com.alibaba.fastjson.JSONObject
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.lakesoul.Snapshot
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
-import org.apache.spark.sql.lakesoul.utils.{SparkUtil, TableInfo}
+import org.apache.spark.sql.lakesoul.utils.{JsonUtils, SparkUtil, TableInfo}
 
 import java.util
 import scala.collection.JavaConverters._
@@ -90,11 +90,8 @@ object SparkMetaVersion extends Logging {
     val short_table_name = info.getTableName
     val partitions = info.getPartitions
     val properties = info.getProperties
-    import scala.util.parsing.json.JSON
-    val configuration = JSON.parseFull(properties)
-    val configurationMap = configuration match {
-      case Some(map: collection.immutable.Map[String, Any]) => map.toSeq.map(kv => (kv._1, kv._2.toString)).toMap
-    }
+    val configuration: Map[String, Any] = JsonUtils.fromJson(properties)
+    val configurationMap = configuration.toSeq.map(kv => (kv._1, kv._2.toString)).toMap
 
     // table may have no partition at all or only have range or hash partition
     val partitionCols = DBUtil.parseTableInfoPartitions(partitions)

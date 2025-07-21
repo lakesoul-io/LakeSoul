@@ -13,6 +13,7 @@ import org.apache.spark.sql.types.{StructField, StructType}
 import org.apache.spark.sql.{Dataset, SparkSession}
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.arrow.ArrowUtils
+import org.apache.spark.sql.catalyst.types.DataTypeUtils
 import org.apache.spark.sql.lakesoul.LakeSoulOptions.HASH_PARTITIONS
 
 
@@ -44,7 +45,7 @@ trait ImplicitMetadataOperation extends Logging {
       if (colMatches.length > 1) {
         throw LakeSoulErrors.ambiguousPartitionColumnException(columnName, colMatches)
       } else if (colMatches.isEmpty) {
-        throw LakeSoulErrors.partitionColumnNotFoundException(columnName, schema.toAttributes)
+        throw LakeSoulErrors.partitionColumnNotFoundException(columnName, DataTypeUtils.toAttributes(schema))
       }
       colMatches.head.name
     }

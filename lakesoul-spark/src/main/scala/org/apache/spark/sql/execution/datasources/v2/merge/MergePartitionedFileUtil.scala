@@ -8,13 +8,13 @@ import com.dmetasoul.lakesoul.meta.DataFileInfo
 import org.apache.hadoop.fs.{BlockLocation, FileStatus, LocatedFileStatus, Path}
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
+import org.apache.spark.sql.execution.datasources.FileStatusWithMetadata
 import org.apache.spark.sql.lakesoul.utils.TableInfo
 import org.apache.spark.sql.types.StructType
 
 object MergePartitionedFileUtil {
   def notSplitFiles(sparkSession: SparkSession,
-                    file: FileStatus,
+                    file: FileStatusWithMetadata,
                     filePath: Path,
                     partitionValues: InternalRow,
                     tableInfo: TableInfo,
@@ -35,7 +35,7 @@ object MergePartitionedFileUtil {
   }
 
   def getPartitionedFile(sparkSession: SparkSession,
-                         file: FileStatus,
+                         file: FileStatusWithMetadata,
                          filePath: Path,
                          partitionValues: InternalRow,
                          tableInfo: TableInfo,
@@ -43,7 +43,7 @@ object MergePartitionedFileUtil {
                          requestFilesSchemaMap: Map[String, StructType],
                          requestDataSchema: StructType,
                          requestPartitionFields: Array[String]): MergePartitionedFile = {
-    val hosts = getBlockHosts(getBlockLocations(file), 0, file.getLen)
+    val hosts = getBlockHosts(getBlockLocations(file.fileStatus), 0, file.getLen)
 
     val fs = filePath
       .getFileSystem(sparkSession.sessionState.newHadoopConf())
