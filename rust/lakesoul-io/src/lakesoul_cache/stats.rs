@@ -1,5 +1,5 @@
 //! Cache stats
-
+#![feature(u128_type, u128)]
 use std::{
     fmt::Debug,
     sync::atomic::{AtomicU64, Ordering},
@@ -15,11 +15,22 @@ pub trait CacheReadStats: Sync + Send + Debug {
     /// Total hits
     fn total_misses(&self) -> u64;
 
+    /// Total query time
+    fn total_query_time(&self) -> u64;
+
+    /// Total data size
+    fn total_data_size(&self) -> u64;
+
     /// Increase total reads by 1.
     fn inc_total_reads(&self);
 
     /// Increase total hits by 1.
     fn inc_total_misses(&self);
+
+    /// Increase total query time by val.
+    fn inc_total_query_time(&self, val: u64);
+
+    fn inc_total_data_size(&self, val: u64);
 }
 
 /// Cache capacity stats.
@@ -45,6 +56,8 @@ pub struct AtomicIntCacheStats {
     total_misses: AtomicU64,
     max_capacity: AtomicU64,
     capacity_usage: AtomicU64,
+    total_query_times: AtomicU64,
+    total_data_size: AtomicU64,
 }
 
 /// Atomic integer cache stats.
@@ -55,6 +68,8 @@ impl AtomicIntCacheStats {
             total_reads: AtomicU64::new(0),
             max_capacity: AtomicU64::new(0),
             capacity_usage: AtomicU64::new(0),
+            total_query_times: AtomicU64::new(0),
+            total_data_size: AtomicU64::new(0),
         }
     }
 }
@@ -74,12 +89,28 @@ impl CacheReadStats for AtomicIntCacheStats {
         self.total_reads.load(Ordering::Acquire)
     }
 
+    fn total_query_time(&self) -> u64 {
+        self.total_query_times.load(Ordering::Acquire)
+    }
+
+    fn total_data_size(&self) -> u64 {
+        self.total_data_size.load(Ordering::Acquire)
+    }
+
     fn inc_total_reads(&self) {
         self.total_reads.fetch_add(1, Ordering::Relaxed);
     }
 
     fn inc_total_misses(&self) {
         self.total_misses.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn inc_total_query_time(&self, val: u64) {
+        self.total_query_times.fetch_add(val, Ordering::Relaxed);
+    }
+
+    fn inc_total_data_size(&self, val: u64) {
+        self.total_data_size.fetch_add(val, Ordering::Relaxed);
     }
 }
 

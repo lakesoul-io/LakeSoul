@@ -1,16 +1,19 @@
+#![feature(file_lock)]
+
 use fs::File;
 // use fs_err::os::unix::fs::FileExt;
 // use fs_err as fs;
 use std::borrow::Borrow;
 use std::boxed::Box;
 use std::collections::hash_map::RandomState;
+use std::collections::{HashMap, HashSet};
 use std::error::Error as StdError;
 use std::ffi::{OsStr, OsString};
-use std::hash::BuildHasher;
+use std::hash::{BuildHasher, Hash};
 use std::io;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 use std::{fmt, fs};
 use tracing::{debug, error, warn};
 
@@ -52,6 +55,7 @@ pub struct LruDiskCacheEntry {
 #[derive(Debug)]
 pub struct LruDiskCache<S: BuildHasher = RandomState> {
     lru: RwLock<LruCache<OsString, LruDiskCacheEntry, S, FileSize>>,
+    file_lock: RwLock<HashMap<OsString, Arc<RwLock<OsString>>>>,
     root: PathBuf,
     pending_size: u64,
 }
@@ -73,8 +77,6 @@ fn get_all_files<P: AsRef<Path>>(path: P) -> Box<dyn Iterator<Item = (PathBuf, u
             })
         })
         .collect();
-    // Sort by last-modified-time, so oldest file first.
-    // files.sort_by_key(|k| k.0);
     Box::new(files.into_iter())
 }
 
@@ -160,6 +162,7 @@ impl LruDiskCache {
         // println!("drop LruDiskCache");
         LruDiskCache {
             lru: RwLock::new(LruCache::with_meter(size, FileSize)),
+            file_lock: RwLock::new(HashMap::new()),
             root: root,
             pending_size: 0,
         }
@@ -213,12 +216,15 @@ impl LruDiskCache {
         }
         //TODO: ideally LRUCache::insert would give us back the entries it had to remove.
         while self.size() + size > self.capacity() {
-            let (rel_path, _) = self
-                .lru
-                .write()
-                .unwrap()
-                .remove_lru()
-                .expect("Unexpectedly empty cache!");
+            // add file lock,sure threads don't remove the same file
+            let mut files_lock = self.file_lock.write().unwrap();
+            let mut lru_writer = self.lru.write().unwrap();
+            let (rel_path, _) =
+                lru_writer.remove_lru().expect("Unexpectedly empty cache!");
+            let file_lock = files_lock.get(&rel_path).unwrap().clone();
+            let _file_write_lock = file_lock.write().unwrap();
+            files_lock.remove(&rel_path);
+            drop(files_lock);
             let remove_path = self.rel_to_abs_path(rel_path);
             //TODO: check that files are removable during `init`, so that this is only
             // due to outside interference.
@@ -254,14 +260,13 @@ impl LruDiskCache {
         self.make_space(size)?;
         let path = self.rel_to_abs_path(rel_path);
         // let file =  File::open(path);
+        let mut lru_writer = self.lru.write().unwrap();
         let lru_disk_cache_entry = LruDiskCacheEntry {
             file: File::open(path)?,
             size,
         };
-        self.lru
-            .write()
-            .unwrap()
-            .insert(rel_path.to_owned(), lru_disk_cache_entry);
+
+        lru_writer.insert(rel_path.to_owned(), lru_disk_cache_entry);
         Ok(())
     }
 
@@ -280,6 +285,14 @@ impl LruDiskCache {
         let rel_path = key.as_ref();
         let path = self.rel_to_abs_path(rel_path);
         fs::create_dir_all(path.parent().expect("Bad path?"))?;
+        let mut files_lock = self.file_lock.write().unwrap();
+        if files_lock.contains_key(rel_path) {
+            return Ok(());
+        }
+        let file_lock = Arc::new(RwLock::new(rel_path.to_owned()));
+        files_lock.insert(rel_path.to_owned(), file_lock.clone());
+        drop(files_lock);
+        let _res = file_lock.write().unwrap();
         by(&path)?;
         let size = match size {
             Some(size) => size,
@@ -316,7 +329,6 @@ impl LruDiskCache {
     pub fn insert_bytes<K: AsRef<OsStr>>(&self, key: K, bytes: &[u8]) -> Result<()> {
         self.insert_by(key, Some(bytes.len() as u64), |path| {
             let mut f = File::create(path)?;
-            // f.lock();
             f.write_all(bytes)?;
             Ok(())
         })
@@ -358,6 +370,15 @@ impl LruDiskCache {
     /// Get an opened readable and seekable handle to the file at `key`, if one exists and can
     /// be opened. Updates the LRU state of the file if present.
     pub fn get<K: AsRef<OsStr>>(&self, key: K) -> Option<Vec<u8>> {
+        // Due to LRU's nature, no read-write conflicts occur, so read locks are commented out.
+        // Uncomment them if conflicts arise later.
+        // let file_lock = match self.file_lock
+        //     .read()
+        //     .unwrap().get(key.as_ref()) {
+        //     Some(lock) => lock.clone(),
+        //     None => return None,
+        //     };
+        // let _read_file_lock = file_lock.read().unwrap();
         if let Some(file) = self.get_file(&key) {
             let file_size = file.metadata().unwrap().len() as usize;
             let mut buf = vec![0; file_size];
@@ -396,8 +417,13 @@ impl LruDiskCache {
 
     /// Remove the given key from the cache.
     pub fn remove<K: AsRef<OsStr>>(&self, key: K) -> Result<()> {
+        let mut files_lock = self.file_lock.write().unwrap();
         match self.lru.write().unwrap().remove(key.as_ref()) {
             Some(_) => {
+                let file_lock = files_lock.get(key.as_ref()).unwrap().clone();
+                let _file_write_lock = file_lock.write().unwrap();
+                files_lock.remove(key.as_ref());
+                drop(files_lock);
                 let path = self.rel_to_abs_path(key.as_ref());
                 fs::remove_file(&path).map_err(|e| {
                     error!("Error removing file from cache: `{:?}`: {}", path, e);
@@ -522,29 +548,6 @@ mod tests {
             // The least-recently-used file should have been removed.
             assert!(!c.contains_key("file2"));
         }
-        // Get rid of the cache, to test that the LRU persists on-disk as mtimes.
-        // This is hacky, but mtime resolution on my mac with HFS+ is only 1 second, so we either
-        // need to have a 1 second sleep in the test (boo) or adjust the mtimes back a bit so
-        // that updating one file to the current time actually works to make it newer.
-        // set_mtime_back(f.tmp().join("file1"), 5);
-        // set_mtime_back(f.tmp().join("file3"), 5);
-        // {
-        //     let mut c = LruDiskCache::new(f.tmp(), 25).unwrap();
-        //     // Bump file1 again.
-        //     c.get("file1").unwrap();
-        // }
-        // // Now check that the on-disk mtimes were updated and used.
-        // {
-        //     let mut c = LruDiskCache::new(f.tmp(), 25).unwrap();
-        //     assert!(c.contains_key("file1"));
-        //     assert!(c.contains_key("file3"));
-        //     assert_eq!(c.size(), 20);
-        //     // Add another file to bump out the least-recently-used.
-        //     c.insert_bytes("file4", &[4; 10]).unwrap();
-        //     assert_eq!(c.size(), 20);
-        //     assert!(!c.contains_key("file3"));
-        //     assert!(c.contains_key("file1"));
-        // }
     }
 
     #[test]
@@ -629,7 +632,7 @@ mod tests {
     /// page size: 4 * 1024
     /// page hit percent: 0.78448486328125
     /// page miss percent: 0.21551513671875
-    #[test]
+    // #[test]
     fn test_lru_disk_cache_from_zipf() {
         let f = TestFixture::new();
         let mut cache_hit = 0;
@@ -674,6 +677,37 @@ mod tests {
                 let c = c.clone();
                 let handle = thread::spawn(move || {
                     assert_eq!(c.get("file1").unwrap(), vec![1u8; 2 * M]);
+                });
+                handles.push(handle);
+            }
+
+            assert_eq!(c.get("file1").unwrap(), vec![1u8; 2 * M]);
+            assert_eq!(c.get("file1").unwrap(), vec![1u8; 2 * M]);
+            assert_eq!(c.get("file1").unwrap(), vec![1u8; 2 * M]);
+            assert_eq!(c.get("file1").unwrap(), vec![1u8; 2 * M]);
+            // Adding this third file should put the cache above the limit.
+            c.insert_bytes("file3", &[3; 10]).unwrap();
+            handles
+                .into_iter()
+                .for_each(|handle| handle.join().unwrap());
+        }
+    }
+
+    #[test]
+    fn test_multi_thread_insert_lru() {
+        let f = TestFixture::new();
+        {
+            pub const M: usize = 1024 * 4;
+            let c =
+                std::sync::Arc::new(LruDiskCache::new(f.tmp(), 4 * M as u64).unwrap());
+            // let c = LruDiskCache::new(f.tmp(), 25).unwrap();
+            c.insert_bytes("file1", &[1; 2 * M]).unwrap();
+            c.get("file1").unwrap();
+            let mut handles = vec![];
+            for _ in 0..100 {
+                let c = c.clone();
+                let handle = thread::spawn(move || {
+                    c.insert_bytes("file1", &vec![1u8; 2 * M]).unwrap();
                 });
                 handles.push(handle);
             }

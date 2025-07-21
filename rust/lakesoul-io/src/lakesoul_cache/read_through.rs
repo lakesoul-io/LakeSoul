@@ -1,6 +1,6 @@
-use std::ops::Range;
 use std::sync::Arc;
-// use crate::cache;
+use std::thread;
+use std::{ops::Range, time::Instant};
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
@@ -71,6 +71,7 @@ async fn get_range<C: PageCache>(
     range: Range<usize>,
     parallelism: usize,
 ) -> Result<Bytes> {
+    let current_time = Instant::now();
     let page_size = cache.page_size();
     let start = (range.start / page_size) * page_size;
     let meta = cache.head(location, store.head(location)).await?;
@@ -113,6 +114,12 @@ async fn get_range<C: PageCache>(
     for page in pages {
         buf.extend_from_slice(&page);
     }
+    let duration = Instant::now() - current_time;
+    stats.inc_total_query_time(duration.as_millis() as u64);
+    stats.inc_total_data_size(buf.len() as u64);
+    let current_thread = thread::current();
+    // info!("thread name: {:?}======thread id: {:?}========cache get data cost {} ms", current_thread.name(), current_thread.id(), stats.total_query_time());
+    // println!("thread name: {:?}======thread id: {:?}========cache get data cost {} ms", current_thread.name(), current_thread.id(), stats.total_query_time());
     Ok(buf.into())
 }
 
