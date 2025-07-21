@@ -112,6 +112,8 @@ jobs:
           cp ./lakesoul-presto/target/$PRESTO_TEST_JAR_NAME ./script/benchmark/work-dir
       - name: Deploy cluster
         run: |
+          sed -i 's/if NEW.version - rs_version >= 10 then/if NEW.version - rs_version >= 1 then/' script/meta_init.sql
+          sed -i 's/if NEW.version >= 10 then/if NEW.version >= 1 then/' script/meta_init.sql
           cd ./docker/lakesoul-docker-compose-env
           docker compose pull -q
           docker compose --profile s3 up -d
@@ -119,7 +121,11 @@ jobs:
       - name: Deploy Presto Server
         run: |
           echo "deploy presto server pwd: ${PWD}"
-          docker run -d --net lakesoul-docker-compose-env_default --name=presto -v ${PWD}/script/benchmark/work-dir/${PRESTO_JAR_NAME}:/opt/presto-server/plugin/lakesoul/${PRESTO_JAR_NAME} -v ${PWD}/script/benchmark/presto/catalog:/opt/presto-server/etc/catalog -v ${PWD}/script/benchmark/presto/config.properties:/opt/presto-server/etc/config.properties -v ${PWD}/script/benchmark/work-dir:/opt/spark/work-dir -v ${PWD}/script/benchmark/presto/lakesoul.properties:/root/lakesoul.properties --env lakesoul_home=/root/lakesoul.properties prestodb/presto:0.292
+          docker run -d --net lakesoul-docker-compose-env_default --name=presto -v ${PWD}/script/benchmark/work-dir/${PRESTO_JAR_NAME}:/opt/presto-server/plugin/lakesoul/${PRESTO_JAR_NAME} -v ${PWD}/script/benchmark/presto/catalog:/opt/presto-server/etc/catalog -v ${PWD}/script/benchmark/presto/config.properties:/opt/presto-server/etc/config.properties -v ${PWD}/script/benchmark/presto/jvm.config:/opt/presto-server/etc/jvm.config -v ${PWD}/script/benchmark/work-dir:/opt/spark/work-dir -v ${PWD}/script/benchmark/presto/lakesoul.properties:/root/lakesoul.properties --env lakesoul_home=/root/lakesoul.properties prestodb/presto:0.292
+      - name: Start compaction task
+        run: |
+          cd ./script/benchmark/work-dir
+          nohup docker run --cpus 2 -m 5000m --net lakesoul-docker-compose-env_default --rm -t -v ${PWD}:/opt/spark/work-dir --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties bitnami/spark:3.3.1 spark-submit --driver-memory 2G --executor-memory 2G --conf spark.driver.memoryOverhead=1500m --conf spark.executor.memoryOverhead=1500m --conf spark.hadoop.fs.s3.buffer.dir=/tmp --conf spark.hadoop.fs.s3a.buffer.dir=/tmp --conf spark.hadoop.fs.s3.impl=org.apache.hadoop.fs.s3a.S3AFileSystem --conf spark.hadoop.fs.s3a.path.style.access=true --conf spark.hadoop.fs.s3a.endpoint=http://minio:9000 --conf spark.hadoop.fs.s3a.access.key=minioadmin1 --conf spark.hadoop.fs.s3a.secret.key=minioadmin1 --conf spark.sql.warehouse.dir=s3://lakesoul-test-bucket/ --conf spark.hadoop.fs.s3a.fast.upload.buffer=disk --conf spark.hadoop.fs.s3a.fast.upload=true --conf spark.dmetasoul.lakesoul.native.io.enable=true --conf spark.dmetasoul.lakesoul.compaction.level1.file.number.limit=5 --conf spark.dmetasoul.lakesoul.compaction.level1.file.merge.num.limit=2 --class com.dmetasoul.lakesoul.spark.compaction.NewCompactionTask --master local[4] /opt/spark/work-dir/$SPARK_JAR_NAME --threadpool.size=10 --database="" --file_num_limit=5 --file_size_limit=10KB > compaction.log 2>&1 &
       - name: Start flink mysql cdc task-1
         run: |
           docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.entry.MysqlCdc /opt/flink/work-dir/$FLINK_JAR_NAME --source_db.host mysql --source_db.port 3306 --source_db.db_name test_cdc --source_db.user root --source_db.password root --source.parallelism 2 --sink.parallelism 4 --use.cdc true --warehouse_path s3://lakesoul-test-bucket/data/ --flink.checkpoint s3://lakesoul-test-bucket/chk --flink.savepoint s3://lakesoul-test-bucket/svp --job.checkpoint_interval 5000 --server_time_zone UTC
@@ -211,4 +217,11 @@ jobs:
             presto-server.log
           retention-days: 5
           if-no-files-found: error
-
+      - name: Upload Compaction Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lakesoul-compaction-log
+          path: ./script/benchmark/work-dir/compaction.log
+          retention-days: 3
+          if-no-files-found: error

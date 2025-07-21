@@ -425,11 +425,12 @@ object LakeSoulFileWriter extends Logging {
       .map(_.replace(LAKESOUL_RANGE_PARTITION_SPLITTER, "/"))
     private val maxFileSize = options.get(MAX_FILE_SIZE_KEY)
 
+    private lazy val proj =
+      UnsafeProjection.create(Seq(description.bucketSpec.get.bucketIdExpression),
+        description.allColumns)
+
     /** Given an input row, returns the corresponding `bucketId` */
-    protected lazy val getBucketId: InternalRow => Int = {
-      val proj =
-        UnsafeProjection.create(Seq(description.bucketSpec.get.bucketIdExpression),
-          description.allColumns)
+    private lazy val getBucketId: InternalRow => Int = {
       row => proj(row).getInt(0)
     }
 
