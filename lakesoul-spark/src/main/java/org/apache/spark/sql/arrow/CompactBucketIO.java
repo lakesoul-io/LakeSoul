@@ -44,7 +44,7 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
     private static final long serialVersionUID = -4118390797329510218L;
 
     public static String DISCARD_FILE_LIST_KEY = "discard_file";
-    public static String COMPACT_DIR = "compact_dir";
+    public static String COMPACT_DIR = "compactdir";
     public static String INCREMENTAL_FILE = "incremental_file";
     private final Configuration conf;
     private final List<String> primaryKeys;
@@ -394,28 +394,40 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
                         if (curMergeList.size() >= compactLevelMergeFileNumLimit || fileSize >= this.compactLevelMergeFileSizeLimit) {
                             LOG.info("Task {}, Compacting Level {} existed compact files, curMergeList {}, size {}",
                                     taskId, level, curMergeList, fileSize);
-                            initializeReader(curMergeList);
                             int pickLevel = ((level != this.maxNumLevelLimit) ? level + 1 : this.maxNumLevelLimit);
-                            initializeWriter(String.format("%s/%s%d", this.tablePath, COMPACT_DIR, pickLevel));
-                            HashMap<String, List<FlushResult>> outFile = readAndWrite();
-                            this.close();
-                            if (outFile == null || outFile.isEmpty()) {
-                                LOG.info("COMPACT_DIR level compaction task: read file list is {}", curMergeList);
-                                LOG.info("COMPACT_DIR level compaction task: after compaction out file info: {}", outFile);
-                                throw new IllegalStateException(
-                                        "COMPACT_DIR level compaction task: after compaction, without out file info, read file list is: " +
-                                                curMergeList);
-                            }
+                            
+			    if(curMergeList.size() != 1) {
+			    	initializeReader(curMergeList);
+                            	initializeWriter(String.format("%s/%s%d", this.tablePath, COMPACT_DIR, pickLevel));
+                            	HashMap<String, List<FlushResult>> outFile = readAndWrite();
+                            	this.close();
+                            	if (outFile == null || outFile.isEmpty()) {
+                                	LOG.info("COMPACT_DIR level compaction task: read file list is {}", curMergeList);
+                                	LOG.info("COMPACT_DIR level compaction task: after compaction out file info: {}", outFile);
+                                	throw new IllegalStateException(
+                                        	"COMPACT_DIR level compaction task: after compaction, without out file info, read file list is: " +
+                                                	curMergeList);
+                            	}
 
-                            for (Map.Entry<String, List<FlushResult>> entry : outFile.entrySet()) {
-                                if (level == this.maxNumLevelLimit) {
-                                    levelMap.computeIfAbsent(pickLevel, COMPACT_DIR -> new ArrayList<>())
-                                            .addAll(changeFlushFileToCompressDataFileInfo(entry.getValue()));
+                            	for (Map.Entry<String, List<FlushResult>> entry : outFile.entrySet()) {
+                                	if (level == this.maxNumLevelLimit) {
+                                    		levelMap.computeIfAbsent(pickLevel, COMPACT_DIR -> new ArrayList<>())
+                                            		.addAll(changeFlushFileToCompressDataFileInfo(entry.getValue()));
+                                	} else {
+                                    		levelFileMap.computeIfAbsent(COMPACT_DIR + pickLevel, COMPACT_DIR -> new ArrayList<>())
+                                            		.addAll(changeFlushFileToCompressDataFileInfo(entry.getValue()));
+                                	}
+                            	}
+			    }else {//move 
+				if (level == this.maxNumLevelLimit) {
+                                    levelMap.computeIfAbsent(level, COMPACT_DIR -> new ArrayList<>()).add(curFile);
                                 } else {
-                                    levelFileMap.computeIfAbsent(COMPACT_DIR + pickLevel, COMPACT_DIR -> new ArrayList<>())
-                                            .addAll(changeFlushFileToCompressDataFileInfo(entry.getValue()));
+                                    discardInfoList.remove(curFile);	
+                                    curFile = moveFileToLevel(curFile, level, pickLevel);
+                                    levelFileMap.computeIfAbsent(COMPACT_DIR + pickLevel, COMPACT_DIR -> new ArrayList<>()).add(curFile);
                                 }
-                            }
+
+			    }
                             curMergeList.clear();
                             fileSize = 0L;
                         }
