@@ -144,7 +144,7 @@ class RBACOperationSuite extends QueryTest
       spark.sql("drop table database1.table1")
     }
     println(err3.getMessage)
-    assert(err3.getMessage.contains("Table or view not found"))
+    assert(err3.getMessage.contains("cannot be found"))
 
     // CRUD data
     val err4 = intercept[Exception] {
@@ -156,7 +156,7 @@ class RBACOperationSuite extends QueryTest
       spark.sql("update database1.table1 set foo='foo4', bar='bar44' where id = 3")
     }
     println(err5.getMessage)
-    assert(err5.getMessage.contains("Table or view not found"))
+    assert(err5.getMessage.contains("cannot be found"))
 
     val err6 = intercept[Exception] {
       spark.sql("select * from database1.table1")

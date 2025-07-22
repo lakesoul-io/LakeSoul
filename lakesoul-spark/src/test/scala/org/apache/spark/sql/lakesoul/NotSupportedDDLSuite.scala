@@ -37,7 +37,6 @@ abstract class NotSupportedDDLBase extends QueryTest
   protected override def beforeEach(): Unit = {
     super.beforeEach()
     try {
-      println(SQLConf.get.getConf(SQLConf.DEFAULT_CATALOG))
       sql(
         s"""
            |CREATE TABLE $nonPartitionedTableName

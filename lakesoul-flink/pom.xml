@@ -508,6 +508,7 @@ SPDX-License-Identifier: Apache-2.0
                             <include>org.apache.spark:spark-catalyst_${scala.binary.version}</include>
                             <include>org.apache.spark:spark-unsafe_${scala.binary.version}</include>
                             <include>org.apache.spark:spark-tags_${scala.binary.version}</include>
+                            <include>org.apache.spark:spark-sql-api_${scala.binary.version}</include>
                             <include>org.json4s:json4s-jackson_2.12</include>
                             <include>org.json4s:json4s-core_2.12</include>
                             <include>org.json4s:json4s-ast_2.12</include>
