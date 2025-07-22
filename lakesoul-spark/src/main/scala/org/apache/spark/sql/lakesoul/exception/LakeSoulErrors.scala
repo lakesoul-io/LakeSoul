@@ -27,7 +27,7 @@ object LakeSoulErrors {
                          startPosition: Option[Int] = None,
                          plan: Option[LogicalPlan] = None,
                          cause: Option[Throwable] = None): AnalysisException = {
-    new AnalysisException(msg, line, startPosition, plan, cause)
+    new AnalysisException(msg, line, startPosition, cause)
   }
 
   def formatColumn(colName: String): String = s"`$colName`"

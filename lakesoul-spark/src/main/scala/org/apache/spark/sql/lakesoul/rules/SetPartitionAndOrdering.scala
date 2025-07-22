@@ -13,7 +13,7 @@ import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partition
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.datasources.v2.merge.{MultiPartitionMergeBucketScan, OnePartitionMergeBucketScan}
 import org.apache.spark.sql.execution.datasources.v2.parquet.BucketParquetScan
-import org.apache.spark.sql.execution.datasources.v2.{BatchScanExec, DataSourceV2Relation, DataSourceV2ScanRelation}
+import org.apache.spark.sql.execution.datasources.v2.{BatchScanExec, DataSourceV2Relation, DataSourceV2ScanRelation, StoragePartitionJoinParams}
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -44,7 +44,7 @@ case class SetPartitionAndOrdering(session: SparkSession)
     relation@DataSourceV2ScanRelation(
     DataSourceV2Relation(tbl: LakeSoulTableV2, _, _, _, _),
     bucketScan: BucketParquetScan,
-    output, _)) =>
+    output, _, _)) =>
       // projection and filters were already pushed down in the optimizer.
       // this uses PhysicalOperation to get the projection and ensure that if the batch scan does
       // not support columnar, a projection is added to convert the rows to UnsafeRow.
@@ -54,7 +54,8 @@ case class SetPartitionAndOrdering(session: SparkSession)
       val outputOrdering = hashKeys.map(key => SortOrder(key, Ascending))
 
 
-      val batchExec = BatchScanExec(relation.output, relation.scan, filters)
+      val batchExec = BatchScanExec(relation.output, relation.scan, filters, relation.ordering,
+        relation.relation.table, StoragePartitionJoinParams(relation.keyGroupedPartitioning))
       val child = withProjectAndFilter(project, filters, batchExec, !batchExec.supportsColumnar)
 
       if (hashKeys.forall(key => child.output.map(_.name).contains(key.name))) {
@@ -67,7 +68,7 @@ case class SetPartitionAndOrdering(session: SparkSession)
     relation@DataSourceV2ScanRelation(
     DataSourceV2Relation(tbl: LakeSoulTableV2, _, _, _, _),
     mergeScan@OnePartitionMergeBucketScan(_, _, _, _, _, _, _, options: CaseInsensitiveStringMap, _, _, _),
-    output, _)) =>
+    output, _, _)) =>
       // projection and filters were already pushed down in the optimizer.
       // this uses PhysicalOperation to get the projection and ensure that if the batch scan does
       // not support columnar, a projection is added to convert the rows to UnsafeRow.
@@ -89,7 +90,8 @@ case class SetPartitionAndOrdering(session: SparkSession)
       }
 
 
-      val batchExec = BatchScanExec(relation.output, relation.scan, filters)
+      val batchExec = BatchScanExec(relation.output, relation.scan, filters, relation.ordering,
+        relation.relation.table, StoragePartitionJoinParams(relation.keyGroupedPartitioning))
       val child = withProjectAndFilter(project, filters, batchExec, !batchExec.supportsColumnar)
 
       if (hashKeys.forall(key => child.output.map(_.name).contains(key.name))) {
@@ -102,7 +104,7 @@ case class SetPartitionAndOrdering(session: SparkSession)
     relation@DataSourceV2ScanRelation(
     DataSourceV2Relation(tbl: LakeSoulTableV2, _, _, _, _),
     mergeScan@MultiPartitionMergeBucketScan(_, _, _, _, _, _, _, options: CaseInsensitiveStringMap, _, _, _),
-    output, _)) =>
+    output, _, _)) =>
       // projection and filters were already pushed down in the optimizer.
       // this uses PhysicalOperation to get the projection and ensure that if the batch scan does
       // not support columnar, a projection is added to convert the rows to UnsafeRow.
@@ -111,7 +113,8 @@ case class SetPartitionAndOrdering(session: SparkSession)
       val bucketNum = tableInfo.bucket_num
       val outputPartitioning = HashPartitioning(hashKeys, bucketNum)
 
-      val batchExec = BatchScanExec(relation.output, relation.scan, filters)
+      val batchExec = BatchScanExec(relation.output, relation.scan, filters, relation.ordering,
+        relation.relation.table, StoragePartitionJoinParams(relation.keyGroupedPartitioning))
       val child = withProjectAndFilter(project, filters, batchExec, !batchExec.supportsColumnar)
 
       if (hashKeys.forall(key => child.output.map(_.name).contains(key.name))) {

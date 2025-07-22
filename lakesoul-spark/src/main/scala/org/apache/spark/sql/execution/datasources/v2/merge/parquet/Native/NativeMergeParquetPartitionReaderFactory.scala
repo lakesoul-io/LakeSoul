@@ -67,7 +67,7 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
   private val pushDownDate = sqlConf.parquetFilterPushDownDate
   private val pushDownTimestamp = sqlConf.parquetFilterPushDownTimestamp
   private val pushDownDecimal = sqlConf.parquetFilterPushDownDecimal
-  private val pushDownStringStartWith = sqlConf.parquetFilterPushDownStringStartWith
+  private val pushDownStringStartWith = sqlConf.parquetFilterPushDownStringPredicate
   private val pushDownInFilterThreshold = sqlConf.parquetFilterPushDownInFilterThreshold
   private val nativeIOEnable = sqlConf.getConf(NATIVE_IO_ENABLE)
   private val nativeIOPrefecherBufferSize = sqlConf.getConf(NATIVE_IO_PREFETCHER_BUFFER_SIZE)

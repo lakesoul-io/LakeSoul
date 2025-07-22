@@ -12,6 +12,7 @@ import com.dmetasoul.lakesoul.spark.clean.CleanOldCompaction.{cleanOldCommitOpDi
 import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.PredicateHelper
+import org.apache.spark.sql.catalyst.types.DataTypeUtils
 import org.apache.spark.sql.connector.catalog.CatalogManager.SESSION_CATALOG_NAME
 import org.apache.spark.sql.execution.command.LeafRunnableCommand
 import org.apache.spark.sql.execution.datasources.LakeSoulFileWriter.{MAX_FILE_SIZE_KEY, SNAPPY_COMPRESS_RATIO}
@@ -108,7 +109,7 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
 
     val v2Relation = DataSourceV2Relation(
       table,
-      tableSchemaWithoutPartitions.toAttributes,
+      DataTypeUtils.toAttributes(tableSchemaWithoutPartitions),
       None,
       None,
       option
@@ -119,7 +120,7 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
       DataSourceV2ScanRelation(
         v2Relation,
         scan,
-        tableSchemaWithoutPartitions.toAttributes
+        DataTypeUtils.toAttributes(tableSchemaWithoutPartitions)
       )
     )
 

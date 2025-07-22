@@ -6,7 +6,7 @@ package org.apache.spark.sql.lakesoul.rules
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Alias, AnsiCast, Cast, CreateStruct, Expression, GetMapValue, GetStructField, NamedExpression, UpCast}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, CreateStruct, Expression, GetMapValue, GetStructField, NamedExpression, UpCast}
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.execution.datasources.LogicalRelation
@@ -30,7 +30,7 @@ case class LakeSoulAnalysis(session: SparkSession, sqlConf: SQLConf)
 
   override def apply(plan: LogicalPlan): LogicalPlan = plan.resolveOperatorsDown {
     // INSERT INTO by ordinal
-    case a@AppendData(DataSourceV2Relation(d: LakeSoulTableV2, _, _, _, _), query, _, false, _)
+    case a@AppendData(DataSourceV2Relation(d: LakeSoulTableV2, _, _, _, _), query, _, false, _, _)
       if query.resolved && needsSchemaAdjustment(d.name(), query, d.schema()) =>
       val projection = normalizeQueryColumns(query, d)
       if (projection != query) {
@@ -41,7 +41,7 @@ case class LakeSoulAnalysis(session: SparkSession, sqlConf: SQLConf)
 
     // INSERT OVERWRITE by ordinal
     case a@OverwriteByExpression(
-    DataSourceV2Relation(d: LakeSoulTableV2, _, _, _, _), _, query, _, false, _)
+    DataSourceV2Relation(d: LakeSoulTableV2, _, _, _, _), _, query, _, false, _, _)
       if query.resolved && needsSchemaAdjustment(d.name(), query, d.schema()) =>
       val projection = normalizeQueryColumns(query, d)
       if (projection != query) {
@@ -145,7 +145,7 @@ case class LakeSoulAnalysis(session: SparkSession, sqlConf: SQLConf)
     val timeZone = conf.sessionLocalTimeZone
     conf.storeAssignmentPolicy match {
       case SQLConf.StoreAssignmentPolicy.LEGACY => Cast(_, _, Option(timeZone))
-      case SQLConf.StoreAssignmentPolicy.ANSI => AnsiCast(_, _, Option(timeZone))
+      case SQLConf.StoreAssignmentPolicy.ANSI => Cast(_, _, Option(timeZone))
       case SQLConf.StoreAssignmentPolicy.STRICT => UpCast(_, _)
     }
   }

@@ -46,7 +46,7 @@ trigger 和 pg 函数在数据库初始化的时候已经配置，默认压缩�
     --conf "spark.executor.extraJavaOptions=-XX:MaxDirectMemorySize=4G" \
     --conf "spark.executor.memoryOverhead=3g" \
     --class com.dmetasoul.lakesoul.spark.compaction.CompactionTask  \
-    jars/lakesoul-spark-3.3-VAR::VERSION.jar 
+    jars/lakesoul-spark-3.5-VAR::VERSION.jar 
     --threadpool.size=10
     --database=test
 ```
@@ -55,5 +55,5 @@ trigger 和 pg 函数在数据库初始化的时候已经配置，默认压缩�
 :::
 
 :::tip
-可以为 Spark 全局压缩任务开启 [Dynamic Allocation](https://spark.apache.org/docs/3.3.1/job-scheduling.html#dynamic-resource-allocation)，使得该任务可以根据需要自动弹性伸缩资源。
+可以为 Spark 全局压缩任务开启 [Dynamic Allocation](https://spark.apache.org/docs/3.5.6/job-scheduling.html#dynamic-resource-allocation)，使得该任务可以根据需要自动弹性伸缩资源。
 :::

@@ -6,6 +6,7 @@ package org.apache.spark.sql.lakesoul
 
 import com.dmetasoul.lakesoul.meta.DataFileInfo
 import org.apache.hadoop.fs.Path
+import org.apache.spark.sql.catalyst.types.DataTypeUtils
 import org.apache.spark.sql.{Dataset, SparkSession}
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Relation
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
@@ -49,7 +50,7 @@ object LakeSoulPartFileMerge {
       spark,
       DataSourceV2Relation(
         table,
-        table.schema().toAttributes,
+        DataTypeUtils.toAttributes(table.schema()),
         None,
         None,
         option

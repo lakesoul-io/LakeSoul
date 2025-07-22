@@ -7,13 +7,13 @@ package org.apache.spark.sql.lakesoul.utils
 import java.lang.{Double => JDouble, Long => JLong}
 import java.math.{BigDecimal => JBigDecimal}
 import java.util.{Locale, TimeZone}
-
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.AnalysisException
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.analysis._
 import org.apache.spark.sql.catalyst.catalog.CatalogTypes.TablePartitionSpec
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Literal}
+import org.apache.spark.sql.catalyst.types.DataTypeUtils
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 import org.apache.spark.sql.types._
 
@@ -369,7 +369,7 @@ private[lakesoul] object PartitionUtils {
   }
 
   def getPathFragment(spec: TablePartitionSpec, partitionColumns: Seq[Attribute]): String = {
-    getPathFragment(spec, StructType.fromAttributes(partitionColumns))
+    getPathFragment(spec, DataTypeUtils.fromAttributes(partitionColumns))
   }
 
   /**

@@ -4,7 +4,6 @@
 
 package org.apache.spark.sql.execution.datasources.v2.parquet
 
-import org.apache.hadoop.fs.Path
 import org.apache.hadoop.mapred.FileSplit
 import org.apache.hadoop.mapreduce._
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
@@ -21,13 +20,12 @@ import org.apache.spark.sql.connector.read.PartitionReader
 import org.apache.spark.sql.execution.datasources.parquet.{NativeVectorizedReader, ParquetFilters}
 import org.apache.spark.sql.execution.datasources.{DataSourceUtils, PartitionedFile, RecordReaderIterator}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf.{NATIVE_IO_CDC_COLUMN, NATIVE_IO_ENABLE, NATIVE_IO_IS_COMPACTED, NATIVE_IO_PREFETCHER_BUFFER_SIZE, NATIVE_IO_READER_AWAIT_TIMEOUT, NATIVE_IO_THREAD_NUM}
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf._
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 
-import java.net.URI
 import java.time.ZoneId
 import scala.collection.JavaConverters.mutableMapAsJavaMapConverter
 import scala.collection.mutable
@@ -58,7 +56,7 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
   private val pushDownDate = sqlConf.parquetFilterPushDownDate
   private val pushDownTimestamp = sqlConf.parquetFilterPushDownTimestamp
   private val pushDownDecimal = sqlConf.parquetFilterPushDownDecimal
-  private val pushDownStringStartWith = sqlConf.parquetFilterPushDownStringStartWith
+  private val pushDownStringStartWith = sqlConf.parquetFilterPushDownStringPredicate
   private val pushDownInFilterThreshold = sqlConf.parquetFilterPushDownInFilterThreshold
   private val nativeIOEnable = sqlConf.getConf(NATIVE_IO_ENABLE)
   private val nativeIOPrefecherBufferSize = sqlConf.getConf(NATIVE_IO_PREFETCHER_BUFFER_SIZE)
@@ -113,7 +111,7 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
                                       RebaseSpec) => RecordReader[Void, T]): RecordReader[Void, T] = {
     val conf = broadcastedConf.value.value
 
-    val filePath = new Path(new URI(file.filePath))
+    val filePath = file.filePath.toPath
     val split =
       new FileSplit(
         filePath,
@@ -226,7 +224,7 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
     // SPARK-23457 Register a task completion listener before `initialization`.
     taskContext.foreach(_.addTaskCompletionListener[Unit](_ => iter.close()))
     logDebug(s"Appending $partitionSchema ${file.partitionValues}")
-    vectorizedReader.initialize(Array(split), hadoopAttemptContext, readDataSchema)
+    vectorizedReader.initialize(Array(split.asInstanceOf[InputSplit]), hadoopAttemptContext, readDataSchema)
     vectorizedReader.asInstanceOf[RecordReader[Void, ColumnarBatch]]
   }
 }

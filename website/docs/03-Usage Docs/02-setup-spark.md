@@ -23,7 +23,7 @@ spark-shell --packages com.dmetasoul:lakesoul-spark:3.3-VAR::VERSION
 You can find the LakeSoul packages from our release page: [Releases](https://github.com/lakesoul-io/LakeSoul/releases).
 Download the jar file and pass it to `spark-submit`.
 ```bash
-spark-submit --jars "lakesoul-spark-3.3-VAR::VERSION.jar"
+spark-submit --jars "lakesoul-spark-3.5-VAR::VERSION.jar"
 ```
 
 Or you could directly put the jar into `$SPARK_HOME/jars`

@@ -18,7 +18,7 @@ SPDX-License-Identifier: Apache-2.0
     <name>LakeSoul Spark</name>
 
     <artifactId>lakesoul-spark</artifactId>
-    <version>3.3-${revision}</version>
+    <version>3.5-${revision}</version>
 
     <properties>
         <scalatest.version>3.2.14</scalatest.version>
@@ -140,6 +140,14 @@ SPDX-License-Identifier: Apache-2.0
                     <groupId>com.google.protobuf</groupId>
                     <artifactId>protobuf-java</artifactId>
                 </exclusion>
+                <exclusion>
+                    <groupId>org.apache.avro</groupId>
+                    <artifactId>avro-mapred</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>io.dropwizard.metrics</groupId>
+                    <artifactId>metrics-json</artifactId>
+                </exclusion>
             </exclusions>
         </dependency>
         <!-- https://mvnrepository.com/artifact/io.jhdf/jhdf -->
@@ -214,6 +222,12 @@ SPDX-License-Identifier: Apache-2.0
             <artifactId>kafka-schema-registry-client</artifactId>
             <version>${schema.registry.version}</version>
             <scope>${local.scope}</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>com.fasterxml.jackson.core</groupId>
+                    <artifactId>jackson-databind</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>io.confluent</groupId>
@@ -298,6 +312,20 @@ SPDX-License-Identifier: Apache-2.0
             <version>${spark.version}</version>
             <scope>test</scope>
             <classifier>tests</classifier>
+            <exclusions>
+                <exclusion>
+                    <groupId>com.google.protobuf</groupId>
+                    <artifactId>protobuf-java</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.apache.avro</groupId>
+                    <artifactId>avro-mapred</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>io.dropwizard.metrics</groupId>
+                    <artifactId>metrics-json</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.apache.spark</groupId>

@@ -9,6 +9,7 @@ import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.expressions.Expression
+import org.apache.spark.sql.catalyst.types.DataTypeUtils
 import org.apache.spark.sql.connector.catalog.Identifier
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Relation
 import org.apache.spark.sql.functions.col
@@ -134,7 +135,7 @@ object SparkUtil extends Logging {
       spark,
       DataSourceV2Relation(
         table,
-        table.schema().toAttributes,
+        DataTypeUtils.toAttributes(table.schema()),
         None,
         None,
         option

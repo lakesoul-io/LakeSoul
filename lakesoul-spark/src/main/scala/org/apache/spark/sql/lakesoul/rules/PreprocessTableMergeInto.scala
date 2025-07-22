@@ -17,7 +17,7 @@ import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 case class PreprocessTableMergeInto(sqlConf: SQLConf) extends Rule[LogicalPlan] {
 
   override def apply(plan: LogicalPlan): LogicalPlan = plan.resolveOperators {
-    case m@MergeIntoTable(targetTable, sourceTable, mergeCondition, matchedActions, notMatchedActions)
+    case m@MergeIntoTable(targetTable, sourceTable, mergeCondition, matchedActions, notMatchedActions, _)
       if m.resolved =>
 
       EliminateSubqueryAliases(targetTable) match {

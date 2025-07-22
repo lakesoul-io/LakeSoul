@@ -47,7 +47,7 @@ The use the following command to start the compaction service job:
     --conf "spark.executor.extraJavaOptions=-XX:MaxDirectMemorySize=4G" \
     --conf "spark.executor.memoryOverhead=3g" \
     --class com.dmetasoul.lakesoul.spark.compaction.CompactionTask  \
-    jars/lakesoul-spark-3.3-VAR::VERSION.jar 
+    jars/lakesoul-spark-3.5-VAR::VERSION.jar 
     --threadpool.size=10
     --database=test
 ```
@@ -57,5 +57,5 @@ Because LakeSoul enables native IO by default and needs to rely on off-heap memo
 :::
 
 :::tip
-Your could enable Spark's dynamic allocation to get auto-scaling for the compaction service job. Refer to Spark's doc [Dynamic Resource Allocation](https://spark.apache.org/docs/3.3.1/job-scheduling.html#dynamic-resource-allocation) on how to config.
+Your could enable Spark's dynamic allocation to get auto-scaling for the compaction service job. Refer to Spark's doc [Dynamic Resource Allocation](https://spark.apache.org/docs/3.5.6/job-scheduling.html#dynamic-resource-allocation) on how to config.
 :::

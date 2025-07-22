@@ -40,14 +40,14 @@ All scripts and code mentioned in this article can be obtained from this address
 
 This article uses Docker Compose for deployment, with the following components and versions:
 
-| Component | Version                      |
-| --- |------------------------------|
+| Component    | Version                      |
+|--------------|------------------------------|
 | Apache Doris | Default 3.0.2                |
-| LakeSoul | 2.6.1                        |
-| Postgres | 14.5                         |
-| Apache Spark | 3.3.1                        |
+| LakeSoul     | 2.6.1                        |
+| Postgres     | 14.5                         |
+| Apache Spark | 3.5.6                        |
 | Apache Flink | 1.20                         |
-| MinIO | RELEASE.2024-04-29T09-56-05Z |
+| MinIO        | RELEASE.2024-04-29T09-56-05Z |
 
 
 ### 02 Environment Deployment

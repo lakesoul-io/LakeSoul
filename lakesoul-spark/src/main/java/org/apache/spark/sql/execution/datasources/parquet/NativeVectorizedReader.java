@@ -17,9 +17,9 @@ import org.apache.spark.memory.MemoryMode;
 import org.apache.spark.sql.arrow.ArrowUtils;
 import org.apache.spark.sql.catalyst.InternalRow;
 import org.apache.spark.sql.catalyst.expressions.GenericInternalRow;
-import org.apache.spark.sql.execution.vectorized.ColumnVectorUtils;
 import org.apache.spark.sql.execution.vectorized.OffHeapColumnVector;
 import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector;
+import org.apache.spark.sql.execution.vectorized.VectorUtils;
 import org.apache.spark.sql.execution.vectorized.WritableColumnVector;
 import org.apache.spark.sql.internal.SQLConf;
 import org.apache.spark.sql.types.Metadata;
@@ -148,6 +148,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
                            StructType requestSchema,
                            Map<String, String> mergeOperatorInfo)
             throws IOException, InterruptedException, UnsupportedOperationException {
+        taskAttemptContext.getConfiguration().set("spark.sql.parquet.inferTimestampNTZ.enabled", "true");
         super.initialize(inputSplits[0], taskAttemptContext);
         FileSplit split = (FileSplit) inputSplits[0];
         this.file = split.getPath();
@@ -319,7 +320,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
                 partitionColumnVectors = OnHeapColumnVector.allocateColumns(capacity, partitionColumns);
             }
             for (int i = 0; i < partitionColumns.fields().length; i++) {
-                ColumnVectorUtils.populate(partitionColumnVectors[i], partitionValues, i);
+                VectorUtils.populate(partitionColumnVectors[i], partitionValues, i);
                 partitionColumnVectors[i].setIsConstant();
             }
         }

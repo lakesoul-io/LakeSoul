@@ -16,7 +16,7 @@ import org.apache.spark.sql.connector.catalog.TableChange._
 import org.apache.spark.sql.connector.catalog._
 import org.apache.spark.sql.connector.catalog.functions.UnboundFunction
 import org.apache.spark.sql.connector.expressions.{BucketTransform, FieldReference, IdentityTransform, Transform}
-import org.apache.spark.sql.connector.write.{LogicalWriteInfo, V1Write, WriteBuilder}
+import org.apache.spark.sql.connector.write.{LogicalWriteInfo, SupportsOverwrite, SupportsTruncate, V1Write, WriteBuilder}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.datasources.{DataSource, DataSourceUtils, PartitioningUtils}
 import org.apache.spark.sql.internal.SQLConf
@@ -24,9 +24,9 @@ import org.apache.spark.sql.lakesoul.LakeSoulConfig
 import org.apache.spark.sql.lakesoul.commands._
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.functions.SparkFunctions
-import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
+import org.apache.spark.sql.lakesoul.sources.{LakeSoulSQLConf, LakeSoulSourceUtils}
 import org.apache.spark.sql.lakesoul.utils.SparkUtil
-import org.apache.spark.sql.sources.InsertableRelation
+import org.apache.spark.sql.sources.{Filter, InsertableRelation}
 import org.apache.spark.sql.types.{StructField, StructType}
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.{AnalysisException, DataFrame, SparkSession}
@@ -336,7 +336,16 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
 
     override def abortStagedChanges(): Unit = {}
 
-    override def capabilities(): util.Set[TableCapability] = Set(V1_BATCH_WRITE).asJava
+    override def capabilities(): util.Set[TableCapability] = {
+      var caps = Set(
+        BATCH_READ, V1_BATCH_WRITE, OVERWRITE_DYNAMIC,
+        OVERWRITE_BY_FILTER, TRUNCATE, MICRO_BATCH_READ
+      )
+      if (spark.conf.get(LakeSoulSQLConf.SCHEMA_AUTO_MIGRATE)) {
+        caps += ACCEPT_ANY_SCHEMA
+      }
+      caps.asJava
+    }
 
     override def newWriteBuilder(info: LogicalWriteInfo): WriteBuilder = {
       // TODO: We now pass both properties and options into CreateTableCommand, because
@@ -344,13 +353,15 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
       // them
       val combinedProps = info.options.asCaseSensitiveMap().asScala ++ properties.asScala
       writeOptions = combinedProps.toMap
-      new LakeSoulV1WriteBuilder
+      new LakeSoulV1WriteBuilder(new CaseInsensitiveStringMap(writeOptions.asJava))
     }
 
     /*
      * WriteBuilder for creating a lakesoul table.
      */
-    private class LakeSoulV1WriteBuilder extends WriteBuilder {
+    private class LakeSoulV1WriteBuilder(writeOptions: CaseInsensitiveStringMap)
+      extends WriteBuilder with SupportsOverwrite with SupportsTruncate {
+
       override def build(): V1Write = {
         new V1Write {
           override def toInsertableRelation: InsertableRelation =
@@ -359,8 +370,15 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
             }
         }
       }
-    }
 
+      override def truncate(): LakeSoulV1WriteBuilder = {
+        this
+      }
+
+      override def overwrite(filters: Array[Filter]): WriteBuilder = {
+        this
+      }
+    }
   }
 
   override def alterTable(ident: Identifier, changes: TableChange*): Table = {

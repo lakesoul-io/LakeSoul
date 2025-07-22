@@ -292,7 +292,7 @@ abstract class DeleteSuiteBase extends QueryTest
     val e = intercept[AnalysisException] {
       executeDelete(target = s"lakesoul.default.`$tempPath`")
     }.getMessage
-    assert(e.contains("Table or view not found") || e.contains("doesn't exist"))
+    assert(e.contains("Table or view not found") || e.contains("doesn't exist."))
   }
 
   test("Negative case - non-deterministic condition") {
@@ -300,7 +300,7 @@ abstract class DeleteSuiteBase extends QueryTest
     val e = intercept[AnalysisException] {
       executeDelete(target = s"lakesoul.default.`$tempPath`", where = "rand() > 0.5")
     }.getMessage
-    assert(e.contains("nondeterministic expressions are only allowed in"))
+    assert(e.contains("The operator expects a deterministic expression, but the actual expression is"))
   }
 
   test("delete cached table by name") {
