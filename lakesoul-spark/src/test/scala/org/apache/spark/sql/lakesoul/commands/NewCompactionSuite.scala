@@ -443,8 +443,8 @@ class NewCompactionSuite extends QueryTest
 
           // Get initial PartitionInfo count
           val initialFile = getFileList(tablePath)
-          val incrementalFileCount = initialFile.filter(file => !file.path.contains("compact_dir")).length
-          val lastCompactedFileCount = initialFile.filter(file => file.path.contains("compact_dir")).length
+          val incrementalFileCount = initialFile.filter(file => !file.path.contains("compactdir")).length
+          val lastCompactedFileCount = initialFile.filter(file => file.path.contains("compactdir")).length
           println(s"before ${c}th time compact file count=${incrementalFileCount + lastCompactedFileCount}, " +
             s"compact file count=$lastCompactedFileCount, incremental file count=$incrementalFileCount")
 
@@ -528,8 +528,8 @@ class NewCompactionSuite extends QueryTest
 
           // Get initial PartitionInfo count
           val initialFile = getFileList(tablePath)
-          val incrementalFileCount = initialFile.filter(file => !file.path.contains("compact_dir")).length
-          val lastCompactedFileCount = initialFile.filter(file => file.path.contains("compact_dir")).length
+          val incrementalFileCount = initialFile.filter(file => !file.path.contains("compactdir")).length
+          val lastCompactedFileCount = initialFile.filter(file => file.path.contains("compactdir")).length
           println(s"before ${c}th time compact file count=${incrementalFileCount + lastCompactedFileCount}, " +
             s"compact file count=$lastCompactedFileCount, incremental file count=$incrementalFileCount")
 
@@ -713,8 +713,8 @@ class NewCompactionSuite extends QueryTest
           val compactedFiles = getFileList(tablePath)
           compactedFiles.groupBy(_.file_bucket_id).foreach { case (bucketId, dataFileInfoList) =>
             dataFileInfoList.foreach(dataFileInfo => {
-              if (dataFileInfo.path.contains("compact_dir")) {
-                val index = dataFileInfo.path.indexOf("compact_dir")
+              if (dataFileInfo.path.contains("compactdir")) {
+                val index = dataFileInfo.path.indexOf("compactdir")
                 val end = index + 12;
                 val level = dataFileInfo.path.substring(index + 11, end).toInt
                 if (c == 1 || c == 2) {
