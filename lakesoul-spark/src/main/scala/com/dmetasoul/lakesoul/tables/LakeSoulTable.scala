@@ -369,6 +369,9 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
         } else {
           files.groupBy(_.file_bucket_id).values.toSeq
         }
+        sparkSession.sparkContext.setJobDescription(
+         s"Compact(${tableInfo.namespace}.${tableInfo.short_table_name.getOrElse(tableInfo.table_path)}/$condition" +
+         s",n=$fileNumLimit,s=$fileSizeLimit,b=$newBucketNum)")
         val fileRDD = spark.sparkContext.parallelize(bucketToFiles, bucketToFiles.size)
         val configuration = new SerializableWritable(spark.sessionState.newHadoopConf())
         val partitionValues = part.range_value
