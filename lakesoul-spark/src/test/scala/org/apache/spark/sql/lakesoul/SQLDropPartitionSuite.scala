@@ -35,7 +35,6 @@ abstract class SQLDropPartitionBase extends QueryTest
   protected override def beforeEach(): Unit = {
     super.beforeEach()
     try {
-      println(SQLConf.get.getConf(SQLConf.DEFAULT_CATALOG))
       sql(
         s"""
            |CREATE TABLE $singlePartitionedTableName (a INT, b STRING, p INT)
@@ -103,7 +102,7 @@ abstract class SQLDropPartitionBase extends QueryTest
     val e = intercept[AnalysisException] {
       sql(s"ALTER TABLE $singlePartitionedTableName DROP PARTITION (p=3)")
     }
-    assert(e.getMessage.contains("The following partitions not found"))
+    assert(e.getMessage.contains("cannot be found"))
   }
 
   test("ALTER TABLE DROP MUlTI-LEVEL PARTITION") {
