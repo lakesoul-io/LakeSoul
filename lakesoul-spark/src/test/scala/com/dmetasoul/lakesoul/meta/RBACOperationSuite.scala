@@ -151,7 +151,7 @@ class RBACOperationSuite extends QueryTest
       spark.sql("insert into database1.table1 values(4, 'foo4', 'bar4')")
     }
     println(err4.getMessage)
-    assert(err4.getMessage.contains("Table not found"))
+    assert(err4.getMessage.contains("cannot be found"))
     val err5 = intercept[Exception] {
       spark.sql("update database1.table1 set foo='foo4', bar='bar44' where id = 3")
     }
