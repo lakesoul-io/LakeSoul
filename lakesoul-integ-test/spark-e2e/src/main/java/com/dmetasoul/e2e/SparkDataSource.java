@@ -29,7 +29,7 @@ public class SparkDataSource {
             .config("spark.sql.catalog.lakesoul", "org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog")
             .config("spark.sql.defaultCatalog", "lakesoul")
             .getOrCreate();
-    var parquetPath = "s3://lakesoul-test-bucket/lakesoul/e2e/data/";
+    var parquetPath = "s3://dmetasoul-bucket/lakesoul/lakesoul-e2e/data/";
     StructType schema =
             DataTypes.createStructType(
                     new StructField[] {
