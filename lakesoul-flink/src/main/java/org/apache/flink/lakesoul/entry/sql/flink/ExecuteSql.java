@@ -13,10 +13,7 @@ import org.apache.flink.table.api.bridge.java.StreamStatementSet;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.api.internal.TableEnvironmentInternal;
 import org.apache.flink.table.delegation.Parser;
-import org.apache.flink.table.operations.CreateTableASOperation;
-import org.apache.flink.table.operations.ModifyOperation;
-import org.apache.flink.table.operations.Operation;
-import org.apache.flink.table.operations.QueryOperation;
+import org.apache.flink.table.operations.*;
 import org.apache.flink.table.operations.command.AddJarOperation;
 import org.apache.flink.table.operations.command.SetOperation;
 import org.slf4j.Logger;
@@ -72,6 +69,9 @@ public class ExecuteSql {
                 String message = String.format("CTAS statement is not supported: %s", statement);
                 System.out.println(message);
                 throw new RuntimeException(message);
+            } else if (operation instanceof BeginStatementSetOperation || operation instanceof EndStatementSetOperation) {
+                System.out.println(statement);
+                continue;
             } else if (operation instanceof ModifyOperation) {
                 System.out.println(MessageFormatter.format("\n======Executing insertion:\n{}", statement).getMessage());
                 // add insertion to statement set

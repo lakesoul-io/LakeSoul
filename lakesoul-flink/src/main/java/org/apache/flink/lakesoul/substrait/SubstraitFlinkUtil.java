@@ -1,9 +1,6 @@
 package org.apache.flink.lakesoul.substrait;
 
 import io.substrait.expression.Expression;
-import io.substrait.expression.ExpressionCreator;
-import io.substrait.extension.SimpleExtension;
-import io.substrait.type.TypeCreator;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.table.connector.source.abilities.SupportsFilterPushDown;

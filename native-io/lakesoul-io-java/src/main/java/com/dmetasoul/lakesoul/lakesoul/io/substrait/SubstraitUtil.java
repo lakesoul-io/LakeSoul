@@ -82,7 +82,8 @@ public class SubstraitUtil {
             LOCK = new ReentrantReadWriteLock();
             NATIVE_IO_BASE = new NativeIOBase("Substrait");
         } catch (IOException e) {
-            throw new RuntimeException("load simple extension failed");
+            e.printStackTrace();
+            throw new RuntimeException("load simple extension failed", e);
         }
         java.lang.Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             try {
