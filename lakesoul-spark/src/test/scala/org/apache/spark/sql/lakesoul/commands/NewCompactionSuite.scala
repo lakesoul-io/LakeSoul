@@ -715,8 +715,8 @@ class NewCompactionSuite extends QueryTest
             dataFileInfoList.foreach(dataFileInfo => {
               if (dataFileInfo.path.contains("compactdir")) {
                 val index = dataFileInfo.path.indexOf("compactdir")
-                val end = index + 12;
-                val level = dataFileInfo.path.substring(index + 11, end).toInt
+                val end = index + 11;
+                val level = dataFileInfo.path.substring(index + 10, end).toInt
                 if (c == 1 || c == 2) {
                   assert(level == 1 && level <= spark.conf.get("spark.dmetasoul.lakesoul.max.num.levels.limit").toInt,
                     s"This Level is ${level} compact times is ${c}, but should no this level")
