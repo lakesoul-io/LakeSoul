@@ -101,6 +101,7 @@ trait LakeSoulSQLCommandTest extends LakeSoulTestUtils {
   override protected def createSparkSession: TestSparkSession = {
     SparkSession.cleanupAnyExistingSession()
     sparkConf.set("spark.ui.enabled", "false")
+    sparkConf.set("spark.sql.parquet.inferTimestampNTZ.enabled", "true")
     val session = new LakeSoulTestSparkSession(sparkConf)
     session.conf.set("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
     session.conf.set(SQLConf.DEFAULT_CATALOG.key, LakeSoulCatalog.CATALOG_NAME)

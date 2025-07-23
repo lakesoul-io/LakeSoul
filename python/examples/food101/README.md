@@ -8,14 +8,13 @@ We can download data from [Hugginface Food101 dataset](https://huggingface.co/da
 
 ## Import data into LakeSoul
 ```shell
-export lakesoul_jar=lakesoul-spark-3.3-3.0.0.jar
+export lakesoul_jar=lakesoul-spark-3.5-3.0.0.jar
 docker run --rm -ti --net lakesoul-docker-compose-env_default \
 -v $PWD/"${lakesoul_jar}":/opt/spark/work-dir/jars/"${lakesoul_jar}" \
--v $PWD/../../python/lakesoul/:/opt/bitnami/spark/lakesoul \
 -v $PWD/lakesoul.properties:/opt/spark/work-dir/lakesoul.properties \
 -v $PWD/food101:/opt/spark/work-dir/food101 \
 --env LAKESOUL_HOME=/opt/spark/work-dir/lakesoul.properties \
-bitnami/spark:3.5.6 spark-submit --jars /opt/spark/work-dir/jars/"${lakesoul_jar}" --driver-memory 16G --executor-memory 16G --master "local[4]" --conf spark.pyspark.python=./venv/bin/python3 /opt/spark/work-dir/food101/import_data.py
+swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/spark:3.5.8-py310-hadoop334 spark-submit --jars /opt/spark/work-dir/jars/"${lakesoul_jar}" --driver-memory 16G --executor-memory 16G --master "local[4]" --conf spark.pyspark.python=./venv/bin/python3 /opt/spark/work-dir/food101/import_data.py
 ```
 Note: lakesoul-spark jar file can be downloaded from: https://github.com/lakesoul-io/LakeSoul/releases/download/v2.5.3/lakesoul-spark-3.3-2.5.3.jar
 

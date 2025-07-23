@@ -16,7 +16,7 @@ To use `spark-shell`, `pyspark` or `spark-sql` shells, you should include LakeSo
 
 #### Use Maven Coordinates via --packages
 ```bash
-spark-shell --packages com.dmetasoul:lakesoul-spark:3.3-VAR::VERSION
+spark-shell --packages com.dmetasoul:lakesoul-spark:3.5-VAR::VERSION
 ```
 
 #### Use Local Packages
@@ -34,7 +34,7 @@ Include maven dependencies in your project:
 <dependency>
     <groupId>com.dmetasoul</groupId>
     <artifactId>lakesoul-spark</artifactId>
-    <version>3.3-VAR::VERSION</version>
+    <version>3.5-VAR::VERSION</version>
 </dependency>
 ```
 

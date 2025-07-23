@@ -17,10 +17,9 @@ import org.apache.spark.sql.catalyst.types.DataTypeUtils
 import org.apache.spark.sql.connector.read._
 import org.apache.spark.sql.connector.read.streaming.{MicroBatchStream, Offset}
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetReadSupport, ParquetWriteSupport}
-import org.apache.spark.sql.execution.datasources.v2.merge.parquet.Native.NativeMergeParquetPartitionReaderFactory
+import org.apache.spark.sql.execution.datasources.v2.merge.parquet.Native.NativeMergePartitionReaderFactory
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
 import org.apache.spark.sql.execution.streaming.LongOffset
-import org.apache.spark.sql.execution.datasources.v2.merge.parquet.Native.NativeMergePartitionReaderFactory
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.LakeSoulOptions.ReadType
 import org.apache.spark.sql.lakesoul._
@@ -34,6 +33,7 @@ import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.{AnalysisException, SparkSession}
 import org.apache.spark.util.{SerializableConfiguration, Utils}
 
+import java.util.{Locale, OptionalLong, TimeZone}
 import scala.collection.JavaConverters._
 import scala.collection.mutable.ArrayBuffer
 
@@ -168,7 +168,7 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
     val defaultMergeOp = Class.forName(defaultMergeOpInfoString, true, Utils.getContextOrSparkClassLoader).getConstructors()(0)
       .newInstance()
       .asInstanceOf[MergeOperator[Any]]
-    NativeMergeParquetPartitionReaderFactory(sparkSession.sessionState.conf, broadcastedConf,
+    NativeMergePartitionReaderFactory(sparkSession.sessionState.conf, broadcastedConf,
       dataSchema, readDataSchema, readPartitionSchema, pushedFilters, mergeOperatorInfo, defaultMergeOp, options.asScala.toMap)
   }
 

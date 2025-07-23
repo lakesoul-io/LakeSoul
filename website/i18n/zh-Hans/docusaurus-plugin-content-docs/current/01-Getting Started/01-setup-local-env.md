@@ -28,15 +28,15 @@ docker exec -i lakesoul-test-pg sh -c "PGPASSWORD=lakesoul_test psql -h localhos
 由于 Apache Spark 官方的下载安装包不包含 hadoop-cloud 以及 AWS S3 等依赖，我们提供了一个 Spark 安装包，其中包含了 hadoop cloud 、s3 等必要的依赖：https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/spark/spark-3.3.2-bin-hadoop3.tgz
 
 ```bash
-wget https://dlcdn.apache.org/spark/spark-3.5.6/spark-3.5.6-bin-hadoop3.tgz
-tar xf spark-3.5.6-bin-hadoop3.tgz
-export SPARK_HOME=${PWD}/spark-3.5.6-bin-hadoop3
+wget https://dlcdn.apache.org/spark/spark-3.5.8/spark-3.5.8-bin-hadoop3.tgz
+tar xf spark-3.5.8-bin-hadoop3.tgz
+export SPARK_HOME=${PWD}/spark-3.5.8-bin-hadoop3
 ```
 
 :::tip
 如果是生产部署，推荐下载不打包 Hadoop 的 Spark 安装包：
 
-https://dlcdn.apache.org/spark/spark-3.5.6/spark-3.5.6-bin-without-hadoop.tgz
+https://dlcdn.apache.org/spark/spark-3.5.8/spark-3.5.8-bin-without-hadoop.tgz
 
 并参考 https://spark.apache.org/docs/latest/hadoop-provided.html 这篇文档使用集群环境中的 Hadoop 依赖和配置。
 :::
@@ -166,7 +166,7 @@ containerized.taskmanager.env.LAKESOUL_PG_URL: jdbc:postgresql://127.0.0.1:5432/
 :::
 
 ### 2.3 在客户端机器上配置全局环境变量信息
-这里需要用到变量信息写到一个 env.sh 文件中，这里 Hadoop 版本为 3.1.4.0-315，Spark 版本为 spark-3.5.6， Flink 版本为 flink-1.20.1，Hadoop 环境可以根据实际情况配置。如果客户机上已经有默认的 Hadoop 环境变量配置，则前面 Hadoop 的变量可以省去：
+这里需要用到变量信息写到一个 env.sh 文件中，这里 Hadoop 版本为 3.1.4.0-315，Spark 版本为 spark-3.5.8， Flink 版本为 flink-1.20.1，Hadoop 环境可以根据实际情况配置。如果客户机上已经有默认的 Hadoop 环境变量配置，则前面 Hadoop 的变量可以省去：
 ```shell
 export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64
 export HADOOP_HOME="/usr/hdp/3.1.4.0-315/hadoop"
@@ -176,7 +176,7 @@ export HADOOP_YARN_HOME="/usr/hdp/3.1.4.0-315/hadoop-yarn"
 export HADOOP_LIBEXEC_DIR="/usr/hdp/3.1.4.0-315/hadoop/libexec"
 export HADOOP_CONF_DIR="/usr/hdp/3.1.4.0-315/hadoop/conf"
 
-export SPARK_HOME=/usr/hdp/spark-3.5.6-bin-without-hadoop
+export SPARK_HOME=/usr/hdp/spark-3.5.8-bin-without-hadoop
 export SPARK_CONF_DIR=/home/lakesoul/lakesoul_hadoop_ci/LakeSoul-main/LakeSoul/script/benchmark/hadoop/spark-conf
 
 export FLINK_HOME=/opt/flink-1.20.1
@@ -219,16 +219,16 @@ lakesoul.pg.username=lakesoul_test
 lakesoul.pg.password=lakesoul_test
 ```
 #### 3.4.2 准备 Spark 镜像
-可以使用 bitnami Spark 镜像：
+可以使用 Spark 镜像：
 ```bash
-docker pull bitnami/spark:3.5.6
+docker pull swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/spark:3.5.8-py310-hadoop334
 ```
 
 #### 3.4.3 启动 Spark Shell
 ```bash
 docker run --net lakesoul-docker-compose-env_default --rm -ti \
     -v $(pwd)/lakesoul.properties:/opt/spark/work-dir/lakesoul.properties \
-    --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties bitnami/spark:3.5.6 \
+    --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/spark:3.5.8-py310-hadoop334 \
     spark-shell \
     --packages com.dmetasoul:lakesoul-spark:3.5-3.0.0 \
     --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension \
@@ -267,7 +267,7 @@ docker exec -ti lakesoul-docker-compose-env-lakesoul-meta-db-1 psql -h localhost
 ```
 清理 RustFS 桶内容:
 ```bash
-docker run --net lakesoul-docker-compose-env_default --rm -t -e AWS_ACCESS_KEY_ID=rustfsadmin -e AWS_SECRET_ACCESS_KEY=rustfsadmin -e AWS_DEFAULT_REGION=us-east-1 bitnami/spark:3.5.6 aws --endpoint-url http://rustfs:9000 s3 rm --recursive s3://lakesoul-test-bucket/
+docker run --net lakesoul-docker-compose-env_default --rm -t -e AWS_ACCESS_KEY_ID=rustfsadmin -e AWS_SECRET_ACCESS_KEY=rustfsadmin -e AWS_DEFAULT_REGION=us-east-1 swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/spark:3.5.8-py310-hadoop334 aws --endpoint-url http://rustfs:9000 s3 rm --recursive s3://lakesoul-test-bucket/
 ```
 
 ### 3.6 停止 Docker Compose 环境

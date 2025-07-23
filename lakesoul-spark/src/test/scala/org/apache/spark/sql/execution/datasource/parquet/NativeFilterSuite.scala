@@ -6,15 +6,7 @@ package org.apache.spark.sql.execution.datasource.parquet
 
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOBase
 import org.apache.parquet.filter2.predicate.FilterApi._
-import org.apache.parquet.filter2.predicate.Operators.{
-  Eq,
-  Gt,
-  GtEq,
-  Lt,
-  LtEq,
-  NotEq,
-  Column => _
-}
+import org.apache.parquet.filter2.predicate.Operators.{Eq, Gt, GtEq, Lt, LtEq, NotEq, Column => _}
 import org.apache.parquet.filter2.predicate.{FilterPredicate, Operators}
 import org.apache.parquet.schema.MessageType
 import org.apache.spark.SparkConf
@@ -25,23 +17,12 @@ import org.apache.spark.sql.catalyst.optimizer.InferFiltersFromConstraints
 import org.apache.spark.sql.catalyst.planning.PhysicalOperation
 import org.apache.spark.sql.catalyst.util.RebaseDateTime.RebaseSpec
 import org.apache.spark.sql.execution.datasources.DataSourceStrategy
-import org.apache.spark.sql.execution.datasources.parquet.{
-  NumRowGroupsAcc,
-  ParquetFilters,
-  ParquetTest,
-  SparkToParquetSchemaConverter
-}
+import org.apache.spark.sql.execution.datasources.parquet.{NumRowGroupsAcc, ParquetFilters, ParquetTest, SparkToParquetSchemaConverter}
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2ScanRelation
-import org.apache.spark.sql.execution.datasources.v2.parquet.{
-  NativeScan,
-  ParquetScan
-}
+import org.apache.spark.sql.execution.datasources.v2.parquet.{NativeScan, ParquetScan}
 import org.apache.spark.sql.functions.struct
-import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.internal.SQLConf.{
-  LegacyBehaviorPolicy,
-  ParquetOutputTimestampType
-}
+import org.apache.spark.sql.internal.{LegacyBehaviorPolicy, SQLConf}
+import org.apache.spark.sql.internal.SQLConf.ParquetOutputTimestampType
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf.NATIVE_IO_ENABLE
 import org.apache.spark.sql.lakesoul.test.LakeSoulTestUtils
@@ -121,7 +102,7 @@ class ParquetNativeFilterSuite
         case PhysicalOperation(
               _,
               filters,
-              DataSourceV2ScanRelation(_, scan: ParquetScan, _, _)
+              DataSourceV2ScanRelation(_, scan: ParquetScan, _, _, _)
             ) =>
           assert(filters.nonEmpty, "No filter is analyzed from the given query")
           val sourceFilters =
@@ -153,7 +134,7 @@ class ParquetNativeFilterSuite
         case PhysicalOperation(
               _,
               filters,
-              DataSourceV2ScanRelation(_, scan: NativeScan, _, _)
+              DataSourceV2ScanRelation(_, scan: NativeScan, _, _, _)
             ) =>
           println("match case NativeParquetScan")
           //          assert(filters.nonEmpty, "No filter is analyzed from the given query")
@@ -232,7 +213,7 @@ abstract class ParquetFilterSuite
       conf.parquetFilterPushDownDate,
       conf.parquetFilterPushDownTimestamp,
       conf.parquetFilterPushDownDecimal,
-      conf.parquetFilterPushDownStringStartWith,
+      conf.parquetFilterPushDownStringPredicate,
       conf.parquetFilterPushDownInFilterThreshold,
       caseSensitive.getOrElse(conf.caseSensitiveAnalysis),
       datetimeRebaseSpec

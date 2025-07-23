@@ -89,7 +89,7 @@ spark.readStream.format("lakesoul")
 将LakeSoul/python/lakesoul文件夹放入spark/python/pyspark中，通过提供pyspark.lakesoul模块，实现快照读、增量读和流式读的python API
 
 ```Python
-# 使用spark 3.3.x版本运行pyspark测试
+# 使用spark 3.5.x版本运行pyspark测试
 from pyspark.lakesoul.tables import LakeSoulTable
 from pyspark.sql import SparkSession
 

@@ -71,5 +71,5 @@ Because LakeSoul enables native IO by default and needs to rely on off-heap memo
 :::
 
 :::tip
-Your could enable Spark's dynamic allocation to get auto-scaling for the compaction service job. Refer to Spark's doc [Dynamic Resource Allocation](https://spark.apache.org/docs/3.5.6/job-scheduling.html#dynamic-resource-allocation) on how to config.
+Your could enable Spark's dynamic allocation to get auto-scaling for the compaction service job. Refer to Spark's doc [Dynamic Resource Allocation](https://spark.apache.org/docs/3.5.8/job-scheduling.html#dynamic-resource-allocation) on how to config.
 :::

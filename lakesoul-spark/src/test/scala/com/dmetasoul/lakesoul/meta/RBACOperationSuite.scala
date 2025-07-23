@@ -160,13 +160,13 @@ class RBACOperationSuite extends QueryTest
       spark.sql("select * from database1.table1")
     }
     println(err6.getMessage)
-    assert(err6.getMessage.contains("Table or view not found"))
+    assert(err6.getMessage.contains("cannot be found"))
 
     val err7 = intercept[Exception] {
       spark.sql("delete from database1.table1 where id = 3")
     }
     println(err7.getMessage)
-    assert(err7.getMessage.contains("Table or view not found"))
+    assert(err7.getMessage.contains("cannot be found"))
 
     // clear test
     login(ADMIN1, ADMIN1_PASS, DOMAIN1)

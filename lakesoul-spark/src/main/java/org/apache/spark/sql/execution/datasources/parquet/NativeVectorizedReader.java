@@ -162,6 +162,7 @@ public class NativeVectorizedReader
         if (isVortex) {
             this.sparkSchema = requestSchema;
         } else {
+            taskAttemptContext.getConfiguration().set("spark.sql.parquet.inferTimestampNTZ.enabled", "true");
             super.initialize(split, taskAttemptContext);
         }
         this.nativeIOOptions = NativeIOUtils.getNativeIOOptions(

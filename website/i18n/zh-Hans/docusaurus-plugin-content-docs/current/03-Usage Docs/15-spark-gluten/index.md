@@ -19,7 +19,7 @@ Gluten 已经能够接收 Arrow 格式的 batch 数据作为输入，但是 Glut
 $SPARK_HOME/bin/spark-shell --master local\[1\] --driver-memory 4g \
   # 以下为 Gluten 插件所需的配置项
   --conf "spark.driver.extraJavaOptions=--illegal-access=permit -Dio.netty.tryReflectionSetAccessible=true" \
-  --conf spark.driver.extraClassPath=gluten-velox-bundle-spark3.3_2.12-linux_amd64-1.4.0.jar \
+  --conf spark.driver.extraClassPath=gluten-velox-bundle-spark3.5_2.12-linux_amd64-1.4.0.jar \
   --conf spark.plugins=org.apache.gluten.GlutenPlugin \
   --conf spark.memory.offHeap.enabled=true \
   --conf spark.shuffle.manager=org.apache.spark.shuffle.sort.ColumnarShuffleManager \
@@ -30,8 +30,8 @@ $SPARK_HOME/bin/spark-shell --master local\[1\] --driver-memory 4g \
   --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog \
   --conf spark.sql.defaultCatalog=lakesoul \
   # 引入 LakeSoul spark gluten 的 jar
-  --jars lakesoul-spark-gluten-3.3-VAR::VERSION.jar
+  --jars lakesoul-spark-gluten-3.5-VAR::VERSION.jar
 ```
-以这样的方式启动 Spark 任务后，即可同时启用 Gluten 和 LakeSoul，实现 IO 性能、计算性能的双重加速。注意 LakeSoul 的包名为 `lakesoul-spark-gluten-3.3-VAR::VERSION.jar`，其中 `3.3` 为 Spark 版本，`VAR::VERSION` 为 LakeSoul 版本。
+以这样的方式启动 Spark 任务后，即可同时启用 Gluten 和 LakeSoul，实现 IO 性能、计算性能的双重加速。注意 LakeSoul 的包名为 `lakesoul-spark-gluten-3.5-VAR::VERSION.jar`，其中 `3.5` 为 Spark 版本，`VAR::VERSION` 为 LakeSoul 版本。
 
 Gluten 的 Jar 可以从 https://github.com/apache/gluten/releases 这里下载，需要选择 Spark 3.3 版本。

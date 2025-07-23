@@ -22,7 +22,7 @@ public class JnrLoader {
 
     private boolean hasLoaded = false;
 
-    public static final JnrLoader INSTANCE = new JnrLoader();
+    public static JnrLoader INSTANCE = new JnrLoader();
 
     public static LibLakeSoulMetaData get() {
         JnrLoader.tryLoad();
@@ -75,5 +75,11 @@ public class JnrLoader {
         }
 
         INSTANCE.hasLoaded = true;
+    }
+
+    public synchronized static void unload() {
+        INSTANCE.hasLoaded = false;
+        INSTANCE.libLakeSoulMetaData = null;
+        INSTANCE = null;
     }
 }

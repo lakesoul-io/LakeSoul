@@ -15,7 +15,7 @@ LakeSoul 目前支持 Spark 3.3 + Scala 2.12.
 
 #### 使用 `--packages` 传 Maven 仓库和包名
 ```bash
-spark-shell --packages com.dmetasoul:lakesoul-spark:3.3-VAR::VERSION
+spark-shell --packages com.dmetasoul:lakesoul-spark:3.5-VAR::VERSION
 ```
 
 #### 使用打包好的 LakeSoul 包
@@ -38,7 +38,7 @@ Jar 包可以从 Github Release 页面下载：https://github.com/lakesoul-io/La
 <dependency>
     <groupId>com.dmetasoul</groupId>
     <artifactId>lakesoul-spark</artifactId>
-    <version>3.3-VAR::VERSION</version>
+    <version>3.5-VAR::VERSION</version>
 </dependency>
 ```
 

@@ -20,7 +20,7 @@ When the Spark job starts, configure the Gluten plug-in and LakeSoul in the foll
 $SPARK_HOME/bin/spark-shell --master local\[1\] --driver-memory 4g \
    # The following are the configuration items required by the Gluten plug-in
    --conf "spark.driver.extraJavaOptions=--illegal-access=permit -Dio.netty.tryReflectionSetAccessible=true" \
-   --conf spark.driver.extraClassPath=gluten-velox-bundle-spark3.3_2.12-linux_amd64-1.4.0.jar \
+   --conf spark.driver.extraClassPath=gluten-velox-bundle-spark3.5_2.12-linux_amd64-1.6.0.jar \
    --conf spark.plugins=org.apache.gluten.GlutenPlugin \
    --conf spark.memory.offHeap.enabled=true \
    --conf spark.shuffle.manager=org.apache.spark.shuffle.sort.ColumnarShuffleManager \
@@ -31,10 +31,10 @@ $SPARK_HOME/bin/spark-shell --master local\[1\] --driver-memory 4g \
    --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog \
    --conf spark.sql.defaultCatalog=lakesoul \
    # Introduce the jars of LakeSoul Spark Gluten
-   --jars lakesoul-spark-gluten-3.3-VAR::VERSION.jar,gluten-velox-bundle-spark3.3_2.12-1.1.0.jar
+   --jars lakesoul-spark-gluten-3.5-VAR::VERSION.jar
 ```
-Note that the name of lakesoul's jar is `lakesoul-spark-gluten-3.3-VAR::VERSION.jar`.
+Note that the name of lakesoul's jar is `lakesoul-spark-gluten-3.5-VAR::VERSION.jar`.
 
 After starting the Spark task in this way, Gluten and LakeSoul can be enabled at the same time to achieve dual acceleration of IO performance and computing performance.
 
-Gluten's Jar can be downloaded from https://github.com/apache/gluten/releases. Please choose Spark 3.3's jar.
+Gluten's Jar can be downloaded from https://github.com/apache/gluten/releases. Please choose Spark 3.5's jar.
