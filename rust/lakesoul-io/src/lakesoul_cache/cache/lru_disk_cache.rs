@@ -160,7 +160,7 @@ impl LruDiskCache {
         // println!("drop LruDiskCache");
         LruDiskCache {
             lru: RwLock::new(LruCache::with_meter(size, FileSize)),
-            root: root,
+            root,
             pending_size: 0,
         }
         .init()
@@ -385,7 +385,7 @@ impl LruDiskCache {
                         error!(
                             "[laesoul::cache::lru_cache] Error reading file from cache."
                         );
-                        return None;
+                        None
                     }
                 }
             }

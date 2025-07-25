@@ -46,7 +46,7 @@ mod catalog_tests {
                 namespace: {
                     let mut v = String::with_capacity(5);
                     for _ in 0..10 {
-                        v.push(rng.random_range('a'..'z'));
+                        v.push(rng.random_range('a'..='z'));
                     }
                     format!("{prefix}_{v}")
                 },

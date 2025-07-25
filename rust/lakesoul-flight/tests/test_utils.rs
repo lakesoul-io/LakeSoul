@@ -51,7 +51,7 @@ impl Drop for TestServer {
                 // this means error occured
                 panic!("server error code: {}", n)
             }
-            None => return, // kill by sig is ok
+            None => (), // kill by sig is ok
         }
     }
 }
@@ -152,5 +152,5 @@ pub async fn handle_sql(
     sql: &str,
 ) -> anyhow::Result<Vec<RecordBatch>> {
     let info = client.execute(sql.to_string(), None).await?;
-    Ok(handle_flight_info(&info, client).await?)
+    handle_flight_info(&info, client).await
 }
