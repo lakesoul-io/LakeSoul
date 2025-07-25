@@ -49,8 +49,8 @@ You could download spark distribution from https://spark.apache.org/downloads.ht
 After unpacking spark package, you could find LakeSoul distribution jar from https://github.com/lakesoul-io/LakeSoul/releases. Download the jar file put it into `jars` directory of your spark environment.
 
 ```bash
-wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/spark/spark-3.3.2-bin-hadoop-3.tgz
-tar xf spark-3.3.2-bin-hadoop-3.tgz
+wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/spark/spark-3.3.2-bin-hadoop3.tgz
+tar xf spark-3.3.2-bin-hadoop3.tgz
 export SPARK_HOME=${PWD}/spark-3.3.2-bin-hadoop3
 wget https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-spark-VAR::VERSION-spark-3.3.jar -P $SPARK_HOME/jars
 ```
