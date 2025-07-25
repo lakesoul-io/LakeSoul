@@ -1,0 +1,65 @@
+# minio-service
+apiVersion: v1
+kind: Service
+metadata:
+  name: miniosvc
+  labels:
+    app: miniosvc
+spec:
+  type: ClusterIP
+  ports:
+    - name: api
+      port: 9000 # MinIO API 端口
+      targetPort: 9000
+      protocol: TCP
+    - name: console
+      port: 9001 # MinIO 控制台端口
+      targetPort: 9001
+      protocol: TCP
+  selector:
+    app: minio # 匹配 MinIO Deployment 的标签
+---
+# minio-backend
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  labels:
+    app: minio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+        - name: minio
+          image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/bitnami/minio:2025.4.22-debian-12-r1
+          ports:
+            - containerPort: 9000
+            - containerPort: 9001
+          # command: ["minio"]
+          # args: ["server","/data"]
+          volumeMounts:
+            - mountPath: /data
+              name: data
+          env:
+            - name: MINIO_DEFAULT_BUCKETS
+              value: "dmetasoul-bucket:public"
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: e2e-config
+                  key: AWS_ACCESS_KEY_ID
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                configMapKeyRef:
+                  name: e2e-config
+                  key: AWS_SECRET_ACCESS_KEY
+      volumes:
+        - name: data
+          emptyDir: {}
