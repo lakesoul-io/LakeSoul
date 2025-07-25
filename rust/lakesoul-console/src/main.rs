@@ -6,8 +6,8 @@ use clap::{Parser, Subcommand};
 use lakesoul_datafusion::{
     MetaDataClient, cli::CoreArgs, create_lakesoul_session_ctx, tpch::register_tpch_udtfs,
 };
-use tracing_subscriber::EnvFilter;
 use tracing::trace;
+use tracing_subscriber::EnvFilter;
 
 mod exec;
 mod print;

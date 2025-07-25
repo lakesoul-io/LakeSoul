@@ -7,7 +7,7 @@
 use crate::error::Result;
 use async_trait::async_trait;
 use bb8_postgres::bb8::{Pool, PooledConnection, QueueStrategy};
-use bb8_postgres::{bb8, PostgresConnectionManager};
+use bb8_postgres::{PostgresConnectionManager, bb8};
 use postgres_types::{ToSql, Type};
 use std::borrow::Cow;
 use std::collections::HashMap;

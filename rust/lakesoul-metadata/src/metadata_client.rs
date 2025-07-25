@@ -22,8 +22,8 @@ use proto::proto::entity::{
 use crate::error::{LakeSoulMetaDataError, Result};
 use crate::pooled_client::PooledClient;
 use crate::{
-    clean_meta_for_test, create_connection, execute_insert, execute_query, execute_update,
-    DaoType, PARAM_DELIM, PARTITION_DESC_DELIM,
+    DaoType, PARAM_DELIM, PARTITION_DESC_DELIM, clean_meta_for_test, create_connection,
+    execute_insert, execute_query, execute_update,
 };
 
 /// The metadata client for the postgres database.
