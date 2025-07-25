@@ -56,6 +56,10 @@ use crate::helpers::{
 };
 use crate::lakesoul_io_config::{LakeSoulIOConfig, create_session_context};
 
+/// Read data total time
+static READ_DATA_TOTAL_TIME: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 /// A reader for LakeSoul tables that supports efficient reading of data with various optimizations.
 ///
 /// This reader provides functionality to:
@@ -364,13 +368,25 @@ impl SyncSendableMutableLakeSoulReader {
     pub fn next_rb_blocked(
         &self,
     ) -> Option<std::result::Result<RecordBatch, DataFusionError>> {
+        let current_time = std::time::Instant::now();
         let inner_reader = self.get_inner_reader();
         let runtime = self.get_runtime();
-        runtime.block_on(async move {
+        let res = runtime.block_on(async move {
             let reader = inner_reader.borrow();
             let mut reader = reader.lock().await;
             reader.next_rb().await
-        })
+        });
+        let duration = (std::time::Instant::now() - current_time).as_millis();
+        let _current_thread = std::thread::current();
+        READ_DATA_TOTAL_TIME
+            .fetch_add(duration as u64, std::sync::atomic::Ordering::Relaxed);
+
+        // if duration == 0{
+        //     println!("thread name: {:?}======thread id: {:?}========cache get data cost {} ms", current_thread.name(), current_thread.id(), READ_DATA_TOTAL_TIME.load(std::sync::atomic::Ordering::Acquire));
+        // }
+        // info!("thread name: {:?}======thread id: {:?}========cache get data cost {} ms", current_thread.name(), current_thread.id(), stats.total_query_time());
+
+        res
     }
 
     /// Gets the schema of the reader.
