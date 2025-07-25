@@ -1114,6 +1114,6 @@ mod tests {
         assert_eq!(conf.max_row_group_size, 250000);
         assert_eq!(conf.max_row_group_num_values, 2147483647);
         assert_eq!(conf.prefetch_size, 1);
-        assert_eq!(conf.parquet_filter_pushdown, false);
+        assert!(!conf.parquet_filter_pushdown);
     }
 }

@@ -1,0 +1,57 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: jobmanager-pod-template
+spec:
+  initContainers:
+    - name: artifacts-fetcher
+      image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/minio/mc
+      command:
+          - sh
+          - -c
+          - |
+            mc alias set hwoss https://obs.cn-southwest-2.myhuaweicloud.com ${AWS_ACCESS_KEY_ID} ${AWS_SECRET_ACCESS_KEY}
+            mc cp hwoss/${AWS_BUCKET}/lakesoul/lakesoul-e2e/target/lakesoul-flink-1.20-${LAKESOUL_VERSION}.jar /flink-artifact/
+      volumeMounts:
+        - mountPath: /flink-artifact
+          name: flink-artifact
+      env:
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            configMapKeyRef:
+              name: e2e-config
+              key: AWS_ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            configMapKeyRef:
+              name: e2e-config
+              key: AWS_SECRET_ACCESS_KEY
+        - name: AWS_ENDPOINT
+          valueFrom:
+            configMapKeyRef:
+              name: e2e-config
+              key: AWS_ENDPOINT
+        - name: AWS_BUCKET
+          valueFrom:
+            configMapKeyRef:
+              name: e2e-config
+              key: AWS_BUCKET
+        - name: LAKESOUL_VERSION
+          valueFrom:
+            configMapKeyRef:
+              name: e2e-config
+              key: LAKESOUL_VERSION
+  containers:
+    # Do not change the main container name
+    - name: flink-main-container
+      resources:
+        requests:
+          ephemeral-storage: 2048Mi
+        limits:
+          ephemeral-storage: 2048Mi
+      volumeMounts:
+        - mountPath: /opt/flink/usrlib
+          name: flink-artifact
+  volumes:
+    - name: flink-artifact
+      emptyDir: { }

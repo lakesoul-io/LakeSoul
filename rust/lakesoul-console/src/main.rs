@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand};
 use lakesoul_datafusion::{
     MetaDataClient, cli::CoreArgs, create_lakesoul_session_ctx, tpch::register_tpch_udtfs,
 };
+use tracing::trace;
 use tracing_subscriber::EnvFilter;
 
 mod exec;
@@ -65,6 +66,8 @@ async fn main_inner(cli: Cli) -> anyhow::Result<()> {
         .with_thread_ids(true)
         .with_timer(timer)
         .init();
+
+    trace!("tracing init success");
 
     let meta_client = Arc::new(MetaDataClient::from_env().await?);
 

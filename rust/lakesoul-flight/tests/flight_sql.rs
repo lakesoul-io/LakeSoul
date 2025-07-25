@@ -81,7 +81,7 @@ async fn test_flight_sql_lfs() {
 
             let result = handle_sql(&mut client, query_sql).await.unwrap();
 
-            let expected = vec![
+            let expected = [
                 "+----+----+-----+",
                 "| c1 | c2 | c3  |",
                 "+----+----+-----+",
@@ -101,7 +101,7 @@ async fn test_flight_sql_lfs() {
             ";
 
             let result = handle_sql(&mut client, query_sql).await.unwrap();
-            let expected = vec![
+            let expected = [
                 "+----+----+-----+",
                 "| c1 | c2 | c3  |",
                 "+----+----+-----+",
@@ -123,7 +123,7 @@ async fn test_flight_sql_lfs() {
 
             let result = handle_sql(&mut client, query_sql).await.unwrap();
 
-            let expected = vec![
+            let expected = [
                 "+----+----+-----+",
                 "| c1 | c2 | c3  |",
                 "+----+----+-----+",
@@ -207,7 +207,7 @@ async fn test_jwt() {
 
             let result = handle_sql(&mut client, query_sql).await.unwrap();
 
-            let expected = vec![
+            let expected = [
                 "+----+----+-----+",
                 "| c1 | c2 | c3  |",
                 "+----+----+-----+",
@@ -305,7 +305,7 @@ async fn test_rbac() {
 
             let result = handle_sql(&mut client, query_sql).await.unwrap();
 
-            let expected = vec![
+            let expected = [
                 "+----+----+-----+",
                 "| c1 | c2 | c3  |",
                 "+----+----+-----+",
@@ -393,7 +393,7 @@ async fn test_flight_sql_obj_store() {
 
             let result = handle_sql(&mut client, query_sql).await.unwrap();
 
-            let expected = vec![
+            let expected = [
                 "+----+----+-----+",
                 "| c1 | c2 | c3  |",
                 "+----+----+-----+",
@@ -415,7 +415,7 @@ async fn test_flight_sql_obj_store() {
 
             let result = handle_sql(&mut client, query_sql).await.unwrap();
 
-            let expected = vec![
+            let expected = [
                 "+----+----+-----+",
                 "| c1 | c2 | c3  |",
                 "+----+----+-----+",

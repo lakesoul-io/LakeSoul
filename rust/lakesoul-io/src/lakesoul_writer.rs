@@ -715,13 +715,11 @@ mod tests {
         let mut rng = rand::rng();
         let mut len_rng = rand::rng();
         let iter = (0..num_columns)
-            .into_iter()
             .map(|i| {
                 (
                     format!("col_{}", i),
                     Arc::new(StringArray::from(
                         (0..num_rows)
-                            .into_iter()
                             .map(|_| {
                                 rand::distr::Alphanumeric.sample_string(
                                     &mut rng,
@@ -857,7 +855,6 @@ mod tests {
             .with_primary_keys(
                 // (0..num_columns - 1)
                 (0..3)
-                    .into_iter()
                     .map(|i| format!("col_{}", i))
                     .collect::<Vec<String>>(),
             )
