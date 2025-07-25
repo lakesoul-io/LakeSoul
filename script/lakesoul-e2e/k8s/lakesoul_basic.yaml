@@ -1,0 +1,478 @@
+# config map
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: config
+  namespace: lakesoul-basic-env
+data:
+  metadata_init.sql: |
+    create table if not exists namespace
+    (
+        namespace  text,
+        properties json,
+        comment    text,
+        domain     text default 'public',
+        primary key (namespace)
+    );
+
+    insert into namespace(namespace, properties, comment) values ('default', '{}', '')
+    ON CONFLICT DO NOTHING;
+
+    create table if not exists table_info
+    (
+        table_id        text,
+        table_namespace text default 'default',
+        table_name      text,
+        table_path      text,
+        table_schema    text,
+        properties      json,
+        partitions      text,
+        domain          text default 'public',
+        primary key (table_id)
+    );
+    CREATE INDEX CONCURRENTLY IF NOT EXISTS table_info_name_index ON table_info (table_namespace, table_name);
+    CREATE INDEX CONCURRENTLY IF NOT EXISTS table_info_path_index ON table_info (table_path);
+
+    create table if not exists table_name_id
+    (
+        table_name      text,
+        table_id        text,
+        table_namespace text default 'default',
+        domain          text default 'public',
+        primary key (table_name, table_namespace)
+    );
+    CREATE INDEX CONCURRENTLY IF NOT EXISTS table_name_id_id_index ON table_name_id (table_id);
+
+    create table if not exists table_path_id
+    (
+        table_path      text,
+        table_id        text,
+        table_namespace text default 'default',
+        domain          text default 'public',
+        primary key (table_path)
+    );
+    CREATE INDEX CONCURRENTLY IF NOT EXISTS table_path_id_id_index ON table_path_id (table_id);
+
+    DO
+    $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'data_file_op') THEN
+                create type data_file_op as
+                (
+                    path            text,
+                    file_op         text,
+                    size            bigint,
+                    file_exist_cols text
+                );
+            END IF;
+        END
+    $$;
+
+    create table if not exists data_commit_info
+    (
+        table_id       text,
+        partition_desc text,
+        commit_id      UUID,
+        file_ops       data_file_op[],
+        commit_op      text,
+        committed      boolean default 'false',
+        timestamp      bigint,
+        domain         text default 'public',
+        primary key (table_id, partition_desc, commit_id)
+    );
+    CREATE INDEX CONCURRENTLY IF NOT EXISTS data_commit_info_commit_id ON data_commit_info (commit_id);
+
+    create table if not exists partition_info
+    (
+        table_id       text,
+        partition_desc text,
+        version        int,
+        commit_op      text,
+        timestamp      bigint DEFAULT (date_part('epoch'::text, now()) * (1000)::double precision),
+        snapshot       UUID[],
+        expression     text,
+        domain         text default 'public',
+        primary key (table_id, partition_desc, version)
+    );
+    CREATE INDEX CONCURRENTLY IF NOT EXISTS partition_info_timestamp ON partition_info (timestamp);
+    CREATE INDEX CONCURRENTLY IF NOT EXISTS partition_info_desc_gin_tsvector_index ON partition_info USING GIN (to_tsvector('english', partition_desc));
+
+    CREATE OR REPLACE FUNCTION partition_insert() RETURNS TRIGGER AS
+    $$
+    DECLARE
+        rs_version         integer;
+        rs_table_path      text;
+        rs_table_namespace text;
+    BEGIN
+        if NEW.commit_op <> 'CompactionCommit' then
+            select version
+            INTO rs_version
+            from partition_info
+            where table_id = NEW.table_id
+              and partition_desc = NEW.partition_desc
+              and version != NEW.version
+              and commit_op = 'CompactionCommit'
+            order by version desc
+            limit 1;
+            if rs_version >= 0 then
+                if NEW.version - rs_version >= 10 then
+                    select table_path, table_namespace
+                    into rs_table_path, rs_table_namespace
+                    from table_info
+                    where table_id = NEW.table_id;
+                    perform pg_notify('lakesoul_compaction_notify',
+                                      concat('{"table_path":"', rs_table_path, '","table_partition_desc":"',
+                                            NEW.partition_desc, '","table_namespace":"', rs_table_namespace, '"}'));
+                end if;
+            else
+                if NEW.version >= 10 then
+                    select table_path, table_namespace
+                    into rs_table_path, rs_table_namespace
+                    from table_info
+                    where table_id = NEW.table_id;
+                    perform pg_notify('lakesoul_compaction_notify',
+                                      concat('{"table_path":"', rs_table_path, '","table_partition_desc":"',
+                                            NEW.partition_desc, '","table_namespace":"', rs_table_namespace, '"}'));
+                end if;
+            end if;
+            RETURN NULL;
+        end if;
+        RETURN NULL;
+    END;
+    $$ LANGUAGE plpgsql;
+
+    DROP TRIGGER IF EXISTS partition_table_change ON partition_info;
+    CREATE TRIGGER partition_table_change
+        AFTER INSERT
+        ON partition_info
+        FOR EACH ROW
+    EXECUTE PROCEDURE partition_insert();
+
+    create table if not exists global_config
+    (
+        key  text,
+        value text,
+        primary key (key)
+    );
+
+    create table if not exists discard_compressed_file_info
+    (
+        file_path text,
+        table_path text,
+        partition_desc text,
+        timestamp bigint DEFAULT (date_part('epoch'::text, now()) * (1000)::double precision),
+        t_date date,
+        PRIMARY KEY (file_path)
+    );
+  LAKESOUL_PG_URL: "jdbc:postgresql://pgsvc.lakesoul-basic-env.svc.cluster.local:5432/lakesoul_test?stringtype=unspecified"
+  LAKESOUL_PG_USERNAME: "lakesoul_test"
+  LAKESOUL_PG_PASSWORD: "lakesoul_test"
+  LAKESOUL_PG_DB: "lakesoul_test"
+  AWS_SECRET_ACCESS_KEY: "minioadmin1"
+  AWS_ACCESS_KEY_ID: "minioadmin1"
+  AWS_ENDPOINT: "http://miniosvc.lakesoul-basic-env.svc.cluster.local:9000"
+  AWS_BUCKET: "lakesoul-test-bucket"
+  config.yaml: |+
+    jobmanager.rpc.address: flink-jobmanager
+    taskmanager.numberOfTaskSlots: 2
+    blob.server.port: 6124
+    jobmanager.rpc.port: 6123
+    taskmanager.rpc.port: 6122
+    jobmanager.memory.process.size: 1600m
+    taskmanager.memory.process.size: 1728m
+    parallelism.default: 2    
+    s3.access-key: minioadmin1
+    s3.secret-key: minioadmin1
+    endpoint: http://miniosvc.lakesoul-basic-env.svc.cluster.local:9000
+  log4j-console.properties: |+
+    # 如下配置会同时影响用户代码和 Flink 的日志行为
+    rootLogger.level = INFO
+    rootLogger.appenderRef.console.ref = ConsoleAppender
+    rootLogger.appenderRef.rolling.ref = RollingFileAppender
+
+    # 如果你只想改变 Flink 的日志行为则可以取消如下的注释部分
+    #logger.flink.name = org.apache.flink
+    #logger.flink.level = INFO
+
+    # 下面几行将公共 libraries 或 connectors 的日志级别保持在 INFO 级别。
+    # root logger 的配置不会覆盖此处配置。
+    # 你必须手动修改这里的日志级别。
+    logger.pekko.name = org.apache.pekko
+    logger.pekko.level = INFO
+    logger.kafka.name= org.apache.kafka
+    logger.kafka.level = INFO
+    logger.hadoop.name = org.apache.hadoop
+    logger.hadoop.level = INFO
+    logger.zookeeper.name = org.apache.zookeeper
+    logger.zookeeper.level = INFO
+
+    # 将所有 info 级别的日志输出到 console
+    appender.console.name = ConsoleAppender
+    appender.console.type = CONSOLE
+    appender.console.layout.type = PatternLayout
+    appender.console.layout.pattern = %d{yyyy-MM-dd HH:mm:ss,SSS} %-5p %-60c %x - %m%n
+
+    # 将所有 info 级别的日志输出到指定的 rolling file
+    appender.rolling.name = RollingFileAppender
+    appender.rolling.type = RollingFile
+    appender.rolling.append = false
+    appender.rolling.fileName = ${sys:log.file}
+    appender.rolling.filePattern = ${sys:log.file}.%i
+    appender.rolling.layout.type = PatternLayout
+    appender.rolling.layout.pattern = %d{yyyy-MM-dd HH:mm:ss,SSS} %-5p %-60c %x - %m%n
+    appender.rolling.policies.type = Policies
+    appender.rolling.policies.size.type = SizeBasedTriggeringPolicy
+    appender.rolling.policies.size.size=100MB
+    appender.rolling.strategy.type = DefaultRolloverStrategy
+    appender.rolling.strategy.max = 10
+
+    # 关闭 Netty channel handler 中不相关的（错误）警告
+    logger.netty.name = org.jboss.netty.channel.DefaultChannelPipeline
+    logger.netty.level = OFF
+---
+# minio-service
+apiVersion: v1
+kind: Service
+metadata:
+  name: miniosvc
+  namespace: lakesoul-basic-env # 修改为你的命名空间
+  labels:
+    app: miniosvc
+spec:
+  type: ClusterIP
+  ports:
+    - name: api
+      port: 9000 # MinIO API 端口
+      targetPort: 9000
+      protocol: TCP
+    - name: console
+      port: 9001 # MinIO 控制台端口
+      targetPort: 9001
+      protocol: TCP
+  selector:
+    app: minio # 匹配 MinIO Deployment 的标签
+---
+# minio-backend
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: lakesoul-basic-env
+  labels:
+    app: minio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+        - name: minio
+          image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/bitnami/minio:2025.4.22-debian-12-r1
+          ports:
+            - containerPort: 9000
+            - containerPort: 9001
+          # command: ["minio"]
+          # args: ["server","/data"]
+          volumeMounts:
+            - mountPath: /data
+              name: data
+          env:
+            - name: MINIO_DEFAULT_BUCKETS
+              value: "lakesoul-test-bucket:public"
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: config
+                  key: AWS_ACCESS_KEY_ID
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                configMapKeyRef:
+                  name: config
+                  key: AWS_SECRET_ACCESS_KEY
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+# pg-service
+apiVersion: v1
+kind: Service
+metadata:
+  name: pgsvc
+  namespace: lakesoul-basic-env # 修改为你的命名空间
+  labels:
+    app: pgsvc
+spec:
+  type: ClusterIP # 内部访问（默认）
+  ports:
+    - name: postgres
+      port: 5432 # 服务端口（外部访问）
+      targetPort: 5432 # 容器端口
+      protocol: TCP
+  selector:
+    app: postgres # 匹配Deployment的标签
+---
+# pg-backend
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: lakesoul-basic-env
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: docker.1ms.run/library/postgres # 选择合适的版本/cloudnative-pg/postgresql
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: metadata-init
+              mountPath: /docker-entrypoint-initdb.d
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: config
+                  key: LAKESOUL_PG_USERNAME
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                configMapKeyRef:
+                  name: config
+                  key: LAKESOUL_PG_PASSWORD
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: config
+                  key: LAKESOUL_PG_DB
+      volumes:
+        - name: metadata-init
+          configMap:
+            name: config
+            defaultMode: 0744
+            items:
+              - key: metadata_init.sql
+                path: metadata_init.sql
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flink-jobmanager
+  namespace: lakesoul-basic-env
+spec:
+  type: ClusterIP
+  ports:
+    - name: rpc
+      port: 6123
+    - name: blob-server
+      port: 6124
+    - name: webui
+      port: 8081
+  selector:
+    app: flink
+    component: jobmanager
+---
+# flink jobmanager
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flink-jobmanager
+  namespace: lakesoul-basic-env
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flink
+      component: jobmanager
+  template:
+    metadata:
+      labels:
+        app: flink
+        component: jobmanager
+    spec:
+      containers:
+        - name: jobmanager
+          image: docker.1ms.run/library/flink:1.20.1-scala_2.12-java8
+          args: ["jobmanager"]
+          ports:
+            - containerPort: 6123
+              name: rpc
+            - containerPort: 6124
+              name: blob-server
+            - containerPort: 8081
+              name: webui
+          livenessProbe:
+            tcpSocket:
+              port: 6123
+            initialDelaySeconds: 30
+            periodSeconds: 60
+          volumeMounts:
+            - name: flink-config-volume
+              mountPath: /opt/flink/conf
+          securityContext:
+            runAsUser: 9999 # 参考官方 flink 镜像中的 _flink_ 用户，如有必要可以修改
+      volumes:
+        - name: flink-config-volume
+          configMap:
+            name: config
+            items:
+              - key: config.yaml
+                path: config.yaml
+              - key: log4j-console.properties
+                path: log4j-console.properties
+---
+# flink task manager
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flink-taskmanager
+  namespace: lakesoul-basic-env
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: flink
+      component: taskmanager
+  template:
+    metadata:
+      labels:
+        app: flink
+        component: taskmanager
+    spec:
+      containers:
+        - name: taskmanager
+          image: docker.1ms.run/library/flink:1.20.1-scala_2.12-java8
+          args: ["taskmanager"]
+          ports:
+            - containerPort: 6122
+              name: rpc
+          livenessProbe:
+            tcpSocket:
+              port: 6122
+            initialDelaySeconds: 30
+            periodSeconds: 60
+          volumeMounts:
+            - name: flink-config-volume
+              mountPath: /opt/flink/conf/
+          securityContext:
+            runAsUser: 9999 # 参考官方 flink 镜像中的 _flink_ 用户，如有必要可以修改
+      volumes:
+        - name: flink-config-volume
+          configMap:
+            name: config
+            items:
+              - key: config.yaml
+                path: config.yaml
+              - key: log4j-console.properties
+                path: log4j-console.properties
