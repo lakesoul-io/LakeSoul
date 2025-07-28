@@ -314,7 +314,8 @@ impl LakeSoulTable {
     pub fn hash_bucket_num(&self) -> Result<usize> {
         let mut tmp = self
             .properties
-            .hash_bucket_num.as_ref()
+            .hash_bucket_num
+            .as_ref()
             .unwrap_or(&String::from("1"))
             .parse::<isize>()
             .map_err(|_| {
