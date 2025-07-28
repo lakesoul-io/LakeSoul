@@ -5,11 +5,7 @@ use std::{ops::Range, time::Instant};
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use futures::{StreamExt, TryStreamExt, stream, stream::BoxStream};
-use object_store::{
-    Attributes, GetOptions, GetResult, GetResultPayload, ListResult, MultipartUpload,
-    ObjectMeta, ObjectStore, PutMultipartOpts, PutOptions, PutPayload, PutResult,
-    path::Path,
-};
+use object_store::{Attributes, GetOptions, GetResult, GetResultPayload, ListResult, MultipartUpload, ObjectMeta, ObjectStore, PutOptions, PutPayload, PutResult, path::Path, PutMultipartOptions};
 
 use crate::lakesoul_cache::{paging::PageCache, stats::CacheStats};
 use object_store::Result;
@@ -141,7 +137,7 @@ impl<C: PageCache> ObjectStore for ReadThroughCache<C> {
     async fn put_multipart_opts(
         &self,
         location: &Path,
-        _opts: PutMultipartOpts,
+        _opts: PutMultipartOptions,
     ) -> Result<Box<dyn MultipartUpload>> {
         self.invalidate(location).await?;
 

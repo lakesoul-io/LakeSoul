@@ -101,6 +101,7 @@ public class LakeSoulPageSource implements ConnectorPageSource {
                 LakeSoulConfig.getInstance().getRegion(),
                 LakeSoulConfig.getInstance().getBucketName(),
                 LakeSoulConfig.getInstance().getEndpoint(),
+                LakeSoulConfig.getInstance().getSigner(),
                 LakeSoulConfig.getInstance().getDefaultFS(),
                 LakeSoulConfig.getInstance().getUser(),
                 LakeSoulConfig.getInstance().isVirtualPathStyle()

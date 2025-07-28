@@ -17,11 +17,7 @@ use futures::{FutureExt, StreamExt};
 use hdrs::{Client, ClientBuilder, File};
 use object_store::Error::{Generic, Precondition};
 use object_store::path::Path;
-use object_store::{
-    Attributes, GetOptions, GetRange, GetResult, GetResultPayload, ListResult,
-    MultipartUpload, ObjectMeta, ObjectStore, PutMode, PutMultipartOpts, PutOptions,
-    PutPayload, PutResult, UploadPart,
-};
+use object_store::{Attributes, GetOptions, GetRange, GetResult, GetResultPayload, ListResult, MultipartUpload, ObjectMeta, ObjectStore, PutMode, PutMultipartOptions, PutOptions, PutPayload, PutResult, UploadPart};
 use std::fmt::{Debug, Display, Formatter};
 use std::io::ErrorKind::NotFound;
 use std::io::SeekFrom;
@@ -153,7 +149,7 @@ impl ObjectStore for Hdfs {
     async fn put_multipart_opts(
         &self,
         location: &Path,
-        _opts: PutMultipartOpts,
+        _opts: PutMultipartOptions,
     ) -> object_store::Result<Box<dyn MultipartUpload>> {
         // hdrs uses Unblocking underneath, so we don't have to
         // implement concurrent write
