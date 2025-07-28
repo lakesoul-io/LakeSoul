@@ -546,7 +546,7 @@ mod tests {
     use object_store::ObjectStore;
     use object_store::buffered::BufWriter;
     use object_store::path::Path;
-    use rand::distr::{Alphanumeric, DistString};
+    use rand::distr::{Alphanumeric, SampleString};
     use rand::thread_rng;
     use std::sync::Arc;
     use tokio::io::AsyncWriteExt;
@@ -632,7 +632,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(meta0.location, Path::from(write_path.as_str()));
-        assert_eq!(meta0.size, size);
+        assert_eq!(meta0.size, size as u64);
 
         // test get
         let s = read_file_from_hdfs(write_path.clone(), object_store.clone()).await;
@@ -643,11 +643,11 @@ mod tests {
         let step = size / read_concurrency;
         let ranges = (0..read_concurrency)
             .into_iter()
-            .map(|i| std::ops::Range::<usize> {
-                start: i * step,
-                end: (i + 1) * step,
+            .map(|i| std::ops::Range::<u64> {
+                start: (i * step) as u64,
+                end: ((i + 1) * step) as u64,
             })
-            .collect::<Vec<std::ops::Range<usize>>>();
+            .collect::<Vec<std::ops::Range<u64>>>();
         let mut result = Vec::new();
         for i in 0..16 {
             result.push(

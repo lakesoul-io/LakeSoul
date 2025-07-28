@@ -176,9 +176,9 @@ impl Credentials {
             let binding = self.metadata_client.load();
             if let Some(client) = binding.as_ref() {
                 let path = parse_table_path(&headers.uri, bucket);
-                if path
-                    .starts_with(format!("s3://{}/{}/{}", bucket, self.group, self.user).as_str())
-                {
+                if path.starts_with(
+                    format!("s3://{}/{}/{}", bucket, self.group, self.user).as_str(),
+                ) {
                     return Ok(());
                 }
                 verify_permission_by_table_path(
