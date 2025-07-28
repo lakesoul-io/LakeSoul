@@ -17,7 +17,11 @@ use futures::{FutureExt, StreamExt};
 use hdrs::{Client, ClientBuilder, File};
 use object_store::Error::{Generic, Precondition};
 use object_store::path::Path;
-use object_store::{Attributes, GetOptions, GetRange, GetResult, GetResultPayload, ListResult, MultipartUpload, ObjectMeta, ObjectStore, PutMode, PutMultipartOptions, PutOptions, PutPayload, PutResult, UploadPart};
+use object_store::{
+    Attributes, GetOptions, GetRange, GetResult, GetResultPayload, ListResult,
+    MultipartUpload, ObjectMeta, ObjectStore, PutMode, PutMultipartOptions, PutOptions,
+    PutPayload, PutResult, UploadPart,
+};
 use std::fmt::{Debug, Display, Formatter};
 use std::io::ErrorKind::NotFound;
 use std::io::SeekFrom;

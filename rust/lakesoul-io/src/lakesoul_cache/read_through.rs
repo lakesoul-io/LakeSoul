@@ -5,7 +5,11 @@ use std::{ops::Range, time::Instant};
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use futures::{StreamExt, TryStreamExt, stream, stream::BoxStream};
-use object_store::{Attributes, GetOptions, GetResult, GetResultPayload, ListResult, MultipartUpload, ObjectMeta, ObjectStore, PutOptions, PutPayload, PutResult, path::Path, PutMultipartOptions};
+use object_store::{
+    Attributes, GetOptions, GetResult, GetResultPayload, ListResult, MultipartUpload,
+    ObjectMeta, ObjectStore, PutMultipartOptions, PutOptions, PutPayload, PutResult,
+    path::Path,
+};
 
 use crate::lakesoul_cache::{paging::PageCache, stats::CacheStats};
 use object_store::Result;
