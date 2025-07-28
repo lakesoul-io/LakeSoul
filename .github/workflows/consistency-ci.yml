@@ -116,7 +116,7 @@ jobs:
       - name: Generate benchmark data and expected query results
         run: |
           mkdir -p lakesoul/test_files/tpch/data
-          git clone https://github.com/databricks/tpch-dbgen.git
+          git clone --branch master --depth 1 https://github.com/databricks/tpch-dbgen.git
           cd tpch-dbgen
           make
           ./dbgen -f -s 0.1

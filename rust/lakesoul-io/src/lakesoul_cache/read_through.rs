@@ -7,7 +7,7 @@ use bytes::{Bytes, BytesMut};
 use futures::{StreamExt, TryStreamExt, stream, stream::BoxStream};
 use object_store::{
     Attributes, GetOptions, GetResult, GetResultPayload, ListResult, MultipartUpload,
-    ObjectMeta, ObjectStore, PutMultipartOpts, PutOptions, PutPayload, PutResult,
+    ObjectMeta, ObjectStore, PutMultipartOptions, PutOptions, PutPayload, PutResult,
     path::Path,
 };
 
@@ -141,7 +141,7 @@ impl<C: PageCache> ObjectStore for ReadThroughCache<C> {
     async fn put_multipart_opts(
         &self,
         location: &Path,
-        _opts: PutMultipartOpts,
+        _opts: PutMultipartOptions,
     ) -> Result<Box<dyn MultipartUpload>> {
         self.invalidate(location).await?;
 
