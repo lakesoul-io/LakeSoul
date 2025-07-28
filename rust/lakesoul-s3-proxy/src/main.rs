@@ -18,7 +18,6 @@ use http::header::{CONTENT_LENGTH, HOST};
 use http::{HeaderValue, Uri};
 use lakesoul_metadata::MetaDataClient;
 use lakesoul_metadata::rbac::verify_permission_by_table_path;
-use pingora::http::ResponseHeader;
 use lazy_static::lazy_static;
 use pingora::lb::discovery::ServiceDiscovery;
 use pingora::lb::selection::{BackendIter, BackendSelection};
@@ -27,7 +26,7 @@ use pingora::prelude::*;
 use pingora::protocols::l4::socket::SocketAddr;
 use pingora::server::ShutdownWatch;
 use pingora::services::background::BackgroundService;
-use prometheus::{register_int_counter, IntCounter};
+use prometheus::{IntCounter, register_int_counter};
 use std::collections::{BTreeSet, HashMap};
 use std::net::{IpAddr, SocketAddrV4};
 use std::str::FromStr;
@@ -37,9 +36,12 @@ use tracing::{debug, error, info};
 use tracing_subscriber::EnvFilter;
 
 lazy_static! {
-    static ref REQ_COUNTER: IntCounter = register_int_counter!("s3proxy_request_num", "request num").unwrap();
-    static ref REQ_BYTES: IntCounter = register_int_counter!("s3proxy_request_bytes", "request bytes").unwrap();
-    static ref RES_BYTES: IntCounter = register_int_counter!("s3proxy_response_bytes", "response bytes").unwrap();
+    static ref REQ_COUNTER: IntCounter =
+        register_int_counter!("s3proxy_request_num", "request num").unwrap();
+    static ref REQ_BYTES: IntCounter =
+        register_int_counter!("s3proxy_request_bytes", "request bytes").unwrap();
+    static ref RES_BYTES: IntCounter =
+        register_int_counter!("s3proxy_response_bytes", "response bytes").unwrap();
 }
 
 fn main() {
@@ -74,7 +76,8 @@ fn main() {
         _ => (String::new(), String::new(), false),
     };
 
-    let verify_client_signature = std::env::var("CLIENT_AWS_SECRET").is_ok() && std::env::var("CLIENT_AWS_KEY").is_ok();
+    let verify_client_signature = std::env::var("CLIENT_AWS_SECRET").is_ok()
+        && std::env::var("CLIENT_AWS_KEY").is_ok();
 
     let uri = Uri::from_str(endpoint.as_str()).unwrap();
     let tls: bool = if let Some(scheme) = uri.scheme_str() {
@@ -136,7 +139,8 @@ fn main() {
     proxy_server.add_service(lb);
 
     // add prometheus endpoint
-    let mut prometheus_service_http = pingora::services::listening::Service::prometheus_http_service();
+    let mut prometheus_service_http =
+        pingora::services::listening::Service::prometheus_http_service();
     prometheus_service_http.add_tcp("0.0.0.0:1234");
     proxy_server.add_service(prometheus_service_http);
 
@@ -164,7 +168,7 @@ impl Credentials {
     async fn verify_rbac(
         &self,
         headers: &RequestHeader,
-        bucket: &Option<&str>,
+        bucket: &str,
     ) -> Result<(), anyhow::Error> {
         if !self.verify_meta {
             Ok(())
@@ -172,17 +176,29 @@ impl Credentials {
             let binding = self.metadata_client.load();
             if let Some(client) = binding.as_ref() {
                 let path = parse_table_path(&headers.uri, bucket);
-                if path.starts_with(format!("s3://{}/users/{}", bucket, self.user).as_str()) {
+                if path
+                    .starts_with(format!("s3://{}/{}/{}", bucket, self.group, self.user).as_str())
+                {
                     return Ok(());
                 }
-                verify_permission_by_table_path(self.user.as_str(), self.group.as_str(), path.as_str(), client.clone())
-                    .await?;
+                verify_permission_by_table_path(
+                    self.user.as_str(),
+                    self.group.as_str(),
+                    path.as_str(),
+                    client.clone(),
+                )
+                .await?;
             }
             Ok(())
         }
     }
 
-    fn sign_aws_v4(&self, headers: &mut RequestHeader, host: &String, bucket: &str) -> Result<(), anyhow::Error> {
+    fn sign_aws_v4(
+        &self,
+        headers: &mut RequestHeader,
+        host: &String,
+        bucket: &str,
+    ) -> Result<(), anyhow::Error> {
         let mut signing_settings = SigningSettings::default();
         signing_settings.payload_checksum_kind = PayloadChecksumKind::XAmzSha256;
         let binding = self.identity.load();
@@ -226,14 +242,19 @@ impl Credentials {
         let signable_request = SignableRequest::new(
             headers.method.as_str(),
             &uri,
-            headers.headers.iter().filter_map(|(name, value)| match value.to_str() {
-                Ok(v) => Some((name.as_str(), v)),
-                Err(_) => None,
-            }),
+            headers
+                .headers
+                .iter()
+                .filter_map(|(name, value)| match value.to_str() {
+                    Ok(v) => Some((name.as_str(), v)),
+                    Err(_) => None,
+                }),
             match headers.headers.get("x-amz-content-sha256") {
                 Some(value) => {
                     if value == "STREAMING-AWS4-HMAC-SHA256-PAYLOAD" {
-                        SignableBody::Precomputed("STREAMING-AWS4-HMAC-SHA256-PAYLOAD".parse()?)
+                        SignableBody::Precomputed(
+                            "STREAMING-AWS4-HMAC-SHA256-PAYLOAD".parse()?,
+                        )
                     } else {
                         SignableBody::UnsignedPayload
                     }
@@ -247,7 +268,7 @@ impl Credentials {
         debug!("new headers {:?}, new query {:?}", new_headers, new_query);
 
         for header in new_headers.into_iter() {
-            let mut value = http::HeaderValue::from_str(header.value())?;
+            let mut value = HeaderValue::from_str(header.value())?;
             value.set_sensitive(header.sensitive());
             headers.insert_header(header.name(), value)?
         }
@@ -346,7 +367,13 @@ impl ProxyHttp for S3Proxy {
         debug!("request_filter original header: {header:?}");
         let bucket;
         // we need to parse bucket name from uri component
-        if let Some(path) = header.uri.path().split("/").filter(|s| !s.is_empty()).next() {
+        if let Some(path) = header
+            .uri
+            .path()
+            .split("/")
+            .filter(|s| !s.is_empty())
+            .next()
+        {
             bucket = path.to_string();
         } else {
             error!("Cannot determine bucket {:?}", header);
@@ -584,7 +611,9 @@ mod tests {
 
         assert_eq!(
             parse_table_path(
-                &Uri::from_static("/lakesoul-test-bucket/test/default/abc/date=20250221/type=1/test.parquet"),
+                &Uri::from_static(
+                    "/lakesoul-test-bucket/test/default/abc/date=20250221/type=1/test.parquet"
+                ),
                 "lakesoul-test-bucket"
             ),
             "s3://lakesoul-test-bucket/test/default/abc"
