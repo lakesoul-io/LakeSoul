@@ -46,11 +46,10 @@ use crate::lakesoul_cache::cache::DiskCache;
 use crate::lakesoul_cache::read_through::ReadThroughCache;
 
 static LAKESOUL_CACHE: OnceLock<Arc<DiskCache>> = OnceLock::new();
-
+/// Get and init Lakesoul Cache
 fn get_lakesoul_cache() -> Arc<DiskCache> {
     LAKESOUL_CACHE
         .get_or_init(|| -> Arc<DiskCache> {
-            // if std::env::var("LAKESOUL_CACHE").is_ok() {
             let cache_size = {
                 match std::env::var("LAKESOUL_CACHE_SIZE") {
                     Ok(mut s) => {
@@ -80,9 +79,6 @@ fn get_lakesoul_cache() -> Arc<DiskCache> {
             };
             println!("LAKESOUL_CACHE_SIZE: {}", cache_size);
             Arc::new(DiskCache::new(cache_size, 4 * 1024 * 1024))
-            // } else {
-            //     DiskCache::new(0, 0)
-            // }
         })
         .clone()
 }
