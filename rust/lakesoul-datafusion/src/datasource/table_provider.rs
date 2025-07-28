@@ -210,9 +210,8 @@ impl LakeSoulTableProvider {
                 hash_bucket_num: if primary_keys.is_empty() {
                     None
                 } else {
-                    Some(4)
+                    Some(String::from("4"))
                 },
-                datafusion_properties: Some(cmd.options.clone()),
                 cdc_change_column: cdc_column,
                 use_cdc,
                 ..Default::default()

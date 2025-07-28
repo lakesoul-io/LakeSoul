@@ -359,7 +359,7 @@ pub extern "C" fn lakesoul_config_builder_set_hash_bucket_num(
 ) -> NonNull<IOConfigBuilder> {
     convert_to_opaque(
         from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
-            .with_hash_bucket_num(hash_bucket_num),
+            .with_hash_bucket_num(hash_bucket_num.to_string()),
     )
 }
 
