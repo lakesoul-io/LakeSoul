@@ -56,7 +56,7 @@ pub(crate) fn create_io_config_builder_from_table_info(
         .with_prefix(table_info.table_path.clone())
         .with_primary_keys(hash_partitions)
         .with_range_partitions(range_partitions)
-        .with_hash_bucket_num(properties.hash_bucket_num.unwrap_or(1))
+        .with_hash_bucket_num(properties.hash_bucket_num.unwrap_or(String::from("1")))
         .set_dynamic_partition(dynamic_partition)
         .with_option(OPTION_KEY_STABLE_SORT, use_cdc)
         .with_option(OPTION_KEY_CDC_COLUMN, cdc_column);

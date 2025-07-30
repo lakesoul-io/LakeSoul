@@ -137,8 +137,8 @@ pub struct LakeSoulIOConfig {
     /// Names of range partition columns
     pub(crate) range_partitions: Vec<String>,
     /// Number of hash buckets for hash partitioning
-    #[derivative(Default(value = "1"))]
-    pub(crate) hash_bucket_num: usize,
+    #[derivative(Default(value = "1.to_string()"))]
+    hash_bucket_num: String,
     /// Names of columns to select
     #[deprecated(since = "2.5.0", note = "deprecated")]
     pub(crate) columns: Vec<String>,
@@ -278,6 +278,18 @@ impl LakeSoulIOConfig {
     pub fn hash_bucket_num(&self) -> usize {
         self.option(OPTION_KEY_HASH_BUCKET_NUM)
             .map_or(1, |x| x.parse().unwrap())
+    }
+
+    // Get hash_bucket_num field directly, not from option
+    pub fn get_hash_bucket_num(&self) -> Result<usize> {
+        let mut tmp = self.hash_bucket_num.parse::<isize>().map_err(|_e| {
+            DataFusionError::Internal(format!(
+                "parse {} to isize failed",
+                self.hash_bucket_num
+            ))
+        })?;
+        tmp = tmp.max(1);
+        Ok(tmp as usize)
     }
 
     /// Returns the CDC (Change Data Capture) column name if set
@@ -421,7 +433,7 @@ impl LakeSoulIOConfigBuilder {
     /// # Arguments
     ///
     /// * `hash_bucket_num` - The number of hash buckets for partitioning
-    pub fn with_hash_bucket_num(mut self, hash_bucket_num: usize) -> Self {
+    pub fn with_hash_bucket_num(mut self, hash_bucket_num: String) -> Self {
         self.config.hash_bucket_num = hash_bucket_num;
         self
     }

@@ -215,7 +215,7 @@ impl PartitioningAsyncWriter {
                 })
                 .collect::<Result<Vec<_>>>()?;
             let hash_partitioning =
-                Partitioning::Hash(hash_partitioning_expr, config.hash_bucket_num);
+                Partitioning::Hash(hash_partitioning_expr, config.get_hash_bucket_num()?);
 
             Arc::new(RepartitionByRangeAndHashExec::try_new(
                 sort_exec,

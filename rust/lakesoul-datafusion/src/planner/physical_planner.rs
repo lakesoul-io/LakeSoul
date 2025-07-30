@@ -127,7 +127,9 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
 
                             let hash_partitioning = Partitioning::Hash(
                                 hash_partitioning_expr,
-                                lakesoul_table.hash_bucket_num(),
+                                lakesoul_table.hash_bucket_num().map_err(|e| {
+                                    DataFusionError::Internal(e.to_string())
+                                })?,
                             );
                             let range_partitioning_expr = column_names_to_physical_expr(
                                 lakesoul_table.range_partitions(),

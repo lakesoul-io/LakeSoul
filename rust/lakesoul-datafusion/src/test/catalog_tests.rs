@@ -51,8 +51,7 @@ mod catalog_tests {
                     format!("{prefix}_{v}")
                 },
                 properties: serde_json::to_string(&LakeSoulTableProperty {
-                    hash_bucket_num: Some(hash_bucket_num),
-                    datafusion_properties: None,
+                    hash_bucket_num: Some(hash_bucket_num.to_string()),
                     ..Default::default()
                 })
                 .unwrap(),

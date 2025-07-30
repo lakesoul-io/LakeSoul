@@ -311,8 +311,21 @@ impl LakeSoulTable {
         &self.range_partitions
     }
 
-    pub fn hash_bucket_num(&self) -> usize {
-        self.properties.hash_bucket_num.unwrap_or(1)
+    pub fn hash_bucket_num(&self) -> Result<usize> {
+        let mut tmp = self
+            .properties
+            .hash_bucket_num
+            .as_ref()
+            .unwrap_or(&String::from("1"))
+            .parse::<isize>()
+            .map_err(|_| {
+                LakeSoulError::Internal(format!(
+                    "parse {:?} to isize error",
+                    self.properties.hash_bucket_num
+                ))
+            })?;
+        tmp = tmp.max(1);
+        Ok(tmp as usize)
     }
 
     pub fn table_namespace(&self) -> &str {
