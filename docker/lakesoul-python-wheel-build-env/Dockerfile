@@ -20,15 +20,12 @@ RUN rm -f ninja-linux.zip &&                                                    
     rm -f ninja-linux.zip &&                                                                               \
     echo OK: Ninja
 
-ARG RUST_VERSION=nightly
-RUN rm -f rust-${RUST_VERSION}-x86_64-unknown-linux-gnu.tar.gz &&                                          \
-    rm -rf rust-${RUST_VERSION}-x86_64-unknown-linux-gnu &&                                                \
-    rm -rf /usr/local/rust-${RUST_VERSION} &&                                                              \
-    curl -L -O https://static.rust-lang.org/dist/rust-${RUST_VERSION}-x86_64-unknown-linux-gnu.tar.gz &&   \
-    tar -xf rust-${RUST_VERSION}-x86_64-unknown-linux-gnu.tar.gz &&                                        \
-    ./rust-${RUST_VERSION}-x86_64-unknown-linux-gnu/install.sh --prefix=/usr/local/rust-${RUST_VERSION} && \
-    rm -f rust-${RUST_VERSION}-x86_64-unknown-linux-gnu.tar.gz &&                                          \
-    rm -rf rust-${RUST_VERSION}-x86_64-unknown-linux-gnu &&                                                \
-    echo OK: Rust
-
-ENV PATH=/usr/local/rust-${RUST_VERSION}/bin:${PATH}
+ARG RUST_VERSION=1.87.0
+ENV RUSTUP_HOME=/opt/rustup
+ENV CARGO_HOME=/opt/cargo
+RUN mkdir -p $RUSTUP_HOME $CARGO_HOME
+RUN echo "RUST version $RUST_VERSION"
+ENV RUSTUP_DIST_SERVER="https://rsproxy.cn"
+ENV RUSTUP_UPDATE_ROOT="https://rsproxy.cn/rustup"
+RUN curl --proto '=https' --tlsv1.2 -sSf https://rsproxy.cn/rustup-init.sh | RUSTUP_HOME=$RUSTUP_HOME CARGO_HOME=$CARGO_HOME sh -s -- -y --profile minimal --default-toolchain $RUST_VERSION
+ENV PATH=$CARGO_HOME/bin:$PATH
