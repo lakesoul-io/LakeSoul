@@ -5,6 +5,9 @@
 name: Manual Trigger Only 
 
 on:
+  push:
+    branches:
+      - 'py'
   workflow_dispatch:
 
 jobs:
@@ -12,6 +15,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
+    permissions:
+      id-token: write 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
