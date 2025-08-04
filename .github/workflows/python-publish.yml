@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2025 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Manual Trigger Only 
+
+on:
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      - name: build  
+        run: |
+          python3 python/docker_build_all_wheels.py
+      - name: Publish package distributions to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/

@@ -83,7 +83,7 @@ class LakeSoulWheelDockerBuilder(object):
 
     def _build_all_wheels(self, dir_path):
         cibw_path = os.path.join(dir_path, 'bin', 'cibuildwheel')
-        args = [cibw_path, '--platform', 'linux']
+        args = [cibw_path, '--platform', 'linux','--output-dir','dist']
         subprocess.check_call(args)
 
     def run(self):
