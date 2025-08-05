@@ -6,9 +6,12 @@ use clap::{Parser, Subcommand};
 use lakesoul_datafusion::{
     MetaDataClient, cli::CoreArgs, create_lakesoul_session_ctx, tpch::register_tpch_udtfs,
 };
+use rand::Rng;
+use rand::distr::Alphanumeric;
 use tracing_subscriber::EnvFilter;
 
 mod exec;
+mod logo;
 mod print;
 
 #[derive(Parser)]
@@ -22,6 +25,13 @@ struct Cli {
     )]
     file: Vec<String>,
 
+    #[arg(
+        long,
+        default_value = "/tmp",
+        help = "log dir, end with '/' is not valid"
+    )]
+    log_dir: String,
+
     #[command(flatten)]
     pub core: CoreArgs,
 
@@ -32,7 +42,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     TpchGen {
-        #[arg(short, long)]
+        #[arg(long)]
         schema: Option<String>,
         #[arg(short, long)]
         path_prefix: String,
@@ -51,10 +61,27 @@ fn parse_valid_file(dir: &str) -> Result<String, String> {
     }
 }
 
-async fn main_inner(cli: Cli) -> anyhow::Result<()> {
-    // init log
-    let file_appender =
-        tracing_appender::rolling::never("/tmp/lakesoul/logs", "console.log");
+fn rand_str() -> String {
+    // 创建线程本地随机数生成器
+    let mut rng = rand::rng();
+
+    // 生成 len 个随机的字母数字字符
+    let s: String = (0..5)
+        .map(|_| rng.sample(Alphanumeric))
+        .map(char::from) // Alphanumeric 是 u8，需要转成 char
+        .collect();
+
+    s
+}
+
+fn init_log(mut log_dir: &str) {
+    if log_dir.ends_with("/") {
+        log_dir = &log_dir[..log_dir.len() - 1];
+    }
+
+    let log_dir = format!("{log_dir}/lakesoul_log_{}", rand_str());
+    tracing::debug!("log_dir:{}", &log_dir);
+    let file_appender = tracing_appender::rolling::never(&log_dir, "console.log");
     let timer = tracing_subscriber::fmt::time::ChronoLocal::rfc_3339();
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
     let level = EnvFilter::from_default_env();
@@ -65,7 +92,15 @@ async fn main_inner(cli: Cli) -> anyhow::Result<()> {
         .with_thread_ids(true)
         .with_timer(timer)
         .init();
+}
 
+fn print_banner() {
+    println!("{}", logo::LOGO);
+}
+
+async fn main_inner(cli: Cli) -> anyhow::Result<()> {
+    print_banner();
+    init_log(&cli.log_dir);
     let meta_client = Arc::new(MetaDataClient::from_env().await?);
 
     let ctx = create_lakesoul_session_ctx(meta_client, &cli.core).unwrap();

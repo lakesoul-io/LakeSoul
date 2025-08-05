@@ -52,6 +52,16 @@ all = [
     "ray>=2.7",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=8"
+]
+
+[tool.pytest.ini_options]
+addopts = [
+    "--import-mode=importlib",
+]
+
 [tool.cibuildwheel]
 manylinux-x86_64-image = "dmetasoul/lakesoul-python-wheel-build-env-manylinux_2_28:v1.0.0"
 build = "*-manylinux_x86_64"
@@ -60,7 +70,7 @@ skip = ["cp36-*", "cp37-*", "cp311-*", "cp312-*", "pp*"]
 [tool.cibuildwheel.linux]
 before-build = "rm -rf {project}/cpp/build && {project}/cpp/compile.sh"
 repair-wheel-command = """\
-    auditwheel repair --plat manylinux_2_28_x86_64 \
+    auditwheel --verbose repair --plat manylinux_2_28_x86_64 \
                       --exclude libarrow_python.so \
                       --exclude libarrow_dataset.so.1601 \
                       --exclude libarrow_acero.so.1601 \
