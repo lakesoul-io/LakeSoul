@@ -13,6 +13,3 @@ def test_lakesoul_dataset():
         total_cols += batch.num_columns
 
     assert total_rows == 20000
-
-if __name__ == "__main__":
-    test_lakesoul_dataset()

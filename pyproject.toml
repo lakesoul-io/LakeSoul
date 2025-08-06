@@ -40,16 +40,18 @@ where = ["python"]
 include = ["lakesoul*"]
 
 [project.optional-dependencies]
-torch = ["torch>=1.11"]
+torch = ["torch>=1.11.0"]
 pandas = ["pandas>=1.4"]
 datasets = ["datasets>=2.14", "urllib3<2,>=1.21.1"]
 ray = ["ray>=2.7"]
+pyspark = ["pyspark==3.3.1"]
 all = [
     "torch>=1.11",
     "pandas>=1.4",
     "datasets>=2.14",
     "urllib3<2,>=1.21.1",
     "ray>=2.7",
+    "pyspark==3.3.1",
 ]
 
 [dependency-groups]
