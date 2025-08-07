@@ -1,0 +1,106 @@
+name: CI with Python Test
+on:
+  push:
+    paths-ignore:
+      - "javadoc/**"
+      - "website/**"
+      - "**.md"
+    branches:
+      - 'main'
+      - 'release/**'
+  pull_request:
+    paths-ignore:
+      - "javadoc/**"
+      - "website/**"
+      - "**.md"
+    branches:
+      - 'main'
+      - 'release/**'
+  workflow_dispatch:
+
+jobs:
+  run-pytest:
+    runs-on: ubuntu-latest
+    services:
+      # Label used to access the service container
+      postgres:
+        # Docker Hub image
+        image: postgres:14.5
+        # Provide the password for postgres
+        env:
+          POSTGRES_PASSWORD: lakesoul_test
+          POSTGRES_USER: lakesoul_test
+          POSTGRES_DB: lakesoul_test
+        # Set health checks to wait until postgres has started
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+          --name lakesoul-test-pg
+        ports:
+          # Maps tcp port 5432 on service container to the host
+          - 5432:5432
+    steps:
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          default: true
+      - uses: actions/checkout@v4
+      - name: Set up JDK 11
+        uses: actions/setup-java@v4
+        with:
+          java-version: '11'
+          distribution: 'temurin'
+          cache: maven
+      - name: Install psql
+        run: sudo apt-get install -y postgresql-client-16
+      - name: Init PG
+        run: |
+          ./script/meta_init_for_local_test.sh -j 2
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          version: "23.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "./rust -> target"
+      - name: pytest
+        env:
+          LAKESOUL_SOURCE_DIR: ${{ github.workspace }}
+        run: |
+          export LD_LIBRARY_PATH=$JAVA_HOME/lib/server:$LD_LIBRARY_PATH
+          echo $LD_LIBRARY_PATH
+          mvn package -pl lakesoul-spark -am -DskipTests
+          uv sync
+          source .venv/bin/activate
+          bash cpp/compile.sh
+          cp cpp/build/python/lakesoul/metadata/generated/entity_pb2.py python/lakesoul/metadata/generated
+          cp cpp/build/_lakesoul_dataset.so python/lakesoul/arrow
+          cp rust/target/release/liblakesoul_metadata_c.so python/lakesoul/metadata/lib/
+          cargo run --manifest-path rust/Cargo.toml --release -p lakesoul-console -- tpch-gen -p "file:///tmp/lakesoul/tpch_data" --scale-factor 0.1 -n 8 
+          uv run pytest -s
+  publish:
+    runs-on: ubuntu-latest
+    needs: ["run-pytest"]
+    env:
+      PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
+    permissions:
+      id-token: write 
+    steps:
+      - name: Checkout repository
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/checkout@v3
+      - name: build  
+        run: |
+          python3 python/docker_build_all_wheels.py
+      - name: Publish package distributions to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+      
+        
+

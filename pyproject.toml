@@ -54,7 +54,7 @@ dev = [
 "Bug Tracker" = "https://github.com/lakesoul-io/LakeSoul/issues"
 
 [build-system]
-requires = ["setuptools >= 62.1.0", "wheel", "cython >= 0.29.31,<3", "grpcio[protobuf] ~= 1.57"]
+requires = ["setuptools >= 62.1.0", "wheel", "cython >= 0.29.31,<3", "grpcio[protobuf] ~= 1.57","pyarrow==16.1.0"]
 build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 
