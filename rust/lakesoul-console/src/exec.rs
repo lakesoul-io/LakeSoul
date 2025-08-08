@@ -34,6 +34,10 @@ pub async fn exec_command(
             scale_factor,
             num_parts,
         } => {
+            println!(
+                "start to generate tpch data scale_factor:{} num_parts:{}",
+                scale_factor, num_parts
+            );
             let mut all = vec![];
             let all_targets = [
                 "part".to_string(),

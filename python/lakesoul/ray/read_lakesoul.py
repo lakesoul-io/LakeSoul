@@ -11,7 +11,7 @@ from ray.data.datasource.datasource import ReadTask
 from ray.data.datasource.datasource import Datasource
 from ray.data.block import BlockMetadata
 
-from ..metadata.meta_ops import *
+from ..metadata.meta_ops import get_arrow_schema_by_table_name,get_data_files_and_pks_by_table_name
 
 def _read_lakesoul_data_file(table_name,
                              batch_size=16,

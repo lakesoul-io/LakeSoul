@@ -2,10 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-[build-system]
-requires = ["setuptools >= 62.1.0", "wheel", "cython >= 0.29.31,<3", "grpcio[protobuf] ~= 1.57"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "lakesoul"
 version = "1.0.0b2"
@@ -31,25 +27,44 @@ dependencies = [
     "protobuf~=5.0",
 ]
 
+[optional-dependencies]
+torch = ["torch>=1.11.0,<2.5"]
+pandas = ["pandas>=1.4"]
+datasets = ["datasets>=2.14", "urllib3<2,>=1.21.1"]
+ray = ["ray>=2.7,<2.11.0"]
+pyspark = ["pyspark==3.3.1"]
+all = [ {include="all"} ]
+
+[dependency-groups]
+all = [
+    "torch>=1.11,<2.5",
+    "pandas>=1.4",
+    "datasets>=2.14",
+    "urllib3<2,>=1.21.1",
+    "ray>=2.7,<2.11.0",
+    "pyspark==3.3.1",
+]
+dev = [
+    "pytest>=8",
+    {include-group = "all"}
+]
+
 [project.urls]
 "Homepage" = "https://github.com/lakesoul-io/LakeSoul"
 "Bug Tracker" = "https://github.com/lakesoul-io/LakeSoul/issues"
 
+[build-system]
+requires = ["setuptools >= 62.1.0", "wheel", "cython >= 0.29.31,<3", "grpcio[protobuf] ~= 1.57","pyarrow==16.1.0"]
+build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
+
 where = ["python"]
 include = ["lakesoul*"]
 
-[project.optional-dependencies]
-torch = ["torch>=1.11"]
-pandas = ["pandas>=1.4"]
-datasets = ["datasets>=2.14", "urllib3<2,>=1.21.1"]
-ray = ["ray>=2.7"]
-all = [
-    "torch>=1.11",
-    "pandas>=1.4",
-    "datasets>=2.14",
-    "urllib3<2,>=1.21.1",
-    "ray>=2.7",
+
+[tool.pytest.ini_options]
+addopts = [
+    "--import-mode=importlib",
 ]
 
 [tool.cibuildwheel]
@@ -60,7 +75,7 @@ skip = ["cp36-*", "cp37-*", "cp311-*", "cp312-*", "pp*"]
 [tool.cibuildwheel.linux]
 before-build = "rm -rf {project}/cpp/build && {project}/cpp/compile.sh"
 repair-wheel-command = """\
-    auditwheel repair --plat manylinux_2_28_x86_64 \
+    auditwheel --verbose repair --plat manylinux_2_28_x86_64 \
                       --exclude libarrow_python.so \
                       --exclude libarrow_dataset.so.1601 \
                       --exclude libarrow_acero.so.1601 \

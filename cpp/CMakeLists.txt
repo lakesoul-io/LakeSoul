@@ -86,7 +86,7 @@ if(NOT EXISTS ${PYTHON_INCLUDE_DIR})
     message(FATAL_ERROR "Fail to find Python include dir")
 endif()
 
-# Find Cargo nightly
+# Find Cargo 
 find_program(Cargo_EXECUTABLE cargo)
 if(NOT Cargo_EXECUTABLE)
     message(FATAL_ERROR "Cargo not found")
@@ -98,54 +98,50 @@ execute_process(COMMAND ${Cargo_EXECUTABLE} --version
 if(NOT rc EQUAL 0)
     message(FATAL_ERROR "Fail to get Cargo version")
 endif()
-string(FIND "${cargo_version}" "-nightly" index)
-if(index EQUAL -1)
-    message(FATAL_ERROR "Cargo nightly required")
-endif()
 
 # Build liblakesoul_io_c.so
-if(NOT EXISTS ${PROJECT_SOURCE_DIR}/../rust/target/release/liblakesoul_io_c.so)
+if(NOT EXISTS ${PROJECT_SOURCE_DIR}/../rust/target/release/liblakesoul_io_c${CMAKE_SHARED_LIBRARY_SUFFIX})
     execute_process(COMMAND ${Cargo_EXECUTABLE} build -r
                     WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/../rust/lakesoul-io-c
                     RESULT_VARIABLE rc)
     if(NOT rc EQUAL 0)
-        message(FATAL_ERROR "Fail to build liblakesoul_io_c.so")
+        message(FATAL_ERROR "Fail to build liblakesoul_io_c${CMAKE_SHARED_LIBRARY_SUFFIX}")
     endif()
 endif()
 
 # Build liblakesoul_metadata_c.so
-if(NOT EXISTS ${PROJECT_SOURCE_DIR}/../rust/target/release/liblakesoul_metadata_c.so)
+if(NOT EXISTS ${PROJECT_SOURCE_DIR}/../rust/target/release/liblakesoul_metadata_c${CMAKE_SHARED_LIBRARY_SUFFIX})
     execute_process(COMMAND ${Cargo_EXECUTABLE} build -r
                     WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/../rust/lakesoul-metadata-c
                     RESULT_VARIABLE rc)
     if(NOT rc EQUAL 0)
-        message(FATAL_ERROR "Fail to build liblakesoul_metadata_c.so")
+        message(FATAL_ERROR "Fail to build liblakesoul_metadata_c${CMAKE_SHARED_LIBRARY_SUFFIX}")
     endif()
 endif()
 
 # Create CMake imported targets
 add_library(liblakesoul_io_c SHARED IMPORTED)
 set_target_properties(liblakesoul_io_c PROPERTIES
-    IMPORTED_LOCATION "${PROJECT_SOURCE_DIR}/../rust/target/release/liblakesoul_io_c.so"
+    IMPORTED_LOCATION "${PROJECT_SOURCE_DIR}/../rust/target/release/liblakesoul_io_c${CMAKE_SHARED_LIBRARY_SUFFIX}"
     INTERFACE_INCLUDE_DIRECTORIES "${PROJECT_SOURCE_DIR}/../rust/lakesoul-io-c"
     IMPORTED_NO_SONAME TRUE)
 
 add_library(libarrow SHARED IMPORTED)
 set_target_properties(libarrow PROPERTIES
-    IMPORTED_LOCATION "${PYARROW_DIR}/libarrow.so.${PYARROW_ABI_TAG}"
+    IMPORTED_LOCATION "${PYARROW_DIR}/libarrow${CMAKE_SHARED_LIBRARY_SUFFIX}.${PYARROW_ABI_TAG}"
     INTERFACE_INCLUDE_DIRECTORIES "${PYARROW_DIR}/include"
     INTERFACE_COMPILE_DEFINITIONS "_GLIBCXX_USE_CXX11_ABI=1")
 
 add_library(libarrow_dataset SHARED IMPORTED)
 set_target_properties(libarrow_dataset PROPERTIES
-    IMPORTED_LOCATION "${PYARROW_DIR}/libarrow_dataset.so.${PYARROW_ABI_TAG}"
+    IMPORTED_LOCATION "${PYARROW_DIR}/libarrow_dataset${CMAKE_SHARED_LIBRARY_SUFFIX}.${PYARROW_ABI_TAG}"
     INTERFACE_INCLUDE_DIRECTORIES "${PYARROW_DIR}/include"
     INTERFACE_COMPILE_DEFINITIONS "_GLIBCXX_USE_CXX11_ABI=1"
     INTERFACE_LINK_LIBRARIES "libarrow")
 
 add_library(libarrow_python SHARED IMPORTED)
 set_target_properties(libarrow_python PROPERTIES
-    IMPORTED_LOCATION "${PYARROW_DIR}/libarrow_python.so"
+    IMPORTED_LOCATION "${PYARROW_DIR}/libarrow_python${CMAKE_SHARED_LIBRARY_SUFFIX}"
     INTERFACE_INCLUDE_DIRECTORIES "${NUMPY_INCLUDE_DIR};${PYTHON_INCLUDE_DIR}"
     INTERFACE_LINK_LIBRARIES "libarrow;libarrow_dataset")
 

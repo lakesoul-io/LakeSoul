@@ -8,10 +8,6 @@ use clap::{Parser, builder::TypedValueParser};
 
 #[derive(Parser, Debug, Default)]
 pub struct CoreArgs {
-    /// LakeSoul Meta 文件路径
-    #[arg(long, default_value = "")]
-    pub lakesoul_home: String,
-
     /// LakeSoul 数据仓库前缀路径
     #[arg(long)]
     pub warehouse_prefix: Option<String>,
