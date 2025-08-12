@@ -46,6 +46,7 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
     public static String DISCARD_FILE_LIST_KEY = "discard_file";
     public static String COMPACT_DIR = "compactdir";
     public static String INCREMENTAL_FILE = "incremental_file";
+    public static Set<Integer> LOW_LEVEL_LIST = new HashSet<>(Arrays.asList(1, 2));
     private final Configuration conf;
     private final List<String> primaryKeys;
     private final List<String> rangeColumns;
@@ -69,6 +70,7 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
     private final long compactionReadFileMaxSize;
     private final int maxNumLevelLimit;
     private final long maxBytesForLevelBase;
+    private final long maxBytesForLowLevelMultiplier;
     private final long maxBytesForLevelMultiplier;
     private final int readFileNumLimit;
     private final long batchIncrementalFileSizeLimit;
@@ -122,6 +124,8 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
                 (int) LakeSoulSQLConf.MAX_NUM_LEVELS_LIMIT().defaultValue().get());
         this.maxBytesForLevelBase = DBUtil.parseMemoryExpression(conf.get(LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LEVEL_BASE().key(),
                 LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LEVEL_BASE().defaultValue().get()));
+        this.maxBytesForLowLevelMultiplier = conf.getInt(LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LOW_LEVEL_MULTIPLIER().key(),
+                (int) LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LOW_LEVEL_MULTIPLIER().defaultValue().get());
         this.maxBytesForLevelMultiplier = conf.getInt(LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LEVEL_MULTIPLIER().key(),
                 (int) LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LEVEL_MULTIPLIER().defaultValue().get());
 
@@ -245,10 +249,19 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
             levelFileSize += fileInfo.getFileSize();
             count++;
         }
-        boolean res = (levelFileSize >= (this.maxBytesForLevelBase * Math.pow(this.maxBytesForLevelMultiplier, level - 1)) || count >= this.compactLevelExistedFileNumLimit);
+	boolean res = count >= this.compactLevelExistedFileNumLimit;
+	long currentLevelMaxBytes = 0;
+	if(LOW_LEVEL_LIST.contains(level)) {
+	    currentLevelMaxBytes =  Math.round(this.maxBytesForLevelBase * Math.pow(this.maxBytesForLowLevelMultiplier, level - 1));	
+	}else {
+            int lowLevel = LOW_LEVEL_LIST.size();		
+            long lowLevelMaxBytes = Math.round(this.maxBytesForLevelBase * Math.pow(this.maxBytesForLowLevelMultiplier, lowLevel - 1));
+	    currentLevelMaxBytes = Math.round(lowLevelMaxBytes * Math.pow(this.maxBytesForLevelMultiplier, level - lowLevel ));		
+	}
+        res |= (levelFileSize >= currentLevelMaxBytes);		
         if (res) {
-            LOG.info("Task {}, Compact Level {}, Level File Size Limit {} MB, Now Total File Size {} MB, File Count {} ",
-                    taskId, level, (this.maxBytesForLevelBase * Math.pow(this.maxBytesForLevelMultiplier, level - 1)) / 1024.0 / 1024, levelFileSize / 1024.0 / 1024, count);
+            LOG.info("Task {}, Compact Level {}, Level File Size Limit {} MB, Now Total File Size {} MB, File Num {} ",
+                    taskId, level, currentLevelMaxBytes / 1024.0 / 1024, levelFileSize / 1024.0 / 1024, count);
         }
         return res;
     }
@@ -346,7 +359,7 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
                                 break;
                             }
                         }
-                        LOG.info("Task {}, Compacting incremental file", taskId);
+                        LOG.info("Task {}, Compacting incremental file {}", taskId, batchFileList);
                         initializeReader(batchFileList);
                         initializeWriter(String.format("%s/%s%d", this.tablePath, COMPACT_DIR, 1));
                         HashMap<String, List<FlushResult>> outFile = readAndWrite();
@@ -460,6 +473,7 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
             }
             rsMap.put(DISCARD_FILE_LIST_KEY, discardInfoList);
         }
+        LOG.info("discard_file_info {}", discardInfoList);
 
         return rsMap;
     }

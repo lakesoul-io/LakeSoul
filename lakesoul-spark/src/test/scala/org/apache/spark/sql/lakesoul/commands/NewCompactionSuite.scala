@@ -655,6 +655,7 @@ class NewCompactionSuite extends QueryTest
     withSQLConf(
       LakeSoulSQLConf.MAX_NUM_LEVELS_LIMIT.key -> "3",
       LakeSoulSQLConf.COMPACTION_MAX_LEVEL_FILE_NUM_LIMIT.key -> "3",
+      LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LOW_LEVEL_MULTIPLIER.key -> "2",
       LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LEVEL_MULTIPLIER.key -> "2",
       LakeSoulSQLConf.COMPACTION_LEVEL_FILE_MERGE_NUM_LIMIT.key -> "3") {
       withTempDir { tempDir =>

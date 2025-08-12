@@ -195,7 +195,17 @@ object LakeSoulSQLConf {
           |COMPACTION MAX BYTES FOR LEVEL BASE LIMIT. Default is 1GB.
         """.stripMargin)
       .stringConf
-      .createWithDefault("10GB")
+      .createWithDefault("100MB")
+
+   
+  val COMPACTION_MAX_BYTES_FOR_LOW_LEVEL_MULTIPLIER: ConfigEntry[Int] =
+    buildConf("compaction.max.bytes.for.low.level.multiplier")
+      .doc(
+        """
+          |COMPACTION MAX BYTES FOR LOW LEVEL(1,2) MULTIPLIER. Default is 5.
+        """.stripMargin)
+      .intConf
+      .createWithDefault(5)
 
   val COMPACTION_MAX_BYTES_FOR_LEVEL_MULTIPLIER: ConfigEntry[Int] =
     buildConf("compaction.max.bytes.for.level.multiplier")
