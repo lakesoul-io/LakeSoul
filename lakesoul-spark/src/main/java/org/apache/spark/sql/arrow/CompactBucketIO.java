@@ -35,6 +35,7 @@ import java.io.Serializable;
 import java.util.*;
 import java.util.stream.Collectors;
 
+
 import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_NON_PARTITION_TABLE_PART_DESC;
 
 public class CompactBucketIO implements AutoCloseable, Serializable {
@@ -43,8 +44,9 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
     private static final long serialVersionUID = -4118390797329510218L;
 
     public static String DISCARD_FILE_LIST_KEY = "discard_file";
-    public static String COMPACT_DIR = "compact_dir";
+    public static String COMPACT_DIR = "compactdir";
     public static String INCREMENTAL_FILE = "incremental_file";
+    public static Set<Integer> LOW_LEVEL_LIST = new HashSet<>(Arrays.asList(1, 2));
     private final Configuration conf;
     private final List<String> primaryKeys;
     private final List<String> rangeColumns;
@@ -61,10 +63,15 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
     private LakeSoulArrowReader lakesoulArrowReader;
     private Map<String, List<CompressDataFileInfo>> levelFileMap;
     private final String tablePath;
-    private final int compactLevel1ExistedFileNumberLimit;
-    private final long compactLevel1MergeFileSizeLimit;
-    private final int compactLevel1MergeFileNumLimit;
+    private final int compactLevel0ExistedFileNumLimit;
+    private final int compactLevelExistedFileNumLimit;
+    private final long compactLevelMergeFileSizeLimit;
+    private final int compactLevelMergeFileNumLimit;
     private final long compactionReadFileMaxSize;
+    private final int maxNumLevelLimit;
+    private final long maxBytesForLevelBase;
+    private final long maxBytesForLowLevelMultiplier;
+    private final long maxBytesForLevelMultiplier;
     private final int readFileNumLimit;
     private final long batchIncrementalFileSizeLimit;
     private final int batchSize;
@@ -99,16 +106,29 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
         this.batchSize = conf.getInt(SQLConf$.MODULE$.PARQUET_VECTORIZED_READER_BATCH_SIZE().key(), 2048);
         this.tablePath = tablePath;
 
-        this.compactLevel1ExistedFileNumberLimit = conf.getInt(LakeSoulSQLConf.COMPACTION_LEVEL1_FILE_NUM_LIMIT().key(),
-                (int) LakeSoulSQLConf.COMPACTION_LEVEL1_FILE_NUM_LIMIT().defaultValue().get());
-        this.compactLevel1MergeFileSizeLimit =
-                DBUtil.parseMemoryExpression(conf.get(LakeSoulSQLConf.COMPACTION_LEVEL1_FILE_MERGE_SIZE_LIMIT().key(),
-                        LakeSoulSQLConf.COMPACTION_LEVEL1_FILE_MERGE_SIZE_LIMIT().defaultValue().get()));
-        this.compactLevel1MergeFileNumLimit = conf.getInt(LakeSoulSQLConf.COMPACTION_LEVEL1_FILE_MERGE_NUM_LIMIT().key(),
-                (int) LakeSoulSQLConf.COMPACTION_LEVEL1_FILE_MERGE_NUM_LIMIT().defaultValue().get());
+        this.compactLevel0ExistedFileNumLimit = conf.getInt(LakeSoulSQLConf.COMPACTION_MAX_LEVEL0_FILE_NUM_LIMIT().key(),
+                (int) LakeSoulSQLConf.COMPACTION_MAX_LEVEL0_FILE_NUM_LIMIT().defaultValue().get());
+        this.compactLevelExistedFileNumLimit = conf.getInt(LakeSoulSQLConf.COMPACTION_MAX_LEVEL_FILE_NUM_LIMIT().key(),
+                (int) LakeSoulSQLConf.COMPACTION_MAX_LEVEL_FILE_NUM_LIMIT().defaultValue().get());
+
+        this.compactLevelMergeFileSizeLimit =
+                DBUtil.parseMemoryExpression(conf.get(LakeSoulSQLConf.COMPACTION_LEVEL_FILE_MERGE_SIZE_LIMIT().key(),
+                        LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE().defaultValue().get()));
+        this.compactLevelMergeFileNumLimit = conf.getInt(LakeSoulSQLConf.COMPACTION_LEVEL_FILE_MERGE_NUM_LIMIT().key(),
+                (int) LakeSoulSQLConf.COMPACTION_LEVEL_FILE_MERGE_NUM_LIMIT().defaultValue().get());
         this.compactionReadFileMaxSize =
                 DBUtil.parseMemoryExpression(conf.get(LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE().key(),
                         LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE().defaultValue().get()));
+
+        this.maxNumLevelLimit = conf.getInt(LakeSoulSQLConf.MAX_NUM_LEVELS_LIMIT().key(),
+                (int) LakeSoulSQLConf.MAX_NUM_LEVELS_LIMIT().defaultValue().get());
+        this.maxBytesForLevelBase = DBUtil.parseMemoryExpression(conf.get(LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LEVEL_BASE().key(),
+                LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LEVEL_BASE().defaultValue().get()));
+        this.maxBytesForLowLevelMultiplier = conf.getInt(LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LOW_LEVEL_MULTIPLIER().key(),
+                (int) LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LOW_LEVEL_MULTIPLIER().defaultValue().get());
+        this.maxBytesForLevelMultiplier = conf.getInt(LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LEVEL_MULTIPLIER().key(),
+                (int) LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LEVEL_MULTIPLIER().defaultValue().get());
+
 
         this.readFileNumLimit = readFileNumLimit;
         this.batchIncrementalFileSizeLimit = Math.min(batchIncrementalFileSizeLimit, compactionReadFileMaxSize);
@@ -202,7 +222,9 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
         }
         for (CompressDataFileInfo fileInfo : fileList) {
             if (fileInfo.getFilePath().contains(COMPACT_DIR)) {
-                this.levelFileMap.computeIfAbsent(COMPACT_DIR, COMPACT_FILE -> new ArrayList<>()).add(fileInfo);
+                int index = fileInfo.getFilePath().indexOf(COMPACT_DIR);
+                String levelPath = fileInfo.getFilePath().substring(index, index + COMPACT_DIR.length() + 1);
+                this.levelFileMap.computeIfAbsent(levelPath, COMPACT_FILE -> new ArrayList<>()).add(fileInfo);
             } else {
                 this.levelFileMap.computeIfAbsent(INCREMENTAL_FILE, INCREMENTAL_FILE -> new ArrayList<>())
                         .add(fileInfo);
@@ -212,9 +234,74 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
                 taskId, tablePath, fileList, levelFileMap);
     }
 
+    private List<CompressDataFileInfo> getCompactFileListByLevel(int level) {
+        return this.levelFileMap.get(COMPACT_DIR + level);
+    }
+
+    private boolean needCompaction(int level) {
+        List<CompressDataFileInfo> fileInfoList = getCompactFileListByLevel(level);
+        if (fileInfoList == null) {
+            return false;
+        }
+        long levelFileSize = 0;
+        int count = 0;
+        for (CompressDataFileInfo fileInfo : fileInfoList) {
+            levelFileSize += fileInfo.getFileSize();
+            count++;
+        }
+	boolean res = count >= this.compactLevelExistedFileNumLimit;
+	long currentLevelMaxBytes = 0;
+	if(LOW_LEVEL_LIST.contains(level)) {
+	    currentLevelMaxBytes =  Math.round(this.maxBytesForLevelBase * Math.pow(this.maxBytesForLowLevelMultiplier, level - 1));	
+	}else {
+            int lowLevel = LOW_LEVEL_LIST.size();		
+            long lowLevelMaxBytes = Math.round(this.maxBytesForLevelBase * Math.pow(this.maxBytesForLowLevelMultiplier, lowLevel - 1));
+	    currentLevelMaxBytes = Math.round(lowLevelMaxBytes * Math.pow(this.maxBytesForLevelMultiplier, level - lowLevel ));		
+	}
+        res |= (levelFileSize >= currentLevelMaxBytes);		
+        if (res) {
+            LOG.info("Task {}, Compact Level {}, Level File Size Limit {} MB, Now Total File Size {} MB, File Num {} ",
+                    taskId, level, currentLevelMaxBytes / 1024.0 / 1024, levelFileSize / 1024.0 / 1024, count);
+        }
+        return res;
+    }
+
+    private CompressDataFileInfo moveFileToLevel(CompressDataFileInfo fileInfo, int sourceLevel, int pickLevel) throws Exception {
+
+        long fileSize = fileInfo.getFileSize();
+        String fileExistCols = fileInfo.getFileExistCols();
+        String sourcePath = fileInfo.getFilePath();
+        String prefixPath = String.format("%s/%s%d", this.tablePath, COMPACT_DIR, sourceLevel);
+        String targetDir = String.format("%s/%s%d", this.tablePath, COMPACT_DIR, pickLevel);
+        if (!this.metaPartitionExpr.equals(LAKESOUL_NON_PARTITION_TABLE_PART_DESC)) {
+            prefixPath += "/";
+            targetDir += "/";
+            prefixPath += metaPartitionExpr.replace(",", "/");
+            targetDir += metaPartitionExpr.replace(",", "/");
+        }
+        if (prefixPath.charAt(prefixPath.length() - 1) != '/') {
+            prefixPath += "/";
+        }
+
+        String fileName = sourcePath.substring(prefixPath.length());
+        String targetPath = String.format("%s/%s", targetDir, fileName);
+
+        LOG.info("Task {}, MOVE Level {} fileName {} to Level {}", taskId, sourceLevel, fileName, pickLevel);
+        Path path = new Path(targetDir);
+        FileSystem fileSystem = path.getFileSystem(conf);
+        if (!fileSystem.exists(path)) {
+            fileSystem.mkdirs(path);
+            LOG.info("Task {}, targetDir not exists, create dir {}", taskId, targetDir);
+        }
+        fileSystem.rename(new Path(fileInfo.getFilePath()), new Path(targetPath));
+        FileStatus fileStatus = fileSystem.getFileStatus(new Path(targetPath));
+        return new CompressDataFileInfo(targetPath, fileSize, fileExistCols, fileStatus.getModificationTime());
+    }
+
     public HashMap<String, List<CompressDataFileInfo>> startCompactTask() throws Exception {
         List<CompressDataFileInfo> resultList = new ArrayList<>();
         HashMap<String, List<CompressDataFileInfo>> rsMap = new HashMap<>();
+        List<CompressDataFileInfo> discardInfoList = new ArrayList<>();
         LOG.info("Task {}, Starting compact task, fileInfo {}", taskId, this.fileInfo);
         if (this.tableHashBucketNumChanged) {
             List<CompressDataFileInfo> fileList = this.fileInfo;
@@ -232,7 +319,7 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
                     }
                 }
                 initializeReader(batchFileList);
-                initializeWriter(String.format("%s/%s", this.tablePath, COMPACT_DIR));
+                initializeWriter(String.format("%s/%s%d", this.tablePath, COMPACT_DIR, 1));
                 HashMap<String, List<FlushResult>> outFile = readAndWrite();
                 this.close();
                 if (outFile == null || outFile.isEmpty()) {
@@ -247,95 +334,147 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
                 }
             }
             rsMap.put(this.metaPartitionExpr, resultList);
-            if (levelFileMap.containsKey(COMPACT_DIR)) {
-                rsMap.put(DISCARD_FILE_LIST_KEY, levelFileMap.get(COMPACT_DIR));
-            }
-        } else {
-            if (levelFileMap.containsKey(INCREMENTAL_FILE)) {
-                List<CompressDataFileInfo> totalIncreFileList = levelFileMap.get(INCREMENTAL_FILE);
-                int index = 0;
-                while (index < totalIncreFileList.size()) {
-                    long batchFileSize = 0;
-                    List<CompressDataFileInfo> batchFileList = new ArrayList<>();
-                    while (index < totalIncreFileList.size() && batchFileList.size() < readFileNumLimit) {
-                        CompressDataFileInfo curFile = totalIncreFileList.get(index);
-                        batchFileList.add(curFile);
-                        batchFileSize += curFile.getFileSize();
-                        index++;
-                        if (batchFileSize > batchIncrementalFileSizeLimit) {
-                            break;
-                        }
-                    }
-                    LOG.info("Task {}, Compacting incremental file", taskId);
-                    initializeReader(batchFileList);
-                    initializeWriter(String.format("%s/%s", this.tablePath, COMPACT_DIR));
-                    HashMap<String, List<FlushResult>> outFile = readAndWrite();
-                    this.close();
-                    if (outFile == null || outFile.isEmpty()) {
-                        LOG.info("incremental level compaction task: read file list is {}", batchFileList);
-                        LOG.info("incremental level compaction task: after compaction out file info: {}", outFile);
-                        throw new IllegalStateException(
-                                "incremental level compaction task: after compaction, without out file info, read file list is: " +
-                                        batchFileList);
-                    }
-                    for (Map.Entry<String, List<FlushResult>> entry : outFile.entrySet()) {
-                        levelFileMap.computeIfAbsent(COMPACT_DIR, COMPACT_DIR -> new ArrayList<>())
-                                .addAll(changeFlushFileToCompressDataFileInfo(entry.getValue()));
-                    }
+            for (int level = this.maxNumLevelLimit; level >= 1; --level) {
+                if (levelFileMap.containsKey(COMPACT_DIR + level)) {
+                    rsMap.put(DISCARD_FILE_LIST_KEY, levelFileMap.get(COMPACT_DIR + level));
                 }
             }
-            List<CompressDataFileInfo> oriCompactFileList = levelFileMap.get(COMPACT_DIR);
-            LOG.info("Task {}, Start to compact existed compact file {}, num {}",
-                    taskId, oriCompactFileList, oriCompactFileList.size());
-            List<CompressDataFileInfo> discardFileList = new ArrayList<>();
-            if (oriCompactFileList.size() >= compactLevel1ExistedFileNumberLimit) {
-                int index = 0;
-                long fileSize = 0L;
-                List<CompressDataFileInfo> curMergeList = new ArrayList<>();
-                while (index < oriCompactFileList.size()) {
-                    CompressDataFileInfo curFile = oriCompactFileList.get(index);
-                    if (curFile.getFileSize() < compactionReadFileMaxSize ||
-                            !curMergeList.isEmpty()) {
-                        fileSize += curFile.getFileSize();
-                        curMergeList.add(curFile);
-                        discardFileList.add(curFile);
-                    } else {
-                        resultList.add(curFile);
-                    }
-
-                    if (curMergeList.size() >= this.compactLevel1MergeFileNumLimit||
-                        fileSize >= this.compactLevel1MergeFileSizeLimit) {
-                        LOG.info("Task {}, Compacting existed compact files, curMergeList {}, size {}",
-                                taskId, curMergeList, fileSize);
-                        initializeReader(curMergeList);
-                        initializeWriter(String.format("%s/%s", this.tablePath, COMPACT_DIR));
+        } else {
+            boolean L0Compacted = false;
+            if (levelFileMap.containsKey(INCREMENTAL_FILE)) {
+                List<CompressDataFileInfo> totalIncreFileList = levelFileMap.get(INCREMENTAL_FILE);
+                if (totalIncreFileList.size() >= this.compactLevel0ExistedFileNumLimit) {
+                    L0Compacted = true;
+                    int index = 0;
+                    while (index < totalIncreFileList.size()) {
+                        long batchFileSize = 0;
+                        List<CompressDataFileInfo> batchFileList = new ArrayList<>();
+                        while (index < totalIncreFileList.size() && batchFileList.size() < readFileNumLimit) {
+                            CompressDataFileInfo curFile = totalIncreFileList.get(index);
+                            batchFileList.add(curFile);
+                            discardInfoList.add(curFile);
+                            batchFileSize += curFile.getFileSize();
+                            index++;
+                            if (batchFileSize > batchIncrementalFileSizeLimit) {
+                                break;
+                            }
+                        }
+                        LOG.info("Task {}, Compacting incremental file {}", taskId, batchFileList);
+                        initializeReader(batchFileList);
+                        initializeWriter(String.format("%s/%s%d", this.tablePath, COMPACT_DIR, 1));
                         HashMap<String, List<FlushResult>> outFile = readAndWrite();
                         this.close();
                         if (outFile == null || outFile.isEmpty()) {
-                            LOG.info("COMPACT_DIR level compaction task: read file list is {}", curMergeList);
-                            LOG.info("COMPACT_DIR level compaction task: after compaction out file info: {}", outFile);
+                            LOG.info("incremental level compaction task: read file list is {}", batchFileList);
+                            LOG.info("incremental level compaction task: after compaction out file info: {}", outFile);
                             throw new IllegalStateException(
-                                    "COMPACT_DIR level compaction task: after compaction, without out file info, read file list is: " +
-                                            curMergeList);
+                                    "incremental level compaction task: after compaction, without out file info, read file list is: " +
+                                            batchFileList);
                         }
                         for (Map.Entry<String, List<FlushResult>> entry : outFile.entrySet()) {
-                            resultList.addAll(changeFlushFileToCompressDataFileInfo(entry.getValue()));
+                            levelFileMap.computeIfAbsent(COMPACT_DIR + 1, COMPACT_DIR -> new ArrayList<>())
+                                    .addAll(changeFlushFileToCompressDataFileInfo(entry.getValue()));
                         }
-                        curMergeList.clear();
-                        fileSize = 0L;
                     }
-                    index++;
                 }
-                if (!curMergeList.isEmpty()) {
-                    resultList.addAll(curMergeList);
-                    discardFileList.removeAll(curMergeList);
-                }
-                rsMap.put(this.metaPartitionExpr, resultList);
-                rsMap.put(DISCARD_FILE_LIST_KEY, discardFileList);
-            } else {
-                rsMap.put(this.metaPartitionExpr, oriCompactFileList);
             }
+            Map<Integer, ArrayList<CompressDataFileInfo>> levelMap = new HashMap<>();
+            HashSet<Integer> compactedList = new HashSet<Integer>();
+            for (int level = 1; level <= this.maxNumLevelLimit; ++level) {
+                List<CompressDataFileInfo> discardFileList = new ArrayList<>();
+                if (needCompaction(level)) {
+                    compactedList.add(level);
+                    List<CompressDataFileInfo> oriCompactFileList = getCompactFileListByLevel(level);
+                    int index = 0;
+                    long fileSize = 0L;
+                    List<CompressDataFileInfo> curMergeList = new ArrayList<>();
+                    while (index < oriCompactFileList.size()) {
+                        CompressDataFileInfo curFile = oriCompactFileList.get(index);
+                        if (curFile.getFileSize() < compactionReadFileMaxSize ||
+                                !curMergeList.isEmpty()) {
+                            fileSize += curFile.getFileSize();
+                            curMergeList.add(curFile);
+                            discardFileList.add(curFile);
+                        } else {
+                            int pickLevel = ((level != this.maxNumLevelLimit) ? level + 1 : this.maxNumLevelLimit);
+                            if (level != this.maxNumLevelLimit) {
+                                curFile = moveFileToLevel(curFile, level, pickLevel);
+                                levelFileMap.computeIfAbsent(COMPACT_DIR + pickLevel, COMPACT_DIR -> new ArrayList<>()).add(curFile);
+                            } else {
+                                levelMap.computeIfAbsent(level, COMPACT_DIR -> new ArrayList<>()).add(curFile);
+                            }
+                        }
+                        if (curMergeList.size() >= compactLevelMergeFileNumLimit || fileSize >= this.compactLevelMergeFileSizeLimit) {
+                            LOG.info("Task {}, Compacting Level {} existed compact files, curMergeList {}, size {}",
+                                    taskId, level, curMergeList, fileSize);
+                            int pickLevel = ((level != this.maxNumLevelLimit) ? level + 1 : this.maxNumLevelLimit);
+                            
+			    if(curMergeList.size() != 1) {
+			    	initializeReader(curMergeList);
+                            	initializeWriter(String.format("%s/%s%d", this.tablePath, COMPACT_DIR, pickLevel));
+                            	HashMap<String, List<FlushResult>> outFile = readAndWrite();
+                            	this.close();
+                            	if (outFile == null || outFile.isEmpty()) {
+                                	LOG.info("COMPACT_DIR level compaction task: read file list is {}", curMergeList);
+                                	LOG.info("COMPACT_DIR level compaction task: after compaction out file info: {}", outFile);
+                                	throw new IllegalStateException(
+                                        	"COMPACT_DIR level compaction task: after compaction, without out file info, read file list is: " +
+                                                	curMergeList);
+                            	}
+
+                            	for (Map.Entry<String, List<FlushResult>> entry : outFile.entrySet()) {
+                                	if (level == this.maxNumLevelLimit) {
+                                    		levelMap.computeIfAbsent(pickLevel, COMPACT_DIR -> new ArrayList<>())
+                                            		.addAll(changeFlushFileToCompressDataFileInfo(entry.getValue()));
+                                	} else {
+                                    		levelFileMap.computeIfAbsent(COMPACT_DIR + pickLevel, COMPACT_DIR -> new ArrayList<>())
+                                            		.addAll(changeFlushFileToCompressDataFileInfo(entry.getValue()));
+                                	}
+                            	}
+			    }else {//move 
+				if (level == this.maxNumLevelLimit) {
+                                    levelMap.computeIfAbsent(level, COMPACT_DIR -> new ArrayList<>()).add(curFile);
+                                } else {
+                                    discardInfoList.remove(curFile);	
+                                    curFile = moveFileToLevel(curFile, level, pickLevel);
+                                    levelFileMap.computeIfAbsent(COMPACT_DIR + pickLevel, COMPACT_DIR -> new ArrayList<>()).add(curFile);
+                                }
+
+			    }
+                            curMergeList.clear();
+                            fileSize = 0L;
+                        }
+                        index++;
+                    }
+                    if (!curMergeList.isEmpty()) {
+                        levelMap.computeIfAbsent(level, value -> new ArrayList<>()).addAll(curMergeList);
+                        discardFileList.removeAll(curMergeList);
+                    }
+                    discardInfoList.addAll(discardFileList);
+                }
+            }
+
+            for (int level = this.maxNumLevelLimit; level >= 1; --level) {
+                if (compactedList.contains(level)) {
+                    List<CompressDataFileInfo> compactedFileList = levelMap.get(level);
+                    if (compactedFileList != null) {
+                        rsMap.computeIfAbsent(this.metaPartitionExpr, value -> new ArrayList<>()).addAll(compactedFileList);
+                    }
+                } else {
+                    List<CompressDataFileInfo> oriCompactFileList = getCompactFileListByLevel(level);
+                    if (oriCompactFileList != null) {
+                        rsMap.computeIfAbsent(this.metaPartitionExpr, value -> new ArrayList<>()).addAll(oriCompactFileList);
+                    }
+                }
+            }
+            if (!L0Compacted && levelFileMap.containsKey(INCREMENTAL_FILE)) {
+                List<CompressDataFileInfo> totalIncreFileList = levelFileMap.get(INCREMENTAL_FILE);
+                rsMap.computeIfAbsent(this.metaPartitionExpr, value -> new ArrayList<>()).addAll(totalIncreFileList);
+            }
+            rsMap.put(DISCARD_FILE_LIST_KEY, discardInfoList);
         }
+        LOG.info("discard_file_info {}", discardInfoList);
+
         return rsMap;
     }
 
