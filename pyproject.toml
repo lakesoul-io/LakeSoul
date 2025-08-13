@@ -1,9 +1,9 @@
 [build-system]
 requires = [
-"setuptools > = 62.1.0",
-"wheel",
-"cython > = 0.29.31,<3",
-"grpcio[protobuf] ~ = 1.57"
+    "setuptools>=62.1.0",
+    "wheel",
+    "cython>=0.29.31,<3",
+    "grpcio[protobuf]~=1.57",
 ]
 build-backend = "setuptools.build_meta"
 
@@ -14,16 +14,16 @@ version = "1.0.0b2"
 description = "Python APIs for using LakeSoul"
 readme = "README.md"
 requires-python = ">=3.8"
-keywords = [ "lakesoul", "bigdata", "ai" ]
+keywords = ["lakesoul", "bigdata", "ai"]
 classifiers = [
-"Development Status :: 5 - Production/Stable",
-"Intended Audience :: Developers",
-"License :: OSI Approved :: Apache Software License",
-"Operating System :: OS Independent",
-"Topic :: Software Development :: Libraries :: Python Modules",
-"Programming Language :: Python :: 3"
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Programming Language :: Python :: 3",
 ]
-dependencies = [ "pyarrow==16.1.0", "numpy<2.0", "protobuf~=5.0" ]
+dependencies = ["pyarrow==16.1.0", "numpy<2.0", "protobuf~=5.0"]
 
 
 [[project.authors]]
@@ -41,28 +41,28 @@ Homepage = "https://github.com/lakesoul-io/LakeSoul"
 
 
 [project.optional-dependencies]
-torch = [ "torch>=1.11" ]
-pandas = [ "pandas>=1.4" ]
-datasets = [ "datasets>=2.14", "urllib3<2,>=1.21.1" ]
-ray = [ "ray>=2.7" ]
+torch = ["torch>=1.11"]
+pandas = ["pandas>=1.4"]
+datasets = ["datasets>=2.14", "urllib3<2,>=1.21.1"]
+ray = ["ray>=2.7"]
 all = [
-"torch> = 1.11",
-"pandas> = 1.4",
-"datasets> = 2.14",
-"urllib3<2,> = 1.21.1",
-"ray> = 2.7"
+    "torch>=1.11",
+    "pandas>=1.4",
+    "datasets>=2.14",
+    "urllib3<2,>=1.21.1",
+    "ray>=2.7",
 ]
 
 
 [tool.setuptools.packages.find]
-where = [ "python" ]
-include = [ "lakesoul*" ]
+where = ["python"]
+include = ["lakesoul*"]
 
 
 [tool.cibuildwheel]
 manylinux-x86_64-image = "dmetasoul/lakesoul-python-wheel-build-env-manylinux_2_28:v1.0.0"
 build = "*-manylinux_x86_64"
-skip = [ "cp36-*", "cp37-*", "cp311-*", "cp312-*", "pp*" ]
+skip = ["cp36-*", "cp37-*", "cp311-*", "cp312-*", "pp*"]
 
 
 [tool.cibuildwheel.linux]
@@ -71,4 +71,4 @@ repair-wheel-command = "auditwheel repair --plat manylinux_2_28_x86_64 --exclude
 
 
 [tool.uv.workspace]
-exclude = [ "script/lakesoul-e2e/e2e" ]
+exclude = ["script/lakesoul-e2e/e2e"]
