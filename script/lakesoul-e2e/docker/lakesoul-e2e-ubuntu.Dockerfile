@@ -32,7 +32,7 @@ ENV UV_PYTHON_INSTALL_MIRROR="https://ghfast.top/https://github.com/indygreg/pyt
 COPY  opt/protoc-25.7-linux-x86_64.zip /opt/protoc25.zip
 RUN unzip /opt/protoc25.zip -d /opt/protoc25
 ENV PATH=/opt/protoc25/bin:$PATH
-COPY --chown=lakesoul:lakesoul settings.xml $LAKESOUL_HOME/.m2/settings.xml
+COPY --chown=lakesoul:lakesoul sysconf/settings.xml $LAKESOUL_HOME/.m2/settings.xml
 ENV RUSTUP_DIST_SERVER="https://rsproxy.cn"
 ENV RUSTUP_UPDATE_ROOT="https://rsproxy.cn/rustup"
 # flink
