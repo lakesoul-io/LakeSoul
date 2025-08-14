@@ -8,7 +8,6 @@ Global Variable definition
 
 import os
 from pathlib import Path
-import boto3
 import opendal
 
 VERSION = os.getenv("LAKESOUL_VERSION", None)
@@ -52,12 +51,6 @@ END_POINT = os.getenv("AWS_ENDPOINT", None)
 SECRET_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", None)
 ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", None)
 BUCKET = os.getenv("AWS_BUCKET", None)
-S3_CLIENT = boto3.client(
-    "s3",
-    aws_access_key_id=ACCESS_KEY_ID,
-    aws_secret_access_key=SECRET_KEY,
-    endpoint_url=END_POINT,
-)
 S3_OPERATOR = opendal.Operator(
     "s3",
     bucket=BUCKET,
