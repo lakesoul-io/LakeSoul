@@ -5,8 +5,12 @@
 [project]
 name = "lakesoul"
 version = "1.0.0b2"
+authors = [
+  { name="LakeSoul Team", email="lakesoul-technical-discuss@lists.lfaidata.foundation" },
+]
 description = "Python APIs for using LakeSoul"
 readme = "README.md"
+license = { text="Apache-2.0" }
 requires-python = ">=3.8"
 keywords = ["lakesoul", "bigdata", "ai"]
 classifiers = [
@@ -17,17 +21,11 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Programming Language :: Python :: 3",
 ]
-dependencies = ["pyarrow==16.1.0", "numpy<2.0", "protobuf~=5.0"]
-
-
-[[project.authors]]
-name = "LakeSoul Team"
-email = "lakesoul-technical-discuss@lists.lfaidata.foundation"
-
-
-[project.license]
-text = "Apache-2.0"
-
+dependencies = [
+    "pyarrow==16.1.0",
+    "numpy<2.0",
+    "protobuf~=5.0",
+]
 
 [optional-dependencies]
 torch = ["torch>=1.11.0,<2.5"]
@@ -52,7 +50,7 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/lakesoul-io/LakeSoul"
+"Homepage" = "https://github.com/lakesoul-io/LakeSoul"
 "Bug Tracker" = "https://github.com/lakesoul-io/LakeSoul/issues"
 
 [build-system]
@@ -69,17 +67,10 @@ addopts = [
     "--import-mode=importlib",
 ]
 
-
-[tool.setuptools.packages.find]
-where = ["python"]
-include = ["lakesoul*"]
-
-
 [tool.cibuildwheel]
 manylinux-x86_64-image = "dmetasoul/lakesoul-python-wheel-build-env-manylinux_2_28:v1.0.0"
 build = "*-manylinux_x86_64"
 skip = ["cp36-*", "cp37-*", "cp311-*", "cp312-*", "pp*"]
-
 
 [tool.cibuildwheel.linux]
 before-build = "rm -rf {project}/cpp/build && {project}/cpp/compile.sh"
@@ -92,6 +83,5 @@ repair-wheel-command = """\
                       --exclude libarrow.so.1601 \
                       -w {dest_dir} {wheel}\
     """
-
 [tool.uv.workspace]
-exclude = ["script/lakesoul-e2e/e2e"]
+exclude = ['script/lakesoul-e2e/e2e']
