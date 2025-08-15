@@ -3488,6 +3488,7 @@ dependencies = [
  "datafusion",
  "futures",
  "lakesoul-datafusion",
+ "rand 0.9.2",
  "rustyline",
  "tokio",
  "tracing",

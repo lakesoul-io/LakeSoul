@@ -109,6 +109,7 @@ class LakeSoulTable(object):
 
     def compaction(self, condition=None, force=None, mergeOperatorInfo=None):
         """
+        Deprecated
         Compaction delta files for the table.
         Example::
             starTable.compaction(
@@ -314,5 +315,6 @@ class LakeSoulTable(object):
 
     @classmethod
     def registerMergeOperator(cls, sparkSession, class_name, fun_name):
+        # deprecated
         return sparkSession._sc._jvm.com.dmetasoul.lakesoul.tables.LakeSoulTable \
             .registerMergeOperator(sparkSession._jsparkSession, class_name, fun_name)

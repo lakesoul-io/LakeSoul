@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+.pytest_cache
 /target/
 /build/
 /.idea/
@@ -32,7 +33,9 @@ __pycache__/
 /python/lakesoul/metadata/generated/entity_pb2_grpc.py
 /python/build/
 /python/lakesoul.egg-info/
+/python/lakesoul/metadata/lib/liblakesoul_metadata_c.so
 *.whl
 /wheelhouse/
 /rust/.idea
+**/.venv/
 .flattened-pom.xml
