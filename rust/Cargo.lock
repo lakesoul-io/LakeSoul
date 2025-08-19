@@ -3669,6 +3669,7 @@ dependencies = [
  "bytes",
  "cached",
  "chrono",
+ "jsonwebtoken",
  "md5",
  "num_enum",
  "postgres",
