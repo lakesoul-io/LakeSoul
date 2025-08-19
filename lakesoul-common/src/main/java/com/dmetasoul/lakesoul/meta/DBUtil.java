@@ -16,8 +16,11 @@ import org.apache.commons.lang3.StringUtils;
 import java.io.IOException;
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -397,4 +400,25 @@ public class DBUtil {
         return 0;
     }
 
+    /**
+     * Generate secret from username and password
+     * 
+     * Reference:
+     * https://github.com/lakesoul-io/LakeSoul/blob/main/rust/lakesoul-metadata/src/metadata_client.rs#L115
+     */
+    public static String generateSecret(String username, String password) {
+        String pattern = "!@" + username + "#$" + password + "&*";
+        try {
+            MessageDigest md = MessageDigest.getInstance("MD5");
+            byte[] digest = md.digest(pattern.getBytes(StandardCharsets.UTF_8));
+
+            StringBuilder hexString = new StringBuilder();
+            for (byte b : digest) {
+                hexString.append(String.format("%02x", b));
+            }
+            return hexString.toString();
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException("MD5 algorithm not available", e);
+        }
+    }
 }
