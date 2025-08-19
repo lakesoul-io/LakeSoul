@@ -11,7 +11,8 @@ use arrow_flight::{
 use assert_cmd::cargo::CommandCargoExt;
 use core::panic;
 use futures::{Stream, StreamExt};
-use lakesoul_flight::{Claims, TokenServerClient};
+use lakesoul_flight::TokenServerClient;
+use lakesoul_metadata::Claims;
 use std::{
     collections::HashMap,
     pin::Pin,
