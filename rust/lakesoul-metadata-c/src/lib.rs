@@ -16,7 +16,9 @@ use std::ptr::{NonNull, null, null_mut};
 
 use lakesoul_metadata::error::LakeSoulMetaDataError;
 use lakesoul_metadata::transfusion::SplitDesc;
-use lakesoul_metadata::{Builder, MetaDataClient, PooledClient, Runtime};
+use lakesoul_metadata::{
+    Builder, Claims, JwtServer, MetaDataClient, PooledClient, Runtime,
+};
 use prost::Message;
 use prost::bytes::BufMut;
 use proto::proto::entity;
@@ -418,6 +420,93 @@ pub extern "C" fn free_lakesoul_metadata_client(
     client: NonNull<CResult<MetaDataClient>>,
 ) {
     from_nonnull(client).free::<MetaDataClient>();
+}
+
+/// Encode the token from `Claims`.
+///
+/// # Parameters
+/// - `callback`: The callback function to call.
+///   - When the first parameter is `""`, the second parameter is the err string.
+///   - When the first parameter is not `""`, it represents the token string and the second parameter is `null`.
+/// - `claims_json`: The claims json string.
+/// - `secret`: The secret string.
+#[unsafe(no_mangle)]
+pub extern "C" fn encode_token_from_claims(
+    callback: extern "C" fn(*const c_char, *const c_char),
+    claims_json: *const c_char,
+    secret: *const c_char,
+) {
+    let claims_json_str = c_char2str(claims_json);
+    let secret_str = c_char2str(secret);
+
+    let claims: Claims = match serde_json::from_str(claims_json_str) {
+        Ok(c) => c,
+        Err(e) => {
+            let status = CString::new("").unwrap().into_raw();
+            let err = CString::new(e.to_string().as_str()).unwrap().into_raw();
+            call_result_callback(callback, status, err);
+            // release `status`, and the `err` has been released by the `call_result_callback`
+            unsafe {
+                let _ = CString::from_raw(status);
+            }
+            return;
+        }
+    };
+
+    let (result, err): (*mut c_char, *const c_char) =
+        match JwtServer::new(secret_str).create_token(&claims) {
+            Ok(token) => (CString::new(token).unwrap().into_raw(), null()),
+            Err(e) => (
+                CString::new("").unwrap().into_raw(),
+                CString::new(e.to_string().as_str()).unwrap().into_raw(),
+            ),
+        };
+
+    call_result_callback(callback, result, err);
+
+    // release `result`, and the `err` has been released by the `call_result_callback`
+    unsafe {
+        let _ = CString::from_raw(result);
+    }
+}
+
+/// Decode the token to `Claims`.
+///
+/// # Parameters
+/// - `callback`: The callback function to call.
+///   - When the first parameter is `""`, the second parameter is the err string.
+///   - When the first parameter is not `""`, it represents the claims json string and the second parameter is `null`.
+/// - `token`: The token string.
+/// - `secret`: The secret string.
+#[unsafe(no_mangle)]
+pub extern "C" fn decode_token_to_claims(
+    callback: extern "C" fn(*const c_char, *const c_char),
+    token: *const c_char,
+    secret: *const c_char,
+) {
+    let token_str = c_char2str(token);
+    let secret_str = c_char2str(secret);
+
+    let (result, err): (*mut c_char, *const c_char) =
+        match JwtServer::new(secret_str).decode_token(token_str) {
+            Ok(claims) => (
+                CString::new(serde_json::to_string(&claims).unwrap())
+                    .unwrap()
+                    .into_raw(),
+                null(),
+            ),
+            Err(e) => (
+                CString::new("").unwrap().into_raw(),
+                CString::new(e.to_string().as_str()).unwrap().into_raw(),
+            ),
+        };
+
+    call_result_callback(callback, result, err);
+
+    // release `result`, and the `err` has been released by the `call_result_callback`
+    unsafe {
+        let _ = CString::from_raw(result);
+    }
 }
 
 /// # Safety
