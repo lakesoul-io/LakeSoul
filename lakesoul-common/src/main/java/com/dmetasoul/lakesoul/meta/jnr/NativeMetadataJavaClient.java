@@ -7,6 +7,7 @@ import com.alibaba.fastjson.JSON;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.DataBaseProperty;
 import com.dmetasoul.lakesoul.meta.entity.JniWrapper;
+import com.dmetasoul.lakesoul.meta.security.Claims;
 import com.google.protobuf.InvalidProtocolBufferException;
 import jnr.ffi.ObjectReferenceManager;
 import jnr.ffi.Pointer;
@@ -564,6 +565,52 @@ public class NativeMetadataJavaClient implements AutoCloseable {
             throw new RuntimeException(e);
         } finally {
             unlockReadLock();
+        }
+    }
+
+    public String encodeTokenFromClaims(Claims claims) {
+        String secret = DBUtil.generateSecret(DBUtil.getDBInfo().getUsername(), DBUtil.getDBInfo().getPassword());
+        String claimsJson = JSON.toJSONString(claims);
+        final CompletableFuture<String> future = new CompletableFuture<>();
+        getLibLakeSoulMetaData().encode_token_from_claims(
+                new ReferencedStringCallback((result, msg) -> {
+                    if (msg != null) {
+                        System.err.println(msg);
+                    }
+                    future.complete(result);
+                }, getStringCallbackObjectReferenceManager()),
+                claimsJson,
+                secret);
+        try {
+            return future.get(timeout, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException | ExecutionException e) {
+            throw new RuntimeException(e);
+        } catch (TimeoutException e) {
+            LOG.error("Encode token from Claims timeout");
+            throw new RuntimeException(e);
+        }
+    }
+
+    public Claims decodeTokenToClaims(String token) {
+        String secret = DBUtil.generateSecret(DBUtil.getDBInfo().getUsername(), DBUtil.getDBInfo().getPassword());
+        final CompletableFuture<String> future = new CompletableFuture<>();
+        getLibLakeSoulMetaData().decode_token_to_claims(
+                new ReferencedStringCallback((result, msg) -> {
+                    if (msg != null) {
+                        System.err.println(msg);
+                    }
+                    future.complete(result);
+                }, getStringCallbackObjectReferenceManager()),
+                token,
+                secret);
+        try {
+            String claimsJson = future.get(timeout, TimeUnit.MILLISECONDS);
+            return JSON.parseObject(claimsJson, Claims.class);
+        } catch (InterruptedException | ExecutionException e) {
+            throw new RuntimeException(e);
+        } catch (TimeoutException e) {
+            LOG.error("Decode token to Claims timeout");
+            throw new RuntimeException(e);
         }
     }
 }
