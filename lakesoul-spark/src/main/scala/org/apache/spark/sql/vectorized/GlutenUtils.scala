@@ -8,6 +8,10 @@ import com.dmetasoul.lakesoul.lakesoul.io.NativeIOBase
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.ValueVector
 import org.apache.spark.SparkContext
+import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.execution.{ColumnarToRowExec, ProjectExec, SparkPlan, UnaryExecNode, WholeStageCodegenExec}
+import org.apache.spark.sql.lakesoul.rules.withPartitionAndOrdering
 
 import java.lang.reflect.{Constructor, Method}
 
@@ -15,64 +19,38 @@ import java.lang.reflect.{Constructor, Method}
  * Use reflection to get Gluten's objects to avoid import gluten class
  */
 object GlutenUtils {
-  lazy val isGlutenEnabled: Boolean =
-    SparkContext.getActive.exists(_.getConf.get("spark.plugins", "").contains("org.apache.gluten.GlutenPlugin"))
+  lazy val isGlutenEnabled: Boolean = false
 
-  private lazy val getGlutenAllocatorMethod: Method = {
-    val cls = Class.forName("org.apache.gluten.memory.arrow.alloc.ArrowBufferAllocators")
-    cls.getDeclaredMethod("contextInstance")
-  }
-
-  /**
-   * This cannot be lazy because gluten's allocator
-   * is associated with each of Spark's context
-   */
-  private def getGlutenAllocator: BufferAllocator = {
-    if (isGlutenEnabled) {
-      getGlutenAllocatorMethod.invoke(null).asInstanceOf[BufferAllocator]
-    } else {
-      null
-    }
-  }
-
-  def setArrowAllocator(io: NativeIOBase): Unit = {
-    if (isGlutenEnabled) {
-      io.setExternalAllocator(getGlutenAllocator.newChildAllocator("gluten", 32 * 1024 * 1024, Long.MaxValue))
-    }
-  }
-
-  private lazy val glutenArrowColumnVectorCtor: Constructor[_] = {
-    if (isGlutenEnabled) {
-      val cls = Class.forName("org.apache.gluten.vectorized.ArrowWritableColumnVector")
-      cls.getConstructor(classOf[ValueVector], classOf[ValueVector], classOf[Int], classOf[Int], classOf[Boolean])
-    } else {
-      null
-    }
-  }
-
-  private lazy val glutenArrowColumnVectorGetValueVector: Method = {
-    if (isGlutenEnabled) {
-      val cls = Class.forName("org.apache.gluten.vectorized.ArrowWritableColumnVector")
-      cls.getMethod("getValueVector")
-    } else {
-      null
-    }
-  }
+  def setArrowAllocator(io: NativeIOBase): Unit = {}
 
   def createArrowColumnVector(vector: ValueVector): ColumnVector = {
-    if (isGlutenEnabled) {
-      val args = Array[AnyRef](vector, null, Integer.valueOf(0), Integer.valueOf(vector.getValueCapacity), java.lang.Boolean.FALSE)
-      glutenArrowColumnVectorCtor.newInstance(args:_*).asInstanceOf[ColumnVector]
-    } else {
       new org.apache.spark.sql.arrow.ArrowColumnVector(vector)
-    }
   }
 
   def getValueVectorFromArrowVector(vector: ColumnVector): ValueVector = {
-    if (isGlutenEnabled) {
-      glutenArrowColumnVectorGetValueVector.invoke(vector).asInstanceOf[ValueVector]
-    } else {
       vector.asInstanceOf[org.apache.spark.sql.arrow.ArrowColumnVector].getValueVector
+  }
+
+  def nativeWrap(plan: SparkPlan, isArrowColumnarInput: Boolean): RDD[InternalRow] = {
+    if (isArrowColumnarInput) {
+      plan match {
+        case withPartitionAndOrdering(_, _, child) =>
+          return nativeWrap(child, isArrowColumnarInput)
+        case _ =>
+      }
+      // in this case, we drop columnar to row
+      // and use columnar batch directly as input
+      // this takes effect no matter gluten enabled or not
+      ArrowFakeRowAdaptor(plan match {
+        case ColumnarToRowExec(child) => child
+        case UnaryExecNode(plan, child)
+          if plan.getClass.getName == "io.glutenproject.execution.VeloxColumnarToRowExec" => child
+        case WholeStageCodegenExec(ColumnarToRowExec(child)) => child
+        case WholeStageCodegenExec(ProjectExec(_, child)) => child
+        case _ => plan
+      }).execute()
+    } else {
+      plan.execute()
     }
   }
 }

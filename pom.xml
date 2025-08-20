@@ -129,6 +129,15 @@ SPDX-License-Identifier: Apache-2.0
                 </plugins>
             </build>
         </profile>
+        <profile>
+            <id>gluten</id>
+            <activation>
+                <activeByDefault>false</activeByDefault>
+            </activation>
+            <modules>
+                <module>lakesoul-gluten</module>
+            </modules>
+        </profile>
     </profiles>
 
     <build>
