@@ -132,7 +132,7 @@ pub(crate) async fn create_table(
 }
 
 /// Create a [`LakeSoulIOConfigBuilder`] from LakeSoul metadata, according to the table name, fetch files, namespace, options, and object store options.
-pub(crate) async fn create_io_config_builder(
+pub async fn create_io_config_builder(
     client: MetaDataClientRef,
     table_name: Option<&str>,
     fetch_files: bool,

@@ -68,6 +68,3 @@ tower = "0.4.13"
 metrics = "0.21"
 cached = { version = "0.54.0", features = ["async_tokio_rt_multi_thread"] }
 clap = { version = "4.4", features = ["derive"] }
-
-[patch.crates-io]
-sfv = { git = "https://github.com/undef1nd/sfv.git", tag = "v0.9.4" }

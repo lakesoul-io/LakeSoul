@@ -170,6 +170,16 @@ mod tests {
         assert!(r.err().unwrap().to_string().contains(
             "permission denied to access default.test_rbac_table from user lake-iam-001 in group lake-czods"
         ));
+
+        let r = verify_permission_by_table_path(
+            "lake-iam-001",
+            "lake-czads",
+            table_path,
+            metadata_client.clone(),
+        )
+        .await;
+        assert!(r.is_ok());
+
         drop_table(uuid.as_str(), table_path, metadata_client).await?;
         Ok(())
     }

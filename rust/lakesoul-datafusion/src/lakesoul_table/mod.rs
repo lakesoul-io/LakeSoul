@@ -135,7 +135,7 @@ impl LakeSoulTable {
     }
 
     pub async fn upsert_dataframe(&self, dataframe: DataFrame) -> Result<()> {
-        let builder = create_io_config_builder(
+        let mut builder = create_io_config_builder(
             self.client.clone(),
             None,
             false,
@@ -144,6 +144,7 @@ impl LakeSoulTable {
             Default::default(),
         )
         .await?;
+        builder = builder.with_prefix(self.table_info.table_path.clone());
         let sess_ctx = create_session_context_with_planner(
             &mut builder.clone().build(),
             Some(LakeSoulQueryPlanner::new_ref()),
@@ -167,7 +168,7 @@ impl LakeSoulTable {
     }
 
     pub async fn execute_upsert(&self, record_batch: RecordBatch) -> Result<()> {
-        let builder = create_io_config_builder(
+        let mut builder = create_io_config_builder(
             self.client.clone(),
             None,
             false,
@@ -176,6 +177,7 @@ impl LakeSoulTable {
             Default::default(),
         )
         .await?;
+        builder = builder.with_prefix(self.table_info.table_path.clone());
         let sess_ctx = create_session_context_with_planner(
             &mut builder.clone().build(),
             Some(LakeSoulQueryPlanner::new_ref()),
@@ -193,10 +195,7 @@ impl LakeSoulTable {
         .build()?;
         let dataframe = DataFrame::new(sess_ctx.state(), logical_plan);
 
-        let results = dataframe
-            // .explain(true, false)?
-            .collect()
-            .await?;
+        let results = dataframe.collect().await?;
 
         info!(
             "execute_upsert result: {}",
@@ -209,7 +208,7 @@ impl LakeSoulTable {
         &self,
         object_store_options: HashMap<String, String>,
     ) -> Result<Box<dyn AsyncBatchWriter + Send>> {
-        let builder = create_io_config_builder(
+        let mut builder = create_io_config_builder(
             self.client.clone(),
             Some(self.table_name()),
             false,
@@ -220,16 +219,15 @@ impl LakeSoulTable {
             )]),
             object_store_options,
         )
-        .await?
-        .clone();
-
+        .await?;
+        builder = builder.with_prefix(self.table_info.table_path.clone());
         let config = builder.build();
         let writer = AsyncSendableMutableLakeSoulWriter::try_new(config).await?;
         Ok(Box::new(writer))
     }
 
     pub async fn to_dataframe(&self, context: &SessionContext) -> Result<DataFrame> {
-        let config_builder = create_io_config_builder(
+        let mut config_builder = create_io_config_builder(
             self.client(),
             Some(self.table_name()),
             true,
@@ -238,6 +236,7 @@ impl LakeSoulTable {
             HashMap::new(),
         )
         .await?;
+        config_builder = config_builder.with_prefix(self.table_info.table_path.clone());
         let provider = Arc::new(
             LakeSoulTableProvider::try_new(
                 &context.state(),

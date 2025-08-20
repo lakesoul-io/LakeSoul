@@ -535,7 +535,11 @@ where
     path.push_str("s3://");
     path.push_str(bucket_name);
     split
-        .take_while(|s| !(s.ends_with(".parquet") || s.contains(partition_equal)))
+        .take_while(|s| {
+            !(s.ends_with(".parquet")
+                || s.contains("compactdir")
+                || s.contains(partition_equal))
+        })
         .for_each(|s| {
             path.push('/');
             path.push_str(s);
@@ -582,6 +586,15 @@ fn parse_table_path(uri: &Uri, bucket: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::util::pretty::print_batches;
+    use arrow_array::{Array, ArrayRef, Int32Array, RecordBatch};
+    use lakesoul_datafusion::LakeSoulQueryPlanner;
+    use lakesoul_datafusion::catalog::create_io_config_builder;
+    use lakesoul_datafusion::lakesoul_table::LakeSoulTable;
+    use lakesoul_datafusion::serialize::arrow_java::ArrowJavaSchema;
+    use lakesoul_io::lakesoul_io_config::create_session_context_with_planner;
+    use lakesoul_metadata::MetaDataClientRef;
+    use proto::proto::entity::TableInfo;
 
     #[test]
     fn test_parse_table_path() {
@@ -647,5 +660,202 @@ mod tests {
             ),
             "s3://lakesoul-test-bucket/test/default/abc"
         );
+    }
+
+    async fn create_and_write_table(
+        table_name: &str,
+        path: &str,
+        domain: &str,
+        record_batch: RecordBatch,
+        meta_data_client: MetaDataClientRef,
+    ) -> Result<(String, String), anyhow::Error> {
+        let schema = record_batch.schema();
+        let table_id = format!("table_{}", uuid::Uuid::new_v4());
+        let ti = TableInfo {
+            table_id: table_id.clone(),
+            table_name: table_name.to_string(),
+            table_path: path.to_string(),
+            table_schema: serde_json::to_string::<ArrowJavaSchema>(&schema.into())?,
+            table_namespace: "default".to_string(),
+            properties: "{}".to_string(),
+            partitions: ";".to_string(),
+            domain: domain.to_string(),
+        };
+        meta_data_client.create_table(ti).await?;
+        let table = LakeSoulTable::for_namespace_and_name(
+            "default",
+            table_name,
+            Some(meta_data_client.clone()),
+        )
+        .await?;
+        table.execute_upsert(record_batch).await?;
+        Ok((table_id, path.to_string()))
+    }
+
+    async fn drop_table(
+        table_id: &str,
+        path: &str,
+        meta_data_client: MetaDataClientRef,
+    ) -> Result<(), anyhow::Error> {
+        meta_data_client
+            .delete_table_by_table_id_cascade(table_id, path)
+            .await?;
+        Ok(())
+    }
+
+    fn create_batch_i32(names: Vec<&str>, values: Vec<&[i32]>) -> RecordBatch {
+        let values: Vec<Arc<dyn Array>> = values
+            .into_iter()
+            .map(|vec| Arc::new(Int32Array::from(Vec::from(vec))) as ArrayRef)
+            .collect::<Vec<ArrayRef>>();
+        let iter = names
+            .into_iter()
+            .zip(values)
+            .map(|(name, array)| (name, array, true))
+            .collect::<Vec<_>>();
+        RecordBatch::try_from_iter_with_nullable(iter).unwrap()
+    }
+
+    fn init_s3() {
+        let timer = tracing_subscriber::fmt::time::ChronoLocal::rfc_3339();
+        match tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::from_default_env())
+            .with_timer(timer)
+            .try_init()
+        {
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("Failed to set logger: {e:?}");
+            }
+        }
+        unsafe {
+            std::env::set_var("AWS_ENDPOINT", "http://localhost:9000");
+            std::env::set_var("AWS_REGION", "us-east-1");
+            std::env::set_var("AWS_ACCESS_KEY_ID", "minioadmin1");
+            std::env::set_var("AWS_SECRET_ACCESS_KEY", "minioadmin1");
+        }
+    }
+
+    fn run_server() -> std::thread::JoinHandle<()> {
+        unsafe {
+            std::env::set_var("LAKESOUL_CURRENT_USER", "lake-iam-001");
+            std::env::set_var("LAKESOUL_CURRENT_DOMAIN", "lake-czads");
+        }
+        std::thread::spawn(move || {
+            main();
+        })
+    }
+
+    fn change_s3_to_proxy() {
+        unsafe {
+            std::env::set_var("AWS_ENDPOINT", "http://localhost:6188");
+        }
+    }
+
+    async fn create_table_and_write_suffix(
+        suffix: &str,
+        metadata_client: MetaDataClientRef,
+    ) -> Result<(String, String), anyhow::Error> {
+        let table_name = format!("test_rbac_table_{}", suffix);
+        let table_path = format!("s3://lakesoul-test-bucket/tmp/table_{}", suffix);
+        let doamin = format!("lake-cz{}", suffix);
+        let record_batch =
+            create_batch_i32(vec!["id", "data"], vec![&[1, 2, 3], &[1, 2, 3]]);
+        create_and_write_table(
+            &table_name,
+            &table_path,
+            &doamin,
+            record_batch.clone(),
+            metadata_client.clone(),
+        )
+        .await
+    }
+
+    async fn insert_table(
+        suffix: &str,
+        metadata_client: MetaDataClientRef,
+    ) -> Result<(), anyhow::Error> {
+        let table_name = format!("test_rbac_table_{}", suffix);
+        let record_batch =
+            create_batch_i32(vec!["id", "data"], vec![&[1, 2, 3], &[1, 2, 3]]);
+        let table = LakeSoulTable::for_namespace_and_name(
+            "default",
+            &table_name,
+            Some(metadata_client.clone()),
+        )
+        .await?;
+        table.execute_upsert(record_batch).await?;
+        Ok(())
+    }
+
+    async fn read_table(
+        suffix: &str,
+        metadata_client: MetaDataClientRef,
+    ) -> Result<(), anyhow::Error> {
+        let table_name = format!("test_rbac_table_{}", suffix);
+        let builder = create_io_config_builder(
+            metadata_client.clone(),
+            Some(table_name.as_str()),
+            true,
+            "default",
+            Default::default(),
+            Default::default(),
+        )
+        .await?;
+        let sess_ctx = create_session_context_with_planner(
+            &mut builder.build(),
+            Some(LakeSoulQueryPlanner::new_ref()),
+        )?;
+        let table = LakeSoulTable::for_namespace_and_name(
+            "default",
+            &table_name,
+            Some(metadata_client.clone()),
+        )
+        .await?;
+        let dataframe = table.to_dataframe(&sess_ctx).await?;
+        let results = dataframe.collect().await?;
+        print_batches(&results)?;
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].num_columns(), 2);
+        assert_eq!(results[0].num_rows(), 3);
+        assert_eq!(results[1].num_columns(), 2);
+        assert_eq!(results[1].num_rows(), 3);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_s3_rbac() -> Result<(), anyhow::Error> {
+        init_s3();
+        let metadata_client = Arc::new(MetaDataClient::from_env().await?);
+
+        let (uuid_ads, table_path_ads) =
+            create_table_and_write_suffix("ads", metadata_client.clone()).await?;
+        let (uuid_dwd, table_path_dwd) =
+            create_table_and_write_suffix("dwd", metadata_client.clone()).await?;
+
+        let _thread_handle = run_server();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        change_s3_to_proxy();
+
+        // verify read/write table in ads domain success
+        insert_table("ads", metadata_client.clone()).await?;
+        read_table("ads", metadata_client.clone()).await?;
+
+        // verify read/write table in dwd domain failed
+        let err = insert_table("dwd", metadata_client.clone())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("403 Forbidden"));
+        let err = read_table("dwd", metadata_client.clone())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("403 Forbidden"));
+
+        drop_table(&uuid_ads, &table_path_ads, metadata_client.clone()).await?;
+        drop_table(&uuid_dwd, &table_path_dwd, metadata_client.clone()).await?;
+
+        // exit self by signal 15
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        std::process::exit(0);
     }
 }
