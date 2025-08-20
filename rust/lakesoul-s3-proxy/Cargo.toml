@@ -28,3 +28,13 @@ lazy_static = "1.5"
 tower-service = "0.3"
 prometheus = { version = "0.13", features = ["process"] }
 bytes = "1.0"
+uuid = { version = "1.17.0", features = ["v4"] }
+
+[dev-dependencies]
+lakesoul-io = { path = "../lakesoul-io" }
+lakesoul-datafusion = { path = "../lakesoul-datafusion" }
+proto = { path = "../proto" }
+arrow = { workspace = true }
+arrow-array = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

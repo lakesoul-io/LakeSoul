@@ -490,6 +490,7 @@ impl LakeSoulHashSinkExec {
             );
 
             if !partitioned_writer.contains_key(&partition_desc) {
+                debug!("create writer for partition {partition_desc}");
                 let mut config = create_io_config_builder_from_table_info(
                     table_info.clone(),
                     HashMap::new(),
@@ -724,29 +725,18 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
             partitioned_file_path_and_row_count,
         ));
 
-        // });
-
-        // let abort_helper = Arc::new(AbortOnDropMany(join_handles));
-
         let sink_schema = self.sink_schema.clone();
-        // let count = futures::future::join_all(join_handles).await;
-        // for (columnar_values, result) in partitioned_file_path_and_row_count.lock().await.iter() {
-        //     match commit_data(self.metadata_client(), self.table_info().table_name.as_str(), &result.0).await {
-        //         Ok(()) => todo!(),
-        //         Err(_) => todo!(),
-        //     }
-        // }
 
         let stream = futures::stream::once(async move {
             match join_handle.await {
                 Ok(Ok(count)) => Ok(make_sink_batch(count, String::from(""))),
                 Ok(Err(e)) => {
                     debug!("{e:?}");
-                    Ok(make_sink_batch(u64::MAX, e.to_string()))
+                    Err(e)
                 }
                 Err(e) => {
                     debug!("{e:?}");
-                    Ok(make_sink_batch(u64::MAX, e.to_string()))
+                    Err(DataFusionError::Execution(e.to_string()))
                 }
             }
         })
