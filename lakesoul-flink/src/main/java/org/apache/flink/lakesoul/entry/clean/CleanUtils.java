@@ -117,15 +117,15 @@ public class CleanUtils {
             Path path = new Path(filePath);
             if (fs.exists(path)) {
                 fs.delete(path, false); // false 表示不递归删除
-                logger.info("=============================HDFS 文件已删除: " + filePath);
+                logger.info("=============================HDFS/s3 文件已删除: " + filePath);
                 deleteEmptyParentDirectories(fs, path.getParent());
                 fs.close();
             } else {
-                logger.info("=============================HDFS 文件不存在: " + filePath);
+                logger.info("=============================HDFS/s3 文件不存在: " + filePath);
             }
         } catch (IOException e) {
             e.printStackTrace();
-            logger.error("=============================删除 HDFS 文件失败: " + filePath);
+            logger.error("=============================删除 HDFS/s3 文件失败: " + filePath);
         }
     }
 
