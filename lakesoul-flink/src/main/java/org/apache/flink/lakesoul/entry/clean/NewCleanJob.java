@@ -68,9 +68,12 @@ public class NewCleanJob {
         targetTables = parameter.get(SourceOptions.TARGET_TABLES.key(),null);
 
         //int ontimerInterval = 60000;
-        int ontimerInterval = parameter.getInt(SourceOptions.ONTIMER_INTERVAL.key(), 1) * 3600000;
+        int ontimerInterval = parameter.getInt(SourceOptions.ONTIMER_INTERVAL.key(), 5) * 60000;
         //expiredTime = 60000;
-        expiredTime = parameter.getInt(SourceOptions.DATA_EXPIRED_TIME.key(), 1) * 86400000;
+        expiredTime = parameter.getInt(SourceOptions.DATA_EXPIRED_TIME.key(), 3) ;
+        if (expiredTime < 10){
+            expiredTime = expiredTime * 86400000;
+        }
         JdbcIncrementalSource<String> postgresIncrementalSource =
                 PostgresSourceBuilder.PostgresIncrementalSource.<String>builder()
                         .hostname(host)

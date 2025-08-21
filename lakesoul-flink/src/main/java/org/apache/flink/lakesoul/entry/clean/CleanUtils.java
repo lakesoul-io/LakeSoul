@@ -89,11 +89,12 @@ public class CleanUtils {
     }
 
     private static final String HDFS_URI_PREFIX = "hdfs:/";
+    private static final String S3_URI_PREFIX = "s3:/";
 
     public void deleteFile(List<String> filePathList) throws SQLException {
         Configuration hdfsConfig = new Configuration();
         for (String filePath : filePathList) {
-            if (filePath.startsWith(HDFS_URI_PREFIX)) {
+            if (filePath.startsWith(HDFS_URI_PREFIX) || filePath.startsWith(S3_URI_PREFIX)) {
                 deleteHdfsFile(filePath, hdfsConfig);
             } else if (filePath.startsWith("file:/")) {
                 try {
