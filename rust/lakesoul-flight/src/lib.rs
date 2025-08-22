@@ -9,11 +9,9 @@ extern crate tracing;
 
 pub mod args;
 mod flight_sql_service;
-mod jwt;
 
 use datafusion::error::DataFusionError;
 pub use flight_sql_service::FlightSqlServiceImpl;
-pub use jwt::{Claims, JwtServer};
 
 use lakesoul_datafusion::LakeSoulError;
 use lakesoul_metadata::LakeSoulMetaDataError;
@@ -23,6 +21,7 @@ mod token_codec;
 pub use token_codec::TokenResponse;
 mod banner;
 pub use banner::BANNER;
+pub(crate) use lakesoul_metadata::{Claims, JwtServer};
 
 mod token {
     include!(concat!(env!("OUT_DIR"), "/json.token.TokenServer.rs"));

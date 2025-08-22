@@ -13,10 +13,11 @@ use std::time::Instant;
 
 use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::Parser;
-use lakesoul_flight::{BANNER, Claims, TokenResponse};
-use lakesoul_flight::{FlightSqlServiceImpl, JwtServer, args::Args};
-use lakesoul_flight::{TokenServer, TokenServerServer};
-use lakesoul_metadata::MetaDataClient;
+use lakesoul_flight::{
+    BANNER, FlightSqlServiceImpl, TokenResponse, TokenServer, TokenServerServer,
+    args::Args,
+};
+use lakesoul_metadata::{Claims, JwtServer, MetaDataClient};
 use metrics::{counter, gauge};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use tonic::service::Interceptor;

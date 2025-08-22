@@ -127,6 +127,37 @@ public class NamespaceDao {
         return list;
     }
 
+    public List<String> listNamespacesByDomain(String domain) {
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
+            JniWrapper jniWrapper = NativeMetadataJavaClient.query(
+                    NativeUtils.CodedDaoType.ListNamespacesByDomain,
+                    Collections.singletonList(domain));
+            if (jniWrapper == null)
+                return null;
+            List<Namespace> namespaceList = jniWrapper.getNamespaceList();
+            return namespaceList.stream().map(Namespace::getNamespace).collect(Collectors.toList());
+        }
+        Connection conn = null;
+        PreparedStatement pstmt = null;
+        ResultSet rs = null;
+        String sql = String.format("select namespace from namespace where domain = '%s'", domain);
+        List<String> list = new ArrayList<>();
+        try {
+            conn = DBConnector.getConn();
+            pstmt = conn.prepareStatement(sql);
+            rs = pstmt.executeQuery();
+            while (rs.next()) {
+                String namespace = rs.getString("namespace");
+                list.add(namespace);
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        } finally {
+            DBConnector.closeConn(rs, pstmt, conn);
+        }
+        return list;
+    }
+
     public int updatePropertiesByNamespace(String namespace, String properties) {
         if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
             return NativeMetadataJavaClient.update(

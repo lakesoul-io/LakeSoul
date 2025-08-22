@@ -158,6 +158,10 @@ public class DBManager {
         return tableNameIdDao.listAllNameByNamespace(tableNamespace);
     }
 
+    public List<NamespaceTableName> listTableNamesByDomain(String domain) {
+        return tableNameIdDao.listAllNamesByDomain(domain);
+    }
+
     public List<String> listTablePathsByNamespace(String tableNamespace) {
         return tablePathIdDao.listAllPathByNamespace(tableNamespace);
     }
@@ -915,6 +919,10 @@ public class DBManager {
     //==============
     public List<String> listNamespaces() {
         return namespaceDao.listNamespaces();
+    }
+
+    public List<String> listNamespacesByDomain(String domain) {
+        return namespaceDao.listNamespacesByDomain(domain);
     }
 
     public void createNewNamespace(String name, String properties, String comment) {

@@ -5,6 +5,7 @@
 package com.dmetasoul.lakesoul.meta.dao;
 
 import com.dmetasoul.lakesoul.meta.DBConnector;
+import com.dmetasoul.lakesoul.meta.NamespaceTableName;
 import com.dmetasoul.lakesoul.meta.entity.JniWrapper;
 import com.dmetasoul.lakesoul.meta.entity.TableNameId;
 import com.dmetasoul.lakesoul.meta.jnr.NativeMetadataJavaClient;
@@ -76,6 +77,41 @@ public class TableNameIdDao {
                 String tableName = rs.getString("table_name");
                 list.add(tableName);
             }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        } finally {
+            DBConnector.closeConn(rs, pstmt, conn);
+        }
+        return list;
+    }
+
+    public List<NamespaceTableName> listAllNamesByDomain(String domain) {
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
+            JniWrapper jniWrapper = NativeMetadataJavaClient.query(
+                    NativeUtils.CodedDaoType.ListTableNamesByDomain,
+                    Collections.singletonList(domain));
+            if (jniWrapper == null)
+                return null;
+            List<TableNameId> tableNameIdList = jniWrapper.getTableNameIdList();
+            return tableNameIdList.stream().map(e -> {
+                return new NamespaceTableName(e.getTableNamespace(), e.getTableName());
+            }).collect(Collectors.toList());
+        }
+        Connection conn = null;
+        PreparedStatement pstmt = null;
+        ResultSet rs = null;
+        String sql = String.format("select table_name, table_namespace from table_name_id where domain = '%s'", domain);
+        List<NamespaceTableName> list = new ArrayList<>();
+        try {
+            conn = DBConnector.getConn();
+            pstmt = conn.prepareStatement(sql);
+            rs = pstmt.executeQuery();
+            while (rs.next()) {
+                String tableName = rs.getString("table_name");
+                String tableNamespace = rs.getString("table_namespace");
+                list.add(new NamespaceTableName(tableNamespace, tableName));
+            }
+
         } catch (SQLException e) {
             throw new RuntimeException(e);
         } finally {
