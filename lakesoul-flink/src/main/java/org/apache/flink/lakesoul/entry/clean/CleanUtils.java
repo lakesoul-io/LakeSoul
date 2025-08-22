@@ -89,11 +89,12 @@ public class CleanUtils {
     }
 
     private static final String HDFS_URI_PREFIX = "hdfs:/";
+    private static final String S3_URI_PREFIX = "s3:/";
 
     public void deleteFile(List<String> filePathList) throws SQLException {
         Configuration hdfsConfig = new Configuration();
         for (String filePath : filePathList) {
-            if (filePath.startsWith(HDFS_URI_PREFIX)) {
+            if (filePath.startsWith(HDFS_URI_PREFIX) || filePath.startsWith(S3_URI_PREFIX)) {
                 deleteHdfsFile(filePath, hdfsConfig);
             } else if (filePath.startsWith("file:/")) {
                 try {
@@ -116,15 +117,15 @@ public class CleanUtils {
             Path path = new Path(filePath);
             if (fs.exists(path)) {
                 fs.delete(path, false); // false 表示不递归删除
-                logger.info("=============================HDFS 文件已删除: " + filePath);
+                logger.info("=============================HDFS/s3 文件已删除: " + filePath);
                 deleteEmptyParentDirectories(fs, path.getParent());
                 fs.close();
             } else {
-                logger.info("=============================HDFS 文件不存在: " + filePath);
+                logger.info("=============================HDFS/s3 文件不存在: " + filePath);
             }
         } catch (IOException e) {
             e.printStackTrace();
-            logger.error("=============================删除 HDFS 文件失败: " + filePath);
+            logger.error("=============================删除 HDFS/s3 文件失败: " + filePath);
         }
     }
 
