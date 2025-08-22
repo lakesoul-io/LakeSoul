@@ -361,7 +361,7 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
     }
     val spark = SparkSession.active
 
-    def executeCompactOnePartition(part: PartitionInfoScala): Unit = {
+    def executeCompactOnePartition(part: PartitionInfoScala, uuid: UUID): Unit = {
       val files = DataOperation.getSinglePartitionDataInfo(part)
       if (files.nonEmpty) {
         val bucketToFiles = if (tableInfo.hash_partition_columns.isEmpty) {
@@ -406,6 +406,13 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
         }
         val dataFileInfoSeq = compactResult.flatMap(ff => ff).collect().toSeq
         if (dataFileInfoSeq.nonEmpty) {
+          val discardFileInfo = dataFileInfoSeq
+          .filter(file => file.range_partitions.equals(CompactBucketIO.DISCARD_FILE_LIST_KEY))
+          if(discardFileInfo.nonEmpty) {
+            println(f"[compaction-$uuid]: $partitionValues finished")
+          }else {
+            println(f"[compaction-$uuid]: $partitionValues error")
+          }
           commitMetadata(dataFileInfoSeq, partitionValues, tableInfo, part)
         } else {
           println(s"[WARN] read file size is ${files.length}, but without file created after compaction")
@@ -472,7 +479,8 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
         MetaCommit.recordDiscardFileInfo(discardCompressedFileList.toList.asJava)
       }
     }
-
+    val uuid = UUID.randomUUID(); 
+    println(f"[compaction-$uuid]: beging") 
     if (condition.isDefined) {
       val partitionFilters = Seq(condition.get).flatMap { filter =>
         LakeSoulUtils.splitMetadataAndDataPredicates(filter, tableInfo.range_partition_columns, spark)._1
@@ -492,15 +500,16 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
           partitionFilterInfo.head.range_value,
           ""
         )
-        executeCompactOnePartition(partitionInfo)
+        executeCompactOnePartition(partitionInfo, uuid)
       }
     } else {
       val allInfo = SparkMetaVersion.getAllPartitionInfo(tableInfo.table_id)
       val partitionsNeedCompact = allInfo.filter(_.read_files.length >= 1)
       partitionsNeedCompact.foreach(part => {
-        executeCompactOnePartition(part)
+        executeCompactOnePartition(part, uuid)
       })
     }
+    println(f"[compaction-$uuid]: ending") 
 
     if (newBucketNum.isDefined) {
       val properties = SparkMetaVersion.dbManager.getTableInfoByTableId(tableInfo.table_id).getProperties

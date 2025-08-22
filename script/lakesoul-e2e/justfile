@@ -1,0 +1,132 @@
+env := "LAKESOUL_VERSION=3.0.0-SNAPSHOT  \
+LAKESOUL_PG_URL=jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified \
+LAKESOUL_PG_USERNAME=lakesoul_test \
+LAKESOUL_PG_PASSWORD=lakesoul_test"
+
+k8s_env := "LAKESOUL_VERSION=3.0.0-SNAPSHOT  \
+LAKESOUL_PG_URL=jdbc:postgresql://pgsvc.default.svc.cluster.local:5432/lakesoul_e2e?stringtype=unspecified \
+LAKESOUL_PG_USERNAME=lakesoul_e2e \
+LAKESOUL_PG_DRIVER=com.lakesoul.shaded.org.postgresql.Driver \
+LAKESOUL_PG_PASSWORD=lakesoul_e2e"
+
+
+init:
+    wget https://mirrors.tuna.tsinghua.edu.cn/apache/flink/flink-1.20.1/flink-1.20.1-bin-scala_2.12.tgz -O opt/flink-1.20.1-bin-scala_2.12.tgz 
+    wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/spark/spark-3.3.2-bin-hadoop3.tgz -O opt/spark-3.3.2-bin-hadoop3.tgz 
+    wget https://archive.apache.org/dist/hadoop/common/hadoop-3.3.2/hadoop-3.3.2.tar.gz -O opt/hadoop-3.3.2.tar.gz
+    wget https://mirrors.tuna.tsinghua.edu.cn/apache/hadoop/common/hadoop-3.3.6/hadoop-3.3.6.tar.gz -O opt/hadoop/3.3.6.tar.gz
+    wget https://github.com/protocolbuffers/protobuf/releases/download/v25.7/protoc-25.7-linux-x86_64.zip -O opt/protoc-25.7-linux-x86_64.zip
+
+env:
+    {{k8s_env}}
+
+pytest:
+     {{env}} uv run pytest
+
+check: 
+    {{env}} uv run e2etest check
+
+build:
+    cd e2e && uv build
+
+rmi version: 
+    docker rmi dmetasoul-repo/e2e:{{version}}
+
+run:
+    {{k8s_env}} ./e2e/.venv/bin/e2etest run
+
+image-e2e version:
+    docker build -t dmetasoul-repo/e2e:{{version}} -f docker/lakesoul-e2e-ubuntu.Dockerfile .
+
+tag version:
+    docker tag dmetasoul-repo/e2e:{{version}} swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/e2e:{{version}}
+
+push version:
+    docker push swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/e2e:{{version}}
+
+e2e-run version: build (rmi version) (image-e2e version) 
+    docker run -d --name e2e --cpus=8 -v $HOME/.kube:/opt/lakesoul/.kube -v $FLINK_HOME/conf/config.yaml:/opt/flink/conf/config.yaml \
+    -v ./config.yaml:/opt/lakesoul/config.yaml \
+    -v ./k8s/flink-pod-template.yaml:/opt/lakesoul/k8s/flink-pod-template.yaml \
+    -e HTTPS_PROXY=http://172.17.0.1:8118 \
+    -e NO_PROXY=.myhuaweicloud.com \
+    -e AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID \
+    -e AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY \
+    -e AWS_ENDPOINT=$AWS_ENDPOINT \
+    -e AWS_BUCKET=$AWS_BUCKET \
+    -e LAKESOUL_VERSION=3.0.0-SNAPSHOT \
+    -e LAKESOUL_PG_DRIVER=com.lakesoul.shaded.org.postgresql.Driver \
+    -e LAKESOUL_PG_USERNAME=lakesoul_e2e \
+    -e LAKESOUL_PG_PASSWORD=lakesoul_e2e \
+    -e LAKESOUL_PG_URL=jdbc:postgresql://pgsvc.default.svc.cluster.local:5432/lakesoul_e2e?stringtype=unspecified \
+    dmetasoul-repo/e2e:{{version}} \
+    e2etest --fresh --repo https://github.com/mag1c1an1/LakeSoul.git --branch tmp_name run
+    
+
+upload oss:
+    mcli cp ~/.m2/repository/com/dmetasoul/flink-e2e/3.0.0-SNAPSHOT/flink-e2e-3.0.0-SNAPSHOT.jar {{oss}}/dmetasoul-bucket/lakesoul/lakesoul-e2e/target/flink-e2e-3.0.0-SNAPSHOT.jar
+    mcli cp ~/.m2/repository/com/dmetasoul/spark-e2e/3.0.0-SNAPSHOT/spark-e2e-3.0.0-SNAPSHOT.jar {{oss}}/dmetasoul-bucket/lakesoul/lakesoul-e2e/target/spark-e2e-3.0.0-SNAPSHOT.jar 
+    mcli cp ~/.m2/repository/com/dmetasoul/lakesoul-flink/1.20-3.0.0-SNAPSHOT/lakesoul-flink-1.20-3.0.0-SNAPSHOT.jar {{oss}}/dmetasoul-bucket/lakesoul/lakesoul-e2e/target/lakesoul-flink-1.20-3.0.0-SNAPSHOT.jar
+    mcli cp ~/.m2/repository/com/dmetasoul/lakesoul-spark/3.3-3.0.0-SNAPSHOT/lakesoul-spark-3.3-3.0.0-SNAPSHOT.jar {{oss}}/dmetasoul-bucket/lakesoul/lakesoul-e2e/target/lakesoul-spark-3.3-3.0.0-SNAPSHOT.jar
+
+rm oss:
+    mcli rm  {{oss}}/dmetasoul-bucket/lakesoul/lakesoul-e2e/target/flink-e2e-3.0.0-SNAPSHOT.jar
+    mcli rm  {{oss}}/dmetasoul-bucket/lakesoul/lakesoul-e2e/target/spark-e2e-3.0.0-SNAPSHOT.jar 
+    mcli rm  {{oss}}/dmetasoul-bucket/lakesoul/lakesoul-e2e/target/lakesoul-flink-1.20-3.0.0-SNAPSHOT.jar
+    mcli rm  {{oss}}/dmetasoul-bucket/lakesoul/lakesoul-e2e/target/lakesoul-spark-3.3-3.0.0-SNAPSHOT.jar
+
+flink-debug:
+    flink run-application --target kubernetes-application \
+    --class com.dmetasoul.e2e.FlinkDataSink \
+    -Djobmanager.archive.fs.dir=s3://dmetasoul-bucket/lakesoul/lakesoul-e2e/flink/completed-jobs \
+    -Dkubernetes.pod-template-file.default=/home/jiax/lakesoul-e2e/k8s/flink-pod-template.yaml \
+    -Dcontainerized.master.env.LAKESOUL_PG_DRIVER=com.lakesoul.shaded.org.postgresql.Driver \
+    -Dcontainerized.master.env.LAKESOUL_PG_USERNAME=lakesoul_e2e \
+    -Dcontainerized.master.env.LAKESOUL_PG_PASSWORD=lakesoul_e2e \
+    -Dcontainerized.master.env.LAKESOUL_PG_URL=jdbc:postgresql://pgsvc.default.svc.cluster.local:5432/lakesoul_e2e?stringtype=unspecified \
+    -Dcontainerized.taskmanager.env.LAKESOUL_PG_DRIVER=com.lakesoul.shaded.org.postgresql.Driver \
+    -Dcontainerized.taskmanager.env.LAKESOUL_PG_USERNAME=lakesoul_e2e \
+    -Dcontainerized.taskmanager.env.LAKESOUL_PG_PASSWORD=lakesoul_e2e \
+    -Dcontainerized.taskmanager.env.LAKESOUL_PG_URL=jdbc:postgresql://pgsvc.default.svc.cluster.local:5432/lakesoul_e2e?stringtype=unspecified \
+    -Dkubernetes.artifacts.local-upload-enabled=true \
+    -Dkubernetes.artifacts.local-upload-overwrite=true \
+    -Dkubernetes.artifacts.local-upload-target=s3://dmetasoul-bucket/lakesoul/lakesoul-e2e/target/ \
+    -Dkubernetes.cluster-id=lakesoul-e2e-flink \
+    -Dkubernetes.container.image.ref=swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/flink-hadoop-3.3.6:1.0 \
+    s3://dmetasoul-bucket/lakesoul/lakesoul-e2e/target/flink-e2e-3.0.0-SNAPSHOT.jar
+
+del:
+    kubectl delete deployment lakesoul-e2e-flink
+
+local which:
+    flink run  -c com.dmetasoul.e2e.FlinkData{{which}} ~/.m2/repository/com/dmetasoul/flink-e2e/3.0.0-SNAPSHOT/flink-e2e-3.0.0-SNAPSHOT.jar
+
+spark-debug:
+    spark-submit \
+    --deploy-mode cluster \
+    --master k8s://https://116.63.9.84:5443 \
+    --jars s3://dmetasoul-bucket/lakesoul/lakesoul-e2e/target/lakesoul-spark-3.3-3.0.0-SNAPSHOT.jar \
+    --name lakesoul-e2e-spark \
+    --class com.dmetasoul.e2e.SparkDataSink \
+    --conf spark.executor.instances=1 \
+    --conf spark.kubernetes.authenticate.driver.serviceAccountName=spark \
+    --conf spark.kubernetes.container.image=swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/spark-hadoop-3.3.2:1.0 \
+    --conf spark.hadoop.fs.s3a.access.key=$AWS_ACCESS_KEY_ID \
+    --conf spark.hadoop.fs.s3a.secret.key=$AWS_SECRET_ACCESS_KEY \
+    --conf spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem \
+    --conf spark.hadoop.fs.s3.impl=org.apache.hadoop.fs.s3a.S3AFileSystem \
+    --conf spark.hadoop.fs.s3a.endpoint=$AWS_ENDPOINT \
+    --conf spark.hadoop.fs.s3a.path.style.access=true \
+    --conf spark.kubernetes.container.image.pullPolicy=Always \
+    --conf spark.kubernetes.driverEnv.LAKESOUL_PG_DRIVER=com.lakesoul.shaded.org.postgresql.Driver \
+    --conf spark.kubernetes.driverEnv.LAKESOUL_PG_USERNAME=lakesoul_e2e \
+    --conf spark.kubernetes.driverEnv.LAKESOUL_PG_PASSWORD=lakesoul_e2e \
+    --conf spark.kubernetes.driverEnv.LAKESOUL_PG_URL=jdbc:postgresql://pgsvc.default.svc.cluster.local:5432/lakesoul_e2e?stringtype=unspecified \
+    --conf spark.executorEnv.LAKESOUL_PG_DRIVER=com.lakesoul.shaded.org.postgresql.Driver \
+    --conf spark.executorEnv.LAKESOUL_PG_USERNAME=lakesoul_e2e \
+    --conf spark.executorEnv.LAKESOUL_PG_PASSWORD=lakesoul_e2e \
+    --conf spark.executorEnv.LAKESOUL_PG_URL=jdbc:postgresql://pgsvc.default.svc.cluster.local:5432/lakesoul_e2e?stringtype=unspecified \
+    --conf spark.eventLog.enabled=true \
+    --conf spark.eventLog.dir=s3://dmetasoul-bucket/lakesoul/lakesoul-e2e/spark/completed-jobs \
+    s3://dmetasoul-bucket/lakesoul/lakesoul-e2e/target/spark-e2e-3.0.0-SNAPSHOT.jar
+
