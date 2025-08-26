@@ -1,0 +1,4 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hadoop-config-lakesoul-e2e-flink-jiax

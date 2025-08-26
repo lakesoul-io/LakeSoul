@@ -91,8 +91,8 @@ flink-debug:
     -Dkubernetes.artifacts.local-upload-enabled=true \
     -Dkubernetes.artifacts.local-upload-overwrite=true \
     -Dkubernetes.artifacts.local-upload-target=s3://dmetasoul-bucket/lakesoul/lakesoul-e2e/target/ \
-    -Dkubernetes.cluster-id=lakesoul-e2e-flink \
-    -Dkubernetes.container.image.ref=swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/flink-hadoop-3.3.6:1.0 \
+    -Dkubernetes.cluster-id=lakesoul-e2e-flink-jiax \
+    -Dkubernetes.container.image.ref=swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/flink-hadoop-3.3.6:1.1 \
     s3://dmetasoul-bucket/lakesoul/lakesoul-e2e/target/flink-e2e-3.0.0-SNAPSHOT.jar
 
 del:
