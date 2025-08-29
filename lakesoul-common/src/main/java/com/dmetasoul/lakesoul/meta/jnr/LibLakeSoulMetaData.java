@@ -35,6 +35,10 @@ public interface LibLakeSoulMetaData {
 
     void free_split_desc_array(Pointer json);
 
+    void encode_token_from_claims(StringCallback stringCallback, String claimsJson, String secret);
+
+    void decode_token_to_claims(StringCallback stringCallback, String token, String secret);
+
     /**
      * caller should ensure that ptr is valid
      *

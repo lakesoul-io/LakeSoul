@@ -57,9 +57,9 @@ use datafusion::prelude::*;
 use tonic::metadata::MetadataMap;
 
 use crate::args::Args;
-use crate::jwt::JwtServer;
+use crate::{Claims, JwtServer};
 use crate::{
-    Claims, datafusion_error_to_status, lakesoul_error_to_status,
+    datafusion_error_to_status, lakesoul_error_to_status,
     lakesoul_metadata_error_to_status,
 };
 use lakesoul_metadata::rbac::verify_permission_by_table_name;

@@ -62,6 +62,11 @@ public class NativeUtils {
         ListDiscardCompressedFileInfoBeforeTimestamp(DAO_TYPE_QUERY_LIST_OFFSET + 12, 1),
         ListDiscardCompressedFileByFilterCondition(DAO_TYPE_QUERY_LIST_OFFSET + 13, 3),
 
+        // Query Namespace List Filtered by Domain
+        ListNamespacesByDomain(DAO_TYPE_QUERY_LIST_OFFSET + 14, 1),
+        // Query Table Name List Filtered by Domain
+        ListTableNamesByDomain(DAO_TYPE_QUERY_LIST_OFFSET + 15, 1),
+
         // ==== Insert One ====
         InsertNamespace(DAO_TYPE_INSERT_ONE_OFFSET),
         InsertTablePathId(DAO_TYPE_INSERT_ONE_OFFSET + 1),

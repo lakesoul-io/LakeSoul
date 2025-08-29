@@ -48,8 +48,8 @@ impl JwtServer {
 mod tests {
     use super::*;
     use crate::jwt::JwtServer;
+    use crate::metadata_client::MetaDataClient;
     use chrono::Days;
-    use lakesoul_metadata::MetaDataClient;
     use std::sync::Arc;
 
     #[tokio::test]
