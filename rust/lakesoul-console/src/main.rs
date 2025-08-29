@@ -8,6 +8,8 @@ use lakesoul_datafusion::{
 };
 use rand::Rng;
 use rand::distr::Alphanumeric;
+use tracing::trace;
+use tracing_subscriber::EnvFilter;
 use tracing_subscriber::EnvFilter;
 
 mod exec;
