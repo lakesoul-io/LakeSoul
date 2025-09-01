@@ -14,7 +14,6 @@ SPDX-License-Identifier: Apache-2.0
         <groupId>com.dmetasoul</groupId>
         <version>${revision}</version>
     </parent>
-    <packaging>pom</packaging>
     <modelVersion>4.0.0</modelVersion>
     <name>LakeSoul Spark</name>
 
@@ -30,6 +29,7 @@ SPDX-License-Identifier: Apache-2.0
         <jackson.yaml.version>2.12.7</jackson.yaml.version>
         <local.scope>provided</local.scope>
         <test.fork.count>2</test.fork.count>
+        <spark.shade.skip>false</spark.shade.skip>
     </properties>
 
     <repositories>
@@ -501,7 +501,7 @@ SPDX-License-Identifier: Apache-2.0
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
-                <version>3.5.2</version>
+                <version>3.6.0</version>
                 <executions>
                     <execution>
                         <phase>package</phase>
@@ -511,6 +511,7 @@ SPDX-License-Identifier: Apache-2.0
                     </execution>
                 </executions>
                 <configuration>
+                    <skip>${spark.shade.skip}</skip>
                     <createDependencyReducedPom>true</createDependencyReducedPom>
                     <useDependencyReducedPomInJar>true</useDependencyReducedPomInJar>
                     <artifactSet>
@@ -520,6 +521,7 @@ SPDX-License-Identifier: Apache-2.0
                             <include>com.dmetasoul:lakesoul-io-java</include>
                             <include>com.github.jnr:*</include>
                             <include>org.ow2.asm:*</include>
+                            <include>org.apache.arrow:*</include>
                             <include>org.eclipse.collections:*</include>
                             <include>com.google.flatbuffers:*</include>
                             <include>com.zaxxer:HikariCP</include>

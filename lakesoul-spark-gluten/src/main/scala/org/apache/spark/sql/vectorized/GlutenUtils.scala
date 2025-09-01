@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 package org.apache.spark.sql.vectorized
 
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOBase
@@ -17,6 +21,11 @@ object GlutenUtils {
 
   lazy val isGlutenEnabled: Boolean =
     SparkContext.getActive.exists(_.getConf.get("spark.plugins", "").contains("org.apache.gluten.GlutenPlugin"))
+
+  /**
+   * All following methods should test isGlutenEnabled first because
+   * logics can be different when gluten is enabled or not.
+   */
 
   /**
    * This cannot be lazy because gluten's allocator
@@ -52,12 +61,12 @@ object GlutenUtils {
     }
   }
 
-  def nativeWrap(plan: SparkPlan, isArrowColumnarInput: Boolean): (RDD[InternalRow], Boolean) = {
+  def nativeWrap(plan: SparkPlan, isArrowColumnarInput: Boolean, orderingMatched: Boolean): (RDD[InternalRow], Boolean) = {
     if (isArrowColumnarInput) {
       plan match {
         case withPartitionAndOrdering(_, _, child) =>
-          return nativeWrap(child, isArrowColumnarInput)
-        case VeloxColumnarToRowExec(child) => return nativeWrap(child, isArrowColumnarInput)
+          return nativeWrap(child, isArrowColumnarInput, orderingMatched)
+        case VeloxColumnarToRowExec(child) => return nativeWrap(child, isArrowColumnarInput, orderingMatched)
         case WholeStageTransformer(_, _) =>
           return (ArrowFakeRowAdaptor(LoadArrowDataExec(plan)).execute(), true)
         case aqe: AdaptiveSparkPlanExec =>
@@ -117,6 +126,18 @@ object GlutenUtils {
       }).execute(), true)
     } else {
       (plan.execute(), false)
+    }
+  }
+
+  def getChildForSort(child: SparkPlan): SparkPlan = {
+    if (!GlutenUtils.isGlutenEnabled) {
+      child
+    } else {
+      // gluten may have VeloxColumnarToRow(WholeStageTransformer)
+      child match {
+        case VeloxColumnarToRowExec(WholeStageTransformer(c, _)) => c
+        case _ => child
+      }
     }
   }
 }

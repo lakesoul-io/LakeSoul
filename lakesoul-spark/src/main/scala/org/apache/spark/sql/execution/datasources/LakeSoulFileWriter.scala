@@ -8,8 +8,6 @@ package org.apache.spark.sql.execution.datasources
 
 import com.dmetasoul.lakesoul.meta.DBConfig.{LAKESOUL_NON_PARTITION_TABLE_PART_DESC, LAKESOUL_RANGE_PARTITION_SPLITTER}
 import com.dmetasoul.lakesoul.meta.DBUtil
-import org.apache.gluten.execution._
-import org.apache.gluten.extension.columnar.heuristic.HeuristicTransform
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileAlreadyExistsException, Path}
 import org.apache.hadoop.mapreduce._
@@ -18,7 +16,6 @@ import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
 import org.apache.spark._
 import org.apache.spark.internal.Logging
 import org.apache.spark.internal.io.{FileCommitProtocol, SparkHadoopWriterUtils}
-import org.apache.spark.rdd.RDD
 import org.apache.spark.shuffle.FetchFailedException
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
@@ -35,10 +32,10 @@ import org.apache.spark.sql.execution.datasources.FileFormatWriter.ConcurrentOut
 import org.apache.spark.sql.execution.datasources.v2.parquet.NativeParquetOutputWriter
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.lakesoul.{DelayedCommitProtocol, DelayedCopyCommitProtocol}
-import org.apache.spark.sql.lakesoul.rules.withPartitionAndOrdering
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
-import org.apache.spark.sql.vectorized.{ArrowFakeRowAdaptor, GlutenUtils}
+import org.apache.spark.sql.lakesoul.{DelayedCommitProtocol, DelayedCopyCommitProtocol}
+import org.apache.spark.sql.vectorized.GlutenUtils
+import org.apache.spark.sql.vectorized.GlutenUtils.{getChildForSort, nativeWrap}
 import org.apache.spark.util.{SerializableConfiguration, Utils}
 
 import java.util.{Date, UUID}
@@ -163,89 +160,9 @@ object LakeSoulFileWriter extends Logging {
 
     val nativeIOEnable = sparkSession.sessionState.conf.getConf(LakeSoulSQLConf.NATIVE_IO_ENABLE)
 
-    def nativeWrap(plan: SparkPlan, isArrowColumnarInput: Boolean): (RDD[InternalRow], Boolean) = {
-      if (isArrowColumnarInput) {
-        plan match {
-          case withPartitionAndOrdering(_, _, child) =>
-            return nativeWrap(child, isArrowColumnarInput)
-          case VeloxColumnarToRowExec(child) => return nativeWrap(child, isArrowColumnarInput)
-          case WholeStageTransformer(_, _) =>
-            return (ArrowFakeRowAdaptor(LoadArrowDataExec(plan)).execute(), true)
-          case aqe: AdaptiveSparkPlanExec =>
-            return (ArrowFakeRowAdaptor(
-              AdaptiveSparkPlanExec(
-                aqe.inputPlan,
-                aqe.context,
-                aqe.preprocessingRules,
-                aqe.isSubquery,
-                supportsColumnar = true)
-            ).execute(), true)
-          case _ =>
-        }
-        // try use gluten plan
-        if (GlutenUtils.isGlutenEnabled) {
-          val nativePlan = HeuristicTransform.static().apply(plan)
-          nativePlan match {
-            case plan1: ValidatablePlan =>
-              if (plan1.doValidate().ok()) {
-
-                def injectAdapter(p: SparkPlan): SparkPlan = p match {
-                  case p: ProjectExecTransformer => p.mapChildren(injectAdapter)
-                  case s: SortExecTransformer => s.mapChildren(injectAdapter)
-                  case _ => ColumnarCollapseTransformStages.wrapInputIteratorTransformer(p)
-                }
-
-                val transform = injectAdapter(nativePlan)
-
-                val needTransformPlan = transform match {
-                  case _: TransformSupport =>
-                    WholeStageTransformer(transform)(
-                      ColumnarCollapseTransformStages.transformStageCounter.incrementAndGet())
-                  case _ => transform
-                }
-                // for partitioning/bucketing, we switch back to row
-                if (!orderingMatched) {
-                  return (VeloxColumnarToRowExec(needTransformPlan).execute(), false)
-                } else {
-                  return (ArrowFakeRowAdaptor(
-                    LoadArrowDataExec(needTransformPlan)
-                  ).execute(), true)
-                }
-              }
-            case _ =>
-          }
-        }
-        // in this case, we drop columnar to row
-        // and use columnar batch directly as input
-        // this takes effect no matter gluten enabled or not
-        (ArrowFakeRowAdaptor(plan match {
-          case ColumnarToRowExec(child) => child
-          case UnaryExecNode(plan, child)
-            if plan.getClass.getName == "org.apache.execution.VeloxColumnarToRowExec" => child
-          case WholeStageCodegenExec(ColumnarToRowExec(child)) => child
-          case WholeStageCodegenExec(ProjectExec(_, child)) => child
-          case _ => plan
-        }).execute(), true)
-      } else {
-        (plan.execute(), false)
-      }
-    }
-
     val isArrowColumnarInput = nativeIOEnable &&
       ((isCompaction && !isCDC) // none cdc compaction compaction is a arrow columnar scan
         || GlutenUtils.isGlutenEnabled)
-
-    def getChildForSort(child: SparkPlan): SparkPlan = {
-      if (!GlutenUtils.isGlutenEnabled || !isArrowColumnarInput) {
-        child
-      } else {
-        // gluten may have VeloxColumnarToRow(WholeStageTransformer)
-        child match {
-          case VeloxColumnarToRowExec(WholeStageTransformer(c, _)) => c
-          case _ => child
-        }
-      }
-    }
 
     def addLocalSortPlan(plan: SparkPlan, orderingExpr: Seq[SortOrder]): SparkPlan = {
       plan match {
@@ -269,8 +186,8 @@ object LakeSoulFileWriter extends Logging {
         if (isCompaction && options.getOrElse("copyCompactedFile", "").nonEmpty) {
           val data = Seq(InternalRow(options("copyCompactedFile")))
           ((sparkSession.sparkContext.parallelize(data), false), None)
-        } else if (!isBucketNumChanged && (orderingMatched || isCompaction)) {
-          (nativeWrap(empty2NullPlan, isArrowColumnarInput), None)
+        } else if (!isBucketNumChanged && orderingMatched) {
+          (nativeWrap(empty2NullPlan, isArrowColumnarInput, orderingMatched), None)
         } else {
           // SPARK-21165: the `requiredOrdering` is based on the attributes from analyzed plan, and
           // the physical plan may have different attribute ids due to optimizer removing some
@@ -280,16 +197,9 @@ object LakeSoulFileWriter extends Logging {
           val sortPlan = addLocalSortPlan(empty2NullPlan, orderingExpr)
 
           if (isArrowColumnarInput) {
-            (nativeWrap(sortPlan, isArrowColumnarInput), None)
+            (nativeWrap(sortPlan, isArrowColumnarInput, orderingMatched), None)
           } else {
-//            val maxWriters = sparkSession.sessionState.conf.maxConcurrentOutputFileWriters
-//            val concurrentWritersEnabled = maxWriters > 0 && sortColumns.isEmpty
-//            if (concurrentWritersEnabled) {
-//              ((empty2NullPlan.execute(), false),
-//                Some(ConcurrentOutputWriterSpec(maxWriters, () => sortPlan.createSorter())))
-//            } else {
-              ((sortPlan.execute(), false), None)
-//            }
+            ((sortPlan.execute(), false), None)
           }
         }
 
@@ -405,7 +315,6 @@ object LakeSoulFileWriter extends Logging {
     committer.setupTask(taskAttemptContext)
 
     val isCompaction = options.getOrElse("isCompaction", "false").toBoolean
-    val isBucketNumChanged = options.getOrElse("isBucketNumChanged", "false").toBoolean
 
     val dataWriter =
       if (!iterator.hasNext) {
@@ -598,5 +507,4 @@ object LakeSoulFileWriter extends Logging {
       logInfo("copy file")
     }
   }
-
 }

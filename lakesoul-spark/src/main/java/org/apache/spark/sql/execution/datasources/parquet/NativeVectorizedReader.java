@@ -94,8 +94,6 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
      */
     private ColumnarBatch columnarBatch;
 
-    private WritableColumnVector[] partitionColumnVectors = null;
-
     private StructType partitionColumns = null;
 
     private InternalRow partitionValues = null;
@@ -304,24 +302,6 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
                 newSchema = newSchema.add(partitionField);
             }
             requestSchema = newSchema;
-        } else {
-            partitionColumns = new StructType(new StructField[]{new StructField("empty row", LongType, false, Metadata.empty())});
-
-            partitionValues = new GenericInternalRow(new Long[]{0L});
-            if (partitionColumnVectors != null) {
-                for (WritableColumnVector c : partitionColumnVectors) {
-                    c.close();
-                }
-            }
-            if (memMode == MemoryMode.OFF_HEAP) {
-                partitionColumnVectors = OffHeapColumnVector.allocateColumns(capacity, partitionColumns);
-            } else {
-                partitionColumnVectors = OnHeapColumnVector.allocateColumns(capacity, partitionColumns);
-            }
-            for (int i = 0; i < partitionColumns.fields().length; i++) {
-                ColumnVectorUtils.populate(partitionColumnVectors[i], partitionValues, i);
-                partitionColumnVectors[i].setIsConstant();
-            }
         }
         recreateNativeReader();
     }
@@ -350,10 +330,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
             VectorSchemaRoot nextVectorSchemaRoot = nativeReader.nextResultVectorSchemaRoot();
             int rowCount = nextVectorSchemaRoot.getRowCount();
             if (nextVectorSchemaRoot.getSchema().getFields().isEmpty()) {
-                if (partitionColumnVectors == null) {
-                    throw new IOException("NativeVectorizedReader has not been initialized");
-                }
-                columnarBatch = new ColumnarBatch(partitionColumnVectors, rowCount);
+                columnarBatch = new ColumnarBatch(new ColumnVector[]{}, rowCount);
             } else {
                 nativeColumnVector = NativeIOUtils.asArrayColumnVector(nextVectorSchemaRoot);
                 columnarBatch = new ColumnarBatch(nativeColumnVector, rowCount);

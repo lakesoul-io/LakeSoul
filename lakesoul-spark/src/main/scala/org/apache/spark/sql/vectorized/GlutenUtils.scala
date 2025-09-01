@@ -24,33 +24,37 @@ object GlutenUtils {
   def setArrowAllocator(io: NativeIOBase): Unit = {}
 
   def createArrowColumnVector(vector: ValueVector): ColumnVector = {
-      new org.apache.spark.sql.arrow.ArrowColumnVector(vector)
+    new org.apache.spark.sql.arrow.ArrowColumnVector(vector)
   }
 
   def getValueVectorFromArrowVector(vector: ColumnVector): ValueVector = {
       vector.asInstanceOf[org.apache.spark.sql.arrow.ArrowColumnVector].getValueVector
   }
 
-  def nativeWrap(plan: SparkPlan, isArrowColumnarInput: Boolean): RDD[InternalRow] = {
-    if (isArrowColumnarInput) {
+  def nativeWrap(plan: SparkPlan, isArrowColumnarInput: Boolean, orderingMatched: Boolean): (RDD[InternalRow], Boolean) = {
+    if (isArrowColumnarInput && orderingMatched) {
       plan match {
         case withPartitionAndOrdering(_, _, child) =>
-          return nativeWrap(child, isArrowColumnarInput)
+          return nativeWrap(child, isArrowColumnarInput, orderingMatched)
         case _ =>
       }
       // in this case, we drop columnar to row
       // and use columnar batch directly as input
       // this takes effect no matter gluten enabled or not
-      ArrowFakeRowAdaptor(plan match {
+      (ArrowFakeRowAdaptor(plan match {
         case ColumnarToRowExec(child) => child
         case UnaryExecNode(plan, child)
           if plan.getClass.getName == "io.glutenproject.execution.VeloxColumnarToRowExec" => child
         case WholeStageCodegenExec(ColumnarToRowExec(child)) => child
         case WholeStageCodegenExec(ProjectExec(_, child)) => child
         case _ => plan
-      }).execute()
+      }).execute(), true)
     } else {
-      plan.execute()
+      (plan.execute(), false)
     }
+  }
+
+  def getChildForSort(child: SparkPlan): SparkPlan = {
+      child
   }
 }

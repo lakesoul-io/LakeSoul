@@ -13,9 +13,9 @@ SPDX-License-Identifier: Apache-2.0
     <inceptionYear>2022</inceptionYear>
     <modules>
         <module>lakesoul-common</module>
+        <module>native-io/lakesoul-io-java</module>
         <module>lakesoul-spark</module>
         <module>lakesoul-flink</module>
-        <module>native-io/lakesoul-io-java</module>
         <module>lakesoul-presto</module>
     </modules>
     <packaging>pom</packaging>
@@ -135,7 +135,7 @@ SPDX-License-Identifier: Apache-2.0
                 <activeByDefault>false</activeByDefault>
             </activation>
             <modules>
-                <module>lakesoul-gluten</module>
+                <module>lakesoul-spark-gluten</module>
             </modules>
         </profile>
     </profiles>
