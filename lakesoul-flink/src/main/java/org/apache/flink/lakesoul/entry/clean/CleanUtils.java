@@ -78,17 +78,17 @@ public class CleanUtils {
 
     public void cleanPartitionInfo(String table_id, String partition_desc, int version, Connection connection) throws SQLException {
         UUID id = UUID.randomUUID();
-        logger.info("Clean-[{}]: begin", id);
+        logger.info("[Clean-{}]: begin", id);
         String sql = "DELETE FROM partition_info where table_id= '" + table_id +
                 "' and partition_desc ='" + partition_desc + "' and version = '" + version + "'";
         try (PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
             preparedStatement.executeUpdate();
             logger.info(sql);
-            logger.info("Clean-[{}]: success",id);
+            logger.info("[Clean-{}]: success",id);
         } catch (SQLException e) {
             e.printStackTrace();
             logger.info("删除partition_info数据异常");
-            logger.info("Clean-[{}]: fail",id);
+            logger.info("[Clean-{}]: fail",id);
         }
     }
 
@@ -114,14 +114,14 @@ public class CleanUtils {
             catch (URISyntaxException e) {
                 e.printStackTrace();
                 logger.info("无法解析文件URI: {}", filePath);
-                logger.info("Clean-[{}]: fail",id);
+                logger.info("[Clean-{}]: fail",id);
             }
             catch (IOException e) {
                 e.printStackTrace();
-                logger.info("Clean-[{}]: fail",id);
+                logger.info("[Clean-{}]: fail",id);
             }
         }
-        logger.info("Clean-[{}]: success",id);
+        logger.info("[Clean-{}]: success",id);
     }
 
     private void deleteHdfsFile(String filePath, Configuration hdfsConfig) throws IOException {
