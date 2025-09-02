@@ -99,6 +99,7 @@ public class CleanUtils {
         UUID id = UUID.randomUUID();
         logger.info("[Clean-{}]: begin",id);
         Configuration hdfsConfig = new Configuration();
+        boolean hasError = false;
         for (String filePath : filePathList) {
             try{
                 if (filePath.startsWith(HDFS_URI_PREFIX) || filePath.startsWith(S3_URI_PREFIX)) {
@@ -113,15 +114,19 @@ public class CleanUtils {
             }
             catch (URISyntaxException e) {
                 e.printStackTrace();
+                hasError = true;
                 logger.info("无法解析文件URI: {}", filePath);
                 logger.info("[Clean-{}]: fail",id);
             }
             catch (IOException e) {
+                hasError = true;
                 e.printStackTrace();
                 logger.info("[Clean-{}]: fail",id);
             }
         }
-        logger.info("[Clean-{}]: success",id);
+        if (!hasError) {
+            logger.info("[Clean-{}]: success",id);
+        }
     }
 
     private void deleteHdfsFile(String filePath, Configuration hdfsConfig) throws IOException {
