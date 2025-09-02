@@ -163,6 +163,13 @@ object LakeSoulFileWriter extends Logging {
     val isArrowColumnarInput = nativeIOEnable &&
       ((isCompaction && !isCDC) // none cdc compaction compaction is a arrow columnar scan
         || GlutenUtils.isGlutenEnabled)
+    // for compaction, only when static bucket!=-1
+    // for all other cases, only when no partition && no bucket spec
+    // otherwise, we need row writer
+    val tryEnableColumnarWriter = partitionSet.isEmpty && (writerBucketSpec.isEmpty || staticBucketId != -1)
+    logInfo(s"partitionSet: $partitionSet, writerBucketSpec: $writerBucketSpec, " +
+      s"isArrowColumnarInput: $isArrowColumnarInput, isCdc: $isCDC, isCompaction: $isCompaction, " +
+        s"orderingMatched: $orderingMatched, tryEnableColumnarWriter: $tryEnableColumnarWriter")
 
     def addLocalSortPlan(plan: SparkPlan, orderingExpr: Seq[SortOrder]): SparkPlan = {
       plan match {
@@ -187,7 +194,7 @@ object LakeSoulFileWriter extends Logging {
           val data = Seq(InternalRow(options("copyCompactedFile")))
           ((sparkSession.sparkContext.parallelize(data), false), None)
         } else if (!isBucketNumChanged && orderingMatched) {
-          (nativeWrap(empty2NullPlan, isArrowColumnarInput, orderingMatched), None)
+          (nativeWrap(empty2NullPlan, isArrowColumnarInput, tryEnableColumnarWriter), None)
         } else {
           // SPARK-21165: the `requiredOrdering` is based on the attributes from analyzed plan, and
           // the physical plan may have different attribute ids due to optimizer removing some
@@ -197,7 +204,7 @@ object LakeSoulFileWriter extends Logging {
           val sortPlan = addLocalSortPlan(empty2NullPlan, orderingExpr)
 
           if (isArrowColumnarInput) {
-            (nativeWrap(sortPlan, isArrowColumnarInput, orderingMatched), None)
+            (nativeWrap(sortPlan, isArrowColumnarInput, tryEnableColumnarWriter), None)
           } else {
             ((sortPlan.execute(), false), None)
           }

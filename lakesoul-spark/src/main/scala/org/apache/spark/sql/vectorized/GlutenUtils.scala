@@ -31,11 +31,11 @@ object GlutenUtils {
       vector.asInstanceOf[org.apache.spark.sql.arrow.ArrowColumnVector].getValueVector
   }
 
-  def nativeWrap(plan: SparkPlan, isArrowColumnarInput: Boolean, orderingMatched: Boolean): (RDD[InternalRow], Boolean) = {
-    if (isArrowColumnarInput && orderingMatched) {
+  def nativeWrap(plan: SparkPlan, isArrowColumnarInput: Boolean, tryEnableColumnarWriter: Boolean): (RDD[InternalRow], Boolean) = {
+    if (isArrowColumnarInput && tryEnableColumnarWriter) {
       plan match {
         case withPartitionAndOrdering(_, _, child) =>
-          return nativeWrap(child, isArrowColumnarInput, orderingMatched)
+          return nativeWrap(child, isArrowColumnarInput, tryEnableColumnarWriter)
         case _ =>
       }
       // in this case, we drop columnar to row
@@ -43,8 +43,6 @@ object GlutenUtils {
       // this takes effect no matter gluten enabled or not
       (ArrowFakeRowAdaptor(plan match {
         case ColumnarToRowExec(child) => child
-        case UnaryExecNode(plan, child)
-          if plan.getClass.getName == "io.glutenproject.execution.VeloxColumnarToRowExec" => child
         case WholeStageCodegenExec(ColumnarToRowExec(child)) => child
         case WholeStageCodegenExec(ProjectExec(_, child)) => child
         case _ => plan

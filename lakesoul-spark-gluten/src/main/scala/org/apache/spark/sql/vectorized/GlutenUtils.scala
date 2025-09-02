@@ -61,12 +61,12 @@ object GlutenUtils {
     }
   }
 
-  def nativeWrap(plan: SparkPlan, isArrowColumnarInput: Boolean, orderingMatched: Boolean): (RDD[InternalRow], Boolean) = {
+  def nativeWrap(plan: SparkPlan, isArrowColumnarInput: Boolean, tryEnableColumnarWriter: Boolean): (RDD[InternalRow], Boolean) = {
     if (isArrowColumnarInput) {
       plan match {
         case withPartitionAndOrdering(_, _, child) =>
-          return nativeWrap(child, isArrowColumnarInput, orderingMatched)
-        case VeloxColumnarToRowExec(child) => return nativeWrap(child, isArrowColumnarInput, orderingMatched)
+          return nativeWrap(child, isArrowColumnarInput, tryEnableColumnarWriter)
+        case VeloxColumnarToRowExec(child) => return nativeWrap(child, isArrowColumnarInput, tryEnableColumnarWriter)
         case WholeStageTransformer(_, _) =>
           return (ArrowFakeRowAdaptor(LoadArrowDataExec(plan)).execute(), true)
         case aqe: AdaptiveSparkPlanExec =>
@@ -102,7 +102,7 @@ object GlutenUtils {
                 case _ => transform
               }
               // for partitioning/bucketing, we switch back to row
-              if (!orderingMatched) {
+              if (!tryEnableColumnarWriter) {
                 return (VeloxColumnarToRowExec(needTransformPlan).execute(), false)
               } else {
                 return (ArrowFakeRowAdaptor(

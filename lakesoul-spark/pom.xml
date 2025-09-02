@@ -106,10 +106,6 @@ SPDX-License-Identifier: Apache-2.0
                     <groupId>org.antlr</groupId>
                     <artifactId>*</artifactId>
                 </exclusion>
-<!--                <exclusion>-->
-<!--                    <groupId>org.apache.arrow</groupId>-->
-<!--                    <artifactId>*</artifactId>-->
-<!--                </exclusion>-->
                 <exclusion>
                     <groupId>io.substrait</groupId>
                     <artifactId>*</artifactId>
