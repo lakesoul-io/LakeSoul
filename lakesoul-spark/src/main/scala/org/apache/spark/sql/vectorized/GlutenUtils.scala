@@ -10,7 +10,9 @@ import org.apache.arrow.vector.ValueVector
 import org.apache.spark.SparkContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.execution.{ColumnarToRowExec, ProjectExec, SparkPlan, UnaryExecNode, WholeStageCodegenExec}
+import org.apache.spark.sql.catalyst.expressions.SortOrder
+import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
+import org.apache.spark.sql.execution.{ColumnarToRowExec, ProjectExec, SortExec, SparkPlan, UnaryExecNode, WholeStageCodegenExec}
 import org.apache.spark.sql.lakesoul.rules.withPartitionAndOrdering
 
 import java.lang.reflect.{Constructor, Method}
@@ -55,4 +57,21 @@ object GlutenUtils {
   def getChildForSort(child: SparkPlan): SparkPlan = {
       child
   }
+
+  def addLocalSortPlan(plan: SparkPlan, orderingExpr: Seq[SortOrder]): SparkPlan = {
+    plan match {
+      case aqe: AdaptiveSparkPlanExec =>
+        SortExec(
+          orderingExpr,
+          global = false,
+          child = aqe.copy(supportsColumnar = true)
+        )
+      case _ => SortExec(
+        orderingExpr,
+        global = false,
+        child = getChildForSort(plan)
+      )
+    }
+  }
+
 }

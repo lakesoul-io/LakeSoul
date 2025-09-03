@@ -35,7 +35,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.lakesoul.{DelayedCommitProtocol, DelayedCopyCommitProtocol}
 import org.apache.spark.sql.vectorized.GlutenUtils
-import org.apache.spark.sql.vectorized.GlutenUtils.{getChildForSort, nativeWrap}
+import org.apache.spark.sql.vectorized.GlutenUtils.{addLocalSortPlan, getChildForSort, nativeWrap}
 import org.apache.spark.util.{SerializableConfiguration, Utils}
 
 import java.util.{Date, UUID}
@@ -170,22 +170,6 @@ object LakeSoulFileWriter extends Logging {
     logInfo(s"partitionSet: $partitionSet, writerBucketSpec: $writerBucketSpec, " +
       s"isArrowColumnarInput: $isArrowColumnarInput, isCdc: $isCDC, isCompaction: $isCompaction, " +
         s"orderingMatched: $orderingMatched, tryEnableColumnarWriter: $tryEnableColumnarWriter")
-
-    def addLocalSortPlan(plan: SparkPlan, orderingExpr: Seq[SortOrder]): SparkPlan = {
-      plan match {
-        case aqe: AdaptiveSparkPlanExec =>
-          SortExec(
-            orderingExpr,
-            global = false,
-            child = aqe.copy(supportsColumnar = true)
-          )
-        case _ => SortExec(
-          orderingExpr,
-          global = false,
-          child = getChildForSort(empty2NullPlan)
-        )
-      }
-    }
 
     try {
       // for compaction, we won't break ordering from batch scan

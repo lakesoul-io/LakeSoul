@@ -7,17 +7,20 @@ package org.apache.spark.sql.vectorized
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOBase
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.ValueVector
-import org.apache.gluten.execution.{LoadArrowDataExec, ProjectExecTransformer, SortExecTransformer, TransformSupport, ValidatablePlan, VeloxColumnarToRowExec, WholeStageTransformer}
-import org.apache.gluten.extension.columnar.heuristic.HeuristicTransform
+import org.apache.gluten.backendsapi.BackendsApiManager
+import org.apache.gluten.execution._
+import org.apache.gluten.extension.columnar.transition.BackendTransitions
 import org.apache.gluten.memory.arrow.alloc.ArrowBufferAllocators
 import org.apache.spark.SparkContext
+import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.SortOrder
+import org.apache.spark.sql.catalyst.plans.logical.Sort
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
-import org.apache.spark.sql.execution.{ColumnarCollapseTransformStages, ColumnarToRowExec, ProjectExec, SparkPlan, UnaryExecNode, WholeStageCodegenExec}
-import org.apache.spark.sql.lakesoul.rules.withPartitionAndOrdering
+import org.apache.spark.sql.execution.{ColumnarCollapseTransformStages, SortExec, SparkPlan}
 
-object GlutenUtils {
+object GlutenUtils extends Logging {
 
   lazy val isGlutenEnabled: Boolean =
     SparkContext.getActive.exists(_.getConf.get("spark.plugins", "").contains("org.apache.gluten.GlutenPlugin"))
@@ -61,69 +64,31 @@ object GlutenUtils {
     }
   }
 
-  def nativeWrap(plan: SparkPlan, isArrowColumnarInput: Boolean, tryEnableColumnarWriter: Boolean): (RDD[InternalRow], Boolean) = {
-    if (isArrowColumnarInput) {
-      plan match {
-        case withPartitionAndOrdering(_, _, child) =>
-          return nativeWrap(child, isArrowColumnarInput, tryEnableColumnarWriter)
-        case VeloxColumnarToRowExec(child) => return nativeWrap(child, isArrowColumnarInput, tryEnableColumnarWriter)
-        case WholeStageTransformer(_, _) =>
-          return (ArrowFakeRowAdaptor(LoadArrowDataExec(plan)).execute(), true)
+  def nativeWrap(plan: SparkPlan, isArrowColumnarInput: Boolean,
+                 tryEnableColumnarWriter: Boolean): (RDD[InternalRow], Boolean) = {
+    if (GlutenUtils.isGlutenEnabled) {
+      val glutenPlan: SparkPlan = plan match {
         case aqe: AdaptiveSparkPlanExec =>
-          return (ArrowFakeRowAdaptor(
-            AdaptiveSparkPlanExec(
-              aqe.inputPlan,
-              aqe.context,
-              aqe.preprocessingRules,
-              aqe.isSubquery,
-              supportsColumnar = true)
-          ).execute(), true)
+          AdaptiveSparkPlanExec(
+            aqe.inputPlan,
+            aqe.context,
+            aqe.preprocessingRules,
+            aqe.isSubquery,
+            supportsColumnar = true)
         case _ =>
+          val nativePlan = BackendTransitions.insert(plan, outputsColumnar = true)
+          nativePlan match {
+            case plan1: ValidatablePlan if (plan1.doValidate().ok()) =>
+              if (plan1.isInstanceOf[WholeStageTransformer]) plan1 else WholeStageTransformer(plan1)(
+                ColumnarCollapseTransformStages.transformStageCounter.incrementAndGet())
+            case _ => plan
+          }
       }
-      // try use gluten plan
-      if (GlutenUtils.isGlutenEnabled) {
-        val nativePlan = HeuristicTransform.static().apply(plan)
-        nativePlan match {
-          case plan1: ValidatablePlan =>
-            if (plan1.doValidate().ok()) {
-
-              def injectAdapter(p: SparkPlan): SparkPlan = p match {
-                case p: ProjectExecTransformer => p.mapChildren(injectAdapter)
-                case s: SortExecTransformer => s.mapChildren(injectAdapter)
-                case _ => ColumnarCollapseTransformStages.wrapInputIteratorTransformer(p)
-              }
-
-              val transform = injectAdapter(nativePlan)
-
-              val needTransformPlan = transform match {
-                case _: TransformSupport =>
-                  WholeStageTransformer(transform)(
-                    ColumnarCollapseTransformStages.transformStageCounter.incrementAndGet())
-                case _ => transform
-              }
-              // for partitioning/bucketing, we switch back to row
-              if (!tryEnableColumnarWriter) {
-                return (VeloxColumnarToRowExec(needTransformPlan).execute(), false)
-              } else {
-                return (ArrowFakeRowAdaptor(
-                  LoadArrowDataExec(needTransformPlan)
-                ).execute(), true)
-              }
-            }
-          case _ =>
-        }
+      if (!tryEnableColumnarWriter) {
+        (VeloxColumnarToRowExec(glutenPlan).execute(), false)
+      } else {
+        (ArrowFakeRowAdaptor(LoadArrowDataExec(glutenPlan)).execute(), true)
       }
-      // in this case, we drop columnar to row
-      // and use columnar batch directly as input
-      // this takes effect no matter gluten enabled or not
-      (ArrowFakeRowAdaptor(plan match {
-        case ColumnarToRowExec(child) => child
-        case UnaryExecNode(plan, child)
-          if plan.getClass.getName == "org.apache.execution.VeloxColumnarToRowExec" => child
-        case WholeStageCodegenExec(ColumnarToRowExec(child)) => child
-        case WholeStageCodegenExec(ProjectExec(_, child)) => child
-        case _ => plan
-      }).execute(), true)
     } else {
       (plan.execute(), false)
     }
@@ -138,6 +103,70 @@ object GlutenUtils {
         case VeloxColumnarToRowExec(WholeStageTransformer(c, _)) => c
         case _ => child
       }
+    }
+  }
+
+  def addLocalSortPlan(plan: SparkPlan, orderingExpr: Seq[SortOrder]): SparkPlan = {
+    plan match {
+      case aqe: AdaptiveSparkPlanExec =>
+        val sortPlan = SortExec(
+          orderingExpr,
+          global = false,
+          child = aqe.inputPlan
+        )
+        sortPlan.setLogicalLink(Sort(orderingExpr, global = false, aqe.inputPlan.logicalLink.get))
+        AdaptiveSparkPlanExec(
+          sortPlan,
+          aqe.context,
+          aqe.preprocessingRules,
+          aqe.isSubquery,
+          supportsColumnar = true)
+      case _ => if (!GlutenUtils.isGlutenEnabled) {
+        SortExec(
+          orderingExpr,
+          global = false,
+          child = getChildForSort(plan)
+        )
+      } else {
+        SortExecTransformer(
+          orderingExpr,
+          global = false,
+          child = getChildForSort(plan)
+        )
+      }
+    }
+  }
+
+  private def separateScanRDD: Boolean =
+    BackendsApiManager.getSettings.excludeScanExecFromCollapsedStage()
+
+  private def isSeparateBaseScanExecTransformer(plan: SparkPlan): Boolean = plan match {
+    case _: BasicScanExecTransformer if separateScanRDD => true
+    case _ => false
+  }
+
+  private def supportTransform(plan: SparkPlan): Boolean = plan match {
+    case plan: TransformSupport if !isSeparateBaseScanExecTransformer(plan) => true
+    case _ => false
+  }
+
+  /** Inserts an InputIteratorTransformer on top of those that do not support transform. */
+  private def insertInputIteratorTransformer(plan: SparkPlan): SparkPlan = {
+    plan match {
+      case p if !supportTransform(p) =>
+        ColumnarCollapseTransformStages.wrapInputIteratorTransformer(insertWholeStageTransformer(p))
+      case p =>
+        p.withNewChildren(p.children.map(insertInputIteratorTransformer))
+    }
+  }
+
+  private def insertWholeStageTransformer(plan: SparkPlan): SparkPlan = {
+    plan match {
+      case t if supportTransform(t) =>
+        WholeStageTransformer(t.withNewChildren(t.children.map(insertInputIteratorTransformer)))(
+          ColumnarCollapseTransformStages.transformStageCounter.incrementAndGet())
+      case other =>
+        other.withNewChildren(other.children.map(insertWholeStageTransformer))
     }
   }
 }

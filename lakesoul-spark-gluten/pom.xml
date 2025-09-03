@@ -18,6 +18,7 @@
         <maven.compiler.target>8</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <gluten.version>1.5.0-SNAPSHOT</gluten.version>
+        <scalatest.version>3.2.14</scalatest.version>
     </properties>
 
     <dependencies>
@@ -25,6 +26,12 @@
             <groupId>org.apache.gluten</groupId>
             <artifactId>gluten-core</artifactId>
             <version>${gluten.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.apache.gluten</groupId>
+                    <artifactId>spark-sql-columnar-shims-spark34</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.apache.gluten</groupId>
@@ -39,18 +46,47 @@
         </dependency>
         <dependency>
             <groupId>org.apache.gluten</groupId>
+            <artifactId>gluten-substrait</artifactId>
+            <version>${gluten.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.apache.gluten</groupId>
+                    <artifactId>spark-sql-columnar-shims-spark34</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.gluten</groupId>
             <artifactId>spark-sql-columnar-shims-common</artifactId>
             <version>${gluten.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.apache.gluten</groupId>
+                    <artifactId>spark-sql-columnar-shims-spark34</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.apache.gluten</groupId>
             <artifactId>spark-sql-columnar-shims-spark33</artifactId>
             <version>${gluten.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.apache.gluten</groupId>
+                    <artifactId>spark-sql-columnar-shims-spark34</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.apache.gluten</groupId>
             <artifactId>backends-velox</artifactId>
             <version>${gluten.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.apache.gluten</groupId>
+                    <artifactId>spark-sql-columnar-shims-spark34</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>com.dmetasoul</groupId>
@@ -64,6 +100,13 @@
             </exclusions>
         </dependency>
         <dependency>
+            <groupId>com.dmetasoul</groupId>
+            <artifactId>lakesoul-spark</artifactId>
+            <version>3.3-${revision}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <groupId>org.apache.spark</groupId>
             <artifactId>spark-sql_2.12</artifactId>
             <version>${spark.version}</version>
@@ -73,6 +116,62 @@
                     <artifactId>*</artifactId>
                 </exclusion>
             </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>org.scalatest</groupId>
+            <artifactId>scalatest_${scala.binary.version}</artifactId>
+            <version>${scalatest.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.scalatestplus</groupId>
+            <artifactId>junit-4-13_2.12</artifactId>
+            <version>3.2.16.0</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-sql_${scala.binary.version}</artifactId>
+            <version>${spark.version}</version>
+            <scope>test</scope>
+            <classifier>tests</classifier>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-catalyst_${scala.binary.version}</artifactId>
+            <version>${spark.version}</version>
+            <scope>test</scope>
+            <classifier>tests</classifier>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.apache.arrow</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-core_${scala.binary.version}</artifactId>
+            <version>${spark.version}</version>
+            <scope>test</scope>
+            <classifier>tests</classifier>
+            <exclusions>
+                <exclusion>
+                    <groupId>com.google.protobuf</groupId>
+                    <artifactId>protobuf-java</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.apache.hadoop</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-hive_${scala.binary.version}</artifactId>
+            <version>${spark.version}</version>
+            <scope>provided</scope>
         </dependency>
     </dependencies>
 
