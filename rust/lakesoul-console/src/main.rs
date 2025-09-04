@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2025 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use std::{path::Path, process::ExitCode, sync::Arc};
 
 use crate::exec::{exec_command, exec_from_files, exec_from_repl};
@@ -8,8 +12,6 @@ use lakesoul_datafusion::{
 };
 use rand::Rng;
 use rand::distr::Alphanumeric;
-use tracing::trace;
-use tracing_subscriber::EnvFilter;
 use tracing_subscriber::EnvFilter;
 
 mod exec;

@@ -1,8 +1,18 @@
 **/__pycache__/
 **/dist/
-**/.ruff_cache
 **/.venv/
 **.code-workspace
 **/.pytest_cache/
 **/.env
 **/opt/
+**/target
+
+# Python-generated files
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+k8s/*.yaml

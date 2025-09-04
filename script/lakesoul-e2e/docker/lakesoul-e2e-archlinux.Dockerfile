@@ -1,5 +1,5 @@
-# SPDX-FileCopyrightText: LakeSoul Contributors
-# 
+# SPDX-FileCopyrightText: 2025 LakeSoul Contributors
+#
 # SPDX-License-Identifier: Apache-2.0
 FROM docker.1ms.run/archlinux/archlinux:base-devel-20250630.0.373922
 RUN echo "Server = https://mirrors.tuna.tsinghua.edu.cn/archlinux/\$repo/os/\$arch" | cat - /etc/pacman.d/mirrorlist > tmpf && mv tmpf /etc/pacman.d/mirrorlist

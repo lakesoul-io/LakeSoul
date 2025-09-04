@@ -1,0 +1,34 @@
+/*
+ * SPDX-FileCopyrightText: 2025 LakeSoul Contributors
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+package com.dmetasoul.e2e;
+
+import org.apache.flink.api.common.RuntimeExecutionMode;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
+
+import java.util.concurrent.ExecutionException;
+
+/**
+ * @author mag1cian
+ */
+public class Main {
+  public static void main(String[] args) throws ExecutionException, InterruptedException {
+    StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+    {%- if streaming -%}
+    env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
+    {%- else -%}
+    env.setRuntimeMode(RuntimeExecutionMode.BATCH);
+    {%- endif -%}
+    env.setParallelism(1);
+    StreamTableEnvironment tEnv = StreamTableEnvironment.create(env);
+    tEnv.getConfig().getConfiguration().setString("pipeline.name", "{{appName}}");
+    tEnv.executeSql("create catalog lakesoul with('type'='lakesoul')").await();
+    {% for sql in sqls -%}
+    tEnv.executeSql("{{sql}}").await();
+    {% endfor -%}
+  }
+}

@@ -84,4 +84,4 @@ repair-wheel-command = """\
                       -w {dest_dir} {wheel}\
     """
 [tool.uv.workspace]
-exclude = ['script/lakesoul-e2e/e2e']
+exclude = ['script/lakesoul-e2e']

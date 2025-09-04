@@ -1,5 +1,5 @@
-# SPDX-FileCopyrightText: LakeSoul Contributors
-# 
+# SPDX-FileCopyrightText: 2025 LakeSoul Contributors
+#
 # SPDX-License-Identifier: Apache-2.0
 FROM ubuntu:20.04
 ENV DEBIAN_FRONTEND=noninteractive
@@ -67,4 +67,3 @@ RUN echo '[source.crates-io]' > $LAKESOUL_HOME/.cargo/config.toml && \
     echo '[net]' >> $LAKESOUL_HOME/.cargo/config.toml && \
     echo 'git-fetch-with-cli = true' >> $LAKESOUL_HOME/.cargo/config.toml
 # build
-
