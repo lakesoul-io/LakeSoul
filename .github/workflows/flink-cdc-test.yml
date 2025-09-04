@@ -93,18 +93,18 @@ jobs:
           mkdir -p rust/target/release
           cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so rust/target/release
           cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so rust/target/release
-          MAVEN_OPTS="-Xmx4000m" mvn -q -B clean package -f pom.xml -Pcross-build -DskipTests
+          MAVEN_OPTS="-Xmx4000m" mvn -q -B clean -pl lakesoul-flink,lakesoul-spark-gluten -am -Dspark.shade.skip=true package -f pom.xml -Pcross-build -DskipTests
       - name: Get jar names
         run: |
           echo "FLINK_JAR_NAME=$(python script/get_jar_name.py lakesoul-flink)" >> $GITHUB_ENV
           echo "FLINK_TEST_JAR_NAME=$(python script/get_jar_name.py lakesoul-flink | sed -e 's/.jar/-tests.jar/g')" >> $GITHUB_ENV
-          echo "SPARK_JAR_NAME=$(python script/get_jar_name.py lakesoul-spark)" >> $GITHUB_ENV
+          echo "SPARK_JAR_NAME=$(python script/get_jar_name.py lakesoul-spark-gluten)" >> $GITHUB_ENV
           echo "SPARK_TEST_JAR_NAME=$(python script/get_jar_name.py lakesoul-spark | sed -e 's/.jar/-tests.jar/g')" >> $GITHUB_ENV
       - name: Copy built jar to work-dir
         run: |
           cp ./lakesoul-flink/target/$FLINK_JAR_NAME ./script/benchmark/work-dir
           cp ./lakesoul-flink/target/$FLINK_TEST_JAR_NAME ./script/benchmark/work-dir
-          cp ./lakesoul-spark/target/$SPARK_JAR_NAME ./script/benchmark/work-dir
+          cp ./lakesoul-spark-gluten/target/$SPARK_JAR_NAME ./script/benchmark/work-dir
           cp ./lakesoul-spark/target/$SPARK_TEST_JAR_NAME ./script/benchmark/work-dir
       - name: Deploy cluster
         run: |
