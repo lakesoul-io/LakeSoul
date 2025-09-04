@@ -5,20 +5,26 @@
 package org.apache.spark.sql.vectorized
 
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOBase
-import org.apache.arrow.memory.BufferAllocator
+import org.apache.arrow.memory.rounding.{DefaultRoundingPolicy, RoundingPolicy}
+import org.apache.arrow.memory.{AllocationListener, AllocationReservation, ArrowBuf, BufferAllocator, BufferManager, ForeignAllocation}
 import org.apache.arrow.vector.ValueVector
 import org.apache.gluten.backendsapi.BackendsApiManager
 import org.apache.gluten.execution._
+import org.apache.gluten.extension.columnar.heuristic.{FallbackNode, HeuristicTransform}
 import org.apache.gluten.extension.columnar.transition.BackendTransitions
 import org.apache.gluten.memory.arrow.alloc.ArrowBufferAllocators
-import org.apache.spark.SparkContext
+import org.apache.spark.{SparkContext, TaskContext}
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.SortOrder
 import org.apache.spark.sql.catalyst.plans.logical.Sort
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
-import org.apache.spark.sql.execution.{ColumnarCollapseTransformStages, SortExec, SparkPlan}
+import org.apache.spark.sql.execution.{ColumnarCollapseTransformStages, ColumnarToRowExec, InputIteratorTransformer, SortExec, SparkPlan, WholeStageCodegenExec}
+import org.apache.spark.util.TaskCompletionListener
+
+import java.io.IOException
+import java.util
 
 object GlutenUtils extends Logging {
 
@@ -44,7 +50,48 @@ object GlutenUtils extends Logging {
 
   def setArrowAllocator(io: NativeIOBase): Unit = {
     if (isGlutenEnabled) {
-      io.setExternalAllocator(getGlutenAllocator.newChildAllocator("gluten", 32 * 1024 * 1024, Long.MaxValue))
+      val allocator = getGlutenAllocator.newChildAllocator("gluten", 32 * 1024 * 1024, Long.MaxValue)
+      // set external allocator to gluten allocator with noop close
+      // and close this allocator in task completion listener
+      // to avoid closing in-use allocator during velox execution
+      io.setExternalAllocator(new BufferAllocator {
+        override def buffer(l: Long): ArrowBuf = allocator.buffer(l)
+        override def buffer(l: Long, bufferManager: BufferManager): ArrowBuf = allocator.buffer(l, bufferManager)
+        override def getRoot: BufferAllocator = allocator.getRoot
+        override def newChildAllocator(s: String, l: Long, l1: Long): BufferAllocator = allocator.newChildAllocator(s, l, l1)
+        override def newChildAllocator(s: String, allocationListener: AllocationListener, l: Long,
+                                       l1: Long): BufferAllocator = allocator.newChildAllocator(s, allocationListener, l, l1)
+        override def close(): Unit = {}
+        override def getAllocatedMemory: Long = allocator.getAllocatedMemory
+        override def getLimit: Long = allocator.getLimit
+        override def getInitReservation: Long = allocator.getInitReservation
+        override def setLimit(l: Long): Unit = allocator.setLimit(l)
+        override def getPeakMemoryAllocation: Long = allocator.getPeakMemoryAllocation
+        override def getHeadroom: Long = allocator.getHeadroom
+        override def forceAllocate(l: Long): Boolean = allocator.forceAllocate(l)
+        override def releaseBytes(l: Long): Unit = allocator.releaseBytes(l)
+        override def getListener: AllocationListener = allocator.getListener
+        override def getParentAllocator: BufferAllocator = allocator.getParentAllocator
+        override def getChildAllocators: util.Collection[BufferAllocator] = allocator.getChildAllocators
+        override def newReservation(): AllocationReservation = allocator.newReservation()
+        override def getEmpty: ArrowBuf = allocator.getEmpty
+        override def getName: String = allocator.getName
+        override def isOverLimit: Boolean = allocator.isOverLimit
+        override def toVerboseString: String = allocator.toVerboseString
+        override def assertOpen(): Unit = allocator.assertOpen()
+        override def getRoundingPolicy: RoundingPolicy = allocator.getRoundingPolicy
+        override def wrapForeignAllocation(allocation: ForeignAllocation): ArrowBuf = allocator.wrapForeignAllocation(allocation)
+      })
+      TaskContext.get.addTaskCompletionListener(new TaskCompletionListener {
+        override def onTaskCompletion(context: TaskContext): Unit = {
+          try allocator.close()
+          catch {
+            case e: Throwable =>
+              throw new RuntimeException(e)
+          }
+        }
+      })
+      ()
     }
   }
 
@@ -75,13 +122,31 @@ object GlutenUtils extends Logging {
             aqe.preprocessingRules,
             aqe.isSubquery,
             supportsColumnar = true)
+        // In case there's no gluten transform exist, or is already columnar to row
+        case ColumnarToRowExec(_) | VeloxColumnarToRowExec(_) | WholeStageCodegenExec(_) => return (plan.execute(), false)
+        // In case gluten transform fallback to vanilla plan
+        case FallbackNode(fallbackPlan) => return (fallbackPlan.execute(), false)
         case _ =>
-          val nativePlan = BackendTransitions.insert(plan, outputsColumnar = true)
+          val nativePlan1 = plan match {
+            case SortExec(ordering, global, child, _) =>
+              if (child.isInstanceOf[GlutenPlan] || supportTransform(child))
+                SortExecTransformer(ordering, global, child)
+              else return (plan.execute(), false)
+            case _ => plan
+          }
+          val nativePlan = BackendTransitions.insert(nativePlan1, outputsColumnar = true)
           nativePlan match {
             case plan1: ValidatablePlan if (plan1.doValidate().ok()) =>
-              if (plan1.isInstanceOf[WholeStageTransformer]) plan1 else WholeStageTransformer(plan1)(
-                ColumnarCollapseTransformStages.transformStageCounter.incrementAndGet())
-            case _ => plan
+              if (plan1.isInstanceOf[WholeStageTransformer]) plan1 else {
+                val plan2 = if (supportTransform(plan1)) {
+                  plan1
+                } else {
+                  ColumnarCollapseTransformStages.wrapInputIteratorTransformer(plan1)
+                }
+                WholeStageTransformer(plan2)(
+                  ColumnarCollapseTransformStages.transformStageCounter.incrementAndGet())
+              }
+            case _ => return (plan.execute(), false)
           }
       }
       if (!tryEnableColumnarWriter) {
@@ -121,14 +186,14 @@ object GlutenUtils extends Logging {
           aqe.preprocessingRules,
           aqe.isSubquery,
           supportsColumnar = true)
-      case _ => if (!GlutenUtils.isGlutenEnabled) {
-        SortExec(
+      case _ => if (GlutenUtils.isGlutenEnabled && supportTransform(plan)) {
+        SortExecTransformer(
           orderingExpr,
           global = false,
           child = getChildForSort(plan)
         )
       } else {
-        SortExecTransformer(
+        SortExec(
           orderingExpr,
           global = false,
           child = getChildForSort(plan)

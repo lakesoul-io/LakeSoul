@@ -301,6 +301,7 @@
                             <artifact>com.dmetasoul:lakesoul-spark</artifact>
                             <excludes>
                                 <exclude>org/apache/spark/sql/vectorized/GlutenUtils**</exclude>
+                                <exclude>org/apache/spark/sql/lakesoul/rules/withPartitionAndOrdering**</exclude>
                             </excludes>
                         </filter>
                     </filters>
