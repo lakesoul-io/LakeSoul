@@ -24,8 +24,6 @@ object NewCompactionTask {
   val DATABASE_PARAMETER = "database"
   val FILE_NUM_LIMIT_PARAMETER = "file_num_limit"
   val FILE_SIZE_LIMIT_PARAMETER = "file_size_limit"
-  val NEW_COMPACT_TABLE_LIST_PARAMETER = "new_compact_table_list"
-
   val NOTIFY_CHANNEL_NAME = "lakesoul_compaction_notify"
 
   val threadMap: java.util.Map[String, Integer] = new ConcurrentHashMap
@@ -35,8 +33,6 @@ object NewCompactionTask {
   var cleanOldCompaction: Option[Boolean] = Some(false)
   var fileNumLimit: Option[Int] = None
   var fileSizeLimit: Option[String] = None
-  var newCompactTableSet: Option[Set[String]] = None
-
   def main(args: Array[String]): Unit = {
 
     val parameter = ParametersTool.fromArgs(args)
@@ -49,19 +45,6 @@ object NewCompactionTask {
     if (parameter.has(FILE_SIZE_LIMIT_PARAMETER)) {
       fileSizeLimit = Some(parameter.get(FILE_SIZE_LIMIT_PARAMETER))
 
-    }
-
-    if(parameter.has(NEW_COMPACT_TABLE_LIST_PARAMETER)) {
-         val tableListStr = parameter.get(NEW_COMPACT_TABLE_LIST_PARAMETER)
-         newCompactTableSet = Some(
-           tableListStr.split(",")
-          .map(_.trim)
-          .filter(_.nonEmpty)
-          .toSet)
-    }
-
-    newCompactTableSet.foreach { tableSet =>
-       println(s"only use new compaction tableName: ${tableSet.mkString(", ")}")
     }
 
     val builder = SparkSession.builder()
@@ -132,23 +115,14 @@ object NewCompactionTask {
         val tableName = path.split("/").last
         val table = LakeSoulTable.forPath(path)
         if (partitionDesc == "") {
-          if(newCompactTableSet.exists(_.contains(tableName))) {
-                 table.newCompaction(fileNumLimit = fileNumLimit, fileSizeLimit = fileSizeLimit)
-          } else {
-                 table.compaction(cleanOldCompaction = cleanOldCompaction.get, fileNumLimit = fileNumLimit, fileSizeLimit = fileSizeLimit, force = fileSizeLimit.isEmpty)
-          }
+          table.newCompaction(fileNumLimit = fileNumLimit, fileSizeLimit = fileSizeLimit)
         } else {
           val partitions = partitionDesc.split(",").map(
             partition => {
               partition.replace("=", "='") + "'"
             }
           ).mkString(" and ")
-
-          if(newCompactTableSet.exists(_.contains(tableName))) {
-                table.newCompaction(partitions, fileNumLimit = fileNumLimit, fileSizeLimit = fileSizeLimit)
-          }else {
-                table.compaction(partitions, cleanOldCompaction = cleanOldCompaction.get, fileNumLimit = fileNumLimit, fileSizeLimit = fileSizeLimit, force = fileSizeLimit.isEmpty)
-          }
+          table.newCompaction(partitions, fileNumLimit = fileNumLimit, fileSizeLimit = fileSizeLimit)
         }
       } catch {
         case e: Exception => {
@@ -158,7 +132,7 @@ object NewCompactionTask {
       } finally {
         threadMap.put(setValue, 0)
         println("========== " + dateFormat.format(new Date()) + " " + threadName + " processed notification: " + setValue + " ========== ")
-      }
+      }   
     }
   }
 }
