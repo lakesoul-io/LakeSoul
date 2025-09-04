@@ -25,6 +25,8 @@ use proto::proto::entity;
 pub mod transfusion;
 
 pub mod error;
+mod jwt;
+pub use jwt::{Claims, JwtServer};
 mod metadata_client;
 mod pooled_client;
 pub mod rbac;
@@ -175,6 +177,11 @@ pub enum DaoType {
     /// The coded type for the Data Access Object for list discard compressed file by filter condition.
     ListDiscardCompressedFileByFilterCondition = DAO_TYPE_QUERY_LIST_OFFSET + 13,
 
+    /// The coded type for the Data Access Object for list namespaces by domain.
+    ListNamespacesByDomain = DAO_TYPE_QUERY_LIST_OFFSET + 14,
+    /// The coded type for the Data Access Object for list table name by domain.
+    ListTableNamesByDomain = DAO_TYPE_QUERY_LIST_OFFSET + 15,
+
     // ==== Coded Insert One ====
     /// The coded type for the Data Access Object for insert namespace.
     InsertNamespace = DAO_TYPE_INSERT_ONE_OFFSET,
@@ -279,6 +286,10 @@ async fn get_prepared_statement<'a>(
         DaoType::ListNamespaces =>
             "select namespace, properties, comment, domain
             from namespace",
+        DaoType::ListNamespacesByDomain =>
+            "select namespace, properties, comment, domain
+            from namespace
+            where domain = $1::TEXT",
 
         // Select TablePathId
         DaoType::SelectTablePathIdByTablePath =>
@@ -302,6 +313,10 @@ async fn get_prepared_statement<'a>(
             "select table_name, table_id, table_namespace, domain
             from table_name_id
             where table_namespace = $1::TEXT",
+        DaoType::ListTableNamesByDomain =>
+            "select table_name, table_id, table_namespace, domain
+            from table_name_id
+            where domain = $1::TEXT",
 
         // Select TableInfo
         DaoType::SelectTableInfoByTableId =>
@@ -595,6 +610,20 @@ pub async fn execute_query(
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
+        DaoType::ListNamespacesByDomain if params.len() == 1 => {
+            let result = client.query(&statement, &[&params[0]]).await;
+            match result {
+                Ok(rows) => rows,
+                Err(e) => return Err(LakeSoulMetaDataError::from(e)),
+            }
+        }
+        DaoType::ListTableNamesByDomain if params.len() == 1 => {
+            let result = client.query(&statement, &[&params[0]]).await;
+            match result {
+                Ok(rows) => rows,
+                Err(e) => return Err(LakeSoulMetaDataError::from(e)),
+            }
+        }
         DaoType::ListTableNameByNamespace if params.len() == 1 => {
             let result = client.query(&statement, &[&params[0]]).await;
             match result {
@@ -832,9 +861,9 @@ pub async fn execute_query(
     };
 
     let result_type = match query_type {
-        DaoType::SelectNamespaceByNamespace | DaoType::ListNamespaces => {
-            ResultType::Namespace
-        }
+        DaoType::SelectNamespaceByNamespace
+        | DaoType::ListNamespaces
+        | DaoType::ListNamespacesByDomain => ResultType::Namespace,
 
         DaoType::SelectTableInfoByTableId
         | DaoType::SelectTableInfoByTableNameAndNameSpace
@@ -847,7 +876,8 @@ pub async fn execute_query(
 
         DaoType::SelectTableNameIdByTableName
         | DaoType::ListTableNameByNamespace
-        | DaoType::SelectTableDomainById => ResultType::TableNameId,
+        | DaoType::SelectTableDomainById
+        | DaoType::ListTableNamesByDomain => ResultType::TableNameId,
 
         DaoType::ListPartitionByTableId
         | DaoType::ListPartitionDescByTableIdAndParList
