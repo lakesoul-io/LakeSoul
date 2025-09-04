@@ -255,7 +255,8 @@ jobs:
           path: ./rust/target/release/
       - name: Build with Maven
         run: |
-          wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/gluten-1.5.0-6c2c836f-snapshot.tar.gz
+          wget -q https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/gluten-1.5.0-6c2c836f-snapshot.tar.gz
+          mkdir -p ~/.m2/repository
           tar xf gluten-1.5.0-6c2c836f-snapshot.tar.gz -C ~/.m2/repository
           rm -f gluten-1.5.0-6c2c836f-snapshot.tar.gz
           MAVEN_OPTS="-Xmx4g -Dio.netty.tryReflectionSetAccessible=true" mvn -B test -pl lakesoul-spark-gluten -am -Pgluten -Pcross-build --file pom.xml -Dtest='LakeSoulGlutenCompatSuite,UpdateGlutenTestSuite,UpsertGlutenTestSuite,DeleteSQLGlutenTestSuite,MergeIntoSQLGlutenTestSuite,' -Dsurefire.failIfNoSpecifiedTests=false
