@@ -139,8 +139,8 @@ jobs:
           if [ ! -e mysql-connector-java-8.0.30.jar ]; then wget -q https://repo1.maven.org/maven2/mysql/mysql-connector-java/8.0.30/mysql-connector-java-8.0.30.jar; fi
           if [ ! -e flink-connector-jdbc-3.2.0-1.19.jar ]; then wget -q https://repo1.maven.org/maven2/org/apache/flink/flink-connector-jdbc/3.2.0-1.19/flink-connector-jdbc-3.2.0-1.19.jar; fi
           if [ ! -e assertj-core-3.23.1.jar ]; then wget -q https://repo1.maven.org/maven2/org/assertj/assertj-core/3.23.1/assertj-core-3.23.1.jar; fi
-          if [ ! -e gluten-velox-bundle-spark3.3_2.12-linux_amd64-1.4.0.jar ]; then wget -q https://github.com/apache/incubator-gluten/releases/download/v1.4.0/apache-gluten-1.4.0-incubating-bin-spark33.tar.gz && tar xf apache-gluten-1.4.0-incubating-bin-spark33.tar.gz -C ./script/benchmark/work-dir && rm -f apache-gluten-1.4.0-incubating-bin-spark33.tar.gz; fi
-          ls -lah ./script/benchmark/work-dir
+          if [ ! -e gluten-velox-bundle-spark3.3_2.12-linux_amd64-1.4.0.jar ]; then wget -q https://github.com/apache/incubator-gluten/releases/download/v1.4.0/apache-gluten-1.4.0-incubating-bin-spark33.tar.gz && tar xf apache-gluten-1.4.0-incubating-bin-spark33.tar.gz && rm -f apache-gluten-1.4.0-incubating-bin-spark33.tar.gz; fi
+          ls -lah .
       - name: Create table and insert data
         run: |
           cd ./script/benchmark
