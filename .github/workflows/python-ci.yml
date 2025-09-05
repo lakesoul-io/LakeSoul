@@ -78,7 +78,7 @@ jobs:
           cp cpp/build/_lakesoul_dataset.so python/lakesoul/arrow
           cp rust/target/release/liblakesoul_metadata_c.so python/lakesoul/metadata/lib/
           cargo run --manifest-path rust/Cargo.toml --release -p lakesoul-console -- tpch-gen -p "file:///tmp/lakesoul/tpch_data" --scale-factor 0.1 -n 8 
-          uv run pytest -s
+          uv run pytest python/tests/ -s
   publish:
     runs-on: ubuntu-latest
     if: startsWith(github.event.ref, 'refs/tags/v')

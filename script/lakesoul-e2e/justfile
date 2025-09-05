@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2025 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+image-init:
+    wget https://mirrors.tuna.tsinghua.edu.cn/apache/flink/flink-1.20.1/flink-1.20.1-bin-scala_2.12.tgz -O opt/flink-1.20.1-bin-scala_2.12.tgz 
+    wget https://archive.apache.org/dist/spark/spark-3.3.2/spark-3.3.2-bin-without-hadoop.tgz -O opt/spark-3.3.2-bin-without-hadoop.tgz
+    wget https://archive.apache.org/dist/hadoop/common/hadoop-3.3.2/hadoop-3.3.2.tar.gz -O opt/hadoop-3.3.2.tar.gz
+    wget https://github.com/protocolbuffers/protobuf/releases/download/v25.7/protoc-25.7-linux-x86_64.zip -O opt/protoc-25.7-linux-x86_64.zip
+    wegt https://repo1.maven.org/maven2/org/apache/parquet/parquet-hadoop-bundle/1.13.1/parquet-hadoop-bundle-1.13.1.jar
+
+run:
+    uv run e2etest --dag_dir ./dags/example.py --level debug --parallelism 7 
+
+upload oss:
+    mc cp ~/.m2/repository/com/dmetasoul/lakesoul-flink/1.20-3.0.0-SNAPSHOT/lakesoul-flink-1.20-3.0.0-SNAPSHOT.jar {{oss}}/dmetasoul-bucket/jiax/lakesoul-e2e/compile/lakesoul-flink-1.20-3.0.0-SNAPSHOT.jar
+    mc cp ~/.m2/repository/com/dmetasoul/lakesoul-spark/3.3-3.0.0-SNAPSHOT/lakesoul-spark-3.3-3.0.0-SNAPSHOT.jar {{oss}}/dmetasoul-bucket/jiax/lakesoul-e2e/compile/lakesoul-spark-3.3-3.0.0-SNAPSHOT.jar
+
+rm oss:
+    -mc rm  {{oss}}/dmetasoul-bucket/jiax/lakesoul-e2e/compile/flink-e2e-3.0.0-SNAPSHOT.jar
+    -mc rm  {{oss}}/dmetasoul-bucket/jiax/lakesoul-e2e/compile/spark-e2e-3.0.0-SNAPSHOT.jar 
+    -mc rm  {{oss}}/dmetasoul-bucket/jiax/lakesoul-e2e/compile/lakesoul-flink-1.20-3.0.0-SNAPSHOT.jar
+    -mc rm  {{oss}}/dmetasoul-bucket/jiax/lakesoul-e2e/compile/lakesoul-spark-3.3-3.0.0-SNAPSHOT.jar
+
+del-pod name:
+    kubectl get pods | rg '{{name}}' | awk '{print $1}'  | xargs kubectl delete pod
+    
+del-deploy name pos="1,2":
+    kubectl get pods | rg {{name}} | awk '{print $1}' | cut -d'-' -f{{pos}} | xargs kubectl delete deployment
+

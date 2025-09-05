@@ -83,3 +83,5 @@ repair-wheel-command = """\
                       --exclude libarrow.so.1601 \
                       -w {dest_dir} {wheel}\
     """
+[tool.uv.workspace]
+exclude = ['script/lakesoul-e2e']

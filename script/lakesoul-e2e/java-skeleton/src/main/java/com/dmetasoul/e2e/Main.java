@@ -1,0 +1,29 @@
+/*
+ * SPDX-FileCopyrightText: 2025 LakeSoul Contributors
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+package com.dmetasoul.e2e;
+
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.types.DataTypes;
+import org.apache.spark.sql.types.StructField;
+import org.apache.spark.sql.types.StructType;
+
+/**
+ * @author mag1cian
+ */
+public class Main {
+  public static void main(String[] args) {
+    var spark =
+        SparkSession.builder()
+            .appName("repeat_sink_1707-source_after")
+            .getOrCreate();
+    var df = spark.sql("SELECT * FROM test_table_1");
+    df.write().mode("overwrite").parquet("s3://dmetasoul-bucket/jiax/lakesoul-e2e/repeat_sink_1707/after/");
+    spark.stop();
+  }
+}

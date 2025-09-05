@@ -36,8 +36,10 @@ impl Debug for PooledClient {
 pub type PgConnection<'a> = PooledConnection<'a, PgConnectionManager>;
 
 impl PooledClient {
+    #[instrument(level = "trace")]
     pub async fn try_new(config: String) -> Result<PooledClient> {
         let config = config.parse::<Config>()?;
+        trace!("try to build pooled pg client");
         let manager = PgConnectionManager::new(config);
         let pool = Pool::builder()
             .max_size(8)

@@ -22,6 +22,7 @@ import org.apache.spark.sql.lakesoul.schema.{InvariantCheckerExec, Invariants, S
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.types.{StringType, StructType}
+import org.apache.spark.sql.vectorized.GlutenUtils
 import org.apache.spark.util.SerializableConfiguration
 
 import scala.collection.mutable
@@ -256,7 +257,7 @@ trait TransactionalWrite {
         options.put("compression", "uncompressed")
       }
 
-      val physicalPlan = if (isCompaction) {
+      val physicalPlan = if (isCompaction || GlutenUtils.isGlutenEnabled) {
         queryExecution.executedPlan
       } else {
         val invariants = Invariants.getFromSchema(tableInfo.schema, spark)
