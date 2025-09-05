@@ -71,8 +71,6 @@ jobs:
           export LD_LIBRARY_PATH=$JAVA_HOME/lib/server:$LD_LIBRARY_PATH
           echo $LD_LIBRARY_PATH
           mvn package -pl lakesoul-spark -am -DskipTests
-          uv sync
-          source .venv/bin/activate
           bash cpp/compile.sh
           cp cpp/build/python/lakesoul/metadata/generated/entity_pb2.py python/lakesoul/metadata/generated
           cp cpp/build/_lakesoul_dataset.so python/lakesoul/arrow
@@ -93,7 +91,7 @@ jobs:
       - name: build  
         run: |
           python3 python/docker_build_all_wheels.py
-      - name: Publish package distributions to TestPyPI
+      - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
 
       
