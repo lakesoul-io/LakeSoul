@@ -45,11 +45,23 @@ trigger 和 pg 函数在数据库初始化的时候已经配置，默认压缩�
     --num-executors 20 \
     --conf "spark.executor.extraJavaOptions=-XX:MaxDirectMemorySize=4G" \
     --conf "spark.executor.memoryOverhead=3g" \
-    --class com.dmetasoul.lakesoul.spark.compaction.CompactionTask  \
+    --class com.dmetasoul.lakesoul.spark.compaction.NewCompactionTask  \
     jars/lakesoul-spark-3.3-VAR::VERSION.jar 
     --threadpool.size=10
     --database=test
 ```
+Compaction提供了以下参数，提交时候写在NewCompactionTask之后，例如`--conf spark.dmetasoul.lakesoul.compaction.max.bytes.for.level.base=1GB`。
+|参数        |    参数说明     |     默认值      | 
+| :----------- | :----------- | -----------: |
+|`spark.dmetasoul.lakesoul.compaction.max.bytes.for.level.base` | Level1层触发Compact所需最小字节数(单个Bucket内)| 100MB|
+|`spark.dmetasoul.lakesoul.compaction.max.bytes.for.low.level.multiplier` | LeveL-n+1/Level-n触发Compact最小字节数比率(`1<=n<=2` 单个Bucket内)| 5|
+|`spark.dmetasoul.lakesoul.compaction.max.bytes.for.level.multiplier` | LeveL-n+1/Level-n层触发Compact最小字节数比率(`n>=3`单个Bucket内)| 10|
+|`spark.dmetasoul.lakesoul.compaction.level0.file.number.limit` | L0层触发Compact需要的最少文件数量(单个Bucket内)| 10|
+|`spark.dmetasoul.lakesoul.compaction.level.file.number.limit` | 每层触发Compact需要的最少文件数量，不包含L0(单个Bucket内)| 10|
+|`spark.dmetasoul.lakesoul.compaction.level.file.merge.size.limit` | 每层触发Compact时，每个合并组的最小字节数，不包含L0(单个Bucket内)| 1GB|
+|`spark.dmetasoul.lakesoul.compaction.level.file.merge.num.limit` | 触发Compact时，每个合并组的最少文件数，不包含L0(单个Bucket内)| 5|
+|`spark.dmetasoul.lakesoul.compaction.level.max.file.size` | Lsm-tree最大层数，设定为n，总共有n+1层，L0-Ln| 5|
+
 :::tip
 因为LakeSoul默认开启native IO 需要依赖堆外内存，所以 Spark 任务需要设置堆外内存大小，否则容易出现堆外内存溢出问题。
 :::
