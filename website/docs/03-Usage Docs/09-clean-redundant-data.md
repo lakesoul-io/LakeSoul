@@ -1,7 +1,7 @@
 # LakeSoul Table Lifecycle Automatic Maintenance and Redundant Data Automatic Cleaning
 
 :::tip
-This feature is available starting from version 2.4.0 to 2.6.0
+This feature is available starting from version 2.4.0 to 2.6.0. For 3.0 version and above, it is recommended to use [Async Clean Service](../03-Usage%20Docs/16-new-async-clean-service.md).
 :::
 
 In a data warehouse, it is usually necessary to set the life cycle of table data to save space and reduce costs.

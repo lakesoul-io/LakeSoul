@@ -52,7 +52,7 @@ After unpacking spark package, you could find LakeSoul distribution jar from htt
 wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/spark/spark-3.3.2-bin-hadoop3.tgz
 tar xf spark-3.3.2-bin-hadoop3.tgz
 export SPARK_HOME=${PWD}/spark-3.3.2-bin-hadoop3
-wget https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-spark-VAR::VERSION-spark-3.3.jar -P $SPARK_HOME/jars
+wget https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-spark-3.3-VAR::VERSION.jar -P $SPARK_HOME/jars
 ```
 
 :::tip
@@ -117,7 +117,9 @@ s3.path.style.access: true
 ```
 
 And place flink-s3-fs-hadoop.jar and flink-shaded-hadoop-2-uber-2.6.5-10.0.jar under Flink/lib
+
 Download flink-s3-fs-hadoop.jar: https://repo1.maven.org/maven2/org/apache/flink/flink-s3-fs-hadoop/1.20.1/flink-s3-fs-hadoop-1.20.1.jar
+
 Download flink-shaded-hadoop-2-uber-2.6.5-10.0.jar: https://repo1.maven.org/maven2/org/apache/flink/flink-shaded-hadoop-2-uber/2.6.5-10.0/flink-shaded-hadoop-2-uber-2.6.5-10.0.jar
 
 ## 2. Start on Hadoop, Spark and Flink cluster environments

@@ -41,9 +41,11 @@ PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/me
 
 同时，还需要增加一个额外的配置项来指定工作空间。可以用环境变量 `LAKESOUL_CURRENT_DOMAIN` 或 JVM 属性 `lakesoul.current.domain` 来传递该用户的工作空间。设置这些参数后，Spark/Flink/Presto/Python 的作业即可实现工作空间划分和元数据隔离。
 
-## 与 Hadoop 用户组配合使用
-在集群中，通常还需要隔离 HDFS 上的物理数据。LakeSoul 会自动在建表时，将 namespace 和表目录的用户组设置为当前用户和工作空间。并将 namespace 目录权限设置为 `drwx-rwx-___`，将表目录权限设置为 `drwx-r_x-___` （目前仅支持HDFS。S3的支持会在未来提供）。
+## 与存储系统的权限集成
+在 HDFS 集群中，通常还需要隔离 HDFS 上的物理数据。LakeSoul 会自动在建表时，将 namespace 和表目录的用户组设置为当前用户和工作空间。并将 namespace 目录权限设置为 `drwx-rwx-___`，将表目录权限设置为 `drwx-r_x-___` 。
 
 在多租户 Hadoop 环境中，建议在作业提交客户机上，为每个用户分配 Linux 用户，与 Hadoop 用户组同步。并为每个用户设置好 LakeSoul 元数据连接的环境变量(可以添加到每个用户的 `~/.bashrc` 中)。除集群管理员外，其他用户在客户机上不应有 sudo 权限。
 
 如果使用 Zeppelin 等开发环境，可以参考 Zeppelin 的 [User Impersonation](https://zeppelin.apache.org/docs/0.10.0/usage/interpreter/user_impersonation.html) 功能，在每个用户创建 Notebook 时，自动进行 Linux 用户的切换(通过 `sudo -u`)。其他开发工具也可以参考实现类似的机制。
+
+对于 S3 等对象存储，LakeSoul 提供了 `S3 Proxy`服务，用于实现对象存储上目录的权限隔离。`S3 Proxy`采用 Sidecar 转发模式，拦截 S3 的 http 请求，结合当前用户名信息判断是否具有要访问的目标表的权限。

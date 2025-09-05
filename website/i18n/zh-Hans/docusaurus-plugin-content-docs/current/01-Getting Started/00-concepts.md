@@ -18,12 +18,12 @@ LakeSoul 是一个端到端的实时湖仓存储框架，使用开放式的架�
 
 ## LakeSoul 的核心功能
 LakeSoul 的目标是构建一套端到端的湖仓平台，涵盖数据集成、实时/批量数据 ETL 计算和 AI 计算。主要核心功能点包括：
-1. [实时数据集成](../03-Usage%20Docs/05-flink-cdc-sync.md)。LakeSoul 基于 Flink CDC 实现了整库同步的功能，目前已支持 MySQL、PostgreSQL、PolarDB、Oracle 等数据库。对于所有数据源，均支持整库同步、自动新表发现同步、自动 Schema 变更同步（支持加列、减列）。
-2. 流批计算。LakeSoul 支持 Spark、Flink 等框架进行流、批 ETL 计算。其中主键表在 Flink 中支持 ChangeLog （CDC）读取，从而实现[流式增量计算](../03-Usage%20Docs/06-flink-lakesoul-connector.md)。
-3. 数据分析查询。LakeSoul 通过高性能的 IO 层实现提升数据分析查询的性能。同时也能够支持各类向量化的计算引擎。当前 LakeSoul 已经实现了 Spark Gluten Engine 的对接，在 Spark 上实现原生向量化计算。LakeSoul 也在进一步实现与 Apache Doris、Clickhouse、Presto Velox 等高性能向量化查询引擎的对接。
+1. [实时数据集成](../03-Usage%20Docs/05-flink-cdc-sync.md)。LakeSoul 基于 Flink CDC 实现了整库同步的功能，目前已支持 MySQL、PostgreSQL、PolarDB、Oracle 等数据库。对于所有数据源，均支持整库同步、自动新表发现同步、自动 DDL Schema 变更同步（支持加列、减列、变更数据类型）。
+2. 流批计算。LakeSoul 支持 Spark、Flink 等框架进行流、批 ETL 计算。其中主键表在 Flink 中支持多流并发 Upsert、Partial Update、ChangeLog （CDC）读取，从而实现[流式增量计算](../03-Usage%20Docs/06-flink-lakesoul-connector.md)。
+3. 数据分析查询。LakeSoul 通过高性能的 IO 层实现提升数据分析查询的性能。同时也能够支持各类向量化的计算引擎。当前 LakeSoul 已经实现了 Spark Gluten Engine 的对接，在 Spark 上实现原生向量化计算。LakeSoul 也实现了与 Apache Doris、Presto Velox 等高性能向量化查询引擎的对接集成。
 4. [AI 计算](../03-Usage%20Docs/11-machine-learning-support.md)。LakeSoul 能够支持 PyTorch、Ray、Pandas 等各类 AI 和数据科学框架分布式读取，进行 AI 模型的训练和推理。
 5. 多租户空间和 RBAC。LakeSoul 内置了[多空间隔离和权限控制](../03-Usage%20Docs/12-workspace-and-rbac.md)。可以在湖仓中划分多个工作空间，每个工作空间可以加入多个用户。不同空间的元数据、物理数据实现了访问权限隔离。空间的权限隔离，对于 SQL、Java/Scala、Python 作业，包括提交到集群上执行的作业，均是有效的。
-6. 自治管理。LakeSoul 提供了[自动分离式的弹性 Compaction 服务](../03-Usage%20Docs/08-auto-compaction-task.md)、[自动数据清理服务等](../03-Usage%20Docs/09-clean-redundant-data.md)，减轻运维工作量。其中分离式弹性 Compaction 服务由元数据层自动感知触发，并行执行，不影响写入任务的效率。
+6. 自治管理。LakeSoul 提供了[自动分离式的弹性 Compaction 服务](../03-Usage%20Docs/08-auto-compaction-task.md)、[自动数据清理服务等](../03-Usage%20Docs/16-new-async-clean-service.md)，减轻运维工作量。其中分离式弹性 Compaction 服务由元数据层自动感知触发，并行执行，不影响写入任务的效率。
 7. 快照和回滚。LakeSoul 表可以支持按照时间戳进行[快照读和版本回滚](../02-Tutorials/03-snapshot-manage.md)。
 8. [出湖同步](../03-Usage%20Docs/14-export-to-databases.md)。LakeSoul 提供封装好的流式、批式出湖任务。
 
@@ -50,7 +50,7 @@ LakeSoul 的目标是构建一套端到端的湖仓平台，涵盖数据集成�
 
 主键表还能够支持 [CDC 格式](../03-Usage%20Docs/04-cdc-ingestion-table.mdx)。对于从数据库同步的表，需要开启 CDC 格式。同时 CDC 格式在 Flink 流读时会自动支持 ChangeLog 语义，从而能够在 Flink 中实现流式增量计算。
 
-主键表在 Presto 和 AI 框架中同样支持批读。
+主键表（含 CDC 格式表）在 Doris、Presto 和 Python 中同样支持批读。
 
 ### 快照读
 LakeSoul 在 Spark、Flink 中支持快照读（Time Travel）和版本回滚。参考文档：[Spark 快照功能](../02-Tutorials/03-snapshot-manage.md)、[Flink 快照读](../03-Usage%20Docs/06-flink-lakesoul-connector.md#42-%E5%BF%AB%E7%85%A7%E6%89%B9%E9%87%8F%E8%AF%BB)。
