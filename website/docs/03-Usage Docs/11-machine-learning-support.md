@@ -6,24 +6,12 @@ released 1.0 Beta.
 
 ## Install
 
-### Download LakeSoul wheel file
+### Download LakeSoul from PyPI
 
-For users of Python 3.8, Python 3.9, and Python 3.10, we have prepared different wheel files for each version. Please
-download the appropriate one based on your requirements. We will publish official package to pypi.org in near future.
-
-The Python package currently only supports Linux x86_64 systems. The Python package is built based on the manylinux_2_28 image and supports CentOS 8, Debian 10, Ubuntu 18.10 and above OS versions (for specific compatibility, see [Distro compatibility](https://github.com/mayeut/pep600_compliance?tab=readme-ov-file#distro-compatibility)). If you need to run it on an earlier OS version, it is recommended to use Docker container.
-
-* For Python 3.8
-  users: [lakesoul-1.0.0b2-cp38-cp38-manylinux_2_28_x86_64.whl](https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b2-cp38-cp38-manylinux_2_28_x86_64.whl)
-* For Python 3.9
-  users: [lakesoul-1.0.0b2-cp39-cp39-manylinux_2_28_x86_64.whl](https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b2-cp39-cp39-manylinux_2_28_x86_64.whl)
-* For Python 3.10
-  users: [lakesoul-1.0.0b2-cp310-cp310-manylinux_2_28_x86_64.whl](https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b2-cp310-cp310-manylinux_2_28_x86_64.whl)
-
-Assuming we are using Python 3.8, we can down load the wheel file as below
+Currently, Lakesoul only supports Python 3.8, 3.9, 3.10 on x64 Linux.
 
 ```bash
-wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b2-cp38-cp38-manylinux_2_28_x86_64.whl
+pip install lakesoul
 ```
 
 ### Install python virtual enviroment
@@ -31,7 +19,7 @@ wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lake
 We have provide several AI training examples using LakeSoul as data source. Follow the below instructions to setup a
 testing environment.
 
-```bash 
+```bash  
 # change python version if needed
 conda create -n lakesoul_test python=3.8
 conda activate lakesoul_test
@@ -42,7 +30,9 @@ pip install -r requirements.txt
 ```
 
 ### LakeSoul environment setup
+
 When using, you need to refer to the method in the [LakeSoul Quick Environment](../01-Getting%20Started/01-setup-local-env.md) document to setup the LakeSoul environment, and configure the connection information of the LakeSoul metadata library through the environment variables: `LAKESOUL_PG_URL`, `LAKESOUL_PG_USERNAME`, `LAKESOUL_PG_PASSWORD`. If you use docker compose to start the local test environment as described in the document, then these environment variables are:
+
 ```bash
 export LAKESOUL_PG_URL=jdbc:postgresql://localhost:5432/lakesoul_test?stringtype=unspecified
 export LAKESOUL_PG_USERNAME=lakesoul_test

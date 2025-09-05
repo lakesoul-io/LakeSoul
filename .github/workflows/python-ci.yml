@@ -71,7 +71,7 @@ jobs:
           export LD_LIBRARY_PATH=$JAVA_HOME/lib/server:$LD_LIBRARY_PATH
           echo $LD_LIBRARY_PATH
           mvn package -pl lakesoul-spark -am -DskipTests
-          uv sync
+          uv sync --no-install-project   
           source .venv/bin/activate
           bash cpp/compile.sh
           cp cpp/build/python/lakesoul/metadata/generated/entity_pb2.py python/lakesoul/metadata/generated
@@ -81,7 +81,7 @@ jobs:
           uv run pytest python/tests/ -s
   publish:
     runs-on: ubuntu-latest
-    if: startsWith(github.event.ref, 'refs/tags/v')
+    if: startsWith(github.event.ref, 'refs/tags/py-v')
     needs: ["run-pytest"]
     env:
       PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
@@ -93,7 +93,7 @@ jobs:
       - name: build  
         run: |
           python3 python/docker_build_all_wheels.py
-      - name: Publish package distributions to TestPyPI
+      - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
 
       
