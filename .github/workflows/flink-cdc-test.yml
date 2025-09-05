@@ -93,6 +93,10 @@ jobs:
           mkdir -p rust/target/release
           cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so rust/target/release
           cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so rust/target/release
+          wget -q https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/gluten-1.5.0-6c2c836f-snapshot.tar.gz
+          mkdir -p ~/.m2/repository
+          tar xf gluten-1.5.0-6c2c836f-snapshot.tar.gz -C ~/.m2/repository
+          rm -f gluten-1.5.0-6c2c836f-snapshot.tar.gz
           MAVEN_OPTS="-Xmx4000m" mvn -q -B clean -pl lakesoul-flink,lakesoul-spark-gluten -am -Dspark.shade.skip=true package -f pom.xml -Pcross-build -Pgluten -DskipTests
       - name: Get jar names
         run: |
