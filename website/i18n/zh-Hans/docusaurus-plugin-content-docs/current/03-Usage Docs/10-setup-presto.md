@@ -7,7 +7,7 @@
 LakeSoul 实现了 Presto Connector，目前支持读取湖仓表，能够读取无主键表、有主键表（包括 [CDC 格式表](04-cdc-ingestion-table.mdx)），读取时会自动执行 Merge on Read 获取最新的数据。
 
 ## 下载 Jar 包
-可以从 Github Release 页面下载 Presto 的包：https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-presto-presto-0.28-VAR::VERSION.jar
+可以从 Github Release 页面下载 Presto 的包：https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-presto-presto-0.29-VAR::VERSION.jar
 
 ## 配置 Presto
 在 Presto 目录下的 plugin 子目录下，新建 lakesoul 子目录。将上面下载好的 jar 放入该子目录。
@@ -23,7 +23,7 @@ fs.s3a.endpoint=http://minio:9000
 其中 `fs.s3a` 开头的设置项为访问 S3 的配置，可以根据需要修改。
 
 ## 配置 LakeSoul 元数据
-参考 [配置元数据](01-setup-meta-env.md) 文档中的方法，使用环境变量或 JVM Property 等方式。例如可以在 [Presto JVM Config](https://prestodb.io/docs/current/installation/deployment.html#jvm-config) 中配置 JVM Properties。
+参考 [配置元数据](01-setup-meta-env.md) 文档中的方法，使用环境变量或 JVM Property 等方式。例如可以在 [Presto JVM Config](https://prestodb.io/docs/current/installation/deployment.html#jvm-config) 中配置 JVM Properties，或使用环境变量`LAKESOUL_PG_URL`等配置。对于集群部署（如 k8S,推荐使用Secret + 环境变量引用的方式配置元数据库）。
 
 ## 启动 Presto Client
 ```shell

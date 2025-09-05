@@ -42,9 +42,11 @@ Refer to the method in [Metadata Configuration](01-setup-meta-env.md) and use th
 
 At the same time, an additional configuration item needs to be added to specify the workspace. The user's workspace can be passed using the environment variable `LAKESOUL_CURRENT_DOMAIN` or the JVM property `lakesoul.current.domain`. After setting these parameters, Spark/Flink/Presto/Python jobs can achieve workspace division and metadata isolation.
 
-## Used with Hadoop user group
-In a cluster, it is also often necessary to isolate the physical data on HDFS. LakeSoul will automatically set  user and group of the namespace and table directory to the current user and workspace when creating a table. And set the namespace directory permissions to `drwx-rwx-___` and the table directory permissions to `drwx-r_x-___` (Currently only HDFS is supported. S3 support will be provided in the future).
+## Use LakeSoul RBAC with storage systems
+In an HDFS cluster, it is also often necessary to isolate the physical data on HDFS. LakeSoul will automatically set  user and group of the namespace and table directory to the current user and workspace when creating a table. And set the namespace directory permissions to `drwx-rwx-___` and the table directory permissions to `drwx-r_x-___` (Currently only HDFS is supported. S3 support will be provided in the future).
 
 In a multi-tenant Hadoop environment, it is recommended that each user be assigned a Linux user on the job submission client machine, synchronized with the Hadoop's user and group. And set the environment variables of the LakeSoul metadata connection for each user (can be added to each user's `~/.bashrc`). Users other than the cluster administrator should not have sudo permissions on the client machine.
 
 If you use a development environment such as Zeppelin, you can refer to Zeppelin's [User Impersonation](https://zeppelin.apache.org/docs/0.10.0/usage/interpreter/user_impersonation.html) function. When each user creates a Notebook, Zeppelin would automatically switch Linux users (via `sudo -u`). Other development tools can also implement similar mechanisms.
+
+For object storage systems like S3, LakeSoul provides the `S3 Proxy` service to implement permission isolation for directories on object storage. `S3 Proxy` uses a sidecar forwarding model to intercept S3 HTTP requests and, based on the current username, determine whether the user has permission to access the target table.

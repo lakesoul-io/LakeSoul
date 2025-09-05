@@ -16,6 +16,8 @@ SPDX-License-Identifier: Apache-2.0
 
 [中文介绍](README-CN.md)
 
+**2025.09: LakeSoul has released newest version 3.0.0, check out our [release note](https://lakesoul-io.github.io/blog/2025/09/05/lakesoul-3.0.0-release)**
+
 LakeSoul is a cloud-native Lakehouse framework that supports scalable metadata management, ACID transactions, efficient and flexible upsert operation, schema evolution, and unified streaming & batch processing.
 
 LakeSoul supports multiple computing engines to read and write lake warehouse table data, including Spark, Flink, Presto, and PyTorch, and supports multiple computing modes such as batch, stream, MPP, and AI. LakeSoul supports storage systems such as HDFS and S3.
@@ -34,7 +36,7 @@ LakeSoul supports concurrent batch or streaming read and write. Both read and wr
 
 LakeSoul supports multi-workspace and RBAC. LakeSoul uses Postgres's RBAC and row-level security policies to implement permission isolation for metadata. Together with Hadoop users and groups, physical data isolation can be achieved. LakeSoul's permission isolation is effective for SQL/Java/Python jobs.
 
-LakeSoul supports automatic disaggregated compaction, automatic table life cycle maintenance, and automatic redundant data cleaning, reducing operation costs and improving usability.
+LakeSoul supports automatic disaggregated size-tiered multi-level compaction, automatic table life cycle maintenance, automatic data asset statistics, and automatic redundant data cleaning, reducing operation costs and improving usability.
 
 More detailed features please refer to our doc page: [Documentations](https://lakesoul-io.github.io/docs/intro)
 
@@ -91,10 +93,8 @@ Please find usage documentations in doc site:
   - [x] Query optimization
     - [x] Shuffle/Join elimination for operations on primary key
   - [x] Merge UDF (Merge operator)
-  - [ ] Merge Into SQL support
+  - [x] Merge Into SQL support
     - [x] Merge Into SQL with match on Primary Key (Merge on read)
-    - [ ] Merge Into SQL with match on non-pk
-    - [ ] Merge Into SQL with match condition and complex expression (Merge on read when match on PK) (depends on [#66](https://github.com/lakesoul-io/LakeSoul/issues/66))
 * Flink Integration and CDC Ingestion ([#57](https://github.com/lakesoul-io/LakeSoul/issues/57))
   - [x] Table API
     - [x] Batch/Stream Sink
@@ -113,13 +113,14 @@ Please find usage documentations in doc site:
   - [x] Time Travel (Snapshot read)
   - [x] Snapshot rollback
   - [x] Automatic global compaction service
-  - [ ] MPP Engine Integration (depends on [#66](https://github.com/lakesoul-io/LakeSoul/issues/66))
+  - [x] MPP Engine Integration (depends on [#66](https://github.com/lakesoul-io/LakeSoul/issues/66))
     - [x] Presto
-    - [ ] Trino
+    - [x] Compatibility with Presto Native Execution(with Velox)
+    - [x] Apache Doris
 * Cloud and Native IO ([#66](https://github.com/lakesoul-io/LakeSoul/issues/66))
   - [x] Object storage IO optimization
-  - [x] Native merge on read
-  - [ ] Multi-layer storage classes support with data tiering
+  - [x] Native vectorized merge on read
+  - [x] Multi-layer storage classes support with local-disk data cache
 
 # Community guidelines
 [Community guidelines](community-guideline.md)

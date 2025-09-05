@@ -8,6 +8,8 @@ SPDX-License-Identifier: Apache-2.0
 
 <img src='https://github.com/lfai/artwork/blob/main/lfaidata-assets/lfaidata-project-badge/sandbox/color/lfaidata-project-badge-sandbox-color.svg' alt="LF AI & Data Sandbox Project" height='180'>
 
+**2025.09: LakeSoul 发布最新 3.0.0 版本，详情请参考 [发布日志](https://lakesoul-io.github.io/blog/2025/09/05/lakesoul-3.0.0-release)**
+
 LakeSoul 是一款开源云原生湖仓一体框架，具备高可扩展的元数据管理、ACID 事务、高效灵活的 upsert 操作、Schema 演进和批流一体化处理等特性。LakeSoul 支持多种计算引擎读写湖仓表数据，包括 Spark、Flink、Presto、PyTorch，支持批、流、MPP、AI 多种计算模式。LakeSoul 支持 HDFS、S3 等存储系统。
 ![LakeSoul 架构](website/static/img/lakeSoulModel.png)
 
@@ -23,7 +25,7 @@ LakeSoul 支持流、批并发读写，读写全面兼容 CDC 语义，通过自
 
 LakeSoul 支持多工作空间和用户权限隔离。LakeSoul 使用 Postgres 的 RBAC 和行级别安全策略，实现了元数据的权限隔离。配合 Hadoop 用户和组，可以实现物理数据隔离。LakeSoul 的权限隔离对 SQL/Java/Python 的作业都是有效的。
 
-LakeSoul 支持自动分离式 Compaction 、自动表生命周期清理、自动冗余数据清理，降低维护成本，提升易用性。
+LakeSoul 支持自动分离式多层 Compaction 、自动表生命周期清理、自动冗余数据清理、自动资产统计、数据血缘等，降低维护成本，提升易用性。
 
 更多特性和其他产品对比请参考：[特性介绍](https://lakesoul-io.github.io/zh-Hans/docs/intro)
 
