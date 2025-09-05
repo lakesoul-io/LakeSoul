@@ -1,0 +1,54 @@
+# SPDX-FileCopyrightText: 2025 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v1
+kind: Pod
+metadata:
+  name: e2etest
+  labels:
+    app: e2etest
+  namespace: lakesoul-basic-env
+spec:
+  containers:
+    - name: e2etest
+      image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/e2e:0.1.6
+      command: ["/bin/bash"] 
+      # command: ["e2etest"] 
+      # args: ["--fresh", "--repo","https://github.com/mag1c1an1/LakeSoul.git","--branch","tmp_name", "run"]
+      env:
+        - name: LAKESOUL_PG_URL
+          valueFrom:
+            configMapKeyRef:
+              name: config
+              key: LAKESOUL_PG_URL
+        - name: LAKESOUL_PG_USERNAME
+          valueFrom:
+            configMapKeyRef:
+              name: config
+              key: LAKESOUL_PG_USERNAME
+        - name: LAKESOUL_PG_PASSWORD
+          valueFrom:
+            configMapKeyRef:
+              name: config
+              key: LAKESOUL_PG_PASSWORD
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            configMapKeyRef:
+              name: config
+              key: AWS_ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            configMapKeyRef:
+              name: config
+              key: AWS_SECRET_ACCESS_KEY
+        - name: AWS_ENDPOINT
+          valueFrom:
+            configMapKeyRef:
+              name: config
+              key: AWS_ENDPOINT
+        - name: AWS_BUCKET
+          valueFrom:
+            configMapKeyRef:
+              name: config
+              key: AWS_BUCKET
+  restartPolicy: Never  # 任务完成后不需要重启

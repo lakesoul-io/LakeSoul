@@ -77,14 +77,18 @@ public class CleanUtils {
     }
 
     public void cleanPartitionInfo(String table_id, String partition_desc, int version, Connection connection) throws SQLException {
+        UUID id = UUID.randomUUID();
+        logger.info("[Clean-{}]: begin", id);
         String sql = "DELETE FROM partition_info where table_id= '" + table_id +
                 "' and partition_desc ='" + partition_desc + "' and version = '" + version + "'";
         try (PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
             preparedStatement.executeUpdate();
             logger.info(sql);
+            logger.info("[Clean-{}]: success",id);
         } catch (SQLException e) {
             e.printStackTrace();
             logger.info("删除partition_info数据异常");
+            logger.info("[Clean-{}]: fail",id);
         }
     }
 
@@ -92,54 +96,72 @@ public class CleanUtils {
     private static final String S3_URI_PREFIX = "s3:/";
 
     public void deleteFile(List<String> filePathList) throws SQLException {
+        UUID id = UUID.randomUUID();
+        logger.info("[Clean-{}]: begin",id);
         Configuration hdfsConfig = new Configuration();
+        boolean hasError = false;
         for (String filePath : filePathList) {
-            if (filePath.startsWith(HDFS_URI_PREFIX) || filePath.startsWith(S3_URI_PREFIX)) {
-                deleteHdfsFile(filePath, hdfsConfig);
-            } else if (filePath.startsWith("file:/")) {
-                try {
-                    URI uri = new URI(filePath);
-                    String actualPath = new File(uri.getPath()).getAbsolutePath();
-                    deleteLocalFile(actualPath);
-                } catch (URISyntaxException e) {
-                    e.printStackTrace();
-                    logger.info("无法解析文件URI: " + filePath);
+            try{
+                if (filePath.startsWith(HDFS_URI_PREFIX) || filePath.startsWith(S3_URI_PREFIX)) {
+                    deleteHdfsFile(filePath, hdfsConfig);
+                } else if (filePath.startsWith("file:/")) {
+                        URI uri = new URI(filePath);
+                        String actualPath = new File(uri.getPath()).getAbsolutePath();
+                        deleteLocalFile(actualPath);
+                } else {
+                    deleteLocalFile(filePath);
                 }
-            } else {
-                deleteLocalFile(filePath);
             }
+            catch (URISyntaxException e) {
+                e.printStackTrace();
+                hasError = true;
+                logger.info("无法解析文件URI: {}", filePath);
+                logger.info("[Clean-{}]: fail",id);
+            }
+            catch (IOException e) {
+                hasError = true;
+                e.printStackTrace();
+                logger.info("[Clean-{}]: fail",id);
+            }
+        }
+        if (!hasError) {
+            logger.info("[Clean-{}]: success",id);
         }
     }
 
-    private void deleteHdfsFile(String filePath, Configuration hdfsConfig) {
+    private void deleteHdfsFile(String filePath, Configuration hdfsConfig) throws IOException {
         try {
             FileSystem fs = FileSystem.get(URI.create(filePath), hdfsConfig);
             Path path = new Path(filePath);
             if (fs.exists(path)) {
-                fs.delete(path, false); // false 表示不递归删除
-                logger.info("=============================HDFS/s3 文件已删除: " + filePath);
+                // false 表示不递归删除
+                fs.delete(path, false);
+                logger.info("=============================HDFS/s3 文件已删除: {}", filePath);
                 deleteEmptyParentDirectories(fs, path.getParent());
                 fs.close();
             } else {
-                logger.info("=============================HDFS/s3 文件不存在: " + filePath);
+                logger.info("=============================HDFS/s3 文件不存在: {}", filePath);
             }
         } catch (IOException e) {
             e.printStackTrace();
-            logger.error("=============================删除 HDFS/s3 文件失败: " + filePath);
+            logger.error("=============================删除 HDFS/s3 文件失败: {}", filePath);
+            throw new IOException(filePath + "fail to delete");
         }
     }
 
-    private void deleteLocalFile(String filePath) {
+    private void deleteLocalFile(String filePath) throws IOException {
         File file = new File(filePath);
         if (file.exists()) {
             if (file.delete()) {
-                logger.info("本地文件已删除：" + filePath);
+                logger.info("本地文件已删除：{}", filePath);
                 deleteEmptyParentDirectories(file.getParentFile());
             } else {
-                logger.info("本地文件删除失败: " + filePath);
+                logger.info("本地文件删除失败: {}", filePath);
+                throw new IOException(file + "fail to delete");
             }
         } else {
-            logger.info("=============================本地文件不存在: " + filePath);
+            logger.info("=============================本地文件不存在: {}", filePath);
+            throw new IOException(file + "not found");
         }
     }
 

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2025 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use std::sync::Arc;
 
 use arrow_array::{ArrayRef, RecordBatch, StringArray};

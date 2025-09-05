@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: 2025 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v1
+kind: Pod
+metadata:
+  name: jobmanager-pod-template
+spec:
+  initContainers:
+    - name: artifacts-fetcher
+      image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/minio/mc
+      command:
+          - sh
+          - -c
+          - |
+            mc alias set hwoss https://obs.cn-southwest-2.myhuaweicloud.com ${AWS_ACCESS_KEY_ID} ${AWS_SECRET_ACCESS_KEY}
+            mc cp hwoss/${AWS_BUCKET}/{{ jarPath }} /flink-artifact/
+      volumeMounts:
+        - mountPath: /flink-artifact
+          name: flink-artifact
+      env:
+        - name: AWS_ACCESS_KEY_ID
+          value: {{ accessKey }}
+        - name: AWS_SECRET_ACCESS_KEY
+          value: {{ secretKey }}
+        - name: AWS_ENDPOINT
+          value: {{ endpoint }}
+        - name: AWS_BUCKET
+          value: {{ bucket }}
+  containers:
+    # Do not change the main container name
+    - name: flink-main-container
+      resources:
+        requests:
+          ephemeral-storage: 1024Mi
+        limits:
+          ephemeral-storage: 1024Mi
+      volumeMounts:
+        - mountPath: /opt/flink/usrlib
+          name: flink-artifact
+  volumes:
+    - name: flink-artifact
+      emptyDir: { }
