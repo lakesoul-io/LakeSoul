@@ -71,6 +71,8 @@ jobs:
           export LD_LIBRARY_PATH=$JAVA_HOME/lib/server:$LD_LIBRARY_PATH
           echo $LD_LIBRARY_PATH
           mvn package -pl lakesoul-spark -am -DskipTests
+          uv sync --no-install-project   
+          source .venv/bin/activate
           bash cpp/compile.sh
           cp cpp/build/python/lakesoul/metadata/generated/entity_pb2.py python/lakesoul/metadata/generated
           cp cpp/build/_lakesoul_dataset.so python/lakesoul/arrow
