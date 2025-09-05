@@ -81,7 +81,7 @@ jobs:
           uv run pytest python/tests/ -s
   publish:
     runs-on: ubuntu-latest
-    if: startsWith(github.event.ref, 'refs/tags/v')
+    if: startsWith(github.event.ref, 'refs/tags/py-v')
     needs: ["run-pytest"]
     env:
       PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple

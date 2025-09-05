@@ -4,7 +4,7 @@
 
 [project]
 name = "lakesoul"
-version = "1.0.0b2"
+version = "1.0.0"
 authors = [
   { name="LakeSoul Team", email="lakesoul-technical-discuss@lists.lfaidata.foundation" },
 ]
@@ -64,7 +64,6 @@ dev = [
 requires = ["setuptools >= 62.1.0", "wheel", "cython >= 0.29.31,<3", "grpcio[protobuf] ~= 1.57","pyarrow==16.1.0"]
 build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
-
 where = ["python"]
 include = ["lakesoul*"]
 
