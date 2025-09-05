@@ -299,17 +299,17 @@ import com.dmetasoul.lakesoul.tables.LakeSoulTable
 val tablePath = "file:/tmp/lakesoul_namespace/lakesoul_upsert_table"
 
 // Init hash table with first dataframe
-val df = Seq((20201101, 1, 1), (20201101, 2, 2), (20201101, 3, 3), (20201102, 4, 4)).toDF("range", "hash", "value")
+val df = Seq((1,"Andy","2020-11-01"), (2, "Bach", "2020-11-02"), (3, "Clark","2020-11-03"), (4,"David", "2020-11-04")).toDF("id", "name", "date")
 val writer = df.write.format("lakesoul").mode("overwrite")
 
 writer
-    .option("rangePartitions", "range")
-    .option("hashPartitions", "hash")
+    .option("hashPartitions", "id")
     .option("hashBucketNum", 2)
+    .option("rangePartitions", "date")
     .save(tablePath)
 
 // merge the second dataframe into hash table using LakeSoulTable upsert API
-val dfUpsert = Seq((20201101, 1, 1), (20201101, 2, 2), (20201101, 3, 3), (20201102, 4, 4)).toDF("range", "hash", "value")
+val dfUpsert = Seq((1,"Alice","2020-11-01'), (2,"Bob","2020-11-02"), (3,"Cathy","2020-11-03"), (4,"Dean","2020-11-04")).toDF("id", "name", "date")
 LakeSoulTable.forPath(tablePath).upsert(dfUpsert)
 
 ```
@@ -321,9 +321,9 @@ LakeSoulTable.forPath(tablePath).upsert(dfUpsert)
 from pyspark.sql.types import *
 from tables import LakeSoulTable
 tablePath = "file:/tmp/lakesoul_namespace/lakesoul_upsert_table"
-df = spark.createDataFrame([(20201101, 1, 1), (20201101, 2, 2), (20201101, 3, 3), (20201102, 4, 4)],schema='range string,hash string,value string')
-df.write.format("lakesoul").mode("overwrite").option("rangePartitions", "range").option("hashPartitions", "hash").option("hashBucketNum", 2).save(tablePath)
-dfUpsert = spark.createDataFrame([(20201111, 1, 1), (20201111, 2, 2), (20201111, 3, 3), (20201112, 4, 4)],schema='range string,hash string,value string')
+df = spark.createDataFrame([(1,"Andy","2020-11-01"), (2, "Bach", "2020-11-02"), (3, "Clark","2020-11-03"), (4,"David", "2020-11-04")],schema='id bigint,name string,date string')
+df.write.format("lakesoul").mode("overwrite").option("hashPartitions", "id").option("hashBucketNum", 2).option("rangePartitions", "date").save(tablePath)
+dfUpsert = spark.createDataFrame([(1,"Alice","2020-11-01'), (2,"Bob","2020-11-02"), (3,"Cathy","2020-11-03"), (4,"Dean","2020-11-04")],schema='id bigint,name string,date string')
 LakeSoulTable.forPath(spark,tablePath).upsert(dfUpsert)
 ```
  </TabItem>
@@ -359,7 +359,7 @@ LakeSoulTable.forPath(tablePath).updateExpr("id = 2", Seq(("name"->"'David'")).t
     // python
   from tables import LakeSoulTable
   tablePath = "file:/tmp/lakesoul_namespace/lakesoul_upsert_table"
-  LakeSoulTable.forPath(spark,tablePath).update("hash = 4", { "value":"5"})
+  LakeSoulTable.forPath(spark,tablePath).update("id = 2", { "name":"David"})
   ```
    </TabItem>
 
