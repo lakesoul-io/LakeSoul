@@ -27,13 +27,20 @@ dependencies = [
     "protobuf~=5.0",
 ]
 
-[optional-dependencies]
+[project.optional-dependencies]
 torch = ["torch>=1.11.0,<2.5"]
 pandas = ["pandas>=1.4"]
 datasets = ["datasets>=2.14", "urllib3<2,>=1.21.1"]
 ray = ["ray>=2.7,<2.11.0"]
 pyspark = ["pyspark==3.3.1"]
-all = [ {include="all"} ]
+all = [
+    "torch>=1.11,<2.5",
+    "pandas>=1.4",
+    "datasets>=2.14",
+    "urllib3<2,>=1.21.1",
+    "ray>=2.7,<2.11.0",
+    "pyspark==3.3.1",
+]
 
 [dependency-groups]
 all = [
@@ -85,3 +92,7 @@ repair-wheel-command = """\
     """
 [tool.uv.workspace]
 exclude = ['script/lakesoul-e2e']
+
+[[tool.uv.index]]
+url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/"
+default = true
