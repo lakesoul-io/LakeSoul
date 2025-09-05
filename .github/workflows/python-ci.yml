@@ -63,6 +63,12 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Install uv
         uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-suffix: "lakesoul-py-ci"
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "./rust -> target"
