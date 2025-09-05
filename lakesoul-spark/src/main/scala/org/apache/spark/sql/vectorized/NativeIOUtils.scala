@@ -50,8 +50,12 @@ object NativeIOUtils {
       .toArray
   }
 
-  private def asArrowColumnVector(vector: ValueVector): ColumnVector = {
+  def asArrowColumnVector(vector: ValueVector): ColumnVector = {
     GlutenUtils.createArrowColumnVector(vector)
+  }
+
+  def columnVectorToArrowValueVector(vector: ColumnVector): ValueVector = {
+    GlutenUtils.getValueVectorFromArrowVector(vector)
   }
 
   private def asColumnVector(vector: ValueVector): ColumnVector = {

@@ -29,17 +29,14 @@ class NativeParquetFileFormat extends FileFormat
     val timeZoneId = options
       .getOrElse(DateTimeUtils.TIMEZONE_OPTION, sparkSession.sessionState.conf.sessionLocalTimeZone)
 
-    if (options.getOrElse("isCompaction", "false").toBoolean &&
-      !options.getOrElse("isCDC", "false").toBoolean &&
-      !options.getOrElse("isBucketNumChanged", "false").toBoolean &&
-      options.contains("staticBucketId")
-    ) {
+    if (options.getOrElse("isNative", "true").toBoolean) {
       new OutputWriterFactory {
         override def newInstance(
                                   path: String,
                                   dataSchema: StructType,
                                   context: TaskAttemptContext): OutputWriter = {
-          new NativeParquetCompactionColumnarOutputWriter(path, dataSchema, timeZoneId, context)
+          logInfo(s"Use native columnar parquet writer for $path")
+          new NativeParquetColumnarOutputWriter(path, dataSchema, timeZoneId, context)
         }
 
         override def getFileExtension(context: TaskAttemptContext): String = {
@@ -52,6 +49,7 @@ class NativeParquetFileFormat extends FileFormat
                                   path: String,
                                   dataSchema: StructType,
                                   context: TaskAttemptContext): OutputWriter = {
+          logInfo(s"Use native parquet writer for $path")
           new NativeParquetOutputWriter(path, dataSchema, timeZoneId, context)
         }
 

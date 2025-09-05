@@ -6,6 +6,8 @@
 
 package org.apache.spark.sql.execution.datasources
 
+import com.dmetasoul.lakesoul.meta.DBConfig.{LAKESOUL_NON_PARTITION_TABLE_PART_DESC, LAKESOUL_RANGE_PARTITION_SPLITTER}
+import com.dmetasoul.lakesoul.meta.DBUtil
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileAlreadyExistsException, Path}
 import org.apache.hadoop.mapreduce._
@@ -14,9 +16,8 @@ import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
 import org.apache.spark._
 import org.apache.spark.internal.Logging
 import org.apache.spark.internal.io.{FileCommitProtocol, SparkHadoopWriterUtils}
-import org.apache.spark.rdd.RDD
 import org.apache.spark.shuffle.FetchFailedException
-import org.apache.spark.sql.{Row, SparkSession}
+import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.catalog.BucketSpec
 import org.apache.spark.sql.catalyst.catalog.CatalogTypes.TablePartitionSpec
@@ -26,19 +27,16 @@ import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
 import org.apache.spark.sql.catalyst.util.{CaseInsensitiveMap, DateTimeUtils}
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution._
+import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
 import org.apache.spark.sql.execution.datasources.FileFormatWriter.ConcurrentOutputWriterSpec
+import org.apache.spark.sql.execution.datasources.v2.parquet.NativeParquetOutputWriter
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.lakesoul.rules.withPartitionAndOrdering
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
-import org.apache.spark.sql.vectorized.ArrowFakeRowAdaptor
-import org.apache.spark.util.{SerializableConfiguration, Utils}
-import com.dmetasoul.lakesoul.meta.DBConfig.{LAKESOUL_NON_PARTITION_TABLE_PART_DESC, LAKESOUL_RANGE_PARTITION_SPLITTER}
-import com.dmetasoul.lakesoul.meta.DBUtil
-import com.dmetasoul.lakesoul.spark.clean.CleanOldCompaction.splitCompactFilePath
-import org.apache.spark.sql.execution.datasources.v2.parquet.{NativeParquetCompactionColumnarOutputWriter, NativeParquetOutputWriter}
 import org.apache.spark.sql.lakesoul.{DelayedCommitProtocol, DelayedCopyCommitProtocol}
-import org.apache.spark.sql.types.{DataTypes, StringType, StructField, StructType}
+import org.apache.spark.sql.vectorized.GlutenUtils
+import org.apache.spark.sql.vectorized.GlutenUtils.{addLocalSortPlan, getChildForSort, nativeWrap}
+import org.apache.spark.util.{SerializableConfiguration, Utils}
 
 import java.util.{Date, UUID}
 import scala.collection.JavaConverters.mapAsScalaMapConverter
@@ -132,26 +130,6 @@ object LakeSoulFileWriter extends Logging {
 
     val dataSchema = dataColumns.toStructType
     DataSourceUtils.verifySchema(fileFormat, dataSchema)
-    // Note: prepareWrite has side effect. It sets "job".
-    val outputWriterFactory =
-      fileFormat.prepareWrite(sparkSession, job, caseInsensitiveOptions, dataSchema)
-
-    val description = new WriteJobDescription(
-      uuid = UUID.randomUUID.toString,
-      serializableHadoopConf = new SerializableConfiguration(job.getConfiguration),
-      outputWriterFactory = outputWriterFactory,
-      allColumns = finalOutputSpec.outputColumns,
-      dataColumns = dataColumns,
-      partitionColumns = partitionColumns,
-      bucketSpec = writerBucketSpec,
-      path = finalOutputSpec.outputPath,
-      customPartitionLocations = finalOutputSpec.customPartitionLocations,
-      maxRecordsPerFile = caseInsensitiveOptions.get("maxRecordsPerFile").map(_.toLong)
-        .getOrElse(sparkSession.sessionState.conf.maxRecordsPerFile),
-      timeZoneId = caseInsensitiveOptions.get(DateTimeUtils.TIMEZONE_OPTION)
-        .getOrElse(sparkSession.sessionState.conf.sessionLocalTimeZone),
-      statsTrackers = statsTrackers
-    )
 
     val isCDC = caseInsensitiveOptions.getOrElse("isCDC", "false").toBoolean
     val isCompaction = caseInsensitiveOptions.getOrElse("isCompaction", "false").toBoolean
@@ -176,71 +154,70 @@ object LakeSoulFileWriter extends Logging {
 
     SQLExecution.checkSQLExecutionId(sparkSession)
 
-    // propagate the description UUID into the jobs, so that committers
-    // get an ID guaranteed to be unique.
-    job.getConfiguration.set("spark.sql.sources.writeJobUUID", description.uuid)
-
     // This call shouldn't be put into the `try` block below because it only initializes and
     // prepares the job, any exception thrown from here shouldn't cause abortJob() to be called.
     committer.setupJob(job)
 
     val nativeIOEnable = sparkSession.sessionState.conf.getConf(LakeSoulSQLConf.NATIVE_IO_ENABLE)
 
-    def nativeWrap(plan: SparkPlan): RDD[InternalRow] = {
-      if (isCompaction
-        && staticBucketId != -1
-        && !isCDC
-        && !isBucketNumChanged
-        && nativeIOEnable) {
-        plan match {
-          case withPartitionAndOrdering(_, _, child) =>
-            return nativeWrap(child)
-          case _ =>
-        }
-        // in this case, we drop columnar to row
-        // and use columnar batch directly as input
-        // this takes effect no matter gluten enabled or not
-        ArrowFakeRowAdaptor(plan match {
-          case ColumnarToRowExec(child) => child
-          case UnaryExecNode(plan, child)
-            if plan.getClass.getName == "io.glutenproject.execution.VeloxColumnarToRowExec" => child
-          case WholeStageCodegenExec(ColumnarToRowExec(child)) => child
-          case WholeStageCodegenExec(ProjectExec(_, child)) => child
-          case _ => plan
-        }).execute()
-      } else {
-        plan.execute()
-      }
-    }
+    val isArrowColumnarInput = nativeIOEnable &&
+      ((isCompaction && !isCDC) // none cdc compaction compaction is a arrow columnar scan
+        || GlutenUtils.isGlutenEnabled)
+    // for compaction, only when static bucket!=-1
+    // for all other cases, only when no partition && no bucket spec
+    // otherwise, we need row writer
+    val tryEnableColumnarWriter = partitionSet.isEmpty && (writerBucketSpec.isEmpty || staticBucketId != -1)
+    logInfo(s"partitionSet: $partitionSet, writerBucketSpec: $writerBucketSpec, " +
+      s"isArrowColumnarInput: $isArrowColumnarInput, isCdc: $isCDC, isCompaction: $isCompaction, " +
+        s"orderingMatched: $orderingMatched, tryEnableColumnarWriter: $tryEnableColumnarWriter")
 
     try {
       // for compaction, we won't break ordering from batch scan
-      val (rdd, concurrentOutputWriterSpec) =
-        if (isCompaction && options.getOrElse(COPY_FILE_WRITER_KEY, "false").toBoolean) {
-          val data = Seq(InternalRow(COPY_FILE_WRITER_KEY))
-          (sparkSession.sparkContext.parallelize(data), None)
-        } else if (!isBucketNumChanged && (orderingMatched || isCompaction)) {
-          (nativeWrap(empty2NullPlan), None)
+      val ((rdd, isNative), concurrentOutputWriterSpec) =
+        if (isCompaction && options.getOrElse("copyCompactedFile", "").nonEmpty) {
+          val data = Seq(InternalRow(options("copyCompactedFile")))
+          ((sparkSession.sparkContext.parallelize(data), false), None)
+        } else if (!isBucketNumChanged && orderingMatched) {
+          (nativeWrap(empty2NullPlan, isArrowColumnarInput, tryEnableColumnarWriter), None)
         } else {
           // SPARK-21165: the `requiredOrdering` is based on the attributes from analyzed plan, and
           // the physical plan may have different attribute ids due to optimizer removing some
           // aliases. Here we bind the expression ahead to avoid potential attribute ids mismatch.
           val orderingExpr = bindReferences(
             requiredOrdering.map(SortOrder(_, Ascending)), finalOutputSpec.outputColumns)
-          val sortPlan = SortExec(
-            orderingExpr,
-            global = false,
-            child = empty2NullPlan)
+          val sortPlan = addLocalSortPlan(empty2NullPlan, orderingExpr)
 
-          val maxWriters = sparkSession.sessionState.conf.maxConcurrentOutputFileWriters
-          val concurrentWritersEnabled = maxWriters > 0 && sortColumns.isEmpty
-          if (concurrentWritersEnabled) {
-            (empty2NullPlan.execute(),
-              Some(ConcurrentOutputWriterSpec(maxWriters, () => sortPlan.createSorter())))
+          if (isArrowColumnarInput) {
+            (nativeWrap(sortPlan, isArrowColumnarInput, tryEnableColumnarWriter), None)
           } else {
-            (nativeWrap(sortPlan), None)
+            ((sortPlan.execute(), false), None)
           }
         }
+
+      // Note: prepareWrite has side effect. It sets "job".
+      val outputWriterFactory =
+        fileFormat.prepareWrite(sparkSession, job, caseInsensitiveOptions + (("isNative", isNative.toString)), dataSchema)
+
+      val description = new WriteJobDescription(
+        uuid = UUID.randomUUID.toString,
+        serializableHadoopConf = new SerializableConfiguration(job.getConfiguration),
+        outputWriterFactory = outputWriterFactory,
+        allColumns = finalOutputSpec.outputColumns,
+        dataColumns = dataColumns,
+        partitionColumns = partitionColumns,
+        bucketSpec = writerBucketSpec,
+        path = finalOutputSpec.outputPath,
+        customPartitionLocations = finalOutputSpec.customPartitionLocations,
+        maxRecordsPerFile = caseInsensitiveOptions.get("maxRecordsPerFile").map(_.toLong)
+          .getOrElse(sparkSession.sessionState.conf.maxRecordsPerFile),
+        timeZoneId = caseInsensitiveOptions.get(DateTimeUtils.TIMEZONE_OPTION)
+          .getOrElse(sparkSession.sessionState.conf.sessionLocalTimeZone),
+        statsTrackers = statsTrackers
+      )
+
+      // propagate the description UUID into the jobs, so that committers
+      // get an ID guaranteed to be unique.
+      job.getConfiguration.set("spark.sql.sources.writeJobUUID", description.uuid)
 
       // SPARK-23271 If we are attempting to write a zero partition rdd, create a dummy single
       // partition rdd to make sure we at least set up one write task to write the metadata.
@@ -289,7 +266,7 @@ object LakeSoulFileWriter extends Logging {
       ret.map(_.summary.updatedPartitions).reduceOption(_ ++ _).getOrElse(Set.empty)
     } catch {
       case cause: Throwable =>
-        logError(s"Aborting job ${description.uuid}.", cause)
+        logError(s"Aborting job", cause)
         committer.abortJob(job)
         throw QueryExecutionErrors.jobAbortedError(cause)
     }
@@ -329,7 +306,6 @@ object LakeSoulFileWriter extends Logging {
     committer.setupTask(taskAttemptContext)
 
     val isCompaction = options.getOrElse("isCompaction", "false").toBoolean
-    val isBucketNumChanged = options.getOrElse("isBucketNumChanged", "false").toBoolean
 
     val dataWriter =
       if (!iterator.hasNext) {
@@ -522,5 +498,4 @@ object LakeSoulFileWriter extends Logging {
       logInfo("copy file")
     }
   }
-
 }

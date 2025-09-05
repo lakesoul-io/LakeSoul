@@ -11,14 +11,14 @@ import org.apache.hadoop.mapreduce.TaskAttemptContext
 import org.apache.spark.sql.arrow.ArrowColumnVector
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.types.StructType
-import org.apache.spark.sql.vectorized.{ArrowFakeRow, ColumnarBatch}
+import org.apache.spark.sql.vectorized.{ArrowFakeRow, ColumnarBatch, NativeIOUtils}
 
 import scala.collection.JavaConverters.{asScalaBufferConverter, seqAsJavaListConverter}
 
 // for compaction write, we directly get ColumnarBatch of ArrowVectors
 // from RDD[ArrowFakeRow]
-class NativeParquetCompactionColumnarOutputWriter(path: String, dataSchema: StructType, timeZoneId: String,
-                                                  context: TaskAttemptContext)
+class NativeParquetColumnarOutputWriter(path: String, dataSchema: StructType, timeZoneId: String,
+                                        context: TaskAttemptContext)
   extends NativeParquetOutputWriter(path, dataSchema, timeZoneId, context) {
   override def write(row: InternalRow): Unit = {
     if (!row.isInstanceOf[ArrowFakeRow]) {
@@ -35,6 +35,11 @@ class NativeParquetCompactionColumnarOutputWriter(path: String, dataSchema: Stru
       input.close()
       root.close()
     }
+  }
+
+  override def close() = {
+    nativeIOWriter.flush()
+    nativeIOWriter.close()
   }
 
   private def extractVectorSchemaRoot(columnarBatch: ColumnarBatch): Unit = {
@@ -54,10 +59,8 @@ class NativeParquetCompactionColumnarOutputWriter(path: String, dataSchema: Stru
     val numRowsInBatch = columnarBatch.numRows()
     val cols = (0 until columnarBatch.numCols).toList.map(
       i =>
-        columnarBatch
-          .column(i)
-          .asInstanceOf[ArrowColumnVector]
-          .getValueVector)
+        NativeIOUtils.columnVectorToArrowValueVector(columnarBatch.column(i))
+    )
     toArrowRecordBatch(numRowsInBatch, cols)
   }
 

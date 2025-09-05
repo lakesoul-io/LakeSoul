@@ -4,6 +4,7 @@
 
 package org.apache.spark.sql.lakesoul.rules
 
+import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.connector.read.Scan
@@ -18,18 +19,28 @@ import org.apache.spark.sql.vectorized.GlutenUtils
  *
  * @param session
  */
-case class GlutenCompatPostInjectColumnar(session: SparkSession) extends ColumnarRule {
+case class GlutenCompatPostInjectColumnar(session: SparkSession)
+  extends ColumnarRule
+  with Logging {
 
   private def isLakeSoulScan(scan: Scan): Boolean = {
     scan.getClass.getSimpleName.contains("NativeParquetScan") ||
       scan.isInstanceOf[MergeDeltaParquetScan]
   }
 
+  private lazy val offloadArrowDataExecCtor = {
+    val cls = Class.forName("org.apache.gluten.execution.OffloadArrowDataExec")
+    cls.getConstructor(classOf[SparkPlan])
+  }
+
   private def transform(plan: SparkPlan): SparkPlan = plan match {
     case UnaryExecNode(plan, ColumnarToRowExec(scan: BatchScanExec))
-        if plan.getClass.getName == "io.glutenproject.execution.RowToVeloxColumnarExec" &&
-          isLakeSoulScan(scan.scan)
-      => scan
+      if plan.getClass.getName == "org.apache.gluten.execution.RowToVeloxColumnarExec" &&
+        isLakeSoulScan(scan.scan)
+    =>
+      logInfo(s"Replace RowToVeloxColumnarExec with OffloadArrowDataExec for LakeSoul: ${plan}")
+      val args = Array[AnyRef](scan)
+      offloadArrowDataExecCtor.newInstance(args: _*).asInstanceOf[SparkPlan]
     case p =>
       p.withNewChildren(p.children.map(transform))
   }

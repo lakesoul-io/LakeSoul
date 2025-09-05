@@ -87,6 +87,7 @@ class MergeFilePartitionReader[T](readers: Iterator[MergePartitionedFileReader[T
   override def close(): Unit = {
     if (currentReader != null) {
       currentReader.close()
+      currentReader = null
     }
     InputFileBlockHolder.unset()
   }
