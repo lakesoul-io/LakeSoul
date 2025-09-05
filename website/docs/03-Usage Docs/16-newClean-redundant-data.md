@@ -1,4 +1,4 @@
-# LakeSoul Table Lifecycle Automatic Maintenance and Redundant Data Automatic Cleanup
+# LakeSoul Automatic Asynchronous Data Cleanup Service
 
 :::tip
 This feature is available in version 3.0.0 and above.
