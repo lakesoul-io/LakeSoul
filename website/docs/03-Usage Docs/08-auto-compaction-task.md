@@ -46,11 +46,25 @@ The use the following command to start the compaction service job:
     --num-executors 20 \
     --conf "spark.executor.extraJavaOptions=-XX:MaxDirectMemorySize=4G" \
     --conf "spark.executor.memoryOverhead=3g" \
-    --class com.dmetasoul.lakesoul.spark.compaction.CompactionTask  \
+    --class com.dmetasoul.lakesoul.spark.compaction.NewCompactionTask  \
+    --conf spark.dmetasoul.lakesoul.compaction.level0.file.number.limit=2 \
     jars/lakesoul-spark-3.3-VAR::VERSION.jar 
     --threadpool.size=10
     --database=test
 ```
+
+The following parameters are provided for compaction. When submitting, they should be placed after NewCompactionTask，such as spark.dmetasoul.lakesoul.compaction.max.bytes.for.level.base=1GB.
+
+|Parameter |Meaning |default|
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------|------ |
+|`spark.dmetasoul.lakesoul.compaction.max.bytes.for.level.base`	| The minimum number of bytes required to trigger compaction in Level 1(a single partition)	|100MB|
+|`spark.dmetasoul.lakesoul.compaction.max.bytes.for.low.level.multiplier`	| The size ratio between Level-n+1 and Level-n layers.(`1<=n<=2` a single partition)|5|
+|`spark.dmetasoul.lakesoul.compaction.max.bytes.for.level.multiplier`	| The size ratio between Level-n+1 and Level-n layers(`n>=3`a single partition)|10|
+|`spark.dmetasoul.lakesoul.compaction.level0.file.number.limit`	| The minimum number of files required to trigger compaction in Level 0(a single partition)|10|
+|`spark.dmetasoul.lakesoul.compaction.level.file.number.limit`	| The minimum number of files required to trigger compaction for each level, excluding Level 0(a single partition)|	10|
+|`spark.dmetasoul.lakesoul.compaction.level.file.merge.size.limit`	| The minimum number of bytes for each merge group when triggering compaction，excluding Level 0(a single partition)|	1GB|
+|`spark.dmetasoul.lakesoul.compaction.level.file.merge.num.limit`	| The minimum number of files for each merge group when triggering compaction，excluding Level 0(a single partition)|	5|
+|`spark.dmetasoul.lakesoul.compaction.level.max.file.size`	| The maximum number of layers in the LSM-tree is set to n, resulting in a total of n+1 layers, from L0 to Ln	|5|
 
 :::tip
 Because LakeSoul enables native IO by default and needs to rely on off-heap memory, the spark task needs to set the size of off-heap memory, otherwise it is prone to out-of-heap memory overflow.
