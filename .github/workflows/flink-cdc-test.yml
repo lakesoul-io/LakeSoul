@@ -56,6 +56,7 @@ jobs:
           python-version: '3.9'
       - name: Install dependencies
         run: |
+          sudo apt-get update && sudo apt-get install --only-upgrade tzdata
           python -m pip install --upgrade pip setuptools wheel
           pip install pymysql cryptography jproperties --no-cache-dir
           wget -q https://dlcdn.apache.org/hadoop/common/hadoop-3.3.5/hadoop-3.3.5.tar.gz -O $HOME/hadoop-3.3.5.tar.gz && tar xf $HOME/hadoop-3.3.5.tar.gz -C $HOME

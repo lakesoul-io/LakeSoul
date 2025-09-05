@@ -255,6 +255,7 @@ jobs:
           path: ./rust/target/release/
       - name: Build with Maven
         run: |
+          sudo apt-get update && sudo apt-get install --only-upgrade tzdata
           wget -q https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/gluten-1.5.0-6c2c836f-snapshot.tar.gz
           mkdir -p ~/.m2/repository
           tar xf gluten-1.5.0-6c2c836f-snapshot.tar.gz -C ~/.m2/repository
