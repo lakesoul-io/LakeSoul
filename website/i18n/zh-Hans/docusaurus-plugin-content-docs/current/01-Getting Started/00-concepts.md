@@ -23,7 +23,7 @@ LakeSoul 的目标是构建一套端到端的湖仓平台，涵盖数据集成�
 3. 数据分析查询。LakeSoul 通过高性能的 IO 层实现提升数据分析查询的性能。同时也能够支持各类向量化的计算引擎。当前 LakeSoul 已经实现了 Spark Gluten Engine 的对接，在 Spark 上实现原生向量化计算。LakeSoul 也实现了与 Apache Doris、Presto Velox 等高性能向量化查询引擎的对接集成。
 4. [AI 计算](../03-Usage%20Docs/11-machine-learning-support.md)。LakeSoul 能够支持 PyTorch、Ray、Pandas 等各类 AI 和数据科学框架分布式读取，进行 AI 模型的训练和推理。
 5. 多租户空间和 RBAC。LakeSoul 内置了[多空间隔离和权限控制](../03-Usage%20Docs/12-workspace-and-rbac.md)。可以在湖仓中划分多个工作空间，每个工作空间可以加入多个用户。不同空间的元数据、物理数据实现了访问权限隔离。空间的权限隔离，对于 SQL、Java/Scala、Python 作业，包括提交到集群上执行的作业，均是有效的。
-6. 自治管理。LakeSoul 提供了[自动分离式的弹性 Compaction 服务](../03-Usage%20Docs/08-auto-compaction-task.md)、[自动数据清理服务等](../03-Usage%20Docs/09-clean-redundant-data.md)，减轻运维工作量。其中分离式弹性 Compaction 服务由元数据层自动感知触发，并行执行，不影响写入任务的效率。
+6. 自治管理。LakeSoul 提供了[自动分离式的弹性 Compaction 服务](../03-Usage%20Docs/08-auto-compaction-task.md)、[自动数据清理服务等](../03-Usage%20Docs/16-new-async-clean-service.md)，减轻运维工作量。其中分离式弹性 Compaction 服务由元数据层自动感知触发，并行执行，不影响写入任务的效率。
 7. 快照和回滚。LakeSoul 表可以支持按照时间戳进行[快照读和版本回滚](../02-Tutorials/03-snapshot-manage.md)。
 8. [出湖同步](../03-Usage%20Docs/14-export-to-databases.md)。LakeSoul 提供封装好的流式、批式出湖任务。
 
