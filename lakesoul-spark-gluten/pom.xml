@@ -17,7 +17,7 @@
         <maven.compiler.source>8</maven.compiler.source>
         <maven.compiler.target>8</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <gluten.version>1.5.0-SNAPSHOT</gluten.version>
+        <gluten.version>1.6.0-SNAPSHOT</gluten.version>
         <scalatest.version>3.2.14</scalatest.version>
     </properties>
 
