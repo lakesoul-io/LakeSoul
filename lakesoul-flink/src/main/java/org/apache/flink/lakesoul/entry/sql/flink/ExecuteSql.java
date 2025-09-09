@@ -16,6 +16,7 @@ import org.apache.flink.table.delegation.Parser;
 import org.apache.flink.table.operations.*;
 import org.apache.flink.table.operations.command.AddJarOperation;
 import org.apache.flink.table.operations.command.SetOperation;
+import org.apache.flink.table.operations.ddl.CreateCatalogOperation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.helpers.MessageFormatter;
@@ -82,15 +83,18 @@ public class ExecuteSql {
                 statementSet.addInsertSql(statement);
             } else if ((operation instanceof QueryOperation) || (operation instanceof AddJarOperation)) {
                 LOG.warn("SQL Statement {} is ignored", statement);
+            } else if (operation instanceof CreateCatalogOperation) {
+                CreateCatalogOperation createCatalogOperation = (CreateCatalogOperation) operation;
+                if (createCatalogOperation.getCatalogName().equals("lakesoul")){
+                    continue;
+                } else {
+                    tableEnv.executeSql(statement);
+                }
             } else {
-                // for all show/alter/create catalog/use but not select statements
+                // for all show/alter/use but not select statements
                 // execute and print results
                 System.out.println(MessageFormatter.format("\n======Executing:\n{}", statement).getMessage());
-                if (statement.startsWith("create catalog") && tableEnv.getCatalog("lakesoul").isPresent()){
-                    System.out.println("=======lakesoul lakesoul has been created======");
-                } else {
-                    tableEnv.executeSql(statement).print();
-                }
+                tableEnv.executeSql(statement).print();
             }
         }
         if (hasModifiedOp) {
