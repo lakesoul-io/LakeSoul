@@ -16,6 +16,7 @@ import org.apache.flink.table.delegation.Parser;
 import org.apache.flink.table.operations.*;
 import org.apache.flink.table.operations.command.AddJarOperation;
 import org.apache.flink.table.operations.command.SetOperation;
+import org.apache.flink.table.operations.ddl.CreateCatalogOperation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.helpers.MessageFormatter;
@@ -37,6 +38,9 @@ public class ExecuteSql {
             throws Exception {
         List<String> statements = parseStatements(script);
         Parser parser = ((TableEnvironmentInternal) tableEnv).getParser();
+
+        tableEnv.executeSql("create catalog lakesoul with('type'='lakesoul')");
+        tableEnv.executeSql("use catalog lakesoul");
 
         StreamStatementSet statementSet = tableEnv.createStatementSet();
         Boolean hasModifiedOp = false;
@@ -79,8 +83,15 @@ public class ExecuteSql {
                 statementSet.addInsertSql(statement);
             } else if ((operation instanceof QueryOperation) || (operation instanceof AddJarOperation)) {
                 LOG.warn("SQL Statement {} is ignored", statement);
+            } else if (operation instanceof CreateCatalogOperation) {
+                CreateCatalogOperation createCatalogOperation = (CreateCatalogOperation) operation;
+                if (createCatalogOperation.getCatalogName().equals("lakesoul")){
+                    continue;
+                } else {
+                    tableEnv.executeSql(statement);
+                }
             } else {
-                // for all show/alter/create catalog/use but not select statements
+                // for all show/alter/use but not select statements
                 // execute and print results
                 System.out.println(MessageFormatter.format("\n======Executing:\n{}", statement).getMessage());
                 tableEnv.executeSql(statement).print();
@@ -92,7 +103,7 @@ public class ExecuteSql {
 
             // try get k8s cluster name
             String k8sClusterID = conf.getString("kubernetes.cluster-id", "");
-            env.execute(k8sClusterID.isEmpty() ? null : k8sClusterID + "-job");
+            env.execute(k8sClusterID.isEmpty() ? null : k8sClusterID);
         } else {
             System.out.println("There's no INSERT INTO statement, the program will terminate");
         }
