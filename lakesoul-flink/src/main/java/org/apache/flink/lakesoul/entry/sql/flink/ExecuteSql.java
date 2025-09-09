@@ -38,6 +38,9 @@ public class ExecuteSql {
         List<String> statements = parseStatements(script);
         Parser parser = ((TableEnvironmentInternal) tableEnv).getParser();
 
+        tableEnv.executeSql("create catalog lakesoul with('type'='lakesoul')");
+        tableEnv.executeSql("use catalog lakesoul");
+
         StreamStatementSet statementSet = tableEnv.createStatementSet();
         Boolean hasModifiedOp = false;
         for (String statement : statements) {
@@ -83,7 +86,11 @@ public class ExecuteSql {
                 // for all show/alter/create catalog/use but not select statements
                 // execute and print results
                 System.out.println(MessageFormatter.format("\n======Executing:\n{}", statement).getMessage());
-                tableEnv.executeSql(statement).print();
+                if (statement.startsWith("create catalog") && tableEnv.getCatalog("lakesoul").isPresent()){
+                    System.out.println("=======lakesoul lakesoul has been created======");
+                } else {
+                    tableEnv.executeSql(statement).print();
+                }
             }
         }
         if (hasModifiedOp) {
