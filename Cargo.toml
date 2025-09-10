@@ -7,9 +7,8 @@ authors = ["LakeSoul Contributors"]
 edition = "2024"
 publish = false
 version = "1.0.0"
-include = [
-    "python/**/*.rs"
-]
+include = [ "python/**/*.rs" ]
+build = "python/build.rs"
 
 [lib]
 path = "python/lib.rs"
@@ -18,6 +17,7 @@ crate-type = ["cdylib"]
 [dependencies]
 pyo3 = { version = "0.26.0", features = ["extension-module", "abi3-py38"] }
 lakesoul-io = { path = "rust/lakesoul-io" }
+lakesoul-metadata = { path = "rust/lakesoul-metadata" }
 
 [workspace]
 members = [
