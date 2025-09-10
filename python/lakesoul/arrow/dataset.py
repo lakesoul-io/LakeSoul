@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from typing import final, override
 import pyarrow as pa
 import pyarrow._dataset
 
@@ -177,3 +178,105 @@ def lakesoul_dataset(table_name,
         object_store_configs=object_store_configs
     )
     return dataset
+
+
+@final
+class DS(pyarrow._dataset.Dataset):
+    def __init__(self): ...
+
+    @override
+    def count_rows(
+        self,
+        filter: pyarrow._dataset.Expression | None = None,
+        batch_size: int | None = None,
+        batch_readahead: int | None = None,
+        fragment_readahead: int | None = None,
+        fragment_scan_options: pyarrow._dataset.FragmentScanOptions | None = None,
+        use_threads: bool | None = None,
+        cache_metadata: bool | None = None,
+        memory_pool: pyarrow.MemoryPool | None = None,
+        _row_range: tuple[int, int] | None = None,
+    ): ...
+
+
+    @override
+    def filter(self):...
+
+    @override
+    def head(self):...
+
+    @override
+    def join(self,
+     right_dataset, keys, right_keys, join_type, left_suffix, right_suffix, coalesce_keys, use_threads
+             ):...
+
+    @override
+    def join_asof(self,right_dataset,on,by,tolerance):...
+
+
+    @override
+    def replace_schema(self,schema):...
+
+    @override
+    def scanner(self):...
+
+    @override
+    def sort_by(self,sorting,**kwargs):...
+
+    @override
+    def take(self,indices):...
+
+    @override
+    def to_batches(self):...
+
+    @override
+    def to_table(self):...
+
+@final
+class LakeSoulFragment(pyarrow._dataset.Fragment):
+    def __init__(self):...
+
+    def count_rows(self):...
+
+    def head(self):...
+
+    def scanner(self):...
+
+    def take(self):...
+
+    def to_batches(self):...
+
+    def to_table(self):...
+
+
+@final
+class LakeSoulScanner(pyarrow._dataset.Scanner):
+    def __init__(self):...
+    def count_rows(self):...
+
+    @staticmethod
+    def from_batches():...
+
+    @staticmethod
+    def from_dataset():...
+
+    @staticmethod
+    def from_fragment():...
+
+
+    
+    def head(self):...
+
+    def scan_batches(self):...
+
+    def take(self):...
+
+    def to_batches(self):...
+
+    def to_reader(self):...
+
+    def to_table(self):...
+
+
+    
+    

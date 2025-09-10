@@ -21,7 +21,12 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Programming Language :: Python :: 3",
 ]
-dependencies = ["pyarrow==16.1.0", "numpy<2.0", "protobuf>=5.0"]
+dependencies = [
+    "pyarrow==16.1.0",
+    "numpy<2.0",
+    "protobuf~=5.0",
+    "maturin>=1.9.4",
+]
 
 [project.optional-dependencies]
 torch = ["torch>=1.11.0,<2.5"]
@@ -62,17 +67,20 @@ dev = ["pytest>=8", { include-group = "all" }]
 "Bug Tracker" = "https://github.com/lakesoul-io/LakeSoul/issues"
 
 [build-system]
-requires = [
-    "setuptools >= 62.1.0",
-    "wheel",
-    "cython >= 0.29.31,<3",
-    "pyarrow==16.1.0",
-    "grpcio-tools==1.70",
-]
-build-backend = "setuptools.build_meta"
-[tool.setuptools.packages.find]
-where = ["python"]
-include = ["lakesoul*"]
+requires = ["maturin>=1,<2","grpcio[protobuf] ~= 1.57"]
+build-backend = "maturin"
+# requires = ["setuptools >= 62.1.0", "wheel", "cython >= 0.29.31,<3", "grpcio[protobuf] ~= 1.57","pyarrow==16.1.0"]
+# build-backend = "setuptools.build_meta"
+
+[tool.maturin]
+python-source = "lakesoul"
+module-name = "lakesoul._lib"
+features = ["pyo3/extension-module"]
+
+
+# [tool.setuptools.packages.find]
+# where = ["python"]
+# include = ["lakesoul*"]
 
 
 [tool.pytest.ini_options]
@@ -95,8 +103,7 @@ repair-wheel-command = """\
                       --exclude libarrow.so.1601 \
                       -w {dest_dir} {wheel}\
     """
-[tool.uv.workspace]
-exclude = ['script/lakesoul-e2e']
+
 
 [[tool.uv.index]]
 url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/"
