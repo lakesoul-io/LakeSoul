@@ -5,8 +5,8 @@
 use anyhow::anyhow;
 use std::fmt::Debug;
 
-use arrow::array::{as_primitive_array, as_string_array, ArrayBuilder, UInt8Builder};
-use arrow_array::{builder::*, types::*, Array, ArrowPrimitiveType};
+use arrow::array::{ArrayBuilder, UInt8Builder, as_primitive_array, as_string_array};
+use arrow_array::{Array, ArrowPrimitiveType, builder::*, types::*};
 use arrow_schema::DataType;
 
 use crate::sorted_merge::sort_key_range::SortKeyArrayRangeVec;
