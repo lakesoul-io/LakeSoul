@@ -42,3 +42,4 @@ __pycache__/
 /rust/.idea
 **/.venv/
 .flattened-pom.xml
+/**/*.so

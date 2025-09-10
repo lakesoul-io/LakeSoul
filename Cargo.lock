@@ -3720,6 +3720,7 @@ name = "lakesoul-python"
 version = "1.0.0"
 dependencies = [
  "lakesoul-io",
+ "lakesoul-metadata",
  "pyo3",
 ]
 
