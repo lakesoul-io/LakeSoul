@@ -1,6 +1,23 @@
 # SPDX-FileCopyrightText: 2023 LakeSoul Contributors
 #
 # SPDX-License-Identifier: Apache-2.0
+[package]
+name = "lakesoul-python"
+authors = ["LakeSoul Contributors"]
+edition = "2024"
+publish = false
+version = "1.0.0"
+include = [
+    "python/**/*.rs"
+]
+
+[lib]
+path = "python/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.26.0", features = ["extension-module", "abi3-py38"] }
+lakesoul-io = { path = "rust/lakesoul-io" }
 
 [workspace]
 members = [
@@ -13,7 +30,6 @@ members = [
     "rust/lakesoul-flight",
     "rust/lakesoul-s3-proxy",
     "rust/lakesoul-console",
-    "python",
 ]
 resolver = "3"
 
@@ -78,4 +94,3 @@ tower = "0.4.13"
 metrics = "0.21"
 cached = { version = "0.54.0", features = ["async_tokio_rt_multi_thread"] }
 clap = { version = "4.4", features = ["derive"] }
-pyo3 = { version = "0.26.0" }

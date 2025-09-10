@@ -21,26 +21,25 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Programming Language :: Python :: 3",
 ]
-dependencies = [
-    "pyarrow==16.1.0",
-    "numpy<2.0",
-    "protobuf~=5.0",
-    "maturin>=1.9.4",
-]
+dependencies = ["pyarrow==16.1.0", "numpy<2.0"]
 
 [project.optional-dependencies]
-torch = ["torch>=1.11.0,<2.5"]
-pandas = ["pandas>=1.4"]
-datasets = ["datasets>=2.14"]
-ray = ["ray>=2.7,<2.11.0"]
-pyspark = ["pyspark==3.3.1"]
-all = [
-    "torch>=1.11,<2.5",
-    "pandas>=1.4",
-    "datasets>=2.14",
-    "ray>=2.7,<2.11.0",
-    "pyspark==3.3.1",
-]
+# torch = ["torch>=1.11.0,<2.5"]
+# pandas = ["pandas>=1.4"]
+# datasets = ["datasets>=2.14", "urllib3<2,>=1.21.1"]
+# ray = ["ray>=2.7,<2.11.0"]
+# pyspark = ["pyspark==3.3.1"]
+# all = [
+#     "torch>=1.11,<2.5",
+#     "pandas>=1.4",
+#     "datasets>=2.14",
+#     "urllib3<2,>=1.21.1",
+#     "ray>=2.7,<2.11.0",
+#     "pyspark==3.3.1",
+# ]
+
+[project.scripts]
+lakesoul = "lakesoul:main"
 
 [tool.uv.sources]
 torch = [{ index = "pytorch-cpu" }]
@@ -53,12 +52,12 @@ explicit = true
 
 [dependency-groups]
 all = [
-    "torch>=1.11,<2.5",
-    "pandas>=1.4",
-    "datasets>=2.14",
-    "ray>=2.7,<2.11.0",
-    "pyspark==3.3.1",
-    "grpcio-tools==1.70"
+    # "torch>=1.11,<2.5",
+    # "pandas>=1.4",
+    # "datasets>=2.14",
+    # "urllib3<2,>=1.21.1",
+    # "ray>=2.7,<2.11.0",
+    # "pyspark==3.3.1",
 ]
 dev = ["pytest>=8", { include-group = "all" }]
 
@@ -67,13 +66,13 @@ dev = ["pytest>=8", { include-group = "all" }]
 "Bug Tracker" = "https://github.com/lakesoul-io/LakeSoul/issues"
 
 [build-system]
-requires = ["maturin>=1,<2","grpcio[protobuf] ~= 1.57"]
+requires = ["maturin>=1,<2"]
 build-backend = "maturin"
 # requires = ["setuptools >= 62.1.0", "wheel", "cython >= 0.29.31,<3", "grpcio[protobuf] ~= 1.57","pyarrow==16.1.0"]
 # build-backend = "setuptools.build_meta"
 
 [tool.maturin]
-python-source = "lakesoul"
+python-source = "python/src"
 module-name = "lakesoul._lib"
 features = ["pyo3/extension-module"]
 
