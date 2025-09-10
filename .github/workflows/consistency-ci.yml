@@ -79,6 +79,7 @@ jobs:
         with:
           spark-version: '3.3.1'
           hadoop-version: '3'
+          spark-url: 'https://mirrors.huaweicloud.com/apache/spark/spark-3.3.1/spark-3.3.1-bin-hadoop3.tgz'
       - run: spark-submit --version
 
       - uses: actions-rs/toolchain@v1

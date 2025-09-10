@@ -15,7 +15,8 @@ use std::sync::Arc;
 use crate::constant::{ConstEmptyArray, ConstNullArray};
 use crate::sorted_merge::merge_operator::{MergeOperator, MergeResult};
 use crate::sorted_merge::sort_key_range::{
-    SortKeyArrayRange, SortKeyBatchRange, SortKeyBatchRanges, SortKeyBatchRangesRef,
+    SortKeyArrayRange, SortKeyArrayRangeVec, SortKeyBatchRange, SortKeyBatchRanges,
+    SortKeyBatchRangesRef,
 };
 
 use arrow::compute::interleave;
@@ -32,9 +33,8 @@ use arrow::{
 use arrow_array::types::*;
 use dary_heap::QuaternaryHeap;
 use nohash::BuildNoHashHasher;
-use smallvec::SmallVec;
 
-use super::sort_key_range::{UseLastSortKeyBatchRanges, UseLastSortKeyBatchRangesRef};
+use super::sort_key_range::UseLastSortKeyBatchRanges;
 
 /// The combiner for the sorted merge.
 #[derive(Debug)]
@@ -248,7 +248,7 @@ impl MinHeapSortKeyBatchRangeCombiner {
             .map(|(column_idx, field)| {
                 let capacity = self.in_progress.len();
                 // collect all array ranges of current column_idx for each row
-                let ranges_per_row: Vec<&SmallVec<[SortKeyArrayRange; 4]>> = self
+                let ranges_per_row: Vec<&SortKeyArrayRangeVec> = self
                     .in_progress
                     .iter()
                     .map(|ranges_per_row| ranges_per_row.column(column_idx))
@@ -315,7 +315,7 @@ impl MinHeapSortKeyBatchRangeCombiner {
 fn merge_sort_key_array_ranges(
     capacity: usize,
     field: &Field,
-    ranges: Vec<&SmallVec<[SortKeyArrayRange; 4]>>,
+    ranges: Vec<&SortKeyArrayRangeVec>,
     flatten_dedup_arrays: &mut Vec<ArrayRef>,
     batch_idx_to_flatten_array_idx: &HashMap<usize, usize>,
     merge_operator: &MergeOperator,
@@ -455,13 +455,13 @@ pub struct UseLastRangeCombiner {
 
     /// The in-progress ranges that accumulate from popping from loser tree.
     /// For UseLast merge operator, [`UseLastSortKeyBatchRanges`] is used to collect the in-progress ranges.
-    in_progress: Vec<UseLastSortKeyBatchRangesRef>,
+    in_progress: Vec<UseLastSortKeyBatchRanges>,
 
     /// The target batch size for generated record batch.
     target_batch_size: usize,
 
     /// The current sort key range.
-    current_sort_key_range: UseLastSortKeyBatchRangesRef,
+    current_sort_key_range: UseLastSortKeyBatchRanges,
 
     /// The constant null array to avoid duplicate allocation.
     const_null_array: ConstNullArray,
@@ -493,11 +493,10 @@ impl UseLastRangeCombiner {
             streams_num,
             in_progress: Vec::with_capacity(target_batch_size),
             target_batch_size,
-            current_sort_key_range: Arc::new(UseLastSortKeyBatchRanges::new(
-                schema,
-                fields_map,
+            current_sort_key_range: UseLastSortKeyBatchRanges::new(
+                schema.fields().len(),
                 is_partial_merge,
-            )),
+            ),
             const_null_array: ConstNullArray::new(),
             ranges: (0..streams_num).map(|_| None).collect(),
             loser_tree: vec![],
@@ -507,12 +506,16 @@ impl UseLastRangeCombiner {
         }
     }
 
+    #[inline]
     pub fn push(&mut self, range: SortKeyBatchRange) {
-        let stream_idx = range.stream_idx;
-        self.ranges[stream_idx] = Some(range);
-        self.ranges_counter += 1;
+        unsafe {
+            let stream_idx = range.stream_idx;
+            *self.ranges.get_unchecked_mut(stream_idx) = Some(range);
+            self.ranges_counter += 1;
+        }
     }
 
+    #[inline]
     pub fn update(&mut self) {
         if self.loser_tree.is_empty() {
             if self.ranges_counter >= self.streams_num {
@@ -521,6 +524,15 @@ impl UseLastRangeCombiner {
         } else {
             self.update_loser_tree();
         }
+    }
+
+    #[inline]
+    pub fn set_current_sort_key_range(
+        ranges: &mut UseLastSortKeyBatchRanges,
+        range: &SortKeyBatchRange,
+        fields_map: &Vec<Vec<usize>>,
+    ) {
+        ranges.add_range_in_batch(range, fields_map);
     }
 
     /// If in_progress is full, we should build record batch by merge all ranges in in_progress.
@@ -550,13 +562,22 @@ impl UseLastRangeCombiner {
             if let Some(mut range) = self.ranges[winner].take() {
                 self.loser_tree_has_updated = false;
                 if self.current_sort_key_range.match_row(&range) {
-                    self.get_mut_current_sort_key_range()
-                        .add_range_in_batch(&range);
+                    let fields_map = &*self.fields_map;
+                    Self::set_current_sort_key_range(
+                        &mut self.current_sort_key_range,
+                        &range,
+                        fields_map,
+                    );
                 } else {
-                    self.in_progress.push(self.current_sort_key_range.clone());
+                    self.in_progress
+                        .push(std::mem::take(&mut self.current_sort_key_range));
                     self.init_current_sort_key_range();
-                    self.get_mut_current_sort_key_range()
-                        .add_range_in_batch(&range);
+                    let fields_map = &*self.fields_map;
+                    Self::set_current_sort_key_range(
+                        &mut self.current_sort_key_range,
+                        &range,
+                        fields_map,
+                    );
                 }
                 range.advance();
                 RangeCombinerResult::Range(range)
@@ -566,8 +587,10 @@ impl UseLastRangeCombiner {
                 RangeCombinerResult::None
             } else {
                 if !self.current_sort_key_range.is_empty() {
-                    self.in_progress.push(self.current_sort_key_range.clone());
-                    self.get_mut_current_sort_key_range().set_batch_range(None);
+                    self.in_progress
+                        .push(std::mem::take(&mut self.current_sort_key_range));
+                    self.init_current_sort_key_range();
+                    self.current_sort_key_range.set_batch_range(None);
                 }
                 RangeCombinerResult::RecordBatch(self.build_record_batch())
             }
@@ -712,44 +735,48 @@ impl UseLastRangeCombiner {
         RecordBatch::try_new(self.schema.clone(), columns)
     }
 
-    /// Get the mutable reference of the current sort key range.
-    fn get_mut_current_sort_key_range(&mut self) -> &mut UseLastSortKeyBatchRanges {
-        Arc::make_mut(&mut self.current_sort_key_range)
-    }
-
     /// Initialize the current sort key range.
+    #[inline]
     fn init_current_sort_key_range(&mut self) {
-        self.current_sort_key_range = Arc::new(UseLastSortKeyBatchRanges::new(
-            self.schema.clone(),
-            self.fields_map.clone(),
+        self.current_sort_key_range = UseLastSortKeyBatchRanges::new(
+            self.schema.fields().len(),
             self.is_partial_merge,
-        ));
+        );
     }
 
     /// Attempts to initialize the loser tree with one value from each
     /// non exhausted input, if possible
     fn init_loser_tree(&mut self) {
         // Init loser tree
-        self.loser_tree = vec![usize::MAX; self.streams_num];
-        for i in 0..self.streams_num {
-            let mut winner = i;
-            let mut cmp_node = self.loser_tree_leaf_node_index(i);
-            while cmp_node != 0 && self.loser_tree[cmp_node] != usize::MAX {
-                let challenger = self.loser_tree[cmp_node];
-                match (&self.ranges[winner], &self.ranges[challenger]) {
-                    // None means the stream is exhausted, always mark None as loser
-                    (None, _) => self.update_winner(cmp_node, &mut winner, challenger),
-                    (_, None) => (),
-                    (Some(ac), Some(bc)) => {
-                        if ac.cmp(bc).is_gt() {
-                            self.update_winner(cmp_node, &mut winner, challenger);
+        unsafe {
+            self.loser_tree = vec![usize::MAX; self.streams_num];
+            for i in 0..self.streams_num {
+                let mut winner = i;
+                let mut cmp_node = self.loser_tree_leaf_node_index(i);
+                while cmp_node != 0
+                    && *self.loser_tree.get_unchecked(cmp_node) != usize::MAX
+                {
+                    let challenger = self.loser_tree.get_unchecked(cmp_node);
+                    match (
+                        &self.ranges.get_unchecked(winner),
+                        &self.ranges.get_unchecked(*challenger),
+                    ) {
+                        // None means the stream is exhausted, always mark None as loser
+                        (None, _) => {
+                            self.update_winner(cmp_node, &mut winner, *challenger)
+                        }
+                        (_, None) => (),
+                        (Some(ac), Some(bc)) => {
+                            if ac.cmp(bc).is_gt() {
+                                self.update_winner(cmp_node, &mut winner, *challenger);
+                            }
                         }
                     }
-                }
 
-                cmp_node = self.loser_tree_parent_node_index(cmp_node);
+                    cmp_node = self.loser_tree_parent_node_index(cmp_node);
+                }
+                *self.loser_tree.get_unchecked_mut(cmp_node) = winner;
             }
-            self.loser_tree[cmp_node] = winner;
         }
         self.loser_tree_has_updated = true;
     }
@@ -800,31 +827,38 @@ impl UseLastRangeCombiner {
     /// If `enable_round_robin_tie_breaker` is true and a tie occurs at the final level, the
     /// tie-breaker logic will be applied to ensure fair selection among equal elements.
     fn update_loser_tree(&mut self) {
-        let mut winner = self.loser_tree[0];
-        let mut cmp_node = self.loser_tree_leaf_node_index(winner);
+        unsafe {
+            let mut winner = *self.loser_tree.get_unchecked(0);
+            let mut cmp_node = self.loser_tree_leaf_node_index(winner);
 
-        while cmp_node != 0 {
-            let challenger = self.loser_tree[cmp_node];
-            // None means the stream is exhausted, always mark None as loser
-            match (&self.ranges[winner], &self.ranges[challenger]) {
-                (None, _) => self.update_winner(cmp_node, &mut winner, challenger),
-                (_, None) => (),
-                (Some(ac), Some(bc)) => {
-                    if ac.cmp(bc).is_gt() {
-                        self.update_winner(cmp_node, &mut winner, challenger);
+            while cmp_node != 0 {
+                let challenger = *self.loser_tree.get_unchecked(cmp_node);
+                // None means the stream is exhausted, always mark None as loser
+                match (
+                    &self.ranges.get_unchecked(winner),
+                    &self.ranges.get_unchecked(challenger),
+                ) {
+                    (None, _) => self.update_winner(cmp_node, &mut winner, challenger),
+                    (_, None) => (),
+                    (Some(ac), Some(bc)) => {
+                        if ac.cmp(bc).is_gt() {
+                            self.update_winner(cmp_node, &mut winner, challenger);
+                        }
                     }
                 }
+                cmp_node = self.loser_tree_parent_node_index(cmp_node);
             }
-            cmp_node = self.loser_tree_parent_node_index(cmp_node);
+            *self.loser_tree.get_unchecked_mut(0) = winner;
         }
-        self.loser_tree[0] = winner;
         self.loser_tree_has_updated = true;
     }
 
     /// Update the winner of the loser tree.
     #[inline]
     fn update_winner(&mut self, cmp_node: usize, winner: &mut usize, challenger: usize) {
-        self.loser_tree[cmp_node] = *winner;
-        *winner = challenger;
+        unsafe {
+            *self.loser_tree.get_unchecked_mut(cmp_node) = *winner;
+            *winner = challenger;
+        }
     }
 }

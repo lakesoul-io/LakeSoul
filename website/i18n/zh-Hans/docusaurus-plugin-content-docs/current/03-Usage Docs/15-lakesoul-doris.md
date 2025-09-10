@@ -39,16 +39,16 @@ LakeSoul 是由数元灵开发的云原生湖仓框架，并在 2023 年 5 月�
 
 本文示例采用 Docker Compose 部署，组件及版本号如下：
 
-| 组件名称 | 版本 |
-| --- | --- |
-| Apache Doris | 默认 3.0.2|
-| LakeSoul | 2.6.1 |
-| Postgres | 14.5 |
-| Apache Spark | 3.3.1 |
-| Apache Flink | 1.20 |
+| 组件名称 | 版本                           |
+| --- |------------------------------|
+| Apache Doris | 默认 3.0.5                     |
+| LakeSoul | 2.6.1                        |
+| Postgres | 14.5                         |
+| Apache Spark | 3.3.1                        |
+| Apache Flink | 1.20                         |
 | MinIO | RELEASE.2024-04-29T09-56-05Z |
 
-
+下载 Doris 安装包：https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/apache-doris-3.0.5-bin-x64.tar.gz
 
 ### 02 环境部署
 
