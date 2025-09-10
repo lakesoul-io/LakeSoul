@@ -8,9 +8,8 @@ use std::fmt::Debug;
 use arrow::array::{ArrayBuilder, UInt8Builder, as_primitive_array, as_string_array};
 use arrow_array::{Array, ArrowPrimitiveType, builder::*, types::*};
 use arrow_schema::DataType;
-use smallvec::SmallVec;
 
-use crate::sorted_merge::sort_key_range::SortKeyArrayRange;
+use crate::sorted_merge::sort_key_range::SortKeyArrayRangeVec;
 use crate::{
     sum_all_with_primitive_type_and_append_value,
     sum_last_with_primitive_type_and_append_value,
@@ -55,7 +54,7 @@ impl MergeOperator {
     pub fn merge(
         &self,
         data_type: DataType,
-        ranges: &SmallVec<[SortKeyArrayRange; 4]>,
+        ranges: &SortKeyArrayRangeVec,
         append_array_data_builder: &mut Box<dyn ArrayBuilder>,
     ) -> ArrowResult<MergeResult> {
         let res = match &ranges.len() {
@@ -163,7 +162,7 @@ impl MergeOperator {
     }
 }
 
-fn last_non_null(ranges: &SmallVec<[SortKeyArrayRange; 4]>) -> MergeResult {
+fn last_non_null(ranges: &SortKeyArrayRangeVec) -> MergeResult {
     let mut is_none = true;
     let mut non_null_row_idx = 0;
     let mut batch_idx = 0;
@@ -192,7 +191,7 @@ fn last_non_null(ranges: &SmallVec<[SortKeyArrayRange; 4]>) -> MergeResult {
 
 fn sum_all_with_primitive_type(
     dt: DataType,
-    ranges: &SmallVec<[SortKeyArrayRange; 4]>,
+    ranges: &SortKeyArrayRangeVec,
     append_array_data_builder: &mut Box<dyn ArrayBuilder>,
 ) -> ArrowResult<MergeResult> {
     match dt {
@@ -288,7 +287,7 @@ fn sum_all_with_primitive_type(
 
 fn sum_last_with_primitive_type(
     dt: DataType,
-    ranges: &SmallVec<[SortKeyArrayRange; 4]>,
+    ranges: &SortKeyArrayRangeVec,
     append_array_data_builder: &mut Box<dyn ArrayBuilder>,
 ) -> ArrowResult<MergeResult> {
     match dt {
@@ -383,7 +382,7 @@ fn sum_last_with_primitive_type(
 }
 
 fn concat_all_with_string_type(
-    ranges: &SmallVec<[SortKeyArrayRange; 4]>,
+    ranges: &SortKeyArrayRangeVec,
     append_array_data_builder: &mut Box<dyn ArrayBuilder>,
     delim: char,
 ) -> ArrowResult<MergeResult> {
@@ -427,7 +426,7 @@ fn concat_all_with_string_type(
 }
 
 fn concat_last_with_string_type(
-    ranges: &SmallVec<[SortKeyArrayRange; 4]>,
+    ranges: &SortKeyArrayRangeVec,
     append_array_data_builder: &mut Box<dyn ArrayBuilder>,
     delim: char,
 ) -> ArrowResult<MergeResult> {

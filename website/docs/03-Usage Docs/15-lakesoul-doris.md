@@ -42,12 +42,14 @@ This article uses Docker Compose for deployment, with the following components a
 
 | Component | Version                      |
 | --- |------------------------------|
-| Apache Doris | Default 3.0.2                |
+| Apache Doris | Default 3.0.5                |
 | LakeSoul | 2.6.1                        |
 | Postgres | 14.5                         |
 | Apache Spark | 3.3.1                        |
 | Apache Flink | 1.20                         |
 | MinIO | RELEASE.2024-04-29T09-56-05Z |
+
+Download Doris installation package from: https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/apache-doris-3.0.5-bin-x64.tar.gz
 
 
 ### 02 Environment Deployment
