@@ -10,6 +10,7 @@
 /derby.log
 /.metals/
 /.vscode/
+.venv
 /**/.venv
 *.iml
 /native-io/lakesoul-io-java/target/
@@ -23,6 +24,7 @@ dependency-reduced-pom.xml
 *.DS_Store
 __pycache__/
 /cpp/build/
+/cpp/.cache
 /python/lakesoul/.libs/
 /python/lakesoul/arrow/_lakesoul_dataset.so
 /python/pyarrow
