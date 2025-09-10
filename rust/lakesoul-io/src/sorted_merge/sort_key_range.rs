@@ -228,13 +228,15 @@ impl Clone for SortKeyArrayRange {
     }
 }
 
+pub(crate) type SortKeyArrayRangeVec = SmallVec<[SortKeyArrayRange; 16]>;
+
 /// Multiple ranges with same sorted primary key from variant source record_batch.
 /// These ranges will be merged into ONE row of target record_batch finally.
 #[derive(Debug, Clone)]
 pub struct SortKeyBatchRanges {
     /// vector with length=column_num
     /// each element of this vector is a collection corresponding to the specific column of SortKeyArrayRange to be merged
-    pub(crate) sort_key_array_ranges: Vec<SmallVec<[SortKeyArrayRange; 4]>>,
+    pub(crate) sort_key_array_ranges: Vec<SortKeyArrayRangeVec>,
 
     /// fields_index_map from source schemas to target schema which vector index = stream_idx
     fields_map: Arc<Vec<Vec<usize>>>,
@@ -264,7 +266,7 @@ impl SortKeyBatchRanges {
         self.schema.clone()
     }
 
-    pub fn column(&self, column_idx: usize) -> &SmallVec<[SortKeyArrayRange; 4]> {
+    pub fn column(&self, column_idx: usize) -> &SortKeyArrayRangeVec {
         &self.sort_key_array_ranges[column_idx]
     }
 

@@ -14,9 +14,7 @@ use std::sync::Arc;
 
 use crate::constant::{ConstEmptyArray, ConstNullArray};
 use crate::sorted_merge::merge_operator::{MergeOperator, MergeResult};
-use crate::sorted_merge::sort_key_range::{
-    SortKeyArrayRange, SortKeyBatchRange, SortKeyBatchRanges, SortKeyBatchRangesRef,
-};
+use crate::sorted_merge::sort_key_range::{SortKeyArrayRange, SortKeyArrayRangeVec, SortKeyBatchRange, SortKeyBatchRanges, SortKeyBatchRangesRef};
 
 use arrow::compute::interleave;
 use arrow::{
@@ -32,7 +30,6 @@ use arrow::{
 use arrow_array::types::*;
 use dary_heap::QuaternaryHeap;
 use nohash::BuildNoHashHasher;
-use smallvec::SmallVec;
 
 use super::sort_key_range::{UseLastSortKeyBatchRanges, UseLastSortKeyBatchRangesRef};
 
@@ -248,7 +245,7 @@ impl MinHeapSortKeyBatchRangeCombiner {
             .map(|(column_idx, field)| {
                 let capacity = self.in_progress.len();
                 // collect all array ranges of current column_idx for each row
-                let ranges_per_row: Vec<&SmallVec<[SortKeyArrayRange; 4]>> = self
+                let ranges_per_row: Vec<&SortKeyArrayRangeVec> = self
                     .in_progress
                     .iter()
                     .map(|ranges_per_row| ranges_per_row.column(column_idx))
@@ -315,7 +312,7 @@ impl MinHeapSortKeyBatchRangeCombiner {
 fn merge_sort_key_array_ranges(
     capacity: usize,
     field: &Field,
-    ranges: Vec<&SmallVec<[SortKeyArrayRange; 4]>>,
+    ranges: Vec<&SortKeyArrayRangeVec>,
     flatten_dedup_arrays: &mut Vec<ArrayRef>,
     batch_idx_to_flatten_array_idx: &HashMap<usize, usize>,
     merge_operator: &MergeOperator,
