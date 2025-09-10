@@ -28,13 +28,14 @@
 //! }
 //! ```
 
+use arrow_array::RecordBatchReader;
 use atomic_refcell::AtomicRefCell;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use std::sync::Arc;
 
-use arrow_schema::SchemaRef;
+use arrow_schema::{ArrowError, SchemaRef};
 
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::{DataFusionError, Result};
@@ -404,6 +405,25 @@ impl SyncSendableMutableLakeSoulReader {
 
     fn get_inner_reader(&self) -> Arc<AtomicRefCell<Mutex<LakeSoulReader>>> {
         self.inner.clone()
+    }
+}
+
+impl RecordBatchReader for SyncSendableMutableLakeSoulReader {
+    fn schema(&self) -> SchemaRef {
+        self.get_schema().expect("reader has no schema")
+    }
+}
+
+impl Iterator for SyncSendableMutableLakeSoulReader {
+    type Item = Result<RecordBatch, ArrowError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.next_rb_blocked().map(|res| {
+            res.map_err(|e| match e {
+                DataFusionError::ArrowError(arrow_error, _) => arrow_error,
+                other => ArrowError::ExternalError(format!("{other}").into()),
+            })
+        })
     }
 }
 

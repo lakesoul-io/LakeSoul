@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use lakesoul_io::lakesoul_io_config::LakeSoulIOConfigBuilder;
 // use arrow_array::RecordBatchReader;
 // use arrow_schema::SchemaRef;
 // use itertools::Itertools;
@@ -36,7 +37,7 @@ pub(crate) fn init(py: Python, parent: &Bound<PyModule>) -> PyResult<()> {
     parent.add_submodule(&m)?;
     install_module("lakesoul._lib._dataset", &m)?;
 
-    // m.add_class::<PyVortexDataset>()?;
+    m.add_class::<PyReaderFactory>()?;
 
     m.add_function(wrap_pyfunction!(double, &m)?)?;
 
@@ -96,11 +97,24 @@ pub(crate) fn init(py: Python, parent: &Bound<PyModule>) -> PyResult<()> {
 //     row_filter.map(|x| x.borrow().inner().clone())
 // }
 
-// #[pyclass(name = "VortexDataset", module = "dataset")]
-// pub struct PyVortexDataset {
-//     vxf: VortexFile,
-//     schema: SchemaRef,
-// }
+#[pyclass(name = "ReaderFactory", module = "_dataset")]
+pub struct PyReaderFactory {
+    builder: LakeSoulIOConfigBuilder,
+}
+
+#[pymethods]
+impl PyReaderFactory {
+    #[new]
+    fn new() -> Self {
+        Self {
+            builder: LakeSoulIOConfigBuilder::default(),
+        }
+    }
+
+    fn hello(&self) -> String {
+        "hello".into()
+    }
+}
 
 // impl PyVortexDataset {
 //     pub fn try_new(vxf: VortexFile) -> VortexResult<Self> {

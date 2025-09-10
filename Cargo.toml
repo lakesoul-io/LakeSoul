@@ -4,16 +4,26 @@
 
 [workspace]
 members = [
-    "lakesoul-metadata",
-    "lakesoul-metadata-c",
-    "proto",
-    "lakesoul-io",
-    "lakesoul-io-c",
-    "lakesoul-datafusion",
-    "lakesoul-flight",
-    "lakesoul-s3-proxy", "lakesoul-console",
+    "rust/lakesoul-metadata",
+    "rust/lakesoul-metadata-c",
+    "rust/proto",
+    "rust/lakesoul-io",
+    "rust/lakesoul-io-c",
+    "rust/lakesoul-datafusion",
+    "rust/lakesoul-flight",
+    "rust/lakesoul-s3-proxy",
+    "rust/lakesoul-console",
+    "python",
 ]
 resolver = "3"
+
+[workspace.package]
+authors = ["LakeSoul Contributors"]
+edition = "2024"
+homepage = "https://github.com/lakesoul-io/LakeSoul"
+license = "Apache-2.0"
+readme = "README.md"
+version = "0.1.0"
 
 [profile.release]
 #lto = true
@@ -22,7 +32,7 @@ resolver = "3"
 datafusion = { version = "47.0.0" }
 datafusion-common = { version = "47.0.0" }
 datafusion-substrait = { version = "47.0.0" }
-datafusion-expr = {version = "47.0.0"}
+datafusion-expr = { version = "47.0.0" }
 arrow = { version = "55.0.0" }
 arrow-schema = { version = "55.0.0" }
 arrow-array = { version = "55.0.0" }
@@ -68,3 +78,4 @@ tower = "0.4.13"
 metrics = "0.21"
 cached = { version = "0.54.0", features = ["async_tokio_rt_multi_thread"] }
 clap = { version = "4.4", features = ["derive"] }
+pyo3 = { version = "0.26.0" }

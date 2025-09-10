@@ -6,11 +6,11 @@
 name = "lakesoul"
 version = "1.0.0"
 authors = [
-  { name="LakeSoul Team", email="lakesoul-technical-discuss@lists.lfaidata.foundation" },
+    { name = "LakeSoul Team", email = "lakesoul-technical-discuss@lists.lfaidata.foundation" },
 ]
 description = "Python APIs for using LakeSoul"
 readme = "README.md"
-license = { text="Apache-2.0" }
+license = { text = "Apache-2.0" }
 requires-python = ">=3.8"
 keywords = ["lakesoul", "bigdata", "ai"]
 classifiers = [
@@ -25,6 +25,7 @@ dependencies = [
     "pyarrow==16.1.0",
     "numpy<2.0",
     "protobuf~=5.0",
+    "maturin>=1.9.4",
 ]
 
 [project.optional-dependencies]
@@ -43,12 +44,8 @@ all = [
 ]
 
 [tool.uv.sources]
-torch = [
-    { index = "pytorch-cpu" },
-]
-torchvision = [
-    { index = "pytorch-cpu" },
-]
+torch = [{ index = "pytorch-cpu" }]
+torchvision = [{ index = "pytorch-cpu" }]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
@@ -64,27 +61,31 @@ all = [
     "ray>=2.7,<2.11.0",
     "pyspark==3.3.1",
 ]
-dev = [
-    "pytest>=8",
-    {include-group = "all"}
-]
+dev = ["pytest>=8", { include-group = "all" }]
 
 [project.urls]
 "Homepage" = "https://github.com/lakesoul-io/LakeSoul"
 "Bug Tracker" = "https://github.com/lakesoul-io/LakeSoul/issues"
 
 [build-system]
-requires = ["setuptools >= 62.1.0", "wheel", "cython >= 0.29.31,<3", "grpcio[protobuf] ~= 1.57","pyarrow==16.1.0"]
-build-backend = "setuptools.build_meta"
-[tool.setuptools.packages.find]
-where = ["python"]
-include = ["lakesoul*"]
+requires = ["maturin>=1,<2","grpcio[protobuf] ~= 1.57"]
+build-backend = "maturin"
+# requires = ["setuptools >= 62.1.0", "wheel", "cython >= 0.29.31,<3", "grpcio[protobuf] ~= 1.57","pyarrow==16.1.0"]
+# build-backend = "setuptools.build_meta"
+
+[tool.maturin]
+python-source = "lakesoul"
+module-name = "lakesoul._lib"
+features = ["pyo3/extension-module"]
+
+
+# [tool.setuptools.packages.find]
+# where = ["python"]
+# include = ["lakesoul*"]
 
 
 [tool.pytest.ini_options]
-addopts = [
-    "--import-mode=importlib",
-]
+addopts = ["--import-mode=importlib"]
 
 [tool.cibuildwheel]
 manylinux-x86_64-image = "dmetasoul/lakesoul-python-wheel-build-env-manylinux_2_28:v1.0.0"
@@ -102,8 +103,7 @@ repair-wheel-command = """\
                       --exclude libarrow.so.1601 \
                       -w {dest_dir} {wheel}\
     """
-[tool.uv.workspace]
-exclude = ['script/lakesoul-e2e']
+
 
 [[tool.uv.index]]
 url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/"
