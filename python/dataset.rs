@@ -3,23 +3,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright the Vortex contributors
 
-use std::sync::Arc;
-
 use lakesoul_io::lakesoul_io_config::LakeSoulIOConfigBuilder;
 // use arrow_array::RecordBatchReader;
 // use arrow_schema::SchemaRef;
 // use itertools::Itertools;
 // use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
-// use pyo3::types::PyString;
-// use vortex::dtype::FieldName;
-// use vortex::error::VortexResult;
-// use vortex::expr::{ExprRef, SelectExpr, root, select};
-// use vortex::file::{VortexFile, VortexOpenOptions};
-// use vortex::iter::ArrayIteratorExt;
-// use vortex::scan::SplitBy;
-// use vortex::{ArrayRef, ToCanonical};
-
 // use crate::arrays::PyArrayRef;
 // use crate::arrow::{IntoPyArrow, ToPyArrow};
 // use crate::expr::PyExpr;
@@ -36,11 +25,8 @@ pub(crate) fn init(py: Python, parent: &Bound<PyModule>) -> PyResult<()> {
     let m = PyModule::new(py, "_dataset")?;
     parent.add_submodule(&m)?;
     install_module("lakesoul._lib._dataset", &m)?;
-
     m.add_class::<PyReaderFactory>()?;
-
     m.add_function(wrap_pyfunction!(double, &m)?)?;
-
     Ok(())
 }
 

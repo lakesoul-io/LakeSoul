@@ -7,7 +7,7 @@ authors = ["LakeSoul Contributors"]
 edition = "2024"
 publish = false
 version = "1.0.0"
-include = [ "python/**/*.rs" ]
+include = ["python/**/*.rs"]
 build = "python/build.rs"
 
 [lib]
@@ -15,9 +15,14 @@ path = "python/lib.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.26.0", features = ["extension-module", "abi3-py38"] }
+pyo3 = { version = "0.26.0", features = [
+    "extension-module",
+    "experimental-async",
+    "abi3-py38",
+] }
 lakesoul-io = { path = "rust/lakesoul-io" }
 lakesoul-metadata = { path = "rust/lakesoul-metadata" }
+tokio.workspace = true
 
 [workspace]
 members = [
@@ -94,3 +99,5 @@ tower = "0.4.13"
 metrics = "0.21"
 cached = { version = "0.54.0", features = ["async_tokio_rt_multi_thread"] }
 clap = { version = "4.4", features = ["derive"] }
+snafu = { version = "0.8" }
+snafu-virtstack = { version = "0.1" }

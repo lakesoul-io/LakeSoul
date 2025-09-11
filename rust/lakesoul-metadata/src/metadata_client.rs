@@ -47,93 +47,83 @@ impl Debug for MetaDataClient {
 
 pub type MetaDataClientRef = Arc<MetaDataClient>;
 
+/// Generate pg config from environment variable
+pub fn pg_config_from_env() -> Result<String, LakeSoulMetaDataError> {
+    if let Some(config_path) = option_env!("lakesoul_home") {
+        trace!("get config from lakesoul_home: {}", config_path);
+        let config = fs::read_to_string(&config_path).unwrap_or_else(|_| {
+            panic!("Fails at reading a config file {}", &config_path)
+        });
+        let config_map = config
+            .split('\n')
+            .filter_map(|property| {
+                property.find('=').map(|idx| property.split_at(idx + 1))
+            })
+            .collect::<HashMap<_, _>>();
+        let url = Url::parse(
+            &config_map.get("lakesoul.pg.url=").unwrap_or(
+                &"jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified",
+            )[5..],
+        )?;
+        return Ok(format!(
+            "host={} port={} dbname={} user={} password={}",
+            url.host_str().ok_or(LakeSoulMetaDataError::Internal(
+                "url host missing".to_string()
+            ))?,
+            url.port().ok_or(LakeSoulMetaDataError::Internal(
+                "url port missing".to_string()
+            ))?,
+            url.path_segments()
+                .ok_or(LakeSoulMetaDataError::Internal(
+                    "url path missing".to_string()
+                ))?
+                .next()
+                .ok_or(LakeSoulMetaDataError::Internal(
+                    "url path missing".to_string()
+                ))?,
+            config_map
+                .get("lakesoul.pg.username=")
+                .unwrap_or(&"lakesoul_test"),
+            config_map
+                .get("lakesoul.pg.password=")
+                .unwrap_or(&"lakesoul_test")
+        ));
+    }
+    if let Some(pg_url) = option_env!("LAKESOUL_PG_URL") {
+        trace!("get config from env LAKESOUL_PG_URL= {}", pg_url);
+        let url = Url::parse(&pg_url[5..])?;
+        return Ok(format!(
+            "host={} port={} dbname={} user={} password={}",
+            url.host_str().ok_or(LakeSoulMetaDataError::Internal(
+                "url host missing".to_string()
+            ))?,
+            url.port().ok_or(LakeSoulMetaDataError::Internal(
+                "url port missing".to_string()
+            ))?,
+            url.path_segments()
+                .ok_or(LakeSoulMetaDataError::Internal(
+                    "url path missing".to_string()
+                ))?
+                .next()
+                .ok_or(LakeSoulMetaDataError::Internal(
+                    "url path missing".to_string()
+                ))?,
+            env::var("LAKESOUL_PG_USERNAME")
+                .unwrap_or_else(|_| "lakesoul_test".to_string()),
+            env::var("LAKESOUL_PG_PASSWORD")
+                .unwrap_or_else(|_| "lakesoul_test".to_string())
+        ));
+    }
+    // use default
+    let default_config = "host=127.0.0.1 port=5432 dbname=lakesoul_test user=lakesoul_test password=lakesoul_test";
+    trace!("get config by default {}", default_config);
+    Ok(default_config.to_string())
+}
+
 impl MetaDataClient {
     pub async fn from_env() -> Result<Self> {
-        match env::var("lakesoul_home") {
-            Ok(config_path) => {
-                trace!(
-                    "try init metadata client from lakesoul_home: {}",
-                    config_path
-                );
-                let config = fs::read_to_string(&config_path).unwrap_or_else(|_| {
-                    panic!("Fails at reading a config file {}", &config_path)
-                });
-                let config_map = config
-                    .split('\n')
-                    .filter_map(|property| {
-                        property.find('=').map(|idx| property.split_at(idx + 1))
-                    })
-                    .collect::<HashMap<_, _>>();
-                let url = Url::parse(
-                    &config_map
-                        .get("lakesoul.pg.url=")
-                        .unwrap_or(&"jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified")[5..],
-                )?;
-                Self::from_config(format!(
-                    "host={} port={} dbname={} user={} password={}",
-                    url.host_str().ok_or(LakeSoulMetaDataError::Internal(
-                        "url host missing".to_string()
-                    ))?,
-                    url.port().ok_or(LakeSoulMetaDataError::Internal(
-                        "url port missing".to_string()
-                    ))?,
-                    url.path_segments()
-                        .ok_or(LakeSoulMetaDataError::Internal(
-                            "url path missing".to_string()
-                        ))?
-                        .next()
-                        .ok_or(LakeSoulMetaDataError::Internal(
-                            "url path missing".to_string()
-                        ))?,
-                    config_map
-                        .get("lakesoul.pg.username=")
-                        .unwrap_or(&"lakesoul_test"),
-                    config_map
-                        .get("lakesoul.pg.password=")
-                        .unwrap_or(&"lakesoul_test")
-                ))
-                .await
-            }
-            Err(_) => match env::var("LAKESOUL_PG_URL") {
-                Ok(pg_url) => {
-                    trace!(
-                        "create metadata client from env LAKESOUL_PG_URL= {}",
-                        pg_url
-                    );
-                    let url = Url::parse(&pg_url[5..])?;
-                    Self::from_config(format!(
-                        "host={} port={} dbname={} user={} password={}",
-                        url.host_str().ok_or(LakeSoulMetaDataError::Internal(
-                            "url host missing".to_string()
-                        ))?,
-                        url.port().ok_or(LakeSoulMetaDataError::Internal(
-                            "url port missing".to_string()
-                        ))?,
-                        url.path_segments()
-                            .ok_or(LakeSoulMetaDataError::Internal(
-                                "url path missing".to_string()
-                            ))?
-                            .next()
-                            .ok_or(LakeSoulMetaDataError::Internal(
-                                "url path missing".to_string()
-                            ))?,
-                        env::var("LAKESOUL_PG_USERNAME")
-                            .unwrap_or_else(|_| "lakesoul_test".to_string()),
-                        env::var("LAKESOUL_PG_PASSWORD")
-                            .unwrap_or_else(|_| "lakesoul_test".to_string())
-                    ))
-                    .await
-                }
-                Err(_) => {
-                    let default_config = "host=127.0.0.1 port=5432 dbname=lakesoul_test user=lakesoul_test password=lakesoul_test";
-                    trace!(
-                        "try init metadata client from default config: {}",
-                        default_config
-                    );
-                    Self::from_config(default_config.to_string()).await
-                }
-            },
-        }
+        let config = pg_config_from_env()?;
+        Self::from_config(config).await
     }
 
     pub async fn from_config(config: String) -> Result<Self> {
