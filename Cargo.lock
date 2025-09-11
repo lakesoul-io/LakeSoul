@@ -3722,6 +3722,7 @@ dependencies = [
  "lakesoul-io",
  "lakesoul-metadata",
  "pyo3",
+ "tokio",
 ]
 
 [[package]]

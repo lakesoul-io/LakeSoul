@@ -38,9 +38,6 @@ dependencies = ["pyarrow==16.1.0", "numpy<2.0"]
 #     "pyspark==3.3.1",
 # ]
 
-[project.scripts]
-lakesoul = "lakesoul:main"
-
 [tool.uv.sources]
 torch = [{ index = "pytorch-cpu" }]
 torchvision = [{ index = "pytorch-cpu" }]
@@ -59,14 +56,14 @@ all = [
     # "ray>=2.7,<2.11.0",
     # "pyspark==3.3.1",
 ]
-dev = ["pytest>=8","grpcio[protobuf]~=1.57", { include-group = "all" }]
+dev = ["pytest>=8", "grpcio[protobuf]~=1.57", { include-group = "all" }]
 
 [project.urls]
 "Homepage" = "https://github.com/lakesoul-io/LakeSoul"
 "Bug Tracker" = "https://github.com/lakesoul-io/LakeSoul/issues"
 
 [build-system]
-requires = ["maturin>=1,<2", ]
+requires = ["maturin>=1,<2"]
 build-backend = "maturin"
 # requires = ["setuptools >= 62.1.0", "wheel", "cython >= 0.29.31,<3", "grpcio[protobuf] ~= 1.57","pyarrow==16.1.0"]
 # build-backend = "setuptools.build_meta"
@@ -107,3 +104,6 @@ repair-wheel-command = """\
 [[tool.uv.index]]
 url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/"
 default = true
+
+[tool.ruff]
+line-length = 88

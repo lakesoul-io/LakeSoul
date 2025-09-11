@@ -7,6 +7,9 @@ from __future__ import annotations
 import collections
 import re
 from dataclasses import dataclass
+from typing import Iterable, Sequence
+
+import pyarrow
 
 from .dao import (
     select_table_info_by_table_name,
@@ -14,26 +17,43 @@ from .dao import (
     list_data_commit_info,
     get_partition_info_by_table_id_and_desc,
 )
+from .generated.entity_pb2 import TableInfo, PartitionInfo, DataCommitInfo
 from .utils import to_arrow_schema
 
 
-def get_table_info_by_name(table_name, namespace):
+__all__ = [
+    "get_table_info_by_name",
+    "get_all_partition_info",
+    "get_table_single_partition_data_info",
+    "get_arrow_schema_by_table_name",
+    "get_partition_and_pk_cols",
+    "should_filter_partitions_by_all",
+    "filter_partitions_from_all",
+    "LakeSoulScanPlanPartition",
+    "get_scan_plan_partitions",
+    "get_data_files_and_pks_by_table_name",
+]
+
+
+def get_table_info_by_name(table_name: str, namespace: str) -> TableInfo:
     return select_table_info_by_table_name(table_name, namespace)
 
 
-def get_all_partition_info(table_id):
+def get_all_partition_info(table_id: str) -> Sequence[PartitionInfo]:
     return get_partition_info_by_table_id(table_id)
 
 
-def get_table_single_partition_data_info(partition_info):
+def get_table_single_partition_data_info(
+    partition_info: PartitionInfo,
+) -> Sequence[DataCommitInfo]:
     return list_data_commit_info(
         partition_info.table_id, partition_info.partition_desc, partition_info.snapshot
     )
 
 
 def get_arrow_schema_by_table_name(
-    table_name, namespace="default", exclude_partition=False
-):
+    table_name: str, namespace: str = "default", exclude_partition: bool = False
+) -> pyarrow.Schema:
     table_info = get_table_info_by_name(table_name, namespace)
     schema = table_info.table_schema
     exclude_partitions = None
@@ -43,7 +63,7 @@ def get_arrow_schema_by_table_name(
     return to_arrow_schema(schema, exclude_partitions)
 
 
-def get_partition_and_pk_cols(table_info):
+def get_partition_and_pk_cols(table_info: TableInfo) -> tuple[list[str], list[str]]:
     if not table_info.partitions:
         return [], []
     parts = table_info.partitions.split(";")
@@ -52,7 +72,9 @@ def get_partition_and_pk_cols(table_info):
     return part_cols, pk_cols
 
 
-def should_filter_partitions_by_all(partition_keys, part_cols):
+def should_filter_partitions_by_all(
+    partition_keys: Iterable[str], part_cols: list[str]
+) -> bool:
     if not partition_keys:
         return False
     if collections.Counter(partition_keys) == collections.Counter(part_cols):
@@ -64,7 +86,9 @@ def should_filter_partitions_by_all(partition_keys, part_cols):
     )
 
 
-def filter_partitions_from_all(partitions, table_info):
+def filter_partitions_from_all(
+    partitions: dict[str, str], table_info: TableInfo
+) -> list[PartitionInfo]:
     partition_list = get_all_partition_info(table_info.table_id)
     if not partition_list:
         raise ValueError(f"Table `{table_info.table_name}` is empty")
@@ -92,14 +116,18 @@ class LakeSoulScanPlanPartition:
     bucket_id: int = 0
 
 
-def get_scan_plan_partitions(table_name, partitions=None, namespace="default"):
+def get_scan_plan_partitions(
+    table_name: str,
+    partitions: dict[str, str] | None = None,
+    namespace: str = "default",
+) -> list[LakeSoulScanPlanPartition]:
     partitions = partitions or {}
     table_info = get_table_info_by_name(table_name, namespace)
 
     part_cols, pk_cols = get_partition_and_pk_cols(table_info)
     if should_filter_partitions_by_all(partitions.keys(), part_cols):
-        partition_infos = filter_partitions_from_all(partitions, table_info.table_id)
-    elif partitions and len(partitions) == len(part_cols):
+        partition_infos = filter_partitions_from_all(partitions, table_info)
+    elif len(partitions) == len(part_cols):
         part_desc = []
         for part_col in part_cols:
             part_desc.append(f"{part_col}={partitions[part_col]}")
@@ -150,8 +178,10 @@ def get_scan_plan_partitions(table_name, partitions=None, namespace="default"):
 
 
 def get_data_files_and_pks_by_table_name(
-    table_name, partitions=None, namespace="default"
-):
+    table_name: str,
+    partitions: dict[str, str] | None = None,
+    namespace: str = "default",
+) -> tuple[list[str], list[str]]:
     part_filter = []
     partitions = partitions or {}
     for part_key, part_value in partitions.items():

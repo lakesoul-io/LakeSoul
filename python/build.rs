@@ -11,6 +11,7 @@ fn main() {
             "grpc.tools.protoc",
             &format!("-I={}", proto_dir),
             &format!("--python_out={}", out),
+            &format!("--pyi_out={}", out),
             proto_path,
         ])
         .status()

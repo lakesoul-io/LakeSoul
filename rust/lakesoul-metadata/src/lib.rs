@@ -19,7 +19,7 @@ use tokio_postgres::{Error, Row};
 use crate::pooled_client::PgConnection;
 pub use crate::pooled_client::PooledClient;
 pub use error::{LakeSoulMetaDataError, Result};
-pub use metadata_client::{MetaDataClient, MetaDataClientRef};
+pub use metadata_client::{MetaDataClient, MetaDataClientRef, pg_config_from_env};
 use proto::proto::entity;
 
 pub mod transfusion;
