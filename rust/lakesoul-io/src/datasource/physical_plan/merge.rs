@@ -7,8 +7,17 @@
 use std::sync::Arc;
 use std::{any::Any, collections::HashMap};
 
+use crate::default_column_stream::DefaultColumnStream;
+use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;
+use crate::filter::parser::Parser as FilterParser;
+use crate::lakesoul_io_config::LakeSoulIOConfig;
+use crate::sorted_merge::merge_operator::MergeOperator;
+use crate::sorted_merge::sorted_stream_merger::{
+    SortedStream, build_sorted_stream_merger,
+};
 use arrow_schema::{Field, Schema, SchemaRef};
 use datafusion::dataframe::DataFrame;
+use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::logical_expr::Expr;
 use datafusion::physical_expr::{EquivalenceProperties, LexOrdering};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
@@ -24,13 +33,6 @@ use datafusion::{
 };
 use datafusion_common::{DFSchemaRef, DataFusionError, Result};
 use datafusion_substrait::substrait::proto::Plan;
-
-use crate::default_column_stream::DefaultColumnStream;
-use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;
-use crate::filter::parser::Parser as FilterParser;
-use crate::lakesoul_io_config::LakeSoulIOConfig;
-use crate::sorted_merge::merge_operator::MergeOperator;
-use crate::sorted_merge::sorted_stream_merger::{SortedStream, SortedStreamMerger};
 
 /// [`ExecutionPlan`] implementation for the merge on read operation.
 #[derive(Debug)]
@@ -259,6 +261,9 @@ impl ExecutionPlan for MergeParquetExec {
             stream_init_futs.push(stream);
         }
 
+        let reservation = MemoryConsumer::new(format!("LakeSoulMerge[{partition}]"))
+            .register(&context.runtime_env().memory_pool);
+
         let merged_stream = merge_stream(
             stream_init_futs,
             self.schema(),
@@ -267,6 +272,7 @@ impl ExecutionPlan for MergeParquetExec {
             self.merge_operators(),
             context.session_config().batch_size(),
             self.io_config.clone(),
+            reservation,
         )?;
 
         Ok(merged_stream)
@@ -274,7 +280,7 @@ impl ExecutionPlan for MergeParquetExec {
 }
 
 /// Merge the streams into a single stream.
-pub fn merge_stream(
+fn merge_stream(
     streams: Vec<SendableRecordBatchStream>,
     schema: SchemaRef,
     primary_keys: Arc<Vec<String>>,
@@ -282,8 +288,13 @@ pub fn merge_stream(
     merge_operators: Arc<HashMap<String, String>>,
     batch_size: usize,
     config: LakeSoulIOConfig,
+    reservation: MemoryReservation,
 ) -> Result<SendableRecordBatchStream> {
-    debug!("merge_stream with config= {:?}", &config);
+    debug!(
+        "merge_stream with config= {:?}, {:?}",
+        &config, default_column_value
+    );
+    println!("merge_stream default column {:?}", default_column_value);
     let merge_on_read = if config.skip_merge_on_read() || config.primary_keys.is_empty() {
         false
     } else {
@@ -332,18 +343,16 @@ pub fn merge_stream(
                 )))
             })
             .collect();
-        let merge_stream = SortedStreamMerger::new_from_streams(
+        build_sorted_stream_merger(
             streams,
+            primary_keys,
             merge_schema,
-            primary_keys.iter().cloned().collect(),
-            batch_size,
-            merge_ops,
-        )?;
-        Box::pin(DefaultColumnStream::new_from_streams_with_default(
-            vec![Box::pin(merge_stream)],
             schema,
+            batch_size,
             default_column_value,
-        ))
+            merge_ops,
+            reservation,
+        )?
     };
     Ok(merge_stream)
 }
