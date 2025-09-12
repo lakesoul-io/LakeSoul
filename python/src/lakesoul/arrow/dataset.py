@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
+from typing import Iterator
 from typing_extensions import TYPE_CHECKING
 
 import pyarrow
@@ -15,15 +16,19 @@ from lakesoul._lib._dataset import sync_reader
 
 if TYPE_CHECKING:
     DatasetBase = pyarrow._dataset.Dataset  # type: ignore
+    ScannerBase = pyarrow._dataset.Scanner  # type: ignore
+    FragmentBase = pyarrow._dataset.Fragment  # type: ignore
 else:
     DatasetBase = object
+    ScannerBase = object
+    FragmentBase = object
 
 
 class Dataset(DatasetBase):
     def __init__(
         self,
         lakesoul_table_name: str,
-        batch_size: int = 16,
+        batch_size: int = 1024,
         thread_count: int = 1,
         rank: int | None = None,
         world_size: int | None = None,
@@ -62,6 +67,28 @@ class Dataset(DatasetBase):
 
             thread_count = multiprocessing.cpu_count()
         self._thread_count = thread_count
+        scan_partitions = get_scan_plan_partitions(
+            table_name=self._lakesoul_table_name,
+            partitions=self._partitions,
+            namespace=self._namespace,
+        )
+        target_schema, partition_schema = get_schemas_by_table_name(
+            table_name=self._lakesoul_table_name,
+            namespace=self._namespace,
+            exclude_partition=not self._retain_partition_columns,
+        )
+        self._target_schema = target_schema
+        self._partition_schema = partition_schema
+        filtered_scan_partitions = self._filter_scan_partitions(
+            scan_partitions, self._rank, self._world_size
+        )
+        file_urls = []
+        pks = []
+        for scan_part in filtered_scan_partitions:
+            file_urls.append(scan_part.files)
+            pks.append(scan_part.primary_keys)
+        self._file_urls = file_urls
+        self._pks = pks
 
     def __reduce__(self):
         """custom serialize"""
@@ -82,51 +109,32 @@ class Dataset(DatasetBase):
     def scanner(self, *args, **kwargs):
         raise NotImplementedError
 
-    def to_batches(self):
+    def to_batches(self) -> Iterator[pyarrow.RecordBatch]:
         readers = self._sync_readers()
         for reader in readers:
             for rb in reader:
                 yield rb
 
     def _sync_readers(self) -> list[pyarrow.RecordBatchReader]:
-        scan_partitions = get_scan_plan_partitions(
-            table_name=self._lakesoul_table_name,
-            partitions=self._partitions,
-            namespace=self._namespace,
-        )
-        target_schema, partition_schema = get_schemas_by_table_name(
-            table_name=self._lakesoul_table_name,
-            namespace=self._namespace,
-            exclude_partition=not self._retain_partition_columns,
-        )
-        filtered_scan_partitions = self._filter_scan_partitions(
-            scan_partitions, self._rank, self._world_size
-        )
-        file_urls = []
-        pks = []
-        for scan_part in filtered_scan_partitions:
-            file_urls.append(scan_part.files)
-            pks.append(scan_part.primary_keys)
-
         readers = []
-        for urls, keys in zip(file_urls, pks):
+        for urls, keys in zip(self._file_urls, self._pks):
             readers.append(
                 sync_reader(
                     self._batch_size,
                     self._thread_count,
-                    target_schema,
+                    self._target_schema,
                     urls,
                     keys,
                     list(self._partitions.items()),
                     list(self._oss_conf.items()),
-                    partition_schema,
+                    self._partition_schema,
                 )
             )
         return readers
 
     @property
     def schema(self):
-        return self._dataset.schema
+        return self._schema
 
     def _check_rank_and_world_size(
         self, rank: int | None, world_size: int | None
@@ -197,12 +205,14 @@ class Dataset(DatasetBase):
         return filtered_scan_partitions
 
 
-class Fragment:
-    pass
+class Fragment(FragmentBase):
+    def __init__(self):
+        pass
 
 
-class Scanner:
-    pass
+class Scanner(ScannerBase):
+    def __init__(self):
+        pass
 
 
 def lakesoul_dataset(

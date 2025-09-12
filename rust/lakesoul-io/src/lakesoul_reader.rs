@@ -42,7 +42,7 @@ use datafusion::error::{DataFusionError, Result};
 
 use datafusion::prelude::SessionContext;
 
-use futures::StreamExt;
+use futures::{Stream, StreamExt};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -271,6 +271,10 @@ impl LakeSoulReader {
         } else {
             None
         }
+    }
+
+    pub fn stream(&mut self) -> Option<SendableRecordBatchStream> {
+        self.stream.take()
     }
 }
 

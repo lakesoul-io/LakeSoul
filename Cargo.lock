@@ -3731,8 +3731,10 @@ dependencies = [
 name = "lakesoul-python"
 version = "1.0.0"
 dependencies = [
+ "arrow-array",
  "arrow-pyarrow",
  "arrow-schema",
+ "futures",
  "lakesoul-io",
  "lakesoul-metadata",
  "pyo3",
