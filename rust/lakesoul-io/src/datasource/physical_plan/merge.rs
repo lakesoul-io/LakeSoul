@@ -294,7 +294,6 @@ fn merge_stream(
         "merge_stream with config= {:?}, {:?}",
         &config, default_column_value
     );
-    println!("merge_stream default column {:?}", default_column_value);
     let merge_on_read = if config.skip_merge_on_read() || config.primary_keys.is_empty() {
         false
     } else {
