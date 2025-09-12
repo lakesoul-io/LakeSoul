@@ -179,7 +179,7 @@ public class NewCleanJob {
             List<String> snapshot = value.snapshot;
             if (commitOp.equals("CompactionCommit") || commitOp.equals("UpdateCommit") ){
                 if ( snapshot.size() == 1) {
-                    boolean isOldCompaction = cleanUtils.getCompactVersion(tableId, partitionDesc, version, pgConnection);
+                    boolean isOldCompaction = commitOp.equals("UpdateCommit") || cleanUtils.getCompactVersion(tableId, partitionDesc, version, pgConnection);
                     log.info("当前识别出来为旧版压缩："+ isOldCompaction);
                     compactionVersionState.update(isOldCompaction);
                 }
