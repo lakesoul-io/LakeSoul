@@ -6,20 +6,25 @@
 use std::sync::Arc;
 
 use crate::install_module;
+use arrow_array::RecordBatch;
 use arrow_pyarrow::PyArrowType;
-use arrow_schema::Schema;
+use arrow_schema::{ArrowError, Schema, SchemaRef};
+use futures::{StreamExt, stream::SelectAll};
 use lakesoul_io::{
     arrow::array::RecordBatchReader,
+    datafusion::{error::DataFusionError, execution::SendableRecordBatchStream},
     lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder},
     lakesoul_reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader},
 };
 use pyo3::{exceptions::PyRuntimeError, prelude::*};
+use tokio::runtime;
 
 pub(crate) fn init(py: Python, parent: &Bound<PyModule>) -> PyResult<()> {
     let m = PyModule::new(py, "_dataset")?;
     parent.add_submodule(&m)?;
     install_module("lakesoul._lib._dataset", &m)?;
     m.add_function(wrap_pyfunction!(sync_reader, &m)?)?;
+    m.add_function(wrap_pyfunction!(one_reader, &m)?)?;
     Ok(())
 }
 
@@ -57,6 +62,11 @@ fn sync_reader(
         .start_blocked()
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
     Ok(PyArrowType(Box::new(reader)))
+}
+
+#[pyfunction]
+fn one_reader() -> PyArrowType<Box<dyn RecordBatchReader + Send>> {
+    todo!()
 }
 
 fn build_io_config(
@@ -98,4 +108,52 @@ fn build_io_config(
         builder = builder.with_object_store_option("fs.s3a.path.style.access", "true");
     }
     builder.build()
+}
+
+struct OneReader {
+    schema: SchemaRef,
+    readers: Vec<LakeSoulReader>,
+    runtime: Arc<tokio::runtime::Runtime>,
+    stream: SelectAll<SendableRecordBatchStream>,
+}
+
+impl OneReader {
+    fn new(
+        schema: SchemaRef,
+        mut readers: Vec<LakeSoulReader>,
+        runtime: tokio::runtime::Runtime,
+    ) -> Self {
+        let mut ss = vec![];
+        for reader in readers.iter_mut() {
+            if let Some(s) = reader.stream() {
+                ss.push(s);
+            }
+        }
+        let s = futures::stream::select_all(ss);
+        Self {
+            schema,
+            readers,
+            runtime: Arc::new(runtime),
+            stream: s,
+        }
+    }
+}
+
+impl Iterator for OneReader {
+    type Item = Result<RecordBatch, ArrowError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.runtime.block_on(self.stream.next()).map(|res| {
+            res.map_err(|e| match e {
+                DataFusionError::ArrowError(arrow_error, _) => arrow_error,
+                _ => ArrowError::ExternalError(Box::new(e)),
+            })
+        })
+    }
+}
+
+impl RecordBatchReader for OneReader {
+    fn schema(&self) -> arrow_schema::SchemaRef {
+        todo!()
+    }
 }

@@ -139,7 +139,7 @@ def get_scan_plan_partitions(
     part_cols, pk_cols = get_partition_and_pk_cols(table_info)
     if should_filter_partitions_by_all(partitions.keys(), part_cols):
         partition_infos = filter_partitions_from_all(partitions, table_info)
-    elif len(partitions) == len(part_cols):
+    elif partitions and len(partitions) == len(part_cols):
         part_desc = []
         for part_col in part_cols:
             part_desc.append(f"{part_col}={partitions[part_col]}")

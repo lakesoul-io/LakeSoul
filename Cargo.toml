@@ -25,6 +25,8 @@ lakesoul-metadata = { path = "rust/lakesoul-metadata" }
 tokio.workspace = true
 arrow-pyarrow.workspace = true
 arrow-schema.workspace = true
+arrow-array.workspace = true
+futures.workspace = true
 
 [workspace]
 members = [
