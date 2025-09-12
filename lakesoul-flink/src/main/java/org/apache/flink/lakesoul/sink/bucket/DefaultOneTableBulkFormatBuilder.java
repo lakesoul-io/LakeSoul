@@ -42,7 +42,6 @@ public final class DefaultOneTableBulkFormatBuilder
             IOException {
         int hashBucketNum = conf.getInteger(LakeSoulSinkOptions.HASH_BUCKET_NUM);
         int hashBucketId = hashBucketNum == -1 ? 0 : subTaskId % hashBucketNum;
-        System.out.printf("DefaultOneTableBulkFormatBuilder::createWriter, subTaskId=%d, hashBucketId=%d\n", subTaskId, hashBucketId);
         return new LakeSoulRowDataOneTableSinkWriter(
                 hashBucketId,
                 identity,

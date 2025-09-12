@@ -16,13 +16,7 @@ import org.apache.spark.TaskContext;
 import org.apache.spark.memory.MemoryMode;
 import org.apache.spark.sql.arrow.ArrowUtils;
 import org.apache.spark.sql.catalyst.InternalRow;
-import org.apache.spark.sql.catalyst.expressions.GenericInternalRow;
-import org.apache.spark.sql.execution.vectorized.ColumnVectorUtils;
-import org.apache.spark.sql.execution.vectorized.OffHeapColumnVector;
-import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector;
-import org.apache.spark.sql.execution.vectorized.WritableColumnVector;
 import org.apache.spark.sql.internal.SQLConf;
-import org.apache.spark.sql.types.Metadata;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.vectorized.*;
@@ -33,8 +27,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
-
-import static org.apache.spark.sql.types.DataTypes.LongType;
 
 
 /**
@@ -162,7 +154,6 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
         }
         this.mergeOps = mergeOperatorInfo;
         this.requestSchema = requestSchema == null ? sparkSchema : requestSchema;
-        initializeInternal();
         TaskContext.get().addTaskCompletionListener(context -> {
             try {
                 close();
@@ -275,7 +266,6 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
 
         totalRowCount = 0;
         nativeReader = new LakeSoulArrowReader(reader, awaitTimeout);
-
     }
 
     private String filterEncode(FilterPredicate filter) {
@@ -304,10 +294,6 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
             requestSchema = newSchema;
         }
         recreateNativeReader();
-    }
-
-    private void initBatch() throws IOException {
-        initBatch(MEMORY_MODE, null, null);
     }
 
     public void initBatch(StructType partitionColumns, InternalRow partitionValues) throws IOException {
@@ -339,10 +325,6 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
         } else {
             return false;
         }
-    }
-
-    private void initializeInternal() throws IOException, UnsupportedOperationException {
-        initBatch();
     }
 
     private LakeSoulArrowReader nativeReader = null;
