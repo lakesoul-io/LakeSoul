@@ -340,28 +340,26 @@ impl Clone for UseLastSortKeyArrayRange {
 /// These ranges will be merged into ONE row of target record_batch finally.
 /// This is used for case of UseLast MergeOperator.
 #[derive(Debug, Clone, Default)]
-pub struct UseLastSortKeyBatchRanges<C: CursorValues> {
+pub struct UseLastSortKeyBatchRanges<C: CursorValues, const IS_PARTIAL_MERGE: bool> {
     /// The current batch range for collecting UseLastSortKeyArrayRange of current primary key
     current_batch_range: Option<SortKeyBatchRange<C>>,
 
     /// UseLastSortKeyArrayRange for each column of source schema
-    last_index_of_array: Vec<Option<UseLastSortKeyArrayRange>>,
-
-    /// whether the current batch range is partial merge
-    is_partial_merge: bool,
+    last_index_of_array: SmallVec<[Option<UseLastSortKeyArrayRange>; 1]>,
 }
 
-impl<C: CursorValues> UseLastSortKeyBatchRanges<C> {
-    pub fn new(field_num: usize, is_partial_merge: bool) -> UseLastSortKeyBatchRanges<C> {
-        let last_index_of_array = if is_partial_merge {
-            vec![None; field_num]
+impl<C: CursorValues, const IS_PARTIAL_MERGE: bool>
+    UseLastSortKeyBatchRanges<C, IS_PARTIAL_MERGE>
+{
+    pub fn new(field_num: usize) -> UseLastSortKeyBatchRanges<C, IS_PARTIAL_MERGE> {
+        let last_index_of_array = if IS_PARTIAL_MERGE {
+            smallvec![None; field_num]
         } else {
-            vec![None; 1]
+            smallvec![None; 1]
         };
         UseLastSortKeyBatchRanges {
             current_batch_range: None,
             last_index_of_array,
-            is_partial_merge,
         }
     }
 
@@ -385,7 +383,7 @@ impl<C: CursorValues> UseLastSortKeyBatchRanges<C> {
             self.set_batch_range(Some(range.clone()));
         }
         unsafe {
-            if self.is_partial_merge {
+            if IS_PARTIAL_MERGE {
                 let range_col = fields_map.get_unchecked(range.stream_idx());
                 for column_idx in 0..range.columns() {
                     let target_schema_idx = range_col.get_unchecked(column_idx);
@@ -429,7 +427,7 @@ impl<C: CursorValues> UseLastSortKeyBatchRanges<C> {
     #[inline]
     pub fn column(&self, column_idx: usize) -> &Option<UseLastSortKeyArrayRange> {
         unsafe {
-            if self.is_partial_merge {
+            if IS_PARTIAL_MERGE {
                 self.last_index_of_array.get_unchecked(column_idx)
             } else {
                 self.last_index_of_array.get_unchecked(0)
@@ -439,4 +437,5 @@ impl<C: CursorValues> UseLastSortKeyBatchRanges<C> {
 }
 
 pub type SortKeyBatchRangesRef<C> = Arc<SortKeyBatchRanges<C>>;
-pub type UseLastSortKeyBatchRangesRef<C> = Arc<UseLastSortKeyBatchRanges<C>>;
+pub type UseLastSortKeyBatchRangesRef<C, const IS_PARTIAL_MERGE: bool> =
+    Arc<UseLastSortKeyBatchRanges<C, IS_PARTIAL_MERGE>>;
