@@ -16,9 +16,10 @@ use crate::constant::{ConstEmptyArray, ConstNullArray};
 use crate::sorted_merge::merge_operator::{MergeOperator, MergeResult};
 use crate::sorted_merge::sort_key_range::{
     SortKeyArrayRange, SortKeyArrayRangeVec, SortKeyBatchRange, SortKeyBatchRanges,
-    SortKeyBatchRangesRef,
 };
 
+use super::sort_key_range::UseLastSortKeyBatchRanges;
+use crate::sorted_merge::cursor::CursorValues;
 use arrow::compute::interleave;
 use arrow::{
     array::{
@@ -34,89 +35,20 @@ use arrow_array::types::*;
 use dary_heap::QuaternaryHeap;
 use nohash::BuildNoHashHasher;
 
-use super::sort_key_range::UseLastSortKeyBatchRanges;
-
-/// The combiner for the sorted merge.
-#[derive(Debug)]
-pub enum RangeCombiner {
-    DefaultUseLastRangeCombiner(UseLastRangeCombiner),
-    MinHeapSortKeyBatchRangeCombiner(MinHeapSortKeyBatchRangeCombiner),
-}
-
-impl RangeCombiner {
-    /// Create a new RangeCombiner.
-    pub fn new(
-        schema: SchemaRef,
-        streams_num: usize,
-        fields_map: Arc<Vec<Vec<usize>>>,
-        target_batch_size: usize,
-        merge_operator: Vec<MergeOperator>,
-        is_partial_merge: bool,
-    ) -> Self {
-        if merge_operator.is_empty()
-            || merge_operator
-                .iter()
-                .all(|op| *op == MergeOperator::UseLast)
-        {
-            RangeCombiner::DefaultUseLastRangeCombiner(UseLastRangeCombiner::new(
-                schema,
-                streams_num,
-                fields_map,
-                target_batch_size,
-                is_partial_merge,
-            ))
-        } else {
-            RangeCombiner::MinHeapSortKeyBatchRangeCombiner(
-                MinHeapSortKeyBatchRangeCombiner::new(
-                    schema,
-                    streams_num,
-                    fields_map,
-                    target_batch_size,
-                    merge_operator,
-                ),
-            )
-        }
-    }
-
-    /// Push a range into the combiner.
-    pub fn push_range(&mut self, range: SortKeyBatchRange) {
-        match self {
-            RangeCombiner::MinHeapSortKeyBatchRangeCombiner(combiner) => {
-                combiner.push(range)
-            }
-            RangeCombiner::DefaultUseLastRangeCombiner(combiner) => combiner.push(range),
-        };
-    }
-
-    /// Poll a result from the combiner.
-    pub fn poll_result(&mut self) -> RangeCombinerResult {
-        match self {
-            RangeCombiner::MinHeapSortKeyBatchRangeCombiner(combiner) => {
-                combiner.poll_result()
-            }
-            RangeCombiner::DefaultUseLastRangeCombiner(combiner) => {
-                combiner.poll_result()
-            }
-        }
-    }
-
-    pub fn external_advance(&self) -> bool {
-        match self {
-            RangeCombiner::MinHeapSortKeyBatchRangeCombiner(_) => true,
-            RangeCombiner::DefaultUseLastRangeCombiner(_) => false,
-        }
-    }
+pub(crate) trait RangeCombinerTrait<C: CursorValues>: Unpin {
+    fn push_range(&mut self, range: SortKeyBatchRange<C>);
+    fn poll_result(&mut self) -> RangeCombinerResult<C>;
 }
 
 /// The poll result of the combiner.
 #[derive(Debug)]
-pub enum RangeCombinerResult {
+pub enum RangeCombinerResult<C: CursorValues> {
     /// The combiner is finished.
     None,
     /// An error occurred.
     Err(ArrowError),
     /// A range.
-    Range(SortKeyBatchRange),
+    Range(SortKeyBatchRange<C>),
     /// A record batch.
     RecordBatch(ArrowResult<RecordBatch>),
 }
@@ -124,7 +56,7 @@ pub enum RangeCombinerResult {
 /// The combiner for the sorted merge using a min heap.
 /// It is used for the common merge operator.
 #[derive(Debug)]
-pub struct MinHeapSortKeyBatchRangeCombiner {
+pub struct MinHeapSortKeyBatchRangeCombiner<C: CursorValues> {
     /// The schema of the record batch.
     schema: SchemaRef,
 
@@ -132,17 +64,17 @@ pub struct MinHeapSortKeyBatchRangeCombiner {
     fields_map: Arc<Vec<Vec<usize>>>,
 
     /// The min heap.
-    heap: QuaternaryHeap<Reverse<SortKeyBatchRange>>,
+    heap: QuaternaryHeap<Reverse<SortKeyBatchRange<C>>>,
 
     /// The in-progress ranges that accumulate from popping from heap.
     /// When the in-progress ranges are full, we should build a record batch by merging them.
-    in_progress: Vec<SortKeyBatchRangesRef>,
+    in_progress: Vec<SortKeyBatchRanges<C>>,
 
     /// The target batch size for generated record batch.
     target_batch_size: usize,
 
     /// The current sort key range.
-    current_sort_key_range: SortKeyBatchRangesRef,
+    current_sort_key_range: SortKeyBatchRanges<C>,
 
     /// The merge operator.
     merge_operator: Vec<MergeOperator>,
@@ -154,7 +86,7 @@ pub struct MinHeapSortKeyBatchRangeCombiner {
     const_empty_array: ConstEmptyArray,
 }
 
-impl MinHeapSortKeyBatchRangeCombiner {
+impl<C: CursorValues> MinHeapSortKeyBatchRangeCombiner<C> {
     /// Create a new MinHeapSortKeyBatchRangeCombiner.
     ///
     /// # Arguments
@@ -171,8 +103,7 @@ impl MinHeapSortKeyBatchRangeCombiner {
         target_batch_size: usize,
         merge_operator: Vec<MergeOperator>,
     ) -> Self {
-        let new_range =
-            Arc::new(SortKeyBatchRanges::new(schema.clone(), fields_map.clone()));
+        let new_range = SortKeyBatchRanges::new(schema.clone(), fields_map.clone());
         let merge_op = match merge_operator.len() {
             0 => vec![MergeOperator::UseLast; schema.fields().len()],
             _ => merge_operator,
@@ -190,7 +121,7 @@ impl MinHeapSortKeyBatchRangeCombiner {
         }
     }
 
-    pub fn push(&mut self, range: SortKeyBatchRange) {
+    pub fn push(&mut self, range: SortKeyBatchRange<C>) {
         self.heap.push(Reverse(range))
     }
 
@@ -201,19 +132,18 @@ impl MinHeapSortKeyBatchRangeCombiner {
     /// if heap is empty,
     /// check if in_progress is empty, if so, return None, which the RangeCombiner is finished
     /// otherwise, build record batch by merge all the remaining ranges in in_progress
-    pub fn poll_result(&mut self) -> RangeCombinerResult {
+    pub fn poll(&mut self) -> RangeCombinerResult<C> {
         if self.in_progress.len() == self.target_batch_size {
             RangeCombinerResult::RecordBatch(self.build_record_batch())
         } else {
             match self.heap.pop() {
                 Some(Reverse(mut range)) => {
                     if self.current_sort_key_range.match_row(&range) {
-                        self.get_mut_current_sort_key_range()
+                        self.current_sort_key_range
                             .add_range_in_batch(range.clone());
                     } else {
-                        self.in_progress.push(self.current_sort_key_range.clone());
-                        self.init_current_sort_key_range();
-                        self.get_mut_current_sort_key_range()
+                        self.push_and_reinit_current_sort_key_range();
+                        self.current_sort_key_range
                             .add_range_in_batch(range.clone());
                     }
                     range.advance();
@@ -226,8 +156,8 @@ impl MinHeapSortKeyBatchRangeCombiner {
                         RangeCombinerResult::None
                     } else {
                         if !self.current_sort_key_range.is_empty() {
-                            self.in_progress.push(self.current_sort_key_range.clone());
-                            self.get_mut_current_sort_key_range().set_batch_range(None);
+                            self.push_and_reinit_current_sort_key_range();
+                            self.current_sort_key_range.set_batch_range(None);
                         }
                         RangeCombinerResult::RecordBatch(self.build_record_batch())
                     }
@@ -237,7 +167,7 @@ impl MinHeapSortKeyBatchRangeCombiner {
     }
 
     /// Build a record batch by merging the in-progress ranges.
-    /// Construct [`arrow::array::Array`] for each column by columnarly merging the in-progress ranges.
+    /// Construct [`Array`] for each column by columnarly merging the in-progress ranges.
     fn build_record_batch(&mut self) -> ArrowResult<RecordBatch> {
         // construct record batch by columnarly merging
         let columns = self
@@ -294,16 +224,21 @@ impl MinHeapSortKeyBatchRangeCombiner {
     }
 
     /// Initialize the current sort key range.
-    fn init_current_sort_key_range(&mut self) {
-        self.current_sort_key_range = Arc::new(SortKeyBatchRanges::new(
-            self.schema.clone(),
-            self.fields_map.clone(),
-        ));
+    fn push_and_reinit_current_sort_key_range(&mut self) {
+        let new_sort_key_range =
+            SortKeyBatchRanges::new(self.schema.clone(), self.fields_map.clone());
+        let old = std::mem::replace(&mut self.current_sort_key_range, new_sort_key_range);
+        self.in_progress.push(old);
+    }
+}
+
+impl<C: CursorValues> RangeCombinerTrait<C> for MinHeapSortKeyBatchRangeCombiner<C> {
+    fn push_range(&mut self, range: SortKeyBatchRange<C>) {
+        self.push(range);
     }
 
-    /// Get the mutable reference of the current sort key range.
-    fn get_mut_current_sort_key_range(&mut self) -> &mut SortKeyBatchRanges {
-        Arc::make_mut(&mut self.current_sort_key_range)
+    fn poll_result(&mut self) -> RangeCombinerResult<C> {
+        self.poll()
     }
 }
 
@@ -402,7 +337,7 @@ fn merge_sort_key_array_ranges(
 /// The combiner for the sorted merge using a loser tree.
 /// It is used for the UseLast merge operator.
 #[derive(Debug)]
-pub struct UseLastRangeCombiner {
+pub struct UseLastRangeCombiner<C: CursorValues, const IS_PARTIAL_MERGE: bool> {
     /// The schema of the record batch.
     schema: SchemaRef,
 
@@ -451,26 +386,25 @@ pub struct UseLastRangeCombiner {
     loser_tree_has_updated: bool,
 
     /// ranges for each input source. `None` means the input is exhausted
-    ranges: Vec<Option<SortKeyBatchRange>>,
+    ranges: Vec<Option<SortKeyBatchRange<C>>>,
 
     /// The in-progress ranges that accumulate from popping from loser tree.
     /// For UseLast merge operator, [`UseLastSortKeyBatchRanges`] is used to collect the in-progress ranges.
-    in_progress: Vec<UseLastSortKeyBatchRanges>,
+    in_progress: Vec<UseLastSortKeyBatchRanges<C, IS_PARTIAL_MERGE>>,
 
     /// The target batch size for generated record batch.
     target_batch_size: usize,
 
     /// The current sort key range.
-    current_sort_key_range: UseLastSortKeyBatchRanges,
+    current_sort_key_range: UseLastSortKeyBatchRanges<C, IS_PARTIAL_MERGE>,
 
     /// The constant null array to avoid duplicate allocation.
     const_null_array: ConstNullArray,
-
-    /// Whether the merge is partial.
-    is_partial_merge: bool,
 }
 
-impl UseLastRangeCombiner {
+impl<C: CursorValues, const IS_PARTIAL_MERGE: bool>
+    UseLastRangeCombiner<C, IS_PARTIAL_MERGE>
+{
     /// Create a new UseLastRangeCombiner.
     ///
     /// # Arguments
@@ -485,7 +419,6 @@ impl UseLastRangeCombiner {
         streams_num: usize,
         fields_map: Arc<Vec<Vec<usize>>>,
         target_batch_size: usize,
-        is_partial_merge: bool,
     ) -> Self {
         Self {
             schema: schema.clone(),
@@ -493,21 +426,17 @@ impl UseLastRangeCombiner {
             streams_num,
             in_progress: Vec::with_capacity(target_batch_size),
             target_batch_size,
-            current_sort_key_range: UseLastSortKeyBatchRanges::new(
-                schema.fields().len(),
-                is_partial_merge,
-            ),
+            current_sort_key_range: UseLastSortKeyBatchRanges::new(schema.fields().len()),
             const_null_array: ConstNullArray::new(),
             ranges: (0..streams_num).map(|_| None).collect(),
             loser_tree: vec![],
             ranges_counter: 0,
             loser_tree_has_updated: false,
-            is_partial_merge,
         }
     }
 
     #[inline]
-    pub fn push(&mut self, range: SortKeyBatchRange) {
+    pub fn push(&mut self, range: SortKeyBatchRange<C>) {
         unsafe {
             let stream_idx = range.stream_idx;
             *self.ranges.get_unchecked_mut(stream_idx) = Some(range);
@@ -528,8 +457,8 @@ impl UseLastRangeCombiner {
 
     #[inline]
     pub fn set_current_sort_key_range(
-        ranges: &mut UseLastSortKeyBatchRanges,
-        range: &SortKeyBatchRange,
+        ranges: &mut UseLastSortKeyBatchRanges<C, IS_PARTIAL_MERGE>,
+        range: &SortKeyBatchRange<C>,
         fields_map: &Vec<Vec<usize>>,
     ) {
         ranges.add_range_in_batch(range, fields_map);
@@ -545,7 +474,7 @@ impl UseLastRangeCombiner {
     ///
     /// If the merge is full column merge, we use `build_record_batch_full_merge` to build the record batch.
     /// Otherwise, we use `build_record_batch` to build the record batch.
-    pub fn poll_result(&mut self) -> RangeCombinerResult {
+    pub fn poll(&mut self) -> RangeCombinerResult<C> {
         if self.ranges_counter < self.streams_num {
             return RangeCombinerResult::Err(ArrowError::InvalidArgumentError(format!(
                 "Not all streams have been initialized, ranges_counter: {}, streams_num: {}",
@@ -569,9 +498,7 @@ impl UseLastRangeCombiner {
                         fields_map,
                     );
                 } else {
-                    self.in_progress
-                        .push(std::mem::take(&mut self.current_sort_key_range));
-                    self.init_current_sort_key_range();
+                    self.push_and_reinit_current_sort_key_range();
                     let fields_map = &*self.fields_map;
                     Self::set_current_sort_key_range(
                         &mut self.current_sort_key_range,
@@ -587,9 +514,7 @@ impl UseLastRangeCombiner {
                 RangeCombinerResult::None
             } else {
                 if !self.current_sort_key_range.is_empty() {
-                    self.in_progress
-                        .push(std::mem::take(&mut self.current_sort_key_range));
-                    self.init_current_sort_key_range();
+                    self.push_and_reinit_current_sort_key_range();
                     self.current_sort_key_range.set_batch_range(None);
                 }
                 RangeCombinerResult::RecordBatch(self.build_record_batch())
@@ -603,15 +528,18 @@ impl UseLastRangeCombiner {
         let capacity = self.in_progress.len();
         let mut interleave_idx = Vec::<(usize, usize)>::with_capacity(capacity);
         interleave_idx.resize(capacity, (0, 0));
+
         let mut batch_idx_to_flatten_array_idx =
             HashMap::<usize, usize, BuildNoHashHasher<usize>>::with_capacity_and_hasher(
                 capacity * 2,
                 BuildNoHashHasher::default(),
             );
+
         let mut array_count = 1usize;
         let mut flatten_arrays: Vec<Vec<ArrayRef>> =
             Vec::with_capacity(self.schema.fields().len());
         flatten_arrays.resize(self.schema.fields().len(), vec![]);
+
         for column_idx in 0..self.schema.fields().len() {
             unsafe {
                 let flatten_array = flatten_arrays.get_unchecked_mut(column_idx);
@@ -622,6 +550,7 @@ impl UseLastRangeCombiner {
                 );
             }
         }
+
         for (idx, ranges) in self.in_progress.iter().enumerate() {
             if let Some(range) = ranges.column(0) {
                 let batch_idx = range.batch_idx;
@@ -679,7 +608,7 @@ impl UseLastRangeCombiner {
     /// However, we only need to collect last index of array ranges for each generated row, rather than compute the merge result.
     /// Finally, we interleave the flatten array and return the result.
     fn build_record_batch(&mut self) -> ArrowResult<RecordBatch> {
-        if !self.is_partial_merge {
+        if !IS_PARTIAL_MERGE {
             return self.build_record_batch_full_merge();
         }
         // construct record batch by columnarly merging
@@ -737,11 +666,11 @@ impl UseLastRangeCombiner {
 
     /// Initialize the current sort key range.
     #[inline]
-    fn init_current_sort_key_range(&mut self) {
-        self.current_sort_key_range = UseLastSortKeyBatchRanges::new(
-            self.schema.fields().len(),
-            self.is_partial_merge,
-        );
+    fn push_and_reinit_current_sort_key_range(&mut self) {
+        let new_sort_key_range =
+            UseLastSortKeyBatchRanges::new(self.schema.fields().len());
+        let old = std::mem::replace(&mut self.current_sort_key_range, new_sort_key_range);
+        self.in_progress.push(old);
     }
 
     /// Attempts to initialize the loser tree with one value from each
@@ -749,7 +678,7 @@ impl UseLastRangeCombiner {
     fn init_loser_tree(&mut self) {
         // Init loser tree
         unsafe {
-            self.loser_tree = vec![usize::MAX; self.streams_num];
+            self.loser_tree.resize(self.streams_num, usize::MAX);
             for i in 0..self.streams_num {
                 let mut winner = i;
                 let mut cmp_node = self.loser_tree_leaf_node_index(i);
@@ -860,5 +789,17 @@ impl UseLastRangeCombiner {
             *self.loser_tree.get_unchecked_mut(cmp_node) = *winner;
             *winner = challenger;
         }
+    }
+}
+
+impl<C: CursorValues, const IS_PARTIAL_MERGE: bool> RangeCombinerTrait<C>
+    for UseLastRangeCombiner<C, IS_PARTIAL_MERGE>
+{
+    fn push_range(&mut self, range: SortKeyBatchRange<C>) {
+        self.push(range);
+    }
+
+    fn poll_result(&mut self) -> RangeCombinerResult<C> {
+        self.poll()
     }
 }
