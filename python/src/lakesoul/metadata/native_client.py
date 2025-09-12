@@ -6,7 +6,7 @@
 # import concurrent.futures
 # import importlib
 # from ctypes import CFUNCTYPE, c_void_p, c_bool, c_char_p, create_string_buffer, c_int
-from typing import Optional
+from __future__ import annotations
 from .lib.const import PARAM_DELIM
 from . import lib
 from .generated import entity_pb2
@@ -177,7 +177,7 @@ from lakesoul._lib._metadata import exec_query
 #         return INSTANCE
 
 
-def query(query_type, params) -> Optional[entity_pb2.JniWrapper]:
+def query(query_type: int, params: list[str]) -> entity_pb2.JniWrapper | None:
     joined_params = PARAM_DELIM.join(params)
     bytes = exec_query(query_type, joined_params)
     ret = None

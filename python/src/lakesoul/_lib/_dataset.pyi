@@ -1,17 +1,13 @@
 import pyarrow
 
 def double(x) -> int: ...
-
-class ArrowDataset:
-    def __new__(cls): ...
-
-    def hello(self)->str:...
-
-    def to_reader(self) -> pyarrow.RecordBatchReader:...
-
-    def fragments(self) -> list[ArrowFragment]:...
-
-    def schema(self) -> pyarrow.Schema:...
-
-class ArrowFragment:
-    def to_reader(self) -> pyarrow.RecordBatchReader:...
+def sync_reader(
+    batch_size: int,
+    thread_num: int,
+    schema: pyarrow.Schema,
+    file_urls: list[str],
+    primary_keys: list[str],
+    partition_info: list[tuple[str, str]],
+    oss_conf: list[tuple[str, str]],
+    partition_schema: pyarrow.Schema | None = None,
+) -> pyarrow.RecordBatchReader: ...
