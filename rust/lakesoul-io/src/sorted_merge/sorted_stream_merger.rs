@@ -5,20 +5,30 @@
 //! This module provides functionality for sorted stream merger.
 //! Which is referred by `SortPreservingMergeExec` in DataFusion.
 
+use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use crate::sorted_merge::combiner::{RangeCombiner, RangeCombinerResult};
+use crate::sorted_merge::combiner::*;
 use crate::sorted_merge::merge_operator::MergeOperator;
 use crate::sorted_merge::sort_key_range::SortKeyBatchRange;
 
+use crate::default_column_stream::DefaultColumnStream;
+use crate::sorted_merge::cursor::{ArrayValues, CursorArray, CursorValues, RowValues};
+use crate::sorted_merge::stream::{FieldCursorStream, RowCursorStream};
+use arrow::array::*;
 use arrow::record_batch::RecordBatch;
-use arrow::row::{RowConverter, SortField};
+use arrow_array::{
+    BinaryArray, LargeBinaryArray, LargeStringArray, StringArray, StringViewArray,
+    downcast_primitive,
+};
+use arrow_schema::{DataType, SortOptions};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::error::Result;
-use datafusion::physical_expr::PhysicalExpr;
+use datafusion::execution::memory_pool::MemoryReservation;
+use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
 use datafusion::physical_plan::{
     RecordBatchStream, SendableRecordBatchStream, expressions::col,
 };
@@ -43,15 +53,18 @@ impl SortedStream {
     }
 }
 
+pub(crate) type CursorStream<C> =
+    Pin<Box<dyn Stream<Item = Result<(C, RecordBatch)>> + Send>>;
+
 /// A wrapper of sorted input streams to merge together.
-struct MergingStreams {
+struct MergingStreams<C: CursorValues> {
     /// The sorted input streams to merge together
-    streams: Vec<Fuse<SendableRecordBatchStream>>,
+    streams: Vec<Fuse<CursorStream<C>>>,
     /// number of streams
     num_streams: usize,
 }
 
-impl Debug for MergingStreams {
+impl<C: CursorValues> Debug for MergingStreams<C> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MergingStreams")
             .field("num_streams", &self.num_streams)
@@ -59,8 +72,8 @@ impl Debug for MergingStreams {
     }
 }
 
-impl MergingStreams {
-    fn new(input_streams: Vec<Fuse<SendableRecordBatchStream>>) -> Self {
+impl<C: CursorValues> MergingStreams<C> {
+    fn new(input_streams: Vec<Fuse<CursorStream<C>>>) -> Self {
         Self {
             num_streams: input_streams.len(),
             streams: input_streams,
@@ -74,29 +87,23 @@ impl MergingStreams {
 
 /// Struct of sorted stream merger.
 #[derive(Debug)]
-pub(crate) struct SortedStreamMerger {
+pub(crate) struct SortedStreamMerger<C: CursorValues, R: RangeCombinerTrait<C>> {
     /// The schema of the RecordBatches yielded by this stream
     schema: SchemaRef,
 
     /// The sorted input streams to merge together
     // streams: MergingStreams,
-    streams: MergingStreams,
+    streams: MergingStreams<C>,
 
     /// Maintain a flag for each stream denoting if the current range
     /// has finished and needs to poll from the stream
     range_finished: Vec<bool>,
 
-    /// The physical expressions to sort by
-    column_expressions: Vec<Vec<Arc<dyn PhysicalExpr>>>,
-
     /// The [`RangeCombiner`] of sorted stream
-    range_combiner: RangeCombiner,
+    range_combiner: R,
 
     /// If the stream has encountered an error
     aborted: bool,
-
-    /// row converter for sort fields
-    row_converters: Vec<RowConverter>,
 
     /// The accumulated indexes for the next record batch
     batch_idx_counter: usize,
@@ -105,7 +112,190 @@ pub(crate) struct SortedStreamMerger {
     initialized: Vec<bool>,
 }
 
-impl SortedStreamMerger {
+macro_rules! primitive_merge_helper {
+    ($t:ty, $($v:ident),+) => {
+        merge_helper!(PrimitiveArray<$t>, $($v),+)
+    };
+}
+
+macro_rules! merge_helper {
+    ($t:ty, $streams:ident, $col_name:ident, $merge_schema:ident, $target_schema:ident, $batch_size:ident, $default_column_value:ident, $reservation:ident, $merge_operator:ident, $fields_map:ident) => {{
+        let streams = $streams
+            .into_iter()
+            .map(|s| {
+                let stream = s.stream;
+                let schema = stream.schema();
+                let col_expr = col($col_name, schema.as_ref())?;
+                let stream = FieldCursorStream::<$t>::new(
+                    PhysicalSortExpr::new(col_expr, SortOptions::default()),
+                    stream,
+                    $reservation.new_empty(),
+                );
+                let stream: CursorStream<ArrayValues<<$t as CursorArray>::Values>> =
+                    Box::pin(stream);
+                Ok(stream)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        create_merger!(
+            ArrayValues<<$t as CursorArray>::Values>,
+            streams,
+            $merge_schema,
+            $target_schema,
+            $fields_map,
+            $batch_size,
+            $merge_operator,
+            $default_column_value
+        );
+    }};
+}
+
+macro_rules! create_merger {
+    ($t:ty, $streams:ident, $merge_schema:ident, $target_schema:ident, $fields_map:ident, $batch_size:ident, $merge_operator:ident, $default_column_value:ident) => {{
+        let streams_num = $streams.len();
+        if $merge_operator.is_empty()
+            || $merge_operator
+                .iter()
+                .all(|op| *op == MergeOperator::UseLast)
+        {
+            let is_partial_merge = $fields_map
+                .iter()
+                .any(|f| f.len() != $merge_schema.fields().len());
+            if is_partial_merge {
+                let combiner = UseLastRangeCombiner::<$t, true>::new(
+                    $merge_schema.clone(),
+                    streams_num,
+                    $fields_map,
+                    $batch_size,
+                );
+                let merge_stream = SortedStreamMerger::new_from_streams(
+                    $streams,
+                    $merge_schema,
+                    combiner,
+                )?;
+                return Ok(Box::pin(
+                    DefaultColumnStream::new_from_streams_with_default(
+                        vec![Box::pin(merge_stream)],
+                        $target_schema,
+                        $default_column_value,
+                    ),
+                ));
+            } else {
+                let combiner = UseLastRangeCombiner::<$t, false>::new(
+                    $merge_schema.clone(),
+                    streams_num,
+                    $fields_map,
+                    $batch_size,
+                );
+                let merge_stream = SortedStreamMerger::new_from_streams(
+                    $streams,
+                    $merge_schema,
+                    combiner,
+                )?;
+                return Ok(Box::pin(
+                    DefaultColumnStream::new_from_streams_with_default(
+                        vec![Box::pin(merge_stream)],
+                        $target_schema,
+                        $default_column_value,
+                    ),
+                ));
+            }
+        } else {
+            let combiner = MinHeapSortKeyBatchRangeCombiner::new(
+                $merge_schema.clone(),
+                streams_num,
+                $fields_map,
+                $batch_size,
+                $merge_operator,
+            );
+            let merge_stream =
+                SortedStreamMerger::new_from_streams($streams, $merge_schema, combiner)?;
+            return Ok(Box::pin(
+                DefaultColumnStream::new_from_streams_with_default(
+                    vec![Box::pin(merge_stream)],
+                    $target_schema,
+                    $default_column_value,
+                ),
+            ));
+        }
+    }};
+}
+
+pub(crate) fn build_sorted_stream_merger(
+    streams: Vec<SortedStream>,
+    primary_keys: Arc<Vec<String>>,
+    merge_schema: SchemaRef,
+    target_schema: SchemaRef,
+    batch_size: usize,
+    default_column_value: Arc<HashMap<String, String>>,
+    merge_operator: Vec<MergeOperator>,
+    reservation: MemoryReservation,
+) -> Result<SendableRecordBatchStream> {
+    let fields_map = streams
+        .iter()
+        .map(|s| {
+            s.stream
+                .schema()
+                .fields()
+                .iter()
+                .map(|f| Ok(merge_schema.index_of(f.name())?))
+                .collect::<Result<Vec<usize>>>()
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let fields_map = Arc::new(fields_map);
+
+    // for single column pk with primitive data type,
+    // use FieldCursorStream to avoid RowConverter overhead
+    if primary_keys.len() == 1 {
+        let col_name = primary_keys[0].as_str();
+        let data_type = merge_schema.field_with_name(col_name)?.data_type();
+        downcast_primitive! {
+            data_type => (primitive_merge_helper, streams, col_name, merge_schema, target_schema, batch_size, default_column_value, reservation, merge_operator, fields_map),
+            DataType::Utf8 => merge_helper!(StringArray, streams, col_name, merge_schema, target_schema, batch_size, default_column_value, reservation, merge_operator, fields_map)
+            DataType::Utf8View => merge_helper!(StringViewArray, streams, col_name, merge_schema, target_schema, batch_size, default_column_value, reservation, merge_operator, fields_map)
+            DataType::LargeUtf8 => merge_helper!(LargeStringArray, streams, col_name, merge_schema, target_schema, batch_size, default_column_value, reservation, merge_operator, fields_map)
+            DataType::Binary => merge_helper!(BinaryArray, streams, col_name, merge_schema, target_schema, batch_size, default_column_value, reservation, merge_operator, fields_map)
+            DataType::LargeBinary => merge_helper!(LargeBinaryArray, streams, col_name, merge_schema, target_schema, batch_size, default_column_value, reservation, merge_operator, fields_map)
+            _ => {}
+        }
+    }
+
+    // For single column pk with unsupport data type,
+    // or multi-column pk, use RowCusorStream
+    let streams = streams
+        .into_iter()
+        .map(|s| {
+            let stream = s.stream;
+            let schema = stream.schema();
+            let sort_exprs = primary_keys
+                .iter()
+                .map(|k| {
+                    let col_expr = col(k.as_str(), &schema)?;
+                    Ok(PhysicalSortExpr::new(col_expr, SortOptions::default()))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let stream = RowCursorStream::try_new(
+                schema.as_ref(),
+                &LexOrdering::new(sort_exprs),
+                stream,
+                reservation.new_empty(),
+            )?;
+            let stream: CursorStream<RowValues> = Box::pin(stream);
+            Ok(stream)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    create_merger!(
+        RowValues,
+        streams,
+        merge_schema,
+        target_schema,
+        fields_map,
+        batch_size,
+        merge_operator,
+        default_column_value
+    );
+}
+
+impl<C: CursorValues, R: RangeCombinerTrait<C>> SortedStreamMerger<C, R> {
     /// Create a new sorted stream merger from a list of sorted streams.
     ///
     /// # Arguments
@@ -116,80 +306,18 @@ impl SortedStreamMerger {
     /// * `batch_size` - The batch size of the RecordBatches.
     /// * `merge_operator` - The merge operator to use.
     pub(crate) fn new_from_streams(
-        streams: Vec<SortedStream>,
+        streams: Vec<CursorStream<C>>,
         target_schema: SchemaRef,
-        primary_keys: Vec<String>,
-        batch_size: usize,
-        merge_operator: Vec<MergeOperator>,
+        range_combiner: R,
     ) -> Result<Self> {
         let streams_num = streams.len();
-
-        let expressions = streams
-            .iter()
-            .map(|stream| {
-                let schema = stream.stream.schema();
-                primary_keys
-                    .iter()
-                    .map(move |pk| col(pk.as_str(), &schema.clone()))
-                    .collect::<Result<Vec<_>>>()
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        let row_converters = streams
-            .iter()
-            .map(|stream| {
-                let schema = stream.stream.schema();
-                let sort_fields = primary_keys
-                    .iter()
-                    .map(move |pk| {
-                        let data_type =
-                            schema.field_with_name(pk.as_str())?.data_type().clone();
-                        Ok(SortField::new(data_type))
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                Ok(RowConverter::new(sort_fields)?)
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        // O(nm), n = number of stream schema fields, m = number of target schema fields
-        let fields_map = streams
-            .iter()
-            .map(|s| {
-                s.stream
-                    .schema()
-                    .fields()
-                    .iter()
-                    .map(|f| Ok(target_schema.index_of(f.name())?))
-                    .collect::<Result<Vec<usize>>>()
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let fields_map = Arc::new(fields_map);
-
-        // this is a partial merge when any one of stream has columns less than target
-        let is_partial_merge = fields_map
-            .iter()
-            .any(|f| f.len() != target_schema.fields().len());
-
-        let wrappers: Vec<Fuse<SendableRecordBatchStream>> =
-            streams.into_iter().map(|s| s.stream.fuse()).collect();
-
-        let combiner = RangeCombiner::new(
-            target_schema.clone(),
-            streams_num,
-            fields_map,
-            batch_size,
-            merge_operator,
-            is_partial_merge,
-        );
 
         Ok(Self {
             schema: target_schema,
             range_finished: vec![true; streams_num],
-            streams: MergingStreams::new(wrappers),
-            column_expressions: expressions,
+            streams: MergingStreams::new(streams.into_iter().map(|s| s.fuse()).collect()),
             aborted: false,
-            range_combiner: combiner,
-            row_converters,
+            range_combiner,
             batch_idx_counter: 0,
             initialized: vec![false; streams_num],
         })
@@ -198,6 +326,7 @@ impl SortedStreamMerger {
     /// If the stream at the given index is not exhausted, and the last batch range for the
     /// stream is finished, poll the stream for the next RecordBatch and create a new
     /// batch range for the stream from the returned result
+    #[inline]
     fn maybe_poll_stream(
         &mut self,
         cx: &mut Context<'_>,
@@ -221,29 +350,17 @@ impl SortedStreamMerger {
                     return Poll::Ready(Err(e));
                 }
                 Some(Ok(batch)) => {
+                    let (cursor_values, batch) = batch;
                     if batch.num_rows() > 0 {
                         self.initialized[idx] = true;
-                        let cols = self.column_expressions[idx]
-                            .iter()
-                            .map(|expr| {
-                                expr.evaluate(&batch)?.into_array(batch.num_rows())
-                            })
-                            .collect::<Result<Vec<_>>>()?;
-                        let rows = match self.row_converters[idx].convert_columns(&cols) {
-                            Ok(rows) => rows,
-                            Err(e) => {
-                                return Poll::Ready(Err(ArrowError(e, None)));
-                            }
-                        };
 
                         self.batch_idx_counter += 1;
-                        let (batch, rows) = (Arc::new(batch), Arc::new(rows));
                         let range = SortKeyBatchRange::new_and_init(
                             0,
                             idx,
                             self.batch_idx_counter,
-                            batch,
-                            rows,
+                            Arc::new(batch),
+                            Arc::new(cursor_values),
                         );
 
                         self.range_finished[idx] = false;
@@ -264,7 +381,7 @@ impl SortedStreamMerger {
     }
 }
 
-impl SortedStreamMerger {
+impl<C: CursorValues, R: RangeCombinerTrait<C>> SortedStreamMerger<C, R> {
     #[inline]
     fn poll_next_inner(
         self: &mut Pin<&mut Self>,
@@ -307,7 +424,6 @@ impl SortedStreamMerger {
                 }
                 RangeCombinerResult::Range(range) => {
                     let stream_idx = range.stream_idx();
-                    // range.advance();
 
                     if !range.is_finished() {
                         self.range_combiner.push_range(range)
@@ -324,6 +440,8 @@ impl SortedStreamMerger {
                             }
                         }
                     }
+                    // here we don't return Poll::Pending to let combiner
+                    // continue to produce range
                 }
                 RangeCombinerResult::RecordBatch(batch) => {
                     return Poll::Ready(Some(batch.map_err(|e| ArrowError(e, None))));
@@ -333,7 +451,7 @@ impl SortedStreamMerger {
     }
 }
 
-impl Stream for SortedStreamMerger {
+impl<C: CursorValues, R: RangeCombinerTrait<C>> Stream for SortedStreamMerger<C, R> {
     type Item = Result<RecordBatch>;
 
     fn poll_next(
@@ -344,7 +462,9 @@ impl Stream for SortedStreamMerger {
     }
 }
 
-impl RecordBatchStream for SortedStreamMerger {
+impl<C: CursorValues, R: RangeCombinerTrait<C>> RecordBatchStream
+    for SortedStreamMerger<C, R>
+{
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }
@@ -352,21 +472,18 @@ impl RecordBatchStream for SortedStreamMerger {
 
 #[cfg(test)]
 mod tests {
-    use std::ops::Index;
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     use arrow::array::ArrayRef;
-    use arrow::array::as_primitive_array;
     use arrow::array::{Int32Array, StringArray};
-    use arrow::datatypes::Int64Type;
-    use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+    use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
     use arrow::util::pretty::print_batches;
     use arrow_array::Float64Array;
     use datafusion::assert_batches_eq;
     use datafusion::error::Result;
     use datafusion::execution::context::TaskContext;
-    use datafusion::logical_expr::col as logical_col;
     use datafusion::physical_plan::{ExecutionPlan, common};
     use datafusion::prelude::{SessionConfig, SessionContext};
 
@@ -374,158 +491,12 @@ mod tests {
     use crate::lakesoul_io_config::LakeSoulIOConfigBuilder;
     use crate::lakesoul_reader::LakeSoulReader;
     use crate::sorted_merge::merge_operator::MergeOperator;
-    use crate::sorted_merge::sorted_stream_merger::{SortedStream, SortedStreamMerger};
-    use comfy_table::{Cell, Table};
+    use crate::sorted_merge::sorted_stream_merger::{
+        SortedStream, build_sorted_stream_merger,
+    };
+    use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryConsumer};
     use datafusion::physical_plan::memory::LazyMemoryExec;
     use parking_lot::lock_api::RwLock;
-
-    #[tokio::test]
-    async fn test_multi_file_merger() {
-        let session_config = SessionConfig::default().with_batch_size(32);
-        let session_ctx = SessionContext::new_with_config(session_config);
-        let project_dir = std::env::current_dir().unwrap();
-        let files: Vec<String> = vec![
-            project_dir
-                .join("../../python/small_0.parquet")
-                .into_os_string()
-                .into_string()
-                .unwrap(),
-            project_dir
-                .join("../../python/small_1.parquet")
-                .into_os_string()
-                .into_string()
-                .unwrap(),
-            project_dir
-                .join("../../python/small_2.parquet")
-                .into_os_string()
-                .into_string()
-                .unwrap(),
-        ];
-        let mut streams = Vec::with_capacity(files.len());
-        for i in 0..files.len() {
-            let stream = session_ctx
-                .read_parquet(files[i].as_str(), Default::default())
-                .await
-                .unwrap()
-                .sort(vec![logical_col("int0").sort(true, true)])
-                .unwrap()
-                .execute_stream()
-                .await
-                .unwrap();
-            streams.push(SortedStream::new(stream));
-        }
-
-        let schema = get_test_file_schema();
-
-        let merge_stream = SortedStreamMerger::new_from_streams(
-            streams,
-            schema,
-            vec![String::from("int0")],
-            1024,
-            vec![],
-        )
-        .unwrap();
-        let merged_result = common::collect(Box::pin(merge_stream)).await.unwrap();
-
-        let mut all_rb = Vec::new();
-        for file in &files {
-            let stream = session_ctx
-                .read_parquet(file.as_str(), Default::default())
-                .await
-                .unwrap()
-                .sort(vec![logical_col("int0").sort(true, true)])
-                .unwrap()
-                .execute_stream()
-                .await
-                .unwrap();
-            let rb = common::collect(stream).await.unwrap();
-            print_batches(&rb.clone()).unwrap();
-            all_rb.extend(rb);
-        }
-
-        let expected_table = merge_with_use_last(&all_rb).unwrap();
-        let expected_lines = expected_table
-            .lines()
-            .map(|line| String::from(line.trim_end()))
-            .collect::<Vec<_>>();
-
-        let formatted = arrow::util::pretty::pretty_format_batches(&merged_result)
-            .unwrap()
-            .to_string();
-
-        let actual_lines: Vec<&str> = formatted.trim().lines().collect();
-        assert_eq!(
-            expected_lines, actual_lines,
-            "\n\nexpected:\n\n{:#?}\nactual:\n\n{:#?}\n\n",
-            expected_lines, actual_lines
-        );
-    }
-
-    // merge a series of record batches into a table using use_last
-    fn merge_with_use_last(results: &[RecordBatch]) -> Result<Table> {
-        let mut table = Table::new();
-        table.load_preset("||--+-++|    ++++++");
-
-        if results.is_empty() {
-            return Ok(table);
-        }
-
-        let schema = results[0].schema();
-
-        let mut header = Vec::new();
-        for field in schema.fields() {
-            header.push(Cell::new(field.name()));
-        }
-        table.set_header(header);
-
-        let mut rows = Vec::new();
-        for batch in results {
-            for row in 0..batch.num_rows() {
-                let mut cells = Vec::new();
-                for col in 0..batch.num_columns() {
-                    let column = batch.column(col);
-                    let arr = as_primitive_array::<Int64Type>(column);
-                    cells.push(arr.value(row));
-                }
-                rows.push(cells);
-                // table.add_row(cells);
-            }
-        }
-
-        rows.sort_by_key(|k| k[0]);
-
-        for row_idx in 0..rows.len() {
-            if row_idx == rows.len() - 1
-                || rows.index(row_idx)[0] != rows.index(row_idx + 1)[0]
-            {
-                table.add_row(rows.index(row_idx));
-            }
-        }
-
-        Ok(table)
-    }
-
-    pub fn get_test_file_schema() -> SchemaRef {
-        let schema = Schema::new(vec![
-            Field::new("int0", DataType::Int64, false),
-            Field::new("int1", DataType::Int64, false),
-            Field::new("int2", DataType::Int64, false),
-            Field::new("int3", DataType::Int64, false),
-            Field::new("int4", DataType::Int64, false),
-            Field::new("int5", DataType::Int64, false),
-            Field::new("int6", DataType::Int64, false),
-            Field::new("int7", DataType::Int64, false),
-            Field::new("int8", DataType::Int64, false),
-            Field::new("int9", DataType::Int64, false),
-            Field::new("int10", DataType::Int64, false),
-            Field::new("int11", DataType::Int64, false),
-            Field::new("int12", DataType::Int64, false),
-            Field::new("int13", DataType::Int64, false),
-            Field::new("int14", DataType::Int64, false),
-        ]);
-
-        Arc::new(schema)
-    }
 
     fn create_batch_one_col_i32(name: &str, vec: &[i32]) -> RecordBatch {
         let a: ArrayRef = Arc::new(Int32Array::from(Vec::from(vec)));
@@ -580,15 +551,22 @@ mod tests {
                 .await
                 .unwrap();
 
-        let merge_stream = SortedStreamMerger::new_from_streams(
+        let primary_keys = vec!["a".to_string()];
+        let pool = Arc::new(GreedyMemoryPool::new(100 * 1024 * 1024)) as _;
+        let a1 = MemoryConsumer::new("a1").register(&pool);
+
+        let merge_stream = build_sorted_stream_merger(
             vec![s1, s2, s3],
-            schema,
-            vec![String::from("a")],
+            Arc::from(primary_keys),
+            schema.clone(),
+            schema.clone(),
             2,
+            Arc::new(HashMap::new()),
             vec![],
+            a1,
         )
         .unwrap();
-        let merged = common::collect(Box::pin(merge_stream)).await.unwrap();
+        let merged = common::collect(merge_stream).await.unwrap();
         assert_batches_eq!(
             &[
                 "+----+", "| a  |", "+----+", "| 1  |", "| 3  |", "| 4  |", "| 5  |",
@@ -765,15 +743,23 @@ mod tests {
             Field::new("c", DataType::Int32, true),
         ]);
 
-        let merge_stream = SortedStreamMerger::new_from_streams(
+        let primary_keys = vec!["id".to_string()];
+        let pool = Arc::new(GreedyMemoryPool::new(100 * 1024 * 1024)) as _;
+        let a1 = MemoryConsumer::new("a1").register(&pool);
+
+        let schema = Arc::new(schema);
+        let merge_stream = build_sorted_stream_merger(
             vec![s1, s2, s3],
-            Arc::new(schema),
-            vec![String::from("id")],
+            Arc::from(primary_keys),
+            schema.clone(),
+            schema.clone(),
             2,
+            Arc::new(HashMap::new()),
             vec![],
+            a1,
         )
         .unwrap();
-        let merged = common::collect(Box::pin(merge_stream)).await.unwrap();
+        let merged = common::collect(merge_stream).await.unwrap();
         print_batches(&merged).unwrap();
     }
 
@@ -990,12 +976,18 @@ mod tests {
             Field::new("d", DataType::Utf8, true),
         ]);
 
-        let merge_stream = SortedStreamMerger::new_from_streams(
+        let primary_keys = vec!["id".to_string()];
+        let pool = Arc::new(GreedyMemoryPool::new(100 * 1024 * 1024)) as _;
+        let a1 = MemoryConsumer::new("a1").register(&pool);
+
+        let schema = Arc::new(schema);
+        let merge_stream = build_sorted_stream_merger(
             vec![s1, s2, s3],
-            Arc::new(schema),
-            vec![String::from("id")],
+            Arc::from(primary_keys),
+            schema.clone(),
+            schema.clone(),
             2,
-            // TODO SumLast?
+            Arc::new(HashMap::new()),
             vec![
                 MergeOperator::UseLast,
                 MergeOperator::SumAll,
@@ -1003,9 +995,10 @@ mod tests {
                 MergeOperator::UseLast,
                 MergeOperator::UseLast,
             ],
+            a1,
         )
         .unwrap();
-        let merged = common::collect(Box::pin(merge_stream)).await.unwrap();
+        let merged = common::collect(merge_stream).await.unwrap();
         assert_batches_eq!(
             &[
                 "+----+-----+------+-------+--------+",
