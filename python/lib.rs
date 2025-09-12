@@ -7,14 +7,8 @@ use pyo3::prelude::*;
 mod dataset;
 mod metadata;
 
-#[pyfunction]
-fn hello() -> String {
-    "hello".to_string()
-}
-
 #[pymodule]
 fn _lib(py: Python, m: &Bound<PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(hello, m)?)?;
     metadata::init(py, m)?;
     dataset::init(py, m)?;
     Ok(())

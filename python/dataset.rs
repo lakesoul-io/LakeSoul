@@ -3,90 +3,99 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright the Vortex contributors
 
+use std::sync::Arc;
+
 use crate::install_module;
 use arrow_pyarrow::PyArrowType;
 use arrow_schema::Schema;
-use lakesoul_io::{arrow::array::RecordBatchReader, lakesoul_io_config::LakeSoulIOConfigBuilder};
-use pyo3::{ffi::PyFrameObject, prelude::*, types::PyList};
-
-#[pyfunction]
-fn double(x: usize) -> usize {
-    x * 2
-}
+use lakesoul_io::{
+    arrow::array::RecordBatchReader,
+    lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder},
+    lakesoul_reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader},
+};
+use pyo3::{exceptions::PyRuntimeError, prelude::*};
 
 pub(crate) fn init(py: Python, parent: &Bound<PyModule>) -> PyResult<()> {
     let m = PyModule::new(py, "_dataset")?;
     parent.add_submodule(&m)?;
     install_module("lakesoul._lib._dataset", &m)?;
-    m.add_class::<PyArrowDataset>()?;
-    m.add_function(wrap_pyfunction!(double, &m)?)?;
+    m.add_function(wrap_pyfunction!(sync_reader, &m)?)?;
     Ok(())
 }
 
-#[pyclass(name = "ArrowDataSet", module = "_dataset")]
-pub struct PyArrowDataset {
+#[pyfunction]
+#[pyo3(signature = (batch_size,thread_num,schema,file_urls,primary_keys,partition_info,oss_conf,partition_schema=None))]
+fn sync_reader(
     batch_size: usize,
     thread_num: usize,
-    target_schema: Schema,
-    file_urls: Vec<Vec<String>>,
-    primary_keys: Vec<Vec<String>>,
+    schema: PyArrowType<Schema>,
+    file_urls: Vec<String>,
+    primary_keys: Vec<String>,
     partition_info: Vec<(String, String)>,
     oss_conf: Vec<(String, String)>,
-    builder: LakeSoulIOConfigBuilder,
+    partition_schema: Option<PyArrowType<Schema>>,
+) -> PyResult<PyArrowType<Box<dyn RecordBatchReader + Send>>> {
+    let config = build_io_config(
+        batch_size,
+        thread_num,
+        schema,
+        partition_schema,
+        file_urls,
+        primary_keys,
+        partition_info,
+        oss_conf,
+    );
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(thread_num)
+        .build()?;
+
+    let reader = LakeSoulReader::new(config).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let mut reader = SyncSendableMutableLakeSoulReader::new(reader, runtime);
+    reader
+        .start_blocked()
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    Ok(PyArrowType(Box::new(reader)))
 }
 
-#[pymethods]
-impl PyArrowDataset {
-    #[new]
-    fn new(
-        batch_size: usize,
-        thread_num: usize,
-        schema: PyArrowType<Schema>,
-        file_urls: Vec<Vec<String>>,
-        primary_keys: Vec<Vec<String>>,
-        partition_info: Vec<(String, String)>,
-        oss_conf: Vec<(String, String)>,
-    ) -> Self {
-        let target_schema = schema.0;
-        Self {
-            batch_size,
-            thread_num,
-            target_schema,
-            file_urls,
-            primary_keys,
-            partition_info,
-            oss_conf,
-            builder: LakeSoulIOConfigBuilder::default(),
+fn build_io_config(
+    batch_size: usize,
+    thread_num: usize,
+    schema: PyArrowType<Schema>,
+    partition_schema: Option<PyArrowType<Schema>>,
+    file_urls: Vec<String>,
+    primary_keys: Vec<String>,
+    partition_info: Vec<(String, String)>,
+    oss_conf: Vec<(String, String)>,
+) -> LakeSoulIOConfig {
+    let target_schema = schema.0;
+    let mut builder = LakeSoulIOConfigBuilder::default()
+        .with_batch_size(batch_size)
+        .with_thread_num(thread_num)
+        .with_files(file_urls)
+        .with_primary_keys(primary_keys)
+        .with_schema(Arc::new(target_schema));
+
+    for (k, v) in partition_info {
+        builder = builder.with_default_column_value(k, v);
+    }
+
+    if let Some(p_schema) = partition_schema {
+        builder = builder.with_partition_schema(Arc::new(p_schema.0));
+    }
+
+    let mut has_path_style_config = false;
+
+    for (k, v) in oss_conf {
+        if k == "fs.s3a.path.style.access" {
+            has_path_style_config = true;
         }
+        builder = builder.with_object_store_option(k, v);
     }
-
-    fn to_reader(&self) -> PyArrowType<Box<dyn RecordBatchReader + Send>> {
-        todo!()
+    if !has_path_style_config {
+        // if this config is not specified by user, we always set it to true
+        builder = builder.with_object_store_option("fs.s3a.path.style.access", "true");
     }
-
-    fn fragments(&self) -> Vec<PyArrowFragment> {
-        todo!()
-    }
-
-    fn schema(&self) -> PyArrowType<Schema> {
-        PyArrowType(self.target_schema.clone())
-    }
-}
-
-#[pyclass(name = "ArrowFrament", module = "_dataset")]
-pub struct PyArrowFragment {
-    builder: LakeSoulIOConfigBuilder,
-}
-
-impl PyArrowFragment {
-    fn new() -> Self {
-        todo!()
-    }
-}
-
-#[pymethods]
-impl PyArrowFragment {
-    fn to_reader(&self) -> PyArrowType<Box<dyn RecordBatchReader + Send>> {
-        todo!()
-    }
+    builder.build()
 }

@@ -260,7 +260,6 @@ def to_arrow_field(arrow_field_json):
 
 def to_arrow_schema(schema_json_str, exclude_columns=None) -> pyarrow.Schema:
     exclude_columns = frozenset(exclude_columns or frozenset())
-    _json = json.loads(schema_json_str)
     fields = json.loads(schema_json_str)["fields"]
     arrow_fields = []
     for field in fields:
@@ -269,3 +268,19 @@ def to_arrow_schema(schema_json_str, exclude_columns=None) -> pyarrow.Schema:
         arrow_fields.append(to_arrow_field(field))
     # print(arrow_fields)
     return pyarrow.schema(arrow_fields)
+
+
+def to_arrow_schemas(schema_json_str, exclude_columns=None) -> pyarrow.Schema:
+    exclude_columns = frozenset(exclude_columns or frozenset())
+    fields = json.loads(schema_json_str)["fields"]
+    arrow_fields = []
+    partition_fields = []
+    for field in fields:
+        if field["name"] in exclude_columns:
+            partition_fields.append(field)
+            continue
+        arrow_fields.append(to_arrow_field(field))
+    # print(arrow_fields)
+    return pyarrow.schema(arrow_fields), None if len(
+        partition_fields
+    ) == 0 else pyarrow.schema(partition_fields)

@@ -18,7 +18,7 @@ from .dao import (
     get_partition_info_by_table_id_and_desc,
 )
 from .generated.entity_pb2 import TableInfo, PartitionInfo, DataCommitInfo
-from .utils import to_arrow_schema
+from .utils import to_arrow_schema, to_arrow_schemas
 
 
 __all__ = [
@@ -61,6 +61,18 @@ def get_arrow_schema_by_table_name(
         exclude_partitions = frozenset(table_info.partitions.split(";")[0].split(","))
 
     return to_arrow_schema(schema, exclude_partitions)
+
+
+def get_schemas_by_table_name(
+    table_name: str, namespace: str = "default", exclude_partition: bool = False
+) -> tuple[pyarrow.Schema, pyarrow.Schema | None]:
+    table_info = get_table_info_by_name(table_name, namespace)
+    schema = table_info.table_schema
+    exclude_partitions = None
+    if exclude_partition and len(table_info.partitions) > 0:
+        exclude_partitions = frozenset(table_info.partitions.split(";")[0].split(","))
+
+    return to_arrow_schemas(schema, exclude_partitions)
 
 
 def get_partition_and_pk_cols(table_info: TableInfo) -> tuple[list[str], list[str]]:
@@ -140,10 +152,10 @@ def get_scan_plan_partitions(
 
     plan_partitions = []
     if not partition_infos:
-        raise ValueError(
-            f"Requested partition(s) {partitions} of table `{table_name}` \
-            does not exist or table is empty"
-        )
+        pass
+        # raise ValueError(
+        #     f"Requested partition(s) {partitions} of table {table_name} does not exist or table is empty"
+        # )
     if not pk_cols:
         for partition in partition_infos:
             data_files = []
