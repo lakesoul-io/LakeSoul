@@ -7,9 +7,9 @@ from pyspark.sql import Column, DataFrame, functions
 
 class LakeSoulTable(object):
     """
-        Main class for programmatically interacting with LakeSoul tables.
-        You can create LakeSoulTable instances using the path of the LakeSoul table.::
-            starTable = LakeSoulTable.forPath(spark, "/path/to/table")
+    Main class for programmatically interacting with LakeSoul tables.
+    You can create LakeSoulTable instances using the path of the LakeSoul table.::
+        starTable = LakeSoulTable.forPath(spark, "/path/to/table")
     """
 
     def __init__(self, spark, jst):
@@ -83,8 +83,10 @@ class LakeSoulTable(object):
         elif type(justList) is bool:
             self._jst.cleanup(justList)
         else:
-            e = "param justList must be a Boolean value," \
+            e = (
+                "param justList must be a Boolean value,"
                 + "found to be of type %s" % str(type(justList))
+            )
             raise TypeError(e)
 
     def upsert(self, source, condition=None):
@@ -129,8 +131,10 @@ class LakeSoulTable(object):
         elif type(condition) is str:
             jcondition = condition
         else:
-            e = "param condition must be a String value," \
+            e = (
+                "param condition must be a String value,"
                 + "found to be of type %s" % str(type(condition))
+            )
             raise TypeError(e)
 
         if force is None:
@@ -138,8 +142,9 @@ class LakeSoulTable(object):
         elif type(force) is bool:
             jforce = force
         else:
-            e = "param force must be a Boolean value," \
-                + "found to be of type %s" % str(type(force))
+            e = "param force must be a Boolean value," + "found to be of type %s" % str(
+                type(force)
+            )
             raise TypeError(e)
 
         jmo = self._merge_operator_to_jmo(self._spark, mergeOperatorInfo)
@@ -149,8 +154,10 @@ class LakeSoulTable(object):
         if type(condition) is str:
             self._jst.dropPartition(condition)
         else:
-            e = "param condition must be a String value," \
+            e = (
+                "param condition must be a String value,"
                 + "found to be of type %s" % str(type(condition))
+            )
             raise TypeError(e)
 
     def dropTable(self):
@@ -169,11 +176,14 @@ class LakeSoulTable(object):
         """
         assert sparkSession is not None
         jst = sparkSession._sc._jvm.com.dmetasoul.lakesoul.tables.LakeSoulTable.forPath(
-            sparkSession._jsparkSession, path)
+            sparkSession._jsparkSession, path
+        )
         return LakeSoulTable(sparkSession, jst)
 
     @classmethod
-    def forPathIncremental(cls, sparkSession, path, partitionDesc, startTime, endTime, timeZone=""):
+    def forPathIncremental(
+        cls, sparkSession, path, partitionDesc, startTime, endTime, timeZone=""
+    ):
         """
         Create a LakeSoulTable for incremental data at the given `path` startTime and endTime using the given SparkSession.
         :param sparkSession: SparkSession to use for loading the table
@@ -187,8 +197,9 @@ class LakeSoulTable(object):
             starTable = LakeSoulTable.forIncrementalPath(spark, "/path/to/table","","2023-02-28 14:45:00","2023-02-28 14:50:00")
         """
         assert sparkSession is not None
-        jst = sparkSession._sc._jvm.com.dmetasoul.lakesoul.tables.LakeSoulTable \
-            .forPathIncremental(path, partitionDesc, startTime, endTime, timeZone)
+        jst = sparkSession._sc._jvm.com.dmetasoul.lakesoul.tables.LakeSoulTable.forPathIncremental(
+            path, partitionDesc, startTime, endTime, timeZone
+        )
         return LakeSoulTable(sparkSession, jst)
 
     @classmethod
@@ -205,8 +216,9 @@ class LakeSoulTable(object):
             starTable = LakeSoulTable.forSnapshotPath(spark, "/path/to/table","","2023-02-28 14:45:00")
         """
         assert sparkSession is not None
-        jst = sparkSession._sc._jvm.com.dmetasoul.lakesoul.tablLos_Angeleses.LakeSoulTable. \
-            forPathSnapshot(path, partitionDesc, endTime, timeZone)
+        jst = sparkSession._sc._jvm.com.dmetasoul.lakesoul.tablLos_Angeleses.LakeSoulTable.forPathSnapshot(
+            path, partitionDesc, endTime, timeZone
+        )
         return LakeSoulTable(sparkSession, jst)
 
     @classmethod
@@ -225,7 +237,8 @@ class LakeSoulTable(object):
         """
         assert sparkSession is not None
         jdt = sparkSession._sc._jvm.com.dmetasoul.lakesoul.tables.LakeSoulTable.forName(
-            sparkSession._jsparkSession, tableOrViewName)
+            sparkSession._jsparkSession, tableOrViewName
+        )
         return LakeSoulTable(sparkSession, jdt)
 
     @classmethod
@@ -242,7 +255,8 @@ class LakeSoulTable(object):
         """
         assert sparkSession is not None
         return sparkSession._sc._jvm.com.dmetasoul.lakesoul.tables.LakeSoulTable.isLakeSoulTable(
-            identifier)
+            identifier
+        )
 
     @classmethod
     def _dict_to_jmap(cls, sparkSession, pydict, argname):
@@ -259,17 +273,24 @@ class LakeSoulTable(object):
         jmap = sparkSession._sc._jvm.java.util.HashMap()
         for col, expr in pydict.items():
             if type(col) is not str:
-                e = ("Keys of dict in %s must contain only strings with column names" % argname) + \
-                    (", found '%s' of type '%s" % (str(col), str(type(col))))
+                e = (
+                    "Keys of dict in %s must contain only strings with column names"
+                    % argname
+                ) + (", found '%s' of type '%s" % (str(col), str(type(col))))
                 raise TypeError(e)
             if type(expr) is Column:
                 jmap.put(col, expr._jc)
             elif type(expr) is str:
                 jmap.put(col, functions.expr(expr)._jc)
             else:
-                e = ("Values of dict in %s must contain only Spark SQL Columns " % argname) + \
-                    "or strings (expressions in SQL syntax) as values, " + \
-                    ("found '%s' of type '%s'" % (str(expr), str(type(expr))))
+                e = (
+                    (
+                        "Values of dict in %s must contain only Spark SQL Columns "
+                        % argname
+                    )
+                    + "or strings (expressions in SQL syntax) as values, "
+                    + ("found '%s' of type '%s'" % (str(expr), str(type(expr))))
+                )
                 raise TypeError(e)
         return jmap
 
@@ -282,8 +303,10 @@ class LakeSoulTable(object):
         elif type(condition) is str:
             jcondition = functions.expr(condition)._jc
         else:
-            e = ("%s must be a Spark SQL Column or a string (expression in SQL syntax)" % argname) \
-                + ", found to be of type %s" % str(type(condition))
+            e = (
+                "%s must be a Spark SQL Column or a string (expression in SQL syntax)"
+                % argname
+            ) + ", found to be of type %s" % str(type(condition))
             raise TypeError(e)
         return jcondition
 
@@ -297,17 +320,23 @@ class LakeSoulTable(object):
         if merge_operator is None:
             return jmo
         elif type(merge_operator) is not dict:
-            e = "mergeOperator must be a dict, found to be %s" % (str(type(merge_operator)))
+            e = "mergeOperator must be a dict, found to be %s" % (
+                str(type(merge_operator))
+            )
             raise TypeError(e)
 
         for col, mop in merge_operator.items():
             if type(col) is not str:
-                e = "Keys of dict in mergeOperator must contain only strings with column names" + \
-                    (", found '%s' of type '%s" % (str(col), str(type(col))))
+                e = (
+                    "Keys of dict in mergeOperator must contain only strings with column names"
+                    + (", found '%s' of type '%s" % (str(col), str(type(col))))
+                )
                 raise TypeError(e)
             if type(mop) is not str:
-                e = "Values of dict in mergeOperator must contain only strings with mergeOp class names" + \
-                    (", found '%s' of type '%s" % (str(mop), str(type(mop))))
+                e = (
+                    "Values of dict in mergeOperator must contain only strings with mergeOp class names"
+                    + (", found '%s' of type '%s" % (str(mop), str(type(mop))))
+                )
                 raise TypeError(e)
             jmo.put(col, mop)
 
@@ -316,5 +345,6 @@ class LakeSoulTable(object):
     @classmethod
     def registerMergeOperator(cls, sparkSession, class_name, fun_name):
         # deprecated
-        return sparkSession._sc._jvm.com.dmetasoul.lakesoul.tables.LakeSoulTable \
-            .registerMergeOperator(sparkSession._jsparkSession, class_name, fun_name)
+        return sparkSession._sc._jvm.com.dmetasoul.lakesoul.tables.LakeSoulTable.registerMergeOperator(
+            sparkSession._jsparkSession, class_name, fun_name
+        )
