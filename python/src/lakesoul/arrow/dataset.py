@@ -24,6 +24,9 @@ else:
     FragmentBase = object
 
 
+DEFAULT_BATCH_SIZE: int = 2**10
+
+
 class Dataset(DatasetBase):
     def __init__(
         self,
@@ -90,6 +93,142 @@ class Dataset(DatasetBase):
         self._file_urls = file_urls
         self._pks = pks
 
+    # TODO
+    def count_rows(
+        self,
+        filter=None,
+        batch_size=DEFAULT_BATCH_SIZE,
+        batch_readahead=None,
+        fragment_readahead=None,
+        fragment_scan_options=None,
+        use_threads=None,
+        cache_metadata=None,
+        memory_pool=None,
+    ):
+        pass
+
+    # TODO
+    def filter(self, expression):
+        raise NotImplementedError
+
+    # TODO
+    def get_fragments(self, filter):
+        raise NotImplementedError
+
+    # TODO
+    def head(
+        self,
+        num_rows: int,
+        columns=None,
+        filter=None,
+        batch_size=DEFAULT_BATCH_SIZE,
+        batch_readahead=None,
+        fragment_readahead=None,
+        fragment_scan_options=None,
+        use_threads=None,
+        cache_metadata=None,
+        memory_pool=None,
+    ):
+        raise NotImplementedError
+
+    def join(
+        self,
+        right_dataset: pyarrow.dataset.Dataset, # type: ignore
+        keys,
+        right_keys,
+        join_type,
+        left_suffix,
+        right_suffix,
+        coalesce_keys,
+        use_threads,
+    ):
+        raise NotImplementedError
+
+    def join_asof(
+        self,
+        right_dataset: pyarrow.dataset.Dataset, # type: ignore
+        on: str,
+        by,
+        tolerance: int,
+        right_on=None,
+        right_by=None,
+    ):
+        raise NotImplementedError
+
+    @property
+    def partition_expression(self):
+        raise NotImplementedError
+
+    def replace_schema(self,schema:pyarrow.Schema):
+        raise NotImplementedError
+
+    # TODO
+    def scanner(self,
+        columns=None,
+        filter=None,
+        batch_size=DEFAULT_BATCH_SIZE,
+        batch_readahead=None,
+        fragment_readahead=None,
+        fragment_scan_options=None,
+        use_threads=None,
+        cache_metadata=None,
+        memory_pool=None,
+
+                ):
+        raise NotImplementedError
+    
+    @property
+    def schema(self):
+        return self._schema
+
+    def sort_by(self,sorting,**kwargs):
+        raise NotImplementedError
+
+    def take(self,indices,
+        columns=None,
+        filter=None,
+        batch_size=DEFAULT_BATCH_SIZE,
+        batch_readahead=None,
+        fragment_readahead=None,
+        fragment_scan_options=None,
+        use_threads=None,
+        cache_metadata=None,
+        memory_pool=None,
+             ):
+        raise NotImplementedError
+
+    # TODO
+    def to_batches(self,
+        columns=None,
+        filter=None,
+        batch_size=DEFAULT_BATCH_SIZE,
+        batch_readahead=None,
+        fragment_readahead=None,
+        fragment_scan_options=None,
+        use_threads=None,
+        cache_metadata=None,
+        memory_pool=None,
+                   ) -> Iterator[pyarrow.RecordBatch]:
+        readers = self._sync_readers()
+        for reader in readers:
+            for rb in reader:
+                yield rb
+    
+    # TODO
+    def to_table(self,
+        columns=None,
+        filter=None,
+        batch_size=DEFAULT_BATCH_SIZE,
+        batch_readahead=None,
+        fragment_readahead=None,
+        fragment_scan_options=None,
+        use_threads=None,
+        cache_metadata=None,
+        memory_pool=None,
+                 ) -> pyarrow.Table:
+        raise NotImplementedError
+
+
     def __reduce__(self):
         """custom serialize"""
         return self.__class__, (
@@ -103,17 +242,8 @@ class Dataset(DatasetBase):
             self._namespace,
         )
 
-    def get_fragments(self, filter):
-        raise NotImplementedError
 
-    def scanner(self, *args, **kwargs):
-        raise NotImplementedError
 
-    def to_batches(self) -> Iterator[pyarrow.RecordBatch]:
-        readers = self._sync_readers()
-        for reader in readers:
-            for rb in reader:
-                yield rb
 
     def _sync_readers(self) -> list[pyarrow.RecordBatchReader]:
         readers = []
@@ -132,9 +262,7 @@ class Dataset(DatasetBase):
             )
         return readers
 
-    @property
-    def schema(self):
-        return self._schema
+
 
     def _check_rank_and_world_size(
         self, rank: int | None, world_size: int | None
@@ -206,25 +334,183 @@ class Dataset(DatasetBase):
 
 
 class Fragment(FragmentBase):
+    # TODO
     def __init__(self):
         pass
+
+    @property
+    def partition_expression(self):
+        raise NotImplementedError
+
+    @property
+    def physical_schema(self):
+        raise NotImplementedError
+
+    # TODO
+    def count_rows(
+        self,
+        filter=None,
+        batch_size=DEFAULT_BATCH_SIZE,
+        batch_readahead=None,
+        fragment_readahead=None,
+        fragment_scan_options=None,
+        use_threads=None,
+        cache_metadata=None,
+        memory_pool=None,
+    ): ...
+
+    # TODO
+    def head(
+        self,
+        num_rows: int,
+        schema=None,
+        columns=None,
+        filter=None,
+        batch_size=DEFAULT_BATCH_SIZE,
+        batch_readahead=None,
+        fragment_readahead=None,
+        fragment_scan_options=None,
+        use_threads=None,
+        cache_metadata=None,
+        memory_pool=None,
+    ): ...
+
+    # TODO
+    def scanner(
+        self,
+        schema=None,
+        columns=None,
+        filter=None,
+        batch_size=DEFAULT_BATCH_SIZE,
+        batch_readahead=None,
+        fragment_readahead=None,
+        fragment_scan_options=None,
+        use_threads=None,
+        cache_metadata=None,
+        memory_pool=None,
+    ): ...
+
+    def take(self): ...
+
+    # TODO
+    def to_batches(
+        self,
+        schema=None,
+        columns=None,
+        filter=None,
+        batch_size=DEFAULT_BATCH_SIZE,
+        batch_readahead=None,
+        fragment_readahead=None,
+        fragment_scan_options=None,
+        use_threads=None,
+        cache_metadata=None,
+        memory_pool=None,
+    ): ...
+
+    # TODO
+    def to_table(
+        self,
+        schema=None,
+        columns=None,
+        filter=None,
+        batch_size=DEFAULT_BATCH_SIZE,
+        batch_readahead=None,
+        fragment_readahead=None,
+        fragment_scan_options=None,
+        use_threads=None,
+        cache_metadata=None,
+        memory_pool=None,
+    ): ...
 
 
 class Scanner(ScannerBase):
-    def __init__(self):
+    # TODO
+    def __init__(self, schema, projected_schema):
+        self._dataset_schema = schema
+        self._projected_schema = projected_schema
+
+    # TODO
+    def count_rows(self) -> int: ...
+
+    @staticmethod
+    def from_batches(
+        source,
+        *,
+        schema=None,
+        colums=None,
+        filter=None,
+        batch_size=DEFAULT_BATCH_SIZE,
+        batch_readahead=None,
+        fragment_scan_options=None,
+        use_threads=None,
+        cache_metadata=None,
+        memory_pool=None,
+    ):
+        raise NotImplementedError("the method is not supported")
+
+    # TODO
+    @staticmethod
+    def from_dataset(
+        dataset,
+        schema=None,
+        colums=None,
+        filter=None,
+        batch_size=DEFAULT_BATCH_SIZE,
+        batch_readahead=None,
+        fragment_scan_options=None,
+        use_threads=None,
+        cache_metadata=None,
+        memory_pool=None,
+    ):
         pass
+
+    # TODO
+    @staticmethod
+    def from_fragment(
+        fragment,
+        *,
+        schema=None,
+        columns=None,
+        filter=None,
+        batch_size=DEFAULT_BATCH_SIZE,
+        batch_readahead=None,
+        fragment_readahead=None,
+        fragment_scan_options=None,
+        use_threads=None,
+        cache_metadata=None,
+        memory_pool=None,
+    ): ...
+
+    # TODO
+    def head(self, num_rows: int):
+        pass
+
+    def scan_batches(self):
+        raise NotImplementedError("the method is not supported")
+
+    def take(self, indices):
+        raise NotImplementedError("the method is not supported")
+
+    # TODO
+    def to_batches(self): ...
+
+    # TODO
+    def to_reader(self): ...
+
+    # TODO
+    def to_table(self): ...
 
 
 def lakesoul_dataset(
-    table_name,
-    batch_size=16,
-    thread_count=1,
-    rank=None,
-    world_size=None,
-    partitions=None,
-    retain_partition_columns=False,
-    namespace="default",
-    object_store_configs={},
+    table_name: str,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    thread_count: int = 1,
+    rank: int | None = None,
+    world_size: int | None = None,
+    partitions: dict[str, str] | None = None,
+    retain_partition_columns: bool = False,
+    namespace: str = "default",
+    object_store_configs: dict[str, str] | None = None,
 ):
     dataset = Dataset(
         table_name,

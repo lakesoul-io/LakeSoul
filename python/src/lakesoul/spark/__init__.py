@@ -4,4 +4,4 @@
 
 from .tables import LakeSoulTable
 
-__all__ = ['LakeSoulTable']
+__all__ = ["LakeSoulTable"]

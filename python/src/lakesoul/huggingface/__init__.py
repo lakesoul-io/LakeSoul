@@ -4,4 +4,4 @@
 
 from .from_lakesoul import from_lakesoul
 
-__all__ = ['from_lakesoul']
+__all__ = ["from_lakesoul"]

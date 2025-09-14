@@ -4,4 +4,4 @@
 
 from .read_lakesoul import read_lakesoul
 
-__all__ = ['read_lakesoul']
+__all__ = ["read_lakesoul"]
