@@ -5,7 +5,8 @@ fn main() {
     let proto_dir = "rust/proto/src";
     let proto_path = "rust/proto/src/entity.proto";
     let out = "python/src/lakesoul/metadata/generated";
-    Command::new(vpy)
+    // ignore error
+    let _ = Command::new(vpy)
         .args([
             "-m",
             "grpc.tools.protoc",
@@ -14,6 +15,5 @@ fn main() {
             &format!("--pyi_out={}", out),
             proto_path,
         ])
-        .status()
-        .unwrap();
+        .status();
 }

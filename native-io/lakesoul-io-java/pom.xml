@@ -374,7 +374,7 @@ SPDX-License-Identifier: Apache-2.0
             <build>
                 <resources>
                     <resource>
-                        <directory>${basedir}/../../rust/target/release/</directory>
+                        <directory>${basedir}/../../target/release/</directory>
                         <includes>
                             <include>liblakesoul_io_c.dylib</include>
                             <include>liblakesoul_io_c.so</include>
