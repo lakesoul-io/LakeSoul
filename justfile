@@ -1,4 +1,5 @@
 # env := "LAKESOUL_PG_URL=jdbc:postgresql://localhost:5532/py?stringtype=unspecified LAKESOUL_PG_USERNAME=lakesoul_test LAKESOUL_PG_PASSWORD=lakesoul_test LAKESOUL_SOURCE_DIR=/home/jiax/LakeSoul LD_LIBRARY_PATH=$JAVA_HOME/lib/server"
+env := "LAKESOUL_PG_URL=jdbc:postgresql://localhost:5432/py?stringtype=unspecified LAKESOUL_PG_USERNAME=lakesoul_test LAKESOUL_PG_PASSWORD=lakesoul_test LAKESOUL_SOURCE_DIR=/home/jiax/Projects/LakeSoul"
 
 clean-data:
     rm -rf /tmp/lakesoul/tpch_data
@@ -9,7 +10,7 @@ gen-data:
 # pytest:
 #     cd .. && {{env}} uv run pytest -s 
 pytest:
-    uv run pytest -s python/tests/_lib/rust_module_test.py::test_dataset
+    {{env}} uv run pytest -s python/tests
 
 sync:
     uv sync --reinstall-package lakesoul -v

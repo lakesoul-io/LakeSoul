@@ -2,7 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+from typing import Iterator
 import datasets
+import pyarrow as pa
 
 
 def from_lakesoul(
@@ -29,19 +32,20 @@ def from_lakesoul(
         namespace=namespace,
         object_store_configs=object_store_configs,
     )
+    
 
-    def _generate_tables_from_lakesoul_table():
-        import pyarrow as pa
-
+    def _generate_tables_from_lakesoul_table(
+        *args, **kwargs
+    ) -> Iterator[tuple[int, pa.Table]]:
         for batch_idx, batch in enumerate(arrow_dataset.to_batches()):
             yield batch_idx, pa.Table.from_batches([batch])
 
     ex_gen = _generate_tables_from_lakesoul_table
-    ex_iterable = datasets.iterable_dataset.ArrowExamplesIterable(ex_gen, kwargs={})
+    ex_iterable = datasets.iterable_dataset.ArrowExamplesIterable(ex_gen, kwargs={})  # type: ignore
     inferred_features = datasets.Features.from_arrow_schema(arrow_dataset.schema)
     info = datasets.DatasetInfo(features=inferred_features)
     dataset = datasets.IterableDataset(ex_iterable=ex_iterable, info=info)
     return dataset
 
 
-datasets.IterableDataset.from_lakesoul = from_lakesoul
+datasets.IterableDataset.from_lakesoul = from_lakesoul  # type: ignore
