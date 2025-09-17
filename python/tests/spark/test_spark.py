@@ -10,7 +10,6 @@ import string
 import tempfile
 import shutil
 import sys
-import time
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, lit, expr

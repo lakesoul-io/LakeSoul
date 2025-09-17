@@ -42,7 +42,7 @@ use datafusion::error::{DataFusionError, Result};
 
 use datafusion::prelude::SessionContext;
 
-use futures::{Stream, StreamExt};
+use futures::StreamExt;
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
