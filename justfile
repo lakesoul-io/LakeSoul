@@ -1,5 +1,5 @@
 # env := "LAKESOUL_PG_URL=jdbc:postgresql://localhost:5532/py?stringtype=unspecified LAKESOUL_PG_USERNAME=lakesoul_test LAKESOUL_PG_PASSWORD=lakesoul_test LAKESOUL_SOURCE_DIR=/home/jiax/LakeSoul LD_LIBRARY_PATH=$JAVA_HOME/lib/server"
-env := "LAKESOUL_PG_URL=jdbc:postgresql://localhost:5432/py?stringtype=unspecified LAKESOUL_PG_USERNAME=lakesoul_test LAKESOUL_PG_PASSWORD=lakesoul_test LAKESOUL_SOURCE_DIR=/home/jiax/Projects/LakeSoul"
+env := "LAKESOUL_PG_URL=jdbc:postgresql://localhost:5432/lakesoul_test?stringtype=unspecified LAKESOUL_PG_USERNAME=lakesoul_test LAKESOUL_PG_PASSWORD=lakesoul_test LAKESOUL_SOURCE_DIR=$HOME/Projects/LakeSoul LD_LIBRARY_PATH=$HADOOP_HOME/lib/native"
 
 clean-data:
     rm -rf /tmp/lakesoul/tpch_data
@@ -13,4 +13,4 @@ pytest:
     {{env}} uv run pytest -s python/tests
 
 sync:
-    uv sync --reinstall-package lakesoul -v
+    uv sync --reinstall-package lakesoul -vv
