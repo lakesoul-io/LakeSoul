@@ -24,7 +24,7 @@ env:
 
 jobs:
   clippy_check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rs/toolchain@v1
@@ -41,7 +41,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "./ -> target"
-          key: "ubuntu-latest-clippy"
+          key: "ubuntu-24.04-clippy"
       - name: Run Format
         run: cargo fmt --all --check
       - name: Run Clippy

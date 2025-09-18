@@ -26,7 +26,7 @@ permissions:
 
 jobs:
   verify-hash-consistency:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       # Label used to access the service container
       postgres:
