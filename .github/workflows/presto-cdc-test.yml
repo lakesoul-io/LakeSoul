@@ -75,7 +75,7 @@ jobs:
           default: true
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "./rust -> target"
+          workspaces: "./ -> target"
       - name: Cache Docker images
         uses: ScribeMD/docker-cache@0.4.0
         with:
@@ -87,12 +87,12 @@ jobs:
         with:
           use-cross: true
           command: build
-          args: '--manifest-path rust/Cargo.toml --target x86_64-unknown-linux-gnu --package lakesoul-io-c --package lakesoul-metadata-c --release --all-features'
+          args: '--target x86_64-unknown-linux-gnu --package lakesoul-io-c --package lakesoul-metadata-c --release --all-features'
       - name: Build with Maven
         run: |
-          mkdir -p rust/target/release
-          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so rust/target/release
-          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so rust/target/release
+          mkdir -p target/release
+          cp target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so target/release
+          cp target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so target/release
           MAVEN_OPTS="-Xmx4000m" mvn -q -B clean package -f pom.xml -Pcross-build -DskipTests
       - name: Get jar names
         run: |

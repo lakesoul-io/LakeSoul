@@ -71,21 +71,16 @@ jobs:
             uv.lock
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "./rust -> target"
+          workspaces: "./ -> target"
       - name: pytest
         env:
           LAKESOUL_SOURCE_DIR: ${{ github.workspace }}
         run: |
           export LD_LIBRARY_PATH=$JAVA_HOME/lib/server:$LD_LIBRARY_PATH
-          echo $LD_LIBRARY_PATH
           mvn package -pl lakesoul-spark -am -DskipTests
           uv sync --no-install-project   
           source .venv/bin/activate
-          bash cpp/compile.sh
-          cp cpp/build/python/lakesoul/metadata/generated/entity_pb2.py python/lakesoul/metadata/generated
-          cp cpp/build/_lakesoul_dataset.so python/lakesoul/arrow
-          cp rust/target/release/liblakesoul_metadata_c.so python/lakesoul/metadata/lib/
-          cargo run --manifest-path rust/Cargo.toml --release -p lakesoul-console -- tpch-gen -p "file:///tmp/lakesoul/tpch_data" --scale-factor 0.1 -n 8 
+          cargo run --release -p lakesoul-console -- tpch-gen -p "file:///tmp/lakesoul/tpch_data" --scale-factor 0.1 -n 8 
           uv run pytest python/tests/ -s
   publish:
     runs-on: ubuntu-latest

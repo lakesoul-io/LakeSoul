@@ -83,7 +83,6 @@ jobs:
         with:
           version: "23.x"
       - name: Build and test
-        working-directory: ./rust
         run: |
           rm -f Cargo.lock
           cargo clean
