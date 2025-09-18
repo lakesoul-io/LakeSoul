@@ -40,10 +40,10 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "./rust -> target"
+          workspaces: "./ -> target"
           key: "ubuntu-latest-clippy"
       - name: Run Format
-        run: cd rust && cargo fmt --all --check
+        run: cargo fmt --all --check
       - name: Run Clippy
-        run: cd rust && cargo clippy --no-deps --all-features --package lakesoul-io-c --package lakesoul-metadata-c
+        run: cargo clippy --no-deps --all-features --package lakesoul-io-c --package lakesoul-metadata-c --package lakesoul-python
 

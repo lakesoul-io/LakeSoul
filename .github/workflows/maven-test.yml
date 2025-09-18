@@ -47,7 +47,7 @@ jobs:
           default: true
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "./rust -> target"
+          workspaces: "./ -> target"
       - name: Cache Docker images
         uses: ScribeMD/docker-cache@0.4.0
         with:
@@ -56,15 +56,15 @@ jobs:
         with:
           use-cross: true
           command: build
-          args: '--manifest-path rust/Cargo.toml --target x86_64-unknown-linux-gnu --package lakesoul-io-c --package lakesoul-metadata-c --release --all-features'
+          args: '--target x86_64-unknown-linux-gnu --package lakesoul-io-c --package lakesoul-metadata-c --release --all-features'
       - uses: actions/upload-artifact@v4
         with:
           name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
-          path: ./rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so
+          path: ./target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so
       - uses: actions/upload-artifact@v4
         with:
           name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
-          path: ./rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so
+          path: ./target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so
 
   spark-test-1:
     runs-on: ubuntu-latest
@@ -112,11 +112,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
-          path: ./rust/target/release/
+          path: ./target/release/
       - uses: actions/download-artifact@v4
         with:
           name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
-          path: ./rust/target/release/
+          path: ./target/release/
       - name: Build with Maven
         run: |
           mvn -B test -pl lakesoul-spark -am -Pcross-build -Pparallel-test --file pom.xml -Dtest='!ANNCase,UpdateScalaSuite,AlterTableByNameSuite,ReadSuite,UpdateSQLSuite,ParquetNativeFilterSuite,DeleteScalaSuite,DeleteSQLSuite,ParquetV2FilterSuite,ParquetScanSuite,UpsertSuiteBase' -Dsurefire.failIfNoSpecifiedTests=false
@@ -180,11 +180,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
-          path: ./rust/target/release/
+          path: ./target/release/
       - uses: actions/download-artifact@v4
         with:
           name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
-          path: ./rust/target/release/
+          path: ./target/release/
       - name: Build with Maven
         run: |
           mvn -B test -pl lakesoul-spark -am -Pcross-build -Pparallel-test --file pom.xml -Dtest='!ANNCase,!UpdateScalaSuite,!AlterTableByNameSuite,!ReadSuite,!UpdateSQLSuite,!ParquetNativeFilterSuite,!DeleteScalaSuite,!DeleteSQLSuite,!ParquetV2FilterSuite,!ParquetScanSuite,!UpsertSuiteBase,!RBACOperationSuite,!DeltaJoinSuite' -Dsurefire.failIfNoSpecifiedTests=false
@@ -248,11 +248,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
-          path: ./rust/target/release/
+          path: ./target/release/
       - uses: actions/download-artifact@v4
         with:
           name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
-          path: ./rust/target/release/
+          path: ./target/release/
       - name: Build with Maven
         run: |
           sudo apt-get update && sudo apt-get install --only-upgrade tzdata
@@ -333,11 +333,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
-          path: ./rust/target/release/
+          path: ./target/release/
       - uses: actions/download-artifact@v4
         with:
           name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
-          path: ./rust/target/release/
+          path: ./target/release/
       - name: Build with Maven
         run: |
           mvn -B test -pl lakesoul-spark -am -Pcross-build --file pom.xml -Dtest='RBACOperationSuite' -Dsurefire.failIfNoSpecifiedTests=false
@@ -401,11 +401,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
-          path: ./rust/target/release/
+          path: ./target/release/
       - uses: actions/download-artifact@v4
         with:
           name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
-          path: ./rust/target/release/
+          path: ./target/release/
       - name: Build with Maven
         run: |
           MAVEN_OPTS="-Xmx5g" mvn -B clean test -pl lakesoul-flink -am -Pcross-build --file pom.xml -Dtest='!LakeSoulRBACTest' -Dsurefire.failIfNoSpecifiedTests=false
@@ -488,11 +488,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
-          path: ./rust/target/release/
+          path: ./target/release/
       - uses: actions/download-artifact@v4
         with:
           name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
-          path: ./rust/target/release/
+          path: ./target/release/
       - name: Build with Maven
         run: |
           MAVEN_OPTS="-Xmx5g" mvn -B clean test -pl lakesoul-flink -am -Pcross-build --file pom.xml -Dtest='LakeSoulRBACTest' -Dsurefire.failIfNoSpecifiedTests=false
