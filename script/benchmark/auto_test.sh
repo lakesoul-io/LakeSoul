@@ -90,14 +90,14 @@ function sleep_after_ddl_or_dml {
 # Verify data consistency between mysql and LakeSoul
 function verify_data_consistency {
   echo "====== Verifing data consistency ======"
-  docker run --cpus 4 -m 16000m --net lakesoul-docker-compose-env_default --rm -t -v ${PWD}/work-dir:/opt/spark/work-dir --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties apache/spark:3.3.3 spark-submit --driver-memory 14G --executor-memory 14G --conf spark.driver.memoryOverhead=1500m --conf spark.executor.memoryOverhead=1500m --jars /opt/spark/work-dir/lakesoul-spark-2.2.0-spark-3.3.jar,/opt/spark/work-dir/mysql-connector-java-8.0.30.jar --conf spark.hadoop.fs.s3.buffer.dir=/tmp --conf spark.hadoop.fs.s3a.buffer.dir=/tmp --conf spark.hadoop.fs.s3a.fast.upload.buffer=disk --conf spark.hadoop.fs.s3a.fast.upload=true --class org.apache.spark.sql.lakesoul.benchmark.Benchmark --master local[4] /opt/spark/work-dir/lakesoul-spark-2.2.0-spark-3.3-SNAPSHOT-tests.jar
+  docker run --cpus 4 -m 16000m --net lakesoul-docker-compose-env_default --rm -t -v ${PWD}/work-dir:/opt/spark/work-dir --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/bitnami/spark:3.3.1 spark-submit --driver-memory 14G --executor-memory 14G --conf spark.driver.memoryOverhead=1500m --conf spark.executor.memoryOverhead=1500m --jars /opt/spark/work-dir/lakesoul-spark-2.2.0-spark-3.3.jar,/opt/spark/work-dir/mysql-connector-java-8.0.30.jar --conf spark.hadoop.fs.s3.buffer.dir=/tmp --conf spark.hadoop.fs.s3a.buffer.dir=/tmp --conf spark.hadoop.fs.s3a.fast.upload.buffer=disk --conf spark.hadoop.fs.s3a.fast.upload=true --class org.apache.spark.sql.lakesoul.benchmark.Benchmark --master local[4] /opt/spark/work-dir/lakesoul-spark-2.2.0-spark-3.3-SNAPSHOT-tests.jar
   echo "====== Verifing has been completed! ======"
 }
 
 # Verify data consistency
 function verify_data_consistency_pass_db_info {
   echo "====== Verifing data consistency ======"
-  docker run --cpus 4 -m 16000m --net lakesoul-docker-compose-env_default --rm -t -v ${PWD}/work-dir:/opt/spark/work-dir --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties apache/spark:3.3.3 spark-submit --driver-memory 14G --executor-memory 14G --conf spark.driver.memoryOverhead=1500m --conf spark.executor.memoryOverhead=1500m --jars /opt/spark/work-dir/lakesoul-spark-2.2.0-spark-3.3.jar,/opt/spark/work-dir/mysql-connector-java-8.0.30.jar --conf spark.hadoop.fs.s3.buffer.dir=/tmp --conf spark.hadoop.fs.s3a.buffer.dir=/tmp --conf spark.hadoop.fs.s3a.fast.upload.buffer=disk --conf spark.hadoop.fs.s3a.fast.upload=true --class org.apache.spark.sql.lakesoul.benchmark.Benchmark --master local[4] /opt/spark/work-dir/lakesoul-spark-2.2.0-spark-3.3-SNAPSHOT-tests.jar $host $db $user $password $port $timezone
+  docker run --cpus 4 -m 16000m --net lakesoul-docker-compose-env_default --rm -t -v ${PWD}/work-dir:/opt/spark/work-dir --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/bitnami/spark:3.3.1 spark-submit --driver-memory 14G --executor-memory 14G --conf spark.driver.memoryOverhead=1500m --conf spark.executor.memoryOverhead=1500m --jars /opt/spark/work-dir/lakesoul-spark-2.2.0-spark-3.3.jar,/opt/spark/work-dir/mysql-connector-java-8.0.30.jar --conf spark.hadoop.fs.s3.buffer.dir=/tmp --conf spark.hadoop.fs.s3a.buffer.dir=/tmp --conf spark.hadoop.fs.s3a.fast.upload.buffer=disk --conf spark.hadoop.fs.s3a.fast.upload=true --class org.apache.spark.sql.lakesoul.benchmark.Benchmark --master local[4] /opt/spark/work-dir/lakesoul-spark-2.2.0-spark-3.3-SNAPSHOT-tests.jar $host $db $user $password $port $timezone
   echo "====== Verifing has been completed! ======"
 }
 
@@ -111,7 +111,7 @@ function clean_up_metadata {
 # Clean up data in minio
 function clean_up_minio_data {
   echo "====== Cleaning up data in minio ======"
-  docker run --net lakesoul-docker-compose-env_default --rm -t apache/spark:3.3.3 aws --no-sign-request --endpoint-url http://minio:9000 s3 rm --recursive s3://lakesoul-test-bucket/
+  docker run --net lakesoul-docker-compose-env_default --rm -t swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/bitnami/spark:3.3.1 aws --no-sign-request --endpoint-url http://minio:9000 s3 rm --recursive s3://lakesoul-test-bucket/
   echo "====== Cleaning up data in minio has been completed! ======"
 }
 
@@ -147,7 +147,7 @@ if [ ! -e mysql-connector-java-8.0.30.jar ]; then
   wget https://repo1.maven.org/maven2/mysql/mysql-connector-java/8.0.30/mysql-connector-java-8.0.30.jar
 fi
 #pull spark docker image
-docker pull apache/spark:3.3.3
+docker pull swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/bitnami/spark:3.3.1
 
 cd ..
 
