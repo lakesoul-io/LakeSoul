@@ -27,12 +27,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
+      - uses:  dtolnay/rust-toolchain@master
         with:
-          profile: minimal
-          toolchain: stable
+          toolchain: 1.87
           components: clippy,rustfmt
-          default: true
       - name: Install Protoc
         uses: arduino/setup-protoc@v2
         with:
