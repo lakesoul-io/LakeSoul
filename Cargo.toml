@@ -28,6 +28,10 @@ arrow-schema.workspace = true
 arrow-array.workspace = true
 futures.workspace = true
 
+[lints]
+workspace = true
+
+
 [workspace]
 members = [
     "rust/lakesoul-metadata",
@@ -106,3 +110,7 @@ cached = { version = "0.54.0", features = ["async_tokio_rt_multi_thread"] }
 clap = { version = "4.4", features = ["derive"] }
 snafu = { version = "0.8" }
 snafu-virtstack = { version = "0.1" }
+
+
+[workspace.lints.clippy]
+too_many_arguments = "allow"

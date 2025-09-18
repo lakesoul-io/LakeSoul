@@ -45,5 +45,5 @@ jobs:
       - name: Run Format
         run: cargo fmt --all --check
       - name: Run Clippy
-        run: cargo clippy --no-deps --all-features --package lakesoul-io-c --package lakesoul-metadata-c --package lakesoul-python
+        run: cargo clippy --no-deps --all-features -p lakesoul-io-c -p lakesoul-metadata-c -p lakesoul-python -p lakesoul-io
 
