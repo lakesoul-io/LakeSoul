@@ -14,7 +14,7 @@ sudo docker run --rm -ti --net lakesoul-docker-compose-env_default \
 -v $PWD/lakesoul.properties:/opt/spark/work-dir/lakesoul.properties \
 -v $PWD/imdb:/opt/spark/work-dir/imdb \
 --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties \
-bitnami/spark:3.3.1 spark-submit --jars /opt/spark/work-dir/jars/"${lakesoul_jar}" --driver-memory 16G --executor-memory 16G --master "local[4]" --conf spark.pyspark.python=./venv/bin/python3 /opt/spark/work-dir/imdb/import_data.py
+apache/spark:3.3.3 spark-submit --jars /opt/spark/work-dir/jars/"${lakesoul_jar}" --driver-memory 16G --executor-memory 16G --master "local[4]" --conf spark.pyspark.python=./venv/bin/python3 /opt/spark/work-dir/imdb/import_data.py
 ```
 
 ## Train model using HuggingFace Trainer API

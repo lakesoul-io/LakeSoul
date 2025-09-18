@@ -126,7 +126,7 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: build
-          args: '-release --package lakesoul-io-c --package lakesoul-metadata-c --all-features'
+          args: '--release --package lakesoul-io-c --package lakesoul-metadata-c --all-features'
       - uses: actions/upload-artifact@v4
         with:
           name: lakesoul-nativeio-x86_64-apple-darwin
