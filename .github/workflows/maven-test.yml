@@ -51,7 +51,7 @@ jobs:
       - name: Cache Docker images
         uses: ScribeMD/docker-cache@0.4.0
         with:
-          key: docker-${{ runner.os }}-${{ hashFiles('rust/Cross.toml') }}
+          key: docker-${{ runner.os }}-${{ hashFiles('Cross.toml') }}
       - uses: actions-rs/cargo@v1
         with:
           use-cross: true
