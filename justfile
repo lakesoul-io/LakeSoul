@@ -14,3 +14,6 @@ pytest:
 
 sync:
     uv sync --reinstall-package lakesoul -vv
+
+dist:
+    uvx -p 3.8 cibuildwheel@2.19 --platform linux --output-dir dist
