@@ -210,14 +210,14 @@ lakesoul.pg.password=lakesoul_test
 ####  3.4.2 Prepare Spark Image
 You could use bitnami's Spark 3.3 docker image with packaged hadoop denendencies:
 ```bash
-docker pull bitnami/spark:3.3.1
+docker pull apache/spark:3.3.3
 ```
 
 ####  3.4.3 Start Spark Shell
 ```bash
 docker run --net lakesoul-docker-compose-env_default --rm -ti \
     -v $(pwd)/lakesoul.properties:/opt/spark/work-dir/lakesoul.properties \
-    --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties bitnami/spark:3.3.1 \
+    --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties apache/spark:3.3.3 \
     spark-shell \
     --packages com.dmetasoul:lakesoul-spark:spark-3.3-VAR::VERSION \
     --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension \
@@ -254,7 +254,7 @@ docker exec -ti lakesoul-docker-compose-env-lakesoul-meta-db-1 psql -h localhost
 ```
 To cleanup all contents in MinIO bucket, execute:
 ```bash
-docker run --net lakesoul-docker-compose-env_default --rm -t bitnami/spark:3.3.1 aws --no-sign-request --endpoint-url http://minio:9000 s3 rm --recursive s3://lakesoul-test-bucket/
+docker run --net lakesoul-docker-compose-env_default --rm -t apache/spark:3.3.3 aws --no-sign-request --endpoint-url http://minio:9000 s3 rm --recursive s3://lakesoul-test-bucket/
 ```
 
 ### 3.6 Shutdown Docker Compose Env

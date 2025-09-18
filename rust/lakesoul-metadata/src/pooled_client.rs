@@ -55,11 +55,14 @@ impl PooledClient {
         })
     }
 
-    pub async fn get(&self) -> Result<PgConnection> {
+    pub async fn get(&self) -> Result<PgConnection<'_>> {
         self.pool.get().await.map_err(Into::into)
     }
 
-    pub async fn prepare_cached(&self, query: &str) -> Result<(PgConnection, Statement)> {
+    pub async fn prepare_cached(
+        &self,
+        query: &str,
+    ) -> Result<(PgConnection<'_>, Statement)> {
         let conn = self.get().await?;
         let statement = conn.prepare_cached(query).await?;
         Ok((conn, statement))

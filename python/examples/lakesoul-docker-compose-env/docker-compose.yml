@@ -24,7 +24,7 @@ services:
 
 
   minio:
-    image: bitnami/minio:latest
+    image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/bitnami/minio:2025.4.22-debian-12-r1
     ports:
       - "9000:9000"
       - "9001:9001"
