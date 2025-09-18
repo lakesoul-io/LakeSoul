@@ -221,14 +221,14 @@ lakesoul.pg.password=lakesoul_test
 #### 3.4.2 准备 Spark 镜像
 可以使用 bitnami Spark 镜像：
 ```bash
-docker pull apache/spark:3.3.3
+docker pull swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/bitnami/spark:3.3.1
 ```
 
 #### 3.4.3 启动 Spark Shell
 ```bash
 docker run --net lakesoul-docker-compose-env_default --rm -ti \
     -v $(pwd)/lakesoul.properties:/opt/spark/work-dir/lakesoul.properties \
-    --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties apache/spark:3.3.3 \
+    --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/bitnami/spark:3.3.1 \
     spark-shell \
     --packages com.dmetasoul:lakesoul-spark:2.4.0-spark-3.3 \
     --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension \
@@ -265,7 +265,7 @@ docker exec -ti lakesoul-docker-compose-env-lakesoul-meta-db-1 psql -h localhost
 ```
 清理 MinIO 桶内容:
 ```bash
-docker run --net lakesoul-docker-compose-env_default --rm -t apache/spark:3.3.3 aws --no-sign-request --endpoint-url http://minio:9000 s3 rm --recursive s3://lakesoul-test-bucket/
+docker run --net lakesoul-docker-compose-env_default --rm -t swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/bitnami/spark:3.3.1 aws --no-sign-request --endpoint-url http://minio:9000 s3 rm --recursive s3://lakesoul-test-bucket/
 ```
 
 ### 3.6 停止 Docker Compose 环境

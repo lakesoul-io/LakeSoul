@@ -12,7 +12,7 @@ docker compose up -d
 ### Pull spark image
 
 ```bash
-docker pull apache/spark:3.3.3
+docker pull swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/bitnami/spark:3.3.1
 ```
 
 ### Download LakeSoul release jar
