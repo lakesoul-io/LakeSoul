@@ -29,7 +29,6 @@ pub(crate) fn init(py: Python, parent: &Bound<PyModule>) -> PyResult<()> {
 
 #[pyfunction]
 #[pyo3(signature = (batch_size,thread_num,schema,file_urls,primary_keys,partition_info,oss_conf,partition_schema=None))]
-#[allow(clippy::too_many_arguments)] // FIXME(mag1ciana:clear this)
 fn sync_reader(
     batch_size: usize,
     thread_num: usize,
@@ -68,7 +67,6 @@ fn sync_reader(
 
 #[pyfunction]
 #[pyo3(signature = (batch_size,thread_num,schema,file_urls,primary_keys,partition_info,oss_conf,partition_schema=None))]
-#[allow(clippy::too_many_arguments)] // FIXME(mag1ciana:clear this)
 fn one_reader(
     batch_size: usize,
     thread_num: usize,
@@ -109,7 +107,6 @@ fn one_reader(
     Ok(PyArrowType(Box::new(one)))
 }
 
-#[allow(clippy::too_many_arguments)] // FIXME(mag1ciana:clear this)
 fn build_io_config(
     batch_size: usize,
     thread_num: usize,

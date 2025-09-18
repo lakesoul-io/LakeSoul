@@ -53,3 +53,6 @@ rand_chacha = { workspace = true }
 
 [features]
 ci = []
+
+[lints]
+workspace = true

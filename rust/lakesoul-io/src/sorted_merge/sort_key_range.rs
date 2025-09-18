@@ -377,7 +377,7 @@ impl<C: CursorValues, const IS_PARTIAL_MERGE: bool>
     pub fn add_range_in_batch(
         &mut self,
         range: &SortKeyBatchRange<C>,
-        fields_map: &Vec<Vec<usize>>,
+        fields_map: &[Vec<usize>],
     ) {
         if self.is_empty() {
             self.set_batch_range(Some(range.clone()));
