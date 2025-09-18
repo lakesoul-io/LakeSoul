@@ -12,7 +12,7 @@ on:
 
 jobs:
   build-linux-x86_64:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Set up JDK 11
@@ -123,7 +123,7 @@ jobs:
 
 
   deploy-maven-package:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [ build-linux-x86_64, build-windows-x86_64, build-macos-x86_64 ]
     steps:
       - uses: actions/checkout@v4
