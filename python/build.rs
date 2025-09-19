@@ -1,11 +1,11 @@
-use std::{env, process::{Command, ExitStatus}};
+use std::{
+    env,
+    process::{Command, ExitStatus},
+};
 
 const GPRCIO_VERSION: &str = "1.70";
 
 fn main() {
-    // 获取当前工作目录（通常是项目根目录）
-    let cwd = env::current_dir().unwrap();
-    println!("cargo:warning=Current dir: {:?}", cwd);
     // first time for uv
     if gen_py().is_err() {
         Command::new("python3")
