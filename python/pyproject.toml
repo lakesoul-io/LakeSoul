@@ -21,7 +21,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Programming Language :: Python :: 3",
 ]
-dependencies = ["pyarrow==16.1.0", "numpy<2.0"]
+dependencies = ["pyarrow", "numpy", "grpcio[protobuf]==1.70"]
 
 [tool.uv.workspace]
 exclude = ["script/lakesoul-e2e"]
@@ -59,7 +59,7 @@ all = [
     "ray>=2.7,<2.11.0",
     "pyspark==3.3.1",
 ]
-dev = ["pytest>=8", "grpcio[protobuf]~=1.70", { include-group = "all" }]
+dev = ["pytest>=8", { include-group = "all" }]
 
 [project.urls]
 "Homepage" = "https://github.com/lakesoul-io/LakeSoul"
@@ -68,41 +68,14 @@ dev = ["pytest>=8", "grpcio[protobuf]~=1.70", { include-group = "all" }]
 [build-system]
 requires = ["maturin>=1,<2"]
 build-backend = "maturin"
-# requires = ["setuptools >= 62.1.0", "wheel", "cython >= 0.29.31,<3","pyarrow==16.1.0"]
-# build-backend = "setuptools.build_meta"
 
 [tool.maturin]
-python-source = "python/src"
+python-source = "src"
 module-name = "lakesoul._lib"
 features = ["pyo3/extension-module"]
 
-
-# [tool.setuptools.packages.find]
-# where = ["python"]
-# include = ["lakesoul*"]
-
-
 [tool.pytest.ini_options]
 addopts = ["--import-mode=importlib"]
-
-[tool.cibuildwheel]
-build-frontend = "build[uv]"
-environment-pass = ["HTTPS_PROXY", "HTTP_PROXY"]
-manylinux-x86_64-image = "dmetasoul/lakesoul-python-wheel-build-env-manylinux_2_28:v1.0.0"
-build = "*-manylinux_x86_64"
-skip = ["cp36-*", "cp37-*", "cp311-*", "cp312-*", "pp*"]
-
-[tool.cibuildwheel.linux]
-repair-wheel-command = """\
-    auditwheel repair --plat manylinux_2_28_x86_64 \
-                      --exclude libarrow_python.so \
-                      --exclude libarrow_dataset.so.1601 \
-                      --exclude libarrow_acero.so.1601 \
-                      --exclude libparquet.so.1601 \
-                      --exclude libarrow.so.1601 \
-                      -w {dest_dir} {wheel}\
-    """
-
 
 [[tool.uv.index]]
 url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/"

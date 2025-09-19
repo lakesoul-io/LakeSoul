@@ -3,8 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 import copy
-from typing import Iterator
-from typing_extensions import TYPE_CHECKING
+from typing import Iterator, TYPE_CHECKING
 
 import functools
 
