@@ -93,7 +93,7 @@ jobs:
           mkdir -p target/release
           cp target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so target/release
           cp target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so target/release
-          MAVEN_OPTS="-Xmx4000m" mvn -q -B clean package -f pom.xml -Pcross-build -DskipTests
+          MAVEN_OPTS="-Xmx4000m" mvn -q -B package -f pom.xml -Pcross-build -DskipTests
       - name: Get jar names
         run: |
           echo "FLINK_JAR_NAME=$(python script/get_jar_name.py lakesoul-flink)" >> $GITHUB_ENV

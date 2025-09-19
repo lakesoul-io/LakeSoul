@@ -98,7 +98,7 @@ jobs:
           mkdir -p ~/.m2/repository
           tar xf gluten-1.6.0-84ac41874-snapshot.tar.gz -C ~/.m2/repository
           rm -f gluten-1.6.0-84ac41874-snapshot.tar.gz
-          MAVEN_OPTS="-Xmx4000m" mvn -q -B clean -pl lakesoul-flink,lakesoul-spark-gluten -am -Dspark.shade.skip=true package -f pom.xml -Pcross-build -Pgluten -DskipTests
+          MAVEN_OPTS="-Xmx4000m" mvn -q -B -pl lakesoul-flink,lakesoul-spark-gluten -am -Dspark.shade.skip=true package -f pom.xml -Pcross-build -Pgluten -DskipTests
       - name: Get jar names
         run: |
           echo "FLINK_JAR_NAME=$(python script/get_jar_name.py lakesoul-flink)" >> $GITHUB_ENV
