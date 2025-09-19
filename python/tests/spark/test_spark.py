@@ -10,7 +10,6 @@ import string
 import tempfile
 import shutil
 import sys
-import time
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, lit, expr
@@ -321,35 +320,35 @@ def test_snapshot_query(spark_and_file):
     pass
 
 
-# TODO: udpate 
+# TODO: udpate
 def test_incremental_query(spark_and_file):
-#     spark, temp_file = spark_and_file
-#     __overwriteHashLakeSoulTable(
-#         spark, temp_file, [("a", 1), ("b", 2), ("c", 3), ("d", 4)]
-#     )
-#     table = LakeSoulTable.forPath(spark, temp_file)
-#     readStartTime = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-#     time.sleep(2)
-#     df = spark.createDataFrame([("e", 55), ("f", 66)], ["key", "value"])
-#     table.upsert(df)
-#     time.sleep(2)
-#     df = spark.createDataFrame([("g", 77)], ["key", "value"])
-#     table.upsert(df)
-#     time.sleep(1)
-#     readEndTime = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-#     lake1 = LakeSoulTable.forPathIncremental(
-#         spark, temp_file, "", readStartTime, readEndTime, "Asia/Shanghai"
-#     )
-#     lake2 = (
-#         spark.read.format("lakesoul")
-#         .option("readstarttime", readStartTime)
-#         .option("readendtime", readEndTime)
-#         .option("timezone", "Asia/Shanghai")
-#         .option("readtype", "incremental")
-#         .load(temp_file)
-#     )
-#     __checkAnswer(spark, lake1.toDF(), [("e", 55), ("f", 66), ("g", 77)])
-#     __checkAnswer(spark, lake2, [("e", 55), ("f", 66), ("g", 77)])
+    #     spark, temp_file = spark_and_file
+    #     __overwriteHashLakeSoulTable(
+    #         spark, temp_file, [("a", 1), ("b", 2), ("c", 3), ("d", 4)]
+    #     )
+    #     table = LakeSoulTable.forPath(spark, temp_file)
+    #     readStartTime = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    #     time.sleep(2)
+    #     df = spark.createDataFrame([("e", 55), ("f", 66)], ["key", "value"])
+    #     table.upsert(df)
+    #     time.sleep(2)
+    #     df = spark.createDataFrame([("g", 77)], ["key", "value"])
+    #     table.upsert(df)
+    #     time.sleep(1)
+    #     readEndTime = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    #     lake1 = LakeSoulTable.forPathIncremental(
+    #         spark, temp_file, "", readStartTime, readEndTime, "Asia/Shanghai"
+    #     )
+    #     lake2 = (
+    #         spark.read.format("lakesoul")
+    #         .option("readstarttime", readStartTime)
+    #         .option("readendtime", readEndTime)
+    #         .option("timezone", "Asia/Shanghai")
+    #         .option("readtype", "incremental")
+    #         .load(temp_file)
+    #     )
+    #     __checkAnswer(spark, lake1.toDF(), [("e", 55), ("f", 66), ("g", 77)])
+    #     __checkAnswer(spark, lake2, [("e", 55), ("f", 66), ("g", 77)])
     pass
 
 

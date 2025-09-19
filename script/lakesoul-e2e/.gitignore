@@ -13,6 +13,3 @@ build/
 dist/
 wheels/
 *.egg-info
-
-# Virtual environments
-k8s/*.yaml

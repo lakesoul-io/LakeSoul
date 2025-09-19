@@ -24,15 +24,13 @@ env:
 
 jobs:
   clippy_check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
+      - uses:  dtolnay/rust-toolchain@master
         with:
-          profile: minimal
-          toolchain: stable
+          toolchain: 1.87
           components: clippy,rustfmt
-          default: true
       - name: Install Protoc
         uses: arduino/setup-protoc@v2
         with:
@@ -40,10 +38,10 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "./rust -> target"
-          key: "ubuntu-latest-clippy"
+          workspaces: "./ -> target"
+          key: "ubuntu-24.04-clippy"
       - name: Run Format
-        run: cd rust && cargo fmt --all --check
+        run: cargo fmt --all --check
       - name: Run Clippy
-        run: cd rust && cargo clippy --no-deps --all-features --package lakesoul-io-c --package lakesoul-metadata-c
+        run: cargo clippy --no-deps --all-features -p lakesoul-io-c -p lakesoul-metadata-c -p lakesoul-python -p lakesoul-io
 

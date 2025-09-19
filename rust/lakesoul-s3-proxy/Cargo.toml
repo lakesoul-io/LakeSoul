@@ -38,3 +38,6 @@ arrow = { workspace = true }
 arrow-array = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[lints]
+workspace = true
