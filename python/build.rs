@@ -1,10 +1,19 @@
 use std::process::{Command, ExitStatus};
 
+const GPRCIO_VERSION: &str = "1.70";
+
 fn main() {
     // first time for uv
-    if let Err(_) = gen_py() {
+    if gen_py().is_err() {
         Command::new("python3")
             .args(["-m", "venv", ".venv"])
+            .status()
+            .unwrap();
+        Command::new(".venv/bin/pip")
+            .args([
+                "install",
+                format!("grpcio[protobuf]=={}", GPRCIO_VERSION).as_str(),
+            ])
             .status()
             .unwrap();
         gen_py().unwrap();
