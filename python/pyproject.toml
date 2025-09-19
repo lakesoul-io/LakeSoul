@@ -72,7 +72,7 @@ build-backend = "maturin"
 # build-backend = "setuptools.build_meta"
 
 [tool.maturin]
-python-source = "python/src"
+python-source = "src"
 module-name = "lakesoul._lib"
 features = ["pyo3/extension-module"]
 
