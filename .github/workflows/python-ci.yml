@@ -78,10 +78,11 @@ jobs:
         run: |
           export LD_LIBRARY_PATH=$JAVA_HOME/lib/server:$LD_LIBRARY_PATH
           mvn package -pl lakesoul-spark -am -DskipTests
+          cd python
           uv sync --no-install-project   
           source .venv/bin/activate
           cargo run --release -p lakesoul-console -- tpch-gen -p "file:///tmp/lakesoul/tpch_data" --scale-factor 0.1 -n 8 
-          uv run pytest python/tests/ -s
+          uv run pytest ./tests/ -s
   publish:
     runs-on: ubuntu-24.04
     if: startsWith(github.event.ref, 'refs/tags/py-v')

@@ -1,7 +1,4 @@
-use std::{
-    env,
-    process::{Command, ExitStatus},
-};
+use std::process::{Command, ExitStatus};
 
 const GPRCIO_VERSION: &str = "1.70";
 
