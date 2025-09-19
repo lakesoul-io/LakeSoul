@@ -1,9 +1,0 @@
-# SPDX-FileCopyrightText: 2023 LakeSoul Contributors
-#
-# SPDX-License-Identifier: Apache-2.0
-
-pyarrow==16.1.0
-numpy<2
-cython>=0.29.31,<3
-grpcio-tools==1.70
-auditwheel~=5.4

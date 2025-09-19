@@ -97,7 +97,7 @@ jobs:
         uses: astral-sh/setup-uv@v6
       - name: build  
         run: |
-          python3 python/docker_build_all_wheels.py
+          cd python && uvx --from 'maturin[zig]' maturin build --release --zig --target x86_64-unknown-linux-gnu --auditwheel repair --compatibility manylinux2014 --out ../dist
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
 
