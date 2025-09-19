@@ -1406,7 +1406,7 @@ all = [
 ]
 dev = [
     { name = "datasets", specifier = ">=2.14" },
-    { name = "grpcio", extras = ["protobuf"], specifier = "~=1.57" },
+    { name = "grpcio", extras = ["protobuf"], specifier = "~=1.70" },
     { name = "pandas", specifier = ">=1.4" },
     { name = "pyspark", specifier = "==3.3.1" },
     { name = "pytest", specifier = ">=8" },
