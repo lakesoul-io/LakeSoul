@@ -2,8 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from .dataset import Dataset
-from .dataset import lakesoul_dataset
+from .dataset import Dataset,lakesoul_dataset
 
 __all__ = [
     "Dataset",

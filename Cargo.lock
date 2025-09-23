@@ -3734,9 +3734,11 @@ dependencies = [
  "arrow-array",
  "arrow-pyarrow",
  "arrow-schema",
+ "datafusion-substrait",
  "futures",
  "lakesoul-io",
  "lakesoul-metadata",
+ "prost",
  "pyo3",
  "tokio",
 ]

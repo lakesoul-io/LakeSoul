@@ -3,33 +3,24 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 import copy
-from typing import Iterator, TYPE_CHECKING
+from typing import Iterator
 
 import functools
 
-import pyarrow
+import pyarrow as pa
+import pyarrow.dataset as ds
 from ..metadata.meta_ops import (
     get_scan_plan_partitions,
     get_schemas_by_table_name,
     LakeSoulScanPlanPartition,
 )
 
-from lakesoul._lib._dataset import one_reader
-
-if TYPE_CHECKING:
-    DatasetBase = pyarrow._dataset.Dataset  # type: ignore
-    ScannerBase = pyarrow._dataset.Scanner  # type: ignore
-    FragmentBase = pyarrow._dataset.Fragment  # type: ignore
-else:
-    DatasetBase = object
-    ScannerBase = object
-    FragmentBase = object
-
+from lakesoul._lib._dataset import one_reader  # type: ignore
 
 DEFAULT_BATCH_SIZE: int = 2**10
 
 
-class Dataset(DatasetBase):
+class Dataset(ds.Dataset):
     def __init__(
         self,
         lakesoul_table_name: str,
@@ -149,7 +140,7 @@ class Dataset(DatasetBase):
         use_threads=True,
         cache_metadata=None,
         memory_pool=None,
-    ) -> pyarrow.Table:
+    ) -> pa.Table:
         return self.scanner(
             columns,
             filter,
@@ -164,7 +155,7 @@ class Dataset(DatasetBase):
 
     def join(
         self,
-        right_dataset: pyarrow.dataset.Dataset,  # type: ignore
+        right_dataset: ds.Dataset,
         keys,
         right_keys,
         join_type,
@@ -177,7 +168,7 @@ class Dataset(DatasetBase):
 
     def join_asof(
         self,
-        right_dataset: pyarrow.dataset.Dataset,  # type: ignore
+        right_dataset: ds.Dataset,
         on: str,
         by,
         tolerance: int,
@@ -190,7 +181,7 @@ class Dataset(DatasetBase):
     def partition_expression(self):
         raise NotImplementedError("this method is not supported")
 
-    def replace_schema(self, schema: pyarrow.Schema):
+    def replace_schema(self, schema: pa.Schema):
         raise NotImplementedError("this method is not supported")
 
     def scanner(
@@ -251,7 +242,7 @@ class Dataset(DatasetBase):
         use_threads=True,
         cache_metadata=None,
         memory_pool=None,
-    ) -> Iterator[pyarrow.RecordBatch]:
+    ) -> Iterator[pa.RecordBatch]:
         return self.scanner(
             columns,
             filter,
@@ -275,7 +266,7 @@ class Dataset(DatasetBase):
         use_threads=True,
         cache_metadata=None,
         memory_pool=None,
-    ) -> pyarrow.Table:
+    ) -> pa.Table:
         return self.scanner(
             columns,
             filter,
@@ -384,10 +375,23 @@ def check_parameters(
     def decorator(func):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
-            if use_columns and kwargs["columns"] is not None:
-                raise NotImplementedError("columns is not supported")
-            if use_filter and kwargs["filter"] is not None:
-                raise NotImplementedError("filter is not supported")
+            if (
+                use_columns
+                and kwargs.get("columns") is not None
+                and (
+                    not isinstance(kwargs["columns"], list)
+                    or not all(isinstance(item, str) for item in kwargs["columns"])
+                )
+            ):
+                raise NotImplementedError("columns with expression is not supported")
+            if (
+                use_filter
+                and kwargs["filter"] is not None
+                and not isinstance(kwargs["filter"], ds.Expression)
+            ):
+                raise NotImplementedError(
+                    f"filter type {type(kwargs['filter'])} is not supported"
+                )
             if use_batch_readahead and kwargs["batch_readahead"] is not None:
                 raise NotImplementedError("batch_readahead is not supported")
             if use_fragment_readahead and kwargs["fragment_readahead"] is not None:
@@ -411,33 +415,33 @@ def check_parameters(
         return decorator(_func)
 
 
-class Fragment(FragmentBase):
+class Fragment(ds.Fragment):
     def __init__(
         self,
         batch_size: int,
         thread_count: int,
-        schema: pyarrow.Schema,
+        schema: pa.Schema,
         file_urls: list[str],
         pks: list[str],
         partitions: list[tuple[str, str]],
         oss_conf: list[tuple[str, str]],
-        partition_schema: pyarrow.Schema | None,
+        partition_schema: pa.Schema | None,
     ):
         self._batch_size = batch_size
         self._thread_count = thread_count
-        self._schemaa = pyarrow.Schema(schema)
+        self._schemaa = pa.Schema(schema)
         self._file_urls = file_urls[:]
         self._pks = pks[:]
         self._partitions = partitions[:]
         self._oss_conf = oss_conf[:]
-        self._partition_schema = pyarrow.schema(partition_schema)
+        self._partition_schema = pa.schema(partition_schema)
 
     @property
     def partition_expression(self):
         raise NotImplementedError
 
     @property
-    def physical_schema(self) -> pyarrow.Schema:
+    def physical_schema(self) -> pa.Schema:
         return self._schemaa
 
     def count_rows(
@@ -477,7 +481,7 @@ class Fragment(FragmentBase):
         use_threads=True,
         cache_metadata=None,
         memory_pool=None,
-    ) -> pyarrow.Table:
+    ) -> pa.Table:
         return self.scanner(
             schema,
             columns,
@@ -545,7 +549,7 @@ class Fragment(FragmentBase):
         use_threads=True,
         cache_metadata=None,
         memory_pool=None,
-    ) -> Iterator[pyarrow.RecordBatch]:
+    ) -> Iterator[pa.RecordBatch]:
         return self.scanner(
             schema=schema,
             columns=columns,
@@ -571,7 +575,7 @@ class Fragment(FragmentBase):
         use_threads=True,
         cache_metadata=None,
         memory_pool=None,
-    ) -> pyarrow.Table:
+    ) -> pa.Table:
         return self.scanner(
             schema=schema,
             columns=columns,
@@ -586,28 +590,39 @@ class Fragment(FragmentBase):
         ).to_batches()
 
 
-class Scanner(ScannerBase):
+def schema_projection(origin: pa.Schema, projections: list[str]) -> pa.Schema:
+    # O(n + m)
+    origin_fields = {field.name for field in origin}
+    missing_fields = [col for col in projections if col not in origin_fields]
+    if missing_fields:
+        raise ValueError(f"字段不存在于原始 schema 中: {missing_fields}")
+
+    fields = [field for field in origin if field.name in projections]
+    return pa.schema(fields)
+
+
+class Scanner(ds.Scanner):
     def __init__(
         self,
         batch_size: int,
         thread_count: int,
-        target_schema: pyarrow.Schema,
+        target_schema: pa.Schema,
         file_urls: list[list[str]],
         pks: list[list[str]],
         partitions: list[tuple[str, str]],
         oss_conf: list[tuple[str, str]],
-        partiion_schema: pyarrow.Schema | None,
+        partiion_schema: pa.Schema | None,
+        filter: bytes | None,
     ):
         self._batch_size = batch_size
         self._thread_count = thread_count
-        self._target_schema = pyarrow.schema(target_schema)
-        self._partition_schema = (
-            pyarrow.schema(partiion_schema) if partiion_schema else None
-        )
+        self._target_schema = pa.schema(target_schema)
+        self._partition_schema = pa.schema(partiion_schema) if partiion_schema else None
         self._file_urls = copy.deepcopy(file_urls)
         self._pks = copy.deepcopy(pks)
         self._partition = partitions
         self._oss_conf = oss_conf
+        self._filter = filter
 
     def count_rows(self) -> int:
         return self.to_table().num_rows
@@ -633,8 +648,8 @@ class Scanner(ScannerBase):
     def from_dataset(
         dataset: Dataset,
         *,
-        columns=None,
-        filter=None,
+        columns: list[str] | None = None,
+        filter: ds.Expression | None = None,
         batch_size=DEFAULT_BATCH_SIZE,
         batch_readahead=None,
         fragment_readahead=None,
@@ -647,19 +662,29 @@ class Scanner(ScannerBase):
             thread_count = 1
         else:
             thread_count = dataset._thread_count
+
+        if columns:
+            target_schema = schema_projection(dataset._schema, columns)
+        else:
+            target_schema = dataset._schema
+
+        if filter:
+            filter = filter.to_substrait(dataset._schema).to_pybytes()  # copy
+
         return Scanner(
             batch_size,
             thread_count,
-            dataset._schema,
+            target_schema,
             dataset._file_urls,
             dataset._pks,
             list(dataset._partitions.items()),
             list(dataset._oss_conf.items()),
             dataset._partition_schema,
+            filter,
         )
 
     @staticmethod
-    @check_parameters
+    # @check_parameters
     def from_fragment(
         fragment,
         *,
@@ -689,7 +714,7 @@ class Scanner(ScannerBase):
             fragment._partition_schema,
         )
 
-    def head(self, num_rows: int) -> pyarrow.Table:
+    def head(self, num_rows: int) -> pa.Table:
         reader = self.to_reader()
         batches = []
         total_rows = 0
@@ -702,7 +727,7 @@ class Scanner(ScannerBase):
                 batch = batch.slice(0, remaining)
             batches.append(batch)
             total_rows += batch.num_rows
-        return pyarrow.Table.from_batches(batches)
+        return pa.Table.from_batches(batches)
 
     def scan_batches(self):
         raise NotImplementedError("this method is not supported")
@@ -710,12 +735,12 @@ class Scanner(ScannerBase):
     def take(self, indices):
         raise NotImplementedError("this method is not supported")
 
-    def to_batches(self) -> Iterator[pyarrow.RecordBatch]:
+    def to_batches(self) -> Iterator[pa.RecordBatch]:
         reader = self.to_reader()
         for rb in reader:
             yield rb
 
-    def to_reader(self) -> pyarrow.RecordBatchReader:
+    def to_reader(self) -> pa.RecordBatchReader:
         return one_reader(
             self._batch_size,
             self._thread_count,
@@ -727,7 +752,7 @@ class Scanner(ScannerBase):
             self._partition_schema,
         )
 
-    def to_table(self) -> pyarrow.Table:
+    def to_table(self) -> pa.Table:
         return self.to_reader().read_all()
 
 

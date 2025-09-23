@@ -9,6 +9,7 @@ use crate::install_module;
 use arrow_array::RecordBatch;
 use arrow_pyarrow::PyArrowType;
 use arrow_schema::{ArrowError, Schema, SchemaRef};
+use datafusion_substrait::substrait::proto::Plan;
 use futures::{StreamExt, stream::SelectAll};
 use lakesoul_io::{
     arrow::array::RecordBatchReader,
@@ -16,6 +17,7 @@ use lakesoul_io::{
     lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder},
     lakesoul_reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader},
 };
+use prost::Message;
 use pyo3::{exceptions::PyRuntimeError, prelude::*};
 
 pub(crate) fn init(py: Python, parent: &Bound<PyModule>) -> PyResult<()> {
@@ -28,7 +30,7 @@ pub(crate) fn init(py: Python, parent: &Bound<PyModule>) -> PyResult<()> {
 }
 
 #[pyfunction]
-#[pyo3(signature = (batch_size,thread_num,schema,file_urls,primary_keys,partition_info,oss_conf,partition_schema=None))]
+#[pyo3(signature = (batch_size,thread_num,schema,file_urls,primary_keys,partition_info,oss_conf,partition_schema=None,filter = None))]
 fn sync_reader(
     batch_size: usize,
     thread_num: usize,
@@ -38,6 +40,7 @@ fn sync_reader(
     partition_info: Vec<(String, String)>,
     oss_conf: Vec<(String, String)>,
     partition_schema: Option<PyArrowType<Schema>>,
+    filter: Option<Vec<u8>>,
 ) -> PyResult<PyArrowType<Box<dyn RecordBatchReader + Send>>> {
     let schema = Arc::new(schema.0);
     let partition_schema = partition_schema.map(|s| Arc::new(s.0));
@@ -50,7 +53,8 @@ fn sync_reader(
         primary_keys,
         &partition_info,
         &oss_conf,
-    );
+        &filter,
+    )?;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -66,7 +70,7 @@ fn sync_reader(
 }
 
 #[pyfunction]
-#[pyo3(signature = (batch_size,thread_num,schema,file_urls,primary_keys,partition_info,oss_conf,partition_schema=None))]
+#[pyo3(signature = (batch_size,thread_num,schema,file_urls,primary_keys,partition_info,oss_conf,partition_schema=None,filter=None))]
 fn one_reader(
     batch_size: usize,
     thread_num: usize,
@@ -76,6 +80,7 @@ fn one_reader(
     partition_info: Vec<(String, String)>,
     oss_conf: Vec<(String, String)>,
     partition_schema: Option<PyArrowType<Schema>>,
+    filter: Option<Vec<u8>>,
 ) -> PyResult<PyArrowType<Box<dyn RecordBatchReader + Send>>> {
     let schema = Arc::new(schema.0);
     let partition_schema = partition_schema.map(|s| Arc::new(s.0));
@@ -92,7 +97,8 @@ fn one_reader(
                 pks,
                 &partition_info,
                 &oss_conf,
-            ))
+                &filter,
+            )?)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
         })
         .collect::<PyResult<Vec<LakeSoulReader>>>()?;
@@ -116,7 +122,8 @@ fn build_io_config(
     primary_keys: Vec<String>,
     partition_info: &[(String, String)],
     oss_conf: &[(String, String)],
-) -> LakeSoulIOConfig {
+    filter: &Option<Vec<u8>>,
+) -> PyResult<LakeSoulIOConfig> {
     let mut builder = LakeSoulIOConfigBuilder::default()
         .with_batch_size(batch_size)
         .with_thread_num(thread_num)
@@ -144,7 +151,14 @@ fn build_io_config(
         // if this config is not specified by user, we always set it to true
         builder = builder.with_object_store_option("fs.s3a.path.style.access", "true");
     }
-    builder.build()
+
+    if let Some(buf) = filter {
+        let filter =
+            Plan::decode(buf.as_slice()).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        builder = builder.with_filter_proto(filter);
+    }
+
+    Ok(builder.build())
 }
 
 struct OneReader {

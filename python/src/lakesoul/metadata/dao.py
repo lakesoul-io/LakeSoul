@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from typing import Sequence
-from .lib.const import DaoType
+from .const import DaoType
 from .native_client import query
 
 from .generated import entity_pb2

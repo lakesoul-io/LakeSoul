@@ -9,6 +9,7 @@ def sync_reader(
     partition_info: list[tuple[str, str]],
     oss_conf: list[tuple[str, str]],
     partition_schema: pyarrow.Schema | None = None,
+    filter: bytes | None = None,
 ) -> pyarrow.RecordBatchReader: ...
 def one_reader(
     batch_size: int,
@@ -19,4 +20,5 @@ def one_reader(
     partition_info: list[tuple[str, str]],
     oss_conf: list[tuple[str, str]],
     partition_schema: pyarrow.Schema | None = None,
+    filter: bytes | None = None,
 ) -> pyarrow.RecordBatchReader: ...

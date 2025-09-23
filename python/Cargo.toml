@@ -24,6 +24,14 @@ arrow-pyarrow.workspace = true
 arrow-schema.workspace = true
 arrow-array.workspace = true
 futures.workspace = true
+prost.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+datafusion-substrait = { workspace = true }
+
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+datafusion-substrait = { workspace = true, features = ["protoc"] }
+
 
 [lints]
 workspace = true

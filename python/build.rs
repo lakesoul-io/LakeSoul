@@ -1,6 +1,6 @@
 use std::process::{Command, ExitStatus};
 
-const GPRCIO_VERSION: &str = "1.70";
+const GPRC_VERSION: &str = "1.70";
 
 fn main() {
     // first time for uv
@@ -12,7 +12,7 @@ fn main() {
         Command::new(".venv/bin/pip")
             .args([
                 "install",
-                format!("grpcio[protobuf]=={}", GPRCIO_VERSION).as_str(),
+                format!("grpcio-tools=={}", GPRC_VERSION).as_str(),
             ])
             .status()
             .unwrap();

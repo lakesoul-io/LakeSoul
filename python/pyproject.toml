@@ -21,7 +21,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Programming Language :: Python :: 3",
 ]
-dependencies = ["pyarrow", "numpy", "grpcio[protobuf]==1.70"]
+dependencies = ["pyarrow", "numpy", "grpcio-tools==1.70", "protobuf>=5.29"]
 
 [tool.uv.workspace]
 exclude = ["script/lakesoul-e2e"]

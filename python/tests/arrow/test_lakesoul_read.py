@@ -23,7 +23,9 @@ def test_lakesoul_dataset():
 def test_dataset_parameters():
     lds = lakesoul_dataset("part")
     with pytest.raises(NotImplementedError) as _:
-        lds.scanner(columns=[])
+        lds.scanner(columns=1)
+    with pytest.raises(NotImplementedError) as _:
+        lds.scanner(columns=[1])
     with pytest.raises(NotImplementedError) as _:
         lds.scanner(filter="")
     with pytest.raises(NotImplementedError) as _:
