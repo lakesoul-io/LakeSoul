@@ -12,6 +12,11 @@ import com.dmetasoul.lakesoul.meta.entity.FileOp;
 import com.dmetasoul.lakesoul.meta.entity.Uuid;
 import com.zaxxer.hikari.HikariConfig;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.permission.*;
+import org.apache.hadoop.hdfs.DistributedFileSystem;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.MalformedURLException;
@@ -32,6 +37,8 @@ import java.util.stream.Collectors;
 import static com.dmetasoul.lakesoul.meta.DBConfig.*;
 
 public class DBUtil {
+
+    private static final Logger LOG = LoggerFactory.getLogger(DBUtil.class);
 
     private static final String driverNameDefault = "org.postgresql.Driver";
     private static final String urlDefault = "jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified";
@@ -420,5 +427,58 @@ public class DBUtil {
         } catch (NoSuchAlgorithmException e) {
             throw new RuntimeException("MD5 algorithm not available", e);
         }
+    }
+
+    private static void setDirPermission(org.apache.hadoop.fs.Path dir, String userName, String domain,
+        DistributedFileSystem hdfs, boolean ignoreExists) throws IOException {
+        if (!hdfs.exists(dir)) {
+            hdfs.mkdirs(dir);
+            hdfs.setOwner(dir, userName, domain);
+            if (domain.equalsIgnoreCase("public") || domain.equalsIgnoreCase("lake-public")) {
+                // set 777 for public domain and sticky bit
+                hdfs.setPermission(dir, new FsPermission(FsAction.ALL, FsAction.ALL, FsAction.ALL, true));
+            } else {
+                // set 770 for other domain
+                hdfs.setPermission(dir, new FsPermission(FsAction.ALL, FsAction.ALL, FsAction.NONE));
+            }
+            try {
+                // try set default acl to allow domain users have
+                // permission to read/write compaction dirs
+                hdfs.setAcl(dir, java.util.Collections.singletonList(
+                        new AclEntry.Builder()
+                                .setName(domain)
+                                .setType(AclEntryType.GROUP)
+                                .setScope(AclEntryScope.DEFAULT)
+                                .setPermission(FsAction.ALL)
+                                .build()
+                ));
+            } catch (Exception e) {
+                LOG.info("Ignore set acl exception for {}", dir, e);
+            }
+        } else if (!ignoreExists) {
+            throw new IOException("Directory " + dir + " already exists");
+        }
+    }
+
+    // try to set dir permission and acl for HDFS
+    // ignore if no hdfs fs class exists or path is local/s3 fs
+    public static void createAndSetTableDirPermission(FileSystem fs, org.apache.hadoop.fs.Path tbDir,
+                                                      boolean ignoreTableDirExists) throws IOException {
+        try {
+            DBUtil.class.getClassLoader().loadClass("org.apache.hadoop.hdfs.DistributedFileSystem");
+        } catch (Exception e) {
+            return;
+        }
+        if (!(fs instanceof DistributedFileSystem)) {
+            return;
+        }
+        DistributedFileSystem hdfs = (DistributedFileSystem) fs;
+
+        String userName = DBUtil.getUser();
+        String domain = DBUtil.getDomain();
+        LOG.info("Set dir {} permission for {}:{}", tbDir, userName, domain);
+        org.apache.hadoop.fs.Path nsDir = tbDir.getParent();
+        setDirPermission(nsDir, userName, domain, hdfs, true);
+        setDirPermission(tbDir, userName, domain, hdfs, ignoreTableDirExists);
     }
 }
