@@ -21,19 +21,18 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Programming Language :: Python :: 3",
 ]
-dependencies = ["pyarrow==16.1.0", "numpy<2.0", "grpcio-tools==1.70"]
+dependencies = ["pyarrow==16.1.0", "numpy<2.0", "protobuf>=5.0"]
 
 [project.optional-dependencies]
 torch = ["torch>=1.11.0,<2.5"]
 pandas = ["pandas>=1.4"]
-datasets = ["datasets>=2.14", "urllib3<2,>=1.21.1"]
+datasets = ["datasets>=2.14"]
 ray = ["ray>=2.7,<2.11.0"]
 pyspark = ["pyspark==3.3.1"]
 all = [
     "torch>=1.11,<2.5",
     "pandas>=1.4",
     "datasets>=2.14",
-    "urllib3<2,>=1.21.1",
     "ray>=2.7,<2.11.0",
     "pyspark==3.3.1",
 ]
@@ -52,9 +51,9 @@ all = [
     "torch>=1.11,<2.5",
     "pandas>=1.4",
     "datasets>=2.14",
-    "urllib3<2,>=1.21.1",
     "ray>=2.7,<2.11.0",
     "pyspark==3.3.1",
+    "grpcio-tools==1.70"
 ]
 dev = ["pytest>=8", { include-group = "all" }]
 
@@ -68,6 +67,7 @@ requires = [
     "wheel",
     "cython >= 0.29.31,<3",
     "pyarrow==16.1.0",
+    "grpcio-tools==1.70",
 ]
 build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
@@ -79,6 +79,7 @@ include = ["lakesoul*"]
 addopts = ["--import-mode=importlib"]
 
 [tool.cibuildwheel]
+build-frontend = "build[uv]"
 manylinux-x86_64-image = "dmetasoul/lakesoul-python-wheel-build-env-manylinux_2_28:v1.0.0"
 build = "*-manylinux_x86_64"
 skip = ["cp36-*", "cp37-*", "cp311-*", "cp312-*", "pp*"]
