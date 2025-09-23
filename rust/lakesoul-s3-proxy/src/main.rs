@@ -376,16 +376,23 @@ impl ProxyHttp for S3Proxy {
         {
             bucket = path.to_string();
         } else {
-            error!("Cannot determine bucket {:?}", header);
-            session.respond_error(503).await?;
+            let msg = format!("Cannot determine bucket from header {:?}", header);
+            error!("{}", msg);
+            session
+                .respond_error_with_body(400, Bytes::from(msg))
+                .await?;
             return Ok(true);
         }
 
         // verify meta permission
         match self.cred.verify_rbac(header, &bucket).await {
             Err(e) => {
-                error!("permission denied error {:?}", e);
-                session.respond_error(403).await?;
+                let msg =
+                    format!("Permission denied error {:?}, uri {:?}", e, header.uri);
+                error!("{}", msg);
+                session
+                    .respond_error_with_body(403, Bytes::from(msg))
+                    .await?;
                 return Ok(true);
             }
             _ => {}
@@ -395,8 +402,14 @@ impl ProxyHttp for S3Proxy {
         match self.cred.sign_aws_v4(header, &self.host, &bucket) {
             Ok(_) => Ok(false),
             Err(e) => {
-                error!("sign error {:?}", e);
-                session.respond_error(500).await?;
+                let msg = format!(
+                    "Sign aws v4 error {:?}, header {:?}, host {:?}, bucket {:?}",
+                    e, header, self.host, bucket
+                );
+                error!("{}", msg);
+                session
+                    .respond_error_with_body(500, Bytes::from(msg))
+                    .await?;
                 Ok(true)
             }
         }

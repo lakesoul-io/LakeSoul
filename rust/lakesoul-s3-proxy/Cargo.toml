@@ -9,8 +9,8 @@ edition = "2024"
 
 [dependencies]
 lakesoul-metadata = { path = "../lakesoul-metadata" }
-pingora = { version = "0.5.0", features = ["lb", "openssl"] }
-pingora-core = { version = "0.5.0", features = ["openssl"] }
+pingora = { version = "0.6.0", features = ["lb", "openssl"] }
+pingora-core = { version = "0.6.0", features = ["openssl"] }
 async-trait="0.1"
 hickory-resolver = "0.24.4"
 aws-sigv4 = "1.3.3"
