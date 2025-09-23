@@ -5,5 +5,5 @@
 pyarrow==16.1.0
 numpy<2
 cython>=0.29.31,<3
-grpcio[protobuf]~=1.57
+grpcio-tools==1.70
 auditwheel~=5.4
