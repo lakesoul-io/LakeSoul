@@ -566,7 +566,7 @@ where
     split
         .take_while(|s| {
             !(s.ends_with(".parquet")
-                || s.contains("compactdir")
+                || s.starts_with("compact")
                 || s.contains(partition_equal))
         })
         .for_each(|s| {
@@ -583,7 +583,11 @@ fn parse_table_path_from_query(query: &str, bucket_name: &str) -> String {
         if let Some(key) = query_part_iter.next() {
             if key == "prefix" {
                 if let Some(value) = query_part_iter.next() {
-                    return assemble_table_path(value.split("%2F"), bucket_name, "%3D");
+                    return assemble_table_path(
+                        value.split("%2F").filter(|s| !s.is_empty()),
+                        bucket_name,
+                        "%3D",
+                    );
                 }
             }
         }
@@ -645,6 +649,22 @@ mod tests {
 
         assert_eq!(
             parse_table_path(
+                &Uri::from_static("/lakesoul-test-bucket/test/default/abc"),
+                "lakesoul-test-bucket"
+            ),
+            "s3://lakesoul-test-bucket/test/default/abc"
+        );
+
+        assert_eq!(
+            parse_table_path(
+                &Uri::from_static("/lakesoul-test-bucket/test/default/abc/"),
+                "lakesoul-test-bucket"
+            ),
+            "s3://lakesoul-test-bucket/test/default/abc"
+        );
+
+        assert_eq!(
+            parse_table_path(
                 &Uri::from_static("/lakesoul-test-bucket/test/default/abc/test.parquet"),
                 "lakesoul-test-bucket"
             ),
@@ -660,12 +680,39 @@ mod tests {
             ),
             "s3://lakesoul-test-bucket/test/default/abc"
         );
+        assert_eq!(
+            parse_table_path(
+                &Uri::from_static(
+                    "/lakesoul-test-bucket/test/default/abc/compact_123456/date=20250221/type=1/test.parquet"
+                ),
+                "lakesoul-test-bucket"
+            ),
+            "s3://lakesoul-test-bucket/test/default/abc"
+        );
 
         // list request parse from query
         assert_eq!(
             parse_table_path(
                 &Uri::from_static(
                     "/lakesoul-test-bucket?list-type=2&prefix=test%2Fdefault%2Fabc%2Ftest.parquet&delimiter=%2F&encoding-type=url"
+                ),
+                "lakesoul-test-bucket"
+            ),
+            "s3://lakesoul-test-bucket/test/default/abc"
+        );
+        assert_eq!(
+            parse_table_path(
+                &Uri::from_static(
+                    "/lakesoul-test-bucket?list-type=2&prefix=test%2Fdefault%2Fabc&delimiter=%2F&encoding-type=url"
+                ),
+                "lakesoul-test-bucket"
+            ),
+            "s3://lakesoul-test-bucket/test/default/abc"
+        );
+        assert_eq!(
+            parse_table_path(
+                &Uri::from_static(
+                    "/lakesoul-test-bucket?list-type=2&prefix=test%2Fdefault%2Fabc%2F&delimiter=%2F&encoding-type=url"
                 ),
                 "lakesoul-test-bucket"
             ),

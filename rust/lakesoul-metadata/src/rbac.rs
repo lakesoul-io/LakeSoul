@@ -179,7 +179,7 @@ mod tests {
         .await;
         assert!(r.is_err());
         assert!(r.err().unwrap().to_string().contains(
-            "permission denied to access default.test_rbac_table from user lake-iam-001 in group lake-czods"
+            "Permission denied to access default.test_rbac_table from user lake-iam-001 in group lake-czods"
         ));
 
         let r = verify_permission_by_table_path(
