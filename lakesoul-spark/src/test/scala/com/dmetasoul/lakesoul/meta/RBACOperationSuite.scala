@@ -5,14 +5,12 @@
 package com.dmetasoul.lakesoul.meta
 
 import com.dmetasoul.lakesoul.meta.jnr.NativeMetadataJavaClient
-import org.apache.hadoop.fs.Path
 import org.apache.hadoop.security.UserGroupInformation
-import org.apache.spark.SparkException
-import org.apache.spark.sql.{QueryTest, Row}
 import org.apache.spark.sql.catalyst.analysis.NoSuchNamespaceException
 import org.apache.spark.sql.catalyst.expressions.GenericRowWithSchema
 import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
 import org.apache.spark.sql.test.SharedSparkSession
+import org.apache.spark.sql.{QueryTest, Row}
 import org.junit.Assert
 import org.junit.runner.RunWith
 import org.scalatestplus.junit.JUnitRunner
@@ -234,14 +232,20 @@ class RBACOperationSuite extends QueryTest
     sql("use database1")
     val tablePath = new Path("hdfs://localhost:9000/lakesoul-test-bucket/database1/table1")
     sql("create table if not exists table1 ( id int, foo string, bar string ) using lakesoul location '" + tablePath.toString + "'")
-    // table owner can read/write// table owner can read/write
+    // table owner can read/write
     sql("insert into table1 values(1, 'foo1', 'bar1')")
     sql("select * from table1")
     login(USER2, USER2_PASS, DOMAIN1)
     // user in same domain can read
     sql("select * from table1")
-    // user in same domain can't write
-    Assert.assertThrows(classOf[SparkException], () => sql("insert into table1 values(2, 'foo2', 'bar2')"))
+    // user in same domain can write
+    sql("insert into table1 values(2, 'foo2', 'bar2')")
+    // user in other domain cannot access
+    login(ADMIN2, ADMIN2_PASS, DOMAIN2)
+    val dir = new org.apache.hadoop.fs.Path(tablePath.toString)
+    val fs = dir.getFileSystem(spark.sparkContext.hadoopConfiguration)
+    Assert.assertThrows(classOf[org.apache.hadoop.security.AccessControlException], () => fs.listFiles(dir, true))
+
     login(ADMIN1, ADMIN1_PASS, DOMAIN1)
     sql("drop database if exists database1 cascade")
   }
