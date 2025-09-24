@@ -50,8 +50,7 @@ import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.VarCharType;
 import org.apache.flink.table.types.logical.utils.LogicalTypeChecks;
 import org.apache.flink.types.RowKind;
-import org.apache.hadoop.fs.permission.FsAction;
-import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.fs.permission.*;
 import org.apache.spark.sql.types.StructType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -622,9 +621,6 @@ public class FlinkUtil {
     }
 
     public static void createAndSetTableDirPermission(Path p, boolean ignoreTableDirExists) throws IOException {
-        // TODO: move these to native io
-        // currently we only support setting owner and permission for HDFS.
-        // S3 support will be added later
         if (!hasHdfsClasses()) return;
 
         FileSystem fs = p.getFileSystem();
@@ -639,36 +635,7 @@ public class FlinkUtil {
 
             LOG.info("Set dir {} permission for {}:{} with flink fs {}, hadoop fs {}", p, userName, domain,
                     hfs.getClass(), hdfs.getClass());
-
-            if (userName == null || domain == null)
-                return;
-
-            org.apache.hadoop.fs.Path nsDir = HadoopFileSystem.toHadoopPath(p.getParent());
-            if (!hdfs.exists(nsDir)) {
-                hdfs.mkdirs(nsDir);
-                if (domain.equalsIgnoreCase("public") || domain.equalsIgnoreCase("lake-public")) {
-                    hdfs.setPermission(nsDir, new FsPermission(FsAction.ALL, FsAction.ALL, FsAction.ALL));
-                } else {
-                    hdfs.setOwner(nsDir, userName, domain);
-                    hdfs.setPermission(nsDir, new FsPermission(FsAction.ALL, FsAction.ALL, FsAction.NONE));
-                }
-            }
-            org.apache.hadoop.fs.Path tbDir = HadoopFileSystem.toHadoopPath(p);
-            if (!hdfs.exists(tbDir)) {
-                hdfs.mkdirs(tbDir);
-            } else {
-                if (ignoreTableDirExists) {
-                    return;
-                } else {
-                    throw new IOException("Table dir " + tbDir + " already exists");
-                }
-            }
-            if (domain.equalsIgnoreCase("public") || domain.equalsIgnoreCase("lake-public")) {
-                hdfs.setPermission(tbDir, new FsPermission(FsAction.ALL, FsAction.ALL, FsAction.ALL));
-            } else {
-                hdfs.setOwner(tbDir, userName, domain);
-                hdfs.setPermission(tbDir, new FsPermission(FsAction.ALL, FsAction.ALL, FsAction.NONE));
-            }
+            DBUtil.createAndSetTableDirPermission(hdfs, HadoopFileSystem.toHadoopPath(p), ignoreTableDirExists);
         }
     }
 

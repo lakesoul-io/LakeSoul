@@ -8,19 +8,17 @@ import com.dmetasoul.lakesoul.lakesoul.io.NativeIOBase
 import com.dmetasoul.lakesoul.meta.DBUtil
 import org.apache.arrow.vector.{ValueVector, VectorSchemaRoot}
 import org.apache.hadoop.conf.Configuration
-import org.apache.hadoop.fs.permission.{FsAction, FsPermission}
 import org.apache.hadoop.fs.s3a.S3AFileSystem
 import org.apache.hadoop.fs.{FileSystem, Path}
-import org.apache.hadoop.hdfs.DistributedFileSystem
 import org.apache.hadoop.mapreduce.TaskAttemptContext
 import org.apache.parquet.hadoop.ParquetInputFormat
+import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.execution.datasources.LakeSoulFileWriter.{HASH_BUCKET_ID_KEY, MAX_FILE_SIZE_KEY}
+import org.apache.spark.sql.execution.datasources.LakeSoulFileWriter.MAX_FILE_SIZE_KEY
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetReadSupport, ParquetWriteSupport}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructType
 
-import java.io.IOException
 import scala.collection.JavaConverters._
 
 class NativeIOUtils {
@@ -38,7 +36,7 @@ class NativeIOOptions(val s3Bucket: String,
                       val others: Map[String, String] = Map.empty
                      )
 
-object NativeIOUtils {
+object NativeIOUtils extends Logging {
 
   def asArrayColumnVector(vectorSchemaRoot: VectorSchemaRoot): Array[ColumnVector] = {
     asScalaIteratorConverter(vectorSchemaRoot.getFieldVectors.iterator())
@@ -151,50 +149,8 @@ object NativeIOUtils {
     }
   }
 
-  private def hasHdfsFileSystemClass: Boolean = {
-    try {
-      NativeIOUtils.getClass.getClassLoader.loadClass("org.apache.hadoop.hdfs.DistributedFileSystem")
-      true
-    } catch {
-      case e: ClassNotFoundException => false
-    }
-  }
-
   def createAndSetTableDirPermission(path: Path, conf: Configuration): Unit = {
-    // TODO: move these to native io
-    // currently we only support setting owner and permission for HDFS.
-    // S3 support will be added later
-    if (!hasHdfsFileSystemClass) return
-
     val fs: FileSystem = path.getFileSystem(conf)
-    fs match {
-      case hdfs: DistributedFileSystem =>
-        val userName = DBUtil.getUser
-        val domain = DBUtil.getDomain
-        if (userName == null || domain == null) return
-
-        val nsDir = path.getParent
-        if (!hdfs.exists(nsDir)) {
-          hdfs.mkdirs(nsDir)
-          hdfs.setOwner(nsDir, userName, domain)
-          if (domain.equalsIgnoreCase("public") || domain.equalsIgnoreCase("lake-public")) {
-            hdfs.setPermission(nsDir, new FsPermission(FsAction.ALL, FsAction.ALL, FsAction.ALL))
-          } else {
-            hdfs.setPermission(nsDir, new FsPermission(FsAction.ALL, FsAction.ALL, FsAction.NONE))
-          }
-        }
-        if (!hdfs.exists(path)) {
-          hdfs.mkdirs(path)
-          hdfs.setOwner(path, userName, domain)
-          if (domain.equalsIgnoreCase("public") || domain.equalsIgnoreCase("lake-public")) {
-            hdfs.setPermission(path, new FsPermission(FsAction.ALL, FsAction.READ_EXECUTE, FsAction.ALL))
-          } else {
-            hdfs.setPermission(path, new FsPermission(FsAction.ALL, FsAction.READ_EXECUTE, FsAction.NONE))
-          }
-        } else {
-          throw new IOException(s"Table dir $path already exists")
-        }
-      case _ =>
-    }
+    DBUtil.createAndSetTableDirPermission(fs, path, false)
   }
 }
