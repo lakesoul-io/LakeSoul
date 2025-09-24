@@ -19,6 +19,7 @@ use crate::helpers::{
 use arrow::array::{Array, as_primitive_array, as_struct_array, make_array};
 use arrow::compute::kernels::cast::cast_with_options;
 use arrow::record_batch::RecordBatch;
+use arrow_array::cast::as_string_array;
 use arrow_array::{
     ArrayRef, BooleanArray, PrimitiveArray, RecordBatchOptions, StringArray, StructArray,
     new_null_array, types::*,
@@ -205,10 +206,15 @@ pub fn transform_array(
                         .clone()
                         .into_data()
                 }
+                DataType::Int64 => {
+                    as_primitive_array::<Int64Type>(&array).clone().into_data()
+                }
+                DataType::Utf8 => as_string_array(&array).clone().into_data(),
                 _ => {
-                    return Err(DataFusionError::Internal(
-                        "Unsupported timestamp type".to_string(),
-                    ));
+                    return Err(Internal(format!(
+                        "cannot cast to timestamp from unsupported type {:?}",
+                        array.data_type()
+                    )));
                 }
             };
             let array_ref = make_array(array);
