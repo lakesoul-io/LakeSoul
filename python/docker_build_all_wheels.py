@@ -73,7 +73,7 @@ class LakeSoulWheelDockerBuilder(object):
                 py_path = os.path.join(dir_path, 'bin', 'python')
                 args = [py_path, '-m', 'pip', 'install', '--upgrade', 'pip']
                 subprocess.check_call(args)
-                args = [py_path, '-m', 'pip', 'install', 'cibuildwheel==2.16.2']
+                args = [py_path, '-m', 'pip', 'install', 'cibuildwheel==2.19']
                 subprocess.check_call(args)
                 self._patch_cibuildwheel(dir_path)
                 yield dir_path

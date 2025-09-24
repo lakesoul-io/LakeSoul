@@ -98,6 +98,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
       - name: build  
         run: |
           python3 python/docker_build_all_wheels.py
