@@ -617,7 +617,10 @@ pub extern "C" fn rust_logger_init() {
     {
         Ok(_) => {}
         Err(e) => {
-            if !e.to_string().contains("a global default trace dispatcher has already been set") {
+            if !e
+                .to_string()
+                .contains("a global default trace dispatcher has already been set")
+            {
                 let msg = format!("Failed to initialize tracing subscriber {:?}", e);
                 eprintln!("{}", msg);
                 panic!("{}", msg)
