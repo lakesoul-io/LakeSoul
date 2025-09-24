@@ -164,6 +164,17 @@ pub struct Credentials {
     virtual_host: bool,
 }
 
+fn starts_with_any(
+    path: &str,
+    bucket: &str,
+    group: &str,
+    prefixes: &'static [&str],
+) -> bool {
+    prefixes
+        .iter()
+        .any(|p| path.starts_with(format!("s3://{}/{}/{}", bucket, p, group).as_str()))
+}
+
 impl Credentials {
     async fn verify_rbac(
         &self,
@@ -178,6 +189,11 @@ impl Credentials {
                 let path = parse_table_path(&headers.uri, bucket);
                 if path.starts_with(
                     format!("s3://{}/{}/{}", bucket, self.group, self.user).as_str(),
+                ) || starts_with_any(
+                    path.as_str(),
+                    bucket,
+                    self.group.as_str(),
+                    &["savepoint", "checkpoint", "resource-manager"],
                 ) {
                     return Ok(());
                 }
