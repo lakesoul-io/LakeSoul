@@ -433,11 +433,12 @@ public class DBUtil {
         DistributedFileSystem hdfs, boolean ignoreExists) throws IOException {
         if (!hdfs.exists(dir)) {
             hdfs.mkdirs(dir);
-            hdfs.setOwner(dir, userName, domain);
             if (domain.equalsIgnoreCase("public") || domain.equalsIgnoreCase("lake-public")) {
                 // set 777 for public domain and sticky bit
                 hdfs.setPermission(dir, new FsPermission(FsAction.ALL, FsAction.ALL, FsAction.ALL, true));
             } else {
+                // set dir owner to user:domain
+                hdfs.setOwner(dir, userName, domain);
                 // set 770 for other domain
                 hdfs.setPermission(dir, new FsPermission(FsAction.ALL, FsAction.ALL, FsAction.NONE));
             }
