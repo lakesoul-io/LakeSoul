@@ -437,7 +437,7 @@ mod tests {
             let to_write = RecordBatch::try_from_iter([("col", col)])?;
             let temp_dir = tempfile::tempdir()?;
             let path = temp_dir
-                .into_path()
+                .keep()
                 .join("test.parquet")
                 .into_os_string()
                 .into_string()
@@ -520,7 +520,7 @@ mod tests {
             RecordBatch::try_from_iter([("col", col), ("col1", col1), ("col2", col2)])?;
         let temp_dir = tempfile::tempdir()?;
         let path = temp_dir
-            .into_path()
+            .keep()
             .join("test.parquet")
             .into_os_string()
             .into_string()
@@ -748,7 +748,7 @@ mod tests {
         let to_write = create_batch(num_columns, num_rows, str_len);
         let temp_dir = tempfile::tempdir()?;
         let path = temp_dir
-            .into_path()
+            .keep()
             .join("test.parquet")
             .into_os_string()
             .into_string()
@@ -835,7 +835,7 @@ mod tests {
         let to_write = create_batch(num_columns, num_rows, str_len);
         let temp_dir = tempfile::tempdir()?;
         let path = temp_dir
-            .into_path()
+            .keep()
             .join("test.parquet")
             .into_os_string()
             .into_string()
@@ -844,7 +844,7 @@ mod tests {
             .with_files(vec![path.clone()])
             .with_prefix(
                 tempfile::tempdir()?
-                    .into_path()
+                    .keep()
                     .into_os_string()
                     .into_string()
                     .unwrap(),

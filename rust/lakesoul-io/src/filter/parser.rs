@@ -15,7 +15,7 @@ use datafusion_common::DataFusionError::{External, Internal};
 use datafusion_common::{Column, DFSchema, Result};
 use datafusion_substrait::extensions::Extensions;
 use datafusion_substrait::logical_plan::consumer::{
-    DefaultSubstraitConsumer, from_substrait_rex,
+    DefaultSubstraitConsumer, from_substrait_extended_expr, from_substrait_rex,
 };
 use datafusion_substrait::substrait::proto::expression::field_reference::ReferenceType;
 use datafusion_substrait::substrait::proto::expression::literal::LiteralType;
@@ -28,7 +28,7 @@ use datafusion_substrait::substrait::proto::plan_rel::RelType::Root;
 use datafusion_substrait::substrait::proto::rel::RelType::Read;
 use datafusion_substrait::substrait::proto::r#type::Nullability;
 use datafusion_substrait::substrait::proto::{
-    Expression, FunctionArgument, Plan, PlanRel, Rel, RelRoot,
+    Expression, ExtendedExpression, FunctionArgument, Plan, PlanRel, Rel, RelRoot,
 };
 #[allow(deprecated)]
 use datafusion_substrait::variation_const::TIMESTAMP_MICRO_TYPE_VARIATION_REF;
@@ -37,6 +37,13 @@ use tokio::task;
 
 /// The parser for parsing the filter string from Java or Subtrait Plan.
 pub struct Parser {}
+
+pub enum FilterContainer {
+    RawBuf(Vec<u8>),
+    String(String),
+    Plan(Plan),
+    ExtenedExpr(ExtendedExpression),
+}
 
 impl Parser {
     pub fn parse(filter_str: String, schema: SchemaRef) -> Result<Expr> {
@@ -322,6 +329,30 @@ impl Parser {
                     .build()
                     .map_err(|e| External(Box::new(e)))?;
                 runtime.block_on(closure)
+            }
+        }
+    }
+
+    pub async fn parse_filter_container(
+        context: &SessionContext,
+        container: FilterContainer,
+    ) -> Result<Vec<Expr>> {
+        match container {
+            FilterContainer::RawBuf(items) => {
+                // parse bytes to other types
+                todo!()
+            }
+            FilterContainer::String(_) => todo!(),
+            FilterContainer::Plan(plan) => todo!(),
+            FilterContainer::ExtenedExpr(extended_expression) => {
+                let expr_container =
+                    from_substrait_extended_expr(&context.state(), &extended_expression)
+                        .await?;
+                Ok(expr_container
+                    .exprs
+                    .into_iter()
+                    .map(|(expr, _)| expr)
+                    .collect::<Vec<Expr>>())
             }
         }
     }

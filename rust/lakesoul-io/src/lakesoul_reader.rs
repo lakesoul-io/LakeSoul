@@ -1177,7 +1177,7 @@ mod tests {
         let num_rows = 1000;
         let num_columns = 100;
         let str_len = 4;
-        let _temp_dir = tempfile::tempdir()?.into_path();
+        let _temp_dir = tempfile::tempdir()?.keep();
         let temp_dir = std::env::current_dir()?.join("temp_dir");
         let with_pk = true;
         let to_write_schema = create_schema(num_columns, with_pk);

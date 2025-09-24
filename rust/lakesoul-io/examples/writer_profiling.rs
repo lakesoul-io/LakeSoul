@@ -50,7 +50,7 @@ fn main() -> Result<()> {
     let to_write = create_batch(num_columns, num_rows, str_len);
     let temp_dir = tempfile::tempdir()?;
     let path = temp_dir
-        .into_path()
+        .keep()
         .join("test.parquet")
         .into_os_string()
         .into_string()
