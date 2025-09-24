@@ -720,7 +720,7 @@ impl MetaDataClient {
     pub async fn get_table_path_id_by_table_path(
         &self,
         table_path: &str,
-    ) -> Result<TablePathId> {
+    ) -> Result<Option<TablePathId>> {
         match self
             .execute_query(
                 DaoType::SelectTablePathIdByTablePath as i32,
@@ -728,7 +728,13 @@ impl MetaDataClient {
             )
             .await
         {
-            Ok(wrapper) => Ok(wrapper.table_path_id[0].clone()),
+            Ok(wrapper) => {
+                if wrapper.table_path_id.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(wrapper.table_path_id[0].clone()))
+                }
+            }
             Err(err) => Err(err),
         }
     }
@@ -757,7 +763,7 @@ impl MetaDataClient {
     ) -> Result<Option<TableInfo>> {
         match self
             .execute_query(
-                DaoType::SelectTablePathIdByTablePath as i32,
+                DaoType::SelectTableInfoByTablePath as i32,
                 table_path.to_string(),
             )
             .await
