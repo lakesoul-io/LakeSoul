@@ -612,7 +612,7 @@ fn parse_table_path(uri: &Uri, bucket: &str) -> String {
             parse_table_path_from_query(query, bucket_name)
         }
     } else {
-        assemble_table_path(path_parts_iter, bucket_name, "=")
+        assemble_table_path(path_parts_iter, bucket_name, "%3D")
     }
 }
 
