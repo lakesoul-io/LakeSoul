@@ -8,7 +8,8 @@ use aws_config::Region;
 use aws_config::default_provider::credentials::DefaultCredentialsChain;
 use aws_credential_types::provider::ProvideCredentials;
 use aws_sigv4::http_request::{
-    PayloadChecksumKind, SignableBody, SignableRequest, SigningSettings, sign,
+    PayloadChecksumKind, PercentEncodingMode, SignableBody, SignableRequest,
+    SigningSettings, sign,
 };
 use aws_sigv4::sign::v4;
 use aws_smithy_runtime_api::client::identity::Identity;
@@ -187,6 +188,7 @@ impl Credentials {
             let binding = self.metadata_client.load();
             if let Some(client) = binding.as_ref() {
                 let path = parse_table_path(&headers.uri, bucket);
+                debug!("Parsed table path {:?}", path);
                 if path.starts_with(
                     format!("s3://{}/{}/{}", bucket, self.group, self.user).as_str(),
                 ) || starts_with_any(
@@ -216,6 +218,7 @@ impl Credentials {
         bucket: &str,
     ) -> Result<(), anyhow::Error> {
         let mut signing_settings = SigningSettings::default();
+        signing_settings.percent_encoding_mode = PercentEncodingMode::Single;
         signing_settings.payload_checksum_kind = PayloadChecksumKind::XAmzSha256;
         let binding = self.identity.load();
         let identity = binding.as_ref();
