@@ -9,7 +9,6 @@ use crate::install_module;
 use arrow_array::RecordBatch;
 use arrow_pyarrow::PyArrowType;
 use arrow_schema::{ArrowError, Schema, SchemaRef};
-use datafusion_substrait::substrait::proto::Plan;
 use futures::{StreamExt, stream::SelectAll};
 use lakesoul_io::{
     arrow::array::RecordBatchReader,
@@ -17,7 +16,6 @@ use lakesoul_io::{
     lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder},
     lakesoul_reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader},
 };
-use prost::Message;
 use pyo3::{exceptions::PyRuntimeError, prelude::*};
 
 pub(crate) fn init(py: Python, parent: &Bound<PyModule>) -> PyResult<()> {
@@ -53,8 +51,8 @@ fn sync_reader(
         primary_keys,
         &partition_info,
         &oss_conf,
-        &filter,
-    )?;
+        filter,
+    );
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -97,8 +95,8 @@ fn one_reader(
                 pks,
                 &partition_info,
                 &oss_conf,
-                &filter,
-            )?)
+                filter.clone(),
+            ))
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
         })
         .collect::<PyResult<Vec<LakeSoulReader>>>()?;
@@ -122,8 +120,8 @@ fn build_io_config(
     primary_keys: Vec<String>,
     partition_info: &[(String, String)],
     oss_conf: &[(String, String)],
-    filter: &Option<Vec<u8>>,
-) -> PyResult<LakeSoulIOConfig> {
+    filter: Option<Vec<u8>>,
+) -> LakeSoulIOConfig {
     let mut builder = LakeSoulIOConfigBuilder::default()
         .with_batch_size(batch_size)
         .with_thread_num(thread_num)
@@ -153,17 +151,14 @@ fn build_io_config(
     }
 
     if let Some(buf) = filter {
-        let filter =
-            Plan::decode(buf.as_slice()).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        builder = builder.with_filter_proto(filter);
+        builder = builder.with_filter_buf(buf);
     }
 
-    Ok(builder.build())
+    builder.build()
 }
 
 struct OneReader {
     schema: SchemaRef,
-    // readers: Vec<LakeSoulReader>,
     runtime: Arc<tokio::runtime::Runtime>,
     stream: SelectAll<SendableRecordBatchStream>,
 }

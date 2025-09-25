@@ -5,6 +5,7 @@ const GPRC_VERSION: &str = "1.70";
 fn main() {
     // first time for uv
     if gen_py().is_err() {
+        println!("cargo::warning=try using sys python to gen proto");
         Command::new("python3")
             .args(["-m", "venv", ".venv"])
             .status()
@@ -17,7 +18,9 @@ fn main() {
             .status()
             .unwrap();
         gen_py().unwrap();
+        return;
     }
+    println!("cargo::warning=try using uv's python to gen proto");
 }
 
 fn gen_py() -> std::io::Result<ExitStatus> {

@@ -3,7 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 import copy
-from typing import Iterator
+from typing import Iterator, final
+from typing_extensions import override
+
 
 import functools
 
@@ -20,8 +22,9 @@ from lakesoul._lib._dataset import one_reader  # type: ignore
 DEFAULT_BATCH_SIZE: int = 2**10
 
 
+@final
 class Dataset(ds.Dataset):
-    def __init__(
+    def __init__(  # pyright: ignore[reportMissingSuperCall]
         self,
         lakesoul_table_name: str,
         batch_size: int = 1024,
@@ -48,13 +51,13 @@ class Dataset(ds.Dataset):
         object_store_configs = object_store_configs or {}
         self._oss_conf = object_store_configs
 
-        if not isinstance(batch_size, int) or batch_size <= 0:
+        if batch_size <= 0:
             raise ValueError(
                 f"batch_size must be non-negative int; {batch_size} is invalid"
             )
         self._batch_size = batch_size
 
-        if not isinstance(thread_count, int) or thread_count < 0:
+        if thread_count < 0:
             raise ValueError(
                 f"thread_count must be non-negative int; {thread_count} is invalid"
             )
@@ -186,13 +189,13 @@ class Dataset(ds.Dataset):
 
     def scanner(
         self,
-        columns=None,
-        filter=None,
-        batch_size=DEFAULT_BATCH_SIZE,
+        columns: list[str] | None = None,
+        filter: ds.Expression | None = None,
+        batch_size: int = DEFAULT_BATCH_SIZE,
         batch_readahead=None,
         fragment_readahead=None,
         fragment_scan_options=None,
-        use_threads=True,
+        use_threads: bool = True,
         cache_metadata=None,
         memory_pool=None,
     ):
@@ -279,6 +282,7 @@ class Dataset(ds.Dataset):
             memory_pool,
         ).to_table()
 
+    @override
     def __reduce__(self):
         """custom serialize"""
         return self.__class__, (
@@ -292,15 +296,33 @@ class Dataset(ds.Dataset):
             self._namespace,
         )
 
+    def thread_count(self) -> int:
+        return self._thread_count
+
+    def file_urls(self) -> list[list[str]]:
+        return self._file_urls
+
+    def pks(self) -> list[list[str]]:
+        return self._pks
+
+    def partitions(self) -> dict[str, str]:
+        return self._partitions
+
+    def oss_conf(self) -> dict[str, str]:
+        return self._oss_conf
+
+    def partition_schema(self) -> pa.Schema:
+        return self._partition_schema
+
     def _check_rank_and_world_size(
         self, rank: int | None, world_size: int | None
     ) -> tuple[int | None, int | None]:
         if rank is None and world_size is None:
             return self._try_get_rank_and_world_size()
         elif rank is not None and world_size is not None:
-            if not isinstance(rank, int) or rank < 0:
+            if rank < 0:
                 raise ValueError(f"rank must be non-negative int; {rank} is invalid")
-            if not isinstance(world_size, int) or world_size <= 0:
+            if world_size <= 0:
                 raise ValueError(
                     f"world_size must be positive int; {world_size} is invalid"
                 )
@@ -415,8 +437,9 @@ def check_parameters(
         return decorator(_func)
 
 
+@final
 class Fragment(ds.Fragment):
-    def __init__(
+    def __init__(  # pyright: ignore[reportMissingSuperCall]
         self,
         batch_size: int,
         thread_count: int,
@@ -601,8 +624,9 @@ def schema_projection(origin: pa.Schema, projections: list[str]) -> pa.Schema:
     return pa.schema(fields)
 
 
+@final
 class Scanner(ds.Scanner):
-    def __init__(
+    def __init__(  # pyright: ignore[reportMissingSuperCall]
         self,
         batch_size: int,
         thread_count: int,
@@ -650,52 +674,52 @@ class Scanner(ds.Scanner):
         *,
         columns: list[str] | None = None,
         filter: ds.Expression | None = None,
-        batch_size=DEFAULT_BATCH_SIZE,
+        batch_size: int = DEFAULT_BATCH_SIZE,
         batch_readahead=None,
         fragment_readahead=None,
         fragment_scan_options=None,
-        use_threads=True,
+        use_threads: bool = True,
         cache_metadata=None,
         memory_pool=None,
     ) -> Scanner:
         if not use_threads:
             thread_count = 1
         else:
-            thread_count = dataset._thread_count
+            thread_count = dataset.thread_count()
 
         if columns:
-            target_schema = schema_projection(dataset._schema, columns)
+            target_schema = schema_projection(dataset.schema, columns)
         else:
-            target_schema = dataset._schema
+            target_schema = dataset.schema
 
-        if filter:
-            filter = filter.to_substrait(dataset._schema).to_pybytes()  # copy
+        if filter is not None:
+            filter = filter.to_substrait(dataset.schema).to_pybytes()  # copy
 
         return Scanner(
             batch_size,
             thread_count,
             target_schema,
-            dataset._file_urls,
-            dataset._pks,
-            list(dataset._partitions.items()),
-            list(dataset._oss_conf.items()),
-            dataset._partition_schema,
+            dataset.file_urls(),
+            dataset.pks(),
+            list(dataset.partitions().items()),
+            list(dataset.oss_conf().items()),
+            dataset.partition_schema(),
             filter,
         )
 
     @staticmethod
     # @check_parameters
     def from_fragment(
-        fragment,
+        fragment: Fragment,
         *,
         schema=None,
         columns=None,
-        filter=None,
-        batch_size=DEFAULT_BATCH_SIZE,
+        filter: ds.Expression | None = None,
+        batch_size: int = DEFAULT_BATCH_SIZE,
         batch_readahead=None,
         fragment_readahead=None,
         fragment_scan_options=None,
-        use_threads=True,
+        use_threads: bool = True,
         cache_metadata=None,
         memory_pool=None,
     ) -> Scanner:
@@ -703,6 +727,10 @@ class Scanner(ds.Scanner):
             thread_count = 1
         else:
             thread_count = fragment._thread_count
+
+        if filter is not None:
+            filter = filter.to_substrait(fragment._schema).to_pybytes()  # copy
+
         return Scanner(
             batch_size,
             thread_count,
@@ -712,6 +740,7 @@ class Scanner(ds.Scanner):
             fragment._partitions,
             fragment._oss_conf,
             fragment._partition_schema,
+            filter,
         )
 
     def head(self, num_rows: int) -> pa.Table:
@@ -750,6 +779,7 @@ class Scanner(ds.Scanner):
             self._partition,
             self._oss_conf,
             self._partition_schema,
+            self._filter,
         )
 
     def to_table(self) -> pa.Table:
@@ -766,7 +796,7 @@ def lakesoul_dataset(
     retain_partition_columns: bool = False,
     namespace: str = "default",
     object_store_configs: dict[str, str] | None = None,
-):
+) -> Dataset:
     dataset = Dataset(
         table_name,
         batch_size=batch_size,

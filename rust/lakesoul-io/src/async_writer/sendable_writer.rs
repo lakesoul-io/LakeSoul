@@ -46,7 +46,6 @@ impl AsyncSendableMutableLakeSoulWriter {
         })
     }
 
-    #[async_recursion::async_recursion]
     async fn write_batch_async(
         &mut self,
         record_batch: RecordBatch,
@@ -74,8 +73,8 @@ impl AsyncSendableMutableLakeSoulWriter {
                     let b =
                         record_batch.slice(to_write, record_batch.num_rows() - to_write);
                     drop(guard);
-                    self.write_batch_async(a, true).await?;
-                    return self.write_batch_async(b, false).await;
+                    Box::pin(self.write_batch_async(a, true)).await?;
+                    return Box::pin(self.write_batch_async(b, false)).await;
                 }
             }
 

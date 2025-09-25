@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright 2025 LakeSoul contributors
 use std::sync::LazyLock;
 
 use crate::install_module;

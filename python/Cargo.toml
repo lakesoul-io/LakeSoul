@@ -3,20 +3,20 @@ name = "lakesoul-python"
 authors = ["LakeSoul Contributors"]
 edition = "2024"
 publish = false
-version = "1.0.0"
-include = ["*.rs"]
+version = "1.1.0"
 build = "build.rs"
 
 [lib]
-path = "lib.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.24.0", features = [
+pyo3 = { version = "0.24.1", features = [
     "extension-module",
     "experimental-async",
     "abi3-py38",
 ] }
+pyo3-log = "0.12"
+log = "0.4"
 lakesoul-io = { path = "../rust/lakesoul-io" }
 lakesoul-metadata = { path = "../rust/lakesoul-metadata" }
 tokio.workspace = true

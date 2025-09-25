@@ -165,10 +165,13 @@ impl LakeSoulReader {
 
             let dataframe = self.sess_ctx.read_table(Arc::new(source))?;
             let filters = convert_filter(
+                &self.sess_ctx,
                 &dataframe,
-                self.config.filter_strs.clone(),
-                self.config.filter_protos.clone(),
-            )?;
+                std::mem::take(&mut self.config.filter_strs),
+                std::mem::take(&mut self.config.filter_protos),
+                std::mem::take(&mut self.config.filter_buf),
+            )
+            .await?;
 
             // Check if filters are or-conjunction of primary column
             let skip_reader = if self.config.skip_merge_on_read()

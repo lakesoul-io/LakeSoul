@@ -4,7 +4,7 @@
 
 [project]
 name = "lakesoul"
-version = "1.0.2"
+version = "1.1.0"
 authors = [
     { name = "LakeSoul Team", email = "lakesoul-technical-discuss@lists.lfaidata.foundation" },
 ]
@@ -21,7 +21,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Programming Language :: Python :: 3",
 ]
-dependencies = ["pyarrow", "numpy", "protobuf>=5.0","typing-extensions>=4.8"]
+dependencies = ["pyarrow", "numpy", "protobuf>=5.0","typing-extensions>=4.8","colorlog>=6"]
 
 [tool.uv.workspace]
 exclude = ["script/lakesoul-e2e"]

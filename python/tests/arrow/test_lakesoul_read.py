@@ -2,8 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+
 from lakesoul.arrow import lakesoul_dataset
 import pytest
+import pyarrow as pa
 
 
 def test_lakesoul_dataset():
@@ -23,24 +25,54 @@ def test_lakesoul_dataset():
 def test_dataset_parameters():
     lds = lakesoul_dataset("part")
     with pytest.raises(NotImplementedError) as _:
-        lds.scanner(columns=1)
+        _ = lds.scanner(columns=1)  # pyright: ignore[reportArgumentType]
     with pytest.raises(NotImplementedError) as _:
-        lds.scanner(columns=[1])
+        _ = lds.scanner(columns=[1])  # pyright: ignore[reportArgumentType]
     with pytest.raises(NotImplementedError) as _:
-        lds.scanner(filter="")
+        _ = lds.scanner(filter="")
     with pytest.raises(NotImplementedError) as _:
-        lds.scanner(batch_readahead=1)
+        _ = lds.scanner(batch_readahead=1)
     with pytest.raises(NotImplementedError) as _:
-        lds.scanner(fragment_readahead=1)
+        _ = lds.scanner(fragment_readahead=1)
     with pytest.raises(NotImplementedError) as _:
-        lds.scanner(fragment_scan_options="")
+        _ = lds.scanner(fragment_scan_options="")
     with pytest.raises(NotImplementedError) as _:
-        lds.scanner(cache_metadata=True)
+        _ = lds.scanner(cache_metadata=True)
     with pytest.raises(NotImplementedError) as _:
-        lds.scanner(memory_pool=False)
+        _ = lds.scanner(memory_pool=False)
 
 
 def test_dataset_to_table():
     lds = lakesoul_dataset("part")
     table = lds.to_table()
     assert table.num_rows == 20000
+
+
+def test_invalid_filter():
+    import pyarrow.compute as pc
+
+    with pytest.raises(pa.ArrowInvalid) as _:
+        filter = pc.field("no_in_schema") == 50
+        scanner = lakesoul_dataset("part").scanner(filter=filter)
+        _ = scanner.to_table()
+
+
+def test_filter():
+    import pyarrow.compute as pc
+
+    filter = pc.field("p_size") == 50
+    scanner = lakesoul_dataset("part").scanner(filter=filter)
+    table = scanner.to_table()
+    assert len(table) == 392
+
+
+def test_prune_columns():
+    ...
+    # import pyarrow.compute as pc
+
+    # filter = pc.field("p_size") == 50
+    # columns = ["p_partkey", "p_name"]
+    # scanner = lakesoul_dataset("part").scanner(filter=filter, columns=columns)
+    # table = scanner.to_table()
+    # assert len(table) == 392
+    # assert table.num_columns == 2

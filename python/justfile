@@ -5,7 +5,7 @@ clean-data:
     rm -rf /tmp/lakesoul/tpch_data
 
 gen-data:
-    cd rust &&  cargo run -p lakesoul-console -- tpch-gen -p "file:///tmp/lakesoul/tpch_data" --scale-factor 0.1 -n 8 
+    cd rust &&  cargo run -p lakesoul-console -- tpch-gen -p "file:///tmp/lakesoul/tpch_data" --scale-factor 0.1 -n 8
 
 # pytest:
 #     {{env}} uv run pytest -s tests
@@ -13,7 +13,7 @@ pytest:
     {{env}} uv run pytest -s tests/arrow/test_lakesoul_read.py
 
 sync:
-    uv sync --reinstall-package lakesoul -vv
+    uv sync --reinstall-package lakesoul
 
 dist:
     uvx --from 'maturin[zig]' maturin build --release --zig --target x86_64-unknown-linux-gnu --auditwheel repair --compatibility manylinux2014 --out ../dist

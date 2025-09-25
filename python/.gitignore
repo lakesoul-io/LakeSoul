@@ -1,2 +1,3 @@
-src/lakesoul/**/.so 
+src/lakesoul/**/.so
 dist/
+**/.ruff_cache

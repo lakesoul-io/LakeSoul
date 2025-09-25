@@ -9,6 +9,7 @@ mod metadata;
 
 #[pymodule]
 fn _lib(py: Python, m: &Bound<PyModule>) -> PyResult<()> {
+    pyo3_log::init();
     metadata::init(py, m)?;
     dataset::init(py, m)?;
     Ok(())
@@ -19,20 +20,20 @@ fn _lib(py: Python, m: &Bound<PyModule>) -> PyResult<()> {
 /// Without this, it's not possible to use native submodules as "packages". For example:
 ///
 /// ```pycon
-/// >>> from vortex._lib.dtype import bool_  # This fails
-/// ModuleNotFoundError: No module named 'vortex._lib.dtype'; 'vortex._lib' is not a package
+/// >>> from lakesoul._lib.dataset import sync_reader  # This fails
+/// ModuleNotFoundError: No module named 'lakesoul._lib.dataset'; 'lakesoul._lib' is not a package
 /// ```
 ///
 /// After this, we can import submodules both as modules:
 ///
 /// ```pycon
-/// >>> from vortex._lib import dtype
+/// >>> from lakesoul._lib import dataset
 /// ```
 ///
 /// And have direct import access to functions and classes in the submodule:
 ///
 /// ```pycon
-/// >>> from vortex._lib.dtype import bool_
+/// >>> from lakesoul._lib.dataset import sync_reader
 /// ```
 ///
 /// See <https://github.com/PyO3/pyo3/issues/759#issuecomment-1811992321>.
