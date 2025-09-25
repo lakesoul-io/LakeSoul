@@ -39,5 +39,6 @@ threads: 4' > /opt/proxy_conf.yaml
 USER ${LAKESOUL_USER}
 WORKDIR ${HOME}
 ENV RUST_LOG=info
+ENV RUST_LOG_STYLE=never
 ENV RUST_BACKTRACE=full
 ENV RUST_LOG_FORMAT="%Y-%m-%dT%H:%M:%S%:z %l [%f:%L] %m"
