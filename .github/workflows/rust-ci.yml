@@ -67,7 +67,7 @@ jobs:
           apt: postgresql-client-16 cargo
       - name: Init PG
         run: |
-          ./script/meta_init_for_local_test.sh -j 2
+          ./script/meta_init_for_local_test.sh -j 1
       - name: Install Protoc
         uses: arduino/setup-protoc@v2
         with:

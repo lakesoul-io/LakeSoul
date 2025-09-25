@@ -8,7 +8,8 @@ use aws_config::Region;
 use aws_config::default_provider::credentials::DefaultCredentialsChain;
 use aws_credential_types::provider::ProvideCredentials;
 use aws_sigv4::http_request::{
-    PayloadChecksumKind, SignableBody, SignableRequest, SigningSettings, sign,
+    PayloadChecksumKind, PercentEncodingMode, SignableBody, SignableRequest,
+    SigningSettings, sign,
 };
 use aws_sigv4::sign::v4;
 use aws_smithy_runtime_api::client::identity::Identity;
@@ -164,6 +165,17 @@ pub struct Credentials {
     virtual_host: bool,
 }
 
+fn starts_with_any(
+    path: &str,
+    bucket: &str,
+    group: &str,
+    prefixes: &'static [&str],
+) -> bool {
+    prefixes
+        .iter()
+        .any(|p| path.starts_with(format!("s3://{}/{}/{}", bucket, p, group).as_str()))
+}
+
 impl Credentials {
     async fn verify_rbac(
         &self,
@@ -176,8 +188,14 @@ impl Credentials {
             let binding = self.metadata_client.load();
             if let Some(client) = binding.as_ref() {
                 let path = parse_table_path(&headers.uri, bucket);
+                debug!("Parsed table path {:?}", path);
                 if path.starts_with(
                     format!("s3://{}/{}/{}", bucket, self.group, self.user).as_str(),
+                ) || starts_with_any(
+                    path.as_str(),
+                    bucket,
+                    self.group.as_str(),
+                    &["savepoint", "checkpoint", "resource-manager"],
                 ) {
                     return Ok(());
                 }
@@ -200,6 +218,7 @@ impl Credentials {
         bucket: &str,
     ) -> Result<(), anyhow::Error> {
         let mut signing_settings = SigningSettings::default();
+        signing_settings.percent_encoding_mode = PercentEncodingMode::Single;
         signing_settings.payload_checksum_kind = PayloadChecksumKind::XAmzSha256;
         let binding = self.identity.load();
         let identity = binding.as_ref();
@@ -550,7 +569,7 @@ where
     split
         .take_while(|s| {
             !(s.ends_with(".parquet")
-                || s.contains("compactdir")
+                || s.starts_with("compact")
                 || s.contains(partition_equal))
         })
         .for_each(|s| {
@@ -567,7 +586,11 @@ fn parse_table_path_from_query(query: &str, bucket_name: &str) -> String {
         if let Some(key) = query_part_iter.next() {
             if key == "prefix" {
                 if let Some(value) = query_part_iter.next() {
-                    return assemble_table_path(value.split("%2F"), bucket_name, "%3D");
+                    return assemble_table_path(
+                        value.split("%2F").filter(|s| !s.is_empty()),
+                        bucket_name,
+                        "%3D",
+                    );
                 }
             }
         }
@@ -592,7 +615,7 @@ fn parse_table_path(uri: &Uri, bucket: &str) -> String {
             parse_table_path_from_query(query, bucket_name)
         }
     } else {
-        assemble_table_path(path_parts_iter, bucket_name, "=")
+        assemble_table_path(path_parts_iter, bucket_name, "%3D")
     }
 }
 
@@ -629,6 +652,22 @@ mod tests {
 
         assert_eq!(
             parse_table_path(
+                &Uri::from_static("/lakesoul-test-bucket/test/default/abc"),
+                "lakesoul-test-bucket"
+            ),
+            "s3://lakesoul-test-bucket/test/default/abc"
+        );
+
+        assert_eq!(
+            parse_table_path(
+                &Uri::from_static("/lakesoul-test-bucket/test/default/abc/"),
+                "lakesoul-test-bucket"
+            ),
+            "s3://lakesoul-test-bucket/test/default/abc"
+        );
+
+        assert_eq!(
+            parse_table_path(
                 &Uri::from_static("/lakesoul-test-bucket/test/default/abc/test.parquet"),
                 "lakesoul-test-bucket"
             ),
@@ -644,12 +683,39 @@ mod tests {
             ),
             "s3://lakesoul-test-bucket/test/default/abc"
         );
+        assert_eq!(
+            parse_table_path(
+                &Uri::from_static(
+                    "/lakesoul-test-bucket/test/default/abc/compact_123456/date=20250221/type=1/test.parquet"
+                ),
+                "lakesoul-test-bucket"
+            ),
+            "s3://lakesoul-test-bucket/test/default/abc"
+        );
 
         // list request parse from query
         assert_eq!(
             parse_table_path(
                 &Uri::from_static(
                     "/lakesoul-test-bucket?list-type=2&prefix=test%2Fdefault%2Fabc%2Ftest.parquet&delimiter=%2F&encoding-type=url"
+                ),
+                "lakesoul-test-bucket"
+            ),
+            "s3://lakesoul-test-bucket/test/default/abc"
+        );
+        assert_eq!(
+            parse_table_path(
+                &Uri::from_static(
+                    "/lakesoul-test-bucket?list-type=2&prefix=test%2Fdefault%2Fabc&delimiter=%2F&encoding-type=url"
+                ),
+                "lakesoul-test-bucket"
+            ),
+            "s3://lakesoul-test-bucket/test/default/abc"
+        );
+        assert_eq!(
+            parse_table_path(
+                &Uri::from_static(
+                    "/lakesoul-test-bucket?list-type=2&prefix=test%2Fdefault%2Fabc%2F&delimiter=%2F&encoding-type=url"
                 ),
                 "lakesoul-test-bucket"
             ),
