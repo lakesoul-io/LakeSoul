@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 import copy
-from typing import Iterator, final
+from typing import Any, Callable, Iterator, final
 from typing_extensions import override
 
 
@@ -88,6 +88,7 @@ class Dataset(ds.Dataset):
             pks.append(scan_part.primary_keys)
         self._file_urls = file_urls
         self._pks = pks
+        self._filter = None
 
     def count_rows(
         self,
@@ -112,11 +113,10 @@ class Dataset(ds.Dataset):
             memory_pool=memory_pool,
         ).count_rows()
 
-    # TODO(mag1cian)
-    def filter(self, expression):
-        raise NotImplementedError("this method is not supported")
+    def filter(self, expression: ds.Expression):
+        self._filter = expression
 
-    def get_fragments(self, filter=None) -> Iterator[Fragment]:
+    def get_fragments(self, filter: ds.Expression | None = None) -> Iterator[Fragment]:
         partitions = list(self._partitions.items())
         oss_conf = list(self._oss_conf.items())
         for urls, keys in zip(self._file_urls, self._pks):
@@ -129,6 +129,7 @@ class Dataset(ds.Dataset):
                 partitions,
                 oss_conf,
                 self._partition_schema,
+                filter if filter is not None else self._filter,
             )
 
     def head(
@@ -201,15 +202,15 @@ class Dataset(ds.Dataset):
     ):
         return Scanner.from_dataset(
             self,
-            columns=columns,
-            filter=filter,
-            batch_size=batch_size,
-            batch_readahead=batch_readahead,
-            fragment_readahead=fragment_readahead,
-            fragment_scan_options=fragment_scan_options,
-            use_threads=use_threads,
-            cache_metadata=cache_metadata,
-            memory_pool=memory_pool,
+            columns=columns,  # pyright: ignore[reportCallIssue]
+            filter=filter if filter is not None else self._filter,  # pyright: ignore[reportCallIssue]
+            batch_size=batch_size,  # pyright: ignore[reportCallIssue]
+            batch_readahead=batch_readahead,  # pyright: ignore[reportCallIssue]
+            fragment_readahead=fragment_readahead,  # pyright: ignore[reportCallIssue]
+            fragment_scan_options=fragment_scan_options,  # pyright: ignore[reportCallIssue]
+            use_threads=use_threads,  # pyright: ignore[reportCallIssue]
+            cache_metadata=cache_metadata,  # pyright: ignore[reportCallIssue]
+            memory_pool=memory_pool,  # pyright: ignore[reportCallIssue]
         )
 
     @property
@@ -302,7 +303,7 @@ class Dataset(ds.Dataset):
     def file_urls(self) -> list[list[str]]:
         return self._file_urls
 
-    def pks(self) -> list[list[str]]:
+    def primary_keys(self) -> list[list[str]]:
         return self._pks
 
     def partitions(self) -> dict[str, str]:
@@ -384,21 +385,21 @@ class Dataset(ds.Dataset):
 
 
 def check_parameters(
-    _func=None,
+    _func: Callable[..., Any] | None = None,
     *,
-    use_columns=True,
-    use_filter=True,
-    use_batch_readahead=True,
-    use_fragment_readahead=True,
-    use_fragment_scan_options=True,
-    use_cache_metadata=True,
-    use_memory_pool=True,
+    check_columns: bool = True,
+    check_filter: bool = True,
+    check_batch_readahead: bool = True,
+    check_fragment_readahead: bool = True,
+    check_fragment_scan_options: bool = True,
+    check_cache_metadata: bool = True,
+    check_memory_pool: bool = True,
 ):
     def decorator(func):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
             if (
-                use_columns
+                check_columns
                 and kwargs.get("columns") is not None
                 and (
                     not isinstance(kwargs["columns"], list)
@@ -407,25 +408,25 @@ def check_parameters(
             ):
                 raise NotImplementedError("columns with expression is not supported")
             if (
-                use_filter
+                check_filter
                 and kwargs["filter"] is not None
                 and not isinstance(kwargs["filter"], ds.Expression)
             ):
                 raise NotImplementedError(
                     f"filter type {type(kwargs['filter'])} is not supported"
                 )
-            if use_batch_readahead and kwargs["batch_readahead"] is not None:
+            if check_batch_readahead and kwargs["batch_readahead"] is not None:
                 raise NotImplementedError("batch_readahead is not supported")
-            if use_fragment_readahead and kwargs["fragment_readahead"] is not None:
+            if check_fragment_readahead and kwargs["fragment_readahead"] is not None:
                 raise NotImplementedError("fragment_readahead is not supported")
             if (
-                use_fragment_scan_options
+                check_fragment_scan_options
                 and kwargs["fragment_scan_options"] is not None
             ):
                 raise NotImplementedError("fragment scan optoins is not supported")
-            if use_cache_metadata and kwargs["cache_metadata"] is not None:
+            if check_cache_metadata and kwargs["cache_metadata"] is not None:
                 raise NotImplementedError("cache metadata is not supported")
-            if use_memory_pool and kwargs["memory_pool"] is not None:
+            if check_memory_pool and kwargs["memory_pool"] is not None:
                 raise NotImplementedError("memory pool is not supported")
             return func(*args, **kwargs)
 
@@ -449,15 +450,19 @@ class Fragment(ds.Fragment):
         partitions: list[tuple[str, str]],
         oss_conf: list[tuple[str, str]],
         partition_schema: pa.Schema | None,
+        filter: ds.Expression | None,
     ):
         self._batch_size = batch_size
         self._thread_count = thread_count
-        self._schemaa = pa.Schema(schema)
+        self._schema = pa.schema(schema)  # copy
         self._file_urls = file_urls[:]
         self._pks = pks[:]
         self._partitions = partitions[:]
         self._oss_conf = oss_conf[:]
-        self._partition_schema = pa.schema(partition_schema)
+        self._partition_schema = (
+            pa.schema(partition_schema) if partition_schema is not None else None
+        )  # copy
+        self._filter = filter
 
     @property
     def partition_expression(self):
@@ -465,7 +470,7 @@ class Fragment(ds.Fragment):
 
     @property
     def physical_schema(self) -> pa.Schema:
-        return self._schemaa
+        return self._schema
 
     def count_rows(
         self,
@@ -520,29 +525,29 @@ class Fragment(ds.Fragment):
 
     def scanner(
         self,
-        schema=None,
-        columns=None,
-        filter=None,
-        batch_size=DEFAULT_BATCH_SIZE,
+        schema: pa.Schema | None = None,
+        columns: list[str] | None = None,
+        filter: ds.Expression | None = None,
+        batch_size: int = DEFAULT_BATCH_SIZE,
         batch_readahead=None,
         fragment_readahead=None,
         fragment_scan_options=None,
-        use_threads=True,
+        use_threads: bool = True,
         cache_metadata=None,
         memory_pool=None,
     ) -> Scanner:
         return Scanner.from_fragment(
             self,
-            schema=schema,
-            columns=columns,
-            filter=filter,
-            batch_size=batch_size,
-            batch_readahead=batch_readahead,
-            fragment_readahead=fragment_readahead,
-            fragment_scan_options=fragment_scan_options,
-            use_threads=use_threads,
-            cache_metadata=cache_metadata,
-            memory_pool=memory_pool,
+            schema=schema,  # pyright: ignore[reportCallIssue]
+            columns=columns,  # pyright: ignore[reportCallIssue]
+            filter=filter if filter is not None else self._filter,  # pyright: ignore[reportCallIssue]
+            batch_size=batch_size,  # pyright: ignore[reportCallIssue]
+            batch_readahead=batch_readahead,  # pyright: ignore[reportCallIssue]
+            fragment_readahead=fragment_readahead,  # pyright: ignore[reportCallIssue]
+            fragment_scan_options=fragment_scan_options,  # pyright: ignore[reportCallIssue]
+            use_threads=use_threads,  # pyright: ignore[reportCallIssue]
+            cache_metadata=cache_metadata,  # pyright: ignore[reportCallIssue]
+            memory_pool=memory_pool,  # pyright: ignore[reportCallIssue]
         )
 
     def take(
@@ -612,13 +617,34 @@ class Fragment(ds.Fragment):
             memory_pool=memory_pool,
         ).to_batches()
 
+    def batch_size(self) -> int:
+        return self._batch_size
+
+    def thread_count(self) -> int:
+        return self._thread_count
+
+    def file_urls(self) -> list[str]:
+        return self._file_urls
+
+    def primary_keys(self) -> list[str]:
+        return self._pks
+
+    def partitions(self) -> list[tuple[str, str]]:
+        return self._partitions
+
+    def oss_conf(self) -> list[tuple[str, str]]:
+        return self._oss_conf
+
+    def partition_schema(self) -> pa.Schema:
+        return self._partition_schema
+
 
 def schema_projection(origin: pa.Schema, projections: list[str]) -> pa.Schema:
     # O(n + m)
     origin_fields = {field.name for field in origin}
-    missing_fields = [col for col in projections if col not in origin_fields]
-    if missing_fields:
-        raise ValueError(f"字段不存在于原始 schema 中: {missing_fields}")
+    redundant_fields = [col for col in projections if col not in origin_fields]
+    if redundant_fields:
+        raise ValueError(f"columns are not in origin schema : {redundant_fields}")
 
     fields = [field for field in origin if field.name in projections]
     return pa.schema(fields)
@@ -700,7 +726,7 @@ class Scanner(ds.Scanner):
             thread_count,
             target_schema,
             dataset.file_urls(),
-            dataset.pks(),
+            dataset.primary_keys(),
             list(dataset.partitions().items()),
             list(dataset.oss_conf().items()),
             dataset.partition_schema(),
@@ -708,12 +734,12 @@ class Scanner(ds.Scanner):
         )
 
     @staticmethod
-    # @check_parameters
+    @check_parameters
     def from_fragment(
         fragment: Fragment,
         *,
-        schema=None,
-        columns=None,
+        schema: pa.Schema | None = None,
+        columns: list[str] | None = None,
         filter: ds.Expression | None = None,
         batch_size: int = DEFAULT_BATCH_SIZE,
         batch_readahead=None,
@@ -726,20 +752,25 @@ class Scanner(ds.Scanner):
         if not use_threads:
             thread_count = 1
         else:
-            thread_count = fragment._thread_count
+            thread_count = fragment.thread_count()
 
         if filter is not None:
-            filter = filter.to_substrait(fragment._schema).to_pybytes()  # copy
+            filter = filter.to_substrait(fragment.physical_schema).to_pybytes()  # copy
+
+        schema = schema if schema is not None else fragment.physical_schema
+
+        if columns is not None:
+            schema = schema_projection(schema, columns)
 
         return Scanner(
             batch_size,
             thread_count,
-            schema if schema else fragment._target_schema,
-            [fragment._file_urls],
-            [fragment._pks],
-            fragment._partitions,
-            fragment._oss_conf,
-            fragment._partition_schema,
+            schema,
+            [fragment.file_urls()],
+            [fragment.primary_keys()],
+            fragment.partitions(),
+            fragment.oss_conf(),
+            fragment.partition_schema(),
             filter,
         )
 

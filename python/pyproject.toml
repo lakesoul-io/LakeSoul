@@ -56,7 +56,8 @@ all = [
     "datasets>=2.14",
     "ray>=2.7,<2.11.0",
     "pyspark==3.3.1",
-    "grpcio-tools == 1.70"
+    "grpcio-tools == 1.70",
+    "duckdb"
 ]
 dev = ["pytest>=8", { include-group = "all" }]
 
@@ -85,11 +86,4 @@ line-length = 88
 
 
 [tool.basedpyright]
-reportMissingModuleSource = "none"
-reportUnknownVariableType =  "none"
-reportMissingTypeStubs = "none"
-reportUntypedBaseClass = "none"
-reportUnknownMemberType = "none"
-reportUnknownParameterType = "none"
-reportUnknownArgumentType = "none"
-reportUnusedParameter= "none"
+typeCheckingMode = "standard"

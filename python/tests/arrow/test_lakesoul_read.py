@@ -57,7 +57,7 @@ def test_invalid_filter():
         _ = scanner.to_table()
 
 
-def test_filter():
+def test_dataset_with_filter():
     import pyarrow.compute as pc
     import decimal
 
@@ -72,19 +72,73 @@ def test_filter():
     table = scanner.to_table()
     assert len(table) == 8190
 
+    lds = lakesoul_dataset("part")
+    lds.filter(filter)
+    scanner = lds.scanner()
+    table = scanner.to_table()
+    assert len(table) == 8190
+
     filter = (pc.field("p_retailprice") >= val[0]) & (pc.field("p_size") == 50)
     scanner = lakesoul_dataset("part").scanner(filter=filter)
     table = scanner.to_table()
     assert len(table) == 176
 
 
-def test_prune_columns():
-    ...
-    # import pyarrow.compute as pc
+def test_fragment_with_filter():
+    import decimal
+    import pyarrow.compute as pc
 
-    # filter = pc.field("p_size") == 50
-    # columns = ["p_partkey", "p_name"]
-    # scanner = lakesoul_dataset("part").scanner(filter=filter, columns=columns)
-    # table = scanner.to_table()
-    # assert len(table) == 392
-    # assert table.num_columns == 2
+    val = pa.array([decimal.Decimal("1500.00")], type=pa.decimal128(15, 2))
+    filter = (pc.field("p_retailprice") >= val[0]) & (pc.field("p_size") == 50)
+    fragment = list(lakesoul_dataset("part").get_fragments(filter=filter))[0]
+    scanner = fragment.scanner()
+    table = scanner.to_table()
+    assert len(table) == 176
+
+
+def test_filter_override():
+    import decimal
+    import pyarrow.compute as pc
+
+    val = pa.array([decimal.Decimal("1500.00")], type=pa.decimal128(15, 2))
+    decimal_filter = pc.field("p_retailprice") >= val[0]
+    int_filter = pc.field("p_size") == 50
+    # dataset
+    lds = lakesoul_dataset("part")
+    lds.filter(decimal_filter)
+    scanner = lds.scanner(filter=int_filter)
+    table = scanner.to_table()
+    assert len(table) == 392
+    # fragments
+    fragment = list(lakesoul_dataset("part").get_fragments(filter=decimal_filter))[0]
+    scanner = fragment.scanner(filter=int_filter)
+    table = scanner.to_table()
+    assert len(table) == 392
+
+
+def test_prune_columns():
+    # dataset
+    cols = ["p_name"]
+    scanner = lakesoul_dataset("part").scanner(columns=cols)
+    table = scanner.to_table()
+    assert len(table.column_names) == 1
+    # fragment
+    fragment = list(lakesoul_dataset("part").get_fragments())[0]
+    scanner = fragment.scanner(columns=cols)
+    table = scanner.to_table()
+    assert len(table.column_names) == 1
+
+    with pytest.raises(ValueError) as _:
+        # no such field
+        scanner = lakesoul_dataset("part").scanner(columns=["not existed"])
+        table = scanner.to_table()
+        _ = scanner.to_table()
+
+    with pytest.raises(ValueError) as _:
+        # no such field
+        fragment = list(lakesoul_dataset("part").get_fragments())[0]
+        scanner = fragment.scanner(columns=["not existed"])
+        _ = scanner.to_table()
+
+
+def test_duckdb_compatibility(): ...
