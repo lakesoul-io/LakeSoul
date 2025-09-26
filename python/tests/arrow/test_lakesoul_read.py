@@ -59,11 +59,23 @@ def test_invalid_filter():
 
 def test_filter():
     import pyarrow.compute as pc
+    import decimal
 
     filter = pc.field("p_size") == 50
     scanner = lakesoul_dataset("part").scanner(filter=filter)
     table = scanner.to_table()
     assert len(table) == 392
+
+    val = pa.array([decimal.Decimal("1500.00")], type=pa.decimal128(15, 2))
+    filter = pc.field("p_retailprice") >= val[0]
+    scanner = lakesoul_dataset("part").scanner(filter=filter)
+    table = scanner.to_table()
+    assert len(table) == 8190
+
+    filter = (pc.field("p_retailprice") >= val[0]) & (pc.field("p_size") == 50)
+    scanner = lakesoul_dataset("part").scanner(filter=filter)
+    table = scanner.to_table()
+    assert len(table) == 176
 
 
 def test_prune_columns():
