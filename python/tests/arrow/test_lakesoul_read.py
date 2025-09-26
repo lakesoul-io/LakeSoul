@@ -141,4 +141,10 @@ def test_prune_columns():
         _ = scanner.to_table()
 
 
-def test_duckdb_compatibility(): ...
+def test_duckdb_compatibility():
+    import duckdb
+
+    conn = duckdb.connect(database=":memory:")
+    _lds = lakesoul_dataset("part")
+    results = conn.execute("select * from _lds").arrow()
+    assert len(results) == 20000
