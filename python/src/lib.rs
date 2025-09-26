@@ -9,7 +9,10 @@ mod metadata;
 
 #[pymodule]
 fn _lib(py: Python, m: &Bound<PyModule>) -> PyResult<()> {
-    pyo3_log::init();
+    pyo3_log::Logger::default()
+        .filter(log::LevelFilter::Debug) // trace may cause deadlocks
+        .install()
+        .unwrap();
     metadata::init(py, m)?;
     dataset::init(py, m)?;
     Ok(())

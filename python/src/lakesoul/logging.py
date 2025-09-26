@@ -41,7 +41,7 @@ def init_logger(level: str):
             datefmt="%Y-%m-%d %H:%M:%S",
             log_colors={
                 "DEBUG": "light_black",
-                "INFO": "light_white",
+                "INFO": "green",
                 "WARNING": "yellow",
                 "ERROR": "red",
             },
