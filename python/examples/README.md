@@ -5,7 +5,7 @@
 ### Deploy LakeSoul Docker Compose Env
 
 ```bash
-cd docker/lakesoul-docker-compose-env
+cd lakesoul-docker-compose-env
 docker compose up -d
 ```
 
@@ -39,7 +39,7 @@ wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lake
 
 ### Install python virtual enviroment
 
-```bash 
+```bash
 conda create -n lakesoul_test python=3.8
 conda activate lakesoul_test
 # replace ${PWD} with your working directory
@@ -66,7 +66,7 @@ export LAKESOUL_PG_PASSWORD=lakesoul_test
 
 Afterwards, we can test the examples using the instructions below.
 
-| Project                              | Dataset                              | Base Model                                | 
+| Project                              | Dataset                              | Base Model                                |
 |:-------------------------------------|:-------------------------------------|:------------------------------------------|
 | [Titanic](./titanic/) | [Kaggle Titanic Dataset](https://www.kaggle.com/competitions/titanic) | `DNN` |
 | [IMDB Sentiment Analysis](./imdb/) | [Hugginface IMDB dataset](https://huggingface.co/datasets/imdb/tree/refs%2Fconvert%2Fparquet/plain_text/train) | [distilbert-base-uncased](https://huggingface.co/distilbert-base-uncased) |
