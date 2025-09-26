@@ -134,7 +134,7 @@ class NativeMetadataClient:
             )
             bytes = future.result(2.0)
 
-            buffer = create_string_buffer(self._query_result_len)
+            buffer = create_string_buffer(self._query_result_len + 1)
             future = executor.submit(
                 lib.lakesoul_metadata_c.export_bytes_result,
                 CFUNCTYPE(c_void_p, c_bool, c_char_p)(export_bytes_result_callback),
