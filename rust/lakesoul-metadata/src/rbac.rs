@@ -30,7 +30,11 @@ pub async fn verify_permission_by_table_name(
         .get_table_name_id_by_table_name(table, ns)
         .await?
         .ok_or(LakeSoulMetaDataError::Internal(
-            "table not found".to_string(),
+            format!(
+                "Table {}.{} not found, user {}, group {}",
+                table, ns, user, group
+            )
+            .into(),
         ))?;
     debug!("table {}.{} in domain {}", ns, table, table_name_id.domain);
     match table_name_id.domain.as_str() {
@@ -38,7 +42,7 @@ pub async fn verify_permission_by_table_name(
         domain if domain == group => Ok(()),
         _ => Err(LakeSoulMetaDataError::Other(
             format!(
-                "permission denied to access {}.{} from user {} in group {}",
+                "Permission denied to access {}.{} from user {} in group {}",
                 ns, table, user, group
             )
             .into(),
@@ -67,14 +71,21 @@ pub async fn verify_permission_by_table_path(
     let table_path_id = meta_data_client
         .as_ref()
         .get_table_path_id_by_table_path(path)
-        .await?;
+        .await?
+        .ok_or(LakeSoulMetaDataError::Other(
+            format!(
+                "Path is not a LakeSoul table {}, user {}, group {}",
+                path, user, group
+            )
+            .into(),
+        ))?;
     debug!("table {} in domain {}", path, table_path_id.domain);
     match table_path_id.domain.as_str() {
         "public" | "lake-public" => Ok(()),
         domain if domain == group => Ok(()),
         _ => Err(LakeSoulMetaDataError::Other(
             format!(
-                "permission denied to access {} from user {} in group {}",
+                "Permission denied to access {} from user {} in group {}",
                 path, user, group
             )
             .into(),
@@ -168,7 +179,7 @@ mod tests {
         .await;
         assert!(r.is_err());
         assert!(r.err().unwrap().to_string().contains(
-            "permission denied to access default.test_rbac_table from user lake-iam-001 in group lake-czods"
+            "Permission denied to access default.test_rbac_table from user lake-iam-001 in group lake-czods"
         ));
 
         let r = verify_permission_by_table_path(
