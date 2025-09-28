@@ -1,7 +1,7 @@
 # LakeSoul Python 接口和对机器学习框架的支持
 
 LakeSoul 实现了 PyTorch/ PyArrow/ HuggingFace / Ray 的数据源接口， 用户可以使用 LakeSoul 存储机器学习数据集，并可以通过接口读取 LakeSoul 表的数据，支持分布式读取。目前
-Python 接口发布了 1.0 Beta 版。
+Python 接口发布了 1.1.0 。
 
 ## 安装方法
 
@@ -204,7 +204,31 @@ ds = lakesoul_dataset("table_name", partitions={'split': 'train'})
 for batch in ds.to_batches():
     ...
 
+
 # convert to pandas table
 # this will load entire table into memory
 df = ds.to_table().to_pandas()
+
+
+# apply filter
+cols = ["p_name"]
+scanner = lakesoul_dataset("part").scanner(columns=cols)
+table = scanner.to_table()
+
+ int_filter = pc.field("p_size") == 50
+ scanner = lds.scanner(filter=int_filter)
+```
+
+## DuckDB 读取 LakeSoul 表
+
+DuckDB 通过读取 Apache Arrow Dataset 的方式可以读取 LakeSoul 表，暂时不支持谓词。
+示例：
+
+```python
+import duckdb
+
+conn = duckdb.connect(database=":memory:")
+_lds = lakesoul_dataset("part")
+results = conn.execute("select * from _lds")
+print(results)
 ```

@@ -5,6 +5,10 @@ Demonstrate the capability of fine-tuning a BERT model using the HuggingFace Tra
 ## Prepare data
 We can download data from [Hugginface IMDB dataset](https://huggingface.co/datasets/imdb/tree/refs%2Fconvert%2Fparquet/plain_text/train) into `imdb/dataset/` directory.
 
+```bash
+```
+
+
 ## Import data into LakeSoul
 ```shell
 export lakesoul_jar=lakesoul-spark-2.5.1-spark-3.3.jar
@@ -20,15 +24,14 @@ swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/bitnami/spark:3.3.1 spark-su
 ## Train model using HuggingFace Trainer API
 ```shell
 conda activate lakesoul_test
-python imdb/train.py 
+python imdb/train.py
 ```
 
 ## Inference the trained model
-```shell 
+```shell
 python imdb/inference.py
 ```
 
 ##  Reference:
 1. https://huggingface.co/docs/transformers/tasks/sequence_classification
 2. https://huggingface.co/datasets/imdb
-

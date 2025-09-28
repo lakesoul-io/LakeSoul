@@ -754,6 +754,8 @@ class Scanner(ds.Scanner):
         else:
             thread_count = fragment.thread_count()
 
+        print(f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!filter: {filter}")
+
         if filter is not None:
             filter = filter.to_substrait(fragment.physical_schema).to_pybytes()  # copy
 
