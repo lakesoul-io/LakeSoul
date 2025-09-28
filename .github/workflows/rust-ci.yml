@@ -80,5 +80,6 @@ jobs:
           RUST_BACKTRACE=full cargo test --package lakesoul-datafusion
           RUST_BACKTRACE=full cargo test --package lakesoul-flight --test flight_sql -- --color always --nocapture
           RUST_BACKTRACE=full cargo test --color=always --package lakesoul-metadata --lib rbac::tests::test_verify_permission -- --nocapture
+          cargo clean
           RUST_BACKTRACE=full cargo test --color=always --package lakesoul-s3-proxy --bin lakesoul-s3-proxy tests --profile test --no-fail-fast -- --nocapture
 
