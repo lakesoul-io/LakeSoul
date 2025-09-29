@@ -144,20 +144,16 @@ def test_prune_columns():
 def test_duckdb_compatibility():
     import duckdb
 
-    conn = duckdb.connect(database=":memory:")
+    conn = duckdb.connect()
     _lds = lakesoul_dataset("part")
     results = conn.execute("select * from _lds").arrow()
     assert len(results) == 20000
-
-    _lds = lakesoul_dataset("part")
-    results = conn.execute("select * from _lds").arrow()
-    print(results)
 
 
 def test_duckdb_compatibility_with_filter():
     import duckdb
 
-    conn = duckdb.connect(database=":memory:")
+    conn = duckdb.connect()
     _lds = lakesoul_dataset("part")
-    results = conn.execute("select * from _lds where p_size = 50")
-    print(results)
+    results = conn.execute("select * from _lds where p_size = 50").arrow()
+    assert len(results) == 392

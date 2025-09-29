@@ -8,6 +8,7 @@ from typing_extensions import override
 
 
 import functools
+import logging
 
 import pyarrow as pa
 import pyarrow.dataset as ds
@@ -708,6 +709,7 @@ class Scanner(ds.Scanner):
         cache_metadata=None,
         memory_pool=None,
     ) -> Scanner:
+        logging.debug(f"from_dataset filter: {filter}")
         if not use_threads:
             thread_count = 1
         else:
@@ -719,7 +721,7 @@ class Scanner(ds.Scanner):
             target_schema = dataset.schema
 
         if filter is not None:
-            filter = filter.to_substrait(dataset.schema).to_pybytes()  # copy
+            filter = bytes(filter.to_substrait(dataset.schema))  # copy
 
         return Scanner(
             batch_size,
@@ -749,15 +751,14 @@ class Scanner(ds.Scanner):
         cache_metadata=None,
         memory_pool=None,
     ) -> Scanner:
+        logging.debug(f"from_fragement filter: {filter}")
         if not use_threads:
             thread_count = 1
         else:
             thread_count = fragment.thread_count()
 
-        print(f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!filter: {filter}")
-
         if filter is not None:
-            filter = filter.to_substrait(fragment.physical_schema).to_pybytes()  # copy
+            filter = bytes(filter.to_substrait(fragment.physical_schema))  # copy
 
         schema = schema if schema is not None else fragment.physical_schema
 
