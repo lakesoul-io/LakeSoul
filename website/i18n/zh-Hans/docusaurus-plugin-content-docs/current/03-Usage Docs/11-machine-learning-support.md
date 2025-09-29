@@ -11,7 +11,7 @@ Python 接口发布了 1.1.0 。
 pip install lakesoul
 ```
 
-目前lakesoul只支持Pyhton 3.8、3.9、3.10, x64 Linux
+目前 lakesoul 只支持Pyhton 3.8、3.9、3.10, x64 Linux
 
 ### 安装 python 虚拟环境
 
@@ -204,31 +204,32 @@ ds = lakesoul_dataset("table_name", partitions={'split': 'train'})
 for batch in ds.to_batches():
     ...
 
-
 # convert to pandas table
 # this will load entire table into memory
 df = ds.to_table().to_pandas()
 
-
 # apply filter
-cols = ["p_name"]
-scanner = lakesoul_dataset("part").scanner(columns=cols)
+filter = pc.field("column") == 50
+scanner = lds.scanner(filter=filter)
 table = scanner.to_table()
 
- int_filter = pc.field("p_size") == 50
- scanner = lds.scanner(filter=int_filter)
+# prune columns
+cols = ["col1"]
+scanner = lakesoul_dataset("table_name").scanner(columns=cols)
+table = scanner.to_table()
 ```
 
 ## DuckDB 读取 LakeSoul 表
 
-DuckDB 通过读取 Apache Arrow Dataset 的方式可以读取 LakeSoul 表，暂时不支持谓词。
-示例：
+DuckDB 通过读取 Apache Arrow Dataset 的方式可以读取 LakeSoul 表，暂不支持 DuckDBPyConnection::Execute API。示例：
 
 ```python
 import duckdb
 
-conn = duckdb.connect(database=":memory:")
-_lds = lakesoul_dataset("part")
-results = conn.execute("select * from _lds")
-print(results)
+conn = duckdb.connect()
+_lds = lakesoul_dataset("table_name")
+results = conn.sql("select * from _lds")
+
+# with filter
+results = conn.sql("select * from _lds where col1 = 50")
 ```
