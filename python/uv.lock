@@ -17,7 +17,7 @@ resolution-markers = [
 [[package]]
 name = "aiohappyeyeballs"
 version = "2.4.4"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')",
@@ -30,7 +30,7 @@ wheels = [
 [[package]]
 name = "aiohappyeyeballs"
 version = "2.6.1"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version == '3.12.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'darwin')",
@@ -49,19 +49,19 @@ wheels = [
 [[package]]
 name = "aiohttp"
 version = "3.10.11"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')",
 ]
 dependencies = [
-    { name = "aiohappyeyeballs", version = "2.4.4", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "aiosignal", version = "1.3.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
+    { name = "aiohappyeyeballs", version = "2.4.4", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "aiosignal", version = "1.3.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
     { name = "async-timeout", marker = "python_full_version < '3.9'" },
     { name = "attrs", marker = "python_full_version < '3.9'" },
-    { name = "frozenlist", version = "1.5.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "multidict", version = "6.1.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "yarl", version = "1.15.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
+    { name = "frozenlist", version = "1.5.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "multidict", version = "6.1.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "yarl", version = "1.15.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
 ]
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/25/a8/8e2ba36c6e3278d62e0c88aa42bb92ddbef092ac363b390dab4421da5cf5/aiohttp-3.10.11.tar.gz", hash = "sha256:9dc2b8f3dcab2e39e0fa309c8da50c3b55e6f34ab25f1a71d3288f24924d33a7", size = 7551886, upload-time = "2024-11-13T16:40:33.335Z" }
 wheels = [
@@ -160,7 +160,7 @@ wheels = [
 [[package]]
 name = "aiohttp"
 version = "3.12.15"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version == '3.12.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'darwin')",
@@ -172,14 +172,14 @@ resolution-markers = [
     "(python_full_version == '3.9.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version == '3.9.*' and sys_platform == 'darwin')",
 ]
 dependencies = [
-    { name = "aiohappyeyeballs", version = "2.6.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
-    { name = "aiosignal", version = "1.4.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
+    { name = "aiohappyeyeballs", version = "2.6.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
+    { name = "aiosignal", version = "1.4.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
     { name = "async-timeout", marker = "python_full_version >= '3.9' and python_full_version < '3.11'" },
     { name = "attrs", marker = "python_full_version >= '3.9'" },
-    { name = "frozenlist", version = "1.7.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
-    { name = "multidict", version = "6.6.4", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
-    { name = "propcache", version = "0.3.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
-    { name = "yarl", version = "1.20.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
+    { name = "frozenlist", version = "1.7.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
+    { name = "multidict", version = "6.6.4", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
+    { name = "propcache", version = "0.3.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
+    { name = "yarl", version = "1.20.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
 ]
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/9b/e7/d92a237d8802ca88483906c388f7c201bbe96cd80a165ffd0ac2f6a8d59f/aiohttp-3.12.15.tar.gz", hash = "sha256:4fc61385e9c98d72fcdf47e6dd81833f47b2f77c114c29cd64a361be57a763a2", size = 7823716, upload-time = "2025-07-29T05:52:32.215Z" }
 wheels = [
@@ -273,13 +273,13 @@ wheels = [
 [[package]]
 name = "aiosignal"
 version = "1.3.1"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')",
 ]
 dependencies = [
-    { name = "frozenlist", version = "1.5.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
+    { name = "frozenlist", version = "1.5.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
 ]
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/ae/67/0952ed97a9793b4958e5736f6d2b346b414a2cd63e82d05940032f45b32f/aiosignal-1.3.1.tar.gz", hash = "sha256:54cd96e15e1649b75d6c87526a6ff0b6c1b0dd3459f43d9ca11d48c339b68cfc", size = 19422, upload-time = "2022-11-08T16:03:58.806Z" }
 wheels = [
@@ -289,7 +289,7 @@ wheels = [
 [[package]]
 name = "aiosignal"
 version = "1.4.0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version == '3.12.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'darwin')",
@@ -301,8 +301,8 @@ resolution-markers = [
     "(python_full_version == '3.9.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version == '3.9.*' and sys_platform == 'darwin')",
 ]
 dependencies = [
-    { name = "frozenlist", version = "1.7.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
-    { name = "typing-extensions", version = "4.15.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9' and python_full_version < '3.13'" },
+    { name = "frozenlist", version = "1.7.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
+    { name = "typing-extensions", version = "4.15.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9' and python_full_version < '3.13'" },
 ]
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/61/62/06741b579156360248d1ec624842ad0edf697050bbaf7c3e46394e106ad1/aiosignal-1.4.0.tar.gz", hash = "sha256:f47eecd9468083c2029cc99945502cb7708b082c232f9aca65da147157b251c7", size = 25007, upload-time = "2025-07-03T22:54:43.528Z" }
 wheels = [
@@ -312,7 +312,7 @@ wheels = [
 [[package]]
 name = "async-timeout"
 version = "5.0.1"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/a5/ae/136395dfbfe00dfc94da3f3e136d0b13f394cba8f4841120e34226265780/async_timeout-5.0.1.tar.gz", hash = "sha256:d9321a7a3d5a6a5e187e824d2fa0793ce379a202935782d555d6e9d2735677d3", size = 9274, upload-time = "2024-11-06T16:41:39.6Z" }
 wheels = [
     { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/fe/ba/e2081de779ca30d473f21f5b30e0e737c438205440784c7dfc81efc2b029/async_timeout-5.0.1-py3-none-any.whl", hash = "sha256:39e3809566ff85354557ec2398b55e096c8364bacac9405a7a1fa429e77fe76c", size = 6233, upload-time = "2024-11-06T16:41:37.9Z" },
@@ -321,7 +321,7 @@ wheels = [
 [[package]]
 name = "attrs"
 version = "25.3.0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/5a/b0/1367933a8532ee6ff8d63537de4f1177af4bff9f3e829baf7331f595bb24/attrs-25.3.0.tar.gz", hash = "sha256:75d7cefc7fb576747b2c81b4442d4d4a1ce0900973527c011d1030fd3bf4af1b", size = 812032, upload-time = "2025-03-13T11:10:22.779Z" }
 wheels = [
     { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/77/06/bb80f5f86020c4551da315d78b3ab75e8228f89f0162f2c3a819e407941a/attrs-25.3.0-py3-none-any.whl", hash = "sha256:427318ce031701fea540783410126f03899a97ffc6f61596ad581ac2e40e3bc3", size = 63815, upload-time = "2025-03-13T11:10:21.14Z" },
@@ -330,7 +330,7 @@ wheels = [
 [[package]]
 name = "certifi"
 version = "2025.8.3"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/dc/67/960ebe6bf230a96cda2e0abcf73af550ec4f090005363542f0765df162e0/certifi-2025.8.3.tar.gz", hash = "sha256:e564105f78ded564e3ae7c923924435e1daa7463faeab5bb932bc53ffae63407", size = 162386, upload-time = "2025-08-03T03:07:47.08Z" }
 wheels = [
     { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/e5/48/1549795ba7742c948d2ad169c1c8cdbae65bc450d6cd753d124b17c8cd32/certifi-2025.8.3-py3-none-any.whl", hash = "sha256:f6c12493cfb1b06ba2ff328595af9350c65d6644968e5d3a2ffd78699af217a5", size = 161216, upload-time = "2025-08-03T03:07:45.777Z" },
@@ -339,7 +339,7 @@ wheels = [
 [[package]]
 name = "charset-normalizer"
 version = "3.4.3"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/83/2d/5fd176ceb9b2fc619e63405525573493ca23441330fcdaee6bef9460e924/charset_normalizer-3.4.3.tar.gz", hash = "sha256:6fce4b8500244f6fcb71465d4a4930d132ba9ab8e71a7859e6a5d59851068d14", size = 122371, upload-time = "2025-08-09T07:57:28.46Z" }
 wheels = [
     { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/d6/98/f3b8013223728a99b908c9344da3aa04ee6e3fa235f19409033eda92fb78/charset_normalizer-3.4.3-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:fb7f67a1bfa6e40b438170ebdc8158b78dc465a5a67b6dde178a46987b244a72", size = 207695, upload-time = "2025-08-09T07:55:36.452Z" },
@@ -425,7 +425,7 @@ wheels = [
 [[package]]
 name = "click"
 version = "8.1.8"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version == '3.9.*' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version == '3.9.*' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version == '3.9.*' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version == '3.9.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version == '3.9.*' and sys_platform == 'darwin')",
@@ -443,7 +443,7 @@ wheels = [
 [[package]]
 name = "click"
 version = "8.3.0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version == '3.12.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'darwin')",
@@ -463,7 +463,7 @@ wheels = [
 [[package]]
 name = "colorama"
 version = "0.4.6"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/d8/53/6f443c9a4a8358a93a6792e2acffb9d9d5cb0a5cfd8802644b7b1c9a02e4/colorama-0.4.6.tar.gz", hash = "sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44", size = 27697, upload-time = "2022-10-25T02:36:22.414Z" }
 wheels = [
     { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6", size = 25335, upload-time = "2022-10-25T02:36:20.889Z" },
@@ -472,7 +472,7 @@ wheels = [
 [[package]]
 name = "colorlog"
 version = "6.9.0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 dependencies = [
     { name = "colorama", marker = "sys_platform == 'win32'" },
 ]
@@ -484,24 +484,24 @@ wheels = [
 [[package]]
 name = "datasets"
 version = "3.1.0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')",
 ]
 dependencies = [
-    { name = "aiohttp", version = "3.10.11", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
+    { name = "aiohttp", version = "3.10.11", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
     { name = "dill", marker = "python_full_version < '3.9'" },
-    { name = "filelock", version = "3.16.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "fsspec", version = "2024.9.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, extra = ["http"], marker = "python_full_version < '3.9'" },
+    { name = "filelock", version = "3.16.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "fsspec", version = "2024.9.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, extra = ["http"], marker = "python_full_version < '3.9'" },
     { name = "huggingface-hub", marker = "python_full_version < '3.9'" },
     { name = "multiprocess", marker = "python_full_version < '3.9'" },
-    { name = "numpy", version = "1.24.4", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
+    { name = "numpy", version = "1.24.4", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
     { name = "packaging", marker = "python_full_version < '3.9'" },
-    { name = "pandas", version = "2.0.3", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
+    { name = "pandas", version = "2.0.3", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
     { name = "pyarrow", marker = "python_full_version < '3.9'" },
     { name = "pyyaml", marker = "python_full_version < '3.9'" },
-    { name = "requests", version = "2.32.4", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
+    { name = "requests", version = "2.32.4", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
     { name = "tqdm", marker = "python_full_version < '3.9'" },
     { name = "xxhash", marker = "python_full_version < '3.9'" },
 ]
@@ -513,7 +513,7 @@ wheels = [
 [[package]]
 name = "datasets"
 version = "4.0.0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version == '3.12.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'darwin')",
@@ -526,16 +526,16 @@ resolution-markers = [
 ]
 dependencies = [
     { name = "dill", marker = "python_full_version >= '3.9'" },
-    { name = "filelock", version = "3.19.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
-    { name = "fsspec", version = "2025.3.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, extra = ["http"], marker = "python_full_version >= '3.9'" },
+    { name = "filelock", version = "3.19.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
+    { name = "fsspec", version = "2025.3.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, extra = ["http"], marker = "python_full_version >= '3.9'" },
     { name = "huggingface-hub", marker = "python_full_version >= '3.9'" },
     { name = "multiprocess", marker = "python_full_version >= '3.9'" },
-    { name = "numpy", version = "1.26.4", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
+    { name = "numpy", version = "1.26.4", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
     { name = "packaging", marker = "python_full_version >= '3.9'" },
-    { name = "pandas", version = "2.3.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
+    { name = "pandas", version = "2.3.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
     { name = "pyarrow", marker = "python_full_version >= '3.9'" },
     { name = "pyyaml", marker = "python_full_version >= '3.9'" },
-    { name = "requests", version = "2.32.5", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
+    { name = "requests", version = "2.32.5", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
     { name = "tqdm", marker = "python_full_version >= '3.9'" },
     { name = "xxhash", marker = "python_full_version >= '3.9'" },
 ]
@@ -547,7 +547,7 @@ wheels = [
 [[package]]
 name = "dill"
 version = "0.3.8"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/17/4d/ac7ffa80c69ea1df30a8aa11b3578692a5118e7cd1aa157e3ef73b092d15/dill-0.3.8.tar.gz", hash = "sha256:3ebe3c479ad625c4553aca177444d89b486b1d84982eeacded644afc0cf797ca", size = 184847, upload-time = "2024-01-27T23:42:16.145Z" }
 wheels = [
     { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/c9/7a/cef76fd8438a42f96db64ddaa85280485a9c395e7df3db8158cfec1eee34/dill-0.3.8-py3-none-any.whl", hash = "sha256:c36ca9ffb54365bdd2f8eb3eff7d2a21237f8452b57ace88b1ac615b7e815bd7", size = 116252, upload-time = "2024-01-27T23:42:14.239Z" },
@@ -556,7 +556,7 @@ wheels = [
 [[package]]
 name = "duckdb"
 version = "1.3.2"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')",
@@ -603,7 +603,7 @@ wheels = [
 [[package]]
 name = "duckdb"
 version = "1.4.0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version == '3.12.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'darwin')",
@@ -651,10 +651,10 @@ wheels = [
 [[package]]
 name = "exceptiongroup"
 version = "1.3.0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 dependencies = [
-    { name = "typing-extensions", version = "4.13.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "typing-extensions", version = "4.15.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9' and python_full_version < '3.11'" },
+    { name = "typing-extensions", version = "4.13.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "typing-extensions", version = "4.15.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9' and python_full_version < '3.11'" },
 ]
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/0b/9f/a65090624ecf468cdca03533906e7c69ed7588582240cfe7cc9e770b50eb/exceptiongroup-1.3.0.tar.gz", hash = "sha256:b241f5885f560bc56a59ee63ca4c6a8bfa46ae4ad651af316d4e81817bb9fd88", size = 29749, upload-time = "2025-05-10T17:42:51.123Z" }
 wheels = [
@@ -664,7 +664,7 @@ wheels = [
 [[package]]
 name = "filelock"
 version = "3.16.1"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')",
@@ -677,7 +677,7 @@ wheels = [
 [[package]]
 name = "filelock"
 version = "3.19.1"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version == '3.12.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'darwin')",
@@ -696,7 +696,7 @@ wheels = [
 [[package]]
 name = "frozenlist"
 version = "1.5.0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')",
@@ -799,7 +799,7 @@ wheels = [
 [[package]]
 name = "frozenlist"
 version = "1.7.0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version == '3.12.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'darwin')",
@@ -920,7 +920,7 @@ wheels = [
 [[package]]
 name = "fsspec"
 version = "2024.9.0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')",
@@ -932,13 +932,13 @@ wheels = [
 
 [package.optional-dependencies]
 http = [
-    { name = "aiohttp", version = "3.10.11", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
+    { name = "aiohttp", version = "3.10.11", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
 ]
 
 [[package]]
 name = "fsspec"
 version = "2025.3.0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version == '3.12.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'darwin')",
@@ -956,13 +956,13 @@ wheels = [
 
 [package.optional-dependencies]
 http = [
-    { name = "aiohttp", version = "3.12.15", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
+    { name = "aiohttp", version = "3.12.15", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
 ]
 
 [[package]]
 name = "grpcio"
 version = "1.70.0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')",
@@ -1028,7 +1028,7 @@ wheels = [
 [[package]]
 name = "grpcio"
 version = "1.75.0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version == '3.12.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'darwin')",
@@ -1040,7 +1040,7 @@ resolution-markers = [
     "(python_full_version == '3.9.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version == '3.9.*' and sys_platform == 'darwin')",
 ]
 dependencies = [
-    { name = "typing-extensions", version = "4.15.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
+    { name = "typing-extensions", version = "4.15.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
 ]
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/91/88/fe2844eefd3d2188bc0d7a2768c6375b46dfd96469ea52d8aeee8587d7e0/grpcio-1.75.0.tar.gz", hash = "sha256:b989e8b09489478c2d19fecc744a298930f40d8b27c3638afbfe84d22f36ce4e", size = 12722485, upload-time = "2025-09-16T09:20:21.731Z" }
 wheels = [
@@ -1099,13 +1099,13 @@ wheels = [
 [[package]]
 name = "grpcio-tools"
 version = "1.70.0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 dependencies = [
-    { name = "grpcio", version = "1.70.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "grpcio", version = "1.75.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
+    { name = "grpcio", version = "1.70.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "grpcio", version = "1.75.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
     { name = "protobuf" },
-    { name = "setuptools", version = "75.3.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "setuptools", version = "80.9.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
+    { name = "setuptools", version = "75.3.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "setuptools", version = "80.9.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
 ]
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/c1/fe/3adf1035c1f9e9243516530beae67e197f2acc17562ec75f03a0ba77fc55/grpcio_tools-1.70.0.tar.gz", hash = "sha256:e578fee7c1c213c8e471750d92631d00f178a15479fb2cb3b939a07fc125ccd3", size = 5323149, upload-time = "2025-01-23T18:00:38.271Z" }
 wheels = [
@@ -1168,7 +1168,7 @@ wheels = [
 [[package]]
 name = "hf-xet"
 version = "1.1.10"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/74/31/feeddfce1748c4a233ec1aa5b7396161c07ae1aa9b7bdbc9a72c3c7dd768/hf_xet-1.1.10.tar.gz", hash = "sha256:408aef343800a2102374a883f283ff29068055c111f003ff840733d3b715bb97", size = 487910, upload-time = "2025-09-12T20:10:27.12Z" }
 wheels = [
     { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/f7/a2/343e6d05de96908366bdc0081f2d8607d61200be2ac802769c4284cc65bd/hf_xet-1.1.10-cp37-abi3-macosx_10_12_x86_64.whl", hash = "sha256:686083aca1a6669bc85c21c0563551cbcdaa5cf7876a91f3d074a030b577231d", size = 2761466, upload-time = "2025-09-12T20:10:22.836Z" },
@@ -1183,20 +1183,20 @@ wheels = [
 [[package]]
 name = "huggingface-hub"
 version = "0.35.0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 dependencies = [
-    { name = "filelock", version = "3.16.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "filelock", version = "3.19.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
-    { name = "fsspec", version = "2024.9.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "fsspec", version = "2025.3.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
+    { name = "filelock", version = "3.16.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "filelock", version = "3.19.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
+    { name = "fsspec", version = "2024.9.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "fsspec", version = "2025.3.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
     { name = "hf-xet", marker = "platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'" },
     { name = "packaging" },
     { name = "pyyaml" },
-    { name = "requests", version = "2.32.4", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "requests", version = "2.32.5", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
+    { name = "requests", version = "2.32.4", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "requests", version = "2.32.5", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
     { name = "tqdm" },
-    { name = "typing-extensions", version = "4.13.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "typing-extensions", version = "4.15.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
+    { name = "typing-extensions", version = "4.13.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "typing-extensions", version = "4.15.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
 ]
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/37/79/d71d40efa058e8c4a075158f8855bc2998037b5ff1c84f249f34435c1df7/huggingface_hub-0.35.0.tar.gz", hash = "sha256:ccadd2a78eef75effff184ad89401413629fabc52cefd76f6bbacb9b1c0676ac", size = 461486, upload-time = "2025-09-16T13:49:33.282Z" }
 wheels = [
@@ -1206,7 +1206,7 @@ wheels = [
 [[package]]
 name = "idna"
 version = "3.10"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/f1/70/7703c29685631f5a7590aa73f1f1d3fa9a380e654b86af429e0934a32f7d/idna-3.10.tar.gz", hash = "sha256:12f65c9b470abda6dc35cf8e63cc574b1c52b11df2c86030af0ac09b01b13ea9", size = 190490, upload-time = "2024-09-15T18:07:39.745Z" }
 wheels = [
     { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/76/c6/c88e154df9c4e1a2a66ccf0005a88dfb2650c1dffb6f5ce603dfbd452ce3/idna-3.10-py3-none-any.whl", hash = "sha256:946d195a0d259cbba61165e88e65941f16e9b36ea6ddb97f00452bae8b1287d3", size = 70442, upload-time = "2024-09-15T18:07:37.964Z" },
@@ -1215,7 +1215,7 @@ wheels = [
 [[package]]
 name = "importlib-resources"
 version = "6.4.5"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 dependencies = [
     { name = "zipp", marker = "python_full_version < '3.9'" },
 ]
@@ -1227,7 +1227,7 @@ wheels = [
 [[package]]
 name = "iniconfig"
 version = "2.1.0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/f2/97/ebf4da567aa6827c909642694d71c9fcf53e5b504f2d96afea02718862f3/iniconfig-2.1.0.tar.gz", hash = "sha256:3abbd2e30b36733fee78f9c7f7308f2d0050e88f0087fd25c2645f63c773e1c7", size = 4793, upload-time = "2025-03-19T20:09:59.721Z" }
 wheels = [
     { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/2c/e1/e6716421ea10d38022b952c159d5161ca1193197fb744506875fbb87ea7b/iniconfig-2.1.0-py3-none-any.whl", hash = "sha256:9deba5723312380e77435581c6bf4935c94cbfab9b1ed33ef8d238ea168eb760", size = 6050, upload-time = "2025-03-19T20:10:01.071Z" },
@@ -1236,10 +1236,10 @@ wheels = [
 [[package]]
 name = "jinja2"
 version = "3.1.6"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 dependencies = [
-    { name = "markupsafe", version = "2.1.5", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "markupsafe", version = "3.0.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
+    { name = "markupsafe", version = "2.1.5", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "markupsafe", version = "3.0.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
 ]
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/df/bf/f7da0350254c0ed7c72f3e33cef02e048281fec7ecec5f032d4aac52226b/jinja2-3.1.6.tar.gz", hash = "sha256:0137fb05990d35f1275a587e9aee6d56da821fc83491a0fb838183be43f66d6d", size = 245115, upload-time = "2025-03-05T20:05:02.478Z" }
 wheels = [
@@ -1249,7 +1249,7 @@ wheels = [
 [[package]]
 name = "jsonschema"
 version = "4.23.0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')",
@@ -1257,10 +1257,10 @@ resolution-markers = [
 dependencies = [
     { name = "attrs", marker = "python_full_version < '3.9'" },
     { name = "importlib-resources", marker = "python_full_version < '3.9'" },
-    { name = "jsonschema-specifications", version = "2023.12.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
+    { name = "jsonschema-specifications", version = "2023.12.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
     { name = "pkgutil-resolve-name", marker = "python_full_version < '3.9'" },
-    { name = "referencing", version = "0.35.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "rpds-py", version = "0.20.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
+    { name = "referencing", version = "0.35.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "rpds-py", version = "0.20.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
 ]
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/38/2e/03362ee4034a4c917f697890ccd4aec0800ccf9ded7f511971c75451deec/jsonschema-4.23.0.tar.gz", hash = "sha256:d71497fef26351a33265337fa77ffeb82423f3ea21283cd9467bb03999266bc4", size = 325778, upload-time = "2024-07-08T18:40:05.546Z" }
 wheels = [
@@ -1270,7 +1270,7 @@ wheels = [
 [[package]]
 name = "jsonschema"
 version = "4.25.1"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version == '3.12.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'darwin')",
@@ -1283,9 +1283,9 @@ resolution-markers = [
 ]
 dependencies = [
     { name = "attrs", marker = "python_full_version >= '3.9'" },
-    { name = "jsonschema-specifications", version = "2025.9.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
-    { name = "referencing", version = "0.36.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
-    { name = "rpds-py", version = "0.27.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
+    { name = "jsonschema-specifications", version = "2025.9.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
+    { name = "referencing", version = "0.36.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
+    { name = "rpds-py", version = "0.27.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
 ]
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/74/69/f7185de793a29082a9f3c7728268ffb31cb5095131a9c139a74078e27336/jsonschema-4.25.1.tar.gz", hash = "sha256:e4a9655ce0da0c0b67a085847e00a3a51449e1157f4f75e9fb5aa545e122eb85", size = 357342, upload-time = "2025-08-18T17:03:50.038Z" }
 wheels = [
@@ -1295,14 +1295,14 @@ wheels = [
 [[package]]
 name = "jsonschema-specifications"
 version = "2023.12.1"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')",
 ]
 dependencies = [
     { name = "importlib-resources", marker = "python_full_version < '3.9'" },
-    { name = "referencing", version = "0.35.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
+    { name = "referencing", version = "0.35.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
 ]
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/f8/b9/cc0cc592e7c195fb8a650c1d5990b10175cf13b4c97465c72ec841de9e4b/jsonschema_specifications-2023.12.1.tar.gz", hash = "sha256:48a76787b3e70f5ed53f1160d2b81f586e4ca6d1548c5de7085d1682674764cc", size = 13983, upload-time = "2023-12-25T15:16:53.63Z" }
 wheels = [
@@ -1312,7 +1312,7 @@ wheels = [
 [[package]]
 name = "jsonschema-specifications"
 version = "2025.9.1"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version == '3.12.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'darwin')",
@@ -1324,7 +1324,7 @@ resolution-markers = [
     "(python_full_version == '3.9.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version == '3.9.*' and sys_platform == 'darwin')",
 ]
 dependencies = [
-    { name = "referencing", version = "0.36.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
+    { name = "referencing", version = "0.36.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
 ]
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/19/74/a633ee74eb36c44aa6d1095e7cc5569bebf04342ee146178e2d36600708b/jsonschema_specifications-2025.9.1.tar.gz", hash = "sha256:b540987f239e745613c7a9176f3edb72b832a4ac465cf02712288397832b5e8d", size = 32855, upload-time = "2025-09-08T01:34:59.186Z" }
 wheels = [
@@ -1337,32 +1337,32 @@ version = "1.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "colorlog" },
-    { name = "numpy", version = "1.24.4", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "numpy", version = "1.26.4", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
+    { name = "numpy", version = "1.24.4", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "numpy", version = "1.26.4", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
     { name = "protobuf" },
     { name = "pyarrow" },
-    { name = "typing-extensions", version = "4.13.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "typing-extensions", version = "4.15.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
+    { name = "typing-extensions", version = "4.13.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "typing-extensions", version = "4.15.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
 ]
 
 [package.optional-dependencies]
 all = [
-    { name = "datasets", version = "3.1.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "datasets", version = "4.0.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
-    { name = "pandas", version = "2.0.3", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "pandas", version = "2.3.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
+    { name = "datasets", version = "3.1.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "datasets", version = "4.0.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
+    { name = "pandas", version = "2.0.3", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "pandas", version = "2.3.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
     { name = "pyspark" },
     { name = "ray" },
     { name = "torch", version = "2.4.1", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(python_full_version < '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or sys_platform == 'darwin'" },
     { name = "torch", version = "2.4.1+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(python_full_version >= '3.13' and sys_platform == 'linux') or (platform_machine != 'aarch64' and sys_platform == 'linux') or (platform_python_implementation != 'CPython' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
 ]
 datasets = [
-    { name = "datasets", version = "3.1.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "datasets", version = "4.0.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
+    { name = "datasets", version = "3.1.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "datasets", version = "4.0.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
 ]
 pandas = [
-    { name = "pandas", version = "2.0.3", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "pandas", version = "2.3.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
+    { name = "pandas", version = "2.0.3", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "pandas", version = "2.3.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
 ]
 pyspark = [
     { name = "pyspark" },
@@ -1377,29 +1377,29 @@ torch = [
 
 [package.dev-dependencies]
 all = [
-    { name = "datasets", version = "3.1.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "datasets", version = "4.0.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
-    { name = "duckdb", version = "1.3.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "duckdb", version = "1.4.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
+    { name = "datasets", version = "3.1.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "datasets", version = "4.0.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
+    { name = "duckdb", version = "1.3.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "duckdb", version = "1.4.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
     { name = "grpcio-tools" },
-    { name = "pandas", version = "2.0.3", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "pandas", version = "2.3.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
+    { name = "pandas", version = "2.0.3", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "pandas", version = "2.3.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
     { name = "pyspark" },
     { name = "ray" },
     { name = "torch", version = "2.4.1", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(python_full_version < '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or sys_platform == 'darwin'" },
     { name = "torch", version = "2.4.1+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(python_full_version >= '3.13' and sys_platform == 'linux') or (platform_machine != 'aarch64' and sys_platform == 'linux') or (platform_python_implementation != 'CPython' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
 ]
 dev = [
-    { name = "datasets", version = "3.1.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "datasets", version = "4.0.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
-    { name = "duckdb", version = "1.3.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "duckdb", version = "1.4.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
+    { name = "datasets", version = "3.1.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "datasets", version = "4.0.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
+    { name = "duckdb", version = "1.3.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "duckdb", version = "1.4.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
     { name = "grpcio-tools" },
-    { name = "pandas", version = "2.0.3", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "pandas", version = "2.3.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
+    { name = "pandas", version = "2.0.3", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "pandas", version = "2.3.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
     { name = "pyspark" },
-    { name = "pytest", version = "8.3.5", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "pytest", version = "8.4.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
+    { name = "pytest", version = "8.3.5", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "pytest", version = "8.4.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
     { name = "ray" },
     { name = "torch", version = "2.4.1", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(python_full_version < '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or sys_platform == 'darwin'" },
     { name = "torch", version = "2.4.1+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(python_full_version >= '3.13' and sys_platform == 'linux') or (platform_machine != 'aarch64' and sys_platform == 'linux') or (platform_python_implementation != 'CPython' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
@@ -1449,7 +1449,7 @@ dev = [
 [[package]]
 name = "markupsafe"
 version = "2.1.5"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')",
@@ -1511,7 +1511,7 @@ wheels = [
 [[package]]
 name = "markupsafe"
 version = "3.0.2"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version == '3.12.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'darwin')",
@@ -1589,7 +1589,7 @@ wheels = [
 [[package]]
 name = "mpmath"
 version = "1.3.0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/e0/47/dd32fa426cc72114383ac549964eecb20ecfd886d1e5ccf5340b55b02f57/mpmath-1.3.0.tar.gz", hash = "sha256:7a28eb2a9774d00c7bc92411c19a89209d5da7c4c9a9e227be8330a23a25b91f", size = 508106, upload-time = "2023-03-07T16:47:11.061Z" }
 wheels = [
     { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/43/e3/7d92a15f894aa0c9c4b49b8ee9ac9850d6e63b03c9c32c0367a13ae62209/mpmath-1.3.0-py3-none-any.whl", hash = "sha256:a0b2b9fe80bbcd81a6647ff13108738cfb482d481d826cc0e02f5b35e5c88d2c", size = 536198, upload-time = "2023-03-07T16:47:09.197Z" },
@@ -1598,7 +1598,7 @@ wheels = [
 [[package]]
 name = "msgpack"
 version = "1.1.1"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/45/b1/ea4f68038a18c77c9467400d166d74c4ffa536f34761f7983a104357e614/msgpack-1.1.1.tar.gz", hash = "sha256:77b79ce34a2bdab2594f490c8e80dd62a02d650b91a75159a63ec413b8d104cd", size = 173555, upload-time = "2025-06-13T06:52:51.324Z" }
 wheels = [
     { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/33/52/f30da112c1dc92cf64f57d08a273ac771e7b29dea10b4b30369b2d7e8546/msgpack-1.1.1-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:353b6fc0c36fde68b661a12949d7d49f8f51ff5fa019c1e47c87c4ff34b080ed", size = 81799, upload-time = "2025-06-13T06:51:37.228Z" },
@@ -1664,13 +1664,13 @@ wheels = [
 [[package]]
 name = "multidict"
 version = "6.1.0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')",
 ]
 dependencies = [
-    { name = "typing-extensions", version = "4.13.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
+    { name = "typing-extensions", version = "4.13.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
 ]
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/d6/be/504b89a5e9ca731cd47487e91c469064f8ae5af93b7259758dcfc2b9c848/multidict-6.1.0.tar.gz", hash = "sha256:22ae2ebf9b0c69d206c003e2f6a914ea33f0a932d4aa16f236afc049d9958f4a", size = 64002, upload-time = "2024-09-09T23:49:38.163Z" }
 wheels = [
@@ -1770,7 +1770,7 @@ wheels = [
 [[package]]
 name = "multidict"
 version = "6.6.4"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version == '3.12.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'darwin')",
@@ -1782,7 +1782,7 @@ resolution-markers = [
     "(python_full_version == '3.9.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version == '3.9.*' and sys_platform == 'darwin')",
 ]
 dependencies = [
-    { name = "typing-extensions", version = "4.15.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9' and python_full_version < '3.11'" },
+    { name = "typing-extensions", version = "4.15.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9' and python_full_version < '3.11'" },
 ]
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/69/7f/0652e6ed47ab288e3756ea9c0df8b14950781184d4bd7883f4d87dd41245/multidict-6.6.4.tar.gz", hash = "sha256:d2d4e4787672911b48350df02ed3fa3fffdc2f2e8ca06dd6afdf34189b76a9dd", size = 101843, upload-time = "2025-08-11T12:08:48.217Z" }
 wheels = [
@@ -1900,7 +1900,7 @@ wheels = [
 [[package]]
 name = "multiprocess"
 version = "0.70.16"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 dependencies = [
     { name = "dill" },
 ]
@@ -1922,7 +1922,7 @@ wheels = [
 [[package]]
 name = "networkx"
 version = "3.1"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')",
@@ -1935,7 +1935,7 @@ wheels = [
 [[package]]
 name = "networkx"
 version = "3.2.1"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version == '3.9.*' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version == '3.9.*' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version == '3.9.*' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version == '3.9.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version == '3.9.*' and sys_platform == 'darwin')",
@@ -1948,7 +1948,7 @@ wheels = [
 [[package]]
 name = "networkx"
 version = "3.4.2"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version == '3.10.*' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version == '3.10.*' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version == '3.10.*' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version == '3.10.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version == '3.10.*' and sys_platform == 'darwin')",
@@ -1961,7 +1961,7 @@ wheels = [
 [[package]]
 name = "networkx"
 version = "3.5"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version == '3.12.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'darwin')",
@@ -1976,7 +1976,7 @@ wheels = [
 [[package]]
 name = "numpy"
 version = "1.24.4"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')",
@@ -2015,7 +2015,7 @@ wheels = [
 [[package]]
 name = "numpy"
 version = "1.26.4"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version == '3.12.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'darwin')",
@@ -2068,7 +2068,7 @@ wheels = [
 [[package]]
 name = "packaging"
 version = "25.0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/a1/d4/1fc4078c65507b51b96ca8f8c3ba19e6a61c8253c72794544580a7b6c24d/packaging-25.0.tar.gz", hash = "sha256:d443872c98d677bf60f6a1f2f8c1cb748e8fe762d2bf9d3148b5599295b0fc4f", size = 165727, upload-time = "2025-04-19T11:48:59.673Z" }
 wheels = [
     { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/20/12/38679034af332785aac8774540895e234f4d07f7545804097de4b666afd8/packaging-25.0-py3-none-any.whl", hash = "sha256:29572ef2b1f17581046b3a2227d5c611fb25ec70ca1ba8554b24b0e69331a484", size = 66469, upload-time = "2025-04-19T11:48:57.875Z" },
@@ -2077,13 +2077,13 @@ wheels = [
 [[package]]
 name = "pandas"
 version = "2.0.3"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')",
 ]
 dependencies = [
-    { name = "numpy", version = "1.24.4", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
+    { name = "numpy", version = "1.24.4", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
     { name = "python-dateutil", marker = "python_full_version < '3.9'" },
     { name = "pytz", marker = "python_full_version < '3.9'" },
     { name = "tzdata", marker = "python_full_version < '3.9'" },
@@ -2119,7 +2119,7 @@ wheels = [
 [[package]]
 name = "pandas"
 version = "2.3.2"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version == '3.12.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'darwin')",
@@ -2131,7 +2131,7 @@ resolution-markers = [
     "(python_full_version == '3.9.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version == '3.9.*' and sys_platform == 'darwin')",
 ]
 dependencies = [
-    { name = "numpy", version = "1.26.4", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
+    { name = "numpy", version = "1.26.4", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
     { name = "python-dateutil", marker = "python_full_version >= '3.9'" },
     { name = "pytz", marker = "python_full_version >= '3.9'" },
     { name = "tzdata", marker = "python_full_version >= '3.9'" },
@@ -2184,7 +2184,7 @@ wheels = [
 [[package]]
 name = "pkgutil-resolve-name"
 version = "1.3.10"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/70/f2/f2891a9dc37398696ddd945012b90ef8d0a034f0012e3f83c3f7a70b0f79/pkgutil_resolve_name-1.3.10.tar.gz", hash = "sha256:357d6c9e6a755653cfd78893817c0853af365dd51ec97f3d358a819373bbd174", size = 5054, upload-time = "2021-07-21T08:19:05.096Z" }
 wheels = [
     { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/c9/5c/3d4882ba113fd55bdba9326c1e4c62a15e674a2501de4869e6bd6301f87e/pkgutil_resolve_name-1.3.10-py3-none-any.whl", hash = "sha256:ca27cc078d25c5ad71a9de0a7a330146c4e014c2462d9af19c6b828280649c5e", size = 4734, upload-time = "2021-07-21T08:19:03.106Z" },
@@ -2193,7 +2193,7 @@ wheels = [
 [[package]]
 name = "pluggy"
 version = "1.5.0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')",
@@ -2206,7 +2206,7 @@ wheels = [
 [[package]]
 name = "pluggy"
 version = "1.6.0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version == '3.12.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'darwin')",
@@ -2225,7 +2225,7 @@ wheels = [
 [[package]]
 name = "propcache"
 version = "0.2.0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')",
@@ -2334,7 +2334,7 @@ wheels = [
 [[package]]
 name = "propcache"
 version = "0.3.2"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version == '3.12.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'darwin')",
@@ -2449,7 +2449,7 @@ wheels = [
 [[package]]
 name = "protobuf"
 version = "5.29.5"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/43/29/d09e70352e4e88c9c7a198d5645d7277811448d76c23b00345670f7c8a38/protobuf-5.29.5.tar.gz", hash = "sha256:bc1463bafd4b0929216c35f437a8e28731a2b7fe3d98bb77a600efced5a15c84", size = 425226, upload-time = "2025-05-28T23:51:59.82Z" }
 wheels = [
     { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/5f/11/6e40e9fc5bba02988a214c07cf324595789ca7820160bfd1f8be96e48539/protobuf-5.29.5-cp310-abi3-win32.whl", hash = "sha256:3f1c6468a2cfd102ff4703976138844f78ebd1fb45f49011afc5139e9e283079", size = 422963, upload-time = "2025-05-28T23:51:41.204Z" },
@@ -2467,7 +2467,7 @@ wheels = [
 [[package]]
 name = "py4j"
 version = "0.10.9.5"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/ce/1f/b00295b6da3bd2f050912b9f71fdb436ae8f1601cf161365937d8553e24b/py4j-0.10.9.5.tar.gz", hash = "sha256:276a4a3c5a2154df1860ef3303a927460e02e97b047dc0a47c1c3fb8cce34db6", size = 761259, upload-time = "2022-03-18T01:06:29.681Z" }
 wheels = [
     { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/86/ec/60880978512d5569ca4bf32b3b4d7776a528ecf4bca4523936c98c92a3c8/py4j-0.10.9.5-py2.py3-none-any.whl", hash = "sha256:52d171a6a2b031d8a5d1de6efe451cf4f5baff1a2819aabc3741c8406539ba04", size = 199724, upload-time = "2022-03-18T01:06:27.762Z" },
@@ -2476,10 +2476,10 @@ wheels = [
 [[package]]
 name = "pyarrow"
 version = "16.1.0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 dependencies = [
-    { name = "numpy", version = "1.24.4", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "numpy", version = "1.26.4", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
+    { name = "numpy", version = "1.24.4", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "numpy", version = "1.26.4", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
 ]
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/1a/f2/67533f116deb6dae7a0ac04681695fe06135912253a115c5ecdc714a32d4/pyarrow-16.1.0.tar.gz", hash = "sha256:15fbb22ea96d11f0b5768504a3f961edab25eaf4197c341720c4a387f6c60315", size = 1080280, upload-time = "2024-05-14T13:54:39.227Z" }
 wheels = [
@@ -2523,7 +2523,7 @@ wheels = [
 [[package]]
 name = "pygments"
 version = "2.19.2"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/b0/77/a5b8c569bf593b0140bde72ea885a803b82086995367bf2037de0159d924/pygments-2.19.2.tar.gz", hash = "sha256:636cb2477cec7f8952536970bc533bc43743542f70392ae026374600add5b887", size = 4968631, upload-time = "2025-06-21T13:39:12.283Z" }
 wheels = [
     { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/c7/21/705964c7812476f378728bdf590ca4b771ec72385c533964653c68e86bdc/pygments-2.19.2-py3-none-any.whl", hash = "sha256:86540386c03d588bb81d44bc3928634ff26449851e99741617ecb9037ee5ec0b", size = 1225217, upload-time = "2025-06-21T13:39:07.939Z" },
@@ -2532,7 +2532,7 @@ wheels = [
 [[package]]
 name = "pyspark"
 version = "3.3.1"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 dependencies = [
     { name = "py4j" },
 ]
@@ -2541,7 +2541,7 @@ sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/d1/48/cc
 [[package]]
 name = "pytest"
 version = "8.3.5"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')",
@@ -2551,7 +2551,7 @@ dependencies = [
     { name = "exceptiongroup", marker = "python_full_version < '3.9'" },
     { name = "iniconfig", marker = "python_full_version < '3.9'" },
     { name = "packaging", marker = "python_full_version < '3.9'" },
-    { name = "pluggy", version = "1.5.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
+    { name = "pluggy", version = "1.5.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
     { name = "tomli", marker = "python_full_version < '3.9'" },
 ]
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/ae/3c/c9d525a414d506893f0cd8a8d0de7706446213181570cdbd766691164e40/pytest-8.3.5.tar.gz", hash = "sha256:f4efe70cc14e511565ac476b57c279e12a855b11f48f212af1080ef2263d3845", size = 1450891, upload-time = "2025-03-02T12:54:54.503Z" }
@@ -2562,7 +2562,7 @@ wheels = [
 [[package]]
 name = "pytest"
 version = "8.4.2"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version == '3.12.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'darwin')",
@@ -2578,7 +2578,7 @@ dependencies = [
     { name = "exceptiongroup", marker = "python_full_version >= '3.9' and python_full_version < '3.11'" },
     { name = "iniconfig", marker = "python_full_version >= '3.9'" },
     { name = "packaging", marker = "python_full_version >= '3.9'" },
-    { name = "pluggy", version = "1.6.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
+    { name = "pluggy", version = "1.6.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
     { name = "pygments", marker = "python_full_version >= '3.9'" },
     { name = "tomli", marker = "python_full_version >= '3.9' and python_full_version < '3.11'" },
 ]
@@ -2590,7 +2590,7 @@ wheels = [
 [[package]]
 name = "python-dateutil"
 version = "2.9.0.post0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 dependencies = [
     { name = "six" },
 ]
@@ -2602,7 +2602,7 @@ wheels = [
 [[package]]
 name = "pytz"
 version = "2025.2"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/f8/bf/abbd3cdfb8fbc7fb3d4d38d320f2441b1e7cbe29be4f23797b4a2b5d8aac/pytz-2025.2.tar.gz", hash = "sha256:360b9e3dbb49a209c21ad61809c7fb453643e048b38924c765813546746e81c3", size = 320884, upload-time = "2025-03-25T02:25:00.538Z" }
 wheels = [
     { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/81/c4/34e93fe5f5429d7570ec1fa436f1986fb1f00c3e0f43a589fe2bbcd22c3f/pytz-2025.2-py2.py3-none-any.whl", hash = "sha256:5ddf76296dd8c44c26eb8f4b6f35488f3ccbf6fbbd7adee0b7262d43f0ec2f00", size = 509225, upload-time = "2025-03-25T02:24:58.468Z" },
@@ -2611,7 +2611,7 @@ wheels = [
 [[package]]
 name = "pyyaml"
 version = "6.0.2"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/54/ed/79a089b6be93607fa5cdaedf301d7dfb23af5f25c398d5ead2525b063e17/pyyaml-6.0.2.tar.gz", hash = "sha256:d584d9ec91ad65861cc08d42e834324ef890a082e591037abe114850ff7bbc3e", size = 130631, upload-time = "2024-08-06T20:33:50.674Z" }
 wheels = [
     { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/9b/95/a3fac87cb7158e231b5a6012e438c647e1a87f09f8e0d123acec8ab8bf71/PyYAML-6.0.2-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:0a9a2848a5b7feac301353437eb7d5957887edbf81d56e903999a75a3d743086", size = 184199, upload-time = "2024-08-06T20:31:40.178Z" },
@@ -2671,24 +2671,24 @@ wheels = [
 [[package]]
 name = "ray"
 version = "2.10.0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 dependencies = [
-    { name = "aiosignal", version = "1.3.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "aiosignal", version = "1.4.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
-    { name = "click", version = "8.1.8", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.10'" },
-    { name = "click", version = "8.3.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.10'" },
-    { name = "filelock", version = "3.16.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "filelock", version = "3.19.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
-    { name = "frozenlist", version = "1.5.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "frozenlist", version = "1.7.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
-    { name = "jsonschema", version = "4.23.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "jsonschema", version = "4.25.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
+    { name = "aiosignal", version = "1.3.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "aiosignal", version = "1.4.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
+    { name = "click", version = "8.1.8", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.10'" },
+    { name = "click", version = "8.3.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.10'" },
+    { name = "filelock", version = "3.16.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "filelock", version = "3.19.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
+    { name = "frozenlist", version = "1.5.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "frozenlist", version = "1.7.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
+    { name = "jsonschema", version = "4.23.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "jsonschema", version = "4.25.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
     { name = "msgpack" },
     { name = "packaging" },
     { name = "protobuf" },
     { name = "pyyaml" },
-    { name = "requests", version = "2.32.4", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "requests", version = "2.32.5", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
+    { name = "requests", version = "2.32.4", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "requests", version = "2.32.5", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
 ]
 wheels = [
     { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/1a/4a/30b2933437bef8389cade16d5db18c5c553d3e4d8b736c4b7fb0e17ae0d7/ray-2.10.0-cp310-cp310-macosx_10_15_x86_64.whl", hash = "sha256:8a174268c7b6ca9826e4884b837395b695a45c17049927965d1b4cc370184ba2", size = 65814419, upload-time = "2024-03-21T18:35:24.336Z" },
@@ -2716,14 +2716,14 @@ wheels = [
 [[package]]
 name = "referencing"
 version = "0.35.1"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')",
 ]
 dependencies = [
     { name = "attrs", marker = "python_full_version < '3.9'" },
-    { name = "rpds-py", version = "0.20.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
+    { name = "rpds-py", version = "0.20.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
 ]
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/99/5b/73ca1f8e72fff6fa52119dbd185f73a907b1989428917b24cff660129b6d/referencing-0.35.1.tar.gz", hash = "sha256:25b42124a6c8b632a425174f24087783efb348a6f1e0008e63cd4466fedf703c", size = 62991, upload-time = "2024-05-01T20:26:04.574Z" }
 wheels = [
@@ -2733,7 +2733,7 @@ wheels = [
 [[package]]
 name = "referencing"
 version = "0.36.2"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version == '3.12.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'darwin')",
@@ -2746,8 +2746,8 @@ resolution-markers = [
 ]
 dependencies = [
     { name = "attrs", marker = "python_full_version >= '3.9'" },
-    { name = "rpds-py", version = "0.27.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
-    { name = "typing-extensions", version = "4.15.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9' and python_full_version < '3.13'" },
+    { name = "rpds-py", version = "0.27.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
+    { name = "typing-extensions", version = "4.15.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9' and python_full_version < '3.13'" },
 ]
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/2f/db/98b5c277be99dd18bfd91dd04e1b759cad18d1a338188c936e92f921c7e2/referencing-0.36.2.tar.gz", hash = "sha256:df2e89862cd09deabbdba16944cc3f10feb6b3e6f18e902f7cc25609a34775aa", size = 74744, upload-time = "2025-01-25T08:48:16.138Z" }
 wheels = [
@@ -2757,7 +2757,7 @@ wheels = [
 [[package]]
 name = "requests"
 version = "2.32.4"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')",
@@ -2776,7 +2776,7 @@ wheels = [
 [[package]]
 name = "requests"
 version = "2.32.5"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version == '3.12.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'darwin')",
@@ -2801,7 +2801,7 @@ wheels = [
 [[package]]
 name = "rpds-py"
 version = "0.20.1"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')",
@@ -2915,7 +2915,7 @@ wheels = [
 [[package]]
 name = "rpds-py"
 version = "0.27.1"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version == '3.12.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'darwin')",
@@ -3087,7 +3087,7 @@ wheels = [
 [[package]]
 name = "setuptools"
 version = "75.3.2"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')",
@@ -3100,7 +3100,7 @@ wheels = [
 [[package]]
 name = "setuptools"
 version = "80.9.0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version == '3.12.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'darwin')",
@@ -3119,7 +3119,7 @@ wheels = [
 [[package]]
 name = "six"
 version = "1.17.0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/94/e7/b2c673351809dca68a0e064b6af791aa332cf192da575fd474ed7d6f16a2/six-1.17.0.tar.gz", hash = "sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81", size = 34031, upload-time = "2024-12-04T17:35:28.174Z" }
 wheels = [
     { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl", hash = "sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274", size = 11050, upload-time = "2024-12-04T17:35:26.475Z" },
@@ -3128,7 +3128,7 @@ wheels = [
 [[package]]
 name = "sympy"
 version = "1.13.3"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')",
@@ -3144,7 +3144,7 @@ wheels = [
 [[package]]
 name = "sympy"
 version = "1.14.0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version == '3.12.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'darwin')",
@@ -3166,7 +3166,7 @@ wheels = [
 [[package]]
 name = "tomli"
 version = "2.2.1"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/18/87/302344fed471e44a87289cf4967697d07e532f2421fdaf868a303cbae4ff/tomli-2.2.1.tar.gz", hash = "sha256:cd45e1dc79c835ce60f7404ec8119f2eb06d38b1deba146f07ced3bbc44505ff", size = 17175, upload-time = "2024-11-27T22:38:36.873Z" }
 wheels = [
     { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/43/ca/75707e6efa2b37c77dadb324ae7d9571cb424e61ea73fad7c56c2d14527f/tomli-2.2.1-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:678e4fa69e4575eb77d103de3df8a895e1591b48e740211bd1067378c69e8249", size = 131077, upload-time = "2024-11-27T22:37:54.956Z" },
@@ -3214,19 +3214,19 @@ resolution-markers = [
     "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')",
 ]
 dependencies = [
-    { name = "filelock", version = "3.16.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')" },
-    { name = "filelock", version = "3.19.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "(python_full_version >= '3.9' and python_full_version < '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.9' and sys_platform == 'darwin')" },
-    { name = "fsspec", version = "2024.9.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')" },
-    { name = "fsspec", version = "2025.3.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "(python_full_version >= '3.9' and python_full_version < '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.9' and sys_platform == 'darwin')" },
+    { name = "filelock", version = "3.16.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')" },
+    { name = "filelock", version = "3.19.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "(python_full_version >= '3.9' and python_full_version < '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.9' and sys_platform == 'darwin')" },
+    { name = "fsspec", version = "2024.9.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')" },
+    { name = "fsspec", version = "2025.3.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "(python_full_version >= '3.9' and python_full_version < '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.9' and sys_platform == 'darwin')" },
     { name = "jinja2", marker = "(python_full_version < '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or sys_platform == 'darwin'" },
-    { name = "networkx", version = "3.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')" },
-    { name = "networkx", version = "3.2.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "(python_full_version == '3.9.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version == '3.9.*' and sys_platform == 'darwin')" },
-    { name = "networkx", version = "3.4.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "(python_full_version == '3.10.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version == '3.10.*' and sys_platform == 'darwin')" },
-    { name = "networkx", version = "3.5", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "(python_full_version >= '3.11' and python_full_version < '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.11' and sys_platform == 'darwin')" },
-    { name = "sympy", version = "1.13.3", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')" },
-    { name = "sympy", version = "1.14.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "(python_full_version >= '3.9' and python_full_version < '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.9' and sys_platform == 'darwin')" },
-    { name = "typing-extensions", version = "4.13.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')" },
-    { name = "typing-extensions", version = "4.15.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "(python_full_version >= '3.9' and python_full_version < '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.9' and sys_platform == 'darwin')" },
+    { name = "networkx", version = "3.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')" },
+    { name = "networkx", version = "3.2.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "(python_full_version == '3.9.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version == '3.9.*' and sys_platform == 'darwin')" },
+    { name = "networkx", version = "3.4.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "(python_full_version == '3.10.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version == '3.10.*' and sys_platform == 'darwin')" },
+    { name = "networkx", version = "3.5", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "(python_full_version >= '3.11' and python_full_version < '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.11' and sys_platform == 'darwin')" },
+    { name = "sympy", version = "1.13.3", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')" },
+    { name = "sympy", version = "1.14.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "(python_full_version >= '3.9' and python_full_version < '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.9' and sys_platform == 'darwin')" },
+    { name = "typing-extensions", version = "4.13.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')" },
+    { name = "typing-extensions", version = "4.15.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "(python_full_version >= '3.9' and python_full_version < '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.9' and sys_platform == 'darwin')" },
 ]
 wheels = [
     { url = "https://download.pytorch.org/whl/cpu/torch-2.4.1-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:fa27b048d32198cda6e9cff0bf768e8683d98743903b7e5d2b1f5098ded1d343" },
@@ -3253,19 +3253,19 @@ resolution-markers = [
     "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')",
 ]
 dependencies = [
-    { name = "filelock", version = "3.16.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')" },
-    { name = "filelock", version = "3.19.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')" },
-    { name = "fsspec", version = "2024.9.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')" },
-    { name = "fsspec", version = "2025.3.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "filelock", version = "3.16.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "filelock", version = "3.19.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "fsspec", version = "2024.9.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "fsspec", version = "2025.3.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')" },
     { name = "jinja2", marker = "(python_full_version >= '3.13' and sys_platform == 'linux') or (platform_machine != 'aarch64' and sys_platform == 'linux') or (platform_python_implementation != 'CPython' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
-    { name = "networkx", version = "3.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')" },
-    { name = "networkx", version = "3.2.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "(python_full_version == '3.9.*' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version == '3.9.*' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version == '3.9.*' and sys_platform != 'darwin' and sys_platform != 'linux')" },
-    { name = "networkx", version = "3.4.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "(python_full_version == '3.10.*' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version == '3.10.*' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version == '3.10.*' and sys_platform != 'darwin' and sys_platform != 'linux')" },
-    { name = "networkx", version = "3.5", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.11' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.11' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.11' and sys_platform != 'darwin' and sys_platform != 'linux')" },
-    { name = "sympy", version = "1.13.3", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')" },
-    { name = "sympy", version = "1.14.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')" },
-    { name = "typing-extensions", version = "4.13.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')" },
-    { name = "typing-extensions", version = "4.15.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "networkx", version = "3.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "networkx", version = "3.2.1", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "(python_full_version == '3.9.*' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version == '3.9.*' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version == '3.9.*' and sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "networkx", version = "3.4.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "(python_full_version == '3.10.*' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version == '3.10.*' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version == '3.10.*' and sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "networkx", version = "3.5", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.11' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.11' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.11' and sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "sympy", version = "1.13.3", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "sympy", version = "1.14.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "typing-extensions", version = "4.13.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "typing-extensions", version = "4.15.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')" },
 ]
 wheels = [
     { url = "https://download.pytorch.org/whl/cpu/torch-2.4.1%2Bcpu-cp310-cp310-linux_x86_64.whl", hash = "sha256:833490a28ac156762ed6adaa7c695879564fa2fd0dc51bcf3fdb2c7b47dc55e6" },
@@ -3283,7 +3283,7 @@ wheels = [
 [[package]]
 name = "tqdm"
 version = "4.67.1"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 dependencies = [
     { name = "colorama", marker = "sys_platform == 'win32'" },
 ]
@@ -3295,7 +3295,7 @@ wheels = [
 [[package]]
 name = "typing-extensions"
 version = "4.13.2"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')",
@@ -3308,7 +3308,7 @@ wheels = [
 [[package]]
 name = "typing-extensions"
 version = "4.15.0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version == '3.12.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'darwin')",
@@ -3327,7 +3327,7 @@ wheels = [
 [[package]]
 name = "tzdata"
 version = "2025.2"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/95/32/1a225d6164441be760d75c2c42e2780dc0873fe382da3e98a2e1e48361e5/tzdata-2025.2.tar.gz", hash = "sha256:b60a638fcc0daffadf82fe0f57e53d06bdec2f36c4df66280ae79bce6bd6f2b9", size = 196380, upload-time = "2025-03-23T13:54:43.652Z" }
 wheels = [
     { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/5c/23/c7abc0ca0a1526a0774eca151daeb8de62ec457e77262b66b359c3c7679e/tzdata-2025.2-py2.py3-none-any.whl", hash = "sha256:1a403fada01ff9221ca8044d701868fa132215d84beb92242d9acd2147f667a8", size = 347839, upload-time = "2025-03-23T13:54:41.845Z" },
@@ -3336,7 +3336,7 @@ wheels = [
 [[package]]
 name = "urllib3"
 version = "1.26.20"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/e4/e8/6ff5e6bc22095cfc59b6ea711b687e2b7ed4bdb373f7eeec370a97d7392f/urllib3-1.26.20.tar.gz", hash = "sha256:40c2dc0c681e47eb8f90e7e27bf6ff7df2e677421fd46756da1161c39ca70d32", size = 307380, upload-time = "2024-08-29T15:43:11.37Z" }
 wheels = [
     { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/33/cf/8435d5a7159e2a9c83a95896ed596f68cf798005fe107cc655b5c5c14704/urllib3-1.26.20-py2.py3-none-any.whl", hash = "sha256:0ed14ccfbf1c30a9072c7ca157e4319b70d65f623e91e7b32fadb2853431016e", size = 144225, upload-time = "2024-08-29T15:43:08.921Z" },
@@ -3345,7 +3345,7 @@ wheels = [
 [[package]]
 name = "xxhash"
 version = "3.5.0"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/00/5e/d6e5258d69df8b4ed8c83b6664f2b47d30d2dec551a29ad72a6c69eafd31/xxhash-3.5.0.tar.gz", hash = "sha256:84f2caddf951c9cbf8dc2e22a89d4ccf5d86391ac6418fe81e3c67d0cf60b45f", size = 84241, upload-time = "2024-08-17T09:20:38.972Z" }
 wheels = [
     { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/bb/8a/0e9feca390d512d293afd844d31670e25608c4a901e10202aa98785eab09/xxhash-3.5.0-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:ece616532c499ee9afbb83078b1b952beffef121d989841f7f4b3dc5ac0fd212", size = 31970, upload-time = "2024-08-17T09:17:35.675Z" },
@@ -3457,15 +3457,15 @@ wheels = [
 [[package]]
 name = "yarl"
 version = "1.15.2"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version < '3.9' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.9' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version < '3.9' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.9' and sys_platform == 'darwin')",
 ]
 dependencies = [
     { name = "idna", marker = "python_full_version < '3.9'" },
-    { name = "multidict", version = "6.1.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
-    { name = "propcache", version = "0.2.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.9'" },
+    { name = "multidict", version = "6.1.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "propcache", version = "0.2.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
 ]
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/06/e1/d5427a061819c9f885f58bb0467d02a523f1aec19f9e5f9c82ce950d90d3/yarl-1.15.2.tar.gz", hash = "sha256:a39c36f4218a5bb668b4f06874d676d35a035ee668e6e7e3538835c703634b84", size = 169318, upload-time = "2024-10-13T18:48:04.311Z" }
 wheels = [
@@ -3571,7 +3571,7 @@ wheels = [
 [[package]]
 name = "yarl"
 version = "1.20.1"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 resolution-markers = [
     "(python_full_version >= '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and platform_python_implementation != 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
     "(python_full_version == '3.12.*' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'darwin')",
@@ -3584,8 +3584,8 @@ resolution-markers = [
 ]
 dependencies = [
     { name = "idna", marker = "python_full_version >= '3.9'" },
-    { name = "multidict", version = "6.6.4", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
-    { name = "propcache", version = "0.3.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.9'" },
+    { name = "multidict", version = "6.6.4", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
+    { name = "propcache", version = "0.3.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
 ]
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/3c/fb/efaa23fa4e45537b827620f04cf8f3cd658b76642205162e072703a5b963/yarl-1.20.1.tar.gz", hash = "sha256:d017a4997ee50c91fd5466cef416231bb82177b93b029906cefc542ce14c35ac", size = 186428, upload-time = "2025-06-10T00:46:09.923Z" }
 wheels = [
@@ -3697,7 +3697,7 @@ wheels = [
 [[package]]
 name = "zipp"
 version = "3.20.2"
-source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/" }
+source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }
 sdist = { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/54/bf/5c0000c44ebc80123ecbdddba1f5dcd94a5ada602a9c225d84b5aaa55e86/zipp-3.20.2.tar.gz", hash = "sha256:bc9eb26f4506fda01b81bcde0ca78103b6e62f991b381fec825435c836edbc29", size = 24199, upload-time = "2024-09-13T13:44:16.101Z" }
 wheels = [
     { url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/packages/62/8b/5ba542fa83c90e09eac972fc9baca7a88e7e7ca4b221a89251954019308b/zipp-3.20.2-py3-none-any.whl", hash = "sha256:a817ac80d6cf4b23bf7f2828b7cabf326f15a001bea8b1f9b49631780ba28350", size = 9200, upload-time = "2024-09-13T13:44:14.38Z" },

@@ -412,9 +412,9 @@ fn parse_buf(buf: &[u8]) -> Result<FilterContainer, DataFusionError> {
     {
         return Ok(FilterContainer::ExtenedExpr(expr));
     }
-    return Err(DataFusionError::Substrait(
+    Err(DataFusionError::Substrait(
         "Parse substrait failed. Unsupported filter type".to_string(),
-    ));
+    ))
 }
 
 fn _from_nullability(nullability: Nullability) -> bool {

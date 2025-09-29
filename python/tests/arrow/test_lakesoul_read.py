@@ -146,7 +146,7 @@ def test_duckdb_compatibility():
 
     conn = duckdb.connect()
     _lds = lakesoul_dataset("part")
-    results = conn.execute("select * from _lds").arrow()
+    results = conn.sql("select * from _lds").arrow()
     assert len(results) == 20000
 
 
@@ -155,5 +155,5 @@ def test_duckdb_compatibility_with_filter():
 
     conn = duckdb.connect()
     _lds = lakesoul_dataset("part")
-    results = conn.execute("select * from _lds where p_size = 50").arrow()
+    results = conn.sql("select * from _lds where p_size = 50").arrow()
     assert len(results) == 392

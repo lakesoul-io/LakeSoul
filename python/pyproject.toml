@@ -78,7 +78,7 @@ features = ["pyo3/extension-module"]
 addopts = ["--import-mode=importlib"]
 
 [[tool.uv.index]]
-url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/"
+url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
 default = true
 
 [tool.ruff]

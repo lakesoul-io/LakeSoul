@@ -381,9 +381,9 @@ pub async fn convert_filter(
 ) -> Result<Vec<Expr>> {
     let iter = filter_str
         .into_iter()
-        .map(|s| FilterContainer::String(s))
-        .chain(filter_protos.into_iter().map(|p| FilterContainer::Plan(p)))
-        .chain(filter_bufs.into_iter().map(|b| FilterContainer::RawBuf(b)));
+        .map(FilterContainer::String)
+        .chain(filter_protos.into_iter().map(FilterContainer::Plan))
+        .chain(filter_bufs.into_iter().map(FilterContainer::RawBuf));
 
     let mut exprs: Vec<Expr> = Vec::new();
 
