@@ -34,7 +34,9 @@ SHELL ["/bin/bash", "-c"]
 
 RUN echo $'---\n\
 version: 1\n\
-threads: 4' > /opt/proxy_conf.yaml
+threads: 4\n\
+grace_period_seconds: 3\n\
+graceful_shutdown_timeout_seconds: 3' > /opt/proxy_conf.yaml
 
 USER ${LAKESOUL_USER}
 WORKDIR ${HOME}

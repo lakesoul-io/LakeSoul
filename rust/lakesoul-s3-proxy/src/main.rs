@@ -76,6 +76,7 @@ fn main() {
         (Ok(user), Ok(group)) => (user, group, true),
         _ => (String::new(), String::new(), false),
     };
+    let common_prefix = std::env::var("LAKESOUL_COMMON_PREFIX").ok();
 
     let verify_client_signature = std::env::var("CLIENT_AWS_SECRET").is_ok()
         && std::env::var("CLIENT_AWS_KEY").is_ok();
@@ -95,8 +96,15 @@ fn main() {
         80
     };
     info!(
-        "endpoint {}, region {}, virtual_host {}, verify rbac {}, verify client {}, tls {}, port {}",
-        endpoint, region, virtual_host, verify_meta, verify_client_signature, tls, port
+        "endpoint {}, region {}, virtual_host {}, verify rbac {}, verify client {}, tls {}, port {}, common_prefix {:?}",
+        endpoint,
+        region,
+        virtual_host,
+        verify_meta,
+        verify_client_signature,
+        tls,
+        port,
+        common_prefix
     );
 
     let mut upstreams = LoadBalancer::from(DnsDiscovery::new(
@@ -121,6 +129,7 @@ fn main() {
             group,
             verify_meta,
             virtual_host,
+            common_prefix,
         },
     );
     let cred = background_s3_credentials.task();
@@ -163,6 +172,7 @@ pub struct Credentials {
     group: String,
     verify_meta: bool,
     virtual_host: bool,
+    common_prefix: Option<String>,
 }
 
 fn starts_with_any(
@@ -170,10 +180,12 @@ fn starts_with_any(
     bucket: &str,
     group: &str,
     prefixes: &'static [&str],
+    common_prefix: &Option<String>,
 ) -> bool {
-    prefixes
-        .iter()
-        .any(|p| path.starts_with(format!("s3://{}/{}/{}", bucket, p, group).as_str()))
+    prefixes.iter().any(|p| match common_prefix {
+        None => path.starts_with(format!("s3://{}/{}/{}", bucket, p, group).as_str()),
+        Some(prefix) => path.starts_with(format!("{}/{}/{}", prefix, p, group).as_str()),
+    })
 }
 
 impl Credentials {
@@ -189,13 +201,19 @@ impl Credentials {
             if let Some(client) = binding.as_ref() {
                 let path = parse_table_path(&headers.uri, bucket);
                 debug!("Parsed table path {:?}", path);
-                if path.starts_with(
-                    format!("s3://{}/{}/{}", bucket, self.group, self.user).as_str(),
-                ) || starts_with_any(
+                if match self.common_prefix {
+                    Some(ref prefix) => path.starts_with(
+                        format!("{}/{}/{}", prefix, self.group, self.user).as_str(),
+                    ),
+                    None => path.starts_with(
+                        format!("s3://{}/{}/{}", bucket, self.group, self.user).as_str(),
+                    ),
+                } || starts_with_any(
                     path.as_str(),
                     bucket,
                     self.group.as_str(),
                     &["savepoint", "checkpoint", "resource-manager"],
+                    &self.common_prefix,
                 ) {
                     return Ok(());
                 }
