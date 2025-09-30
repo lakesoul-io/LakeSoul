@@ -35,3 +35,6 @@ default = []
 
 [build-dependencies]
 cbindgen = "0.29.0"
+
+[lints]
+workspace = true

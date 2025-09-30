@@ -151,6 +151,8 @@ pub struct LakeSoulIOConfig {
     pub(crate) filters: Vec<Expr>,
     /// Filter predicates as substrait plans
     pub(crate) filter_protos: Vec<Plan>,
+    /// Filter predicates as substrait raw buf
+    pub(crate) filter_buf: Vec<Vec<u8>>,
     /// Number of rows per batch for reading/writing
     #[derivative(Default(value = "8192"))]
     pub(crate) batch_size: usize,
@@ -563,6 +565,16 @@ impl LakeSoulIOConfigBuilder {
     /// * `filter_proto` - The filter proto to add
     pub fn with_filter_proto(mut self, filter_proto: Plan) -> Self {
         self.config.filter_protos.push(filter_proto);
+        self
+    }
+
+    /// Adds a filter protobuf to the list of filter bufs
+    ///
+    /// # Arguments
+    ///
+    /// * `filter_buf` - The filter proto buf to add
+    pub fn with_filter_buf(mut self, filter_buf: Vec<u8>) -> Self {
+        self.config.filter_buf.push(filter_buf);
         self
     }
 

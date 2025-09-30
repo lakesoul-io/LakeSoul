@@ -6,16 +6,16 @@ use std::ops::Not;
 use std::sync::Arc;
 
 use anyhow::anyhow;
-use arrow_schema::{DataType, Field, Fields, SchemaRef};
+use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef};
 use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::logical_expr::Expr;
 use datafusion::prelude::{SessionContext, col};
 use datafusion::scalar::ScalarValue;
-use datafusion_common::DataFusionError::{External, Internal};
+use datafusion_common::DataFusionError::{self, External, Internal};
 use datafusion_common::{Column, DFSchema, Result};
 use datafusion_substrait::extensions::Extensions;
 use datafusion_substrait::logical_plan::consumer::{
-    DefaultSubstraitConsumer, from_substrait_rex,
+    DefaultSubstraitConsumer, from_substrait_extended_expr, from_substrait_rex,
 };
 use datafusion_substrait::substrait::proto::expression::field_reference::ReferenceType;
 use datafusion_substrait::substrait::proto::expression::literal::LiteralType;
@@ -28,15 +28,23 @@ use datafusion_substrait::substrait::proto::plan_rel::RelType::Root;
 use datafusion_substrait::substrait::proto::rel::RelType::Read;
 use datafusion_substrait::substrait::proto::r#type::Nullability;
 use datafusion_substrait::substrait::proto::{
-    Expression, FunctionArgument, Plan, PlanRel, Rel, RelRoot,
+    Expression, ExtendedExpression, FunctionArgument, Plan, PlanRel, Rel, RelRoot,
 };
 #[allow(deprecated)]
 use datafusion_substrait::variation_const::TIMESTAMP_MICRO_TYPE_VARIATION_REF;
+use prost::Message;
 use tokio::runtime::{Builder, Handle};
 use tokio::task;
 
 /// The parser for parsing the filter string from Java or Subtrait Plan.
 pub struct Parser {}
+
+pub enum FilterContainer {
+    RawBuf(Vec<u8>),
+    String(String),
+    Plan(Plan),
+    ExtenedExpr(ExtendedExpression),
+}
 
 impl Parser {
     pub fn parse(filter_str: String, schema: SchemaRef) -> Result<Expr> {
@@ -325,6 +333,37 @@ impl Parser {
             }
         }
     }
+
+    pub async fn parse_filter_container(
+        context: &SessionContext,
+        schema: &DFSchema,
+        container: FilterContainer,
+    ) -> Result<Vec<Expr>> {
+        match container {
+            FilterContainer::RawBuf(buf) => {
+                let c = parse_buf(&buf)?;
+                return Box::pin(Parser::parse_filter_container(context, schema, c))
+                    .await;
+            }
+            FilterContainer::String(s) => {
+                let arrow_schema = Arc::new(Schema::from(schema));
+                Ok(vec![Parser::parse(s, arrow_schema)?])
+            }
+            FilterContainer::Plan(plan) => {
+                Ok(vec![Parser::parse_substrait_plan(plan, schema)?])
+            }
+            FilterContainer::ExtenedExpr(extended_expression) => {
+                let expr_container =
+                    from_substrait_extended_expr(&context.state(), &extended_expression)
+                        .await?;
+                Ok(expr_container
+                    .exprs
+                    .into_iter()
+                    .map(|(expr, _)| expr)
+                    .collect::<Vec<Expr>>())
+            }
+        }
+    }
 }
 
 fn qualified_expr(expr_str: &str, schema: SchemaRef) -> Option<(Expr, Arc<Field>)> {
@@ -359,6 +398,23 @@ fn qualified_expr(expr_str: &str, schema: SchemaRef) -> Option<(Expr, Arc<Field>
         }
         expr
     }
+}
+
+// never buf -> FilterContainer::RawBuf
+fn parse_buf(buf: &[u8]) -> Result<FilterContainer, DataFusionError> {
+    if let Ok(p) =
+        Plan::decode(buf).map_err(|e| DataFusionError::Substrait(e.to_string()))
+    {
+        return Ok(FilterContainer::Plan(p));
+    }
+    if let Ok(expr) = ExtendedExpression::decode(buf)
+        .map_err(|e| DataFusionError::Substrait(e.to_string()))
+    {
+        return Ok(FilterContainer::ExtenedExpr(expr));
+    }
+    Err(DataFusionError::Substrait(
+        "Parse substrait failed. Unsupported filter type".to_string(),
+    ))
 }
 
 fn _from_nullability(nullability: Nullability) -> bool {

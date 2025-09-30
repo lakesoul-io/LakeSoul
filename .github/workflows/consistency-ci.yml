@@ -26,7 +26,7 @@ permissions:
 
 jobs:
   verify-hash-consistency:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       # Label used to access the service container
       postgres:
@@ -99,17 +99,17 @@ jobs:
           default: true
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "./rust -> target"
+          workspaces: "./ -> target"
       - uses: actions-rs/cargo@v1
         with:
           use-cross: true
           command: build
-          args: '--manifest-path rust/Cargo.toml --target x86_64-unknown-linux-gnu --package lakesoul-io-c --package lakesoul-metadata-c --release --all-features'
+          args: '--target x86_64-unknown-linux-gnu --package lakesoul-io-c --package lakesoul-metadata-c --release --all-features'
       - name: Build with Maven
         run: |
-          mkdir -p rust/target/release
-          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so rust/target/release
-          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so rust/target/release
+          mkdir -p target/release
+          cp target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so target/release
+          cp target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so target/release
           MAVEN_OPTS="-Xmx4000m" mvn -q -B package -f pom.xml -Pcross-build -DskipTests
       - name: Get jar names
         run: |
@@ -137,7 +137,6 @@ jobs:
       - name: Verify that benchmark queries return expected results
         run: |
           export TPCH_DATA=`realpath lakesoul/test_files/tpch/data`
-          cd ./rust
           # use release build for plan verificaton because debug build causes stack overflow
           cargo test --release load_tpch_data --package lakesoul-datafusion --features=ci -- --nocapture
           PGPASSWORD='lakesoul_test' psql -U lakesoul_test  -h 127.0.0.1 -p 5432 -d lakesoul_test -c "select * from table_info;"

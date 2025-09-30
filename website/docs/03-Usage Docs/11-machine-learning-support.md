@@ -2,7 +2,7 @@
 
 LakeSoul implements interfaces for PyTorch/PyArrow/HuggingFace/Ray, allowing users to retrieve datasets from LakeSoul
 tables through the interfaces. Distributed reading is supported for both PyTorch and Ray. LakeSoul for Python has now
-released 1.0 Beta.
+released 1.1.0 .
 
 ## Install
 
@@ -19,7 +19,7 @@ pip install lakesoul
 We have provide several AI training examples using LakeSoul as data source. Follow the below instructions to setup a
 testing environment.
 
-```bash  
+```bash
 # change python version if needed
 conda create -n lakesoul_test python=3.8
 conda activate lakesoul_test
@@ -214,4 +214,28 @@ for batch in ds.to_batches():
 # convert to pandas table
 # this will load entire table into memory
 df = ds.to_table().to_pandas()
+
+# apply filter
+filter = pc.field("column") == 50
+scanner = lds.scanner(filter=filter)
+table = scanner.to_table()
+
+# prune columns
+cols = ["col1"]
+scanner = lakesoul_dataset("table_name").scanner(columns=cols)
+table = scanner.to_table()
+```
+
+## DuckDB Reads LakeSoul Table
+DuckDB can read LakeSoul tables by accessing Apache Arrow Datasets, but it does not currently support the DuckDBPyConnection::Excute API. Example：
+
+```python
+import duckdb
+
+conn = duckdb.connect()
+_lds = lakesoul_dataset("table_name")
+results = conn.sql("select * from _lds")
+
+# with filter
+results = conn.sql("select * from _lds where col1 = 50")
 ```

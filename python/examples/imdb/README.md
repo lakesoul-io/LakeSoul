@@ -5,6 +5,10 @@ Demonstrate the capability of fine-tuning a BERT model using the HuggingFace Tra
 ## Prepare data
 We can download data from [Hugginface IMDB dataset](https://huggingface.co/datasets/imdb/tree/refs%2Fconvert%2Fparquet/plain_text/train) into `imdb/dataset/` directory.
 
+```bash
+```
+
+
 ## Import data into LakeSoul
 ```shell
 export lakesoul_jar=lakesoul-spark-2.5.1-spark-3.3.jar
@@ -14,21 +18,20 @@ sudo docker run --rm -ti --net lakesoul-docker-compose-env_default \
 -v $PWD/lakesoul.properties:/opt/spark/work-dir/lakesoul.properties \
 -v $PWD/imdb:/opt/spark/work-dir/imdb \
 --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties \
-bitnami/spark:3.3.1 spark-submit --jars /opt/spark/work-dir/jars/"${lakesoul_jar}" --driver-memory 16G --executor-memory 16G --master "local[4]" --conf spark.pyspark.python=./venv/bin/python3 /opt/spark/work-dir/imdb/import_data.py
+swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/bitnami/spark:3.3.1 spark-submit --jars /opt/spark/work-dir/jars/"${lakesoul_jar}" --driver-memory 16G --executor-memory 16G --master "local[4]" --conf spark.pyspark.python=./venv/bin/python3 /opt/spark/work-dir/imdb/import_data.py
 ```
 
 ## Train model using HuggingFace Trainer API
 ```shell
 conda activate lakesoul_test
-python imdb/train.py 
+python imdb/train.py
 ```
 
 ## Inference the trained model
-```shell 
+```shell
 python imdb/inference.py
 ```
 
 ##  Reference:
 1. https://huggingface.co/docs/transformers/tasks/sequence_classification
 2. https://huggingface.co/datasets/imdb
-

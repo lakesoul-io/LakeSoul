@@ -39,3 +39,5 @@ jsonwebtoken = { version = "9", default-features = false }
 test-log = { workspace = true, features = ["trace"] }
 tracing-subscriber = { workspace = true }
 
+[lints]
+workspace = true

@@ -1,11 +1,10 @@
-lakesoul @ file://${PWD}/lakesoul-1.0.0b2-cp38-cp38-manylinux_2_28_x86_64.whl
-numpy<2.0
+lakesoul
 pandas
 torch
 tqdm
-transformers 
+transformers
 sentence-transformers
-datasets 
+datasets
 evaluate
 accelerate
 scikit-learn

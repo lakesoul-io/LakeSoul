@@ -9,7 +9,7 @@ use std::{any::Any, collections::HashMap};
 
 use crate::default_column_stream::DefaultColumnStream;
 use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;
-use crate::filter::parser::Parser as FilterParser;
+use crate::filter::parser::{FilterContainer, Parser as FilterParser};
 use crate::lakesoul_io_config::LakeSoulIOConfig;
 use crate::sorted_merge::merge_operator::MergeOperator;
 use crate::sorted_merge::sorted_stream_merger::{
@@ -18,10 +18,12 @@ use crate::sorted_merge::sorted_stream_merger::{
 use arrow_schema::{Field, Schema, SchemaRef};
 use datafusion::dataframe::DataFrame;
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
+
 use datafusion::logical_expr::Expr;
 use datafusion::physical_expr::{EquivalenceProperties, LexOrdering};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::{ExecutionPlanProperties, Partitioning, PlanProperties};
+use datafusion::prelude::SessionContext;
 #[allow(deprecated)]
 use datafusion::{
     datasource::physical_plan::{FileScanConfig, ParquetExec},
@@ -370,29 +372,27 @@ fn schema_intersection(df_schema: DFSchemaRef, request_schema: SchemaRef) -> Vec
 }
 
 /// Convert the filter string from Java or [`datafusion_substrait::substrait::proto::Plan`] to the [`datafusion::logical_expr::Expr`].
-pub fn convert_filter(
+pub async fn convert_filter(
+    ctx: &SessionContext,
     df: &DataFrame,
     filter_str: Vec<String>,
     filter_protos: Vec<Plan>,
+    filter_bufs: Vec<Vec<u8>>,
 ) -> Result<Vec<Expr>> {
-    let arrow_schema = Arc::new(Schema::from(df.schema()));
-    debug!("schema:{:?}", arrow_schema);
-    let mut str_filters = vec![];
-    for f in &filter_str {
-        let filter = FilterParser::parse(f.clone(), arrow_schema.clone())?;
-        str_filters.push(filter);
-    }
-    let proto_filters = filter_protos
+    let iter = filter_str
         .into_iter()
-        .map(|plan| FilterParser::parse_substrait_plan(plan, df.schema()))
-        .collect::<Result<Vec<_>>>()?;
-    debug!("str filters: {:#?}", str_filters);
-    debug!("proto filters: {:#?}", proto_filters);
-    if proto_filters.is_empty() {
-        Ok(str_filters)
-    } else {
-        Ok(proto_filters)
+        .map(FilterContainer::String)
+        .chain(filter_protos.into_iter().map(FilterContainer::Plan))
+        .chain(filter_bufs.into_iter().map(FilterContainer::RawBuf));
+
+    let mut exprs: Vec<Expr> = Vec::new();
+
+    for container in iter {
+        exprs.extend(
+            FilterParser::parse_filter_container(ctx, df.schema(), container).await?,
+        );
     }
+    Ok(exprs)
 }
 
 /// Execute the dataframe by colum pruning and row filtering.

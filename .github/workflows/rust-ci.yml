@@ -23,7 +23,7 @@ env:
 
 jobs:
   rust_ci:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       # Label used to access the service container
       postgres:
@@ -45,7 +45,7 @@ jobs:
           # Maps tcp port 5432 on service container to the host
           - 5432:5432
       minio:
-        image: bitnami/minio:2025.4.22-debian-12-r1
+        image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/bitnami/minio:2025.4.22-debian-12-r1
         ports:
           - "9000:9000"
           - "9001:9001"
@@ -83,7 +83,6 @@ jobs:
         with:
           version: "23.x"
       - name: Build and test
-        working-directory: ./rust
         run: |
           rm -f Cargo.lock
           cargo clean

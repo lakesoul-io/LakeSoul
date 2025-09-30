@@ -1,0 +1,37 @@
+[package]
+name = "lakesoul-python"
+authors = ["LakeSoul Contributors"]
+edition = "2024"
+publish = false
+version = "1.1.0"
+build = "build.rs"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.24.1", features = [
+    "extension-module",
+    "experimental-async",
+    "abi3-py38",
+] }
+pyo3-log = "0.12"
+log = "0.4"
+lakesoul-io = { path = "../rust/lakesoul-io" }
+lakesoul-metadata = { path = "../rust/lakesoul-metadata" }
+tokio.workspace = true
+arrow-pyarrow.workspace = true
+arrow-schema.workspace = true
+arrow-array.workspace = true
+futures.workspace = true
+prost.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+datafusion-substrait = { workspace = true }
+
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+datafusion-substrait = { workspace = true, features = ["protoc"] }
+
+
+[lints]
+workspace = true

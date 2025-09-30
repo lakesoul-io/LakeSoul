@@ -16,7 +16,7 @@
 //!
 //! let config = LakeSoulIOConfigBuilder::new()
 //!     .with_files(vec!["path/to/file.parquet"])
-//!     .build();   
+//!     .build();
 //!
 //! let runtime = tokio::runtime::Runtime::new().unwrap();
 //! let mut writer = SyncSendableMutableLakeSoulWriter::try_new(config, runtime).unwrap();
@@ -245,7 +245,6 @@ impl SyncSendableMutableLakeSoulWriter {
         }
     }
 
-    #[async_recursion::async_recursion(?Send)]
     async fn write_batch_async(
         &mut self,
         record_batch: RecordBatch,
@@ -273,8 +272,8 @@ impl SyncSendableMutableLakeSoulWriter {
                     let b =
                         record_batch.slice(to_write, record_batch.num_rows() - to_write);
                     drop(guard);
-                    self.write_batch_async(a, true).await?;
-                    return self.write_batch_async(b, false).await;
+                    Box::pin(self.write_batch_async(a, true)).await?;
+                    return Box::pin(self.write_batch_async(b, false)).await;
                 }
             }
             let rb_schema = record_batch.schema();
@@ -437,7 +436,7 @@ mod tests {
             let to_write = RecordBatch::try_from_iter([("col", col)])?;
             let temp_dir = tempfile::tempdir()?;
             let path = temp_dir
-                .into_path()
+                .keep()
                 .join("test.parquet")
                 .into_os_string()
                 .into_string()
@@ -520,7 +519,7 @@ mod tests {
             RecordBatch::try_from_iter([("col", col), ("col1", col1), ("col2", col2)])?;
         let temp_dir = tempfile::tempdir()?;
         let path = temp_dir
-            .into_path()
+            .keep()
             .join("test.parquet")
             .into_os_string()
             .into_string()
@@ -748,7 +747,7 @@ mod tests {
         let to_write = create_batch(num_columns, num_rows, str_len);
         let temp_dir = tempfile::tempdir()?;
         let path = temp_dir
-            .into_path()
+            .keep()
             .join("test.parquet")
             .into_os_string()
             .into_string()
@@ -835,7 +834,7 @@ mod tests {
         let to_write = create_batch(num_columns, num_rows, str_len);
         let temp_dir = tempfile::tempdir()?;
         let path = temp_dir
-            .into_path()
+            .keep()
             .join("test.parquet")
             .into_os_string()
             .into_string()
@@ -844,7 +843,7 @@ mod tests {
             .with_files(vec![path.clone()])
             .with_prefix(
                 tempfile::tempdir()?
-                    .into_path()
+                    .keep()
                     .into_os_string()
                     .into_string()
                     .unwrap(),

@@ -1,0 +1,3 @@
+src/lakesoul/**/.so
+dist/
+**/.ruff_cache

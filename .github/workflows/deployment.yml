@@ -12,7 +12,7 @@ on:
 
 jobs:
   build-linux-x86_64:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Set up JDK 11
@@ -28,24 +28,24 @@ jobs:
           default: true
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "./rust -> target"
+          workspaces: "./ -> target"
       - name: Cache Docker images
         uses: ScribeMD/docker-cache@0.4.0
         with:
-          key: docker-${{ runner.os }}-${{ hashFiles('rust/Cross.toml') }}
+          key: docker-${{ runner.os }}-${{ hashFiles('Cross.toml') }}
       - uses: actions-rs/cargo@v1
         with:
           use-cross: true
           command: build
-          args: '--manifest-path rust/Cargo.toml --target x86_64-unknown-linux-gnu --package lakesoul-io-c --package lakesoul-metadata-c --release --all-features'
+          args: '--target x86_64-unknown-linux-gnu --package lakesoul-io-c --package lakesoul-metadata-c --release --all-features'
       - uses: actions/upload-artifact@v4
         with:
           name: lakesoul-nativeio-x86_64-unknown-linux-gnu
-          path: ./rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so
+          path: ./target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so
       - uses: actions/upload-artifact@v4
         with:
           name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu
-          path: ./rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so
+          path: ./target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so
 
   build-windows-x86_64:
     runs-on: windows-latest
@@ -69,19 +69,19 @@ jobs:
           default: true
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "./rust -> target"
+          workspaces: "./ -> target"
       - uses: actions-rs/cargo@v1
         with:
           command: build
-          args: '--manifest-path rust/Cargo.toml --release --package lakesoul-io-c --package lakesoul-metadata-c --all-features'
+          args: '--release --package lakesoul-io-c --package lakesoul-metadata-c --all-features'
       - uses: actions/upload-artifact@v4
         with:
           name: lakesoul-nativeio-x86_64-pc-windows-msvc
-          path: ./rust/target/release/lakesoul_io_c.dll
+          path: ./target/release/lakesoul_io_c.dll
       - uses: actions/upload-artifact@v4
         with:
           name: lakesoul-nativemetadata-x86_64-pc-windows-msvc
-          path: ./rust/target/release/lakesoul_metadata_c.dll
+          path: ./target/release/lakesoul_metadata_c.dll
 
   build-macos-x86_64:
     runs-on: macos-latest
@@ -107,50 +107,50 @@ jobs:
           default: true
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "./rust -> target"
+          workspaces: "./ -> target"
       - uses: actions-rs/cargo@v1
         with:
           command: build
-          args: '--manifest-path rust/Cargo.toml --package lakesoul-io-c --package lakesoul-metadata-c --release --all-features'
+          args: '--package lakesoul-io-c --package lakesoul-metadata-c --release --all-features'
       - uses: actions/upload-artifact@v4
         with:
           name: lakesoul-nativeio-x86_64-apple-darwin
-          path: ./rust/target/release/liblakesoul_io_c.dylib
+          path: ./target/release/liblakesoul_io_c.dylib
       - uses: actions/upload-artifact@v4
         with:
           name: lakesoul-nativemetadata-x86_64-apple-darwin
-          path: ./rust/target/release/liblakesoul_metadata_c.dylib
+          path: ./target/release/liblakesoul_metadata_c.dylib
 
 
   deploy-maven-package:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [ build-linux-x86_64, build-windows-x86_64, build-macos-x86_64 ]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: lakesoul-nativeio-x86_64-unknown-linux-gnu
-          path: ./rust/target/release/
+          path: ./target/release/
       - uses: actions/download-artifact@v4
         with:
           name: lakesoul-nativeio-x86_64-apple-darwin
-          path: ./rust/target/release/
+          path: ./target/release/
       - uses: actions/download-artifact@v4
         with:
           name: lakesoul-nativeio-x86_64-pc-windows-msvc
-          path: ./rust/target/release/
+          path: ./target/release/
       - uses: actions/download-artifact@v4
         with:
           name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu
-          path: ./rust/target/release/
+          path: ./target/release/
       - uses: actions/download-artifact@v4
         with:
           name: lakesoul-nativemetadata-x86_64-apple-darwin
-          path: ./rust/target/release/
+          path: ./target/release/
       - uses: actions/download-artifact@v4
         with:
           name: lakesoul-nativemetadata-x86_64-pc-windows-msvc
-          path: ./rust/target/release/
+          path: ./target/release/
       - name: Set up JDK 11
         uses: actions/setup-java@v5
         with:

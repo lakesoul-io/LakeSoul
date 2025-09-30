@@ -28,13 +28,14 @@
 //! }
 //! ```
 
+use arrow_array::RecordBatchReader;
 use atomic_refcell::AtomicRefCell;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use std::sync::Arc;
 
-use arrow_schema::SchemaRef;
+use arrow_schema::{ArrowError, SchemaRef};
 
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::{DataFusionError, Result};
@@ -164,10 +165,13 @@ impl LakeSoulReader {
 
             let dataframe = self.sess_ctx.read_table(Arc::new(source))?;
             let filters = convert_filter(
+                &self.sess_ctx,
                 &dataframe,
-                self.config.filter_strs.clone(),
-                self.config.filter_protos.clone(),
-            )?;
+                std::mem::take(&mut self.config.filter_strs),
+                std::mem::take(&mut self.config.filter_protos),
+                std::mem::take(&mut self.config.filter_buf),
+            )
+            .await?;
 
             // Check if filters are or-conjunction of primary column
             let skip_reader = if self.config.skip_merge_on_read()
@@ -270,6 +274,10 @@ impl LakeSoulReader {
         } else {
             None
         }
+    }
+
+    pub fn stream(&mut self) -> Option<SendableRecordBatchStream> {
+        self.stream.take()
     }
 }
 
@@ -404,6 +412,25 @@ impl SyncSendableMutableLakeSoulReader {
 
     fn get_inner_reader(&self) -> Arc<AtomicRefCell<Mutex<LakeSoulReader>>> {
         self.inner.clone()
+    }
+}
+
+impl RecordBatchReader for SyncSendableMutableLakeSoulReader {
+    fn schema(&self) -> SchemaRef {
+        self.get_schema().expect("reader has no schema")
+    }
+}
+
+impl Iterator for SyncSendableMutableLakeSoulReader {
+    type Item = Result<RecordBatch, ArrowError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.next_rb_blocked().map(|res| {
+            res.map_err(|e| match e {
+                DataFusionError::ArrowError(arrow_error, _) => arrow_error,
+                other => ArrowError::ExternalError(format!("{other}").into()),
+            })
+        })
     }
 }
 
@@ -1153,7 +1180,7 @@ mod tests {
         let num_rows = 1000;
         let num_columns = 100;
         let str_len = 4;
-        let _temp_dir = tempfile::tempdir()?.into_path();
+        let _temp_dir = tempfile::tempdir()?.keep();
         let temp_dir = std::env::current_dir()?.join("temp_dir");
         let with_pk = true;
         let to_write_schema = create_schema(num_columns, with_pk);

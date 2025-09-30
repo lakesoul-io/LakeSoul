@@ -459,7 +459,7 @@ impl<C: CursorValues, const IS_PARTIAL_MERGE: bool>
     pub fn set_current_sort_key_range(
         ranges: &mut UseLastSortKeyBatchRanges<C, IS_PARTIAL_MERGE>,
         range: &SortKeyBatchRange<C>,
-        fields_map: &Vec<Vec<usize>>,
+        fields_map: &[Vec<usize>],
     ) {
         ranges.add_range_in_batch(range, fields_map);
     }
