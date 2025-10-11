@@ -2,21 +2,18 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use arc_swap::{ArcSwap, ArcSwapOption};
+mod aws;
+mod azure;
+mod handler;
+
+use crate::aws::AWSHandler;
+use crate::azure::AzureHandler;
+use crate::handler::HTTPHandler;
+use arc_swap::ArcSwapOption;
 use async_trait::async_trait;
-use aws_config::Region;
-use aws_config::default_provider::credentials::DefaultCredentialsChain;
-use aws_credential_types::provider::ProvideCredentials;
-use aws_sigv4::http_request::{
-    PayloadChecksumKind, PercentEncodingMode, SignableBody, SignableRequest,
-    SigningSettings, sign,
-};
-use aws_sigv4::sign::v4;
-use aws_smithy_runtime_api::client::identity::Identity;
 use bytes::Bytes;
 use hickory_resolver::TokioAsyncResolver;
-use http::header::{CONTENT_LENGTH, HOST};
-use http::{HeaderValue, Uri};
+use http::Uri;
 use lakesoul_metadata::MetaDataClient;
 use lakesoul_metadata::rbac::verify_permission_by_table_path;
 use lazy_static::lazy_static;
@@ -29,10 +26,12 @@ use pingora::server::ShutdownWatch;
 use pingora::services::background::BackgroundService;
 use prometheus::{IntCounter, register_int_counter};
 use std::collections::{BTreeSet, HashMap};
+use std::fmt::Debug;
 use std::net::{IpAddr, SocketAddrV4};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
+use tracing::log::warn;
 use tracing::{debug, error, info};
 use tracing_subscriber::EnvFilter;
 
@@ -65,10 +64,6 @@ fn main() {
     let mut proxy_server = Server::new(Some(opt)).unwrap();
     proxy_server.bootstrap();
 
-    let endpoint = std::env::var("AWS_ENDPOINT").expect("need AWS_ENDPOINT env");
-    let region = std::env::var("AWS_REGION").expect("need AWS_REGION env");
-    let virtual_host =
-        std::env::var("AWS_VIRTUAL_HOST").is_ok_and(|v| v.to_lowercase() == "true");
     let (user, group, verify_meta) = match (
         std::env::var("LAKESOUL_CURRENT_USER"),
         std::env::var("LAKESOUL_CURRENT_DOMAIN"),
@@ -79,10 +74,29 @@ fn main() {
     info!("pg url {:?}", std::env::var("LAKESOUL_PG_URL"));
     let common_prefix = std::env::var("LAKESOUL_COMMON_PREFIX").ok();
 
-    let verify_client_signature = std::env::var("CLIENT_AWS_SECRET").is_ok()
-        && std::env::var("CLIENT_AWS_KEY").is_ok();
+    // first try aws
+    let handler: Arc<dyn HTTPHandler + Send + Sync + 'static> =
+        match AWSHandler::try_new() {
+            Ok(aws) => {
+                info!("Initialized AWS handler {:?}", aws);
+                Arc::new(aws)
+            }
+            Err(e) => {
+                warn!("try init aws handler failed {:?}", e);
+                match AzureHandler::try_new() {
+                    Ok(az) => {
+                        info!("Initialized Azure handler {:?}", az);
+                        Arc::new(az)
+                    }
+                    Err(e) => {
+                        println!("Initalize azure handler failed {:?}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+        };
 
-    let uri = Uri::from_str(endpoint.as_str()).unwrap();
+    let uri = Uri::from_str(handler.get_endpoint().as_str()).unwrap();
     let tls: bool = if let Some(scheme) = uri.scheme_str() {
         scheme == "https"
     } else {
@@ -97,15 +111,8 @@ fn main() {
         80
     };
     info!(
-        "endpoint {}, region {}, virtual_host {}, verify rbac {}, verify client {}, tls {}, port {}, common_prefix {:?}",
-        endpoint,
-        region,
-        virtual_host,
-        verify_meta,
-        verify_client_signature,
-        tls,
-        port,
-        common_prefix
+        "verify rbac {}, tls {}, port {}, common_prefix {:?}",
+        verify_meta, tls, port, common_prefix
     );
 
     let mut upstreams = LoadBalancer::from(DnsDiscovery::new(
@@ -122,14 +129,12 @@ fn main() {
 
     let background_s3_credentials = background_service(
         "s3 credentials",
-        Credentials {
-            region,
-            identity: ArcSwap::new(Arc::new(Identity::new(0, None))),
+        S3ProxyHandle {
+            http_handle: handler,
             metadata_client: ArcSwapOption::new(None),
             user: user.clone(),
             group,
             verify_meta,
-            virtual_host,
             common_prefix,
         },
     );
@@ -160,19 +165,17 @@ fn main() {
 
 pub struct S3Proxy {
     lb: Arc<LoadBalancer<RoundRobin>>,
-    cred: Arc<Credentials>,
+    cred: Arc<S3ProxyHandle>,
     host: String,
     tls: bool,
 }
 
-pub struct Credentials {
-    region: String,
-    identity: ArcSwap<Identity>,
+pub struct S3ProxyHandle {
+    pub http_handle: Arc<dyn HTTPHandler + Send + Sync + 'static>,
     metadata_client: ArcSwapOption<MetaDataClient>,
     user: String,
     group: String,
     verify_meta: bool,
-    virtual_host: bool,
     common_prefix: Option<String>,
 }
 
@@ -189,7 +192,7 @@ fn starts_with_any(
     })
 }
 
-impl Credentials {
+impl S3ProxyHandle {
     async fn verify_rbac(
         &self,
         headers: &RequestHeader,
@@ -235,106 +238,10 @@ impl Credentials {
             Ok(())
         }
     }
-
-    fn sign_aws_v4(
-        &self,
-        headers: &mut RequestHeader,
-        host: &String,
-        bucket: &str,
-    ) -> Result<(), anyhow::Error> {
-        let mut signing_settings = SigningSettings::default();
-        signing_settings.percent_encoding_mode = PercentEncodingMode::Single;
-        signing_settings.payload_checksum_kind = PayloadChecksumKind::XAmzSha256;
-        let binding = self.identity.load();
-        let identity = binding.as_ref();
-        let signing_params = v4::SigningParams::builder()
-            .identity(identity)
-            .region(self.region.as_str())
-            .name("s3")
-            .time(SystemTime::now())
-            .settings(signing_settings)
-            .build()?
-            .into();
-
-        let mut uri = headers.uri.to_string();
-        debug!("original uri {}", uri);
-
-        // for virtual host addressing, we need to replace host header
-        // with format bucket-name.endpoint-host before signing
-        if self.virtual_host {
-            // rewrite host
-            let new_host = format!("{}.{}", bucket, host);
-            debug!("new host {}", new_host);
-            headers.insert_header(HOST, HeaderValue::try_from(new_host)?)?;
-            // rewrite path to remove bucket name
-            let start = uri.find(bucket).unwrap();
-            uri.replace_range(start..(start + bucket.len()), "");
-            uri = uri.replace("//", "/");
-            debug!("replaced uri {}", uri);
-        } else {
-            headers.insert_header(HOST, HeaderValue::try_from(host)?)?;
-        }
-
-        if let Some(value) = headers.headers.get("x-amz-decoded-content-length") {
-            let value: u64 = value.to_str()?.parse()?;
-            if value == 0 {
-                headers.insert_header(CONTENT_LENGTH, HeaderValue::try_from(0)?)?;
-            }
-        }
-
-        // construct request for signing by aws_sigv4
-        let signable_request = SignableRequest::new(
-            headers.method.as_str(),
-            &uri,
-            headers
-                .headers
-                .iter()
-                .filter_map(|(name, value)| match value.to_str() {
-                    Ok(v) => Some((name.as_str(), v)),
-                    Err(_) => None,
-                }),
-            match headers.headers.get("x-amz-content-sha256") {
-                Some(value) => {
-                    if value == "STREAMING-AWS4-HMAC-SHA256-PAYLOAD" {
-                        SignableBody::Precomputed(
-                            "STREAMING-AWS4-HMAC-SHA256-PAYLOAD".parse()?,
-                        )
-                    } else {
-                        SignableBody::UnsignedPayload
-                    }
-                }
-                None => SignableBody::UnsignedPayload,
-            },
-        )?;
-        let (signing_instructions, _signature) =
-            sign(signable_request, &signing_params)?.into_parts();
-        let (new_headers, new_query) = signing_instructions.into_parts();
-        debug!("new headers {:?}, new query {:?}", new_headers, new_query);
-
-        for header in new_headers.into_iter() {
-            let mut value = HeaderValue::from_str(header.value())?;
-            value.set_sensitive(header.sensitive());
-            headers.insert_header(header.name(), value)?
-        }
-
-        if !new_query.is_empty() {
-            let mut query = aws_smithy_http::query_writer::QueryWriter::new_from_string(
-                uri.as_str(),
-            )?;
-            for (name, value) in new_query {
-                query.insert(name, &value);
-            }
-            headers.set_uri(query.build_uri().to_string().parse()?);
-        } else {
-            headers.set_uri(uri.parse()?);
-        }
-        debug!("final all headers {:?}", headers);
-        Ok(())
-    }
 }
 
 #[async_trait]
-impl BackgroundService for Credentials {
+impl BackgroundService for S3ProxyHandle {
     async fn start(&self, shutdown: ShutdownWatch) {
         if self.verify_meta {
             // create metadata client
@@ -361,20 +268,10 @@ impl BackgroundService for Credentials {
                 return;
             }
             if next_update <= now {
-                info!("begin create aws credentials");
-                let credentials_provider = DefaultCredentialsChain::builder()
-                    .region(Region::new(self.region.clone()))
-                    .build()
-                    .await;
-                credentials_provider
-                    .provide_credentials()
+                self.http_handle
+                    .refresh_identity()
                     .await
-                    .map(|credentials| {
-                        info!("new credentials: {credentials:?}");
-                        self.identity.swap(Arc::new(Identity::from(credentials)));
-                    })
-                    .inspect_err(|e| error!("create aws credential error: {e:?}"))
-                    .expect("credentials provider should be created");
+                    .expect("cannot refresh http handle identity");
                 next_update = now + Duration::from_secs(60 * 45);
             }
             tokio::time::sleep_until(next_update.into()).await;
@@ -385,7 +282,6 @@ impl BackgroundService for Credentials {
 
 #[async_trait]
 impl ProxyHttp for S3Proxy {
-    /// For this small example, we don't need context storage
     type CTX = ();
     fn new_ctx(&self) {}
 
@@ -450,11 +346,11 @@ impl ProxyHttp for S3Proxy {
         }
 
         // signing
-        match self.cred.sign_aws_v4(header, &self.host, &bucket) {
+        match self.cred.http_handle.handle_request_header(header, &bucket) {
             Ok(_) => Ok(false),
             Err(e) => {
                 let msg = format!(
-                    "Sign aws v4 error {:?}, header {:?}, host {:?}, bucket {:?}",
+                    "Sign object storage header error {:?}, header {:?}, host {:?}, bucket {:?}",
                     e, header, self.host, bucket
                 );
                 error!("{}", msg);

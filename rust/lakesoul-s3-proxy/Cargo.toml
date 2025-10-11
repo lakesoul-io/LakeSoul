@@ -29,6 +29,10 @@ tower-service = "0.3"
 prometheus = { version = "0.13", features = ["process"] }
 bytes = "1.0"
 uuid = { version = "1.17.0", features = ["v4"] }
+ring = { version = "0.17", features = ["std"] }
+base64 = { version = "0.22", features = ["std"] }
+url = "2.5.7"
+chrono = { version = "0.4", features = ["clock"] }
 
 [dev-dependencies]
 lakesoul-io = { path = "../lakesoul-io" }
