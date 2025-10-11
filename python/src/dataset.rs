@@ -81,6 +81,7 @@ fn one_reader(
     filter: Option<Vec<u8>>,
 ) -> PyResult<PyArrowType<Box<dyn RecordBatchReader + Send>>> {
     let schema = Arc::new(schema.0);
+    println!("schema: {:?}", schema);
     let partition_schema = partition_schema.map(|s| Arc::new(s.0));
     let readers = file_urls
         .into_iter()
