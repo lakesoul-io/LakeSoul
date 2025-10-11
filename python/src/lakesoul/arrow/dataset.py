@@ -201,7 +201,6 @@ class Dataset(ds.Dataset):
         cache_metadata=None,
         memory_pool=None,
     ):
-        print(columns)
         return Scanner.from_dataset(
             self,
             columns=columns,  # pyright: ignore[reportCallIssue]
@@ -642,19 +641,15 @@ class Fragment(ds.Fragment):
 
 
 def schema_projection(origin: pa.Schema, projections: list[str]) -> pa.Schema:
+    logging.debug(f"Projection: {projections}")
     # O(n + m)
     origin_fields = {field.name for field in origin}
     redundant_fields = [col for col in projections if col not in origin_fields]
     if redundant_fields:
         raise ValueError(f"columns are not in origin schema : {redundant_fields}")
 
-    fields = []
+    fields = [origin.field(field) for field in projections if field in origin_fields]
 
-    for field in projections:
-        if field in origin_fields:
-            fields.append(origin.field(field))
-        else:
-            raise ValueError(f"column {field} is not in origin schema")
     return pa.schema(fields)
 
 
