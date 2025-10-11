@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 
+from duckdb import BinderException
 from lakesoul.arrow import lakesoul_dataset
 import pytest
 import pyarrow as pa
@@ -121,12 +122,23 @@ def test_prune_columns():
     cols = ["p_name"]
     scanner = lakesoul_dataset("part").scanner(columns=cols)
     table = scanner.to_table()
-    assert len(table.column_names) == 1
+    assert len(table.columns) == 1
+
     # fragment
     fragment = list(lakesoul_dataset("part").get_fragments())[0]
     scanner = fragment.scanner(columns=cols)
     table = scanner.to_table()
-    assert len(table.column_names) == 1
+    assert len(table.columns) == 1
+
+    cols = ["p_name", "p_size"]
+    scanner = lakesoul_dataset("part").scanner(columns=cols)
+    table = scanner.to_table()
+    assert len(table.columns) == 2
+
+    fragment = list(lakesoul_dataset("part").get_fragments())[0]
+    scanner = fragment.scanner(columns=cols)
+    table = scanner.to_table()
+    assert len(table.columns) == 2
 
     with pytest.raises(ValueError) as _:
         # no such field
@@ -140,6 +152,12 @@ def test_prune_columns():
         scanner = fragment.scanner(columns=["not existed"])
         _ = scanner.to_table()
 
+    with pytest.raises(ValueError) as _:
+        # no such field
+        fragment = list(lakesoul_dataset("part").get_fragments())[0]
+        scanner = fragment.scanner(columns=["p_name", "not existed"])
+        _ = scanner.to_table()
+
 
 def test_duckdb_compatibility():
     import duckdb
@@ -150,10 +168,45 @@ def test_duckdb_compatibility():
     assert len(results) == 20000
 
 
-def test_duckdb_compatibility_with_filter():
+def test_duckdb_compatibility_with_filter_and_projections():
     import duckdb
 
     conn = duckdb.connect()
     _lds = lakesoul_dataset("part")
+    results = conn.execute("select * from _lds where p_size = 50").arrow()
+    assert len(results) == 392
+
     results = conn.sql("select * from _lds where p_size = 50").arrow()
     assert len(results) == 392
+
+    results = conn.execute("select p_size,p_name from _lds where p_size = 50").arrow()
+    assert len(results) == 392
+    expected = ["p_size", "p_name"]
+    actual = [f.name for f in results.schema]
+    assert actual == expected
+    assert len(results.columns) == 2
+
+    results = conn.sql("select p_size, p_name from _lds where p_size = 50").arrow()
+    assert len(results) == 392
+    expected = ["p_size", "p_name"]
+    actual = [f.name for f in results.schema]
+    assert actual == expected
+    assert len(results.columns) == 2
+
+    results = conn.sql("select p_name,p_size from _lds where p_size = 50").arrow()
+    assert len(results) == 392
+    expected = ["p_name", "p_size"]
+    actual = [f.name for f in results.schema]
+    assert actual == expected
+    assert len(results.columns) == 2
+
+    results = conn.execute("select p_name,p_size from _lds where p_size = 50").arrow()
+    assert len(results) == 392
+    expected = ["p_name", "p_size"]
+    actual = [f.name for f in results.schema]
+    assert actual == expected
+    assert len(results.columns) == 2
+
+    with pytest.raises(BinderException) as _:
+        # no such field
+        results = conn.execute("select not_existed from _lds").arrow()
