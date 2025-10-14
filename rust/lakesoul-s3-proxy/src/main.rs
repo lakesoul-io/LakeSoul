@@ -76,6 +76,7 @@ fn main() {
         (Ok(user), Ok(group)) => (user, group, true),
         _ => (String::new(), String::new(), false),
     };
+    info!("pg url {:?}", std::env::var("LAKESOUL_PG_URL"));
     let common_prefix = std::env::var("LAKESOUL_COMMON_PREFIX").ok();
 
     let verify_client_signature = std::env::var("CLIENT_AWS_SECRET").is_ok()
@@ -202,12 +203,18 @@ impl Credentials {
                 let path = parse_table_path(&headers.uri, bucket);
                 debug!("Parsed table path {:?}", path);
                 if match self.common_prefix {
-                    Some(ref prefix) => path.starts_with(
-                        format!("{}/{}/{}", prefix, self.group, self.user).as_str(),
-                    ),
-                    None => path.starts_with(
-                        format!("s3://{}/{}/{}", bucket, self.group, self.user).as_str(),
-                    ),
+                    Some(ref prefix) => {
+                        path.starts_with(
+                            format!("{}/{}/{}", prefix, self.group, self.user).as_str(),
+                        ) || path.starts_with(format!("{}/spark-upload", prefix).as_str())
+                    }
+                    None => {
+                        path.starts_with(
+                            format!("s3://{}/{}/{}", bucket, self.group, self.user)
+                                .as_str(),
+                        ) || path
+                            .starts_with(format!("s3://{}/spark-upload", bucket).as_str())
+                    }
                 } || starts_with_any(
                     path.as_str(),
                     bucket,
@@ -331,9 +338,15 @@ impl BackgroundService for Credentials {
     async fn start(&self, shutdown: ShutdownWatch) {
         if self.verify_meta {
             // create metadata client
+            info!("begin create metadata client");
             let metadata_client = Arc::new(
                 MetaDataClient::from_env()
                     .await
+                    .map(|metadata_client| {
+                        info!("initialized metadata client");
+                        metadata_client
+                    })
+                    .inspect_err(|e| error!("create metadata client error: {e:?}"))
                     .expect("cannot create meta data client"),
             );
             self.metadata_client.store(Some(metadata_client));
@@ -348,7 +361,7 @@ impl BackgroundService for Credentials {
                 return;
             }
             if next_update <= now {
-                // TODO: log err
+                info!("begin create aws credentials");
                 let credentials_provider = DefaultCredentialsChain::builder()
                     .region(Region::new(self.region.clone()))
                     .build()
@@ -360,7 +373,8 @@ impl BackgroundService for Credentials {
                         info!("new credentials: {credentials:?}");
                         self.identity.swap(Arc::new(Identity::from(credentials)));
                     })
-                    .expect("failed to provide credentials from configs");
+                    .inspect_err(|e| error!("create aws credential error: {e:?}"))
+                    .expect("credentials provider should be created");
                 next_update = now + Duration::from_secs(60 * 45);
             }
             tokio::time::sleep_until(next_update.into()).await;
