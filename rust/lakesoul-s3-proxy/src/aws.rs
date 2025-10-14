@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::context::S3ProxyContext;
 use crate::handler::{HTTPHandler, parse_host_port};
 use anyhow::Error;
 use arc_swap::ArcSwap;
@@ -14,9 +15,11 @@ use aws_sigv4::http_request::{
 };
 use aws_sigv4::sign::v4;
 use aws_smithy_runtime_api::client::identity::Identity;
+use bytes::Bytes;
 use http::HeaderValue;
 use http::header::{CONTENT_LENGTH, HOST};
 use pingora::http::RequestHeader;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tracing::{debug, info};
@@ -161,5 +164,94 @@ impl HTTPHandler for AWSHandler {
 
     fn get_endpoint(&self) -> String {
         self.endpoint.clone()
+    }
+
+    fn require_request_body_rewrite(
+        &self,
+        _ctx: &S3ProxyContext,
+        _headers: &RequestHeader,
+    ) -> bool {
+        false
+    }
+
+    fn require_response_body_rewrite(
+        &self,
+        _ctx: &S3ProxyContext,
+        _headers: &RequestHeader,
+    ) -> bool {
+        false
+    }
+
+    fn rewrite_request_body(
+        &self,
+        _headers: &RequestHeader,
+        _ctx: &mut S3ProxyContext,
+        _body: &mut Option<Bytes>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn rewrite_response_body(
+        &self,
+        _headers: &RequestHeader,
+        _ctx: &mut S3ProxyContext,
+        _body: &mut Option<Bytes>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub struct Contents {
+    pub key: String,
+    pub last_modified: String,
+    pub etag: String,
+    pub size: String,
+    pub storage_class: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub struct ContentsWrap {
+    pub contents: Vec<Contents>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub struct ListBucketResult {
+    pub name: String,
+    pub prefix: String,
+    pub key_count: u64,
+    pub max_keys: u64,
+    pub is_truncated: bool,
+    pub continuation_token: String,
+    pub next_continuation_token: String,
+    pub contents: Vec<Contents>,
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    #[test]
+    fn test_list_serde() {
+        let l = ListBucketResult {
+            name: "".to_string(),
+            prefix: "".to_string(),
+            key_count: 0,
+            max_keys: 0,
+            is_truncated: false,
+            continuation_token: "".to_string(),
+            next_continuation_token: "".to_string(),
+            contents: vec![Contents {
+                key: "".to_string(),
+                last_modified: "".to_string(),
+                etag: "".to_string(),
+                size: 0,
+                storage_class: "".to_string(),
+            }],
+        };
+        let s = quick_xml::se::to_string(&l).unwrap();
+        println!("{}", s);
     }
 }

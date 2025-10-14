@@ -2,20 +2,27 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::handler::{parse_host_port, HTTPHandler};
+use crate::aws::{Contents, ListBucketResult};
+use crate::context::S3ProxyContext;
+use crate::handler::{HTTPHandler, parse_host_port};
 use anyhow::Error;
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
+use bytes::Bytes;
 use chrono::Utc;
-use http::header::{AUTHORIZATION, CONTENT_ENCODING, CONTENT_LANGUAGE, CONTENT_LENGTH, CONTENT_TYPE, DATE, HOST, IF_MATCH, IF_MODIFIED_SINCE, IF_NONE_MATCH, IF_UNMODIFIED_SINCE, RANGE};
+use http::header::{
+    AUTHORIZATION, CONTENT_ENCODING, CONTENT_LANGUAGE, CONTENT_LENGTH, CONTENT_TYPE,
+    DATE, HOST, IF_MATCH, IF_MODIFIED_SINCE, IF_NONE_MATCH, IF_UNMODIFIED_SINCE, RANGE,
+};
 use http::{HeaderMap, HeaderName, HeaderValue, Method};
 use pingora::Result;
 use pingora::http::RequestHeader;
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::HashMap;
-use arrow_array::new_empty_array;
+use std::str::FromStr;
 use tokio::sync::Mutex;
-use tracing::log::info;
+use tracing::log::debug;
 use url::Url;
 
 static CONTENT_MD5: HeaderName = HeaderName::from_static("content-md5");
@@ -88,6 +95,86 @@ impl HTTPHandler for AzureHandler {
     fn get_endpoint(&self) -> String {
         self.endpoint.clone()
     }
+
+    fn require_request_body_rewrite(
+        &self,
+        ctx: &S3ProxyContext,
+        headers: &RequestHeader,
+    ) -> bool {
+        if ctx.request_query_params.contains_key("uploadId") {
+            return true;
+        }
+        return false;
+    }
+
+    fn require_response_body_rewrite(
+        &self,
+        ctx: &S3ProxyContext,
+        headers: &RequestHeader,
+    ) -> bool {
+        headers.method == Method::GET
+            && ctx.request_query_params.contains_key("list-type")
+    }
+
+    fn rewrite_request_body(
+        &self,
+        headers: &RequestHeader,
+        ctx: &mut S3ProxyContext,
+        body: &mut Option<Bytes>,
+    ) -> std::result::Result<(), Error> {
+        todo!()
+    }
+
+    fn rewrite_response_body(
+        &self,
+        headers: &RequestHeader,
+        ctx: &mut S3ProxyContext,
+        body: &mut Option<Bytes>,
+    ) -> std::result::Result<(), Error> {
+        if headers.method == Method::GET
+            && ctx.request_query_params.contains_key("list-type")
+        {
+            // convert azure list result to aws
+            let response_body =
+                String::from_utf8(std::mem::take(&mut ctx.response_body))?;
+            let mut azure_result: EnumerationResults =
+                quick_xml::de::from_str(&response_body)?;
+            let aws_result = ListBucketResult {
+                name: ctx.bucket.clone(),
+                prefix: std::mem::take(&mut azure_result.prefix),
+                key_count: azure_result.blobs.len() as u64,
+                max_keys: azure_result.max_results,
+                is_truncated: !azure_result.next_marker.is_empty(),
+                continuation_token: std::mem::take(&mut azure_result.marker),
+                next_continuation_token: std::mem::take(&mut azure_result.next_marker),
+                contents: azure_result
+                    .blobs
+                    .into_iter()
+                    .map(|mut blob| {
+                        let blob = &mut blob.blob;
+                        Contents {
+                            key: std::mem::take(&mut blob.name),
+                            last_modified: take_string_from_map(&mut blob.properties, "Last-Modified"),
+                            etag: take_string_from_map(&mut blob.properties, "ETag"),
+                            size: take_string_from_map(&mut blob.properties, "Content-Length"),
+                            storage_class: "STANDARD".to_string(),
+                        }
+                    })
+                    .collect(),
+            };
+            debug!("Converted azure list results {:?}", aws_result);
+            let s = quick_xml::se::to_string(&aws_result)?;
+            *body = Some(Bytes::from(s));
+        } else {
+            *body = Some(Bytes::from(std::mem::take(&mut ctx.response_body)))
+        }
+        Ok(())
+    }
+}
+
+fn take_string_from_map(map: &mut HashMap<String, String>, key: &str) -> String {
+    map.get_mut(key)
+        .map_or(String::new(), |v| std::mem::take(v))
 }
 
 // following code are adapted from arrow-rs/object_store/azure
@@ -109,6 +196,43 @@ impl AzureAccessKey {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub struct Blob {
+    pub name: String,
+    pub properties: HashMap<String, String>,
+    pub metadata: HashMap<String, String>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub struct BlobWrap {
+    pub blob: Blob,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub struct Blobs {
+    pub blobs: Vec<Blob>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub struct EnumerationResults {
+    pub prefix: String,
+    pub marker: String,
+    pub max_results: u64,
+    pub delimiter: String,
+    pub next_marker: String,
+    pub blobs: Vec<BlobWrap>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub struct AzureListResults {
+    pub enumeration_results: EnumerationResults,
+}
+
 fn sign(
     url: &Url,
     headers: &mut RequestHeader,
@@ -117,7 +241,7 @@ fn sign(
 ) -> Result<(), Error> {
     let signature =
         generate_authorization(&headers.headers, &url, &headers.method, account, key);
-    info!("azure signing {}, {}", url, signature);
+    debug!("azure signing {}, {}", url, signature);
     headers.insert_header(AUTHORIZATION, signature)?;
     Ok(())
 }
@@ -125,26 +249,62 @@ fn sign(
 fn rewrite_queries(url: &Url, headers: &mut RequestHeader) -> Result<(), Error> {
     if headers.method == Method::HEAD {
         let mut query = aws_smithy_http::query_writer::QueryWriter::new_from_string(
-            &headers.uri.to_string()
+            &headers.uri.to_string(),
         )?;
         query.insert("comp", "metadata");
         headers.set_uri(query.build_uri().to_string().parse()?);
     } else {
-        let url.query_pairs()
+        let query_params: HashMap<_, _> = url.query_pairs().collect();
+        if query_params.contains_key("list-type") {
+            convert_list_query(url, headers, &query_params)?;
+        }
     }
     Ok(())
 }
 
+fn convert_list_query(
+    url: &Url,
+    headers: &mut RequestHeader,
+    query_params: &HashMap<Cow<str>, Cow<str>>,
+) -> Result<(), Error> {
+    let mut query = aws_smithy_http::query_writer::QueryWriter::new_from_string(
+        &headers.uri.to_string(),
+    )?;
+    query.insert("comp", "list");
+    query.insert(
+        "prefix",
+        query_params.get("prefix").unwrap_or(&Cow::Borrowed("/")),
+    );
+    query.insert(
+        "delimiter",
+        query_params
+            .get("delimiter")
+            .unwrap_or(&Cow::Borrowed("%2F")),
+    );
+    query_params.get("max-keys").iter().for_each(|max| {
+        query.insert("maxresults", max);
+    });
+    query_params
+        .get("continuation-token")
+        .iter()
+        .for_each(|token| {
+            query.insert("marker", token);
+        });
+    Ok(())
+}
+
 fn rewrite_request_headers(headers: &mut RequestHeader) -> Result<(), Error> {
-    let mut new_headers = HeaderMap::new();
-    headers.headers.iter().for_each(|(k, v)| {
+    let mut new_headers: HashMap<String, HeaderValue> = HashMap::new();
+    headers.as_ref().headers.iter().for_each(|(k, v)| {
         if k.as_str().starts_with("x-amz-meta") {
-            new_headers.append(k.as_str().replace("amz", "ms").as_str(), v.clone());
-        } else if !k.as_str().starts_with("x-amz-") {
-            new_headers.append(k, v.clone());
+            let new_header = k.as_str().replace("amz", "ms");
+            new_headers.insert(new_header, v.clone());
         }
     });
-    headers.headers = new_headers;
+    new_headers.into_iter().try_for_each(|(k, v)| {
+        headers.insert_header(HeaderName::from_str(&k)?, v)?;
+        Result::<(), Error>::Ok(())
+    })?;
     Ok(())
 }
 
@@ -281,4 +441,101 @@ fn add_if_exists<'a>(h: &'a HeaderMap, key: &HeaderName) -> &'a str {
         .ok()
         .flatten()
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::azure::{AzureListResults, Blob, BlobWrap, Blobs, EnumerationResults};
+
+    #[test]
+    fn test_list_result_parse() {
+        let input = "<?xml version=\"1.0\" encoding=\"utf-8\"?>
+<EnumerationResults ServiceEndpoint=\"http://myaccount.blob.core.windows.net/\"  ContainerName=\"mycontainer\">
+        <Prefix>string-value</Prefix>
+            <Marker>string-value</Marker>
+            <MaxResults>123</MaxResults>
+            <Delimiter>string-value</Delimiter>
+            <Blobs>
+            <Blob>
+            <Name>blob-name</Name>
+            <Snapshot>date-time-value</Snapshot>
+            <VersionId>date-time-vlue</VersionId>
+            <IsCurrentVersion>true</IsCurrentVersion>
+            <Deleted>true</Deleted>
+            <Properties>
+            <Creation-Time>date-time-value</Creation-Time>
+            <Last-Modified>date-time-value</Last-Modified>
+            <Etag>etag</Etag>
+            <Owner>owner user id</Owner>
+            <Group>owning group id</Group>
+            <Permissions>permission string</Permissions>
+            <Acl>access control list</Acl>
+            <ResourceType>file | directory</ResourceType>
+            <Placeholder>true</Placeholder>
+            <Content-Length>size-in-bytes</Content-Length>
+            <Content-Type>blob-content-type</Content-Type>
+            <Content-Encoding />
+            <Content-Language />
+            <Content-MD5 />
+            <Cache-Control />
+            <x-ms-blob-sequence-number>sequence-number</x-ms-blob-sequence-number>
+            <BlobType>BlockBlob|PageBlob|AppendBlob</BlobType>
+            <AccessTier>tier</AccessTier>
+            <LeaseStatus>locked|unlocked</LeaseStatus>
+            <LeaseState>available | leased | expired | breaking | broken</LeaseState>
+            <LeaseDuration>infinite | fixed</LeaseDuration>
+            <CopyId>id</CopyId>
+            <CopyStatus>pending | success | aborted | failed </CopyStatus>
+            <CopySource>source url</CopySource>
+            <CopyProgress>bytes copied/bytes total</CopyProgress>
+            <CopyCompletionTime>datetime</CopyCompletionTime>
+            <CopyStatusDescription>error string</CopyStatusDescription>
+            <ServerEncrypted>true</ServerEncrypted>
+            <CustomerProvidedKeySha256>encryption-key-sha256</CustomerProvidedKeySha256>
+            <EncryptionContext>encryption-context</EncryptionContext>
+            <EncryptionScope>encryption-scope-name</EncryptionScope>
+            <IncrementalCopy>true</IncrementalCopy>
+            <AccessTierInferred>true</AccessTierInferred>
+            <AccessTierChangeTime>datetime</AccessTierChangeTime>
+            <DeletedTime>datetime</DeletedTime>
+            <RemainingRetentionDays>no-of-days</RemainingRetentionDays>
+            <TagCount>number of tags between 1 to 10</TagCount>
+            <RehydratePriority>rehydrate priority</RehydratePriority>
+            <Expiry-Time>date-time-value</Expiry-Time>
+            </Properties>
+            <Metadata>
+            <Name>value</Name>
+            </Metadata>
+            <Tags>
+            <TagSet>
+            <Tag>
+            <Key>TagName</Key>
+            <Value>TagValue</Value>
+            </Tag>
+            </TagSet>
+            </Tags>
+            <OrMetadata />
+            </Blob>
+            </Blobs>
+            <NextMarker />
+            </EnumerationResults>";
+        let result: EnumerationResults = quick_xml::de::from_str(input).unwrap();
+        println!("{:#?}", result);
+        let er = EnumerationResults {
+            prefix: "a".to_string(),
+            marker: "marker".to_string(),
+            max_results: 123,
+            delimiter: "/".to_string(),
+            next_marker: "asdfasdf".to_string(),
+            blobs: vec![BlobWrap {
+                blob: Blob {
+                    name: "".to_string(),
+                    properties: Default::default(),
+                    metadata: Default::default(),
+                },
+            }],
+        };
+        let s = quick_xml::se::to_string(&er).unwrap();
+        println!("{}", s);
+    }
 }

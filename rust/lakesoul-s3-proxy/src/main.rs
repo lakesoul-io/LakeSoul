@@ -4,10 +4,12 @@
 
 mod aws;
 mod azure;
+mod context;
 mod handler;
 
 use crate::aws::AWSHandler;
 use crate::azure::AzureHandler;
+use crate::context::S3ProxyContext;
 use crate::handler::HTTPHandler;
 use arc_swap::ArcSwapOption;
 use async_trait::async_trait;
@@ -34,6 +36,7 @@ use std::time::{Duration, Instant};
 use tracing::log::warn;
 use tracing::{debug, error, info};
 use tracing_subscriber::EnvFilter;
+use url::Url;
 
 lazy_static! {
     static ref REQ_COUNTER: IntCounter =
@@ -144,7 +147,7 @@ fn main() {
         &proxy_server.configuration,
         S3Proxy {
             lb,
-            cred,
+            handle: cred,
             host: String::from(host),
             tls,
         },
@@ -165,7 +168,7 @@ fn main() {
 
 pub struct S3Proxy {
     lb: Arc<LoadBalancer<RoundRobin>>,
-    cred: Arc<S3ProxyHandle>,
+    handle: Arc<S3ProxyHandle>,
     host: String,
     tls: bool,
 }
@@ -282,13 +285,16 @@ impl BackgroundService for S3ProxyHandle {
 
 #[async_trait]
 impl ProxyHttp for S3Proxy {
-    type CTX = ();
-    fn new_ctx(&self) {}
+    type CTX = S3ProxyContext;
+
+    fn new_ctx(&self) -> Self::CTX {
+        S3ProxyContext::new()
+    }
 
     async fn upstream_peer(
         &self,
         _session: &mut Session,
-        _ctx: &mut (),
+        _ctx: &mut Self::CTX,
     ) -> Result<Box<HttpPeer>> {
         let upstream = self
             .lb
@@ -304,14 +310,41 @@ impl ProxyHttp for S3Proxy {
     async fn request_filter(
         &self,
         session: &mut Session,
-        _ctx: &mut Self::CTX,
+        ctx: &mut Self::CTX,
     ) -> Result<bool>
     where
         Self::CTX: Send + Sync,
     {
         REQ_COUNTER.inc();
         let header = session.req_header_mut();
-        debug!("request_filter original header: {header:?}");
+        let s = format!(
+            "{}{}",
+            self.handle.http_handle.get_endpoint(),
+            header.uri.to_string()
+        );
+        debug!("Requesting url {:?}", s);
+
+        // fill context
+        let url = Url::parse(s.as_str())
+            .map_err(|e| Error::because(InternalError, "cannot parse url", e))?;
+        ctx.request_query_params = url.query_pairs().into_owned().collect();
+        ctx.require_request_body_rewrite = self
+            .handle
+            .http_handle
+            .require_request_body_rewrite(&ctx, header);
+        ctx.require_response_body_rewrite = self
+            .handle
+            .http_handle
+            .require_response_body_rewrite(&ctx, header);
+        debug!(
+            "request_filter original header: {header:?}, params: {:?}, \
+            rewrite req body {}, rewrite reps body {}",
+            ctx.request_query_params,
+            ctx.require_request_body_rewrite,
+            ctx.require_response_body_rewrite
+        );
+
+        // retrieve bucket name from request
         let bucket;
         // we need to parse bucket name from uri component
         if let Some(path) = header
@@ -330,9 +363,10 @@ impl ProxyHttp for S3Proxy {
                 .await?;
             return Ok(true);
         }
+        ctx.bucket = bucket;
 
         // verify meta permission
-        match self.cred.verify_rbac(header, &bucket).await {
+        match self.handle.verify_rbac(header, &ctx.bucket).await {
             Err(e) => {
                 let msg =
                     format!("Permission denied error {:?}, uri {:?}", e, header.uri);
@@ -346,12 +380,16 @@ impl ProxyHttp for S3Proxy {
         }
 
         // signing
-        match self.cred.http_handle.handle_request_header(header, &bucket) {
+        match self
+            .handle
+            .http_handle
+            .handle_request_header(header, &ctx.bucket)
+        {
             Ok(_) => Ok(false),
             Err(e) => {
                 let msg = format!(
                     "Sign object storage header error {:?}, header {:?}, host {:?}, bucket {:?}",
-                    e, header, self.host, bucket
+                    e, header, self.host, ctx.bucket
                 );
                 error!("{}", msg);
                 session
@@ -364,10 +402,10 @@ impl ProxyHttp for S3Proxy {
 
     async fn request_body_filter(
         &self,
-        _session: &mut Session,
+        session: &mut Session,
         body: &mut Option<Bytes>,
-        _end_of_stream: bool,
-        _ctx: &mut Self::CTX,
+        end_of_stream: bool,
+        ctx: &mut Self::CTX,
     ) -> Result<()>
     where
         Self::CTX: Send + Sync,
@@ -378,23 +416,56 @@ impl ProxyHttp for S3Proxy {
                 bytes.len(),
                 bytes
             );
-            REQ_BYTES.inc_by(bytes.len() as u64)
+            REQ_BYTES.inc_by(bytes.len() as u64);
+
+            // when we need to rewrite req body like multipart upload
+            // we accumulate request buffer and replace body after end of stream
+            if ctx.require_request_body_rewrite {
+                ctx.request_body.extend_from_slice(bytes.as_ref());
+                // clear buffer to indicate ignoring original body
+                bytes.clear();
+                if end_of_stream {
+                    // let handler fill required body
+                    self.handle
+                        .http_handle
+                        .rewrite_request_body(session.req_header(), ctx, body)
+                        .map_err(|e| {
+                            Error::because(InternalError, "handle request body error", e)
+                        })?;
+                }
+            }
         }
         Ok(())
     }
 
     fn response_body_filter(
         &self,
-        _session: &mut Session,
+        session: &mut Session,
         body: &mut Option<Bytes>,
-        _end_of_stream: bool,
-        _ctx: &mut Self::CTX,
+        end_of_stream: bool,
+        ctx: &mut Self::CTX,
     ) -> Result<Option<Duration>>
     where
         Self::CTX: Send + Sync,
     {
         if let Some(bytes) = body {
-            RES_BYTES.inc_by(bytes.len() as u64)
+            RES_BYTES.inc_by(bytes.len() as u64);
+
+            // rewrite response body for list object
+            if ctx.require_response_body_rewrite {
+                ctx.response_body.extend_from_slice(bytes.as_ref());
+                // clear buffer to indicate ignoring original body
+                bytes.clear();
+                if end_of_stream {
+                    // let handler fill required body
+                    self.handle
+                        .http_handle
+                        .rewrite_response_body(session.req_header(), ctx, body)
+                        .map_err(|e| {
+                            Error::because(InternalError, "handle response body error", e)
+                        })?;
+                }
+            }
         }
         Ok(None)
     }

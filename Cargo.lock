@@ -3771,6 +3771,7 @@ dependencies = [
  "pingora-core",
  "prometheus",
  "proto",
+ "quick-xml",
  "ring",
  "serde",
  "serde_json",
