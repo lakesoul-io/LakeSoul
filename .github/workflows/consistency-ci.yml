@@ -99,7 +99,7 @@ jobs:
                   default: true
             - uses: Swatinem/rust-cache@v2
               with:
-                  workspaces: "./ -> target"
+                  workspaces: "./rust -> target"
             - uses: actions-rs/cargo@v1
               with:
                   use-cross: true
@@ -107,9 +107,9 @@ jobs:
                   args: "--target x86_64-unknown-linux-gnu --package lakesoul-io-c --package lakesoul-metadata-c --release --all-features"
             - name: Build with Maven
               run: |
-                  mkdir -p target/release
-                  cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so target/release
-                  cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so target/release
+                  mkdir -p rust/target/release
+                  cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so rust/target/release
+                  cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so rust/target/release
                   MAVEN_OPTS="-Xmx4000m" mvn -q -B package -f pom.xml -Pcross-build -DskipTests
             - name: Get jar names
               run: |

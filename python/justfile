@@ -7,10 +7,8 @@ clean-data:
 gen-data:
     cd rust &&  cargo run -p lakesoul-console -- tpch-gen -p "file:///tmp/lakesoul/tpch_data" --scale-factor 0.1 -n 8
 
-# pytest:
-#     {{env}} uv run pytest -s tests
 pytest:
-    {{env}} uv run pytest -s tests/arrow/test_lakesoul_read.py
+    {{env}} uv run pytest -s tests
 
 sync:
     uv sync --reinstall-package lakesoul
