@@ -4,172 +4,170 @@
 
 name: Deployment
 on:
-  push:
-    tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
-  workflow_dispatch:
-
+    push:
+        tags:
+            - "v[0-9]+.[0-9]+.[0-9]+"
+    workflow_dispatch:
 
 jobs:
-  build-linux-x86_64:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up JDK 11
-        uses: actions/setup-java@v4
-        with:
-          java-version: '11'
-          distribution: 'temurin'
-          cache: maven
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          default: true
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: "./ -> target"
-      - name: Cache Docker images
-        uses: ScribeMD/docker-cache@0.4.0
-        with:
-          key: docker-${{ runner.os }}-${{ hashFiles('Cross.toml') }}
-      - uses: actions-rs/cargo@v1
-        with:
-          use-cross: true
-          command: build
-          args: '--target x86_64-unknown-linux-gnu --package lakesoul-io-c --package lakesoul-metadata-c --release --all-features'
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lakesoul-nativeio-x86_64-unknown-linux-gnu
-          path: ./target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu
-          path: ./target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so
+    build-linux-x86_64:
+        runs-on: ubuntu-24.04
+        steps:
+            - uses: actions/checkout@v4
+            - name: Set up JDK 11
+              uses: actions/setup-java@v4
+              with:
+                  java-version: "11"
+                  distribution: "temurin"
+                  cache: maven
+            - uses: actions-rs/toolchain@v1
+              with:
+                  profile: minimal
+                  toolchain: stable
+                  default: true
+            - uses: Swatinem/rust-cache@v2
+              with:
+                  workspaces: "./ -> target"
+            - name: Cache Docker images
+              uses: ScribeMD/docker-cache@0.4.0
+              with:
+                  key: docker-${{ runner.os }}-${{ hashFiles('Cross.toml') }}
+            - uses: actions-rs/cargo@v1
+              with:
+                  use-cross: true
+                  command: build
+                  args: "--target x86_64-unknown-linux-gnu --package lakesoul-io-c --package lakesoul-metadata-c --release --all-features"
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: lakesoul-nativeio-x86_64-unknown-linux-gnu
+                  path: ./rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu
+                  path: ./rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so
 
-  build-windows-x86_64:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up JDK 11
-        uses: actions/setup-java@v4
-        with:
-          java-version: '11'
-          distribution: 'temurin'
-          cache: maven
-      - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          default: true
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: "./ -> target"
-      - uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: '--release --package lakesoul-io-c --package lakesoul-metadata-c --all-features'
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lakesoul-nativeio-x86_64-pc-windows-msvc
-          path: ./target/release/lakesoul_io_c.dll
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lakesoul-nativemetadata-x86_64-pc-windows-msvc
-          path: ./target/release/lakesoul_metadata_c.dll
+    build-windows-x86_64:
+        runs-on: windows-latest
+        steps:
+            - uses: actions/checkout@v4
+            - name: Set up JDK 11
+              uses: actions/setup-java@v4
+              with:
+                  java-version: "11"
+                  distribution: "temurin"
+                  cache: maven
+            - name: Install Protoc
+              uses: arduino/setup-protoc@v2
+              with:
+                  version: "23.x"
+                  repo-token: ${{ secrets.GITHUB_TOKEN }}
+            - uses: actions-rs/toolchain@v1
+              with:
+                  profile: minimal
+                  toolchain: stable
+                  default: true
+            - uses: Swatinem/rust-cache@v2
+              with:
+                  workspaces: "./ -> target"
+            - uses: actions-rs/cargo@v1
+              with:
+                  command: build
+                  args: "--release --package lakesoul-io-c --package lakesoul-metadata-c --all-features"
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: lakesoul-nativeio-x86_64-pc-windows-msvc
+                  path: ./target/release/lakesoul_io_c.dll
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: lakesoul-nativemetadata-x86_64-pc-windows-msvc
+                  path: ./target/release/lakesoul_metadata_c.dll
 
-  build-macos-x86_64:
-    runs-on: macos-latest
-    steps:
-      - name: Install automake
-        run: brew install automake
-      - uses: actions/checkout@v5
-      - name: Set up JDK 11
-        uses: actions/setup-java@v5
-        with:
-          java-version: '11'
-          distribution: 'temurin'
-          cache: maven
-      - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          default: true
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: "./ -> target"
-      - uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: '--package lakesoul-io-c --package lakesoul-metadata-c --release --all-features'
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lakesoul-nativeio-x86_64-apple-darwin
-          path: ./target/release/liblakesoul_io_c.dylib
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lakesoul-nativemetadata-x86_64-apple-darwin
-          path: ./target/release/liblakesoul_metadata_c.dylib
+    build-macos-x86_64:
+        runs-on: macos-latest
+        steps:
+            - name: Install automake
+              run: brew install automake
+            - uses: actions/checkout@v5
+            - name: Set up JDK 11
+              uses: actions/setup-java@v5
+              with:
+                  java-version: "11"
+                  distribution: "temurin"
+                  cache: maven
+            - name: Install Protoc
+              uses: arduino/setup-protoc@v2
+              with:
+                  version: "23.x"
+                  repo-token: ${{ secrets.GITHUB_TOKEN }}
+            - uses: actions-rs/toolchain@v1
+              with:
+                  profile: minimal
+                  toolchain: stable
+                  default: true
+            - uses: Swatinem/rust-cache@v2
+              with:
+                  workspaces: "./ -> target"
+            - uses: actions-rs/cargo@v1
+              with:
+                  command: build
+                  args: "--package lakesoul-io-c --package lakesoul-metadata-c --release --all-features"
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: lakesoul-nativeio-x86_64-apple-darwin
+                  path: ./target/release/liblakesoul_io_c.dylib
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: lakesoul-nativemetadata-x86_64-apple-darwin
+                  path: ./target/release/liblakesoul_metadata_c.dylib
 
-
-  deploy-maven-package:
-    runs-on: ubuntu-24.04
-    needs: [ build-linux-x86_64, build-windows-x86_64, build-macos-x86_64 ]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: lakesoul-nativeio-x86_64-unknown-linux-gnu
-          path: ./target/release/
-      - uses: actions/download-artifact@v4
-        with:
-          name: lakesoul-nativeio-x86_64-apple-darwin
-          path: ./target/release/
-      - uses: actions/download-artifact@v4
-        with:
-          name: lakesoul-nativeio-x86_64-pc-windows-msvc
-          path: ./target/release/
-      - uses: actions/download-artifact@v4
-        with:
-          name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu
-          path: ./target/release/
-      - uses: actions/download-artifact@v4
-        with:
-          name: lakesoul-nativemetadata-x86_64-apple-darwin
-          path: ./target/release/
-      - uses: actions/download-artifact@v4
-        with:
-          name: lakesoul-nativemetadata-x86_64-pc-windows-msvc
-          path: ./target/release/
-      - name: Set up JDK 11
-        uses: actions/setup-java@v5
-        with:
-          java-version: '11'
-          distribution: 'temurin'
-          cache: maven
-          server-id: central
-          server-username: MAVEN_USERNAME
-          server-password: MAVEN_PASSWORD
-          gpg-private-key: ${{ secrets.MAVEN_SIGN_GPG_KEY }}
-          gpg-passphrase: GPG_PASSPHRASE
-      - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Release to Maven Central Repository
-        run: mvn --batch-mode deploy -Pcross-build,release-sign-artifacts -DskipTests -Dmaven.test.skip=true
-        env:
-          MAVEN_USERNAME: ${{ secrets.OSSRH_USERNAME }}
-          MAVEN_PASSWORD: ${{ secrets.OSSRH_TOKEN }}
-          GPG_PASSPHRASE: ${{ secrets.MAVEN_SIGN_GPG_PASSPHRASE }}
+    deploy-maven-package:
+        runs-on: ubuntu-24.04
+        needs: [build-linux-x86_64, build-windows-x86_64, build-macos-x86_64]
+        steps:
+            - uses: actions/checkout@v4
+            - uses: actions/download-artifact@v4
+              with:
+                  name: lakesoul-nativeio-x86_64-unknown-linux-gnu
+                  path: ./target/release/
+            - uses: actions/download-artifact@v4
+              with:
+                  name: lakesoul-nativeio-x86_64-apple-darwin
+                  path: ./target/release/
+            - uses: actions/download-artifact@v4
+              with:
+                  name: lakesoul-nativeio-x86_64-pc-windows-msvc
+                  path: ./target/release/
+            - uses: actions/download-artifact@v4
+              with:
+                  name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu
+                  path: ./target/release/
+            - uses: actions/download-artifact@v4
+              with:
+                  name: lakesoul-nativemetadata-x86_64-apple-darwin
+                  path: ./target/release/
+            - uses: actions/download-artifact@v4
+              with:
+                  name: lakesoul-nativemetadata-x86_64-pc-windows-msvc
+                  path: ./target/release/
+            - name: Set up JDK 11
+              uses: actions/setup-java@v5
+              with:
+                  java-version: "11"
+                  distribution: "temurin"
+                  cache: maven
+                  server-id: central
+                  server-username: MAVEN_USERNAME
+                  server-password: MAVEN_PASSWORD
+                  gpg-private-key: ${{ secrets.MAVEN_SIGN_GPG_KEY }}
+                  gpg-passphrase: GPG_PASSPHRASE
+            - name: Install Protoc
+              uses: arduino/setup-protoc@v2
+              with:
+                  version: "23.x"
+                  repo-token: ${{ secrets.GITHUB_TOKEN }}
+            - name: Release to Maven Central Repository
+              run: mvn --batch-mode deploy -Pcross-build,release-sign-artifacts -DskipTests -Dmaven.test.skip=true
+              env:
+                  MAVEN_USERNAME: ${{ secrets.OSSRH_USERNAME }}
+                  MAVEN_PASSWORD: ${{ secrets.OSSRH_TOKEN }}
+                  GPG_PASSPHRASE: ${{ secrets.MAVEN_SIGN_GPG_PASSPHRASE }}

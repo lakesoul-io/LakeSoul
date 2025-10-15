@@ -92,8 +92,8 @@ jobs:
       - name: Build with Maven
         run: |
           mkdir -p target/release
-          cp target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so target/release
-          cp target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so target/release
+          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so target/release
+          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so target/release
           wget -q https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/gluten-1.6.0-84ac41874-snapshot.tar.gz
           mkdir -p ~/.m2/repository
           tar xf gluten-1.6.0-84ac41874-snapshot.tar.gz -C ~/.m2/repository

@@ -54,11 +54,11 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: lakesoul-nativeio-x86_64-unknown-linux-gnu
-          path: ./target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so
+          path: ./rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so
       - uses: actions/upload-artifact@v4
         with:
           name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu
-          path: ./target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so
+          path: ./rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so
 
   build-windows-x86_64:
     runs-on: windows-latest
