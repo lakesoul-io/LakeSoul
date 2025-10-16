@@ -8,504 +8,504 @@
 name: CI with Maven Test
 
 on:
-  push:
-    paths-ignore:
-      - "javadoc/**"
-      - "website/**"
-      - "python/**"
-      - "cpp/**"
-      - "**.md"
-    branches:
-      - 'main'
-  pull_request:
-    paths-ignore:
-      - "javadoc/**"
-      - "website/**"
-      - "python/**"
-      - "cpp/**"
-      - "**.md"
-    branches:
-      - 'main'
-      - 'release/**'
-  workflow_dispatch:
+    push:
+        paths-ignore:
+            - "javadoc/**"
+            - "website/**"
+            - "python/**"
+            - "cpp/**"
+            - "**.md"
+        branches:
+            - "main"
+    pull_request:
+        paths-ignore:
+            - "javadoc/**"
+            - "website/**"
+            - "python/**"
+            - "cpp/**"
+            - "**.md"
+        branches:
+            - "main"
+            - "release/**"
+    workflow_dispatch:
 
 jobs:
-  build-rust-linux-x86_64:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up JDK 11
-        uses: actions/setup-java@v4
-        with:
-          java-version: '11'
-          distribution: 'temurin'
-          cache: maven
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          default: true
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: "./ -> target"
-      - name: Cache Docker images
-        uses: ScribeMD/docker-cache@0.4.0
-        with:
-          key: docker-${{ runner.os }}-${{ hashFiles('Cross.toml') }}
-      - uses: actions-rs/cargo@v1
-        with:
-          use-cross: true
-          command: build
-          args: '--target x86_64-unknown-linux-gnu --package lakesoul-io-c --package lakesoul-metadata-c --release --all-features'
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
-          path: ./target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
-          path: ./target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so
+    build-rust-linux-x86_64:
+        runs-on: ubuntu-24.04
+        steps:
+            - uses: actions/checkout@v4
+            - name: Set up JDK 11
+              uses: actions/setup-java@v4
+              with:
+                  java-version: "11"
+                  distribution: "temurin"
+                  cache: maven
+            - uses: actions-rs/toolchain@v1
+              with:
+                  profile: minimal
+                  toolchain: stable
+                  default: true
+            - uses: Swatinem/rust-cache@v2
+              with:
+                  workspaces: "./rust -> target"
+            - name: Cache Docker images
+              uses: ScribeMD/docker-cache@0.4.0
+              with:
+                  key: docker-${{ runner.os }}-${{ hashFiles('Cross.toml') }}
+            - uses: actions-rs/cargo@v1
+              with:
+                  use-cross: true
+                  command: build
+                  args: "--target x86_64-unknown-linux-gnu --package lakesoul-io-c --package lakesoul-metadata-c --release --all-features"
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
+                  path: ./rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
+                  path: ./rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so
 
-  spark-test-1:
-    runs-on: ubuntu-24.04
-    needs: [ build-rust-linux-x86_64 ]
+    spark-test-1:
+        runs-on: ubuntu-24.04
+        needs: [build-rust-linux-x86_64]
 
-    services:
-      # Label used to access the service container
-      postgres:
-        # Docker Hub image
-        image: postgres:14.5
-        # Provide the password for postgres
-        env:
-          POSTGRES_PASSWORD: lakesoul_test
-          POSTGRES_USER: lakesoul_test
-          POSTGRES_DB: lakesoul_test
-        # Set health checks to wait until postgres has started
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-          --name lakesoul-test-pg
-        ports:
-          # Maps tcp port 5432 on service container to the host
-          - 5432:5432
+        services:
+            # Label used to access the service container
+            postgres:
+                # Docker Hub image
+                image: postgres:14.5
+                # Provide the password for postgres
+                env:
+                    POSTGRES_PASSWORD: lakesoul_test
+                    POSTGRES_USER: lakesoul_test
+                    POSTGRES_DB: lakesoul_test
+                # Set health checks to wait until postgres has started
+                options: >-
+                    --health-cmd pg_isready
+                    --health-interval 10s
+                    --health-timeout 5s
+                    --health-retries 5
+                    --name lakesoul-test-pg
+                ports:
+                    # Maps tcp port 5432 on service container to the host
+                    - 5432:5432
 
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up JDK 11
-        uses: actions/setup-java@v4
-        with:
-          java-version: '11'
-          distribution: 'temurin'
-          cache: maven
-      - name: Install psql
-        run: sudo apt-get install -y postgresql-client-16
-      - name: Init PG
-        run: |
-          ./script/meta_init_for_local_test.sh -j 2
-      - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions/download-artifact@v4
-        with:
-          name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
-          path: ./target/release/
-      - uses: actions/download-artifact@v4
-        with:
-          name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
-          path: ./target/release/
-      - name: Build with Maven
-        run: |
-          mvn -B test -pl lakesoul-spark -am -Pcross-build -Pparallel-test --file pom.xml -Dtest='!ANNCase,UpdateScalaSuite,AlterTableByNameSuite,ReadSuite,UpdateSQLSuite,ParquetNativeFilterSuite,DeleteScalaSuite,DeleteSQLSuite,ParquetV2FilterSuite,ParquetScanSuite,UpsertSuiteBase' -Dsurefire.failIfNoSpecifiedTests=false
-      - name: Generate Report Site
-        if: always()
-        run: |
-          mvn surefire-report:report-only -pl lakesoul-spark -am
-      - name: Upload Test Report
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: maven-test-report-artifact-spark-1
-          path: lakesoul-spark/target/site
-          retention-days: 5
-          if-no-files-found: error
+        steps:
+            - uses: actions/checkout@v4
+            - name: Set up JDK 11
+              uses: actions/setup-java@v4
+              with:
+                  java-version: "11"
+                  distribution: "temurin"
+                  cache: maven
+            - name: Install psql
+              run: sudo apt-get install -y postgresql-client-16
+            - name: Init PG
+              run: |
+                  ./script/meta_init_for_local_test.sh -j 2
+            - name: Install Protoc
+              uses: arduino/setup-protoc@v2
+              with:
+                  version: "23.x"
+                  repo-token: ${{ secrets.GITHUB_TOKEN }}
+            - uses: actions/download-artifact@v4
+              with:
+                  name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
+                  path: ./rust/target/release/
+            - uses: actions/download-artifact@v4
+              with:
+                  name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
+                  path: ./rust/target/release/
+            - name: Build with Maven
+              run: |
+                  mvn -B clean test -pl lakesoul-spark -am -Pcross-build -Pparallel-test --file pom.xml -Dtest='!ANNCase,UpdateScalaSuite,AlterTableByNameSuite,ReadSuite,UpdateSQLSuite,ParquetNativeFilterSuite,DeleteScalaSuite,DeleteSQLSuite,ParquetV2FilterSuite,ParquetScanSuite,UpsertSuiteBase' -Dsurefire.failIfNoSpecifiedTests=false
+            - name: Generate Report Site
+              if: always()
+              run: |
+                  mvn surefire-report:report-only -pl lakesoul-spark -am
+            - name: Upload Test Report
+              if: always()
+              continue-on-error: true
+              uses: actions/upload-artifact@v4
+              with:
+                  name: maven-test-report-artifact-spark-1
+                  path: lakesoul-spark/target/site
+                  retention-days: 5
+                  if-no-files-found: error
 
-  spark-test-2:
-    runs-on: ubuntu-24.04
-    needs: [ build-rust-linux-x86_64 ]
+    spark-test-2:
+        runs-on: ubuntu-24.04
+        needs: [build-rust-linux-x86_64]
 
-    services:
-      # Label used to access the service container
-      postgres:
-        # Docker Hub image
-        image: postgres:14.5
-        # Provide the password for postgres
-        env:
-          POSTGRES_PASSWORD: lakesoul_test
-          POSTGRES_USER: lakesoul_test
-          POSTGRES_DB: lakesoul_test
-        # Set health checks to wait until postgres has started
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-          --name lakesoul-test-pg
-        ports:
-          # Maps tcp port 5432 on service container to the host
-          - 5432:5432
+        services:
+            # Label used to access the service container
+            postgres:
+                # Docker Hub image
+                image: postgres:14.5
+                # Provide the password for postgres
+                env:
+                    POSTGRES_PASSWORD: lakesoul_test
+                    POSTGRES_USER: lakesoul_test
+                    POSTGRES_DB: lakesoul_test
+                # Set health checks to wait until postgres has started
+                options: >-
+                    --health-cmd pg_isready
+                    --health-interval 10s
+                    --health-timeout 5s
+                    --health-retries 5
+                    --name lakesoul-test-pg
+                ports:
+                    # Maps tcp port 5432 on service container to the host
+                    - 5432:5432
 
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up JDK 11
-        uses: actions/setup-java@v4
-        with:
-          java-version: '11'
-          distribution: 'temurin'
-          cache: maven
-      - name: Install psql
-        run: sudo apt-get install -y postgresql-client-16
-      - name: Init PG
-        run: |
-          ./script/meta_init_for_local_test.sh -j 2
-      - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions/download-artifact@v4
-        with:
-          name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
-          path: ./target/release/
-      - uses: actions/download-artifact@v4
-        with:
-          name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
-          path: ./target/release/
-      - name: Build with Maven
-        run: |
-          mvn -B test -pl lakesoul-spark -am -Pcross-build -Pparallel-test --file pom.xml -Dtest='!ANNCase,!UpdateScalaSuite,!AlterTableByNameSuite,!ReadSuite,!UpdateSQLSuite,!ParquetNativeFilterSuite,!DeleteScalaSuite,!DeleteSQLSuite,!ParquetV2FilterSuite,!ParquetScanSuite,!UpsertSuiteBase,!RBACOperationSuite,!DeltaJoinSuite' -Dsurefire.failIfNoSpecifiedTests=false
-      - name: Generate Report Site
-        if: always()
-        run: |
-          mvn surefire-report:report-only -pl lakesoul-spark -am
-      - name: Upload Test Report
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: maven-test-report-artifact-spark-2
-          path: lakesoul-spark/target/site
-          retention-days: 5
-          if-no-files-found: error
+        steps:
+            - uses: actions/checkout@v4
+            - name: Set up JDK 11
+              uses: actions/setup-java@v4
+              with:
+                  java-version: "11"
+                  distribution: "temurin"
+                  cache: maven
+            - name: Install psql
+              run: sudo apt-get install -y postgresql-client-16
+            - name: Init PG
+              run: |
+                  ./script/meta_init_for_local_test.sh -j 2
+            - name: Install Protoc
+              uses: arduino/setup-protoc@v2
+              with:
+                  version: "23.x"
+                  repo-token: ${{ secrets.GITHUB_TOKEN }}
+            - uses: actions/download-artifact@v4
+              with:
+                  name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
+                  path: ./rust/target/release/
+            - uses: actions/download-artifact@v4
+              with:
+                  name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
+                  path: ./rust/target/release/
+            - name: Build with Maven
+              run: |
+                  mvn -B clean test -pl lakesoul-spark -am -Pcross-build -Pparallel-test --file pom.xml -Dtest='!ANNCase,!UpdateScalaSuite,!AlterTableByNameSuite,!ReadSuite,!UpdateSQLSuite,!ParquetNativeFilterSuite,!DeleteScalaSuite,!DeleteSQLSuite,!ParquetV2FilterSuite,!ParquetScanSuite,!UpsertSuiteBase,!RBACOperationSuite,!DeltaJoinSuite' -Dsurefire.failIfNoSpecifiedTests=false
+            - name: Generate Report Site
+              if: always()
+              run: |
+                  mvn surefire-report:report-only -pl lakesoul-spark -am
+            - name: Upload Test Report
+              if: always()
+              continue-on-error: true
+              uses: actions/upload-artifact@v4
+              with:
+                  name: maven-test-report-artifact-spark-2
+                  path: lakesoul-spark/target/site
+                  retention-days: 5
+                  if-no-files-found: error
 
-  spark-test-gluten:
-    runs-on: ubuntu-24.04
-    needs: [ build-rust-linux-x86_64 ]
+    spark-test-gluten:
+        runs-on: ubuntu-24.04
+        needs: [build-rust-linux-x86_64]
 
-    services:
-      # Label used to access the service container
-      postgres:
-        # Docker Hub image
-        image: postgres:14.5
-        # Provide the password for postgres
-        env:
-          POSTGRES_PASSWORD: lakesoul_test
-          POSTGRES_USER: lakesoul_test
-          POSTGRES_DB: lakesoul_test
-        # Set health checks to wait until postgres has started
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-          --name lakesoul-test-pg
-        ports:
-          # Maps tcp port 5432 on service container to the host
-          - 5432:5432
+        services:
+            # Label used to access the service container
+            postgres:
+                # Docker Hub image
+                image: postgres:14.5
+                # Provide the password for postgres
+                env:
+                    POSTGRES_PASSWORD: lakesoul_test
+                    POSTGRES_USER: lakesoul_test
+                    POSTGRES_DB: lakesoul_test
+                # Set health checks to wait until postgres has started
+                options: >-
+                    --health-cmd pg_isready
+                    --health-interval 10s
+                    --health-timeout 5s
+                    --health-retries 5
+                    --name lakesoul-test-pg
+                ports:
+                    # Maps tcp port 5432 on service container to the host
+                    - 5432:5432
 
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up JDK 11
-        uses: actions/setup-java@v4
-        with:
-          java-version: '11'
-          distribution: 'temurin'
-          cache: maven
-      - name: Install psql
-        run: sudo apt-get install -y postgresql-client-16
-      - name: Init PG
-        run: |
-          ./script/meta_init_for_local_test.sh -j 1
-      - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions/download-artifact@v4
-        with:
-          name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
-          path: ./target/release/
-      - uses: actions/download-artifact@v4
-        with:
-          name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
-          path: ./target/release/
-      - name: Build with Maven
-        run: |
-          sudo apt-get update && sudo apt-get install --only-upgrade tzdata
-          wget -q https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/gluten-1.6.0-84ac41874-snapshot.tar.gz
-          mkdir -p ~/.m2/repository
-          tar xf gluten-1.6.0-84ac41874-snapshot.tar.gz -C ~/.m2/repository
-          rm -f gluten-1.6.0-84ac41874-snapshot.tar.gz
-          MAVEN_OPTS="-Xmx4g -Dio.netty.tryReflectionSetAccessible=true" mvn -B test -pl lakesoul-spark-gluten -am -Pgluten -Pcross-build --file pom.xml -Dtest='LakeSoulGlutenCompatSuite,UpdateGlutenTestSuite,UpsertGlutenTestSuite,DeleteSQLGlutenTestSuite,MergeIntoSQLGlutenTestSuite,' -Dsurefire.failIfNoSpecifiedTests=false
-      - name: Generate Report Site
-        if: always()
-        run: |
-          mvn surefire-report:report-only -pl lakesoul-spark-gluten -am -Pgluten
-      - name: Upload Test Report
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: maven-test-report-artifact-spark-2
-          path: lakesoul-spark-gluten/target/site
-          retention-days: 5
-          if-no-files-found: error
+        steps:
+            - uses: actions/checkout@v4
+            - name: Set up JDK 11
+              uses: actions/setup-java@v4
+              with:
+                  java-version: "11"
+                  distribution: "temurin"
+                  cache: maven
+            - name: Install psql
+              run: sudo apt-get install -y postgresql-client-16
+            - name: Init PG
+              run: |
+                  ./script/meta_init_for_local_test.sh -j 1
+            - name: Install Protoc
+              uses: arduino/setup-protoc@v2
+              with:
+                  version: "23.x"
+                  repo-token: ${{ secrets.GITHUB_TOKEN }}
+            - uses: actions/download-artifact@v4
+              with:
+                  name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
+                  path: ./rust/target/release/
+            - uses: actions/download-artifact@v4
+              with:
+                  name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
+                  path: ./rust/target/release/
+            - name: Build with Maven
+              run: |
+                  sudo apt-get update && sudo apt-get install --only-upgrade tzdata
+                  wget -q https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/gluten-1.6.0-84ac41874-snapshot.tar.gz
+                  mkdir -p ~/.m2/repository
+                  tar xf gluten-1.6.0-84ac41874-snapshot.tar.gz -C ~/.m2/repository
+                  rm -f gluten-1.6.0-84ac41874-snapshot.tar.gz
+                  MAVEN_OPTS="-Xmx4g -Dio.netty.tryReflectionSetAccessible=true" mvn -B clean test -pl lakesoul-spark-gluten -am -Pgluten -Pcross-build --file pom.xml -Dtest='LakeSoulGlutenCompatSuite,UpdateGlutenTestSuite,UpsertGlutenTestSuite,DeleteSQLGlutenTestSuite,MergeIntoSQLGlutenTestSuite,' -Dsurefire.failIfNoSpecifiedTests=false
+            - name: Generate Report Site
+              if: always()
+              run: |
+                  mvn surefire-report:report-only -pl lakesoul-spark-gluten -am -Pgluten
+            - name: Upload Test Report
+              if: always()
+              continue-on-error: true
+              uses: actions/upload-artifact@v4
+              with:
+                  name: maven-test-report-artifact-spark-2
+                  path: lakesoul-spark-gluten/target/site
+                  retention-days: 5
+                  if-no-files-found: error
 
-  spark-test-rbac:
-    runs-on: ubuntu-24.04
-    needs: [ build-rust-linux-x86_64 ]
+    spark-test-rbac:
+        runs-on: ubuntu-24.04
+        needs: [build-rust-linux-x86_64]
 
-    services:
-      # Label used to access the service container
-      postgres:
-        # Docker Hub image
-        image: postgres:14.5
-        # Provide the password for postgres
-        env:
-          POSTGRES_PASSWORD: lakesoul_test
-          POSTGRES_USER: lakesoul_test
-          POSTGRES_DB: lakesoul_test
-        # Set health checks to wait until postgres has started
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-          --name lakesoul-test-pg
-        ports:
-          # Maps tcp port 5432 on service container to the host
-          - 5432:5432
+        services:
+            # Label used to access the service container
+            postgres:
+                # Docker Hub image
+                image: postgres:14.5
+                # Provide the password for postgres
+                env:
+                    POSTGRES_PASSWORD: lakesoul_test
+                    POSTGRES_USER: lakesoul_test
+                    POSTGRES_DB: lakesoul_test
+                # Set health checks to wait until postgres has started
+                options: >-
+                    --health-cmd pg_isready
+                    --health-interval 10s
+                    --health-timeout 5s
+                    --health-retries 5
+                    --name lakesoul-test-pg
+                ports:
+                    # Maps tcp port 5432 on service container to the host
+                    - 5432:5432
 
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up JDK 11
-        uses: actions/setup-java@v4
-        with:
-          java-version: '11'
-          distribution: 'temurin'
-          cache: maven
-      - name: Install psql
-        run: sudo apt-get install -y postgresql-client-16
-      - name: Init PG
-        run: |
-          ./script/meta_init_for_local_test.sh -j 1
-      - name: Init PG RBAC
-        run: |
-          ./script/meta_rbac_init_for_local_test.sh -j 1
-      - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: beyondstorage/setup-hdfs@master
-        with:
-          hdfs-version: '3.3.6'
-      - name: Modify HDFS User Group Mapping
-        run: |
-          sed -i '/^<\/configuration>/i <property><name>hadoop.user.group.static.mapping.overrides</name><value>admin1=domain1;user1=domain1;user2=domain1;admin2=domain2</value></property>' $HADOOP_HOME/etc/hadoop/core-site.xml
-          $HADOOP_HOME/sbin/stop-dfs.sh
-          $HADOOP_HOME/sbin/start-dfs.sh
-          $HADOOP_HOME/bin/hadoop fs -chmod -R 777 /
-      - uses: actions/download-artifact@v4
-        with:
-          name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
-          path: ./target/release/
-      - uses: actions/download-artifact@v4
-        with:
-          name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
-          path: ./target/release/
-      - name: Build with Maven
-        run: |
-          mvn -B test -pl lakesoul-spark -am -Pcross-build --file pom.xml -Dtest='RBACOperationSuite' -Dsurefire.failIfNoSpecifiedTests=false
-      - name: Generate Report Site
-        if: always()
-        run: |
-          mvn surefire-report:report-only -pl lakesoul-spark -am
-      - name: Upload Test Report
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: maven-test-report-artifact-spark-3
-          path: lakesoul-spark/target/site
-          retention-days: 5
-          if-no-files-found: error
+        steps:
+            - uses: actions/checkout@v4
+            - name: Set up JDK 11
+              uses: actions/setup-java@v4
+              with:
+                  java-version: "11"
+                  distribution: "temurin"
+                  cache: maven
+            - name: Install psql
+              run: sudo apt-get install -y postgresql-client-16
+            - name: Init PG
+              run: |
+                  ./script/meta_init_for_local_test.sh -j 1
+            - name: Init PG RBAC
+              run: |
+                  ./script/meta_rbac_init_for_local_test.sh -j 1
+            - name: Install Protoc
+              uses: arduino/setup-protoc@v2
+              with:
+                  version: "23.x"
+                  repo-token: ${{ secrets.GITHUB_TOKEN }}
+            - uses: beyondstorage/setup-hdfs@master
+              with:
+                  hdfs-version: "3.3.6"
+            - name: Modify HDFS User Group Mapping
+              run: |
+                  sed -i '/^<\/configuration>/i <property><name>hadoop.user.group.static.mapping.overrides</name><value>admin1=domain1;user1=domain1;user2=domain1;admin2=domain2</value></property>' $HADOOP_HOME/etc/hadoop/core-site.xml
+                  $HADOOP_HOME/sbin/stop-dfs.sh
+                  $HADOOP_HOME/sbin/start-dfs.sh
+                  $HADOOP_HOME/bin/hadoop fs -chmod -R 777 /
+            - uses: actions/download-artifact@v4
+              with:
+                  name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
+                  path: ./rust/target/release/
+            - uses: actions/download-artifact@v4
+              with:
+                  name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
+                  path: ./rust/target/release/
+            - name: Build with Maven
+              run: |
+                  mvn -B clean test -pl lakesoul-spark -am -Pcross-build --file pom.xml -Dtest='RBACOperationSuite' -Dsurefire.failIfNoSpecifiedTests=false
+            - name: Generate Report Site
+              if: always()
+              run: |
+                  mvn surefire-report:report-only -pl lakesoul-spark -am
+            - name: Upload Test Report
+              if: always()
+              continue-on-error: true
+              uses: actions/upload-artifact@v4
+              with:
+                  name: maven-test-report-artifact-spark-3
+                  path: lakesoul-spark/target/site
+                  retention-days: 5
+                  if-no-files-found: error
 
-  flink-test-1:
-    runs-on: ubuntu-24.04
-    needs: [ build-rust-linux-x86_64 ]
+    flink-test-1:
+        runs-on: ubuntu-24.04
+        needs: [build-rust-linux-x86_64]
 
-    services:
-      # Label used to access the service container
-      postgres:
-        # Docker Hub image
-        image: postgres:14.5
-        # Provide the password for postgres
-        env:
-          POSTGRES_PASSWORD: lakesoul_test
-          POSTGRES_USER: lakesoul_test
-          POSTGRES_DB: lakesoul_test
-        # Set health checks to wait until postgres has started
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-          --name lakesoul-test-pg
-        ports:
-          # Maps tcp port 5432 on service container to the host
-          - 5432:5432
+        services:
+            # Label used to access the service container
+            postgres:
+                # Docker Hub image
+                image: postgres:14.5
+                # Provide the password for postgres
+                env:
+                    POSTGRES_PASSWORD: lakesoul_test
+                    POSTGRES_USER: lakesoul_test
+                    POSTGRES_DB: lakesoul_test
+                # Set health checks to wait until postgres has started
+                options: >-
+                    --health-cmd pg_isready
+                    --health-interval 10s
+                    --health-timeout 5s
+                    --health-retries 5
+                    --name lakesoul-test-pg
+                ports:
+                    # Maps tcp port 5432 on service container to the host
+                    - 5432:5432
 
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up JDK 11
-        uses: actions/setup-java@v4
-        with:
-          java-version: '11'
-          distribution: 'temurin'
-          cache: maven
-      - name: Install psql
-        run: sudo apt-get install -y postgresql-client-16
-      - name: Init PG
-        run: |
-          PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql lakesoul_test
-      - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions/download-artifact@v4
-        with:
-          name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
-          path: ./target/release/
-      - uses: actions/download-artifact@v4
-        with:
-          name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
-          path: ./target/release/
-      - name: Build with Maven
-        run: |
-          MAVEN_OPTS="-Xmx5g" mvn -B test -pl lakesoul-flink -am -Pcross-build --file pom.xml -Dtest='!LakeSoulRBACTest' -Dsurefire.failIfNoSpecifiedTests=false
-      - name: Generate Report Site
-        if: always()
-        run: |
-          mvn surefire-report:report-only -pl lakesoul-flink -am
-      - name: Upload Test Report
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: maven-test-report-artifact-flink-1
-          path: lakesoul-flink/target/site
-          retention-days: 5
-          if-no-files-found: error
+        steps:
+            - uses: actions/checkout@v4
+            - name: Set up JDK 11
+              uses: actions/setup-java@v4
+              with:
+                  java-version: "11"
+                  distribution: "temurin"
+                  cache: maven
+            - name: Install psql
+              run: sudo apt-get install -y postgresql-client-16
+            - name: Init PG
+              run: |
+                  PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql lakesoul_test
+            - name: Install Protoc
+              uses: arduino/setup-protoc@v2
+              with:
+                  version: "23.x"
+                  repo-token: ${{ secrets.GITHUB_TOKEN }}
+            - uses: actions/download-artifact@v4
+              with:
+                  name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
+                  path: ./rust/target/release/
+            - uses: actions/download-artifact@v4
+              with:
+                  name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
+                  path: ./rust/target/release/
+            - name: Build with Maven
+              run: |
+                  MAVEN_OPTS="-Xmx5g" mvn -B clean test -pl lakesoul-flink -am -Pcross-build --file pom.xml -Dtest='!LakeSoulRBACTest' -Dsurefire.failIfNoSpecifiedTests=false
+            - name: Generate Report Site
+              if: always()
+              run: |
+                  mvn surefire-report:report-only -pl lakesoul-flink -am
+            - name: Upload Test Report
+              if: always()
+              continue-on-error: true
+              uses: actions/upload-artifact@v4
+              with:
+                  name: maven-test-report-artifact-flink-1
+                  path: lakesoul-flink/target/site
+                  retention-days: 5
+                  if-no-files-found: error
 
-  flink-test-rbac:
-    runs-on: ubuntu-24.04
-    needs: [ build-rust-linux-x86_64 ]
+    flink-test-rbac:
+        runs-on: ubuntu-24.04
+        needs: [build-rust-linux-x86_64]
 
-    services:
-      # Label used to access the service container
-      postgres:
-        # Docker Hub image
-        image: postgres:14.5
-        # Provide the password for postgres
-        env:
-          POSTGRES_PASSWORD: lakesoul_test
-          POSTGRES_USER: lakesoul_test
-          POSTGRES_DB: lakesoul_test
-        # Set health checks to wait until postgres has started
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-          --name lakesoul-test-pg
-        ports:
-          # Maps tcp port 5432 on service container to the host
-          - 5432:5432
+        services:
+            # Label used to access the service container
+            postgres:
+                # Docker Hub image
+                image: postgres:14.5
+                # Provide the password for postgres
+                env:
+                    POSTGRES_PASSWORD: lakesoul_test
+                    POSTGRES_USER: lakesoul_test
+                    POSTGRES_DB: lakesoul_test
+                # Set health checks to wait until postgres has started
+                options: >-
+                    --health-cmd pg_isready
+                    --health-interval 10s
+                    --health-timeout 5s
+                    --health-retries 5
+                    --name lakesoul-test-pg
+                ports:
+                    # Maps tcp port 5432 on service container to the host
+                    - 5432:5432
 
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up JDK 11
-        uses: actions/setup-java@v4
-        with:
-          java-version: '11'
-          distribution: 'temurin'
-          cache: maven
-      - name: Install psql
-        run: sudo apt-get install -y postgresql-client-16
-      - name: Init PG
-        run: |
-          PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql lakesoul_test
-      - name: Init PG RBAC ROW POLICY
-        run: |
-          PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_rbac_init.sql lakesoul_test
-      - name: Init PG RBAC DOMAINS
-        run: |
-          PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_rbac_init_domains_for_test.sql lakesoul_test
-      - name: Init PG RBAC USERS
-        run: |
-          PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_rbac_init_users_for_test.sql lakesoul_test
+        steps:
+            - uses: actions/checkout@v4
+            - name: Set up JDK 11
+              uses: actions/setup-java@v4
+              with:
+                  java-version: "11"
+                  distribution: "temurin"
+                  cache: maven
+            - name: Install psql
+              run: sudo apt-get install -y postgresql-client-16
+            - name: Init PG
+              run: |
+                  PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql lakesoul_test
+            - name: Init PG RBAC ROW POLICY
+              run: |
+                  PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_rbac_init.sql lakesoul_test
+            - name: Init PG RBAC DOMAINS
+              run: |
+                  PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_rbac_init_domains_for_test.sql lakesoul_test
+            - name: Init PG RBAC USERS
+              run: |
+                  PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_rbac_init_users_for_test.sql lakesoul_test
 
-      - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: beyondstorage/setup-hdfs@master
-        with:
-          hdfs-version: '3.3.6'
-      - name: Modify HDFS User Group Mapping
-        run: |
-          sed -i '/^<\/configuration>/i <property><name>hadoop.user.group.static.mapping.overrides</name><value>admin1=domain1;user1=domain1;user2=domain1;admin2=domain2</value></property>' $HADOOP_HOME/etc/hadoop/core-site.xml
-          $HADOOP_HOME/sbin/stop-dfs.sh
-          $HADOOP_HOME/sbin/start-dfs.sh
-          $HADOOP_HOME/bin/hadoop fs -chmod -R 777 /
-      - uses: actions/download-artifact@v4
-        with:
-          name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
-          path: ./target/release/
-      - uses: actions/download-artifact@v4
-        with:
-          name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
-          path: ./target/release/
-      - name: Build with Maven
-        run: |
-          MAVEN_OPTS="-Xmx5g" mvn -B test -pl lakesoul-flink -am -Pcross-build --file pom.xml -Dtest='LakeSoulRBACTest' -Dsurefire.failIfNoSpecifiedTests=false
-      - name: Generate Report Site
-        if: always()
-        run: |
-          mvn surefire-report:report-only -pl lakesoul-flink -am
-      - name: Upload Test Report
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: maven-test-report-artifact-flink-2
-          path: lakesoul-flink/target/site
-          retention-days: 5
-          if-no-files-found: error
+            - name: Install Protoc
+              uses: arduino/setup-protoc@v2
+              with:
+                  version: "23.x"
+                  repo-token: ${{ secrets.GITHUB_TOKEN }}
+            - uses: beyondstorage/setup-hdfs@master
+              with:
+                  hdfs-version: "3.3.6"
+            - name: Modify HDFS User Group Mapping
+              run: |
+                  sed -i '/^<\/configuration>/i <property><name>hadoop.user.group.static.mapping.overrides</name><value>admin1=domain1;user1=domain1;user2=domain1;admin2=domain2</value></property>' $HADOOP_HOME/etc/hadoop/core-site.xml
+                  $HADOOP_HOME/sbin/stop-dfs.sh
+                  $HADOOP_HOME/sbin/start-dfs.sh
+                  $HADOOP_HOME/bin/hadoop fs -chmod -R 777 /
+            - uses: actions/download-artifact@v4
+              with:
+                  name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
+                  path: ./rust/target/release/
+            - uses: actions/download-artifact@v4
+              with:
+                  name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
+                  path: ./rust/target/release/
+            - name: Build with Maven
+              run: |
+                  MAVEN_OPTS="-Xmx5g" mvn -B clean test -pl lakesoul-flink -am -Pcross-build --file pom.xml -Dtest='LakeSoulRBACTest' -Dsurefire.failIfNoSpecifiedTests=false
+            - name: Generate Report Site
+              if: always()
+              run: |
+                  mvn surefire-report:report-only -pl lakesoul-flink -am
+            - name: Upload Test Report
+              if: always()
+              continue-on-error: true
+              uses: actions/upload-artifact@v4
+              with:
+                  name: maven-test-report-artifact-flink-2
+                  path: lakesoul-flink/target/site
+                  retention-days: 5
+                  if-no-files-found: error

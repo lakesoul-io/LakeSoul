@@ -49,9 +49,9 @@ pub type MetaDataClientRef = Arc<MetaDataClient>;
 
 /// Generate pg config from environment variable
 pub fn pg_config_from_env() -> Result<String, LakeSoulMetaDataError> {
-    if let Some(config_path) = option_env!("lakesoul_home") {
+    if let Ok(config_path) = std::env::var("lakesoul_home") {
         trace!("get config from lakesoul_home: {}", config_path);
-        let config = fs::read_to_string(config_path).unwrap_or_else(|_| {
+        let config = fs::read_to_string(&config_path).unwrap_or_else(|_| {
             panic!("Fails at reading a config file {}", &config_path)
         });
         let config_map = config
@@ -89,7 +89,7 @@ pub fn pg_config_from_env() -> Result<String, LakeSoulMetaDataError> {
                 .unwrap_or(&"lakesoul_test")
         ));
     }
-    if let Some(pg_url) = option_env!("LAKESOUL_PG_URL") {
+    if let Ok(pg_url) = std::env::var("LAKESOUL_PG_URL") {
         trace!("get config from env LAKESOUL_PG_URL= {}", pg_url);
         let url = Url::parse(&pg_url[5..])?;
         return Ok(format!(
