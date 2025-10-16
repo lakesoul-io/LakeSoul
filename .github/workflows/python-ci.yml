@@ -50,6 +50,7 @@ jobs:
         with:
           java-version: '11'
           distribution: 'temurin'
+          cache-dependency-path: "**/pom.xml"
           cache: maven
       - name: Install psql
         run: sudo apt-get install -y postgresql-client-16

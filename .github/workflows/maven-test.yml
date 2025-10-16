@@ -40,6 +40,7 @@ jobs:
                   java-version: "11"
                   distribution: "temurin"
                   cache: maven
+                  cache-dependency-path: "**/pom.xml"
             - uses: actions-rs/toolchain@v1
               with:
                   profile: minimal
@@ -99,6 +100,7 @@ jobs:
                   java-version: "11"
                   distribution: "temurin"
                   cache: maven
+                  cache-dependency-path: "**/pom.xml"
             - name: Install psql
               run: sudo apt-get install -y postgresql-client-16
             - name: Init PG
@@ -167,6 +169,7 @@ jobs:
                   java-version: "11"
                   distribution: "temurin"
                   cache: maven
+                  cache-dependency-path: "**/pom.xml"
             - name: Install psql
               run: sudo apt-get install -y postgresql-client-16
             - name: Init PG
@@ -235,6 +238,7 @@ jobs:
                   java-version: "11"
                   distribution: "temurin"
                   cache: maven
+                  cache-dependency-path: "**/pom.xml"
             - name: Install psql
               run: sudo apt-get install -y postgresql-client-16
             - name: Init PG
@@ -308,6 +312,7 @@ jobs:
                   java-version: "11"
                   distribution: "temurin"
                   cache: maven
+                  cache-dependency-path: "**/pom.xml"
             - name: Install psql
               run: sudo apt-get install -y postgresql-client-16
             - name: Init PG
@@ -388,6 +393,7 @@ jobs:
                   java-version: "11"
                   distribution: "temurin"
                   cache: maven
+                  cache-dependency-path: "**/pom.xml"
             - name: Install psql
               run: sudo apt-get install -y postgresql-client-16
             - name: Init PG
@@ -456,6 +462,7 @@ jobs:
                   java-version: "11"
                   distribution: "temurin"
                   cache: maven
+                  cache-dependency-path: "**/pom.xml"
             - name: Install psql
               run: sudo apt-get install -y postgresql-client-16
             - name: Init PG

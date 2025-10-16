@@ -33,6 +33,7 @@ jobs:
           java-version: '11'
           distribution: 'temurin'
           cache: maven
+          cache-dependency-path: "**/pom.xml"
       - uses: actions-rs/toolchain@v1
         with:
           profile: minimal
@@ -70,6 +71,7 @@ jobs:
           java-version: '11'
           distribution: 'temurin'
           cache: maven
+          cache-dependency-path: "**/pom.xml"
       - name: Install Protoc
         uses: arduino/setup-protoc@v2
         with:
@@ -109,6 +111,7 @@ jobs:
           java-version: '11'
           distribution: 'temurin'
           cache: maven
+          cache-dependency-path: "**/pom.xml"
       - name: Install Protoc
         uses: arduino/setup-protoc@v2
         with:
@@ -171,6 +174,7 @@ jobs:
           java-version: '11'
           distribution: 'temurin'
           cache: maven
+          cache-dependency-path: "**/pom.xml"
       - name: Install Protoc
         uses: arduino/setup-protoc@v2
         with:

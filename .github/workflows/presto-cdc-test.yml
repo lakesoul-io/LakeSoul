@@ -47,6 +47,7 @@ jobs:
               with:
                   java-version: "11"
                   distribution: "temurin"
+                  cache-dependency-path: "**/pom.xml"
                   cache: maven
             - name: Set up Python 3.9
               uses: actions/setup-python@v4
