@@ -213,6 +213,12 @@ pub struct Contents {
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
+pub struct CommonPrefixes {
+    pub prefix: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
 pub struct ContentsWrap {
     pub contents: Vec<Contents>,
 }
@@ -221,13 +227,16 @@ pub struct ContentsWrap {
 #[serde(rename_all = "PascalCase")]
 pub struct ListBucketResult {
     pub name: String,
-    pub prefix: String,
+    pub prefix: Option<String>,
     pub key_count: u64,
     pub max_keys: u64,
     pub is_truncated: bool,
     pub continuation_token: String,
     pub next_continuation_token: String,
+    #[serde(rename = "$value", default)]
     pub contents: Vec<Contents>,
+    #[serde(rename = "$value", default)]
+    pub common_prefixes: Vec<CommonPrefixes>,
 }
 
 #[cfg(test)]
@@ -247,9 +256,10 @@ mod test {
                 key: "".to_string(),
                 last_modified: "".to_string(),
                 etag: "".to_string(),
-                size: 0,
+                size: "0".to_string(),
                 storage_class: "".to_string(),
             }],
+            common_prefixes: vec![],
         };
         let s = quick_xml::se::to_string(&l).unwrap();
         println!("{}", s);

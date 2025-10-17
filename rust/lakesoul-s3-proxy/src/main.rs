@@ -453,19 +453,21 @@ impl ProxyHttp for S3Proxy {
 
             // rewrite response body for list object
             if ctx.require_response_body_rewrite {
+                debug!("need rewrite response, eos {}", end_of_stream);
                 ctx.response_body.extend_from_slice(bytes.as_ref());
                 // clear buffer to indicate ignoring original body
                 bytes.clear();
-                if end_of_stream {
-                    // let handler fill required body
-                    self.handle
-                        .http_handle
-                        .rewrite_response_body(session.req_header(), ctx, body)
-                        .map_err(|e| {
-                            Error::because(InternalError, "handle response body error", e)
-                        })?;
-                }
             }
+        }
+        if ctx.require_response_body_rewrite && end_of_stream {
+            debug!("begin rewrite response");
+            // let handler fill required body
+            self.handle
+                .http_handle
+                .rewrite_response_body(session.req_header(), ctx, body)
+                .map_err(|e| {
+                    Error::because(InternalError, "handle response body error", e)
+                })?;
         }
         Ok(None)
     }

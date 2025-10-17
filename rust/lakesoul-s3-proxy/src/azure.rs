@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::aws::{Contents, ListBucketResult};
+use crate::aws::{CommonPrefixes, Contents, ListBucketResult};
 use crate::context::S3ProxyContext;
 use crate::handler::{HTTPHandler, parse_host_port};
 use anyhow::Error;
@@ -22,7 +22,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::str::FromStr;
 use tokio::sync::Mutex;
-use tracing::log::debug;
+use tracing::log::{debug, info};
 use url::Url;
 
 static CONTENT_MD5: HeaderName = HeaderName::from_static("content-md5");
@@ -72,6 +72,9 @@ impl AzureHandler {
         // 2.
         add_required_headers(headers, &self.host)?;
         // 3.
+        // re-construct url
+        let s = format!("{}{}", self.endpoint, headers.uri.to_string());
+        let url = Url::parse(s.as_str())?;
         sign(&url, headers, self.account.as_str(), &self.key)?;
         Ok(())
     }
@@ -134,34 +137,62 @@ impl HTTPHandler for AzureHandler {
         if headers.method == Method::GET
             && ctx.request_query_params.contains_key("list-type")
         {
+            debug!("azure rewrite response body for list");
             // convert azure list result to aws
             let response_body =
                 String::from_utf8(std::mem::take(&mut ctx.response_body))?;
             let mut azure_result: EnumerationResults =
                 quick_xml::de::from_str(&response_body)?;
-            let aws_result = ListBucketResult {
+            let key_count = azure_result.blobs.blobs.len() as u64;
+            let mut aws_result = ListBucketResult {
                 name: ctx.bucket.clone(),
                 prefix: std::mem::take(&mut azure_result.prefix),
-                key_count: azure_result.blobs.len() as u64,
-                max_keys: azure_result.max_results,
-                is_truncated: !azure_result.next_marker.is_empty(),
-                continuation_token: std::mem::take(&mut azure_result.marker),
-                next_continuation_token: std::mem::take(&mut azure_result.next_marker),
-                contents: azure_result
-                    .blobs
-                    .into_iter()
-                    .map(|mut blob| {
-                        let blob = &mut blob.blob;
-                        Contents {
-                            key: std::mem::take(&mut blob.name),
-                            last_modified: take_string_from_map(&mut blob.properties, "Last-Modified"),
-                            etag: take_string_from_map(&mut blob.properties, "ETag"),
-                            size: take_string_from_map(&mut blob.properties, "Content-Length"),
-                            storage_class: "STANDARD".to_string(),
-                        }
-                    })
-                    .collect(),
+                key_count,
+                max_keys: azure_result.max_results.unwrap_or(key_count),
+                is_truncated: !azure_result
+                    .next_marker
+                    .as_ref()
+                    .unwrap_or(&String::new())
+                    .is_empty(),
+                continuation_token: azure_result
+                    .marker
+                    .as_mut()
+                    .map(|marker| std::mem::take(marker))
+                    .unwrap_or(String::new()),
+                next_continuation_token: azure_result
+                    .next_marker
+                    .as_mut()
+                    .map(|marker| std::mem::take(marker))
+                    .unwrap_or(String::new()),
+                contents: vec![],
+                common_prefixes: vec![],
             };
+            azure_result
+                .blobs
+                .blobs
+                .into_iter()
+                .for_each(|mut blob| match blob {
+                    BlobOrPrefix::Blob(mut blob) => {
+                        aws_result.contents.push(Contents {
+                            key: std::mem::take(&mut blob.name),
+                            last_modified: take_string_from_map(
+                                &mut blob.properties,
+                                "Last-Modified",
+                            ),
+                            etag: take_string_from_map(&mut blob.properties, "ETag"),
+                            size: take_string_from_map(
+                                &mut blob.properties,
+                                "Content-Length",
+                            ),
+                            storage_class: "STANDARD".to_string(),
+                        });
+                    }
+                    BlobOrPrefix::BlobPrefix(mut prefix) => {
+                        aws_result.common_prefixes.push(CommonPrefixes {
+                            prefix: std::mem::take(&mut prefix.name),
+                        });
+                    }
+                });
             debug!("Converted azure list results {:?}", aws_result);
             let s = quick_xml::se::to_string(&aws_result)?;
             *body = Some(Bytes::from(s));
@@ -198,39 +229,41 @@ impl AzureAccessKey {
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
-pub struct Blob {
+struct BlobPrefix {
+    pub name: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+struct Blob {
     pub name: String,
     pub properties: HashMap<String, String>,
-    pub metadata: HashMap<String, String>,
+    pub metadata: Option<HashMap<String, String>>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
-pub struct BlobWrap {
-    pub blob: Blob,
+enum BlobOrPrefix {
+    Blob(Blob),
+    BlobPrefix(BlobPrefix),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
-pub struct Blobs {
-    pub blobs: Vec<Blob>,
+struct Blobs {
+    #[serde(rename = "$value", default)]
+    pub blobs: Vec<BlobOrPrefix>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
-pub struct EnumerationResults {
-    pub prefix: String,
-    pub marker: String,
-    pub max_results: u64,
+struct EnumerationResults {
+    pub prefix: Option<String>,
+    pub marker: Option<String>,
+    pub max_results: Option<u64>,
     pub delimiter: String,
-    pub next_marker: String,
-    pub blobs: Vec<BlobWrap>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
-pub struct AzureListResults {
-    pub enumeration_results: EnumerationResults,
+    pub next_marker: Option<String>,
+    pub blobs: Blobs,
 }
 
 fn sign(
@@ -263,18 +296,23 @@ fn rewrite_queries(url: &Url, headers: &mut RequestHeader) -> Result<(), Error> 
 }
 
 fn convert_list_query(
-    url: &Url,
+    _url: &Url,
     headers: &mut RequestHeader,
     query_params: &HashMap<Cow<str>, Cow<str>>,
 ) -> Result<(), Error> {
+    debug!("converting list query params {:?}", query_params);
     let mut query = aws_smithy_http::query_writer::QueryWriter::new_from_string(
         &headers.uri.to_string(),
     )?;
+    query.clear_params();
     query.insert("comp", "list");
-    query.insert(
-        "prefix",
-        query_params.get("prefix").unwrap_or(&Cow::Borrowed("/")),
-    );
+    query.insert("restype", "container");
+    // for listing root dir, should not pass prefix params(even if empty) to azure
+    query_params.get("prefix").iter().for_each(|p| {
+        if !p.is_empty() && !(*p == "/") {
+            query.insert("prefix", p);
+        }
+    });
     query.insert(
         "delimiter",
         query_params
@@ -290,6 +328,12 @@ fn convert_list_query(
         .for_each(|token| {
             query.insert("marker", token);
         });
+    let q = query.build_uri().to_string().parse()?;
+    debug!(
+        "converting list query params {:?} to uri {:?}",
+        query_params, q
+    );
+    headers.set_uri(q);
     Ok(())
 }
 
@@ -445,97 +489,231 @@ fn add_if_exists<'a>(h: &'a HeaderMap, key: &HeaderName) -> &'a str {
 
 #[cfg(test)]
 mod tests {
-    use crate::azure::{AzureListResults, Blob, BlobWrap, Blobs, EnumerationResults};
+    use crate::azure::{
+        Blob, BlobOrPrefix, BlobPrefix, Blobs,
+        EnumerationResults,
+    };
+    use serde::{Deserialize, Serialize};
 
     #[test]
     fn test_list_result_parse() {
-        let input = "<?xml version=\"1.0\" encoding=\"utf-8\"?>
-<EnumerationResults ServiceEndpoint=\"http://myaccount.blob.core.windows.net/\"  ContainerName=\"mycontainer\">
-        <Prefix>string-value</Prefix>
-            <Marker>string-value</Marker>
-            <MaxResults>123</MaxResults>
-            <Delimiter>string-value</Delimiter>
-            <Blobs>
-            <Blob>
-            <Name>blob-name</Name>
-            <Snapshot>date-time-value</Snapshot>
-            <VersionId>date-time-vlue</VersionId>
-            <IsCurrentVersion>true</IsCurrentVersion>
-            <Deleted>true</Deleted>
+        let input = "<?xml version= \"1.0\" encoding= \"utf-8\"?>
+<EnumerationResults ServiceEndpoint= \"https://lakeinsight.blob.core.windows.net/\" ContainerName= \"lakeinsight-test\">
+    <Prefix>files/</Prefix>
+    <Delimiter>/</Delimiter>
+    <Blobs>
+        <BlobPrefix>
+            <Name>files/flink-env/</Name>
+        </BlobPrefix>
+        <Blob>
+            <Name>files/lakesoul-flink-1.17-2.6.0-1.jar</Name>
             <Properties>
-            <Creation-Time>date-time-value</Creation-Time>
-            <Last-Modified>date-time-value</Last-Modified>
-            <Etag>etag</Etag>
-            <Owner>owner user id</Owner>
-            <Group>owning group id</Group>
-            <Permissions>permission string</Permissions>
-            <Acl>access control list</Acl>
-            <ResourceType>file | directory</ResourceType>
-            <Placeholder>true</Placeholder>
-            <Content-Length>size-in-bytes</Content-Length>
-            <Content-Type>blob-content-type</Content-Type>
-            <Content-Encoding />
-            <Content-Language />
-            <Content-MD5 />
-            <Cache-Control />
-            <x-ms-blob-sequence-number>sequence-number</x-ms-blob-sequence-number>
-            <BlobType>BlockBlob|PageBlob|AppendBlob</BlobType>
-            <AccessTier>tier</AccessTier>
-            <LeaseStatus>locked|unlocked</LeaseStatus>
-            <LeaseState>available | leased | expired | breaking | broken</LeaseState>
-            <LeaseDuration>infinite | fixed</LeaseDuration>
-            <CopyId>id</CopyId>
-            <CopyStatus>pending | success | aborted | failed </CopyStatus>
-            <CopySource>source url</CopySource>
-            <CopyProgress>bytes copied/bytes total</CopyProgress>
-            <CopyCompletionTime>datetime</CopyCompletionTime>
-            <CopyStatusDescription>error string</CopyStatusDescription>
-            <ServerEncrypted>true</ServerEncrypted>
-            <CustomerProvidedKeySha256>encryption-key-sha256</CustomerProvidedKeySha256>
-            <EncryptionContext>encryption-context</EncryptionContext>
-            <EncryptionScope>encryption-scope-name</EncryptionScope>
-            <IncrementalCopy>true</IncrementalCopy>
-            <AccessTierInferred>true</AccessTierInferred>
-            <AccessTierChangeTime>datetime</AccessTierChangeTime>
-            <DeletedTime>datetime</DeletedTime>
-            <RemainingRetentionDays>no-of-days</RemainingRetentionDays>
-            <TagCount>number of tags between 1 to 10</TagCount>
-            <RehydratePriority>rehydrate priority</RehydratePriority>
-            <Expiry-Time>date-time-value</Expiry-Time>
+                <Creation-Time>Thu, 16 Oct 2025 07:20:10 GMT</Creation-Time>
+                <Last-Modified>Fri, 17 Oct 2025 03:32:29 GMT</Last-Modified>
+                <Etag>0x8DE0D2DCC95938D</Etag>
+                <Content-Length>108604572</Content-Length>
+                <Content-Type>application/java-archive</Content-Type>
+                <Content-Encoding />
+                <Content-Language />
+                <Content-CRC64 />
+                <Content-MD5 />
+                <Cache-Control />
+                <Content-Disposition />
+                <BlobType>BlockBlob</BlobType>
+                <AccessTier>Hot</AccessTier>
+                <AccessTierInferred>true</AccessTierInferred>
+                <LeaseStatus>unlocked</LeaseStatus>
+                <LeaseState>available</LeaseState>
+                <ServerEncrypted>true</ServerEncrypted>
             </Properties>
-            <Metadata>
-            <Name>value</Name>
-            </Metadata>
-            <Tags>
-            <TagSet>
-            <Tag>
-            <Key>TagName</Key>
-            <Value>TagValue</Value>
-            </Tag>
-            </TagSet>
-            </Tags>
             <OrMetadata />
-            </Blob>
-            </Blobs>
-            <NextMarker />
-            </EnumerationResults>";
+        </Blob>
+        <Blob>
+            <Name>files/lakesoul-flink-1.20-3.0.0-SNAPSHOT.jar</Name>
+            <Properties>
+                <Creation-Time>Thu, 16 Oct 2025 07:40:40 GMT</Creation-Time>
+                <Last-Modified>Thu, 16 Oct 2025 07:40:40 GMT</Last-Modified>
+                <Etag>0x8DE0C874DEDC3D6</Etag>
+                <Content-Length>138686786</Content-Length>
+                <Content-Type>application/octet-stream</Content-Type>
+                <Content-Encoding />
+                <Content-Language />
+                <Content-CRC64 />
+                <Content-MD5 />
+                <Cache-Control />
+                <Content-Disposition />
+                <BlobType>BlockBlob</BlobType>
+                <AccessTier>Hot</AccessTier>
+                <AccessTierInferred>true</AccessTierInferred>
+                <LeaseStatus>unlocked</LeaseStatus>
+                <LeaseState>available</LeaseState>
+                <ServerEncrypted>true</ServerEncrypted>
+            </Properties>
+            <OrMetadata />
+        </Blob>
+        <Blob>
+            <Name>files/lakesoul-presto-0.29-3.0.0-SNAPSHOT.jar</Name>
+            <Properties>
+                <Creation-Time>Thu, 16 Oct 2025 07:40:38 GMT</Creation-Time>
+                <Last-Modified>Thu, 16 Oct 2025 07:40:38 GMT</Last-Modified>
+                <Etag>0x8DE0C874D37AE38</Etag>
+                <Content-Length>175048184</Content-Length>
+                <Content-Type>application/octet-stream</Content-Type>
+                <Content-Encoding />
+                <Content-Language />
+                <Content-CRC64 />
+                <Content-MD5 />
+                <Cache-Control />
+                <Content-Disposition />
+                <BlobType>BlockBlob</BlobType>
+                <AccessTier>Hot</AccessTier>
+                <AccessTierInferred>true</AccessTierInferred>
+                <LeaseStatus>unlocked</LeaseStatus>
+                <LeaseState>available</LeaseState>
+                <ServerEncrypted>true</ServerEncrypted>
+            </Properties>
+            <OrMetadata />
+        </Blob>
+        <Blob>
+            <Name>files/lakesoul-spark-3.3-2.6.0-1.jar</Name>
+            <Properties>
+                <Creation-Time>Thu, 16 Oct 2025 07:20:10 GMT</Creation-Time>
+                <Last-Modified>Fri, 17 Oct 2025 03:32:28 GMT</Last-Modified>
+                <Etag>0x8DE0D2DCC7D2D15</Etag>
+                <Content-Length>30522431</Content-Length>
+                <Content-Type>application/java-archive</Content-Type>
+                <Content-Encoding />
+                <Content-Language />
+                <Content-CRC64 />
+                <Content-MD5 />
+                <Cache-Control />
+                <Content-Disposition />
+                <BlobType>BlockBlob</BlobType>
+                <AccessTier>Hot</AccessTier>
+                <AccessTierInferred>true</AccessTierInferred>
+                <LeaseStatus>unlocked</LeaseStatus>
+                <LeaseState>available</LeaseState>
+                <ServerEncrypted>true</ServerEncrypted>
+            </Properties>
+            <OrMetadata />
+        </Blob>
+        <Blob>
+            <Name>files/lakesoulPgAssets-1.0-SNAPSHOT.jar</Name>
+            <Properties>
+                <Creation-Time>Thu, 16 Oct 2025 07:20:10 GMT</Creation-Time>
+                <Last-Modified>Fri, 17 Oct 2025 03:32:28 GMT</Last-Modified>
+                <Etag>0x8DE0D2DCC6B0745</Etag>
+                <Content-Length>20116864</Content-Length>
+                <Content-Type>application/java-archive</Content-Type>
+                <Content-Encoding />
+                <Content-Language />
+                <Content-CRC64 />
+                <Content-MD5 />
+                <Cache-Control />
+                <Content-Disposition />
+                <BlobType>BlockBlob</BlobType>
+                <AccessTier>Hot</AccessTier>
+                <AccessTierInferred>true</AccessTierInferred>
+                <LeaseStatus>unlocked</LeaseStatus>
+                <LeaseState>available</LeaseState>
+                <ServerEncrypted>true</ServerEncrypted>
+            </Properties>
+            <OrMetadata />
+        </Blob>
+        <Blob>
+            <Name>files/mc</Name>
+            <Properties>
+                <Creation-Time>Thu, 16 Oct 2025 07:20:10 GMT</Creation-Time>
+                <Last-Modified>Fri, 17 Oct 2025 03:32:29 GMT</Last-Modified>
+                <Etag>0x8DE0D2DCC93BF0B</Etag>
+                <Content-Length>26681344</Content-Length>
+                <Content-Type>application/x-executable</Content-Type>
+                <Content-Encoding />
+                <Content-Language />
+                <Content-CRC64 />
+                <Content-MD5 />
+                <Cache-Control />
+                <Content-Disposition />
+                <BlobType>BlockBlob</BlobType>
+                <AccessTier>Hot</AccessTier>
+                <AccessTierInferred>true</AccessTierInferred>
+                <LeaseStatus>unlocked</LeaseStatus>
+                <LeaseState>available</LeaseState>
+                <ServerEncrypted>true</ServerEncrypted>
+            </Properties>
+            <OrMetadata />
+        </Blob>
+        <Blob>
+            <Name>files/metrics.properties</Name>
+            <Properties>
+                <Creation-Time>Thu, 16 Oct 2025 07:20:10 GMT</Creation-Time>
+                <Last-Modified>Fri, 17 Oct 2025 03:32:28 GMT</Last-Modified>
+                <Etag>0x8DE0D2DCC6D02CF</Etag>
+                <Content-Length>548</Content-Length>
+                <Content-Type>application/octet-stream</Content-Type>
+                <Content-Encoding />
+                <Content-Language />
+                <Content-CRC64 />
+                <Content-MD5>N7rCgIb2kbP6p6EbnSO31A==</Content-MD5>
+                <Cache-Control />
+                <Content-Disposition />
+                <BlobType>BlockBlob</BlobType>
+                <AccessTier>Hot</AccessTier>
+                <AccessTierInferred>true</AccessTierInferred>
+                <LeaseStatus>unlocked</LeaseStatus>
+                <LeaseState>available</LeaseState>
+                <ServerEncrypted>true</ServerEncrypted>
+            </Properties>
+            <OrMetadata />
+        </Blob>
+        <BlobPrefix>
+            <Name>files/spark-env/</Name>
+        </BlobPrefix>
+    </Blobs>
+    <NextMarker />
+</EnumerationResults>";
         let result: EnumerationResults = quick_xml::de::from_str(input).unwrap();
         println!("{:#?}", result);
         let er = EnumerationResults {
-            prefix: "a".to_string(),
-            marker: "marker".to_string(),
-            max_results: 123,
+            prefix: Some("a".to_string()),
+            marker: Some("marker".to_string()),
+            max_results: Some(123),
             delimiter: "/".to_string(),
-            next_marker: "asdfasdf".to_string(),
-            blobs: vec![BlobWrap {
-                blob: Blob {
-                    name: "".to_string(),
-                    properties: Default::default(),
-                    metadata: Default::default(),
-                },
-            }],
+            next_marker: Some("asdfasdf".to_string()),
+            blobs: Blobs {
+                blobs: vec![
+                    BlobOrPrefix::BlobPrefix(BlobPrefix {
+                        name: "blob_prefix".to_string(),
+                    }),
+                    BlobOrPrefix::Blob(Blob {
+                        name: "blob name".to_string(),
+                        properties: Default::default(),
+                        metadata: None,
+                    }),
+                ],
+            },
         };
         let s = quick_xml::se::to_string(&er).unwrap();
         println!("{}", s);
+        /*
+        #[derive(Deserialize, Serialize)]
+        enum Enum { A, B, C }
+
+        #[derive(Deserialize, Serialize)]
+        struct Outer {
+            #[serde(rename = "$value")]
+            a: Enum,
+        }
+
+        #[derive(Deserialize, Serialize)]
+        struct AnyName {
+            // <A/>, <B/> or <C/>
+            #[serde(rename = "$value", default)]
+            field: Vec<Enum>,
+        }
+        let a = AnyName { field: vec![Enum::A, Enum::B] };
+        let s = quick_xml::se::to_string(&a).unwrap();
+        println!("{}", s);
+         */
     }
 }
