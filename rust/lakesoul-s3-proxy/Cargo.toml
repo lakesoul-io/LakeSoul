@@ -30,6 +30,7 @@ prometheus = { version = "0.13", features = ["process"] }
 bytes = "1.0"
 uuid = { version = "1.17.0", features = ["v4"] }
 ring = { version = "0.17", features = ["std"] }
+rand = "0.9"
 base64 = { version = "0.22", features = ["std"] }
 url = "2.5.7"
 chrono = { version = "0.4", features = ["clock"] }
