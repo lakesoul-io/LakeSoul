@@ -5,15 +5,29 @@
 use crate::context::S3ProxyContext;
 use bytes::Bytes;
 use http::Uri;
-use pingora::prelude::RequestHeader;
+use pingora::http::ResponseHeader;
+use pingora::prelude::{RequestHeader, Session};
 use std::str::FromStr;
 
 #[async_trait::async_trait]
 pub trait HTTPHandler: Send {
-    fn handle_request_header(
+    async fn handle_request_header(
         &self,
-        headers: &mut RequestHeader,
-        bucket: &str,
+        session: &mut Session,
+        ctx: &S3ProxyContext,
+    ) -> Result<bool, anyhow::Error>;
+
+    async fn change_upstream_header(
+        &self,
+        session: &mut Session,
+        upstream_request: &mut RequestHeader,
+        ctx: &S3ProxyContext,
+    ) -> Result<(), anyhow::Error>;
+
+    fn handle_response_header(
+        &self,
+        ctx: &S3ProxyContext,
+        headers: &mut ResponseHeader,
     ) -> Result<(), anyhow::Error>;
 
     async fn refresh_identity(&self) -> Result<(), anyhow::Error>;
@@ -32,7 +46,7 @@ pub trait HTTPHandler: Send {
         headers: &RequestHeader,
     ) -> bool;
 
-    fn rewrite_request_body(
+    async fn rewrite_request_body(
         &self,
         headers: &RequestHeader,
         ctx: &mut S3ProxyContext,

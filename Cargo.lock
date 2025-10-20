@@ -3772,6 +3772,7 @@ dependencies = [
  "prometheus",
  "proto",
  "quick-xml",
+ "rand 0.9.2",
  "ring",
  "serde",
  "serde_json",
