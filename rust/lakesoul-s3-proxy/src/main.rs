@@ -19,6 +19,7 @@ use http::Uri;
 use lakesoul_metadata::MetaDataClient;
 use lakesoul_metadata::rbac::verify_permission_by_table_path;
 use lazy_static::lazy_static;
+use pingora::http::ResponseHeader;
 use pingora::lb::discovery::ServiceDiscovery;
 use pingora::lb::selection::{BackendIter, BackendSelection};
 use pingora::lb::{Backend, Backends, Extensions};
@@ -316,11 +317,10 @@ impl ProxyHttp for S3Proxy {
         Self::CTX: Send + Sync,
     {
         REQ_COUNTER.inc();
-        let header = session.req_header_mut();
         let s = format!(
             "{}{}",
             self.handle.http_handle.get_endpoint(),
-            header.uri.to_string()
+            session.req_header().uri.to_string()
         );
         debug!("Requesting url {:?}", s);
 
@@ -331,14 +331,15 @@ impl ProxyHttp for S3Proxy {
         ctx.require_request_body_rewrite = self
             .handle
             .http_handle
-            .require_request_body_rewrite(&ctx, header);
+            .require_request_body_rewrite(&ctx, session.req_header());
         ctx.require_response_body_rewrite = self
             .handle
             .http_handle
-            .require_response_body_rewrite(&ctx, header);
+            .require_response_body_rewrite(&ctx, session.req_header());
         debug!(
-            "request_filter original header: {header:?}, params: {:?}, \
+            "request_filter original header: {:?}, params: {:?}, \
             rewrite req body {}, rewrite reps body {}",
+            session.req_header(),
             ctx.request_query_params,
             ctx.require_request_body_rewrite,
             ctx.require_response_body_rewrite
@@ -347,7 +348,8 @@ impl ProxyHttp for S3Proxy {
         // retrieve bucket name from request
         let bucket;
         // we need to parse bucket name from uri component
-        if let Some(path) = header
+        if let Some(path) = session
+            .req_header()
             .uri
             .path()
             .split("/")
@@ -356,7 +358,10 @@ impl ProxyHttp for S3Proxy {
         {
             bucket = path.to_string();
         } else {
-            let msg = format!("Cannot determine bucket from header {:?}", header);
+            let msg = format!(
+                "Cannot determine bucket from header {:?}",
+                session.req_header()
+            );
             error!("{}", msg);
             session
                 .respond_error_with_body(400, Bytes::from(msg))
@@ -366,10 +371,17 @@ impl ProxyHttp for S3Proxy {
         ctx.bucket = bucket;
 
         // verify meta permission
-        match self.handle.verify_rbac(header, &ctx.bucket).await {
+        match self
+            .handle
+            .verify_rbac(session.req_header(), &ctx.bucket)
+            .await
+        {
             Err(e) => {
-                let msg =
-                    format!("Permission denied error {:?}, uri {:?}", e, header.uri);
+                let msg = format!(
+                    "Permission denied error {:?}, uri {:?}",
+                    e,
+                    session.req_header().uri
+                );
                 error!("{}", msg);
                 session
                     .respond_error_with_body(403, Bytes::from(msg))
@@ -379,17 +391,21 @@ impl ProxyHttp for S3Proxy {
             _ => {}
         }
 
-        // signing
+        // modify header (e.g. converting headers and params, signing)
         match self
             .handle
             .http_handle
-            .handle_request_header(header, &ctx.bucket)
+            .handle_request_header(session, ctx)
+            .await
         {
-            Ok(_) => Ok(false),
+            Ok(b) => Ok(b),
             Err(e) => {
                 let msg = format!(
                     "Sign object storage header error {:?}, header {:?}, host {:?}, bucket {:?}",
-                    e, header, self.host, ctx.bucket
+                    e,
+                    session.req_header(),
+                    self.host,
+                    ctx.bucket
                 );
                 error!("{}", msg);
                 session
@@ -424,17 +440,56 @@ impl ProxyHttp for S3Proxy {
                 ctx.request_body.extend_from_slice(bytes.as_ref());
                 // clear buffer to indicate ignoring original body
                 bytes.clear();
-                if end_of_stream {
-                    // let handler fill required body
-                    self.handle
-                        .http_handle
-                        .rewrite_request_body(session.req_header(), ctx, body)
-                        .map_err(|e| {
-                            Error::because(InternalError, "handle request body error", e)
-                        })?;
-                }
             }
         }
+        if ctx.require_request_body_rewrite && end_of_stream {
+            // let handler fill required body
+            self.handle
+                .http_handle
+                .rewrite_request_body(session.req_header(), ctx, body)
+                .await
+                .map_err(|e| {
+                    Error::because(InternalError, "handle request body error", e)
+                })?;
+            // session.req_header_mut().insert_header(
+            //     "Content-Length",
+            //     body.as_ref().and_then(|b| Some(b.len())).unwrap_or(0),
+            // )?;
+        }
+        Ok(())
+    }
+
+    async fn upstream_request_filter(
+        &self,
+        session: &mut Session,
+        upstream_request: &mut RequestHeader,
+        ctx: &mut Self::CTX,
+    ) -> Result<()>
+    where
+        Self::CTX: Send + Sync,
+    {
+        self.handle
+            .http_handle
+            .change_upstream_header(session, upstream_request, ctx)
+            .await
+            .map_err(|e| Error::because(InternalError, "handle upstream header error", e))
+    }
+
+    async fn response_filter(
+        &self,
+        _session: &mut Session,
+        upstream_response: &mut ResponseHeader,
+        ctx: &mut Self::CTX,
+    ) -> Result<()>
+    where
+        Self::CTX: Send + Sync,
+    {
+        self.handle
+            .http_handle
+            .handle_response_header(ctx, upstream_response)
+            .map_err(|e| {
+                Error::because(InternalError, "handle response_header error", e)
+            })?;
         Ok(())
     }
 

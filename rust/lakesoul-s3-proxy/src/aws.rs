@@ -18,7 +18,8 @@ use aws_smithy_runtime_api::client::identity::Identity;
 use bytes::Bytes;
 use http::HeaderValue;
 use http::header::{CONTENT_LENGTH, HOST};
-use pingora::http::RequestHeader;
+use pingora::http::{RequestHeader, ResponseHeader};
+use pingora::prelude::Session;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -52,11 +53,11 @@ impl AWSHandler {
 
 #[async_trait::async_trait]
 impl HTTPHandler for AWSHandler {
-    fn handle_request_header(
+    async fn handle_request_header(
         &self,
-        headers: &mut RequestHeader,
-        bucket: &str,
-    ) -> Result<(), Error> {
+        session: &mut Session,
+        ctx: &S3ProxyContext,
+    ) -> Result<bool, Error> {
         let mut signing_settings = SigningSettings::default();
         signing_settings.percent_encoding_mode = PercentEncodingMode::Single;
         signing_settings.payload_checksum_kind = PayloadChecksumKind::XAmzSha256;
@@ -71,56 +72,66 @@ impl HTTPHandler for AWSHandler {
             .build()?
             .into();
 
-        let mut uri = headers.uri.to_string();
+        let mut uri = session.req_header().uri.to_string();
         debug!("original uri {}", uri);
 
         // for virtual host addressing, we need to replace host header
         // with format bucket-name.endpoint-host before signing
         if self.virtual_host {
             // rewrite host
-            let new_host = format!("{}.{}", bucket, self.host);
+            let new_host = format!("{}.{}", ctx.bucket, self.host);
             debug!("new host {}", new_host);
-            headers.insert_header(HOST, HeaderValue::try_from(new_host)?)?;
+            session
+                .req_header_mut()
+                .insert_header(HOST, HeaderValue::try_from(new_host)?)?;
             // rewrite path to remove bucket name
-            let start = uri.find(bucket).unwrap();
-            uri.replace_range(start..(start + bucket.len()), "");
+            let start = uri.find(&ctx.bucket).unwrap();
+            uri.replace_range(start..(start + ctx.bucket.len()), "");
             uri = uri.replace("//", "/");
             debug!("replaced uri {}", uri);
         } else {
-            headers.insert_header(HOST, HeaderValue::try_from(self.host.clone())?)?;
+            session
+                .req_header_mut()
+                .insert_header(HOST, HeaderValue::try_from(self.host.clone())?)?;
         }
 
-        if let Some(value) = headers.headers.get("x-amz-decoded-content-length") {
+        if let Some(value) = session
+            .req_header()
+            .headers
+            .get("x-amz-decoded-content-length")
+        {
             let value: u64 = value.to_str()?.parse()?;
             if value == 0 {
-                headers.insert_header(CONTENT_LENGTH, HeaderValue::try_from(0)?)?;
+                session
+                    .req_header_mut()
+                    .insert_header(CONTENT_LENGTH, HeaderValue::try_from(0)?)?;
             }
         }
 
         // construct request for signing by aws_sigv4
-        let signable_request = SignableRequest::new(
-            headers.method.as_str(),
-            &uri,
-            headers
-                .headers
-                .iter()
-                .filter_map(|(name, value)| match value.to_str() {
-                    Ok(v) => Some((name.as_str(), v)),
-                    Err(_) => None,
-                }),
-            match headers.headers.get("x-amz-content-sha256") {
-                Some(value) => {
-                    if value == "STREAMING-AWS4-HMAC-SHA256-PAYLOAD" {
-                        SignableBody::Precomputed(
-                            "STREAMING-AWS4-HMAC-SHA256-PAYLOAD".parse()?,
-                        )
-                    } else {
-                        SignableBody::UnsignedPayload
+        let signable_request =
+            SignableRequest::new(
+                session.req_header().method.as_str(),
+                &uri,
+                session.req_header().headers.iter().filter_map(
+                    |(name, value)| match value.to_str() {
+                        Ok(v) => Some((name.as_str(), v)),
+                        Err(_) => None,
+                    },
+                ),
+                match session.req_header().headers.get("x-amz-content-sha256") {
+                    Some(value) => {
+                        if value == "STREAMING-AWS4-HMAC-SHA256-PAYLOAD" {
+                            SignableBody::Precomputed(
+                                "STREAMING-AWS4-HMAC-SHA256-PAYLOAD".parse()?,
+                            )
+                        } else {
+                            SignableBody::UnsignedPayload
+                        }
                     }
-                }
-                None => SignableBody::UnsignedPayload,
-            },
-        )?;
+                    None => SignableBody::UnsignedPayload,
+                },
+            )?;
         let (signing_instructions, _signature) =
             sign(signable_request, &signing_params)?.into_parts();
         let (new_headers, new_query) = signing_instructions.into_parts();
@@ -129,7 +140,9 @@ impl HTTPHandler for AWSHandler {
         for header in new_headers.into_iter() {
             let mut value = HeaderValue::from_str(header.value())?;
             value.set_sensitive(header.sensitive());
-            headers.insert_header(header.name(), value)?
+            session
+                .req_header_mut()
+                .insert_header(header.name(), value)?
         }
 
         if !new_query.is_empty() {
@@ -139,11 +152,30 @@ impl HTTPHandler for AWSHandler {
             for (name, value) in new_query {
                 query.insert(name, &value);
             }
-            headers.set_uri(query.build_uri().to_string().parse()?);
+            session
+                .req_header_mut()
+                .set_uri(query.build_uri().to_string().parse()?);
         } else {
-            headers.set_uri(uri.parse()?);
+            session.req_header_mut().set_uri(uri.parse()?);
         }
-        debug!("final all headers {:?}", headers);
+        debug!("final all headers {:?}", session.req_header());
+        Ok(false)
+    }
+
+    async fn change_upstream_header(
+        &self,
+        _session: &mut Session,
+        _upstream_request: &mut RequestHeader,
+        _ctx: &S3ProxyContext,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn handle_response_header(
+        &self,
+        _ctx: &S3ProxyContext,
+        _headers: &mut ResponseHeader,
+    ) -> Result<(), Error> {
         Ok(())
     }
 
@@ -182,7 +214,7 @@ impl HTTPHandler for AWSHandler {
         false
     }
 
-    fn rewrite_request_body(
+    async fn rewrite_request_body(
         &self,
         _headers: &RequestHeader,
         _ctx: &mut S3ProxyContext,
@@ -233,10 +265,24 @@ pub struct ListBucketResult {
     pub is_truncated: bool,
     pub continuation_token: String,
     pub next_continuation_token: String,
+
     #[serde(rename = "$value", default)]
     pub contents: Vec<Contents>,
+
     #[serde(rename = "$value", default)]
     pub common_prefixes: Vec<CommonPrefixes>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub struct Part {
+    pub part_number: u16,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub struct CompleteMultipartUpload {
+    pub part: Vec<Part>,
 }
 
 #[cfg(test)]
@@ -246,7 +292,7 @@ mod test {
     fn test_list_serde() {
         let l = ListBucketResult {
             name: "".to_string(),
-            prefix: "".to_string(),
+            prefix: Some("".to_string()),
             key_count: 0,
             max_keys: 0,
             is_truncated: false,
