@@ -166,14 +166,14 @@ impl HTTPHandler for AWSHandler {
         &self,
         _session: &mut Session,
         _upstream_request: &mut RequestHeader,
-        _ctx: &S3ProxyContext,
+        _ctx: &mut S3ProxyContext,
     ) -> Result<(), Error> {
         Ok(())
     }
 
     fn handle_response_header(
         &self,
-        _ctx: &S3ProxyContext,
+        _ctx: &mut S3ProxyContext,
         _headers: &mut ResponseHeader,
     ) -> Result<(), Error> {
         Ok(())
@@ -283,6 +283,42 @@ pub struct Part {
 #[serde(rename_all = "PascalCase")]
 pub struct CompleteMultipartUpload {
     pub part: Vec<Part>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub struct Object {
+    pub key: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub struct Delete {
+    pub object: Vec<Object>,
+    pub quiet: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub struct Deleted {
+    pub key: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub struct DeleteError {
+    pub key: String,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub struct DeleteResult {
+    #[serde(default)]
+    pub deleted: Vec<Deleted>,
+    #[serde(default)]
+    pub error: Vec<DeleteError>,
 }
 
 #[cfg(test)]

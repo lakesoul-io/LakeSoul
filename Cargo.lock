@@ -3767,12 +3767,14 @@ dependencies = [
  "lakesoul-io",
  "lakesoul-metadata",
  "lazy_static",
+ "pad",
  "pingora",
  "pingora-core",
  "prometheus",
  "proto",
  "quick-xml",
  "rand 0.9.2",
+ "regex",
  "ring",
  "serde",
  "serde_json",
@@ -4552,6 +4554,15 @@ name = "outref"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1a80800c0488c3a21695ea981a54918fbb37abf04f4d0720c453632255e2ff0e"
+
+[[package]]
+name = "pad"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2ad9b889f1b12e0b9ee24db044b5129150d5eada288edc800f789928dc8c0e3"
+dependencies = [
+ "unicode-width 0.1.14",
+]
 
 [[package]]
 name = "parking"
