@@ -451,10 +451,6 @@ impl ProxyHttp for S3Proxy {
                 .map_err(|e| {
                     Error::because(InternalError, "handle request body error", e)
                 })?;
-            // session.req_header_mut().insert_header(
-            //     "Content-Length",
-            //     body.as_ref().and_then(|b| Some(b.len())).unwrap_or(0),
-            // )?;
         }
         Ok(())
     }

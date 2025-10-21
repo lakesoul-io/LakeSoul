@@ -21,12 +21,12 @@ pub trait HTTPHandler: Send {
         &self,
         session: &mut Session,
         upstream_request: &mut RequestHeader,
-        ctx: &S3ProxyContext,
+        ctx: &mut S3ProxyContext,
     ) -> Result<(), anyhow::Error>;
 
     fn handle_response_header(
         &self,
-        ctx: &S3ProxyContext,
+        ctx: &mut S3ProxyContext,
         headers: &mut ResponseHeader,
     ) -> Result<(), anyhow::Error>;
 
