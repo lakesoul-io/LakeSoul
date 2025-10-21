@@ -195,7 +195,7 @@ object LakeSoulSQLConf {
           |COMPACTION MAX BYTES FOR LEVEL BASE LIMIT. Default is 1GB.
         """.stripMargin)
       .stringConf
-      .createWithDefault("100MB")
+      .createWithDefault("1GB")
 
    
   val COMPACTION_MAX_BYTES_FOR_LOW_LEVEL_MULTIPLIER: ConfigEntry[Int] =
@@ -234,6 +234,15 @@ object LakeSoulSQLConf {
       .intConf
       .createWithDefault(10)
 
+  val COMPACTION_IGNORE_NOT_EXIST_FILE: ConfigEntry[Boolean] =
+    buildConf("compaction.ignore.not.exist.file")
+      .doc(
+        """
+          |COMPACTION IGNORE NOT EXIST FILE
+        """.stripMargin)
+      .booleanConf
+      .createWithDefault(false)
+
   val MAX_NUM_LEVELS_LIMIT: ConfigEntry[Int] =
     buildConf("max.num.levels.limit")
       .doc(
@@ -247,10 +256,10 @@ object LakeSoulSQLConf {
     buildConf("compaction.level.file.merge.size.limit")
       .doc(
         """
-          |COMPACTION LEVEL SINGLE TASK MERGE SIZE. Default is 1GB.
+          |COMPACTION LEVEL SINGLE TASK MERGE SIZE. Default is 600MB.
         """.stripMargin)
       .stringConf
-      .createWithDefault("1GB")
+      .createWithDefault("600MB")
 
   val COMPACTION_LEVEL_FILE_MERGE_NUM_LIMIT: ConfigEntry[Int] =
     buildConf("compaction.level.file.merge.num.limit")
@@ -269,4 +278,23 @@ object LakeSoulSQLConf {
         """.stripMargin)
       .stringConf
       .createWithDefault("5GB")
+  
+  val COMPACTION_PICK_NEXT_LEVEL_MIN_FILE_SIZE: ConfigEntry[String] =
+    buildConf("compaction.pick.next.level.min.file.size")
+      .doc(
+        """
+          |COMPACTION PICK NEXT LEVEL MIN FILE SIZE. Default is 100MB.
+        """.stripMargin)
+      .stringConf
+      .createWithDefault("100MB") 
+
+  val COMPACTION_PICK_NEXT_LEVEL_MIN_FILE_SIZE_MULTIPLIER: ConfigEntry[Int] =
+    buildConf("compaction.pick.next.level.min.file.size.multiplier")
+      .doc(
+        """
+          |COMPACTION PICK NEXT LEVEL MIN FILE SIZE. Default is 5.
+        """.stripMargin)
+      .intConf
+      .createWithDefault(5) 
+ 
 }
