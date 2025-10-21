@@ -419,13 +419,13 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
                             discardFileList.add(curFile);
                         } else {
                             mergedlevelFileMap.computeIfAbsent(level, COMPACT_DIR -> new ArrayList<>()).add(curFile);
-                        }
+			}
                         if (curMergeList.size() >= compactLevelMergeFileNumLimit || fileSize >= this.compactLevelMergeFileSizeLimit) {
                             LOG.info("Task {}, Compacting Level {} existed compact files, curMergeList {}, size {}",
                                     taskId, level, curMergeList, fileSize);
                             int pickLevel = level;
-			    if(curMergeList.size() != 1) {
-			    	initializeReader(curMergeList);
+                            if(curMergeList.size() != 1) {
+                                initializeReader(curMergeList);
                             	initializeWriter(String.format("%s/%s%d", this.tablePath, COMPACT_DIR, pickLevel));
                             	HashMap<String, List<FlushResult>> outFile = readAndWrite();
                             	this.close();
@@ -438,11 +438,11 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
                             	}
 
                             	for (Map.Entry<String, List<FlushResult>> entry : outFile.entrySet()) {
-                                    	mergedlevelFileMap.computeIfAbsent(pickLevel, COMPACT_DIR -> new ArrayList<>())
+                                    mergedlevelFileMap.computeIfAbsent(pickLevel, COMPACT_DIR -> new ArrayList<>())
                                             		.addAll(changeFlushFileToCompressDataFileInfo(entry.getValue()));
                             	}
 			    }else {//move 
-                                    mergedlevelFileMap.computeIfAbsent(level, COMPACT_DIR -> new ArrayList<>()).add(curFile);
+                                mergedlevelFileMap.computeIfAbsent(level, COMPACT_DIR -> new ArrayList<>()).add(curFile);
 			    }
                             curMergeList.clear();
                             fileSize = 0L;
@@ -454,12 +454,11 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
                         discardFileList.removeAll(curMergeList);
                     }
                 }else {
-		    if (oriCompactFileList != null) {
+                    if (oriCompactFileList != null) {
                         mergedlevelFileMap.computeIfAbsent(level, value -> new ArrayList<>()).addAll(oriCompactFileList);
                     }
-
 		}
-		ArrayList<CompressDataFileInfo> mergedFileList = mergedlevelFileMap.get(level);
+                ArrayList<CompressDataFileInfo> mergedFileList = mergedlevelFileMap.get(level);
                 //check file size
                 if (mergedFileList != null && !mergedFileList.isEmpty() && level != this.maxNumLevelLimit) {
                     long pickNextLevelMinFileSize = DBUtil.parseMemoryExpression(conf.get(LakeSoulSQLConf.COMPACTION_PICK_NEXT_LEVEL_MIN_FILE_SIZE().key(), LakeSoulSQLConf.COMPACTION_PICK_NEXT_LEVEL_MIN_FILE_SIZE().defaultValue().get()));
