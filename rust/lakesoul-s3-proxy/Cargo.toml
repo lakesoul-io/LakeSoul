@@ -36,6 +36,8 @@ url = "2.5.7"
 chrono = { version = "0.4", features = ["clock"] }
 serde = { workspace = true }
 quick-xml = { version = "0.38", features = ["serialize"] }
+regex = "1.11.2"
+pad = "0.1"
 
 [dev-dependencies]
 lakesoul-io = { path = "../lakesoul-io" }
