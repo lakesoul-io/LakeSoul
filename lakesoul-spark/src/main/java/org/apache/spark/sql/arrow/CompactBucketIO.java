@@ -465,16 +465,17 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
 
                     int pickNextLevelMinFileSizeMultiplier = conf.getInt(LakeSoulSQLConf.COMPACTION_PICK_NEXT_LEVEL_MIN_FILE_SIZE_MULTIPLIER().key(), (int) LakeSoulSQLConf.COMPACTION_PICK_NEXT_LEVEL_MIN_FILE_SIZE_MULTIPLIER().defaultValue().get());
                     long thisLevelPickNextlevelMinFileSize = Math.round(pickNextLevelMinFileSize * Math.pow(pickNextLevelMinFileSizeMultiplier, level - 1));
-                    LOG.info("Level {} File Num {}, FileList {}", level, mergedFileList.size(), mergedFileList);
-                    for (int i = 0; i < mergedFileList.size(); ++i) {
-                        CompressDataFileInfo fileInfo = mergedFileList.get(i);
+                    LOG.info("Level {} File Num {}, FileList {} thisLevelPickNextlevelMinFileSize {}", level, mergedFileList.size(), mergedFileList, thisLevelPickNextlevelMinFileSize);
+                    Iterator<CompressDataFileInfo> iterator = mergedFileList.iterator();
+                    while (iterator.hasNext()) {
+                        CompressDataFileInfo fileInfo = iterator.next();			    
                         if (fileInfo.getFileSize() < thisLevelPickNextlevelMinFileSize) {
                             break;
                         } else {
                             int pickLevel = level + 1;
                             LOG.info("fileName {} fileSize {} MOVE to Level {}", fileInfo.getFilePath(), fileInfo.getFileSize(), pickLevel);
                             discardFileList.remove(fileInfo);
-                            mergedlevelFileMap.get(level).remove(fileInfo);
+                            iterator.remove();
                             CompressDataFileInfo newFileInfo = moveFileToLevel(fileInfo, level, pickLevel);
                             levelFileMap.computeIfAbsent(COMPACT_DIR + pickLevel, COMPACT_DIR -> new ArrayList<>()).add(newFileInfo);
                         }
