@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 package org.apache.flink.lakesoul.entry.assets;
 
 import org.apache.flink.api.common.state.MapState;
@@ -20,10 +23,8 @@ public class DomainLevelAssets extends KeyedProcessFunction<String, TableCountsW
                         String.class,
                         TableCounts.class);
 
-
         ValueStateDescriptor<DomainCount> databaseStateDescriptor =
                 new ValueStateDescriptor<>("nameSpaceCountValueState", DomainCount.class);
-
 
         MapStateDescriptor<String, Boolean> tableNumbers =
                 new MapStateDescriptor<>("tableNumbersState",String.class,Boolean.class);

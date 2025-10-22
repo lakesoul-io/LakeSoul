@@ -1,8 +1,6 @@
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
 //
-// Source code recreated from a .class file by IntelliJ IDEA
-// (powered by FernFlower decompiler)
-//
-
+// SPDX-License-Identifier: Apache-2.0
 package org.apache.flink.lakesoul.entry.assets;
 
 import org.apache.flink.connector.jdbc.JdbcConnectionOptions;
