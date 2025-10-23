@@ -37,6 +37,7 @@ class NewCompactionSuite extends QueryTest
       .set(SQLConf.DEFAULT_CATALOG.key, LakeSoulCatalog.CATALOG_NAME)
       .set("spark.sql.extensions", "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension")
       .set("spark.dmetasoul.lakesoul.compaction.level0.file.number.limit","2")
+      .set("spark.dmetasoul.lakesoul.compaction.pick.next.level.min.file.size","1KB")
   }
 
   override protected def createSparkSession: TestSparkSession = {
@@ -718,15 +719,7 @@ class NewCompactionSuite extends QueryTest
                 val index = dataFileInfo.path.indexOf("compactdir")
                 val end = index + 11;
                 val level = dataFileInfo.path.substring(index + 10, end).toInt
-                if (c == 1 || c == 2) {
-                  assert(level == 1 && level <= spark.conf.get("spark.dmetasoul.lakesoul.max.num.levels.limit").toInt,
-                    s"This Level is ${level} compact times is ${c}, but should no this level")
-                } else if (c % 3 == 0 && c % 9 != 0) {
-                  assert(level == 2 && level <= spark.conf.get("spark.dmetasoul.lakesoul.max.num.levels.limit").toInt,
-                    s"This Level is ${level} compact times is ${c}, but should no this level")
-                } else if (c % 9 == 0) {
-                  assert(level == 3, s"This Level is ${level} compact times is ${c}, but should not this level")
-                }
+                assert(level == 3, s"This Level is ${level} compact times is ${c}, but should not this level")
               }
             })
           }
