@@ -34,7 +34,7 @@ use std::net::{IpAddr, SocketAddrV4};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::log::warn;
+use tracing::log::{trace, warn};
 use tracing::{debug, error, info};
 use tracing_subscriber::EnvFilter;
 use url::Url;
@@ -327,6 +327,7 @@ impl ProxyHttp for S3Proxy {
         // fill context
         let url = Url::parse(s.as_str())
             .map_err(|e| Error::because(InternalError, "cannot parse url", e))?;
+        ctx.request_method = session.req_header().method.clone();
         ctx.request_query_params = url.query_pairs().into_owned().collect();
         ctx.require_request_body_rewrite = self
             .handle
@@ -427,7 +428,7 @@ impl ProxyHttp for S3Proxy {
         Self::CTX: Send + Sync,
     {
         if let Some(bytes) = body {
-            debug!(
+            trace!(
                 "request_body_filter original body length: {}, content: {:?}",
                 bytes.len(),
                 bytes

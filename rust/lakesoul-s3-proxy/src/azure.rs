@@ -2,22 +2,17 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::aws::{
-    CommonPrefixes, CompleteMultipartUpload, Contents, Delete, DeleteError, DeleteResult,
-    Deleted, ListBucketResult,
-};
+use crate::aws::{CommonPrefixes, CompleteMultipartUpload, Contents, CopyObjectResult, Delete, DeleteError, DeleteResult, Deleted, ListBucketResult};
 use crate::context::S3ProxyContext;
 use crate::handler::{HTTPHandler, parse_host_port};
 use anyhow::{Error, anyhow};
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
 use bytes::Bytes;
-use chrono::Utc;
-use http::header::{
-    AUTHORIZATION, CONTENT_ENCODING, CONTENT_LANGUAGE, CONTENT_LENGTH, CONTENT_TYPE,
-    DATE, HOST, IF_MATCH, IF_MODIFIED_SINCE, IF_NONE_MATCH, IF_UNMODIFIED_SINCE, RANGE,
-};
-use http::{HeaderMap, HeaderName, HeaderValue, Method};
+use chrono::{DateTime, SecondsFormat, Utc};
+use http::header::{AUTHORIZATION, CONTENT_ENCODING, CONTENT_LANGUAGE, CONTENT_LENGTH, CONTENT_TYPE, DATE, ETAG, HOST, IF_MATCH, IF_MODIFIED_SINCE, IF_NONE_MATCH, IF_UNMODIFIED_SINCE, LAST_MODIFIED, RANGE, TRANSFER_ENCODING};
+use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
+use pad::PadStr;
 use pingora::Result;
 use pingora::http::{RequestHeader, ResponseHeader};
 use pingora::prelude::Session;
@@ -27,14 +22,13 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::str::FromStr;
-use pad::PadStr;
 use tokio::sync::Mutex;
 use tracing::log::debug;
 use url::Url;
 use uuid::Uuid;
 
 static CONTENT_MD5: HeaderName = HeaderName::from_static("content-md5");
-static AZURE_VERSION: HeaderValue = HeaderValue::from_static("2023-11-03");
+static AZURE_VERSION: HeaderValue = HeaderValue::from_static("2017-07-29");
 static VERSION: HeaderName = HeaderName::from_static("x-ms-version");
 static BLOB_TYPE: HeaderName = HeaderName::from_static("x-ms-blob-type");
 static BLOB_TYPE_VALUE: HeaderValue = HeaderValue::from_static("BlockBlob");
@@ -111,6 +105,8 @@ impl AzureHandler {
                 &ctx.request_query_params,
             )
             .await?;
+        } else if headers.method == Method::DELETE {
+            self.convert_delete_query(url, headers, &ctx.request_query_params)?;
         } else if headers.method == Method::POST
             && ctx.request_query_params.contains_key("delete")
         {
@@ -139,10 +135,11 @@ impl AzureHandler {
                 query.insert("prefix", p);
             }
         });
-        query.insert(
-            "delimiter",
-            query_params.get("delimiter").unwrap_or(&"/".to_string()),
-        );
+        query_params.get("delimiter").iter().for_each(|p| {
+            if !p.is_empty() {
+                query.insert("delimiter", p);
+            }
+        });
         query_params.get("max-keys").iter().for_each(|max| {
             query.insert("maxresults", max);
         });
@@ -255,7 +252,18 @@ impl AzureHandler {
         let mut complete_part_state = self.complete_multipart.lock().await;
         complete_part_state.insert(upload_id.clone(), bytes);
         drop(complete_part_state);
-        headers.insert_header("Content-Length", HeaderValue::from(length))?;
+        headers.insert_header(CONTENT_LENGTH, HeaderValue::from(length))?;
+        Ok(())
+    }
+
+    fn convert_delete_query(
+        &self,
+        _url: &Url,
+        headers: &mut RequestHeader,
+        query_params: &HashMap<String, String>,
+    ) -> Result<(), Error> {
+        debug!("converting delete query params {:?}", query_params);
+        headers.insert_header("x-ms-delete-snapshots", "include")?;
         Ok(())
     }
 
@@ -309,7 +317,7 @@ impl AzureHandler {
             .enumerate()
             .try_for_each(|(idx, obj)| {
                 // genereate subrequest headers
-                let path = format!("/{container_name}/{}", obj.key);
+                let path = format!("/{container_name}/{}?recursive=true", obj.key);
                 let mut req_header =
                     RequestHeader::build_no_case(Method::DELETE, path.as_bytes(), None)?;
 
@@ -338,7 +346,7 @@ impl AzureHandler {
                 azure_batch.push_str(
                     req_header
                         .headers
-                        .get("Authorization")
+                        .get(AUTHORIZATION)
                         .ok_or(anyhow!("cannot find authorization header"))?
                         .to_str()?,
                 );
@@ -349,12 +357,12 @@ impl AzureHandler {
         azure_batch.push_str("--\r\n");
         debug!("rewrite request_body for batch delete {:?}", azure_batch);
         let bytes = Bytes::from(azure_batch);
-        headers.insert_header("Content-Length", bytes.len())?;
+        headers.insert_header(CONTENT_LENGTH, bytes.len())?;
         let content_type = format!("multipart/mixed; boundary={}", batch_id);
-        headers.insert_header("Content-Type", content_type.as_str())?;
+        headers.insert_header(CONTENT_TYPE, content_type.as_str())?;
         session
             .req_header_mut()
-            .insert_header("Content-Type", content_type)?;
+            .insert_header(CONTENT_TYPE, content_type)?;
         self.batch_delete.lock().await.insert(batch_id, bytes);
         ctx.delete_request = Some(aws_request);
         Ok(())
@@ -372,6 +380,19 @@ impl AzureHandler {
             headers.insert_header(HeaderName::from_str(&k)?, v)?;
             Result::<(), Error>::Ok(())
         })?;
+        if headers.method == Method::PUT {
+            headers.remove_header(&LAST_MODIFIED);
+            headers.remove_header("Content-MD5");
+            if let Some(copy) = headers.headers.get("x-amz-copy-source").cloned() {
+                let source = copy.to_str()?;
+                let url = if source.starts_with("/") {
+                    format!("{}{}", self.endpoint, source)
+                } else {
+                    format!("{}/{}", self.endpoint, source)
+                };
+                headers.insert_header("x-ms-copy-source", url)?;
+            }
+        }
         Ok(())
     }
 
@@ -477,35 +498,56 @@ impl HTTPHandler for AzureHandler {
         ctx: &mut S3ProxyContext,
         headers: &mut ResponseHeader,
     ) -> std::result::Result<(), Error> {
-        let etag = headers.headers.get("ETag");
+        let etag = headers.headers.get(ETAG);
         match etag {
             Some(etag) => {
                 let new_etag = etag.to_str()?.trim_matches('"').trim_start_matches("0x");
                 let padding_len = new_etag.len().next_power_of_two();
                 let new_etag = new_etag.pad_to_width_with_char(padding_len, '0');
                 ctx.response_headers
-                    .insert("ETag".to_string(), new_etag.to_string());
-                headers.insert_header("ETag", HeaderValue::try_from(new_etag)?)?;
+                    .insert(ETAG.to_string(), new_etag.to_string());
+                headers.insert_header(ETAG, HeaderValue::try_from(new_etag)?)?;
             }
             None => {
                 if ctx.request_query_params.get("partNumber").is_some() {
                     // for upload part, we must add ETag header in response header
                     let md5 = headers.headers.get("Content-MD5").cloned();
                     if md5.is_some() {
-                        headers.insert_header("ETag", md5.unwrap())?;
+                        headers.insert_header(ETAG, md5.unwrap())?;
                     }
                 }
             }
         }
         headers
             .headers
-            .get("Content-Type")
+            .get(CONTENT_TYPE)
             .iter()
             .try_for_each(|h| {
                 ctx.response_headers
-                    .insert("Content-Type".to_string(), h.to_str()?.to_string());
+                    .insert(CONTENT_TYPE.to_string(), h.to_str()?.to_string());
                 Ok::<_, Error>(())
             })?;
+        headers
+            .headers
+            .get(LAST_MODIFIED)
+            .iter()
+            .try_for_each(|h| {
+                let time = h.to_str()?;
+                ctx.response_headers
+                    .insert(LAST_MODIFIED.to_string(), convert_timestamp(time)?);
+                Ok::<_, Error>(())
+            })?;
+        if ctx.require_response_body_rewrite {
+            headers.remove_header(&CONTENT_LENGTH);
+            headers.insert_header(TRANSFER_ENCODING, "Chunked")?;
+        }
+        if ctx.request_method == Method::DELETE {
+            // for delete request, we just ignore 404
+            if headers.status == StatusCode::NOT_FOUND {
+                headers.set_status(StatusCode::ACCEPTED)?;
+            }
+        }
+        debug!("Response headers rewritten {:?}", headers);
         Ok(())
     }
 
@@ -537,6 +579,8 @@ impl HTTPHandler for AzureHandler {
             && ctx.request_query_params.contains_key("list-type"))
             || (headers.method == Method::POST
                 && ctx.request_query_params.contains_key("delete"))
+            || (headers.method == Method::PUT
+                && headers.headers.contains_key("x-amz-copy-source"))
     }
 
     async fn rewrite_request_body(
@@ -586,7 +630,7 @@ impl HTTPHandler for AzureHandler {
             debug!("rewrite request_body for batch delete {:?}", request_body);
             let batch_id = headers
                 .headers
-                .get("Content-Type")
+                .get(CONTENT_TYPE)
                 .and_then(|v| {
                     v.to_str().ok().and_then(|s| {
                         if s.starts_with("multipart/mixed; boundary=batch_")
@@ -668,10 +712,13 @@ impl HTTPHandler for AzureHandler {
                     BlobOrPrefix::Blob(mut blob) => {
                         aws_result.contents.push(Contents {
                             key: std::mem::take(&mut blob.name),
-                            last_modified: take_string_from_map(
-                                &mut blob.properties,
-                                "Last-Modified",
-                            ),
+                            last_modified: convert_timestamp(
+                                take_string_from_map(
+                                    &mut blob.properties,
+                                    "Last-Modified",
+                                )
+                                .as_str(),
+                            )?,
                             etag: take_string_from_map(&mut blob.properties, "ETag"),
                             size: take_string_from_map(
                                 &mut blob.properties,
@@ -702,7 +749,7 @@ impl HTTPHandler for AzureHandler {
                 String::from_utf8(std::mem::take(&mut ctx.response_body))?;
             let batch_id = ctx
                 .response_headers
-                .get("Content-Type")
+                .get(CONTENT_TYPE.as_str())
                 .and_then(|s| {
                     if s.starts_with("multipart/mixed; boundary=batch") {
                         Some(&s[26..])
@@ -791,6 +838,24 @@ impl HTTPHandler for AzureHandler {
                 aws_result
             );
             *body = Some(Bytes::from(s));
+        } else if headers.method == Method::PUT
+            && headers.headers.contains_key("x-amz-copy-source")
+        {
+            // rewrite copy-object result
+            let aws_result = CopyObjectResult {
+                e_tag: ctx.response_headers.get(ETAG.as_str())
+                    .cloned()
+                    .unwrap_or(String::new()),
+                last_modified: ctx.response_headers.get(LAST_MODIFIED.as_str())
+                    .cloned()
+                    .unwrap_or(String::new()),
+            };
+            let s = quick_xml::se::to_string(&aws_result)?;
+            debug!(
+                "Converted azure copy object results to aws {:?}",
+                aws_result
+            );
+            *body = Some(Bytes::from(s));
         } else {
             *body = Some(Bytes::from(std::mem::take(&mut ctx.response_body)))
         }
@@ -801,6 +866,11 @@ impl HTTPHandler for AzureHandler {
 fn take_string_from_map(map: &mut HashMap<String, String>, key: &str) -> String {
     map.get_mut(key)
         .map_or(String::new(), |v| std::mem::take(v))
+}
+
+fn convert_timestamp(input: &str) -> Result<String, Error> {
+    let date = DateTime::parse_from_rfc2822(input)?;
+    Ok(date.to_rfc3339_opts(SecondsFormat::Millis, true))
 }
 
 // following code are adapted from arrow-rs/object_store/azure
@@ -856,7 +926,7 @@ struct EnumerationResults {
     pub prefix: Option<String>,
     pub marker: Option<String>,
     pub max_results: Option<u64>,
-    pub delimiter: String,
+    pub delimiter: Option<String>,
     pub next_marker: Option<String>,
     pub blobs: Blobs,
 }
@@ -1200,7 +1270,7 @@ mod tests {
             prefix: Some("a".to_string()),
             marker: Some("marker".to_string()),
             max_results: Some(123),
-            delimiter: "/".to_string(),
+            delimiter: Some("/".to_string()),
             next_marker: Some("asdfasdf".to_string()),
             blobs: Blobs {
                 blobs: vec![
