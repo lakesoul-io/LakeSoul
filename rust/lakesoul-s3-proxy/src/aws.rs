@@ -321,6 +321,13 @@ pub struct DeleteResult {
     pub error: Vec<DeleteError>,
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub struct CopyObjectResult {
+    pub e_tag: String,
+    pub last_modified: String,
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
