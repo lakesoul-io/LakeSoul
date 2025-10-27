@@ -406,14 +406,21 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
         }
         val dataFileInfoSeq = compactResult.flatMap(ff => ff).collect().toSeq
         if (dataFileInfoSeq.nonEmpty) {
-          val discardFileInfo = dataFileInfoSeq
-          .filter(file => file.range_partitions.equals(CompactBucketIO.DISCARD_FILE_LIST_KEY))
-          if(discardFileInfo.nonEmpty) {
-            println(f"[compaction-$uuid]: $partitionValues finished")
+          val dataFileInfoAfterFilter = dataFileInfoSeq
+          .filter(file => !file.range_partitions.equals(CompactBucketIO.DISCARD_FILE_LIST_KEY))
+          val incrementalFiles = dataFileInfoAfterFilter.filter(!_.path.contains("compactdir"))
+          if(incrementalFiles.isEmpty) {
+            val discardFileInfo = dataFileInfoSeq.filter(file => file.range_partitions.equals(CompactBucketIO.DISCARD_FILE_LIST_KEY))
+            if(discardFileInfo.nonEmpty) {
+              println(f"[compaction-$uuid]: $partitionValues finished")
+            }else {
+              println(f"[compaction-$uuid]: $partitionValues error")
+            }
+            commitMetadata(dataFileInfoSeq, partitionValues, tableInfo, part)
           }else {
-            println(f"[compaction-$uuid]: $partitionValues error")
+            println(f"[compaction-$uuid]: $partitionValues finished")
+            println("L0 compaction below threshold, skipping commit")   
           }
-          commitMetadata(dataFileInfoSeq, partitionValues, tableInfo, part)
         } else {
           println(s"[WARN] read file size is ${files.length}, but without file created after compaction")
         }
