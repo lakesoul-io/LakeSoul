@@ -574,12 +574,16 @@ impl HTTPHandler for AzureHandler {
             let path = url.path();
             // starting from second path segment is the key
             let key = &path[ctx.bucket.len() + 2..];
-            sign(&url, session.req_header_mut(), self.account.as_str(), &self.key)?;
+            sign(
+                &url,
+                session.req_header_mut(),
+                self.account.as_str(),
+                &self.key,
+            )?;
             let client = reqwest::Client::new();
             let mut request = client.request(Method::PUT, url.clone());
             request = request.headers(session.req_header().headers.clone());
-            request = request.body(azure_req_body)
-                .timeout(Duration::from_secs(5));
+            request = request.body(azure_req_body).timeout(Duration::from_secs(5));
             let resp = request.send().await?;
             let code = resp.status().as_u16();
             let mut resp_header = ResponseHeader::build(code, None)?;
@@ -617,7 +621,10 @@ impl HTTPHandler for AzureHandler {
                 .await?;
             if resp.status().is_success() {
                 // write body
-                debug!("Converted azure complete multipart upload results to aws {:?}", s);
+                debug!(
+                    "Converted azure complete multipart upload results to aws {:?}",
+                    s
+                );
                 let bytes = Bytes::from(s);
                 session.write_response_body(Some(bytes), true).await?;
             }
