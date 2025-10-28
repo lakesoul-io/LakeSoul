@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::aws::Delete;
-use std::collections::HashMap;
 use http::Method;
+use std::collections::HashMap;
 
 pub struct S3ProxyContext {
     pub bucket: String,

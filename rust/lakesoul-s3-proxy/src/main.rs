@@ -15,8 +15,8 @@ use arc_swap::ArcSwapOption;
 use async_trait::async_trait;
 use bytes::Bytes;
 use hickory_resolver::TokioAsyncResolver;
-use http::Uri;
-use lakesoul_metadata::MetaDataClient;
+use http::{Method, Uri};
+use lakesoul_metadata::{LakeSoulMetaDataError, MetaDataClient};
 use lakesoul_metadata::rbac::verify_permission_by_table_path;
 use lazy_static::lazy_static;
 use pingora::http::ResponseHeader;
@@ -231,13 +231,28 @@ impl S3ProxyHandle {
                 ) {
                     return Ok(());
                 }
-                verify_permission_by_table_path(
+                match verify_permission_by_table_path(
                     self.user.as_str(),
                     self.group.as_str(),
                     path.as_str(),
                     client.clone(),
                 )
-                .await?;
+                .await {
+                    Ok(_) => {}
+                    Err(LakeSoulMetaDataError::NotFound(e)) => {
+                        match headers.method {
+                            Method::GET => {
+                                return Err(anyhow::Error::from(
+                                    LakeSoulMetaDataError::NotFound(e)
+                                ));
+                            }
+                            _ => {}
+                        }
+                    }
+                    Err(e) => {
+                        return Err(anyhow::Error::from(e));
+                    }
+                }
             }
             Ok(())
         }
@@ -402,7 +417,7 @@ impl ProxyHttp for S3Proxy {
             Ok(b) => Ok(b),
             Err(e) => {
                 let msg = format!(
-                    "Sign object storage header error {:?}, header {:?}, host {:?}, bucket {:?}",
+                    "Handle object request error {:?}, header {:?}, host {:?}, bucket {:?}",
                     e,
                     session.req_header(),
                     self.host,

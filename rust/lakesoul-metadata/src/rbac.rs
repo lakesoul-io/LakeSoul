@@ -29,7 +29,7 @@ pub async fn verify_permission_by_table_name(
         .as_ref()
         .get_table_name_id_by_table_name(table, ns)
         .await?
-        .ok_or(LakeSoulMetaDataError::Internal(
+        .ok_or(LakeSoulMetaDataError::NotFound(
             format!(
                 "Table {}.{} not found, user {}, group {}",
                 table, ns, user, group
@@ -72,7 +72,7 @@ pub async fn verify_permission_by_table_path(
         .as_ref()
         .get_table_path_id_by_table_path(path)
         .await?
-        .ok_or(LakeSoulMetaDataError::Other(
+        .ok_or(LakeSoulMetaDataError::NotFound(
             format!(
                 "Path is not a LakeSoul table {}, user {}, group {}",
                 path, user, group
