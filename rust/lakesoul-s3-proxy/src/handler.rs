@@ -14,7 +14,7 @@ pub trait HTTPHandler: Send {
     async fn handle_request_header(
         &self,
         session: &mut Session,
-        ctx: &S3ProxyContext,
+        ctx: &mut S3ProxyContext,
     ) -> Result<bool, anyhow::Error>;
 
     async fn change_upstream_header(

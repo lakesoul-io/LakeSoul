@@ -56,7 +56,7 @@ impl HTTPHandler for AWSHandler {
     async fn handle_request_header(
         &self,
         session: &mut Session,
-        ctx: &S3ProxyContext,
+        ctx: &mut S3ProxyContext,
     ) -> Result<bool, Error> {
         let mut signing_settings = SigningSettings::default();
         signing_settings.percent_encoding_mode = PercentEncodingMode::Single;
@@ -283,6 +283,15 @@ pub struct Part {
 #[serde(rename_all = "PascalCase")]
 pub struct CompleteMultipartUpload {
     pub part: Vec<Part>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub struct CompleteMultipartUploadResult {
+    pub location: String,
+    pub bucket: String,
+    pub key: String,
+    pub e_tag: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

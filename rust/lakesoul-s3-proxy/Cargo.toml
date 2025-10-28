@@ -38,6 +38,7 @@ serde = { workspace = true }
 quick-xml = { version = "0.38", features = ["serialize"] }
 regex = "1.11.2"
 pad = "0.1"
+reqwest = "0.12"
 
 [dev-dependencies]
 lakesoul-io = { path = "../lakesoul-io" }

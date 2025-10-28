@@ -2,7 +2,10 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::aws::{CommonPrefixes, CompleteMultipartUpload, Contents, CopyObjectResult, Delete, DeleteError, DeleteResult, Deleted, ListBucketResult};
+use crate::aws::{
+    CommonPrefixes, CompleteMultipartUpload, CompleteMultipartUploadResult, Contents,
+    CopyObjectResult, Delete, DeleteError, DeleteResult, Deleted, ListBucketResult,
+};
 use crate::context::S3ProxyContext;
 use crate::handler::{HTTPHandler, parse_host_port};
 use anyhow::{Error, anyhow};
@@ -10,7 +13,11 @@ use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
 use bytes::Bytes;
 use chrono::{DateTime, SecondsFormat, Utc};
-use http::header::{AUTHORIZATION, CONTENT_ENCODING, CONTENT_LANGUAGE, CONTENT_LENGTH, CONTENT_TYPE, DATE, ETAG, HOST, IF_MATCH, IF_MODIFIED_SINCE, IF_NONE_MATCH, IF_UNMODIFIED_SINCE, LAST_MODIFIED, RANGE, TRANSFER_ENCODING};
+use http::header::{
+    AUTHORIZATION, CONTENT_ENCODING, CONTENT_LANGUAGE, CONTENT_LENGTH, CONTENT_TYPE,
+    DATE, ETAG, HOST, IF_MATCH, IF_MODIFIED_SINCE, IF_NONE_MATCH, IF_UNMODIFIED_SINCE,
+    LAST_MODIFIED, RANGE, TRANSFER_ENCODING,
+};
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use pad::PadStr;
 use pingora::Result;
@@ -22,6 +29,7 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::str::FromStr;
+use std::time::Duration;
 use tokio::sync::Mutex;
 use tracing::log::debug;
 use url::Url;
@@ -41,7 +49,6 @@ pub struct AzureHandler {
     key: AzureAccessKey,
     account: String,
     multi_part_upload_state: Mutex<HashMap<String, Vec<(u16, String)>>>,
-    complete_multipart: Mutex<HashMap<String, Bytes>>,
     batch_delete: Mutex<HashMap<String, Bytes>>,
 }
 
@@ -58,7 +65,6 @@ impl AzureHandler {
             key: az_key,
             account,
             multi_part_upload_state: Mutex::new(HashMap::new()),
-            complete_multipart: Mutex::new(HashMap::new()),
             batch_delete: Mutex::new(HashMap::new()),
         })
     }
@@ -98,15 +104,10 @@ impl AzureHandler {
         } else if ctx.request_query_params.contains_key("partNumber") {
             self.convert_uploadpart_query(url, headers, &ctx.request_query_params)
                 .await?;
-        } else if ctx.request_query_params.contains_key("uploadId") {
-            self.convert_complete_multipart_query(
-                url,
-                headers,
-                &ctx.request_query_params,
-            )
-            .await?;
-        } else if headers.method == Method::DELETE {
-            self.convert_delete_query(url, headers, &ctx.request_query_params)?;
+        } else if headers.method == Method::DELETE
+            && !headers.headers.contains_key("uploadId")
+        {
+            self.convert_delete_query(session.req_header_mut())?;
         } else if headers.method == Method::POST
             && ctx.request_query_params.contains_key("delete")
         {
@@ -215,7 +216,8 @@ impl AzureHandler {
         _url: &Url,
         headers: &mut RequestHeader,
         query_params: &HashMap<String, String>,
-    ) -> Result<(), Error> {
+        aws_request: &CompleteMultipartUpload,
+    ) -> Result<Bytes, Error> {
         // change method to put
         headers.set_method(Method::PUT);
         debug!("converting complete part params {:?}", query_params);
@@ -238,6 +240,13 @@ impl AzureHandler {
         let state = multi_part_state
             .get_mut(upload_id)
             .ok_or(anyhow!("cannot find upload ID {:?}", upload_id))?;
+        if state.len() != aws_request.part.len() {
+            return Err(anyhow!(
+                "Number of parts mismatched, request {:?}, state {:?}",
+                aws_request.part,
+                state.len()
+            ));
+        }
         state.sort_unstable_by_key(|(n, _)| *n);
         let block_ids = state
             .iter_mut()
@@ -247,22 +256,12 @@ impl AzureHandler {
         let s = quick_xml::se::to_string(&azure_request)?;
         debug!("Converted azure complete multipart upload {:?}", s);
         let bytes = Bytes::from(s);
-        let length = bytes.len();
-        drop(multi_part_state);
-        let mut complete_part_state = self.complete_multipart.lock().await;
-        complete_part_state.insert(upload_id.clone(), bytes);
-        drop(complete_part_state);
-        headers.insert_header(CONTENT_LENGTH, HeaderValue::from(length))?;
-        Ok(())
+        headers.insert_header(CONTENT_LENGTH, bytes.len())?;
+        Ok(bytes)
     }
 
-    fn convert_delete_query(
-        &self,
-        _url: &Url,
-        headers: &mut RequestHeader,
-        query_params: &HashMap<String, String>,
-    ) -> Result<(), Error> {
-        debug!("converting delete query params {:?}", query_params);
+    fn convert_delete_query(&self, headers: &mut RequestHeader) -> Result<(), Error> {
+        debug!("converting delete query params");
         headers.insert_header("x-ms-delete-snapshots", "include")?;
         Ok(())
     }
@@ -393,6 +392,7 @@ impl AzureHandler {
                 headers.insert_header("x-ms-copy-source", url)?;
             }
         }
+        headers.remove_header(&IF_MATCH);
         Ok(())
     }
 
@@ -422,7 +422,7 @@ impl HTTPHandler for AzureHandler {
     async fn handle_request_header(
         &self,
         session: &mut Session,
-        ctx: &S3ProxyContext,
+        ctx: &mut S3ProxyContext,
     ) -> Result<bool, Error> {
         let s = format!("{}{}", self.endpoint, session.req_header().uri.to_string());
         let url = Url::parse(s.as_str())?;
@@ -476,6 +476,154 @@ impl HTTPHandler for AzureHandler {
             return Ok(true);
         }
 
+        // handle DeleteObject
+        // since azure does not return body, we have to do it instead of response_body_filter
+        if session.req_header().method == Method::PUT
+            && session
+                .req_header()
+                .headers
+                .contains_key("x-amz-copy-source")
+        {
+            self.rewrite_request_headers(session.req_header_mut())?;
+            self.add_required_headers(session.req_header_mut(), &ctx, &self.host)?;
+            sign(
+                &url,
+                session.req_header_mut(),
+                self.account.as_str(),
+                &self.key,
+            )?;
+            let client = reqwest::Client::new();
+            let mut request = client.request(Method::PUT, url.clone());
+            request = request.headers(session.req_header().headers.clone());
+            let resp = request.send().await?;
+            let code = resp.status().as_u16();
+            let mut resp_header = ResponseHeader::build(code, None)?;
+            resp.headers().iter().try_for_each(|(k, v)| {
+                resp_header.insert_header(k, v)?;
+                Ok::<(), Error>(())
+            })?;
+            resp_header.set_reason_phrase(resp.status().canonical_reason())?;
+            self.handle_response_header(ctx, &mut resp_header)?;
+            let s = if resp.status().is_success() {
+                // write body
+                // construct aws copy-object result
+                let aws_result = CopyObjectResult {
+                    e_tag: resp_header
+                        .headers
+                        .get(ETAG)
+                        .and_then(|etag| etag.to_str().ok())
+                        .unwrap_or("")
+                        .to_string(),
+                    last_modified: ctx
+                        .response_headers
+                        .get(LAST_MODIFIED.as_str())
+                        .and_then(|time| Some(time.as_str()))
+                        .unwrap_or("")
+                        .to_string(),
+                };
+                quick_xml::se::to_string(&aws_result)?
+            } else {
+                String::new()
+            };
+            if !s.is_empty() {
+                resp_header.insert_header(CONTENT_LENGTH, s.as_bytes().len())?;
+            } else {
+                resp_header.insert_header(CONTENT_LENGTH, 0)?;
+            }
+            session
+                .write_response_header(Box::new(resp_header), true)
+                .await?;
+            if resp.status().is_success() {
+                // write body
+                debug!("Converted azure copy object results to aws {:?}", s);
+                let bytes = Bytes::from(s);
+                session.write_response_body(Some(bytes), true).await?;
+            }
+            return Ok(true);
+        }
+
+        // handle CompleteMultipartUpload
+        // Azure does not send body in response for this request
+        // so we have to intercept it and request by ourselves
+        if session.req_header().method == Method::POST
+            && ctx.request_query_params.contains_key("uploadId")
+        {
+            let body = session
+                .read_request_body()
+                .await?
+                .ok_or(anyhow!("no body found in complete multipart request"))?;
+            let request_body = String::from_utf8(body.to_vec())?;
+            let aws_request: CompleteMultipartUpload =
+                quick_xml::de::from_str(&request_body)?;
+            let azure_req_body = self
+                .convert_complete_multipart_query(
+                    &url,
+                    session.req_header_mut(),
+                    &ctx.request_query_params,
+                    &aws_request,
+                )
+                .await?;
+            self.rewrite_request_headers(session.req_header_mut())?;
+            self.add_required_headers(session.req_header_mut(), ctx, &self.host)?;
+            let s = format!(
+                "{}{}",
+                self.endpoint,
+                session.req_header_mut().uri.to_string()
+            );
+            let url = Url::parse(s.as_str())?;
+            let path = url.path();
+            // starting from second path segment is the key
+            let key = &path[ctx.bucket.len() + 2..];
+            sign(&url, session.req_header_mut(), self.account.as_str(), &self.key)?;
+            let client = reqwest::Client::new();
+            let mut request = client.request(Method::PUT, url.clone());
+            request = request.headers(session.req_header().headers.clone());
+            request = request.body(azure_req_body)
+                .timeout(Duration::from_secs(5));
+            let resp = request.send().await?;
+            let code = resp.status().as_u16();
+            let mut resp_header = ResponseHeader::build(code, None)?;
+            resp.headers().iter().try_for_each(|(k, v)| {
+                resp_header.insert_header(k, v)?;
+                Ok::<(), Error>(())
+            })?;
+            resp_header.set_reason_phrase(resp.status().canonical_reason())?;
+            self.handle_response_header(ctx, &mut resp_header)?;
+            let s = if resp.status().is_success() {
+                // build aws response body
+                let aws_result = CompleteMultipartUploadResult {
+                    location: "".to_string(),
+                    bucket: ctx.bucket.clone(),
+                    key: key.to_string(),
+                    e_tag: resp_header
+                        .headers
+                        .get(ETAG)
+                        .and_then(|etag| etag.to_str().ok())
+                        .unwrap_or("")
+                        .to_string(),
+                };
+                quick_xml::se::to_string(&aws_result)?
+            } else {
+                String::new()
+            };
+
+            if !s.is_empty() {
+                resp_header.insert_header(CONTENT_LENGTH, s.as_bytes().len())?;
+            } else {
+                resp_header.insert_header(CONTENT_LENGTH, 0)?;
+            }
+            session
+                .write_response_header(Box::new(resp_header), true)
+                .await?;
+            if resp.status().is_success() {
+                // write body
+                debug!("Converted azure complete multipart upload results to aws {:?}", s);
+                let bytes = Bytes::from(s);
+                session.write_response_body(Some(bytes), true).await?;
+            }
+            return Ok(true);
+        }
+
         Ok(false)
     }
 
@@ -518,15 +666,11 @@ impl HTTPHandler for AzureHandler {
                 }
             }
         }
-        headers
-            .headers
-            .get(CONTENT_TYPE)
-            .iter()
-            .try_for_each(|h| {
-                ctx.response_headers
-                    .insert(CONTENT_TYPE.to_string(), h.to_str()?.to_string());
-                Ok::<_, Error>(())
-            })?;
+        headers.headers.get(CONTENT_TYPE).iter().try_for_each(|h| {
+            ctx.response_headers
+                .insert(CONTENT_TYPE.to_string(), h.to_str()?.to_string());
+            Ok::<_, Error>(())
+        })?;
         headers
             .headers
             .get(LAST_MODIFIED)
@@ -564,10 +708,8 @@ impl HTTPHandler for AzureHandler {
         ctx: &S3ProxyContext,
         headers: &RequestHeader,
     ) -> bool {
-        // rewrite request body for CompleteMultipartUpload/DeleteObjects
-        headers.method == Method::POST
-            && (ctx.request_query_params.contains_key("uploadId")
-                || ctx.request_query_params.contains_key("delete"))
+        // rewrite request body for DeleteObjects
+        headers.method == Method::POST && ctx.request_query_params.contains_key("delete")
     }
 
     fn require_response_body_rewrite(
@@ -579,8 +721,6 @@ impl HTTPHandler for AzureHandler {
             && ctx.request_query_params.contains_key("list-type"))
             || (headers.method == Method::POST
                 && ctx.request_query_params.contains_key("delete"))
-            || (headers.method == Method::PUT
-                && headers.headers.contains_key("x-amz-copy-source"))
     }
 
     async fn rewrite_request_body(
@@ -589,43 +729,7 @@ impl HTTPHandler for AzureHandler {
         ctx: &mut S3ProxyContext,
         body: &mut Option<Bytes>,
     ) -> std::result::Result<(), Error> {
-        if !ctx.request_query_params.contains_key("partNumber")
-            && ctx.request_query_params.contains_key("uploadId")
-        {
-            let upload_id = ctx.request_query_params.get("uploadId").unwrap();
-            debug!("rewrite request_body for uploadId {:?}", upload_id);
-            let request_body = String::from_utf8(std::mem::take(&mut ctx.request_body))?;
-            let aws_request: CompleteMultipartUpload =
-                quick_xml::de::from_str(&request_body)?;
-
-            let mut multipart_state = self.multi_part_upload_state.lock().await;
-            let state_len = multipart_state
-                .get_mut(upload_id)
-                .ok_or(anyhow!("cannot find upload ID {:?}", upload_id))?
-                .len();
-            // clear state
-            multipart_state.remove(upload_id);
-            // release lock
-            drop(multipart_state);
-            if state_len != aws_request.part.len() {
-                return Err(anyhow!(
-                    "Number of parts mismatched, request {:?}, state {:?}",
-                    aws_request.part,
-                    state_len
-                ));
-            }
-
-            let mut complete_state = self.complete_multipart.lock().await;
-            let bytes = complete_state.get_mut(upload_id).ok_or(anyhow!(
-                "cannot find upload ID in complete part bytes {:?}",
-                upload_id
-            ))?;
-            *body = Some(std::mem::take(bytes));
-            // clear state
-            complete_state.remove(upload_id);
-            // release lock
-            drop(complete_state);
-        } else if ctx.request_query_params.contains_key("delete") {
+        if ctx.request_query_params.contains_key("delete") {
             let request_body = String::from_utf8(std::mem::take(&mut ctx.request_body))?;
             debug!("rewrite request_body for batch delete {:?}", request_body);
             let batch_id = headers
@@ -822,7 +926,7 @@ impl HTTPHandler for AzureHandler {
                             });
                         }
                         _ => {
-                            let status = http::status::StatusCode::from_u16(code)?;
+                            let status = StatusCode::from_u16(code)?;
                             aws_result.error.push(DeleteError {
                                 key,
                                 code: status.to_string(),
@@ -835,24 +939,6 @@ impl HTTPHandler for AzureHandler {
             let s = quick_xml::se::to_string(&aws_result)?;
             debug!(
                 "Converted azure batch delete results to aws {:?}",
-                aws_result
-            );
-            *body = Some(Bytes::from(s));
-        } else if headers.method == Method::PUT
-            && headers.headers.contains_key("x-amz-copy-source")
-        {
-            // rewrite copy-object result
-            let aws_result = CopyObjectResult {
-                e_tag: ctx.response_headers.get(ETAG.as_str())
-                    .cloned()
-                    .unwrap_or(String::new()),
-                last_modified: ctx.response_headers.get(LAST_MODIFIED.as_str())
-                    .cloned()
-                    .unwrap_or(String::new()),
-            };
-            let s = quick_xml::se::to_string(&aws_result)?;
-            debug!(
-                "Converted azure copy object results to aws {:?}",
                 aws_result
             );
             *body = Some(Bytes::from(s));
