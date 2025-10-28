@@ -48,6 +48,7 @@ pub struct AzureHandler {
     host: String,
     key: AzureAccessKey,
     account: String,
+    client: reqwest::Client,
     multi_part_upload_state: Mutex<HashMap<String, Vec<(u16, String)>>>,
     batch_delete: Mutex<HashMap<String, Bytes>>,
 }
@@ -64,6 +65,7 @@ impl AzureHandler {
             host,
             key: az_key,
             account,
+            client: reqwest::Client::new(),
             multi_part_upload_state: Mutex::new(HashMap::new()),
             batch_delete: Mutex::new(HashMap::new()),
         })
@@ -476,7 +478,7 @@ impl HTTPHandler for AzureHandler {
             return Ok(true);
         }
 
-        // handle DeleteObject
+        // handle CopyObject
         // since azure does not return body, we have to do it instead of response_body_filter
         if session.req_header().method == Method::PUT
             && session
@@ -492,10 +494,13 @@ impl HTTPHandler for AzureHandler {
                 self.account.as_str(),
                 &self.key,
             )?;
-            let client = reqwest::Client::new();
-            let mut request = client.request(Method::PUT, url.clone());
-            request = request.headers(session.req_header().headers.clone());
-            let resp = request.send().await?;
+            let resp = self
+                .client
+                .request(Method::PUT, url.clone())
+                .headers(session.req_header().headers.clone())
+                .timeout(Duration::from_secs(10))
+                .send()
+                .await?;
             let code = resp.status().as_u16();
             let mut resp_header = ResponseHeader::build(code, None)?;
             resp.headers().iter().try_for_each(|(k, v)| {
@@ -580,11 +585,14 @@ impl HTTPHandler for AzureHandler {
                 self.account.as_str(),
                 &self.key,
             )?;
-            let client = reqwest::Client::new();
-            let mut request = client.request(Method::PUT, url.clone());
-            request = request.headers(session.req_header().headers.clone());
-            request = request.body(azure_req_body).timeout(Duration::from_secs(5));
-            let resp = request.send().await?;
+            let resp = self
+                .client
+                .request(Method::PUT, url.clone())
+                .headers(session.req_header().headers.clone())
+                .body(azure_req_body)
+                .timeout(Duration::from_secs(10))
+                .send()
+                .await?;
             let code = resp.status().as_u16();
             let mut resp_header = ResponseHeader::build(code, None)?;
             resp.headers().iter().try_for_each(|(k, v)| {
