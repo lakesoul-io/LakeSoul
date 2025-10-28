@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#[allow(unreachable_patterns)]
 mod aws;
 mod azure;
 mod context;
@@ -16,8 +17,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use hickory_resolver::TokioAsyncResolver;
 use http::{Method, Uri};
-use lakesoul_metadata::{LakeSoulMetaDataError, MetaDataClient};
 use lakesoul_metadata::rbac::verify_permission_by_table_path;
+use lakesoul_metadata::{LakeSoulMetaDataError, MetaDataClient};
 use lazy_static::lazy_static;
 use pingora::http::ResponseHeader;
 use pingora::lb::discovery::ServiceDiscovery;
@@ -200,14 +201,14 @@ impl S3ProxyHandle {
     async fn verify_rbac(
         &self,
         headers: &RequestHeader,
-        bucket: &str,
+        ctx: &S3ProxyContext,
     ) -> Result<(), anyhow::Error> {
         if !self.verify_meta {
             Ok(())
         } else {
             let binding = self.metadata_client.load();
             if let Some(client) = binding.as_ref() {
-                let path = parse_table_path(&headers.uri, bucket);
+                let path = parse_table_path(&headers.uri, &ctx.bucket);
                 debug!("Parsed table path {:?}", path);
                 if match self.common_prefix {
                     Some(ref prefix) => {
@@ -217,18 +218,20 @@ impl S3ProxyHandle {
                     }
                     None => {
                         path.starts_with(
-                            format!("s3://{}/{}/{}", bucket, self.group, self.user)
+                            format!("s3://{}/{}/{}", ctx.bucket, self.group, self.user)
                                 .as_str(),
-                        ) || path
-                            .starts_with(format!("s3://{}/spark-upload", bucket).as_str())
+                        ) || path.starts_with(
+                            format!("s3://{}/spark-upload", ctx.bucket).as_str(),
+                        )
                     }
                 } || starts_with_any(
                     path.as_str(),
-                    bucket,
+                    &ctx.bucket,
                     self.group.as_str(),
                     &["savepoint", "checkpoint", "resource-manager"],
                     &self.common_prefix,
                 ) {
+                    debug!("path is a valid predefined prefix {}, access allowed", path);
                     return Ok(());
                 }
                 match verify_permission_by_table_path(
@@ -237,19 +240,36 @@ impl S3ProxyHandle {
                     path.as_str(),
                     client.clone(),
                 )
-                .await {
+                .await
+                {
                     Ok(_) => {}
                     Err(LakeSoulMetaDataError::NotFound(e)) => {
                         match headers.method {
-                            Method::GET => {
+                            // for GetObject but not ListObject
+                            Method::GET
+                                if !ctx
+                                    .request_query_params
+                                    .contains_key("list-type") =>
+                            {
+                                error!(
+                                    "Path {} is not a table and is not allowed to read",
+                                    path
+                                );
                                 return Err(anyhow::Error::from(
-                                    LakeSoulMetaDataError::NotFound(e)
+                                    LakeSoulMetaDataError::NotFound(e),
                                 ));
                             }
-                            _ => {}
+                            _ => {
+                                // for List/Put/UploadPart/Delete
+                                info!(
+                                    "Path {} is not a table but is allowed to modify",
+                                    path
+                                );
+                            }
                         }
                     }
                     Err(e) => {
+                        error!("Path {} is a table but is not allowed to access", path);
                         return Err(anyhow::Error::from(e));
                     }
                 }
@@ -272,8 +292,10 @@ impl BackgroundService for S3ProxyHandle {
                         info!("initialized metadata client");
                         metadata_client
                     })
-                    .inspect_err(|e| error!("create metadata client error: {e:?}"))
-                    .expect("cannot create meta data client"),
+                    .unwrap_or_else(|e| {
+                        error!("create metadata client error: {e:?}");
+                        std::process::exit(1);
+                    }),
             );
             self.metadata_client.store(Some(metadata_client));
         }
@@ -290,7 +312,10 @@ impl BackgroundService for S3ProxyHandle {
                 self.http_handle
                     .refresh_identity()
                     .await
-                    .expect("cannot refresh http handle identity");
+                    .unwrap_or_else(|e| {
+                        error!("refresh object store identity error: {e:?}");
+                        std::process::exit(1);
+                    });
                 next_update = now + Duration::from_secs(60 * 45);
             }
             tokio::time::sleep_until(next_update.into()).await;
@@ -387,11 +412,7 @@ impl ProxyHttp for S3Proxy {
         ctx.bucket = bucket;
 
         // verify meta permission
-        match self
-            .handle
-            .verify_rbac(session.req_header(), &ctx.bucket)
-            .await
-        {
+        match self.handle.verify_rbac(session.req_header(), &ctx).await {
             Err(e) => {
                 let msg = format!(
                     "Permission denied error {:?}, uri {:?}",
