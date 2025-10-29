@@ -419,7 +419,7 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
             commitMetadata(dataFileInfoSeq, partitionValues, tableInfo, part)
           }else {
             println(f"[compaction-$uuid]: $partitionValues finished")
-            println("L0 compaction below threshold, skipping commit")   
+            println("Level0 compaction below threshold, skipping commit")   
           }
         } else {
           println(s"[WARN] read file size is ${files.length}, but without file created after compaction")
