@@ -3798,6 +3798,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "chrono",
+ "hex",
  "hickory-resolver",
  "http 1.3.1",
  "lakesoul-datafusion",
