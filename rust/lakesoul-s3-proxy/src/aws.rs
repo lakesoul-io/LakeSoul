@@ -337,6 +337,27 @@ pub struct CopyObjectResult {
     pub last_modified: String,
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub struct Owner {
+    pub display_name: String,
+    pub id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub struct AccessControlList {
+    pub no_use: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub struct AccessControlPolicy {
+    pub owner: Owner,
+    #[serde(rename = "$value")]
+    pub access_control: AccessControlList,
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -360,6 +381,19 @@ mod test {
             common_prefixes: vec![],
         };
         let s = quick_xml::se::to_string(&l).unwrap();
+        println!("{}", s);
+    }
+
+    #[test]
+    fn test_access_control_serde() {
+        let a = AccessControlPolicy {
+            owner: Owner {
+                display_name: "123".to_string(),
+                id: "456".to_string(),
+            },
+            access_control: AccessControlList { no_use: vec![] },
+        };
+        let s = quick_xml::se::to_string(&a).unwrap();
         println!("{}", s);
     }
 }

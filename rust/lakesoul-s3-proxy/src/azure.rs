@@ -3,8 +3,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::aws::{
-    CommonPrefixes, CompleteMultipartUpload, CompleteMultipartUploadResult, Contents,
-    CopyObjectResult, Delete, DeleteError, DeleteResult, Deleted, ListBucketResult,
+    AccessControlList, AccessControlPolicy, CommonPrefixes, CompleteMultipartUpload,
+    CompleteMultipartUploadResult, Contents, CopyObjectResult, Delete, DeleteError,
+    DeleteResult, Deleted, ListBucketResult, Owner,
 };
 use crate::context::S3ProxyContext;
 use crate::handler::{HTTPHandler, parse_host_port};
@@ -36,7 +37,7 @@ use url::Url;
 use uuid::Uuid;
 
 static CONTENT_MD5: HeaderName = HeaderName::from_static("content-md5");
-static AZURE_VERSION: HeaderValue = HeaderValue::from_static("2017-07-29");
+static AZURE_VERSION: HeaderValue = HeaderValue::from_static("2020-04-08");
 static VERSION: HeaderName = HeaderName::from_static("x-ms-version");
 static BLOB_TYPE: HeaderName = HeaderName::from_static("x-ms-blob-type");
 static BLOB_TYPE_VALUE: HeaderValue = HeaderValue::from_static("BlockBlob");
@@ -289,7 +290,7 @@ impl AzureHandler {
             .get_retry_buffer()
             .ok_or(anyhow!("cannot get body from session"))?;
         let mut query = aws_smithy_http::query_writer::QueryWriter::new_from_string(
-            &headers.uri.to_string(),
+            &headers.uri.to_string().replace("/?", "?"),
         )?;
         query.clear_params();
         query.insert("comp", "batch");
@@ -300,6 +301,7 @@ impl AzureHandler {
             ctx.request_query_params, q
         );
         headers.set_uri(q);
+        headers.remove_header(&CONTENT_MD5);
         let request_body = String::from_utf8(request_body.to_vec())?;
         debug!("rewrite request_body for batch delete {:?}", request_body);
         let aws_request: Delete = quick_xml::de::from_str(&request_body)?;
@@ -317,6 +319,9 @@ impl AzureHandler {
             .iter()
             .enumerate()
             .try_for_each(|(idx, obj)| {
+                if idx > 0 {
+                    azure_batch.push_str("\r\n\r\n");
+                }
                 // genereate subrequest headers
                 let path = format!("/{container_name}/{}?recursive=true", obj.key);
                 let mut req_header =
@@ -339,6 +344,8 @@ impl AzureHandler {
                 azure_batch.push_str(date_str.as_str());
                 req_header.insert_header(DATE, date_val)?;
                 azure_batch.push_str("\r\nContent-Length: 0");
+                req_header.insert_header("x-ms-delete-snapshots", "include")?;
+                azure_batch.push_str("\r\nx-ms-delete-snapshots: include");
                 // sign subrequest
                 let s = format!("{}{}", self.endpoint, req_header.uri.to_string());
                 let url = Url::parse(s.as_str())?;
@@ -639,6 +646,30 @@ impl HTTPHandler for AzureHandler {
             return Ok(true);
         }
 
+        // handle GetBucketAcl
+        if session.req_header().method == Method::GET
+            && ctx.request_query_params.contains_key("acl")
+        {
+            let aws_result = AccessControlPolicy {
+                owner: Owner {
+                    display_name: "lakesoul".to_string(),
+                    id: "lakesoul".to_string(),
+                },
+                access_control: AccessControlList { no_use: vec![] },
+            };
+            let bytes = quick_xml::se::to_string(&aws_result)?.as_bytes().to_vec();
+            let mut resp_header = ResponseHeader::build(200, None)?;
+            resp_header.insert_header(CONTENT_TYPE, "text/plain")?;
+            resp_header.insert_header(CONTENT_LENGTH, bytes.len())?;
+            session
+                .write_response_header(Box::new(resp_header), true)
+                .await?;
+            session
+                .write_response_body(Some(Bytes::from(bytes)), true)
+                .await?;
+            return Ok(true);
+        }
+
         Ok(false)
     }
 
@@ -661,24 +692,25 @@ impl HTTPHandler for AzureHandler {
         ctx: &mut S3ProxyContext,
         headers: &mut ResponseHeader,
     ) -> std::result::Result<(), Error> {
-        let etag = headers.headers.get(ETAG);
-        match etag {
-            Some(etag) => {
+        // if md5 presents in response header, use decoded md5 to replace etag header
+        if let Some(md5) = headers.headers.get(&CONTENT_MD5) {
+            let md5 = BASE64_STANDARD.decode(md5.as_bytes())?;
+            let hex_md5 = hex::encode(md5);
+            headers.insert_header(ETAG, hex_md5)?;
+        } else if let Some(md5) = headers.headers.get("x-ms-blob-content-md5") {
+            let md5 = BASE64_STANDARD.decode(md5.as_bytes())?;
+            let hex_md5 = hex::encode(md5);
+            headers.insert_header(ETAG, hex_md5)?;
+        } else {
+            // no md5 but etag only. remove double quotes and starting "0x"
+            // and pad string length to nearest power of 2 (required by AWS Java SDK)
+            if let Some(etag) = headers.headers.get(ETAG) {
                 let new_etag = etag.to_str()?.trim_matches('"').trim_start_matches("0x");
                 let padding_len = new_etag.len().next_power_of_two();
                 let new_etag = new_etag.pad_to_width_with_char(padding_len, '0');
                 ctx.response_headers
                     .insert(ETAG.to_string(), new_etag.to_string());
                 headers.insert_header(ETAG, HeaderValue::try_from(new_etag)?)?;
-            }
-            None => {
-                if ctx.request_query_params.get("partNumber").is_some() {
-                    // for upload part, we must add ETag header in response header
-                    let md5 = headers.headers.get("Content-MD5").cloned();
-                    if md5.is_some() {
-                        headers.insert_header(ETAG, md5.unwrap())?;
-                    }
-                }
             }
         }
         headers.headers.get(CONTENT_TYPE).iter().try_for_each(|h| {
