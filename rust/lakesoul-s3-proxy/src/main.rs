@@ -2,24 +2,26 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use arc_swap::{ArcSwap, ArcSwapOption};
+#[allow(unreachable_patterns)]
+mod aws;
+mod azure;
+mod context;
+mod handler;
+
+use crate::aws::AWSHandler;
+use crate::azure::AzureHandler;
+use crate::context::S3ProxyContext;
+use crate::handler::HTTPHandler;
+use anyhow::anyhow;
+use arc_swap::ArcSwapOption;
 use async_trait::async_trait;
-use aws_config::Region;
-use aws_config::default_provider::credentials::DefaultCredentialsChain;
-use aws_credential_types::provider::ProvideCredentials;
-use aws_sigv4::http_request::{
-    PayloadChecksumKind, PercentEncodingMode, SignableBody, SignableRequest,
-    SigningSettings, sign,
-};
-use aws_sigv4::sign::v4;
-use aws_smithy_runtime_api::client::identity::Identity;
 use bytes::Bytes;
 use hickory_resolver::TokioAsyncResolver;
-use http::header::{CONTENT_LENGTH, HOST};
-use http::{HeaderValue, Uri};
-use lakesoul_metadata::MetaDataClient;
+use http::{Method, Uri};
 use lakesoul_metadata::rbac::verify_permission_by_table_path;
+use lakesoul_metadata::{LakeSoulMetaDataError, MetaDataClient};
 use lazy_static::lazy_static;
+use pingora::http::ResponseHeader;
 use pingora::lb::discovery::ServiceDiscovery;
 use pingora::lb::selection::{BackendIter, BackendSelection};
 use pingora::lb::{Backend, Backends, Extensions};
@@ -29,12 +31,15 @@ use pingora::server::ShutdownWatch;
 use pingora::services::background::BackgroundService;
 use prometheus::{IntCounter, register_int_counter};
 use std::collections::{BTreeSet, HashMap};
+use std::fmt::Debug;
 use std::net::{IpAddr, SocketAddrV4};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
+use tracing::log::{trace, warn};
 use tracing::{debug, error, info};
 use tracing_subscriber::EnvFilter;
+use url::Url;
 
 lazy_static! {
     static ref REQ_COUNTER: IntCounter =
@@ -65,10 +70,6 @@ fn main() {
     let mut proxy_server = Server::new(Some(opt)).unwrap();
     proxy_server.bootstrap();
 
-    let endpoint = std::env::var("AWS_ENDPOINT").expect("need AWS_ENDPOINT env");
-    let region = std::env::var("AWS_REGION").expect("need AWS_REGION env");
-    let virtual_host =
-        std::env::var("AWS_VIRTUAL_HOST").is_ok_and(|v| v.to_lowercase() == "true");
     let (user, group, verify_meta) = match (
         std::env::var("LAKESOUL_CURRENT_USER"),
         std::env::var("LAKESOUL_CURRENT_DOMAIN"),
@@ -77,12 +78,33 @@ fn main() {
         _ => (String::new(), String::new(), false),
     };
     info!("pg url {:?}", std::env::var("LAKESOUL_PG_URL"));
-    let common_prefix = std::env::var("LAKESOUL_COMMON_PREFIX").ok();
+    let common_prefix = std::env::var("LAKESOUL_COMMON_PREFIX")
+        .ok()
+        .and_then(|s| Some(s.trim_end_matches('/').to_string()));
 
-    let verify_client_signature = std::env::var("CLIENT_AWS_SECRET").is_ok()
-        && std::env::var("CLIENT_AWS_KEY").is_ok();
+    // first try aws
+    let handler: Arc<dyn HTTPHandler + Send + Sync + 'static> =
+        match AWSHandler::try_new() {
+            Ok(aws) => {
+                info!("Initialized AWS handler {:?}", aws);
+                Arc::new(aws)
+            }
+            Err(e) => {
+                warn!("try init aws handler failed {:?}", e);
+                match AzureHandler::try_new() {
+                    Ok(az) => {
+                        info!("Initialized Azure handler {:?}", az);
+                        Arc::new(az)
+                    }
+                    Err(e) => {
+                        println!("Initalize azure handler failed {:?}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+        };
 
-    let uri = Uri::from_str(endpoint.as_str()).unwrap();
+    let uri = Uri::from_str(handler.get_endpoint().as_str()).unwrap();
     let tls: bool = if let Some(scheme) = uri.scheme_str() {
         scheme == "https"
     } else {
@@ -97,15 +119,8 @@ fn main() {
         80
     };
     info!(
-        "endpoint {}, region {}, virtual_host {}, verify rbac {}, verify client {}, tls {}, port {}, common_prefix {:?}",
-        endpoint,
-        region,
-        virtual_host,
-        verify_meta,
-        verify_client_signature,
-        tls,
-        port,
-        common_prefix
+        "verify rbac {}, tls {}, port {}, common_prefix {:?}",
+        verify_meta, tls, port, common_prefix
     );
 
     let mut upstreams = LoadBalancer::from(DnsDiscovery::new(
@@ -122,14 +137,12 @@ fn main() {
 
     let background_s3_credentials = background_service(
         "s3 credentials",
-        Credentials {
-            region,
-            identity: ArcSwap::new(Arc::new(Identity::new(0, None))),
+        S3ProxyHandle {
+            http_handle: handler,
             metadata_client: ArcSwapOption::new(None),
             user: user.clone(),
             group,
             verify_meta,
-            virtual_host,
             common_prefix,
         },
     );
@@ -139,7 +152,7 @@ fn main() {
         &proxy_server.configuration,
         S3Proxy {
             lb,
-            cred,
+            handle: cred,
             host: String::from(host),
             tls,
         },
@@ -160,19 +173,17 @@ fn main() {
 
 pub struct S3Proxy {
     lb: Arc<LoadBalancer<RoundRobin>>,
-    cred: Arc<Credentials>,
+    handle: Arc<S3ProxyHandle>,
     host: String,
     tls: bool,
 }
 
-pub struct Credentials {
-    region: String,
-    identity: ArcSwap<Identity>,
+pub struct S3ProxyHandle {
+    pub http_handle: Arc<dyn HTTPHandler + Send + Sync + 'static>,
     metadata_client: ArcSwapOption<MetaDataClient>,
     user: String,
     group: String,
     verify_meta: bool,
-    virtual_host: bool,
     common_prefix: Option<String>,
 }
 
@@ -189,152 +200,104 @@ fn starts_with_any(
     })
 }
 
-impl Credentials {
+impl S3ProxyHandle {
     async fn verify_rbac(
         &self,
         headers: &RequestHeader,
-        bucket: &str,
+        ctx: &S3ProxyContext,
     ) -> Result<(), anyhow::Error> {
+        let path = parse_table_path(&headers.uri, &ctx.bucket);
         if !self.verify_meta {
+            match self.common_prefix {
+                Some(ref prefix) => {
+                    if path.starts_with(format!("{}/warehouse", prefix).as_str()) {
+                        return Err(anyhow!("Access warehouse dir is not allowed"));
+                    }
+                }
+                None => {
+                    if path.starts_with(format!("s3://{}/warehouse", ctx.bucket).as_str())
+                    {
+                        return Err(anyhow!("Access warehouse dir is not allowed"));
+                    }
+                }
+            }
             Ok(())
         } else {
             let binding = self.metadata_client.load();
             if let Some(client) = binding.as_ref() {
-                let path = parse_table_path(&headers.uri, bucket);
                 debug!("Parsed table path {:?}", path);
                 if match self.common_prefix {
                     Some(ref prefix) => {
                         path.starts_with(
                             format!("{}/{}/{}", prefix, self.group, self.user).as_str(),
-                        ) || path.starts_with(format!("{}/spark-upload", prefix).as_str())
+                        ) || path.starts_with(format!("{}/files", prefix).as_str())
                     }
                     None => {
                         path.starts_with(
-                            format!("s3://{}/{}/{}", bucket, self.group, self.user)
+                            format!("s3://{}/{}/{}", ctx.bucket, self.group, self.user)
                                 .as_str(),
                         ) || path
-                            .starts_with(format!("s3://{}/spark-upload", bucket).as_str())
+                            .starts_with(format!("s3://{}/files", ctx.bucket).as_str())
                     }
                 } || starts_with_any(
                     path.as_str(),
-                    bucket,
+                    &ctx.bucket,
                     self.group.as_str(),
-                    &["savepoint", "checkpoint", "resource-manager"],
+                    &["savepoint", "checkpoint", "resource-manager", "files"],
                     &self.common_prefix,
                 ) {
+                    debug!("path is a valid predefined prefix {}, access allowed", path);
                     return Ok(());
                 }
-                verify_permission_by_table_path(
+                match verify_permission_by_table_path(
                     self.user.as_str(),
                     self.group.as_str(),
                     path.as_str(),
                     client.clone(),
                 )
-                .await?;
+                .await
+                {
+                    Ok(_) => {}
+                    Err(LakeSoulMetaDataError::NotFound(e)) => {
+                        match headers.method {
+                            // for GetObject but not ListObject
+                            Method::GET
+                                if !ctx
+                                    .request_query_params
+                                    .contains_key("list-type") =>
+                            {
+                                error!(
+                                    "Path {} is not a table and is not allowed to read",
+                                    path
+                                );
+                                return Err(anyhow::Error::from(
+                                    LakeSoulMetaDataError::NotFound(e),
+                                ));
+                            }
+                            _ => {
+                                // for List/Put/UploadPart/Delete
+                                info!(
+                                    "Path {} is not a table but is allowed to modify",
+                                    path
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Path {} is a table but is not allowed to access", path);
+                        return Err(anyhow::Error::from(e));
+                    }
+                }
+            } else {
+                return Err(anyhow!("Metadata client failed to initialize"));
             }
             Ok(())
         }
     }
-
-    fn sign_aws_v4(
-        &self,
-        headers: &mut RequestHeader,
-        host: &String,
-        bucket: &str,
-    ) -> Result<(), anyhow::Error> {
-        let mut signing_settings = SigningSettings::default();
-        signing_settings.percent_encoding_mode = PercentEncodingMode::Single;
-        signing_settings.payload_checksum_kind = PayloadChecksumKind::XAmzSha256;
-        let binding = self.identity.load();
-        let identity = binding.as_ref();
-        let signing_params = v4::SigningParams::builder()
-            .identity(identity)
-            .region(self.region.as_str())
-            .name("s3")
-            .time(SystemTime::now())
-            .settings(signing_settings)
-            .build()?
-            .into();
-
-        let mut uri = headers.uri.to_string();
-        debug!("original uri {}", uri);
-
-        // for virtual host addressing, we need to replace host header
-        // with format bucket-name.endpoint-host before signing
-        if self.virtual_host {
-            // rewrite host
-            let new_host = format!("{}.{}", bucket, host);
-            debug!("new host {}", new_host);
-            headers.insert_header(HOST, HeaderValue::try_from(new_host)?)?;
-            // rewrite path to remove bucket name
-            let start = uri.find(bucket).unwrap();
-            uri.replace_range(start..(start + bucket.len()), "");
-            uri = uri.replace("//", "/");
-            debug!("replaced uri {}", uri);
-        } else {
-            headers.insert_header(HOST, HeaderValue::try_from(host)?)?;
-        }
-
-        if let Some(value) = headers.headers.get("x-amz-decoded-content-length") {
-            let value: u64 = value.to_str()?.parse()?;
-            if value == 0 {
-                headers.insert_header(CONTENT_LENGTH, HeaderValue::try_from(0)?)?;
-            }
-        }
-
-        // construct request for signing by aws_sigv4
-        let signable_request = SignableRequest::new(
-            headers.method.as_str(),
-            &uri,
-            headers
-                .headers
-                .iter()
-                .filter_map(|(name, value)| match value.to_str() {
-                    Ok(v) => Some((name.as_str(), v)),
-                    Err(_) => None,
-                }),
-            match headers.headers.get("x-amz-content-sha256") {
-                Some(value) => {
-                    if value == "STREAMING-AWS4-HMAC-SHA256-PAYLOAD" {
-                        SignableBody::Precomputed(
-                            "STREAMING-AWS4-HMAC-SHA256-PAYLOAD".parse()?,
-                        )
-                    } else {
-                        SignableBody::UnsignedPayload
-                    }
-                }
-                None => SignableBody::UnsignedPayload,
-            },
-        )?;
-        let (signing_instructions, _signature) =
-            sign(signable_request, &signing_params)?.into_parts();
-        let (new_headers, new_query) = signing_instructions.into_parts();
-        debug!("new headers {:?}, new query {:?}", new_headers, new_query);
-
-        for header in new_headers.into_iter() {
-            let mut value = HeaderValue::from_str(header.value())?;
-            value.set_sensitive(header.sensitive());
-            headers.insert_header(header.name(), value)?
-        }
-
-        if !new_query.is_empty() {
-            let mut query = aws_smithy_http::query_writer::QueryWriter::new_from_string(
-                uri.as_str(),
-            )?;
-            for (name, value) in new_query {
-                query.insert(name, &value);
-            }
-            headers.set_uri(query.build_uri().to_string().parse()?);
-        } else {
-            headers.set_uri(uri.parse()?);
-        }
-        debug!("final all headers {:?}", headers);
-        Ok(())
-    }
 }
 
 #[async_trait]
-impl BackgroundService for Credentials {
+impl BackgroundService for S3ProxyHandle {
     async fn start(&self, shutdown: ShutdownWatch) {
         if self.verify_meta {
             // create metadata client
@@ -346,8 +309,10 @@ impl BackgroundService for Credentials {
                         info!("initialized metadata client");
                         metadata_client
                     })
-                    .inspect_err(|e| error!("create metadata client error: {e:?}"))
-                    .expect("cannot create meta data client"),
+                    .unwrap_or_else(|e| {
+                        error!("create metadata client error: {e:?}");
+                        std::process::exit(1);
+                    }),
             );
             self.metadata_client.store(Some(metadata_client));
         }
@@ -361,20 +326,13 @@ impl BackgroundService for Credentials {
                 return;
             }
             if next_update <= now {
-                info!("begin create aws credentials");
-                let credentials_provider = DefaultCredentialsChain::builder()
-                    .region(Region::new(self.region.clone()))
-                    .build()
-                    .await;
-                credentials_provider
-                    .provide_credentials()
+                self.http_handle
+                    .refresh_identity()
                     .await
-                    .map(|credentials| {
-                        info!("new credentials: {credentials:?}");
-                        self.identity.swap(Arc::new(Identity::from(credentials)));
-                    })
-                    .inspect_err(|e| error!("create aws credential error: {e:?}"))
-                    .expect("credentials provider should be created");
+                    .unwrap_or_else(|e| {
+                        error!("refresh object store identity error: {e:?}");
+                        std::process::exit(1);
+                    });
                 next_update = now + Duration::from_secs(60 * 45);
             }
             tokio::time::sleep_until(next_update.into()).await;
@@ -385,14 +343,16 @@ impl BackgroundService for Credentials {
 
 #[async_trait]
 impl ProxyHttp for S3Proxy {
-    /// For this small example, we don't need context storage
-    type CTX = ();
-    fn new_ctx(&self) {}
+    type CTX = S3ProxyContext;
+
+    fn new_ctx(&self) -> Self::CTX {
+        S3ProxyContext::new()
+    }
 
     async fn upstream_peer(
         &self,
         _session: &mut Session,
-        _ctx: &mut (),
+        _ctx: &mut Self::CTX,
     ) -> Result<Box<HttpPeer>> {
         let upstream = self
             .lb
@@ -408,17 +368,46 @@ impl ProxyHttp for S3Proxy {
     async fn request_filter(
         &self,
         session: &mut Session,
-        _ctx: &mut Self::CTX,
+        ctx: &mut Self::CTX,
     ) -> Result<bool>
     where
         Self::CTX: Send + Sync,
     {
         REQ_COUNTER.inc();
-        let header = session.req_header_mut();
-        debug!("request_filter original header: {header:?}");
+        let s = format!(
+            "{}{}",
+            self.handle.http_handle.get_endpoint(),
+            session.req_header().uri.to_string()
+        );
+        debug!("Requesting url {:?}", s);
+
+        // fill context
+        let url = Url::parse(s.as_str())
+            .map_err(|e| Error::because(InternalError, "cannot parse url", e))?;
+        ctx.request_method = session.req_header().method.clone();
+        ctx.request_query_params = url.query_pairs().into_owned().collect();
+        ctx.require_request_body_rewrite = self
+            .handle
+            .http_handle
+            .require_request_body_rewrite(&ctx, session.req_header());
+        ctx.require_response_body_rewrite = self
+            .handle
+            .http_handle
+            .require_response_body_rewrite(&ctx, session.req_header());
+        debug!(
+            "request_filter original header: {:?}, params: {:?}, \
+            rewrite req body {}, rewrite reps body {}",
+            session.req_header(),
+            ctx.request_query_params,
+            ctx.require_request_body_rewrite,
+            ctx.require_response_body_rewrite
+        );
+
+        // retrieve bucket name from request
         let bucket;
         // we need to parse bucket name from uri component
-        if let Some(path) = header
+        if let Some(path) = session
+            .req_header()
             .uri
             .path()
             .split("/")
@@ -427,19 +416,26 @@ impl ProxyHttp for S3Proxy {
         {
             bucket = path.to_string();
         } else {
-            let msg = format!("Cannot determine bucket from header {:?}", header);
+            let msg = format!(
+                "Cannot determine bucket from header {:?}",
+                session.req_header()
+            );
             error!("{}", msg);
             session
                 .respond_error_with_body(400, Bytes::from(msg))
                 .await?;
             return Ok(true);
         }
+        ctx.bucket = bucket;
 
         // verify meta permission
-        match self.cred.verify_rbac(header, &bucket).await {
+        match self.handle.verify_rbac(session.req_header(), &ctx).await {
             Err(e) => {
-                let msg =
-                    format!("Permission denied error {:?}, uri {:?}", e, header.uri);
+                let msg = format!(
+                    "Permission denied error {:?}, uri {:?}",
+                    e,
+                    session.req_header().uri
+                );
                 error!("{}", msg);
                 session
                     .respond_error_with_body(403, Bytes::from(msg))
@@ -449,13 +445,21 @@ impl ProxyHttp for S3Proxy {
             _ => {}
         }
 
-        // signing
-        match self.cred.sign_aws_v4(header, &self.host, &bucket) {
-            Ok(_) => Ok(false),
+        // modify header (e.g. converting headers and params, signing)
+        match self
+            .handle
+            .http_handle
+            .handle_request_header(session, ctx)
+            .await
+        {
+            Ok(b) => Ok(b),
             Err(e) => {
                 let msg = format!(
-                    "Sign aws v4 error {:?}, header {:?}, host {:?}, bucket {:?}",
-                    e, header, self.host, bucket
+                    "Handle object request error {:?}, header {:?}, host {:?}, bucket {:?}",
+                    e,
+                    session.req_header(),
+                    self.host,
+                    ctx.bucket
                 );
                 error!("{}", msg);
                 session
@@ -468,37 +472,107 @@ impl ProxyHttp for S3Proxy {
 
     async fn request_body_filter(
         &self,
-        _session: &mut Session,
+        session: &mut Session,
         body: &mut Option<Bytes>,
-        _end_of_stream: bool,
-        _ctx: &mut Self::CTX,
+        end_of_stream: bool,
+        ctx: &mut Self::CTX,
     ) -> Result<()>
     where
         Self::CTX: Send + Sync,
     {
         if let Some(bytes) = body {
-            debug!(
+            trace!(
                 "request_body_filter original body length: {}, content: {:?}",
                 bytes.len(),
                 bytes
             );
-            REQ_BYTES.inc_by(bytes.len() as u64)
+            REQ_BYTES.inc_by(bytes.len() as u64);
+
+            // when we need to rewrite req body like multipart upload
+            // we accumulate request buffer and replace body after end of stream
+            if ctx.require_request_body_rewrite {
+                ctx.request_body.extend_from_slice(bytes.as_ref());
+                // clear buffer to indicate ignoring original body
+                bytes.clear();
+            }
         }
+        if ctx.require_request_body_rewrite && end_of_stream {
+            // let handler fill required body
+            self.handle
+                .http_handle
+                .rewrite_request_body(session.req_header(), ctx, body)
+                .await
+                .map_err(|e| {
+                    Error::because(InternalError, "handle request body error", e)
+                })?;
+        }
+        Ok(())
+    }
+
+    async fn upstream_request_filter(
+        &self,
+        session: &mut Session,
+        upstream_request: &mut RequestHeader,
+        ctx: &mut Self::CTX,
+    ) -> Result<()>
+    where
+        Self::CTX: Send + Sync,
+    {
+        self.handle
+            .http_handle
+            .change_upstream_header(session, upstream_request, ctx)
+            .await
+            .map_err(|e| Error::because(InternalError, "handle upstream header error", e))
+    }
+
+    async fn response_filter(
+        &self,
+        _session: &mut Session,
+        upstream_response: &mut ResponseHeader,
+        ctx: &mut Self::CTX,
+    ) -> Result<()>
+    where
+        Self::CTX: Send + Sync,
+    {
+        self.handle
+            .http_handle
+            .handle_response_header(ctx, upstream_response)
+            .map_err(|e| {
+                Error::because(InternalError, "handle response_header error", e)
+            })?;
         Ok(())
     }
 
     fn response_body_filter(
         &self,
-        _session: &mut Session,
+        session: &mut Session,
         body: &mut Option<Bytes>,
-        _end_of_stream: bool,
-        _ctx: &mut Self::CTX,
+        end_of_stream: bool,
+        ctx: &mut Self::CTX,
     ) -> Result<Option<Duration>>
     where
         Self::CTX: Send + Sync,
     {
         if let Some(bytes) = body {
-            RES_BYTES.inc_by(bytes.len() as u64)
+            RES_BYTES.inc_by(bytes.len() as u64);
+
+            // rewrite response body for list object
+            if ctx.require_response_body_rewrite {
+                debug!("need rewrite response, eos {}", end_of_stream);
+                ctx.response_body.extend_from_slice(bytes.as_ref());
+                // clear buffer to indicate ignoring original body
+                bytes.clear();
+            }
+        }
+        if ctx.require_response_body_rewrite && end_of_stream {
+            debug!("begin rewrite response");
+            // let handler fill required body
+            self.handle
+                .http_handle
+                .rewrite_response_body(session.req_header(), ctx, body)
+                .map_err(|e| {
+                    Error::because(InternalError, "handle response body error", e)
+                })?;
         }
         Ok(None)
     }
