@@ -12,6 +12,7 @@ use crate::aws::AWSHandler;
 use crate::azure::AzureHandler;
 use crate::context::S3ProxyContext;
 use crate::handler::HTTPHandler;
+use anyhow::anyhow;
 use arc_swap::ArcSwapOption;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -77,7 +78,9 @@ fn main() {
         _ => (String::new(), String::new(), false),
     };
     info!("pg url {:?}", std::env::var("LAKESOUL_PG_URL"));
-    let common_prefix = std::env::var("LAKESOUL_COMMON_PREFIX").ok();
+    let common_prefix = std::env::var("LAKESOUL_COMMON_PREFIX")
+        .ok()
+        .and_then(|s| Some(s.trim_end_matches('/').to_string()));
 
     // first try aws
     let handler: Arc<dyn HTTPHandler + Send + Sync + 'static> =
@@ -203,32 +206,44 @@ impl S3ProxyHandle {
         headers: &RequestHeader,
         ctx: &S3ProxyContext,
     ) -> Result<(), anyhow::Error> {
+        let path = parse_table_path(&headers.uri, &ctx.bucket);
         if !self.verify_meta {
+            match self.common_prefix {
+                Some(ref prefix) => {
+                    if path.starts_with(format!("{}/warehouse", prefix).as_str()) {
+                        return Err(anyhow!("Access warehouse dir is not allowed"));
+                    }
+                }
+                None => {
+                    if path.starts_with(format!("s3://{}/warehouse", ctx.bucket).as_str())
+                    {
+                        return Err(anyhow!("Access warehouse dir is not allowed"));
+                    }
+                }
+            }
             Ok(())
         } else {
             let binding = self.metadata_client.load();
             if let Some(client) = binding.as_ref() {
-                let path = parse_table_path(&headers.uri, &ctx.bucket);
                 debug!("Parsed table path {:?}", path);
                 if match self.common_prefix {
                     Some(ref prefix) => {
                         path.starts_with(
                             format!("{}/{}/{}", prefix, self.group, self.user).as_str(),
-                        ) || path.starts_with(format!("{}/spark-upload", prefix).as_str())
+                        ) || path.starts_with(format!("{}/files", prefix).as_str())
                     }
                     None => {
                         path.starts_with(
                             format!("s3://{}/{}/{}", ctx.bucket, self.group, self.user)
                                 .as_str(),
-                        ) || path.starts_with(
-                            format!("s3://{}/spark-upload", ctx.bucket).as_str(),
-                        )
+                        ) || path
+                            .starts_with(format!("s3://{}/files", ctx.bucket).as_str())
                     }
                 } || starts_with_any(
                     path.as_str(),
                     &ctx.bucket,
                     self.group.as_str(),
-                    &["savepoint", "checkpoint", "resource-manager"],
+                    &["savepoint", "checkpoint", "resource-manager", "files"],
                     &self.common_prefix,
                 ) {
                     debug!("path is a valid predefined prefix {}, access allowed", path);
@@ -273,6 +288,8 @@ impl S3ProxyHandle {
                         return Err(anyhow::Error::from(e));
                     }
                 }
+            } else {
+                return Err(anyhow!("Metadata client failed to initialize"));
             }
             Ok(())
         }
