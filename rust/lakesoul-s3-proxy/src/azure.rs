@@ -37,7 +37,7 @@ use url::Url;
 use uuid::Uuid;
 
 static CONTENT_MD5: HeaderName = HeaderName::from_static("content-md5");
-static AZURE_VERSION: HeaderValue = HeaderValue::from_static("2020-04-08");
+static AZURE_VERSION: HeaderValue = HeaderValue::from_static("2018-11-09");
 static VERSION: HeaderName = HeaderName::from_static("x-ms-version");
 static BLOB_TYPE: HeaderName = HeaderName::from_static("x-ms-blob-type");
 static BLOB_TYPE_VALUE: HeaderValue = HeaderValue::from_static("BlockBlob");
@@ -294,7 +294,6 @@ impl AzureHandler {
         )?;
         query.clear_params();
         query.insert("comp", "batch");
-        query.insert("restype", "container");
         let q = query.build_uri().to_string().parse()?;
         debug!(
             "converting batch delete query params {:?} to uri {:?}",

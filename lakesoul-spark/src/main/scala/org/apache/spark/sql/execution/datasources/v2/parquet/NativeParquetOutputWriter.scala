@@ -11,6 +11,7 @@ import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.types.pojo.Schema
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.mapreduce.TaskAttemptContext
+import org.apache.spark.TaskContext
 import org.apache.spark.sql.arrow.{ArrowUtils, ArrowWriter}
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.execution.datasources.OutputWriter
@@ -18,6 +19,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.{GlutenUtils, NativeIOUtils}
+import org.apache.spark.util.TaskCompletionListener
 
 import java.util
 import scala.collection.JavaConverters.mapAsScalaMapConverter
@@ -35,7 +37,7 @@ class NativeParquetOutputWriter(val path: String, dataSchema: StructType, timeZo
 
   protected val nativeIOWriter: NativeIOWriter = new NativeIOWriter(arrowSchema)
 
-
+  private var closed = false
 
   GlutenUtils.setArrowAllocator(nativeIOWriter)
   nativeIOWriter.setRowGroupRowNumber(NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE)
@@ -53,7 +55,17 @@ class NativeParquetOutputWriter(val path: String, dataSchema: StructType, timeZo
 
   protected val root: VectorSchemaRoot = VectorSchemaRoot.create(arrowSchema, allocator)
 
-  val recordWriter: ArrowWriter = ArrowWriter.create(root)
+  private val recordWriter: ArrowWriter = ArrowWriter.create(root)
+
+  TaskContext.get.addTaskCompletionListener(new TaskCompletionListener {
+    override def onTaskCompletion(context: TaskContext): Unit = {
+      try close()
+      catch {
+        case e: Throwable =>
+          throw new RuntimeException(e)
+      }
+    }
+  })
 
   override def write(row: InternalRow): Unit = {
 
@@ -69,13 +81,18 @@ class NativeParquetOutputWriter(val path: String, dataSchema: StructType, timeZo
   }
 
   override def close(): Unit = {
-    recordWriter.finish()
+    this.synchronized {
+      if (!closed) {
+        recordWriter.finish()
 
-    nativeIOWriter.write(root)
-    flushResult = nativeIOWriter.flush().asScala
+        nativeIOWriter.write(root)
+        flushResult = nativeIOWriter.flush().asScala
 
-    recordWriter.reset()
-    root.close()
-    nativeIOWriter.close()
+        recordWriter.reset()
+        root.close()
+        nativeIOWriter.close()
+        closed = true
+      }
+    }
   }
 }
