@@ -19,6 +19,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.{GlutenUtils, NativeIOUtils}
+import org.apache.spark.util.TaskCompletionListener
 
 import java.io.IOException
 import java.util
@@ -57,11 +58,13 @@ class NativeParquetOutputWriter(val path: String, dataSchema: StructType, timeZo
 
   val recordWriter: ArrowWriter = ArrowWriter.create(root)
 
-  TaskContext.get.addTaskCompletionListener((context: TaskContext) => {
-    try close()
-    catch {
-      case e: Exception =>
-        throw new RuntimeException(e)
+  TaskContext.get.addTaskCompletionListener(new TaskCompletionListener {
+    override def onTaskCompletion(context: TaskContext): Unit = {
+      try close()
+      catch {
+        case e: Throwable =>
+          throw new RuntimeException(e)
+      }
     }
   })
 
