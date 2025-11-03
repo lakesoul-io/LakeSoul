@@ -11,6 +11,7 @@ import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.types.pojo.Schema
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.mapreduce.TaskAttemptContext
+import org.apache.spark.TaskContext
 import org.apache.spark.sql.arrow.{ArrowUtils, ArrowWriter}
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.execution.datasources.OutputWriter
@@ -19,6 +20,7 @@ import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.{GlutenUtils, NativeIOUtils}
 
+import java.io.IOException
 import java.util
 import scala.collection.JavaConverters.mapAsScalaMapConverter
 import scala.collection.mutable
@@ -54,6 +56,14 @@ class NativeParquetOutputWriter(val path: String, dataSchema: StructType, timeZo
   protected val root: VectorSchemaRoot = VectorSchemaRoot.create(arrowSchema, allocator)
 
   val recordWriter: ArrowWriter = ArrowWriter.create(root)
+
+  TaskContext.get.addTaskCompletionListener((context: TaskContext) => {
+    try close()
+    catch {
+      case e: Exception =>
+        throw new RuntimeException(e)
+    }
+  })
 
   override def write(row: InternalRow): Unit = {
 

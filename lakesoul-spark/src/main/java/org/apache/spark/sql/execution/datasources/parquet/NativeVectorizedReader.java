@@ -157,7 +157,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
         TaskContext.get().addTaskCompletionListener(context -> {
             try {
                 close();
-            } catch (IOException e) {
+            } catch (Exception e) {
                 throw new RuntimeException(e);
             }
         });
