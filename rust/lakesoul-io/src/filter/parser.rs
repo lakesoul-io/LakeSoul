@@ -242,16 +242,13 @@ impl Parser {
                 })) => {
                     if let Some(ReferenceType::DirectReference(reference_segment)) =
                         &mut f.reference_type
-                    {
-                        if let Some(reference_segment::ReferenceType::MapKey(map_key)) =
+                        && let Some(reference_segment::ReferenceType::MapKey(map_key)) =
                             &mut reference_segment.reference_type
-                        {
-                            if let Some(Literal {
+                            && let Some(Literal {
                                 literal_type: Some(LiteralType::String(name)),
                                 ..
                             }) = &map_key.map_key
-                            {
-                                if let Some(idx) =
+                                && let Some(idx) =
                                     df_schema.index_of_column_by_name(None, name.as_ref())
                                 {
                                     reference_segment.reference_type = Some(
@@ -263,9 +260,6 @@ impl Parser {
                                         ),
                                     );
                                 }
-                            }
-                        }
-                    }
                 }
                 Some(ArgType::Value(Expression {
                     rex_type: Some(RexType::ScalarFunction(f)),
@@ -307,8 +301,7 @@ impl Parser {
                         ..
                     })),
             }) = plan.relations.first().cloned()
-            {
-                if let Some(expression) = &mut read_rel.filter {
+                && let Some(expression) = &mut read_rel.filter {
                     let extensions = Extensions::try_from(&plan.extensions)?;
                     if let Some(RexType::ScalarFunction(f)) = &mut expression.rex_type {
                         Self::modify_substrait_argument(&mut f.arguments, df_schema);
@@ -317,7 +310,6 @@ impl Parser {
                     let consumer = DefaultSubstraitConsumer::new(&extensions, &state);
                     return from_substrait_rex(&consumer, expression, df_schema).await;
                 }
-            }
             Err(Internal(format!(
                 "encountered wrong substrait plan {:?}",
                 plan

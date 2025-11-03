@@ -930,11 +930,10 @@ pub fn extract_hash_bucket_id(file_path: &str) -> Option<u32> {
     // followed by digits before any optional suffix
     let re = Regex::new(r"part-.*_(\d+)(?:\..+)?$").ok()?;
 
-    if let Some(captures) = re.captures(file_name) {
-        if let Some(id_match) = captures.get(1) {
+    if let Some(captures) = re.captures(file_name)
+        && let Some(id_match) = captures.get(1) {
             return id_match.as_str().parse::<u32>().ok();
         }
-    }
 
     None
 }

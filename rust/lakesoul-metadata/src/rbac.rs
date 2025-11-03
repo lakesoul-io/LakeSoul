@@ -33,8 +33,7 @@ pub async fn verify_permission_by_table_name(
             format!(
                 "Table {}.{} not found, user {}, group {}",
                 table, ns, user, group
-            )
-            .into(),
+            ),
         ))?;
     debug!("table {}.{} in domain {}", ns, table, table_name_id.domain);
     match table_name_id.domain.as_str() {

@@ -819,7 +819,7 @@ pub async fn execute_query(
             if params.len() == 3 =>
         {
             let concated_uuid = &params[2];
-            if concated_uuid.len() % 32 != 0 {
+            if !concated_uuid.len().is_multiple_of(32) {
                 eprintln!(
                     "Invalid params of query_type={:?}, params={:?}",
                     query_type, params

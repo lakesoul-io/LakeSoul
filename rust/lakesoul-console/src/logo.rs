@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-pub static LOGO: &'static str = r###"
+pub static LOGO: &str = r###"
  █████                 █████                █████████                      ████ 
 ░░███                 ░░███                ███░░░░░███                    ░░███ 
  ░███         ██████   ░███ █████  ██████ ░███    ░░░   ██████  █████ ████ ░███ 

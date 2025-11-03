@@ -38,7 +38,7 @@ class NativeParquetOutputWriter(val path: String, dataSchema: StructType, timeZo
 
   protected val nativeIOWriter: NativeIOWriter = new NativeIOWriter(arrowSchema)
 
-
+  private var closed: Boolean = false
 
   GlutenUtils.setArrowAllocator(nativeIOWriter)
   nativeIOWriter.setRowGroupRowNumber(NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE)
@@ -82,13 +82,17 @@ class NativeParquetOutputWriter(val path: String, dataSchema: StructType, timeZo
   }
 
   override def close(): Unit = {
-    recordWriter.finish()
+    this.synchronized {
+      if (closed) return
+      recordWriter.finish()
 
-    nativeIOWriter.write(root)
-    flushResult = nativeIOWriter.flush().asScala
+      nativeIOWriter.write(root)
+      flushResult = nativeIOWriter.flush().asScala
 
-    recordWriter.reset()
-    root.close()
-    nativeIOWriter.close()
+      recordWriter.reset()
+      root.close()
+      nativeIOWriter.close()
+      closed = true
+    }
   }
 }
