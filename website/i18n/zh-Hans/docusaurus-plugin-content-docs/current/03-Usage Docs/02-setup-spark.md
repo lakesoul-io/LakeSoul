@@ -107,11 +107,11 @@ spark.sql.sources.default lakesoul
 containerized.master.env.LAKESOUL_PG_DRIVER：com.lakesoul.shaded.org.postgresql.Driver
 containerized.master.env.LAKESOUL_PG_USERNAME: root
 containerized.master.env.LAKESOUL_PG_PASSWORD: root
-containerized.master.env.LAKESOUL_PG_URL: jdbc:postgresql://localhost:5432/test_lakesoul_meta?stringtype=未指定
+containerized.master.env.LAKESOUL_PG_URL: jdbc:postgresql://localhost:5432/test_lakesoul_meta?stringtype=unspecified
 containerized.taskmanager.env.LAKESOUL_PG_DRIVER：com.lakesoul.shaded.org.postgresql.Driver
 containerized.taskmanager.env.LAKESOUL_PG_USERNAME: root
 containerized.taskmanager.env.LAKESOUL_PG_PASSWORD: root
-containerized.taskmanager.env.LAKESOUL_PG_URL: jdbc:postgresql://localhost:5432/test_lakesoul_meta?stringtype=未指定
+containerized.taskmanager.env.LAKESOUL_PG_URL: jdbc:postgresql://localhost:5432/test_lakesoul_meta?stringtype=unspecified
 ```
 
 请注意，需要同时设置 master 和 taskmanager 环境变量。
@@ -129,7 +129,7 @@ export LAKESOUL_PG_URL=jdbc:postgresql://localhost:5432/test_lakesoul_meta?strin
 export LAKESOUL_PG_USERNAME=root
 export LAKESOUL_PG_PASSWORD=root
 ```
-::::
+:::
 
 :::tip
 LakeSoul 需要使用相对多一些的堆外内存，建议适当增加 Task Manager 的堆外内存配置，例如：
