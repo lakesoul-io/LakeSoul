@@ -29,12 +29,10 @@ pub async fn verify_permission_by_table_name(
         .as_ref()
         .get_table_name_id_by_table_name(table, ns)
         .await?
-        .ok_or(LakeSoulMetaDataError::Internal(
-            format!(
-                "Table {}.{} not found, user {}, group {}",
-                table, ns, user, group
-            ),
-        ))?;
+        .ok_or(LakeSoulMetaDataError::Internal(format!(
+            "Table {}.{} not found, user {}, group {}",
+            table, ns, user, group
+        )))?;
     debug!("table {}.{} in domain {}", ns, table, table_name_id.domain);
     match table_name_id.domain.as_str() {
         "public" | "lake-public" => Ok(()),

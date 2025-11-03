@@ -244,22 +244,21 @@ impl Parser {
                         &mut f.reference_type
                         && let Some(reference_segment::ReferenceType::MapKey(map_key)) =
                             &mut reference_segment.reference_type
-                            && let Some(Literal {
-                                literal_type: Some(LiteralType::String(name)),
-                                ..
-                            }) = &map_key.map_key
-                                && let Some(idx) =
-                                    df_schema.index_of_column_by_name(None, name.as_ref())
-                                {
-                                    reference_segment.reference_type = Some(
-                                        reference_segment::ReferenceType::StructField(
-                                            Box::new(StructField {
-                                                field: idx as i32,
-                                                child: None,
-                                            }),
-                                        ),
-                                    );
-                                }
+                        && let Some(Literal {
+                            literal_type: Some(LiteralType::String(name)),
+                            ..
+                        }) = &map_key.map_key
+                        && let Some(idx) =
+                            df_schema.index_of_column_by_name(None, name.as_ref())
+                    {
+                        reference_segment.reference_type =
+                            Some(reference_segment::ReferenceType::StructField(
+                                Box::new(StructField {
+                                    field: idx as i32,
+                                    child: None,
+                                }),
+                            ));
+                    }
                 }
                 Some(ArgType::Value(Expression {
                     rex_type: Some(RexType::ScalarFunction(f)),
@@ -301,15 +300,16 @@ impl Parser {
                         ..
                     })),
             }) = plan.relations.first().cloned()
-                && let Some(expression) = &mut read_rel.filter {
-                    let extensions = Extensions::try_from(&plan.extensions)?;
-                    if let Some(RexType::ScalarFunction(f)) = &mut expression.rex_type {
-                        Self::modify_substrait_argument(&mut f.arguments, df_schema);
-                    }
-                    let state = ctx.state();
-                    let consumer = DefaultSubstraitConsumer::new(&extensions, &state);
-                    return from_substrait_rex(&consumer, expression, df_schema).await;
+                && let Some(expression) = &mut read_rel.filter
+            {
+                let extensions = Extensions::try_from(&plan.extensions)?;
+                if let Some(RexType::ScalarFunction(f)) = &mut expression.rex_type {
+                    Self::modify_substrait_argument(&mut f.arguments, df_schema);
                 }
+                let state = ctx.state();
+                let consumer = DefaultSubstraitConsumer::new(&extensions, &state);
+                return from_substrait_rex(&consumer, expression, df_schema).await;
+            }
             Err(Internal(format!(
                 "encountered wrong substrait plan {:?}",
                 plan

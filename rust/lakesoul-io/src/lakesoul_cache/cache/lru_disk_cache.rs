@@ -276,9 +276,10 @@ impl LruDiskCache {
         by: F,
     ) -> Result<()> {
         if let Some(size) = size
-            && !self.can_store(size) {
-                return Err(Error::FileTooLarge);
-            }
+            && !self.can_store(size)
+        {
+            return Err(Error::FileTooLarge);
+        }
         let rel_path = key.as_ref();
         let path = self.rel_to_abs_path(rel_path);
         fs::create_dir_all(path.parent().expect("Bad path?"))?;

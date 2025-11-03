@@ -974,12 +974,13 @@ impl MetaDataClient {
 
             if let Ok(origin_properties) =
                 serde_json::from_str::<serde_json::Value>(&table_info.properties)
-                && let Some(origin_obj) = origin_properties.as_object() {
-                    // 如果原始properties中包含domain,保留它
-                    if let Some(domain) = origin_obj.get("domain") {
-                        new_properties.insert("domain".to_string(), domain.clone());
-                    }
+                && let Some(origin_obj) = origin_properties.as_object()
+            {
+                // 如果原始properties中包含domain,保留它
+                if let Some(domain) = origin_obj.get("domain") {
+                    new_properties.insert("domain".to_string(), domain.clone());
                 }
+            }
 
             // 更新properties
             self.execute_update(
