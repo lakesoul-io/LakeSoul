@@ -74,22 +74,22 @@ public class LakeSoulSourceToSinkTable {
         String createTableSql;
         if (useCDC) {
             createTableSql =
-                    "create table %s.%s " + "with (" + "   'connector'='lakesoul'," + "   'hashBucketNum'='%s'," +
-                            "   'use_cdc'='%s'," + "   'path'='%s'" + ") like %s.%s";
-            tEnvs.executeSql(String.format("drop table if exists %s.%s", sinkDBName, sinkTableName));
+                    "create table `%s`.`%s` " + "with (" + "   'connector'='lakesoul'," + "   'hashBucketNum'='%s'," +
+                            "   'use_cdc'='%s'," + "   'path'='%s'" + ") like `%s`.`%s`";
+            tEnvs.executeSql(String.format("drop table if exists `%s`.`%s`", sinkDBName, sinkTableName));
             tEnvs.executeSql(
                     String.format(createTableSql, sinkDBName, sinkTableName, hashBucketNum, "true", warehousePath,
                             sourceDBName, sourceTableName));
         } else {
-            createTableSql = "create table %s.%s " + "with (" + "   'format'='lakesoul'," + "   'use_cdc'='%s'," +
-                    "   'path'='%s'" + ") like %s.%s";
-            tEnvs.executeSql(String.format("drop table if exists %s.%s", sinkDBName, sinkTableName));
+            createTableSql = "create table `%s`.`%s` " + "with (" + "   'format'='lakesoul'," + "   'use_cdc'='%s'," +
+                    "   'path'='%s'" + ") like `%s`.`%s`";
+            tEnvs.executeSql(String.format("drop table if exists `%s`.`%s`", sinkDBName, sinkTableName));
             tEnvs.executeSql(
                     String.format(createTableSql, sinkDBName, sinkTableName, hashBucketNum, "false", warehousePath,
                             sourceDBName, sourceTableName));
         }
 
-        String writeSql = "INSERT INTO %s.%s SELECT * from %s.%s";
+        String writeSql = "INSERT INTO `%s`.`%s` SELECT * from `%s`.`%s`";
         String sql = String.format(writeSql, sinkDBName, sinkTableName, sourceDBName, sourceTableName);
         System.out.println(tEnvs.explainSql(sql, ExplainDetail.CHANGELOG_MODE, ExplainDetail.JSON_EXECUTION_PLAN));
         tEnvs.executeSql(sql); // we should not await here to not block the process exiting
