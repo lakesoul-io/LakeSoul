@@ -44,6 +44,7 @@ public class MysqlCdc {
         String passWord = parameter.get(SOURCE_DB_PASSWORD.key());
         String host = parameter.get(SOURCE_DB_HOST.key());
         int port = parameter.getInt(SOURCE_DB_PORT.key(), MysqlDBManager.DEFAULT_MYSQL_PORT);
+        String sinkDBName = parameter.get(SINK_DBNAME.key(), SINK_DBNAME.defaultValue());
         String databasePrefixPath = parameter.get(WAREHOUSE_PATH.key());
         String serverTimezone = parameter.get(SERVER_TIME_ZONE.key(), SERVER_TIME_ZONE.defaultValue());
         int sourceParallelism = parameter.getInt(SOURCE_PARALLELISM.key());
@@ -120,7 +121,7 @@ public class MysqlCdc {
 
         LakeSoulRecordConvert lakeSoulRecordConvert = new LakeSoulRecordConvert(conf, conf.getString(SERVER_TIME_ZONE));
         sourceBuilder.deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert,
-                conf.getString(WAREHOUSE_PATH)));
+                conf.getString(WAREHOUSE_PATH), sinkDBName));
         Properties jdbcProperties = new Properties();
         jdbcProperties.put("allowPublicKeyRetrieval", "true");
         jdbcProperties.put("useSSL", "false");

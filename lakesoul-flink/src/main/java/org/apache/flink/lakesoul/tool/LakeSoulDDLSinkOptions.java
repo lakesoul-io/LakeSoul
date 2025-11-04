@@ -53,5 +53,11 @@ public class LakeSoulDDLSinkOptions extends LakeSoulSinkOptions{
             .defaultValue("")
             .withDescription("list of source database excluded tables. Comma-Separated string");
 
+    public static final ConfigOption<String> SINK_DBNAME = ConfigOptions
+            .key("sink_db_name")
+            .stringType()
+            .defaultValue(null)
+            .withDescription("Database for Data into LakeSoul");
+
 
 }
