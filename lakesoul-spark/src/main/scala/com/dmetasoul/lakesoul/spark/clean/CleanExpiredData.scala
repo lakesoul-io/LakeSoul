@@ -195,6 +195,10 @@ object CleanExpiredData {
          |AND
          |    partition_desc='$partitionDesc'
          |    )
+         |AND
+         |    table_id='$tableId'
+         |AND
+         |    partition_desc='$partitionDesc'
          |  )t
          |CROSS JOIN LATERAL (
          |    SELECT
