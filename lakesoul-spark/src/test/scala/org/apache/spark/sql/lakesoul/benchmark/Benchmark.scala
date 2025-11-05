@@ -22,13 +22,13 @@ object Benchmark {
   var singleLakeSoulContrast = false
   var verifyCDC = true
   var lakeSoulDBName = "flink_sink"
-  var lakeSoulTableName = "default_init"
+  var lakeSoulTableName = "s_test_cdc_default_init"
 
 
   var url: String = "jdbc:mysql://" + hostname + ":" + mysqlPort + "/" + dbName + "?allowPublicKeyRetrieval=true&useSSL=false&useUnicode=true&characterEncoding=utf-8&serverTimezone=" + serverTimeZone
 
   val DEFAULT_INIT_TABLE = "default_init"
-  val DEFAULT_INIT_TABLE_1 = "default_init_1"
+  val DEFAULT_INIT_TABLE_1 = "s_test_cdc_default_init_1"
   val printLine = " ******** "
   val splitLine = " --------------------------------------------------------------- "
 
