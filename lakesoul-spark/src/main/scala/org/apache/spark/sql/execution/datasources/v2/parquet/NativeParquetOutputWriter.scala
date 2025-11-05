@@ -57,16 +57,6 @@ class NativeParquetOutputWriter(val path: String, dataSchema: StructType, timeZo
 
   private val recordWriter: ArrowWriter = ArrowWriter.create(root)
 
-  TaskContext.get.addTaskCompletionListener(new TaskCompletionListener {
-    override def onTaskCompletion(context: TaskContext): Unit = {
-      try close()
-      catch {
-        case e: Throwable =>
-          throw new RuntimeException(e)
-      }
-    }
-  })
-
   override def write(row: InternalRow): Unit = {
 
     recordWriter.write(row)
