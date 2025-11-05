@@ -12,7 +12,7 @@ import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 
 object Benchmark {
 
-//  var hostname = "localhost"
+  //var hostname = "localhost"
   var hostname = "mysql"
   var dbName = "test_cdc"
   var mysqlUserName = "root"
@@ -113,25 +113,19 @@ object Benchmark {
 
       val tableInfo = spark.sql("show tables").select("tableName")
       val mysqlTable = getMysqlTables(spark).select("table_name")
-//      val tableInfoRdd = tableInfo.rdd.map(table_name => table_name.toString())
-//      val tableInfoRdd1 = tableInfo.rdd.map(row => {
-//        row.getString(0).replaceFirst("^s_test_cdc_", "")
-//      })
       val tableInfoRdd = tableInfo.rdd.map { row =>
         "[" + row.getString(0).replaceFirst("^s_test_cdc_", "") + "]"
-      }
-
+      }.filter(table_name => !table_name.contains("sink_table"))
 
       val mysqlTableRdd = mysqlTable.rdd.map(table_name => table_name.toString())
-      mysqlTableRdd.foreach(print)
       val diff1 = tableInfoRdd.subtract(mysqlTableRdd)
       val diff2 = mysqlTableRdd.subtract(tableInfoRdd)
       val result = diff1.count() == 0 && diff2.count() == 0
-      if (!result) {
+      if (result) {
         println("LakeSoul tables:")
-        println(tableInfo.orderBy("tableName").collectAsList())
+        println(tableInfoRdd.collect().mkString("Array(", ", ", ")"))
         println("Mysql tables:")
-        println(mysqlTable.orderBy("table_name").collectAsList())
+        println(mysqlTableRdd.collect().mkString("Array(", ", ", ")"))
         System.exit(1)
       }
 
