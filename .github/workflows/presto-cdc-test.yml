@@ -149,11 +149,11 @@ jobs:
             - name: "[Check] Mysql cdc data accuracy verification task"
               run: |
                   cd ./script/benchmark
-                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-java-8.0.30.jar:/root/presto-jdbc-0.292.jar com.facebook.presto.benchmark.Benchmark
+                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11-ea-jre-slim java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-java-8.0.30.jar:/root/presto-jdbc-0.292.jar com.facebook.presto.benchmark.Benchmark
             - name: "[Check] Presto source to sink data accuracy verification task"
               run: |
                   cd ./script/benchmark
-                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-java-8.0.30.jar:/root/presto-jdbc-0.292.jar com.facebook.presto.benchmark.Benchmark --cdc.contract false --single.table.contract true
+                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11-ea-jre-slim java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-java-8.0.30.jar:/root/presto-jdbc-0.292.jar com.facebook.presto.benchmark.Benchmark --cdc.contract false --single.table.contract true
             - name: Adding columns for tables and deleting some data from tables
               run: |
                   cd ./script/benchmark
@@ -164,11 +164,11 @@ jobs:
             - name: "[Check] Mysql cdc data accuracy verification task"
               run: |
                   cd ./script/benchmark
-                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-java-8.0.30.jar:/root/presto-jdbc-0.292.jar com.facebook.presto.benchmark.Benchmark
+                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11-ea-jre-slim java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-java-8.0.30.jar:/root/presto-jdbc-0.292.jar com.facebook.presto.benchmark.Benchmark
             - name: "[Check] Presto source to sink data accuracy verification task"
               run: |
                   cd ./script/benchmark
-                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-java-8.0.30.jar:/root/presto-jdbc-0.292.jar com.facebook.presto.benchmark.Benchmark --cdc.contract false --single.table.contract true
+                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11-ea-jre-slim java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-java-8.0.30.jar:/root/presto-jdbc-0.292.jar com.facebook.presto.benchmark.Benchmark --cdc.contract false --single.table.contract true
             - name: Updating data in tables
               run: |
                   cd ./script/benchmark
@@ -177,11 +177,11 @@ jobs:
             - name: "[Check] Mysql cdc data accuracy verification task"
               run: |
                   cd ./script/benchmark
-                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-java-8.0.30.jar:/root/presto-jdbc-0.292.jar com.facebook.presto.benchmark.Benchmark
+                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11-ea-jre-slim java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-java-8.0.30.jar:/root/presto-jdbc-0.292.jar com.facebook.presto.benchmark.Benchmark
             - name: "[Check] Presto source to sink data accuracy verification task"
               run: |
                   cd ./script/benchmark
-                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-java-8.0.30.jar:/root/presto-jdbc-0.292.jar com.facebook.presto.benchmark.Benchmark --cdc.contract false --single.table.contract true
+                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11-ea-jre-slim java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-java-8.0.30.jar:/root/presto-jdbc-0.292.jar com.facebook.presto.benchmark.Benchmark --cdc.contract false --single.table.contract true
             - name: Dropping columns and deleting some data in tables
               run: |
                   cd ./script/benchmark
@@ -192,11 +192,11 @@ jobs:
             - name: "[Check] Mysql cdc data accuracy verification task"
               run: |
                   cd ./script/benchmark
-                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-java-8.0.30.jar:/root/presto-jdbc-0.292.jar com.facebook.presto.benchmark.Benchmark
+                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11-ea-jre-slim java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-java-8.0.30.jar:/root/presto-jdbc-0.292.jar com.facebook.presto.benchmark.Benchmark
             - name: "[Check] Presto source to sink data accuracy verification task"
               run: |
                   cd ./script/benchmark
-                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-java-8.0.30.jar:/root/presto-jdbc-0.292.jar com.facebook.presto.benchmark.Benchmark --cdc.contract false --single.table.contract true
+                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11-ea-jre-slim java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-java-8.0.30.jar:/root/presto-jdbc-0.292.jar com.facebook.presto.benchmark.Benchmark --cdc.contract false --single.table.contract true
             - name: Print Flink Log
               if: always()
               run: |
