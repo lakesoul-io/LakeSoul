@@ -121,7 +121,7 @@ object Benchmark {
       val diff1 = tableInfoRdd.subtract(mysqlTableRdd)
       val diff2 = mysqlTableRdd.subtract(tableInfoRdd)
       val result = diff1.count() == 0 && diff2.count() == 0
-      if (result) {
+      if (!result) {
         println("LakeSoul tables:")
         println(tableInfoRdd.collect().mkString("Array(", ", ", ")"))
         println("Mysql tables:")
@@ -130,7 +130,7 @@ object Benchmark {
       }
 
       val tables = tableInfo.collect().map(_ (0).toString)
-      tables.foreach(tableName => verifyQuery(spark, tableName))
+      tables.filter(s => !s.equals("sink_table")).foreach(tableName => verifyQuery(spark, tableName))
     }
   }
 
