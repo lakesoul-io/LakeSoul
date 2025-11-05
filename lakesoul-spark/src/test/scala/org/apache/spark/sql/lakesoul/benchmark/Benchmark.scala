@@ -12,9 +12,11 @@ import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 
 object Benchmark {
 
+//  var hostname = "localhost"
   var hostname = "mysql"
   var dbName = "test_cdc"
   var mysqlUserName = "root"
+//  var mysqlPassword = "123456"
   var mysqlPassword = "root"
   var mysqlPort = 3306
   var serverTimeZone = "UTC"
@@ -27,7 +29,7 @@ object Benchmark {
 
   var url: String = "jdbc:mysql://" + hostname + ":" + mysqlPort + "/" + dbName + "?allowPublicKeyRetrieval=true&useSSL=false&useUnicode=true&characterEncoding=utf-8&serverTimezone=" + serverTimeZone
 
-  val DEFAULT_INIT_TABLE = "default_init"
+  val DEFAULT_INIT_TABLE = "s_test_cdc_default_init"
   val DEFAULT_INIT_TABLE_1 = "s_test_cdc_default_init_1"
   val printLine = " ******** "
   val splitLine = " --------------------------------------------------------------- "
@@ -107,13 +109,23 @@ object Benchmark {
     }
 
     if (verifyCDC) {
-      spark.sql("use " + dbName)
+      spark.sql("use " + lakeSoulDBName)
 
       val tableInfo = spark.sql("show tables").select("tableName")
       val mysqlTable = getMysqlTables(spark).select("table_name")
+//      val tableInfoRdd = tableInfo.rdd.map(table_name => table_name.toString())
+//      val tableInfoRdd1 = tableInfo.rdd.map(row => {
+//        row.getString(0).replaceFirst("^s_test_cdc_", "")
+//      })
+      val tableInfoRdd = tableInfo.rdd.map { row =>
+        "[" + row.getString(0).replaceFirst("^s_test_cdc_", "") + "]"
+      }
 
-      val diff1 = tableInfo.rdd.subtract(mysqlTable.rdd)
-      val diff2 = mysqlTable.rdd.subtract(tableInfo.rdd)
+
+      val mysqlTableRdd = mysqlTable.rdd.map(table_name => table_name.toString())
+      mysqlTableRdd.foreach(print)
+      val diff1 = tableInfoRdd.subtract(mysqlTableRdd)
+      val diff2 = mysqlTableRdd.subtract(tableInfoRdd)
       val result = diff1.count() == 0 && diff2.count() == 0
       if (!result) {
         println("LakeSoul tables:")
@@ -143,7 +155,7 @@ object Benchmark {
     var jdbcDF = spark.read.format("jdbc")
       .option("driver", "com.mysql.jdbc.Driver")
       .option("url", url)
-      .option("dbtable", table)
+      .option("dbtable", table.substring(11))
       .option("user", mysqlUserName)
       .option("numPartitions", "16")
       .option("password", mysqlPassword).load()
