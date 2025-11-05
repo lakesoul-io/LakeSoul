@@ -21,7 +21,7 @@ object Benchmark {
 
   var singleLakeSoulContrast = false
   var verifyCDC = true
-  var lakeSoulDBName = "flink_sink"
+  var lakeSoulDBName = "default"
   var lakeSoulTableName = "s_test_cdc_default_init"
 
 
