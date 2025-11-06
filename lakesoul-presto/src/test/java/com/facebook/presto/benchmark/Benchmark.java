@@ -86,7 +86,7 @@ public class Benchmark {
                 String tableName = tablesResults.getString(1);
                 System.out.println(splitLine);
                 System.out.println("verifing tableName = " + dbName + "." + tableName);
-                verifyQuery(dbName, dbName, tableName);
+                verifyQuery(dbName, lakeSoulDBName, tableName);
             }
         }
 
