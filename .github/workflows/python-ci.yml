@@ -82,6 +82,7 @@ jobs:
           uv sync
           source .venv/bin/activate
           cargo run --release -p lakesoul-console -- tpch-gen -p "file:///tmp/lakesoul/tpch_data" --scale-factor 0.1 -n 8 
+          cargo run --release -p lakesoul-console -- -f test.sql
           uv run pytest ./tests/ -s
   publish:
     runs-on: ubuntu-24.04

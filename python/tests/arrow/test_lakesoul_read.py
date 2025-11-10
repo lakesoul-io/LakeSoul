@@ -3,10 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 
-from duckdb import BinderException
-from lakesoul.arrow import lakesoul_dataset
-import pytest
 import pyarrow as pa
+import pytest
+from duckdb import BinderException
+
+from lakesoul.arrow import lakesoul_dataset
 
 
 def test_lakesoul_dataset():
@@ -59,8 +60,9 @@ def test_invalid_filter():
 
 
 def test_dataset_with_filter():
-    import pyarrow.compute as pc
     import decimal
+
+    import pyarrow.compute as pc
 
     filter = pc.field("p_size") == 50
     scanner = lakesoul_dataset("part").scanner(filter=filter)
@@ -87,6 +89,7 @@ def test_dataset_with_filter():
 
 def test_fragment_with_filter():
     import decimal
+
     import pyarrow.compute as pc
 
     val = pa.array([decimal.Decimal("1500.00")], type=pa.decimal128(15, 2))
@@ -99,6 +102,7 @@ def test_fragment_with_filter():
 
 def test_filter_override():
     import decimal
+
     import pyarrow.compute as pc
 
     val = pa.array([decimal.Decimal("1500.00")], type=pa.decimal128(15, 2))
@@ -210,3 +214,13 @@ def test_duckdb_compatibility_with_filter_and_projections():
     with pytest.raises(BinderException) as _:
         # no such field
         results = conn.execute("select not_existed from _lds").arrow()
+
+
+def test_normal_lakesoul_table():
+    lds = lakesoul_dataset("test_lfs", batch_size=1024)
+
+    total_rows = 0
+    for batch in lds.to_batches():
+        total_rows += batch.num_rows
+
+    assert total_rows == 1

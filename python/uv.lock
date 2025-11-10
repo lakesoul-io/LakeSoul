@@ -1349,6 +1349,8 @@ dependencies = [
 all = [
     { name = "datasets", version = "3.1.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
     { name = "datasets", version = "4.0.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
+    { name = "duckdb", version = "1.3.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "duckdb", version = "1.4.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
     { name = "pandas", version = "2.0.3", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
     { name = "pandas", version = "2.3.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
     { name = "pyspark" },
@@ -1359,6 +1361,10 @@ all = [
 datasets = [
     { name = "datasets", version = "3.1.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
     { name = "datasets", version = "4.0.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
+]
+duckdb = [
+    { name = "duckdb", version = "1.3.2", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "duckdb", version = "1.4.0", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version >= '3.9'" },
 ]
 pandas = [
     { name = "pandas", version = "2.0.3", source = { registry = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.9'" },
@@ -1410,6 +1416,8 @@ requires-dist = [
     { name = "colorlog", specifier = ">=6" },
     { name = "datasets", marker = "extra == 'all'", specifier = ">=2.14" },
     { name = "datasets", marker = "extra == 'datasets'", specifier = ">=2.14" },
+    { name = "duckdb", marker = "extra == 'all'" },
+    { name = "duckdb", marker = "extra == 'duckdb'" },
     { name = "numpy" },
     { name = "pandas", marker = "extra == 'all'", specifier = ">=1.4" },
     { name = "pandas", marker = "extra == 'pandas'", specifier = ">=1.4" },
@@ -1423,7 +1431,7 @@ requires-dist = [
     { name = "torch", marker = "extra == 'torch'", specifier = ">=1.11.0,<2.5", index = "https://download.pytorch.org/whl/cpu" },
     { name = "typing-extensions", specifier = ">=4.8" },
 ]
-provides-extras = ["torch", "pandas", "datasets", "ray", "pyspark", "all"]
+provides-extras = ["torch", "pandas", "datasets", "ray", "pyspark", "duckdb", "all"]
 
 [package.metadata.requires-dev]
 all = [
