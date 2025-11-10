@@ -32,12 +32,14 @@ pandas = ["pandas>=1.4"]
 datasets = ["datasets>=2.14"]
 ray = ["ray>=2.7,<2.11.0"]
 pyspark = ["pyspark==3.3.1"]
+duckdb = ["duckdb"]
 all = [
     "torch>=1.11,<2.5",
     "pandas>=1.4",
     "datasets>=2.14",
     "ray>=2.7,<2.11.0",
     "pyspark==3.3.1",
+    "duckdb",
 ]
 
 [tool.uv.sources]
