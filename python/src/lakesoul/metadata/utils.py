@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+
 import pyarrow
 
 
@@ -277,7 +278,7 @@ def to_arrow_schemas(schema_json_str, exclude_columns=None) -> pyarrow.Schema:
     partition_fields = []
     for field in fields:
         if field["name"] in exclude_columns:
-            partition_fields.append(field)
+            partition_fields.append(to_arrow_field(field))
             continue
         arrow_fields.append(to_arrow_field(field))
     # print(arrow_fields)
