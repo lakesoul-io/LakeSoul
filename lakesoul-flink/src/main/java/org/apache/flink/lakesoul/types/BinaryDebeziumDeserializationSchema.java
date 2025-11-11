@@ -15,15 +15,17 @@ public class BinaryDebeziumDeserializationSchema implements DebeziumDeserializat
     private static final long serialVersionUID = -3248249461777452263L;
     LakeSoulRecordConvert convert;
     String basePath;
+    String sinkDBName;
 
-    public BinaryDebeziumDeserializationSchema(LakeSoulRecordConvert convert, String basePath) {
+    public BinaryDebeziumDeserializationSchema(LakeSoulRecordConvert convert, String basePath, String sinkDBName) {
         this.convert = convert;
         this.basePath = basePath;
+        this.sinkDBName = sinkDBName;
     }
 
     @Override
     public void deserialize(SourceRecord sourceRecord, Collector<BinarySourceRecord> collector) throws Exception {
-        BinarySourceRecord binarySourceRecord = BinarySourceRecord.fromMysqlSourceRecord(sourceRecord, this.convert, this.basePath);
+        BinarySourceRecord binarySourceRecord = BinarySourceRecord.fromMysqlSourceRecord(sourceRecord, this.convert, this.basePath, this.sinkDBName);
         if (binarySourceRecord != null) collector.collect(binarySourceRecord);
     }
 

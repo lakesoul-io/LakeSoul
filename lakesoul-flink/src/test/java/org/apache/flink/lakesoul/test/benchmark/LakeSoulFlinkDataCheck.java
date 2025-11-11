@@ -112,7 +112,7 @@ public class LakeSoulFlinkDataCheck {
     }
 
     public static void checkDataBetweenLakeSoulAndMysql(StreamTableEnvironment tEnvs, String database, String tableName) {
-        String sql = "select * from %s.%s.%s";
+        String sql = "select * from `%s`.`%s`.`%s`";
         TableResult mysqlTableResult = tEnvs.executeSql(String.format(sql, "mysql_catalog", database, tableName));
 //        mysqlTableResult.print();
         TableResult lakeSoulTableResult = tEnvs.executeSql(String.format(sql, "lakesoul", database, tableName));

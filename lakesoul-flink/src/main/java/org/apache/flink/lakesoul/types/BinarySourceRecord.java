@@ -66,9 +66,14 @@ public class BinarySourceRecord {
 
     public static BinarySourceRecord fromMysqlSourceRecord(SourceRecord sourceRecord,
                                                            LakeSoulRecordConvert convert,
-                                                           String basePath) throws Exception {
+                                                           String basePath,
+                                                           String sinkDBName) throws Exception {
         Schema keySchema = sourceRecord.keySchema();
         TableId tableId = new TableId(io.debezium.relational.TableId.parse(sourceRecord.topic()).toLowercase());
+        String originalNamespace = tableId.schema() == null ? tableId.catalog() : tableId.schema();
+        String newNamespace = StringUtils.isNotBlank(sinkDBName) ? sinkDBName : originalNamespace;
+        String tableName = String.format("s_%s_%s", originalNamespace, tableId.table()).toLowerCase();
+        tableId = new TableId(newNamespace, newNamespace , tableName);
         boolean isDDL = "io.debezium.connector.mysql.SchemaChangeKey".equalsIgnoreCase(keySchema.name());
         if (isDDL) {
             return null;

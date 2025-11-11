@@ -25,7 +25,7 @@ public class Benchmark {
 
     /** for single test  */
     static boolean singleLakeSoulContrast = false;
-    static String  lakeSoulDBName = "flink_sink";
+    static String  lakeSoulDBName = "default";
     static String  lakeSoulTableName = "default_init";
 
     static final String  DEFAULT_INIT_TABLE = "default_init";
@@ -86,7 +86,7 @@ public class Benchmark {
                 String tableName = tablesResults.getString(1);
                 System.out.println(splitLine);
                 System.out.println("verifing tableName = " + dbName + "." + tableName);
-                verifyQuery(dbName, dbName, tableName);
+                verifyQuery(dbName, lakeSoulDBName, tableName);
             }
         }
 
@@ -120,7 +120,7 @@ public class Benchmark {
 
     public static void verifyQuery (String sourceSchema, String sinkSchema, String table) throws SQLException {
         String sourceSchemaTableName = sourceSchema + "." + table;
-        String sinkSchemaTableName = sinkSchema + "." + table;
+        String sinkSchemaTableName =  sinkSchema + ".s_test_cdc_" + table;
         String sql1 = String.format("select count(*) from lakesoul.%s", sinkSchemaTableName) ;
         String sql2 = String.format("select count(*) from mysql.%s", sourceSchemaTableName) ;
         String sql3 = String.format("select count(*) from (select * from lakesoul.%s except select * from mysql.%s)", sinkSchemaTableName, sourceSchemaTableName);
