@@ -18,6 +18,7 @@ import org.apache.flink.api.common.time.Time;
 import com.ververica.cdc.connectors.sqlserver.source.SqlServerSourceBuilder;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTableSinkStreamBuilder;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.BinaryDebeziumDeserializationSchema;
@@ -90,7 +91,8 @@ public class JdbcCDC {
         int bucketParallelism = parameter.getInt(BUCKET_PARALLELISM.key());
         int checkpointInterval = parameter.getInt(JOB_CHECKPOINT_INTERVAL.key(),
                 JOB_CHECKPOINT_INTERVAL.defaultValue());//mill second
-
+        Configuration globalConfig = GlobalConfiguration.loadConfiguration();
+        String warehousePath = globalConfig.getString(WAREHOUSE_PATH.key(), databasePrefixPath);
         Configuration conf = new Configuration();
         // parameters for mutil tables ddl sink
         conf.set(SOURCE_DB_DB_NAME, dbName);
@@ -98,14 +100,14 @@ public class JdbcCDC {
         conf.set(SOURCE_DB_PASSWORD, passWord);
         conf.set(SOURCE_DB_HOST, host);
         conf.set(SOURCE_DB_PORT, port);
-        conf.set(WAREHOUSE_PATH, databasePrefixPath);
+        conf.set(WAREHOUSE_PATH, warehousePath);
         conf.set(SERVER_TIME_ZONE, serverTimezone);
         conf.set(SOURCE_DB_TYPE,dbType);
 
         // parameters for mutil tables dml sink
         conf.set(LakeSoulSinkOptions.USE_CDC, true);
         conf.set(LakeSoulSinkOptions.isMultiTableSource, true);
-        conf.set(LakeSoulSinkOptions.WAREHOUSE_PATH, databasePrefixPath);
+        conf.set(LakeSoulSinkOptions.WAREHOUSE_PATH, warehousePath);
         conf.set(LakeSoulSinkOptions.SOURCE_PARALLELISM, sourceParallelism);
         conf.set(LakeSoulSinkOptions.BUCKET_PARALLELISM, bucketParallelism);
         conf.set(LakeSoulSinkOptions.HASH_BUCKET_NUM, bucketParallelism);

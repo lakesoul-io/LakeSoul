@@ -11,6 +11,7 @@ import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTableSinkStreamBuilder;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.BinaryDebeziumDeserializationSchema;
@@ -63,7 +64,8 @@ public class MysqlCdc {
                 true);
 
         mysqlDBManager.importOrSyncLakeSoulNamespace(dbName);
-
+        Configuration globalConfig = GlobalConfiguration.loadConfiguration();
+        String warehousePath = globalConfig.getString(WAREHOUSE_PATH.key(), databasePrefixPath);
         Configuration conf = new Configuration();
 
         // parameters for mutil tables ddl sink
@@ -72,13 +74,13 @@ public class MysqlCdc {
         conf.set(SOURCE_DB_PASSWORD, passWord);
         conf.set(SOURCE_DB_HOST, host);
         conf.set(SOURCE_DB_PORT, port);
-        conf.set(WAREHOUSE_PATH, databasePrefixPath);
+        conf.set(WAREHOUSE_PATH, warehousePath);
         conf.set(SERVER_TIME_ZONE, serverTimezone);
 
         // parameters for mutil tables dml sink
         conf.set(LakeSoulSinkOptions.USE_CDC, true);
         conf.set(LakeSoulSinkOptions.isMultiTableSource, true);
-        conf.set(LakeSoulSinkOptions.WAREHOUSE_PATH, databasePrefixPath);
+        conf.set(LakeSoulSinkOptions.WAREHOUSE_PATH, warehousePath);
         conf.set(LakeSoulSinkOptions.SOURCE_PARALLELISM, sourceParallelism);
         conf.set(LakeSoulSinkOptions.BUCKET_PARALLELISM, bucketParallelism);
         conf.set(LakeSoulSinkOptions.HASH_BUCKET_NUM, bucketParallelism);
