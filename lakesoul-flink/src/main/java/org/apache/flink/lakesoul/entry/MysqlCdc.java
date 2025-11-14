@@ -65,7 +65,7 @@ public class MysqlCdc {
 
         mysqlDBManager.importOrSyncLakeSoulNamespace(dbName);
         Configuration globalConfig = GlobalConfiguration.loadConfiguration();
-        String warehousePath = globalConfig.getString(WAREHOUSE_PATH.key(), databasePrefixPath);
+        String warehousePath = databasePrefixPath == null ? globalConfig.getString(WAREHOUSE_PATH.key(), null): databasePrefixPath;
         Configuration conf = new Configuration();
 
         // parameters for mutil tables ddl sink

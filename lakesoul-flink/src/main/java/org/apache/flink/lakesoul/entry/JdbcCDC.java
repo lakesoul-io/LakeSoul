@@ -92,7 +92,7 @@ public class JdbcCDC {
         int checkpointInterval = parameter.getInt(JOB_CHECKPOINT_INTERVAL.key(),
                 JOB_CHECKPOINT_INTERVAL.defaultValue());//mill second
         Configuration globalConfig = GlobalConfiguration.loadConfiguration();
-        String warehousePath = globalConfig.getString(WAREHOUSE_PATH.key(), databasePrefixPath);
+        String warehousePath = databasePrefixPath == null ? globalConfig.getString(WAREHOUSE_PATH.key(), null): databasePrefixPath;
         Configuration conf = new Configuration();
         // parameters for mutil tables ddl sink
         conf.set(SOURCE_DB_DB_NAME, dbName);

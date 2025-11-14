@@ -74,7 +74,7 @@ public class OracleCdc {
             dbManager.importOrSyncLakeSoulNamespace(schema);
         }
         Configuration globalConfig = GlobalConfiguration.loadConfiguration();
-        String warehousePath = globalConfig.getString(WAREHOUSE_PATH.key(), databasePrefixPath);
+        String warehousePath = databasePrefixPath == null ? globalConfig.getString(WAREHOUSE_PATH.key(), null): databasePrefixPath;
         Configuration conf = new Configuration();
         conf.set(LakeSoulSinkOptions.USE_CDC, true);
         conf.set(LakeSoulSinkOptions.isMultiTableSource, true);
