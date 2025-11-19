@@ -805,7 +805,10 @@ pub fn register_s3_object_store(
     let skip_signature = config
         .object_store_options
         .get("fs.s3a.s3.signing-algorithm")
-        .is_some_and(|s| s == "NoOpSignerType");
+        .cloned()
+        .is_some_and(|s| s == "NoOpSignerType")
+        || (key.as_ref().is_some_and(|k| k == "noop")
+            && secret.as_ref().is_some_and(|v| v == "noop"));
     let mut s3_store_builder = AmazonS3Builder::new()
         .with_region(region.unwrap_or_else(|| "us-east-1".to_owned()))
         .with_bucket_name(bucket.unwrap())
@@ -822,9 +825,11 @@ pub fn register_s3_object_store(
         )
         .with_allow_http(true);
     if let (Some(k), Some(s)) = (key, secret) {
-        s3_store_builder = s3_store_builder
-            .with_access_key_id(k)
-            .with_secret_access_key(s);
+        if k != "noop" && s != "noop" {
+            s3_store_builder = s3_store_builder
+                .with_access_key_id(k)
+                .with_secret_access_key(s);
+        }
     }
     if let Some(ep) = endpoint {
         s3_store_builder = s3_store_builder.with_endpoint(ep);
