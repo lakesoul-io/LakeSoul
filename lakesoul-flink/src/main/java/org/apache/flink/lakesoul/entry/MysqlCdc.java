@@ -97,8 +97,7 @@ public class MysqlCdc {
             conf.set(JobOptions.execAttach, false);
             conf.set(lineageOption, true);
             env = StreamExecutionEnvironment.getExecutionEnvironment(conf);
-            appName = "清风";
-            //appName = FileUtil.getSubNameFromBatch(env.getConfiguration().get(JobOptions.KUBE_CLUSTER_ID));
+            appName = FileUtil.getSubNameFromBatch(env.getConfiguration().get(JobOptions.KUBE_CLUSTER_ID));
             listener = new LakeSoulInAndOutputJobListener(lineageUrl);
             listener.jobName(appName, dbName);
             listener.addInputTable("mysql."+dbName+".mysqlTables", dbName,null,null);
