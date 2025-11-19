@@ -767,27 +767,27 @@ pub fn register_s3_object_store(
         .get("fs.s3a.path.style.access")
         .cloned();
     let virtual_path_style = virtual_path_style.is_none_or(|s| s == "true");
-    if !virtual_path_style {
-        if let (Some(endpoint_str), Some(bucket)) = (&endpoint, &bucket) {
-            // for host style access with endpoint defined, we need to check endpoint contains bucket name
-            if !endpoint_str.contains(bucket) {
-                let mut endpoint_url = Url::parse(endpoint_str.as_str())
-                    .map_err(|e| External(Box::new(e)))?;
-                endpoint_url
-                    .set_host(Some(&*format!(
-                        "{}.{}",
-                        bucket,
-                        endpoint_url
-                            .host_str()
-                            .ok_or(External(anyhow!("endpoint host missing").into()))?
-                    )))
-                    .map_err(|e| External(Box::new(e)))?;
-                let endpoint_s = endpoint_url.to_string();
-                endpoint = endpoint_s
-                    .strip_suffix('/')
-                    .map(|s| s.to_string())
-                    .or(Some(endpoint_s));
-            }
+    if !virtual_path_style
+        && let (Some(endpoint_str), Some(bucket)) = (&endpoint, &bucket)
+    {
+        // for host style access with endpoint defined, we need to check endpoint contains bucket name
+        if !endpoint_str.contains(bucket) {
+            let mut endpoint_url =
+                Url::parse(endpoint_str.as_str()).map_err(|e| External(Box::new(e)))?;
+            endpoint_url
+                .set_host(Some(&*format!(
+                    "{}.{}",
+                    bucket,
+                    endpoint_url
+                        .host_str()
+                        .ok_or(External(anyhow!("endpoint host missing").into()))?
+                )))
+                .map_err(|e| External(Box::new(e)))?;
+            let endpoint_s = endpoint_url.to_string();
+            endpoint = endpoint_s
+                .strip_suffix('/')
+                .map(|s| s.to_string())
+                .or(Some(endpoint_s));
         }
     }
 
