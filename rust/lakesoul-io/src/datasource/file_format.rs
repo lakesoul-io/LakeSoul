@@ -193,16 +193,16 @@ impl FileFormat for LakeSoulParquetFormat {
 
             // merge metadata
             for (key, value) in metadata.into_iter() {
-                if let Some(old_val) = out_meta.get(&key) {
-                    if old_val != &value {
-                        return Err(DataFusionError::ArrowError(
-                            ArrowError::SchemaError(format!(
-                                "Fail to merge schema due to conflicting metadata. \
+                if let Some(old_val) = out_meta.get(&key)
+                    && old_val != &value
+                {
+                    return Err(DataFusionError::ArrowError(
+                        ArrowError::SchemaError(format!(
+                            "Fail to merge schema due to conflicting metadata. \
                                          Key '{key}' has different values '{old_val}' and '{value}'"
-                            )),
-                            None,
-                        ));
-                    }
+                        )),
+                        None,
+                    ));
                 }
                 out_meta.insert(key, value);
             }
@@ -347,7 +347,7 @@ pub async fn flatten_file_scan_config(
                         let object_store_url = object_store_url.clone();
                         let conf = conf.clone();
                         async move {
-                            let objects = &[file.object_meta.clone()];
+                            let objects = std::slice::from_ref(&file.object_meta);
                             let files = vec![file.clone()];
                             let file_schema =
                                 format.infer_schema(state, &store, objects).await?;
