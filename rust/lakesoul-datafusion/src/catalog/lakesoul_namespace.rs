@@ -126,7 +126,13 @@ impl SchemaProvider for LakeSoulNamespace {
             }
         };
         info!("table: {:?} {:?}, table {:?}", name, &self.namespace, table);
-        Ok(table.as_sink_provider(&self.context.state()).await.ok())
+
+        Ok(Some(
+            table
+                .as_sink_provider(&self.context.state())
+                .await
+                .map_err(|e| DataFusionError::External(Box::new(e)))?,
+        ))
     }
 
     /// If supported by the implementation, adds a new table to this schema.
