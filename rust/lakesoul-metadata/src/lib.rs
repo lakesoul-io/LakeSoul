@@ -31,6 +31,8 @@ mod metadata_client;
 mod pooled_client;
 pub mod rbac;
 
+pub mod utils;
+
 /// The offset of code for the Data Access Object type for query one.
 pub const DAO_TYPE_QUERY_ONE_OFFSET: i32 = 0;
 /// The offset of code for the Data Access Object type for query list.

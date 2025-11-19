@@ -38,6 +38,7 @@ use futures::stream::FuturesUnordered;
 use lakesoul_io::helpers::listing_table_from_lakesoul_io_config;
 use lakesoul_io::lakesoul_io_config::LakeSoulIOConfig;
 use lakesoul_metadata::MetaDataClientRef;
+use lakesoul_metadata::utils::qualify_path;
 use proto::proto::entity::TableInfo;
 
 use crate::catalog::{
@@ -226,7 +227,8 @@ impl LakeSoulTableProvider {
                     cmd.name.table()
                 )
             } else {
-                cmd.location.to_string()
+                // hdfs is not checked
+                qualify_path(&cmd.location)?
             },
             domain: "public".to_string(),
         });
