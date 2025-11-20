@@ -37,6 +37,7 @@ import java.util.stream.Collectors;
 import static org.apache.flink.lakesoul.entry.MongoSinkUtils.*;
 import static org.apache.flink.lakesoul.tool.JobOptions.JOB_CHECKPOINT_INTERVAL;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkDatabasesOptions.*;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkDatabasesOptions.IS_TABLE_EXISTS;
 
 public class SyncDatabase {
 
@@ -54,6 +55,7 @@ public class SyncDatabase {
     static int checkpointInterval;
     static LakeSoulInAndOutputJobListener listener;
     static String lineageUrl = null;
+    static Boolean isTableExist;
 
     public static void main(String[] args) throws Exception {
         StringBuilder connectorOptions = new StringBuilder();
@@ -88,6 +90,7 @@ public class SyncDatabase {
         }
         sinkParallelism = parameter.getInt(SINK_PARALLELISM.key(), SINK_PARALLELISM.defaultValue());
         useBatch = parameter.getBoolean(BATHC_STREAM_SINK.key(), BATHC_STREAM_SINK.defaultValue());
+        isTableExist = parameter.getBoolean(IS_TABLE_EXISTS.key(), IS_TABLE_EXISTS.defaultValue());
         Configuration conf = new Configuration();
         conf.setString(RestOptions.BIND_PORT, "8081-8089");
         StreamExecutionEnvironment env = null;
@@ -252,6 +255,27 @@ public class SyncDatabase {
         return tableInfo.getDomain();
     }
 
+    public static String[][] getTableSchema(Connection connection, String tableName, int columnCount) throws SQLException {
+        try {
+            String columnSql = "SHOW COLUMNS FROM "+tableName;
+            ResultSet rs = connection.prepareStatement(columnSql).executeQuery();
+            int index = 0;
+            String[] columnNames = new String[columnCount];
+            String[] columnTypes = new String[columnCount];
+            while (rs.next()) {
+                String columnName = rs.getString("Field");
+                columnNames[index] = columnName;
+                String dataType = rs.getString("Type");
+                columnTypes[index] = dataType;
+                index ++;
+            }
+            return new String[][]{columnNames,columnTypes};
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return new String[0][];
+    }
+
     public static void xsyncToPg(StreamExecutionEnvironment env) throws SQLException {
         if (useBatch) {
             env.setRuntimeMode(RuntimeExecutionMode.BATCH);
@@ -343,6 +367,19 @@ public class SyncDatabase {
 
         Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
         Statement statement = conn.createStatement();
+        if (lineageUrl != null){
+            String inputName = "lakesoul." + sourceDatabase + "." + sourceTableName;
+            String inputNamespace = getTableDomain(sourceDatabase, sourceTableName);
+            String[] inputTypes = Arrays.stream(fieldDataTypes).map(type -> type.toString()).collect(Collectors.toList()).toArray(new String[0]);
+            listener.inputFacets(inputName, inputNamespace, fieldNames, inputTypes);
+            String targetName = "mysql." + targetDatabase + "." + targetTableName;
+            if (isTableExist){
+                String[][] tableSchema = getTableSchema(conn, targetTableName, inputTypes.length);
+                listener.outputFacets(targetName, "lake-public", tableSchema[0], tableSchema[1]);
+            } else {
+                listener.outputFacets(targetName,"lake-public",fieldNames,stringFieldsTypes);
+            }
+        }
         // Create the target table in MySQL
         statement.executeUpdate(createTableSql.toString());
         StringBuilder coulmns = new StringBuilder();

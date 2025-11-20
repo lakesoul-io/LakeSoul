@@ -58,7 +58,6 @@ public class LakeSoulSinkDatabasesOptions extends LakeSoulSinkOptions {
             .noDefaultValue()
             .withDescription("source database access password");
 
-
     public static final ConfigOption<String> TARGET_DATABASE_TYPE = ConfigOptions
             .key("target_db.db_type")
             .stringType()
@@ -83,13 +82,11 @@ public class LakeSoulSinkDatabasesOptions extends LakeSoulSinkOptions {
             .noDefaultValue()
             .withDescription("target database table");
 
-
     public static final ConfigOption<Integer> DORIS_REPLICATION_NUM = ConfigOptions
             .key("doris_replication.num")
             .intType()
             .defaultValue(1)
             .withDescription("doris table replication num");
-
 
     public static final ConfigOption<Integer> SINK_PARALLELISM = ConfigOptions
             .key("sink_parallelism")
@@ -103,11 +100,14 @@ public class LakeSoulSinkDatabasesOptions extends LakeSoulSinkOptions {
             .defaultValue(true)
             .withDescription("batch or stream for out-of-lake");
 
-
     public static final ConfigOption<String> DORIS_FENODES = ConfigOptions
             .key("doris.fenodes")
             .stringType()
             .defaultValue("127.0.0.1:8030");
 
+    public static final ConfigOption<Boolean> IS_TABLE_EXISTS = ConfigOptions
+            .key("target_table.exist")
+            .booleanType()
+            .defaultValue(true);
 
 }
