@@ -82,4 +82,13 @@ mod tests {
             assert!(decoded_claims.is_err());
         }
     }
+
+    #[tokio::test]
+    async fn test_verify_token_expired() {
+        let metadata_client = Arc::new(MetaDataClient::from_env().await.unwrap());
+        let jwt_server = JwtServer::new(metadata_client.get_client_secret().as_str());
+        let token = "eyJhbGciOiJIUzI1NiJ9.eyJncm91cCI6Imxha2UtcHVibGljIiwic3ViIjoiQWRtaW4iLCJpYXQiOjE3NjI0MDQ5ODAsImV4cCI6MTc5Mzk0MDk4MH0.p-6u8WjPHOfvNn-IE5QNxdWj5gHjc5XkxQAiC6fxeCc";
+        let decoded_claims = jwt_server.decode_token(token).unwrap();
+        println!("{:?}", decoded_claims);
+    }
 }
