@@ -109,7 +109,10 @@ object Benchmark {
     println("========show test_cdc table========")
     spark.sql("use test_cdc")
     println(spark.sql("show tables").show())
-    spark.sql("use flink_sink")
+    spark.sql("use cdc_sink")
+    println(spark.sql("show tables").show())
+    spark.sql("use flink")
+    println(spark.sql("show tables").show())
 
     if (singleLakeSoulContrast) {
       spark.sql("use " + lakeSoulDBName)
