@@ -401,6 +401,12 @@ SPDX-License-Identifier: Apache-2.0
             <version>3.3.2</version>
             <scope>${local.scope}</scope>
         </dependency>
+        <dependency>
+            <groupId>io.openlineage</groupId>
+            <artifactId>openlineage-flink</artifactId>
+            <version>1.19.0</version>
+            <scope>${local.scope}</scope>
+        </dependency>
     </dependencies>
 
     <build>

@@ -21,15 +21,23 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 import java.net.URI;
 import java.time.ZonedDateTime;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.UUID;
 
 public class LakeSoulInAndOutputJobListener implements JobListener {
     private static final Logger log = LoggerFactory.getLogger(LakeSoulInAndOutputJobListener.class);
     private OpenLineageClient client;
     private OpenLineage openLineage;
-    private List<OpenLineage.InputDataset> inputDatasets;
-    private List<OpenLineage.OutputDataset> outputDatasets;
+    private List<OpenLineage.InputDataset> inputDatasets = new ArrayList<>();
+    private List<OpenLineage.OutputDataset> outputDatasets = new ArrayList<>();
     private String executeMode = "STREAM";
+
+    public String getRunId() {
+        return runId.toString();
+    }
+
     private UUID runId;
     OpenLineage.Run run;
     private OpenLineage.Job job;
@@ -47,11 +55,97 @@ public class LakeSoulInAndOutputJobListener implements JobListener {
         this.executeMode = executeMode;
     }
 
+    public LakeSoulInAndOutputJobListener jobName(String name, String namespace,String uuid) {
+        this.runId = UUID.fromString(uuid);
+        this.run = openLineage.newRunBuilder().runId(this.runId).build();
+        OpenLineage.JobFacets jobFacets = openLineage.newJobFacetsBuilder().jobType(openLineage.newJobTypeJobFacetBuilder().jobType("Flink Job").integration("Flink").processingType(this.executeMode).build()).build();
+        this.job = openLineage.newJobBuilder().name(name).namespace(namespace).facets(jobFacets).build();
+        return this;
+    }
+
     public LakeSoulInAndOutputJobListener jobName(String name, String namespace) {
         this.runId = UUID.randomUUID();
         this.run = openLineage.newRunBuilder().runId(this.runId).build();
         OpenLineage.JobFacets jobFacets = openLineage.newJobFacetsBuilder().jobType(openLineage.newJobTypeJobFacetBuilder().jobType("Flink Job").integration("Flink").processingType(this.executeMode).build()).build();
         this.job = openLineage.newJobBuilder().name(name).namespace(namespace).facets(jobFacets).build();
+        return this;
+    }
+
+    public LakeSoulInAndOutputJobListener addInputTable(
+            String inputName,
+            String inputNamespace,
+            String[] inputSchemaNames,
+            String[] inputSchemaTypes) {
+
+        List<OpenLineage.SchemaDatasetFacetFields> schemaFields = new ArrayList<>();
+        if (inputSchemaNames != null && inputSchemaTypes != null &&
+                inputSchemaNames.length == inputSchemaTypes.length) {
+            for (int i = 0; i < inputSchemaNames.length; i++) {
+                schemaFields.add(openLineage.newSchemaDatasetFacetFieldsBuilder()
+                        .name(inputSchemaNames[i])
+                        .type(inputSchemaTypes[i])
+                        .build());
+            }
+        } else if (inputSchemaNames != null) {
+            for (String name : inputSchemaNames) {
+                schemaFields.add(openLineage.newSchemaDatasetFacetFieldsBuilder()
+                        .name(name)
+                        .build());
+            }
+        }
+
+        OpenLineage.SchemaDatasetFacet schemaFacet = openLineage.newSchemaDatasetFacetBuilder()
+                .fields(schemaFields)
+                .build();
+
+        OpenLineage.InputDataset inputDataset = openLineage.newInputDatasetBuilder()
+                .name(inputName)
+                .namespace(inputNamespace)
+                .facets(openLineage.newDatasetFacetsBuilder()
+                        .schema(schemaFacet)
+                        .build())
+                .build();
+
+        this.inputDatasets.add(inputDataset);
+        return this;
+    }
+
+    public LakeSoulInAndOutputJobListener addOutputTable(
+            String outputName,
+            String outputNamespace,
+            String[] outputSchemaNames,
+            String[] outputSchemaTypes) {
+
+        List<OpenLineage.SchemaDatasetFacetFields> schemaFields = new ArrayList<>();
+        if (outputSchemaNames != null && outputSchemaTypes != null &&
+                outputSchemaNames.length == outputSchemaTypes.length) {
+            for (int i = 0; i < outputSchemaNames.length; i++) {
+                schemaFields.add(openLineage.newSchemaDatasetFacetFieldsBuilder()
+                        .name(outputSchemaNames[i])
+                        .type(outputSchemaTypes[i])
+                        .build());
+            }
+        } else if (outputSchemaNames != null) {
+            for (String name : outputSchemaNames) {
+                schemaFields.add(openLineage.newSchemaDatasetFacetFieldsBuilder()
+                        .name(name)
+                        .build());
+            }
+        }
+
+        OpenLineage.SchemaDatasetFacet schemaFacet = openLineage.newSchemaDatasetFacetBuilder()
+                .fields(schemaFields)
+                .build();
+
+        OpenLineage.OutputDataset outputDataset = openLineage.newOutputDatasetBuilder()
+                .name(outputName)
+                .namespace(outputNamespace)
+                .facets(openLineage.newDatasetFacetsBuilder()
+                        .schema(schemaFacet)
+                        .build())
+                .build();
+
+        this.outputDatasets.add(outputDataset);
         return this;
     }
 
@@ -78,10 +172,32 @@ public class LakeSoulInAndOutputJobListener implements JobListener {
         return this;
     }
 
+    public void emit(){
+//        log.info("Emit run {}, job {}, inputDatasets {}, outputDatasets {}", runId, job,
+//                inputDatasets.stream().map(i -> i.getNamespace() + "." + i.getName()),
+//                outputDatasets.stream().map(i -> i.getNamespace() + "." + i.getName()));
+        try {
+            OpenLineage.RunEvent runStateUpdate =
+                    openLineage.newRunEventBuilder()
+                            .eventType(OpenLineage.RunEvent.EventType.COMPLETE)
+                            .eventTime(ZonedDateTime.now())
+                            .run(this.run)
+                            .job(this.job)
+                            .inputs(this.inputDatasets)
+                            .outputs(this.outputDatasets)
+                            .build();
+            if(this.inputDatasets != null || this.outputDatasets != null){
+                this.client.emit(runStateUpdate);
+            }
+        } catch (Throwable t) {
+            log.warn("Exception while emitting open lineage run state", t);
+        }
+    }
+
     public LakeSoulInAndOutputJobListener outputFacets(String outputName, String outputNamespace, String[] outputSchemaNames, String[] outputSchemaTypes) {
 
         List<OpenLineage.SchemaDatasetFacetFields> schemaFields = new ArrayList<>();
-        if (outputSchemaNames != null && outputSchemaTypes != null && outputSchemaTypes.length == outputSchemaTypes.length) {
+        if (outputSchemaNames != null && outputSchemaTypes != null && outputSchemaNames.length == outputSchemaTypes.length) {
             for (int i = 0; i < outputSchemaNames.length; i++) {
                 schemaFields.add(openLineage.newSchemaDatasetFacetFieldsBuilder().name(outputSchemaNames[i]).type(outputSchemaTypes[i]).build());
             }
@@ -102,6 +218,9 @@ public class LakeSoulInAndOutputJobListener implements JobListener {
         return this;
     }
 
+    public boolean hasOutputDatasets() {
+        return outputDatasets != null && !outputDatasets.isEmpty();
+    }
 
     @Override
     public void onJobSubmitted(@Nullable JobClient jobClient, @Nullable Throwable throwable) {
@@ -109,7 +228,7 @@ public class LakeSoulInAndOutputJobListener implements JobListener {
 
         OpenLineage.RunEvent runStateUpdate =
                 openLineage.newRunEventBuilder()
-                        .eventType(OpenLineage.RunEvent.EventType.RUNNING)
+                        .eventType(OpenLineage.RunEvent.EventType.COMPLETE)
                         .eventTime(ZonedDateTime.now())
                         .run(this.run)
                         .job(this.job)
