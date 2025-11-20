@@ -20,7 +20,6 @@ pub struct JwtServer {
 
 impl JwtServer {
     pub fn new(secret: &str) -> Self {
-        println!("Initializing JWT server {secret}");
         Self {
             encoding_key: EncodingKey::from_secret(secret.as_bytes()),
             decoding_key: DecodingKey::from_secret(secret.as_bytes()),

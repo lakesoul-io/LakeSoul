@@ -824,12 +824,13 @@ pub fn register_s3_object_store(
                 .with_timeout(Duration::from_secs(30)),
         )
         .with_allow_http(true);
-    if let (Some(k), Some(s)) = (key, secret) {
-        if k != "noop" && s != "noop" {
-            s3_store_builder = s3_store_builder
-                .with_access_key_id(k)
-                .with_secret_access_key(s);
-        }
+    if let (Some(k), Some(s)) = (key, secret)
+        && k != "noop"
+        && s != "noop"
+    {
+        s3_store_builder = s3_store_builder
+            .with_access_key_id(k)
+            .with_secret_access_key(s);
     }
     if let Some(ep) = endpoint {
         s3_store_builder = s3_store_builder.with_endpoint(ep);
