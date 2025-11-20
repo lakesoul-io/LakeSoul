@@ -101,6 +101,8 @@ object Benchmark {
     val spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
 
+    println("==========show databases======")
+    println(spark.sql("show databases"))
     println("=====show default table=====")
     spark.sql("use `default`")
     println(spark.sql("show tables").show())
@@ -108,8 +110,6 @@ object Benchmark {
     spark.sql("use test_cdc")
     println(spark.sql("show tables").show())
     spark.sql("use flink_sink")
-    println("=====show flink_sink table=====")
-    println(spark.sql("show tables").show())
 
     if (singleLakeSoulContrast) {
       spark.sql("use " + lakeSoulDBName)
