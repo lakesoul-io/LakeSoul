@@ -11,8 +11,10 @@ import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.configuration.GlobalConfiguration;
+import org.apache.flink.lakesoul.entry.sql.flink.LakeSoulInAndOutputJobListener;
+import org.apache.flink.lakesoul.entry.sql.utils.FileUtil;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTableSinkStreamBuilder;
+import org.apache.flink.lakesoul.tool.JobOptions;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.BinaryDebeziumDeserializationSchema;
 import org.apache.flink.lakesoul.types.BinarySourceRecord;
@@ -27,12 +29,11 @@ import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.TimeUnit;
 
-import static org.apache.flink.lakesoul.tool.JobOptions.FLINK_CHECKPOINT;
-import static org.apache.flink.lakesoul.tool.JobOptions.JOB_CHECKPOINT_INTERVAL;
-import static org.apache.flink.lakesoul.tool.JobOptions.JOB_CHECKPOINT_MODE;
+import static org.apache.flink.lakesoul.tool.JobOptions.*;
 import static org.apache.flink.lakesoul.tool.LakeSoulDDLSinkOptions.*;
 
 public class MysqlCdc {
@@ -52,7 +53,7 @@ public class MysqlCdc {
         int bucketParallelism = parameter.getInt(BUCKET_PARALLELISM.key());
         int checkpointInterval = parameter.getInt(JOB_CHECKPOINT_INTERVAL.key(),
                 JOB_CHECKPOINT_INTERVAL.defaultValue());     //mill second
-
+        LakeSoulInAndOutputJobListener listener = null;
         MysqlDBManager mysqlDBManager = new MysqlDBManager(dbName,
                 userName,
                 passWord,
@@ -64,8 +65,7 @@ public class MysqlCdc {
                 true);
 
         mysqlDBManager.importOrSyncLakeSoulNamespace(dbName);
-        Configuration globalConfig = GlobalConfiguration.loadConfiguration();
-        String warehousePath = databasePrefixPath == null ? globalConfig.getString(WAREHOUSE_PATH.key(), null): databasePrefixPath;
+
         Configuration conf = new Configuration();
 
         // parameters for mutil tables ddl sink
@@ -74,19 +74,37 @@ public class MysqlCdc {
         conf.set(SOURCE_DB_PASSWORD, passWord);
         conf.set(SOURCE_DB_HOST, host);
         conf.set(SOURCE_DB_PORT, port);
-        conf.set(WAREHOUSE_PATH, warehousePath);
+        conf.set(WAREHOUSE_PATH, databasePrefixPath);
         conf.set(SERVER_TIME_ZONE, serverTimezone);
 
         // parameters for mutil tables dml sink
         conf.set(LakeSoulSinkOptions.USE_CDC, true);
         conf.set(LakeSoulSinkOptions.isMultiTableSource, true);
-        conf.set(LakeSoulSinkOptions.WAREHOUSE_PATH, warehousePath);
+        conf.set(LakeSoulSinkOptions.WAREHOUSE_PATH, databasePrefixPath);
         conf.set(LakeSoulSinkOptions.SOURCE_PARALLELISM, sourceParallelism);
         conf.set(LakeSoulSinkOptions.BUCKET_PARALLELISM, bucketParallelism);
         conf.set(LakeSoulSinkOptions.HASH_BUCKET_NUM, bucketParallelism);
         conf.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
 
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(conf);
+        StreamExecutionEnvironment env;
+        //String lineageUrl = "http://localhost:5000";
+        String lineageUrl = System.getenv("LINEAGE_URL");
+        String appName = null;
+        String nameSpace = null;
+        if (lineageUrl != null){
+            conf.set(JobOptions.transportTypeOption, "http");
+            conf.set(JobOptions.urlOption, lineageUrl);
+            conf.set(JobOptions.execAttach, false);
+            conf.set(lineageOption, true);
+            env = StreamExecutionEnvironment.getExecutionEnvironment(conf);
+            appName = FileUtil.getSubNameFromBatch(env.getConfiguration().get(JobOptions.KUBE_CLUSTER_ID));
+            listener = new LakeSoulInAndOutputJobListener(lineageUrl);
+            listener.jobName(appName, dbName);
+            listener.addInputTable("mysql."+dbName+".mysqlTables", dbName,null,null);
+            env.registerJobListener(listener);
+        } else {
+            env = StreamExecutionEnvironment.getExecutionEnvironment(conf);
+        }
         env.getConfig().registerTypeWithKryoSerializer(BinarySourceRecord.class, BinarySourceRecordSerializer.class);
 
         ParameterTool pt = ParameterTool.fromMap(conf.toMap());
@@ -117,8 +135,9 @@ public class MysqlCdc {
                 .databaseList(dbName) // set captured database
                 .tableList(dbName + ".*") // set captured table
                 .serverTimeZone(serverTimezone)  // default -- Asia/Shanghai
-                //.scanNewlyAddedTableEnabled(true)
+                .scanNewlyAddedTableEnabled(true)
                 .username(userName)
+                .includeSchemaChanges(true)
                 .password(passWord);
 
         LakeSoulRecordConvert lakeSoulRecordConvert = new LakeSoulRecordConvert(conf, conf.getString(SERVER_TIME_ZONE));
@@ -132,12 +151,21 @@ public class MysqlCdc {
 
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;
-        context.conf = (Configuration) env.getConfiguration();
+        if (lineageUrl !=null){
+            Map<String, String> confs = ((Configuration) env.getConfiguration()).toMap();
+            confs.put(linageJobName.key(), appName);
+            confs.put(linageJobNamespace.key(), dbName);
+            confs.put(lineageJobUUID.key(), listener.getRunId());
+            confs.put(lineageOption.key(), "true");
+
+            context.conf = Configuration.fromMap(confs);
+        } else {
+            context.conf = (Configuration) env.getConfiguration();
+        }
         LakeSoulMultiTableSinkStreamBuilder
                 builder =
                 new LakeSoulMultiTableSinkStreamBuilder(mySqlSource, context, lakeSoulRecordConvert);
         DataStreamSource<BinarySourceRecord> source = builder.buildMultiTableSource("MySQL Source");
-
         DataStream<BinarySourceRecord> stream = builder.buildHashPartitionedCDCStream(source);
         DataStreamSink<BinarySourceRecord> dmlSink = builder.buildLakeSoulDMLSink(stream);
         env.execute("LakeSoul CDC Sink From MySQL Database " + dbName);
