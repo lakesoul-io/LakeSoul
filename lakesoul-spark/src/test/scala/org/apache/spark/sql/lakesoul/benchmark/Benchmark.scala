@@ -102,7 +102,7 @@ object Benchmark {
     spark.sparkContext.setLogLevel("ERROR")
 
     println("==========show databases======")
-    println(spark.sql("show databases"))
+    println(spark.sql("show databases").show())
     println("=====show default table=====")
     spark.sql("use `default`")
     println(spark.sql("show tables").show())
