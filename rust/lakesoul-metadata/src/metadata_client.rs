@@ -144,9 +144,9 @@ impl MetaDataClient {
                 "{:x}",
                 md5::compute(
                     format!(
-                        "!@{}#${:?}&*",
+                        "!@{}#${}&*",
                         config.get_user().unwrap(),
-                        config.get_password().unwrap()
+                        String::from_utf8_lossy(config.get_password().unwrap())
                     )
                     .as_bytes()
                 )
