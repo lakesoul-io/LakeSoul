@@ -72,7 +72,7 @@ pub mod lakesoul_io_config;
 pub mod lakesoul_reader;
 pub mod lakesoul_writer;
 pub mod local_sensitive_hash;
-mod projection;
+// mod projection;
 pub mod repartition;
 pub mod sorted_merge;
 

@@ -5,7 +5,7 @@
 //! The error type for the LakeSoul metadata.
 
 use bb8_postgres::bb8::RunError;
-use std::{io, num, result, sync::Arc};
+use std::{error::Error, io, num, result, sync::Arc};
 use thiserror::Error;
 
 /// Result type for operations that could result in an [LakeSoulMetaDataError]
@@ -17,10 +17,18 @@ pub type SharedResult<T> = result::Result<T, Arc<LakeSoulMetaDataError>>;
 /// Error type for generic operations that could result in LakeSoulMetaDataError::External
 pub type GenericError = Box<dyn std::error::Error + Send + Sync>;
 
+fn fmt_pg_error(err: &tokio_postgres::Error) -> String {
+    let mut ret = err.to_string();
+    if let Some(err) = err.source() {
+        ret.push_str(&format!(": {}", err));
+    }
+    ret
+}
+
 /// DataFusion error
 #[derive(Error, Debug)]
 pub enum LakeSoulMetaDataError {
-    #[error("postgres error: {0}")]
+    #[error("postgres error: {}",fmt_pg_error(.0))]
     PostgresError(#[from] tokio_postgres::Error),
     #[error("postgres pool error: {0}")]
     PostgresPoolError(#[from] RunError<tokio_postgres::Error>),
