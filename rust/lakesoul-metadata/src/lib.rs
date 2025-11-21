@@ -30,7 +30,6 @@ pub use jwt::{Claims, JwtServer};
 mod metadata_client;
 mod pooled_client;
 pub mod rbac;
-
 pub mod utils;
 
 /// The offset of code for the Data Access Object type for query one.

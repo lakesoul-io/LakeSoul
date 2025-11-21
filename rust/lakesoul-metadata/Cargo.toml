@@ -34,6 +34,7 @@ async-trait = "0.1"
 md5 = "0.7.0"
 cached = { workspace = true }
 jsonwebtoken = { version = "9", default-features = false }
+rootcause = {workspace=true}
 
 [dev-dependencies]
 test-log = { workspace = true, features = ["trace"] }

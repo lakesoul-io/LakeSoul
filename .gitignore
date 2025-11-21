@@ -55,3 +55,13 @@ lakesoul-presto/bin
 lakesoul-spark-gluten/bin
 
 /tmp_data
+**/.project
+**/.factorypath
+**/.classpath
+**/.settings
+native-io/lakesoul-io-java/bin
+lakesoul-spark/bin
+lakesoul-flink/bin
+lakesoul-common/bin
+lakesoul-presto/bin
+lakesoul-spark-gluten/bin

@@ -82,7 +82,5 @@ mod tests {
             "s3://a/b/c/d/e/f"
         );
         assert!(qualify_path("s3:///a//b/c//////////d//e//f").is_err(),);
-        // let x = qualify_path("//a//b/c//d//e//f/");
-        // let x = qualify_path("/a//b/c//d//e//f/");
     }
 }

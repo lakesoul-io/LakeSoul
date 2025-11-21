@@ -1,0 +1,85 @@
+[package]
+name = "io"
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+readme.workspace = true
+version.workspace = true
+
+[dependencies]
+object_store = { workspace = true }
+datafusion-datasource = {workspace = true}
+datafusion-common= {workspace = true}
+
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tokio-util = { workspace = true }
+
+# derivative = { workspace = true }
+# atomic_refcell = { workspace = true }
+arrow = { workspace = true, features = ["prettyprint"] }
+arrow-schema = { workspace = true, features = ["serde"] }
+arrow-array = { workspace = true, features = ["chrono-tz"] }
+arrow-buffer = { workspace = true }
+arrow-cast = { workspace = true }
+# parquet = { workspace = true, features = ["async", "arrow"] }
+futures = { workspace = true }
+# datafusion-common = { workspace = true }
+serde = { workspace = true }
+url = { workspace = true }
+async-trait = { workspace = true }
+# smallvec = "1.10"
+# dary_heap = "0.3"
+bytes = { workspace = true }
+hdrs = { git = "https://github.com/lakesoul-io/hdrs.git", branch = "main", features = ["async_file"], optional = true }
+hdfs-sys = { version = "0.3", default-features = false, features = ["hdfs_3_3"], optional = true }
+chrono = "0.4"
+serde_json = { workspace = true }
+tracing = {workspace = true }
+proto = { path = "../proto" }
+prost = { workspace = true }
+
+rootcause = {workspace=true}
+
+# parking_lot = "0.12.1"
+rand = { workspace = true }
+# half = { workspace = true }
+# anyhow = { workspace = true, features = [] }
+# hex = "0.4"
+# dhat = { version = "0.3.3", optional = true }
+# ndarray = "0.15.6"
+# nohash = "0.2.0"
+# uuid = { workspace = true }
+# regex = "1.11.1"
+
+# num_cpus = "1.16"
+# filetime = "0.2.25"
+# fs-err = "3.1.0"
+# linked-hash-map = "0.5.6"
+# moka = { version = "~0.12", features = ["future"] }
+# tempfile = "3"
+# sysinfo = "~0.32"
+# walkdir = "2.5.0"
+# rand_distr = {workspace = true}
+
+[features]
+hdfs = ["dep:hdrs", "dep:hdfs-sys"]
+default = []
+
+[target.'cfg(target_os = "windows")'.dependencies]
+datafusion-substrait = { workspace = true }
+
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+datafusion-substrait = { workspace = true, features = ["protoc"] }
+
+
+[dev-dependencies]
+tempfile = "3.3.0"
+comfy-table = "6.0"
+whoami = "1.5"
+tracing-subscriber = "0.3.18"
+tokio-test = "0.4.4"
+
+[lints]
+workspace = true

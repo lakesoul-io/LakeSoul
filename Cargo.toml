@@ -14,7 +14,7 @@ members = [
     "rust/lakesoul-flight",
     "rust/lakesoul-s3-proxy",
     "rust/lakesoul-console",
-    "python",
+    "python", "rust/io", "rust/io-c",
 ]
 resolver = "3"
 
@@ -34,6 +34,7 @@ datafusion = { version = "47.0.0" }
 datafusion-common = { version = "47.0.0" }
 datafusion-substrait = { version = "47.0.0" }
 datafusion-expr = { version = "47.0.0" }
+datafusion-datasource= { version = "47.0.0" }
 arrow = { version = "55.0.0" }
 arrow-schema = { version = "55.0.0" }
 arrow-array = { version = "55.0.0" }
@@ -73,15 +74,16 @@ tracing-subscriber = { version = "0.3.19", features = [
     "env-filter",
 ] }
 test-log = "0.2.17"
+# error handling
 thiserror = "1.0"
 anyhow = "1.0.79"
+rootcause = "0.9"
+
 http = "1.2.0"
 tower = "0.4.13"
 metrics = "0.21"
 cached = { version = "0.54.0", features = ["async_tokio_rt_multi_thread"] }
 clap = { version = "4.4", features = ["derive"] }
-snafu = { version = "0.8" }
-snafu-virtstack = { version = "0.1" }
 
 
 [workspace.lints.clippy]

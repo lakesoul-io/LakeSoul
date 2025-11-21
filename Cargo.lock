@@ -3414,6 +3414,47 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8bb03732005da905c88227371639bf1ad885cc712789c011c31c5fb3ab3ccf02"
 
 [[package]]
+name = "io"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-cast",
+ "arrow-schema",
+ "async-trait",
+ "bytes",
+ "chrono",
+ "comfy-table 6.2.0",
+ "datafusion-common",
+ "datafusion-datasource",
+ "datafusion-substrait",
+ "futures",
+ "hdfs-sys",
+ "hdrs",
+ "object_store",
+ "prost",
+ "proto",
+ "rand 0.9.2",
+ "rootcause",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tokio-test",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "whoami",
+]
+
+[[package]]
+name = "io-c"
+version = "0.1.0"
+
+[[package]]
 name = "ipconfig"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3716,6 +3757,7 @@ dependencies = [
  "prost",
  "proto",
  "regex",
+ "rootcause",
  "serde",
  "serde_json",
  "test-log",
@@ -5806,6 +5848,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "rootcause"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "721f6a915e45a5789370d2a871c3ace8dd7e111ee2b803322ffea2fa18300348"
+dependencies = [
+ "hashbrown 0.16.0",
+ "indexmap 2.12.0",
+ "rootcause-internals",
+ "rustc-hash 2.1.1",
+ "spin",
+ "triomphe",
+ "unsize",
+]
+
+[[package]]
+name = "rootcause-internals"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5dd8d2e90c1351b734030f5d56fd1ea4e01691926f12138ca90013c87ec03049"
+dependencies = [
+ "triomphe",
+]
+
+[[package]]
 name = "rust_decimal"
 version = "1.39.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6313,6 +6379,12 @@ dependencies = [
  "libc",
  "windows-sys 0.60.2",
 ]
+
+[[package]]
+name = "spin"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
 
 [[package]]
 name = "sqlparser"
@@ -7154,6 +7226,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "triomphe"
+version = "0.1.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd69c5aa8f924c7519d6372789a74eac5b94fb0f8fcf0d4a97eb0bfc3e785f39"
+dependencies = [
+ "unsize",
+]
+
+[[package]]
 name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7280,6 +7361,15 @@ name = "unsafe-libyaml"
 version = "0.2.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
+
+[[package]]
+name = "unsize"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fa7a7a734c1a5664a662ddcea0b6c9472a21da8888c957c7f1eaa09dba7a939"
+dependencies = [
+ "autocfg",
+]
 
 [[package]]
 name = "untrusted"
