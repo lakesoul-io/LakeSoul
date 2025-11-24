@@ -13,6 +13,7 @@ import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTableSinkStreamBuilder;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.BinaryDebeziumDeserializationSchema;
@@ -72,6 +73,8 @@ public class OracleCdc {
         for (String schema : schemaList) {
             dbManager.importOrSyncLakeSoulNamespace(schema);
         }
+        Configuration globalConfig = GlobalConfiguration.loadConfiguration();
+        String warehousePath = databasePrefixPath == null ? globalConfig.getString(WAREHOUSE_PATH.key(), null): databasePrefixPath;
         Configuration conf = new Configuration();
         conf.set(LakeSoulSinkOptions.USE_CDC, true);
         conf.set(LakeSoulSinkOptions.isMultiTableSource, true);
@@ -79,7 +82,7 @@ public class OracleCdc {
         conf.set(BUCKET_PARALLELISM, bucketParallelism);
         conf.set(HASH_BUCKET_NUM, bucketParallelism);
         conf.set(SERVER_TIME_ZONE, serverTimezone);
-        conf.set(WAREHOUSE_PATH, databasePrefixPath);
+        conf.set(WAREHOUSE_PATH, warehousePath);
         conf.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
