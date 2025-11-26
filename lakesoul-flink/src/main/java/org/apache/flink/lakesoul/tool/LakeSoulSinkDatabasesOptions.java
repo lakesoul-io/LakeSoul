@@ -108,6 +108,10 @@ public class LakeSoulSinkDatabasesOptions extends LakeSoulSinkOptions {
             .key("doris.fenodes")
             .stringType()
             .defaultValue("127.0.0.1:8030");
+    public static final ConfigOption<Boolean> IS_TABLE_EXISTS = ConfigOptions
+            .key("target_table.exist")
+            .booleanType()
+            .defaultValue(true);
 
 
 }

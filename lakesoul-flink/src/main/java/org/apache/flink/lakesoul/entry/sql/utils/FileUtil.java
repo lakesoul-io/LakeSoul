@@ -52,4 +52,12 @@ public class FileUtil {
         String replacedStr = pc.matcher(text).replaceAll(replaceText);
         return replacedStr;
     }
+    public static String getSubNameFromBatch(String batchName) {
+        if (batchName.matches(".*-(\\d+)-(batch$)")) {
+            int index = batchName.lastIndexOf("-",batchName.lastIndexOf("-")-1);
+            return batchName.substring(0,index);
+        }else{
+            return batchName;
+        }
+    }
 }
