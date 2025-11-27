@@ -18,11 +18,12 @@
 
 package org.apache.flink.table.runtime.arrow;
 
+import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.runtime.arrow.writers.ArrowFieldWriter;
 import org.apache.flink.util.Preconditions;
-
-import org.apache.arrow.vector.VectorSchemaRoot;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Writer which serializes the Flink rows to Arrow format.
@@ -32,6 +33,10 @@ import org.apache.arrow.vector.VectorSchemaRoot;
 @Internal
 public final class ArrowWriter<IN> {
 
+    private static final Logger LOG = LoggerFactory.getLogger(
+        ArrowWriter.class
+    );
+
     /** Container that holds a set of vectors for the rows to be sent to the Python worker. */
     private final VectorSchemaRoot root;
 
@@ -40,7 +45,10 @@ public final class ArrowWriter<IN> {
      */
     private final ArrowFieldWriter<IN>[] fieldWriters;
 
-    public ArrowWriter(VectorSchemaRoot root, ArrowFieldWriter<IN>[] fieldWriters) {
+    public ArrowWriter(
+        VectorSchemaRoot root,
+        ArrowFieldWriter<IN>[] fieldWriters
+    ) {
         this.root = Preconditions.checkNotNull(root);
         this.fieldWriters = Preconditions.checkNotNull(fieldWriters);
     }
@@ -59,7 +67,9 @@ public final class ArrowWriter<IN> {
 
     /** Finishes the writing of the current row batch. */
     public void finish() {
-        root.setRowCount(fieldWriters[0].getCount());
+        int count = fieldWriters[0].getCount();
+        LOG.debug("row count: %d", count);
+        root.setRowCount(count);
         for (ArrowFieldWriter<IN> fieldWriter : fieldWriters) {
             fieldWriter.finish();
         }
@@ -68,7 +78,7 @@ public final class ArrowWriter<IN> {
     /** Resets the state of the writer to write the next batch of rows. */
     public void reset() {
         root.setRowCount(0);
-        for (ArrowFieldWriter fieldWriter : fieldWriters) {
+        for (ArrowFieldWriter<IN> fieldWriter : fieldWriters) {
             fieldWriter.reset();
         }
     }

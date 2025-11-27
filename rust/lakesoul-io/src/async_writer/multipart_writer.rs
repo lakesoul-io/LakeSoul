@@ -126,6 +126,7 @@ impl MultiPartAsyncWriter {
         } else {
             config.max_row_group_size
         };
+        debug!("max_row_group_size: {}", max_row_group_size);
         let arrow_writer = ArrowWriter::try_new(
             in_mem_buf.clone(),
             writer_schema,
