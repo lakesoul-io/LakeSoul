@@ -316,7 +316,8 @@ public class JdbcCDC {
                         .startupOptions(StartupOptions.initial())
                         .build();
         NameSpaceManager manager = new NameSpaceManager();
-        manager.importOrSyncLakeSoulNamespace(dbName);
+        String schema = tableList[0].split("\\.")[0];
+        manager.importOrSyncLakeSoulNamespace(schema);
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;
         if (lineageUrl != null){
