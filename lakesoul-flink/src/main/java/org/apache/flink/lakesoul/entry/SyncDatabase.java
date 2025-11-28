@@ -569,7 +569,7 @@ public class SyncDatabase {
         StreamTableEnvironment tEnvs = StreamTableEnvironment.create(env);
         Catalog lakesoulCatalog = new LakeSoulCatalog();
         tEnvs.registerCatalog("lakeSoul", lakesoulCatalog);
-        String jdbcUrl = url;
+        String jdbcUrl = url + ";databaseName=" + targetDatabase;
         Table lakesoulTable = tEnvs.from("`lakeSoul`.`" + sourceDatabase + "`.`" + sourceTableName + "`");
         DataType[] fieldDataTypes = lakesoulTable.getSchema().getFieldDataTypes();
         String[] fieldNames = lakesoulTable.getSchema().getFieldNames();
