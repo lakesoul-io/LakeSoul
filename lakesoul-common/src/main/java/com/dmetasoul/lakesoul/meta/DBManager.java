@@ -940,6 +940,10 @@ public class DBManager {
         return namespaceDao.findByNamespace(namespace);
     }
 
+    public String getNamespaceByTableName(String tableName) {
+        return namespaceDao.getNamespaceNameByTableName(tableName);
+    }
+
     public void updateNamespaceProperties(String namespace, String properties) {
         Namespace namespaceEntity = namespaceDao.findByNamespace(namespace);
         JSONObject originProperties = JSON.parseObject(namespaceEntity.getProperties());

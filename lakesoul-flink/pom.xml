@@ -407,6 +407,7 @@ SPDX-License-Identifier: Apache-2.0
             <version>1.19.0</version>
             <scope>${local.scope}</scope>
         </dependency>
+
     </dependencies>
 
     <build>
