@@ -312,6 +312,7 @@ public class JdbcCDC {
                         .tableList(tableList)
                         .username(userName)
                         .password(passWord)
+                        .splitSize(splitSize)
                         .deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert, conf.getString(WAREHOUSE_PATH), sinkDBName))
                         .startupOptions(StartupOptions.initial())
                         .build();
