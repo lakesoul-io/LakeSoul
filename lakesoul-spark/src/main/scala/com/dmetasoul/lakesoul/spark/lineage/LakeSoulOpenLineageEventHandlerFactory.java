@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 package com.dmetasoul.lakesoul.spark.lineage;
 
 import io.openlineage.client.OpenLineage;
@@ -15,13 +18,11 @@ public class LakeSoulOpenLineageEventHandlerFactory implements OpenLineageEventH
 
     @Override
     public Collection<PartialFunction<LogicalPlan, List<OpenLineage.InputDataset>>> createInputDatasetQueryPlanVisitors(OpenLineageContext context) {
-        // 返回自定义的输入访客列表
         return Collections.singletonList(new LakeSoulInputQueryPlanVisitor(context));
     }
 
     @Override
     public Collection<PartialFunction<LogicalPlan, List<OpenLineage.OutputDataset>>> createOutputDatasetQueryPlanVisitors(OpenLineageContext context) {
-        // 返回自定义的输出访客列表
         return Collections.singletonList(new LakeSoulOutputQueryPlanVisitor(context));
     }
 }

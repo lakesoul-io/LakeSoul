@@ -1,25 +1,17 @@
 package com.dmetasoul.lakesoul.spark.lineage;
 
-import com.dmetasoul.lakesoul.meta.DBManager;
 import io.openlineage.client.OpenLineage;
 import io.openlineage.spark.api.OpenLineageContext;
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan;
 import org.apache.spark.sql.execution.datasources.LogicalRelation;
-import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Relation;
 import org.apache.spark.sql.lakesoul.sources.LakeSoulBaseRelation;
 import org.apache.spark.sql.types.StructType;
-import scala.None;
-import scala.Option;
 import scala.PartialFunction;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-/**
- * LakeSoul 写操作（INSERT/MERGE/DELETE/UPSERT/COMPACTION）输出血缘采集
- * 完全对标 Iceberg 官方实现
- */
 public class LakeSoulOutputQueryPlanVisitor implements PartialFunction<LogicalPlan, List<OpenLineage.OutputDataset>> {
 
     private final OpenLineage ol;
@@ -32,9 +24,6 @@ public class LakeSoulOutputQueryPlanVisitor implements PartialFunction<LogicalPl
 
     @Override
     public boolean isDefinedAt(LogicalPlan plan) {
-        System.out.println("LakeSoulOutputVisitor isDefinedAt called on: " + plan.getClass().getName());
-        // 关键：写操作的 LogicalPlan 外层是各种 Command，但 child 是 DataSourceV2Relation
-        // 我们只关心 child 是 LakeSoul 表的场景
         return plan instanceof LogicalRelation;
     }
 
@@ -85,14 +74,4 @@ public class LakeSoulOutputQueryPlanVisitor implements PartialFunction<LogicalPl
                 .build();
     }
 
-    // 简单判断当前写操作类型（可扩展）
-    private String getCurrentOperation(LogicalPlan plan) {
-        String planName = plan.getClass().getSimpleName().toLowerCase();
-        if (planName.contains("insert")) return "INSERT";
-        if (planName.contains("merge")) return "MERGE";
-        if (planName.contains("delete")) return "DELETE";
-        if (planName.contains("upsert")) return "UPSERT";
-        if (planName.contains("compaction")) return "COMPACTION";
-        return "WRITE";
-    }
 }

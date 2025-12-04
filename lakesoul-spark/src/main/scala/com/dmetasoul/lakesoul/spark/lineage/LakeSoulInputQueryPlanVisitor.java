@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 package com.dmetasoul.lakesoul.spark.lineage;
 
 import com.dmetasoul.lakesoul.meta.DBManager;
@@ -44,11 +47,8 @@ public class LakeSoulInputQueryPlanVisitor implements PartialFunction<LogicalPla
             StructType schema = relation.schema();
             DBManager dbManager = new DBManager();
             String tableNamespace = dbManager.getNamespaceByTableName(tableName);
-            // 构建 schema facet
             OpenLineage.SchemaDatasetFacet schemaFacet = buildSchemaFacet(schema);
-            // 构建 dataset facets
             OpenLineage.DatasetFacets datasetFacets = buildDatasetFacets(schemaFacet);
-            // 构建 InputDataset
             OpenLineage.InputDataset dataset = ol.newInputDatasetBuilder()
                     .name(tableName)
                     .namespace(tableNamespace)
