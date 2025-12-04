@@ -80,7 +80,7 @@ public class JdbcCDC {
             String[] tables = parameter.get(SOURCE_DB_SCHEMA_TABLES.key()).split(",");
             tableList = new String[tables.length];
             for (int i = 0; i < tables.length; i++) {
-                tableList[i] = tables[i].toUpperCase();
+                tableList[i] = dbName + "."+tables[i].toUpperCase();
             }
             splitSize = parameter.getInt(SOURCE_DB_SPLIT_SIZE.key(), SOURCE_DB_SPLIT_SIZE.defaultValue());
         }

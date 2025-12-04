@@ -129,7 +129,8 @@ public class SyncDatabase {
                 xsyncToDoris(env, fenodes);
                 break;
             case "mongodb":
-                String uri = parameter.get(MONGO_DB_URI.key());
+//                String uri = parameter.get(MONGO_DB_URI.key());
+                String uri = url;
                 int batchSize = parameter.getInt(BATCH_SIZE.key(), BATCH_SIZE.defaultValue());
                 int batchIntervalMs = parameter.getInt(BATCH_INTERVAL_MS.key(), BATCH_INTERVAL_MS.defaultValue());
                 xsyncToMongodb(env, uri, batchSize, batchIntervalMs);
