@@ -494,6 +494,7 @@ SPDX-License-Identifier: Apache-2.0
                             <include>com.ververica:flink-sql-connector-mysql-cdc</include>
                             <include>com.ververica:flink-sql-connector-postgres-cdc</include>
                             <include>com.ververica:flink-sql-connector-mongodb-cdc</include>
+                            <include>com.ververica:flink-sql-connector-sqlserver-cdc</include>
                             <include>com.ververica:flink-sql-connector-oracle-cdc</include>
                             <include>org.apache.flink:flink-connector-mongodb</include>
                             <include>org.mongodb:bson</include>
