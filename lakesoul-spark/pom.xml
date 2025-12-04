@@ -310,6 +310,11 @@ SPDX-License-Identifier: Apache-2.0
             <scope>test</scope>
             <classifier>tests</classifier>
         </dependency>
+        <dependency>
+            <groupId>io.openlineage</groupId>
+            <artifactId>openlineage-spark_2.12</artifactId>
+            <version>1.22.0</version>
+        </dependency>
 
         <dependency>
             <groupId>org.apache.spark</groupId>
