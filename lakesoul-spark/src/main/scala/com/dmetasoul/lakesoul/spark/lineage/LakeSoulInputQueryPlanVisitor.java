@@ -33,7 +33,8 @@ public class LakeSoulInputQueryPlanVisitor implements PartialFunction<LogicalPla
     @Override
     public boolean isDefinedAt(LogicalPlan x) {
         // 可以加判断，只匹配 DataSourceV2Relation
-        return  (x instanceof DataSourceV2ScanRelation);
+
+        return  (x instanceof DataSourceV2ScanRelation || x instanceof SaveIntoDataSourceCommand);
     }
     @Override
     public List<OpenLineage.InputDataset> apply(LogicalPlan plan) {
@@ -51,6 +52,19 @@ public class LakeSoulInputQueryPlanVisitor implements PartialFunction<LogicalPla
             OpenLineage.InputDataset dataset = ol.newInputDatasetBuilder()
                     .name(tableName)
                     .namespace(tableNamespace)
+                    .facets(datasetFacets)
+                    .build();
+            List<OpenLineage.InputDataset> datasets = new ArrayList<>();
+            datasets.add(dataset);
+            return datasets;
+        } else if (plan instanceof SaveIntoDataSourceCommand) {
+            SaveIntoDataSourceCommand sourceCommand = (SaveIntoDataSourceCommand) plan;
+            StructType schema = sourceCommand.schema();
+            OpenLineage.SchemaDatasetFacet schemaFacet = buildSchemaFacet(schema);
+            OpenLineage.DatasetFacets datasetFacets = buildDatasetFacets(schemaFacet);
+            OpenLineage.InputDataset dataset = ol.newInputDatasetBuilder()
+                    .name("tableName=None")
+                    .namespace("tableNamespace=None")
                     .facets(datasetFacets)
                     .build();
             List<OpenLineage.InputDataset> datasets = new ArrayList<>();

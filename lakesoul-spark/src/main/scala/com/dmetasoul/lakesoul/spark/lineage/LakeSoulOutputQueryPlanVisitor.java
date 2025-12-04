@@ -4,7 +4,12 @@ import com.dmetasoul.lakesoul.meta.DBManager;
 import io.openlineage.client.OpenLineage;
 import io.openlineage.spark.api.OpenLineageContext;
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan;
+import org.apache.spark.sql.execution.datasources.LogicalRelation;
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Relation;
+import org.apache.spark.sql.lakesoul.sources.LakeSoulBaseRelation;
+import org.apache.spark.sql.types.StructType;
+import scala.None;
+import scala.Option;
 import scala.PartialFunction;
 
 import java.util.ArrayList;
@@ -30,56 +35,38 @@ public class LakeSoulOutputQueryPlanVisitor implements PartialFunction<LogicalPl
         System.out.println("LakeSoulOutputVisitor isDefinedAt called on: " + plan.getClass().getName());
         // 关键：写操作的 LogicalPlan 外层是各种 Command，但 child 是 DataSourceV2Relation
         // 我们只关心 child 是 LakeSoul 表的场景
-//        if (!(plan instanceof org.apache.spark.sql.catalyst.plans.logical.UnaryNode)) {
-//            return false;
-//        }
-//
-//        LogicalPlan child = ((org.apache.spark.sql.catalyst.plans.logical.UnaryNode) plan).child();
-//
-//        if (!(child instanceof DataSourceV2Relation)) {
-//            return false;
-//        }
-//
-        return true;
+        return plan instanceof LogicalRelation;
     }
 
     @Override
     public List<OpenLineage.OutputDataset> apply(LogicalPlan plan) {
-        LogicalPlan child = ((org.apache.spark.sql.catalyst.plans.logical.UnaryNode) plan).child();
-        if (!(child instanceof DataSourceV2Relation)) {
-            return Collections.emptyList();
+
+        if (plan instanceof LogicalRelation) {
+            LogicalRelation relation = (LogicalRelation) plan;
+            StructType schema = relation.relation().schema();
+            LakeSoulBaseRelation lakeSoulBaseRelation = (LakeSoulBaseRelation) relation.relation();
+            String namespace = lakeSoulBaseRelation.tableInfo().namespace();
+            String tableName = null;
+            String tablePath = "";
+            if (lakeSoulBaseRelation.tableInfo().short_table_name().isEmpty()){
+                tablePath = lakeSoulBaseRelation.tableInfo().table_path().toString();
+            } else {
+                tableName = lakeSoulBaseRelation.tableInfo().short_table_name().get();
+            }
+            OpenLineage.SchemaDatasetFacet datasetFacet = buildSchemaFacet(schema);
+            OpenLineage.DatasetFacets facets = buildDatasetFacets(datasetFacet);
+            OpenLineage.OutputDataset outputDataset = ol.newOutputDatasetBuilder()
+                    .name(tableName == null ? tablePath:tableName)
+                    .namespace(namespace)
+                    .facets(facets)
+                    .build();
+
+            return Collections.singletonList(outputDataset);
         }
-
-        DataSourceV2Relation relation = (DataSourceV2Relation) child;
-
-        String tableName = relation.table().name();
-        String namespace = getNamespace(tableName);
-
-        // Schema Facet
-        OpenLineage.SchemaDatasetFacet schemaFacet = buildSchemaFacet(relation.schema());
-
-        // Dataset Facets（加上 DataSource + 自定义 LakeSoul Facet）
-
-        // 构建 OutputDataset
-//        OpenLineage.OutputDataset outputDataset = ol.newOutputDatasetBuilder()
-//                .name(tableName)
-//                .namespace(namespace)
-//                .facets(facets)
-//                // 可选：加上 OutputStatistics（行数）
-//                // .outputFacets(buildOutputFacets())
-//                .build();
-
-        //return Collections.singletonList(outputDataset);
-
         return Collections.emptyList();
     }
 
-    private String getNamespace(String tableName) {
-        DBManager dbManager = new DBManager();
-        return dbManager.getNamespaceByTableName(tableName);
-    }
-
-    private OpenLineage.SchemaDatasetFacet buildSchemaFacet(org.apache.spark.sql.types.StructType schema) {
+    private OpenLineage.SchemaDatasetFacet buildSchemaFacet(StructType schema) {
         List<OpenLineage.SchemaDatasetFacetFields> fields = new ArrayList<>();
         for (org.apache.spark.sql.types.StructField field : schema.fields()) {
             fields.add(ol.newSchemaDatasetFacetFieldsBuilder()
@@ -92,6 +79,11 @@ public class LakeSoulOutputQueryPlanVisitor implements PartialFunction<LogicalPl
                 .build();
     }
 
+    private OpenLineage.DatasetFacets buildDatasetFacets(OpenLineage.SchemaDatasetFacet schemaFacet) {
+        return ol.newDatasetFacetsBuilder()
+                .schema(schemaFacet)
+                .build();
+    }
 
     // 简单判断当前写操作类型（可扩展）
     private String getCurrentOperation(LogicalPlan plan) {

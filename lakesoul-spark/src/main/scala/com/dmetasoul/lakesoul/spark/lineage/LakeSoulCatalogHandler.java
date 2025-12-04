@@ -8,7 +8,10 @@ import org.apache.spark.sql.catalyst.analysis.NoSuchTableException;
 import org.apache.spark.sql.connector.catalog.Identifier;
 import org.apache.spark.sql.connector.catalog.Table;
 import org.apache.spark.sql.connector.catalog.TableCatalog;
+import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 public class LakeSoulCatalogHandler implements CatalogHandler {
@@ -41,18 +44,26 @@ public class LakeSoulCatalogHandler implements CatalogHandler {
                                                   Identifier identifier,
                                                   Map<String, String> map) {
         String tableName = null;
+        String tableNameSpace = null;
+        String tableLocation;
         try {
             Table table = tableCatalog.loadTable(identifier);
-            tableName = table.name();
-            System.out.println(tableName);
+            LakeSoulCatalog lakeSoulCatalog = (LakeSoulCatalog) tableCatalog;
+            tableLocation = lakeSoulCatalog.getTableLocation(identifier).get();
+            tableName = table.name().split("//.")[1];
+            tableNameSpace = table.name().split("//.")[0];
         } catch (NoSuchTableException e) {
             throw new RuntimeException(e);
         }
-        return new DatasetIdentifier(tableName,"lakesoul");
+        DatasetIdentifier.Symlink symlink;
+        symlink = new DatasetIdentifier.Symlink(tableName, tableNameSpace, DatasetIdentifier.SymlinkType.TABLE);
+        List<DatasetIdentifier.Symlink> symlinks = new ArrayList<>();
+        symlinks.add(symlink);
+        return new DatasetIdentifier(tableName,tableLocation,symlinks);
     }
 
     @Override
     public String getName() {
-        return "";
+        return "lakesoul";
     }
 }
