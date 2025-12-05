@@ -29,6 +29,8 @@ import org.apache.flink.table.catalog.Catalog;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.*;
 import org.apache.flink.types.Row;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.sql.*;
 import java.util.*;
@@ -57,7 +59,10 @@ public class SyncDatabase {
     static String lineageUrl = null;
     static Boolean isTableExist;
 
+    private static final Logger log = LoggerFactory.getLogger(SyncDatabase.class);
     public static void main(String[] args) throws Exception {
+
+
         StringBuilder connectorOptions = new StringBuilder();
         ParameterTool parameter = ParameterTool.fromArgs(args);
         sourceDatabase = parameter.get(SOURCE_DB_DB_NAME.key());
@@ -165,8 +170,6 @@ public class SyncDatabase {
 
     public static String sqlServerCreateTableSql(String[] stringFieldTypes, String[] fieldNames, String targetTableName, String pk) {
         StringBuilder sb = new StringBuilder();
-
-        // IF NOT EXISTS 语法
         sb.append("IF NOT EXISTS (SELECT * FROM sys.tables WHERE name='")
                 .append(targetTableName)
                 .append("')\n");
@@ -174,7 +177,11 @@ public class SyncDatabase {
         sb.append("CREATE TABLE ").append(targetTableName).append(" (");
 
         for (int i = 0; i < fieldNames.length; i++) {
-            sb.append(fieldNames[i]).append(" ").append(stringFieldTypes[i]);
+            if (stringFieldTypes[i].equals("TIMESTAMP")){
+                sb.append(fieldNames[i]).append(" ").append("datetime2");
+            } else {
+                sb.append(fieldNames[i]).append(" ").append(stringFieldTypes[i]);
+            }
             if (i != fieldNames.length - 1 || pk != null) {
                 sb.append(", ");
             }
@@ -184,9 +191,7 @@ public class SyncDatabase {
             sb.append("CONSTRAINT PK_").append(targetTableName)
                     .append(" PRIMARY KEY(").append(pk).append(")");
         }
-
         sb.append(")");
-
         return sb.toString();
     }
 
@@ -330,7 +335,10 @@ public class SyncDatabase {
 
         String createTableSql = pgAndMsqlCreateTableSql(stringFieldsTypes, fieldNames, targetTableName, tablePk);
         Statement statement = conn.createStatement();
-        statement.executeUpdate(createTableSql.toString());
+        if (!isTableExist){
+            statement.executeUpdate(createTableSql);
+            log.info("create the postgres table with the sql: "+createTableSql);
+        }
         StringBuilder coulmns = new StringBuilder();
         for (int i = 0; i < fieldDataTypes.length; i++) {
             switch (stringFieldsTypes[i]) {
@@ -413,7 +421,10 @@ public class SyncDatabase {
             }
         }
         // Create the target table in MySQL
-        statement.executeUpdate(createTableSql.toString());
+        if (!isTableExist){
+            statement.executeUpdate(createTableSql);
+            log.info("create the mysql table with the sql: "+createTableSql);
+        }
         StringBuilder coulmns = new StringBuilder();
         for (int i = 0; i < fieldDataTypes.length; i++) {
             if (stringFieldsTypes[i].equals("BLOB")) {
@@ -577,17 +588,18 @@ public class SyncDatabase {
         String tablePk = getTablePk(sourceDatabase, sourceTableName);
         String[] stringFieldsTypes = getMysqlFieldsTypes(fieldDataTypes, fieldNames, tablePk);
         String createTableSql = sqlServerCreateTableSql(stringFieldsTypes, fieldNames, targetTableName, tablePk);
-
         Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
         Statement statement = conn.createStatement();
-        statement.execute(createTableSql);
+        if (!isTableExist){
+            statement.executeUpdate(createTableSql);
+            log.info("create the sqlserver table with the sql: "+createTableSql);
+        }
         StringBuilder coulmns = new StringBuilder();
         for (int i = 0; i < fieldDataTypes.length; i++) {
             if (stringFieldsTypes[i].equals("BLOB")) {
                 coulmns.append("`").append(fieldNames[i]).append("` ").append("BYTES");
             } else if (stringFieldsTypes[i].equals("TEXT")) {
                 coulmns.append("`").append(fieldNames[i]).append("` ").append("VARCHAR");
-
             } else {
                 coulmns.append("`").append(fieldNames[i]).append("` ").append(stringFieldsTypes[i]);
             }
@@ -617,6 +629,7 @@ public class SyncDatabase {
         }
 
         tEnvs.executeSql(sql);
+        System.out.println(sql);
         tEnvs.executeSql("insert into " + targetTableName + " select * from lakeSoul.`" + sourceDatabase + "`." + sourceTableName);
 
         statement.close();

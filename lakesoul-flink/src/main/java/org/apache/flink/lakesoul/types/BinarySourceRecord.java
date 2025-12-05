@@ -16,6 +16,7 @@ import org.apache.flink.lakesoul.tool.FlinkUtil;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 
 public class BinarySourceRecord {
@@ -74,6 +75,12 @@ public class BinarySourceRecord {
         String newNamespace = StringUtils.isNotBlank(sinkDBName) ? sinkDBName : originalNamespace;
         String tableName = String.format("s_%s_%s", originalNamespace, tableId.table()).toLowerCase();
         tableId = new TableId(newNamespace, newNamespace , tableName);
+        List<String> partitionFields = Collections.emptyList();
+        HashMap<String, List<String>> topicsPartitionFields = convert.topicsPartitionFields;
+        if (topicsPartitionFields.containsKey(tableId.table())) {
+            partitionFields = topicsPartitionFields.get(tableId.table());
+        }
+
         boolean isDDL = "io.debezium.connector.mysql.SchemaChangeKey".equalsIgnoreCase(keySchema.name());
         if (isDDL) {
             return null;
@@ -116,7 +123,7 @@ public class BinarySourceRecord {
             }
             return new BinarySourceRecord(sourceRecord.topic(), primaryKeys, tableId,
                     FlinkUtil.makeQualifiedPath(tablePath).toString(),
-                    Collections.emptyList(), false, data, null);
+                    partitionFields, false, data, null);
         }
     }
 

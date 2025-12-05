@@ -65,17 +65,18 @@ public class LakeSoulRecordConvert implements Serializable {
     final boolean useCDC;
 
     List<String> partitionFields;
-
+    HashMap<String, List<String>> topicsPartitionFields;
 
     public LakeSoulRecordConvert(Configuration conf, String serverTimeZone) {
-        this(conf, serverTimeZone, Collections.emptyList());
+        this(conf, serverTimeZone, new HashMap<>());
     }
 
-    public LakeSoulRecordConvert(Configuration conf, String serverTimeZone, List<String> partitionFields) {
+    public LakeSoulRecordConvert(Configuration conf, String serverTimeZone, HashMap<String, List<String>> topicsPartitionFields) {
         this.useCDC = conf.getBoolean(USE_CDC);
         this.cdcColumn = conf.getString(CDC_CHANGE_COLUMN, CDC_CHANGE_COLUMN_DEFAULT);
         this.serverTimeZone = ZoneId.of(serverTimeZone);
-        this.partitionFields = partitionFields;
+        this.partitionFields = Collections.emptyList();
+        this.topicsPartitionFields = topicsPartitionFields;
     }
 
     private boolean partitionFieldsChanged(RowType beforeType, RowData beforeData, RowType afterType, RowData afterData) {

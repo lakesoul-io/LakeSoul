@@ -36,8 +36,7 @@ import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
-import java.util.Map;
-import java.util.Properties;
+import java.util.*;
 import java.util.concurrent.TimeUnit;
 
 import static org.apache.flink.lakesoul.tool.JobOptions.*;
@@ -100,7 +99,7 @@ public class JdbcCDC {
         int checkpointInterval = parameter.getInt(JOB_CHECKPOINT_INTERVAL.key(),
                 JOB_CHECKPOINT_INTERVAL.defaultValue());//mill second
         Configuration globalConfig = GlobalConfiguration.loadConfiguration();
-        String warehousePath = databasePrefixPath == null ? globalConfig.getString(WAREHOUSE_PATH.key(), null): databasePrefixPath;
+        String warehousePath = databasePrefixPath == null ? globalConfig.getString("flink.warehouse.dir", null): databasePrefixPath;
         Configuration conf = new Configuration();
         // parameters for mutil tables ddl sink
         conf.set(SOURCE_DB_DB_NAME, dbName);
@@ -120,6 +119,8 @@ public class JdbcCDC {
         conf.set(LakeSoulSinkOptions.BUCKET_PARALLELISM, bucketParallelism);
         conf.set(LakeSoulSinkOptions.HASH_BUCKET_NUM, bucketParallelism);
         conf.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
+        HashMap<String, List<String>> partitionMap = new HashMap<>();
+        parameter.toMap().forEach((confKey,confValue) -> {if (confKey.contains("topic_partitions_")) partitionMap.put(confKey.substring(17), Arrays.asList(confValue.split(","))); else return;});
         listener = null;
         StreamExecutionEnvironment env;
         appName = null;
@@ -166,7 +167,7 @@ public class JdbcCDC {
                 Time.of(10, TimeUnit.MINUTES), //time interval for measuring failure rate
                 Time.of(20, TimeUnit.SECONDS) // delay
         ));
-        LakeSoulRecordConvert lakeSoulRecordConvert = new LakeSoulRecordConvert(conf, conf.getString(SERVER_TIME_ZONE));
+        LakeSoulRecordConvert lakeSoulRecordConvert = new LakeSoulRecordConvert(conf, conf.getString(SERVER_TIME_ZONE), partitionMap);
 
         if (dbType.equalsIgnoreCase("mysql")) {
             mysqlCdc(lakeSoulRecordConvert, conf, env, sinkDBName);
@@ -320,6 +321,7 @@ public class JdbcCDC {
         String schema = tableList[0].split("\\.")[0];
         manager.importOrSyncLakeSoulNamespace(schema);
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
+        env.getCheckpointConfig().enableUnalignedCheckpoints(false);
         context.env = env;
         if (lineageUrl != null){
             Map<String, String> confs = ((Configuration) env.getConfiguration()).toMap();
@@ -373,6 +375,7 @@ public class JdbcCDC {
                 new LakeSoulMultiTableSinkStreamBuilder(mongoSource, context, lakeSoulRecordConvert);
         DataStreamSource<BinarySourceRecord> source = builder.buildMultiTableSource("mongodb Source");
 
+        source.print();
         DataStream<BinarySourceRecord> stream = builder.buildHashPartitionedCDCStream(source);
         DataStreamSink<BinarySourceRecord> dmlSink = builder.buildLakeSoulDMLSink(stream);
         env.execute("LakeSoul CDC Sink From mongo Database " + dbName);
