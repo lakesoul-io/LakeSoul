@@ -9,12 +9,12 @@ members = [
     "rust/lakesoul-metadata-c",
     "rust/proto",
     "rust/lakesoul-io",
-    "rust/lakesoul-io-c",
-    "rust/lakesoul-datafusion",
-    "rust/lakesoul-flight",
-    "rust/lakesoul-s3-proxy",
-    "rust/lakesoul-console",
-    "python", "rust/io", "rust/io-c",
+    # "rust/lakesoul-io-c",
+    # "rust/lakesoul-datafusion",
+    # "rust/lakesoul-flight",
+    # "rust/lakesoul-s3-proxy",
+    # "rust/lakesoul-console",
+    "python",
 ]
 resolver = "3"
 
@@ -30,11 +30,11 @@ version = "0.1.0"
 #lto = true
 
 [workspace.dependencies]
-datafusion = { version = "47.0.0" }
-datafusion-common = { version = "47.0.0" }
-datafusion-substrait = { version = "47.0.0" }
-datafusion-expr = { version = "47.0.0" }
-datafusion-datasource= { version = "47.0.0" }
+datafusion = { version = "48" }
+datafusion-common = { version = "48" }
+datafusion-substrait = { version = "48" }
+datafusion-expr = { version = "48" }
+datafusion-datasource= { version = "48" }
 arrow = { version = "55.0.0" }
 arrow-schema = { version = "55.0.0" }
 arrow-array = { version = "55.0.0" }
