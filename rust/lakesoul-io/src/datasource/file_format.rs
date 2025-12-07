@@ -15,12 +15,12 @@ use arrow_schema::{ArrowError, FieldRef, Fields, Schema, SchemaBuilder};
 use datafusion::datasource::file_format::file_compression_type::FileCompressionType;
 use datafusion::datasource::file_format::{FileFormat, parquet::ParquetFormat};
 use datafusion::datasource::physical_plan::{
-    FileGroup, FileScanConfig, FileSinkConfig, FileSource,
+    FileGroup, FileScanConfig, FileSinkConfig, FileSource, ParquetSource,
 };
 
 use datafusion::physical_expr::LexRequirement;
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::projection::ProjectionExec;
-use datafusion::physical_plan::{ExecutionPlan, PhysicalExpr};
 use datafusion_common::{DataFusionError, Result, Statistics, project_schema};
 
 use object_store::{ObjectMeta, ObjectStore};
@@ -228,22 +228,26 @@ impl FileFormat for LakeSoulParquetFormat {
     async fn create_physical_plan(
         &self,
         state: &dyn Session,
-        conf: FileScanConfig,
-        // filters: Option<&Arc<dyn PhysicalExpr>>,
+        mut conf: FileScanConfig,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        // If enable pruning then combine the filters to build the predicate.
-        // If disable pruning then set the predicate to None, thus readers
-        // will not prune data based on the statistics.
-        let predicate = self
-            .parquet_format
-            .enable_pruning()
-            .then(|| filters.cloned())
-            .flatten();
-
         let table_schema = LakeSoulTableProvider::compute_table_schema(
             conf.file_schema.clone(),
             &self.conf,
         )?;
+
+        // adapted file source with metadata size hint
+        let mut parquet_source = conf
+            .file_source
+            .as_any()
+            .downcast_ref::<ParquetSource>()
+            .ok_or(DataFusionError::Internal("file source".into()))?
+            .clone();
+        if let Some(metadata_size_hint) = self.parquet_format.metadata_size_hint() {
+            parquet_source = parquet_source.with_metadata_size_hint(metadata_size_hint);
+        }
+
+        conf.file_source = Arc::new(parquet_source);
+
         // projection for Table instead of File
         let projection = conf.projection.clone();
         let target_schema = project_schema(&table_schema, projection.as_ref())?;
@@ -272,8 +276,6 @@ impl FileFormat for LakeSoulParquetFormat {
         let merge_exec = Arc::new(MergeParquetExec::new(
             merged_schema.clone(),
             flatten_conf,
-            predicate,
-            self.parquet_format.metadata_size_hint(),
             self.conf.clone(),
         )?);
 

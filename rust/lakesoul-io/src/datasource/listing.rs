@@ -145,7 +145,8 @@ impl TableProvider for LakeSoulTableProvider {
             return Ok(Arc::new(EmptyExec::new(Arc::new(Schema::empty()))));
         };
         let statistics = Statistics::new_unknown(&self.schema());
-        let filters = if let Some(expr) = conjunction(filters.to_vec()) {
+        let mut source = self.file_source.clone();
+        if let Some(expr) = conjunction(filters.to_vec()) {
             // NOTE: Use the table schema (NOT file schema) here because `expr` may contain references to partition columns.
             let table_df_schema = self.table_schema.as_ref().clone().to_dfschema()?;
             let filters = datafusion::physical_expr::create_physical_expr(
@@ -153,11 +154,18 @@ impl TableProvider for LakeSoulTableProvider {
                 &table_df_schema,
                 state.execution_props(),
             )?;
-            Some(filters)
-        } else {
-            None
-        };
-        let session_state = state.as_any().downcast_ref::<SessionState>().unwrap();
+            let propagation = self
+                .file_source
+                .try_pushdown_filters(vec![filters], state.config_options())?;
+            if let Some(updated) = propagation.updated_node {
+                let filters = propagation.filters.collect_unsupported();
+                debug!("upsupported filters: {:?}", filters);
+                source = updated; // replace self.file_source?
+            } else {
+                debug!("No pushdown filters applied");
+            }
+        }
+
         let store = state.runtime_env().object_store(object_store_url.clone())?;
         let partition_files: Result<Vec<PartitionedFile>> =
             future::try_join_all(self.listing_table_paths.iter().map(|url| {
@@ -177,7 +185,7 @@ impl TableProvider for LakeSoulTableProvider {
         self.listing_options
             .format
             .create_physical_plan(
-                session_state,
+                state,
                 FileScanConfig {
                     object_store_url,
                     file_schema: Arc::clone(&self.schema()),
@@ -191,11 +199,10 @@ impl TableProvider for LakeSoulTableProvider {
                     output_ordering: vec![],
                     file_compression_type: FileCompressionType::ZSTD,
                     new_lines_in_values: false,
-                    file_source: self.file_source.clone(),
+                    file_source: source,
                     table_partition_cols: vec![],
                     batch_size: None,
                 },
-                filters.as_ref(),
             )
             .await
     }
