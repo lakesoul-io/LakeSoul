@@ -5332,7 +5332,6 @@ dependencies = [
  "bytes",
  "prost",
  "prost-build",
- "protobuf-src",
 ]
 
 [[package]]
