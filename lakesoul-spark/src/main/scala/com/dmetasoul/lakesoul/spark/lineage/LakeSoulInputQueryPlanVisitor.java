@@ -35,8 +35,6 @@ public class LakeSoulInputQueryPlanVisitor implements PartialFunction<LogicalPla
 
     @Override
     public boolean isDefinedAt(LogicalPlan x) {
-        // 可以加判断，只匹配 DataSourceV2Relation
-
         return  (x instanceof DataSourceV2ScanRelation || x instanceof SaveIntoDataSourceCommand);
     }
     @Override
