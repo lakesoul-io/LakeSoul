@@ -31,7 +31,6 @@ pub mod planner;
 use lakesoul_io::lakesoul_io_config::{
     LakeSoulIOConfigBuilder, register_hdfs_object_store, register_s3_object_store,
 };
-// use lakesoul_metadata::MetaDataClientRef;
 use object_store::local::LocalFileSystem;
 pub use planner::query_planner::LakeSoulQueryPlanner;
 use url::Url;
@@ -52,6 +51,10 @@ pub fn create_lakesoul_session_ctx(
         .with_batch_size(8192)
         .with_default_catalog_and_schema("LAKESOUL".to_string(), "default".to_string());
     session_config.options_mut().sql_parser.dialect = "postgresql".to_string();
+    session_config
+        .options_mut()
+        .sql_parser
+        .map_varchar_to_utf8view = false;
     session_config
         .options_mut()
         .optimizer
