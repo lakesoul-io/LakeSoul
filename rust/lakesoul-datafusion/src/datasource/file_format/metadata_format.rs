@@ -7,6 +7,7 @@
 use arrow::array::{ArrayRef, StringArray, UInt64Array};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
+use datafusion::catalog::memory::DataSourceExec;
 use rand::distr::SampleString;
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
@@ -21,8 +22,6 @@ use datafusion::datasource::file_format::file_compression_type::FileCompressionT
 use datafusion::datasource::file_format::parquet::ParquetFormatFactory;
 use datafusion::datasource::listing::ListingOptions;
 use datafusion::datasource::physical_plan::FileSource;
-#[allow(deprecated)]
-use datafusion::datasource::physical_plan::parquet::ParquetExecBuilder;
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::dml::InsertOp;
@@ -46,7 +45,7 @@ use datafusion::{
         physical_plan::{FileScanConfig, FileSinkConfig},
     },
     error::Result,
-    physical_plan::{ExecutionPlan, PhysicalExpr},
+    physical_plan::ExecutionPlan,
 };
 use futures::StreamExt;
 use lakesoul_io::async_writer::{AsyncBatchWriter, MultiPartAsyncWriter};
@@ -186,20 +185,11 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         &self,
         state: &dyn Session,
         conf: FileScanConfig,
-        filters: Option<&Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         info!(
-            "LakeSoulMetaDataParquetFormat::create_physical_plan with conf= {:?}, filters= {:?}",
-            &conf, &filters
+            "LakeSoulMetaDataParquetFormat::create_physical_plan with conf= {:?}",
+            &conf,
         );
-        // If enable pruning then combine the filters to build the predicate.
-        // If disable pruning then set the predicate to None, thus readers
-        // will not prune data based on the statistics.
-        let predicate = self
-            .parquet_format
-            .enable_pruning()
-            .then(|| filters.cloned())
-            .flatten();
 
         let file_schema = conf.file_schema.clone();
         let mut builder = SchemaBuilder::from(file_schema.fields());
@@ -238,23 +228,12 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         > = HashMap::new();
         let mut column_nullable = HashSet::<String>::new();
 
-        for config in &flatten_conf {
+        for config in flatten_conf {
             let (partition_desc, partition_columnar_value) =
-                partition_desc_from_file_scan_config(config)?;
+                partition_desc_from_file_scan_config(&config)?;
             let partition_columnar_value = Arc::new(partition_columnar_value);
 
-            let parquet_exec = Arc::new({
-                debug!(
-                    "create parquet exec with config= {:?}, predicate= {:?}",
-                    &config, &predicate
-                );
-                #[allow(deprecated)]
-                let mut builder = ParquetExecBuilder::new(config.clone());
-                if let Some(predicate) = predicate.clone() {
-                    builder = builder.with_predicate(predicate);
-                }
-                builder.build()
-            });
+            let parquet_exec = DataSourceExec::from_data_source(config);
             for field in parquet_exec.schema().fields().iter() {
                 if field.is_nullable() {
                     column_nullable.insert(field.name().clone());

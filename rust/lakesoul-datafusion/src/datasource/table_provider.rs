@@ -20,6 +20,7 @@ use datafusion::datasource::file_format::file_compression_type::FileCompressionT
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{ListingOptions, ListingTableUrl, PartitionedFile};
 use datafusion::datasource::physical_plan::{FileGroup, FileScanConfig, FileSinkConfig};
+use datafusion::datasource::source::DataSource;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::logical_expr::expr::Sort;
@@ -437,7 +438,7 @@ impl TableProvider for LakeSoulTableProvider {
         &self,
         session_state: &dyn Session,
         projection: Option<&Vec<usize>>,
-        filters: &[Expr],
+        filters: &[Expr], // TODO
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let session_state = session_state
@@ -464,18 +465,13 @@ impl TableProvider for LakeSoulTableProvider {
             .map(|col| Ok(self.schema().field_with_name(&col.0)?.clone()))
             .collect::<Result<Vec<_>>>()?;
 
-        let filters = if let Some(expr) = conjunction(filters.to_vec()) {
-            // NOTE: Use the table schema (NOT file schema) here because `expr` may contain references to partition columns.
-            let table_df_schema = self.schema().as_ref().clone().to_dfschema()?;
-            let filters = create_physical_expr(
-                &expr,
-                &table_df_schema,
-                session_state.execution_props(),
-            )?;
-            Some(filters)
-        } else {
-            None
-        };
+        let statistics = Arc::new(statistics);
+
+        let file_source = self
+            .options()
+            .format
+            .file_source()
+            .with_statistics(Statistics::new_unknown(&self.schema()));
 
         let object_store_url = if let Some(url) = self.table_paths().first() {
             url.object_store()
@@ -483,39 +479,56 @@ impl TableProvider for LakeSoulTableProvider {
             return Ok(Arc::new(EmptyExec::new(Arc::new(Schema::empty()))));
         };
 
+        let mut scan_config = FileScanConfig {
+            object_store_url,
+            file_schema: self.schema(),
+            file_groups: partitioned_file_lists
+                .into_iter()
+                .map(|files| FileGroup::new(files).with_statistics(statistics.clone()))
+                .collect(),
+            constraints: Default::default(),
+            // projection for Table instead of File
+            projection: projection.cloned(),
+            limit,
+            output_ordering: self.try_create_output_ordering()?,
+            file_compression_type: FileCompressionType::ZSTD,
+            new_lines_in_values: false,
+            file_source,
+            table_partition_cols,
+            batch_size: None,
+        };
+
+        if let Some(expr) = conjunction(filters.to_vec()) {
+            // NOTE: Use the table schema (NOT file schema) here because `expr` may contain references to partition columns.
+            let table_df_schema = self.schema().as_ref().clone().to_dfschema()?;
+            let filter = create_physical_expr(
+                &expr,
+                &table_df_schema,
+                session_state.execution_props(),
+            )?;
+            let res = scan_config
+                .try_pushdown_filters(vec![filter], session_state.config_options())?;
+            match res.updated_node {
+                Some(sc) => {
+                    debug!("apply new scan config");
+                    debug!("filters: {:?}", res.filters);
+                    scan_config = sc
+                        .as_any()
+                        .downcast_ref::<FileScanConfig>()
+                        .ok_or(DataFusionError::Internal(
+                            "Failed to downcast FileScanConfig".into(),
+                        ))?
+                        .clone();
+                }
+                None => {
+                    debug!("no updated node")
+                }
+            }
+        }
         // create the execution plan
-        let statistics = Arc::new(statistics);
-        let file_source = self
-            .options()
-            .format
-            .file_source()
-            .with_statistics(Statistics::new_unknown(&self.schema()));
         self.options()
             .format
-            .create_physical_plan(
-                session_state,
-                FileScanConfig {
-                    object_store_url,
-                    file_schema: self.schema(),
-                    file_groups: partitioned_file_lists
-                        .into_iter()
-                        .map(|files| {
-                            FileGroup::new(files).with_statistics(statistics.clone())
-                        })
-                        .collect(),
-                    constraints: Default::default(),
-                    // projection for Table instead of File
-                    projection: projection.cloned(),
-                    limit,
-                    output_ordering: self.try_create_output_ordering()?,
-                    file_compression_type: FileCompressionType::ZSTD,
-                    new_lines_in_values: false,
-                    file_source,
-                    table_partition_cols,
-                    batch_size: None,
-                },
-                filters.as_ref(),
-            )
+            .create_physical_plan(session_state, scan_config)
             .await
     }
 
@@ -528,6 +541,7 @@ impl TableProvider for LakeSoulTableProvider {
             .iter()
             .map(|f| {
                 if self.is_partition_filter(f) {
+                    // TODO: only supported partition filter here
                     Ok(TableProviderFilterPushDown::Exact)
                 } else {
                     Ok(TableProviderFilterPushDown::Unsupported)

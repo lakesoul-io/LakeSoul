@@ -18,7 +18,6 @@ use crate::sorted_merge::sorted_stream_merger::{
 use arrow_schema::{Field, Schema, SchemaRef};
 use datafusion::catalog::memory::DataSourceExec;
 use datafusion::dataframe::DataFrame;
-use datafusion::datasource::physical_plan::{FileScanConfigBuilder, ParquetSource};
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 
 use datafusion::logical_expr::Expr;
@@ -26,13 +25,11 @@ use datafusion::physical_expr::{EquivalenceProperties, LexOrdering};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::{ExecutionPlanProperties, Partitioning, PlanProperties};
 use datafusion::prelude::SessionContext;
-#[allow(deprecated)]
 use datafusion::{
     datasource::physical_plan::FileScanConfig,
     execution::TaskContext,
     physical_plan::{
-        DisplayAs, DisplayFormatType, ExecutionPlan, PhysicalExpr,
-        SendableRecordBatchStream,
+        DisplayAs, DisplayFormatType, ExecutionPlan, SendableRecordBatchStream,
     },
 };
 use datafusion_common::{DFSchemaRef, DataFusionError, Result};

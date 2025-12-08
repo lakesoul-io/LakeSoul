@@ -1010,7 +1010,7 @@ pub fn collect_column_equalities(
                     column_name: col.name.clone(),
                     scalar_value: scalar.clone(),
                 });
-            } else if let (Expr::Literal(scalar,_), Expr::Column(col)) =
+            } else if let (Expr::Literal(scalar, _), Expr::Column(col)) =
                 (&binary_expr.left.as_ref(), &binary_expr.right.as_ref())
             {
                 equalities.push(ColumnEquality {

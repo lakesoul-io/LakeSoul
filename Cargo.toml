@@ -9,11 +9,11 @@ members = [
     "rust/lakesoul-metadata-c",
     "rust/proto",
     "rust/lakesoul-io",
-    # "rust/lakesoul-io-c",
-    # "rust/lakesoul-datafusion",
-    # "rust/lakesoul-flight",
-    # "rust/lakesoul-s3-proxy",
-    # "rust/lakesoul-console",
+    "rust/lakesoul-io-c",
+    "rust/lakesoul-datafusion",
+    "rust/lakesoul-flight",
+    "rust/lakesoul-s3-proxy",
+    "rust/lakesoul-console",
     "python",
 ]
 resolver = "3"

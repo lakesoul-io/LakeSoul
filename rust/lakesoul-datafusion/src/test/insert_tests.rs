@@ -205,11 +205,10 @@ mod insert_tests {
             client.clone(),
             table_name,
             vec!["data", "id"],
-            Some(
-                col("id").lt_eq(Expr::Literal(datafusion::scalar::ScalarValue::Int32(
-                    Some(2),
-                ))),
-            ),
+            Some(col("id").lt_eq(Expr::Literal(
+                datafusion::scalar::ScalarValue::Int32(Some(2)),
+                None,
+            ))),
             &[
                 "+------+----+",
                 "| data | id |",
@@ -241,11 +240,10 @@ mod insert_tests {
             client.clone(),
             table_name,
             vec!["data", "id"],
-            Some(
-                col("id").lt_eq(Expr::Literal(datafusion::scalar::ScalarValue::Int32(
-                    Some(2),
-                ))),
-            ),
+            Some(col("id").lt_eq(Expr::Literal(
+                datafusion::scalar::ScalarValue::Int32(Some(2)),
+                None,
+            ))),
             &[
                 "+------+----+",
                 "| data | id |",
