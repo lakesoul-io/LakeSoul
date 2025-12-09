@@ -537,17 +537,25 @@ impl TableProvider for LakeSoulTableProvider {
         filters: &[&Expr],
     ) -> Result<Vec<TableProviderFilterPushDown>> {
         info!("supports_filters_pushdown: {:?}", filters);
-        filters
-            .iter()
-            .map(|f| {
-                if self.is_partition_filter(f) {
-                    // TODO: only supported partition filter here
-                    Ok(TableProviderFilterPushDown::Exact)
-                } else {
-                    Ok(TableProviderFilterPushDown::Unsupported)
-                }
-            })
-            .collect()
+
+        if self.primary_keys.is_empty() {
+            // TODO session config -> io_config / config.parquet support filter pushdown
+            Ok(vec![TableProviderFilterPushDown::Exact; filters.len()])
+        } else {
+            // O(nml), n = number of filters, m = number of primary keys, l = number of columns
+            filters
+                .iter()
+                .map(|f| {
+                    let cols = f.column_refs();
+                    if cols.iter().all(|col| self.primary_keys.contains(&col.name)) {
+                        // use primary key
+                        Ok(TableProviderFilterPushDown::Inexact)
+                    } else {
+                        Ok(TableProviderFilterPushDown::Unsupported)
+                    }
+                })
+                .collect()
+        }
     }
 
     #[instrument(skip(self, state))]
