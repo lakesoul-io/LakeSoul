@@ -80,7 +80,7 @@ fn main() {
     info!("pg url {:?}", std::env::var("LAKESOUL_PG_URL"));
     let common_prefix = std::env::var("LAKESOUL_COMMON_PREFIX")
         .ok()
-        .and_then(|s| Some(s.trim_end_matches('/').to_string()));
+        .map(|s| s.trim_end_matches('/').to_string());
 
     // first try aws
     let handler: Arc<dyn HTTPHandler + Send + Sync + 'static> =
@@ -305,9 +305,8 @@ impl BackgroundService for S3ProxyHandle {
             let metadata_client = Arc::new(
                 MetaDataClient::from_env()
                     .await
-                    .map(|metadata_client| {
+                    .inspect(|metadata_client| {
                         info!("initialized metadata client");
-                        metadata_client
                     })
                     .unwrap_or_else(|e| {
                         error!("create metadata client error: {e:?}");
@@ -377,7 +376,7 @@ impl ProxyHttp for S3Proxy {
         let s = format!(
             "{}{}",
             self.handle.http_handle.get_endpoint(),
-            session.req_header().uri.to_string()
+            session.req_header().uri
         );
         debug!("Requesting url {:?}", s);
 
@@ -389,11 +388,11 @@ impl ProxyHttp for S3Proxy {
         ctx.require_request_body_rewrite = self
             .handle
             .http_handle
-            .require_request_body_rewrite(&ctx, session.req_header());
+            .require_request_body_rewrite(ctx, session.req_header());
         ctx.require_response_body_rewrite = self
             .handle
             .http_handle
-            .require_response_body_rewrite(&ctx, session.req_header());
+            .require_response_body_rewrite(ctx, session.req_header());
         debug!(
             "request_filter original header: {:?}, params: {:?}, \
             rewrite req body {}, rewrite reps body {}",
@@ -411,8 +410,7 @@ impl ProxyHttp for S3Proxy {
             .uri
             .path()
             .split("/")
-            .filter(|s| !s.is_empty())
-            .next()
+            .find(|s| !s.is_empty())
         {
             bucket = path.to_string();
         } else {
@@ -429,20 +427,17 @@ impl ProxyHttp for S3Proxy {
         ctx.bucket = bucket;
 
         // verify meta permission
-        match self.handle.verify_rbac(session.req_header(), &ctx).await {
-            Err(e) => {
-                let msg = format!(
-                    "Permission denied error {:?}, uri {:?}",
-                    e,
-                    session.req_header().uri
-                );
-                error!("{}", msg);
-                session
-                    .respond_error_with_body(403, Bytes::from(msg))
-                    .await?;
-                return Ok(true);
-            }
-            _ => {}
+        if let Err(e) = self.handle.verify_rbac(session.req_header(), ctx).await {
+            let msg = format!(
+                "Permission denied error {:?}, uri {:?}",
+                e,
+                session.req_header().uri
+            );
+            error!("{}", msg);
+            session
+                .respond_error_with_body(403, Bytes::from(msg))
+                .await?;
+            return Ok(true);
         }
 
         // modify header (e.g. converting headers and params, signing)
@@ -689,16 +684,15 @@ fn parse_table_path_from_query(query: &str, bucket_name: &str) -> String {
     let query_parts_iter = query.split("&");
     for query_part in query_parts_iter {
         let mut query_part_iter = query_part.split("=");
-        if let Some(key) = query_part_iter.next() {
-            if key == "prefix" {
-                if let Some(value) = query_part_iter.next() {
-                    return assemble_table_path(
-                        value.split("%2F").filter(|s| !s.is_empty()),
-                        bucket_name,
-                        "%3D",
-                    );
-                }
-            }
+        if let Some(key) = query_part_iter.next()
+            && key == "prefix"
+            && let Some(value) = query_part_iter.next()
+        {
+            return assemble_table_path(
+                value.split("%2F").filter(|s| !s.is_empty()),
+                bucket_name,
+                "%3D",
+            );
         }
     }
     format!("s3://{}", bucket_name)
@@ -711,7 +705,7 @@ fn parse_table_path(uri: &Uri, bucket: &str) -> String {
     path_parts_iter.next().unwrap();
 
     let bucket_name = bucket;
-    if let None = path_parts_iter.peek() {
+    if path_parts_iter.peek().is_none() {
         // a list request without path
         // retrieve path from query string
         let query = uri.query().unwrap_or("");

@@ -83,13 +83,13 @@ impl AzureHandler {
         headers: &mut RequestHeader,
     ) -> Result<(), Error> {
         // 1.
-        self.rewrite_queries(&url, ctx, session, headers).await?;
+        self.rewrite_queries(url, ctx, session, headers).await?;
         self.rewrite_request_headers(headers)?;
         // 2.
         self.add_required_headers(headers, ctx, &self.host)?;
         // 3.
         // re-construct url
-        let s = format!("{}{}", self.endpoint, headers.uri.to_string());
+        let s = format!("{}{}", self.endpoint, headers.uri);
         let url = Url::parse(s.as_str())?;
         sign(&url, headers, self.account.as_str(), &self.key)?;
         Ok(())
@@ -135,7 +135,7 @@ impl AzureHandler {
         query.insert("restype", "container");
         // for listing root dir, should not pass prefix params(even if empty) to azure
         query_params.get("prefix").iter().for_each(|p| {
-            if !p.is_empty() && !(*p == "/") {
+            if !p.is_empty() && (*p != "/") {
                 query.insert("prefix", p);
             }
         });
@@ -309,10 +309,9 @@ impl AzureHandler {
             .uri
             .path()
             .split("/")
-            .filter(|s| !s.is_empty())
-            .next()
+            .find(|s| !s.is_empty())
             .ok_or(anyhow!("cannot parse container name from {}", headers.uri))?;
-        let batch_id = format!("batch_{}", Uuid::new_v4().to_string());
+        let batch_id = format!("batch_{}", Uuid::new_v4());
         aws_request
             .object
             .iter()
@@ -346,7 +345,7 @@ impl AzureHandler {
                 req_header.insert_header("x-ms-delete-snapshots", "include")?;
                 azure_batch.push_str("\r\nx-ms-delete-snapshots: include");
                 // sign subrequest
-                let s = format!("{}{}", self.endpoint, req_header.uri.to_string());
+                let s = format!("{}{}", self.endpoint, req_header.uri);
                 let url = Url::parse(s.as_str())?;
                 sign(&url, &mut req_header, &self.account, &self.key)?;
                 azure_batch.push_str("\r\nAuthorization: ");
@@ -432,7 +431,7 @@ impl HTTPHandler for AzureHandler {
         session: &mut Session,
         ctx: &mut S3ProxyContext,
     ) -> Result<bool, Error> {
-        let s = format!("{}{}", self.endpoint, session.req_header().uri.to_string());
+        let s = format!("{}{}", self.endpoint, session.req_header().uri);
         let url = Url::parse(s.as_str())?;
         // first handle CreateMultipartUpload request
         // generate upload id and fake results
@@ -493,7 +492,7 @@ impl HTTPHandler for AzureHandler {
                 .contains_key("x-amz-copy-source")
         {
             self.rewrite_request_headers(session.req_header_mut())?;
-            self.add_required_headers(session.req_header_mut(), &ctx, &self.host)?;
+            self.add_required_headers(session.req_header_mut(), ctx, &self.host)?;
             sign(
                 &url,
                 session.req_header_mut(),
@@ -528,7 +527,7 @@ impl HTTPHandler for AzureHandler {
                     last_modified: ctx
                         .response_headers
                         .get(LAST_MODIFIED.as_str())
-                        .and_then(|time| Some(time.as_str()))
+                        .map(|time| time.as_str())
                         .unwrap_or("")
                         .to_string(),
                 };
@@ -537,7 +536,7 @@ impl HTTPHandler for AzureHandler {
                 String::new()
             };
             if !s.is_empty() {
-                resp_header.insert_header(CONTENT_LENGTH, s.as_bytes().len())?;
+                resp_header.insert_header(CONTENT_LENGTH, s.len())?;
             } else {
                 resp_header.insert_header(CONTENT_LENGTH, 0)?;
             }
@@ -576,11 +575,7 @@ impl HTTPHandler for AzureHandler {
                 .await?;
             self.rewrite_request_headers(session.req_header_mut())?;
             self.add_required_headers(session.req_header_mut(), ctx, &self.host)?;
-            let s = format!(
-                "{}{}",
-                self.endpoint,
-                session.req_header_mut().uri.to_string()
-            );
+            let s = format!("{}{}", self.endpoint, session.req_header_mut().uri);
             let url = Url::parse(s.as_str())?;
             let path = url.path();
             // starting from second path segment is the key
@@ -626,7 +621,7 @@ impl HTTPHandler for AzureHandler {
             };
 
             if !s.is_empty() {
-                resp_header.insert_header(CONTENT_LENGTH, s.as_bytes().len())?;
+                resp_header.insert_header(CONTENT_LENGTH, s.len())?;
             } else {
                 resp_header.insert_header(CONTENT_LENGTH, 0)?;
             }
@@ -679,7 +674,7 @@ impl HTTPHandler for AzureHandler {
         ctx: &mut S3ProxyContext,
     ) -> std::result::Result<(), Error> {
         // handle query rewrite, change headers, and signing
-        let s = format!("{}{}", self.endpoint, session.req_header().uri.to_string());
+        let s = format!("{}{}", self.endpoint, session.req_header().uri);
         let url = Url::parse(s.as_str())?;
         self.process_request_headers(&url, ctx, session, upstream_request)
             .await?;
@@ -808,7 +803,7 @@ impl HTTPHandler for AzureHandler {
                 "rewrite request_body for batch delete {:?}",
                 String::from_utf8_lossy(azure_batch.as_ref())
             );
-            *body = Some(Bytes::from(azure_batch));
+            *body = Some(azure_batch);
         } else {
             *body = Some(Bytes::from(std::mem::take(&mut ctx.request_body)))
         }
@@ -844,13 +839,13 @@ impl HTTPHandler for AzureHandler {
                 continuation_token: azure_result
                     .marker
                     .as_mut()
-                    .map(|marker| std::mem::take(marker))
-                    .unwrap_or(String::new()),
+                    .map(std::mem::take)
+                    .unwrap_or_default(),
                 next_continuation_token: azure_result
                     .next_marker
                     .as_mut()
-                    .map(|marker| std::mem::take(marker))
-                    .unwrap_or(String::new()),
+                    .map(std::mem::take)
+                    .unwrap_or_default(),
                 contents: vec![],
                 common_prefixes: vec![],
             };
@@ -911,7 +906,7 @@ impl HTTPHandler for AzureHandler {
             let split = response_body
                 .split(batch_id)
                 .filter(|b| {
-                    let s = b.trim_matches(&['-', '\r', '\n', ' ']);
+                    let s = b.trim_matches(['-', '\r', '\n', ' ']);
                     !s.is_empty() && s.contains("HTTP/1.1")
                 })
                 .collect::<Vec<_>>();
@@ -933,7 +928,7 @@ impl HTTPHandler for AzureHandler {
                 .zip(split.into_iter())
                 .try_for_each(|(mut obj, split)| {
                     let key = std::mem::take(&mut obj.key);
-                    let caps = re.captures(&split).ok_or(anyhow!(
+                    let caps = re.captures(split).ok_or(anyhow!(
                         "cannot capture response split pattern {:?}",
                         split
                     ))?;
@@ -996,8 +991,7 @@ impl HTTPHandler for AzureHandler {
 }
 
 fn take_string_from_map(map: &mut HashMap<String, String>, key: &str) -> String {
-    map.get_mut(key)
-        .map_or(String::new(), |v| std::mem::take(v))
+    map.get_mut(key).map_or(String::new(), std::mem::take)
 }
 
 fn convert_timestamp(input: &str) -> Result<String, Error> {
@@ -1084,7 +1078,7 @@ fn sign(
     key: &AzureAccessKey,
 ) -> Result<(), Error> {
     let signature =
-        generate_authorization(&headers.headers, &url, &headers.method, account, key);
+        generate_authorization(&headers.headers, url, &headers.method, account, key);
     debug!("azure signing {}, {}", url, signature);
     headers.insert_header(AUTHORIZATION, signature)?;
     Ok(())
