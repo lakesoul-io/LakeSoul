@@ -134,7 +134,6 @@ public class SyncDatabase {
                 xsyncToDoris(env, fenodes);
                 break;
             case "mongodb":
-//                String uri = parameter.get(MONGO_DB_URI.key());
                 String uri = url;
                 int batchSize = parameter.getInt(BATCH_SIZE.key(), BATCH_SIZE.defaultValue());
                 int batchIntervalMs = parameter.getInt(BATCH_INTERVAL_MS.key(), BATCH_INTERVAL_MS.defaultValue());
@@ -541,6 +540,7 @@ public class SyncDatabase {
                                       String uri,
                                       int batchSize,
                                       int batchInservalMs) throws Exception {
+
         createMongoColl(targetDatabase, targetTableName, uri);
         if (useBatch) {
             env.setRuntimeMode(RuntimeExecutionMode.BATCH);
