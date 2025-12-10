@@ -314,6 +314,7 @@ SPDX-License-Identifier: Apache-2.0
             <groupId>io.openlineage</groupId>
             <artifactId>openlineage-spark_2.12</artifactId>
             <version>1.22.0</version>
+            <scope>compile</scope>
         </dependency>
 
         <dependency>
@@ -550,6 +551,7 @@ SPDX-License-Identifier: Apache-2.0
                             <include>com.google.code.gson:gson</include>
                             <include>dev.failsafe:failsafe</include>
                             <include>com.google.protobuf:protobuf-java</include>
+                            <include>io.openlineage:openlineage-spark_2.12</include>
 
                         </includes>
                     </artifactSet>

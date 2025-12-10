@@ -12,6 +12,7 @@ import org.apache.spark.sql.connector.catalog.Identifier;
 import org.apache.spark.sql.connector.catalog.Table;
 import org.apache.spark.sql.connector.catalog.TableCatalog;
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog;
+import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -49,15 +50,22 @@ public class LakeSoulCatalogHandler implements CatalogHandler {
         String tableName = null;
         String tableNameSpace = null;
         String tableLocation;
+        LakeSoulCatalog lakeSoulCatalog = (LakeSoulCatalog) tableCatalog;
         try {
             Table table = tableCatalog.loadTable(identifier);
-            LakeSoulCatalog lakeSoulCatalog = (LakeSoulCatalog) tableCatalog;
-            tableLocation = lakeSoulCatalog.getTableLocation(identifier).get();
-            tableName = table.name().split("//.")[1];
-            tableNameSpace = table.name().split("//.")[0];
+            if (table instanceof LakeSoulTableV2) {
+                LakeSoulTableV2 lakeSoulTableV2 = (LakeSoulTableV2) table;
+                tableName = lakeSoulTableV2.tableIdentifier().get();
+                tableNameSpace = lakeSoulTableV2.namespace();
+            } else {
+                tableName = table.name().split("//.")[1];
+                tableNameSpace = table.name().split("//.")[0];
+            }
+
         } catch (NoSuchTableException e) {
             throw new RuntimeException(e);
         }
+        tableLocation = lakeSoulCatalog.getTableLocation(identifier).get();
         DatasetIdentifier.Symlink symlink;
         symlink = new DatasetIdentifier.Symlink(tableName, tableNameSpace, DatasetIdentifier.SymlinkType.TABLE);
         List<DatasetIdentifier.Symlink> symlinks = new ArrayList<>();
