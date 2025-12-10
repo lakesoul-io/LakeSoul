@@ -1,0 +1,12 @@
+# EXAMPLE USAGE:
+#
+#   Refer for explanation to following link:
+#   https://lefthook.dev/configuration/
+#
+pre-push:
+    parallel: true
+    jobs:
+        - name: Rust Format
+          run: cargo fmt --all -- --check
+        - name: Rust Clippy
+          run: cargo clippy --all-targets --workspace -- -D warnings
