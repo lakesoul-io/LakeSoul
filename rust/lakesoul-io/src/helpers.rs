@@ -14,6 +14,7 @@ use arrow_schema::{
     ArrowError, DataType, Field, Schema, SchemaBuilder, SchemaRef, TimeUnit,
 };
 use chrono::{DateTime, Duration};
+use datafusion::physical_expr::create_physical_sort_expr;
 use datafusion::physical_plan::memory::LazyBatchGenerator;
 use datafusion::{
     datasource::{
@@ -25,7 +26,6 @@ use datafusion::{
     logical_expr::col,
     physical_expr::{PhysicalSortExpr, create_physical_expr},
     physical_plan::PhysicalExpr,
-    physical_planner::create_physical_sort_expr,
 };
 use datafusion_common::DataFusionError::{External, Internal};
 use datafusion_common::{
