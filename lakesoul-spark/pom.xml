@@ -157,14 +157,6 @@ SPDX-License-Identifier: Apache-2.0
             <version>0.6.10</version>
             <scope>${local.scope}</scope>
         </dependency>
-        <!-- https://mvnrepository.com/artifact/io.openlineage/openlineage-spark -->
-        <!-- https://mvnrepository.com/artifact/io.openlineage/openlineage-spark -->
-        <dependency>
-            <groupId>io.openlineage</groupId>
-            <artifactId>openlineage-spark_2.12</artifactId>
-            <version>1.23.0</version>
-            <scope>provided</scope>
-        </dependency>
         <dependency>
             <groupId>org.apache.spark</groupId>
             <artifactId>spark-sql_${scala.binary.version}</artifactId>
@@ -181,7 +173,6 @@ SPDX-License-Identifier: Apache-2.0
                 </exclusion>
             </exclusions>
         </dependency>
-
         <dependency>
             <groupId>org.apache.spark</groupId>
             <artifactId>spark-catalyst_${scala.binary.version}</artifactId>
