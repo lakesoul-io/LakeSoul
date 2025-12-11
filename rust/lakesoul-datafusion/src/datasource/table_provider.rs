@@ -333,7 +333,9 @@ impl LakeSoulTableProvider {
                     }
                 })
                 .collect::<Result<Vec<_>>>()?;
-            all_sort_orders.push(LexOrdering::new(sort_exprs));
+            if let Some(ordering) = LexOrdering::new(sort_exprs) {
+                all_sort_orders.push(ordering);
+            }
         }
         Ok(all_sort_orders)
     }
@@ -474,7 +476,7 @@ impl TableProvider for LakeSoulTableProvider {
             .options()
             .table_partition_cols
             .iter()
-            .map(|col| Ok(self.schema().field_with_name(&col.0)?.clone()))
+            .map(|col| Ok(Arc::new(self.schema().field_with_name(&col.0)?.clone())))
             .collect::<Result<Vec<_>>>()?;
 
         let statistics = Arc::new(statistics);
@@ -509,6 +511,7 @@ impl TableProvider for LakeSoulTableProvider {
             file_source,
             table_partition_cols,
             batch_size: None,
+            expr_adapter_factory: None, // TODO use adapter
         };
 
         if let Some(expr) = conjunction(filters.to_vec()) {

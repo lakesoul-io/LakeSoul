@@ -195,7 +195,7 @@ impl Iterator for OneReader {
     fn next(&mut self) -> Option<Self::Item> {
         self.runtime.block_on(self.stream.next()).map(|res| {
             res.map_err(|e| match e {
-                DataFusionError::ArrowError(arrow_error, _) => arrow_error,
+                DataFusionError::ArrowError(arrow_error, _) => *arrow_error,
                 _ => ArrowError::ExternalError(Box::new(e)),
             })
         })
