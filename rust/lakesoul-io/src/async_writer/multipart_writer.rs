@@ -254,7 +254,7 @@ impl AsyncBatchWriter for MultiPartAsyncWriter {
         this.writer
             .abort()
             .await
-            .map_err(DataFusionError::ObjectStore)?;
+            .map_err(|e| DataFusionError::ObjectStore(Box::new(e)))?;
         Ok(())
     }
 

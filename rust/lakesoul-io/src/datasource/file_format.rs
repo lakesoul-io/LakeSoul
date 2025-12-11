@@ -74,7 +74,8 @@ async fn fetch_schema(
     file: &ObjectMeta,
     metadata_size_hint: Option<usize>,
 ) -> Result<Schema> {
-    let metadata = fetch_parquet_metadata(store, file, metadata_size_hint).await?;
+    // TODO add cryption
+    let metadata = fetch_parquet_metadata(store, file, metadata_size_hint, None).await?;
     let file_metadata = metadata.file_metadata();
     let schema = parquet_to_arrow_schema(
         file_metadata.schema_descr(),
@@ -197,10 +198,10 @@ impl FileFormat for LakeSoulParquetFormat {
                     && old_val != &value
                 {
                     return Err(DataFusionError::ArrowError(
-                        ArrowError::SchemaError(format!(
+                        Box::new(ArrowError::SchemaError(format!(
                             "Fail to merge schema due to conflicting metadata. \
                                          Key '{key}' has different values '{old_val}' and '{value}'"
-                        )),
+                        ))),
                         None,
                     ));
                 }
@@ -316,6 +317,10 @@ impl FileFormat for LakeSoulParquetFormat {
             .file_source()
             .with_statistics(Statistics::default())
     }
+
+    fn compression_type(&self) -> Option<FileCompressionType> {
+        self.parquet_format.compression_type()
+    }
 }
 
 pub async fn flatten_file_scan_config(
@@ -399,6 +404,7 @@ pub async fn flatten_file_scan_config(
                                 new_lines_in_values: false,
                                 file_source: conf.file_source.with_statistics(statistics),
                                 batch_size: None,
+                                expr_adapter_factory: None, // TODO use expr adapter
                             };
                             // flatten_configs.push(config);
                             Ok::<FileScanConfig, DataFusionError>(config)

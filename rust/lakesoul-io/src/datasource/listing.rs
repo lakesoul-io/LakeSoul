@@ -31,7 +31,6 @@ use datafusion::logical_expr::{TableProviderFilterPushDown, TableType};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::{datasource::TableProvider, logical_expr::Expr};
-use datafusion_common::DataFusionError::ObjectStore;
 use datafusion_common::{DataFusionError, Result, Statistics, ToDFSchema};
 use futures::future;
 use object_store::path::Path;
@@ -159,7 +158,7 @@ impl TableProvider for LakeSoulTableProvider {
                                 <ListingTableUrl as AsRef<Url>>::as_ref(url).path(),
                             )?)
                             .await
-                            .map_err(ObjectStore)?,
+                            .map_err(|e| DataFusionError::ObjectStore(Box::new(e)))?,
                     ))
                 }
             }))
@@ -167,7 +166,7 @@ impl TableProvider for LakeSoulTableProvider {
 
         let mut scan_config = FileScanConfig {
             object_store_url,
-            file_schema: Arc::clone(&self.schema()),
+            file_schema: Arc::clone(&__self.schema()),
             file_groups: vec![
                 FileGroup::new(partition_files?).with_statistics(Arc::new(statistics)),
             ],
@@ -180,6 +179,7 @@ impl TableProvider for LakeSoulTableProvider {
             file_source: source,
             table_partition_cols: vec![],
             batch_size: None,
+            expr_adapter_factory: None, // TODO use expr adapter
         };
 
         if let Some(expr) = conjunction(filters.to_vec()) {
