@@ -137,7 +137,9 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                                 session_state,
                             )?;
                             let sort_exec = Arc::new(SortExec::new(
-                                LexOrdering::new(sort_expr),
+                                LexOrdering::new(sort_expr).ok_or(
+                                    DataFusionError::Plan("empty sort expr".into()),
+                                )?,
                                 physical_input,
                             ));
                             Arc::new(RepartitionByRangeAndHashExec::try_new(

@@ -26,7 +26,8 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::physical_expr::{
-    EquivalenceProperties, LexOrdering, LexRequirement, create_physical_expr,
+    EquivalenceProperties, LexOrdering, LexRequirement, OrderingRequirements,
+    create_physical_expr,
 };
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::filter::FilterExec;
@@ -343,6 +344,10 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
             .file_source()
             .with_statistics(Statistics::default())
     }
+
+    fn compression_type(&self) -> Option<FileCompressionType> {
+        self.parquet_format.compression_type()
+    }
 }
 
 /// Execution plan for writing record batches to a [`LakeSoulParquetSink`]
@@ -607,7 +612,7 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         vec![Distribution::SinglePartition; self.children().len()]
     }
 
-    fn required_input_ordering(&self) -> Vec<Option<LexRequirement>> {
+    fn required_input_ordering(&self) -> Vec<Option<OrderingRequirements>> {
         // The input order is either explicitly set (such as by a ListingTable),
         // or require that the [FileSinkExec] gets the data in the order the
         // input produced it (otherwise the optimizer may choose to reorder
@@ -616,7 +621,9 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         // More rationale:
         // https://github.com/apache/arrow-datafusion/pull/6354#discussion_r1195284178
         match &self.sort_order {
-            Some(requirements) => vec![Some(requirements.clone())],
+            Some(requirements) => {
+                vec![Some(OrderingRequirements::Soft(vec![requirements.clone()]))] // TODO check this
+            }
             None => vec![],
         }
     }

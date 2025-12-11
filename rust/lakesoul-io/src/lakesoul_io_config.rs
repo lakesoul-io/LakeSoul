@@ -798,7 +798,9 @@ pub fn register_s3_object_store(
 
     if bucket.is_none() {
         return Err(DataFusionError::ArrowError(
-            Box::new(ArrowError::InvalidArgumentError("missing fs.s3a.bucket".to_string())),
+            Box::new(ArrowError::InvalidArgumentError(
+                "missing fs.s3a.bucket".to_string(),
+            )),
             None,
         ));
     }
@@ -879,12 +881,11 @@ pub fn register_hdfs_object_store(
 ) -> Result<()> {
     #[cfg(not(feature = "hdfs"))]
     {
-        Err(DataFusionError::ObjectStore(
-            Box::new(
+        Err(DataFusionError::ObjectStore(Box::new(
             object_store::Error::NotSupported {
                 source: "hdfs support is not enabled".into(),
-            }),
-        ))
+            },
+        )))
     }
     #[cfg(feature = "hdfs")]
     {
@@ -990,8 +991,7 @@ fn register_object_store(
             {
                 Ok(format!("file://{}", path))
             }
-            _ => Err(DataFusionError::ObjectStore(
-                Box::new(
+            _ => Err(DataFusionError::ObjectStore(Box::new(
                 object_store::Error::NotSupported {
                     source: "FileSystem is not supported".into(),
                 },
