@@ -75,8 +75,8 @@ pub struct LakeSoulTableProvider {
     pub(crate) file_schema: SchemaRef,
     pub(crate) primary_keys: Vec<String>,
     pub(crate) range_partitions: Vec<String>,
+    pub(crate) pushdown_filters: bool,
 }
-
 impl LakeSoulTableProvider {
     pub async fn try_new(
         session_state: &SessionState,
@@ -94,8 +94,8 @@ impl LakeSoulTableProvider {
         // O(nm), n = number of table fields, m = number of range partitions
         for (idx, field) in table_schema.fields().iter().enumerate() {
             match range_partitions.contains(field.name()) {
-                false => file_schema_projection.push(idx),
                 true => range_partition_projection.push(idx),
+                false => file_schema_projection.push(idx),
             };
         }
 
@@ -142,11 +142,12 @@ impl LakeSoulTableProvider {
             file_schema,
             primary_keys: hash_partitions,
             range_partitions,
+            pushdown_filters: lakesoul_io_config.parquet_pushdown_filters(), // TODO after add more format
         })
     }
 
     pub async fn new_from_create_external_table(
-        _session_state: &dyn Session,
+        session_state: &dyn Session,
         client: MetaDataClientRef,
         cmd: &CreateExternalTable,
     ) -> crate::error::Result<Self> {
@@ -249,6 +250,11 @@ impl LakeSoulTableProvider {
             file_schema,
             primary_keys,
             range_partitions,
+            pushdown_filters: session_state
+                .config_options()
+                .execution
+                .parquet
+                .pushdown_filters, // TODO after more format
         })
     }
 
@@ -477,7 +483,8 @@ impl TableProvider for LakeSoulTableProvider {
             .options()
             .format
             .file_source()
-            .with_statistics(Statistics::new_unknown(&self.schema()));
+            .with_statistics(Statistics::new_unknown(&self.schema()))
+            .with_schema(self.file_schema.clone());
 
         let object_store_url = if let Some(url) = self.table_paths().first() {
             url.object_store()
@@ -512,6 +519,9 @@ impl TableProvider for LakeSoulTableProvider {
                 &table_df_schema,
                 session_state.execution_props(),
             )?;
+            // let mut config = session_state.config_options().clone();
+            // config.execution.parquet.pushdown_filters = true;
+
             let res = scan_config
                 .try_pushdown_filters(vec![filter], session_state.config_options())?;
             match res.updated_node {
@@ -543,6 +553,13 @@ impl TableProvider for LakeSoulTableProvider {
         filters: &[&Expr],
     ) -> Result<Vec<TableProviderFilterPushDown>> {
         info!("supports_filters_pushdown: {:?}", filters);
+
+        if !self.pushdown_filters {
+            return Ok(vec![
+                TableProviderFilterPushDown::Unsupported;
+                filters.len()
+            ]);
+        }
 
         if self.primary_keys.is_empty() {
             // TODO session config -> io_config / config.parquet support filter pushdown

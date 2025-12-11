@@ -639,8 +639,6 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        println!("len is {}", children.len());
-
         Ok(Arc::new(Self {
             input: if children.is_empty() {
                 self.input.clone()

@@ -246,6 +246,11 @@ impl LakeSoulIOConfig {
         &self.prefix
     }
 
+    /// Returns whether to support parquet pushdown filters
+    pub fn parquet_pushdown_filters(&self) -> bool {
+        self.parquet_filter_pushdown
+    }
+
     /// Returns whether to keep row order in output
     pub fn keep_ordering(&self) -> bool {
         self.option(OPTION_KEY_KEEP_ORDERS)
@@ -1044,8 +1049,8 @@ pub fn create_session_context_with_planner(
         .optimizer
         .enable_round_robin_repartition = false; // if true, the record_batches poll from stream become unordered
     sess_conf.options_mut().optimizer.prefer_hash_join = false; //if true, panicked at 'range end out of bounds'
-    sess_conf.options_mut().execution.parquet.pushdown_filters =
-        config.parquet_filter_pushdown;
+    // sess_conf.options_mut().execution.parquet.pushdown_filters =
+    //     config.parquet_filter_pushdown;
     sess_conf.options_mut().execution.target_partitions = 1;
     sess_conf.options_mut().execution.parquet.dictionary_enabled = Some(false);
     sess_conf

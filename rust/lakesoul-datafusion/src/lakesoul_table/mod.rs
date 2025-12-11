@@ -156,7 +156,17 @@ impl LakeSoulTable {
                 self.table_namespace().to_string(),
                 self.table_name().to_string(),
             ),
-            provider_as_source(self.as_provider().await?),
+            provider_as_source(
+                self.as_provider(
+                    sess_ctx
+                        .state()
+                        .config_options()
+                        .execution
+                        .parquet
+                        .pushdown_filters,
+                )
+                .await?,
+            ),
             InsertOp::Replace,
         )?
         .build()?;
@@ -189,7 +199,17 @@ impl LakeSoulTable {
                 self.table_namespace().to_string(),
                 self.table_name().to_string(),
             ),
-            provider_as_source(self.as_provider().await?),
+            provider_as_source(
+                self.as_provider(
+                    sess_ctx
+                        .state()
+                        .config_options()
+                        .execution
+                        .parquet
+                        .pushdown_filters,
+                )
+                .await?,
+            ),
             InsertOp::Replace,
         )?
         .build()?;
@@ -276,7 +296,10 @@ impl LakeSoulTable {
         ))
     }
 
-    pub async fn as_provider(&self) -> Result<Arc<dyn TableProvider>> {
+    pub async fn as_provider(
+        &self,
+        pushdown_filters: bool,
+    ) -> Result<Arc<dyn TableProvider>> {
         Ok(Arc::new(LakeSoulTableProvider {
             listing_options: LakeSoulMetaDataParquetFormat::default_listing_options()
                 .await?,
@@ -287,6 +310,7 @@ impl LakeSoulTable {
             file_schema: self.schema(),
             primary_keys: self.primary_keys().to_vec(),
             range_partitions: self.range_partitions().to_vec(),
+            pushdown_filters,
         }))
     }
 

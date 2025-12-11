@@ -601,7 +601,6 @@ mod insert_tests {
         ]).await
     }
 
-    // #[tokio::test]
     #[test_log::test(tokio::test)]
     async fn test_all_cases() -> Result<()> {
         test_insert_into_append().await?;

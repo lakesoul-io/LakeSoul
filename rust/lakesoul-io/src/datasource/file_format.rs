@@ -397,9 +397,7 @@ pub async fn flatten_file_scan_config(
                                 output_ordering,
                                 file_compression_type: FileCompressionType::ZSTD,
                                 new_lines_in_values: false,
-                                file_source: format
-                                    .file_source()
-                                    .with_statistics(statistics),
+                                file_source: conf.file_source.with_statistics(statistics),
                                 batch_size: None,
                             };
                             // flatten_configs.push(config);
