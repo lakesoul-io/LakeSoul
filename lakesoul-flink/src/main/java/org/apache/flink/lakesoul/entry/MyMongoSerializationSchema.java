@@ -1,5 +1,7 @@
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 package org.apache.flink.lakesoul.entry;
-
 
 import com.mongodb.client.model.InsertOneModel;
 import com.mongodb.client.model.WriteModel;
@@ -32,8 +34,6 @@ public class MyMongoSerializationSchema
 
         this.fieldNames = rowType.getFieldNames();
         this.fieldTypes = rowType.getChildren();
-
-        // 提前拿到 structNameFieldList
         MongoSinkUtils mongoSinkUtils = new MongoSinkUtils();
         this.structNameFieldList = mongoSinkUtils.traverseRow(rowType);
     }
