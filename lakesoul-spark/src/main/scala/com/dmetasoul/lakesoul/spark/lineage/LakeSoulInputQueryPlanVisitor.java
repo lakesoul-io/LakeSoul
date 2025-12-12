@@ -43,8 +43,7 @@ public class LakeSoulInputQueryPlanVisitor implements PartialFunction<LogicalPla
             DataSourceV2ScanRelation relation = (DataSourceV2ScanRelation) plan;
             String tableName = relation.name();
             StructType schema = relation.schema();
-            DBManager dbManager = new DBManager();
-            String tableNamespace = dbManager.getNamespaceByTableName(tableName);
+            String tableNamespace = tableName.split("//.")[0];
             OpenLineage.SchemaDatasetFacet schemaFacet = buildSchemaFacet(schema);
             OpenLineage.DatasetFacets datasetFacets = buildDatasetFacets(schemaFacet);
             OpenLineage.InputDataset dataset = ol.newInputDatasetBuilder()
