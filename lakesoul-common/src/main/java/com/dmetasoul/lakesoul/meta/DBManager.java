@@ -170,6 +170,10 @@ public class DBManager {
         return tableInfoDao.selectByNamespace(tableNamespace);
     }
 
+    public String getNameSpaceByTablePath(String tablePath){
+        return tableInfoDao.selectByTablePath(tablePath).getTableNamespace();
+    }
+
     public TableInfo getTableInfoByPath(String tablePath) {
         return tableInfoDao.selectByTablePath(tablePath);
     }
@@ -938,10 +942,6 @@ public class DBManager {
 
     public Namespace getNamespaceByNamespace(String namespace) {
         return namespaceDao.findByNamespace(namespace);
-    }
-
-    public String getNamespaceByTableName(String tableName) {
-        return namespaceDao.getNamespaceNameByTableName(tableName);
     }
 
     public void updateNamespaceProperties(String namespace, String properties) {

@@ -43,7 +43,17 @@ public class LakeSoulInputQueryPlanVisitor implements PartialFunction<LogicalPla
             DataSourceV2ScanRelation relation = (DataSourceV2ScanRelation) plan;
             String tableName = relation.name();
             StructType schema = relation.schema();
-            String tableNamespace = tableName.split("//.")[0];
+            String tableNamespace;
+            // tableNames will equals "lakesoul.tablePath" when use "LakeSoulTable.forPath(tablePath)"
+            if (tableName.startsWith("lakesoul")){
+                DBManager dbManager = new DBManager();
+                String tablePath = tableName.split("\\.")[1];
+                tablePath = tablePath.replace("`", "");
+                tableNamespace = dbManager.getNameSpaceByTablePath(tablePath);
+                System.out.println(tableNamespace);
+            } else {
+                tableNamespace = tableName.split("\\.")[0];
+            }
             OpenLineage.SchemaDatasetFacet schemaFacet = buildSchemaFacet(schema);
             OpenLineage.DatasetFacets datasetFacets = buildDatasetFacets(schemaFacet);
             OpenLineage.InputDataset dataset = ol.newInputDatasetBuilder()
@@ -55,18 +65,36 @@ public class LakeSoulInputQueryPlanVisitor implements PartialFunction<LogicalPla
             datasets.add(dataset);
             return datasets;
         } else if (plan instanceof SaveIntoDataSourceCommand) {
-            SaveIntoDataSourceCommand sourceCommand = (SaveIntoDataSourceCommand) plan;
-            StructType schema = sourceCommand.schema();
-            OpenLineage.SchemaDatasetFacet schemaFacet = buildSchemaFacet(schema);
-            OpenLineage.DatasetFacets datasetFacets = buildDatasetFacets(schemaFacet);
-            OpenLineage.InputDataset dataset = ol.newInputDatasetBuilder()
-                    .name("tableName=None")
-                    .namespace("tableNamespace=None")
-                    .facets(datasetFacets)
-                    .build();
-            List<OpenLineage.InputDataset> datasets = new ArrayList<>();
-            datasets.add(dataset);
-            return datasets;
+            SaveIntoDataSourceCommand cmd = (SaveIntoDataSourceCommand) plan;
+            String tableNamespace;
+            String tableName;
+            StructType tableSchema;
+            if (cmd.query() instanceof DataSourceV2Relation){
+                DataSourceV2Relation relation = (DataSourceV2Relation) cmd.query();
+                tableSchema = relation.schema();
+                tableName = relation.name();
+                System.out.println(tableName);
+                if (tableName.startsWith("lakesoul")){
+                    DBManager dbManager = new DBManager();
+                    String tablePath = tableName.split("\\.")[1];
+                    tablePath = tablePath.replace("`", "");
+                    tableNamespace = dbManager.getNameSpaceByTablePath(tablePath);
+                } else {
+                    tableNamespace = tableName.split("\\.")[0];
+                }
+                StructType dfSchema = cmd.schema();
+                StructType finalSchema = (tableSchema != null) ? tableSchema : dfSchema;
+                OpenLineage.SchemaDatasetFacet schemaFacet = buildSchemaFacet(finalSchema);
+                OpenLineage.DatasetFacets datasetFacets = buildDatasetFacets(schemaFacet);
+                OpenLineage.InputDataset dataset = ol.newInputDatasetBuilder()
+                        .name(tableName)
+                        .namespace(tableNamespace)
+                        .facets(datasetFacets)
+                        .build();
+                List<OpenLineage.InputDataset> datasets = new ArrayList<>();
+                datasets.add(dataset);
+                return datasets;
+            }
         }
         return Collections.emptyList();
     }
