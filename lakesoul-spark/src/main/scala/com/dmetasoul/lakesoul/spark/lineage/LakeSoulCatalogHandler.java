@@ -70,7 +70,6 @@ public class LakeSoulCatalogHandler implements CatalogHandler {
         symlink = new DatasetIdentifier.Symlink(tableName, tableLocation, DatasetIdentifier.SymlinkType.TABLE);
         List<DatasetIdentifier.Symlink> symlinks = new ArrayList<>();
         symlinks.add(symlink);
-        System.out.println(tableNameSpace+ " =====================");
         return new DatasetIdentifier(tableName,tableNameSpace,symlinks);
     }
 
