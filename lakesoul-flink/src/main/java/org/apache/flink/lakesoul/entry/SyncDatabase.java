@@ -541,7 +541,8 @@ public class SyncDatabase {
                                       int batchSize,
                                       int batchInservalMs) throws Exception {
 
-        createMongoColl(targetDatabase, targetTableName, uri);
+        MongoSinkUtils mongoSinkUtils = new MongoSinkUtils();
+        mongoSinkUtils.createMongoColl(targetDatabase, targetTableName, uri);
         if (useBatch) {
             env.setRuntimeMode(RuntimeExecutionMode.BATCH);
         } else {
@@ -552,10 +553,11 @@ public class SyncDatabase {
         StreamTableEnvironment tEnvs = StreamTableEnvironment.create(env);
         Catalog lakesoulCatalog = new LakeSoulCatalog();
         tEnvs.registerCatalog("lakeSoul", lakesoulCatalog);
-        coll = tEnvs.sqlQuery("select * from lakeSoul.`" + sourceDatabase + "`.`" + sourceTableName + "`");
+        Table coll = tEnvs.sqlQuery("select * from lakeSoul.`" + sourceDatabase + "`.`" + sourceTableName + "`");
         tEnvs.registerTable("mongodbTbl", coll);
         Table table = tEnvs.sqlQuery("select * from mongodbTbl");
         DataStream<Tuple2<Boolean, Row>> rowDataStream = tEnvs.toRetractStream(table, Row.class);
+        MyMongoSerializationSchema mongoSerializationSchema = new MyMongoSerializationSchema(coll);
         MongoSink<Tuple2<Boolean, Row>> sink = MongoSink.<Tuple2<Boolean, Row>>builder()
                 .setUri(uri)
                 .setDatabase(targetDatabase)
@@ -564,7 +566,7 @@ public class SyncDatabase {
                 .setBatchIntervalMs(batchInservalMs)
                 .setMaxRetries(3)
                 .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
-                .setSerializationSchema(new MyMongoSerializationSchema())
+                .setSerializationSchema(mongoSerializationSchema)
                 .build();
         rowDataStream.sinkTo(sink).setParallelism(sinkParallelism);
         env.execute();
