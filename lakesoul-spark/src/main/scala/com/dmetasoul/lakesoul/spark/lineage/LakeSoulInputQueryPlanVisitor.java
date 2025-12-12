@@ -50,7 +50,7 @@ public class LakeSoulInputQueryPlanVisitor implements PartialFunction<LogicalPla
                 String tablePath = tableName.split("\\.")[1];
                 tablePath = tablePath.replace("`", "");
                 tableNamespace = dbManager.getNameSpaceByTablePath(tablePath);
-                System.out.println(tableNamespace);
+                tableName = dbManager.getTableInfoByPath(tablePath).getTableName();
             } else {
                 tableNamespace = tableName.split("\\.")[0];
             }
@@ -73,12 +73,12 @@ public class LakeSoulInputQueryPlanVisitor implements PartialFunction<LogicalPla
                 DataSourceV2Relation relation = (DataSourceV2Relation) cmd.query();
                 tableSchema = relation.schema();
                 tableName = relation.name();
-                System.out.println(tableName);
                 if (tableName.startsWith("lakesoul")){
                     DBManager dbManager = new DBManager();
                     String tablePath = tableName.split("\\.")[1];
                     tablePath = tablePath.replace("`", "");
                     tableNamespace = dbManager.getNameSpaceByTablePath(tablePath);
+                    tableName = dbManager.getTableInfoByPath(tablePath).getTableName();
                 } else {
                     tableNamespace = tableName.split("\\.")[0];
                 }

@@ -127,26 +127,6 @@ public class NamespaceDao {
         return list;
     }
 
-    public String getNamespaceNameByTableName(String tableName){
-        Connection conn = null;
-        PreparedStatement pstmt = null;
-        ResultSet rs = null;
-        String namespace = tableName.split("\\.")[0];
-        String name = tableName.split("\\.")[1];
-        String sql = String.format("select table_namespace from table_name_id where table_name = '%s' and table_namespace = '%s'", name, namespace);
-        try {
-            conn = DBConnector.getConn();
-            pstmt = conn.prepareStatement(sql);
-            rs = pstmt.executeQuery();
-            while (rs.next()) {
-                namespace = rs.getString("table_namespace");
-            }
-        } catch (SQLException e) {
-            throw new RuntimeException(e);
-        }
-        return namespace;
-    }
-
     public List<String> listNamespacesByDomain(String domain) {
         if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
             JniWrapper jniWrapper = NativeMetadataJavaClient.query(
