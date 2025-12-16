@@ -9,6 +9,7 @@ edition = "2024"
 
 [dependencies]
 datafusion = { workspace = true }
+datafusion-substrait = { workspace = true }
 object_store = { workspace = true }
 
 tokio-stream = { workspace = true }
@@ -65,13 +66,6 @@ hdfs = ["dep:hdrs", "dep:hdfs-sys"]
 default = []
 dhat-heap = ["dep:dhat"]    # if you are doing heap profiling
 dhat-ad-hoc = []  # if you are doing ad hoc profiling
-
-[target.'cfg(target_os = "windows")'.dependencies]
-datafusion-substrait = { workspace = true }
-
-[target.'cfg(not(target_os = "windows"))'.dependencies]
-datafusion-substrait = { workspace = true, features = ["protoc"] }
-
 
 [dev-dependencies]
 tempfile = "3.3.0"

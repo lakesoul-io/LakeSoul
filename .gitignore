@@ -53,5 +53,4 @@ lakesoul-flink/bin
 lakesoul-common/bin
 lakesoul-presto/bin
 lakesoul-spark-gluten/bin
-
 /tmp_data

@@ -31,7 +31,6 @@ pub mod planner;
 use lakesoul_io::lakesoul_io_config::{
     LakeSoulIOConfigBuilder, register_hdfs_object_store, register_s3_object_store,
 };
-// use lakesoul_metadata::MetaDataClientRef;
 use object_store::local::LocalFileSystem;
 pub use planner::query_planner::LakeSoulQueryPlanner;
 use url::Url;
@@ -54,6 +53,10 @@ pub fn create_lakesoul_session_ctx(
     session_config.options_mut().sql_parser.dialect = "postgresql".to_string();
     session_config
         .options_mut()
+        .sql_parser
+        .map_varchar_to_utf8view = false;
+    session_config
+        .options_mut()
         .optimizer
         .enable_round_robin_repartition = false; // if true, the record_batches poll from stream become unordered
     session_config.options_mut().optimizer.prefer_hash_join = false; //if true, panicked at 'range end out of bounds'
@@ -68,6 +71,11 @@ pub fn create_lakesoul_session_ctx(
         .execution
         .parquet
         .schema_force_view_types = false;
+    session_config
+        .options_mut()
+        .execution
+        .parquet
+        .pushdown_filters = true;
 
     let planner = LakeSoulQueryPlanner::new_ref();
 

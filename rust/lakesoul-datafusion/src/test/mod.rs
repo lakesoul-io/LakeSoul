@@ -34,6 +34,7 @@ fn init() {
         })
 }
 
+#[track_caller]
 fn assert_batches_eq(table_name: &str, expected: &[&str], results: &[RecordBatch]) {
     // let expected_lines: Vec<String> =
     //         expected.iter().map(|&s| s.into()).collect();

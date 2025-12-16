@@ -1003,14 +1003,14 @@ pub fn collect_column_equalities(
         }
         // If it's an equality comparison with a literal, extract the column name and scalar value
         Expr::BinaryExpr(binary_expr) if binary_expr.op == Operator::Eq => {
-            if let (Expr::Column(col), Expr::Literal(scalar)) =
+            if let (Expr::Column(col), Expr::Literal(scalar, _)) =
                 (&binary_expr.left.as_ref(), &binary_expr.right.as_ref())
             {
                 equalities.push(ColumnEquality {
                     column_name: col.name.clone(),
                     scalar_value: scalar.clone(),
                 });
-            } else if let (Expr::Literal(scalar), Expr::Column(col)) =
+            } else if let (Expr::Literal(scalar, _), Expr::Column(col)) =
                 (&binary_expr.left.as_ref(), &binary_expr.right.as_ref())
             {
                 equalities.push(ColumnEquality {
