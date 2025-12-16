@@ -40,7 +40,6 @@ public class MyMongoSerializationSchema
 
     @Override
     public WriteModel<BsonDocument> serialize(Tuple2<Boolean, Row> record, MongoSinkContext context) {
-
         Row row = record.f1;
         BsonDocument document = new BsonDocument();
         MongoSinkUtils mongoSinkUtils = new MongoSinkUtils();
