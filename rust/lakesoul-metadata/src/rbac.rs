@@ -29,13 +29,10 @@ pub async fn verify_permission_by_table_name(
         .as_ref()
         .get_table_name_id_by_table_name(table, ns)
         .await?
-        .ok_or(LakeSoulMetaDataError::NotFound(
-            format!(
-                "Table {}.{} not found, user {}, group {}",
-                table, ns, user, group
-            )
-            .into(),
-        ))?;
+        .ok_or(LakeSoulMetaDataError::NotFound(format!(
+            "Table {}.{} not found, user {}, group {}",
+            table, ns, user, group
+        )))?;
     debug!("table {}.{} in domain {}", ns, table, table_name_id.domain);
     match table_name_id.domain.as_str() {
         "public" | "lake-public" => Ok(()),
@@ -72,13 +69,10 @@ pub async fn verify_permission_by_table_path(
         .as_ref()
         .get_table_path_id_by_table_path(path)
         .await?
-        .ok_or(LakeSoulMetaDataError::NotFound(
-            format!(
-                "Path is not a LakeSoul table {}, user {}, group {}",
-                path, user, group
-            )
-            .into(),
-        ))?;
+        .ok_or(LakeSoulMetaDataError::NotFound(format!(
+            "Path is not a LakeSoul table {}, user {}, group {}",
+            path, user, group
+        )))?;
     debug!("table {} in domain {}", path, table_path_id.domain);
     match table_path_id.domain.as_str() {
         "public" | "lake-public" => Ok(()),

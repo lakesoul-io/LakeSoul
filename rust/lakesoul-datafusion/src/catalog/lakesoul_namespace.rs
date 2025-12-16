@@ -210,9 +210,20 @@ impl SchemaProvider for LakeSoulNamespace {
                                             "delete table info failed".into(),
                                         )
                                     })?;
-                                Ok(Some(table.as_provider().await.map_err(|e| {
-                                    DataFusionError::External(Box::new(e))
-                                })?))
+                                Ok(Some(
+                                    table
+                                        .as_provider(
+                                            ctx.state()
+                                                .config_options()
+                                                .execution
+                                                .parquet
+                                                .pushdown_filters,
+                                        )
+                                        .await
+                                        .map_err(|e| {
+                                            DataFusionError::External(Box::new(e))
+                                        })?,
+                                ))
                             }
                             Err(e) => match e {
                                 LakeSoulError::MetaDataError(
