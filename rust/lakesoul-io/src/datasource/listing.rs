@@ -222,8 +222,10 @@ impl TableProvider for LakeSoulTableProvider {
     ) -> Result<Vec<TableProviderFilterPushDown>> {
         if self.lakesoul_io_config.primary_keys.is_empty() {
             if self.lakesoul_io_config.parquet_filter_pushdown {
+                debug!("filters pushdown: exact");
                 Ok(vec![TableProviderFilterPushDown::Exact; filters.len()])
             } else {
+                debug!("filters pushdown: unsupported");
                 Ok(vec![
                     TableProviderFilterPushDown::Unsupported;
                     filters.len()
@@ -241,8 +243,10 @@ impl TableProvider for LakeSoulTableProvider {
                         })
                     {
                         // use primary key
+                        debug!("filters pushdown: Inexact (use primary key)");
                         Ok(TableProviderFilterPushDown::Inexact)
                     } else {
+                        debug!("filters pushdown: unsupported");
                         Ok(TableProviderFilterPushDown::Unsupported)
                     }
                 })
