@@ -27,7 +27,7 @@ use arrow_flight::{
 use core::fmt;
 use datafusion::sql::TableReference;
 use datafusion::sql::parser::{DFParser, Statement};
-use datafusion::sql::sqlparser::ast::{CreateTable, SqlOption};
+use datafusion::sql::sqlparser::ast::CreateTable;
 use datafusion::sql::sqlparser::dialect::PostgreSqlDialect;
 use futures::{Stream, StreamExt, TryStreamExt};
 use lakesoul_datafusion::catalog::LakeSoulTableProperty;
@@ -1120,12 +1120,12 @@ fn normalize_sql(sql: &str) -> Result<String, BoxedStatus> {
                 name,
                 columns,
                 partition_by,
-                with_options,
+                table_options,
                 ..
             }) => {
                 info!(
                     "create table: {}, {:?}, {:?}",
-                    name, partition_by, with_options
+                    name, partition_by, table_options
                 );
 
                 let mut create_table_sql = format!(
@@ -1141,21 +1141,23 @@ fn normalize_sql(sql: &str) -> Result<String, BoxedStatus> {
                     create_table_sql =
                         format!("{} PARTITIONED BY {}", create_table_sql, partition_by);
                 }
-                if !with_options.is_empty() {
-                    create_table_sql = format!(
-                        "{} OPTIONS ({})",
-                        create_table_sql,
-                        with_options
-                            .iter()
-                            .map(|opt| match opt {
-                                SqlOption::KeyValue { key, value } =>
-                                    format!("'{}' {}", key, value),
-                                _ => format!("{:}", opt),
-                            })
-                            .collect::<Vec<String>>()
-                            .join(", ")
-                    );
-                }
+
+                create_table_sql = format!("{} {}", create_table_sql, table_options);
+                // if !table_options.is_empty() {
+                //     create_table_sql = format!(
+                //         "{} OPTIONS ({})",
+                //         create_table_sql,
+                //         with_options
+                //             .iter()
+                //             .map(|opt| match opt {
+                //                 SqlOption::KeyValue { key, value } =>
+                //                     format!("'{}' {}", key, value),
+                //                 _ => format!("{:}", opt),
+                //             })
+                //             .collect::<Vec<String>>()
+                //             .join(", ")
+                //     );
+                // }
                 Ok(create_table_sql)
             }
             _ => Ok(sql.to_string()),

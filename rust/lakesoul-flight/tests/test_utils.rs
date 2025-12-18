@@ -8,10 +8,7 @@ use arrow_flight::{
     error::FlightError,
     sql::{CommandStatementIngest, client::FlightSqlServiceClient},
 };
-use assert_cmd::{
-    cargo::{CommandCargoExt, cargo_bin},
-    pkg_name,
-};
+use assert_cmd::cargo::cargo_bin;
 use core::panic;
 use futures::{Stream, StreamExt};
 use lakesoul_flight::TokenServerClient;

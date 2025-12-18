@@ -249,6 +249,7 @@ pub struct CommonPrefixes {
     pub prefix: String,
 }
 
+#[allow(dead_code)]
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
 pub struct ContentsWrap {

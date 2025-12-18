@@ -88,10 +88,8 @@ impl DataSource for TpchSource {
 
     fn try_swapping_with_projection(
         &self,
-        _projection: &datafusion::physical_plan::projection::ProjectionExec,
-    ) -> datafusion_common::Result<
-        Option<std::sync::Arc<dyn datafusion::physical_plan::ExecutionPlan>>,
-    > {
+        _projection: &[datafusion::physical_plan::projection::ProjectionExpr],
+    ) -> datafusion_common::Result<Option<Arc<dyn DataSource>>> {
         Ok(None)
     }
 }
