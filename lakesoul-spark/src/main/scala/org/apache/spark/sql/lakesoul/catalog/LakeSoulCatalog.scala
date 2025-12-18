@@ -637,6 +637,7 @@ object LakeSoulCatalog {
 
   def listTables(namespaces: Array[String]): Array[Identifier] = {
     SparkMetaVersion.listTables(namespaces).asScala.map(tablePath => {
+      println("==========================" + tablePath + "=======================")
       val tableInfo = SparkMetaVersion.getTableInfoByPath(tablePath)
       Identifier.of(namespaces, tableInfo.short_table_name.getOrElse(tableInfo.table_path.toUri.toString))
     }).toArray

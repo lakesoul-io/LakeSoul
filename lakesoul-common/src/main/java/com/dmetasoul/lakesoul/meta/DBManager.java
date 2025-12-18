@@ -323,6 +323,10 @@ public class DBManager {
         partitionInfoDao.deleteByTableId(tableId);
     }
 
+    public void deleteTablePathIdByTableId(String tableId) {
+        tablePathIdDao.deleteByTableId(tableId);
+    }
+
     public void deletePartitionInfoByTableAndPartition(String tableId, String partitionDesc) {
         partitionInfoDao.deleteByTableIdAndPartitionDesc(tableId, partitionDesc);
         dataCommitInfoDao.deleteByTableIdAndPartitionDesc(tableId, partitionDesc);
