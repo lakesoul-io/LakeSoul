@@ -1090,6 +1090,10 @@ impl Display for InMemGenerator {
 }
 
 impl LazyBatchGenerator for InMemGenerator {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn generate_next_batch(&mut self) -> Result<Option<RecordBatch>> {
         Ok(self.batches.pop_front())
     }

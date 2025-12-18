@@ -14,6 +14,7 @@ use arrow_schema::{ArrowError, FieldRef, Fields, Schema, SchemaBuilder};
 
 use datafusion::datasource::file_format::file_compression_type::FileCompressionType;
 use datafusion::datasource::file_format::{FileFormat, parquet::ParquetFormat};
+use datafusion::datasource::physical_plan::parquet::metadata::DFParquetMetadata;
 use datafusion::datasource::physical_plan::{
     FileGroup, FileScanConfig, FileSinkConfig, FileSource, ParquetSource,
 };
@@ -31,7 +32,6 @@ use crate::datasource::{
 use crate::lakesoul_io_config::LakeSoulIOConfig;
 use async_trait::async_trait;
 use datafusion::catalog::Session;
-use datafusion::datasource::file_format::parquet::fetch_parquet_metadata;
 use futures::{StreamExt, TryStreamExt};
 use parquet::arrow::parquet_to_arrow_schema;
 
@@ -71,11 +71,15 @@ impl LakeSoulParquetFormat {
 
 async fn fetch_schema(
     store: &dyn ObjectStore,
-    file: &ObjectMeta,
+    obj_meta: &ObjectMeta,
     metadata_size_hint: Option<usize>,
 ) -> Result<Schema> {
     // TODO add cryption
-    let metadata = fetch_parquet_metadata(store, file, metadata_size_hint, None).await?;
+    let metadata = DFParquetMetadata::new(store, obj_meta)
+        .with_metadata_size_hint(metadata_size_hint)
+        .fetch_metadata()
+        .await?;
+
     let file_metadata = metadata.file_metadata();
     let schema = parquet_to_arrow_schema(
         file_metadata.schema_descr(),
