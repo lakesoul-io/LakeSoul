@@ -16,7 +16,8 @@ use datafusion::datasource::file_format::file_compression_type::FileCompressionT
 use datafusion::datasource::file_format::{FileFormat, parquet::ParquetFormat};
 use datafusion::datasource::physical_plan::parquet::metadata::DFParquetMetadata;
 use datafusion::datasource::physical_plan::{
-    FileGroup, FileScanConfig, FileSinkConfig, FileSource, ParquetSource,
+    FileGroup, FileScanConfig, FileScanConfigBuilder, FileSinkConfig, FileSource,
+    ParquetSource,
 };
 
 use datafusion::physical_expr::LexRequirement;
@@ -236,7 +237,7 @@ impl FileFormat for LakeSoulParquetFormat {
         mut conf: FileScanConfig,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let table_schema = LakeSoulTableProvider::compute_table_schema(
-            conf.file_schema.clone(),
+            conf.table_schema.file_schema().clone(), // todo try table schema
             &self.conf,
         )?;
 
@@ -254,7 +255,7 @@ impl FileFormat for LakeSoulParquetFormat {
         conf.file_source = Arc::new(parquet_source);
 
         // projection for Table instead of File
-        let projection = conf.projection.clone();
+        let projection = conf.file_column_projection_indices();
         let target_schema = project_schema(&table_schema, projection.as_ref())?;
 
         let merged_projection = compute_project_column_indices(
@@ -383,33 +384,20 @@ pub async fn flatten_file_scan_config(
                                     &file.object_meta,
                                 )
                                 .await?;
-                            let projection = compute_project_column_indices(
+                            let projection_indices = compute_project_column_indices(
                                 file_schema.clone(),
                                 target_schema.clone(),
                                 primary_keys,
                                 cdc_column,
                             );
-                            let limit = conf.limit;
-                            let table_partition_cols = conf.table_partition_cols.clone();
-                            let output_ordering = conf.output_ordering.clone();
-                            let config = FileScanConfig {
-                                object_store_url: object_store_url.clone(),
-                                file_schema: file_schema.clone(),
-                                file_groups: vec![
+                            let config = FileScanConfigBuilder::from(conf.clone())
+                                .with_file_groups(vec![
                                     FileGroup::new(files)
                                         .with_statistics(Arc::new(statistics.clone())),
-                                ],
-                                constraints: Default::default(),
-                                projection,
-                                limit,
-                                table_partition_cols,
-                                output_ordering,
-                                file_compression_type: FileCompressionType::ZSTD,
-                                new_lines_in_values: false,
-                                file_source: conf.file_source.with_statistics(statistics),
-                                batch_size: None,
-                                expr_adapter_factory: None, // TODO use expr adapter
-                            };
+                                ])
+                                .with_projection_indices(projection_indices)
+                                .with_source(conf.file_source.with_statistics(statistics))
+                                .build();
                             // flatten_configs.push(config);
                             Ok::<FileScanConfig, DataFusionError>(config)
                         }

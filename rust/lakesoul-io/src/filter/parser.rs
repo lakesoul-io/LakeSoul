@@ -374,7 +374,7 @@ impl Parser {
                     .await;
             }
             FilterContainer::String(s) => {
-                let arrow_schema = Arc::new(Schema::from(schema));
+                let arrow_schema = Arc::new(schema.as_arrow().clone());
                 Ok(vec![Parser::parse(s, arrow_schema)?])
             }
             FilterContainer::Plan(plan) => {

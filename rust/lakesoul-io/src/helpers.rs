@@ -35,7 +35,7 @@ use datafusion_substrait::substrait::proto::Plan;
 use futures::{StreamExt, TryStreamExt};
 use object_store::ObjectMeta;
 use object_store::path::Path;
-use parquet::format::FileMetaData;
+use parquet::file::metadata::ParquetMetaData;
 use proto::proto::entity::JniWrapper;
 use rand::distr::SampleString;
 use std::collections::VecDeque;
@@ -525,12 +525,12 @@ pub fn partition_desc_to_scalar_values(
 pub fn partition_desc_from_file_scan_config(
     conf: &FileScanConfig,
 ) -> Result<(String, HashMap<String, String>)> {
-    if conf.table_partition_cols.is_empty() {
+    if conf.table_partition_cols().is_empty() {
         Ok(("-5".to_string(), HashMap::default()))
     } else {
         match conf.file_groups.first().and_then(|g| g.files().first()) {
             Some(file) => Ok((
-                conf.table_partition_cols
+                conf.table_partition_cols()
                     .iter()
                     .enumerate()
                     .map(|(idx, col)| {
@@ -538,7 +538,7 @@ pub fn partition_desc_from_file_scan_config(
                     })
                     .collect::<Vec<_>>()
                     .join(","),
-                HashMap::from_iter(conf.table_partition_cols.iter().enumerate().map(
+                HashMap::from_iter(conf.table_partition_cols().iter().enumerate().map(
                     |(idx, col)| {
                         (col.name().clone(), file.partition_values[idx].to_string())
                     },
@@ -874,26 +874,14 @@ pub fn get_batch_memory_size(batch: &RecordBatch) -> Result<usize> {
         .sum())
 }
 
-/// Gets the file size of a [`FileMetaData`].
-pub fn get_file_size(metadata: &FileMetaData) -> usize {
-    let footer_size = metadata
-        .footer_signing_key_metadata
-        .as_ref()
-        .map_or(0, |f| f.len());
-    let rg_size = metadata
-        .row_groups
-        .iter()
-        .map(|row_group| row_group.total_byte_size as usize)
-        .sum::<usize>();
-    footer_size + rg_size
-}
-
-/// Gets the file exist columns of a [`FileMetaData`].
-pub fn get_file_exist_col(metadata: &FileMetaData) -> String {
+/// Gets the file exist columns of a [`ParquetMetaData`].
+pub fn get_file_exist_col(metadata: &ParquetMetaData) -> String {
     metadata
-        .schema
+        .file_metadata()
+        .schema_descr()
+        .columns()
         .iter()
-        .map(|schema_element| schema_element.name.clone())
+        .map(|col| col.name().to_string())
         .collect::<Vec<_>>()
         .join(",")
 }

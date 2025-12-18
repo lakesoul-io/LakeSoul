@@ -22,7 +22,7 @@ arrow-schema = { workspace = true, features = ["serde"] }
 arrow-array = { workspace = true, features = ["chrono-tz"] }
 arrow-buffer = { workspace = true }
 arrow-cast = { workspace = true }
-parquet = { workspace = true, features = ["async", "arrow"] }
+parquet = { workspace = true, features = ["async", "arrow","encryption"] }
 futures = { workspace = true }
 datafusion-common = { workspace = true }
 serde = { workspace = true }

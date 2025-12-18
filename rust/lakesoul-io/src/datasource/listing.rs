@@ -13,6 +13,7 @@ use async_trait::async_trait;
 
 use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::datasource::source::DataSource;
+use datafusion::datasource::table_schema::TableSchema;
 
 use crate::helpers::listing_table_from_lakesoul_io_config;
 use crate::lakesoul_io_config::LakeSoulIOConfig;
@@ -23,7 +24,9 @@ use datafusion::datasource::file_format::file_compression_type::FileCompressionT
 use datafusion::datasource::listing::{
     ListingOptions, ListingTable, ListingTableUrl, PartitionedFile,
 };
-use datafusion::datasource::physical_plan::{FileGroup, FileScanConfig, FileSource};
+use datafusion::datasource::physical_plan::{
+    FileGroup, FileScanConfig, FileScanConfigBuilder, FileSource, ParquetSource,
+};
 use datafusion::execution::context::SessionState;
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::logical_expr::utils::conjunction;
@@ -164,23 +167,17 @@ impl TableProvider for LakeSoulTableProvider {
             }))
             .await;
 
-        let mut scan_config = FileScanConfig {
-            object_store_url,
-            file_schema: Arc::clone(&__self.schema()),
-            file_groups: vec![
-                FileGroup::new(partition_files?).with_statistics(Arc::new(statistics)),
-            ],
-            constraints: Default::default(),
-            projection: projection.cloned(),
-            limit,
-            output_ordering: vec![],
-            file_compression_type: FileCompressionType::ZSTD,
-            new_lines_in_values: false,
-            file_source: source,
-            table_partition_cols: vec![],
-            batch_size: None,
-            expr_adapter_factory: None, // TODO use expr adapter
-        };
+        let mut scan_config =
+            FileScanConfigBuilder::new(object_store_url, self.schema().clone(), source)
+                .with_file_groups(vec![
+                    FileGroup::new(partition_files?)
+                        .with_statistics(Arc::new(statistics)),
+                ])
+                .with_projection_indices(projection.cloned())
+                .with_limit(limit)
+                .with_file_compression_type(FileCompressionType::ZSTD)
+                .with_newlines_in_values(false)
+                .build();
 
         if let Some(expr) = conjunction(filters.to_vec()) {
             // NOTE: Use the table schema (NOT file schema) here because `expr` may contain references to partition columns.
