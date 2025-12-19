@@ -219,7 +219,7 @@ impl LakeSoulTable {
         let results = dataframe.collect().await?;
 
         info!(
-            "execute_upsert result: {}",
+            "execute_upsert result:\n{}",
             pretty_format_batches(&results)?
         );
         Ok(())
@@ -428,7 +428,7 @@ fn partitioned_files_from_writer_flush_result(
     let mut partition_desc_and_files_map = HashMap::new();
 
     for (partition_desc, file_path, meta, file_meta) in flush_result {
-        let file_exist_cols = get_file_exist_col(&file_meta);
+        let file_exist_cols = get_file_exist_col(file_meta);
 
         let flush_result = FlushResult {
             file_path: file_path.clone(),

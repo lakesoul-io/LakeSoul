@@ -11,11 +11,10 @@ use std::sync::Arc;
 use arrow_schema::SchemaBuilder;
 use async_trait::async_trait;
 
-use arrow::datatypes::{Schema, SchemaRef};
-use datafusion::datasource::source::DataSource;
 use crate::helpers::listing_table_from_lakesoul_io_config;
 use crate::lakesoul_io_config::LakeSoulIOConfig;
 use crate::transform::uniform_schema;
+use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::catalog::Session;
 use datafusion::datasource::file_format::FileFormat;
 use datafusion::datasource::file_format::file_compression_type::FileCompressionType;
@@ -23,8 +22,9 @@ use datafusion::datasource::listing::{
     ListingOptions, ListingTable, ListingTableUrl, PartitionedFile,
 };
 use datafusion::datasource::physical_plan::{
-    FileGroup, FileScanConfig, FileScanConfigBuilder, FileSource, 
+    FileGroup, FileScanConfig, FileScanConfigBuilder, FileSource,
 };
+use datafusion::datasource::source::DataSource;
 use datafusion::execution::context::SessionState;
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::logical_expr::utils::conjunction;

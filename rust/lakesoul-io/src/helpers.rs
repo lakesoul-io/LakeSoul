@@ -525,7 +525,12 @@ pub fn partition_desc_to_scalar_values(
 pub fn partition_desc_from_file_scan_config(
     conf: &FileScanConfig,
 ) -> Result<(String, HashMap<String, String>)> {
+    // we use
+    // TODO
+    // conf's table_schema is not stable
+    // so use file source's
     if conf.table_partition_cols().is_empty() {
+        warn!("wow: NO range");
         Ok(("-5".to_string(), HashMap::default()))
     } else {
         match conf.file_groups.first().and_then(|g| g.files().first()) {
