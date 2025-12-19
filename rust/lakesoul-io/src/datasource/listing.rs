@@ -13,8 +13,6 @@ use async_trait::async_trait;
 
 use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::datasource::source::DataSource;
-use datafusion::datasource::table_schema::TableSchema;
-
 use crate::helpers::listing_table_from_lakesoul_io_config;
 use crate::lakesoul_io_config::LakeSoulIOConfig;
 use crate::transform::uniform_schema;
@@ -25,7 +23,7 @@ use datafusion::datasource::listing::{
     ListingOptions, ListingTable, ListingTableUrl, PartitionedFile,
 };
 use datafusion::datasource::physical_plan::{
-    FileGroup, FileScanConfig, FileScanConfigBuilder, FileSource, ParquetSource,
+    FileGroup, FileScanConfig, FileScanConfigBuilder, FileSource, 
 };
 use datafusion::execution::context::SessionState;
 use datafusion::logical_expr::dml::InsertOp;

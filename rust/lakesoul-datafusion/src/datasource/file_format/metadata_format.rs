@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Debug};
 use std::sync::Arc;
 
-use arrow::datatypes::{DataType, Field, Schema, SchemaBuilder, SchemaRef};
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::catalog::Session;
 use datafusion::common::parsers::CompressionTypeVariant;
 use datafusion::common::{DFSchema, GetExt, Statistics, project_schema};
@@ -192,15 +192,9 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
             &conf,
         );
 
-        let file_schema = conf.file_schema.clone();
-        let mut builder = SchemaBuilder::from(file_schema.fields());
-        for field in &conf.table_partition_cols {
-            builder.push(Field::new(field.name(), field.data_type().clone(), false));
-        }
+        let table_schema = conf.table_schema.table_schema().clone();
 
-        let table_schema = Arc::new(builder.finish());
-
-        let projection = conf.projection.clone();
+        let projection = conf.file_column_projection_indices();
         let target_schema = project_schema(&table_schema, projection.as_ref())?;
 
         let merged_projection = compute_project_column_indices(
@@ -276,7 +270,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
             partitioned_exec.push(merge_exec);
         }
         let exec = if partitioned_exec.len() > 1 {
-            Arc::new(UnionExec::new(partitioned_exec)) as Arc<dyn ExecutionPlan>
+            UnionExec::try_new(partitioned_exec)?
         } else {
             partitioned_exec.first().unwrap().clone()
         };

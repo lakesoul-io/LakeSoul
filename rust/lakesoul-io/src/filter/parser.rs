@@ -6,7 +6,7 @@ use std::ops::Not;
 use std::sync::Arc;
 
 use anyhow::anyhow;
-use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef};
+use arrow_schema::{DataType, Field, Fields, SchemaRef};
 use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::logical_expr::Expr;
 use datafusion::prelude::{SessionContext, col};

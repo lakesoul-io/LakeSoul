@@ -18,10 +18,9 @@ use std::{env, sync::Arc};
 
 use catalog::LakeSoulCatalog;
 use datafusion::{
-    execution::{
+    config::Dialect, execution::{
         SessionStateBuilder, object_store::ObjectStoreUrl, runtime_env::RuntimeEnv,
-    },
-    prelude::{SessionConfig, SessionContext},
+    }, prelude::{SessionConfig, SessionContext}
 };
 use datasource::table_factory::LakeSoulTableProviderFactory;
 pub use error::{LakeSoulError, Result};
@@ -50,7 +49,7 @@ pub fn create_lakesoul_session_ctx(
         .with_create_default_catalog_and_schema(false)
         .with_batch_size(8192)
         .with_default_catalog_and_schema("LAKESOUL".to_string(), "default".to_string());
-    session_config.options_mut().sql_parser.dialect = "postgresql".to_string();
+    session_config.options_mut().sql_parser.dialect = Dialect::PostgreSQL;
     session_config
         .options_mut()
         .sql_parser

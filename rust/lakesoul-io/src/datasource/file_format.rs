@@ -337,9 +337,7 @@ pub async fn flatten_file_scan_config(
     partition_schema: SchemaRef,
     target_schema: SchemaRef,
 ) -> Result<Vec<FileScanConfig>> {
-    let object_store_url = conf.object_store_url.clone();
-    let store = state.runtime_env().object_store(object_store_url.clone())?;
-
+    let store = state.runtime_env().object_store(&conf.object_store_url)?;
     let file_groups = conf.file_groups.clone();
     let flatten_configs = futures::stream::iter(file_groups)
         .map(|files| {
@@ -347,7 +345,6 @@ pub async fn flatten_file_scan_config(
             let format = format.clone();
             let partition_schema = partition_schema.clone();
             let target_schema = target_schema.clone();
-            let object_store_url = object_store_url.clone();
             let conf = conf.clone();
             async move {
                 let configs: Vec<FileScanConfig> = futures::stream::iter(files.files())
@@ -356,7 +353,6 @@ pub async fn flatten_file_scan_config(
                         let format = format.clone();
                         let partition_schema = partition_schema.clone();
                         let target_schema = target_schema.clone();
-                        let object_store_url = object_store_url.clone();
                         let conf = conf.clone();
                         async move {
                             let objects = std::slice::from_ref(&file.object_meta);

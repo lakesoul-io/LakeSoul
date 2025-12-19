@@ -6,8 +6,6 @@
 
 use std::sync::Arc;
 
-use arrow::datatypes::Schema;
-
 use datafusion::common::{DFSchema, SchemaExt};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::SessionState;
@@ -93,9 +91,9 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                         if lakesoul_table.primary_keys().is_empty()
                             && lakesoul_table
                                 .schema()
-                                .logically_equivalent_names_and_types(&Schema::from(
-                                    input.schema().as_ref(),
-                                ))
+                                .logically_equivalent_names_and_types(
+                                    input.schema().as_arrow(),
+                                )
                                 .is_err()
                         {
                             return Err(DataFusionError::Plan(

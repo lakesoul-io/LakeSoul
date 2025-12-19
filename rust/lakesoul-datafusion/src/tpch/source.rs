@@ -92,6 +92,13 @@ impl DataSource for TpchSource {
     ) -> datafusion_common::Result<Option<Arc<dyn DataSource>>> {
         Ok(None)
     }
+
+    fn partition_statistics(
+        &self,
+        _partition: Option<usize>,
+    ) -> datafusion_common::Result<Statistics> {
+        Ok(Statistics::new_unknown(&self.kind.schema()))
+    }
 }
 
 #[async_trait::async_trait]

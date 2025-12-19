@@ -875,6 +875,7 @@ pub fn get_batch_memory_size(batch: &RecordBatch) -> Result<usize> {
 }
 
 /// Gets the file exist columns of a [`ParquetMetaData`].
+/// This function is only used for Parquet
 pub fn get_file_exist_col(metadata: &ParquetMetaData) -> String {
     metadata
         .file_metadata()
