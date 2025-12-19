@@ -16,13 +16,13 @@ use datafusion::datasource::file_format::file_compression_type::FileCompressionT
 use datafusion::datasource::file_format::{FileFormat, parquet::ParquetFormat};
 use datafusion::datasource::physical_plan::parquet::metadata::DFParquetMetadata;
 use datafusion::datasource::physical_plan::{
-    FileGroup, FileScanConfig, FileScanConfigBuilder, FileSinkConfig, FileSource,
-    ParquetSource,
+    FileGroup, FileScanConfig, FileSinkConfig, FileSource, ParquetSource,
 };
 
+use datafusion::datasource::table_schema::TableSchema;
 use datafusion::physical_expr::LexRequirement;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::physical_plan::projection::ProjectionExec;
+use datafusion::physical_plan::projection::{ProjectionExec, ProjectionExprs};
 use datafusion_common::{DataFusionError, Result, Statistics, project_schema};
 
 use object_store::{ObjectMeta, ObjectStore};
@@ -237,7 +237,7 @@ impl FileFormat for LakeSoulParquetFormat {
         mut conf: FileScanConfig,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let table_schema = LakeSoulTableProvider::compute_table_schema(
-            conf.table_schema.file_schema().clone(), // todo try table schema
+            conf.table_schema.table_schema().clone(), // todo try table schema
             &self.conf,
         )?;
 
@@ -337,6 +337,7 @@ pub async fn flatten_file_scan_config(
     partition_schema: SchemaRef,
     target_schema: SchemaRef,
 ) -> Result<Vec<FileScanConfig>> {
+    // TODO remove clone
     let store = state.runtime_env().object_store(&conf.object_store_url)?;
     let file_groups = conf.file_groups.clone();
     let flatten_configs = futures::stream::iter(file_groups)
@@ -357,6 +358,7 @@ pub async fn flatten_file_scan_config(
                         async move {
                             let objects = std::slice::from_ref(&file.object_meta);
                             let files = vec![file.clone()];
+                            // TODO use schema adapter rewriter?
                             let file_schema =
                                 format.infer_schema(state, &store, objects).await?;
                             let file_schema = {
@@ -386,15 +388,29 @@ pub async fn flatten_file_scan_config(
                                 primary_keys,
                                 cdc_column,
                             );
-                            let config = FileScanConfigBuilder::from(conf.clone())
-                                .with_file_groups(vec![
+                            let table_schema = TableSchema::new(
+                                file_schema,
+                                conf.table_partition_cols().clone(),
+                            );
+                            let projection_exprs = projection_indices.map(|indices| {
+                                ProjectionExprs::from_indices(
+                                    &indices,
+                                    table_schema.table_schema(),
+                                )
+                            });
+                            let config = FileScanConfig {
+                                table_schema,
+                                projection_exprs,
+                                file_source: conf
+                                    .file_source
+                                    .with_statistics(statistics.clone()),
+                                file_groups: vec![
                                     FileGroup::new(files)
-                                        .with_statistics(Arc::new(statistics.clone())),
-                                ])
-                                .with_projection_indices(projection_indices)
-                                .with_source(conf.file_source.with_statistics(statistics))
-                                .build();
-                            // flatten_configs.push(config);
+                                        .with_statistics(Arc::new(statistics)),
+                                ],
+                                ..conf
+                            };
+
                             Ok::<FileScanConfig, DataFusionError>(config)
                         }
                     })

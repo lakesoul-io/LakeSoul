@@ -104,7 +104,7 @@ impl HTTPHandler for AWSHandler {
             if value == 0 {
                 session
                     .req_header_mut()
-                    .insert_header(CONTENT_LENGTH, HeaderValue::try_from(0)?)?;
+                    .insert_header(CONTENT_LENGTH, HeaderValue::from(0))?;
             }
         }
 

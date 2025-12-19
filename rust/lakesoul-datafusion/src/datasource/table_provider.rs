@@ -483,7 +483,7 @@ impl TableProvider for LakeSoulTableProvider {
             .collect::<Result<Vec<_>>>()?;
         // TODO change logic when datafusion 52
         let table_schema =
-            TableSchema::new(self.file_schema.clone(), table_partition_cols);
+            TableSchema::new(self.file_schema.clone(), table_partition_cols.clone());
         let statistics = Arc::new(statistics);
         let file_source = self
             .options()
@@ -500,7 +500,7 @@ impl TableProvider for LakeSoulTableProvider {
 
         let mut scan_config = FileScanConfigBuilder::new(
             object_store_url,
-            table_schema.table_schema().clone(), // this contains partition columns
+            table_schema.file_schema().clone(), // TODO: change logic when datafusion 52
             file_source,
         )
         .with_file_groups(
@@ -513,6 +513,12 @@ impl TableProvider for LakeSoulTableProvider {
         .with_limit(limit)
         .with_newlines_in_values(false)
         .with_output_ordering(self.try_create_output_ordering()?)
+        .with_table_partition_cols(
+            table_partition_cols
+                .into_iter()
+                .map(|field_ref| field_ref.as_ref().clone())
+                .collect(),
+        )
         .with_file_compression_type(FileCompressionType::ZSTD) // TODO CONF;
         .build();
 
@@ -524,8 +530,6 @@ impl TableProvider for LakeSoulTableProvider {
                 &table_df_schema,
                 session_state.execution_props(),
             )?;
-            // let mut config = session_state.config_options().clone();
-            // config.execution.parquet.pushdown_filters = true;
 
             let res = scan_config
                 .try_pushdown_filters(vec![filter], session_state.config_options())?;

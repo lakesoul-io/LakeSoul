@@ -194,8 +194,13 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
 
         let table_schema = conf.table_schema.table_schema().clone();
 
-        let projection = conf.file_column_projection_indices();
-        let target_schema = project_schema(&table_schema, projection.as_ref())?;
+        // lakesoul only use column indices
+        let projection_indices = conf
+            .projection_exprs
+            .as_ref()
+            .map(|expr| expr.ordered_column_indices());
+
+        let target_schema = project_schema(&table_schema, projection_indices.as_ref())?;
 
         let merged_projection = compute_project_column_indices(
             table_schema.clone(),
@@ -203,6 +208,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
             self.conf.primary_keys_slice(),
             &self.conf.cdc_column(),
         );
+
         let merged_schema = project_schema(&table_schema, merged_projection.as_ref())?;
 
         // files to read

@@ -265,14 +265,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
 
         // only need logical plan
 
-        let dialect = self
-            .ctx
-            .state()
-            .config()
-            .options()
-            .sql_parser
-            .dialect
-            .clone();
+        let dialect = self.ctx.state().config().options().sql_parser.dialect;
         let stat = self
             .ctx
             .state()
@@ -610,7 +603,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
             .sql_with_options(sql, opt)
             .await
             .map_err(|e| status!("Error executing query", e))?;
-        let schema = Arc::new(df.schema().clone().into());
+        let schema = Arc::new(df.schema().as_arrow().clone());
         let stream = df
             .execute_stream()
             .await
@@ -643,7 +636,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         let plan = self.get_plan(handle)?;
         let state = self.ctx.state();
         let df = DataFrame::new(state, plan);
-        let schema = Arc::new(df.schema().clone().into());
+        let schema = Arc::new(df.schema().as_arrow().clone());
         let stream = df
             .execute_stream()
             .await
@@ -1001,8 +994,8 @@ impl FlightSqlService for FlightSqlServiceImpl {
 
         self.statements.insert(plan_uuid.clone(), plan.clone());
 
-        let arrow_schema = (&**plan_schema).into();
-        let message = SchemaAsIpc::new(&arrow_schema, &IpcWriteOptions::default())
+        let arrow_schema = plan_schema.as_arrow();
+        let message = SchemaAsIpc::new(arrow_schema, &IpcWriteOptions::default())
             .try_into()
             .map_err(|e| status!("Unable to serialize schema", e))?;
         let IpcMessage(schema_bytes) = message;

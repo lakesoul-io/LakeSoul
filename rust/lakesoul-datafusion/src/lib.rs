@@ -18,9 +18,11 @@ use std::{env, sync::Arc};
 
 use catalog::LakeSoulCatalog;
 use datafusion::{
-    config::Dialect, execution::{
+    config::Dialect,
+    execution::{
         SessionStateBuilder, object_store::ObjectStoreUrl, runtime_env::RuntimeEnv,
-    }, prelude::{SessionConfig, SessionContext}
+    },
+    prelude::{SessionConfig, SessionContext},
 };
 use datasource::table_factory::LakeSoulTableProviderFactory;
 pub use error::{LakeSoulError, Result};
@@ -75,6 +77,11 @@ pub fn create_lakesoul_session_ctx(
         .execution
         .parquet
         .pushdown_filters = true;
+    // TODO use this
+    session_config
+        .options_mut()
+        .execution
+        .listing_table_factory_infer_partitions = false;
 
     let planner = LakeSoulQueryPlanner::new_ref();
 
