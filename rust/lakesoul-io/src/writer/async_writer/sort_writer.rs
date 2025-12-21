@@ -8,21 +8,19 @@ use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use arrow_schema::{SchemaRef, SortOptions};
-use datafusion::{
-    physical_expr::{
-        LexOrdering, PhysicalSortExpr,
-        expressions::{Column, col},
-    },
-    physical_plan::{
-        ExecutionPlan, PhysicalExpr, projection::ProjectionExec, sorts::sort::SortExec,
-        stream::RecordBatchReceiverStream,
-    },
+use datafusion_common::DataFusionError;
+use datafusion_physical_expr::{
+    LexOrdering, PhysicalSortExpr,
+    expressions::{Column, col},
 };
-use datafusion_common::{DataFusionError, Result};
+use datafusion_physical_plan::{
+    ExecutionPlan, PhysicalExpr, projection::ProjectionExec, sorts::sort::SortExec,
+    stream::RecordBatchReceiverStream,
+};
 use tokio::{sync::mpsc::Sender, task::JoinHandle};
 use tokio_stream::StreamExt;
 
-use crate::{helpers::get_batch_memory_size, lakesoul_io_config::LakeSoulIOConfig};
+use crate::{Result, config::LakeSoulIOConfig, helpers::get_batch_memory_size};
 
 use super::{AsyncBatchWriter, FlushOutput, MultiPartAsyncWriter, ReceiverStreamExec};
 

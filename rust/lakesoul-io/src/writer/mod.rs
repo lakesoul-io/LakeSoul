@@ -25,19 +25,20 @@
 //! ```
 use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use arrow::array::{Array as OtherArray, ListArray};
 use arrow::datatypes::{DataType, Field};
 use arrow_array::RecordBatch;
 use arrow_schema::{SchemaBuilder, SchemaRef};
-use datafusion_common::{DataFusionError, Result};
 use rand::distr::SampleString;
-use std::sync::Arc;
+use rootcause::{bail, report};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 
+use crate::Result;
+use crate::config::{IOSchema, LakeSoulIOConfig};
 use crate::helpers::{get_batch_memory_size, get_file_exist_col};
-use crate::lakesoul_io_config::{IOSchema, LakeSoulIOConfig};
 use crate::local_sensitive_hash::LSH;
 use crate::transform::uniform_schema;
 use crate::writer::async_writer::FlushOutput;
@@ -62,12 +63,9 @@ pub async fn create_writer(
             .iter()
             .filter(|f| !config.aux_sort_cols.contains(f.name()))
             .map(|f| {
-                schema.index_of(f.name().as_str()).map_err(|e| {
-                    DataFusionError::ArrowError(
-                        Box::new(e),
-                        Some(format!("Failed to find index of column: {}", f.name())),
-                    )
-                })
+                schema
+                    .index_of(f.name().as_str())
+                    .map_err(|e| report!("Failed to find index of column: {}", f.name()))
             })
             .collect::<Result<Vec<usize>>>()?;
         Arc::new(schema.project(proj_indices.borrow())?)
@@ -218,10 +216,7 @@ impl SyncSendableMutableLakeSoulWriter {
                 if let Some(array) = record_batch.column_by_name(field_name) {
                     let embedding =
                         array.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
-                            DataFusionError::Internal(format!(
-                                "Column {} is not a ListArray",
-                                field_name
-                            ))
+                            report!("Column {} is not a ListArray", field_name)
                         })?;
 
                     let lsh_array = lsh_computer.compute_lsh(&Some(embedding.clone()))?;
@@ -247,12 +242,13 @@ impl SyncSendableMutableLakeSoulWriter {
         }
     }
 
+    #[instrument(skip(self, record_batch))]
     async fn write_batch_async(
         &mut self,
         record_batch: RecordBatch,
         do_spill: bool,
     ) -> Result<()> {
-        debug!(record_batch_row=?record_batch.num_rows(), do_spill=?do_spill, "write_batch_async");
+        debug!(record_batch_row=?record_batch.num_rows(),"write_batch_async");
         let config = self.config().clone();
         if let Some(max_file_size) = self.config().max_file_size {
             // if max_file_size is set, we need to split batch into multiple files
@@ -280,12 +276,8 @@ impl SyncSendableMutableLakeSoulWriter {
             }
             let rb_schema = record_batch.schema();
             guard.write_record_batch(record_batch).await.map_err(|e| {
-                DataFusionError::Internal(format!(
-                    "err={}, config={:?}, batch_schema={:?}",
-                    e,
-                    self.config.clone(),
-                    rb_schema
-                ))
+                e.attach(format!("config={}", self.config.clone()))
+                    .attach(format!("batch_schema={}", rb_schema))
             })?;
 
             if do_spill {
@@ -293,20 +285,12 @@ impl SyncSendableMutableLakeSoulWriter {
                 if let Some(writer) = self.in_progress.take() {
                     let inner_writer = match Arc::try_unwrap(writer) {
                         Ok(inner) => inner,
-                        Err(_) => {
-                            return Err(DataFusionError::Internal(
-                                "Cannot get ownership of inner writer".to_string(),
-                            ));
-                        }
+                        Err(_) => bail!("Cannot get ownership of inner writer"),
                     };
                     let writer = inner_writer.into_inner();
                     let results = writer.flush_and_close().await.map_err(|e| {
-                        DataFusionError::Internal(format!(
-                            "err={}, config={:?}, batch_schema={:?}",
-                            e,
-                            self.config.clone(),
-                            rb_schema
-                        ))
+                        e.attach(format!("config={}", self.config.clone()))
+                            .attach(format!("batch_schema={}", rb_schema))
                     })?;
                     self.flush_results.extend(results);
                 }
@@ -317,9 +301,7 @@ impl SyncSendableMutableLakeSoulWriter {
             let mut writer = inner_writer.lock().await;
             writer.write_record_batch(record_batch).await
         } else {
-            Err(DataFusionError::Internal(
-                "Invalid state of inner writer".to_string(),
-            ))
+            Err(report!("Invalid state of inner writer"))
         }
     }
 
@@ -328,9 +310,7 @@ impl SyncSendableMutableLakeSoulWriter {
             let inner_writer = match Arc::try_unwrap(inner_writer) {
                 Ok(inner) => inner,
                 Err(_) => {
-                    return Err(DataFusionError::Internal(
-                        "Cannot get ownership of the inner writer".to_string(),
-                    ));
+                    bail!("Cannot get ownership of the inner writer");
                 }
             };
             let runtime = self.runtime;
@@ -338,13 +318,10 @@ impl SyncSendableMutableLakeSoulWriter {
                 let writer = inner_writer.into_inner();
 
                 let mut grouped_results: HashMap<String, Vec<String>> = HashMap::new();
-                let results = writer.flush_and_close().await.map_err(|e| {
-                    DataFusionError::Internal(format!(
-                        "err={}, config={:?}",
-                        e,
-                        self.config.clone()
-                    ))
-                })?;
+                let results = writer
+                    .flush_and_close()
+                    .await
+                    .map_err(|e| e.attach(format!("config={}", self.config.clone())))?;
                 for FlushOutput {
                     partition_desc,
                     file_path,
@@ -386,9 +363,7 @@ impl SyncSendableMutableLakeSoulWriter {
             let inner_writer = match Arc::try_unwrap(inner_writer) {
                 Ok(inner) => inner,
                 Err(_) => {
-                    return Err(DataFusionError::Internal(
-                        "Cannot get ownership of inner writer".to_string(),
-                    ));
+                    bail!("Cannot get ownership of inner writer")
                 }
             };
             let runtime = self.runtime;
@@ -408,7 +383,11 @@ impl SyncSendableMutableLakeSoulWriter {
 
 #[cfg(test)]
 mod tests {
-    use crate::{lakesoul_io_config::{LakeSoulIOConfigBuilder, OPTION_KEY_MEM_LIMIT}, lakesoul_reader::LakeSoulReader};
+    use crate::{
+        Result,
+        config::{LakeSoulIOConfigBuilder, OPTION_KEY_MEM_LIMIT},
+        reader::LakeSoulReader,
+    };
 
     use super::*;
     use rand::distr::SampleString;
@@ -419,7 +398,6 @@ mod tests {
     };
     use arrow_array::{Array, StringArray};
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
-    use datafusion::error::Result;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use rand::Rng;
     use std::{fs::File, sync::Arc};

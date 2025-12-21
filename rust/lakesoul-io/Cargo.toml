@@ -11,7 +11,7 @@ edition = "2024"
 # lakesoul
 proto = { path = "../proto" }
 # datafusion
-datafusion = { workspace = true }
+# datafusion = { workspace = true }
 datafusion-common = { workspace = true }
 datafusion-common-runtime = { workspace = true }
 datafusion-session = { workspace = true }
