@@ -8,35 +8,48 @@ version = "3.0.0"
 edition = "2024"
 
 [dependencies]
+# lakesoul
 lakesoul-datafusion = { path = "../lakesoul-datafusion" }
 lakesoul-metadata = { path = "../lakesoul-metadata" }
 lakesoul-io = { path = "../lakesoul-io" }
+# datafusion
+datafusion = { workspace = true }
+# arrow
+arrow = { workspace = true }
 arrow-flight = { workspace = true }
-tokio = { workspace = true }
-chrono = { version = "0.4" }
-tonic = { workspace = true }
+object_store = { workspace = true }
+# async
 futures = { workspace = true }
 async-trait = { workspace = true }
-arrow = { workspace = true }
-prost = { workspace = true }
-uuid = { workspace = true }
-dashmap = "5.5.3"
-datafusion = { workspace = true }
-object_store = { workspace = true }
-tracing = { workspace = true }
-url = { workspace = true }
+# runtime
+tokio = { workspace = true }
+# time
+chrono = { version = "0.4" }
+# web
+tonic = { workspace = true }
 http = { workspace = true }
-jsonwebtoken = { version = "9", default-features = false }
-serde = { workspace = true }
-metrics = "0.24"
-tower = { version = "0.4", features = ["full"] }
+tower = { workspace = true }
 tower-http = { version = "0.4", features = ["trace"] }
-clap = { workspace = true }
-rand = { workspace = true }
+jsonwebtoken = { version = "9", default-features = false }
+metrics = "0.24"
 metrics-exporter-prometheus = "0.16"
-bytes = "1.7.1"
+# serialization
+serde = { workspace = true }
 serde_json = "1.0.133"
-regex = "1.11.0"
+# protobuf
+prost = { workspace = true }
+# cli
+clap = { workspace = true }
+# utils
+url = { workspace = true }
+uuid = { workspace = true }
+bytes = { workspace = true }
+regex = { workspace = true }
+dashmap = "5.5.3"
+# rand
+rand = { workspace = true }
+# logging
+tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [features]

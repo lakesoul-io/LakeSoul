@@ -11,9 +11,9 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = { version = "0.26", features = [
-    "extension-module",
-    "experimental-async",
-    "abi3-py39",
+  "extension-module",
+  "experimental-async",
+  "abi3-py39",
 ] }
 pyo3-log = "0.13"
 log = "0.4"
