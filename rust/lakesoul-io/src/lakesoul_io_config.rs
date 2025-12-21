@@ -9,11 +9,7 @@
 //! and performance tuning options.
 //!
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, OnceLock},
-    time::Duration,
-};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use arrow::error::ArrowError;
 use arrow_schema::{Schema, SchemaRef};
@@ -42,46 +38,7 @@ use url::{ParseError, Url};
 #[cfg(feature = "hdfs")]
 use crate::hdfs::Hdfs;
 
-use crate::lakesoul_cache::cache::DiskCache;
-use crate::lakesoul_cache::read_through::ReadThroughCache;
-
-static LAKESOUL_CACHE: OnceLock<Arc<DiskCache>> = OnceLock::new();
-/// Get and init Lakesoul Cache
-fn get_lakesoul_cache() -> Arc<DiskCache> {
-    LAKESOUL_CACHE
-        .get_or_init(|| -> Arc<DiskCache> {
-            let cache_size = {
-                match std::env::var("LAKESOUL_CACHE_SIZE") {
-                    Ok(mut s) => {
-                        println!("LAKESOUL_CACHE_SIZE: {}", s);
-                        match s.split_off(s.len() - 3).as_str() {
-                            "KiB" => s.parse::<usize>().unwrap_or(1) * 1024,
-                            "MiB" => s.parse::<usize>().unwrap_or(1) * 1024 * 1024,
-                            "GiB" => {
-                                println!("LAKESOUL_CACHE_SIZE: {}", s);
-                                s.parse::<usize>().unwrap_or(1) * 1024 * 1024 * 1024
-                            }
-                            "TiB" => {
-                                s.parse::<usize>().unwrap_or(1)
-                                    * 1024
-                                    * 1024
-                                    * 1024
-                                    * 1024
-                            }
-                            _ => {
-                                println!("LAKESOUL_CACHE_SIZE: {}", s);
-                                1024 * 1024 * 1024
-                            }
-                        }
-                    }
-                    Err(_) => 1024 * 1024 * 1024,
-                }
-            };
-            println!("LAKESOUL_CACHE_SIZE: {}", cache_size);
-            Arc::new(DiskCache::new(cache_size, 4 * 1024 * 1024))
-        })
-        .clone()
-}
+use crate::cache::{get_lakesoul_cache,read_through::ReadThroughCache};
 
 #[derive(Debug, Derivative)]
 #[derivative(Clone)]

@@ -1,13 +1,50 @@
-pub mod cache;
+use crate::cache::disk_cache::DiskCache;
+use std::sync::{Arc, OnceLock};
+
+pub mod disk_cache;
 pub mod paging;
 pub mod read_through;
 pub mod stats;
-
-// We reuse `object_store` Error and Result to make this crate work well
-// with the rest of object_store implementations.
-pub use object_store::{Error, Result};
-
 pub use read_through::ReadThroughCache;
+
+static LAKESOUL_CACHE: OnceLock<Arc<DiskCache>> = OnceLock::new();
+
+/// Get and init Lakesoul Cache
+pub(crate) fn get_lakesoul_cache() -> Arc<DiskCache> {
+    LAKESOUL_CACHE
+        .get_or_init(|| -> Arc<DiskCache> {
+            let cache_size = {
+                match std::env::var("LAKESOUL_CACHE_SIZE") {
+                    Ok(mut s) => {
+                        info!("LAKESOUL_CACHE_SIZE: {}", s);
+                        match s.split_off(s.len() - 3).as_str() {
+                            "KiB" => s.parse::<usize>().unwrap_or(1) * 1024,
+                            "MiB" => s.parse::<usize>().unwrap_or(1) * 1024 * 1024,
+                            "GiB" => {
+                                info!("LAKESOUL_CACHE_SIZE: {}", s);
+                                s.parse::<usize>().unwrap_or(1) * 1024 * 1024 * 1024
+                            }
+                            "TiB" => {
+                                s.parse::<usize>().unwrap_or(1)
+                                    * 1024
+                                    * 1024
+                                    * 1024
+                                    * 1024
+                            }
+                            _ => {
+                                info!("LAKESOUL_CACHE_SIZE: {}", s);
+                                1024 * 1024 * 1024
+                            }
+                        }
+                    }
+                    Err(_) => 1024 * 1024 * 1024,
+                }
+            };
+            info!("LAKESOUL_CACHE_SIZE: {}", cache_size);
+            Arc::new(DiskCache::new(cache_size, 4 * 1024 * 1024))
+        })
+        .clone()
+}
 
 #[cfg(test)]
 pub mod test {
