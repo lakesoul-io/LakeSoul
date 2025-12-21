@@ -3723,6 +3723,7 @@ dependencies = [
  "chrono",
  "comfy-table 6.2.0",
  "dary_heap",
+ "datafusion-catalog-listing",
  "datafusion-common",
  "datafusion-common-runtime",
  "datafusion-datasource",
