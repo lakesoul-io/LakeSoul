@@ -4,63 +4,36 @@
 
 //! Module for the [datafusion::datasource] implementation of LakeSoul.
 
-// use datafusion::datasource::{physical_plan::FileSource, source::DataSource};
+use std::sync::Arc;
+
+use arrow_schema::{Schema, SchemaBuilder, SchemaRef};
+
+use crate::{Result, config::LakeSoulIOConfig, transform::uniform_schema};
 
 pub mod empty_schema;
 pub mod file_format;
-pub mod listing;
 pub mod physical_plan;
 
-// pub struct LakeSoulSource {}
-
-// impl FileSource for LakeSoulSource {
-//     fn create_file_opener(
-//         &self,
-//         object_store: std::sync::Arc<dyn object_store::ObjectStore>,
-//         base_config: &datafusion::datasource::physical_plan::FileScanConfig,
-//         partition: usize,
-//     ) -> std::sync::Arc<dyn datafusion::datasource::physical_plan::FileOpener> {
-//         todo!()
-//     }
-
-//     fn as_any(&self) -> &dyn std::any::Any {
-//         todo!()
-//     }
-
-//     fn with_batch_size(&self, batch_size: usize) -> std::sync::Arc<dyn FileSource> {
-//         todo!()
-//     }
-
-//     fn with_schema(
-//         &self,
-//         schema: arrow_schema::SchemaRef,
-//     ) -> std::sync::Arc<dyn FileSource> {
-//         todo!()
-//     }
-
-//     fn with_projection(
-//         &self,
-//         config: &datafusion::datasource::physical_plan::FileScanConfig,
-//     ) -> std::sync::Arc<dyn FileSource> {
-//         todo!()
-//     }
-
-//     fn with_statistics(
-//         &self,
-//         statistics: datafusion_common::Statistics,
-//     ) -> std::sync::Arc<dyn FileSource> {
-//         todo!()
-//     }
-
-//     fn metrics(&self) -> &datafusion::physical_plan::metrics::ExecutionPlanMetricsSet {
-//         todo!()
-//     }
-
-//     fn statistics(&self) -> datafusion_common::Result<datafusion_common::Statistics> {
-//         todo!()
-//     }
-
-//     fn file_type(&self) -> &str {
-//         todo!()
-//     }
-// }
+pub fn compute_table_schema(
+    file_schema: SchemaRef,
+    config: &LakeSoulIOConfig,
+) -> Result<SchemaRef> {
+    let target_schema = if config.inferring_schema {
+        SchemaRef::new(Schema::empty())
+    } else {
+        uniform_schema(config.target_schema())
+    };
+    let mut builder = SchemaBuilder::from(target_schema.fields());
+    // O(n^2), n is the number of fields in file_schema and config.partition_schema
+    for field in file_schema.fields() {
+        if target_schema.field_with_name(field.name()).is_err() {
+            builder.try_merge(field)?;
+        }
+    }
+    for field in config.partition_schema().fields() {
+        if target_schema.field_with_name(field.name()).is_err() {
+            builder.try_merge(field)?;
+        }
+    }
+    Ok(Arc::new(builder.finish()))
+}

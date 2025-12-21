@@ -40,8 +40,8 @@ use crate::async_writer::{
     AsyncBatchWriter, MultiPartAsyncWriter, PartitioningAsyncWriter, SortAsyncWriter,
     WriterFlushResult,
 };
+use crate::config::{IOSchema, LakeSoulIOConfig};
 use crate::helpers::{get_batch_memory_size, get_file_exist_col};
-use crate::lakesoul_io_config::{IOSchema, LakeSoulIOConfig};
 use crate::local_sensitive_hash::LSH;
 use crate::transform::uniform_schema;
 
@@ -403,7 +403,7 @@ impl SyncSendableMutableLakeSoulWriter {
 #[cfg(test)]
 mod tests {
     use crate::{
-        lakesoul_io_config::{LakeSoulIOConfigBuilder, OPTION_KEY_MEM_LIMIT},
+        config::{LakeSoulIOConfigBuilder, OPTION_KEY_MEM_LIMIT},
         lakesoul_reader::LakeSoulReader,
         lakesoul_writer::{
             AsyncBatchWriter, MultiPartAsyncWriter, SyncSendableMutableLakeSoulWriter,

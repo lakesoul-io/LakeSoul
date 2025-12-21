@@ -46,7 +46,7 @@ impl LakeSoulCatalog {
         self.context.clone()
     }
 
-    fn get_all_namespace(&self) -> crate::error::Result<Vec<Namespace>> {
+    fn get_all_namespace(&self) -> crate::Result<Vec<Namespace>> {
         let client = self.metadata_client.clone();
         futures::executor::block_on(async move { Ok(client.get_all_namespace().await?) })
     }

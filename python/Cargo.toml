@@ -23,8 +23,11 @@ tokio.workspace = true
 arrow-pyarrow.workspace = true
 arrow-schema.workspace = true
 arrow-array.workspace = true
+datafusion-common.workspace = true
+datafusion-execution.workspace = true
 futures.workspace = true
 prost.workspace = true
+rootcause.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 datafusion-substrait = { workspace = true }

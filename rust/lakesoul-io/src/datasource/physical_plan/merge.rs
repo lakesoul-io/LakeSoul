@@ -7,10 +7,10 @@
 use std::sync::Arc;
 use std::{any::Any, collections::HashMap};
 
+use crate::config::LakeSoulIOConfig;
 use crate::default_column_stream::DefaultColumnStream;
 use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;
 use crate::filter::parser::{FilterContainer, Parser as FilterParser};
-use crate::lakesoul_io_config::LakeSoulIOConfig;
 use crate::sorted_merge::merge_operator::MergeOperator;
 use crate::sorted_merge::sorted_stream_merger::{
     SortedStream, build_sorted_stream_merger,
@@ -49,7 +49,7 @@ pub struct MergeParquetExec {
     /// The input execution plans of the merge on read operation.
     inputs: Vec<Arc<dyn ExecutionPlan>>,
     /// The io config of the merge on read operation.
-    io_config: LakeSoulIOConfig,
+    io_config: LakeSoulIOConfig, // try use arc
     /// The properties of the merge on read operation.
     properties: PlanProperties,
 }

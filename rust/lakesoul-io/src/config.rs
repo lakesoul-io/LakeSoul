@@ -1,11 +1,15 @@
 use std::{collections::HashMap, sync::Arc};
 
 use arrow_schema::{Schema, SchemaRef};
+use datafusion_common::DFSchema;
 use datafusion_expr::Expr;
 use datafusion_substrait::substrait::proto::Plan;
 use educe::Educe;
 
-use crate::Result;
+use crate::{
+    Result,
+    filter::parser::{FilterContainer, Parser},
+};
 
 mod options;
 pub use options::*;
@@ -89,18 +93,21 @@ pub struct LakeSoulIOConfig {
     /// Whether to infer schema from data
     #[educe(Default = false)]
     pub(crate) inferring_schema: bool,
-    /// Memory limit for operations
-    #[educe(Default = None)]
-    pub(crate) memory_limit: Option<usize>,
-    /// Size of memory pool
-    #[educe(Default= None)]
-    pub(crate) memory_pool_size: Option<usize>,
     /// Maximum file size in bytes
     #[educe(Default  = None)]
     pub(crate) max_file_size: Option<u64>,
     /// Random number generator seed
     #[educe(Default = 1234)]
     pub(crate) seed: u64,
+    /// Memory buffer capacity
+    #[educe(Default = 16 * 1024)]
+    pub(crate) memory_buffer_capacity: usize,
+    /// Chunk size
+    #[educe(Default=128 * 1024 * 1024)]
+    pub(crate) multipart_chunk_size: usize,
+    /// Receiver capacity
+    #[educe(Default = 8)]
+    pub(crate) receiver_capacity: usize,
 }
 
 impl LakeSoulIOConfig {
@@ -254,6 +261,26 @@ impl LakeSoulIOConfigBuilder {
         let mut builder = LakeSoulIOConfigBuilder::new();
         builder.config.object_store_options = options;
         builder
+    }
+
+    pub fn schema(&self) -> SchemaRef {
+        self.config.target_schema()
+    }
+
+    pub fn primary_keys_slice(&self) -> &[String] {
+        self.config.primary_keys_slice()
+    }
+
+    pub fn aux_sort_cols_slice(&self) -> &[String] {
+        self.config.aux_sort_cols_slice()
+    }
+
+    pub fn prefix(&self) -> &String {
+        &self.config.prefix
+    }
+
+    pub fn object_store_options(&self) -> &HashMap<String, String> {
+        &self.config.object_store_options
     }
 
     /// Sets the prefix for the file path
@@ -593,6 +620,36 @@ impl LakeSoulIOConfigBuilder {
         self
     }
 
+    /// Sets the capacity for In Memory Buffer
+    ///
+    /// # Arguments
+    ///
+    /// * `capacity` - The capacity for memory buffer
+    pub fn with_memory_buffer_capacity(mut self, capacity: usize) -> Self {
+        self.config.memory_buffer_capacity = capacity;
+        self
+    }
+
+    /// Sets the chunk size for multipart upload
+    ///
+    /// # Arguments
+    ///
+    /// * `chunk_size` - size used by multipart writer
+    pub fn with_multipart_chunk_size(mut self, chunk_size: usize) -> Self {
+        self.config.multipart_chunk_size = chunk_size;
+        self
+    }
+
+    /// Sets the capacity for receiver
+    ///
+    /// # Arguments
+    ///
+    /// * `capacity` - receiver's buffer capacity
+    pub fn with_receiver_capacity(mut self, capacity: usize) -> Self {
+        self.config.receiver_capacity = capacity;
+        self
+    }
+
     /// Builds the LakeSoulIOConfig instance
     ///
     /// # Returns
@@ -601,21 +658,34 @@ impl LakeSoulIOConfigBuilder {
     pub fn build(self) -> LakeSoulIOConfig {
         self.config
     }
+}
 
-    pub fn schema(&self) -> SchemaRef {
-        self.config.target_schema()
-    }
+impl LakeSoulIOConfig {
+    /// Get filter in datafusion logical expr
+    ///
+    /// This will consume all filters
+    pub async fn get_filter_exprs(&mut self, table_schema: &Schema) -> Result<Vec<Expr>> {
+        let filter_strs = std::mem::take(&mut self.filter_strs);
+        let filter_protos = std::mem::take(&mut self.filter_protos);
+        let filter_bufs = std::mem::take(&mut self.filter_buf);
+        let iter = filter_strs
+            .into_iter()
+            .map(FilterContainer::String)
+            .chain(filter_protos.into_iter().map(FilterContainer::Plan))
+            .chain(filter_bufs.into_iter().map(FilterContainer::RawBuf));
 
-    pub fn primary_keys_slice(&self) -> &[String] {
-        self.config.primary_keys_slice()
-    }
+        let df_schema = DFSchema::try_from_qualified_schema("?table?", table_schema)?;
 
-    pub fn aux_sort_cols_slice(&self) -> &[String] {
-        self.config.aux_sort_cols_slice()
-    }
+        let mut exprs: Vec<Expr> = Vec::new();
 
-    pub fn prefix(&self) -> &String {
-        &self.config.prefix
+        let dummy_ctx = datafusion::prelude::SessionContext::new();
+
+        for container in iter {
+            exprs.extend(
+                Parser::parse_filter_container(&dummy_ctx, &df_schema, container).await?,
+            );
+        }
+        Ok(exprs)
     }
 }
 

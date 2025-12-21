@@ -7,6 +7,8 @@
 //! It includes functions for formatting scalar values, converting partition descriptions,
 //! and applying partition filters.
 
+use arrow::array::as_primitive_array;
+use arrow::datatypes::UInt32Type;
 use arrow_array::{Array, RecordBatch, UInt32Array};
 use arrow_buffer::i256;
 use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef, TimeUnit};
@@ -30,7 +32,8 @@ use object_store::ObjectMeta;
 use object_store::path::Path;
 use parquet::file::metadata::ParquetMetaData;
 use proto::proto::entity::JniWrapper;
-use rootcause::{bail, report};
+use rand::distr::SampleString;
+use rootcause::{Report, bail, report};
 use std::collections::VecDeque;
 use std::fmt::{Debug, Display, Formatter};
 use std::iter::zip;
@@ -74,6 +77,7 @@ pub fn column_names_to_physical_sort_expr(
                 input_dfschema,
                 session.execution_props(),
             )
+            .map_err(|e| e.into())
         })
         .collect::<Result<Vec<_>>>()
 }
@@ -99,7 +103,7 @@ pub fn column_names_to_physical_expr(
         .map(|column| {
             create_physical_expr(&col(column), input_dfschema, session.execution_props())
         })
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<Result<Vec<_>, DataFusionError>>()?;
     Ok(runtime_expr)
 }
 
@@ -148,7 +152,7 @@ pub fn get_columnar_values(
             if let Some(array) = batch.column_by_name(range_col) {
                 match ScalarValue::try_from_array(array, 0) {
                     Ok(scalar) => Ok((range_col.clone(), scalar)),
-                    Err(e) => Err(e),
+                    Err(e) => Err(e.into()),
                 }
             } else {
                 Err(report!("Invalid partition desc of {}", range_col))
@@ -396,7 +400,7 @@ pub fn into_scalar_value(val: &str, data_type: &DataType) -> Result<ScalarValue>
             DataType::LargeBinary => {
                 Ok(ScalarValue::LargeBinary(Some(hex::decode(val).unwrap())))
             }
-            _ => ScalarValue::try_from_string(val.to_string(), data_type),
+            _ => Ok(ScalarValue::try_from_string(val.to_string(), data_type)?),
         }
     }
 }
@@ -555,7 +559,7 @@ pub async fn listing_table_from_lakesoul_io_config(
             let table_paths = lakesoul_io_config
                 .files
                 .iter()
-                .map(ListingTableUrl::parse)
+                .map(|p| ListingTableUrl::parse(p).map_err(|e| e.into()))
                 .collect::<Result<Vec<_>>>()?;
             let object_metas =
                 get_file_object_meta(session.task_ctx(), &table_paths).await?;
@@ -650,9 +654,8 @@ pub async fn get_file_object_meta(
             async move {
                 let path = Path::from_url_path(
                     <ListingTableUrl as AsRef<Url>>::as_ref(path).path(),
-                )
-                .map_err(object_store::Error::from)?;
-                store.head(&path).await
+                )?;
+                Ok(store.head(&path).await?)
             }
         })
         .boxed()
@@ -665,7 +668,6 @@ pub async fn get_file_object_meta(
         )
         .try_collect()
         .await
-        .map_err(DataFusionError::from)
 }
 
 /// Infers the schema of files from a list of [`ListingTableUrl`] and [`ObjectMeta`].
@@ -695,9 +697,10 @@ pub async fn infer_schema(
         .object_store(object_store_url.clone())?;
 
     // Resolve the schema
-    file_format
+    let ret = file_format
         .infer_schema(session, &store, object_metas)
-        .await
+        .await?;
+    Ok(ret)
 }
 
 /// Applies a partition filter to a [`JniWrapper`].
@@ -718,34 +721,33 @@ pub fn apply_partition_filter(
 ) -> Result<JniWrapper> {
     let runtime = Builder::new_multi_thread().worker_threads(1).build()?;
     runtime.block_on(async {
-        todo!()
-        // let context = SessionContext::default();
-        // let index_filed_name =
-        //     rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 8);
-        // let index_filed = Field::new(index_filed_name, DataType::UInt32, false);
-        // let schema_len = schema.fields().len();
-        // let batch = batch_from_partition(&wrapper, schema, index_filed)?;
+        let context = datafusion::prelude::SessionContext::default();
+        let index_filed_name =
+            rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 8);
+        let index_filed = Field::new(index_filed_name, DataType::UInt32, false);
+        let schema_len = schema.fields().len();
+        let batch = batch_from_partition(&wrapper, schema, index_filed)?;
 
-        // let dataframe = context.read_batch(batch)?;
-        // let df_filter = Parser::parse_substrait_plan(filter, dataframe.schema())?;
+        let dataframe = context.read_batch(batch)?;
+        let df_filter =
+            crate::filter::Parser::parse_substrait_plan(filter, dataframe.schema())?;
 
-        // let results = dataframe.filter(df_filter)?.collect().await?;
+        let results = dataframe.filter(df_filter)?.collect().await?;
 
-        // let mut partition_info = vec![];
-        // for result_batch in results {
-        //     for index in
-        //         as_primitive_array::<UInt32Type>(result_batch.column(schema_len))?
-        //             .values()
-        //             .iter()
-        //     {
-        //         partition_info.push(wrapper.partition_info[*index as usize].clone());
-        //     }
-        // }
+        let mut partition_info = vec![];
+        for result_batch in results {
+            for index in as_primitive_array::<UInt32Type>(result_batch.column(schema_len))
+                .values()
+                .iter()
+            {
+                partition_info.push(wrapper.partition_info[*index as usize].clone());
+            }
+        }
 
-        // Ok(JniWrapper {
-        //     partition_info,
-        //     ..Default::default()
-        // })
+        Ok(JniWrapper {
+            partition_info,
+            ..Default::default()
+        })
     })
 }
 
@@ -785,8 +787,8 @@ fn batch_from_partition(
     }
     let mut columns = columns
         .iter()
-        .map(|values| ScalarValue::iter_to_array(values.clone()))
-        .collect::<Result<Vec<_>>>()?;
+        .map(|values| ScalarValue::iter_to_array(values.clone()).map_err(|e| e.into()))
+        .collect::<Result<Vec<_>, Report>>()?;
 
     // Add index column
     let mut fields_with_index = schema
@@ -1063,7 +1065,7 @@ impl LazyBatchGenerator for InMemGenerator {
         self
     }
 
-    fn generate_next_batch(&mut self) -> Result<Option<RecordBatch>> {
+    fn generate_next_batch(&mut self) -> Result<Option<RecordBatch>, DataFusionError> {
         Ok(self.batches.pop_front())
     }
 }

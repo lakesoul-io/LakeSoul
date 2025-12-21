@@ -7,11 +7,14 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use std::io::Write;
 use std::time::Instant;
+
+use crate::Result;
+
 fn print_batches<W: std::io::Write>(
     writer: &mut W,
     schema: SchemaRef,
     batches: &[RecordBatch],
-) -> anyhow::Result<()> {
+) -> Result<()> {
     // filter out any empty batches
     let batches: Vec<_> = batches
         .iter()
@@ -28,10 +31,7 @@ fn print_batches<W: std::io::Write>(
 }
 
 /// Print when the result batches contain no rows
-fn print_empty<W: std::io::Write>(
-    writer: &mut W,
-    schema: SchemaRef,
-) -> anyhow::Result<()> {
+fn print_empty<W: std::io::Write>(writer: &mut W, schema: SchemaRef) -> Result<()> {
     // Print column headers for Table format
     if !schema.fields().is_empty() {
         let empty_batch = RecordBatch::new_empty(schema);
@@ -71,7 +71,7 @@ impl Printer {
         batches: &[RecordBatch],
         query_start_time: Instant,
         row_count: usize,
-    ) -> anyhow::Result<()> {
+    ) -> Result<()> {
         let stdout = std::io::stdout();
         let mut writer = stdout.lock();
 

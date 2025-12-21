@@ -34,12 +34,14 @@ version = "0.1.0"
 datafusion = { version = "51" }
 datafusion-common = { version = "51" }
 datafusion-common-runtime = { version = "51" }
-datafusion-session= { version = "51" }
-datafusion-expr= { version = "51" }
-datafusion-physical-expr= { version = "51" }
-datafusion-physical-plan= { version = "51" }
-datafusion-execution= { version = "51" }
+datafusion-session = { version = "51" }
+datafusion-catalog-listing = { version = "51" }
+datafusion-expr = { version = "51" }
+datafusion-physical-expr = { version = "51" }
+datafusion-physical-plan = { version = "51" }
+datafusion-execution = { version = "51" }
 datafusion-datasource = { version = "51" }
+datafusion-datasource-parquet = { version = "51" }
 datafusion-substrait = { version = "51" }
 # arrow
 arrow = { version = "57" }

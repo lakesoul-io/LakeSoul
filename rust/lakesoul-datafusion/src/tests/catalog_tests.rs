@@ -4,23 +4,25 @@
 
 #[cfg(test)]
 mod catalog_tests {
-    use crate::catalog::{LakeSoulCatalog, LakeSoulNamespace, LakeSoulTableProperty};
-    use crate::lakesoul_table::LakeSoulTable;
-    use crate::serialize::arrow_java::ArrowJavaSchema;
+    use std::env;
+    use std::sync::Arc;
+
     use arrow::array::{ArrayRef, Int32Array, RecordBatch};
     use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
     use datafusion::assert_batches_eq;
     use datafusion::catalog::{CatalogProvider, SchemaProvider};
-    use lakesoul_io::lakesoul_io_config::LakeSoulIOConfigBuilder;
-    use lakesoul_io::lakesoul_io_config::create_session_context;
-    use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
+    use lakesoul_io::config::LakeSoulIOConfigBuilder;
+    use lakesoul_io::session::create_session_context;
+    use lakesoul_metadata::MetaDataClient;
     use proto::proto::entity::{Namespace, TableInfo};
+    use rand::Rng;
     use rand::distr::Alphanumeric;
-    use rand::{Rng, SeedableRng};
-    use rand_chacha::ChaCha8Rng;
-    use std::env;
-    use std::sync::Arc;
+
     use tokio::runtime::Runtime;
+
+    use crate::catalog::{LakeSoulCatalog, LakeSoulNamespace, LakeSoulTableProperty};
+    use crate::lakesoul_table::LakeSoulTable;
+    use crate::serialize::arrow_java::ArrowJavaSchema;
 
     fn create_batch_i32(names: Vec<&str>, values: Vec<&[i32]>) -> RecordBatch {
         let values = values
@@ -35,12 +37,8 @@ mod catalog_tests {
         RecordBatch::try_from_iter_with_nullable(iter).unwrap()
     }
 
-    async fn get_client() -> MetaDataClientRef {
-        Arc::new(MetaDataClient::from_env().await.unwrap())
-    }
-
     fn random_namespace(prefix: &str, hash_bucket_num: usize) -> Vec<Namespace> {
-        let mut rng = ChaCha8Rng::from_rng(&mut rand::rng());
+        let rng = &mut rand::rng();
         (0..rng.random_range(1..10))
             .map(|_| Namespace {
                 namespace: {
@@ -66,7 +64,7 @@ mod catalog_tests {
         schema: SchemaRef,
     ) -> Vec<(Namespace, Vec<TableInfo>)> {
         let mut ret = Vec::with_capacity(nps.len());
-        let mut rng = ChaCha8Rng::from_rng(&mut rand::rng());
+        let rng = &mut rand::rng();
         let schema = serde_json::to_string::<ArrowJavaSchema>(&schema.into()).unwrap();
         for np in nps {
             let n = rng.random_range(1usize..10);
@@ -90,8 +88,7 @@ mod catalog_tests {
                 );
                 let table_id = format!(
                     "table_{}",
-                    (&mut rng)
-                        .sample_iter(&Alphanumeric)
+                    rng.sample_iter(&Alphanumeric)
                         .take(22)
                         .map(char::from)
                         .collect::<String>()
@@ -110,29 +107,6 @@ mod catalog_tests {
             ret.push((np, v));
         }
         ret
-    }
-
-    fn table_info(table_name: &str, namespace: &str, schema: SchemaRef) -> TableInfo {
-        let path = format!(
-            "{}/test_data/{}/{}",
-            env::current_dir()
-                .unwrap_or(env::temp_dir())
-                .to_str()
-                .unwrap(),
-            namespace,
-            table_name
-        );
-        let schema = serde_json::to_string::<ArrowJavaSchema>(&schema.into()).unwrap();
-        TableInfo {
-            table_id: "table_000000001".into(),
-            table_namespace: "hello".to_string(),
-            table_name: table_name.to_string(),
-            table_path: format!("file://{}", path),
-            table_schema: schema.clone(),
-            properties: "{}".into(),
-            partitions: ";range,hash".to_string(),
-            domain: "public".to_string(),
-        }
     }
 
     fn test_catalog_api() {
@@ -326,9 +300,9 @@ mod catalog_tests {
         });
     }
 
-    // #[test]
-    // fn test_all_cases() {
-    //     test_catalog_api();
-    //     test_catalog_sql();
-    // }
+    #[test]
+    fn test_all_cases() {
+        test_catalog_api();
+        test_catalog_sql();
+    }
 }

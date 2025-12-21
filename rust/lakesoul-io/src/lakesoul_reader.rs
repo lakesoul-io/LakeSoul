@@ -33,6 +33,7 @@ use atomic_refcell::AtomicRefCell;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+use rootcause::compat::boxed_error::IntoBoxedError;
 use std::sync::Arc;
 
 use arrow_schema::{ArrowError, SchemaRef};
@@ -47,6 +48,7 @@ use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
+use crate::config::LakeSoulIOConfig;
 use crate::datasource::file_format::LakeSoulParquetFormat;
 use crate::datasource::listing::LakeSoulTableProvider;
 use crate::datasource::physical_plan::merge::convert_filter;
@@ -55,7 +57,7 @@ use crate::helpers::{
     collect_or_conjunctive_filter_expressions, compute_scalar_hash,
     extract_hash_bucket_id, extract_scalar_value_from_expr,
 };
-use crate::lakesoul_io_config::{LakeSoulIOConfig, create_session_context};
+use crate::session::create_session_context;
 
 /// Read data total time
 static READ_DATA_TOTAL_TIME: std::sync::atomic::AtomicU64 =
@@ -115,7 +117,8 @@ impl LakeSoulReader {
     ///
     /// A Result containing the new LakeSoulReader instance
     pub fn new(mut config: LakeSoulIOConfig) -> Result<Self> {
-        let sess_ctx = create_session_context(&mut config)?;
+        let sess_ctx = create_session_context(&mut config)
+            .map_err(|e| DataFusionError::External(e.into_boxed_error()))?;
         Ok(LakeSoulReader {
             sess_ctx,
             config,
@@ -445,8 +448,14 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::Relaxed;
     use std::sync::mpsc::sync_channel;
+    use std::thread;
     use std::time::Instant;
     use tokio::runtime::Builder;
+
+    use crate::config::LakeSoulIOConfigBuilder;
+    use crate::lakesoul_writer::SyncSendableMutableLakeSoulWriter;
+    use datafusion::logical_expr::{Expr, col};
+    use datafusion_common::ScalarValue;
 
     use arrow::datatypes::{DataType, Field, Schema, TimestampSecondType};
     use arrow::util::pretty::print_batches;
@@ -606,7 +615,6 @@ mod tests {
         Ok(())
     }
 
-    use std::thread;
     #[test]
     fn test_reader_s3_blocked() -> Result<()> {
         let reader_conf = LakeSoulIOConfigBuilder::new()
@@ -669,11 +677,6 @@ mod tests {
         }
         Ok(())
     }
-
-    use crate::lakesoul_io_config::LakeSoulIOConfigBuilder;
-    use crate::lakesoul_writer::SyncSendableMutableLakeSoulWriter;
-    use datafusion::logical_expr::{Expr, col};
-    use datafusion_common::ScalarValue;
 
     // todo use filter_proto
     async fn get_num_rows_of_file_with_filters(

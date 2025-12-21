@@ -9,6 +9,7 @@ use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
 use datafusion::logical_expr::logical_plan::CreateExternalTable;
 use lakesoul_metadata::MetaDataClientRef;
+use rootcause::compat::boxed_error::IntoBoxedError;
 use std::sync::Arc;
 
 use crate::datasource::table_provider::LakeSoulTableProvider;
@@ -42,8 +43,8 @@ impl TableProviderFactory for LakeSoulTableProviderFactory {
         state: &dyn Session,
         cmd: &CreateExternalTable,
     ) -> datafusion::error::Result<Arc<dyn TableProvider>> {
-        info!(
-            "LakeSoulTableProviderFactory::create: {:?}, {:?}, {:?}, {:?}, {:?}",
+        debug!(
+            "LakeSoulTableProviderFactory::create: {}, {}, {}, {}, {:#?}",
             cmd.name, cmd.location, cmd.schema, cmd.constraints, cmd.options
         );
 
@@ -60,7 +61,7 @@ impl TableProviderFactory for LakeSoulTableProviderFactory {
                 &cmd,
             )
             .await
-            .map_err(|e| DataFusionError::External(Box::new(e)))?,
+            .map_err(|report| DataFusionError::External(report.into_boxed_error()))?,
         ))
     }
 }

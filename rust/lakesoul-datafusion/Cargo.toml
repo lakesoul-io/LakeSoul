@@ -57,14 +57,12 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 log = "0.4.27"
 # error
-thiserror = { workspace = true }
-anyhow = { workspace = true }
+rootcause = { workspace = true }
 
 [dev-dependencies]
 ctor = "0.4"
 test-log = { version = "0.2.14", features = ["trace"] }
 rand = { workspace = true }
-rand_chacha = { workspace = true }
 
 [features]
 ci = []

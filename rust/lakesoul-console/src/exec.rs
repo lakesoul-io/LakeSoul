@@ -2,9 +2,12 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::Command;
-use crate::print::Printer;
-use anyhow::bail;
+use std::io::BufRead;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Instant;
+use std::{fs::File, io::BufReader};
+
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::config::Dialect;
@@ -14,20 +17,20 @@ use datafusion::prelude::SessionContext;
 use datafusion::sql::parser::Statement;
 use futures::stream::StreamExt;
 use lakesoul_datafusion::tpch::tpch_gen_sql;
+use rootcause::bail;
 use rustyline::error::ReadlineError;
-use std::io::BufRead;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Instant;
-use std::{fs::File, io::BufReader};
 use tokio::signal;
 use tracing::{debug, trace};
+
+use crate::Command;
+use crate::Result;
+use crate::print::Printer;
 
 pub async fn exec_command(
     commands: Command,
     printer: &Printer,
     ctx: &SessionContext,
-) -> anyhow::Result<()> {
+) -> Result<()> {
     match commands {
         Command::TpchGen {
             schema,
@@ -79,7 +82,7 @@ async fn exec_tpch_gen(
     ctx: &SessionContext,
     sqls: Vec<Vec<String>>,
     printer: &Printer,
-) -> anyhow::Result<()> {
+) -> Result<()> {
     let start = Instant::now();
     let mut row_counts = 0;
     let mut res = vec![];
@@ -100,7 +103,7 @@ async fn exec_from_lines(
     ctx: &SessionContext,
     reader: &mut BufReader<File>,
     printer: &Printer,
-) -> anyhow::Result<()> {
+) -> Result<()> {
     let mut query = "".to_owned();
 
     for line in reader.lines() {
@@ -143,7 +146,7 @@ pub async fn exec_from_files(
     ctx: &SessionContext,
     printer: &Printer,
     files: Vec<String>,
-) -> anyhow::Result<()> {
+) -> Result<()> {
     let files = files
         .into_iter()
         .map(|file_path| File::open(file_path).unwrap())
@@ -171,7 +174,7 @@ fn parse_use(stmt: Statement) -> Option<Use> {
 async fn exec(
     ctx: &SessionContext,
     sql: &str,
-) -> anyhow::Result<(usize, Vec<RecordBatch>, Arc<Schema>)> {
+) -> Result<(usize, Vec<RecordBatch>, Arc<Schema>)> {
     trace!("begin exec sql");
     let stmt = ctx.state().sql_to_statement(sql, &Dialect::PostgreSQL)?;
     if let Some(u) = parse_use(stmt.clone()) {
@@ -234,7 +237,7 @@ async fn exec_and_print(
     ctx: &SessionContext,
     printer: &Printer,
     sql: &str,
-) -> anyhow::Result<()> {
+) -> Result<()> {
     trace!("begin exec sql");
     let now = Instant::now();
     let (row_count, res, schema) = exec(ctx, sql).await?;
@@ -242,10 +245,7 @@ async fn exec_and_print(
     Ok(())
 }
 
-pub async fn exec_from_repl(
-    ctx: &SessionContext,
-    printer: &Printer,
-) -> anyhow::Result<()> {
+pub async fn exec_from_repl(ctx: &SessionContext, printer: &Printer) -> Result<()> {
     let mut rl = rustyline::DefaultEditor::new()?;
     rl.load_history("console.history").ok();
     loop {

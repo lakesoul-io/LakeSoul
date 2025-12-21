@@ -490,9 +490,9 @@ mod tests {
     use datafusion::physical_plan::{ExecutionPlan, common};
     use datafusion::prelude::{SessionConfig, SessionContext};
 
+    use crate::config::LakeSoulIOConfigBuilder;
     use crate::helpers::InMemGenerator;
-    use crate::lakesoul_io_config::LakeSoulIOConfigBuilder;
-    use crate::lakesoul_reader::LakeSoulReader;
+    use crate::reader::LakeSoulReader;
     use crate::sorted_merge::merge_operator::MergeOperator;
     use crate::sorted_merge::sorted_stream_merger::{
         SortedStream, build_sorted_stream_merger,
@@ -513,7 +513,9 @@ mod tests {
         let schema = batches[0].schema();
         let exec = LazyMemoryExec::try_new(
             schema.clone(),
-            vec![Arc::new(RwLock::new(InMemGenerator::try_new(batches)?))],
+            vec![Arc::new(RwLock::new(
+                InMemGenerator::try_new(batches).unwrap(),
+            ))],
         )?;
         let stream = exec.execute(0, context.clone())?;
         Ok(SortedStream::new(stream))

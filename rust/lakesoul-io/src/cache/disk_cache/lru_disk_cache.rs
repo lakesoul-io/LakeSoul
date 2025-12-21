@@ -386,8 +386,8 @@ impl LruDiskCache {
             {
                 use std::os::windows::fs::FileExt;
                 match file.seek_read(&mut buf, 0) {
-                    Ok(v) => Some(buf),
-                    Err(e) => {
+                    Ok(_) => Some(buf),
+                    Err(_) => {
                         error!(
                             "[laesoul::cache::lru_cache] Error reading file from cache."
                         );
@@ -620,7 +620,7 @@ mod tests {
 
         let mut rng = rand::rng();
 
-        let zipf: Zipf<f64> = rand_distr::Zipf::new((1024 * 1024) as f64, 1.03).unwrap();
+        let zipf: Zipf<f64> = Zipf::new((1024 * 1024) as f64, 1.03).unwrap();
         zipf.sample(&mut rng) as usize
     }
 

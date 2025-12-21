@@ -48,6 +48,7 @@ proto = { path = "../proto" }
 arrow = { workspace = true }
 arrow-array = { workspace = true }
 serde_json = { workspace = true }
+rootcause = { workspace = true, features = ["compat-anyhow1"] }
 
 [lints]
 workspace = true

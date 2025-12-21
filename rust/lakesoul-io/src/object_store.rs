@@ -16,6 +16,7 @@ use crate::{
 };
 
 fn create_s3_store(config: &LakeSoulIOConfig) -> Result<AmazonS3> {
+    // ENV First
     let key = std::env::var("AWS_ACCESS_KEY_ID").ok().or_else(|| {
         config
             .object_store_options
@@ -158,25 +159,7 @@ pub fn register_hdfs_object_store(
     }
     #[cfg(feature = "hdfs")]
     {
-        let hdfs = Hdfs::try_new(_host, _config.clone())?;
-
-        // add cache if env LAKESOUL_CACHE is set
-        // todo
-        // if std::env::var("LAKESOUL_CACHE").is_ok() {
-        //     // cache size in bytes, default to 1GB
-        //     let cache_size = {
-        //         match std::env::var("LAKESOUL_CACHE_SIZE") {
-        //             Ok(s) => s.parse::<usize>().unwrap_or(1024) * 1024 * 1024,
-        //             _ => 1024 * 1024 * 1024,
-        //         }
-        //     };
-        //     let cache = Arc::new(DiskCache::new(cache_size, 4 * 1024 * 1024));
-        //     let cache_hdfs_store = Arc::new(ReadThroughCache::new(hdfs, cache));
-        //     // register cache store
-        //     runtime.register_object_store(url, cache_hdfs_store);
-        // } else {
-        //     runtime.register_object_store(url, hdfs);
-        // }
+        let hdfs = crate::hdfs::Hdfs::try_new(_host, _config.clone())?;
 
         _runtime.register_object_store(_url, Arc::new(hdfs));
         Ok(())
@@ -195,7 +178,7 @@ pub fn register_hdfs_object_store(
 /// # Returns
 ///
 /// The normalized path string
-fn register_object_store(
+pub fn register_object_store(
     path: &str,
     config: &mut LakeSoulIOConfig,
     runtime: &RuntimeEnv,
@@ -214,10 +197,8 @@ fn register_object_store(
                 }
                 if !config.object_store_options.contains_key("fs.s3a.bucket") {
                     config.object_store_options.insert(
-                        "fs.s3a.bucket".to_string(),
-                        url.host_str()
-                            .ok_or(report!("host str missing"))?
-                            .to_string(),
+                        "fs.s3a.bucket".into(),
+                        url.host_str().ok_or(report!("host str missing"))?.into(),
                     );
                 }
                 // add cache if env LAKESOUL_CACHE is set

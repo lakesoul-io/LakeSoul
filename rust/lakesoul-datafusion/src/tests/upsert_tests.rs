@@ -4,27 +4,21 @@
 mod upsert_with_metadata_tests {
 
     use chrono::naive::NaiveDate;
+    use lakesoul_io::session::create_session_context;
     use std::sync::Arc;
 
-    use lakesoul_io::filter::parser::Parser;
-
-    use arrow::datatypes::DataType;
-
     use arrow::array::{ArrayRef, Int32Array, StringArray, TimestampMicrosecondArray};
+    use arrow::datatypes::DataType;
     use arrow::datatypes::{Field, Schema, SchemaRef, TimeUnit};
     use arrow::record_batch::RecordBatch;
-
-    use crate::error::Result;
-    use crate::lakesoul_table::LakeSoulTable;
-    use crate::test::assert_batches_eq;
-
-    use lakesoul_io::lakesoul_io_config::{
-        LakeSoulIOConfigBuilder, create_session_context,
-    };
-
+    use lakesoul_io::config::LakeSoulIOConfigBuilder;
+    use lakesoul_io::filter::parser::Parser;
     use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 
+    use crate::Result;
     use crate::catalog::{create_io_config_builder, create_table};
+    use crate::lakesoul_table::LakeSoulTable;
+    use crate::tests::assert_batches_eq;
 
     enum StrOrI32 {
         V1(&'static str),
@@ -551,7 +545,7 @@ mod upsert_with_metadata_tests {
         .await
     }
 
-    async fn test_basic_upsert_same_columns() -> Result<()> {
+    async fn _test_basic_upsert_same_columns() -> Result<()> {
         // require metadata checker
         let table_name = "test_basic_upsert_same_columns";
         let client = Arc::new(MetaDataClient::from_env().await?);
@@ -626,7 +620,7 @@ mod upsert_with_metadata_tests {
         .await
     }
 
-    async fn test_basic_upsert_different_columns() -> Result<()> {
+    async fn _test_basic_upsert_different_columns() -> Result<()> {
         // require metadata checker
         let table_name = "test_basic_upsert_same_columns";
         let client = Arc::new(MetaDataClient::from_env().await?);
@@ -699,22 +693,6 @@ mod upsert_with_metadata_tests {
             ],
         )
         .await
-    }
-
-    async fn test_should_failed_to_upsert_external_columns_when_schema_auto_migrate_is_false()
-    -> Result<()> {
-        // require metadata checker
-        Ok(())
-    }
-
-    async fn test_upsert_in_new_table_should_failed() -> Result<()> {
-        // require metadata checker
-        Ok(())
-    }
-
-    async fn test_upsert_cant_use_delta_file() -> Result<()> {
-        // require metadata checker
-        Ok(())
     }
 
     async fn test_upsert_without_range_partitions_i32() -> Result<()> {
@@ -764,11 +742,6 @@ mod upsert_with_metadata_tests {
             ],
         )
         .await
-    }
-
-    async fn test_upsert_without_hash_partitions_should_fail() -> Result<()> {
-        // require metadata checker
-        Ok(())
     }
 
     async fn test_upsert_with_multiple_range_and_hash_partitions_i32() -> Result<()> {
@@ -827,16 +800,6 @@ mod upsert_with_metadata_tests {
             ],
         )
         .await
-    }
-
-    async fn test_source_dataframe_without_partition_columns() -> Result<()> {
-        // require metadata checker
-        Ok(())
-    }
-
-    async fn test_upsert_with_condition() -> Result<()> {
-        // require metadata checker
-        Ok(())
     }
 
     async fn test_filter_requested_columns_upsert_1_times_i32() -> Result<()> {
@@ -1993,7 +1956,6 @@ mod upsert_with_metadata_tests {
         test_create_table_with_hash_key_disordered().await?;
         test_merge_same_column_with_timestamp_type_i32_time().await?;
         test_merge_different_columns_with_timestamp_type_i32_time().await?;
-
         Ok(())
     }
 }

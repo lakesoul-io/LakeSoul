@@ -4,6 +4,7 @@
 
 //! Module for the async writer implementation of LakeSoul.
 mod multipart_writer;
+use bytes::BytesMut;
 use datafusion_common::DataFusionError;
 pub use multipart_writer::MultiPartAsyncWriter;
 
@@ -19,9 +20,8 @@ pub use sendable_writer::AsyncSendableMutableLakeSoulWriter;
 
 use std::{
     any::Any,
-    collections::VecDeque,
     fmt::{Debug, Formatter},
-    io::{ErrorKind, Write},
+    io::Write,
     sync::Arc,
 };
 
@@ -39,7 +39,7 @@ use parquet::file::metadata::ParquetMetaData;
 
 use crate::Result;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FlushOutput {
     pub partition_desc: String,
     pub file_path: String,
@@ -70,31 +70,25 @@ pub trait AsyncBatchWriter {
 
 /// A VecDeque which is both std::io::Write and bytes::Buf
 #[derive(Clone)]
-struct InMemBuf(Arc<AtomicRefCell<VecDeque<u8>>>);
+struct InMemBuf(Arc<AtomicRefCell<BytesMut>>);
+
+impl InMemBuf {
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self(Arc::new(AtomicRefCell::new(BytesMut::with_capacity(
+            capacity,
+        ))))
+    }
+}
 
 impl Write for InMemBuf {
     #[inline]
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let mut v = self
-            .0
-            .try_borrow_mut()
-            .map_err(|_| std::io::Error::from(ErrorKind::AddrInUse))?;
-        v.extend(buf);
+        self.0.borrow_mut().extend_from_slice(buf);
         Ok(buf.len())
     }
 
     #[inline]
     fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-
-    #[inline]
-    fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
-        let mut v = self
-            .0
-            .try_borrow_mut()
-            .map_err(|_| std::io::Error::from(ErrorKind::AddrInUse))?;
-        v.extend(buf);
         Ok(())
     }
 }

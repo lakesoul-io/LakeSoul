@@ -27,11 +27,7 @@ jobs:
                   default: true
             - uses: Swatinem/rust-cache@v2
               with:
-                  workspaces: "./ -> target"
-            - name: Cache Docker images
-              uses: ScribeMD/docker-cache@0.4.0
-              with:
-                  key: docker-${{ runner.os }}-${{ hashFiles('Cross.toml') }}
+                  workspaces: "./rust -> target"
             - uses: actions-rs/cargo@v1
               with:
                   use-cross: true
@@ -68,7 +64,7 @@ jobs:
                   default: true
             - uses: Swatinem/rust-cache@v2
               with:
-                  workspaces: "./ -> target"
+                  workspaces: "./rust -> target"
             - uses: actions-rs/cargo@v1
               with:
                   command: build
@@ -106,7 +102,7 @@ jobs:
                   default: true
             - uses: Swatinem/rust-cache@v2
               with:
-                  workspaces: "./ -> target"
+                  workspaces: "./rust -> target"
             - uses: actions-rs/cargo@v1
               with:
                   command: build

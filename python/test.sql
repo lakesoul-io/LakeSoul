@@ -4,5 +4,5 @@
             (c1 VARCHAR NOT NULL, c2 INT NOT NULL, c3 DOUBLE , PRIMARY KEY(c1))
             STORED AS LAKESOUL
             PARTITIONED BY (c2)
-            LOCATION 'file:///tmp/LAKESOUL/test_lfs_data';
+            LOCATION 'file:///tmp/lakesoul/test_lfs_data';
 INSERT INTO test_lfs VALUES ('test', 1, 1.0);

@@ -26,11 +26,10 @@ use datafusion::physical_plan::projection::{ProjectionExec, ProjectionExprs};
 use datafusion_common::{DataFusionError, Result, Statistics, project_schema};
 
 use object_store::{ObjectMeta, ObjectStore};
+use rootcause::compat::boxed_error::IntoBoxedError;
 
-use crate::datasource::{
-    listing::LakeSoulTableProvider, physical_plan::MergeParquetExec,
-};
-use crate::lakesoul_io_config::LakeSoulIOConfig;
+use crate::config::LakeSoulIOConfig;
+use crate::datasource::{compute_table_schema, physical_plan::MergeParquetExec};
 use async_trait::async_trait;
 use datafusion::catalog::Session;
 use futures::{StreamExt, TryStreamExt};
@@ -46,27 +45,27 @@ use parquet::arrow::parquet_to_arrow_schema;
 #[derive(Debug, Default)]
 pub struct LakeSoulParquetFormat {
     parquet_format: Arc<ParquetFormat>,
-    conf: LakeSoulIOConfig,
+    io_config: LakeSoulIOConfig, // TODO try Arc
 }
 
 impl LakeSoulParquetFormat {
     pub fn new(parquet_format: Arc<ParquetFormat>, conf: LakeSoulIOConfig) -> Self {
         Self {
             parquet_format,
-            conf,
+            io_config: conf,
         }
     }
 
     pub fn primary_keys(&self) -> Arc<Vec<String>> {
-        Arc::new(self.conf.primary_keys.clone())
+        Arc::new(self.io_config.primary_keys.clone())
     }
 
     pub fn default_column_value(&self) -> Arc<HashMap<String, String>> {
-        Arc::new(self.conf.default_column_value.clone())
+        Arc::new(self.io_config.default_column_value.clone())
     }
 
     pub fn merge_operators(&self) -> Arc<HashMap<String, String>> {
-        Arc::new(self.conf.merge_operators.clone())
+        Arc::new(self.io_config.merge_operators.clone())
     }
 }
 
@@ -236,10 +235,11 @@ impl FileFormat for LakeSoulParquetFormat {
         state: &dyn Session,
         mut conf: FileScanConfig,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let table_schema = LakeSoulTableProvider::compute_table_schema(
-            conf.table_schema.table_schema().clone(), // todo try table schema
-            &self.conf,
-        )?;
+        let table_schema = compute_table_schema(
+            conf.table_schema.table_schema().clone(),
+            &self.io_config,
+        )
+        .map_err(|e| DataFusionError::External(e.into_boxed_error()))?;
 
         // adapted file source with metadata size hint
         let mut parquet_source = conf
@@ -261,8 +261,8 @@ impl FileFormat for LakeSoulParquetFormat {
         let merged_projection = compute_project_column_indices(
             table_schema.clone(),
             target_schema.clone(),
-            self.conf.primary_keys_slice(),
-            &self.conf.cdc_column(),
+            self.io_config.primary_keys_slice(),
+            &self.io_config.cdc_column(),
         );
         let merged_schema = project_schema(&table_schema, merged_projection.as_ref())?;
 
@@ -271,9 +271,9 @@ impl FileFormat for LakeSoulParquetFormat {
             state,
             self.parquet_format.clone(),
             conf,
-            self.conf.primary_keys_slice(),
-            &self.conf.cdc_column(),
-            self.conf.partition_schema(),
+            self.io_config.primary_keys_slice(),
+            &self.io_config.cdc_column(),
+            self.io_config.partition_schema(),
             target_schema.clone(),
         )
         .await?;
@@ -282,7 +282,7 @@ impl FileFormat for LakeSoulParquetFormat {
         let merge_exec = Arc::new(MergeParquetExec::new(
             merged_schema.clone(),
             flatten_conf,
-            self.conf.clone(),
+            self.io_config.clone(),
         )?);
 
         if target_schema.fields().len() < merged_schema.fields().len() {

@@ -15,21 +15,20 @@ use arrow::{
 };
 use arrow_arith::boolean::and;
 use arrow_cast::cast;
-
 use datafusion::{
     common::DFSchema, error::DataFusionError, execution::context::ExecutionProps,
     logical_expr::Expr, physical_expr::create_physical_expr,
 };
-use lakesoul_metadata::MetaDataClientRef;
-use object_store::{ObjectMeta, ObjectStore, path::Path};
-use url::Url;
-
-use crate::error::Result;
-use crate::serialize::arrow_java::schema_from_metadata_str;
-use lakesoul_io::lakesoul_io_config::{
+use lakesoul_io::config::{
     LakeSoulIOConfigBuilder, OPTION_KEY_CDC_COLUMN, OPTION_KEY_STABLE_SORT,
 };
+use lakesoul_metadata::MetaDataClientRef;
+use object_store::{ObjectMeta, ObjectStore, path::Path};
 use proto::proto::entity::{PartitionInfo, TableInfo};
+use url::Url;
+
+use crate::Result;
+use crate::serialize::arrow_java::schema_from_metadata_str;
 
 use crate::catalog::{LakeSoulTableProperty, parse_table_info_partitions};
 

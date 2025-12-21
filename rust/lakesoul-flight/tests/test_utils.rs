@@ -12,6 +12,7 @@ use core::panic;
 use futures::{Stream, StreamExt};
 use lakesoul_flight::TokenServerClient;
 use lakesoul_metadata::Claims;
+use rootcause::Report;
 use std::{
     collections::HashMap,
     pin::Pin,
@@ -21,6 +22,8 @@ use std::{
 use tonic::{Request, transport::Channel};
 use tracing::info;
 
+type Result<T, E = Report> = std::result::Result<T, E>;
+
 pub struct TestServer {
     process: Child,
 }
@@ -29,7 +32,7 @@ impl TestServer {
     pub fn new(
         args: &[&'static str],
         envs: Vec<(&'static str, &'static str)>,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self> {
         info!("test server started");
         let process = Command::new(assert_cmd::cargo::cargo_bin!("flight_sql_server"))
             .args(args)
@@ -104,7 +107,7 @@ pub async fn build_client(claims: Option<Claims>) -> FlightSqlServiceClient<Chan
 async fn handle_flight_info(
     info: &FlightInfo,
     client: &mut FlightSqlServiceClient<Channel>,
-) -> anyhow::Result<Vec<RecordBatch>> {
+) -> Result<Vec<RecordBatch>> {
     info!("handle_flight_info: {:#?}", info);
     let mut batches = vec![];
     for x in &info.endpoint {
@@ -124,7 +127,7 @@ pub async fn ingest(
     batches: Vec<RecordBatch>,
     table_name: &str,
     schema: Option<String>,
-) -> anyhow::Result<i64> {
+) -> Result<i64> {
     let cmd = CommandStatementIngest {
         table_definition_options: None,
         table: String::from(table_name),
@@ -148,7 +151,7 @@ pub fn random_batches() -> Vec<RecordBatch> {
 pub async fn handle_sql(
     client: &mut FlightSqlServiceClient<Channel>,
     sql: &str,
-) -> anyhow::Result<Vec<RecordBatch>> {
+) -> Result<Vec<RecordBatch>> {
     let info = client.execute(sql.to_string(), None).await?;
     Ok(handle_flight_info(&info, client).await?)
 }
