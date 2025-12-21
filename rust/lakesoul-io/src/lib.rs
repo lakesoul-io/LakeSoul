@@ -62,6 +62,7 @@
 #[macro_use]
 extern crate tracing;
 
+#[deprecated(since = "3.1.0")]
 pub mod async_writer;
 pub mod datasource;
 pub mod filter;
@@ -70,8 +71,10 @@ pub mod helpers;
 pub mod lakesoul_cache;
 pub mod lakesoul_io_config;
 pub mod lakesoul_reader;
+#[deprecated(since = "3.1.0")]
 pub mod lakesoul_writer;
 pub mod local_sensitive_hash;
+pub mod writer;
 // mod projection;
 pub mod repartition;
 pub mod sorted_merge;
