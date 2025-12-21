@@ -12,8 +12,15 @@ edition = "2024"
 proto = { path = "../proto" }
 # datafusion
 datafusion = { workspace = true }
-datafusion-substrait = { workspace = true }
 datafusion-common = { workspace = true }
+datafusion-common-runtime = { workspace = true }
+datafusion-session = { workspace = true }
+datafusion-expr = { workspace = true }
+datafusion-physical-expr = { workspace = true }
+datafusion-physical-plan = { workspace = true }
+datafusion-execution = { workspace = true }
+datafusion-datasource= { workspace = true }
+datafusion-substrait = { workspace = true }
 # arrow
 arrow = { workspace = true, features = ["prettyprint"] }
 arrow-schema = { workspace = true, features = ["serde"] }
@@ -54,6 +61,7 @@ bytes = { workspace = true }
 half = { workspace = true }
 uuid = { workspace = true }
 regex = { workspace = true }
+educe = "0.6"
 smallvec = "1.10"
 dary_heap = "0.3"
 lazy_static = "1.4.0"

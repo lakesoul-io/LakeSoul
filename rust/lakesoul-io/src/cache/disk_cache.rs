@@ -1,11 +1,11 @@
-pub mod builder;
-pub mod lru_cache;
-pub mod lru_disk_cache;
-
+use super::paging::PageCache;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use lru_disk_cache::LruDiskCache;
 use moka::future::Cache;
+use object_store::Error;
+use object_store::Error::Generic;
+use object_store::Result;
 use object_store::{ObjectMeta, path::Path};
 use std::{
     collections::HashMap,
@@ -16,11 +16,11 @@ use std::{
 };
 use tokio::sync::RwLock;
 
+pub mod builder;
+pub mod lru_cache;
+pub mod lru_disk_cache;
+
 pub use self::builder::DiskCacheBuilder;
-use crate::lakesoul_cache::paging::PageCache;
-use object_store::Error;
-use object_store::Error::Generic;
-use object_store::Result;
 
 /// Default memory page size is 16 KB
 pub const DEFAULT_PAGE_SIZE: usize = 16 * 1024;

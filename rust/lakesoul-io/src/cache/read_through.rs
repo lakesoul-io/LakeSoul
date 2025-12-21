@@ -11,7 +11,7 @@ use object_store::{
     path::Path,
 };
 
-use crate::lakesoul_cache::{paging::PageCache, stats::CacheStats};
+use super::{paging::PageCache, stats::CacheStats};
 use object_store::Result;
 
 /// Read-through Page Cache.
@@ -40,7 +40,7 @@ impl<C: PageCache> ReadThroughCache<C> {
         Self::new_with_stats(
             inner,
             cache,
-            Arc::new(crate::lakesoul_cache::stats::AtomicIntCacheStats::new()),
+            Arc::new(super::stats::AtomicIntCacheStats::new()),
         )
     }
 
@@ -241,7 +241,7 @@ impl<C: PageCache> ObjectStore for ReadThroughCache<C> {
 
 #[cfg(test)]
 mod tests {
-    use crate::lakesoul_cache::cache::DiskCache;
+    use crate::cache::disk_cache::DiskCache;
 
     use super::*;
 
