@@ -4,10 +4,6 @@
 
 mod util;
 
-use crate::hdfs::util::{
-    OBJECT_STORE_COALESCE_DEFAULT, coalesce_ranges, maybe_spawn_blocking,
-};
-use crate::lakesoul_io_config::LakeSoulIOConfig;
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::error::Result;
@@ -31,6 +27,11 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex;
 use tokio_util::compat::{FuturesAsyncReadCompatExt, FuturesAsyncWriteCompatExt};
 use tokio_util::io::ReaderStream;
+
+use crate::config::LakeSoulIOConfig;
+use crate::hdfs::util::{
+    OBJECT_STORE_COALESCE_DEFAULT, coalesce_ranges, maybe_spawn_blocking,
+};
 
 pub struct Hdfs {
     client: Arc<Client>,

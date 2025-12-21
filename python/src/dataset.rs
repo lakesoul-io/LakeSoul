@@ -5,18 +5,20 @@
 
 use std::sync::Arc;
 
-use crate::install_module;
-use arrow_array::RecordBatch;
+use arrow_array::{RecordBatch, RecordBatchReader};
 use arrow_pyarrow::PyArrowType;
 use arrow_schema::{ArrowError, Schema, SchemaRef};
+use datafusion_common::DataFusionError;
+use datafusion_execution::SendableRecordBatchStream;
 use futures::{StreamExt, stream::SelectAll};
 use lakesoul_io::{
-    arrow::array::RecordBatchReader,
-    datafusion::{error::DataFusionError, execution::SendableRecordBatchStream},
-    lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder},
-    lakesoul_reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader},
+    config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder},
+    reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader},
 };
 use pyo3::{exceptions::PyRuntimeError, prelude::*};
+
+use crate::Result;
+use crate::install_module;
 
 pub(crate) fn init(py: Python, parent: &Bound<PyModule>) -> PyResult<()> {
     let m = PyModule::new(py, "_dataset")?;
@@ -169,7 +171,7 @@ impl OneReader {
         schema: SchemaRef,
         mut readers: Vec<LakeSoulReader>,
         runtime: tokio::runtime::Runtime,
-    ) -> Result<Self, DataFusionError> {
+    ) -> Result<Self> {
         let mut ss = vec![];
         for reader in readers.iter_mut() {
             // start reader

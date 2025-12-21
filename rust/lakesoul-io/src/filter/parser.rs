@@ -49,6 +49,7 @@ pub enum FilterContainer {
 
 impl Parser {
     pub fn parse(filter_str: String, schema: SchemaRef) -> Result<Expr> {
+        debug!(filter_str=%filter_str);
         let (op, left, right) = Parser::parse_filter_str(filter_str)?;
         let expr = if op.eq("or") {
             let left_expr = Parser::parse(left, schema.clone())?;

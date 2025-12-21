@@ -6,3 +6,5 @@
 
 mod physical_planner;
 pub mod query_planner;
+
+pub use query_planner::LakeSoulQueryPlanner;

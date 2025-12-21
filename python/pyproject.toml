@@ -45,7 +45,7 @@ all = [
   "datasets>=2.14",
   "ray>=2.7,<2.11.0",
   "pyspark==3.3.1",
-  "duckdb",
+  "duckdb>=1.4.0",
 ]
 
 [tool.uv.sources]

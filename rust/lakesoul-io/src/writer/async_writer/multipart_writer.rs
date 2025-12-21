@@ -4,16 +4,16 @@
 
 //! Implementation of the multipart writer.
 
-use std::{collections::VecDeque, sync::Arc};
+use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
-use atomic_refcell::AtomicRefCell;
-use bytes::Bytes;
+use bytes::BytesMut;
 use datafusion_common::{DataFusionError, project_schema};
 use datafusion_datasource::ListingTableUrl;
 use datafusion_execution::TaskContext;
 use datafusion_execution::object_store::ObjectStoreUrl;
+use datafusion_session::Session;
 use object_store::{ObjectStore, WriteMultipart, path::Path};
 use parquet::basic::ZstdLevel;
 use parquet::{
@@ -22,13 +22,13 @@ use parquet::{
 use rootcause::{bail, report};
 use url::Url;
 
+use crate::session::LakeSoulIOSession;
 use crate::{
     Result,
     config::LakeSoulIOConfig,
     constant::TBD_PARTITION_DESC,
     helpers::get_batch_memory_size,
-    session::create_session_context,
-    transform::{uniform_record_batch, uniform_schema},
+    helpers::transform::{uniform_record_batch, uniform_schema},
 };
 
 use super::{AsyncBatchWriter, FlushOutput, InMemBuf};
@@ -41,32 +41,26 @@ use super::{AsyncBatchWriter, FlushOutput, InMemBuf};
 /// The `CloudMultiPartUpload` itself would try to concurrently upload parts, and
 /// all parts will be committed to cloud storage by shutdown the `AsyncWrite` object.
 pub struct MultiPartAsyncWriter {
-    /// The in-memory buffer of the multi-part async writer.
     in_mem_buf: InMemBuf,
-    /// The task context of the multi-part async writer.
-    task_context: Arc<TaskContext>,
     /// The schema of the multi-part async writer.
     schema: SchemaRef,
     /// The multi-part writer of [`object_store::WriteMultipart`] that is used to upload the data to the object store asynchronously.
     writer: WriteMultipart,
     /// The [`ArrowWriter`] of the multi-part async writer.
     arrow_writer: ArrowWriter<InMemBuf>,
-    /// The io config of the multi-part async writer.
-    _config: LakeSoulIOConfig,
     /// The object store of the multi-part async writer.
     object_store: Arc<dyn ObjectStore>,
-    /// The path of the multi-part async writer.
-    _path: Path,
     /// The absolute path of the multi-part async writer.
     absolute_path: String,
     /// The number of rows of the multi-part async writer.
     num_rows: u64,
+    /// The number of bytes buffered in the in-memory buffer.
     buffered_size: u64,
 }
 
 impl MultiPartAsyncWriter {
     pub async fn try_new_with_context(
-        config: &mut LakeSoulIOConfig,
+        config: &LakeSoulIOConfig,
         task_context: Arc<TaskContext>,
     ) -> Result<Self> {
         if config.files.is_empty() {
@@ -85,18 +79,17 @@ impl MultiPartAsyncWriter {
                     )?)?,
                 Path::from_url_path(url.path())?,
             )),
-            Err(e) => Err(DataFusionError::External(Box::new(e))),
+            Err(e) => Err(e),
         }?;
 
         // get underlying multipart uploader
         let multipart_upload = object_store.put_multipart(&path).await?;
-        let write_multi_part =
-            WriteMultipart::new_with_chunk_size(multipart_upload, 128 * 1024 * 1024);
+        let write_multi_part = WriteMultipart::new_with_chunk_size(
+            multipart_upload,
+            config.multipart_chunk_size,
+        );
 
-        let in_mem_buf =
-            InMemBuf(Arc::new(AtomicRefCell::new(VecDeque::<u8>::with_capacity(
-                16 * 1024, // 16kb
-            ))));
+        let in_mem_buf = InMemBuf::with_capacity(config.memory_buffer_capacity);
         let schema = uniform_schema(config.target_schema.0.clone());
 
         // O(nm), n = number of fields, m = number of range partitions
@@ -131,7 +124,7 @@ impl MultiPartAsyncWriter {
                 WriterProperties::builder()
                     .set_max_row_group_size(max_row_group_size)
                     .set_write_batch_size(config.batch_size)
-                    .set_compression(Compression::ZSTD(ZstdLevel::default()))
+                    .set_compression(Compression::ZSTD(ZstdLevel::default())) // TODO use conf?
                     .set_dictionary_enabled(false)
                     .build(),
             ),
@@ -139,24 +132,19 @@ impl MultiPartAsyncWriter {
 
         Ok(MultiPartAsyncWriter {
             in_mem_buf,
-            task_context,
             schema,
             writer: write_multi_part,
-            // multi_part_id: multipart_id,
             arrow_writer,
-            _config: config.clone(),
             object_store,
-            _path: path,
             absolute_path: file_name.to_string(),
             num_rows: 0,
             buffered_size: 0,
         })
     }
 
-    pub async fn try_new(mut config: LakeSoulIOConfig) -> Result<Self> {
-        // TODO
-        let task_context = create_session_context(&mut config)?.task_ctx();
-        Self::try_new_with_context(&mut config, task_context).await
+    pub async fn try_new(io_session: Arc<LakeSoulIOSession>) -> Result<Self> {
+        let io_config = io_session.io_config();
+        Self::try_new_with_context(io_config, io_session.task_ctx()).await
     }
 
     async fn write_batch(
@@ -166,10 +154,7 @@ impl MultiPartAsyncWriter {
         writer: &mut WriteMultipart,
     ) -> Result<()> {
         arrow_writer.write(&batch)?;
-        let mut v = in_mem_buf
-            .0
-            .try_borrow_mut()
-            .map_err(|e| DataFusionError::Internal(format!("{:?}", e)))?;
+        let mut v = in_mem_buf.0.try_borrow_mut().map_err(|e| report!(e))?;
         if !v.is_empty() {
             MultiPartAsyncWriter::write_part(writer, &mut v).await
         } else {
@@ -179,9 +164,9 @@ impl MultiPartAsyncWriter {
 
     pub async fn write_part(
         writer: &mut WriteMultipart,
-        in_mem_buf: &mut VecDeque<u8>,
+        in_mem_buf: &mut BytesMut,
     ) -> Result<()> {
-        let bytes = Bytes::from(in_mem_buf.drain(..).collect::<Vec<u8>>());
+        let bytes = in_mem_buf.split().freeze();
         writer.put(bytes);
         Ok(())
     }
@@ -192,10 +177,6 @@ impl MultiPartAsyncWriter {
 
     pub fn absolute_path(&self) -> String {
         self.absolute_path.clone()
-    }
-
-    pub fn task_ctx(&self) -> Arc<TaskContext> {
-        self.task_context.clone()
     }
 }
 

@@ -35,7 +35,7 @@ metrics = "0.24"
 metrics-exporter-prometheus = "0.16"
 # serialization
 serde = { workspace = true }
-serde_json = "1.0.133"
+serde_json = { workspace = true }
 # protobuf
 prost = { workspace = true }
 # cli
@@ -51,6 +51,8 @@ rand = { workspace = true }
 # logging
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+# err
+rootcause = { workspace = true }
 
 [features]
 hdfs = ["lakesoul-io/hdfs"]
@@ -67,9 +69,8 @@ arrow-cast = { workspace = true }
 arrow = { workspace = true, features = ["test_utils"] }
 futures = { workspace = true }
 test-log = { version = "0.2.14" }
-datafusion = { workspace = true }
 lakesoul-datafusion = { path = "../lakesoul-datafusion" }
-anyhow.workspace = true
+rootcause.workspace = true
 
 [lints]
 workspace = true

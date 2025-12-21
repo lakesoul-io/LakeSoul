@@ -38,7 +38,7 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "./ -> target"
+          workspaces: "./rust -> target"
           key: "ubuntu-24.04-clippy"
       - name: Run Format
         run: cargo fmt --all --check

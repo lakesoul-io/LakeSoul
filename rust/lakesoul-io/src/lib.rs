@@ -8,15 +8,6 @@
 //! It includes support for various file formats, optimized reading with primary keys,
 //! partitioned table support, and filter pushdown capabilities.
 //!
-//! # Dependencies
-//!
-//! The following external crates are re-exported for convenience:
-//!
-//! - [arrow](https://docs.rs/arrow/latest/arrow/) - Apache Arrow implementation for columnar data
-//! - [datafusion](https://docs.rs/datafusion/latest/datafusion/) - Query execution framework
-//! - [serde_json](https://docs.rs/serde_json/latest/serde_json/) - JSON serialization/deserialization
-//! - [tokio](https://docs.rs/tokio/latest/tokio/) - Asynchronous runtime
-//!
 //! # Examples
 //!
 //! ```rust
@@ -59,48 +50,32 @@
 //! - `hash_utils` - Hash-related utilities
 //! - `local_sensitive_hash` - Local sensitive hashing support
 
+use rootcause::Report;
+
 #[macro_use]
 extern crate tracing;
 
-#[deprecated(since = "3.1.0")]
-pub mod async_writer;
+pub type Result<T, E = Report> = std::result::Result<T, E>;
+
 pub mod cache;
 pub mod config;
-pub mod datasource;
+pub mod constant;
+// pub mod datasource;
+// mod default_column_stream;
 pub mod filter;
-pub mod hash_utils;
-pub mod helpers;
-#[deprecated(since = "3.1.0")]
-pub mod lakesoul_io_config;
-#[deprecated(since = "3.1.0")]
-pub mod lakesoul_reader;
-#[deprecated(since = "3.1.0")]
-pub mod lakesoul_writer;
-pub mod local_sensitive_hash;
-pub mod reader;
-pub mod writer;
-// mod projection;
-pub mod object_store;
-pub mod physical_plan;
-pub mod repartition;
-pub mod session;
-pub mod sorted_merge;
-
+// pub mod hash_utils;
+pub mod file_format;
 #[cfg(feature = "hdfs")]
 mod hdfs;
+pub mod helpers;
+pub mod local_sensitive_hash;
+pub mod object_store;
+pub mod physical_plan;
+pub mod reader;
 
-pub mod constant;
-mod default_column_stream;
-mod transform;
-
-pub type Result<T> = std::result::Result<T, Report>;
-
-#[doc(inline)]
-pub use arrow;
-#[doc(inline)]
-pub use datafusion::{self, arrow::error::Result as ArrowResult};
-use rootcause::Report;
-#[doc(inline)]
-pub use serde_json;
-#[doc(inline)]
-pub use tokio;
+// pub mod repartition;
+pub mod session;
+// pub mod sorted_merge;
+mod stream;
+pub mod utils;
+pub mod writer;

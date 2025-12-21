@@ -7,20 +7,25 @@ name = "lakesoul-io"
 version = "3.0.0"
 edition = "2024"
 
+[[bench]]
+name = "buf_bench"
+harness = false
+
 [dependencies]
 # lakesoul
 proto = { path = "../proto" }
 # datafusion
-# datafusion = { workspace = true }
+datafusion = { workspace = true }
 datafusion-common = { workspace = true }
 datafusion-common-runtime = { workspace = true }
-datafusion-catalog-listing= { version = "51" }
+datafusion-catalog-listing = { workspace = true }
 datafusion-session = { workspace = true }
 datafusion-expr = { workspace = true }
 datafusion-physical-expr = { workspace = true }
 datafusion-physical-plan = { workspace = true }
 datafusion-execution = { workspace = true }
-datafusion-datasource= { workspace = true }
+datafusion-datasource = { workspace = true }
+datafusion-datasource-parquet = { workspace = true }
 datafusion-substrait = { workspace = true }
 # arrow
 arrow = { workspace = true, features = ["prettyprint"] }
@@ -53,7 +58,6 @@ hdfs-sys = { version = "0.3", default-features = false, features = [
 ], optional = true }
 # rand
 rand = { workspace = true }
-rand_distr = { workspace = true }
 # utils
 atomic_refcell = { workspace = true }
 derivative = { workspace = true }
@@ -77,6 +81,7 @@ walkdir = "2.5.0"
 num_cpus = "1.16"
 filetime = "0.2.25"
 linked-hash-map = "0.5.6"
+itertools = { workspace = true}
 # time
 chrono = "0.4"
 # logging
@@ -93,10 +98,13 @@ dhat-ad-hoc = []                    # if you are doing ad hoc profiling
 
 [dev-dependencies]
 tokio-test = "0.4.4"
+test-log = { version = "0.2.14", features = ["trace"] }
+rand_distr = { workspace = true }
 comfy-table = "6.0"
 tempfile = "3.3.0"
 whoami = "1.5"
 tracing-subscriber = "0.3.18"
+criterion = { version = "0.7", features = ["html_reports"] }
 
 [lints]
 workspace = true

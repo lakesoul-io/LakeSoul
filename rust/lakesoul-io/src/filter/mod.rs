@@ -5,3 +5,4 @@
 //! This module provides the implementation of the filter parser.
 
 pub mod parser;
+pub use parser::Parser;

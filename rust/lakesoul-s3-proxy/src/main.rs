@@ -724,13 +724,14 @@ mod tests {
     use super::*;
     use arrow::util::pretty::print_batches;
     use arrow_array::{Array, ArrayRef, Int32Array, RecordBatch};
-    use lakesoul_datafusion::LakeSoulQueryPlanner;
     use lakesoul_datafusion::catalog::create_io_config_builder;
     use lakesoul_datafusion::lakesoul_table::LakeSoulTable;
+    use lakesoul_datafusion::planner::LakeSoulQueryPlanner;
     use lakesoul_datafusion::serialize::arrow_java::ArrowJavaSchema;
-    use lakesoul_io::lakesoul_io_config::create_session_context_with_planner;
+    use lakesoul_io::session::create_session_context_with_planner;
     use lakesoul_metadata::MetaDataClientRef;
     use proto::proto::entity::TableInfo;
+    use rootcause::compat::anyhow1::IntoAnyhow;
 
     #[test]
     fn test_parse_table_path() {
@@ -866,7 +867,8 @@ mod tests {
             table_name,
             Some(meta_data_client.clone()),
         )
-        .await?;
+        .await
+        .into_anyhow()?;
         table.execute_upsert(record_batch).await?;
         Ok((table_id, path.to_string()))
     }
@@ -962,7 +964,8 @@ mod tests {
             &table_name,
             Some(metadata_client.clone()),
         )
-        .await?;
+        .await
+        .into_anyhow()?;
         table.execute_upsert(record_batch).await?;
         Ok(())
     }
@@ -980,7 +983,8 @@ mod tests {
             Default::default(),
             Default::default(),
         )
-        .await?;
+        .await
+        .into_anyhow()?;
         let sess_ctx = create_session_context_with_planner(
             &mut builder.build(),
             Some(LakeSoulQueryPlanner::new_ref()),
@@ -990,7 +994,8 @@ mod tests {
             &table_name,
             Some(metadata_client.clone()),
         )
-        .await?;
+        .await
+        .into_anyhow()?;
         let dataframe = table.to_dataframe(&sess_ctx).await?;
         let results = dataframe.collect().await?;
         print_batches(&results)?;
