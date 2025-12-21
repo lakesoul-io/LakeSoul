@@ -80,8 +80,10 @@ pub mod local_sensitive_hash;
 pub mod reader;
 pub mod writer;
 // mod projection;
+pub mod object_store;
 pub mod physical_plan;
 pub mod repartition;
+pub mod session;
 pub mod sorted_merge;
 
 #[cfg(feature = "hdfs")]
