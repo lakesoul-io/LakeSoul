@@ -3680,7 +3680,6 @@ dependencies = [
 name = "lakesoul-io"
 version = "3.0.0"
 dependencies = [
- "anyhow",
  "arrow",
  "arrow-array",
  "arrow-buffer",
@@ -3718,6 +3717,7 @@ dependencies = [
  "rand 0.9.2",
  "rand_distr",
  "regex",
+ "rootcause",
  "serde",
  "serde_json",
  "smallvec",

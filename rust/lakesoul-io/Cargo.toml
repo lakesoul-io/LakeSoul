@@ -73,7 +73,7 @@ chrono = "0.4"
 # logging
 tracing = { workspace = true }
 # error
-anyhow = { workspace = true, features = [] }
+rootcause = { workspace = true }
 fs-err = "3.1.0"
 
 [features]

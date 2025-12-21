@@ -86,10 +86,13 @@ pub mod constant;
 mod default_column_stream;
 mod transform;
 
+pub type Result<T> = std::result::Result<T, Report>;
+
 #[doc(inline)]
 pub use arrow;
 #[doc(inline)]
-pub use datafusion::{self, arrow::error::Result};
+pub use datafusion::{self, arrow::error::Result as ArrowResult};
+use rootcause::Report;
 #[doc(inline)]
 pub use serde_json;
 #[doc(inline)]
