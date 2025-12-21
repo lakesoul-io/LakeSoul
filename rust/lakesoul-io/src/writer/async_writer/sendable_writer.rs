@@ -6,14 +6,15 @@
 
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
-use datafusion_common::{DataFusionError, Result};
+use datafusion_common::DataFusionError;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::debug;
 
 use crate::{
+    Result,
+    config::LakeSoulIOConfig,
     helpers::get_batch_memory_size,
-    lakesoul_io_config::LakeSoulIOConfig,
     writer::{
         SendableWriter,
         async_writer::{AsyncBatchWriter, FlushOutput},
@@ -49,12 +50,13 @@ impl AsyncSendableMutableLakeSoulWriter {
         })
     }
 
+    #[instrument(skip(self, record_batch))]
     async fn write_batch_async(
         &mut self,
         record_batch: RecordBatch,
         do_spill: bool,
     ) -> Result<()> {
-        debug!(record_batch_row=?record_batch.num_rows(), do_spill=?do_spill, "write_batch_async");
+        debug!(record_batch_row=?record_batch.num_rows(), "write_batch_async");
         let config = self.config.clone();
 
         if let Some(max_file_size) = self.config.max_file_size {

@@ -4,6 +4,7 @@
 
 //! Module for the async writer implementation of LakeSoul.
 mod multipart_writer;
+use datafusion_common::DataFusionError;
 pub use multipart_writer::MultiPartAsyncWriter;
 
 mod sort_writer;
@@ -27,18 +28,16 @@ use std::{
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use atomic_refcell::AtomicRefCell;
-use datafusion::physical_expr::LexOrdering;
-use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
-use datafusion::{
-    execution::{SendableRecordBatchStream, TaskContext},
-    physical_expr::EquivalenceProperties,
-    physical_plan::{
-        DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties,
-        Partitioning, PlanProperties, stream::RecordBatchReceiverStreamBuilder,
-    },
+use datafusion_execution::{SendableRecordBatchStream, TaskContext};
+use datafusion_physical_expr::{EquivalenceProperties, LexOrdering};
+use datafusion_physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion_physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, Partitioning,
+    PlanProperties, stream::RecordBatchReceiverStreamBuilder,
 };
-use datafusion_common::{DataFusionError, Result};
 use parquet::file::metadata::ParquetMetaData;
+
+use crate::Result;
 
 #[derive(Debug)]
 pub struct FlushOutput {
@@ -187,7 +186,7 @@ impl ExecutionPlan for ReceiverStreamExec {
     fn with_new_children(
         self: Arc<Self>,
         _children: Vec<Arc<dyn ExecutionPlan>>,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
+    ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         unimplemented!()
     }
 
@@ -195,7 +194,7 @@ impl ExecutionPlan for ReceiverStreamExec {
         &self,
         _partition: usize,
         _context: Arc<TaskContext>,
-    ) -> Result<SendableRecordBatchStream> {
+    ) -> Result<SendableRecordBatchStream, DataFusionError> {
         let builder = self.receiver_stream_builder.borrow_mut().take().ok_or(
             DataFusionError::Internal("empty receiver stream".to_string()),
         )?;

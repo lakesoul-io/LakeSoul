@@ -10,22 +10,24 @@ use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use atomic_refcell::AtomicRefCell;
 use bytes::Bytes;
-use datafusion::{
-    datasource::listing::ListingTableUrl,
-    execution::{TaskContext, object_store::ObjectStoreUrl},
-};
-use datafusion_common::{DataFusionError, Result, project_schema};
+use datafusion_common::{DataFusionError, project_schema};
+use datafusion_datasource::ListingTableUrl;
+use datafusion_execution::TaskContext;
+use datafusion_execution::object_store::ObjectStoreUrl;
 use object_store::{ObjectStore, WriteMultipart, path::Path};
 use parquet::basic::ZstdLevel;
 use parquet::{
     arrow::ArrowWriter, basic::Compression, file::properties::WriterProperties,
 };
+use rootcause::{bail, report};
 use url::Url;
 
 use crate::{
+    Result,
+    config::LakeSoulIOConfig,
     constant::TBD_PARTITION_DESC,
     helpers::get_batch_memory_size,
-    lakesoul_io_config::{LakeSoulIOConfig, create_session_context},
+    session::create_session_context,
     transform::{uniform_record_batch, uniform_schema},
 };
 
@@ -68,14 +70,9 @@ impl MultiPartAsyncWriter {
         task_context: Arc<TaskContext>,
     ) -> Result<Self> {
         if config.files.is_empty() {
-            return Err(DataFusionError::Internal(
-                "wrong number of file names provided for writer".to_string(),
-            ));
+            bail!("wrong number of file names provided for writer");
         }
-        let file_name = &config
-            .files
-            .last()
-            .ok_or(DataFusionError::Internal("wrong file name".to_string()))?;
+        let file_name = &config.files.last().ok_or(report!("wrong file name"))?;
 
         // local style path should have already been handled in create_session_context,
         // so we don't have to deal with ParseError::RelativeUrlWithoutBase here
@@ -157,6 +154,7 @@ impl MultiPartAsyncWriter {
     }
 
     pub async fn try_new(mut config: LakeSoulIOConfig) -> Result<Self> {
+        // TODO
         let task_context = create_session_context(&mut config)?.task_ctx();
         Self::try_new_with_context(&mut config, task_context).await
     }

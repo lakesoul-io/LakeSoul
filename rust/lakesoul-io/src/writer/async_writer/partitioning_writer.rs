@@ -8,33 +8,30 @@ use std::{borrow::Borrow, collections::HashMap, sync::Arc};
 
 use arrow_array::RecordBatch;
 use arrow_schema::{SchemaRef, SortOptions};
-use datafusion::{
-    execution::TaskContext,
-    physical_expr::{
-        LexOrdering, PhysicalSortExpr,
-        expressions::{Column, col},
-    },
-    physical_plan::{
-        ExecutionPlan, ExecutionPlanProperties, Partitioning, PhysicalExpr,
-        projection::ProjectionExec, sorts::sort::SortExec,
-        stream::RecordBatchReceiverStream,
-    },
+use datafusion_common::DataFusionError;
+use datafusion_execution::TaskContext;
+use datafusion_physical_expr::{
+    LexOrdering, PhysicalSortExpr,
+    expressions::{Column, col},
 };
-use datafusion_common::{DataFusionError, Result};
+use datafusion_physical_plan::{
+    ExecutionPlan, ExecutionPlanProperties, Partitioning, PhysicalExpr,
+    projection::ProjectionExec, sorts::sort::SortExec, stream::RecordBatchReceiverStream,
+};
 use rand::distr::SampleString;
 use tokio::{sync::mpsc::Sender, task::JoinHandle};
 use tokio_stream::StreamExt;
 
 use crate::{
+    Result,
+    config::{IOSchema, LakeSoulIOConfig, LakeSoulIOConfigBuilder},
     datasource::physical_plan::self_incremental_index_column::SelfIncrementalIndexColumnExec,
     helpers::{
         columnar_values_to_partition_desc, columnar_values_to_sub_path,
         get_batch_memory_size, get_columnar_values,
     },
-    lakesoul_io_config::{
-        IOSchema, LakeSoulIOConfig, LakeSoulIOConfigBuilder, create_session_context,
-    },
     repartition::RepartitionByRangeAndHashExec,
+    session::create_session_context,
     transform::uniform_schema,
 };
 
@@ -58,7 +55,9 @@ pub struct PartitioningAsyncWriter {
     /// The buffered size of the partitioning writer.
     buffered_size: u64,
 }
+// TODO
 type NestedJoinHandle = JoinHandle<Result<Vec<JoinHandle<Result<Vec<FlushOutput>>>>>>;
+
 impl PartitioningAsyncWriter {
     pub fn try_new(config: LakeSoulIOConfig) -> Result<Self> {
         let mut config = config.clone();
