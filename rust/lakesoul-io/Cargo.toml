@@ -14,6 +14,7 @@ proto = { path = "../proto" }
 # datafusion = { workspace = true }
 datafusion-common = { workspace = true }
 datafusion-common-runtime = { workspace = true }
+datafusion-catalog-listing= { version = "51" }
 datafusion-session = { workspace = true }
 datafusion-expr = { workspace = true }
 datafusion-physical-expr = { workspace = true }
