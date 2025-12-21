@@ -8,14 +8,13 @@
 //! It includes configuration options for file paths, schema information, partitioning settings,
 //! and performance tuning options.
 //!
-//!
+
 use std::{
     collections::HashMap,
     sync::{Arc, OnceLock},
     time::Duration,
 };
 
-use anyhow::anyhow;
 use arrow::error::ArrowError;
 use arrow_schema::{Schema, SchemaRef};
 use datafusion::error::{DataFusionError, Result};
@@ -36,6 +35,7 @@ use datafusion_substrait::substrait::proto::Plan;
 use derivative::Derivative;
 use object_store::aws::AmazonS3Builder;
 use object_store::{ClientOptions, RetryConfig};
+use rootcause::{compat::boxed_error::IntoBoxedError, report};
 use tracing::debug;
 use url::{ParseError, Url};
 
@@ -783,9 +783,9 @@ pub fn register_s3_object_store(
                 .set_host(Some(&*format!(
                     "{}.{}",
                     bucket,
-                    endpoint_url
-                        .host_str()
-                        .ok_or(External(anyhow!("endpoint host missing").into()))?
+                    endpoint_url.host_str().ok_or(External(
+                        report!("endpoint host missing").into_boxed_error()
+                    ))?
                 )))
                 .map_err(|e| External(Box::new(e)))?;
             let endpoint_s = endpoint_url.to_string();
