@@ -62,7 +62,7 @@ pub async fn create_writer(
             .map(|f| {
                 schema.index_of(f.name().as_str()).map_err(|e| {
                     DataFusionError::ArrowError(
-                        e,
+                        Box::new(e),
                         Some(format!("Failed to find index of column: {}", f.name())),
                     )
                 })

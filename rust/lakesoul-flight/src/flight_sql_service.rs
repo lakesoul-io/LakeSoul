@@ -27,7 +27,7 @@ use arrow_flight::{
 use core::fmt;
 use datafusion::sql::TableReference;
 use datafusion::sql::parser::{DFParser, Statement};
-use datafusion::sql::sqlparser::ast::{CreateTable, SqlOption};
+use datafusion::sql::sqlparser::ast::CreateTable;
 use datafusion::sql::sqlparser::dialect::PostgreSqlDialect;
 use futures::{Stream, StreamExt, TryStreamExt};
 use lakesoul_datafusion::catalog::LakeSoulTableProperty;
@@ -265,14 +265,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
 
         // only need logical plan
 
-        let dialect = self
-            .ctx
-            .state()
-            .config()
-            .options()
-            .sql_parser
-            .dialect
-            .clone();
+        let dialect = self.ctx.state().config().options().sql_parser.dialect;
         let stat = self
             .ctx
             .state()
@@ -610,7 +603,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
             .sql_with_options(sql, opt)
             .await
             .map_err(|e| status!("Error executing query", e))?;
-        let schema = Arc::new(df.schema().clone().into());
+        let schema = Arc::new(df.schema().as_arrow().clone());
         let stream = df
             .execute_stream()
             .await
@@ -643,7 +636,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         let plan = self.get_plan(handle)?;
         let state = self.ctx.state();
         let df = DataFrame::new(state, plan);
-        let schema = Arc::new(df.schema().clone().into());
+        let schema = Arc::new(df.schema().as_arrow().clone());
         let stream = df
             .execute_stream()
             .await
@@ -1001,8 +994,8 @@ impl FlightSqlService for FlightSqlServiceImpl {
 
         self.statements.insert(plan_uuid.clone(), plan.clone());
 
-        let arrow_schema = (&**plan_schema).into();
-        let message = SchemaAsIpc::new(&arrow_schema, &IpcWriteOptions::default())
+        let arrow_schema = plan_schema.as_arrow();
+        let message = SchemaAsIpc::new(arrow_schema, &IpcWriteOptions::default())
             .try_into()
             .map_err(|e| status!("Unable to serialize schema", e))?;
         let IpcMessage(schema_bytes) = message;
@@ -1120,12 +1113,12 @@ fn normalize_sql(sql: &str) -> Result<String, BoxedStatus> {
                 name,
                 columns,
                 partition_by,
-                with_options,
+                table_options,
                 ..
             }) => {
                 info!(
                     "create table: {}, {:?}, {:?}",
-                    name, partition_by, with_options
+                    name, partition_by, table_options
                 );
 
                 let mut create_table_sql = format!(
@@ -1141,21 +1134,23 @@ fn normalize_sql(sql: &str) -> Result<String, BoxedStatus> {
                     create_table_sql =
                         format!("{} PARTITIONED BY {}", create_table_sql, partition_by);
                 }
-                if !with_options.is_empty() {
-                    create_table_sql = format!(
-                        "{} OPTIONS ({})",
-                        create_table_sql,
-                        with_options
-                            .iter()
-                            .map(|opt| match opt {
-                                SqlOption::KeyValue { key, value } =>
-                                    format!("'{}' {}", key, value),
-                                _ => format!("{:}", opt),
-                            })
-                            .collect::<Vec<String>>()
-                            .join(", ")
-                    );
-                }
+
+                create_table_sql = format!("{} {}", create_table_sql, table_options);
+                // if !table_options.is_empty() {
+                //     create_table_sql = format!(
+                //         "{} OPTIONS ({})",
+                //         create_table_sql,
+                //         with_options
+                //             .iter()
+                //             .map(|opt| match opt {
+                //                 SqlOption::KeyValue { key, value } =>
+                //                     format!("'{}' {}", key, value),
+                //                 _ => format!("{:}", opt),
+                //             })
+                //             .collect::<Vec<String>>()
+                //             .join(", ")
+                //     );
+                // }
                 Ok(create_table_sql)
             }
             _ => Ok(sql.to_string()),

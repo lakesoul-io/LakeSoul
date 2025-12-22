@@ -216,6 +216,23 @@ impl From<&FieldRef> for ArrowJavaField {
 
             DataType::Boolean => (ArrowJavaType::Bool, vec![]),
 
+            DataType::Decimal32(precision, scale) => (
+                ArrowJavaType::Decimal {
+                    precision: *precision,
+                    scale: *scale,
+                    bit_width: 32,
+                },
+                vec![],
+            ),
+            DataType::Decimal64(precision, scale) => (
+                ArrowJavaType::Decimal {
+                    precision: *precision,
+                    scale: *scale,
+                    bit_width: 64,
+                },
+                vec![],
+            ),
+
             DataType::Decimal128(precision, scale) => (
                 ArrowJavaType::Decimal {
                     precision: *precision,

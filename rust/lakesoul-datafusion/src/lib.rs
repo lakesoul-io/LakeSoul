@@ -18,6 +18,7 @@ use std::{env, sync::Arc};
 
 use catalog::LakeSoulCatalog;
 use datafusion::{
+    config::Dialect,
     execution::{
         SessionStateBuilder, object_store::ObjectStoreUrl, runtime_env::RuntimeEnv,
     },
@@ -50,11 +51,11 @@ pub fn create_lakesoul_session_ctx(
         .with_create_default_catalog_and_schema(false)
         .with_batch_size(8192)
         .with_default_catalog_and_schema("LAKESOUL".to_string(), "default".to_string());
-    session_config.options_mut().sql_parser.dialect = "postgresql".to_string();
+    session_config.options_mut().sql_parser.dialect = Dialect::PostgreSQL;
     session_config
         .options_mut()
         .sql_parser
-        .map_varchar_to_utf8view = false;
+        .map_string_types_to_utf8view = false;
     session_config
         .options_mut()
         .optimizer
@@ -76,6 +77,11 @@ pub fn create_lakesoul_session_ctx(
         .execution
         .parquet
         .pushdown_filters = true;
+    // TODO use this
+    session_config
+        .options_mut()
+        .execution
+        .listing_table_factory_infer_partitions = false;
 
     let planner = LakeSoulQueryPlanner::new_ref();
 

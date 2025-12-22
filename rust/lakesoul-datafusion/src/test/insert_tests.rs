@@ -90,7 +90,8 @@ mod insert_tests {
             dataframe.select_columns(&selected_cols)?
         };
 
-        print_batches(&dataframe.clone().explain(true, false)?.collect().await?)?;
+        let batches = &dataframe.clone().collect().await?;
+        print_batches(batches)?;
 
         let results = dataframe.collect().await?;
 

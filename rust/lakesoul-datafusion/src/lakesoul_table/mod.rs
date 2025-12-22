@@ -35,6 +35,7 @@ use helpers::case_fold_table_name;
 use lakesoul_io::async_writer::{
     AsyncBatchWriter, AsyncSendableMutableLakeSoulWriter, WriterFlushResult,
 };
+use lakesoul_io::helpers::get_file_exist_col;
 use lakesoul_io::lakesoul_io_config::OPTION_KEY_MEM_LIMIT;
 use lakesoul_io::lakesoul_io_config::create_session_context_with_planner;
 use lakesoul_metadata::{LakeSoulMetaDataError, MetaDataClient, MetaDataClientRef};
@@ -218,7 +219,7 @@ impl LakeSoulTable {
         let results = dataframe.collect().await?;
 
         info!(
-            "execute_upsert result: {}",
+            "execute_upsert result:\n{}",
             pretty_format_batches(&results)?
         );
         Ok(())
@@ -427,12 +428,8 @@ fn partitioned_files_from_writer_flush_result(
     let mut partition_desc_and_files_map = HashMap::new();
 
     for (partition_desc, file_path, meta, file_meta) in flush_result {
-        let file_exist_cols = file_meta
-            .schema
-            .iter()
-            .map(|s| s.name.clone())
-            .collect::<Vec<String>>()
-            .join(",");
+        let file_exist_cols = get_file_exist_col(file_meta);
+
         let flush_result = FlushResult {
             file_path: file_path.clone(),
             file_size: meta.size as i64,

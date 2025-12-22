@@ -170,7 +170,7 @@ impl SelfIncrementalIndexStream {
         RecordBatch::try_new_with_options(self.schema.clone(), columns, &options).map_err(
             |e| {
                 DataFusionError::ArrowError(
-                    e,
+                    Box::new(e),
                     Some("Failed to apply self-incremental index column".to_string()),
                 )
             },

@@ -49,9 +49,7 @@ impl SortAsyncWriter {
     pub fn try_new(
         async_writer: MultiPartAsyncWriter,
         config: LakeSoulIOConfig,
-        // runtime: Arc<Runtime>,
     ) -> Result<Self> {
-        // let _ = runtime.enter();
         let schema = config.target_schema.0.clone();
         let receiver_stream_builder =
             RecordBatchReceiverStream::builder(schema.clone(), 8);
@@ -72,7 +70,8 @@ impl SortAsyncWriter {
             })
             .collect::<Result<Vec<PhysicalSortExpr>>>()?;
         let sort_exec = Arc::new(SortExec::new(
-            LexOrdering::new(sort_exprs),
+            LexOrdering::new(sort_exprs)
+                .ok_or(DataFusionError::Execution("Empty Sort Exprs".into()))?,
             Arc::new(recv_exec),
         ));
 

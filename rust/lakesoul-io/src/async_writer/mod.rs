@@ -39,10 +39,10 @@ use datafusion::{
     },
 };
 use datafusion_common::{DataFusionError, Result};
-use parquet::format::FileMetaData;
+use parquet::file::metadata::ParquetMetaData;
 
 /// The result of a flush operation with format (partition_desc, file_path, object_meta, file_meta)
-pub type WriterFlushResult = Vec<(String, String, ObjectMeta, FileMetaData)>;
+pub type WriterFlushResult = Vec<(String, String, ObjectMeta, ParquetMetaData)>;
 
 /// The trait for the async batch writer.
 #[async_trait::async_trait]

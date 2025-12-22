@@ -172,7 +172,7 @@ pub fn transform_record_batch(
         transform_arrays,
         &RecordBatchOptions::new().with_row_count(Some(num_rows)),
     )
-    .map_err(|e| ArrowError(e, None))
+    .map_err(|e| ArrowError(Box::new(e), None))
 }
 
 pub fn transform_array(
@@ -229,7 +229,7 @@ pub fn transform_array(
             )
             .map_err(|e| {
                 DataFusionError::ArrowError(
-                    e,
+                    Box::new(e),
                     Some(format!(
                         "Failed to cast timestamp type from {} to {}",
                         source_datatype, target_datatype
@@ -302,7 +302,7 @@ pub fn transform_array(
                         cast_with_options(&array, &target_datatype, &ARROW_CAST_OPTIONS)
                             .map_err(|e| {
                             DataFusionError::ArrowError(
-                                e,
+                                Box::new(e),
                                 Some(format!(
                                     "Failed to cast type from {} to {}",
                                     array.data_type(),

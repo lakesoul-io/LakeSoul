@@ -92,7 +92,7 @@ impl PartitioningAsyncWriter {
                 .map(|f| {
                     schema
                         .index_of(f.name().as_str())
-                        .map_err(|e| DataFusionError::ArrowError(e, None))
+                        .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
                 })
                 .collect::<Result<Vec<usize>>>()?;
             let writer_schema = Arc::new(schema.project(proj_indices.borrow())?);
@@ -159,12 +159,12 @@ impl PartitioningAsyncWriter {
                 })
             })
             .collect::<Result<Vec<PhysicalSortExpr>>>()?;
-        if sort_exprs.is_empty() {
+
+        let sort_exec = if let Some(ordering) = LexOrdering::new(sort_exprs) {
+            Arc::new(SortExec::new(ordering, input))
+        } else {
             return Ok(input);
-        }
-
-        let sort_exec = Arc::new(SortExec::new(LexOrdering::new(sort_exprs), input));
-
+        };
         // see if we need to prune aux sort cols
         let sort_exec: Arc<dyn ExecutionPlan> = if aux_sort_cols.is_empty() {
             sort_exec
