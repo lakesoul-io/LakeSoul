@@ -38,7 +38,6 @@ public class PgDeserialization implements DebeziumDeserializationSchema<String> 
             List<Field> beforeFields = beforeSchema.fields();
             for (Field beforeField : beforeFields) {
                 Object beforeValue = before.get(beforeField);
-
                 String name = beforeField.name();
                 if (name.equals("file_ops")){
                     ArrayList afterValue1 = (ArrayList) before.get(beforeField);
