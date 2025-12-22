@@ -90,6 +90,9 @@ public class JdbcCDC {
             batchSize = parameter.getInt(BATCH_SIZE.key(), BATCH_SIZE.defaultValue());
             tableList = parameter.get(SOURCE_DB_SCHEMA_TABLES.key()).split(",");
         }
+        if (dbType.equals("mysql")){
+            tableList = parameter.get(SOURCE_DB_SCHEMA_TABLES.key()).split(",");
+        }
         pluginName = parameter.get(PLUGIN_NAME.key(), PLUGIN_NAME.defaultValue());
         //flink
         String databasePrefixPath = parameter.get(WAREHOUSE_PATH.key());
@@ -193,7 +196,7 @@ public class JdbcCDC {
                 .hostname(host)
                 .port(port)
                 .databaseList(dbName) // set captured database
-                .tableList(dbName + ".*") // set captured table
+                .tableList(tableList) // set captured table
                 .serverTimeZone(serverTimezone)  // default -- Asia/Shanghai
                 //.scanNewlyAddedTableEnabled(true)
                 .username(userName)
@@ -374,8 +377,6 @@ public class JdbcCDC {
                 builder =
                 new LakeSoulMultiTableSinkStreamBuilder(mongoSource, context, lakeSoulRecordConvert);
         DataStreamSource<BinarySourceRecord> source = builder.buildMultiTableSource("mongodb Source");
-
-        source.print();
         DataStream<BinarySourceRecord> stream = builder.buildHashPartitionedCDCStream(source);
         DataStreamSink<BinarySourceRecord> dmlSink = builder.buildLakeSoulDMLSink(stream);
         env.execute("LakeSoul CDC Sink From mongo Database " + dbName);

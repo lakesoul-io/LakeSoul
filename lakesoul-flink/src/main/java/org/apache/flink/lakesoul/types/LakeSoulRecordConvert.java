@@ -43,10 +43,7 @@ import org.apache.flink.types.RowKind;
 import java.io.Serializable;
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
-import java.time.Instant;
-import java.time.LocalDateTime;
-import java.time.ZoneId;
-import java.time.ZonedDateTime;
+import java.time.*;
 import java.util.*;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CDC_CHANGE_COLUMN;
@@ -63,9 +60,10 @@ public class LakeSoulRecordConvert implements Serializable {
     private final String cdcColumn;
 
     final boolean useCDC;
-
     List<String> partitionFields;
     HashMap<String, List<String>> topicsPartitionFields;
+    HashMap<String, String> topicsTimestampPartitionFields = new HashMap<>();
+
 
     public LakeSoulRecordConvert(Configuration conf, String serverTimeZone) {
         this(conf, serverTimeZone, new HashMap<>());
@@ -133,31 +131,31 @@ public class LakeSoulRecordConvert implements Serializable {
                 String fullDocument = value.getString(MongoDBEnvelope.FULL_DOCUMENT_FIELD);
                 Struct bsonStruct = convertBSONToStruct(fullDocument);
                 Schema documentSchema = bsonStruct.schema();
-                RowData insert = convert(bsonStruct, documentSchema, RowKind.INSERT, sortField);
-                RowType mongoRt = toFlinkRowType(documentSchema,true);
+                RowData insert = convert(bsonStruct, documentSchema, RowKind.INSERT, sortField, tableId.table());
+                RowType mongoRt = toFlinkRowType(documentSchema,true, tableId.table());
                 insert.setRowKind(RowKind.INSERT);
                 builder.setOperation("insert").setAfterRowData(insert).setAfterType(mongoRt);
             } else if (op.equals("delete")) {
                 String fullDocumentValue = value.getString("fullDocumentBeforeChange");
                 Struct before = convertBSONToStruct(fullDocumentValue);
                 Schema beforSchema = before.schema();
-                RowData delete = convert(before,beforSchema,RowKind.DELETE,sortField);
-                RowType rt = toFlinkRowType(beforSchema, true);
+                RowData delete = convert(before,beforSchema,RowKind.DELETE,sortField, tableId.table());
+                RowType rt = toFlinkRowType(beforSchema, true, tableId.table());
                 builder.setOperation("delete").setBeforeRowData(delete).setBeforeRowType(rt);
                 delete.setRowKind(RowKind.DELETE);
             } else {
                 String fullDocumentBeforChange = value.getString("fullDocumentBeforeChange");
                 Struct before = convertBSONToStruct(fullDocumentBeforChange);
                 Schema beforeSchema = before.schema();
-                RowData beforeData = convert(before, beforeSchema, RowKind.UPDATE_BEFORE, sortField);
+                RowData beforeData = convert(before, beforeSchema, RowKind.UPDATE_BEFORE, sortField, tableId.table());
                 beforeData.setRowKind(RowKind.UPDATE_BEFORE);
-                RowType beforeRT = toFlinkRowType(beforeSchema, true);
+                RowType beforeRT = toFlinkRowType(beforeSchema, true, tableId.table());
                 String fullDocument = value.getString(MongoDBEnvelope.FULL_DOCUMENT_FIELD);
                 Struct after = convertBSONToStruct(fullDocument);
                 Schema afterSchema = after.schema();
-                RowData afterData = convert(after, afterSchema, RowKind.UPDATE_AFTER, sortField);
+                RowData afterData = convert(after, afterSchema, RowKind.UPDATE_AFTER, sortField, tableId.table());
                 afterData.setRowKind(RowKind.UPDATE_AFTER);
-                RowType afterRT = toFlinkRowType(afterSchema, true);
+                RowType afterRT = toFlinkRowType(afterSchema, true, tableId.table());
                 if (partitionFieldsChanged(beforeRT, beforeData, afterRT, afterData)) {
                     // partition fields changed. we need to emit both before and after RowData
                     builder.setOperation("update").setBeforeRowData(beforeData).setBeforeRowType(beforeRT)
@@ -174,29 +172,36 @@ public class LakeSoulRecordConvert implements Serializable {
             if (op == Envelope.Operation.CREATE || op == Envelope.Operation.READ) {
                 Schema afterSchema = valueSchema.field(Envelope.FieldName.AFTER).schema();
                 Struct after = value.getStruct(Envelope.FieldName.AFTER);
-                RowData insert = convert(after, afterSchema, RowKind.INSERT, sortField);
-                RowType rt = toFlinkRowType(afterSchema,false);
+                String timeStampPartitionCol = returnTimeStampPartitionCol(topicsPartitionFields, tableId.table(), afterSchema);
+                if (timeStampPartitionCol != null){
+                    topicsTimestampPartitionFields.put(tableId.table(), timeStampPartitionCol);
+                    List<String> updatedTopicPartitionFields = new ArrayList<>(topicsPartitionFields.get(tableId.table()));
+                    updatedTopicPartitionFields.remove(timeStampPartitionCol);
+                    updatedTopicPartitionFields.add(timeStampPartitionCol + "_&p");
+                    topicsPartitionFields.replace(tableId.table(),updatedTopicPartitionFields);
+                }
+                RowData insert = convert(after, afterSchema, RowKind.INSERT, sortField , timeStampPartitionCol);
+                RowType rt = toFlinkRowType(afterSchema,false, timeStampPartitionCol);
                 insert.setRowKind(RowKind.INSERT);
                 builder.setOperation("insert").setAfterRowData(insert).setAfterType(rt);
             } else if (op == Envelope.Operation.DELETE) {
                 Schema beforeSchema = valueSchema.field(Envelope.FieldName.BEFORE).schema();
                 Struct before = value.getStruct(Envelope.FieldName.BEFORE);
-                RowData delete = convert(before, beforeSchema, RowKind.DELETE, sortField);
-                RowType rt = toFlinkRowType(beforeSchema,false);
+                RowData delete = convert(before, beforeSchema, RowKind.DELETE, sortField, tableId.table());
+                RowType rt = toFlinkRowType(beforeSchema,false, tableId.table());
                 delete.setRowKind(RowKind.DELETE);
                 builder.setOperation("delete").setBeforeRowData(delete).setBeforeRowType(rt);
-
             } else {
                 Schema beforeSchema = valueSchema.field(Envelope.FieldName.BEFORE).schema();
                 Struct before = value.getStruct(Envelope.FieldName.BEFORE);
-                RowData beforeData = convert(before, beforeSchema, RowKind.UPDATE_BEFORE, sortField);
+                RowData beforeData = convert(before, beforeSchema, RowKind.UPDATE_BEFORE, sortField, tableId.table());
                 //boolean beforNullable = beforeSchema.isOptional();
-                RowType beforeRT = toFlinkRowType(beforeSchema,false);
+                RowType beforeRT = toFlinkRowType(beforeSchema,false, tableId.table());
                 beforeData.setRowKind(RowKind.UPDATE_BEFORE);
                 Schema afterSchema = valueSchema.field(Envelope.FieldName.AFTER).schema();
                 Struct after = value.getStruct(Envelope.FieldName.AFTER);
-                RowData afterData = convert(after, afterSchema, RowKind.UPDATE_AFTER, sortField);
-                RowType afterRT = toFlinkRowType(afterSchema,false);
+                RowData afterData = convert(after, afterSchema, RowKind.UPDATE_AFTER, sortField, tableId.table());
+                RowType afterRT = toFlinkRowType(afterSchema,false, tableId.table());
                 afterData.setRowKind(RowKind.UPDATE_AFTER);
                 if (partitionFieldsChanged(beforeRT, beforeData, afterRT, afterData)) {
                     // partition fields changed. we need to emit both before and after RowData
@@ -227,29 +232,61 @@ public class LakeSoulRecordConvert implements Serializable {
         return RowType.of(colTypes, colNames);
     }
 
-    public RowType toFlinkRowType(Schema schema, boolean isMongoDDL) {
-        int arity = schema.fields().size() + 1;
-        if (useCDC) ++arity;
+    public RowType toFlinkRowType(
+            Schema schema,
+            boolean isMongoDDL,
+            String timestampPartitionCol) {
+        int arity = schema.fields().size()
+                + (timestampPartitionCol != null ? 1 : 0)
+                + 1
+                + (useCDC ? 1 : 0);
+
         String[] colNames = new String[arity];
         LogicalType[] colTypes = new LogicalType[arity];
-        List<Field> fieldNames = schema.fields();
-        for (int i = 0; i < (useCDC ? arity - 2 : arity - 1); i++) {
-            Field item = fieldNames.get(i);
-            colNames[i] = item.name();
-            if (isMongoDDL){
-                colTypes[i] = convertToLogical(item.schema(), !item.name().equals("_id"));
-            }else {
-                colTypes[i] = convertToLogical(item.schema(), item.schema().isOptional());
+        int pos = 0;
+        for (Field field : schema.fields()) {
+            colNames[pos] = field.name();
+            if (isMongoDDL) {
+                colTypes[pos] =
+                        convertToLogical(
+                                field.schema(),
+                                !"_id".equals(field.name())
+                        );
+            } else {
+                colTypes[pos] =
+                        convertToLogical(
+                                field.schema(),
+                                field.schema().isOptional()
+                        );
+            }
+            pos++;
+        }
+        if (timestampPartitionCol != null) {
+            Field field = schema.field(timestampPartitionCol);
+            if (field != null) {
+                String schemaName = field.schema().name();
+                if (ZonedTimestamp.SCHEMA_NAME.equals(schemaName)
+                        || ZonedTime.SCHEMA_NAME.equals(schemaName)) {
+                    String colNameWithSuffix = timestampPartitionCol + "_&p";
+                    colNames[pos] = colNameWithSuffix;
+                    colTypes[pos] = new VarCharType(false, 10);
+                    pos++;
+                }
             }
         }
-        colNames[useCDC ? arity - 2 : arity - 1] = SORT_FIELD;
-        colTypes[useCDC ? arity - 2 : arity - 1] = new BigIntType();
+
+        colNames[pos] = SORT_FIELD;
+        colTypes[pos] = new BigIntType();
+        pos++;
         if (useCDC) {
-            colNames[arity - 1] = cdcColumn;
-            colTypes[arity - 1] = new VarCharType(false, Integer.MAX_VALUE);
+            colNames[pos] = cdcColumn;
+            colTypes[pos] =
+                    new VarCharType(false, Integer.MAX_VALUE);
+            pos++;
         }
         return RowType.of(colTypes, colNames);
     }
+
 
     public LogicalType convertToLogical(Schema fieldSchema, boolean nullable) {
         if (isPrimitiveType(fieldSchema)) {
@@ -414,31 +451,115 @@ public class LakeSoulRecordConvert implements Serializable {
         writer.writeString(fieldIndex, StringData.fromString(rowKindStr));
     }
 
-    public RowData convert(Struct struct, Schema schema, RowKind rowKind, long sortField) throws Exception {
+    public boolean hasTimeStampPartition(HashMap<String, List<String>> topicsPartitionFields, String tableName, Schema schema){
+        if (topicsPartitionFields.containsKey(tableName)){
+            List<String> partitionColls = topicsPartitionFields.get(tableName);
+            List<Field> fieldNames = schema.fields();
+            for (Field fieldName : fieldNames){
+                if (partitionColls.contains(fieldName.name()) || partitionColls.contains(fieldName.name() + "_$p")){
+                    if (fieldName.schema().name() != null
+                            && (ZonedTimestamp.SCHEMA_NAME.equals(fieldName.schema().name())
+                            || ZonedTime.SCHEMA_NAME.equals(fieldName.schema().name()))) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    public String returnTimeStampPartitionCol(HashMap<String, List<String>> topicsPartitionFields, String tableName, Schema schema){
+        if (topicsPartitionFields.containsKey(tableName)){
+            List<String> partitionColls = topicsPartitionFields.get(tableName);
+            List<Field> fieldNames = schema.fields();
+            for (Field fieldName : fieldNames){
+                if (partitionColls.contains(fieldName.name()) || partitionColls.contains(fieldName.name() + "_$p")){
+                    if (fieldName.schema().name() != null
+                            && (ZonedTimestamp.SCHEMA_NAME.equals(fieldName.schema().name())
+                            || ZonedTime.SCHEMA_NAME.equals(fieldName.schema().name()))) {
+                        return fieldName.name();
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    public RowData convert(
+            Struct struct,
+            Schema schema,
+            RowKind rowKind,
+            long sortField,
+            String timestampPartitionCols) throws Exception {
         if (struct == null) {
             return null;
         }
-        int arity = schema.fields().size() + 1; // for extra event sortField
-        if (useCDC) ++arity; // for extra cdc op (RowKind) field
-        List<Field> fieldNames = schema.fields();
+        int arity = schema.fields().size() + 1; // sortField
+        if (timestampPartitionCols != null) {
+            arity += 1;
+        }
+        if (useCDC) {
+            arity += 1;
+        }
         BinaryRowData row = new BinaryRowData(arity);
         BinaryRowWriter writer = new BinaryRowWriter(row);
-        for (int i = 0; i < (useCDC ? arity - 2 : arity - 1); i++) {
-            Field field = fieldNames.get(i);
+        List<Field> fieldNames = schema.fields();
+        int pos = 0;
+        for (Field field : fieldNames) {
             String fieldName = field.name();
             Object fieldValue = struct.getWithoutDefault(fieldName);
-            if (fieldValue == null) {
-                writer.setNullAt(i);
+            if (fieldName.equals(timestampPartitionCols)
+                    && (ZonedTimestamp.SCHEMA_NAME.equals(field.schema().name())
+                    || ZonedTime.SCHEMA_NAME.equals(field.schema().name()))) {
+                if (fieldValue == null) {
+                    writer.setNullAt(pos++);
+                    continue;
+                }
+                String rawValue = fieldValue.toString();
+                Instant instant = Instant.parse(rawValue);
+                LocalDate localDate =
+                        instant.atZone(serverTimeZone).toLocalDate();
+                writer.writeString(
+                        pos++,
+                        StringData.fromString(localDate.toString())
+                );
                 continue;
             }
-            Schema fieldSchema = schema.field(fieldName).schema();
-            sqlSchemaAndFieldWrite(writer, i, fieldValue, fieldSchema, serverTimeZone);
+            if (fieldValue == null) {
+                writer.setNullAt(pos++);
+                continue;
+            }
+            Schema fieldSchema = field.schema();
+            sqlSchemaAndFieldWrite(
+                    writer,
+                    pos++,
+                    fieldValue,
+                    fieldSchema,
+                    serverTimeZone
+            );
         }
-        writer.writeLong(useCDC ? arity - 2 : arity - 1, sortField);
+        if (timestampPartitionCols != null) {
+            Object v = struct.getWithoutDefault(timestampPartitionCols);
+            if (v == null) {
+                writer.setNullAt(pos++);
+            }
+            Field field = schema.field(timestampPartitionCols);
+            if (field != null) {
+                String schemaName = field.schema().name();
+                if (ZonedTimestamp.SCHEMA_NAME.equals(schemaName)
+                        || ZonedTime.SCHEMA_NAME.equals(schemaName)) {
+                    Instant instant = Instant.parse(v.toString());
+                    LocalDate date = instant.atZone(serverTimeZone).toLocalDate();
+                    writer.writeString(pos++, StringData.fromString(date.toString()));
+                }
+            }
+        }
+        writer.writeLong(pos++, sortField);
         writer.writeRowKind(rowKind);
         if (useCDC) {
-            setCDCRowKindField(writer, rowKind, arity - 1);
+            setCDCRowKindField(writer, rowKind, pos++);
         }
+
         writer.complete();
         return row;
     }
