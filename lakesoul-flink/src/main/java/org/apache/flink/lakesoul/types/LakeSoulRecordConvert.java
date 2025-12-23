@@ -479,7 +479,12 @@ public class LakeSoulRecordConvert implements Serializable {
                     if (fieldName.schema().name() != null
                             && (ZonedTimestamp.SCHEMA_NAME.equals(fieldName.schema().name())
                             || ZonedTime.SCHEMA_NAME.equals(fieldName.schema().name()))
-                            || Timestamp.SCHEMA_NAME.equals(fieldName.schema().name())) {
+                            || Timestamp.SCHEMA_NAME.equals(fieldName.schema().name())
+                            || Date.SCHEMA_NAME.equals(fieldName.schema().name())
+                            || Time.SCHEMA_NAME.equals(fieldName.schema().name())
+                            || ZonedTimestamp.SCHEMA_NAME.equals(fieldName.schema().name())
+                            || MicroTimestamp.SCHEMA_NAME.equals(fieldName.schema().name())
+                            || MicroTime.SCHEMA_NAME.equals(fieldName.schema().name())) {
                         return fieldName.name();
                     }
                 }
@@ -494,13 +499,10 @@ public class LakeSoulRecordConvert implements Serializable {
             RowKind rowKind,
             long sortField,
             String timestampPartitionCol) throws Exception {
-
         if (struct == null) {
             return null;
         }
-
         int baseFieldCount = schema.fields().size();
-
         boolean hasTimestampPartitionCol = timestampPartitionCol != null;
         int arity = baseFieldCount
                 + (hasTimestampPartitionCol ? 1 : 0)
