@@ -172,16 +172,7 @@ public class LakeSoulRecordConvert implements Serializable {
             if (op == Envelope.Operation.CREATE || op == Envelope.Operation.READ) {
                 Schema afterSchema = valueSchema.field(Envelope.FieldName.AFTER).schema();
                 Struct after = value.getStruct(Envelope.FieldName.AFTER);
-                String timeStampPartitionCol = returnTimeStampPartitionCol(topicsPartitionFields, tableId.table(), afterSchema);
-                if (timeStampPartitionCol != null){
-                    topicsTimestampPartitionFields.put(tableId.table(), timeStampPartitionCol);
-                    List<String> updatedTopicPartitionFields = new ArrayList<>(topicsPartitionFields.get(tableId.table()));
-                    if (updatedTopicPartitionFields.contains(timeStampPartitionCol)){
-                        updatedTopicPartitionFields.remove(timeStampPartitionCol);
-                        updatedTopicPartitionFields.add(timeStampPartitionCol + "_&p");
-                    }
-                    topicsPartitionFields.replace(tableId.table(),updatedTopicPartitionFields);
-                }
+                String timeStampPartitionCol = handleTimestampPartitionColumn(tableId, afterSchema, topicsPartitionFields, topicsTimestampPartitionFields);
                 RowData insert = convert(after, afterSchema, RowKind.INSERT, sortField , timeStampPartitionCol);
                 RowType rt = toFlinkRowType(afterSchema,false, timeStampPartitionCol);
                 insert.setRowKind(RowKind.INSERT);
@@ -189,7 +180,8 @@ public class LakeSoulRecordConvert implements Serializable {
             } else if (op == Envelope.Operation.DELETE) {
                 Schema beforeSchema = valueSchema.field(Envelope.FieldName.BEFORE).schema();
                 Struct before = value.getStruct(Envelope.FieldName.BEFORE);
-                RowData delete = convert(before, beforeSchema, RowKind.DELETE, sortField, tableId.table());
+                String timeStampPartitionCol = handleTimestampPartitionColumn(tableId, beforeSchema, topicsPartitionFields, topicsTimestampPartitionFields);
+                RowData delete = convert(before, beforeSchema, RowKind.DELETE, sortField, timeStampPartitionCol);
                 RowType rt = toFlinkRowType(beforeSchema,false, tableId.table());
                 delete.setRowKind(RowKind.DELETE);
                 builder.setOperation("delete").setBeforeRowData(delete).setBeforeRowType(rt);
@@ -218,6 +210,37 @@ public class LakeSoulRecordConvert implements Serializable {
         }
         return builder.setTsMs(tsMs).build();
     }
+    private String handleTimestampPartitionColumn(
+            TableId tableId,
+            Schema afterSchema,
+            HashMap<String, List<String>> topicsPartitionFields,
+            Map<String, String> topicsTimestampPartitionFields) {
+
+        String timeStampPartitionCol =
+                returnTimeStampPartitionCol(
+                        topicsPartitionFields,
+                        tableId.table(),
+                        afterSchema
+                );
+
+        if (timeStampPartitionCol == null) {
+            return null;
+        }
+        topicsTimestampPartitionFields.put(tableId.table(), timeStampPartitionCol);
+        List<String> originPartitionFields = topicsPartitionFields.get(tableId.table());
+        if (originPartitionFields == null) {
+            return timeStampPartitionCol;
+        }
+        List<String> updatedPartitionFields = new ArrayList<>(originPartitionFields);
+
+        if (updatedPartitionFields.contains(timeStampPartitionCol)) {
+            updatedPartitionFields.remove(timeStampPartitionCol);
+            updatedPartitionFields.add(timeStampPartitionCol + "_&p");
+        }
+        topicsPartitionFields.put(tableId.table(), updatedPartitionFields);
+        return timeStampPartitionCol;
+    }
+
 
     public RowType toFlinkRowTypeCDC(RowType rowType) {
         if (!useCDC || rowType.getFieldNames().contains(cdcColumn)) {
@@ -454,7 +477,7 @@ public class LakeSoulRecordConvert implements Serializable {
             List<String> partitionColls = topicsPartitionFields.get(tableName);
             List<Field> fieldNames = schema.fields();
             for (Field fieldName : fieldNames){
-                if (partitionColls.contains(fieldName.name()) || partitionColls.contains(fieldName.name() + "_p")){
+                if (partitionColls.contains(fieldName.name()) || partitionColls.contains(fieldName.name() + "_&p")){
                     if (fieldName.schema().name() != null
                             && (ZonedTimestamp.SCHEMA_NAME.equals(fieldName.schema().name())
                             || ZonedTime.SCHEMA_NAME.equals(fieldName.schema().name()))) {
