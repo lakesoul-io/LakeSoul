@@ -46,10 +46,7 @@ import java.nio.ByteBuffer;
 import java.time.*;
 import java.util.*;
 
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CDC_CHANGE_COLUMN;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CDC_CHANGE_COLUMN_DEFAULT;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SORT_FIELD;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.USE_CDC;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 import static org.apache.flink.lakesoul.types.ParseDocument.convertBSONToStruct;
 
 public class LakeSoulRecordConvert implements Serializable {
@@ -188,14 +185,15 @@ public class LakeSoulRecordConvert implements Serializable {
             } else {
                 Schema beforeSchema = valueSchema.field(Envelope.FieldName.BEFORE).schema();
                 Struct before = value.getStruct(Envelope.FieldName.BEFORE);
-                RowData beforeData = convert(before, beforeSchema, RowKind.UPDATE_BEFORE, sortField, tableId.table());
+                String timeStampPartitionCol = handleTimestampPartitionColumn(tableId, beforeSchema, topicsPartitionFields, topicsTimestampPartitionFields);
+                RowData beforeData = convert(before, beforeSchema, RowKind.UPDATE_BEFORE, sortField, timeStampPartitionCol);
                 //boolean beforNullable = beforeSchema.isOptional();
-                RowType beforeRT = toFlinkRowType(beforeSchema,false, tableId.table());
+                RowType beforeRT = toFlinkRowType(beforeSchema,false, timeStampPartitionCol);
                 beforeData.setRowKind(RowKind.UPDATE_BEFORE);
                 Schema afterSchema = valueSchema.field(Envelope.FieldName.AFTER).schema();
                 Struct after = value.getStruct(Envelope.FieldName.AFTER);
-                RowData afterData = convert(after, afterSchema, RowKind.UPDATE_AFTER, sortField, tableId.table());
-                RowType afterRT = toFlinkRowType(afterSchema,false, tableId.table());
+                RowData afterData = convert(after, afterSchema, RowKind.UPDATE_AFTER, sortField, timeStampPartitionCol);
+                RowType afterRT = toFlinkRowType(afterSchema,false, timeStampPartitionCol);
                 afterData.setRowKind(RowKind.UPDATE_AFTER);
                 if (partitionFieldsChanged(beforeRT, beforeData, afterRT, afterData)) {
                     // partition fields changed. we need to emit both before and after RowData
@@ -480,7 +478,8 @@ public class LakeSoulRecordConvert implements Serializable {
                 if (partitionColls.contains(fieldName.name()) || partitionColls.contains(fieldName.name() + "_&p")){
                     if (fieldName.schema().name() != null
                             && (ZonedTimestamp.SCHEMA_NAME.equals(fieldName.schema().name())
-                            || ZonedTime.SCHEMA_NAME.equals(fieldName.schema().name()))) {
+                            || ZonedTime.SCHEMA_NAME.equals(fieldName.schema().name()))
+                            || Timestamp.SCHEMA_NAME.equals(fieldName.schema().name())) {
                         return fieldName.name();
                     }
                 }
@@ -533,7 +532,12 @@ public class LakeSoulRecordConvert implements Serializable {
         }
         if (hasTimestampPartitionCol) {
             Object fieldValue = struct.getWithoutDefault(timestampPartitionCol);
-            Instant instant = Instant.parse(fieldValue.toString());
+            Instant instant;
+            if (fieldValue instanceof Long){
+                instant = Instant.ofEpochMilli((Long) fieldValue);
+            } else {
+                instant  = Instant.parse(fieldValue.toString());
+            }
             LocalDate date = instant.atZone(serverTimeZone).toLocalDate();
             writer.writeString(pos, StringData.fromString(date.toString()));
             pos++;
