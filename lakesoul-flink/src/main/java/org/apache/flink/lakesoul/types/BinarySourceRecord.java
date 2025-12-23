@@ -124,7 +124,7 @@ public class BinarySourceRecord {
             List<String> newPartitionFields = convert.topicsPartitionFields.get(tableId.table());
             return new BinarySourceRecord(sourceRecord.topic(), primaryKeys, tableId,
                     FlinkUtil.makeQualifiedPath(tablePath).toString(),
-                    newPartitionFields, false, data, null);
+                    newPartitionFields == null ? Collections.emptyList(): newPartitionFields, false, data, null);
         }
     }
 

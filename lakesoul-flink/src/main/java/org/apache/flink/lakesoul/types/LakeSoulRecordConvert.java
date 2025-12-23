@@ -176,8 +176,10 @@ public class LakeSoulRecordConvert implements Serializable {
                 if (timeStampPartitionCol != null){
                     topicsTimestampPartitionFields.put(tableId.table(), timeStampPartitionCol);
                     List<String> updatedTopicPartitionFields = new ArrayList<>(topicsPartitionFields.get(tableId.table()));
-                    updatedTopicPartitionFields.remove(timeStampPartitionCol);
-                    updatedTopicPartitionFields.add(timeStampPartitionCol + "_&p");
+                    if (updatedTopicPartitionFields.contains(timeStampPartitionCol)){
+                        updatedTopicPartitionFields.remove(timeStampPartitionCol);
+                        updatedTopicPartitionFields.add(timeStampPartitionCol + "_&p");
+                    }
                     topicsPartitionFields.replace(tableId.table(),updatedTopicPartitionFields);
                 }
                 RowData insert = convert(after, afterSchema, RowKind.INSERT, sortField , timeStampPartitionCol);
@@ -236,43 +238,39 @@ public class LakeSoulRecordConvert implements Serializable {
             Schema schema,
             boolean isMongoDDL,
             String timestampPartitionCol) {
-        int arity = schema.fields().size()
-                + (timestampPartitionCol != null ? 1 : 0)
-                + 1
-                + (useCDC ? 1 : 0);
 
+        int baseFieldCount = schema.fields().size();
+        boolean hasTimestampPartitionCol = timestampPartitionCol != null;
+
+        int arity = baseFieldCount
+                + (hasTimestampPartitionCol ? 1 : 0)
+                + 1;
+        if (useCDC) {
+            arity += 1;
+        }
         String[] colNames = new String[arity];
         LogicalType[] colTypes = new LogicalType[arity];
+        List<Field> fields = schema.fields();
         int pos = 0;
-        for (Field field : schema.fields()) {
-            colNames[pos] = field.name();
+        for (Field item : fields) {
+            colNames[pos] = item.name();
             if (isMongoDDL) {
-                colTypes[pos] =
-                        convertToLogical(
-                                field.schema(),
-                                !"_id".equals(field.name())
-                        );
+                colTypes[pos] = convertToLogical(
+                        item.schema(),
+                        !item.name().equals("_id")
+                );
             } else {
-                colTypes[pos] =
-                        convertToLogical(
-                                field.schema(),
-                                field.schema().isOptional()
-                        );
+                colTypes[pos] = convertToLogical(
+                        item.schema(),
+                        item.schema().isOptional()
+                );
             }
             pos++;
         }
-        if (timestampPartitionCol != null) {
-            Field field = schema.field(timestampPartitionCol);
-            if (field != null) {
-                String schemaName = field.schema().name();
-                if (ZonedTimestamp.SCHEMA_NAME.equals(schemaName)
-                        || ZonedTime.SCHEMA_NAME.equals(schemaName)) {
-                    String colNameWithSuffix = timestampPartitionCol + "_&p";
-                    colNames[pos] = colNameWithSuffix;
-                    colTypes[pos] = new VarCharType(false, 10);
-                    pos++;
-                }
-            }
+        if (hasTimestampPartitionCol) {
+            colNames[pos] = timestampPartitionCol + "_&p";
+            colTypes[pos] = new VarCharType(false, Integer.MAX_VALUE);
+            pos++;
         }
 
         colNames[pos] = SORT_FIELD;
@@ -280,12 +278,12 @@ public class LakeSoulRecordConvert implements Serializable {
         pos++;
         if (useCDC) {
             colNames[pos] = cdcColumn;
-            colTypes[pos] =
-                    new VarCharType(false, Integer.MAX_VALUE);
-            pos++;
+            colTypes[pos] = new VarCharType(false, Integer.MAX_VALUE);
         }
+
         return RowType.of(colTypes, colNames);
     }
+
 
 
     public LogicalType convertToLogical(Schema fieldSchema, boolean nullable) {
@@ -451,29 +449,12 @@ public class LakeSoulRecordConvert implements Serializable {
         writer.writeString(fieldIndex, StringData.fromString(rowKindStr));
     }
 
-    public boolean hasTimeStampPartition(HashMap<String, List<String>> topicsPartitionFields, String tableName, Schema schema){
-        if (topicsPartitionFields.containsKey(tableName)){
-            List<String> partitionColls = topicsPartitionFields.get(tableName);
-            List<Field> fieldNames = schema.fields();
-            for (Field fieldName : fieldNames){
-                if (partitionColls.contains(fieldName.name()) || partitionColls.contains(fieldName.name() + "_$p")){
-                    if (fieldName.schema().name() != null
-                            && (ZonedTimestamp.SCHEMA_NAME.equals(fieldName.schema().name())
-                            || ZonedTime.SCHEMA_NAME.equals(fieldName.schema().name()))) {
-                        return true;
-                    }
-                }
-            }
-        }
-        return false;
-    }
-
     public String returnTimeStampPartitionCol(HashMap<String, List<String>> topicsPartitionFields, String tableName, Schema schema){
         if (topicsPartitionFields.containsKey(tableName)){
             List<String> partitionColls = topicsPartitionFields.get(tableName);
             List<Field> fieldNames = schema.fields();
             for (Field fieldName : fieldNames){
-                if (partitionColls.contains(fieldName.name()) || partitionColls.contains(fieldName.name() + "_$p")){
+                if (partitionColls.contains(fieldName.name()) || partitionColls.contains(fieldName.name() + "_p")){
                     if (fieldName.schema().name() != null
                             && (ZonedTimestamp.SCHEMA_NAME.equals(fieldName.schema().name())
                             || ZonedTime.SCHEMA_NAME.equals(fieldName.schema().name()))) {
@@ -490,79 +471,61 @@ public class LakeSoulRecordConvert implements Serializable {
             Schema schema,
             RowKind rowKind,
             long sortField,
-            String timestampPartitionCols) throws Exception {
+            String timestampPartitionCol) throws Exception {
+
         if (struct == null) {
             return null;
         }
-        int arity = schema.fields().size() + 1; // sortField
-        if (timestampPartitionCols != null) {
-            arity += 1;
-        }
+
+        int baseFieldCount = schema.fields().size();
+
+        boolean hasTimestampPartitionCol = timestampPartitionCol != null;
+        int arity = baseFieldCount
+                + (hasTimestampPartitionCol ? 1 : 0)
+                + 1;
         if (useCDC) {
             arity += 1;
         }
         BinaryRowData row = new BinaryRowData(arity);
         BinaryRowWriter writer = new BinaryRowWriter(row);
-        List<Field> fieldNames = schema.fields();
+        List<Field> fields = schema.fields();
         int pos = 0;
-        for (Field field : fieldNames) {
+        for (Field field : fields) {
             String fieldName = field.name();
             Object fieldValue = struct.getWithoutDefault(fieldName);
-            if (fieldName.equals(timestampPartitionCols)
-                    && (ZonedTimestamp.SCHEMA_NAME.equals(field.schema().name())
-                    || ZonedTime.SCHEMA_NAME.equals(field.schema().name()))) {
-                if (fieldValue == null) {
-                    writer.setNullAt(pos++);
-                    continue;
-                }
-                String rawValue = fieldValue.toString();
-                Instant instant = Instant.parse(rawValue);
-                LocalDate localDate =
-                        instant.atZone(serverTimeZone).toLocalDate();
-                writer.writeString(
-                        pos++,
-                        StringData.fromString(localDate.toString())
-                );
-                continue;
-            }
+
             if (fieldValue == null) {
-                writer.setNullAt(pos++);
-                continue;
+                writer.setNullAt(pos);
+            } else {
+                Schema fieldSchema = field.schema();
+                sqlSchemaAndFieldWrite(
+                        writer,
+                        pos,
+                        fieldValue,
+                        fieldSchema,
+                        serverTimeZone
+                );
             }
-            Schema fieldSchema = field.schema();
-            sqlSchemaAndFieldWrite(
-                    writer,
-                    pos++,
-                    fieldValue,
-                    fieldSchema,
-                    serverTimeZone
-            );
+            pos++;
         }
-        if (timestampPartitionCols != null) {
-            Object v = struct.getWithoutDefault(timestampPartitionCols);
-            if (v == null) {
-                writer.setNullAt(pos++);
-            }
-            Field field = schema.field(timestampPartitionCols);
-            if (field != null) {
-                String schemaName = field.schema().name();
-                if (ZonedTimestamp.SCHEMA_NAME.equals(schemaName)
-                        || ZonedTime.SCHEMA_NAME.equals(schemaName)) {
-                    Instant instant = Instant.parse(v.toString());
-                    LocalDate date = instant.atZone(serverTimeZone).toLocalDate();
-                    writer.writeString(pos++, StringData.fromString(date.toString()));
-                }
-            }
+        if (hasTimestampPartitionCol) {
+            Object fieldValue = struct.getWithoutDefault(timestampPartitionCol);
+            Instant instant = Instant.parse(fieldValue.toString());
+            LocalDate date = instant.atZone(serverTimeZone).toLocalDate();
+            writer.writeString(pos, StringData.fromString(date.toString()));
+            pos++;
         }
-        writer.writeLong(pos++, sortField);
+        writer.writeLong(pos, sortField);
+        pos++;
         writer.writeRowKind(rowKind);
         if (useCDC) {
-            setCDCRowKindField(writer, rowKind, pos++);
+            setCDCRowKindField(writer, rowKind, pos);
         }
 
         writer.complete();
         return row;
     }
+
 
     public RowData convertDocumentStruct(Struct struct) {
         Schema schema = struct.schema();
