@@ -267,6 +267,10 @@ object SparkMetaVersion extends Logging {
     dbManager.deletePartitionInfoByTableId(table_id)
   }
 
+  def dropTablePathIdByTableId(table_id: String): Unit = {
+    dbManager.deleteTablePathIdByTableId(table_id)
+  }
+
   def dropPartitionInfoByRangeId(table_id: String, range_value: String): List[String] = {
     dbManager.deleteMetaPartitionInfo(table_id, range_value).asScala.toList
   }

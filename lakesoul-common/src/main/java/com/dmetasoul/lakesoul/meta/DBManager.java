@@ -170,6 +170,10 @@ public class DBManager {
         return tableInfoDao.selectByNamespace(tableNamespace);
     }
 
+    public String getNameSpaceByTablePath(String tablePath){
+        return tableInfoDao.selectByTablePath(tablePath).getTableNamespace();
+    }
+
     public TableInfo getTableInfoByPath(String tablePath) {
         return tableInfoDao.selectByTablePath(tablePath);
     }
@@ -317,6 +321,10 @@ public class DBManager {
 
     public void deletePartitionInfoByTableId(String tableId) {
         partitionInfoDao.deleteByTableId(tableId);
+    }
+
+    public void deleteTablePathIdByTableId(String tableId) {
+        tablePathIdDao.deleteByTableId(tableId);
     }
 
     public void deletePartitionInfoByTableAndPartition(String tableId, String partitionDesc) {
