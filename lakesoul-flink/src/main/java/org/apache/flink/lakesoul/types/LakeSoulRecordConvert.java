@@ -128,31 +128,31 @@ public class LakeSoulRecordConvert implements Serializable {
                 String fullDocument = value.getString(MongoDBEnvelope.FULL_DOCUMENT_FIELD);
                 Struct bsonStruct = convertBSONToStruct(fullDocument);
                 Schema documentSchema = bsonStruct.schema();
-                RowData insert = convert(bsonStruct, documentSchema, RowKind.INSERT, sortField, tableId.table());
-                RowType mongoRt = toFlinkRowType(documentSchema,true, tableId.table());
+                RowData insert = convert(bsonStruct, documentSchema, RowKind.INSERT, sortField, null);
+                RowType mongoRt = toFlinkRowType(documentSchema,true, null);
                 insert.setRowKind(RowKind.INSERT);
                 builder.setOperation("insert").setAfterRowData(insert).setAfterType(mongoRt);
             } else if (op.equals("delete")) {
                 String fullDocumentValue = value.getString("fullDocumentBeforeChange");
                 Struct before = convertBSONToStruct(fullDocumentValue);
                 Schema beforSchema = before.schema();
-                RowData delete = convert(before,beforSchema,RowKind.DELETE,sortField, tableId.table());
-                RowType rt = toFlinkRowType(beforSchema, true, tableId.table());
+                RowData delete = convert(before,beforSchema,RowKind.DELETE,sortField, null);
+                RowType rt = toFlinkRowType(beforSchema, true, null);
                 builder.setOperation("delete").setBeforeRowData(delete).setBeforeRowType(rt);
                 delete.setRowKind(RowKind.DELETE);
             } else {
                 String fullDocumentBeforChange = value.getString("fullDocumentBeforeChange");
                 Struct before = convertBSONToStruct(fullDocumentBeforChange);
                 Schema beforeSchema = before.schema();
-                RowData beforeData = convert(before, beforeSchema, RowKind.UPDATE_BEFORE, sortField, tableId.table());
+                RowData beforeData = convert(before, beforeSchema, RowKind.UPDATE_BEFORE, sortField, null);
                 beforeData.setRowKind(RowKind.UPDATE_BEFORE);
-                RowType beforeRT = toFlinkRowType(beforeSchema, true, tableId.table());
+                RowType beforeRT = toFlinkRowType(beforeSchema, true, null);
                 String fullDocument = value.getString(MongoDBEnvelope.FULL_DOCUMENT_FIELD);
                 Struct after = convertBSONToStruct(fullDocument);
                 Schema afterSchema = after.schema();
-                RowData afterData = convert(after, afterSchema, RowKind.UPDATE_AFTER, sortField, tableId.table());
+                RowData afterData = convert(after, afterSchema, RowKind.UPDATE_AFTER, sortField, null);
                 afterData.setRowKind(RowKind.UPDATE_AFTER);
-                RowType afterRT = toFlinkRowType(afterSchema, true, tableId.table());
+                RowType afterRT = toFlinkRowType(afterSchema, true, null);
                 if (partitionFieldsChanged(beforeRT, beforeData, afterRT, afterData)) {
                     // partition fields changed. we need to emit both before and after RowData
                     builder.setOperation("update").setBeforeRowData(beforeData).setBeforeRowType(beforeRT)
