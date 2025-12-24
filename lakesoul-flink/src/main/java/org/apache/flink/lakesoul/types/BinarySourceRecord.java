@@ -72,10 +72,8 @@ public class BinarySourceRecord {
         String tableName = String.format("s_%s_%s", originalNamespace, tableId.table()).toLowerCase();
         String originTableName = tableId.table();
         tableId = new TableId(newNamespace, newNamespace , tableName);
-        List<String> partitionFields = Collections.emptyList();
         HashMap<String, List<String>> topicsPartitionFields = convert.topicsPartitionFields;
         if (topicsPartitionFields.containsKey(originTableName)) {
-            partitionFields = topicsPartitionFields.get(originTableName);
             List<String> partitionColls = topicsPartitionFields.get(originTableName);
             topicsPartitionFields.remove(originTableName);
             topicsPartitionFields.put(tableName, partitionColls);
