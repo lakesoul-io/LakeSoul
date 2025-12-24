@@ -179,7 +179,7 @@ public class LakeSoulRecordConvert implements Serializable {
                 Struct before = value.getStruct(Envelope.FieldName.BEFORE);
                 String timeStampPartitionCol = handleTimestampPartitionColumn(tableId, beforeSchema, topicsPartitionFields, topicsTimestampPartitionFields);
                 RowData delete = convert(before, beforeSchema, RowKind.DELETE, sortField, timeStampPartitionCol);
-                RowType rt = toFlinkRowType(beforeSchema,false, tableId.table());
+                RowType rt = toFlinkRowType(beforeSchema,false, timeStampPartitionCol);
                 delete.setRowKind(RowKind.DELETE);
                 builder.setOperation("delete").setBeforeRowData(delete).setBeforeRowType(rt);
             } else {
