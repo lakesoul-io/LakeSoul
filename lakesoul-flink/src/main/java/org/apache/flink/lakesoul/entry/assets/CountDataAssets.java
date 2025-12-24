@@ -98,10 +98,7 @@ public class CountDataAssets {
                         .build();
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         DataStreamSource<String> postgresParallelSource = env.fromSource(postgresIncrementalSource, WatermarkStrategy.noWatermarks(), "PostgresParallelSource").setParallelism(sourceParallelism);
-
         SingleOutputStreamOperator<Tuple3<String, String, String[]>> mainProcess = postgresParallelSource.map(new PartitionLevelAssets.metaMapper());
-
-        //mainProcess.print();
 
         DataStream<TableCounts> datacommitInfoStream = mainProcess.keyBy((value) -> {
             return (String)value.f1;
