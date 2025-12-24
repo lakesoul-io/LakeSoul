@@ -40,16 +40,18 @@ public class PgDeserialization implements DebeziumDeserializationSchema<String> 
                 Object beforeValue = before.get(beforeField);
                 String name = beforeField.name();
                 if (name.equals("file_ops")){
-                    ArrayList afterValue1 = (ArrayList) before.get(beforeField);
-                    Object[] objects = afterValue1.toArray();
-                    ArrayList<byte[]> arrayList = new ArrayList();
-                    for (Object object : objects) {
-                        ByteBuffer o = (ByteBuffer) object;
-                        byte[] array = o.array();
-                        arrayList.add(array);
+                    ArrayList beforeValue1 = (ArrayList) before.get(beforeField);
+                    if (beforeValue1 != null){
+                        Object[] objects = beforeValue1.toArray();
+                        ArrayList<byte[]> arrayList = new ArrayList();
+                        for (Object object : objects) {
+                            ByteBuffer o = (ByteBuffer) object;
+                            byte[] array = o.array();
+                            arrayList.add(array);
+                        }
+                        beforeJson.put(beforeField.name(), arrayList);
+                        continue;
                     }
-                    beforeJson.put(beforeField.name(), arrayList);
-                    continue;
                 }
                 beforeJson.put(beforeField.name(), beforeValue);
             }

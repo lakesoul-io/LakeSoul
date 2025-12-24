@@ -100,6 +100,9 @@ public class CountDataAssets {
         DataStreamSource<String> postgresParallelSource = env.fromSource(postgresIncrementalSource, WatermarkStrategy.noWatermarks(), "PostgresParallelSource").setParallelism(sourceParallelism);
 
         SingleOutputStreamOperator<Tuple3<String, String, String[]>> mainProcess = postgresParallelSource.map(new PartitionLevelAssets.metaMapper());
+
+        //mainProcess.print();
+
         DataStream<TableCounts> datacommitInfoStream = mainProcess.keyBy((value) -> {
             return (String)value.f1;
         }).process(new PartitionLevelAssets.PartitionLevelProcessFunction()).keyBy((value) -> {
@@ -121,13 +124,6 @@ public class CountDataAssets {
                     .keyBy(value -> value.tableId).process(new JdbcTableLevelAssets());
         }
 
-        //tableCountsStreaming.print();
-
-//        SingleOutputStreamOperator<TableCountsWithTableInfo> tableCountsStreaming = mainProcess.getSideOutput(tableInfoTag).keyBy((value) -> {
-//            return (String)value.f1;
-//        }).connect(datacommitInfoStream.keyBy((value) -> {
-//            return value.tableId;
-//        })).process(new TableLevelAsstes.MergeFunction());
 
         JdbcConnectionOptions build = (new JdbcConnectionOptions.JdbcConnectionOptionsBuilder()).withUrl(pgUrl).withDriverName("org.postgresql.Driver").withUsername(userName).withPassword(passWord).build();
         String tableLevelAssetsSql = "INSERT INTO table_level_assets (" +
