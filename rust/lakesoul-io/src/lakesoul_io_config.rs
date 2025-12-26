@@ -8,14 +8,9 @@
 //! It includes configuration options for file paths, schema information, partitioning settings,
 //! and performance tuning options.
 //!
-//!
-use std::{
-    collections::HashMap,
-    sync::{Arc, OnceLock},
-    time::Duration,
-};
 
-use anyhow::anyhow;
+use std::{collections::HashMap, sync::Arc, time::Duration};
+
 use arrow::error::ArrowError;
 use arrow_schema::{Schema, SchemaRef};
 use datafusion::error::{DataFusionError, Result};
@@ -36,52 +31,14 @@ use datafusion_substrait::substrait::proto::Plan;
 use derivative::Derivative;
 use object_store::aws::AmazonS3Builder;
 use object_store::{ClientOptions, RetryConfig};
+use rootcause::{compat::boxed_error::IntoBoxedError, report};
 use tracing::debug;
 use url::{ParseError, Url};
 
 #[cfg(feature = "hdfs")]
 use crate::hdfs::Hdfs;
 
-use crate::lakesoul_cache::cache::DiskCache;
-use crate::lakesoul_cache::read_through::ReadThroughCache;
-
-static LAKESOUL_CACHE: OnceLock<Arc<DiskCache>> = OnceLock::new();
-/// Get and init Lakesoul Cache
-fn get_lakesoul_cache() -> Arc<DiskCache> {
-    LAKESOUL_CACHE
-        .get_or_init(|| -> Arc<DiskCache> {
-            let cache_size = {
-                match std::env::var("LAKESOUL_CACHE_SIZE") {
-                    Ok(mut s) => {
-                        println!("LAKESOUL_CACHE_SIZE: {}", s);
-                        match s.split_off(s.len() - 3).as_str() {
-                            "KiB" => s.parse::<usize>().unwrap_or(1) * 1024,
-                            "MiB" => s.parse::<usize>().unwrap_or(1) * 1024 * 1024,
-                            "GiB" => {
-                                println!("LAKESOUL_CACHE_SIZE: {}", s);
-                                s.parse::<usize>().unwrap_or(1) * 1024 * 1024 * 1024
-                            }
-                            "TiB" => {
-                                s.parse::<usize>().unwrap_or(1)
-                                    * 1024
-                                    * 1024
-                                    * 1024
-                                    * 1024
-                            }
-                            _ => {
-                                println!("LAKESOUL_CACHE_SIZE: {}", s);
-                                1024 * 1024 * 1024
-                            }
-                        }
-                    }
-                    Err(_) => 1024 * 1024 * 1024,
-                }
-            };
-            println!("LAKESOUL_CACHE_SIZE: {}", cache_size);
-            Arc::new(DiskCache::new(cache_size, 4 * 1024 * 1024))
-        })
-        .clone()
-}
+use crate::cache::{get_lakesoul_cache,read_through::ReadThroughCache};
 
 #[derive(Debug, Derivative)]
 #[derivative(Clone)]
@@ -783,9 +740,9 @@ pub fn register_s3_object_store(
                 .set_host(Some(&*format!(
                     "{}.{}",
                     bucket,
-                    endpoint_url
-                        .host_str()
-                        .ok_or(External(anyhow!("endpoint host missing").into()))?
+                    endpoint_url.host_str().ok_or(External(
+                        report!("endpoint host missing").into_boxed_error()
+                    ))?
                 )))
                 .map_err(|e| External(Box::new(e)))?;
             let endpoint_s = endpoint_url.to_string();
@@ -798,7 +755,9 @@ pub fn register_s3_object_store(
 
     if bucket.is_none() {
         return Err(DataFusionError::ArrowError(
-            ArrowError::InvalidArgumentError("missing fs.s3a.bucket".to_string()),
+            Box::new(ArrowError::InvalidArgumentError(
+                "missing fs.s3a.bucket".to_string(),
+            )),
             None,
         ));
     }
@@ -843,7 +802,7 @@ pub fn register_s3_object_store(
     let s3_store = Arc::new(
         s3_store_builder
             .build()
-            .map_err(DataFusionError::ObjectStore)?,
+            .map_err(|e| DataFusionError::ObjectStore(Box::new(e)))?,
     );
 
     // add cache if env LAKESOUL_CACHE is set
@@ -879,11 +838,11 @@ pub fn register_hdfs_object_store(
 ) -> Result<()> {
     #[cfg(not(feature = "hdfs"))]
     {
-        Err(DataFusionError::ObjectStore(
+        Err(DataFusionError::ObjectStore(Box::new(
             object_store::Error::NotSupported {
                 source: "hdfs support is not enabled".into(),
             },
-        ))
+        )))
     }
     #[cfg(feature = "hdfs")]
     {
@@ -989,11 +948,11 @@ fn register_object_store(
             {
                 Ok(format!("file://{}", path))
             }
-            _ => Err(DataFusionError::ObjectStore(
+            _ => Err(DataFusionError::ObjectStore(Box::new(
                 object_store::Error::NotSupported {
                     source: "FileSystem is not supported".into(),
                 },
-            )),
+            ))),
         },
         Err(ParseError::RelativeUrlWithoutBase) => {
             let path = path.trim_start_matches('/');

@@ -4,43 +4,42 @@
 
 //! The LakeSoul DataFusion module.
 
-#![allow(dead_code)]
-#![allow(clippy::type_complexity)]
-// after finished. remove above attr
-extern crate core;
 #[macro_use]
 extern crate tracing;
 
-pub mod catalog;
-pub mod datasource;
-pub mod error;
 use std::{env, sync::Arc};
 
 use catalog::LakeSoulCatalog;
 use datafusion::{
+    config::Dialect,
     execution::{
         SessionStateBuilder, object_store::ObjectStoreUrl, runtime_env::RuntimeEnv,
     },
     prelude::{SessionConfig, SessionContext},
 };
 use datasource::table_factory::LakeSoulTableProviderFactory;
-pub use error::{LakeSoulError, Result};
-
-pub mod lakesoul_table;
-pub mod planner;
-use lakesoul_io::lakesoul_io_config::{
-    LakeSoulIOConfigBuilder, register_hdfs_object_store, register_s3_object_store,
+use lakesoul_io::{
+    config::LakeSoulIOConfigBuilder,
+    object_store::{register_hdfs_object_store, register_s3_object_store},
 };
 use object_store::local::LocalFileSystem;
-pub use planner::query_planner::LakeSoulQueryPlanner;
+use rootcause::{Report, bail};
 use url::Url;
 
-pub mod serialize;
-
-pub mod cli;
-
+// re export
 pub use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 
+pub mod catalog;
+pub mod datasource;
+pub mod lakesoul_table;
+pub use planner::query_planner::LakeSoulQueryPlanner;
+pub mod cli;
+pub mod planner;
+pub mod serialize;
+
+type Result<T, E = Report> = std::result::Result<T, E>;
+
+// TODO integrate with lakesouliosession
 pub fn create_lakesoul_session_ctx(
     meta_client: MetaDataClientRef,
     args: &cli::CoreArgs,
@@ -50,11 +49,11 @@ pub fn create_lakesoul_session_ctx(
         .with_create_default_catalog_and_schema(false)
         .with_batch_size(8192)
         .with_default_catalog_and_schema("LAKESOUL".to_string(), "default".to_string());
-    session_config.options_mut().sql_parser.dialect = "postgresql".to_string();
+    session_config.options_mut().sql_parser.dialect = Dialect::PostgreSQL;
     session_config
         .options_mut()
         .sql_parser
-        .map_varchar_to_utf8view = false;
+        .map_string_types_to_utf8view = false;
     session_config
         .options_mut()
         .optimizer
@@ -76,6 +75,11 @@ pub fn create_lakesoul_session_ctx(
         .execution
         .parquet
         .pushdown_filters = true;
+    // TODO use this
+    session_config
+        .options_mut()
+        .execution
+        .listing_table_factory_infer_partitions = false;
 
     let planner = LakeSoulQueryPlanner::new_ref();
 
@@ -129,9 +133,7 @@ pub fn create_lakesoul_session_ctx(
                         )?)
                         .is_ok()
                     {
-                        return Err(LakeSoulError::Internal(
-                            "Object store already registered".to_string(),
-                        ));
+                        bail!("Object store already registered")
                     }
 
                     let config = LakeSoulIOConfigBuilder::new_with_object_store_options(
@@ -149,9 +151,7 @@ pub fn create_lakesoul_session_ctx(
                             )?)
                             .is_ok()
                         {
-                            return Err(LakeSoulError::Internal(
-                                "Object store already registered".to_string(),
-                            ));
+                            bail!("Object store already registered")
                         }
                         let config =
                             LakeSoulIOConfigBuilder::new_with_object_store_options(
@@ -176,15 +176,11 @@ pub fn create_lakesoul_session_ctx(
                         .register_object_store(&url, Arc::new(LocalFileSystem::new()));
                 }
                 _ => {
-                    return Err(LakeSoulError::Internal(
-                        "Invalid scheme of warehouse prefix".to_string(),
-                    ));
+                    bail!("Invalid scheme of warehouse prefix")
                 }
             },
             Err(_) => {
-                return Err(LakeSoulError::Internal(
-                    "Invalid warehouse prefix".to_string(),
-                ));
+                bail!("Invalid warehouse prefix")
             }
         }
     } else {
@@ -206,4 +202,4 @@ pub fn create_lakesoul_session_ctx(
 pub mod tpch;
 
 #[cfg(test)]
-mod test;
+mod tests;

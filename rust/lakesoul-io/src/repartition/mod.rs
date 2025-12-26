@@ -305,8 +305,9 @@ impl BatchPartitioner {
                         .columns()
                         .iter()
                         .map(|c| {
-                            arrow::compute::take(c.as_ref(), &indices, None)
-                                .map_err(|e| DataFusionError::ArrowError(e, None))
+                            arrow::compute::take(c.as_ref(), &indices, None).map_err(
+                                |e| DataFusionError::ArrowError(Box::new(e), None),
+                            )
                         })
                         .collect::<Result<Vec<ArrayRef>>>()?;
 
@@ -726,7 +727,7 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
         let name = self.name().to_string();
         let schema = self.schema();
         let schema_captured = Arc::clone(&schema);
-        let sort_exprs = self.sort_exprs().cloned().unwrap_or_default();
+        let sort_exprs = self.sort_exprs().cloned();
         let input = self.input.clone();
         let input_schema = input.schema();
         let range_partitioning_expr = self.range_partitioning_expr.clone();
@@ -790,15 +791,18 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
                 let merge_reservation =
                     MemoryConsumer::new(format!("{}[Merge {partition}]", name))
                         .register(context.memory_pool());
-                StreamingMergeBuilder::new()
+                let sort_exprs = sort_exprs.as_ref();
+                let mut builder = StreamingMergeBuilder::new()
                     .with_streams(input_streams)
                     .with_schema(schema_captured)
-                    .with_expressions(&sort_exprs)
                     .with_metrics(BaselineMetrics::new(&metrics, partition))
                     .with_batch_size(context.session_config().batch_size())
                     .with_fetch(fetch)
-                    .with_reservation(merge_reservation)
-                    .build()
+                    .with_reservation(merge_reservation);
+                if let Some(ordering) = sort_exprs {
+                    builder = builder.with_expressions(ordering);
+                }
+                builder.build()
             } else {
                 Ok(Box::pin(RepartitionStream {
                     num_input_partitions,

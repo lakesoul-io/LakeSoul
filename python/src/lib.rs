@@ -3,9 +3,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright the Vortex contributors
 use pyo3::prelude::*;
+use rootcause::Report;
 
 mod dataset;
 mod metadata;
+
+type Result<T, E = Report> = std::result::Result<T, E>;
 
 #[pymodule]
 fn _lib(py: Python, m: &Bound<PyModule>) -> PyResult<()> {

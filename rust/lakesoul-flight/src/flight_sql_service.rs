@@ -4,8 +4,17 @@
 
 //! The implementation of the [`FlightSqlService`] for LakeSoul.
 
+use std::env;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::time::Instant;
+
+use arrow::array::{ArrayRef, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::ipc::writer::IpcWriteOptions;
+use arrow::record_batch::RecordBatch;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::flight_descriptor::DescriptorType;
@@ -25,49 +34,35 @@ use arrow_flight::{
     HandshakeResponse, IpcMessage, SchemaAsIpc, Ticket,
 };
 use core::fmt;
+use dashmap::DashMap;
+use datafusion::logical_expr::{DdlStatement, DmlStatement, LogicalPlan, WriteOp};
+use datafusion::prelude::*;
 use datafusion::sql::TableReference;
 use datafusion::sql::parser::{DFParser, Statement};
-use datafusion::sql::sqlparser::ast::{CreateTable, SqlOption};
+use datafusion::sql::sqlparser::ast::CreateTable;
 use datafusion::sql::sqlparser::dialect::PostgreSqlDialect;
 use futures::{Stream, StreamExt, TryStreamExt};
 use lakesoul_datafusion::catalog::LakeSoulTableProperty;
+use lakesoul_datafusion::create_lakesoul_session_ctx;
 use lakesoul_datafusion::lakesoul_table::LakeSoulTable;
 use lakesoul_datafusion::lakesoul_table::helpers::case_fold_column_name;
 use lakesoul_datafusion::serialize::arrow_java::schema_from_metadata_str;
 use lakesoul_io::helpers::get_batch_memory_size;
-use lakesoul_io::serde_json;
-use prost::Message;
-use std::env;
-use std::pin::Pin;
-use std::sync::Arc;
-use tonic::{Request, Response, Status, Streaming, metadata::MetadataValue};
-
-use lakesoul_io::async_writer::WriterFlushResult;
+use lakesoul_io::writer::async_writer::FlushOutput;
 use lakesoul_metadata::MetaDataClientRef;
-use uuid::Uuid;
-
-use lakesoul_datafusion::{LakeSoulError, Result, create_lakesoul_session_ctx};
-
-use arrow::array::{ArrayRef, StringArray};
-use arrow::record_batch::RecordBatch;
-use dashmap::DashMap;
-use datafusion::logical_expr::{DdlStatement, DmlStatement, LogicalPlan, WriteOp};
-use datafusion::prelude::*;
-
-use tonic::metadata::MetadataMap;
-
-use crate::args::Args;
-use crate::{Claims, JwtServer};
-use crate::{
-    datafusion_error_to_status, lakesoul_error_to_status,
-    lakesoul_metadata_error_to_status,
-};
 use lakesoul_metadata::rbac::verify_permission_by_table_name;
 use metrics::{counter, gauge, histogram};
+use prost::Message;
 use prost::bytes::Bytes;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::time::Instant;
+use rootcause::bail;
+use tonic::metadata::MetadataMap;
+use tonic::{Request, Response, Status, Streaming, metadata::MetadataValue};
+use uuid::Uuid;
+
+use crate::args::Args;
+use crate::report_to_status;
+use crate::{Claims, JwtServer};
+use crate::{Result, lakesoul_metadata_error_to_status};
 
 const LOG_INTERVAL: usize = 100; // Log every 100 batches
 const MEGABYTE: f64 = 1_048_576.0;
@@ -79,7 +74,7 @@ macro_rules! status {
 }
 
 /// The transactional data of the commit operation on LakeSoul metadata.
-type TransactionalData = (Arc<LakeSoulTable>, WriterFlushResult);
+type TransactionalData = (Arc<LakeSoulTable>, Vec<FlushOutput>);
 
 /// The metrics of the stream write operation.
 struct StreamWriteMetrics {
@@ -265,14 +260,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
 
         // only need logical plan
 
-        let dialect = self
-            .ctx
-            .state()
-            .config()
-            .options()
-            .sql_parser
-            .dialect
-            .clone();
+        let dialect = self.ctx.state().config().options().sql_parser.dialect;
         let stat = self
             .ctx
             .state()
@@ -610,7 +598,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
             .sql_with_options(sql, opt)
             .await
             .map_err(|e| status!("Error executing query", e))?;
-        let schema = Arc::new(df.schema().clone().into());
+        let schema = Arc::new(df.schema().as_arrow().clone());
         let stream = df
             .execute_stream()
             .await
@@ -643,7 +631,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         let plan = self.get_plan(handle)?;
         let state = self.ctx.state();
         let df = DataFrame::new(state, plan);
-        let schema = Arc::new(df.schema().clone().into());
+        let schema = Arc::new(df.schema().as_arrow().clone());
         let stream = df
             .execute_stream()
             .await
@@ -851,7 +839,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
             table
                 .commit_flush_result(flush_result)
                 .await
-                .map_err(lakesoul_error_to_status)?;
+                .map_err(report_to_status)?;
         }
 
         Ok(record_count)
@@ -1001,8 +989,8 @@ impl FlightSqlService for FlightSqlServiceImpl {
 
         self.statements.insert(plan_uuid.clone(), plan.clone());
 
-        let arrow_schema = (&**plan_schema).into();
-        let message = SchemaAsIpc::new(&arrow_schema, &IpcWriteOptions::default())
+        let arrow_schema = plan_schema.as_arrow();
+        let message = SchemaAsIpc::new(arrow_schema, &IpcWriteOptions::default())
             .try_into()
             .map_err(|e| status!("Unable to serialize schema", e))?;
         let IpcMessage(schema_bytes) = message;
@@ -1120,12 +1108,12 @@ fn normalize_sql(sql: &str) -> Result<String, BoxedStatus> {
                 name,
                 columns,
                 partition_by,
-                with_options,
+                table_options,
                 ..
             }) => {
                 info!(
                     "create table: {}, {:?}, {:?}",
-                    name, partition_by, with_options
+                    name, partition_by, table_options
                 );
 
                 let mut create_table_sql = format!(
@@ -1141,21 +1129,23 @@ fn normalize_sql(sql: &str) -> Result<String, BoxedStatus> {
                     create_table_sql =
                         format!("{} PARTITIONED BY {}", create_table_sql, partition_by);
                 }
-                if !with_options.is_empty() {
-                    create_table_sql = format!(
-                        "{} OPTIONS ({})",
-                        create_table_sql,
-                        with_options
-                            .iter()
-                            .map(|opt| match opt {
-                                SqlOption::KeyValue { key, value } =>
-                                    format!("'{}' {}", key, value),
-                                _ => format!("{:}", opt),
-                            })
-                            .collect::<Vec<String>>()
-                            .join(", ")
-                    );
-                }
+
+                create_table_sql = format!("{} {}", create_table_sql, table_options);
+                // if !table_options.is_empty() {
+                //     create_table_sql = format!(
+                //         "{} OPTIONS ({})",
+                //         create_table_sql,
+                //         with_options
+                //             .iter()
+                //             .map(|opt| match opt {
+                //                 SqlOption::KeyValue { key, value } =>
+                //                     format!("'{}' {}", key, value),
+                //                 _ => format!("{:}", opt),
+                //             })
+                //             .collect::<Vec<String>>()
+                //             .join(", ")
+                //     );
+                // }
                 Ok(create_table_sql)
             }
             _ => Ok(sql.to_string()),
@@ -1215,20 +1205,12 @@ impl FlightSqlServiceImpl {
         let jwt_env = env::var("JWT_AUTH_ENABLED").unwrap_or("false".to_string());
         let rbac_env = env::var("RBAC_AUTH_ENABLED").unwrap_or("false".to_string());
         debug!("jwt: {}, rbac: {}", jwt_env, rbac_env);
-        let auth_enabled = jwt_env
-            .to_lowercase()
-            .parse::<bool>()
-            .map_err(|e| LakeSoulError::Internal(format!("{}", e)))?;
-        let rbac_enabled = rbac_env
-            .to_lowercase()
-            .parse::<bool>()
-            .map_err(|e| LakeSoulError::Internal(format!("{}", e)))?;
+        let auth_enabled = jwt_env.to_lowercase().parse::<bool>()?;
+        let rbac_enabled = rbac_env.to_lowercase().parse::<bool>()?;
 
         if rbac_enabled && !auth_enabled {
             error!("rbac enabled but auth disabled");
-            return Err(LakeSoulError::Internal(
-                "rbac enabled but auth disabled".into(),
-            ));
+            bail!("rbac enabled but auth disabled");
         }
 
         // 从环境变量或配置中获取目标速率
@@ -1355,7 +1337,7 @@ impl FlightSqlServiceImpl {
         &self,
         transaction_id: String,
         table: Arc<LakeSoulTable>,
-        result: WriterFlushResult,
+        result: Vec<FlushOutput>,
     ) -> Result<(), BoxedStatus> {
         info!(
             "Appending transactional data for transaction: {}",
@@ -1386,7 +1368,7 @@ impl FlightSqlServiceImpl {
             table
                 .commit_flush_result(result.clone())
                 .await
-                .map_err(lakesoul_error_to_status)?;
+                .map_err(report_to_status)?;
         }
         self.clear_transactional_data(transaction_id)?;
         Ok(())
@@ -1458,14 +1440,14 @@ impl FlightSqlServiceImpl {
         &self,
         table: Arc<LakeSoulTable>,
         stream: PeekableFlightDataStream,
-    ) -> Result<(WriterFlushResult, i64), Status> {
+    ) -> Result<(Vec<FlushOutput>, i64), Status> {
         // 开始记录流式指标
         self.metrics.start_stream();
 
         let mut writer = table
             .get_writer(self.args.core.s3_options())
             .await
-            .map_err(lakesoul_error_to_status)?;
+            .map_err(report_to_status)?;
 
         // 创建 FlightRecordBatchStream 来解码数据
         let mut batch_stream =
@@ -1485,13 +1467,13 @@ impl FlightSqlServiceImpl {
             debug!("write_stream batch_rows: {}", batch_rows);
             record_count += batch_rows as i64;
             let batch_bytes =
-                get_batch_memory_size(&batch).map_err(datafusion_error_to_status)? as u64;
+                get_batch_memory_size(&batch).map_err(report_to_status)? as u64;
             batch_count += 1;
 
             writer
                 .write_record_batch(batch)
                 .await
-                .map_err(datafusion_error_to_status)?;
+                .map_err(report_to_status)?;
 
             self.metrics
                 .add_batch_metrics(batch_rows as u64, batch_bytes);
@@ -1508,10 +1490,7 @@ impl FlightSqlServiceImpl {
                 self.metrics.control_throughput();
             }
         }
-        let result = writer
-            .flush_and_close()
-            .await
-            .map_err(datafusion_error_to_status)?;
+        let result = writer.flush_and_close().await.map_err(report_to_status)?;
 
         // 结束流式处理
         self.metrics.end_stream();

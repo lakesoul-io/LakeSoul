@@ -7,6 +7,7 @@
 pub mod empty_schema_stream;
 
 use futures::{Stream, StreamExt};
+use rootcause::compat::boxed_error::IntoBoxedError;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::pin::Pin;
@@ -16,8 +17,8 @@ use std::task::{Context, Poll};
 use arrow::datatypes::SchemaRef;
 use arrow::record_batch::RecordBatch;
 
-use datafusion::error::Result;
 use datafusion::physical_plan::{RecordBatchStream, SendableRecordBatchStream};
+use datafusion_common::{DataFusionError, Result};
 
 use crate::transform::{transform_record_batch, transform_schema};
 
@@ -111,7 +112,8 @@ impl Stream for DefaultColumnStream {
                         batch,
                         self.use_default,
                         self.default_column_value.clone(),
-                    );
+                    )
+                    .map_err(|e| DataFusionError::External(e.into_boxed_error()));
                     Poll::Ready(Some(batch))
                 }
             };

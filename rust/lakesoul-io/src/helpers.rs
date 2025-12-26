@@ -7,37 +7,33 @@
 //! It includes functions for formatting scalar values, converting partition descriptions,
 //! and applying partition filters.
 
+use arrow::array::as_primitive_array;
 use arrow::datatypes::UInt32Type;
 use arrow_array::{Array, RecordBatch, UInt32Array};
 use arrow_buffer::i256;
-use arrow_schema::{
-    ArrowError, DataType, Field, Schema, SchemaBuilder, SchemaRef, TimeUnit,
-};
+use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef, TimeUnit};
 use chrono::{DateTime, Duration};
-use datafusion::physical_plan::memory::LazyBatchGenerator;
-use datafusion::{
-    datasource::{
-        file_format::FileFormat,
-        listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl},
-        physical_plan::FileScanConfig,
-    },
-    execution::context::{SessionContext, SessionState},
-    logical_expr::col,
-    physical_expr::{PhysicalSortExpr, create_physical_expr},
-    physical_plan::PhysicalExpr,
-    physical_planner::create_physical_sort_expr,
-};
-use datafusion_common::DataFusionError::{External, Internal};
-use datafusion_common::{
-    DFSchema, DataFusionError, Result, ScalarValue, cast::as_primitive_array,
-};
+use datafusion_catalog_listing::{ListingOptions, ListingTable, ListingTableConfig};
+use datafusion_common::DataFusionError;
+use datafusion_common::{DFSchema, ScalarValue};
+use datafusion_datasource::ListingTableUrl;
+use datafusion_datasource::file_format::FileFormat;
+use datafusion_datasource::file_scan_config::FileScanConfig;
+use datafusion_execution::TaskContext;
+use datafusion_expr::col;
+use datafusion_physical_expr::create_physical_sort_expr;
+use datafusion_physical_expr::{PhysicalSortExpr, create_physical_expr};
+use datafusion_physical_plan::PhysicalExpr;
+use datafusion_physical_plan::memory::LazyBatchGenerator;
+use datafusion_session::Session;
 use datafusion_substrait::substrait::proto::Plan;
 use futures::{StreamExt, TryStreamExt};
 use object_store::ObjectMeta;
 use object_store::path::Path;
-use parquet::format::FileMetaData;
+use parquet::file::metadata::ParquetMetaData;
 use proto::proto::entity::JniWrapper;
 use rand::distr::SampleString;
+use rootcause::{Report, bail, report};
 use std::collections::VecDeque;
 use std::fmt::{Debug, Display, Formatter};
 use std::iter::zip;
@@ -46,14 +42,14 @@ use tokio::runtime::Builder;
 use url::Url;
 
 use crate::{
+    Result,
+    config::LakeSoulIOConfig,
     constant::{
         DATE32_FORMAT, FLINK_TIMESTAMP_FORMAT, LAKESOUL_COMMA, LAKESOUL_EMPTY_STRING,
         LAKESOUL_EQ, LAKESOUL_NULL_STRING, TIMESTAMP_MICROSECOND_FORMAT,
         TIMESTAMP_MILLSECOND_FORMAT, TIMESTAMP_NANOSECOND_FORMAT,
         TIMESTAMP_SECOND_FORMAT,
     },
-    filter::parser::Parser,
-    lakesoul_io_config::LakeSoulIOConfig,
     transform::uniform_schema,
 };
 
@@ -71,7 +67,7 @@ use crate::{
 pub fn column_names_to_physical_sort_expr(
     columns: &[String],
     input_dfschema: &DFSchema,
-    session_state: &SessionState,
+    session: &dyn Session,
 ) -> Result<Vec<PhysicalSortExpr>> {
     columns
         .iter()
@@ -79,8 +75,9 @@ pub fn column_names_to_physical_sort_expr(
             create_physical_sort_expr(
                 &col(column).sort(true, true),
                 input_dfschema,
-                session_state.execution_props(),
+                session.execution_props(),
             )
+            .map_err(|e| e.into())
         })
         .collect::<Result<Vec<_>>>()
 }
@@ -99,18 +96,14 @@ pub fn column_names_to_physical_sort_expr(
 pub fn column_names_to_physical_expr(
     columns: &[String],
     input_dfschema: &DFSchema,
-    session_state: &SessionState,
+    session: &dyn Session,
 ) -> Result<Vec<Arc<dyn PhysicalExpr>>> {
     let runtime_expr = columns
         .iter()
         .map(|column| {
-            create_physical_expr(
-                &col(column),
-                input_dfschema,
-                session_state.execution_props(),
-            )
+            create_physical_expr(&col(column), input_dfschema, session.execution_props())
         })
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<Result<Vec<_>, DataFusionError>>()?;
     Ok(runtime_expr)
 }
 
@@ -133,7 +126,7 @@ pub fn range_partition_to_partition_cols(
         .map(|col| {
             Ok((
                 col.clone(),
-                schema.field_with_name(col)?.data_type().clone(),
+                schema.field_with_name(col)?.data_type().clone(), // in schema
             ))
         })
         .collect::<Result<Vec<_>>>()
@@ -159,12 +152,10 @@ pub fn get_columnar_values(
             if let Some(array) = batch.column_by_name(range_col) {
                 match ScalarValue::try_from_array(array, 0) {
                     Ok(scalar) => Ok((range_col.clone(), scalar)),
-                    Err(e) => Err(e),
+                    Err(e) => Err(e.into()),
                 }
             } else {
-                Err(External(
-                    format!("Invalid partition desc of {}", range_col).into(),
-                ))
+                Err(report!("Invalid partition desc of {}", range_col))
             }
         })
         .collect::<Result<Vec<_>>>()
@@ -339,9 +330,7 @@ pub fn into_scalar_value(val: &str, data_type: &DataType) -> Result<ScalarValue>
                         match duration.num_microseconds() {
                             Some(microsecond) => microsecond,
                             None => {
-                                return Err(Internal(
-                                    "microsecond is out of range".to_string(),
-                                ));
+                                bail!("microsecond is out of range");
                             }
                         }
                     } else {
@@ -353,9 +342,7 @@ pub fn into_scalar_value(val: &str, data_type: &DataType) -> Result<ScalarValue>
                         {
                             Some(microsecond) => microsecond,
                             None => {
-                                return Err(Internal(
-                                    "microsecond is out of range".to_string(),
-                                ));
+                                bail!("microsecond is out of range");
                             }
                         }
                     };
@@ -373,9 +360,7 @@ pub fn into_scalar_value(val: &str, data_type: &DataType) -> Result<ScalarValue>
                         match duration.num_nanoseconds() {
                             Some(nanosecond) => nanosecond,
                             None => {
-                                return Err(Internal(
-                                    "nanosecond is out of range".to_string(),
-                                ));
+                                bail!("nanosecond is out of range");
                             }
                         }
                     } else {
@@ -387,9 +372,7 @@ pub fn into_scalar_value(val: &str, data_type: &DataType) -> Result<ScalarValue>
                         {
                             Some(nanosecond) => nanosecond,
                             None => {
-                                return Err(Internal(
-                                    "nanoseconds is out of range".to_string(),
-                                ));
+                                bail!("nanosecond is out of range");
                             }
                         }
                     };
@@ -417,7 +400,7 @@ pub fn into_scalar_value(val: &str, data_type: &DataType) -> Result<ScalarValue>
             DataType::LargeBinary => {
                 Ok(ScalarValue::LargeBinary(Some(hex::decode(val).unwrap())))
             }
-            _ => ScalarValue::try_from_string(val.to_string(), data_type),
+            _ => Ok(ScalarValue::try_from_string(val.to_string(), data_type)?),
         }
     }
 }
@@ -493,9 +476,7 @@ pub fn partition_desc_to_scalar_values(
                     part_values.push((name, val));
                 }
                 _ => {
-                    return Err(External(
-                        format!("Invalid partition_desc: {}", partition_desc).into(),
-                    ));
+                    bail!("Invalid partition_desc: {}", partition_desc);
                 }
             }
         }
@@ -525,12 +506,17 @@ pub fn partition_desc_to_scalar_values(
 pub fn partition_desc_from_file_scan_config(
     conf: &FileScanConfig,
 ) -> Result<(String, HashMap<String, String>)> {
-    if conf.table_partition_cols.is_empty() {
+    // we use
+    // TODO
+    // conf's table_schema is not stable
+    // so use file source's
+    if conf.table_partition_cols().is_empty() {
+        warn!("wow: NO range");
         Ok(("-5".to_string(), HashMap::default()))
     } else {
         match conf.file_groups.first().and_then(|g| g.files().first()) {
             Some(file) => Ok((
-                conf.table_partition_cols
+                conf.table_partition_cols()
                     .iter()
                     .enumerate()
                     .map(|(idx, col)| {
@@ -538,15 +524,13 @@ pub fn partition_desc_from_file_scan_config(
                     })
                     .collect::<Vec<_>>()
                     .join(","),
-                HashMap::from_iter(conf.table_partition_cols.iter().enumerate().map(
+                HashMap::from_iter(conf.table_partition_cols().iter().enumerate().map(
                     |(idx, col)| {
                         (col.name().clone(), file.partition_values[idx].to_string())
                     },
                 )),
             )),
-            None => Err(External(
-                format!("Invalid file_group {:?}", conf.file_groups).into(),
-            )),
+            None => Err(report!("Invalid file_group {:?}", conf.file_groups)),
         }
     }
 }
@@ -564,7 +548,7 @@ pub fn partition_desc_from_file_scan_config(
 ///
 /// Returns a tuple of (Option<[`arrow::datatypes::SchemaRef`]>, Arc<[`datafusion::datasource::listing::ListingTable`]>)
 pub async fn listing_table_from_lakesoul_io_config(
-    session_state: &SessionState,
+    session: &dyn Session,
     lakesoul_io_config: LakeSoulIOConfig,
     file_format: Arc<dyn FileFormat>,
     as_sink: bool,
@@ -575,15 +559,16 @@ pub async fn listing_table_from_lakesoul_io_config(
             let table_paths = lakesoul_io_config
                 .files
                 .iter()
-                .map(ListingTableUrl::parse)
+                .map(|p| ListingTableUrl::parse(p).map_err(|e| e.into()))
                 .collect::<Result<Vec<_>>>()?;
-            let object_metas = get_file_object_meta(session_state, &table_paths).await?;
+            let object_metas =
+                get_file_object_meta(session.task_ctx(), &table_paths).await?;
             let (table_paths, object_metas): (Vec<_>, Vec<_>) =
                 zip(table_paths, object_metas)
                     .filter(|(_, obj_meta)| {
                         let valid = obj_meta.size >= 8;
                         if !valid {
-                            println!(
+                            error!(
                                 "File {}, size {}, is invalid",
                                 obj_meta.location, obj_meta.size
                             );
@@ -593,7 +578,7 @@ pub async fn listing_table_from_lakesoul_io_config(
                     .unzip();
             // Resolve the schema
             let resolved_schema = infer_schema(
-                session_state,
+                session,
                 &table_paths,
                 &object_metas,
                 Arc::clone(&file_format),
@@ -614,17 +599,8 @@ pub async fn listing_table_from_lakesoul_io_config(
                 .with_file_extension(".parquet")
                 .with_table_partition_cols(table_partition_cols);
 
-            let mut builder = SchemaBuilder::from(target_schema.fields());
-            // O(n^2), n = target_schema.fields().len()
-            for field in resolved_schema.fields() {
-                if target_schema.field_with_name(field.name()).is_err() {
-                    builder.push(field.clone());
-                }
-            }
-
             ListingTableConfig::new_with_multi_paths(table_paths)
                 .with_listing_options(listing_options)
-                // .with_schema(Arc::new(builder.finish()))
                 .with_schema(resolved_schema)
         }
         true => {
@@ -655,37 +631,43 @@ pub async fn listing_table_from_lakesoul_io_config(
 ///
 /// # Arguments
 ///
-/// * `sc` - The session state
+/// * `task_ctx` - The task context
 /// * `table_paths` - The list of table paths
 ///
 /// # Returns
 ///
 /// Returns a vector of [`object_store::ObjectMetadata`]
 pub async fn get_file_object_meta(
-    sc: &SessionState,
+    task_ctx: Arc<TaskContext>,
     table_paths: &[ListingTableUrl],
 ) -> Result<Vec<ObjectMeta>> {
     let object_store_url = table_paths
         .first()
-        .ok_or(Internal("no table path".to_string()))?
+        .ok_or(report!("no table path"))?
         .object_store();
-    let store = sc.runtime_env().object_store(object_store_url.clone())?;
+    let store = task_ctx
+        .runtime_env()
+        .object_store(object_store_url.clone())?;
     futures::stream::iter(table_paths)
         .map(|path| {
             let store = store.clone();
             async move {
                 let path = Path::from_url_path(
                     <ListingTableUrl as AsRef<Url>>::as_ref(path).path(),
-                )
-                .map_err(object_store::Error::from)?;
-                store.head(&path).await
+                )?;
+                Ok(store.head(&path).await?)
             }
         })
         .boxed()
-        .buffered(sc.config_options().execution.meta_fetch_concurrency)
+        .buffered(
+            task_ctx
+                .session_config()
+                .options()
+                .execution
+                .meta_fetch_concurrency,
+        )
         .try_collect()
         .await
-        .map_err(DataFusionError::from)
 }
 
 /// Infers the schema of files from a list of [`ListingTableUrl`] and [`ObjectMeta`].
@@ -701,19 +683,24 @@ pub async fn get_file_object_meta(
 ///
 /// Returns the inferred schema
 pub async fn infer_schema(
-    sc: &SessionState,
+    session: &dyn Session,
     table_paths: &[ListingTableUrl],
     object_metas: &[ObjectMeta],
     file_format: Arc<dyn FileFormat>,
 ) -> Result<SchemaRef> {
     let object_store_url = table_paths
         .first()
-        .ok_or(Internal("no table path".to_string()))?
+        .ok_or(report!("no table path"))?
         .object_store();
-    let store = sc.runtime_env().object_store(object_store_url.clone())?;
+    let store = session
+        .runtime_env()
+        .object_store(object_store_url.clone())?;
 
     // Resolve the schema
-    file_format.infer_schema(sc, &store, object_metas).await
+    let ret = file_format
+        .infer_schema(session, &store, object_metas)
+        .await?;
+    Ok(ret)
 }
 
 /// Applies a partition filter to a [`JniWrapper`].
@@ -732,12 +719,9 @@ pub fn apply_partition_filter(
     schema: SchemaRef,
     filter: Plan,
 ) -> Result<JniWrapper> {
-    let runtime = Builder::new_multi_thread()
-        .worker_threads(1)
-        .build()
-        .map_err(|e| External(Box::new(e)))?;
+    let runtime = Builder::new_multi_thread().worker_threads(1).build()?;
     runtime.block_on(async {
-        let context = SessionContext::default();
+        let context = datafusion::prelude::SessionContext::default();
         let index_filed_name =
             rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 8);
         let index_filed = Field::new(index_filed_name, DataType::UInt32, false);
@@ -745,16 +729,16 @@ pub fn apply_partition_filter(
         let batch = batch_from_partition(&wrapper, schema, index_filed)?;
 
         let dataframe = context.read_batch(batch)?;
-        let df_filter = Parser::parse_substrait_plan(filter, dataframe.schema())?;
+        let df_filter =
+            crate::filter::Parser::parse_substrait_plan(filter, dataframe.schema())?;
 
         let results = dataframe.filter(df_filter)?.collect().await?;
 
         let mut partition_info = vec![];
         for result_batch in results {
-            for index in
-                as_primitive_array::<UInt32Type>(result_batch.column(schema_len))?
-                    .values()
-                    .iter()
+            for index in as_primitive_array::<UInt32Type>(result_batch.column(schema_len))
+                .values()
+                .iter()
             {
                 partition_info.push(wrapper.partition_info[*index as usize].clone());
             }
@@ -803,8 +787,8 @@ fn batch_from_partition(
     }
     let mut columns = columns
         .iter()
-        .map(|values| ScalarValue::iter_to_array(values.clone()))
-        .collect::<Result<Vec<_>>>()?;
+        .map(|values| ScalarValue::iter_to_array(values.clone()).map_err(|e| e.into()))
+        .collect::<Result<Vec<_>, Report>>()?;
 
     // Add index column
     let mut fields_with_index = schema
@@ -823,13 +807,12 @@ fn batch_from_partition(
 
 /// Converts a date string to epoch days.
 pub fn date_str_to_epoch_days(value: &str) -> Result<i32> {
-    let date = chrono::NaiveDate::parse_from_str(value, DATE32_FORMAT)
-        .map_err(|e| External(Box::new(e)))?;
+    let date = chrono::NaiveDate::parse_from_str(value, DATE32_FORMAT)?;
     let datetime = date
         .and_hms_opt(12, 12, 12)
-        .ok_or(Internal("invalid h/m/s".to_string()))?;
-    let epoch_time = DateTime::from_timestamp_millis(0).ok_or(Internal(
-        "the number of milliseconds is out of range for a NaiveDateTim".to_string(),
+        .ok_or(report!("invalid h/m/s"))?;
+    let epoch_time = DateTime::from_timestamp_millis(0).ok_or(report!(
+        "the number of milliseconds is out of range for a NaiveDateTim"
     ))?;
 
     Ok(datetime
@@ -839,10 +822,9 @@ pub fn date_str_to_epoch_days(value: &str) -> Result<i32> {
 
 /// Converts a timestamp string to unix time.
 pub fn timestamp_str_to_unix_time(value: &str, fmt: &str) -> Result<Duration> {
-    let datetime = chrono::NaiveDateTime::parse_from_str(value, fmt)
-        .map_err(|e| External(Box::new(e)))?;
-    let epoch_time = DateTime::from_timestamp_millis(0).ok_or(Internal(
-        "the number of milliseconds is out of range for a NaiveDateTim".to_string(),
+    let datetime = chrono::NaiveDateTime::parse_from_str(value, fmt)?;
+    let epoch_time = DateTime::from_timestamp_millis(0).ok_or(report!(
+        "the number of milliseconds is out of range for a NaiveDateTim"
     ))?;
 
     Ok(datetime.signed_duration_since(epoch_time.naive_utc()))
@@ -874,26 +856,15 @@ pub fn get_batch_memory_size(batch: &RecordBatch) -> Result<usize> {
         .sum())
 }
 
-/// Gets the file size of a [`FileMetaData`].
-pub fn get_file_size(metadata: &FileMetaData) -> usize {
-    let footer_size = metadata
-        .footer_signing_key_metadata
-        .as_ref()
-        .map_or(0, |f| f.len());
-    let rg_size = metadata
-        .row_groups
-        .iter()
-        .map(|row_group| row_group.total_byte_size as usize)
-        .sum::<usize>();
-    footer_size + rg_size
-}
-
-/// Gets the file exist columns of a [`FileMetaData`].
-pub fn get_file_exist_col(metadata: &FileMetaData) -> String {
+/// Gets the file exist columns of a [`ParquetMetaData`].
+/// This function is only used for Parquet
+pub fn get_file_exist_col(metadata: &ParquetMetaData) -> String {
     metadata
-        .schema
+        .file_metadata()
+        .schema_descr()
+        .columns()
         .iter()
-        .map(|schema_element| schema_element.name.clone())
+        .map(|col| col.name().to_string())
         .collect::<Vec<_>>()
         .join(",")
 }
@@ -947,10 +918,10 @@ pub struct ColumnEquality {
 }
 
 /// Checks if an expression is an OR-conjunctive expression.
-pub fn is_or_conjunctive(expr: &datafusion::logical_expr::Expr) -> bool {
+pub fn is_or_conjunctive(expr: &datafusion_expr::Expr) -> bool {
     match expr {
-        datafusion::logical_expr::Expr::BinaryExpr(binary_expr) => {
-            binary_expr.op == datafusion::logical_expr::Operator::Or
+        datafusion_expr::Expr::BinaryExpr(binary_expr) => {
+            binary_expr.op == datafusion_expr::Operator::Or
         }
         _ => false,
     }
@@ -961,7 +932,7 @@ pub fn is_or_conjunctive(expr: &datafusion::logical_expr::Expr) -> bool {
 /// This function looks for OR-conjunctive expressions where all components
 /// are equality comparisons on primary key columns.
 pub fn collect_or_conjunctive_filter_expressions(
-    filters: &[datafusion::logical_expr::Expr],
+    filters: &[datafusion_expr::Expr],
     primary_keys: &[String],
 ) -> Vec<ColumnEquality> {
     let mut result = Vec::new();
@@ -990,10 +961,10 @@ pub fn collect_or_conjunctive_filter_expressions(
 ///
 /// Recursively traverses OR expressions to find all column = value comparisons.
 pub fn collect_column_equalities(
-    expr: &datafusion::logical_expr::Expr,
+    expr: &datafusion_expr::Expr,
     equalities: &mut Vec<ColumnEquality>,
 ) {
-    use datafusion::logical_expr::{Expr, Operator};
+    use datafusion_expr::{Expr, Operator};
 
     match expr {
         // If it's an OR expression, process both sides
@@ -1090,7 +1061,11 @@ impl Display for InMemGenerator {
 }
 
 impl LazyBatchGenerator for InMemGenerator {
-    fn generate_next_batch(&mut self) -> Result<Option<RecordBatch>> {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn generate_next_batch(&mut self) -> Result<Option<RecordBatch>, DataFusionError> {
         Ok(self.batches.pop_front())
     }
 }

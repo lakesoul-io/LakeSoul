@@ -32,7 +32,7 @@ use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
 use datafusion::physical_plan::{
     RecordBatchStream, SendableRecordBatchStream, expressions::col,
 };
-use datafusion_common::DataFusionError::ArrowError;
+use datafusion_common::DataFusionError::{self, ArrowError};
 use futures::stream::{Fuse, FusedStream};
 use futures::{Stream, StreamExt};
 
@@ -275,7 +275,8 @@ pub(crate) fn build_sorted_stream_merger(
                 .collect::<Result<Vec<_>>>()?;
             let stream = RowCursorStream::try_new(
                 schema.as_ref(),
-                &LexOrdering::new(sort_exprs),
+                &LexOrdering::new(sort_exprs)
+                    .ok_or(DataFusionError::Execution("empty sort expr".into()))?,
                 stream,
                 reservation.new_empty(),
             )?;
@@ -417,7 +418,7 @@ impl<C: CursorValues, R: RangeCombinerTrait<C>> SortedStreamMerger<C, R> {
         loop {
             match self.range_combiner.poll_result() {
                 RangeCombinerResult::Err(e) => {
-                    return Poll::Ready(Some(Err(ArrowError(e, None))));
+                    return Poll::Ready(Some(Err(ArrowError(Box::new(e), None))));
                 }
                 RangeCombinerResult::None => {
                     return Poll::Ready(None);
@@ -444,7 +445,9 @@ impl<C: CursorValues, R: RangeCombinerTrait<C>> SortedStreamMerger<C, R> {
                     // continue to produce range
                 }
                 RangeCombinerResult::RecordBatch(batch) => {
-                    return Poll::Ready(Some(batch.map_err(|e| ArrowError(e, None))));
+                    return Poll::Ready(Some(
+                        batch.map_err(|e| ArrowError(Box::new(e), None)),
+                    ));
                 }
             }
         }
@@ -487,9 +490,9 @@ mod tests {
     use datafusion::physical_plan::{ExecutionPlan, common};
     use datafusion::prelude::{SessionConfig, SessionContext};
 
+    use crate::config::LakeSoulIOConfigBuilder;
     use crate::helpers::InMemGenerator;
-    use crate::lakesoul_io_config::LakeSoulIOConfigBuilder;
-    use crate::lakesoul_reader::LakeSoulReader;
+    use crate::reader::LakeSoulReader;
     use crate::sorted_merge::merge_operator::MergeOperator;
     use crate::sorted_merge::sorted_stream_merger::{
         SortedStream, build_sorted_stream_merger,
@@ -510,7 +513,9 @@ mod tests {
         let schema = batches[0].schema();
         let exec = LazyMemoryExec::try_new(
             schema.clone(),
-            vec![Arc::new(RwLock::new(InMemGenerator::try_new(batches)?))],
+            vec![Arc::new(RwLock::new(
+                InMemGenerator::try_new(batches).unwrap(),
+            ))],
         )?;
         let stream = exec.execute(0, context.clone())?;
         Ok(SortedStream::new(stream))

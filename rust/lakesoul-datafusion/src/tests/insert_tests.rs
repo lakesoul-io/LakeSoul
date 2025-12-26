@@ -15,16 +15,16 @@ mod insert_tests {
     use arrow_cast::pretty::print_batches;
     use datafusion::logical_expr::Expr;
     use datafusion::prelude::col;
-    use lakesoul_io::lakesoul_io_config::{
-        LakeSoulIOConfigBuilder, create_session_context,
-    };
+    use lakesoul_io::config::LakeSoulIOConfigBuilder;
+    use lakesoul_io::session::create_session_context;
     use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
+    use rootcause::report;
 
     use crate::lakesoul_table::LakeSoulTable;
-    use crate::test::assert_batches_eq;
+    use crate::tests::assert_batches_eq;
     use crate::{
+        Result,
         catalog::{create_io_config_builder, create_table},
-        error::Result,
     };
 
     async fn init_table(
@@ -33,7 +33,6 @@ mod insert_tests {
         table_name: &str,
     ) -> Result<()> {
         let builder = LakeSoulIOConfigBuilder::new().with_schema(schema.clone());
-        // .with_primary_keys(pks);
         create_table(client, table_name, builder.build()).await
     }
 
@@ -90,7 +89,8 @@ mod insert_tests {
             dataframe.select_columns(&selected_cols)?
         };
 
-        print_batches(&dataframe.clone().explain(true, false)?.collect().await?)?;
+        let batches = &dataframe.clone().collect().await?;
+        print_batches(batches)?;
 
         let results = dataframe.collect().await?;
 
@@ -258,7 +258,7 @@ mod insert_tests {
 
     // todo: insert_overwrite is not supported by datafusion 27.0
     // #[tokio::test]
-    async fn test_insert_into_overwrite_non_partitioned_table() -> Result<()> {
+    async fn _test_insert_into_overwrite_non_partitioned_table() -> Result<()> {
         let table_name = "test_insert_into_overwrite_non_partitioned_table";
         let client = Arc::new(MetaDataClient::from_env().await?);
         let record_batch =
@@ -310,9 +310,7 @@ mod insert_tests {
                 dbg!(&e,);
                 Ok(())
             }
-            Ok(()) => Err(crate::error::LakeSoulError::Internal(
-                "InsertInto should fail when missing columns".to_string(),
-            )),
+            Ok(()) => Err(report!("Insert Into should fail when missing columns")),
         }
     }
 
@@ -350,8 +348,8 @@ mod insert_tests {
                 dbg!(&e);
                 Ok(())
             }
-            Ok(()) => Err(crate::error::LakeSoulError::Internal(
-                "InsertInto should fails when an extra column is present but can evolve schema".to_string(),
+            Ok(()) => Err(report!(
+                "Insert Into should fails when an extra column is present but can evolve schema"
             )),
         }
         // todo: pass this case when SCHEMA_AUTO_MIGRATE is true
@@ -360,7 +358,6 @@ mod insert_tests {
     async fn test_datatypes() -> Result<()> {
         let table_name = "test_datatypes";
         let client = Arc::new(MetaDataClient::from_env().await?);
-        // let mut client = MetaDataClient::from_config("host=127.0.0.1 port=5433 dbname=test_lakesoul_meta user=yugabyte password=yugabyte".to_string());
 
         let iter = vec![
             (

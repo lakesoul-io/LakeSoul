@@ -15,21 +15,22 @@ mod integration_tests {
         },
         execution::context::SessionContext,
     };
-    use lakesoul_io::lakesoul_io_config::{
-        LakeSoulIOConfigBuilder, create_session_context_with_planner,
-    };
+    use lakesoul_io::config::LakeSoulIOConfigBuilder;
+    use lakesoul_io::reader::LakeSoulReader;
+    use lakesoul_io::session::create_session_context_with_planner;
     use lakesoul_metadata::MetaDataClient;
+    use rootcause::bail;
 
-    use crate::test::benchmarks::tpch::{
+    use crate::tests::benchmarks::tpch::{
         TPCH_TABLES, get_tbl_tpch_table_primary_keys, get_tbl_tpch_table_schema,
         get_tpch_table_schema,
     };
     use crate::{
+        Result,
         catalog::{create_io_config_builder, create_table},
-        error::{LakeSoulError, Result},
         lakesoul_table::LakeSoulTable,
         planner::query_planner::LakeSoulQueryPlanner,
-        test::benchmarks::tpch::get_tbl_tpch_table_range_partitions,
+        tests::benchmarks::tpch::get_tbl_tpch_table_range_partitions,
     };
 
     async fn get_table(
@@ -64,10 +65,10 @@ mod integration_tests {
         let path =
             std::env::var("TPCH_DATA").unwrap_or_else(|_| "benchmarks/data".to_string());
         if !Path::new(&path).exists() {
-            return Err(LakeSoulError::Internal(format!(
+            bail!(
                 "Benchmark data not found (set TPCH_DATA env var to override): {}",
                 path
-            )));
+            )
         }
         Ok(path)
     }
@@ -110,14 +111,11 @@ mod integration_tests {
             create_table(client.clone(), &table, builder.build()).await?;
             let lakesoul_table = LakeSoulTable::for_name(table).await?;
             lakesoul_table.upsert_dataframe(dataframe).await?;
-            // arrow_cast::pretty::print_batches(&lakesoul_table.to_dataframe(&ctx).await?.collect().await?);
             dbg!(table);
         }
 
         Ok(())
     }
-
-    use lakesoul_io::lakesoul_reader::LakeSoulReader;
 
     #[tokio::test]
     async fn debug() -> Result<()> {

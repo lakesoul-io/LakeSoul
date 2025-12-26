@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::Result;
 use crate::constant::{
     ARROW_CAST_OPTIONS, FLINK_TIMESTAMP_FORMAT, LAKESOUL_EMPTY_STRING,
     LAKESOUL_NULL_STRING, TIMESTAMP_MICROSECOND_FORMAT, TIMESTAMP_MILLSECOND_FORMAT,
@@ -27,8 +28,8 @@ use arrow_array::{
 use arrow_schema::{
     DataType, Field, FieldRef, Fields, Schema, SchemaBuilder, SchemaRef, TimeUnit,
 };
-use datafusion::error::Result;
-use datafusion_common::DataFusionError::{self, ArrowError, External, Internal};
+use datafusion_common::DataFusionError;
+use rootcause::{bail, report};
 
 /// adjust time zone to UTC
 pub fn uniform_field(orig_field: &FieldRef) -> FieldRef {
@@ -167,12 +168,11 @@ pub fn transform_record_batch(
             }
         },
     )?;
-    RecordBatch::try_new_with_options(
+    Ok(RecordBatch::try_new_with_options(
         Arc::new(Schema::new(fields)),
         transform_arrays,
         &RecordBatchOptions::new().with_row_count(Some(num_rows)),
-    )
-    .map_err(|e| ArrowError(e, None))
+    )?)
 }
 
 pub fn transform_array(
@@ -211,10 +211,10 @@ pub fn transform_array(
                 }
                 DataType::Utf8 => as_string_array(&array).clone().into_data(),
                 _ => {
-                    return Err(Internal(format!(
+                    bail!(
                         "cannot cast to timestamp from unsupported type {:?}",
                         array.data_type()
-                    )));
+                    );
                 }
             };
             let array_ref = make_array(array);
@@ -227,13 +227,11 @@ pub fn transform_array(
                 &DataType::Timestamp(target_unit, Some(target_tz.clone())),
                 &ARROW_CAST_OPTIONS,
             )
-            .map_err(|e| {
-                DataFusionError::ArrowError(
-                    e,
-                    Some(format!(
-                        "Failed to cast timestamp type from {} to {}",
-                        source_datatype, target_datatype
-                    )),
+            .map_err(|_| {
+                report!(
+                    "Failed to cast timestamp type from {} to {}",
+                    source_datatype,
+                    target_datatype
                 )
             })?) as _
         }
@@ -302,7 +300,7 @@ pub fn transform_array(
                         cast_with_options(&array, &target_datatype, &ARROW_CAST_OPTIONS)
                             .map_err(|e| {
                             DataFusionError::ArrowError(
-                                e,
+                                Box::new(e),
                                 Some(format!(
                                     "Failed to cast type from {} to {}",
                                     array.data_type(),
@@ -338,18 +336,14 @@ pub fn make_default_array(
         DataType::Int32 => Arc::new(PrimitiveArray::<Int32Type>::from(vec![
             value
                 .as_str()
-                .parse::<i32>()
-                .map_err(
-                    |e| { External(Box::new(e)) }
+                .parse::<i32>(
                 )?;
             num_rows
         ])),
         DataType::Int64 => Arc::new(PrimitiveArray::<Int64Type>::from(vec![
             value
                 .as_str()
-                .parse::<i64>()
-                .map_err(
-                    |e| { External(Box::new(e)) }
+                .parse::<i64>(
                 )?;
             num_rows
         ])),
@@ -411,9 +405,7 @@ pub fn make_default_array(
                             match duration.num_microseconds() {
                                 Some(microsecond) => microsecond,
                                 None => {
-                                    return Err(Internal(
-                                        "microsecond is out of range".to_string(),
-                                    ));
+                                    bail!("microsecond is out of range");
                                 }
                             }
                         } else {
@@ -425,9 +417,7 @@ pub fn make_default_array(
                             {
                                 Some(microsecond) => microsecond,
                                 None => {
-                                    return Err(Internal(
-                                        "microsecond is out of range".to_string(),
-                                    ));
+                                    bail!("microsecond is out of range");
                                 }
                             }
                         };
@@ -445,9 +435,7 @@ pub fn make_default_array(
                             match duration.num_nanoseconds() {
                                 Some(nanosecond) => nanosecond,
                                 None => {
-                                    return Err(Internal(
-                                        "nanosecond is out of range".to_string(),
-                                    ));
+                                    bail!("nanosecond is out of range");
                                 }
                             }
                         } else {
@@ -459,9 +447,7 @@ pub fn make_default_array(
                             {
                                 Some(nanosecond) => nanosecond,
                                 None => {
-                                    return Err(Internal(
-                                        "nanoseconds is out of range".to_string(),
-                                    ));
+                                    bail!("nanosecond is out of range");
                                 }
                             }
                         };
@@ -471,19 +457,16 @@ pub fn make_default_array(
                 ),
             }
         }
-        DataType::Boolean => Arc::new(BooleanArray::from(vec![
-            value
-                .as_str()
-                .parse::<bool>()
-                .map_err(|e| {
-                    External(Box::new(e))
-                })?;
-            num_rows
-        ])),
+        DataType::Boolean => {
+            Arc::new(BooleanArray::from(vec![
+                value.as_str().parse::<bool>()?;
+                num_rows
+            ]))
+        }
         data_type => match into_scalar_value(value, data_type) {
             Ok(scalar) => scalar.to_array_of_size(num_rows)?,
             Err(_) => {
-                println!(
+                error!(
                     "make_default_array() datatype not match, datatype={:?}, value={:?}",
                     datatype, value
                 );

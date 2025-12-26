@@ -20,6 +20,7 @@ use lakesoul_flight::{
 use lakesoul_metadata::{Claims, JwtServer, MetaDataClient};
 use metrics::{counter, gauge};
 use metrics_exporter_prometheus::PrometheusBuilder;
+use rootcause::{Report, bail};
 use tonic::service::Interceptor;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
@@ -148,7 +149,7 @@ impl Drop for CallbackOnDrop {
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Report> {
     // 解析命令行参数
     let args = Args::parse();
 
@@ -188,7 +189,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     caps.get(2).unwrap().as_str().parse()?,
                 )
             } else {
-                return Err("Invalid metrics_addr format".into());
+                bail!("Invalid metrics_addr format");
             };
             std::net::SocketAddr::new(host, port)
         };

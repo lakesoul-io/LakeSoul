@@ -11,19 +11,20 @@ use std::sync::Arc;
 use arrow_schema::SchemaBuilder;
 use async_trait::async_trait;
 
-use arrow::datatypes::{Schema, SchemaRef};
-use datafusion::datasource::source::DataSource;
-
 use crate::helpers::listing_table_from_lakesoul_io_config;
 use crate::lakesoul_io_config::LakeSoulIOConfig;
 use crate::transform::uniform_schema;
+use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::catalog::Session;
 use datafusion::datasource::file_format::FileFormat;
 use datafusion::datasource::file_format::file_compression_type::FileCompressionType;
 use datafusion::datasource::listing::{
     ListingOptions, ListingTable, ListingTableUrl, PartitionedFile,
 };
-use datafusion::datasource::physical_plan::{FileGroup, FileScanConfig, FileSource};
+use datafusion::datasource::physical_plan::{
+    FileGroup, FileScanConfig, FileScanConfigBuilder, FileSource,
+};
+use datafusion::datasource::source::DataSource;
 use datafusion::execution::context::SessionState;
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::logical_expr::utils::conjunction;
@@ -31,7 +32,6 @@ use datafusion::logical_expr::{TableProviderFilterPushDown, TableType};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::{datasource::TableProvider, logical_expr::Expr};
-use datafusion_common::DataFusionError::ObjectStore;
 use datafusion_common::{DataFusionError, Result, Statistics, ToDFSchema};
 use futures::future;
 use object_store::path::Path;
@@ -159,28 +159,23 @@ impl TableProvider for LakeSoulTableProvider {
                                 <ListingTableUrl as AsRef<Url>>::as_ref(url).path(),
                             )?)
                             .await
-                            .map_err(ObjectStore)?,
+                            .map_err(|e| DataFusionError::ObjectStore(Box::new(e)))?,
                     ))
                 }
             }))
             .await;
 
-        let mut scan_config = FileScanConfig {
-            object_store_url,
-            file_schema: Arc::clone(&self.schema()),
-            file_groups: vec![
-                FileGroup::new(partition_files?).with_statistics(Arc::new(statistics)),
-            ],
-            constraints: Default::default(),
-            projection: projection.cloned(),
-            limit,
-            output_ordering: vec![],
-            file_compression_type: FileCompressionType::ZSTD,
-            new_lines_in_values: false,
-            file_source: source,
-            table_partition_cols: vec![],
-            batch_size: None,
-        };
+        let mut scan_config =
+            FileScanConfigBuilder::new(object_store_url, self.schema().clone(), source)
+                .with_file_groups(vec![
+                    FileGroup::new(partition_files?)
+                        .with_statistics(Arc::new(statistics)),
+                ])
+                .with_projection_indices(projection.cloned())
+                .with_limit(limit)
+                .with_file_compression_type(FileCompressionType::ZSTD)
+                .with_newlines_in_values(false)
+                .build();
 
         if let Some(expr) = conjunction(filters.to_vec()) {
             // NOTE: Use the table schema (NOT file schema) here because `expr` may contain references to partition columns.
