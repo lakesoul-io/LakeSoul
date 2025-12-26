@@ -9,6 +9,7 @@ import com.ververica.cdc.connectors.base.options.StartupOptions;
 import com.ververica.cdc.connectors.base.source.jdbc.JdbcIncrementalSource;
 import com.ververica.cdc.connectors.mysql.source.MySqlSource;
 import com.ververica.cdc.connectors.mysql.source.MySqlSourceBuilder;
+import com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions;
 import com.ververica.cdc.connectors.oracle.source.OracleSourceBuilder;
 import com.ververica.cdc.connectors.postgres.source.PostgresSourceBuilder;
 import com.ververica.cdc.connectors.mongodb.source.MongoDBSource;
@@ -39,6 +40,7 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 
+import static com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions.SCAN_SNAPSHOT_FETCH_SIZE;
 import static org.apache.flink.lakesoul.tool.JobOptions.*;
 import static org.apache.flink.lakesoul.tool.LakeSoulDDLSinkOptions.*;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BUCKET_PARALLELISM;
@@ -63,6 +65,8 @@ public class JdbcCDC {
     private static String lineageUrl;
     private static String appName;
     private static String namespace;
+    private static int fetchSize;
+    private static String cdcYamlPath;
 
     public static void main(String[] args) throws Exception {
         ParameterTool parameter = ParameterTool.fromArgs(args);
@@ -83,16 +87,23 @@ public class JdbcCDC {
             }
             splitSize = parameter.getInt(SOURCE_DB_SPLIT_SIZE.key(), SOURCE_DB_SPLIT_SIZE.defaultValue());
         }
-        if (dbType.equalsIgnoreCase("sqlserver") ){
+        if (dbType.equalsIgnoreCase("sqlserver")){
             tableList = parameter.get(SOURCE_DB_SCHEMA_TABLES.key()).split(",");
         }
-        if ( dbType.equalsIgnoreCase("mongodb")){
+        if (dbType.equalsIgnoreCase("mongodb")){
             batchSize = parameter.getInt(BATCH_SIZE.key(), BATCH_SIZE.defaultValue());
             tableList = parameter.get(SOURCE_DB_SCHEMA_TABLES.key()).split(",");
         }
-        if (dbType.equals("mysql")){
-            tableList = parameter.get(SOURCE_DB_SCHEMA_TABLES.key()).split(",");
+        if (dbType.equalsIgnoreCase("mysql")) {
+            if (parameter.get(SOURCE_DB_SCHEMA_TABLES.key()) == null){
+                tableList = new String[1];
+                tableList[0] = dbName + ".*";
+            } else {
+                tableList = parameter.get(SOURCE_DB_SCHEMA_TABLES.key()).split(",");
+            }
+            cdcYamlPath = parameter.get(CONNFIG_YAML_PATH.key(),null);
         }
+        fetchSize = parameter.getInt(SCAN_SNAPSHOT_FETCH_SIZE.key(), SCAN_SNAPSHOT_FETCH_SIZE.defaultValue());
         pluginName = parameter.get(PLUGIN_NAME.key(), PLUGIN_NAME.defaultValue());
         //flink
         String databasePrefixPath = parameter.get(WAREHOUSE_PATH.key());
@@ -192,21 +203,28 @@ public class JdbcCDC {
     }
 
     private static void mysqlCdc(LakeSoulRecordConvert lakeSoulRecordConvert, Configuration conf, StreamExecutionEnvironment env,String sinkDBName) throws Exception {
+
         MySqlSourceBuilder<BinarySourceRecord> sourceBuilder = MySqlSource.<BinarySourceRecord>builder()
                 .hostname(host)
                 .port(port)
                 .databaseList(dbName) // set captured database
                 .tableList(tableList) // set captured table
                 .serverTimeZone(serverTimezone)  // default -- Asia/Shanghai
-                //.scanNewlyAddedTableEnabled(true)
                 .username(userName)
                 .password(passWord);
+
+        if (cdcYamlPath != null){
+            MysqlSourceBuilderTool mysqlSourceBuilderTool = new MysqlSourceBuilderTool();
+            sourceBuilder =  mysqlSourceBuilderTool.mySqlSourceBuilder(cdcYamlPath, sourceBuilder);
+        } else {
+            Properties jdbcProperties = new Properties();
+            jdbcProperties.put("allowPublicKeyRetrieval", "true");
+            jdbcProperties.put("useSSL", "false");
+            sourceBuilder.jdbcProperties(jdbcProperties);
+        }
         sourceBuilder.deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert,
-                conf.getString(WAREHOUSE_PATH), sinkDBName));
-        Properties jdbcProperties = new Properties();
-        jdbcProperties.put("allowPublicKeyRetrieval", "true");
-        jdbcProperties.put("useSSL", "false");
-        sourceBuilder.jdbcProperties(jdbcProperties);
+                conf.get(WAREHOUSE_PATH), sinkDBName));
+
         MySqlSource<BinarySourceRecord> mySqlSource = sourceBuilder.build();
 
         NameSpaceManager manager = new NameSpaceManager();
@@ -238,6 +256,7 @@ public class JdbcCDC {
                 .decodingPluginName(pluginName)
                 .splitSize(splitSize)
                 .slotName(slotName)
+                .fetchSize(fetchSize)
                 .deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert, conf.getString(WAREHOUSE_PATH), sinkDBName))
                 .build();
 
@@ -273,6 +292,7 @@ public class JdbcCDC {
                         .username(userName)
                         .serverTimeZone(serverTimezone)
                         .password(passWord)
+                        .fetchSize(fetchSize)
                         .deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert, conf.getString(WAREHOUSE_PATH), sinkDBName))
                         .includeSchemaChanges(true) // output the schema changes as well
                         .startupOptions(StartupOptions.initial())
@@ -316,6 +336,7 @@ public class JdbcCDC {
                         .tableList(tableList)
                         .username(userName)
                         .password(passWord)
+                        .fetchSize(fetchSize)
                         .splitSize(splitSize)
                         .deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert, conf.getString(WAREHOUSE_PATH), sinkDBName))
                         .startupOptions(StartupOptions.initial())

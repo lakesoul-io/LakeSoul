@@ -47,6 +47,7 @@ public class MysqlCdc {
         String sinkDBName = parameter.get(SINK_DBNAME.key(), SINK_DBNAME.defaultValue());
         String databasePrefixPath = parameter.get(WAREHOUSE_PATH.key());
         String serverTimezone = parameter.get(SERVER_TIME_ZONE.key(), SERVER_TIME_ZONE.defaultValue());
+        String cdcYamlPath = parameter.get(CONNFIG_YAML_PATH.key(),null);
         int sourceParallelism = parameter.getInt(SOURCE_PARALLELISM.key());
         int bucketParallelism = parameter.getInt(BUCKET_PARALLELISM.key());
         int checkpointInterval = parameter.getInt(JOB_CHECKPOINT_INTERVAL.key(),
@@ -99,7 +100,6 @@ public class MysqlCdc {
         if (parameter.get(JOB_CHECKPOINT_MODE.key(), JOB_CHECKPOINT_MODE.defaultValue()).equals("AT_LEAST_ONCE")) {
             checkpointingMode = CheckpointingMode.AT_LEAST_ONCE;
         }
-        env.getCheckpointConfig().setTolerableCheckpointFailureNumber(5);
         env.getCheckpointConfig().setCheckpointingMode(checkpointingMode);
         env.getCheckpointConfig()
                 .setExternalizedCheckpointCleanup(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
@@ -114,20 +114,25 @@ public class MysqlCdc {
         MySqlSourceBuilder<BinarySourceRecord> sourceBuilder = MySqlSource.<BinarySourceRecord>builder()
                 .hostname(host)
                 .port(port)
-                .databaseList(dbName) // set captured database
                 .tableList(dbName + ".*") // set captured table
+                .databaseList(dbName) // set captured database
                 .serverTimeZone(serverTimezone)  // default -- Asia/Shanghai
-                //.scanNewlyAddedTableEnabled(true)
                 .username(userName)
+                .includeSchemaChanges(true)
                 .password(passWord);
 
+        if (cdcYamlPath != null){
+            MysqlSourceBuilderTool mysqlSourceBuilderTool = new MysqlSourceBuilderTool();
+            sourceBuilder = mysqlSourceBuilderTool.mySqlSourceBuilder(cdcYamlPath, sourceBuilder);
+        } else {
+            Properties jdbcProperties = new Properties();
+            jdbcProperties.put("allowPublicKeyRetrieval", "true");
+            jdbcProperties.put("useSSL", "false");
+            sourceBuilder.jdbcProperties(jdbcProperties);
+        }
         LakeSoulRecordConvert lakeSoulRecordConvert = new LakeSoulRecordConvert(conf, conf.getString(SERVER_TIME_ZONE),partitionMap);
         sourceBuilder.deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert,
                 conf.getString(WAREHOUSE_PATH), sinkDBName));
-        Properties jdbcProperties = new Properties();
-        jdbcProperties.put("allowPublicKeyRetrieval", "true");
-        jdbcProperties.put("useSSL", "false");
-        sourceBuilder.jdbcProperties(jdbcProperties);
         MySqlSource<BinarySourceRecord> mySqlSource = sourceBuilder.build();
 
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
