@@ -133,8 +133,13 @@ public class JdbcCDC {
         conf.set(LakeSoulSinkOptions.BUCKET_PARALLELISM, bucketParallelism);
         conf.set(LakeSoulSinkOptions.HASH_BUCKET_NUM, bucketParallelism);
         conf.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
-        HashMap<String, List<String>> partitionMap = new HashMap<>();
-        parameter.toMap().forEach((confKey,confValue) -> {if (confKey.contains("topic_partitions_")) partitionMap.put(confKey.substring(17), Arrays.asList(confValue.split(","))); else return;});
+        HashMap<String, List<String>> partitionMap = new HashMap<>();;
+        HashMap<String, List<String>> finalPartitionMap = partitionMap;
+        parameter.toMap().forEach((confKey, confValue) -> {if (confKey.contains("topic_partitions_")) finalPartitionMap.put(confKey.substring(17), Arrays.asList(confValue.split(","))); else return;});
+        if (partitionMap.isEmpty() && cdcYamlPath != null){
+            MysqlSourceBuilderTool mysqlSourceBuilderTool = new MysqlSourceBuilderTool();
+            partitionMap = mysqlSourceBuilderTool.getTablePartitionList(cdcYamlPath);
+        }
         listener = null;
         StreamExecutionEnvironment env;
         appName = null;
@@ -181,6 +186,7 @@ public class JdbcCDC {
                 Time.of(10, TimeUnit.MINUTES), //time interval for measuring failure rate
                 Time.of(20, TimeUnit.SECONDS) // delay
         ));
+
         LakeSoulRecordConvert lakeSoulRecordConvert = new LakeSoulRecordConvert(conf, conf.getString(SERVER_TIME_ZONE), partitionMap);
 
         if (dbType.equalsIgnoreCase("mysql")) {

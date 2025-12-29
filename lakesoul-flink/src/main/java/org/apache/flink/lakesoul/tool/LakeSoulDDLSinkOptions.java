@@ -65,6 +65,4 @@ public class LakeSoulDDLSinkOptions extends LakeSoulSinkOptions{
             .noDefaultValue()
             .withDescription("");
 
-
-
 }
