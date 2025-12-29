@@ -15,9 +15,8 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.time.Duration;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Properties;
+import java.util.*;
+import java.util.stream.Collectors;
 
 import static com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions.*;
 
@@ -178,4 +177,39 @@ public class MysqlSourceBuilderTool {
         }
         return DebeziumOptions.getDebeziumProperties(dbzParams);
     }
+
+    public HashMap<String, List<String>> getTablePartitionList(String cdcConfigYamlPath)
+            throws IOException {
+
+        InputStream input = Files.newInputStream(Paths.get(cdcConfigYamlPath));
+        Map<String, Object> cdcParams = loadAsFlatMap(input);
+        HashMap<String, List<String>> tablePartitions = new HashMap<>();
+        String partitionPrefix = "partitions.";
+
+        for (Map.Entry<String, Object> entry : cdcParams.entrySet()) {
+            String key = entry.getKey();
+
+            if (!key.startsWith(partitionPrefix)) {
+                continue;
+            }
+            String tableName = key.substring(partitionPrefix.length());
+            Object value = entry.getValue();
+            if (value == null) {
+                continue;
+            }
+            String partitionColsStr = value.toString().trim();
+            if (partitionColsStr.isEmpty()) {
+                continue;
+            }
+            List<String> partitionCols = Arrays.stream(partitionColsStr.split(","))
+                    .map(String::trim)
+                    .filter(s -> !s.isEmpty())
+                    .collect(Collectors.toList());
+
+            tablePartitions.put(tableName, partitionCols);
+        }
+
+        return tablePartitions;
+    }
+
 }
