@@ -75,13 +75,15 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator
         this.partitionFilters = partitionFilters;
         tableInfo = DataOperation.dbManager().getTableInfoByTableId(tableId);
         fullTableName = tableInfo.getTableNamespace() + "." + tableInfo.getTableName();
-        LOG.info("Create Dyn enumerator for table name {}, tableId {}, context {}",
-                fullTableName, tableId, System.identityHashCode(context));
+        LOG.info("Create Dyn enumerator for table name {}, tableId {}, context {}," +
+                        " filter {}, interval {}",
+                fullTableName, tableId, System.identityHashCode(context),
+                partitionFilters, discoveryInterval);
     }
 
     @Override
     public void start() {
-        context.callAsync(this::enumerateSplits, this::processDiscoveredSplits, discoveryInterval, discoveryInterval);
+        context.callAsync(this::enumerateSplits, this::processDiscoveredSplits, 0, discoveryInterval);
     }
 
     @Override
@@ -109,7 +111,7 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator
 
     @Override
     public synchronized void addSplitsBack(List<LakeSoulPartitionSplit> splits, int subtaskId) {
-        LOG.info("Add split back: {} for {}, subTaskId {}, oid {}, tid {}",
+        LOG.info("Add split back {}, for table {}, subTaskId {}, oid {}, tid {}",
                 splits, fullTableName, subtaskId,
                 System.identityHashCode(this),
                 Thread.currentThread().getId());
@@ -129,7 +131,8 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator
         LakeSoulPendingSplits pendingSplits = new LakeSoulPendingSplits(
                 remaining, this.nextStartTime, this.tableId,
                 "", this.discoveryInterval, this.hashBucketNum);
-        LOG.info("LakeSoulAllPartitionDynamicSplitEnumerator snapshotState, table {}, chkId {}, splits {}, oid {}, tid {}",
+        LOG.info("LakeSoulAllPartitionDynamicSplitEnumerator" +
+                        "snapshotState, table {}, chkId {}, splits {}, oid {}, tid {}",
                 fullTableName, checkpointId, pendingSplits,
                 System.identityHashCode(this),
                 Thread.currentThread().getId());
@@ -175,8 +178,9 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator
     }
 
     public Collection<LakeSoulPartitionSplit> enumerateSplits() {
-        LOG.info("enumerateSplits begin for table {}, partition columns {}, oid {}, tid {}",
-                fullTableName, partitionColumns,
+        LOG.info("enumerateSplits begin for table {}, partition columns {}," +
+                        " interval {}, oid {}, tid {}",
+                fullTableName, partitionColumns, discoveryInterval,
                 System.identityHashCode(this),
                 Thread.currentThread().getId());
         long s = System.currentTimeMillis();
@@ -188,7 +192,8 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator
             allPartitionInfo = MetaVersion.getAllPartitionInfo(tableId);
         }
         long e = System.currentTimeMillis();
-        LOG.info("Table {} allPartitionInfo={}, queryTime={}ms", fullTableName, allPartitionInfo, e - s);
+        LOG.info("Table {} allPartitionInfo={}, queryTime={}ms, interval={}",
+                fullTableName, allPartitionInfo, e - s, discoveryInterval);
         List<PartitionInfo> filteredPartition = SubstraitUtil.applyPartitionFilters(
                 allPartitionInfo, partitionArrowSchema, partitionFilters);
         LOG.info("Table {} filteredPartition={}, filter={}", fullTableName, filteredPartition, partitionFilters);
@@ -236,8 +241,8 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator
                 partitionLatestTimestamp.put(partitionDesc, latestTimestamp);
             }
         }
-        LOG.info("dynamic enumerate done, partitionLatestTimestamp={}, oid {}, tid {}",
-                partitionLatestTimestamp,
+        LOG.info("dynamic enumerate table {} done, partitionLatestTimestamp={}, oid {}, tid {}",
+                fullTableName, partitionLatestTimestamp,
                 System.identityHashCode(this),
                 Thread.currentThread().getId());
 
