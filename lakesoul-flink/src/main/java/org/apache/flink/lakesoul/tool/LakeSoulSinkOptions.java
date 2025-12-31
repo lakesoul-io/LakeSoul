@@ -200,6 +200,12 @@ public class  LakeSoulSinkOptions {
             .defaultValue(1024)
             .withDescription("The split size (number of rows) of table snapshot, captured tables are split into multiple splits when read the snapshot of table.");
 
+    public static final ConfigOption<Integer> SOURCE_DB_FETCH_SIZE = ConfigOptions
+            .key("source_db.fetchSize")
+            .intType()
+            .defaultValue(2048)
+            .withDescription("");
+
     //for pg
     public static final ConfigOption<String> PLUGIN_NAME = ConfigOptions
             .key("pluginName")
@@ -231,6 +237,7 @@ public class  LakeSoulSinkOptions {
             .booleanType()
             .defaultValue(false)
             .withDescription("If true, lakesoul sink will auto change sink table's schema");
+
     public static final ConfigOption<Long> LIMIT = ConfigOptions
             .key("lakesoul.limit")
             .longType()

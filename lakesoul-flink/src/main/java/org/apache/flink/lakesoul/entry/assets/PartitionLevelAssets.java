@@ -32,14 +32,13 @@ public class PartitionLevelAssets {
             String[] tableInfos = new String[6];
             JSONObject commitJson;
 
-            // 处理 data_commit_info 表
             if (PGtableName.equals("data_commit_info")) {
                 String beforeCommitted = "true";
-                if (parse.getJSONObject("before").size()>0){
+                if (!parse.getJSONObject("before").isEmpty()){
                     JSONObject before =(JSONObject) parse.get("before");
                     beforeCommitted = before.getString("committed");
                 }
-                if (parse.getJSONObject("after").size() > 0){
+                if (!parse.getJSONObject("after").isEmpty()){
                     commitJson = (JSONObject) parse.get("after");
                 } else {
                     commitJson = (JSONObject) parse.get("before");
@@ -167,7 +166,6 @@ public class PartitionLevelAssets {
                 newTotalFileSize = fileBytesSizePreviousTotalValue - currentFileBytesSize;
                 partitionTotalFileCountValue.update(newTotalFileCount);
                 partitionTotalSizeValue.update(newTotalFileSize);
-                // 如果 delete 操作后，totalFileCount 为 0，清空 base 部分
                 newBaseFileCount = (newTotalFileCount == 0) ? 0 : previousBaseFileCountValue;
                 newBaseFileSize = (newTotalFileCount == 0) ? 0L : fileBytesSizePreviousBaseValue;
 
@@ -183,18 +181,18 @@ public class PartitionLevelAssets {
                 if (committed) {
                     newTotalFileCount = previousTotalFileCountValue + currentFileCountValue;
                     newTotalFileSize = fileBytesSizePreviousTotalValue + currentFileBytesSize;
-                    newTotalFileCount = Math.max(0, newTotalFileCount);  // 防止负值
+                    newTotalFileCount = Math.max(0, newTotalFileCount);
                     newTotalFileSize = Math.max(0, newTotalFileSize);
                     if (commitOp.equals("CompactionCommit")){
                         newBaseFileCount = currentFileCountValue;
                         newBaseFileSize = currentFileBytesSize;
                     } else {
-                        newBaseFileCount = newTotalFileCount == 0? 0 : previousBaseFileCountValue + currentFileCountValue;
-                        newBaseFileSize = newTotalFileCount == 0? 0 : fileBytesSizePreviousBaseValue + currentFileBytesSize;
+                        newBaseFileCount = newTotalFileCount == 0 ? 0 : previousBaseFileCountValue + currentFileCountValue;
+                        newBaseFileSize = newTotalFileCount == 0 ? 0 : fileBytesSizePreviousBaseValue + currentFileBytesSize;
                     }
-                    newBaseFileCount = Math.max(0, newBaseFileCount);  // 防止负值
+                    newBaseFileCount = Math.max(0, newBaseFileCount);
                     newBaseFileSize = Math.max(0, newBaseFileSize);
-                    // 更新累加状态
+
                     partitionBaseSizeValue.update(newBaseFileSize);
                     partitionBaseFileCountValue.update(newBaseFileCount);
                     partitionTotalFileCountValue.update(newTotalFileCount);

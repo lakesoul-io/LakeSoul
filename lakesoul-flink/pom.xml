@@ -303,6 +303,11 @@ SPDX-License-Identifier: Apache-2.0
             <version>1.12.3</version>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <groupId>org.yaml</groupId>
+            <artifactId>snakeyaml</artifactId>
+            <version>2.2</version>
+        </dependency>
 
         <!--The following 3 are required to run tests with access to s3/hdfs-->
         <dependency>
