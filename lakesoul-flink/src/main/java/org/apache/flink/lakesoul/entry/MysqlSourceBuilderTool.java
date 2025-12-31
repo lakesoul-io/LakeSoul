@@ -1,10 +1,11 @@
 package org.apache.flink.lakesoul.entry;
 
-import com.ververica.cdc.connectors.mysql.source.MySqlSource;
 import com.ververica.cdc.connectors.mysql.source.MySqlSourceBuilder;
 import com.ververica.cdc.connectors.mysql.table.StartupOptions;
 import org.apache.flink.lakesoul.types.BinarySourceRecord;
 import org.apache.flink.table.catalog.ObjectPath;
+import org.apache.flink.core.fs.FileSystem;
+import org.apache.flink.core.fs.Path;
 import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.constructor.SafeConstructor;
@@ -12,8 +13,6 @@ import com.ververica.cdc.debezium.table.DebeziumOptions;
 import com.ververica.cdc.debezium.utils.JdbcUrlUtils;
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.file.Files;
-import java.nio.file.Paths;
 import java.time.Duration;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -59,16 +58,19 @@ public class MysqlSourceBuilderTool {
     }
 
     public MySqlSourceBuilder<BinarySourceRecord> mySqlSourceBuilder(String cdcConfigYamlPath, MySqlSourceBuilder<BinarySourceRecord> sourceBuilder) throws IOException {
-        InputStream input =
-                Files.newInputStream(Paths.get(cdcConfigYamlPath));
-        Map<String, Object> cdcParams = loadAsFlatMap(input);
+        Path path = new Path(cdcConfigYamlPath);
+        FileSystem fs = FileSystem.get(path.toUri());
+        Map<String, Object> cdcParams;
+        try (InputStream input = fs.open(path)) {
+            cdcParams = loadAsFlatMap(input);
+        }
         Properties debeziumProperties = getDebeziumProperties(cdcParams);
         Properties jdbcProperties = getJdbcProperties(cdcParams);
         if (!jdbcProperties.isEmpty()){
             sourceBuilder.jdbcProperties(jdbcProperties);
         }
         if (!debeziumProperties.isEmpty()){
-            sourceBuilder.debeziumProperties(jdbcProperties);
+            sourceBuilder.debeziumProperties(debeziumProperties);
         }
         if (cdcParams.containsKey(SCAN_SNAPSHOT_FETCH_SIZE.key())){
             sourceBuilder.fetchSize(Integer.parseInt(cdcParams.get(SCAN_SNAPSHOT_FETCH_SIZE.key()).toString()));
@@ -178,38 +180,41 @@ public class MysqlSourceBuilderTool {
         return DebeziumOptions.getDebeziumProperties(dbzParams);
     }
 
-    public HashMap<String, List<String>> getTablePartitionList(String cdcConfigYamlPath)
+    public HashMap<String, List<String>> getTablePartitionList(String cdcConfigPath)
             throws IOException {
+        Path path = new Path(cdcConfigPath);
+        FileSystem fs = FileSystem.get(path.toUri());
+        try (InputStream input = fs.open(path)) {
+            Map<String, Object> cdcParams = loadAsFlatMap(input);
 
-        InputStream input = Files.newInputStream(Paths.get(cdcConfigYamlPath));
-        Map<String, Object> cdcParams = loadAsFlatMap(input);
-        HashMap<String, List<String>> tablePartitions = new HashMap<>();
-        String partitionPrefix = "partitions.";
+            HashMap<String, List<String>> tablePartitions = new HashMap<>();
+            String partitionPrefix = "partitions.";
 
-        for (Map.Entry<String, Object> entry : cdcParams.entrySet()) {
-            String key = entry.getKey();
+            for (Map.Entry<String, Object> entry : cdcParams.entrySet()) {
+                String key = entry.getKey();
+                if (!key.startsWith(partitionPrefix)) {
+                    continue;
+                }
 
-            if (!key.startsWith(partitionPrefix)) {
-                continue;
+                String tableName = key.substring(partitionPrefix.length());
+                Object value = entry.getValue();
+                if (value == null) {
+                    continue;
+                }
+
+                String cols = value.toString().trim();
+                if (cols.isEmpty()) {
+                    continue;
+                }
+
+                List<String> partitionCols = Arrays.stream(cols.split(","))
+                        .map(String::trim)
+                        .filter(s -> !s.isEmpty())
+                        .collect(Collectors.toList());
+
+                tablePartitions.put(tableName, partitionCols);
             }
-            String tableName = key.substring(partitionPrefix.length());
-            Object value = entry.getValue();
-            if (value == null) {
-                continue;
-            }
-            String partitionColsStr = value.toString().trim();
-            if (partitionColsStr.isEmpty()) {
-                continue;
-            }
-            List<String> partitionCols = Arrays.stream(partitionColsStr.split(","))
-                    .map(String::trim)
-                    .filter(s -> !s.isEmpty())
-                    .collect(Collectors.toList());
-
-            tablePartitions.put(tableName, partitionCols);
+            return tablePartitions;
         }
-
-        return tablePartitions;
     }
-
 }

@@ -233,7 +233,7 @@ public class LakeSoulRecordConvert implements Serializable {
 
         if (updatedPartitionFields.contains(timeStampPartitionCol)) {
             updatedPartitionFields.remove(timeStampPartitionCol);
-            updatedPartitionFields.add(timeStampPartitionCol + "_&p");
+            updatedPartitionFields.add("pt_"+timeStampPartitionCol + "_dt");
         }
         topicsPartitionFields.put(tableId.table(), updatedPartitionFields);
         return timeStampPartitionCol;
@@ -289,7 +289,7 @@ public class LakeSoulRecordConvert implements Serializable {
             pos++;
         }
         if (hasTimestampPartitionCol) {
-            colNames[pos] = timestampPartitionCol + "_&p";
+            colNames[pos] = "pt_" + timestampPartitionCol + "_dt";
             colTypes[pos] = new VarCharType(false, Integer.MAX_VALUE);
             pos++;
         }
@@ -475,7 +475,7 @@ public class LakeSoulRecordConvert implements Serializable {
             List<String> partitionColls = topicsPartitionFields.get(tableName);
             List<Field> fieldNames = schema.fields();
             for (Field fieldName : fieldNames){
-                if (partitionColls.contains(fieldName.name()) || partitionColls.contains(fieldName.name() + "_&p")){
+                if (partitionColls.contains(fieldName.name()) || partitionColls.contains("pt_" + fieldName.name() + "_dt")){
                     if (fieldName.schema().name() != null
                             && (ZonedTimestamp.SCHEMA_NAME.equals(fieldName.schema().name())
                             || ZonedTime.SCHEMA_NAME.equals(fieldName.schema().name()))
