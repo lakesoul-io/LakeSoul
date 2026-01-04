@@ -24,16 +24,19 @@ import static java.util.Objects.requireNonNull;
 public class LakeSoulSplit implements ConnectorSplit {
     private final LakeSoulTableLayoutHandle layout;
     private final List<Path> paths;
+    private final String partitionDesc;
 
     private static final Logger log = Logger.get(LakeSoulSplit.class);
 
     @JsonCreator
     public LakeSoulSplit(
             @JsonProperty("layout") LakeSoulTableLayoutHandle layout,
+	    @JsonProperty("partitionDesc") String partitionDesc,
             @JsonProperty("paths")  List<Path> paths
     ){
         this.layout = requireNonNull(layout, "layout is not null") ;
         this.paths = requireNonNull(paths, "paths is not null") ;
+	this.partitionDesc = partitionDesc;
     }
 
     @JsonProperty
@@ -57,24 +60,23 @@ public class LakeSoulSplit implements ConnectorSplit {
     }
 
     private String buildStableSplitIdentifier() {
-	    
+        if(layout.getPrimaryKeys().isEmpty()) {
+            String result = "LakeSoul:" + paths.get(0).toString();
+            log.info("buildStableSplitIdentifier noPrimaryKeys resultString is %s", result);
+            return result;
+        }
+        String path = paths.get(0).toString();
         String tableName = layout.getTableHandle().getNames().toString();
-        String partitionKey = "";
-        List<String> partitions = layout.getRangeKeys();
-        if (partitions != null && !partitions.isEmpty()) {
-            partitionKey = String.join(",", partitions);
-        }
-        Option<Object> hashBucketId = BucketingUtils.getBucketId(paths.get(0).toString());
-        String fileIdentifier;
-        if (!hashBucketId.isEmpty()) {
-       	    fileIdentifier = "bucket=" + hashBucketId.get();
-        }else {
-            fileIdentifier = "bucket=0";
-        }
-        String result = String.format("LakeSoul:%s#%s#%s", tableName, partitionKey.isEmpty() ? "NO_PARTITION" : partitionKey, fileIdentifier);
-        log.info("buildStableSplitIdentifier partitionKey %s, hashBucketId %s, result %s", partitionKey, fileIdentifier, result);
+        Option<Object> hashBucketId = BucketingUtils.getBucketId(path);
+        String bucketIdStr = hashBucketId.isEmpty() ? "0" : hashBucketId.get().toString();
+        String stablePartitionKey = (this.partitionDesc == null || this.partitionDesc.isEmpty())
+                                    ? "NO_PARTITION"
+                                    : this.partitionDesc;
+        String result = String.format("LakeSoul:%s#%s#bucket=%s", tableName, stablePartitionKey, bucketIdStr);
+        log.info("buildStableSplitIdentifier hasPrimaryKeys resultString is %s", result);
         return result;
     }
+
 
     @Override
     @JsonProperty
