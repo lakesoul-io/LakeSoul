@@ -3,14 +3,12 @@
 // SPDX-License-Identifier: Apache-2.0
 package org.apache.flink.lakesoul.entry.clean;
 
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.Path;
+import org.apache.flink.core.fs.FileSystem;
+import org.apache.flink.core.fs.Path;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
-import java.io.FileWriter;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -23,17 +21,6 @@ public class CleanUtils {
 
     private static final Logger logger = LoggerFactory.getLogger(CleanUtils.class);
 
-    public void write(String record) {
-        String filePath = "./record.txt";
-        try (FileWriter writer = new FileWriter(filePath, true)) {
-            writer.write(record + "\n"); // 将内容写入文件
-            System.out.println("内容已成功写入文件: " + filePath);
-        } catch (IOException e) {
-            System.err.println("写入文件时发生错误: " + e.getMessage());
-        }
-    }
-
-    //实现从pg里删除记录
     public void deleteDataCommitInfo(String table_id, String commit_id, String partition_desc) throws SQLException {
         Connection connection = DriverManager.getConnection("jdbc:postgresql://localhost:5432/lakesoul_test", "lakesoul_test", "lakesoul_test");
         String sql = "DELETE FROM data_commit_info where table_id= '" + table_id +
@@ -63,19 +50,6 @@ public class CleanUtils {
         }
     }
 
-
-    public void deletePartitionInfo(String table_id, String partition_desc, String commit_id) throws SQLException {
-        Connection connection = DriverManager.getConnection("jdbc:postgresql://localhost:5432/lakesoul_test", "lakesoul_test", "lakesoul_test");
-        String sql = "DELETE FROM partition_info where table_id= '" + table_id +
-                "' and partition_desc ='" + partition_desc + "' and '" + commit_id + "' = ANY(snapshot)";
-        try (PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
-            int rowsDeleted = preparedStatement.executeUpdate();
-        } catch (SQLException e) {
-            e.printStackTrace();
-            logger.info("删除partition_info数据异常");
-        }
-    }
-
     public void cleanPartitionInfo(String table_id, String partition_desc, int version, Connection connection) throws SQLException {
         UUID id = UUID.randomUUID();
         logger.info("[Clean-{}]: begin", id);
@@ -98,12 +72,11 @@ public class CleanUtils {
     public void deleteFile(List<String> filePathList) throws SQLException {
         UUID id = UUID.randomUUID();
         logger.info("[Clean-{}]: begin",id);
-        Configuration hdfsConfig = new Configuration();
         boolean hasError = false;
         for (String filePath : filePathList) {
             try{
                 if (filePath.startsWith(HDFS_URI_PREFIX) || filePath.startsWith(S3_URI_PREFIX)) {
-                    deleteHdfsFile(filePath, hdfsConfig);
+                    deleteHdfsFile(filePath);
                 } else if (filePath.startsWith("file:/")) {
                         URI uri = new URI(filePath);
                         String actualPath = new File(uri.getPath()).getAbsolutePath();
@@ -129,16 +102,14 @@ public class CleanUtils {
         }
     }
 
-    private void deleteHdfsFile(String filePath, Configuration hdfsConfig) throws IOException {
+    private void deleteHdfsFile(String filePath ) throws IOException {
         try {
-            FileSystem fs = FileSystem.get(URI.create(filePath), hdfsConfig);
             Path path = new Path(filePath);
+            FileSystem fs = FileSystem.get(path.toUri());
             if (fs.exists(path)) {
-                // false 表示不递归删除
                 fs.delete(path, false);
                 logger.info("=============================HDFS/s3 文件已删除: {}", filePath);
                 deleteEmptyParentDirectories(fs, path.getParent());
-                fs.close();
             } else {
                 logger.info("=============================HDFS/s3 文件不存在: {}", filePath);
             }
@@ -259,7 +230,6 @@ public class CleanUtils {
     public void cleanDiscardFile(long expiredTime, Connection connection) throws SQLException {
         logger.info("expiredTime: " + expiredTime);
         logger.info("从discard_compressed_file_info表中清理过期数据");
-        System.out.println("从discard_compressed_file_info表中清理过期数据");
         long currentTimeMillis = System.currentTimeMillis();
         String querySql = "SELECT file_path FROM discard_compressed_file_info WHERE timestamp < ?";
         String deleteSql = "DELETE FROM discard_compressed_file_info WHERE file_path = ?";
@@ -287,9 +257,8 @@ public class CleanUtils {
         if (directory == null) {
             return;
         }
-        // 检查目录是否为空
         if (fs.listStatus(directory).length == 0) {
-            fs.delete(directory, false); // 删除空目录
+            fs.delete(directory, false);
             deleteEmptyParentDirectories(fs, directory.getParent());
         }
     }
@@ -298,7 +267,6 @@ public class CleanUtils {
         if (directory == null) {
             return; // 根目录不需要处理
         }
-        // 检查目录是否为空
         if (Objects.requireNonNull(directory.list()).length == 0) {
             if (directory.delete()) {
                 deleteEmptyParentDirectories(directory.getParentFile());

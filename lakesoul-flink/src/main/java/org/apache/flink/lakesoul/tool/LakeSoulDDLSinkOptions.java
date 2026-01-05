@@ -59,5 +59,10 @@ public class LakeSoulDDLSinkOptions extends LakeSoulSinkOptions{
             .defaultValue(null)
             .withDescription("Database for Data into LakeSoul");
 
+    public static final ConfigOption<String> CONNFIG_YAML_PATH = ConfigOptions
+            .key("config_yaml_path")
+            .stringType()
+            .noDefaultValue()
+            .withDescription("");
 
 }
