@@ -74,19 +74,19 @@ public class JdbcCDC {
         port = parameter.getInt(SOURCE_DB_PORT.key(), MysqlDBManager.DEFAULT_MYSQL_PORT);
         String sinkDBName = parameter.get(SINK_DBNAME.key(), SINK_DBNAME.defaultValue());
         //Postgres Oracle
-        if (dbType.equalsIgnoreCase("oracle") || dbType.equalsIgnoreCase("postgres") ) {
+        if (dbType.equalsIgnoreCase("oracle") || dbType.equalsIgnoreCase("postgres")) {
             schemaList = parameter.get(SOURCE_DB_SCHEMA_LIST.key()).split(",");
             String[] tables = parameter.get(SOURCE_DB_SCHEMA_TABLES.key()).split(",");
             tableList = new String[tables.length];
             for (int i = 0; i < tables.length; i++) {
-                tableList[i] = dbName + "."+tables[i].toUpperCase();
+                tableList[i] = dbName + "." + tables[i].toUpperCase();
             }
             splitSize = parameter.getInt(SOURCE_DB_SPLIT_SIZE.key(), SOURCE_DB_SPLIT_SIZE.defaultValue());
         }
-        if (dbType.equalsIgnoreCase("sqlserver") ){
+        if (dbType.equalsIgnoreCase("sqlserver")) {
             tableList = parameter.get(SOURCE_DB_SCHEMA_TABLES.key()).split(",");
         }
-        if ( dbType.equalsIgnoreCase("mongodb")){
+        if (dbType.equalsIgnoreCase("mongodb")) {
             batchSize = parameter.getInt(BATCH_SIZE.key(), BATCH_SIZE.defaultValue());
             tableList = parameter.get(SOURCE_DB_SCHEMA_TABLES.key()).split(",");
         }
@@ -99,7 +99,7 @@ public class JdbcCDC {
         int checkpointInterval = parameter.getInt(JOB_CHECKPOINT_INTERVAL.key(),
                 JOB_CHECKPOINT_INTERVAL.defaultValue());//mill second
         Configuration globalConfig = GlobalConfiguration.loadConfiguration();
-        String warehousePath = databasePrefixPath == null ? globalConfig.getString("flink.warehouse.dir", null): databasePrefixPath;
+        String warehousePath = databasePrefixPath == null ? globalConfig.getString("flink.warehouse.dir", null) : databasePrefixPath;
         Configuration conf = new Configuration();
         // parameters for mutil tables ddl sink
         conf.set(SOURCE_DB_DB_NAME, dbName);
@@ -109,7 +109,7 @@ public class JdbcCDC {
         conf.set(SOURCE_DB_PORT, port);
         conf.set(WAREHOUSE_PATH, warehousePath);
         conf.set(SERVER_TIME_ZONE, serverTimezone);
-        conf.set(SOURCE_DB_TYPE,dbType);
+        conf.set(SOURCE_DB_TYPE, dbType);
 
         // parameters for mutil tables dml sink
         conf.set(LakeSoulSinkOptions.USE_CDC, true);
@@ -120,13 +120,17 @@ public class JdbcCDC {
         conf.set(LakeSoulSinkOptions.HASH_BUCKET_NUM, bucketParallelism);
         conf.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
         HashMap<String, List<String>> partitionMap = new HashMap<>();
-        parameter.toMap().forEach((confKey,confValue) -> {if (confKey.contains("topic_partitions_")) partitionMap.put(confKey.substring(17), Arrays.asList(confValue.split(","))); else return;});
+        parameter.toMap().forEach((confKey, confValue) -> {
+            if (confKey.contains("topic_partitions_"))
+                partitionMap.put(confKey.substring(17), Arrays.asList(confValue.split(",")));
+            else return;
+        });
         listener = null;
         StreamExecutionEnvironment env;
         appName = null;
         namespace = null;
         lineageUrl = System.getenv("LINEAGE_URL");
-        if (lineageUrl != null){
+        if (lineageUrl != null) {
             conf.set(JobOptions.transportTypeOption, "http");
             conf.set(JobOptions.urlOption, lineageUrl);
             conf.set(JobOptions.execAttach, false);
@@ -134,7 +138,7 @@ public class JdbcCDC {
             env = StreamExecutionEnvironment.getExecutionEnvironment(conf);
             appName = FileUtil.getSubNameFromBatch(env.getConfiguration().get(JobOptions.KUBE_CLUSTER_ID));
             namespace = System.getenv("LAKESOUL_CURRENT_DOMAIN");
-            if (namespace == null){
+            if (namespace == null) {
                 namespace = "public";
             }
             listener = new LakeSoulInAndOutputJobListener(lineageUrl);
@@ -188,7 +192,7 @@ public class JdbcCDC {
 
     }
 
-    private static void mysqlCdc(LakeSoulRecordConvert lakeSoulRecordConvert, Configuration conf, StreamExecutionEnvironment env,String sinkDBName) throws Exception {
+    private static void mysqlCdc(LakeSoulRecordConvert lakeSoulRecordConvert, Configuration conf, StreamExecutionEnvironment env, String sinkDBName) throws Exception {
         MySqlSourceBuilder<BinarySourceRecord> sourceBuilder = MySqlSource.<BinarySourceRecord>builder()
                 .hostname(host)
                 .port(port)
@@ -207,11 +211,21 @@ public class JdbcCDC {
         MySqlSource<BinarySourceRecord> mySqlSource = sourceBuilder.build();
 
         NameSpaceManager manager = new NameSpaceManager();
+
         manager.importOrSyncLakeSoulNamespace(dbName);
 
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;
-        context.conf = (Configuration) env.getConfiguration();
+        if (lineageUrl != null) {
+            Map<String, String> confs = ((Configuration) env.getConfiguration()).toMap();
+            confs.put(linageJobName.key(), appName);
+            confs.put(linageJobNamespace.key(), namespace);
+            confs.put(lineageJobUUID.key(), listener.getRunId());
+            confs.put(lineageOption.key(), "true");
+            context.conf = Configuration.fromMap(confs);
+        } else {
+            context.conf = (Configuration) env.getConfiguration();
+        }
         LakeSoulMultiTableSinkStreamBuilder
                 builder =
                 new LakeSoulMultiTableSinkStreamBuilder(mySqlSource, context, lakeSoulRecordConvert);
@@ -244,7 +258,16 @@ public class JdbcCDC {
         }
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;
-        context.conf = (Configuration) env.getConfiguration();
+        if (lineageUrl != null) {
+            Map<String, String> confs = ((Configuration) env.getConfiguration()).toMap();
+            confs.put(linageJobName.key(), appName);
+            confs.put(linageJobNamespace.key(), namespace);
+            confs.put(lineageJobUUID.key(), listener.getRunId());
+            confs.put(lineageOption.key(), "true");
+            context.conf = Configuration.fromMap(confs);
+        } else {
+            context.conf = (Configuration) env.getConfiguration();
+        }
         LakeSoulMultiTableSinkStreamBuilder
                 builder =
                 new LakeSoulMultiTableSinkStreamBuilder(pgSource, context, lakeSoulRecordConvert);
@@ -256,7 +279,6 @@ public class JdbcCDC {
     }
 
     private static void oracleCdc(LakeSoulRecordConvert lakeSoulRecordConvert, Configuration conf, StreamExecutionEnvironment env, String sinkDBName) throws Exception {
-
         Properties debeziumProperties = new Properties();
         debeziumProperties.setProperty("log.mining.strategy", "online_catalog");
         debeziumProperties.setProperty("log.mining.continuous.mine", "true");
@@ -284,7 +306,7 @@ public class JdbcCDC {
 
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;
-        if (lineageUrl != null){
+        if (lineageUrl != null) {
             Map<String, String> confs = ((Configuration) env.getConfiguration()).toMap();
             confs.put(linageJobName.key(), appName);
             confs.put(linageJobNamespace.key(), namespace);
@@ -323,7 +345,7 @@ public class JdbcCDC {
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
         env.getCheckpointConfig().enableUnalignedCheckpoints(false);
         context.env = env;
-        if (lineageUrl != null){
+        if (lineageUrl != null) {
             Map<String, String> confs = ((Configuration) env.getConfiguration()).toMap();
             confs.put(linageJobName.key(), appName);
             confs.put(linageJobNamespace.key(), namespace);
@@ -360,7 +382,7 @@ public class JdbcCDC {
         manager.importOrSyncLakeSoulNamespace(dbName);
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;
-        if (lineageUrl != null){
+        if (lineageUrl != null) {
             Map<String, String> confs = ((Configuration) env.getConfiguration()).toMap();
             confs.put(linageJobName.key(), appName);
             confs.put(linageJobNamespace.key(), namespace);
@@ -374,8 +396,6 @@ public class JdbcCDC {
                 builder =
                 new LakeSoulMultiTableSinkStreamBuilder(mongoSource, context, lakeSoulRecordConvert);
         DataStreamSource<BinarySourceRecord> source = builder.buildMultiTableSource("mongodb Source");
-
-        source.print();
         DataStream<BinarySourceRecord> stream = builder.buildHashPartitionedCDCStream(source);
         DataStreamSink<BinarySourceRecord> dmlSink = builder.buildLakeSoulDMLSink(stream);
         env.execute("LakeSoul CDC Sink From mongo Database " + dbName);
