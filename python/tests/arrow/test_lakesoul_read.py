@@ -168,7 +168,7 @@ def test_duckdb_compatibility():
 
     conn = duckdb.connect()
     _lds = lakesoul_dataset("part")
-    results = conn.sql("select * from _lds").arrow()
+    results = conn.sql("select * from _lds").arrow().read_all()
     assert len(results) == 20000
 
 
@@ -177,34 +177,46 @@ def test_duckdb_compatibility_with_filter_and_projections():
 
     conn = duckdb.connect()
     _lds = lakesoul_dataset("part")
-    results = conn.execute("select * from _lds where p_size = 50").arrow()
+    results = conn.execute("select * from _lds where p_size = 50").arrow().read_all()
     assert len(results) == 392
 
-    results = conn.sql("select * from _lds where p_size = 50").arrow()
+    results = conn.sql("select * from _lds where p_size = 50").arrow().read_all()
     assert len(results) == 392
 
-    results = conn.execute("select p_size,p_name from _lds where p_size = 50").arrow()
-    assert len(results) == 392
-    expected = ["p_size", "p_name"]
-    actual = [f.name for f in results.schema]
-    assert actual == expected
-    assert len(results.columns) == 2
-
-    results = conn.sql("select p_size, p_name from _lds where p_size = 50").arrow()
+    results = (
+        conn.execute("select p_size,p_name from _lds where p_size = 50")
+        .arrow()
+        .read_all()
+    )
     assert len(results) == 392
     expected = ["p_size", "p_name"]
     actual = [f.name for f in results.schema]
     assert actual == expected
     assert len(results.columns) == 2
 
-    results = conn.sql("select p_name,p_size from _lds where p_size = 50").arrow()
+    results = (
+        conn.sql("select p_size, p_name from _lds where p_size = 50").arrow().read_all()
+    )
+    assert len(results) == 392
+    expected = ["p_size", "p_name"]
+    actual = [f.name for f in results.schema]
+    assert actual == expected
+    assert len(results.columns) == 2
+
+    results = (
+        conn.sql("select p_name,p_size from _lds where p_size = 50").arrow().read_all()
+    )
     assert len(results) == 392
     expected = ["p_name", "p_size"]
     actual = [f.name for f in results.schema]
     assert actual == expected
     assert len(results.columns) == 2
 
-    results = conn.execute("select p_name,p_size from _lds where p_size = 50").arrow()
+    results = (
+        conn.execute("select p_name,p_size from _lds where p_size = 50")
+        .arrow()
+        .read_all()
+    )
     assert len(results) == 392
     expected = ["p_name", "p_size"]
     actual = [f.name for f in results.schema]
@@ -213,7 +225,7 @@ def test_duckdb_compatibility_with_filter_and_projections():
 
     with pytest.raises(BinderException) as _:
         # no such field
-        results = conn.execute("select not_existed from _lds").arrow()
+        results = conn.execute("select not_existed from _lds").arrow().read_all()
 
 
 def test_normal_lakesoul_table():
