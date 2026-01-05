@@ -11,7 +11,7 @@ authors = [
 description = "Python APIs for using LakeSoul"
 readme = "README.md"
 license = { text = "Apache-2.0" }
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 keywords = ["lakesoul", "bigdata", "ai"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -32,7 +32,7 @@ pandas = ["pandas>=1.4"]
 datasets = ["datasets>=2.14"]
 ray = ["ray>=2.7,<2.11.0"]
 pyspark = ["pyspark==3.3.1"]
-duckdb = ["duckdb"]
+duckdb = ["duckdb>=1.4.0"]
 all = [
     "torch>=1.11,<2.5",
     "pandas>=1.4",

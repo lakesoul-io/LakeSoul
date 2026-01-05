@@ -74,10 +74,6 @@ jobs:
             - uses: Swatinem/rust-cache@v2
               with:
                   workspaces: "./rust -> target"
-            - name: Cache Docker images
-              uses: ScribeMD/docker-cache@0.4.0
-              with:
-                  key: docker-${{ runner.os }}-${{ hashFiles('Cross.toml', 'docker/lakesoul-docker-compose-env/docker-compose.yml') }}
             - name: Pull images
               run: |
                   docker pull -q swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/bitnami/spark:3.3.1

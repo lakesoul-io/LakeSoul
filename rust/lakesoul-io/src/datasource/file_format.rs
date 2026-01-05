@@ -14,13 +14,15 @@ use arrow_schema::{ArrowError, FieldRef, Fields, Schema, SchemaBuilder};
 
 use datafusion::datasource::file_format::file_compression_type::FileCompressionType;
 use datafusion::datasource::file_format::{FileFormat, parquet::ParquetFormat};
+use datafusion::datasource::physical_plan::parquet::metadata::DFParquetMetadata;
 use datafusion::datasource::physical_plan::{
     FileGroup, FileScanConfig, FileSinkConfig, FileSource, ParquetSource,
 };
 
+use datafusion::datasource::table_schema::TableSchema;
 use datafusion::physical_expr::LexRequirement;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::physical_plan::projection::ProjectionExec;
+use datafusion::physical_plan::projection::{ProjectionExec, ProjectionExprs};
 use datafusion_common::{DataFusionError, Result, Statistics, project_schema};
 
 use object_store::{ObjectMeta, ObjectStore};
@@ -31,7 +33,6 @@ use crate::datasource::{
 use crate::lakesoul_io_config::LakeSoulIOConfig;
 use async_trait::async_trait;
 use datafusion::catalog::Session;
-use datafusion::datasource::file_format::parquet::fetch_parquet_metadata;
 use futures::{StreamExt, TryStreamExt};
 use parquet::arrow::parquet_to_arrow_schema;
 
@@ -71,10 +72,15 @@ impl LakeSoulParquetFormat {
 
 async fn fetch_schema(
     store: &dyn ObjectStore,
-    file: &ObjectMeta,
+    obj_meta: &ObjectMeta,
     metadata_size_hint: Option<usize>,
 ) -> Result<Schema> {
-    let metadata = fetch_parquet_metadata(store, file, metadata_size_hint).await?;
+    // TODO add cryption
+    let metadata = DFParquetMetadata::new(store, obj_meta)
+        .with_metadata_size_hint(metadata_size_hint)
+        .fetch_metadata()
+        .await?;
+
     let file_metadata = metadata.file_metadata();
     let schema = parquet_to_arrow_schema(
         file_metadata.schema_descr(),
@@ -197,10 +203,10 @@ impl FileFormat for LakeSoulParquetFormat {
                     && old_val != &value
                 {
                     return Err(DataFusionError::ArrowError(
-                        ArrowError::SchemaError(format!(
+                        Box::new(ArrowError::SchemaError(format!(
                             "Fail to merge schema due to conflicting metadata. \
                                          Key '{key}' has different values '{old_val}' and '{value}'"
-                        )),
+                        ))),
                         None,
                     ));
                 }
@@ -231,7 +237,7 @@ impl FileFormat for LakeSoulParquetFormat {
         mut conf: FileScanConfig,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let table_schema = LakeSoulTableProvider::compute_table_schema(
-            conf.file_schema.clone(),
+            conf.table_schema.table_schema().clone(), // todo try table schema
             &self.conf,
         )?;
 
@@ -249,7 +255,7 @@ impl FileFormat for LakeSoulParquetFormat {
         conf.file_source = Arc::new(parquet_source);
 
         // projection for Table instead of File
-        let projection = conf.projection.clone();
+        let projection = conf.file_column_projection_indices();
         let target_schema = project_schema(&table_schema, projection.as_ref())?;
 
         let merged_projection = compute_project_column_indices(
@@ -316,6 +322,10 @@ impl FileFormat for LakeSoulParquetFormat {
             .file_source()
             .with_statistics(Statistics::default())
     }
+
+    fn compression_type(&self) -> Option<FileCompressionType> {
+        self.parquet_format.compression_type()
+    }
 }
 
 pub async fn flatten_file_scan_config(
@@ -327,9 +337,8 @@ pub async fn flatten_file_scan_config(
     partition_schema: SchemaRef,
     target_schema: SchemaRef,
 ) -> Result<Vec<FileScanConfig>> {
-    let object_store_url = conf.object_store_url.clone();
-    let store = state.runtime_env().object_store(object_store_url.clone())?;
-
+    // TODO remove clone
+    let store = state.runtime_env().object_store(&conf.object_store_url)?;
     let file_groups = conf.file_groups.clone();
     let flatten_configs = futures::stream::iter(file_groups)
         .map(|files| {
@@ -337,7 +346,6 @@ pub async fn flatten_file_scan_config(
             let format = format.clone();
             let partition_schema = partition_schema.clone();
             let target_schema = target_schema.clone();
-            let object_store_url = object_store_url.clone();
             let conf = conf.clone();
             async move {
                 let configs: Vec<FileScanConfig> = futures::stream::iter(files.files())
@@ -346,11 +354,11 @@ pub async fn flatten_file_scan_config(
                         let format = format.clone();
                         let partition_schema = partition_schema.clone();
                         let target_schema = target_schema.clone();
-                        let object_store_url = object_store_url.clone();
                         let conf = conf.clone();
                         async move {
                             let objects = std::slice::from_ref(&file.object_meta);
                             let files = vec![file.clone()];
+                            // TODO use schema adapter rewriter?
                             let file_schema =
                                 format.infer_schema(state, &store, objects).await?;
                             let file_schema = {
@@ -374,33 +382,35 @@ pub async fn flatten_file_scan_config(
                                     &file.object_meta,
                                 )
                                 .await?;
-                            let projection = compute_project_column_indices(
+                            let projection_indices = compute_project_column_indices(
                                 file_schema.clone(),
                                 target_schema.clone(),
                                 primary_keys,
                                 cdc_column,
                             );
-                            let limit = conf.limit;
-                            let table_partition_cols = conf.table_partition_cols.clone();
-                            let output_ordering = conf.output_ordering.clone();
+                            let table_schema = TableSchema::new(
+                                file_schema,
+                                conf.table_partition_cols().clone(),
+                            );
+                            let projection_exprs = projection_indices.map(|indices| {
+                                ProjectionExprs::from_indices(
+                                    &indices,
+                                    table_schema.table_schema(),
+                                )
+                            });
                             let config = FileScanConfig {
-                                object_store_url: object_store_url.clone(),
-                                file_schema: file_schema.clone(),
+                                table_schema,
+                                projection_exprs,
+                                file_source: conf
+                                    .file_source
+                                    .with_statistics(statistics.clone()),
                                 file_groups: vec![
                                     FileGroup::new(files)
-                                        .with_statistics(Arc::new(statistics.clone())),
+                                        .with_statistics(Arc::new(statistics)),
                                 ],
-                                constraints: Default::default(),
-                                projection,
-                                limit,
-                                table_partition_cols,
-                                output_ordering,
-                                file_compression_type: FileCompressionType::ZSTD,
-                                new_lines_in_values: false,
-                                file_source: conf.file_source.with_statistics(statistics),
-                                batch_size: None,
+                                ..conf
                             };
-                            // flatten_configs.push(config);
+
                             Ok::<FileScanConfig, DataFusionError>(config)
                         }
                     })

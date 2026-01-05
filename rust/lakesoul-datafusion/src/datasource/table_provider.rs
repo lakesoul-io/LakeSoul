@@ -19,8 +19,11 @@ use datafusion::datasource::file_format::FileFormat;
 use datafusion::datasource::file_format::file_compression_type::FileCompressionType;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{ListingOptions, ListingTableUrl, PartitionedFile};
-use datafusion::datasource::physical_plan::{FileGroup, FileScanConfig, FileSinkConfig};
+use datafusion::datasource::physical_plan::{
+    FileGroup, FileScanConfig, FileScanConfigBuilder, FileSinkConfig,
+};
 use datafusion::datasource::source::DataSource;
+use datafusion::datasource::table_schema::TableSchema;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::logical_expr::expr::Sort;
@@ -333,7 +336,9 @@ impl LakeSoulTableProvider {
                     }
                 })
                 .collect::<Result<Vec<_>>>()?;
-            all_sort_orders.push(LexOrdering::new(sort_exprs));
+            if let Some(ordering) = LexOrdering::new(sort_exprs) {
+                all_sort_orders.push(ordering);
+            }
         }
         Ok(all_sort_orders)
     }
@@ -474,17 +479,18 @@ impl TableProvider for LakeSoulTableProvider {
             .options()
             .table_partition_cols
             .iter()
-            .map(|col| Ok(self.schema().field_with_name(&col.0)?.clone()))
+            .map(|col| Ok(Arc::new(self.schema().field_with_name(&col.0)?.clone())))
             .collect::<Result<Vec<_>>>()?;
-
+        // TODO change logic when datafusion 52
+        let table_schema =
+            TableSchema::new(self.file_schema.clone(), table_partition_cols.clone());
         let statistics = Arc::new(statistics);
-
         let file_source = self
             .options()
             .format
             .file_source()
             .with_statistics(Statistics::new_unknown(&self.schema()))
-            .with_schema(self.file_schema.clone());
+            .with_schema(table_schema.clone());
 
         let object_store_url = if let Some(url) = self.table_paths().first() {
             url.object_store()
@@ -492,24 +498,29 @@ impl TableProvider for LakeSoulTableProvider {
             return Ok(Arc::new(EmptyExec::new(Arc::new(Schema::empty()))));
         };
 
-        let mut scan_config = FileScanConfig {
+        let mut scan_config = FileScanConfigBuilder::new(
             object_store_url,
-            file_schema: self.schema(),
-            file_groups: partitioned_file_lists
+            table_schema.file_schema().clone(), // TODO: change logic when datafusion 52
+            file_source,
+        )
+        .with_file_groups(
+            partitioned_file_lists
                 .into_iter()
                 .map(|files| FileGroup::new(files).with_statistics(statistics.clone()))
                 .collect(),
-            constraints: Default::default(),
-            // projection for Table instead of File
-            projection: projection.cloned(),
-            limit,
-            output_ordering: self.try_create_output_ordering()?,
-            file_compression_type: FileCompressionType::ZSTD,
-            new_lines_in_values: false,
-            file_source,
-            table_partition_cols,
-            batch_size: None,
-        };
+        )
+        .with_projection_indices(projection.cloned())
+        .with_limit(limit)
+        .with_newlines_in_values(false)
+        .with_output_ordering(self.try_create_output_ordering()?)
+        .with_table_partition_cols(
+            table_partition_cols
+                .into_iter()
+                .map(|field_ref| field_ref.as_ref().clone())
+                .collect(),
+        )
+        .with_file_compression_type(FileCompressionType::ZSTD) // TODO CONF;
+        .build();
 
         if let Some(expr) = conjunction(filters.to_vec()) {
             // NOTE: Use the table schema (NOT file schema) here because `expr` may contain references to partition columns.
@@ -519,8 +530,6 @@ impl TableProvider for LakeSoulTableProvider {
                 &table_df_schema,
                 session_state.execution_props(),
             )?;
-            // let mut config = session_state.config_options().clone();
-            // config.execution.parquet.pushdown_filters = true;
 
             let res = scan_config
                 .try_pushdown_filters(vec![filter], session_state.config_options())?;

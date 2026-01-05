@@ -305,7 +305,7 @@ impl BackgroundService for S3ProxyHandle {
             let metadata_client = Arc::new(
                 MetaDataClient::from_env()
                     .await
-                    .inspect(|metadata_client| {
+                    .inspect(|_metadata_client| {
                         info!("initialized metadata client");
                     })
                     .unwrap_or_else(|e| {
