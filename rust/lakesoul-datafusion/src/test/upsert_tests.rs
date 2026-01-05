@@ -162,7 +162,7 @@ mod upsert_with_metadata_tests {
         let sess_ctx = create_session_context(&mut builder.clone().build())?;
 
         let dataframe = lakesoul_table.to_dataframe(&sess_ctx).await?;
-        let schema = SchemaRef::new(dataframe.schema().into());
+        let schema = SchemaRef::new(dataframe.schema().as_arrow().clone());
 
         let dataframe = if let Some(f) = filters {
             dataframe.filter(Parser::parse(f.clone(), schema)?)?
@@ -225,7 +225,7 @@ mod upsert_with_metadata_tests {
         let sess_ctx = create_session_context(&mut builder.clone().build())?;
 
         let dataframe = lakesoul_table.to_dataframe(&sess_ctx).await?;
-        let schema = SchemaRef::new(dataframe.schema().into());
+        let schema = SchemaRef::new(dataframe.schema().as_arrow().clone());
 
         let dataframe = if let Some(f) = filters {
             dataframe.filter(Parser::parse(f.clone(), schema)?)?
@@ -239,12 +239,7 @@ mod upsert_with_metadata_tests {
             dataframe.select_columns(&selected_cols)?
         };
 
-        let result = dataframe
-            // .explain(true, false)?
-            .collect()
-            .await?;
-
-        // print_batches(&result);
+        let result = dataframe.collect().await?;
         assert_batches_eq(table_name, expected, &result);
         Ok(())
     }
@@ -1971,7 +1966,7 @@ mod upsert_with_metadata_tests {
         .await
     }
 
-    #[tokio::test]
+    #[test_log::test(tokio::test)]
     async fn test_all_cases() -> Result<()> {
         test_merge_same_column_i32().await?;
         test_merge_different_column_i32().await?;

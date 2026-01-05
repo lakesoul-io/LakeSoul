@@ -798,7 +798,9 @@ pub fn register_s3_object_store(
 
     if bucket.is_none() {
         return Err(DataFusionError::ArrowError(
-            ArrowError::InvalidArgumentError("missing fs.s3a.bucket".to_string()),
+            Box::new(ArrowError::InvalidArgumentError(
+                "missing fs.s3a.bucket".to_string(),
+            )),
             None,
         ));
     }
@@ -843,7 +845,7 @@ pub fn register_s3_object_store(
     let s3_store = Arc::new(
         s3_store_builder
             .build()
-            .map_err(DataFusionError::ObjectStore)?,
+            .map_err(|e| DataFusionError::ObjectStore(Box::new(e)))?,
     );
 
     // add cache if env LAKESOUL_CACHE is set
@@ -879,11 +881,11 @@ pub fn register_hdfs_object_store(
 ) -> Result<()> {
     #[cfg(not(feature = "hdfs"))]
     {
-        Err(DataFusionError::ObjectStore(
+        Err(DataFusionError::ObjectStore(Box::new(
             object_store::Error::NotSupported {
                 source: "hdfs support is not enabled".into(),
             },
-        ))
+        )))
     }
     #[cfg(feature = "hdfs")]
     {
@@ -989,11 +991,11 @@ fn register_object_store(
             {
                 Ok(format!("file://{}", path))
             }
-            _ => Err(DataFusionError::ObjectStore(
+            _ => Err(DataFusionError::ObjectStore(Box::new(
                 object_store::Error::NotSupported {
                     source: "FileSystem is not supported".into(),
                 },
-            )),
+            ))),
         },
         Err(ParseError::RelativeUrlWithoutBase) => {
             let path = path.trim_start_matches('/');

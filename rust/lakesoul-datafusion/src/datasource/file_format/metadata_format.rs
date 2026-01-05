@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Debug};
 use std::sync::Arc;
 
-use arrow::datatypes::{DataType, Field, Schema, SchemaBuilder, SchemaRef};
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::catalog::Session;
 use datafusion::common::parsers::CompressionTypeVariant;
 use datafusion::common::{DFSchema, GetExt, Statistics, project_schema};
@@ -26,7 +26,8 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::physical_expr::{
-    EquivalenceProperties, LexOrdering, LexRequirement, create_physical_expr,
+    EquivalenceProperties, LexOrdering, LexRequirement, OrderingRequirements,
+    create_physical_expr,
 };
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::filter::FilterExec;
@@ -191,16 +192,15 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
             &conf,
         );
 
-        let file_schema = conf.file_schema.clone();
-        let mut builder = SchemaBuilder::from(file_schema.fields());
-        for field in &conf.table_partition_cols {
-            builder.push(Field::new(field.name(), field.data_type().clone(), false));
-        }
+        let table_schema = conf.table_schema.table_schema().clone();
 
-        let table_schema = Arc::new(builder.finish());
+        // lakesoul only use column indices
+        let projection_indices = conf
+            .projection_exprs
+            .as_ref()
+            .map(|expr| expr.ordered_column_indices());
 
-        let projection = conf.projection.clone();
-        let target_schema = project_schema(&table_schema, projection.as_ref())?;
+        let target_schema = project_schema(&table_schema, projection_indices.as_ref())?;
 
         let merged_projection = compute_project_column_indices(
             table_schema.clone(),
@@ -208,6 +208,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
             self.conf.primary_keys_slice(),
             &self.conf.cdc_column(),
         );
+
         let merged_schema = project_schema(&table_schema, merged_projection.as_ref())?;
 
         // files to read
@@ -275,7 +276,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
             partitioned_exec.push(merge_exec);
         }
         let exec = if partitioned_exec.len() > 1 {
-            Arc::new(UnionExec::new(partitioned_exec)) as Arc<dyn ExecutionPlan>
+            UnionExec::try_new(partitioned_exec)?
         } else {
             partitioned_exec.first().unwrap().clone()
         };
@@ -342,6 +343,10 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         self.parquet_format
             .file_source()
             .with_statistics(Statistics::default())
+    }
+
+    fn compression_type(&self) -> Option<FileCompressionType> {
+        self.parquet_format.compression_type()
     }
 }
 
@@ -607,7 +612,7 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         vec![Distribution::SinglePartition; self.children().len()]
     }
 
-    fn required_input_ordering(&self) -> Vec<Option<LexRequirement>> {
+    fn required_input_ordering(&self) -> Vec<Option<OrderingRequirements>> {
         // The input order is either explicitly set (such as by a ListingTable),
         // or require that the [FileSinkExec] gets the data in the order the
         // input produced it (otherwise the optimizer may choose to reorder
@@ -616,7 +621,9 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         // More rationale:
         // https://github.com/apache/arrow-datafusion/pull/6354#discussion_r1195284178
         match &self.sort_order {
-            Some(requirements) => vec![Some(requirements.clone())],
+            Some(requirements) => {
+                vec![Some(OrderingRequirements::Soft(vec![requirements.clone()]))] // TODO check this
+            }
             None => vec![],
         }
     }
