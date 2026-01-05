@@ -3,9 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 package org.apache.flink.lakesoul.entry.clean;
 
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.Path;
+import org.apache.flink.core.fs.FileSystem;
+import org.apache.flink.core.fs.Path;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -98,12 +97,11 @@ public class CleanUtils {
     public void deleteFile(List<String> filePathList) throws SQLException {
         UUID id = UUID.randomUUID();
         logger.info("[Clean-{}]: begin",id);
-        Configuration hdfsConfig = new Configuration();
         boolean hasError = false;
         for (String filePath : filePathList) {
             try{
                 if (filePath.startsWith(HDFS_URI_PREFIX) || filePath.startsWith(S3_URI_PREFIX)) {
-                    deleteHdfsFile(filePath, hdfsConfig);
+                    deleteHdfsFile(filePath);
                 } else if (filePath.startsWith("file:/")) {
                         URI uri = new URI(filePath);
                         String actualPath = new File(uri.getPath()).getAbsolutePath();
@@ -129,16 +127,14 @@ public class CleanUtils {
         }
     }
 
-    private void deleteHdfsFile(String filePath, Configuration hdfsConfig) throws IOException {
+    private void deleteHdfsFile(String filePath ) throws IOException {
         try {
-            FileSystem fs = FileSystem.get(URI.create(filePath), hdfsConfig);
             Path path = new Path(filePath);
+            FileSystem fs = FileSystem.get(path.toUri());
             if (fs.exists(path)) {
-                // false 表示不递归删除
                 fs.delete(path, false);
                 logger.info("=============================HDFS/s3 文件已删除: {}", filePath);
                 deleteEmptyParentDirectories(fs, path.getParent());
-                fs.close();
             } else {
                 logger.info("=============================HDFS/s3 文件不存在: {}", filePath);
             }
