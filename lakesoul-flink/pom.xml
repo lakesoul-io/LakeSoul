@@ -604,8 +604,16 @@ SPDX-License-Identifier: Apache-2.0
                             <shadedPattern>com.lakesoul.shaded.org.apache.spark</shadedPattern>
                         </relocation>
                         <relocation>
-                            <pattern>org.apache.flink.table.runtime</pattern>
-                            <shadedPattern>com.lakesoul.shaded.org.apache.flink.table.runtime</shadedPattern>
+                            <pattern>org.apache.flink.table.runtime.arrow</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.apache.flink.table.runtime.arrow</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.apache.flink.table.runtime.typeutils.serializers.python</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.apache.flink.table.runtime.typeutils.serializers.python</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.apache.flink.table.runtime.typeutils.PythonTypeUtils</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.apache.flink.table.runtime.typeutils.PythonTypeUtils</shadedPattern>
                         </relocation>
                         <relocation>
                             <pattern>org.apache.flink.fnexecution</pattern>
