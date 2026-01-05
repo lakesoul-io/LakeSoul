@@ -113,9 +113,7 @@ impl PartitioningAsyncWriter {
             join_handles.push(sink_task);
         }
 
-        let join_handle = tokio::spawn(Self::await_and_summary(
-            join_handles,
-        ));
+        let join_handle = tokio::spawn(Self::await_and_summary(join_handles));
 
         Ok(Self {
             schema,
