@@ -702,7 +702,7 @@ mod tests {
     async fn test_expr_eq_neq() -> Result<()> {
         let mut filters1: Vec<Expr> = vec![];
         let v = ScalarValue::Utf8(Some("Amanda".to_string()));
-        let filter = col("first_name").eq(Expr::Literal(v));
+        let filter = col("first_name").eq(Expr::Literal(v, None));
         filters1.push(filter);
         let mut row_cnt1 = 0;
         let result = get_num_rows_of_file_with_filters(
@@ -718,7 +718,7 @@ mod tests {
 
         let mut filters2: Vec<Expr> = vec![];
         let v = ScalarValue::Utf8(Some("Amanda".to_string()));
-        let filter = col("first_name").not_eq(Expr::Literal(v));
+        let filter = col("first_name").not_eq(Expr::Literal(v, None));
         filters2.push(filter);
 
         let mut row_cnt2 = 0;
@@ -742,7 +742,7 @@ mod tests {
     async fn test_expr_lteq_gt() -> Result<()> {
         let mut filters1: Vec<Expr> = vec![];
         let v = ScalarValue::Float64(Some(139177.2));
-        let filter = col("salary").lt_eq(Expr::Literal(v));
+        let filter = col("salary").lt_eq(Expr::Literal(v, None));
         filters1.push(filter);
 
         let mut row_cnt1 = 0;
@@ -759,7 +759,7 @@ mod tests {
 
         let mut filters2: Vec<Expr> = vec![];
         let v = ScalarValue::Float64(Some(139177.2));
-        let filter = col("salary").gt(Expr::Literal(v));
+        let filter = col("salary").gt(Expr::Literal(v, None));
         filters2.push(filter);
 
         let mut row_cnt2 = 0;
@@ -839,7 +839,7 @@ mod tests {
         let mut filters1: Vec<Expr> = vec![];
         let first_name = ScalarValue::Utf8(Some("Amanda".to_string()));
         // let filter = col("first_name").eq(Expr::Literal(first_name)).and(col("last_name").eq(Expr::Literal(last_name)));
-        let filter = col("first_name").eq(Expr::Literal(first_name));
+        let filter = col("first_name").eq(Expr::Literal(first_name, None));
 
         filters1.push(filter);
         let mut row_cnt1 = 0;
@@ -858,7 +858,7 @@ mod tests {
         let mut filters2: Vec<Expr> = vec![];
         let last_name = ScalarValue::Utf8(Some("Jordan".to_string()));
         // let filter = col("first_name").eq(Expr::Literal(first_name)).and(col("last_name").eq(Expr::Literal(last_name)));
-        let filter = col("last_name").eq(Expr::Literal(last_name));
+        let filter = col("last_name").eq(Expr::Literal(last_name, None));
 
         filters2.push(filter);
         let mut row_cnt2 = 0;
@@ -877,8 +877,8 @@ mod tests {
         let first_name = ScalarValue::Utf8(Some("Amanda".to_string()));
         let last_name = ScalarValue::Utf8(Some("Jordan".to_string()));
         let filter = col("first_name")
-            .eq(Expr::Literal(first_name))
-            .and(col("last_name").eq(Expr::Literal(last_name)));
+            .eq(Expr::Literal(first_name, None))
+            .and(col("last_name").eq(Expr::Literal(last_name, None)));
 
         filters.push(filter);
         let mut row_cnt3 = 0;
@@ -897,8 +897,8 @@ mod tests {
         let first_name = ScalarValue::Utf8(Some("Amanda".to_string()));
         let last_name = ScalarValue::Utf8(Some("Jordan".to_string()));
         let filter = col("first_name")
-            .eq(Expr::Literal(first_name))
-            .or(col("last_name").eq(Expr::Literal(last_name)));
+            .eq(Expr::Literal(first_name, None))
+            .or(col("last_name").eq(Expr::Literal(last_name, None)));
         filters.push(filter);
         let mut row_cnt4 = 0;
         let result = get_num_rows_of_file_with_filters(

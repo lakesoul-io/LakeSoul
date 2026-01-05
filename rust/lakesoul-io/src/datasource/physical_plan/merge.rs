@@ -16,6 +16,7 @@ use crate::sorted_merge::sorted_stream_merger::{
     SortedStream, build_sorted_stream_merger,
 };
 use arrow_schema::{Field, Schema, SchemaRef};
+use datafusion::catalog::memory::DataSourceExec;
 use datafusion::dataframe::DataFrame;
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 
@@ -24,13 +25,11 @@ use datafusion::physical_expr::{EquivalenceProperties, LexOrdering};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::{ExecutionPlanProperties, Partitioning, PlanProperties};
 use datafusion::prelude::SessionContext;
-#[allow(deprecated)]
 use datafusion::{
-    datasource::physical_plan::{FileScanConfig, ParquetExec},
+    datasource::physical_plan::FileScanConfig,
     execution::TaskContext,
     physical_plan::{
-        DisplayAs, DisplayFormatType, ExecutionPlan, PhysicalExpr,
-        SendableRecordBatchStream,
+        DisplayAs, DisplayFormatType, ExecutionPlan, SendableRecordBatchStream,
     },
 };
 use datafusion_common::{DFSchemaRef, DataFusionError, Result};
@@ -60,24 +59,12 @@ impl MergeParquetExec {
     pub fn new(
         schema: SchemaRef,
         flatten_configs: Vec<FileScanConfig>,
-        predicate: Option<Arc<dyn PhysicalExpr>>,
-        metadata_size_hint: Option<usize>,
         io_config: LakeSoulIOConfig,
     ) -> Result<Self> {
         // source file parquet scan
         let mut inputs = Vec::<Arc<dyn ExecutionPlan>>::new();
         for config in flatten_configs {
-            let single_exec = Arc::new({
-                #[allow(deprecated)]
-                let mut builder = ParquetExec::builder(config);
-                if let Some(predicate) = predicate.clone() {
-                    builder = builder.with_predicate(predicate.clone());
-                }
-                if let Some(metadata_size_hint) = metadata_size_hint {
-                    builder = builder.with_metadata_size_hint(metadata_size_hint);
-                }
-                builder.build()
-            });
+            let single_exec = DataSourceExec::from_data_source(config);
             inputs.push(single_exec);
         }
         // O(nml), n = number of schema fields, m = number of file schema fields, l = number of files

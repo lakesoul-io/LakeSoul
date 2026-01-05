@@ -8,7 +8,10 @@ use arrow_flight::{
     error::FlightError,
     sql::{CommandStatementIngest, client::FlightSqlServiceClient},
 };
-use assert_cmd::cargo::CommandCargoExt;
+use assert_cmd::{
+    cargo::{CommandCargoExt, cargo_bin},
+    pkg_name,
+};
 use core::panic;
 use futures::{Stream, StreamExt};
 use lakesoul_flight::TokenServerClient;
@@ -22,8 +25,6 @@ use std::{
 use tonic::{Request, transport::Channel};
 use tracing::info;
 
-const BIN_NAME: &str = "flight_sql_server";
-
 pub struct TestServer {
     process: Child,
 }
@@ -34,7 +35,7 @@ impl TestServer {
         envs: Vec<(&'static str, &'static str)>,
     ) -> anyhow::Result<Self> {
         info!("test server started");
-        let process = Command::cargo_bin(BIN_NAME)?
+        let process = Command::new(cargo_bin!("flight_sql_server"))
             .args(args)
             .envs(envs)
             .spawn()?;

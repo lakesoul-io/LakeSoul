@@ -43,7 +43,7 @@ macro_rules! define_tpch_udtf_provider {
             /// The second and third argument are optional and will default to 1
             /// for both values which tells the generator to generate all parts.
             fn call(&self, args: &[Expr]) -> Result<Arc<dyn TableProvider>> {
-                let Some(Expr::Literal(ScalarValue::Float64(Some(scale_factor)))) =
+                let Some(Expr::Literal(ScalarValue::Float64(Some(scale_factor)), _)) =
                     args.get(0)
                 else {
                     return plan_err!("First argument must be a float literal.");
@@ -56,7 +56,8 @@ macro_rules! define_tpch_udtf_provider {
                 if args.len() > 1 {
                     // Check if the second argument and third arguments are i32 literals and
                     // greater than 0.
-                    let Some(Expr::Literal(ScalarValue::Int64(Some(n)))) = args.get(1)
+                    let Some(Expr::Literal(ScalarValue::Int64(Some(n)), None)) =
+                        args.get(1)
                     else {
                         return plan_err!("Second argument must be an i64 literal.");
                     };
@@ -102,6 +103,5 @@ pub fn register_tpch_udtfs(ctx: &SessionContext) -> Result<()> {
     ctx.register_udtf(TpchPartsupp::name(), Arc::new(TpchPartsupp {}));
     ctx.register_udtf(TpchSupplier::name(), Arc::new(TpchSupplier {}));
     ctx.register_udtf(TpchRegion::name(), Arc::new(TpchRegion {}));
-
     Ok(())
 }

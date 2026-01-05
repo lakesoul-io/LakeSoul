@@ -18,6 +18,12 @@ pub struct S3ProxyContext {
     pub delete_request: Option<Delete>,
 }
 
+impl Default for S3ProxyContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl S3ProxyContext {
     pub fn new() -> Self {
         Self {

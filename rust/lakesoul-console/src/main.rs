@@ -12,6 +12,7 @@ use lakesoul_datafusion::{
 };
 use rand::Rng;
 use rand::distr::Alphanumeric;
+use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
 
 mod exec;
@@ -78,16 +79,15 @@ fn rand_str() -> String {
     s
 }
 
-fn init_log(mut log_dir: &str) {
+fn init_log(mut log_dir: &str) -> WorkerGuard {
     if log_dir.ends_with("/") {
         log_dir = &log_dir[..log_dir.len() - 1];
     }
 
     let log_dir = format!("{log_dir}/lakesoul_log_{}", rand_str());
-    tracing::debug!("log_dir:{}", &log_dir);
     let file_appender = tracing_appender::rolling::never(&log_dir, "console.log");
     let timer = tracing_subscriber::fmt::time::ChronoLocal::rfc_3339();
-    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
     let level = EnvFilter::from_default_env();
     tracing_subscriber::fmt()
         .with_writer(non_blocking)
@@ -96,6 +96,8 @@ fn init_log(mut log_dir: &str) {
         .with_thread_ids(true)
         .with_timer(timer)
         .init();
+    tracing::debug!("log_dir:{}", &log_dir);
+    guard
 }
 
 fn print_banner() {
@@ -104,7 +106,7 @@ fn print_banner() {
 
 async fn main_inner(cli: Cli) -> anyhow::Result<()> {
     print_banner();
-    init_log(&cli.log_dir);
+    let _log_guard = init_log(&cli.log_dir);
     let meta_client = Arc::new(MetaDataClient::from_env().await?);
 
     let ctx = create_lakesoul_session_ctx(meta_client, &cli.core).unwrap();

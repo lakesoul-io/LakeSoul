@@ -232,6 +232,7 @@ async fn test_jwt() {
         }
     }
 }
+
 async fn test_rbac() {
     let claims = Claims {
         sub: "lake-iam-001".to_string(),
