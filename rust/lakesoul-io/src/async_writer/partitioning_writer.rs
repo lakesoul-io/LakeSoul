@@ -21,9 +21,9 @@ use datafusion::{
     },
 };
 use datafusion_common::{DataFusionError, Result};
+use futures::{StreamExt, TryStreamExt, stream};
 use rand::distr::SampleString;
 use tokio::{sync::mpsc::Sender, task::JoinHandle};
-use tokio_stream::StreamExt;
 
 use crate::{
     datasource::physical_plan::self_incremental_index_column::SelfIncrementalIndexColumnExec,
@@ -115,7 +115,6 @@ impl PartitioningAsyncWriter {
 
         let join_handle = tokio::spawn(Self::await_and_summary(
             join_handles,
-            // partitioned_file_path_and_row_count,
         ));
 
         Ok(Self {
@@ -348,18 +347,29 @@ impl PartitioningAsyncWriter {
     ) -> Result<WriterFlushResult> {
         let mut flatten_results = Vec::new();
 
-        for result in futures::future::join_all(join_handles).await {
-            let part_join_handles =
-                result.map_err(|e| DataFusionError::Execution(e.to_string()))??;
-            for part_result in futures::future::join_all(part_join_handles).await {
-                let flatten_part_result =
-                    part_result.map_err(|e| DataFusionError::Execution(e.to_string()))?;
-                flatten_results.extend(
-                    flatten_part_result
-                        .map_err(|e| DataFusionError::Execution(e.to_string()))?,
-                );
-            }
-        }
+        stream::iter(join_handles)
+            .then(|join_handle| async move {
+                let part_join_handles = join_handle
+                    .await
+                    .map_err(|e| DataFusionError::Execution(e.to_string()))??;
+                Ok::<_, DataFusionError>(stream::iter(part_join_handles).then(
+                    |join_handle| {
+                        Box::pin(async move {
+                            let part_result = join_handle.await.map_err(|e| {
+                                DataFusionError::Execution(e.to_string())
+                            })??;
+                            Ok::<_, DataFusionError>(part_result)
+                        })
+                    },
+                ))
+            })
+            .try_flatten_unordered(Some(8))
+            .try_collect::<Vec<_>>()
+            .await?
+            .into_iter()
+            .for_each(|result| {
+                flatten_results.extend(result);
+            });
 
         Ok(flatten_results)
     }
