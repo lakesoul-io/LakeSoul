@@ -39,43 +39,40 @@
 //!
 //! # Modules
 //!
-//! - `lakesoul_reader` - Core reading functionality
-//! - `lakesoul_writer` - Core writing functionality
-//! - `lakesoul_io_config` - Configuration types
-//! - `datasource` - Data source implementations
-//! - `sorted_merge` - Sorted merge operations
-//! - `repartition` - Data repartitioning utilities
+//! - `cache` - Object store cache impl
+//! - `config` - Configuration types
+//! - `constant` - constants used for lakesoul
+//! - `file_format` - datafusion file format impl
 //! - `filter` - Filter pushdown support
-//! - `helpers` - Utility functions
-//! - `hash_utils` - Hash-related utilities
+//! - `helpers` - Helper functions for physical plan construction and execution
 //! - `local_sensitive_hash` - Local sensitive hashing support
-
-use rootcause::Report;
+//! - `object_store` - obejct store configuration
+//! - `physical_plan` - Physical Plan implementations
+//! - `reader` - Core reading functionality
+//! - `session` - dafusion session impl
+//! - `utils` -  Common utilities
+//! - `writer` - Core writing functionality
 
 #[macro_use]
 extern crate tracing;
 
-pub type Result<T, E = Report> = std::result::Result<T, E>;
+pub type Result<T, E = rootcause::Report> = std::result::Result<T, E>;
+
+#[cfg(feature = "hdfs")]
+mod hdfs;
 
 pub mod cache;
 pub mod config;
 pub mod constant;
-// pub mod datasource;
-// mod default_column_stream;
-pub mod filter;
-// pub mod hash_utils;
 pub mod file_format;
-#[cfg(feature = "hdfs")]
-mod hdfs;
+pub mod filter;
 pub mod helpers;
 pub mod local_sensitive_hash;
 pub mod object_store;
 pub mod physical_plan;
 pub mod reader;
-
-// pub mod repartition;
 pub mod session;
-// pub mod sorted_merge;
-mod stream;
 pub mod utils;
 pub mod writer;
+
+mod stream;

@@ -97,18 +97,19 @@ pub fn transform_schema(
     }
 }
 
+#[instrument(skip(batch))]
 pub fn transform_record_batch(
-    target_schema: SchemaRef,
+    merged_schema: SchemaRef,
     batch: RecordBatch,
     use_default: bool,
     default_column_value: Arc<HashMap<String, String>>,
 ) -> Result<RecordBatch> {
     let num_rows = batch.num_rows();
-    let orig_schema = batch.schema();
+    let batch_schema = batch.schema(); // file schema?
     let name_to_index =
-        if orig_schema.fields().len() > crate::constant::NUM_COLUMN_OPTIMIZE_THRESHOLD {
+        if batch_schema.fields().len() > crate::constant::NUM_COLUMN_OPTIMIZE_THRESHOLD {
             Some(HashMap::<String, usize>::from_iter(
-                orig_schema
+                batch_schema
                     .fields()
                     .iter()
                     .enumerate()
@@ -120,14 +121,15 @@ pub fn transform_record_batch(
     let mut transform_arrays = Vec::new();
     let mut fields = vec![];
     // O(nm) n = orig_schema.fields().len(), m = target_schema.fields().len()
-    target_schema.fields().iter().enumerate().try_for_each(
+    merged_schema.fields().iter().enumerate().try_for_each(
         |(_, target_field)| -> Result<()> {
             match column_with_name_and_name2index(
-                &orig_schema,
+                &batch_schema,
                 target_field.name(),
                 &name_to_index,
             ) {
                 Some((idx, _)) => {
+                    // in batch schema
                     let data_type = target_field.data_type();
                     let transformed_array = transform_array(
                         target_field.name().to_string(),

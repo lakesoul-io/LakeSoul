@@ -102,8 +102,8 @@ impl LakeSoulReader {
     /// # Returns
     ///
     /// A Result containing the new LakeSoulReader instance
+    #[instrument(skip(io_config))]
     pub fn new(io_config: LakeSoulIOConfig) -> Result<Self> {
-        debug!(io_config=?io_config);
         if io_config.files.is_empty() {
             bail!("LakeSoulReader has the wrong number of files");
         }
@@ -222,7 +222,9 @@ impl LakeSoulReader {
             let plan = self.io_session.build_physical_plan(filters).await?;
             execute_stream(plan, self.io_session.task_ctx())?
         };
-        self.schema = Some(stream.schema());
+        let schema = stream.schema();
+        debug!("reader schema: {}", schema);
+        self.schema = Some(schema);
         self.stream = Some(stream);
 
         Ok(())
@@ -1180,7 +1182,7 @@ mod tests {
         ]);
         let io_config = LakeSoulIOConfig::builder()
             .with_file("file:/tmp/lakesoul/spark/range=range2/part--0001-f1742635-8034-4190-b273-839fe78617db_00000.c000.parquet".to_string())
-            .with_primary_key("hash".into())
+            .with_primary_key("hash")
             .with_filter_str("and(noteq(op, null), eq(op, Binary{\"xinsert\"}))".into())
             .with_default_column_value("range", "range2")
             .with_schema(Arc::new(schema))
@@ -1215,6 +1217,29 @@ mod tests {
             .with_option("is_compacted", "false")
             .with_option("skip_merge_on_read", "false")
             .with_option("hash_bucket_num", "1")
+            .with_object_store_option("fs.s3a.path.style.access", "false")
+            .with_object_store_option("fs.defaultFS", "file:///")
+            .build();
+        let mut reader = LakeSoulReader::new(io_config).unwrap();
+        reader.start().await.unwrap();
+
+        let mut batches = vec![];
+
+        while let Some(res) = reader.next_rb().await {
+            batches.push(res.unwrap());
+        }
+
+        print_batches(&batches).unwrap();
+    }
+
+    #[test_log::test(tokio::test)]
+    async fn empty_schmea_test() {
+        let schema = Schema::empty();
+        let io_config = LakeSoulIOConfig::builder()
+            .with_file("file:/data/lakesoul/tpch_data/customer/part-kxS5YLIa42tEboX3_0000.parquet")
+            .with_schema(Arc::new(schema))
+            .with_option("is_compacted", "false")
+            .with_option("skip_merge_on_read", "false")
             .with_object_store_option("fs.s3a.path.style.access", "false")
             .with_object_store_option("fs.defaultFS", "file:///")
             .build();

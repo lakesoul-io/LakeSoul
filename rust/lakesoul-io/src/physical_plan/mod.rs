@@ -12,7 +12,7 @@ mod datasource {
 }
 
 #[allow(dead_code)]
-mod empty_schema;
+pub(crate) mod empty_schema;
 
 mod api {
     pub use super::merge::MergeParquetExec;

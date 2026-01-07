@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
 //
 // SPDX-License-Identifier: Apache-2.0
 
@@ -17,12 +18,14 @@ use arrow_schema::{
 use chrono::{DateTime, Duration};
 use datafusion_catalog_listing::{ListingOptions, ListingTable, ListingTableConfig};
 use datafusion_common::DataFusionError;
+use datafusion_common::tree_node::{Transformed, TreeNode};
 use datafusion_common::{DFSchema, ScalarValue};
 use datafusion_datasource::ListingTableUrl;
 use datafusion_datasource::file_format::FileFormat;
 use datafusion_datasource::file_scan_config::FileScanConfig;
 use datafusion_execution::TaskContext;
-use datafusion_expr::col;
+use datafusion_expr::binary::BinaryTypeCoercer;
+use datafusion_expr::{BinaryExpr, Expr, ExprSchemable, col};
 use datafusion_physical_expr::create_physical_sort_expr;
 use datafusion_physical_expr::{PhysicalSortExpr, create_physical_expr};
 use datafusion_physical_plan::PhysicalExpr;
@@ -539,7 +542,7 @@ pub fn partition_desc_from_file_scan_config(
     // conf's table_schema is not stable
     // so use file source's
     if conf.table_partition_cols().is_empty() {
-        warn!("wow: NO range");
+        warn!("partition is empty");
         Ok(("-5".to_string(), HashMap::default()))
     } else {
         match conf.file_groups.first().and_then(|g| g.files().first()) {
@@ -1096,4 +1099,35 @@ impl LazyBatchGenerator for InMemGenerator {
     fn generate_next_batch(&mut self) -> Result<Option<RecordBatch>, DataFusionError> {
         Ok(self.batches.pop_front())
     }
+}
+
+pub(crate) fn coerce_filter_type(expr: Expr, schema: &DFSchema) -> Result<Expr> {
+    expr.transform(|e| {
+        if let Expr::BinaryExpr(BinaryExpr { left, op, right }) = e {
+            let left_type = left.get_type(schema)?;
+            let right_type = right.get_type(schema)?;
+
+            if left_type != right_type {
+                // 使用你代码中的 BinaryTypeCoercer
+                let coercer = BinaryTypeCoercer::new(&left_type, &op, &right_type);
+                if let Ok((coerced_lhs, coerced_rhs)) = coercer.get_input_types() {
+                    return Ok(Transformed::yes(Expr::BinaryExpr(BinaryExpr {
+                        left: Box::new(left.cast_to(&coerced_lhs, schema)?),
+                        op,
+                        right: Box::new(right.cast_to(&coerced_rhs, schema)?),
+                    })));
+                }
+            }
+            Ok(Transformed::no(Expr::BinaryExpr(BinaryExpr {
+                left,
+                op,
+                right,
+            })))
+        } else {
+            // 其它类型（如 Alias, Not, ScalarFunction 等）会自动递归处理其子项
+            Ok(Transformed::no(e))
+        }
+    })
+    .map(|res| res.data)
+    .map_err(|e| e.into())
 }

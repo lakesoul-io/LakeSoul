@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use std::{collections::HashMap, sync::Arc};
 
 use arrow_schema::{Schema, SchemaRef};
@@ -10,6 +14,7 @@ use itertools::Itertools;
 use crate::{
     Result,
     filter::parser::{FilterContainer, Parser},
+    helpers::coerce_filter_type,
 };
 
 mod options;
@@ -325,8 +330,8 @@ impl LakeSoulIOConfigBuilder {
     /// # Arguments
     ///
     /// * `pks` - The primary key to add
-    pub fn with_primary_key(mut self, pks: String) -> Self {
-        self.config.primary_keys.push(pks);
+    pub fn with_primary_key(mut self, pks: impl Into<String>) -> Self {
+        self.config.primary_keys.push(pks.into());
         self
     }
 
@@ -365,8 +370,8 @@ impl LakeSoulIOConfigBuilder {
     /// # Arguments
     ///
     /// * `hash_bucket_num` - The number of hash buckets for partitioning
-    pub fn with_hash_bucket_num(mut self, hash_bucket_num: String) -> Self {
-        self.config.hash_bucket_num = hash_bucket_num;
+    pub fn with_hash_bucket_num(mut self, hash_bucket_num: impl Into<String>) -> Self {
+        self.config.hash_bucket_num = hash_bucket_num.into();
         self
     }
 
@@ -682,7 +687,7 @@ impl LakeSoulIOConfig {
             .chain(filter_protos.into_iter().map(FilterContainer::Plan))
             .chain(filter_bufs.into_iter().map(FilterContainer::RawBuf));
 
-        let df_schema = DFSchema::try_from_qualified_schema("?table?", table_schema)?;
+        let df_schema = DFSchema::try_from(table_schema.clone())?;
 
         let mut exprs: Vec<Expr> = Vec::new();
 
@@ -693,7 +698,13 @@ impl LakeSoulIOConfig {
                 Parser::parse_filter_container(&dummy_ctx, &df_schema, container).await?,
             );
         }
+        let exprs = exprs
+            .into_iter()
+            .map(|expr| coerce_filter_type(expr, &df_schema))
+            .collect::<Result<Vec<_>>>()?;
+
         debug!("parser filter exprs: {}", exprs.iter().format(","));
+
         Ok(exprs)
     }
 }

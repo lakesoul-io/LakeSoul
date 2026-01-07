@@ -52,6 +52,13 @@ pub mod async_writer;
 
 pub type SendableWriter = Box<dyn AsyncBatchWriter + Send>;
 
+pub async fn create_writer_with_io_config(
+    io_config: LakeSoulIOConfig,
+) -> Result<Box<dyn AsyncBatchWriter + Send>> {
+    let io_session = Arc::new(LakeSoulIOSession::try_new(io_config)?);
+    create_writer(io_session).await
+}
+
 pub async fn create_writer(
     io_session: Arc<LakeSoulIOSession>,
 ) -> Result<Box<dyn AsyncBatchWriter + Send>> {
@@ -133,6 +140,7 @@ pub struct SyncSendableMutableLakeSoulWriter {
 }
 
 impl SyncSendableMutableLakeSoulWriter {
+    #[instrument(skip(io_config, runtime))]
     pub fn from_io_config(io_config: LakeSoulIOConfig, runtime: Runtime) -> Result<Self> {
         let io_session = Arc::new(LakeSoulIOSession::try_new(io_config)?);
         Self::try_new(io_session, runtime)
@@ -229,6 +237,8 @@ impl SyncSendableMutableLakeSoulWriter {
                 async move { self.write_batch_async(record_batch, false).await },
             )
         } else if self.io_config().compute_lsh() {
+            debug!("batch schema: {}", record_batch.schema());
+
             let mut new_columns = record_batch.columns().to_vec();
 
             for (field_name, lsh_computer) in self.lsh_computers.iter() {
@@ -249,6 +259,9 @@ impl SyncSendableMutableLakeSoulWriter {
                     }
                 }
             }
+
+            debug!("target schema: {}", self.io_config().target_schema());
+            debug!("len: {}", new_columns.len());
 
             let new_record_batch =
                 RecordBatch::try_new(self.io_config().target_schema(), new_columns)?;

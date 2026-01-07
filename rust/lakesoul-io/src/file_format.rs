@@ -232,12 +232,6 @@ impl FileFormat for LakeSoulParquetFormat {
         state: &dyn Session,
         mut conf: FileScanConfig,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        // let table_schema = compute_table_schema(
-        //     conf.table_schema.table_schema().clone(),
-        //     &self.io_config,
-        // )
-        // .map_err(|e| DataFusionError::External(e.into_boxed_error()))?;
-
         let table_schema = conf.table_schema.table_schema();
 
         // adapted file source with metadata size hint
@@ -253,10 +247,11 @@ impl FileFormat for LakeSoulParquetFormat {
 
         conf.file_source = Arc::new(parquet_source);
 
-        // projection for Table instead of File
+        // projection for Table Schema instead of File Schema
         let projection = conf.file_column_projection_indices();
         let target_schema = project_schema(table_schema, projection.as_ref())?;
 
+        // merge cdc and pks
         let merged_projection = compute_project_column_indices(
             table_schema.clone(),
             target_schema.clone(),
@@ -339,9 +334,10 @@ pub async fn flatten_file_scan_config(
     conf: FileScanConfig,
     primary_keys: &[String],
     cdc_column: &str,
-    partition_schema: SchemaRef,
+    partition_schema: SchemaRef, // use less
     target_schema: SchemaRef,
 ) -> Result<Vec<FileScanConfig>> {
+    debug!("partition schema: {}", partition_schema);
     // TODO remove clone
     let store = state.runtime_env().object_store(&conf.object_store_url)?;
     let file_groups = conf.file_groups.clone();
@@ -370,6 +366,7 @@ pub async fn flatten_file_scan_config(
                                 let mut builder = SchemaBuilder::new();
                                 // O(nm), n = number of fields, m = number of partition columns
                                 for field in file_schema.fields() {
+                                    // in file not in partition
                                     if partition_schema
                                         .field_with_name(field.name())
                                         .is_err()
@@ -379,6 +376,7 @@ pub async fn flatten_file_scan_config(
                                 }
                                 SchemaRef::new(builder.finish())
                             };
+                            debug!("file schema:{}", file_schema);
                             let statistics = format
                                 .infer_stats(
                                     state,
@@ -393,10 +391,11 @@ pub async fn flatten_file_scan_config(
                                 primary_keys,
                                 cdc_column,
                             );
-                            let table_schema = TableSchema::new(
-                                file_schema,
-                                conf.table_partition_cols().clone(),
-                            );
+                            let cols = conf.table_partition_cols().clone();
+                            debug!("partition cols: {:?}", cols);
+                            debug!("flatten: file_schema: {}", file_schema);
+                            // only file schema
+                            let table_schema = TableSchema::new(file_schema, cols);
                             let projection_exprs = projection_indices.map(|indices| {
                                 ProjectionExprs::from_indices(
                                     &indices,
@@ -447,7 +446,7 @@ pub fn compute_project_column_indices(
             .enumerate()
             .filter_map(|(idx, field)| {
                 if projected_schema.field_with_name(field.name()).is_ok()
-                    || primary_keys.contains(field.name())
+                    || primary_keys.contains(field.name()) // linear
                     || field.name().eq(&cdc_column)
                 {
                     Some(idx)

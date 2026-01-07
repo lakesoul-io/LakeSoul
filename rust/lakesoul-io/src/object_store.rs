@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2024 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use std::{sync::Arc, time::Duration};
 
 use datafusion_execution::object_store::ObjectStoreUrl;

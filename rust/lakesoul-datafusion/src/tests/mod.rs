@@ -2,8 +2,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use arrow::array::RecordBatch;
 use std::sync::Arc;
+
+use arrow::array::RecordBatch;
 
 use lakesoul_metadata::MetaDataClient;
 

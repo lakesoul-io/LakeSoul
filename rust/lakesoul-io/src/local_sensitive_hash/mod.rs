@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2024 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use arrow::array::{
     Array, Float32Array, Float64Array, GenericListArray, Int64Array, ListArray,
 };

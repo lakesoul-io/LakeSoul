@@ -7,6 +7,7 @@
 /build/
 /.idea/
 /spark-warehouse/
+/lakesoul-spark-gluten/target/
 /derby.log
 /.metals/
 /.vscode/

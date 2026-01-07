@@ -133,7 +133,7 @@ macro_rules! primitive_merge_helper {
 }
 
 macro_rules! merge_helper {
-    ($t:ty, $streams:ident, $col_name:ident, $merge_schema:ident, $target_schema:ident, $batch_size:ident, $default_column_value:ident, $reservation:ident, $merge_operator:ident, $fields_map:ident) => {{
+    ($t:ty, $streams:ident, $col_name:ident, $physical_schema:ident, $merged_schema:ident, $batch_size:ident, $default_column_value:ident, $reservation:ident, $merge_operator:ident, $fields_map:ident) => {{
         let streams = $streams
             .into_iter()
             .map(|s| {
@@ -153,8 +153,8 @@ macro_rules! merge_helper {
         create_merger!(
             ArrayValues<<$t as CursorArray>::Values>,
             streams,
-            $merge_schema,
-            $target_schema,
+            $physical_schema,
+            $merged_schema,
             $fields_map,
             $batch_size,
             $merge_operator,
@@ -164,7 +164,7 @@ macro_rules! merge_helper {
 }
 
 macro_rules! create_merger {
-    ($t:ty, $streams:ident, $merge_schema:ident, $target_schema:ident, $fields_map:ident, $batch_size:ident, $merge_operator:ident, $default_column_value:ident) => {{
+    ($t:ty, $streams:ident, $physical_schema:ident, $merged_schema:ident, $fields_map:ident, $batch_size:ident, $merge_operator:ident, $default_column_value:ident) => {{
         let streams_num = $streams.len();
         if $merge_operator.is_empty()
             || $merge_operator
@@ -173,60 +173,63 @@ macro_rules! create_merger {
         {
             let is_partial_merge = $fields_map
                 .iter()
-                .any(|f| f.len() != $merge_schema.fields().len());
+                .any(|f| f.len() != $physical_schema.fields().len());
             if is_partial_merge {
                 let combiner = UseLastRangeCombiner::<$t, true>::new(
-                    $merge_schema.clone(),
+                    $physical_schema.clone(),
                     streams_num,
                     $fields_map,
                     $batch_size,
                 );
                 let merge_stream = SortedStreamMerger::new_from_streams(
                     $streams,
-                    $merge_schema,
+                    $physical_schema,
                     combiner,
                 )?;
                 return Ok(Box::pin(
                     DefaultColumnStream::new_from_streams_with_default(
                         vec![Box::pin(merge_stream)],
-                        $target_schema,
+                        $merged_schema,
                         $default_column_value,
                     ),
                 ));
             } else {
                 let combiner = UseLastRangeCombiner::<$t, false>::new(
-                    $merge_schema.clone(),
+                    $physical_schema.clone(),
                     streams_num,
                     $fields_map,
                     $batch_size,
                 );
                 let merge_stream = SortedStreamMerger::new_from_streams(
                     $streams,
-                    $merge_schema,
+                    $physical_schema,
                     combiner,
                 )?;
                 return Ok(Box::pin(
                     DefaultColumnStream::new_from_streams_with_default(
                         vec![Box::pin(merge_stream)],
-                        $target_schema,
+                        $merged_schema,
                         $default_column_value,
                     ),
                 ));
             }
         } else {
             let combiner = MinHeapSortKeyBatchRangeCombiner::new(
-                $merge_schema.clone(),
+                $physical_schema.clone(),
                 streams_num,
                 $fields_map,
                 $batch_size,
                 $merge_operator,
             );
-            let merge_stream =
-                SortedStreamMerger::new_from_streams($streams, $merge_schema, combiner)?;
+            let merge_stream = SortedStreamMerger::new_from_streams(
+                $streams,
+                $physical_schema,
+                combiner,
+            )?;
             return Ok(Box::pin(
                 DefaultColumnStream::new_from_streams_with_default(
                     vec![Box::pin(merge_stream)],
-                    $target_schema,
+                    $merged_schema,
                     $default_column_value,
                 ),
             ));
@@ -237,8 +240,8 @@ macro_rules! create_merger {
 pub(crate) fn build_sorted_stream_merger(
     streams: Vec<SortedStream>,
     primary_keys: Arc<Vec<String>>,
-    merge_schema: SchemaRef,
-    target_schema: SchemaRef,
+    physical_schema: SchemaRef,
+    merged_schema: SchemaRef,
     batch_size: usize,
     default_column_value: Arc<HashMap<String, String>>,
     merge_operator: Vec<MergeOperator>,
@@ -251,7 +254,7 @@ pub(crate) fn build_sorted_stream_merger(
                 .schema()
                 .fields()
                 .iter()
-                .map(|f| Ok(merge_schema.index_of(f.name())?))
+                .map(|f| Ok(physical_schema.index_of(f.name())?))
                 .collect::<Result<Vec<usize>>>()
         })
         .collect::<Result<Vec<_>>>()?;
@@ -261,14 +264,14 @@ pub(crate) fn build_sorted_stream_merger(
     // use FieldCursorStream to avoid RowConverter overhead
     if primary_keys.len() == 1 {
         let col_name = primary_keys[0].as_str();
-        let data_type = merge_schema.field_with_name(col_name)?.data_type();
+        let data_type = physical_schema.field_with_name(col_name)?.data_type();
         downcast_primitive! {
-            data_type => (primitive_merge_helper, streams, col_name, merge_schema, target_schema, batch_size, default_column_value, reservation, merge_operator, fields_map),
-            DataType::Utf8 => merge_helper!(StringArray, streams, col_name, merge_schema, target_schema, batch_size, default_column_value, reservation, merge_operator, fields_map)
-            DataType::Utf8View => merge_helper!(StringViewArray, streams, col_name, merge_schema, target_schema, batch_size, default_column_value, reservation, merge_operator, fields_map)
-            DataType::LargeUtf8 => merge_helper!(LargeStringArray, streams, col_name, merge_schema, target_schema, batch_size, default_column_value, reservation, merge_operator, fields_map)
-            DataType::Binary => merge_helper!(BinaryArray, streams, col_name, merge_schema, target_schema, batch_size, default_column_value, reservation, merge_operator, fields_map)
-            DataType::LargeBinary => merge_helper!(LargeBinaryArray, streams, col_name, merge_schema, target_schema, batch_size, default_column_value, reservation, merge_operator, fields_map)
+            data_type => (primitive_merge_helper, streams, col_name, physical_schema, merged_schema, batch_size, default_column_value, reservation, merge_operator, fields_map),
+            DataType::Utf8 => merge_helper!(StringArray, streams, col_name, physical_schema, merged_schema, batch_size, default_column_value, reservation, merge_operator, fields_map)
+            DataType::Utf8View => merge_helper!(StringViewArray, streams, col_name, physical_schema, merged_schema, batch_size, default_column_value, reservation, merge_operator, fields_map)
+            DataType::LargeUtf8 => merge_helper!(LargeStringArray, streams, col_name, physical_schema, merged_schema, batch_size, default_column_value, reservation, merge_operator, fields_map)
+            DataType::Binary => merge_helper!(BinaryArray, streams, col_name, physical_schema, merged_schema, batch_size, default_column_value, reservation, merge_operator, fields_map)
+            DataType::LargeBinary => merge_helper!(LargeBinaryArray, streams, col_name, physical_schema, merged_schema, batch_size, default_column_value, reservation, merge_operator, fields_map)
             _ => {}
         }
     }
@@ -301,8 +304,8 @@ pub(crate) fn build_sorted_stream_merger(
     create_merger!(
         RowValues,
         streams,
-        merge_schema,
-        target_schema,
+        physical_schema,
+        merged_schema,
         fields_map,
         batch_size,
         merge_operator,

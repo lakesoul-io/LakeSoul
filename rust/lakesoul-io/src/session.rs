@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::iter::zip;
 use std::sync::Arc;
 
@@ -41,13 +41,15 @@ use datafusion_physical_plan::empty::EmptyExec;
 use datafusion_physical_plan::filter::FilterExec;
 use datafusion_session::Session;
 use object_store::ObjectMeta;
-use rootcause::{Report, bail, report};
+use rootcause::prelude::ResultExt;
+use rootcause::{Report, report};
 use tokio::sync::OnceCell;
 
 use crate::config::LakeSoulIOConfig;
 use crate::file_format::LakeSoulParquetFormat;
 use crate::helpers::transform::uniform_schema;
 use crate::helpers::{get_file_object_meta, infer_schema};
+use crate::physical_plan::empty_schema::EmptyScanCountExec;
 use crate::utils::random_str;
 
 /// Creates a new session context
@@ -193,13 +195,14 @@ struct IOSessionInner {
     pub listing_metas: OnceCell<ListingMetas>,
     pub file_format: OnceCell<Arc<LakeSoulParquetFormat>>,
     pub file_schema: OnceCell<Arc<Schema>>,
+    pub partition_schema: OnceCell<Arc<Schema>>,
     pub table_schema: OnceCell<Arc<TableSchema>>,
 }
 
 impl LakeSoulIOSession {
-    pub fn try_new(mut config: LakeSoulIOConfig) -> Result<Self, Report> {
+    pub fn try_new(mut io_config: LakeSoulIOConfig) -> Result<Self, Report> {
         let mut sess_conf = SessionConfig::default()
-            .with_batch_size(config.batch_size)
+            .with_batch_size(io_config.batch_size)
             .with_parquet_pruning(true)
             .with_information_schema(true)
             .with_create_default_catalog_and_schema(true);
@@ -216,58 +219,58 @@ impl LakeSoulIOSession {
             .parquet
             .schema_force_view_types = false;
         let mut runtime_conf = RuntimeEnvBuilder::new();
-        if let Some(pool_size) = config.pool_size() {
+        if let Some(pool_size) = io_config.pool_size() {
             let memory_pool = FairSpillPool::new(pool_size);
             runtime_conf = runtime_conf.with_memory_pool(Arc::new(memory_pool));
         }
         let runtime = runtime_conf.build()?;
         // firstly, parse default fs if exist
-        let default_fs = config
+        let default_fs = io_config
             .object_store_options
             .get("fs.defaultFS")
-            .or_else(|| config.object_store_options.get("fs.default.name"))
+            .or_else(|| io_config.object_store_options.get("fs.default.name"))
             .cloned();
         if let Some(fs) = default_fs {
-            config.default_fs = fs.clone();
+            io_config.default_fs = fs.clone();
             info!("NativeIO register default fs {}", fs);
-            crate::object_store::register_object_store(&fs, &mut config, &runtime)?;
+            crate::object_store::register_object_store(&fs, &mut io_config, &runtime)?;
         };
 
-        if !config.prefix.is_empty() {
-            let prefix = config.prefix.clone();
+        if !io_config.prefix.is_empty() {
+            let prefix = io_config.prefix.clone();
             info!("NativeIO register prefix fs {}", prefix);
             let normalized_prefix = crate::object_store::register_object_store(
                 &prefix,
-                &mut config,
+                &mut io_config,
                 &runtime,
             )?;
-            config.prefix = normalized_prefix;
+            io_config.prefix = normalized_prefix;
         } else if let Ok(warehouse_prefix) = std::env::var("LAKESOUL_WAREHOUSE_PREFIX") {
             info!("NativeIO register warehouse prefix {}", warehouse_prefix);
             let normalized_prefix = crate::object_store::register_object_store(
                 &warehouse_prefix,
-                &mut config,
+                &mut io_config,
                 &runtime,
             )?;
-            config.prefix = normalized_prefix;
+            io_config.prefix = normalized_prefix;
         }
 
         // register object store(s) for input/output files' path
         // and replace file names with default fs concatenated if exist
-        let files = config.files.clone();
+        let files = io_config.files.clone();
         let normalized_filenames = files
             .into_iter()
             .map(|file_name| {
                 crate::object_store::register_object_store(
                     &file_name,
-                    &mut config,
+                    &mut io_config,
                     &runtime,
                 )
             })
             .collect::<Result<Vec<String>, Report>>()?;
-        config.files = normalized_filenames;
-        info!("NativeIO normalized file names: {:?}", config.files);
-        info!("NativeIO final config\n{:?}", config);
+        io_config.files = normalized_filenames;
+        info!("NativeIO normalized file names: {:?}", io_config.files);
+        info!("NativeIO final config\n{:?}", io_config);
         let inner = IOSessionInner {
             session_id: random_str(8),
             session_config: sess_conf,
@@ -275,10 +278,11 @@ impl LakeSoulIOSession {
             listing_metas: OnceCell::new(),
             file_format: OnceCell::new(),
             file_schema: OnceCell::new(),
+            partition_schema: OnceCell::new(),
             table_schema: OnceCell::new(),
         };
         Ok(Self {
-            io_config: config,
+            io_config,
             inner: Arc::new(inner),
             execution_props: ExecutionProps::new(),
         })
@@ -360,7 +364,31 @@ impl LakeSoulIOSession {
                 )
                 .await?;
 
-                Ok::<Arc<Schema>, Report>(uniform_schema(schema))
+                Ok::<Arc<Schema>, Report>(schema)
+            })
+            .await
+    }
+
+    async fn io_partition_schema(&self) -> Result<&Arc<Schema>, Report> {
+        self.inner
+            .partition_schema
+            .get_or_try_init(|| async {
+                // weired
+                // let mut builder =
+                //     SchemaBuilder::from(self.io_config.partition_schema().as_ref());
+                let mut builder = SchemaBuilder::from(Schema::empty());
+                let target_schema = self.io_config().target_schema();
+                let ranges = self.io_config().range_partitions_slice().iter();
+                // weired
+                // .chain(self.io_config().default_column_value.keys());
+                for range in ranges {
+                    let f = target_schema
+                        .field_with_name(range)
+                        .context("partition not in taget schema")?;
+                    builder.try_merge(&Arc::new(f.clone()))?;
+                }
+
+                Ok(Arc::new(builder.finish()))
             })
             .await
     }
@@ -369,17 +397,36 @@ impl LakeSoulIOSession {
         self.inner
             .table_schema
             .get_or_try_init(|| async {
+                let target_schema = if self.io_config().inferring_schema {
+                    SchemaRef::new(Schema::empty())
+                } else {
+                    uniform_schema(self.io_config().target_schema())
+                };
+
+                let mut builder = SchemaBuilder::from(target_schema.fields());
+
                 // Resolve the schema (all files schema)
                 let file_schema = self.io_file_schema().await?;
-                let partition_schema =
-                    uniform_schema(self.io_config().partition_schema());
-                let table_partition_cols = partition_schema
+
+                for f in file_schema.fields() {
+                    // in file schema but not in target schema
+                    if target_schema.field_with_name(f.name()).is_err() {
+                        builder.try_merge(f)?;
+                    }
+                }
+
+                // weired
+                let table_partition_cols = self
+                    .io_partition_schema()
+                    .await?
                     .fields()
                     .into_iter()
                     .map(Clone::clone)
                     .collect();
+                debug!("partition: {:?}", table_partition_cols);
+                // table schema: Target Schema Union File Schema
                 Ok::<Arc<TableSchema>, Report>(Arc::new(TableSchema::new(
-                    file_schema.clone(),
+                    SchemaRef::new(builder.finish()),
                     table_partition_cols,
                 )))
             })
@@ -471,30 +518,55 @@ impl LakeSoulIOSession {
         Ok(TableSchema::new(file_schema, table_partition_cols))
     }
 
-    async fn compute_projection_indices(&self) -> Result<Option<Vec<usize>>, Report> {
+    #[instrument(skip(self))]
+    async fn compute_projection_indices(
+        &self,
+        table_schema: &Arc<Schema>,
+        filter_expr: Option<&Expr>,
+    ) -> Result<Option<Vec<usize>>, Report> {
         let target_schema = self.io_config().target_schema();
-        let table_schema = self.io_table_schema().await?.table_schema();
 
-        let mut indices = Vec::new();
+        let name_to_index: HashMap<&str, usize> = table_schema
+            .fields()
+            .iter()
+            .enumerate()
+            .map(|(i, f)| (f.name().as_str(), i))
+            .collect();
 
-        let mut name_to_index = std::collections::HashMap::new();
-        for (i, field) in table_schema.fields().iter().enumerate() {
-            name_to_index.insert(field.name().as_str(), i);
-        }
+        // 2. 使用 HashSet 收集所有需要的物理列索引（利用其去重特性）
+        let mut required_indices = BTreeSet::new();
 
+        // 2a. 添加 Target Schema 需要的列
         for field in target_schema.fields() {
             if let Some(&idx) = name_to_index.get(field.name().as_str()) {
-                indices.push(idx);
-                debug!("Projection field: {}", table_schema.field(idx));
-            } else {
-                bail!(
-                    "Field '{}' not found in table schema. Available fields: {:?}",
-                    field.name(),
-                    name_to_index.keys().collect::<Vec<_>>()
-                )
+                required_indices.insert(idx);
+            }
+            // 注意：如果 target 里的列不在物理 table_schema 里，
+            // 说明它是分区列或空列，不需要在这里放入物理 Scan 索引。
+        }
+
+        // 2b. 如果有 filter，提取 filter 引用的列并加入并集
+        if let Some(expr) = filter_expr {
+            let mut filter_columns = HashSet::new();
+            // 提取表达式中引用的所有列
+            datafusion_expr::utils::expr_to_columns(expr, &mut filter_columns)?;
+
+            for col in filter_columns {
+                if let Some(&idx) = name_to_index.get(col.name.as_str()) {
+                    required_indices.insert(idx);
+                }
             }
         }
 
+        let indices: Vec<usize> = required_indices.into_iter().collect();
+
+        // 3. 结果判断
+        if indices.is_empty() {
+            // 如果 target 和 filter 都不引用物理列（例如 SELECT 1 WHERE 1=1）
+            return Ok(Some(vec![]));
+        }
+
+        // 如果物理读取的列正好是全表且顺序一致，返回 None 触发 DataFusion 默认优化
         if indices.len() == table_schema.fields().len()
             && indices.iter().enumerate().all(|(i, &idx)| i == idx)
         {
@@ -560,19 +632,57 @@ impl LakeSoulIOSession {
             .map(|meta_ref| PartitionedFile::from(meta_ref.clone()))
             .collect();
 
+        // 1. Classify filters
+        let filter_refs = filters.iter().collect::<Vec<&Expr>>();
+        let pushdown_res = self.supports_filters_pushdown(&filter_refs)?;
+
+        let mut exact_filters = vec![];
+        let mut inexact_filters = vec![];
+        let mut unsupported_filters = vec![];
+
+        for (expr, res) in filters.into_iter().zip(pushdown_res) {
+            match res {
+                TableProviderFilterPushDown::Exact => exact_filters.push(expr),
+                TableProviderFilterPushDown::Inexact => {
+                    inexact_filters.push(expr);
+                }
+                TableProviderFilterPushDown::Unsupported => {
+                    unsupported_filters.push(expr)
+                }
+            }
+        }
+
+        // 2. Prepare remaining filters (Inexact + Unsupported)
+        // These filters are needed for the FilterExec on top of the scan,
+        // and also determine the projection (columns used by these filters must be projected).
+        let remaining_filters: Vec<Expr> = inexact_filters
+            .iter()
+            .cloned()
+            .chain(unsupported_filters)
+            .collect();
+
+        let remaining_predicate = conjunction(remaining_filters);
+
+        // 3. Compute projection indices (Target + Remaining Filters)
+        // Note: We do NOT strictly need to project columns used ONLY by Exact filters,
+        // as they are handled by the scan.
+        let indices = self
+            .compute_projection_indices(
+                self.io_table_schema().await?.table_schema(),
+                remaining_predicate.as_ref(),
+            )
+            .await?;
+
+        // 4. Build initial Scan Config
         let source = file_format.file_source();
-
-        let indices = self.compute_projection_indices().await?;
-
         let mut scan_config = FileScanConfigBuilder::new(
             object_store_url,
-            table_schema.file_schema().clone(), // this is weird
+            table_schema.file_schema().clone(),
             source,
         )
         .with_file_groups(vec![
             FileGroup::new(partition_files).with_statistics(Arc::new(statistics.clone())),
         ])
-        .with_projection_indices(indices)
         .with_file_compression_type(FileCompressionType::ZSTD)
         .with_newlines_in_values(false)
         .with_statistics(statistics)
@@ -582,46 +692,25 @@ impl LakeSoulIOSession {
                 .iter()
                 .map(|f| f.as_ref().clone())
                 .collect(),
-        ) // this is weird
+        )
+        .with_projection_indices(indices)
         .build();
 
-        let filters_clone = filters.clone();
-        let filter_refs = filters_clone.iter().collect::<Vec<&Expr>>();
-        let pushdown_res = self.supports_filters_pushdown(&filter_refs)?;
-        let mut exact_filters = vec![];
-        let mut inexact_filters = vec![];
-        let mut nonexect_filters = vec![];
+        // 5. Pushdown Filters (Exact + Inexact)
+        let pushdown_filters: Vec<Expr> =
+            exact_filters.into_iter().chain(inexact_filters).collect();
 
-        for (expr, res) in filters_clone.into_iter().zip(pushdown_res) {
-            match res {
-                TableProviderFilterPushDown::Exact => exact_filters.push(expr),
-                TableProviderFilterPushDown::Inexact => {
-                    inexact_filters.push(expr.clone());
-                    nonexect_filters.push(expr);
-                }
-                TableProviderFilterPushDown::Unsupported => nonexect_filters.push(expr),
-            }
-        }
-        //  Exact + Inexact to Scan
-        let filters_to_push = exact_filters
-            .iter()
-            .chain(inexact_filters.iter())
-            .cloned()
-            .collect::<Vec<_>>();
-
-        // pushdown
-        if let Some(expr) = conjunction(filters_to_push) {
-            // NOTE: Use the table schema (NOT file schema) here because `expr` may contain references to partition columns.
+        if let Some(expr) = conjunction(pushdown_filters) {
             let table_df_schema = table_schema.table_schema().clone().to_dfschema()?;
-            let filter = datafusion_physical_expr::create_physical_expr(
+            let filter_expr = datafusion_physical_expr::create_physical_expr(
                 &expr,
                 &table_df_schema,
                 self.execution_props(),
             )?;
-            debug!("physical filter expr: {}", filter);
+            debug!("physical filter expr: {}", filter_expr);
             debug!("configs: {:?}", self.config_options());
-            let res =
-                scan_config.try_pushdown_filters(vec![filter], self.config_options())?;
+            let res = scan_config
+                .try_pushdown_filters(vec![filter_expr], self.config_options())?;
             match res.updated_node {
                 Some(sc) => {
                     debug!("apply new scan config");
@@ -638,27 +727,52 @@ impl LakeSoulIOSession {
             }
         }
 
+        // 6. Create Execution Plan
         let exec = file_format.create_physical_plan(self, scan_config).await?;
 
-        if !nonexect_filters.is_empty() {
-            let Some(expr) = conjunction(nonexect_filters) else {
-                debug!("emply nonexect");
-                return Ok(exec);
-            };
+        // 7. Apply remaining filters
+        if let Some(expr) = remaining_predicate {
+            let table_df_schema = exec.schema().to_dfschema()?;
+            let predicate = datafusion_physical_expr::create_physical_expr(
+                &expr,
+                &table_df_schema,
+                self.execution_props(),
+            )?;
 
-            let predicate = {
-                let table_df_schema =
-                    table_schema.table_schema().clone().to_dfschema()?;
-                datafusion_physical_expr::create_physical_expr(
-                    &expr,
-                    &table_df_schema,
-                    self.execution_props(),
-                )?
-            };
-            return Ok(Arc::new(FilterExec::try_new(predicate, exec)?));
+            let indices = self
+                .compute_projection_indices(
+                    self.io_table_schema().await?.table_schema(),
+                    None,
+                )
+                .await?;
+
+            let mut filter_exec = FilterExec::try_new(predicate, exec)?;
+
+            match indices {
+                Some(proj_indices) => {
+                    if proj_indices.is_empty() {
+                        debug!("use empty scan (count only)");
+                        let empty = EmptyScanCountExec::new(
+                            Arc::new(Schema::empty()),
+                            self.io_config().batch_size,
+                            Arc::new(filter_exec),
+                        );
+                        Ok(Arc::new(empty))
+                    } else {
+                        debug!("filter scan with indices: {:?}", proj_indices);
+                        filter_exec = filter_exec.with_projection(Some(proj_indices))?;
+                        Ok(Arc::new(filter_exec))
+                    }
+                }
+                None => {
+                    debug!("filter scan");
+                    Ok(Arc::new(filter_exec))
+                }
+            }
+        } else {
+            debug!("merge scan");
+            Ok(exec)
         }
-
-        Ok(exec)
     }
 
     /// create a new session with a new io config

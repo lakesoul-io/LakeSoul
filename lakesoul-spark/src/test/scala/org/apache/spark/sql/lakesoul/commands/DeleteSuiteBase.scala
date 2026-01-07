@@ -15,7 +15,10 @@ abstract class DeleteSuiteBase extends QueryTest
 
   import testImplicits._
 
-  protected def executeDelete(target: String, where: String = null): Unit
+  protected def executeDelete(target: String, where: String = null): Unit = {
+    val whereClause = Option(where).map(c => s"WHERE $c").getOrElse("")
+    sql(s"DELETE FROM $target $whereClause")
+  }
 
   protected def append(df: DataFrame, partitionBy: Seq[String] = Nil): Unit = {
     val writer = df.write.format("lakesoul").mode("append")
