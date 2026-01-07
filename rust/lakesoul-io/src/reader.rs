@@ -102,8 +102,8 @@ impl LakeSoulReader {
     /// # Returns
     ///
     /// A Result containing the new LakeSoulReader instance
+    #[instrument(skip(io_config))]
     pub fn new(io_config: LakeSoulIOConfig) -> Result<Self> {
-        debug!(io_config=?io_config);
         if io_config.files.is_empty() {
             bail!("LakeSoulReader has the wrong number of files");
         }
@@ -1180,7 +1180,7 @@ mod tests {
         ]);
         let io_config = LakeSoulIOConfig::builder()
             .with_file("file:/tmp/lakesoul/spark/range=range2/part--0001-f1742635-8034-4190-b273-839fe78617db_00000.c000.parquet".to_string())
-            .with_primary_key("hash".into())
+            .with_primary_key("hash")
             .with_filter_str("and(noteq(op, null), eq(op, Binary{\"xinsert\"}))".into())
             .with_default_column_value("range", "range2")
             .with_schema(Arc::new(schema))

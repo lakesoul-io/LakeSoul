@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use std::{collections::HashMap, sync::Arc};
 
 use arrow_schema::{Schema, SchemaRef};
@@ -325,8 +329,8 @@ impl LakeSoulIOConfigBuilder {
     /// # Arguments
     ///
     /// * `pks` - The primary key to add
-    pub fn with_primary_key(mut self, pks: String) -> Self {
-        self.config.primary_keys.push(pks);
+    pub fn with_primary_key(mut self, pks: impl Into<String>) -> Self {
+        self.config.primary_keys.push(pks.into());
         self
     }
 
@@ -365,8 +369,8 @@ impl LakeSoulIOConfigBuilder {
     /// # Arguments
     ///
     /// * `hash_bucket_num` - The number of hash buckets for partitioning
-    pub fn with_hash_bucket_num(mut self, hash_bucket_num: String) -> Self {
-        self.config.hash_bucket_num = hash_bucket_num;
+    pub fn with_hash_bucket_num(mut self, hash_bucket_num: impl Into<String>) -> Self {
+        self.config.hash_bucket_num = hash_bucket_num.into();
         self
     }
 

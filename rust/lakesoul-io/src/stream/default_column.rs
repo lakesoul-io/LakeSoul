@@ -32,7 +32,7 @@ impl WrappedSendableRecordBatchStream {
 #[derive(Debug)]
 pub(crate) struct DefaultColumnStream {
     /// The schema of the RecordBatches yielded by this stream
-    schema: SchemaRef,
+    merged_schema: SchemaRef,
 
     /// The sorted input streams to merge together
     // streams: MergingStreams,
@@ -51,7 +51,7 @@ impl DefaultColumnStream {
         target_schema: SchemaRef,
     ) -> Self {
         DefaultColumnStream {
-            schema: transform_schema(target_schema, stream.schema(), false),
+            merged_schema: transform_schema(target_schema, stream.schema(), false),
             inner_stream: vec![WrappedSendableRecordBatchStream::new(stream)],
             use_default: false,
             cur_stream_idx: 0,
@@ -61,12 +61,12 @@ impl DefaultColumnStream {
 
     pub(crate) fn new_from_streams_with_default(
         streams: Vec<SendableRecordBatchStream>,
-        target_schema: SchemaRef,
+        merged_schema: SchemaRef,
         default_column_value: Arc<HashMap<String, String>>,
     ) -> Self {
         let use_default = true;
         DefaultColumnStream {
-            schema: target_schema,
+            merged_schema,
             inner_stream: streams
                 .into_iter()
                 .map(WrappedSendableRecordBatchStream::new)
@@ -114,6 +114,6 @@ impl Stream for DefaultColumnStream {
 
 impl RecordBatchStream for DefaultColumnStream {
     fn schema(&self) -> SchemaRef {
-        self.schema.clone()
+        self.merged_schema.clone()
     }
 }

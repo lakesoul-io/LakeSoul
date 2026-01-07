@@ -45,7 +45,6 @@ mod insert_tests {
         // todo: partitioned table is replaced by primary key table currently
         let builder = LakeSoulIOConfigBuilder::new()
             .with_schema(schema.clone())
-            // .with_primary_keys(partition_key.into_iter().map(String::from).collect());
             .with_range_partitions(partition_key.into_iter().map(String::from).collect());
         create_table(client, table_name, builder.build()).await
     }

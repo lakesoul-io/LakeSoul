@@ -20,9 +20,9 @@ use datafusion_physical_plan::{
     projection::ProjectionExec, sorts::sort::SortExec, stream::RecordBatchReceiverStream,
 };
 use datafusion_session::Session;
+use futures::{StreamExt, TryStreamExt};
 use rootcause::{Report, bail, report};
 use tokio::sync::mpsc::Sender;
-use tokio_stream::StreamExt;
 
 use crate::{
     Result,
@@ -342,14 +342,30 @@ impl PartitioningAsyncWriter {
     async fn await_and_summary(
         tasks: Vec<SpawnedTask<NestedFlushOutputResult>>,
     ) -> Result<Vec<FlushOutput>> {
-        let mut flatten_results = Vec::new();
-        for result in futures::future::join_all(tasks).await {
-            let part_join_set = result??;
-            for part_result in part_join_set.join_all().await {
-                flatten_results.extend(part_result?);
-            }
-        }
-        Ok(flatten_results)
+        let output = futures::stream::iter(tasks)
+            .then(|task| async {
+                let join_set = task.await??;
+                Ok::<JoinSet<_>, Report>(join_set)
+            })
+            .map_ok(|mut js| {
+                futures::stream::poll_fn(move |cx| match js.poll_join_next(cx) {
+                    std::task::Poll::Ready(Some(Ok(res))) => {
+                        std::task::Poll::Ready(Some(res))
+                    }
+                    std::task::Poll::Ready(Some(Err(e))) => {
+                        std::task::Poll::Ready(Some(Err(report!(e).into_dynamic())))
+                    }
+                    std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
+                    std::task::Poll::Pending => std::task::Poll::Pending,
+                })
+            })
+            .try_flatten_unordered(Some(8)) // io_bound task may increase this
+            .try_collect::<Vec<_>>()
+            .await?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        Ok(output)
     }
 }
 

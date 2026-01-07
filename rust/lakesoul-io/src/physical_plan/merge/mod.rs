@@ -41,7 +41,7 @@ pub mod sorted;
 #[derive(Debug)]
 pub struct MergeParquetExec {
     /// The schema of the merge on read operation.
-    schema: SchemaRef,
+    merged_schema: SchemaRef,
     /// The primary keys of the merge on read operation, which is the sorted columns.
     primary_keys: Arc<Vec<String>>,
     /// The default column value of the merge on read operation, which is the default value for the partition columns.
@@ -59,7 +59,7 @@ pub struct MergeParquetExec {
 impl MergeParquetExec {
     /// Create a new Parquet reader execution plan provided file list and schema.
     pub fn new(
-        schema: SchemaRef,
+        merged_schema: SchemaRef,
         flatten_configs: Vec<FileScanConfig>,
         io_config: LakeSoulIOConfig,
     ) -> Result<Self> {
@@ -70,9 +70,10 @@ impl MergeParquetExec {
             let single_exec = DataSourceExec::from_data_source(config);
             inputs.push(single_exec);
         }
+        // Compute Nullability
         // O(nml), n = number of schema fields, m = number of file schema fields, l = number of files
-        let schema = SchemaRef::new(Schema::new(
-            schema
+        let merged_schema = SchemaRef::new(Schema::new(
+            merged_schema
                 .fields()
                 .iter()
                 .map(|field| {
@@ -81,6 +82,7 @@ impl MergeParquetExec {
                         field.data_type().clone(),
                         field.is_nullable()
                             | inputs.iter().any(|plan| {
+                                // see all inputs
                                 if let Some((_, plan_field)) =
                                     plan.schema().column_with_name(field.name())
                                 {
@@ -97,18 +99,19 @@ impl MergeParquetExec {
         let config = io_config.clone();
         let primary_keys = Arc::new(io_config.primary_keys);
         let default_column_value = Arc::new(io_config.default_column_value);
+        debug!("default_column_values:{:?}", default_column_value);
         let merge_operators: Arc<HashMap<String, String>> =
             Arc::new(io_config.merge_operators);
 
         Ok(Self {
-            schema: schema.clone(),
+            merged_schema: merged_schema.clone(),
             inputs,
             primary_keys,
             default_column_value,
             merge_operators,
             io_config: config,
             properties: PlanProperties::new(
-                EquivalenceProperties::new(schema),
+                EquivalenceProperties::new(merged_schema),
                 Partitioning::UnknownPartitioning(1),
                 EmissionType::Incremental,
                 Boundedness::Bounded,
@@ -131,7 +134,7 @@ impl MergeParquetExec {
         let merge_operators = Arc::new(io_config.merge_operators);
 
         Ok(Self {
-            schema: schema.clone(),
+            merged_schema: schema.clone(),
             inputs,
             primary_keys,
             default_column_value,
@@ -201,7 +204,7 @@ impl ExecutionPlan for MergeParquetExec {
     }
 
     fn schema(&self) -> SchemaRef {
-        self.schema.clone()
+        self.merged_schema.clone()
     }
 
     fn properties(&self) -> &PlanProperties {
@@ -217,7 +220,7 @@ impl ExecutionPlan for MergeParquetExec {
         inputs: Vec<Arc<dyn ExecutionPlan>>,
     ) -> DFResult<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(Self {
-            schema: self.schema(),
+            merged_schema: self.schema(),
             inputs,
             primary_keys: self.primary_keys(),
             default_column_value: self.default_column_value(),
@@ -278,7 +281,7 @@ impl ExecutionPlan for MergeParquetExec {
 /// Merge the streams into a single stream.
 fn merge_stream(
     streams: Vec<SendableRecordBatchStream>,
-    schema: SchemaRef,
+    merged_schema: SchemaRef,
     primary_keys: Arc<Vec<String>>,
     default_column_value: Arc<HashMap<String, String>>,
     merge_operators: Arc<HashMap<String, String>>,
@@ -302,25 +305,28 @@ fn merge_stream(
         info!("not merge on read use DefaultColumnStream");
         Box::pin(DefaultColumnStream::new_from_streams_with_default(
             streams,
-            schema,
+            merged_schema,
             default_column_value,
         ))
     } else {
         info!("use sorted merger");
-        let merge_schema = Arc::new(Schema::new(
-            schema
+        // is file schema?
+        let physical_schema = Arc::new(Schema::new(
+            merged_schema
                 .fields
                 .iter()
                 .filter_map(|field| {
                     if default_column_value.get(field.name()).is_none() {
+                        // phycial reserve
                         Some(field.clone())
                     } else {
                         None
                     }
                 })
                 .collect::<Vec<_>>(),
-        )); // merge_schema
-        let merge_ops = schema
+        ));
+
+        let merge_ops = merged_schema
             .fields()
             .iter()
             .map(|field| {
@@ -337,15 +343,15 @@ fn merge_stream(
             .map(|s| {
                 SortedStream::new(Box::pin(DefaultColumnStream::new_from_stream(
                     s,
-                    merge_schema.clone(),
+                    physical_schema.clone(),
                 )))
             })
             .collect();
         build_sorted_stream_merger(
             streams,
             primary_keys,
-            merge_schema,
-            schema,
+            physical_schema,
+            merged_schema,
             batch_size,
             default_column_value,
             merge_ops,

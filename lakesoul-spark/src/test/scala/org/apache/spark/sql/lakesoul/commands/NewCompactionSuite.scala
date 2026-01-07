@@ -36,8 +36,8 @@ class NewCompactionSuite extends QueryTest
       .set("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
       .set(SQLConf.DEFAULT_CATALOG.key, LakeSoulCatalog.CATALOG_NAME)
       .set("spark.sql.extensions", "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension")
-      .set("spark.dmetasoul.lakesoul.compaction.level0.file.number.limit","2")
-      .set("spark.dmetasoul.lakesoul.compaction.pick.next.level.min.file.size","1KB")
+      .set("spark.dmetasoul.lakesoul.compaction.level0.file.number.limit", "2")
+      .set("spark.dmetasoul.lakesoul.compaction.pick.next.level.min.file.size", "1KB")
   }
 
   override protected def createSparkSession: TestSparkSession = {

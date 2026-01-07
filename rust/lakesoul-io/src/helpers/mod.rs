@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
 //
 // SPDX-License-Identifier: Apache-2.0
 
@@ -539,7 +540,7 @@ pub fn partition_desc_from_file_scan_config(
     // conf's table_schema is not stable
     // so use file source's
     if conf.table_partition_cols().is_empty() {
-        warn!("wow: NO range");
+        warn!("partition is empty");
         Ok(("-5".to_string(), HashMap::default()))
     } else {
         match conf.file_groups.first().and_then(|g| g.files().first()) {

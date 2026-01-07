@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2024 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use arrow_schema::SchemaRef;
 use datafusion_physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion_physical_plan::{
