@@ -263,8 +263,8 @@ public class JdbcCDC {
     private static void postgresCdc(LakeSoulRecordConvert lakeSoulRecordConvert, Configuration conf, StreamExecutionEnvironment env, String sinkDBName) throws Exception {
         JdbcIncrementalSource<BinarySourceRecord> pgSource = PostgresSourceBuilder.PostgresIncrementalSource.<BinarySourceRecord>builder()
                 .hostname(host)
-                .schemaList(schemaList)
                 .tableList(tableList)
+                .schemaList(schemaList)
                 .database(dbName)
                 .port(port)
                 .username(userName)
@@ -310,8 +310,8 @@ public class JdbcCDC {
         JdbcIncrementalSource<BinarySourceRecord> oracleChangeEventSource =
                 new OracleSourceBuilder()
                         .hostname(host)
-                        .schemaList(schemaList)
                         .tableList(tableList)
+                        .schemaList(schemaList)
                         .databaseList(dbName)
                         .port(port)
                         .username(userName)
