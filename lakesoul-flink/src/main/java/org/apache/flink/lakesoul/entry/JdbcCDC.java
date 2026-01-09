@@ -79,12 +79,14 @@ public class JdbcCDC {
         String sinkDBName = parameter.get(SINK_DBNAME.key(), SINK_DBNAME.defaultValue());
         //Postgres Oracle
         if (dbType.equalsIgnoreCase("oracle") || dbType.equalsIgnoreCase("postgres") ) {
-            schemaList = parameter.get(SOURCE_DB_SCHEMA_LIST.key()).split(",");
             String[] tables = parameter.get(SOURCE_DB_SCHEMA_TABLES.key()).split(",");
-            tableList = new String[tables.length];
-            for (int i = 0; i < tables.length; i++) {
-                tableList[i] = dbName + "."+tables[i].toUpperCase();
+            HashSet<String> schemaListSet = new HashSet<>();
+            for (String table : tables) {
+                schemaListSet.add(table.split("\\.")[0]);
             }
+            schemaList = schemaListSet.toArray(new String[0]);
+            tableList = new String[tables.length];
+            System.arraycopy(tables, 0, tableList, 0, tables.length);
             splitSize = parameter.getInt(SOURCE_DB_SPLIT_SIZE.key(), SOURCE_DB_SPLIT_SIZE.defaultValue());
         }
         if (dbType.equalsIgnoreCase("sqlserver")){
