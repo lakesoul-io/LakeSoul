@@ -486,23 +486,23 @@ class ReadSuite extends QueryTest
         .load(tablePath)
       query
         .writeStream.foreachBatch { (query: DataFrame, _: Long) => {
-        batch += 1
-        val data = query.select("id", "range", "hash", "op")
-        if (partitionDes.equals("range=range1")) {
-          if (batch == 1) {
-            checkAnswer(data, Seq((1, "range1", "hash1-1", "insert"), (3, "range1", "hash1-2", "update")).toDF("id", "range", "hash", "op"))
-          }
-        } else if (partitionDes.equals("range=range1,op=insert")) {
-          if (batch == 1) {
-            checkAnswer(data, Seq((1, "range1", "hash1-1", "insert"), (4, "range1", "hash1-5", "insert")).toDF("id", "range", "hash", "op"))
-          }
-        } else {
-          if (batch == 1) {
-            checkAnswer(data, Seq((1, "range1", "hash1-1", "insert"), (2, "range2", "hash2-1", "insert")).toDF("id", "range", "hash", "op"))
+          batch += 1
+          val data = query.select("id", "range", "hash", "op")
+          if (partitionDes.equals("range=range1")) {
+            if (batch == 1) {
+              checkAnswer(data, Seq((1, "range1", "hash1-1", "insert"), (3, "range1", "hash1-2", "update")).toDF("id", "range", "hash", "op"))
+            }
+          } else if (partitionDes.equals("range=range1,op=insert")) {
+            if (batch == 1) {
+              checkAnswer(data, Seq((1, "range1", "hash1-1", "insert"), (4, "range1", "hash1-5", "insert")).toDF("id", "range", "hash", "op"))
+            }
+          } else {
+            if (batch == 1) {
+              checkAnswer(data, Seq((1, "range1", "hash1-1", "insert"), (2, "range2", "hash2-1", "insert")).toDF("id", "range", "hash", "op"))
+            }
           }
         }
-      }
-      }
+        }
         .trigger(Trigger.Once())
         .start()
         .awaitTermination()

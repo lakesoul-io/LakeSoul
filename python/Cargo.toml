@@ -11,9 +11,9 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = { version = "0.26", features = [
-    "extension-module",
-    "experimental-async",
-    "abi3-py39",
+  "extension-module",
+  "experimental-async",
+  "abi3-py39",
 ] }
 pyo3-log = "0.13"
 log = "0.4"
@@ -23,8 +23,11 @@ tokio.workspace = true
 arrow-pyarrow.workspace = true
 arrow-schema.workspace = true
 arrow-array.workspace = true
+datafusion-common.workspace = true
+datafusion-execution.workspace = true
 futures.workspace = true
 prost.workspace = true
+rootcause.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 datafusion-substrait = { workspace = true }

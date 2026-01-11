@@ -3,7 +3,6 @@
 
 //! The C API for the [`lakesoul-io`] crate.
 
-#![allow(clippy::not_unsafe_ptr_arg_deref)]
 extern crate core;
 #[macro_use]
 extern crate tracing;
@@ -16,20 +15,18 @@ use std::sync::Arc;
 
 use bytes::BufMut;
 
-use arrow::array::Array;
-pub use arrow::array::StructArray;
-use arrow::datatypes::{Schema, SchemaRef};
-use arrow::ffi::from_ffi;
-pub use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
+use arrow_array::RecordBatch;
+use arrow_array::ffi::{FFI_ArrowArray, FFI_ArrowSchema, from_ffi};
+use arrow_array::{Array, StructArray};
+use arrow_schema::{Schema, SchemaRef};
 use datafusion_substrait::substrait::proto::Plan;
-use lakesoul_io::datafusion::arrow::record_batch::RecordBatch;
-use lakesoul_io::datafusion::error::Result;
+use lakesoul_io::config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_io::helpers;
-use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
-use lakesoul_io::lakesoul_reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
-use lakesoul_io::lakesoul_writer::SyncSendableMutableLakeSoulWriter;
+use lakesoul_io::reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
+use lakesoul_io::writer::SyncSendableMutableLakeSoulWriter;
 use prost::Message;
 use proto::proto::entity;
+use rootcause::Report;
 use tokio::runtime::{Builder, Runtime};
 use tracing_subscriber::EnvFilter;
 
@@ -53,7 +50,7 @@ impl<OpaqueT> CResult<OpaqueT> {
         }
     }
 
-    pub fn error(err_msg: &str) -> Self {
+    pub fn error<T: Into<Vec<u8>>>(err_msg: T) -> Self {
         CResult {
             ptr: std::ptr::null_mut(),
             err: CString::new(err_msg).unwrap().into_raw(),
@@ -138,8 +135,11 @@ pub extern "C" fn new_lakesoul_io_config_builder() -> NonNull<IOConfigBuilder> {
 }
 
 /// Set the prefix of the IO config.
+/// # Safety
+///
+/// `prefix` must be a valid pointer to a null-terminated string.
 #[unsafe(no_mangle)]
-pub extern "C" fn lakesoul_config_builder_with_prefix(
+pub unsafe extern "C" fn lakesoul_config_builder_with_prefix(
     builder: NonNull<IOConfigBuilder>,
     prefix: *const c_char,
 ) -> NonNull<IOConfigBuilder> {
@@ -153,8 +153,11 @@ pub extern "C" fn lakesoul_config_builder_with_prefix(
 }
 
 /// Add a single file to the IO config.
+/// # Safety
+///
+/// `file` must be a valid pointer to a null-terminated string.
 #[unsafe(no_mangle)]
-pub extern "C" fn lakesoul_config_builder_add_single_file(
+pub unsafe extern "C" fn lakesoul_config_builder_add_single_file(
     builder: NonNull<IOConfigBuilder>,
     file: *const c_char,
 ) -> NonNull<IOConfigBuilder> {
@@ -168,9 +171,12 @@ pub extern "C" fn lakesoul_config_builder_add_single_file(
 }
 
 /// Add a single column to the IO config.
+/// # Safety
+///
+/// `column` must be a valid pointer to a null-terminated string.
 #[unsafe(no_mangle)]
 #[allow(deprecated)]
-pub extern "C" fn lakesoul_config_builder_add_single_column(
+pub unsafe extern "C" fn lakesoul_config_builder_add_single_column(
     builder: NonNull<IOConfigBuilder>,
     column: *const c_char,
 ) -> NonNull<IOConfigBuilder> {
@@ -184,8 +190,11 @@ pub extern "C" fn lakesoul_config_builder_add_single_column(
 }
 
 /// Add a single aux sort column to the IO config.
+/// # Safety
+///
+/// `column` must be a valid pointer to a null-terminated string.
 #[unsafe(no_mangle)]
-pub extern "C" fn lakesoul_config_builder_add_single_aux_sort_column(
+pub unsafe extern "C" fn lakesoul_config_builder_add_single_aux_sort_column(
     builder: NonNull<IOConfigBuilder>,
     column: *const c_char,
 ) -> NonNull<IOConfigBuilder> {
@@ -199,8 +208,11 @@ pub extern "C" fn lakesoul_config_builder_add_single_aux_sort_column(
 }
 
 /// Add a filter to the IO config.
+/// # Safety
+///
+/// `filter` must be a valid pointer to a null-terminated string.
 #[unsafe(no_mangle)]
-pub extern "C" fn lakesoul_config_builder_add_filter(
+pub unsafe extern "C" fn lakesoul_config_builder_add_filter(
     builder: NonNull<IOConfigBuilder>,
     filter: *const c_char,
 ) -> NonNull<IOConfigBuilder> {
@@ -364,8 +376,11 @@ pub extern "C" fn lakesoul_config_builder_set_hash_bucket_num(
 }
 
 /// Set the object store option of the IO config.
+/// # Safety
+///
+/// `key` and `value` must be valid pointers to null-terminated strings.
 #[unsafe(no_mangle)]
-pub extern "C" fn lakesoul_config_builder_set_object_store_option(
+pub unsafe extern "C" fn lakesoul_config_builder_set_object_store_option(
     builder: NonNull<IOConfigBuilder>,
     key: *const c_char,
     value: *const c_char,
@@ -381,8 +396,11 @@ pub extern "C" fn lakesoul_config_builder_set_object_store_option(
 }
 
 /// Add a option to the IO config.
+/// # Safety
+///
+/// `key` and `value` must be valid pointers to null-terminated strings.
 #[unsafe(no_mangle)]
-pub extern "C" fn lakesoul_config_builder_set_option(
+pub unsafe extern "C" fn lakesoul_config_builder_set_option(
     builder: NonNull<IOConfigBuilder>,
     key: *const c_char,
     value: *const c_char,
@@ -398,8 +416,12 @@ pub extern "C" fn lakesoul_config_builder_set_option(
 }
 
 /// Add a files to the IO config.
+/// # Safety
+///
+/// `files` must be a valid pointer to an array of pointers to null-terminated strings.
+/// Elements must be valid pointers to null-terminated strings.
 #[unsafe(no_mangle)]
-pub extern "C" fn lakesoul_config_builder_add_files(
+pub unsafe extern "C" fn lakesoul_config_builder_add_files(
     builder: NonNull<IOConfigBuilder>,
     files: *const *const c_char,
     file_num: c_size_t,
@@ -420,8 +442,11 @@ pub extern "C" fn lakesoul_config_builder_add_files(
 }
 
 /// Add a single primary key to the IO config.
+/// # Safety
+///
+/// `pk` must be a valid pointer to a null-terminated string.
 #[unsafe(no_mangle)]
-pub extern "C" fn lakesoul_config_builder_add_single_primary_key(
+pub unsafe extern "C" fn lakesoul_config_builder_add_single_primary_key(
     builder: NonNull<IOConfigBuilder>,
     pk: *const c_char,
 ) -> NonNull<IOConfigBuilder> {
@@ -435,8 +460,11 @@ pub extern "C" fn lakesoul_config_builder_add_single_primary_key(
 }
 
 /// Add a single range partition to the IO config.
+/// # Safety
+///
+/// `col` must be a valid pointer to a null-terminated string.
 #[unsafe(no_mangle)]
-pub extern "C" fn lakesoul_config_builder_add_single_range_partition(
+pub unsafe extern "C" fn lakesoul_config_builder_add_single_range_partition(
     builder: NonNull<IOConfigBuilder>,
     col: *const c_char,
 ) -> NonNull<IOConfigBuilder> {
@@ -450,8 +478,11 @@ pub extern "C" fn lakesoul_config_builder_add_single_range_partition(
 }
 
 /// Add a merge operation to the IO config.
+/// # Safety
+///
+/// `field` and `merge_op` must be valid pointers to null-terminated strings.
 #[unsafe(no_mangle)]
-pub extern "C" fn lakesoul_config_builder_add_merge_op(
+pub unsafe extern "C" fn lakesoul_config_builder_add_merge_op(
     builder: NonNull<IOConfigBuilder>,
     field: *const c_char,
     merge_op: *const c_char,
@@ -467,8 +498,12 @@ pub extern "C" fn lakesoul_config_builder_add_merge_op(
 }
 
 /// Add collection of primary keys to the IO config.
+/// # Safety
+///
+/// `pks` must be a valid pointer to an array of pointers to null-terminated strings.
+/// Elements must be valid pointers to null-terminated strings.
 #[unsafe(no_mangle)]
-pub extern "C" fn lakesoul_config_builder_add_primary_keys(
+pub unsafe extern "C" fn lakesoul_config_builder_add_primary_keys(
     builder: NonNull<IOConfigBuilder>,
     pks: *const *const c_char,
     pk_num: c_size_t,
@@ -489,8 +524,11 @@ pub extern "C" fn lakesoul_config_builder_add_primary_keys(
 }
 
 /// Set the default column value of the IO config.
+/// # Safety
+///
+/// `field` and `value` must be valid pointers to null-terminated strings.
 #[unsafe(no_mangle)]
-pub extern "C" fn lakesoul_config_builder_set_default_column_value(
+pub unsafe extern "C" fn lakesoul_config_builder_set_default_column_value(
     builder: NonNull<IOConfigBuilder>,
     field: *const c_char,
     value: *const c_char,
@@ -529,7 +567,7 @@ pub extern "C" fn create_lakesoul_reader_from_config(
         Ok(reader) => CResult::<Reader>::new(SyncSendableMutableLakeSoulReader::new(
             reader, runtime,
         )),
-        Err(e) => CResult::<Reader>::error(format!("{:?}", e).as_str()),
+        Err(e) => CResult::<Reader>::error(e.to_string()),
     };
     convert_to_nonnull(result)
 }
@@ -632,7 +670,7 @@ pub extern "C" fn start_reader(
             Err(e) => call_result_callback(
                 callback,
                 false,
-                CString::new(format!("{}", e).as_str()).unwrap().into_raw(),
+                CString::new(e.to_string()).unwrap().into_raw(),
             ),
         }
     }
@@ -656,7 +694,7 @@ pub extern "C" fn start_reader_with_data(
             Err(e) => call_data_result_callback(
                 callback,
                 false,
-                CString::new(format!("{}", e).as_str()).unwrap().into_raw(),
+                CString::new(e.to_string()).unwrap().into_raw(),
                 data,
             ),
         }
@@ -675,7 +713,7 @@ pub extern "C" fn next_record_batch(
         let reader = NonNull::new_unchecked(
             reader.as_ref().ptr as *mut SyncSendableMutableLakeSoulReader,
         );
-        let f = move |rb: Option<Result<RecordBatch>>| match rb {
+        let f = move |rb: Option<Result<RecordBatch, Report>>| match rb {
             None => {
                 call_i32_result_callback(callback, 0, std::ptr::null());
             }
@@ -684,7 +722,7 @@ pub extern "C" fn next_record_batch(
                     call_i32_result_callback(
                         callback,
                         -1,
-                        CString::new(format!("{}", e).as_str()).unwrap().into_raw(),
+                        CString::new(e.to_string()).unwrap().into_raw(),
                     );
                 }
                 Ok(rb) => {
@@ -706,9 +744,7 @@ pub extern "C" fn next_record_batch(
                             call_i32_result_callback(
                                 callback,
                                 -1,
-                                CString::new(format!("{}", e).as_str())
-                                    .unwrap()
-                                    .into_raw(),
+                                CString::new(e.to_string()).unwrap().into_raw(),
                             );
                         }
                     }
@@ -720,8 +756,11 @@ pub extern "C" fn next_record_batch(
 }
 
 /// Call [`SyncSendableMutableLakeSoulReader::next_rb_blocked`] of the [`Reader`].
+/// # Safety
+///
+/// `count` must be a valid pointer to an integer.
 #[unsafe(no_mangle)]
-pub extern "C" fn next_record_batch_blocked(
+pub unsafe extern "C" fn next_record_batch_blocked(
     reader: NonNull<CResult<Reader>>,
     array_addr: c_ptrdiff_t,
     count: *mut c_int,
@@ -739,7 +778,7 @@ pub extern "C" fn next_record_batch_blocked(
             Some(rb_result) => match rb_result {
                 Err(e) => {
                     *count = -1;
-                    CString::new(format!("{}", e).as_str()).unwrap().into_raw()
+                    CString::new(e.to_string()).unwrap().into_raw()
                 }
                 Ok(rb) => {
                     let rows = rb.num_rows() as i32;
@@ -767,6 +806,9 @@ unsafe impl Send for Cvoid {}
 unsafe impl Sync for Cvoid {}
 
 /// Call [`SyncSendableMutableLakeSoulReader::next_rb_callback`] of the [`Reader`].
+/// # Safety
+///
+/// `data` must be a valid pointer
 #[unsafe(no_mangle)]
 pub extern "C" fn next_record_batch_with_data(
     reader: NonNull<CResult<Reader>>,
@@ -780,7 +822,7 @@ pub extern "C" fn next_record_batch_with_data(
             reader.as_ref().ptr as *mut SyncSendableMutableLakeSoulReader,
         );
         let data = Cvoid { data };
-        let f = move |rb: Option<Result<RecordBatch>>| match rb {
+        let f = move |rb: Option<Result<RecordBatch, Report>>| match rb {
             None => {
                 call_i32_data_result_callback(callback, 0, std::ptr::null(), data);
             }
@@ -789,7 +831,7 @@ pub extern "C" fn next_record_batch_with_data(
                     call_i32_data_result_callback(
                         callback,
                         -1,
-                        CString::new(format!("{}", e).as_str()).unwrap().into_raw(),
+                        CString::new(e.to_string()).unwrap().into_raw(),
                         data,
                     );
                 }
@@ -817,9 +859,7 @@ pub extern "C" fn next_record_batch_with_data(
                             call_i32_data_result_callback(
                                 callback,
                                 -1,
-                                CString::new(format!("{}", e).as_str())
-                                    .unwrap()
-                                    .into_raw(),
+                                CString::new(e.to_string()).unwrap().into_raw(),
                                 data,
                             );
                         }
@@ -863,15 +903,16 @@ pub extern "C" fn free_lakesoul_reader(reader: NonNull<CResult<Reader>>) {
 /// Create a new [`SyncSendableMutableLakeSoulWriter`] from the [`IOConfig`] and return a [`Writer`] wrapped in [`CResult`].
 #[unsafe(no_mangle)]
 pub extern "C" fn create_lakesoul_writer_from_config(
-    config: NonNull<IOConfig>,
+    io_config: NonNull<IOConfig>,
     runtime: NonNull<TokioRuntime>,
 ) -> NonNull<CResult<Writer>> {
-    let config: LakeSoulIOConfig = from_opaque(config);
+    let io_config: LakeSoulIOConfig = from_opaque(io_config);
     let runtime: Runtime = from_opaque(runtime);
-    let result = match SyncSendableMutableLakeSoulWriter::try_new(config, runtime) {
-        Ok(writer) => CResult::<Writer>::new(writer),
-        Err(e) => CResult::<Writer>::error(format!("{}", e).as_str()),
-    };
+    let result =
+        match SyncSendableMutableLakeSoulWriter::from_io_config(io_config, runtime) {
+            Ok(writer) => CResult::<Writer>::new(writer),
+            Err(e) => CResult::<Writer>::error(format!("{}", e).as_str()),
+        };
     convert_to_nonnull(result)
 }
 
@@ -956,7 +997,7 @@ pub extern "C" fn write_record_batch_blocked(
         let result: lakesoul_io::Result<()> = result_fn();
         match result {
             Ok(_) => std::ptr::null(),
-            Err(e) => CString::new(format!("{}", e).as_str()).unwrap().into_raw(),
+            Err(e) => CString::new(e.to_string()).unwrap().into_raw(),
         }
     }
 }
@@ -990,9 +1031,7 @@ pub extern "C" fn write_record_batch_ipc_blocked(
                 match writer.write_batch(batch) {
                     Ok(_) => row_count += num_rows,
                     Err(e) => {
-                        return CString::new(format!("Error: {}", e).as_str())
-                            .unwrap()
-                            .into_raw();
+                        return CString::new(e.to_string()).unwrap().into_raw();
                     }
                 }
             }
@@ -1000,13 +1039,11 @@ pub extern "C" fn write_record_batch_ipc_blocked(
                 break;
             }
             Err(e) => {
-                return CString::new(format!("Error: {}", e).as_str())
-                    .unwrap()
-                    .into_raw();
+                return CString::new(e.to_string()).unwrap().into_raw();
             }
         }
     }
-    CString::new(format!("Ok: {}", row_count).as_str())
+    CString::new(format!("Number of rows: {}", row_count))
         .unwrap()
         .into_raw()
 }
@@ -1064,7 +1101,7 @@ pub extern "C" fn flush_and_close_writer(
                 call_i32_result_callback(
                     callback,
                     -1,
-                    CString::new(format!("{}", e).as_str()).unwrap().into_raw(),
+                    CString::new(e.to_string()).unwrap().into_raw(),
                 );
                 convert_to_nonnull(CResult::<BytesResult>::new::<Vec<u8>>(vec![]))
             }
@@ -1088,7 +1125,7 @@ pub extern "C" fn abort_and_close_writer(
             Err(e) => call_result_callback(
                 callback,
                 false,
-                CString::new(format!("{}", e).as_str()).unwrap().into_raw(),
+                CString::new(e.to_string()).unwrap().into_raw(),
             ),
         }
     }
@@ -1200,12 +1237,28 @@ pub extern "C" fn free_bytes_result(bytes: NonNull<CResult<BytesResult>>) {
 /// now use RUST_LOG=LEVEL to activate
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_logger_init() {
-    // TODO add logger format
     let timer = tracing_subscriber::fmt::time::ChronoLocal::rfc_3339();
-    let _ = tracing_subscriber::fmt()
+    match tracing_subscriber::fmt()
         .with_timer(timer)
+        .with_target(false)
+        .with_thread_names(true)
+        .with_file(true)
+        .with_line_number(true)
         .with_env_filter(EnvFilter::from_default_env())
-        .try_init();
+        .try_init()
+    {
+        Ok(_) => {}
+        Err(e) => {
+            if !e
+                .to_string()
+                .contains("a global default trace dispatcher has already been set")
+            {
+                let msg = format!("Failed to initialize tracing subscriber {:?}", e);
+                eprintln!("{}", msg);
+                panic!("{}", msg)
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1216,7 +1269,7 @@ mod tests {
     use std::ptr::NonNull;
     use std::sync::{Condvar, Mutex};
 
-    use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
+    use arrow_array::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
 
     use crate::{
         IOConfigBuilder, create_lakesoul_io_config_from_builder,
@@ -1683,6 +1736,7 @@ mod tests {
         flush_and_close_writer(writer, writer_callback);
         free_lakesoul_reader(reader);
     }
+
     #[test]
     fn log_test() {
         rust_logger_init();

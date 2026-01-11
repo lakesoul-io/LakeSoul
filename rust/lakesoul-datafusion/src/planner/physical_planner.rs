@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use datafusion::common::{DFSchema, SchemaExt};
-use datafusion::error::{DataFusionError, Result};
+use datafusion::error::{DataFusionError, Result as DFResult};
 use datafusion::execution::context::SessionState;
 use datafusion::logical_expr::{Expr, LogicalPlan};
 use datafusion::physical_expr::{LexOrdering, PhysicalExpr, create_physical_expr};
@@ -22,7 +22,8 @@ use datafusion::logical_expr::{DmlStatement, WriteOp};
 use lakesoul_io::helpers::{
     column_names_to_physical_expr, column_names_to_physical_sort_expr,
 };
-use lakesoul_io::repartition::RepartitionByRangeAndHashExec;
+use lakesoul_io::physical_plan::RepartitionByRangeAndHashExec;
+use rootcause::compat::boxed_error::IntoBoxedError;
 
 use crate::lakesoul_table::LakeSoulTable;
 
@@ -45,18 +46,18 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
         &self,
         logical_plan: &LogicalPlan,
         session_state: &SessionState,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        info!("create_physical_plan: {:?}", &logical_plan);
+    ) -> DFResult<Arc<dyn ExecutionPlan>> {
+        debug!("create_physical_plan: {}", &logical_plan);
         match logical_plan {
             LogicalPlan::Filter(filter) => {
-                info!("filter: {:?}", &filter.predicate);
+                debug!("filter: {}", &filter.predicate);
                 let physical_input = self
                     .create_physical_plan(&filter.input, session_state)
                     .await?;
                 let input_schema = physical_input.as_ref().schema();
                 let input_dfschema = filter.input.schema();
-                info!("input_schema: {:?}", &input_schema);
-                info!("input_dfschema: {:?}", &input_dfschema);
+                debug!("input_schema: {}", &input_schema);
+                debug!("input_dfschema: {}", &input_dfschema);
 
                 let runtime_expr = self.create_physical_expr(
                     &filter.predicate,
@@ -71,17 +72,16 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                 input,
                 ..
             }) => {
-                info!("insert into: {:?}, {:?}", &table_name, &input);
+                debug!("insert into: {}, {}", &table_name, &input);
                 let name = table_name.table();
                 let schema = table_name.schema();
-                // let schema = session_state.schema_for_ref(table_name)?;
                 let lakesoul_table = LakeSoulTable::for_namespace_and_name(
                     schema.unwrap_or("default"),
                     name,
                     None,
                 )
                 .await
-                .map_err(|e| DataFusionError::External(Box::new(e)))?;
+                .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
 
                 match lakesoul_table.as_sink_provider(session_state).await {
                     Ok(provider) => {
@@ -116,35 +116,49 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                                 .as_slice(),
                                 input_dfschema,
                                 session_state,
-                            )?;
+                            )
+                            .map_err(|report| {
+                                DataFusionError::External(report.into_boxed_error())
+                            })?;
                             let hash_partitioning_expr = column_names_to_physical_expr(
                                 lakesoul_table.primary_keys(),
                                 input_dfschema,
                                 session_state,
-                            )?;
+                            )
+                            .map_err(|report| {
+                                DataFusionError::External(report.into_boxed_error())
+                            })?;
 
                             let hash_partitioning = Partitioning::Hash(
                                 hash_partitioning_expr,
-                                lakesoul_table.hash_bucket_num().map_err(|e| {
-                                    DataFusionError::Internal(e.to_string())
+                                lakesoul_table.hash_bucket_num().map_err(|report| {
+                                    DataFusionError::External(report.into_boxed_error())
                                 })?,
                             );
                             let range_partitioning_expr = column_names_to_physical_expr(
                                 lakesoul_table.range_partitions(),
                                 input_dfschema,
                                 session_state,
-                            )?;
+                            )
+                            .map_err(|report| {
+                                DataFusionError::External(report.into_boxed_error())
+                            })?;
                             let sort_exec = Arc::new(SortExec::new(
                                 LexOrdering::new(sort_expr).ok_or(
                                     DataFusionError::Plan("empty sort expr".into()),
                                 )?,
                                 physical_input,
                             ));
-                            Arc::new(RepartitionByRangeAndHashExec::try_new(
-                                sort_exec,
-                                range_partitioning_expr,
-                                hash_partitioning,
-                            )?)
+                            Arc::new(
+                                RepartitionByRangeAndHashExec::try_new(
+                                    sort_exec,
+                                    range_partitioning_expr,
+                                    hash_partitioning,
+                                )
+                                .map_err(|report| {
+                                    DataFusionError::External(report.into_boxed_error())
+                                })?,
+                            )
                         } else {
                             physical_input
                         };
@@ -153,7 +167,7 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                             .insert_into(session_state, physical_input, *insert_op)
                             .await
                     }
-                    Err(e) => return Err(DataFusionError::External(Box::new(e))),
+                    Err(report) => return Err(report.into_boxed_error().into()),
                 }
             }
             LogicalPlan::Statement(statement) => {
@@ -185,8 +199,8 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
         expr: &Expr,
         input_dfschema: &DFSchema,
         session_state: &SessionState,
-    ) -> Result<Arc<dyn PhysicalExpr>> {
-        info!("create_physical_expr: {:?}", &expr);
+    ) -> DFResult<Arc<dyn PhysicalExpr>> {
+        debug!("create_physical_expr: {}", &expr);
         create_physical_expr(expr, input_dfschema, session_state.execution_props())
     }
 }

@@ -4,30 +4,34 @@
 
 [package]
 name = "lakesoul-io-c"
-version = "3.0.0"
-edition = "2024"
+version = { workspace = true }
+edition = { workspace = true }
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
+# lakesoul
 lakesoul-io = { path = "../lakesoul-io" }
-arrow = { workspace = true, features = ["ffi"] }
-arrow-ipc = { workspace = true }
-tokio = { version = "1", features = ["full"] }
-bytes = { workspace = true }
 proto = { path = "../proto" }
+# datafusion
+datafusion-common = { workspace = true }
+datafusion-substrait = { workspace = true }
+# arrow
+arrow-schema = { workspace = true }
+arrow-array = { workspace = true, features = ["ffi"] }
+arrow-ipc = { workspace = true }
+# runtime
+tokio = { version = "1", features = ["full"] }
+# utils
+bytes = { workspace = true }
+# protobuf
 prost = { workspace = true }
+# logging
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-
-
-[target.'cfg(target_os = "windows")'.dependencies]
-datafusion-substrait = { workspace = true }
-
-[target.'cfg(not(target_os = "windows"))'.dependencies]
-datafusion-substrait = { workspace = true, features = ["protoc"] }
-
+# err
+rootcause = { workspace = true }
 
 [features]
 hdfs = ["lakesoul-io/hdfs"]

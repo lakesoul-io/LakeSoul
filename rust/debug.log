@@ -1,0 +1,210 @@
+2025-12-29 17:19:33 INFO  PartitionInfoDao:192 - findByTableIdAndParList query elapsed time 3ms
+2025-12-29 17:19:33 INFO  SparkMetaVersion:61 - get all partition info for table_2bb33d16-c265-4617-9362-c295ce778a0b
+2025-12-29 17:19:34 INFO  SparkMetaVersion:61 - Query data commit info for partition partition info: {
+table_name: table_2bb33d16-c265-4617-9362-c295ce778a0b,
+range_value: range=range1,
+version: 3,
+files: 4}, time 2ms
+2025-12-29 17:19:34 INFO  SparkMetaVersion:61 - Query data commit info for partition partition info: {
+table_name: table_2bb33d16-c265-4617-9362-c295ce778a0b,
+range_value: range=range2,
+version: 3,
+files: 4}, time 2ms
+2025-12-29 17:19:34 INFO  PartitionFilter:61 - get all table data info 18ms
+2025-12-29 17:19:34 INFO  DataSoulFileIndexV2:61 - getFileInfo took 21ms, fileNum 9
+2025-12-29 17:19:34 INFO  PartitionFilter:61 - get all table data info 0ms
+2025-12-29 17:19:34 INFO  DataSoulFileIndexV2:61 - getFileInfo took 0ms, fileNum 9
+2025-12-29T17:19:34.475759+08:00  INFO lakesoul_io::session: NativeIO register default fs file:///
+2025-12-29T17:19:34.475761+08:00  INFO lakesoul_io::session: NativeIO register default fs file:///
+2025-12-29T17:19:34.475793+08:00 DEBUG lakesoul_io::session: 
+2025-12-29T17:19:34.475805+08:00 DEBUG lakesoul_io::session: 
+2025-12-29T17:19:34.475824+08:00  INFO lakesoul_io::session: NativeIO normalized file names: ["file:/tmp/lakesoul/spark/range=range1/part--0001-5f15f4e5-6d80-41d4-968f-47b874d77938_00001.c000.parquet"]
+2025-12-29T17:19:34.475823+08:00  INFO lakesoul_io::session: NativeIO normalized file names: ["file:/tmp/lakesoul/spark/range=range1/part--0001-f6e31b2e-1fa8-43e4-9f05-2f889235fd95_00000.c000.parquet", "file:/tmp/lakesoul/spark/range=range1/part--0001-bf6b96b1-3bb4-4478-9182-3202fbbcadbb_00000.c000.parquet"]
+2025-12-29T17:19:34.475835+08:00  INFO lakesoul_io::session: NativeIO final config
+LakeSoulIOConfig {
+    prefix: "",
+    files: [
+        "file:/tmp/lakesoul/spark/range=range1/part--0001-f6e31b2e-1fa8-43e4-9f05-2f889235fd95_00000.c000.parquet",
+        "file:/tmp/lakesoul/spark/range=range1/part--0001-bf6b96b1-3bb4-4478-9182-3202fbbcadbb_00000.c000.parquet",
+    ],
+    primary_keys: [
+        "hash",
+    ],
+    range_partitions: [],
+    hash_bucket_num: "1",
+    columns: [],
+    aux_sort_cols: [],
+    filter_strs: [
+        "and(noteq(op, null), eq(op, Binary{\"delete\"}))",
+    ],
+    filters: [],
+    filter_protos: [],
+    filter_buf: [],
+    batch_size: 4096,
+    max_row_group_size: 250000,
+    max_row_group_num_values: 2147483647,
+    prefetch_size: 1,
+    parquet_filter_pushdown: false,
+    target_schema: IOSchema(
+        Schema {
+            fields: [
+                Field {
+                    name: "hash",
+                    data_type: Utf8,
+                },
+                Field {
+                    name: "op",
+                    data_type: Utf8,
+                    nullable: true,
+                },
+                Field {
+                    name: "range",
+                    data_type: Utf8,
+                    nullable: true,
+                },
+            ],
+            metadata: {},
+        },
+    ),
+    partition_schema: IOSchema(
+        Schema {
+            fields: [],
+            metadata: {},
+        },
+    ),
+    object_store_options: {
+        "fs.defaultFS": "file:///",
+        "fs.s3a.path.style.access": "false",
+    },
+    merge_operators: {},
+    default_column_value: {
+        "range": "range1",
+    },
+    thread_num: 2,
+    default_fs: "file:///",
+    options: {
+        "hash_bucket_num": "32",
+        "is_compacted": "false",
+        "skip_merge_on_read": "false",
+    },
+    use_dynamic_partition: false,
+    inferring_schema: false,
+    max_file_size: None,
+    seed: 1234,
+    memory_buffer_capacity: 16384,
+    multipart_chunk_size: 134217728,
+    receiver_capacity: 8,
+}
+2025-12-29T17:19:34.475833+08:00  INFO lakesoul_io::session: NativeIO final config
+LakeSoulIOConfig {
+    prefix: "",
+    files: [
+        "file:/tmp/lakesoul/spark/range=range1/part--0001-5f15f4e5-6d80-41d4-968f-47b874d77938_00001.c000.parquet",
+    ],
+    primary_keys: [
+        "hash",
+    ],
+    range_partitions: [],
+    hash_bucket_num: "1",
+    columns: [],
+    aux_sort_cols: [],
+    filter_strs: [
+        "and(noteq(op, null), eq(op, Binary{\"delete\"}))",
+    ],
+    filters: [],
+    filter_protos: [],
+    filter_buf: [],
+    batch_size: 4096,
+    max_row_group_size: 250000,
+    max_row_group_num_values: 2147483647,
+    prefetch_size: 1,
+    parquet_filter_pushdown: false,
+    target_schema: IOSchema(
+        Schema {
+            fields: [
+                Field {
+                    name: "hash",
+                    data_type: Utf8,
+                },
+                Field {
+                    name: "op",
+                    data_type: Utf8,
+                    nullable: true,
+                },
+                Field {
+                    name: "range",
+                    data_type: Utf8,
+                    nullable: true,
+                },
+            ],
+            metadata: {},
+        },
+    ),
+    partition_schema: IOSchema(
+        Schema {
+            fields: [],
+            metadata: {},
+        },
+    ),
+    object_store_options: {
+        "fs.defaultFS": "file:///",
+        "fs.s3a.path.style.access": "false",
+    },
+    merge_operators: {},
+    default_column_value: {
+        "range": "range1",
+    },
+    thread_num: 2,
+    default_fs: "file:///",
+    options: {
+        "is_compacted": "false",
+        "skip_merge_on_read": "false",
+        "hash_bucket_num": "32",
+    },
+    use_dynamic_partition: false,
+    inferring_schema: false,
+    max_file_size: None,
+    seed: 1234,
+    memory_buffer_capacity: 16384,
+    multipart_chunk_size: 134217728,
+    receiver_capacity: 8,
+}
+2025-12-29T17:19:34.543084+08:00 DEBUG start: lakesoul_io::session: apply new scan config
+2025-12-29T17:19:34.543084+08:00 DEBUG start: lakesoul_io::session: apply new scan config
+2025-12-29T17:19:34.543122+08:00 DEBUG start: lakesoul_io::session: filters: [No]
+2025-12-29T17:19:34.543128+08:00 DEBUG start: lakesoul_io::session: filters: [No]
+2025-12-29T17:19:34.569987+08:00 DEBUG start: lakesoul_io::datasource::physical_plan::merge: merge_stream with config= LakeSoulIOConfig { prefix: "", files: ["file:/tmp/lakesoul/spark/range=range1/part--0001-5f15f4e5-6d80-41d4-968f-47b874d77938_00001.c000.parquet"], primary_keys: ["hash"], range_partitions: [], hash_bucket_num: "1", columns: [], aux_sort_cols: [], filter_strs: [], filters: [], filter_protos: [], filter_buf: [], batch_size: 4096, max_row_group_size: 250000, max_row_group_num_values: 2147483647, prefetch_size: 1, parquet_filter_pushdown: false, target_schema: IOSchema(Schema { fields: [Field { name: "hash", data_type: Utf8 }, Field { name: "op", data_type: Utf8, nullable: true }, Field { name: "range", data_type: Utf8, nullable: true }], metadata: {} }), partition_schema: IOSchema(Schema { fields: [], metadata: {} }), object_store_options: {"fs.defaultFS": "file:///", "fs.s3a.path.style.access": "false"}, merge_operators: {}, default_column_value: {"range": "range1"}, thread_num: 2, default_fs: "file:///", options: {"is_compacted": "false", "skip_merge_on_read": "false", "hash_bucket_num": "32"}, use_dynamic_partition: false, inferring_schema: false, max_file_size: None, seed: 1234, memory_buffer_capacity: 16384, multipart_chunk_size: 134217728, receiver_capacity: 8 }, {"range": "range1"}
+2025-12-29T17:19:34.569999+08:00 DEBUG start: lakesoul_io::datasource::physical_plan::merge: merge_stream with config= LakeSoulIOConfig { prefix: "", files: ["file:/tmp/lakesoul/spark/range=range1/part--0001-f6e31b2e-1fa8-43e4-9f05-2f889235fd95_00000.c000.parquet", "file:/tmp/lakesoul/spark/range=range1/part--0001-bf6b96b1-3bb4-4478-9182-3202fbbcadbb_00000.c000.parquet"], primary_keys: ["hash"], range_partitions: [], hash_bucket_num: "1", columns: [], aux_sort_cols: [], filter_strs: [], filters: [], filter_protos: [], filter_buf: [], batch_size: 4096, max_row_group_size: 250000, max_row_group_num_values: 2147483647, prefetch_size: 1, parquet_filter_pushdown: false, target_schema: IOSchema(Schema { fields: [Field { name: "hash", data_type: Utf8 }, Field { name: "op", data_type: Utf8, nullable: true }, Field { name: "range", data_type: Utf8, nullable: true }], metadata: {} }), partition_schema: IOSchema(Schema { fields: [], metadata: {} }), object_store_options: {"fs.defaultFS": "file:///", "fs.s3a.path.style.access": "false"}, merge_operators: {}, default_column_value: {"range": "range1"}, thread_num: 2, default_fs: "file:///", options: {"hash_bucket_num": "32", "is_compacted": "false", "skip_merge_on_read": "false"}, use_dynamic_partition: false, inferring_schema: false, max_file_size: None, seed: 1234, memory_buffer_capacity: 16384, multipart_chunk_size: 134217728, receiver_capacity: 8 }, {"range": "range1"}
+2025-12-29T17:19:34.578752+08:00 DEBUG lakesoul_io::sorted_merge::sorted_stream_merger: uninitialized stream[0]
+2025-12-29T17:19:34.578751+08:00 DEBUG lakesoul_io::sorted_merge::sorted_stream_merger: uninitialized stream[0]
+2025-12-29T17:19:34.580417+08:00 DEBUG lakesoul_io::sorted_merge::sorted_stream_merger: uninitialized stream[1]
+2025-12-29T17:19:34.580419+08:00 DEBUG lakesoul_io::sorted_merge::sorted_stream_merger: uninitialized stream[0]
+2025-12-29T17:19:34.580474+08:00 DEBUG lakesoul_io::sorted_merge::sorted_stream_merger: uninitialized stream[0]
+2025-12-29T17:19:34.583678+08:00 DEBUG lakesoul_io::sorted_merge::sorted_stream_merger: uninitialized stream[1]
+2025-12-29T17:19:34.583704+08:00 DEBUG lakesoul_io::sorted_merge::sorted_stream_merger: uninitialized stream[0]
+2025-12-29T17:19:34.583859+08:00 DEBUG lakesoul_io::sorted_merge::sorted_stream_merger: uninitialized stream[0]
+2025-12-29T17:19:34.588783+08:00 DEBUG maybe_poll_stream{idx=0}: lakesoul_io::sorted_merge::sorted_stream_merger: stream[0] exhausted
+2025-12-29T17:19:34.588785+08:00 DEBUG maybe_poll_stream{idx=0}: lakesoul_io::sorted_merge::sorted_stream_merger: stream[0] exhausted
+2025-12-29T17:19:34.588798+08:00 DEBUG lakesoul_io::sorted_merge::sorted_stream_merger: uninitialized stream[1]
+2025-12-29T17:19:34.588958+08:00 ERROR lakesoul_io::sorted_merge::sorted_stream_merger: 
+ ● Not all streams have been initialized, ranges_counter: 0, streams_num: 1
+ ╰ rust/lakesoul-io/src/sorted_merge/combiner.rs:480
+
+2025-12-29T17:19:34.589200+08:00 ERROR lakesoul_io::sorted_merge::sorted_stream_merger: 
+ ● Not all streams have been initialized, ranges_counter: 0, streams_num: 1
+ ╰ rust/lakesoul-io/src/sorted_merge/combiner.rs:480
+
+2025-12-29T17:19:34.593749+08:00 DEBUG lakesoul_io::sorted_merge::sorted_stream_merger: uninitialized stream[0]
+2025-12-29T17:19:34.593768+08:00 DEBUG maybe_poll_stream{idx=0}: lakesoul_io::sorted_merge::sorted_stream_merger: stream[0] terminated
+2025-12-29T17:19:34.593780+08:00 DEBUG lakesoul_io::sorted_merge::sorted_stream_merger: uninitialized stream[1]
+2025-12-29T17:19:34.594196+08:00 DEBUG lakesoul_io::sorted_merge::sorted_stream_merger: uninitialized stream[0]
+2025-12-29T17:19:34.594229+08:00 DEBUG maybe_poll_stream{idx=0}: lakesoul_io::sorted_merge::sorted_stream_merger: stream[0] terminated
+2025-12-29T17:19:34.594244+08:00 DEBUG lakesoul_io::sorted_merge::sorted_stream_merger: uninitialized stream[1]
+2025-12-29T17:19:34.601800+08:00 DEBUG maybe_poll_stream{idx=1}: lakesoul_io::sorted_merge::sorted_stream_merger: push range in rust/lakesoul-io/src/sorted_merge/sorted_stream_merger.rs:377
+2025-12-29T17:19:34.601953+08:00 ERROR lakesoul_io::sorted_merge::sorted_stream_merger: 
+ ● Not all streams have been initialized, ranges_counter: 1, streams_num: 2
+ ╰ rust/lakesoul-io/src/sorted_merge/combiner.rs:480
+
+2025-12-29T17:19:34.601974+08:00 ERROR lakesoul_io::sorted_merge::sorted_stream_merger: 
+ ● Not all streams have been initialized, ranges_counter: 1, streams_num: 2
+ ╰ rust/lakesoul-io/src/sorted_merge/combiner.rs:480

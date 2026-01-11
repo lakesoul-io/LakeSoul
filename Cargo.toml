@@ -5,16 +5,16 @@
 
 [workspace]
 members = [
-    "rust/lakesoul-metadata",
-    "rust/lakesoul-metadata-c",
-    "rust/proto",
-    "rust/lakesoul-io",
-    "rust/lakesoul-io-c",
-    "rust/lakesoul-datafusion",
-    "rust/lakesoul-flight",
-    "rust/lakesoul-s3-proxy",
-    "rust/lakesoul-console",
-    "python",
+  "rust/proto",
+  "rust/lakesoul-metadata",
+  "rust/lakesoul-metadata-c",
+  "rust/lakesoul-io",
+  "rust/lakesoul-io-c",
+  "rust/lakesoul-datafusion",
+  "rust/lakesoul-flight",
+  "rust/lakesoul-s3-proxy",
+  "rust/lakesoul-console",
+  "python",
 ]
 resolver = "3"
 
@@ -30,11 +30,20 @@ version = "0.1.0"
 #lto = true
 
 [workspace.dependencies]
+# datafusion
 datafusion = { version = "51" }
 datafusion-common = { version = "51" }
-datafusion-substrait = { version = "51" }
+datafusion-common-runtime = { version = "51" }
+datafusion-session = { version = "51" }
+datafusion-catalog-listing = { version = "51" }
 datafusion-expr = { version = "51" }
-datafusion-datasource= { version = "51" }
+datafusion-physical-expr = { version = "51" }
+datafusion-physical-plan = { version = "51" }
+datafusion-execution = { version = "51" }
+datafusion-datasource = { version = "51" }
+datafusion-datasource-parquet = { version = "51" }
+datafusion-substrait = { version = "51" }
+# arrow
 arrow = { version = "57" }
 arrow-schema = { version = "57" }
 arrow-array = { version = "57" }
@@ -46,45 +55,59 @@ arrow-flight = { version = "57", features = ["flight-sql-experimental"] }
 arrow-pyarrow = { version = "57" }
 parquet = { version = "57" }
 object_store = { version = "0.12", features = ["aws", "http"] }
-
-tokio-stream = "0.1.9"
+# async
+futures = "0.3"
+async-trait = "0.1"
+# async runtime
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io", "compat"] }
+tokio-stream = "0.1.9"
+# web
+tower = "0.4.13"
 tonic = "0.14"
 tonic-build = "0.14"
-derivative = "2.2.0"
+http = "1.2.0"
+metrics = "0.21"
+# cache
+cached = { version = "0.54.0", features = ["async_tokio_rt_multi_thread"] }
+# cli
+clap = { version = "4.4", features = ["derive"] }
+# utils
 atomic_refcell = "0.1.8"
-futures = "0.3"
+bytes = "1.4.0"
 url = "2.2"
-async-trait = "0.1"
+half = "^2.1"
+uuid = { version = "1.4.0", features = ["v4", "fast-rng", "macro-diagnostics"] }
+derivative = "2.2.0"
+regex = "1.11"
+itertools = "0.14"
+# serialization
 serde_json = "1.0"
+serde = { version = "1.0", features = ["derive", "std", "rc"] }
+# protobuf
 prost = "0.14"
 prost-build = "0.14"
-uuid = { version = "1.4.0", features = ["v4", "fast-rng", "macro-diagnostics"] }
-serde = { version = "1.0", features = ["derive", "std", "rc"] }
+# random
 rand = "0.9"
 rand_distr = "0.5"
 rand_chacha = "0.9"
-bytes = "1.4.0"
-half = "^2.1"
+# logging
 tracing = { version = "0.1.40", features = ["log"] }
 tracing-subscriber = { version = "0.3.19", features = [
-    "default",
-    "chrono",
-    "env-filter",
+  "default",
+  "chrono",
+  "env-filter",
 ] }
+# for test
 test-log = "0.2.17"
+tempfile = "3.3.0"
 # error handling
 thiserror = "1.0"
 anyhow = "1.0.79"
-rootcause = "0.9"
-
-http = "1.2.0"
-tower = "0.4.13"
-metrics = "0.21"
-cached = { version = "0.54.0", features = ["async_tokio_rt_multi_thread"] }
-clap = { version = "4.4", features = ["derive"] }
+rootcause = "0.11"
 
 
 [workspace.lints.clippy]
-too_many_arguments = "allow"
+
+[workspace.lints.rust]
+deprecated = "allow"

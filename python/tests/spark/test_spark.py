@@ -4,18 +4,17 @@
 
 import glob
 import os
-from pathlib import Path
 import random
-import string
-import tempfile
 import shutil
+import string
 import sys
+from pathlib import Path
 
+import pytest
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, lit, expr
+from pyspark.sql.functions import col, expr, lit
 
 from lakesoul.spark import LakeSoulTable
-import pytest
 
 
 def __writeLakeSoulTable(spark, temp_file, datalist):
@@ -73,16 +72,10 @@ def __generate_random_string(length):
 
 
 @pytest.fixture
-def temp_path():
-    path = tempfile.mktemp()
-    return path
-
-
-@pytest.fixture
-def spark_and_file(temp_path):
+def spark_and_file(tmp_path):
     """Fixture to set up a SparkSession for querying LakeSoul tables."""
     old_sys_path = list(sys.path)
-    warehouse_dir = Path(temp_path) / "warehouse"
+    warehouse_dir = Path(tmp_path) / "warehouse"
     warehouse_dir.mkdir(parents=True)
     lakesoul_source_dir = os.environ.get("LAKESOUL_SOURCE_DIR")
     jar_pattern = os.path.join(
@@ -109,7 +102,7 @@ def spark_and_file(temp_path):
         .config("spark.jars", ",".join(jar_files))
         .getOrCreate()
     )
-    temp_file = os.path.join(temp_path, "temp_file")
+    temp_file = os.path.join(tmp_path, "temp_file")
     yield spark, temp_file
     spark.sparkContext.stop()
     if warehouse_dir.exists() and warehouse_dir.is_dir():
