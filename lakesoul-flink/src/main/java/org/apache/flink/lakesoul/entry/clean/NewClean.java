@@ -26,8 +26,8 @@ import java.sql.DriverManager;
 import java.util.List;
 import java.util.Properties;
 
-public class Clean {
-    private static final Logger log = LoggerFactory.getLogger(Clean.class);
+public class NewClean {
+    private static final Logger log = LoggerFactory.getLogger(NewClean.class);
     public static int expiredTime;
     public static String host;
     private static String dbName;
@@ -42,7 +42,6 @@ public class Clean {
     private static int sourceParallelism;
     private static String targetTables;
     private static String startMode;
-
 
     public static void main(String[] args) throws Exception {
         ParameterTool parameter = ParameterTool.fromArgs(args);
@@ -191,7 +190,7 @@ public class Clean {
                 .process(new TableTtlProFunction())
                 .keyBy(value -> value.tableId + "/" + value.partitionDesc)
                 .connect(tableInfoBroadcastStreming);
-        connect.process(new TtlBroadcastProcessFunction(TABLE_TTL_DESC,1));
+        connect.process(new TtlBroadcastProcessFunction(TABLE_TTL_DESC,1)).name("清理过期分区数据");
 
         discardFileInfoStream
                 .map(new DiscardPathMapFunction())

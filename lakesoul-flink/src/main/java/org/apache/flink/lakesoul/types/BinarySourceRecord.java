@@ -67,11 +67,18 @@ public class BinarySourceRecord {
                                                            String sinkDBName) throws Exception {
         Schema keySchema = sourceRecord.keySchema();
         TableId tableId = new TableId(io.debezium.relational.TableId.parse(sourceRecord.topic()).toLowercase());
-        String originalNamespace = tableId.schema() == null ? tableId.catalog() : tableId.schema();
-        String newNamespace = StringUtils.isNotBlank(sinkDBName) ? sinkDBName : originalNamespace;
-        String tableName = String.format("s_%s_%s", originalNamespace, tableId.table()).toLowerCase();
-        String originTableName = tableId.table();
-        tableId = new TableId(newNamespace, newNamespace , tableName);
+        String sourceSchemaName = tableId.schema() == null ? tableId.catalog() : tableId.schema();
+        String tableName;
+        String originTableName;
+        if (sinkDBName.equals(sourceSchemaName) || sourceRecord.topic().split("\\.")[0].equals("mysql_binlog_source")){
+           tableName = String.format("s_%s_%s", sourceSchemaName, tableId.table()).toLowerCase();
+           originTableName = tableId.table();
+           tableId = new TableId(sinkDBName, sourceSchemaName , tableName);
+        } else {
+            tableName = String.format("s_%s_%s_%s", sinkDBName, sourceSchemaName, tableId.table()).toLowerCase();
+            originTableName = tableId.table();
+            tableId = new TableId(sinkDBName, sourceSchemaName , tableName);
+        }
         HashMap<String, List<String>> topicsPartitionFields = convert.topicsPartitionFields;
         if (topicsPartitionFields.containsKey(originTableName)) {
             List<String> partitionColls = topicsPartitionFields.get(originTableName);

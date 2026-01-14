@@ -29,19 +29,41 @@ public class PgCleanDeserialization implements DebeziumDeserializationSchema<Str
         JSONObject result = new JSONObject();
         JSONObject beforeJson = extractStructJson(value.getStruct("before"));
         JSONObject afterJson = extractStructJson(value.getStruct("after"));
-
-        if (!tableName.equals("partition_info") && !tableName.equals("discard_compressed_file_info")) {
-            return;
-        }
         Envelope.Operation operation = Envelope.operationFor(sourceRecord);
+
         result.put("commitOp", operation.toString().toLowerCase());
         result.put("tableName", tableName);
-        result.put("before", beforeJson);
-        result.put("after", afterJson);
+        if (tableName.equals("table_info")) {
+            boolean hasPartitionTtlProperty = false;
+            if (beforeJson.containsKey("properties")){
+                String beforeProperties = beforeJson.get("properties").toString();
+                JSONObject beforePropertiesParse = (JSONObject) JSONObject.parse(beforeProperties);
+                String tableId = beforeJson.getString("table_id");
+                beforePropertiesParse.put("tableId", tableId);
+                result.put("before", beforePropertiesParse);
+                hasPartitionTtlProperty = ((JSONObject) JSONObject.parse(beforeProperties)).containsKey("partition.ttl");
+            }
+            if (afterJson.containsKey("properties")) {
+                String afterProperties = afterJson.get("properties").toString();
+                JSONObject afterPropertiesParse = (JSONObject) JSONObject.parse(afterProperties);
+                String tableId = afterJson.getString("table_id");
+                afterPropertiesParse.put("tableId", tableId);
+                result.put("after", afterPropertiesParse);
+                hasPartitionTtlProperty = hasPartitionTtlProperty || ((JSONObject) JSONObject.parse(afterProperties)).containsKey("partition.ttl");
+            }
 
-        if (!beforeJson.isEmpty() || !afterJson.isEmpty()) {
-            collector.collect(result.toJSONString());
+            if (hasPartitionTtlProperty){
+                collector.collect(result.toJSONString());
+            }
+
+        } else {
+            result.put("before", beforeJson);
+            result.put("after", afterJson);
+            if (!beforeJson.isEmpty() || !afterJson.isEmpty()) {
+                collector.collect(result.toJSONString());
+            }
         }
+
     }
 
     private JSONObject extractStructJson(Struct struct) {

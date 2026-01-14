@@ -9,7 +9,6 @@ import com.ververica.cdc.connectors.base.options.StartupOptions;
 import com.ververica.cdc.connectors.base.source.jdbc.JdbcIncrementalSource;
 import com.ververica.cdc.connectors.mysql.source.MySqlSource;
 import com.ververica.cdc.connectors.mysql.source.MySqlSourceBuilder;
-import com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions;
 import com.ververica.cdc.connectors.oracle.source.OracleSourceBuilder;
 import com.ververica.cdc.connectors.postgres.source.PostgresSourceBuilder;
 import com.ververica.cdc.connectors.mongodb.source.MongoDBSource;
@@ -117,6 +116,9 @@ public class JdbcCDC {
         Configuration globalConfig = GlobalConfiguration.loadConfiguration();
         String warehousePath = databasePrefixPath == null ? globalConfig.getString("flink.warehouse.dir", null): databasePrefixPath;
         Configuration conf = new Configuration();
+        if (sinkDBName == null){
+            sinkDBName = dbName;
+        }
         // parameters for mutil tables ddl sink
         conf.set(SOURCE_DB_DB_NAME, dbName);
         conf.set(SOURCE_DB_USER, userName);
@@ -263,8 +265,8 @@ public class JdbcCDC {
     private static void postgresCdc(LakeSoulRecordConvert lakeSoulRecordConvert, Configuration conf, StreamExecutionEnvironment env, String sinkDBName) throws Exception {
         JdbcIncrementalSource<BinarySourceRecord> pgSource = PostgresSourceBuilder.PostgresIncrementalSource.<BinarySourceRecord>builder()
                 .hostname(host)
-                .tableList(tableList)
                 .schemaList(schemaList)
+                .tableList(tableList)
                 .database(dbName)
                 .port(port)
                 .username(userName)
@@ -296,7 +298,7 @@ public class JdbcCDC {
                 builder =
                 new LakeSoulMultiTableSinkStreamBuilder(pgSource, context, lakeSoulRecordConvert);
         DataStreamSource<BinarySourceRecord> source = builder.buildMultiTableSource("Postgres Source");
-
+        source.print();
         DataStream<BinarySourceRecord> stream = builder.buildHashPartitionedCDCStream(source);
         DataStreamSink<BinarySourceRecord> dmlSink = builder.buildLakeSoulDMLSink(stream);
         env.execute("LakeSoul CDC Sink From Postgres Database " + dbName);
@@ -310,8 +312,8 @@ public class JdbcCDC {
         JdbcIncrementalSource<BinarySourceRecord> oracleChangeEventSource =
                 new OracleSourceBuilder()
                         .hostname(host)
-                        .tableList(tableList)
                         .schemaList(schemaList)
+                        .tableList(tableList)
                         .databaseList(dbName)
                         .port(port)
                         .username(userName)

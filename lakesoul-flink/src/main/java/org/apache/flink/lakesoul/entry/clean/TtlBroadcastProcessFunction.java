@@ -12,6 +12,8 @@ import org.apache.flink.core.fs.Path;
 import org.apache.flink.streaming.api.functions.co.KeyedBroadcastProcessFunction;
 import org.apache.flink.table.catalog.exceptions.CatalogException;
 import org.apache.flink.util.Collector;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.List;
@@ -19,6 +21,7 @@ import java.util.concurrent.TimeUnit;
 
 public class TtlBroadcastProcessFunction extends KeyedBroadcastProcessFunction<String, TableTtlProFunction.PartitionINfoUpdateEvents, TableInfoRecordGets.TableInfo, String> {
 
+    private static final Logger log = LoggerFactory.getLogger(TtlBroadcastProcessFunction.class);
     private final long maxProcessIntervalMillis;
 
     private transient BroadcastState<String, Integer> broadcastState;
@@ -28,9 +31,9 @@ public class TtlBroadcastProcessFunction extends KeyedBroadcastProcessFunction<S
     private transient ValueState<Long> partitionTimerTimestampState;
     public TtlBroadcastProcessFunction(MapStateDescriptor<String, Integer> ttlBroadcastStateDesc , int maxProcessIntervalDays) {
 
-        //this.maxProcessIntervalMillis = 60000;
+        this.maxProcessIntervalMillis = 60000;
         this.ttlBroadcastStateDesc = ttlBroadcastStateDesc;
-        this.maxProcessIntervalMillis = TimeUnit.DAYS.toMillis(maxProcessIntervalDays);
+        //this.maxProcessIntervalMillis = TimeUnit.DAYS.toMillis(maxProcessIntervalDays);
     }
 
     @Override
@@ -131,9 +134,9 @@ public class TtlBroadcastProcessFunction extends KeyedBroadcastProcessFunction<S
             throw new CatalogException("Table " + tableId + " does not exist");
         }
         List<String> deleteFilePath = dbManager.deleteMetaPartitionInfo(tableInfo.getTableId(), partitionDesc);
-
         Path partitionDir = null;
-
+        log.info("开始删除分区数据：" + tableInfo.getTableName() + "/" + partitionDesc);
+        System.out.println("开始删除分区数据：" + tableInfo.getTableName() + "/" + partitionDesc);
         for (String filePath : deleteFilePath) {
             Path path = new Path(filePath);
             try {
