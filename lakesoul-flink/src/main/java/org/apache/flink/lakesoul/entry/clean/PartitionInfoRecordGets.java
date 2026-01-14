@@ -6,6 +6,7 @@ package org.apache.flink.lakesoul.entry.clean;
 import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
 import org.apache.flink.api.common.functions.MapFunction;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -55,6 +56,22 @@ public class PartitionInfoRecordGets {
                     }
                 }
 
+            } else {
+                String table_id = commitJson.getString("table_id");
+                String partition_desc = commitJson.getString("partition_desc");
+                String commit_op = commitJson.getString("commit_op");
+                int version = commitJson.getInteger("version");
+                long timestamp = -5L;//标记这条数据被删除
+                if (tablesId == null){
+                    partitionInfo = new PartitionInfo(table_id,partition_desc,version,commit_op,timestamp, null);
+                }else {
+                    for (String tableId : tablesId) {
+                        if (tableId.equals(table_id)){
+                            partitionInfo = new PartitionInfo(table_id,partition_desc,version,commit_op,timestamp, null);
+                            break;
+                        }
+                    }
+                }
             }
             return partitionInfo;
         }
@@ -62,77 +79,29 @@ public class PartitionInfoRecordGets {
 
     public static class PartitionInfo{
 
-        String table_id;
-        String partition_desc;
+        String tableId;
+        String partitionDesc;
         int version;
-        String commit_op;
+        String commitOp;
         long timestamp;
         List<String> snapshot;
 
-        public PartitionInfo(String table_id, String partition_dec, int version, String commit_op, long timestamp, List<String> snapshot) {
-            this.table_id = table_id;
-            this.partition_desc = partition_dec;
+        public PartitionInfo(String tableId, String partitionDesc, int version, String commitOp, long timestamp, List<String> snapshot) {
+            this.tableId = tableId;
+            this.partitionDesc = partitionDesc;
             this.version = version;
-            this.commit_op = commit_op;
+            this.commitOp = commitOp;
             this.timestamp = timestamp;
-            this.snapshot = snapshot;
-        }
-
-        public String getTable_id() {
-            return table_id;
-        }
-
-        public void setTable_id(String table_id) {
-            this.table_id = table_id;
-        }
-
-        public String getPartition_desc() {
-            return partition_desc;
-        }
-
-        public void setPartition_desc(String partition_desc) {
-            this.partition_desc = partition_desc;
-        }
-
-        public int getVersion() {
-            return version;
-        }
-
-        public void setVersion(int version) {
-            this.version = version;
-        }
-
-        public String getCommit_op() {
-            return commit_op;
-        }
-
-        public void setCommit_op(String commit_op) {
-            this.commit_op = commit_op;
-        }
-
-        public long getTimestamp() {
-            return timestamp;
-        }
-
-        public void setTimestamp(long timestamp) {
-            this.timestamp = timestamp;
-        }
-
-        public List<String> getSnapshot() {
-            return snapshot;
-        }
-
-        public void setSnapshot(List<String> snapshot) {
             this.snapshot = snapshot;
         }
 
         @Override
         public String toString() {
             return "PartitionInfo{" +
-                    "table_id='" + table_id + '\'' +
-                    ", partition_dec='" + partition_desc + '\'' +
+                    "table_id='" + tableId + '\'' +
+                    ", partition_dec='" + partitionDesc + '\'' +
                     ", version=" + version +
-                    ", commit_op='" + commit_op + '\'' +
+                    ", commit_op='" + commitOp + '\'' +
                     ", timestamp=" + timestamp +
                     ", snapshot=" + snapshot +
                     '}';
@@ -149,4 +118,3 @@ public class PartitionInfoRecordGets {
         }
     }
 }
-
