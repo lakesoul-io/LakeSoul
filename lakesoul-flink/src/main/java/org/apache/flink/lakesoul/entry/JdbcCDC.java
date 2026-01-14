@@ -77,7 +77,7 @@ public class JdbcCDC {
         port = parameter.getInt(SOURCE_DB_PORT.key(), MysqlDBManager.DEFAULT_MYSQL_PORT);
         String sinkDBName = parameter.get(SINK_DBNAME.key(), SINK_DBNAME.defaultValue());
         //Postgres Oracle
-        if (dbType.equalsIgnoreCase("oracle") || dbType.equalsIgnoreCase("postgres") ) {
+        if (dbType.equalsIgnoreCase("oracle") || dbType.equalsIgnoreCase("postgres")) {
             String[] tables = parameter.get(SOURCE_DB_SCHEMA_TABLES.key()).split(",");
             HashSet<String> schemaListSet = new HashSet<>();
             for (String table : tables) {
