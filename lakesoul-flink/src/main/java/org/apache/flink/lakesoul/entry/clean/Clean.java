@@ -49,9 +49,7 @@ public class Clean {
         PgCleanDeserialization deserialization = new PgCleanDeserialization();
         Properties debeziumProperties = new Properties();
         debeziumProperties.setProperty("include.unknown.datatypes", "true");
-        String[] tableList = new String[]{"public.partition_info", "public.discard_compressed_file_info"};
-        //String[] tableList = new String[]{ "public.discard_compressed_file_info"};
-
+        String[] tableList = new String[]{"public.partition_info", "public.discard_compressed_file_info", "public.table_info"};
         userName = parameter.get(SourceOptions.SOURCE_DB_USER.key());
         dbName = parameter.get(SourceOptions.SOURCE_DB_DB_NAME.key());
         passWord = parameter.get(SourceOptions.SOURCE_DB_PASSWORD.key());
@@ -106,6 +104,7 @@ public class Clean {
                 .setParallelism(sourceParallelism);
         final OutputTag<String> partitionInfoTag = new OutputTag<String>("partition_info") {};
         final OutputTag<String> discardFileInfoTag = new OutputTag<String>("discard_compressed_file_info") {};
+        final OutputTag<String> tableInfoTag = new OutputTag<String>("table_info") {};
         SingleOutputStreamOperator<String> mainStream = postgresParallelSource.process(
                 new ProcessFunction<String, String>() {
                     @Override
@@ -117,6 +116,8 @@ public class Clean {
                                 ctx.output(partitionInfoTag, value);
                             } else if ("discard_compressed_file_info".equals(tableName)) {
                                 ctx.output(discardFileInfoTag, value);
+                            } else if ("table_info".equals(tableName)) {
+                                ctx.output(tableInfoTag, value);
                             }
                         } catch (Exception e) {
                             System.err.println("JSON parse error: " + e.getMessage());
@@ -126,7 +127,7 @@ public class Clean {
         );
         SideOutputDataStream<String> partitionInfoStream = mainStream.getSideOutput(partitionInfoTag);
         SideOutputDataStream<String> discardFileInfoStream = mainStream.getSideOutput(discardFileInfoTag);
-
+        SideOutputDataStream<String> tableInfoStream = mainStream.getSideOutput(tableInfoTag);
         CleanUtils utils = new CleanUtils();
         final OutputTag<PartitionInfo> compactionCommitTag =
                 new OutputTag<PartitionInfo>(
@@ -140,7 +141,6 @@ public class Clean {
             }
         }
 
-        //partitionInfoStream.map(new PartitionInfoRecordGets.metaMapper(tableIdList)).print();
         SingleOutputStreamOperator<PartitionInfo> mainStreaming = partitionInfoStream.map(new PartitionInfoRecordGets.metaMapper(tableIdList))
                 .process(new ProcessFunction<PartitionInfo, PartitionInfo>() {
                     @Override
@@ -169,7 +169,15 @@ public class Clean {
                         "compactionBroadcastState",
                         BasicTypeInfo.STRING_TYPE_INFO,
                         TypeInformation.of(new TypeHint<CompactProcessFunction.CompactionOut>() {}));
-
+        MapStateDescriptor<String, Integer> TABLE_TTL_DESC =
+                new MapStateDescriptor<>(
+                        "table-ttl-broadcast-state",
+                        String.class,
+                        Integer.class
+                );
+        BroadcastStream<TableInfoRecordGets.TableInfo> tableInfoBroadcastStreming = tableInfoStream
+                .map(new TableInfoRecordGets.tableInfoMapper())
+                .broadcast(TABLE_TTL_DESC);
         BroadcastStream<CompactProcessFunction.CompactionOut> broadcastStream =
                 compactiomStreaming.broadcast(broadcastStateDesc);
 
@@ -177,6 +185,13 @@ public class Clean {
                 partitionInfoStringKeyedStream.connect(broadcastStream);
 
         connectedStream.process(new CompactionBroadcastProcessFunction(broadcastStateDesc, pgUrl, userName, passWord, expiredTime, ontimerInterval));
+
+        BroadcastConnectedStream<TableTtlProFunction.PartitionINfoUpdateEvents, TableInfoRecordGets.TableInfo> connect = mainStreaming
+                .keyBy(value -> value.tableId + "/" + value.partitionDesc)
+                .process(new TableTtlProFunction())
+                .keyBy(value -> value.tableId + "/" + value.partitionDesc)
+                .connect(tableInfoBroadcastStreming);
+        connect.process(new TtlBroadcastProcessFunction(TABLE_TTL_DESC,1));
 
         discardFileInfoStream
                 .map(new DiscardPathMapFunction())

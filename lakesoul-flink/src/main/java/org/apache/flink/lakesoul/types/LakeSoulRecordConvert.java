@@ -31,6 +31,7 @@ import io.debezium.time.Year;
 import io.debezium.time.ZonedTime;
 import io.debezium.time.ZonedTimestamp;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.lakesoul.tool.LakeSoulKeyGen;
 import org.apache.flink.table.data.*;
 import org.apache.flink.table.data.binary.BinaryRowData;
@@ -540,7 +541,17 @@ public class LakeSoulRecordConvert implements Serializable {
             } else {
                 instant  = Instant.parse(fieldValue.toString());
             }
-            LocalDate date = instant.atZone(serverTimeZone).toLocalDate();
+
+            Configuration globalConfig = GlobalConfiguration.loadConfiguration();
+            String timeZone = globalConfig.getString("table.local-time-zone", null);
+            LocalDate date;
+            if (timeZone != null){
+                ZoneId flinkZoneId = ZoneId.of(timeZone);
+                date = instant.atZone(flinkZoneId).toLocalDate();
+            } else {
+                ZoneId flinkZoneId = ZoneId.systemDefault();
+                date = instant.atZone(flinkZoneId).toLocalDate();
+            }
             writer.writeString(pos, StringData.fromString(date.toString()));
             pos++;
         }
