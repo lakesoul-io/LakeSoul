@@ -608,10 +608,13 @@ pub unsafe extern "C" fn free_c_string(c_string: *mut c_char) {
 /// now use RUST_LOG=LEVEL to activate
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_logger_init() {
-    // TODO add logger format
     let timer = tracing_subscriber::fmt::time::ChronoLocal::rfc_3339();
     match tracing_subscriber::fmt()
         .with_timer(timer)
+        .with_target(false)
+        .with_thread_names(true)
+        .with_file(true)
+        .with_line_number(true)
         .with_env_filter(EnvFilter::from_default_env())
         .try_init()
     {

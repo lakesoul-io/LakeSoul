@@ -4,22 +4,24 @@
 
 //! The [`datafusion::catalog`] implementation for the LakeSoul.
 
-use datafusion::sql::TableReference;
-use serde::Deserialize;
 use std::collections::HashMap;
 use std::env;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use crate::error::{LakeSoulError, Result};
-use crate::lakesoul_table::helpers::create_io_config_builder_from_table_info;
-use crate::serialize::arrow_java::ArrowJavaSchema;
-use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
-use lakesoul_metadata::{LakeSoulMetaDataError, MetaDataClientRef};
+use datafusion::sql::TableReference;
+use lakesoul_io::config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
+use lakesoul_metadata::MetaDataClientRef;
 use proto::proto::entity::{
     CommitOp, DataCommitInfo, DataFileOp, FileOp, TableInfo, Uuid,
 };
+use rootcause::report;
+use serde::Deserialize;
+
+use crate::Result;
+use crate::lakesoul_table::helpers::create_io_config_builder_from_table_info;
+use crate::serialize::arrow_java::ArrowJavaSchema;
 
 pub mod lakesoul_catalog;
 //  used in catalog_test, but still say unused_imports, I think it is a bug about rust-lint.
@@ -30,7 +32,7 @@ mod lakesoul_namespace;
 pub use lakesoul_namespace::*;
 
 /// Deserialize the hash bucket number from the string or number.
-fn deserialize_hash_bucket_num<'de, D>(
+fn _deserialize_hash_bucket_num<'de, D>(
     deserializer: D,
 ) -> std::result::Result<Option<usize>, D::Error>
 where
@@ -57,7 +59,7 @@ where
 /// The metadata property for the LakeSoul table.
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LakeSoulTableProperty {
-    /// The hash bucket number for the LakeSoul table.  
+    /// The hash bucket number for the LakeSoul table.
     #[serde(
         rename = "hashBucketNum",
         default,
@@ -84,12 +86,14 @@ pub struct LakeSoulTableProperty {
 }
 
 /// Register a LakeSoul table in the LakeSoul metadata.
+#[allow(dead_code)]
+// TODO: this function used for test
 pub(crate) async fn create_table(
     client: MetaDataClientRef,
     table_name: &str,
     config: LakeSoulIOConfig,
 ) -> Result<()> {
-    info!("create_table: {:?}", &table_name);
+    debug!("create_table: {:?}", &table_name);
     client
         .create_table(TableInfo {
             table_id: format!("table_{}", uuid::Uuid::new_v4()),
@@ -99,7 +103,7 @@ pub(crate) async fn create_table(
                 env::current_dir()
                     .unwrap()
                     .to_str()
-                    .ok_or(LakeSoulError::Internal("can not get $TMPDIR".to_string()))?,
+                    .ok_or(report!("can not get $TMPDIR"))?,
                 table_name
             ),
             table_schema: serde_json::to_string::<ArrowJavaSchema>(
@@ -159,12 +163,7 @@ pub async fn create_io_config_builder(
             )
             .map(|builder| builder.with_files(data_files))
         } else {
-            Err(LakeSoulError::MetaDataError(
-                LakeSoulMetaDataError::NotFound(format!(
-                    "Table '{}' not found",
-                    table_name
-                )),
-            ))
+            Err(report!("Table `{}` not found", table_name))
         }
     } else {
         Ok(LakeSoulIOConfigBuilder::new())
@@ -175,9 +174,11 @@ pub async fn create_io_config_builder(
 pub(crate) fn parse_table_info_partitions(
     partitions: &str,
 ) -> Result<(Vec<String>, Vec<String>)> {
-    let (range_keys, hash_keys) = partitions.split_at(partitions.find(';').ok_or(
-        LakeSoulError::Internal("wrong partition format".to_string()),
-    )?);
+    let (range_keys, hash_keys) = partitions.split_at(
+        partitions
+            .find(';')
+            .ok_or(report!("wrong partition format"))?,
+    );
     let hash_keys = &hash_keys[1..];
     Ok((
         range_keys
@@ -228,7 +229,7 @@ pub(crate) async fn commit_data(
             table_ref.schema().unwrap_or("default"),
         )
         .await?
-        .ok_or(LakeSoulError::Internal("table not found".to_string()))?;
+        .ok_or(report!("table not found"))?;
     client
         .commit_data_commit_info(DataCommitInfo {
             table_id: table_name_id.table_id,

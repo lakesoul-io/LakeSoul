@@ -6,7 +6,7 @@
 name = "lakesoul"
 version = "1.1.0"
 authors = [
-    { name = "LakeSoul Team", email = "lakesoul-technical-discuss@lists.lfaidata.foundation" },
+  { name = "LakeSoul Team", email = "lakesoul-technical-discuss@lists.lfaidata.foundation" },
 ]
 description = "Python APIs for using LakeSoul"
 readme = "README.md"
@@ -14,14 +14,20 @@ license = { text = "Apache-2.0" }
 requires-python = ">=3.9"
 keywords = ["lakesoul", "bigdata", "ai"]
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
-    "Operating System :: OS Independent",
-    "Topic :: Software Development :: Libraries :: Python Modules",
-    "Programming Language :: Python :: 3",
+  "Development Status :: 5 - Production/Stable",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Programming Language :: Python :: 3",
 ]
-dependencies = ["pyarrow", "numpy", "protobuf>=5.0","typing-extensions>=4.8","colorlog>=6"]
+dependencies = [
+  "pyarrow>=16,<21",
+  "numpy",
+  "protobuf>=5.0",
+  "typing-extensions>=4.8",
+  "colorlog>=6",
+]
 
 [tool.uv.workspace]
 exclude = ["script/lakesoul-e2e"]
@@ -29,17 +35,17 @@ exclude = ["script/lakesoul-e2e"]
 [project.optional-dependencies]
 torch = ["torch>=1.11.0,<2.5"]
 pandas = ["pandas>=1.4"]
-datasets = ["datasets>=2.14"]
+datasets = ["datasets>=2.20"]
 ray = ["ray>=2.7,<2.11.0"]
 pyspark = ["pyspark==3.3.1"]
 duckdb = ["duckdb>=1.4.0"]
 all = [
-    "torch>=1.11,<2.5",
-    "pandas>=1.4",
-    "datasets>=2.14",
-    "ray>=2.7,<2.11.0",
-    "pyspark==3.3.1",
-    "duckdb",
+  "torch>=1.11,<2.5",
+  "pandas>=1.4",
+  "datasets>=2.20",
+  "ray>=2.7,<2.11.0",
+  "pyspark==3.3.1",
+  "duckdb>=1.4.0",
 ]
 
 [tool.uv.sources]
@@ -53,13 +59,13 @@ explicit = true
 
 [dependency-groups]
 all = [
-    "torch>=1.11,<2.5",
-    "pandas>=1.4",
-    "datasets>=2.14",
-    "ray>=2.7,<2.11.0",
-    "pyspark==3.3.1",
-    "grpcio-tools == 1.70",
-    "duckdb"
+  "torch>=1.11,<2.5",
+  "pandas>=1.4",
+  "datasets>=2.14",
+  "ray>=2.7,<2.11.0",
+  "pyspark==3.3.1",
+  "grpcio-tools == 1.70",
+  "duckdb",
 ]
 dev = ["pytest>=8", { include-group = "all" }]
 
@@ -68,7 +74,7 @@ dev = ["pytest>=8", { include-group = "all" }]
 "Bug Tracker" = "https://github.com/lakesoul-io/LakeSoul/issues"
 
 [build-system]
-requires = ["maturin>=1,<2","grpcio-tools == 1.70"]
+requires = ["maturin>=1,<2", "grpcio-tools == 1.70"]
 build-backend = "maturin"
 
 [tool.maturin]

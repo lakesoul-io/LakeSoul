@@ -2,23 +2,23 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
+
 import copy
-from typing import Any, Callable, Iterator, final
-from typing_extensions import override
-
-
 import functools
 import logging
+from typing import Any, Callable, Iterator, final
 
 import pyarrow as pa
 import pyarrow.dataset as ds
-from ..metadata.meta_ops import (
-    get_scan_plan_partitions,
-    get_schemas_by_table_name,
-    LakeSoulScanPlanPartition,
-)
+from typing_extensions import override
 
 from lakesoul._lib._dataset import one_reader  # type: ignore
+
+from ..metadata.meta_ops import (
+    LakeSoulScanPlanPartition,
+    get_scan_plan_partitions,
+    get_schemas_by_table_name,
+)
 
 DEFAULT_BATCH_SIZE: int = 2**10
 
@@ -829,7 +829,7 @@ def lakesoul_dataset(
     rank: int | None = None,
     world_size: int | None = None,
     partitions: dict[str, str] | None = None,
-    retain_partition_columns: bool = False,
+    retain_partition_columns: bool = True,
     namespace: str = "default",
     object_store_configs: dict[str, str] | None = None,
 ) -> Dataset:

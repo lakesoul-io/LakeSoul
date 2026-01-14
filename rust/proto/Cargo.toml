@@ -4,15 +4,17 @@
 
 [package]
 name = "proto"
-version = "0.1.0"
-edition = "2021"
+version = { workspace = true }
+edition = { workspace = true }
 build = "build.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-bytes = "1"
+# protobuf
 prost = { workspace = true }
+# utils
+bytes = { workspace = true }
 
 [build-dependencies]
 prost-build = { workspace = true }

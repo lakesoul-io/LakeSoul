@@ -236,3 +236,8 @@ def test_normal_lakesoul_table():
         total_rows += batch.num_rows
 
     assert total_rows == 1
+
+
+def test_debug():
+    lds = lakesoul_dataset("test_lfs", batch_size=1024, retain_partition_columns=True)
+    print(lds.schema)

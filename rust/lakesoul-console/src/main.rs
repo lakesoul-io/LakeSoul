@@ -4,16 +4,20 @@
 
 use std::{path::Path, process::ExitCode, sync::Arc};
 
-use crate::exec::{exec_command, exec_from_files, exec_from_repl};
-use crate::print::Printer;
 use clap::{Parser, Subcommand};
 use lakesoul_datafusion::{
     MetaDataClient, cli::CoreArgs, create_lakesoul_session_ctx, tpch::register_tpch_udtfs,
 };
 use rand::Rng;
 use rand::distr::Alphanumeric;
+use rootcause::Report;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
+
+use crate::exec::{exec_command, exec_from_files, exec_from_repl};
+use crate::print::Printer;
+
+type Result<T, E = Report> = std::result::Result<T, E>;
 
 mod exec;
 mod logo;
@@ -104,7 +108,7 @@ fn print_banner() {
     println!("{}", logo::LOGO);
 }
 
-async fn main_inner(cli: Cli) -> anyhow::Result<()> {
+async fn main_inner(cli: Cli) -> Result<()> {
     print_banner();
     let _log_guard = init_log(&cli.log_dir);
     let meta_client = Arc::new(MetaDataClient::from_env().await?);

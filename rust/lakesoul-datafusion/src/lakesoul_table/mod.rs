@@ -4,20 +4,8 @@
 
 //! The interface of LakeSoul table.
 
-pub mod helpers;
-
 use std::sync::Arc;
 
-use crate::LakeSoulError;
-use crate::datasource::file_format::LakeSoulMetaDataParquetFormat;
-use crate::serialize::arrow_java::schema_from_metadata_str;
-use crate::{
-    catalog::{
-        LakeSoulTableProperty, create_io_config_builder, parse_table_info_partitions,
-    },
-    error::Result,
-    planner::query_planner::LakeSoulQueryPlanner,
-};
 use arrow::datatypes::SchemaRef;
 use arrow_cast::pretty::pretty_format_batches;
 use chrono::Utc;
@@ -32,18 +20,30 @@ use datafusion::{
     logical_expr::LogicalPlanBuilder,
 };
 use helpers::case_fold_table_name;
-use lakesoul_io::async_writer::{
-    AsyncBatchWriter, AsyncSendableMutableLakeSoulWriter, WriterFlushResult,
-};
+use lakesoul_io::config::OPTION_KEY_MEM_LIMIT;
 use lakesoul_io::helpers::get_file_exist_col;
-use lakesoul_io::lakesoul_io_config::OPTION_KEY_MEM_LIMIT;
-use lakesoul_io::lakesoul_io_config::create_session_context_with_planner;
+use lakesoul_io::session::create_session_context_with_planner;
+use lakesoul_io::writer::async_writer::{
+    AsyncBatchWriter, AsyncSendableMutableLakeSoulWriter, FlushOutput,
+};
 use lakesoul_metadata::{LakeSoulMetaDataError, MetaDataClient, MetaDataClientRef};
 use proto::proto::entity::{CommitOp, DataCommitInfo, DataFileOp, FileOp, TableInfo};
+use rootcause::{Report, report};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+use crate::datasource::file_format::LakeSoulMetaDataParquetFormat;
 use crate::datasource::table_provider::LakeSoulTableProvider;
+use crate::serialize::arrow_java::schema_from_metadata_str;
+use crate::{
+    Result,
+    catalog::{
+        LakeSoulTableProperty, create_io_config_builder, parse_table_info_partitions,
+    },
+    planner::query_planner::LakeSoulQueryPlanner,
+};
+
+pub mod helpers;
 
 #[derive(Debug)]
 pub struct LakeSoulTable {
@@ -67,14 +67,12 @@ impl LakeSoulTable {
         if let Some(table_info) = table_info {
             Self::try_new_with_client_and_table_info(client, table_info).await
         } else {
-            Err(LakeSoulError::MetaDataError(
-                LakeSoulMetaDataError::NotFound(format!("Table '{}' not found", path)),
-            ))
+            Err(report!("Table '{}' not found", path))
         }
     }
 
     pub async fn for_name(table_name: &str) -> Result<Self> {
-        Self::for_namespace_and_name("default", table_name, None).await
+        Ok(Self::for_namespace_and_name("default", table_name, None).await?)
     }
 
     pub async fn for_table_reference(
@@ -84,14 +82,14 @@ impl LakeSoulTable {
         let schema = table_ref.schema().unwrap_or("default");
         let table_name = case_fold_table_name(table_ref.table());
         info!("for_table_reference: {:?}, {:?}", schema, table_name);
-        Self::for_namespace_and_name(schema, &table_name, client).await
+        Ok(Self::for_namespace_and_name(schema, &table_name, client).await?)
     }
 
     pub async fn for_namespace_and_name(
         namespace: &str,
         table_name: &str,
         client: Option<MetaDataClientRef>,
-    ) -> Result<Self> {
+    ) -> Result<Self, Report<LakeSoulMetaDataError>> {
         let client = match client {
             Some(client) => client,
             None => Arc::new(MetaDataClient::from_env().await?),
@@ -100,14 +98,14 @@ impl LakeSoulTable {
             .get_table_info_by_table_name(table_name, namespace)
             .await?;
         if let Some(table_info) = table_info {
-            Self::try_new_with_client_and_table_info(client, table_info).await
+            Self::try_new_with_client_and_table_info(client, table_info)
+                .await
+                .map_err(|e| report!(LakeSoulMetaDataError::Internal(e.to_string())))
         } else {
-            Err(LakeSoulError::MetaDataError(
-                LakeSoulMetaDataError::NotFound(format!(
-                    "Table '{}' in '{}' not found",
-                    table_name, namespace
-                )),
-            ))
+            Err(report!(LakeSoulMetaDataError::NotFound(format!(
+                "Table '{}' in '{}' not found",
+                table_name, namespace
+            ))))
         }
     }
 
@@ -243,7 +241,7 @@ impl LakeSoulTable {
         .await?;
         builder = builder.with_prefix(self.table_info.table_path.clone());
         let config = builder.build();
-        let writer = AsyncSendableMutableLakeSoulWriter::try_new(config).await?;
+        let writer = AsyncSendableMutableLakeSoulWriter::from_io_config(config).await?;
         Ok(Box::new(writer))
     }
 
@@ -341,13 +339,7 @@ impl LakeSoulTable {
             .hash_bucket_num
             .as_ref()
             .unwrap_or(&String::from("1"))
-            .parse::<isize>()
-            .map_err(|_| {
-                LakeSoulError::Internal(format!(
-                    "parse {:?} to isize error",
-                    self.properties.hash_bucket_num
-                ))
-            })?;
+            .parse::<isize>()?;
         tmp = tmp.max(1);
         Ok(tmp as usize)
     }
@@ -361,7 +353,7 @@ impl LakeSoulTable {
     }
 
     #[instrument(skip_all)]
-    pub async fn commit_flush_result(&self, result: WriterFlushResult) -> Result<()> {
+    pub async fn commit_flush_result(&self, result: Vec<FlushOutput>) -> Result<()> {
         // 创建data commit info列表
         let mut data_commit_info_list = Vec::new();
 
@@ -423,21 +415,21 @@ struct FlushResult {
 
 /// Get the partition description and the files from the writer flush result.
 fn partitioned_files_from_writer_flush_result(
-    flush_result: &WriterFlushResult,
+    flush_result: &Vec<FlushOutput>,
 ) -> Result<HashMap<String, Vec<FlushResult>>> {
     let mut partition_desc_and_files_map = HashMap::new();
 
-    for (partition_desc, file_path, meta, file_meta) in flush_result {
-        let file_exist_cols = get_file_exist_col(file_meta);
+    for output in flush_result {
+        let file_exist_cols = get_file_exist_col(&output.file_meta);
 
         let flush_result = FlushResult {
-            file_path: file_path.clone(),
-            file_size: meta.size as i64,
+            file_path: output.file_path.clone(),
+            file_size: output.object_meta.size as i64,
             file_exist_cols,
         };
 
         partition_desc_and_files_map
-            .entry(partition_desc.to_string())
+            .entry(output.partition_desc.to_string())
             .or_insert_with(Vec::new)
             .push(flush_result);
     }

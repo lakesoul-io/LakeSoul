@@ -8,15 +8,6 @@
 //! It includes support for various file formats, optimized reading with primary keys,
 //! partitioned table support, and filter pushdown capabilities.
 //!
-//! # Dependencies
-//!
-//! The following external crates are re-exported for convenience:
-//!
-//! - [arrow](https://docs.rs/arrow/latest/arrow/) - Apache Arrow implementation for columnar data
-//! - [datafusion](https://docs.rs/datafusion/latest/datafusion/) - Query execution framework
-//! - [serde_json](https://docs.rs/serde_json/latest/serde_json/) - JSON serialization/deserialization
-//! - [tokio](https://docs.rs/tokio/latest/tokio/) - Asynchronous runtime
-//!
 //! # Examples
 //!
 //! ```rust
@@ -48,46 +39,40 @@
 //!
 //! # Modules
 //!
-//! - `lakesoul_reader` - Core reading functionality
-//! - `lakesoul_writer` - Core writing functionality
-//! - `lakesoul_io_config` - Configuration types
-//! - `datasource` - Data source implementations
-//! - `sorted_merge` - Sorted merge operations
-//! - `repartition` - Data repartitioning utilities
+//! - `cache` - Object store cache impl
+//! - `config` - Configuration types
+//! - `constant` - constants used for lakesoul
+//! - `file_format` - datafusion file format impl
 //! - `filter` - Filter pushdown support
-//! - `helpers` - Utility functions
-//! - `hash_utils` - Hash-related utilities
+//! - `helpers` - Helper functions for physical plan construction and execution
 //! - `local_sensitive_hash` - Local sensitive hashing support
+//! - `object_store` - obejct store configuration
+//! - `physical_plan` - Physical Plan implementations
+//! - `reader` - Core reading functionality
+//! - `session` - dafusion session impl
+//! - `utils` -  Common utilities
+//! - `writer` - Core writing functionality
 
 #[macro_use]
 extern crate tracing;
 
-pub mod async_writer;
-pub mod datasource;
-pub mod filter;
-pub mod hash_utils;
-pub mod helpers;
-pub mod lakesoul_cache;
-pub mod lakesoul_io_config;
-pub mod lakesoul_reader;
-pub mod lakesoul_writer;
-pub mod local_sensitive_hash;
-// mod projection;
-pub mod repartition;
-pub mod sorted_merge;
+pub type Result<T, E = rootcause::Report> = std::result::Result<T, E>;
 
 #[cfg(feature = "hdfs")]
 mod hdfs;
 
+pub mod cache;
+pub mod config;
 pub mod constant;
-mod default_column_stream;
-mod transform;
+pub mod file_format;
+pub mod filter;
+pub mod helpers;
+pub mod local_sensitive_hash;
+pub mod object_store;
+pub mod physical_plan;
+pub mod reader;
+pub mod session;
+pub mod utils;
+pub mod writer;
 
-#[doc(inline)]
-pub use arrow;
-#[doc(inline)]
-pub use datafusion::{self, arrow::error::Result};
-#[doc(inline)]
-pub use serde_json;
-#[doc(inline)]
-pub use tokio;
+mod stream;
