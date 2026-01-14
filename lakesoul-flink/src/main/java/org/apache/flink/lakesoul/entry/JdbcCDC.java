@@ -298,7 +298,6 @@ public class JdbcCDC {
                 builder =
                 new LakeSoulMultiTableSinkStreamBuilder(pgSource, context, lakeSoulRecordConvert);
         DataStreamSource<BinarySourceRecord> source = builder.buildMultiTableSource("Postgres Source");
-        source.print();
         DataStream<BinarySourceRecord> stream = builder.buildHashPartitionedCDCStream(source);
         DataStreamSink<BinarySourceRecord> dmlSink = builder.buildLakeSoulDMLSink(stream);
         env.execute("LakeSoul CDC Sink From Postgres Database " + dbName);

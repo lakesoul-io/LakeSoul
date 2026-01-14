@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 package org.apache.flink.lakesoul.entry.clean;
 
 import org.apache.flink.core.fs.FileSystem;
@@ -26,23 +29,14 @@ public class CleanUtils {
         }
     }
 
-    /**
-     * 使用 Flink FileSystem API 删除文件列表
-     * 支持 hdfs://, s3://, s3a://, file:// 和本地路径
-     */
     public void deleteFile(List<String> filePathList) throws SQLException {
         for (String filePath : filePathList) {
             deleteFile(filePath);
         }
     }
 
-    /**
-     * 使用 Flink FileSystem API 删除单个文件
-     * 支持 hdfs://, s3://, s3a://, file:// 和本地路径
-     */
     public void deleteFile(String filePath) throws SQLException {
         try {
-            // 将路径转换为 URI
             URI fileUri;
             if (filePath.startsWith("hdfs://") || filePath.startsWith("s3://") ||
                     filePath.startsWith("s3a://") || filePath.startsWith("file://")) {
@@ -70,7 +64,6 @@ public class CleanUtils {
                     logger.info("文件不存在: {}", filePath);
                 }
             } finally {
-                // Flink FileSystem 不需要显式关闭，但为了安全起见，如果实现了 Closeable 则关闭
                 if (fs instanceof java.io.Closeable) {
                     try {
                         ((java.io.Closeable) fs).close();
@@ -233,7 +226,6 @@ public class CleanUtils {
                 }
             }
         }
-        // 注意：不再关闭 connection，由调用者管理连接生命周期
         return tableList;
     }
 

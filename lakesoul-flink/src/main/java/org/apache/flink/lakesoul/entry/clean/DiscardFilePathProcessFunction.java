@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 package org.apache.flink.lakesoul.entry.clean;
 
 import org.apache.flink.api.common.state.ValueState;
@@ -14,9 +17,6 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 
-/**
- *使用 HikariCP 连接池，解决 Connection 被关闭的问题
- */
 public class DiscardFilePathProcessFunction
         extends KeyedProcessFunction<String, Tuple2<String, Long>, String> {
 

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 package org.apache.flink.lakesoul.entry.clean;
 
 import com.dmetasoul.lakesoul.meta.DBManager;
@@ -31,9 +34,8 @@ public class TtlBroadcastProcessFunction extends KeyedBroadcastProcessFunction<S
     private transient ValueState<Long> partitionTimerTimestampState;
     public TtlBroadcastProcessFunction(MapStateDescriptor<String, Integer> ttlBroadcastStateDesc , int maxProcessIntervalDays) {
 
-        this.maxProcessIntervalMillis = 60000;
         this.ttlBroadcastStateDesc = ttlBroadcastStateDesc;
-        //this.maxProcessIntervalMillis = TimeUnit.DAYS.toMillis(maxProcessIntervalDays);
+        this.maxProcessIntervalMillis = TimeUnit.DAYS.toMillis(maxProcessIntervalDays);
     }
 
     @Override
@@ -58,7 +60,6 @@ public class TtlBroadcastProcessFunction extends KeyedBroadcastProcessFunction<S
         long currentProcTime = ctx.timerService().currentProcessingTime();
         if (latestTimestamp == null || updateTimestamp > latestTimestamp) {
             partitionLatestFreshTimeState.update(updateTimestamp);
-            // 3. 记录分区最近一次被处理的处理时间
             partitionLatestProcessTimeState.update(currentProcTime);
         }
         if (broadcastState != null){
@@ -136,7 +137,6 @@ public class TtlBroadcastProcessFunction extends KeyedBroadcastProcessFunction<S
         List<String> deleteFilePath = dbManager.deleteMetaPartitionInfo(tableInfo.getTableId(), partitionDesc);
         Path partitionDir = null;
         log.info("开始删除分区数据：" + tableInfo.getTableName() + "/" + partitionDesc);
-        System.out.println("开始删除分区数据：" + tableInfo.getTableName() + "/" + partitionDesc);
         for (String filePath : deleteFilePath) {
             Path path = new Path(filePath);
             try {

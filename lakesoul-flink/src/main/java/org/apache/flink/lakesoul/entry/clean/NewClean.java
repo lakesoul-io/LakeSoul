@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 package org.apache.flink.lakesoul.entry.clean;
 
 import com.alibaba.fastjson.JSON;
@@ -95,7 +98,6 @@ public class NewClean {
                         .build();
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-
         DataStreamSource<String> postgresParallelSource = env.fromSource(
                         postgresIncrementalSource,
                         WatermarkStrategy.noWatermarks(),
