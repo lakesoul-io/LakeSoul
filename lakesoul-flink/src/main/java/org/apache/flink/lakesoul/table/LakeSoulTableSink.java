@@ -37,6 +37,7 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -144,8 +145,10 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
                         ), flinkConf)
                 .withBucketCheckInterval(flinkConf.getLong(BUCKET_CHECK_INTERVAL)).withRollingPolicy(rollingPolicy)
                 .withOutputFileConfig(fileNameConfig).build();
-        if (!primaryKeyList.isEmpty()) {
-            LakeSoulKeyGen keyGen = new LakeSoulKeyGen(rowType, primaryKeyList.toArray(new String[0]));
+        if (!primaryKeyList.isEmpty() || !partitionKeyList.isEmpty()) {
+            List<String> hashList = new ArrayList<>(primaryKeyList);
+            hashList.addAll(partitionKeyList);
+            LakeSoulKeyGen keyGen = new LakeSoulKeyGen(rowType, hashList.toArray(new String[0]));
             Integer hashBucketNum = flinkConf.get(HASH_BUCKET_NUM);
             dataStream = dataStream.partitionCustom(new HashPartitioner(hashBucketNum), keyGen::getRePartitionHash);
             if (flinkConf.get(DYNAMIC_BUCKETING)) {
