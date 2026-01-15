@@ -4,6 +4,7 @@
 
 package org.apache.flink.lakesoul.table;
 
+import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.core.fs.Path;
@@ -153,7 +154,7 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
                 // for dynamic bucket, we try to let same hash bucket and partitions rows to fall into same bucket
                 LakeSoulKeyGen partKeygen = new  LakeSoulKeyGen(rowType, partitionKeyList.toArray(new String[0]));
                 dataStream = dataStream.partitionCustom(new HashPartitioner(hashBucketNum),
-                        rowData -> DynamicBucketingHash.hash(summaryName, rowData, pkKeyGen, partKeygen));
+                        new HashGen(summaryName, pkKeyGen, partKeygen));
                 return dataStream.sinkTo(sink);
             } else {
                 // before dynamic bucket routing in native, we rely on flink's
@@ -166,6 +167,23 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
             }
         } else {
             return dataStream.sinkTo(sink);
+        }
+    }
+
+    private class HashGen implements KeySelector<RowData, Long> {
+        private static final long serialVersionUID = -1045500398735673526L;
+        LakeSoulKeyGen pkKeyGen;
+        LakeSoulKeyGen partKeygen;
+        String summaryName;
+        public HashGen(String summaryName, LakeSoulKeyGen pkKeyGen, LakeSoulKeyGen partKeygen) {
+            this.summaryName = summaryName;
+            this.pkKeyGen = pkKeyGen;
+            this.partKeygen = partKeygen;
+        }
+
+        @Override
+        public Long getKey(RowData rowData) throws Exception {
+            return DynamicBucketingHash.hash(summaryName, rowData, pkKeyGen, partKeygen);
         }
     }
 
