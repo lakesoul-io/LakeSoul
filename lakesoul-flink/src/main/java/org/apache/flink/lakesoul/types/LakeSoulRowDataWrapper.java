@@ -4,9 +4,11 @@
 
 package org.apache.flink.lakesoul.types;
 
-import com.alibaba.fastjson.JSONObject;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.RowType;
+
+import java.util.ArrayList;
+import java.util.List;
 
 public class LakeSoulRowDataWrapper {
     private final TableId tableId;
