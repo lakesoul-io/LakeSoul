@@ -6,6 +6,7 @@ package org.apache.flink.lakesoul.sink;
 
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.connector.source.Source;
+import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.api.java.typeutils.runtime.kryo.JavaSerializer;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
@@ -22,6 +23,8 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.RowType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.io.Serializable;
 
 import static org.apache.flink.configuration.CoreOptions.DEFAULT_PARALLELISM;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
@@ -55,6 +58,22 @@ public class LakeSoulMultiTableSinkStreamBuilder {
                 .setParallelism(context.conf.getInteger(LakeSoulSinkOptions.SOURCE_PARALLELISM));
     }
 
+    private class HashGen implements KeySelector<BinarySourceRecord, Long> {
+        private static final long serialVersionUID = -4298875987882891700L;
+        private final int hashBucketNum;
+        private final int parallelism;
+
+        public HashGen(int hashBucketNum, int parallelism) {
+            this.hashBucketNum = hashBucketNum;
+            this.parallelism = parallelism;
+        }
+
+        @Override
+        public Long getKey(BinarySourceRecord binarySourceRecord) throws Exception {
+            return convert.computeBinarySourceRecordPrimaryKeyHash(binarySourceRecord, hashBucketNum, parallelism);
+        }
+    }
+
     public DataStream<BinarySourceRecord> buildHashPartitionedCDCStream(DataStream<BinarySourceRecord> stream) {
         boolean dynamicBucketing = context.conf.get(DYNAMIC_BUCKETING);
         int parallelism = context.conf.get(DEFAULT_PARALLELISM);
@@ -62,9 +81,7 @@ public class LakeSoulMultiTableSinkStreamBuilder {
         LOG.info("Building CDC stream partition for parallelism {}, dynamic bucket {}",
                 parallelism, dynamicBucketing);
         return stream.partitionCustom(new HashPartitioner(hashBucketNum),
-                binarySourceRecord ->
-                        convert.computeBinarySourceRecordPrimaryKeyHash(binarySourceRecord,
-                                hashBucketNum, parallelism));
+                new HashGen(hashBucketNum, parallelism));
     }
 
     public DataStreamSink<BinarySourceRecord> buildLakeSoulDMLSink(DataStream<BinarySourceRecord> stream) {
