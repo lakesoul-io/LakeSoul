@@ -170,7 +170,7 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
         }
     }
 
-    private class HashGen implements KeySelector<RowData, Long> {
+    private static class HashGen implements KeySelector<RowData, Long> {
         private static final long serialVersionUID = -1045500398735673526L;
         LakeSoulKeyGen pkKeyGen;
         LakeSoulKeyGen partKeygen;
