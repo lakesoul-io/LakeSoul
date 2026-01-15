@@ -5,7 +5,9 @@
 use std::any::Any;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::iter::zip;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::usize;
 
 use arrow_schema::{Schema, SchemaBuilder, SchemaRef};
 use datafusion::execution::SessionStateBuilder;
@@ -28,6 +30,7 @@ use datafusion_datasource::{ListingTableUrl, PartitionedFile, TableSchema};
 use datafusion_datasource_parquet::ParquetFormat;
 use datafusion_execution::config::SessionConfig;
 use datafusion_execution::disk_manager::{DiskManagerBuilder, DiskManagerMode};
+use datafusion_execution::memory_pool::FairSpillPool;
 use datafusion_execution::memory_pool::FairSpillPool;
 use datafusion_execution::runtime_env::RuntimeEnvBuilder;
 use datafusion_execution::{TaskContext, runtime_env::RuntimeEnv};
@@ -242,6 +245,7 @@ impl LakeSoulIOSession {
                 sort_spill_bytes
             );
         }
+
         let runtime = runtime_conf.build()?;
         // firstly, parse default fs if exist
         let default_fs = io_config

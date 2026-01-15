@@ -75,4 +75,5 @@ pub mod session;
 pub mod utils;
 pub mod writer;
 
+mod mem;
 mod stream;

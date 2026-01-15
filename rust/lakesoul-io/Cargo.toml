@@ -11,6 +11,10 @@ edition = "2024"
 name = "buf_bench"
 harness = false
 
+[[bench]]
+name = "spill_bench"
+harness = false
+
 [dependencies]
 # lakesoul
 proto = { path = "../proto" }
@@ -35,6 +39,10 @@ arrow-buffer = { workspace = true }
 arrow-cast = { workspace = true }
 parquet = { workspace = true, features = ["async", "arrow", "encryption"] }
 object_store = { workspace = true }
+# memory
+tikv-jemallocator = "0.6"
+# 用于查询监控指标
+tikv-jemalloc-ctl = {version = "0.6", features = ["stats"] }
 # async
 futures = { workspace = true }
 async-trait = { workspace = true }
