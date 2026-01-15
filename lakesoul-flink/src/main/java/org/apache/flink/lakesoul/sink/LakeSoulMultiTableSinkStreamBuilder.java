@@ -81,7 +81,7 @@ public class LakeSoulMultiTableSinkStreamBuilder {
         LOG.info("Building CDC stream partition for parallelism {}, dynamic bucket {}",
                 parallelism, dynamicBucketing);
         return stream.partitionCustom(new HashPartitioner(hashBucketNum),
-                new HashGen(hashBucketNum, parallelism, ));
+                new HashGen(hashBucketNum, parallelism, convert));
     }
 
     public DataStreamSink<BinarySourceRecord> buildLakeSoulDMLSink(DataStream<BinarySourceRecord> stream) {
