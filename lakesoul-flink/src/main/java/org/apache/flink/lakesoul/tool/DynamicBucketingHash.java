@@ -4,10 +4,13 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
 
+import java.io.Serializable;
 import java.util.List;
 import java.util.Random;
 
-public class DynamicBucketingHash {
+public class DynamicBucketingHash implements Serializable {
+    private static final long serialVersionUID = -1022775401990432854L;
+
     static Random random = new Random(System.currentTimeMillis());
 
     public static long hash(String table, RowData rowData,
