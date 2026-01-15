@@ -55,3 +55,6 @@ lakesoul-common/bin
 lakesoul-presto/bin
 lakesoul-spark-gluten/bin
 **/.envrc
+
+**/memory_profiling.png
+**/output.log

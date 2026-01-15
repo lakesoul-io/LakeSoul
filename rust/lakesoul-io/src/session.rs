@@ -5,7 +5,9 @@
 use std::any::Any;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::iter::zip;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::usize;
 
 use arrow_schema::{Schema, SchemaBuilder, SchemaRef};
 use datafusion::execution::SessionStateBuilder;
@@ -27,7 +29,7 @@ use datafusion_datasource::source::DataSource;
 use datafusion_datasource::{ListingTableUrl, PartitionedFile, TableSchema};
 use datafusion_datasource_parquet::ParquetFormat;
 use datafusion_execution::config::SessionConfig;
-use datafusion_execution::memory_pool::FairSpillPool;
+use datafusion_execution::memory_pool::{FairSpillPool, TrackConsumersPool};
 use datafusion_execution::runtime_env::RuntimeEnvBuilder;
 use datafusion_execution::{TaskContext, runtime_env::RuntimeEnv};
 use datafusion_expr::execution_props::ExecutionProps;
@@ -219,10 +221,21 @@ impl LakeSoulIOSession {
             .parquet
             .schema_force_view_types = false;
         let mut runtime_conf = RuntimeEnvBuilder::new();
-        if let Some(pool_size) = io_config.pool_size() {
-            let memory_pool = FairSpillPool::new(pool_size);
+        // mem limit first
+
+        if let Some(mem_limit) = io_config.mem_limit() {
+            runtime_conf = runtime_conf.with_memory_limit(mem_limit, 1.0);
+        }
+
+        if let Some(mut pool_size) = io_config.pool_size() {
+            pool_size = pool_size.min(io_config.mem_limit().unwrap_or(usize::MAX));
+            let memory_pool = TrackConsumersPool::new(
+                FairSpillPool::new(pool_size),
+                NonZeroUsize::new(5).unwrap(),
+            );
             runtime_conf = runtime_conf.with_memory_pool(Arc::new(memory_pool));
         }
+
         let runtime = runtime_conf.build()?;
         // firstly, parse default fs if exist
         let default_fs = io_config
