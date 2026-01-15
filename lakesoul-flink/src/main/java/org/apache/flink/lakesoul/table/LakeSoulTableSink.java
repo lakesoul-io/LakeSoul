@@ -10,6 +10,7 @@ import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.sink.HashPartitioner;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
 import org.apache.flink.lakesoul.sink.LakeSoulRollingPolicyImpl;
+import org.apache.flink.lakesoul.tool.DynamicBucketingHash;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.tool.LakeSoulKeyGen;
 import org.apache.flink.lakesoul.types.TableId;
@@ -146,17 +147,21 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
                 .withBucketCheckInterval(flinkConf.getLong(BUCKET_CHECK_INTERVAL)).withRollingPolicy(rollingPolicy)
                 .withOutputFileConfig(fileNameConfig).build();
         if (!primaryKeyList.isEmpty() || !partitionKeyList.isEmpty()) {
-            List<String> hashList = new ArrayList<>(primaryKeyList);
-            hashList.addAll(partitionKeyList);
-            LakeSoulKeyGen keyGen = new LakeSoulKeyGen(rowType, hashList.toArray(new String[0]));
+            LakeSoulKeyGen pkKeyGen = new LakeSoulKeyGen(rowType, primaryKeyList.toArray(new String[0]));
             Integer hashBucketNum = flinkConf.get(HASH_BUCKET_NUM);
-            dataStream = dataStream.partitionCustom(new HashPartitioner(hashBucketNum), keyGen::getRePartitionHash);
             if (flinkConf.get(DYNAMIC_BUCKETING)) {
+                // for dynamic bucket, we try to let same hash bucket and partitions rows to fall into same bucket
+                LakeSoulKeyGen partKeygen = new  LakeSoulKeyGen(rowType, partitionKeyList.toArray(new String[0]));
+                dataStream = dataStream.partitionCustom(new HashPartitioner(hashBucketNum),
+                        rowData -> DynamicBucketingHash.hash(summaryName, rowData, pkKeyGen, partKeygen));
                 return dataStream.sinkTo(sink);
             } else {
                 // before dynamic bucket routing in native, we rely on flink's
                 // parallelism to partition primary keys to target hash bucket
-                Integer parallelism = flinkConf.get(BUCKET_PARALLELISM) > hashBucketNum?flinkConf.get(BUCKET_PARALLELISM):hashBucketNum;
+                dataStream = dataStream.partitionCustom(new HashPartitioner(hashBucketNum),
+                        pkKeyGen::getRePartitionHash);
+                Integer parallelism = flinkConf.get(BUCKET_PARALLELISM) > hashBucketNum ?
+                        flinkConf.get(BUCKET_PARALLELISM) : hashBucketNum;
                 return dataStream.sinkTo(sink).setParallelism(parallelism);
             }
         } else {

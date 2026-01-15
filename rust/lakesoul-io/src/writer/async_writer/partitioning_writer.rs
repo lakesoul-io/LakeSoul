@@ -326,6 +326,7 @@ impl PartitioningAsyncWriter {
             for (partition_desc, writer) in partitioned_writer.into_iter() {
                 flush_join_set.spawn(async move {
                     let writer_flush_results = writer.flush_and_close().await?;
+                    info!("Flushed writer {:?}", writer_flush_results);
                     Ok(writer_flush_results
                         .into_iter()
                         .map(|mut output| {
