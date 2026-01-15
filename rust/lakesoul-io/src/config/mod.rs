@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use arrow_schema::{Schema, SchemaRef};
 use datafusion_common::DFSchema;
@@ -15,6 +15,7 @@ use crate::{
     Result,
     filter::parser::{FilterContainer, Parser},
     helpers::coerce_filter_type,
+    utils::ByteSize,
 };
 
 mod options;
@@ -176,10 +177,16 @@ impl LakeSoulIOConfig {
             .is_some_and(|x| x.eq("true"))
     }
 
-    /// Returns the memory limit in bytes if set
+    /// Maximum memory limit in bytes for query execution
     pub fn mem_limit(&self) -> Option<usize> {
-        self.option(OPTION_KEY_MEM_LIMIT)
-            .map(|x| x.parse().unwrap())
+        std::env::var("LAKESOUL_IO_MEM_LIMIT")
+            .ok()
+            .and_then(|s| s.parse::<ByteSize>().ok())
+            .or_else(|| {
+                self.option(OPTION_KEY_MEM_LIMIT)
+                    .and_then(|x| x.parse::<ByteSize>().ok())
+            })
+            .map(|bs| bs.bytes())
     }
 
     /// Returns the maximum file size in bytes if set

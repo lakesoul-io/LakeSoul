@@ -31,7 +31,6 @@ use arrow::array::{Array as OtherArray, ListArray};
 use arrow::datatypes::{DataType, Field};
 use arrow_array::RecordBatch;
 use arrow_schema::{SchemaBuilder, SchemaRef};
-use rand::distr::SampleString;
 use rootcause::{bail, report};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
@@ -112,7 +111,7 @@ pub async fn create_writer(
             writer_io_config.files = vec![format!(
                 "{}/part-{}_{:0>4}.parquet",
                 writer_io_config.prefix(),
-                rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 16),
+                random_str(16),
                 writer_io_config.hash_bucket_id()
             )];
         }
@@ -417,7 +416,7 @@ mod tests {
     use arrow_array::{Array, StringArray};
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
-    use rand::Rng;
+    use rand::{Rng, distr::SampleString};
     use std::{fs::File, sync::Arc};
     use tokio::{runtime::Builder, time::Instant};
     use tracing_subscriber::layer::SubscriberExt;
