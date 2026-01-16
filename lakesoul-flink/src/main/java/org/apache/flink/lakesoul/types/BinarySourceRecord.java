@@ -77,6 +77,12 @@ public class BinarySourceRecord {
             List<String> partitionColls = topicsPartitionFields.get(originTableName);
             topicsPartitionFields.remove(originTableName);
             topicsPartitionFields.put(tableName, partitionColls);
+            if (convert.formatRuleList.containsKey(originTableName)){
+                HashMap<String, String> formatRuleList = convert.formatRuleList;
+                String fomatRule = formatRuleList.get(originTableName);
+                formatRuleList.remove(originTableName);
+                formatRuleList.put(tableName, fomatRule);
+            }
         }
 
         boolean isDDL = "io.debezium.connector.mysql.SchemaChangeKey".equalsIgnoreCase(keySchema.name());
@@ -87,7 +93,6 @@ public class BinarySourceRecord {
             keySchema.fields().forEach(f -> primaryKeys.add(f.name()));
             Schema valueSchema = sourceRecord.valueSchema();
             Struct value = (Struct) sourceRecord.value();
-
             // retrieve source event time if exist and non-zero
             Field sourceField = valueSchema.field(Envelope.FieldName.SOURCE);
             long binlogFileIndex = 0;

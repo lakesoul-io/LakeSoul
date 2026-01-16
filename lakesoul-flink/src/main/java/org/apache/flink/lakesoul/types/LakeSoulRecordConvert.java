@@ -128,7 +128,7 @@ public class LakeSoulRecordConvert implements Serializable {
                 String fullDocument = value.getString(MongoDBEnvelope.FULL_DOCUMENT_FIELD);
                 Struct bsonStruct = convertBSONToStruct(fullDocument);
                 Schema documentSchema = bsonStruct.schema();
-                RowData insert = convert(bsonStruct, documentSchema, RowKind.INSERT, sortField, null);
+                RowData insert = convert(bsonStruct, documentSchema, RowKind.INSERT, sortField, null, null);
                 RowType mongoRt = toFlinkRowType(documentSchema,true, null);
                 insert.setRowKind(RowKind.INSERT);
                 builder.setOperation("insert").setAfterRowData(insert).setAfterType(mongoRt);
@@ -136,7 +136,7 @@ public class LakeSoulRecordConvert implements Serializable {
                 String fullDocumentValue = value.getString("fullDocumentBeforeChange");
                 Struct before = convertBSONToStruct(fullDocumentValue);
                 Schema beforSchema = before.schema();
-                RowData delete = convert(before,beforSchema,RowKind.DELETE,sortField, null);
+                RowData delete = convert(before,beforSchema,RowKind.DELETE,sortField, null, null);
                 RowType rt = toFlinkRowType(beforSchema, true, null);
                 builder.setOperation("delete").setBeforeRowData(delete).setBeforeRowType(rt);
                 delete.setRowKind(RowKind.DELETE);
@@ -144,13 +144,13 @@ public class LakeSoulRecordConvert implements Serializable {
                 String fullDocumentBeforChange = value.getString("fullDocumentBeforeChange");
                 Struct before = convertBSONToStruct(fullDocumentBeforChange);
                 Schema beforeSchema = before.schema();
-                RowData beforeData = convert(before, beforeSchema, RowKind.UPDATE_BEFORE, sortField, null);
+                RowData beforeData = convert(before, beforeSchema, RowKind.UPDATE_BEFORE, sortField, null, null);
                 beforeData.setRowKind(RowKind.UPDATE_BEFORE);
                 RowType beforeRT = toFlinkRowType(beforeSchema, true, null);
                 String fullDocument = value.getString(MongoDBEnvelope.FULL_DOCUMENT_FIELD);
                 Struct after = convertBSONToStruct(fullDocument);
                 Schema afterSchema = after.schema();
-                RowData afterData = convert(after, afterSchema, RowKind.UPDATE_AFTER, sortField, null);
+                RowData afterData = convert(after, afterSchema, RowKind.UPDATE_AFTER, sortField, null, null);
                 afterData.setRowKind(RowKind.UPDATE_AFTER);
                 RowType afterRT = toFlinkRowType(afterSchema, true, null);
                 if (partitionFieldsChanged(beforeRT, beforeData, afterRT, afterData)) {
@@ -170,9 +170,7 @@ public class LakeSoulRecordConvert implements Serializable {
                 Schema afterSchema = valueSchema.field(Envelope.FieldName.AFTER).schema();
                 Struct after = value.getStruct(Envelope.FieldName.AFTER);
                 String timeStampPartitionCol = handleTimestampPartitionColumn(tableId, afterSchema, topicsPartitionFields, topicsTimestampPartitionFields);
-                System.out.println(tableId.table());
-                String timeStampPartitionColFormat = formatRuleList.get(tableId.table());
-                RowData insert = convert(after, afterSchema, RowKind.INSERT, sortField , timeStampPartitionCol);
+                RowData insert = convert(after, afterSchema, RowKind.INSERT, sortField , timeStampPartitionCol,  formatRuleList.get(tableId.table()));
                 RowType rt = toFlinkRowType(afterSchema,false, timeStampPartitionCol);
                 insert.setRowKind(RowKind.INSERT);
                 builder.setOperation("insert").setAfterRowData(insert).setAfterType(rt);
@@ -180,7 +178,7 @@ public class LakeSoulRecordConvert implements Serializable {
                 Schema beforeSchema = valueSchema.field(Envelope.FieldName.BEFORE).schema();
                 Struct before = value.getStruct(Envelope.FieldName.BEFORE);
                 String timeStampPartitionCol = handleTimestampPartitionColumn(tableId, beforeSchema, topicsPartitionFields, topicsTimestampPartitionFields);
-                RowData delete = convert(before, beforeSchema, RowKind.DELETE, sortField, timeStampPartitionCol);
+                RowData delete = convert(before, beforeSchema, RowKind.DELETE, sortField, timeStampPartitionCol,  formatRuleList.get(tableId.table()));
                 RowType rt = toFlinkRowType(beforeSchema,false, timeStampPartitionCol);
                 delete.setRowKind(RowKind.DELETE);
                 builder.setOperation("delete").setBeforeRowData(delete).setBeforeRowType(rt);
@@ -188,13 +186,13 @@ public class LakeSoulRecordConvert implements Serializable {
                 Schema beforeSchema = valueSchema.field(Envelope.FieldName.BEFORE).schema();
                 Struct before = value.getStruct(Envelope.FieldName.BEFORE);
                 String timeStampPartitionCol = handleTimestampPartitionColumn(tableId, beforeSchema, topicsPartitionFields, topicsTimestampPartitionFields);
-                RowData beforeData = convert(before, beforeSchema, RowKind.UPDATE_BEFORE, sortField, timeStampPartitionCol);
+                RowData beforeData = convert(before, beforeSchema, RowKind.UPDATE_BEFORE, sortField, timeStampPartitionCol, formatRuleList.get(tableId.table()));
                 //boolean beforNullable = beforeSchema.isOptional();
                 RowType beforeRT = toFlinkRowType(beforeSchema,false, timeStampPartitionCol);
                 beforeData.setRowKind(RowKind.UPDATE_BEFORE);
                 Schema afterSchema = valueSchema.field(Envelope.FieldName.AFTER).schema();
                 Struct after = value.getStruct(Envelope.FieldName.AFTER);
-                RowData afterData = convert(after, afterSchema, RowKind.UPDATE_AFTER, sortField, timeStampPartitionCol);
+                RowData afterData = convert(after, afterSchema, RowKind.UPDATE_AFTER, sortField, timeStampPartitionCol, formatRuleList.get(tableId.table()));
                 RowType afterRT = toFlinkRowType(afterSchema,false, timeStampPartitionCol);
                 afterData.setRowKind(RowKind.UPDATE_AFTER);
                 if (partitionFieldsChanged(beforeRT, beforeData, afterRT, afterData)) {
@@ -210,6 +208,7 @@ public class LakeSoulRecordConvert implements Serializable {
         }
         return builder.setTsMs(tsMs).build();
     }
+
     private String handleTimestampPartitionColumn(
             TableId tableId,
             Schema afterSchema,
@@ -500,7 +499,8 @@ public class LakeSoulRecordConvert implements Serializable {
             Schema schema,
             RowKind rowKind,
             long sortField,
-            String timestampPartitionCol) throws Exception {
+            String timestampPartitionCol,
+            String formatRule) throws Exception {
         if (struct == null) {
             return null;
         }
@@ -543,9 +543,10 @@ public class LakeSoulRecordConvert implements Serializable {
                 instant  = Instant.parse(fieldValue.toString());
             }
             LocalDate date = instant.atZone(serverTimeZone).toLocalDate();
-            String format = "dd/MM/yyyy";
-            //formatRuleList.get()
-            DateTimeFormatter customFormatter = DateTimeFormatter.ofPattern(format);
+            if (formatRule == null){
+                formatRule = "yyyy/MM/dd";
+            }
+            DateTimeFormatter customFormatter = DateTimeFormatter.ofPattern(formatRule);
             String formattedDate = date.format(customFormatter);
             writer.writeString(pos, StringData.fromString(formattedDate));
             pos++;

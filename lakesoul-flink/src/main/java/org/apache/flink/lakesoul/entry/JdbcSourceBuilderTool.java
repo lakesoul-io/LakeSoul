@@ -245,6 +245,7 @@ public class JdbcSourceBuilderTool {
                         "Unsupported scan.startup.mode: " + mode);
         }
     }
+
     private com.ververica.cdc.connectors.base.options.StartupOptions parsePgStartupOptions(String mode){
         switch (mode.toLowerCase()) {
             case "initial":
@@ -260,6 +261,7 @@ public class JdbcSourceBuilderTool {
                         "Unsupported scan.startup.mode: " + mode);
         }
     }
+
     private Properties getJdbcProperties(Map<String, Object> cdcParams){
         HashMap<String, String> jdbcParams = new HashMap<>();
         final String JDBC_PREFIX = "jdbc.properties.";
@@ -332,7 +334,7 @@ public class JdbcSourceBuilderTool {
             Map<String, Object> cdcParams = loadAsFlatMap(input);
 
             HashMap<String, String> tablePartitionsFormatRules = new HashMap<>();
-            String partitionPrefix = "partitions.format.rule.";
+            String partitionPrefix = "timestamp-format-rule.";
 
             for (Map.Entry<String, Object> entry : cdcParams.entrySet()) {
                 String key = entry.getKey();
