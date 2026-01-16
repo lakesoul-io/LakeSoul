@@ -31,7 +31,7 @@ import io.debezium.time.Year;
 import io.debezium.time.ZonedTime;
 import io.debezium.time.ZonedTimestamp;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.lakesoul.tool.LakeSoulKeyGen;
+import org.apache.flink.lakesoul.tool.DynamicBucketingHash;
 import org.apache.flink.table.data.*;
 import org.apache.flink.table.data.binary.BinaryRowData;
 import org.apache.flink.table.data.writer.BinaryRowWriter;
@@ -39,6 +39,8 @@ import org.apache.flink.table.runtime.typeutils.ArrayDataSerializer;
 import org.apache.flink.table.runtime.typeutils.RowDataSerializer;
 import org.apache.flink.table.types.logical.*;
 import org.apache.flink.types.RowKind;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.Serializable;
 import java.math.BigDecimal;
@@ -53,6 +55,7 @@ public class LakeSoulRecordConvert implements Serializable {
 
     private static final long serialVersionUID = -3907477067300265746L;
     private final ZoneId serverTimeZone;
+    private static final Logger LOG = LoggerFactory.getLogger(LakeSoulRecordConvert.class);
 
     private final String cdcColumn;
 
@@ -60,7 +63,7 @@ public class LakeSoulRecordConvert implements Serializable {
     List<String> partitionFields;
     HashMap<String, List<String>> topicsPartitionFields;
     HashMap<String, String> topicsTimestampPartitionFields = new HashMap<>();
-
+    Random  random = new Random();
 
     public LakeSoulRecordConvert(Configuration conf, String serverTimeZone) {
         this(conf, serverTimeZone, new HashMap<>());
@@ -416,19 +419,18 @@ public class LakeSoulRecordConvert implements Serializable {
         return opField != null ? Envelope.Operation.forCode(value.getString(opField.name())) : null;
     }
 
-    public long computeBinarySourceRecordPrimaryKeyHash(BinarySourceRecord sourceRecord) {
+    public long computeBinarySourceRecordPrimaryKeyHash(BinarySourceRecord sourceRecord,
+                                                        int hashBucketNum,
+                                                        int parallelism) {
         LakeSoulRowDataWrapper data = sourceRecord.getData();
         RowType rowType = Objects.equals(data.getOp(), "delete") ? data.getBeforeType() : data.getAfterType();
         RowData rowData = Objects.equals(data.getOp(), "delete") ? data.getBefore() : data.getAfter();
         List<String> pks = sourceRecord.getPrimaryKeys();
-        long hash = 42;
-        for (String pk : pks) {
-            int typeIndex = rowType.getFieldIndex(pk);
-            LogicalType type = rowType.getTypeAt(typeIndex);
-            Object fieldOrNull = RowData.createFieldGetter(type, typeIndex).getFieldOrNull(rowData);
-            hash = LakeSoulKeyGen.getHash(type, fieldOrNull, hash);
-        }
-        return hash;
+        List<String> partitionKeys = sourceRecord.getPartitionKeys();
+        return DynamicBucketingHash.hash(
+                sourceRecord.getTableId().identifier(),
+                rowType, rowData, pks, partitionKeys,
+                hashBucketNum, parallelism);
     }
 
     public RowData addCDCKindField(RowData rowData, RowData.FieldGetter[] fieldGetters) {
@@ -736,15 +738,25 @@ public class LakeSoulRecordConvert implements Serializable {
             }
         }
         Map<String, String> paras = schema.parameters();
-        if ( paras==null || paras.get("connect.decimal.precision") == null) {
-            return DecimalData.fromBigDecimal(bigDecimal, 38, 30);
+        DecimalData d;
+        if ( paras == null || paras.get("connect.decimal.precision") == null) {
+            d = DecimalData.fromBigDecimal(bigDecimal, 38, 30);
         } else {
-            return DecimalData.fromBigDecimal(bigDecimal, Integer.parseInt(paras.get("connect.decimal.precision")), Integer.parseInt(paras.get("scale")));
+            d = DecimalData.fromBigDecimal(bigDecimal, Integer.parseInt(paras.get("connect.decimal.precision")),
+                    Integer.parseInt(paras.get("scale")));
         }
+        if (d == null) {
+            LOG.error("Convert decimal failed, dbz object: {}, java bd object {}@{}:{}, paras: {}",
+                    dbzObj, bigDecimal, bigDecimal.precision(), bigDecimal.scale(), paras);
+        }
+        return d;
     }
 
     public void writeDecimal(BinaryRowWriter writer, int index, Object dbzObj, Schema schema) {
         DecimalData data = (DecimalData) convertToDecimal(dbzObj, schema);
+        if (data == null) {
+            LOG.error("Convert decimal failed {}", dbzObj);
+        }
         writer.writeDecimal(index, data, data.precision());
     }
 

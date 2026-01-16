@@ -4,12 +4,14 @@
 
 package org.apache.flink.lakesoul.table;
 
+import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.sink.HashPartitioner;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
 import org.apache.flink.lakesoul.sink.LakeSoulRollingPolicyImpl;
+import org.apache.flink.lakesoul.tool.DynamicBucketingHash;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.tool.LakeSoulKeyGen;
 import org.apache.flink.lakesoul.types.TableId;
@@ -37,6 +39,7 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -144,20 +147,43 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
                         ), flinkConf)
                 .withBucketCheckInterval(flinkConf.getLong(BUCKET_CHECK_INTERVAL)).withRollingPolicy(rollingPolicy)
                 .withOutputFileConfig(fileNameConfig).build();
-        if (!primaryKeyList.isEmpty()) {
-            LakeSoulKeyGen keyGen = new LakeSoulKeyGen(rowType, primaryKeyList.toArray(new String[0]));
+        if (!primaryKeyList.isEmpty() || !partitionKeyList.isEmpty()) {
+            LakeSoulKeyGen pkKeyGen = new LakeSoulKeyGen(rowType, primaryKeyList.toArray(new String[0]));
             Integer hashBucketNum = flinkConf.get(HASH_BUCKET_NUM);
-            dataStream = dataStream.partitionCustom(new HashPartitioner(hashBucketNum), keyGen::getRePartitionHash);
             if (flinkConf.get(DYNAMIC_BUCKETING)) {
+                // for dynamic bucket, we try to let same hash bucket and partitions rows to fall into same bucket
+                LakeSoulKeyGen partKeygen = new  LakeSoulKeyGen(rowType, partitionKeyList.toArray(new String[0]));
+                dataStream = dataStream.partitionCustom(new HashPartitioner(hashBucketNum),
+                        new HashGen(summaryName, pkKeyGen, partKeygen));
                 return dataStream.sinkTo(sink);
             } else {
                 // before dynamic bucket routing in native, we rely on flink's
                 // parallelism to partition primary keys to target hash bucket
-                Integer parallelism = flinkConf.get(BUCKET_PARALLELISM) > hashBucketNum?flinkConf.get(BUCKET_PARALLELISM):hashBucketNum;
+                dataStream = dataStream.partitionCustom(new HashPartitioner(hashBucketNum),
+                        pkKeyGen::getRePartitionHash);
+                Integer parallelism = flinkConf.get(BUCKET_PARALLELISM) > hashBucketNum ?
+                        flinkConf.get(BUCKET_PARALLELISM) : hashBucketNum;
                 return dataStream.sinkTo(sink).setParallelism(parallelism);
             }
         } else {
             return dataStream.sinkTo(sink);
+        }
+    }
+
+    private static class HashGen implements KeySelector<RowData, Long> {
+        private static final long serialVersionUID = -1045500398735673526L;
+        LakeSoulKeyGen pkKeyGen;
+        LakeSoulKeyGen partKeygen;
+        String summaryName;
+        public HashGen(String summaryName, LakeSoulKeyGen pkKeyGen, LakeSoulKeyGen partKeygen) {
+            this.summaryName = summaryName;
+            this.pkKeyGen = pkKeyGen;
+            this.partKeygen = partKeygen;
+        }
+
+        @Override
+        public Long getKey(RowData rowData) throws Exception {
+            return DynamicBucketingHash.hash(summaryName, rowData, pkKeyGen, partKeygen);
         }
     }
 

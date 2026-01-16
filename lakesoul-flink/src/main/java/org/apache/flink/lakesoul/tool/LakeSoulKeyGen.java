@@ -26,6 +26,7 @@ public class LakeSoulKeyGen implements Serializable {
     private boolean simpleRecordKey = false;
     private final int[] hashKeyIndex;
     private final LogicalType[] hashKeyType;
+    private final RowData.FieldGetter[] hashKeyFieldGetters;
 
     public LakeSoulKeyGen(RowType rowType, String[] recordKeyFields) {
         List<String> fieldNames = rowType.getFieldNames();
@@ -35,6 +36,10 @@ public class LakeSoulKeyGen implements Serializable {
         }
         this.hashKeyIndex = getFieldPositions(recordKeyFields, fieldNames);
         this.hashKeyType = Arrays.stream(hashKeyIndex).mapToObj(fieldTypes::get).toArray(LogicalType[]::new);
+        this.hashKeyFieldGetters = new RowData.FieldGetter[hashKeyIndex.length];
+        for (int i = 0; i < hashKeyIndex.length; i++) {
+            this.hashKeyFieldGetters[i] = RowData.createFieldGetter(hashKeyType[i], hashKeyIndex[i]);
+        }
     }
 
     private static int[] getFieldPositions(String[] fields, List<String> allFields) {
@@ -47,11 +52,11 @@ public class LakeSoulKeyGen implements Serializable {
             return hash;
         }
         if (this.simpleRecordKey) {
-            Object fieldOrNull = RowData.createFieldGetter(hashKeyType[0], hashKeyIndex[0]).getFieldOrNull(rowData);
+            Object fieldOrNull = hashKeyFieldGetters[0].getFieldOrNull(rowData);
             return getHash(hashKeyType[0], fieldOrNull, hash);
         } else {
             for (int i = 0; i < hashKeyType.length; i++) {
-                Object fieldOrNull = RowData.createFieldGetter(hashKeyType[i], hashKeyIndex[i]).getFieldOrNull(rowData);
+                Object fieldOrNull = hashKeyFieldGetters[i].getFieldOrNull(rowData);
                 hash = getHash(hashKeyType[i], fieldOrNull, hash);
             }
             return hash;
