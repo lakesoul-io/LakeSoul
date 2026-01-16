@@ -118,6 +118,9 @@ public class JdbcCDC {
         Configuration globalConfig = GlobalConfiguration.loadConfiguration();
         String warehousePath = databasePrefixPath == null ? globalConfig.getString("flink.warehouse.dir", null): databasePrefixPath;
         Configuration conf = new Configuration();
+        if (sinkDBName == null){
+            sinkDBName = dbName;
+        }
         // parameters for mutil tables ddl sink
         conf.set(SOURCE_DB_DB_NAME, dbName);
         conf.set(SOURCE_DB_USER, userName);

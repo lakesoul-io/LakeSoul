@@ -31,6 +31,7 @@ import io.debezium.time.Year;
 import io.debezium.time.ZonedTime;
 import io.debezium.time.ZonedTimestamp;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.lakesoul.tool.LakeSoulKeyGen;
 import org.apache.flink.table.data.*;
 import org.apache.flink.table.data.binary.BinaryRowData;
@@ -306,8 +307,6 @@ public class LakeSoulRecordConvert implements Serializable {
         return RowType.of(colTypes, colNames);
     }
 
-
-
     public LogicalType convertToLogical(Schema fieldSchema, boolean nullable) {
         if (isPrimitiveType(fieldSchema)) {
             return primitiveLogicalType(fieldSchema, nullable);
@@ -475,17 +474,20 @@ public class LakeSoulRecordConvert implements Serializable {
         if (topicsPartitionFields.containsKey(tableName)){
             List<String> partitionColls = topicsPartitionFields.get(tableName);
             List<Field> fieldNames = schema.fields();
-            for (Field fieldName : fieldNames){
-                if (partitionColls.contains(fieldName.name()) || partitionColls.contains("pt_" + fieldName.name() + "_dt")){
+            for (Field fieldName : fieldNames) {
+                if (partitionColls.contains("pt_" + fieldName.name() + "_dt")){
                     if (fieldName.schema().name() != null
                             && (ZonedTimestamp.SCHEMA_NAME.equals(fieldName.schema().name())
                             || ZonedTime.SCHEMA_NAME.equals(fieldName.schema().name()))
                             || Timestamp.SCHEMA_NAME.equals(fieldName.schema().name())
                             || Date.SCHEMA_NAME.equals(fieldName.schema().name())
                             || Time.SCHEMA_NAME.equals(fieldName.schema().name())
+                            || Schema.Type.INT64.getName().equals(fieldName.schema().name())
                             || ZonedTimestamp.SCHEMA_NAME.equals(fieldName.schema().name())
                             || MicroTimestamp.SCHEMA_NAME.equals(fieldName.schema().name())
-                            || MicroTime.SCHEMA_NAME.equals(fieldName.schema().name())) {
+                            || MicroTime.SCHEMA_NAME.equals(fieldName.schema().name())
+                            || fieldName.schema().type().getName().equalsIgnoreCase("INT64"))
+                    {
                         return fieldName.name();
                     }
                 }
@@ -534,6 +536,7 @@ public class LakeSoulRecordConvert implements Serializable {
             }
             pos++;
         }
+
         if (hasTimestampPartitionCol) {
             Object fieldValue = struct.getWithoutDefault(timestampPartitionCol);
             Instant instant;
@@ -542,7 +545,16 @@ public class LakeSoulRecordConvert implements Serializable {
             } else {
                 instant  = Instant.parse(fieldValue.toString());
             }
-            LocalDate date = instant.atZone(serverTimeZone).toLocalDate();
+            Configuration globalConfig = GlobalConfiguration.loadConfiguration();
+            String timeZone = globalConfig.getString("table.local-time-zone", null);
+            LocalDate date;
+            if (timeZone != null) {
+                ZoneId flinkZoneId = ZoneId.of(timeZone);
+                date = instant.atZone(flinkZoneId).toLocalDate();
+            } else {
+                ZoneId flinkZoneId = ZoneId.systemDefault();
+                date = instant.atZone(flinkZoneId).toLocalDate();
+            }
             if (formatRule == null){
                 formatRule = "yyyy/MM/dd";
             }
@@ -562,7 +574,6 @@ public class LakeSoulRecordConvert implements Serializable {
         return row;
     }
 
-
     public RowData convertDocumentStruct(Struct struct) {
         Schema schema = struct.schema();
         int arity = schema.fields().size();
@@ -580,7 +591,6 @@ public class LakeSoulRecordConvert implements Serializable {
         writer.complete();
         return row;
     }
-
 
     private void convertNestedStruct(BinaryRowWriter writer, int index, Struct nestedStruct, Schema nestedSchema) {
         int nestedArity = nestedSchema.fields().size();
