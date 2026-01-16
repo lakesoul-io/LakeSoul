@@ -28,6 +28,7 @@ import java.util.concurrent.TimeUnit;
 
 public class FlinkSqlSubmitter extends Submitter {
     private static final Logger LOG = LoggerFactory.getLogger(FlinkSqlSubmitter.class);
+    private static final String SCHEDULE_TIME_REPLACE = "\\$\\{scheduleTime}";
 
     public FlinkSqlSubmitter(SubmitOption submitOption) {
         super(submitOption);
@@ -79,9 +80,16 @@ public class FlinkSqlSubmitter extends Submitter {
         tEnv = StreamTableEnvironment.create(env, settings);
 
         String sql = FileUtil.readHDFSFile(submitOption.getSqlFilePath());
-        System.out.println(
+        LOG.info(
                 MessageFormatter.format("\n======SQL Script Content from file {}:\n{}",
                         submitOption.getSqlFilePath(), sql).getMessage());
+        Long scheduleTime = submitOption.getScheduleTime();
+        LOG.info("Batch ScheduleTime is: {}", scheduleTime);
+        if (scheduleTime > 0) {
+            sql = replaceSchedulerTime(sql, scheduleTime);
+            LOG.info("replaced ${scheduleTime}, result sql: {}", sql);
+        }
+
         ExecuteSql.executeSqlFileContent(sql, tEnv, env);
     }
 
@@ -103,5 +111,9 @@ public class FlinkSqlSubmitter extends Submitter {
                 Time.of(10, TimeUnit.MINUTES), //time interval for measuring failure rate
                 Time.of(20, TimeUnit.SECONDS) // delay
         ));
+    }
+
+    public static String replaceSchedulerTime(String sqlText, Long scheduleTime) {
+        return sqlText.replaceAll(SCHEDULE_TIME_REPLACE, scheduleTime.toString());
     }
 }

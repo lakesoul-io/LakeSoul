@@ -14,6 +14,7 @@ public class SubmitOption {
     private final String jobType;
     private final String language;
     private final String sqlFilePath;
+    private final Long scheduleTime;
     private FlinkOption flinkOption;
 
     public SubmitOption(ParameterTool params) {
@@ -21,10 +22,15 @@ public class SubmitOption {
         this.jobType = params.get("job_type");
         this.language = params.get("language");
         this.sqlFilePath = params.get("sql_file_path");
+        this.scheduleTime = params.getLong("scheduleTime", 0L);
         this.checkParam();
         if (SubmitType.getSubmitType(submitType) == SubmitType.FLINK) {
             setFlinkOption(params, this);
         }
+    }
+
+    public Long getScheduleTime() {
+        return scheduleTime;
     }
 
     public String getSqlFilePath() {
