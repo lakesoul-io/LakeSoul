@@ -44,6 +44,7 @@ import java.io.Serializable;
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.time.*;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
@@ -53,25 +54,24 @@ public class LakeSoulRecordConvert implements Serializable {
 
     private static final long serialVersionUID = -3907477067300265746L;
     private final ZoneId serverTimeZone;
-
     private final String cdcColumn;
-
     final boolean useCDC;
+    HashMap<String, String> formatRuleList;
     List<String> partitionFields;
     HashMap<String, List<String>> topicsPartitionFields;
     HashMap<String, String> topicsTimestampPartitionFields = new HashMap<>();
 
-
     public LakeSoulRecordConvert(Configuration conf, String serverTimeZone) {
-        this(conf, serverTimeZone, new HashMap<>());
+        this(conf, serverTimeZone, new HashMap<>(), new HashMap<>());
     }
 
-    public LakeSoulRecordConvert(Configuration conf, String serverTimeZone, HashMap<String, List<String>> topicsPartitionFields) {
+    public LakeSoulRecordConvert(Configuration conf, String serverTimeZone, HashMap<String, List<String>> topicsPartitionFields, HashMap<String, String> formatRuleList) {
         this.useCDC = conf.getBoolean(USE_CDC);
         this.cdcColumn = conf.getString(CDC_CHANGE_COLUMN, CDC_CHANGE_COLUMN_DEFAULT);
         this.serverTimeZone = ZoneId.of(serverTimeZone);
         this.partitionFields = Collections.emptyList();
         this.topicsPartitionFields = topicsPartitionFields;
+        this.formatRuleList = formatRuleList;
     }
 
     private boolean partitionFieldsChanged(RowType beforeType, RowData beforeData, RowType afterType, RowData afterData) {
@@ -170,6 +170,8 @@ public class LakeSoulRecordConvert implements Serializable {
                 Schema afterSchema = valueSchema.field(Envelope.FieldName.AFTER).schema();
                 Struct after = value.getStruct(Envelope.FieldName.AFTER);
                 String timeStampPartitionCol = handleTimestampPartitionColumn(tableId, afterSchema, topicsPartitionFields, topicsTimestampPartitionFields);
+                System.out.println(tableId.table());
+                String timeStampPartitionColFormat = formatRuleList.get(tableId.table());
                 RowData insert = convert(after, afterSchema, RowKind.INSERT, sortField , timeStampPartitionCol);
                 RowType rt = toFlinkRowType(afterSchema,false, timeStampPartitionCol);
                 insert.setRowKind(RowKind.INSERT);
@@ -541,7 +543,11 @@ public class LakeSoulRecordConvert implements Serializable {
                 instant  = Instant.parse(fieldValue.toString());
             }
             LocalDate date = instant.atZone(serverTimeZone).toLocalDate();
-            writer.writeString(pos, StringData.fromString(date.toString()));
+            String format = "dd/MM/yyyy";
+            //formatRuleList.get()
+            DateTimeFormatter customFormatter = DateTimeFormatter.ofPattern(format);
+            String formattedDate = date.format(customFormatter);
+            writer.writeString(pos, StringData.fromString(formattedDate));
             pos++;
         }
         writer.writeLong(pos, sortField);

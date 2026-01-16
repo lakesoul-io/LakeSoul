@@ -1,7 +1,10 @@
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 package org.apache.flink.lakesoul.entry;
 
 import com.ververica.cdc.connectors.mysql.source.MySqlSourceBuilder;
-import com.ververica.cdc.connectors.mysql.table.StartupOptions;
+import com.ververica.cdc.connectors.postgres.source.PostgresSourceBuilder;
 import org.apache.flink.lakesoul.types.BinarySourceRecord;
 import org.apache.flink.table.catalog.ObjectPath;
 import org.apache.flink.core.fs.FileSystem;
@@ -19,7 +22,7 @@ import java.util.stream.Collectors;
 
 import static com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions.*;
 
-public class MysqlSourceBuilderTool {
+public class JdbcSourceBuilderTool {
 
     @SuppressWarnings("unchecked")
     private Map<String, Object> loadAsNestedMap(InputStream inputStream) {
@@ -55,6 +58,96 @@ public class MysqlSourceBuilderTool {
                 target.put(key, value);
             }
         }
+    }
+
+    public PostgresSourceBuilder<BinarySourceRecord> buildPostgresSource(
+            String cdcConfigYamlPath,
+            PostgresSourceBuilder<BinarySourceRecord> sourceBuilder)
+            throws IOException {
+
+        Path path = new Path(cdcConfigYamlPath);
+        FileSystem fs = FileSystem.get(path.toUri());
+
+        Map<String, Object> cdcParams;
+        try (InputStream input = fs.open(path)) {
+            cdcParams = loadAsFlatMap(input);
+        }
+
+        /* ------------------ Debezium ------------------ */
+        Properties debeziumProperties = getDebeziumProperties(cdcParams);
+        if (!debeziumProperties.isEmpty()) {
+            sourceBuilder.debeziumProperties(debeziumProperties);
+        }
+
+        /* ------------------ fetch / split ------------------ */
+        if (cdcParams.containsKey("scan.snapshot.fetch.size")) {
+            sourceBuilder.fetchSize(
+                    Integer.parseInt(cdcParams.get("scan.snapshot.fetch.size").toString()));
+        }
+
+        if (cdcParams.containsKey("chunk-meta.group.size")) {
+            sourceBuilder.splitMetaGroupSize(
+                    Integer.parseInt(cdcParams.get("chunk-meta.group.size").toString()));
+        }
+
+        /* ------------------ startup ------------------ */
+        if (cdcParams.containsKey("scan.startup.mode")) {
+            sourceBuilder.startupOptions(
+                    parsePgStartupOptions(
+                            cdcParams.get("scan.startup.mode").toString()));
+        }
+
+        /* ------------------ heartbeat ------------------ */
+        if (cdcParams.containsKey("heartbeat.interval")) {
+            sourceBuilder.heartbeatInterval(
+                    Duration.ofSeconds(
+                            Long.parseLong(
+                                    cdcParams.get("heartbeat.interval").toString())));
+        }
+
+        /* ------------------ connection ------------------ */
+        if (cdcParams.containsKey("connect.timeout")) {
+            sourceBuilder.connectTimeout(
+                    Duration.ofSeconds(
+                            Long.parseLong(cdcParams.get("connect.timeout").toString())));
+        }
+
+        if (cdcParams.containsKey("connect.max-retries")) {
+            sourceBuilder.connectMaxRetries(
+                    Integer.parseInt(cdcParams.get("connect.max-retries").toString()));
+        }
+
+        if (cdcParams.containsKey("connection.pool.size")) {
+            sourceBuilder.connectionPoolSize(
+                    Integer.parseInt(cdcParams.get("connection.pool.size").toString()));
+        }
+
+        /* ------------------ behavior flags ------------------ */
+        if (cdcParams.containsKey("include.schema.changes")) {
+            sourceBuilder.includeSchemaChanges(
+                    Boolean.parseBoolean(
+                            cdcParams.get("include.schema.changes").toString()));
+        }
+
+        if (cdcParams.containsKey("scan.incremental.close-idle-reader.enabled")) {
+            sourceBuilder.closeIdleReaders(
+                    Boolean.parseBoolean(
+                            cdcParams.get("scan.incremental.close-idle-reader.enabled").toString()));
+        }
+
+        if (cdcParams.containsKey("scan.incremental.snapshot.backfill.skip")) {
+            sourceBuilder.skipSnapshotBackfill(
+                    Boolean.parseBoolean(
+                            cdcParams.get("scan.incremental.snapshot.backfill.skip").toString()));
+        }
+
+        if (cdcParams.containsKey("scan.incremental.snapshot.chunk.key-column")){
+            sourceBuilder.chunkKeyColumn(
+                    cdcParams.get("scan.incremental.snapshot.chunk.key-column").toString()
+            );
+        }
+
+        return sourceBuilder;
     }
 
     public MySqlSourceBuilder<BinarySourceRecord> mySqlSourceBuilder(String cdcConfigYamlPath, MySqlSourceBuilder<BinarySourceRecord> sourceBuilder) throws IOException {
@@ -112,7 +205,7 @@ public class MysqlSourceBuilderTool {
         }
         if (cdcParams.containsKey(SCAN_STARTUP_MODE.key())) {
             sourceBuilder.startupOptions(
-                    parseStartupOptions(
+                    parseMysqlStartupOptions(
                             cdcParams.get(SCAN_STARTUP_MODE.key()).toString()));
         }
         if (cdcParams.containsKey(SCAN_INCREMENTAL_SNAPSHOT_CHUNK_SIZE.key())){
@@ -137,16 +230,31 @@ public class MysqlSourceBuilderTool {
         return sourceBuilder;
     }
 
-    private StartupOptions parseStartupOptions(String mode) {
+    private com.ververica.cdc.connectors.mysql.table.StartupOptions parseMysqlStartupOptions(String mode) {
         switch (mode.toLowerCase()) {
             case "initial":
-                return StartupOptions.initial();
+                return com.ververica.cdc.connectors.mysql.table.StartupOptions.initial();
             case "latest-offset":
             case "latest":
-                return StartupOptions.latest();
+                return com.ververica.cdc.connectors.mysql.table.StartupOptions.latest();
             case "earliest-offset":
             case "earliest":
-                return StartupOptions.earliest();
+                return com.ververica.cdc.connectors.mysql.table.StartupOptions.earliest();
+            default:
+                throw new IllegalArgumentException(
+                        "Unsupported scan.startup.mode: " + mode);
+        }
+    }
+    private com.ververica.cdc.connectors.base.options.StartupOptions parsePgStartupOptions(String mode){
+        switch (mode.toLowerCase()) {
+            case "initial":
+                return com.ververica.cdc.connectors.base.options.StartupOptions.initial();
+            case "latest-offset":
+            case "latest":
+                return com.ververica.cdc.connectors.base.options.StartupOptions.latest();
+            case "earliest-offset":
+            case "earliest":
+                return com.ververica.cdc.connectors.base.options.StartupOptions.earliest();
             default:
                 throw new IllegalArgumentException(
                         "Unsupported scan.startup.mode: " + mode);
@@ -180,8 +288,7 @@ public class MysqlSourceBuilderTool {
         return DebeziumOptions.getDebeziumProperties(dbzParams);
     }
 
-    public HashMap<String, List<String>> getTablePartitionList(String cdcConfigPath)
-            throws IOException {
+    public HashMap<String, List<String>> getTablePartitionList(String cdcConfigPath) throws IOException {
         Path path = new Path(cdcConfigPath);
         FileSystem fs = FileSystem.get(path.toUri());
         try (InputStream input = fs.open(path)) {
@@ -215,6 +322,37 @@ public class MysqlSourceBuilderTool {
                 tablePartitions.put(tableName, partitionCols);
             }
             return tablePartitions;
+        }
+    }
+
+    public HashMap<String, String> getTablePartitionFormatRuleList(String cdcConfigPath) throws IOException {
+        Path path = new Path(cdcConfigPath);
+        FileSystem fs = FileSystem.get(path.toUri());
+        try (InputStream input = fs.open(path)) {
+            Map<String, Object> cdcParams = loadAsFlatMap(input);
+
+            HashMap<String, String> tablePartitionsFormatRules = new HashMap<>();
+            String partitionPrefix = "partitions.format.rule.";
+
+            for (Map.Entry<String, Object> entry : cdcParams.entrySet()) {
+                String key = entry.getKey();
+                if (!key.startsWith(partitionPrefix)) {
+                    continue;
+                }
+
+                String tableName = key.substring(partitionPrefix.length());
+                Object value = entry.getValue();
+                if (value == null) {
+                    continue;
+                }
+
+                String cols = value.toString().trim();
+                if (cols.isEmpty()) {
+                    continue;
+                }
+                tablePartitionsFormatRules.put(tableName, cols);
+            }
+            return tablePartitionsFormatRules;
         }
     }
 }
