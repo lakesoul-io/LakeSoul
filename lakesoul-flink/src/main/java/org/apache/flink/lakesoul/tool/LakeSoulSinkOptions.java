@@ -243,6 +243,12 @@ public class  LakeSoulSinkOptions {
             .longType()
             .defaultValue(Long.MAX_VALUE)
             .withDescription("limit io read num");
+
+    public static final ConfigOption<String> PARTITION_FORMAT_RULE = ConfigOptions
+            .key("format.rule")
+            .stringType()
+            .defaultValue("dd/MM/yyyy")
+            .withDescription("when timestamp col as partition col, the col can be formated");
 }
 
 

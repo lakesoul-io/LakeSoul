@@ -13,6 +13,7 @@ import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.ExplainDetail;
+import org.apache.flink.table.api.TableResult;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.catalog.Catalog;
 
@@ -70,6 +71,8 @@ public class LakeSoulSourceToSinkTable {
         tEnvs.registerCatalog("lakesoul", lakeSoulCatalog);
         tEnvs.useCatalog("lakesoul");
         tEnvs.executeSql("create database if not exists " + sinkDBName);
+        TableResult showTables = tEnvs.executeSql("show tables");
+        showTables.print();
 
         String createTableSql;
         if (useCDC) {
