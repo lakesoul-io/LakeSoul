@@ -146,7 +146,6 @@ public class JdbcCDC {
             JdbcSourceBuilderTool mysqlSourceBuilderTool = new JdbcSourceBuilderTool();
             partitionMap = mysqlSourceBuilderTool.getTablePartitionList(cdcYamlPath);
         }
-
         HashMap<String, String> partitionFormatRuleMap = new HashMap<>();;
         if (cdcYamlPath != null){
             JdbcSourceBuilderTool mysqlSourceBuilderTool = new JdbcSourceBuilderTool();
@@ -271,21 +270,6 @@ public class JdbcCDC {
     }
 
     private static void postgresCdc(LakeSoulRecordConvert lakeSoulRecordConvert, Configuration conf, StreamExecutionEnvironment env, String sinkDBName) throws Exception {
-//        JdbcIncrementalSource<BinarySourceRecord> pgSource = PostgresSourceBuilder.PostgresIncrementalSource.<BinarySourceRecord>builder()
-//                .hostname(host)
-//                .schemaList(schemaList)
-//                .tableList(tableList)
-//                .database(dbName)
-//                .port(port)
-//                .username(userName)
-//                .password(passWord)
-//                .decodingPluginName(pluginName)
-//                .splitSize(splitSize)
-//                .slotName(slotName)
-//                .fetchSize(fetchSize)
-//                //new
-//                .deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert, conf.getString(WAREHOUSE_PATH), sinkDBName))
-//                .build();
 
         PostgresSourceBuilder<BinarySourceRecord> pgSourcebuilder = PostgresSourceBuilder.PostgresIncrementalSource.<BinarySourceRecord>builder()
                 .hostname(host)

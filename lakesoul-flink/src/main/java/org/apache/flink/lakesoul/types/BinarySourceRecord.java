@@ -70,7 +70,8 @@ public class BinarySourceRecord {
         String sourceSchemaName = tableId.schema() == null ? tableId.catalog() : tableId.schema();
         String tableName;
         String originTableName;
-        if (sinkDBName.equals(sourceSchemaName) || sourceRecord.topic().split("\\.")[0].equals("mysql_binlog_source")){
+        if (sinkDBName.equals(sourceSchemaName)
+                || sourceRecord.topic().split("\\.")[0].equals("mysql_binlog_source")){
             tableName = String.format("s_%s_%s", sourceSchemaName, tableId.table()).toLowerCase();
             originTableName = tableId.table();
             tableId = new TableId(sinkDBName, sourceSchemaName , tableName);
