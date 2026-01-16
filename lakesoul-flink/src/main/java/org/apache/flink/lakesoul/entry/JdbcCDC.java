@@ -198,7 +198,7 @@ public class JdbcCDC {
                 Time.of(20, TimeUnit.SECONDS) // delay
         ));
 
-        LakeSoulRecordConvert lakeSoulRecordConvert = new LakeSoulRecordConvert(conf, conf.getString(SERVER_TIME_ZONE), partitionMap, partitionFormatRuleMap);
+        LakeSoulRecordConvert lakeSoulRecordConvert = new LakeSoulRecordConvert(conf, conf.getString(SERVER_TIME_ZONE), partitionMap, partitionFormatRuleMap, globalConfig);
 
         if (dbType.equalsIgnoreCase("mysql")) {
             mysqlCdc(lakeSoulRecordConvert, conf, env, sinkDBName);

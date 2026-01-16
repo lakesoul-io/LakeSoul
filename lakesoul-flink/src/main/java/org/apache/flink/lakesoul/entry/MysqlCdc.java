@@ -133,7 +133,7 @@ public class MysqlCdc {
             jdbcProperties.put("useSSL", "false");
             sourceBuilder.jdbcProperties(jdbcProperties);
         }
-        LakeSoulRecordConvert lakeSoulRecordConvert = new LakeSoulRecordConvert(conf, conf.getString(SERVER_TIME_ZONE),partitionMap, new HashMap<>());
+        LakeSoulRecordConvert lakeSoulRecordConvert = new LakeSoulRecordConvert(conf, conf.getString(SERVER_TIME_ZONE),partitionMap, new HashMap<>(), globalConfig);
         sourceBuilder.deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert,
                 conf.getString(WAREHOUSE_PATH), sinkDBName));
         MySqlSource<BinarySourceRecord> mySqlSource = sourceBuilder.build();

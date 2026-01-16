@@ -61,18 +61,20 @@ public class LakeSoulRecordConvert implements Serializable {
     List<String> partitionFields;
     HashMap<String, List<String>> topicsPartitionFields;
     HashMap<String, String> topicsTimestampPartitionFields = new HashMap<>();
+    Configuration globalConfig;
 
     public LakeSoulRecordConvert(Configuration conf, String serverTimeZone) {
-        this(conf, serverTimeZone, new HashMap<>(), new HashMap<>());
+        this(conf, serverTimeZone, new HashMap<>(), new HashMap<>(), new Configuration());
     }
 
-    public LakeSoulRecordConvert(Configuration conf, String serverTimeZone, HashMap<String, List<String>> topicsPartitionFields, HashMap<String, String> formatRuleList) {
+    public LakeSoulRecordConvert(Configuration conf, String serverTimeZone, HashMap<String, List<String>> topicsPartitionFields, HashMap<String, String> formatRuleList, Configuration globalConfig) {
         this.useCDC = conf.getBoolean(USE_CDC);
         this.cdcColumn = conf.getString(CDC_CHANGE_COLUMN, CDC_CHANGE_COLUMN_DEFAULT);
         this.serverTimeZone = ZoneId.of(serverTimeZone);
         this.partitionFields = Collections.emptyList();
         this.topicsPartitionFields = topicsPartitionFields;
         this.formatRuleList = formatRuleList;
+        this.globalConfig = globalConfig;
     }
 
     private boolean partitionFieldsChanged(RowType beforeType, RowData beforeData, RowType afterType, RowData afterData) {
@@ -545,7 +547,6 @@ public class LakeSoulRecordConvert implements Serializable {
             } else {
                 instant  = Instant.parse(fieldValue.toString());
             }
-            Configuration globalConfig = GlobalConfiguration.loadConfiguration();
             String timeZone = globalConfig.getString("table.local-time-zone", null);
             LocalDate date;
             if (timeZone != null) {

@@ -74,11 +74,11 @@ public class BinarySourceRecord {
                 || sourceRecord.topic().split("\\.")[0].equals("mysql_binlog_source")){
             tableName = String.format("s_%s_%s", sourceSchemaName, tableId.table()).toLowerCase();
             originTableName = tableId.table();
-            tableId = new TableId(sinkDBName, sourceSchemaName , tableName);
+            tableId = new TableId(sourceSchemaName, sinkDBName, tableName);
         } else {
             tableName = String.format("s_%s_%s_%s", sinkDBName, sourceSchemaName, tableId.table()).toLowerCase();
             originTableName = tableId.table();
-            tableId = new TableId(sinkDBName, sourceSchemaName , tableName);
+            tableId = new TableId( sourceSchemaName, sinkDBName , tableName);
         }
         HashMap<String, List<String>> topicsPartitionFields = convert.topicsPartitionFields;
         if (topicsPartitionFields.containsKey(originTableName)) {
