@@ -187,7 +187,6 @@ impl Stream for SelfIncrementalIndexStream {
     ) -> Poll<Option<Self::Item>> {
         match self.input.poll_next_unpin(cx) {
             Poll::Ready(Some(Ok(batch))) => {
-                info!("poll_next batch with schema: {:?}", batch.schema());
                 Poll::Ready(Some(self.add_index_column(&batch)))
             }
             Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e))),

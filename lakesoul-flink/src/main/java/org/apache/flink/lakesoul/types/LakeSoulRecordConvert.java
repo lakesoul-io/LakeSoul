@@ -56,22 +56,16 @@ public class LakeSoulRecordConvert implements Serializable {
 
     private static final long serialVersionUID = -3907477067300265746L;
     private final ZoneId serverTimeZone;
-<<<<<<< HEAD
-=======
     private static final Logger LOG = LoggerFactory.getLogger(LakeSoulRecordConvert.class);
 
->>>>>>> 454eb4b1 (parallelize commit. optimize hash partition)
     private final String cdcColumn;
     final boolean useCDC;
     HashMap<String, String> formatRuleList;
     List<String> partitionFields;
     HashMap<String, List<String>> topicsPartitionFields;
     HashMap<String, String> topicsTimestampPartitionFields = new HashMap<>();
-<<<<<<< HEAD
     Configuration globalConfig;
-=======
     Random  random = new Random();
->>>>>>> 454eb4b1 (parallelize commit. optimize hash partition)
 
     public LakeSoulRecordConvert(Configuration conf, String serverTimeZone) {
         this(conf, serverTimeZone, new HashMap<>(), new HashMap<>(), new Configuration());

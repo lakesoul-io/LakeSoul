@@ -95,7 +95,7 @@ impl AsyncSendableMutableLakeSoulWriter {
             guard.write_record_batch(record_batch).await?;
 
             if do_spill {
-                debug!("spilling writer with size: {}", guard.buffered_size());
+                info!("Spilling writer with size: {}", guard.buffered_size());
                 drop(guard);
                 if let Some(writer) = self.in_progress.take() {
                     let inner_writer = Arc::try_unwrap(writer)
