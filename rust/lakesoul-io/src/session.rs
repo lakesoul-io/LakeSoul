@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::usize;
 
 use arrow_schema::{Schema, SchemaBuilder, SchemaRef};
+use datafusion::config::SpillCompression;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::context::QueryPlanner;
 use datafusion::optimizer::analyzer::type_coercion::TypeCoercion;
@@ -49,6 +50,7 @@ use rootcause::prelude::ResultExt;
 use rootcause::{Report, report};
 use tokio::sync::OnceCell;
 
+use crate::byte_size;
 use crate::config::LakeSoulIOConfig;
 use crate::file_format::LakeSoulParquetFormat;
 use crate::helpers::transform::uniform_schema;
@@ -210,11 +212,13 @@ impl LakeSoulIOSession {
             .with_parquet_pruning(true)
             .with_information_schema(true)
             .with_create_default_catalog_and_schema(true);
+        // optimizer
         sess_conf
             .options_mut()
             .optimizer
             .enable_round_robin_repartition = false; // if true, the record_batches poll from stream become unordered
         sess_conf.options_mut().optimizer.prefer_hash_join = false; //if true, panicked at 'range end out of bounds'
+        // execution
         sess_conf.options_mut().execution.target_partitions = 1;
         sess_conf.options_mut().execution.parquet.dictionary_enabled = Some(false);
         sess_conf
@@ -227,6 +231,7 @@ impl LakeSoulIOSession {
             let sort_spill_bytes = pool_size / 8;
             sess_conf = sess_conf.with_sort_spill_reservation_bytes(sort_spill_bytes);
             let memory_pool = FairSpillPool::new(pool_size);
+            );
             runtime_conf = runtime_conf.with_memory_pool(Arc::new(memory_pool));
             let dir = io_config
                 .pool_dir()
