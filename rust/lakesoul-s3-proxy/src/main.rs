@@ -228,9 +228,12 @@ impl S3ProxyHandle {
                 debug!("Parsed table path {:?}", path);
                 if match self.common_prefix {
                     Some(ref prefix) => {
-                        path.starts_with(
-                            format!("{}/{}/{}", prefix, self.group, self.user).as_str(),
-                        ) || path.starts_with(format!("{}/files", prefix).as_str())
+                        (!path.starts_with(prefix))
+                            || path.starts_with(
+                                format!("{}/{}/{}", prefix, self.group, self.user)
+                                    .as_str(),
+                            )
+                            || path.starts_with(format!("{}/files", prefix).as_str())
                     }
                     None => {
                         path.starts_with(
@@ -246,7 +249,10 @@ impl S3ProxyHandle {
                     &["savepoint", "checkpoint", "resource-manager", "files"],
                     &self.common_prefix,
                 ) {
-                    debug!("path is a valid predefined prefix {}, access allowed", path);
+                    debug!(
+                        "Path is a valid predefined prefix or unchecked other dir/bucket {}, access allowed",
+                        path
+                    );
                     return Ok(());
                 }
                 match verify_permission_by_table_path(
