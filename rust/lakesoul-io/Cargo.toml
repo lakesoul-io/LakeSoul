@@ -103,6 +103,7 @@ hdfs = ["dep:hdrs", "dep:hdfs-sys"]
 default = []
 dhat-heap = ["dep:dhat"]            # if you are doing heap profiling
 dhat-ad-hoc = []                    # if you are doing ad hoc profiling
+jemalloc = []
 
 [dev-dependencies]
 tokio-test = "0.4.4"

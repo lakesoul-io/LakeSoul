@@ -8,7 +8,7 @@ pub static OPTION_KEY_KEEP_ORDERS: &str = "keep_orders";
 pub static OPTION_DEFAULT_VALUE_KEEP_ORDERS: &str = "false";
 
 /// Key for memory limit in bytes
-pub static OPTION_KEY_MEM_LIMIT: &str = "mem_limit";
+pub static OPTION_KEY_DF_MEM_LIMIT: &str = "df_mem_limit";
 /// Key for memory pool size in bytes
 pub static OPTION_KEY_POOL_SIZE: &str = "pool_size";
 /// Key for memory pool spill dir

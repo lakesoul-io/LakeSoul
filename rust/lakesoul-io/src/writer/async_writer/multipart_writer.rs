@@ -79,7 +79,7 @@ impl MultiPartAsyncWriter {
                     )?)?,
                 Path::from_url_path(url.path())?,
             )),
-            Err(e) => Err(e),
+            Err(e) => Err(report!(e).attach(format!("file: {}", file_name))),
         }?;
 
         // get underlying multipart uploader

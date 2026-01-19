@@ -55,6 +55,16 @@ impl FromStr for ByteSize {
             .ok_or_else(|| "内存配置数值过大导致溢出".to_string())
     }
 }
+
+#[macro_export]
+macro_rules! byte_size {
+    ($s:expr) => {
+        $s.parse::<$crate::utils::ByteSize>()
+            .expect("Failed to parse ByteSize from string")
+            .bytes()
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -66,17 +76,23 @@ mod tests {
             "2GB".parse::<ByteSize>().unwrap().bytes(),
             2 * 1024 * 1024 * 1024
         );
+        assert_eq!(byte_size!("2GB"), 2 * 1024 * 1024 * 1024);
+
         assert_eq!(
             "512mb".parse::<ByteSize>().unwrap().bytes(),
             512 * 1024 * 1024
         );
+        assert_eq!(byte_size!("512mb"), 512 * 1024 * 1024);
+
         assert_eq!("1024Kb".parse::<ByteSize>().unwrap().bytes(), 1024 * 1024);
+        assert_eq!(byte_size!("1024Kb"), 1024 * 1024);
 
         // 空格测试
         assert_eq!(
             "2  GB".parse::<ByteSize>().unwrap().bytes(),
             2 * 1024 * 1024 * 1024
         );
+        assert_eq!(byte_size!("2  GB"), 2 * 1024 * 1024 * 1024);
 
         // 纯数字测试 (默认为 Bytes)
         assert_eq!("100".parse::<ByteSize>().unwrap().bytes(), 100);

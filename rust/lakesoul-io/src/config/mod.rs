@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use arrow_schema::{Schema, SchemaRef};
 use datafusion_common::DFSchema;
@@ -178,12 +178,12 @@ impl LakeSoulIOConfig {
     }
 
     /// Maximum memory limit in bytes for query execution
-    pub fn mem_limit(&self) -> Option<usize> {
-        std::env::var("LAKESOUL_IO_MEM_LIMIT")
+    pub fn df_mem_limit(&self) -> Option<usize> {
+        std::env::var("LAKESOUL_DF_MEM_LIMIT")
             .ok()
             .and_then(|s| s.parse::<ByteSize>().ok())
             .or_else(|| {
-                self.option(OPTION_KEY_MEM_LIMIT)
+                self.option(OPTION_KEY_DF_MEM_LIMIT)
                     .and_then(|x| x.parse::<ByteSize>().ok())
             })
             .map(|bs| bs.bytes())
