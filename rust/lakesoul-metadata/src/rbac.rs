@@ -34,17 +34,7 @@ pub async fn verify_permission_by_table_name(
             table, ns, user, group
         )))?;
     debug!("table {}.{} in domain {}", ns, table, table_name_id.domain);
-    match table_name_id.domain.as_str() {
-        "public" | "lake-public" => Ok(()),
-        domain if domain == group => Ok(()),
-        _ => Err(LakeSoulMetaDataError::Other(
-            format!(
-                "Permission denied to access {}.{} from user {} in group {}",
-                ns, table, user, group
-            )
-            .into(),
-        )),
-    }
+    Ok(())
 }
 
 #[cached(
@@ -74,17 +64,7 @@ pub async fn verify_permission_by_table_path(
             path, user, group
         )))?;
     debug!("table {} in domain {}", path, table_path_id.domain);
-    match table_path_id.domain.as_str() {
-        "public" | "lake-public" => Ok(()),
-        domain if domain == group => Ok(()),
-        _ => Err(LakeSoulMetaDataError::Other(
-            format!(
-                "Permission denied to access {} from user {} in group {}",
-                path, user, group
-            )
-            .into(),
-        )),
-    }
+    Ok(())
 }
 
 #[cfg(test)]
