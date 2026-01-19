@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::usize;
 
 use arrow_schema::{Schema, SchemaBuilder, SchemaRef};
+use datafusion::config::SpillCompression;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::context::QueryPlanner;
 use datafusion::optimizer::analyzer::type_coercion::TypeCoercion;
@@ -47,6 +48,7 @@ use rootcause::prelude::ResultExt;
 use rootcause::{Report, report};
 use tokio::sync::OnceCell;
 
+use crate::byte_size;
 use crate::config::LakeSoulIOConfig;
 use crate::file_format::LakeSoulParquetFormat;
 use crate::helpers::transform::uniform_schema;
@@ -208,11 +210,13 @@ impl LakeSoulIOSession {
             .with_parquet_pruning(true)
             .with_information_schema(true)
             .with_create_default_catalog_and_schema(true);
+        // optimizer
         sess_conf
             .options_mut()
             .optimizer
             .enable_round_robin_repartition = false; // if true, the record_batches poll from stream become unordered
         sess_conf.options_mut().optimizer.prefer_hash_join = false; //if true, panicked at 'range end out of bounds'
+        // execution
         sess_conf.options_mut().execution.target_partitions = 1;
         sess_conf.options_mut().execution.parquet.dictionary_enabled = Some(false);
         sess_conf
@@ -220,15 +224,33 @@ impl LakeSoulIOSession {
             .execution
             .parquet
             .schema_force_view_types = false;
-        let mut runtime_conf = RuntimeEnvBuilder::new();
+        // for now all is default
+        sess_conf.options_mut().execution.spill_compression =
+            SpillCompression::Uncompressed;
+        sess_conf
+            .options_mut()
+            .execution
+            .sort_spill_reservation_bytes = byte_size!("10mb");
+        sess_conf
+            .options_mut()
+            .execution
+            .sort_in_place_threshold_bytes = byte_size!("1mb");
+        sess_conf.options_mut().execution.max_spill_file_size_bytes = byte_size!("128mb");
+
+        // runtime
+
+        let mut runtime_conf = RuntimeEnvBuilder::new()
+            .with_max_temp_directory_size(byte_size!("100G") as u64)
+            .with_temp_file_path("/tmp/lakesoul/spill/dev");
+
         // mem limit first
 
-        if let Some(mem_limit) = io_config.mem_limit() {
+        if let Some(mem_limit) = io_config.df_mem_limit() {
             runtime_conf = runtime_conf.with_memory_limit(mem_limit, 1.0);
         }
 
         if let Some(mut pool_size) = io_config.pool_size() {
-            pool_size = pool_size.min(io_config.mem_limit().unwrap_or(usize::MAX));
+            pool_size = pool_size.min(io_config.df_mem_limit().unwrap_or(usize::MAX));
             let memory_pool = TrackConsumersPool::new(
                 FairSpillPool::new(pool_size),
                 NonZeroUsize::new(5).unwrap(),

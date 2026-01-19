@@ -84,6 +84,7 @@ pub async fn create_writer(
 
     let mut writer_io_config = io_config.clone();
     let writer: Box<dyn AsyncBatchWriter + Send> = if io_config.use_dynamic_partition {
+        info!("use partitioning writer");
         Box::new(PartitioningAsyncWriter::try_new(io_session.clone())?)
     } else if !writer_io_config.primary_keys.is_empty()
         && !writer_io_config.keep_ordering()
@@ -103,6 +104,7 @@ pub async fn create_writer(
         ))
         .await?;
         // use original config
+        info!("use sort writer");
         Box::new(SortAsyncWriter::try_new(writer, io_session.clone())?)
     } else {
         // else multipart
@@ -119,6 +121,7 @@ pub async fn create_writer(
             io_session.with_io_config(writer_io_config),
         ))
         .await?;
+        info!("use multipart writer");
         Box::new(writer)
     };
     Ok(writer)
@@ -195,13 +198,13 @@ impl SyncSendableMutableLakeSoulWriter {
                 new_io_config.max_file_size = Some(max_file_size);
             }
 
-            if let Some(mem_limit) = new_io_config.mem_limit() {
-                if new_io_config.use_dynamic_partition {
-                    new_io_config.max_file_size = Some((mem_limit as f64 * 0.15) as u64);
-                } else if !new_io_config.primary_keys.is_empty()
-                    && !new_io_config.keep_ordering()
-                {
-                    new_io_config.max_file_size = Some((mem_limit as f64 * 0.2) as u64);
+            if let Some(limit) = new_io_config.df_mem_limit() {
+                let is_dynamic = new_io_config.use_dynamic_partition;
+                let has_pks_no_order = !new_io_config.primary_keys.is_empty()
+                    && !new_io_config.keep_ordering();
+
+                if is_dynamic || has_pks_no_order {
+                    new_io_config.max_file_size = Some(limit as u64);
                 }
             }
 
@@ -281,7 +284,7 @@ impl SyncSendableMutableLakeSoulWriter {
         record_batch: RecordBatch,
         do_spill: bool,
     ) -> Result<()> {
-        debug!(record_batch_row=?record_batch.num_rows(),"write_batch_async");
+        debug!(record_batch_row=?record_batch.num_rows());
         let io_config = self.io_config();
         if let Some(max_file_size) = io_config.max_file_size {
             // if max_file_size is set, we need to split batch into multiple files
@@ -296,6 +299,7 @@ impl SyncSendableMutableLakeSoulWriter {
             let batch_memory_size = get_batch_memory_size(&record_batch)? as u64;
             let batch_rows = record_batch.num_rows() as u64;
             // If exceeds max_file_size, split batch
+            // TODO consider compression
             if !do_spill && guard.buffered_size() + batch_memory_size > max_file_size {
                 let to_write = (batch_rows * (max_file_size - guard.buffered_size()))
                     / batch_memory_size;
@@ -410,7 +414,7 @@ impl SyncSendableMutableLakeSoulWriter {
 mod tests {
     use crate::{
         Result,
-        config::{LakeSoulIOConfigBuilder, OPTION_KEY_MEM_LIMIT},
+        config::{LakeSoulIOConfigBuilder, OPTION_KEY_DF_MEM_LIMIT},
         reader::LakeSoulReader,
     };
 
@@ -895,7 +899,7 @@ mod tests {
                     .map(|i| format!("col_{}", i))
                     .collect::<Vec<String>>(),
             )
-            .with_option(OPTION_KEY_MEM_LIMIT, format!("{}", 1024 * 1024 * 48))
+            .with_option(OPTION_KEY_DF_MEM_LIMIT, format!("{}", 1024 * 1024 * 48))
             .set_dynamic_partition(true)
             .with_hash_bucket_num("4".to_string())
             .build();
@@ -997,7 +1001,7 @@ mod tests {
             ])
             .with_hash_bucket_num("2".to_string())
             .set_dynamic_partition(true)
-            .with_option(OPTION_KEY_MEM_LIMIT, format!("{}", 1024 * 1024 * 50))
+            .with_option(OPTION_KEY_DF_MEM_LIMIT, format!("{}", 1024 * 1024 * 50))
             .build();
 
         let io_session = Arc::new(LakeSoulIOSession::try_new(writer_io_config)?);

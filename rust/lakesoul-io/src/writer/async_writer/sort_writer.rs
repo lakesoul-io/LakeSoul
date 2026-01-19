@@ -19,7 +19,7 @@ use datafusion_physical_plan::{
     stream::RecordBatchReceiverStream,
 };
 use datafusion_session::Session;
-use rootcause::{Report, bail};
+use rootcause::{Report, bail, report};
 use tokio::sync::mpsc::Sender;
 use tokio_stream::StreamExt;
 
@@ -69,8 +69,7 @@ impl SortAsyncWriter {
             })
             .collect::<Result<Vec<PhysicalSortExpr>>>()?;
         let sort_exec = Arc::new(SortExec::new(
-            LexOrdering::new(sort_exprs)
-                .ok_or(DataFusionError::Execution("Empty Sort Exprs".into()))?,
+            LexOrdering::new(sort_exprs).ok_or(report!("Empty Sort Exprs"))?,
             Arc::new(recv_exec),
         ));
 
