@@ -54,6 +54,7 @@ public class MysqlCdc {
                 JOB_CHECKPOINT_INTERVAL.defaultValue());     //mill second
         HashMap<String, List<String>> partitionMap = new HashMap<>();
         parameter.toMap().forEach((confKey,confValue) -> {if (confKey.contains("topic_partitions_")) partitionMap.put(confKey.substring(17), Arrays.asList(confValue.split(","))); else return;});
+
         MysqlDBManager mysqlDBManager = new MysqlDBManager(dbName,
                 userName,
                 passWord,
@@ -68,7 +69,9 @@ public class MysqlCdc {
         Configuration globalConfig = GlobalConfiguration.loadConfiguration();
         String warehousePath = databasePrefixPath == null ? globalConfig.getString(WAREHOUSE_PATH.key(), null): databasePrefixPath;
         Configuration conf = new Configuration();
-
+        if (sinkDBName == null){
+            sinkDBName = dbName;
+        }
         // parameters for mutil tables ddl sink
         conf.set(SOURCE_DB_DB_NAME, dbName);
         conf.set(SOURCE_DB_USER, userName);
@@ -122,7 +125,7 @@ public class MysqlCdc {
                 .password(passWord);
 
         if (cdcYamlPath != null){
-            MysqlSourceBuilderTool mysqlSourceBuilderTool = new MysqlSourceBuilderTool();
+            JdbcSourceBuilderTool mysqlSourceBuilderTool = new JdbcSourceBuilderTool();
             sourceBuilder = mysqlSourceBuilderTool.mySqlSourceBuilder(cdcYamlPath, sourceBuilder);
         } else {
             Properties jdbcProperties = new Properties();
@@ -130,7 +133,7 @@ public class MysqlCdc {
             jdbcProperties.put("useSSL", "false");
             sourceBuilder.jdbcProperties(jdbcProperties);
         }
-        LakeSoulRecordConvert lakeSoulRecordConvert = new LakeSoulRecordConvert(conf, conf.getString(SERVER_TIME_ZONE),partitionMap);
+        LakeSoulRecordConvert lakeSoulRecordConvert = new LakeSoulRecordConvert(conf, conf.getString(SERVER_TIME_ZONE),partitionMap, new HashMap<>(), globalConfig);
         sourceBuilder.deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert,
                 conf.getString(WAREHOUSE_PATH), sinkDBName));
         MySqlSource<BinarySourceRecord> mySqlSource = sourceBuilder.build();
