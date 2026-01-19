@@ -308,6 +308,7 @@ impl PartitioningAsyncWriter {
             }
         }
         if let Some(e) = err {
+            error!("partitioned writer write error: {:?}", e);
             for (_, writer) in partitioned_writer.into_iter() {
                 match writer.abort_and_close().await {
                     Ok(_) => match e {
@@ -326,6 +327,20 @@ impl PartitioningAsyncWriter {
             for (partition_desc, writer) in partitioned_writer.into_iter() {
                 flush_join_set.spawn(async move {
                     let writer_flush_results = writer.flush_and_close().await?;
+                    info!(
+                        "Flushed writer {:?}",
+                        writer_flush_results
+                            .iter()
+                            .map(|o| {
+                                (
+                                    o.file_path.clone(),
+                                    o.object_meta.size,
+                                    o.file_meta.file_metadata().num_rows(),
+                                    o.file_meta.num_row_groups(),
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    );
                     Ok(writer_flush_results
                         .into_iter()
                         .map(|mut output| {
@@ -383,6 +398,7 @@ impl AsyncBatchWriter for PartitioningAsyncWriter {
             Ok(_) => Ok(()),
             // channel has been closed, indicating error happened during sort write
             Err(e) => {
+                error!("Error sending record batch to sorter: {:?}", e);
                 if let Some(task) = self.spawned_task.take() {
                     let result = task
                         .await

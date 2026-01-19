@@ -23,9 +23,11 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.*;
+import java.util.concurrent.ForkJoinPool;
 import java.util.stream.Collectors;
 
 import static com.dmetasoul.lakesoul.meta.DBConfig.*;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.LAKESOUL_COMMIT_THREAD_NUM;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SORT_FIELD;
 
 /**
@@ -44,100 +46,127 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
     public LakeSoulSinkCommitter() {
     }
 
+    DBManager lakeSoulDBManager = new DBManager();
+
     public void commit(List<LakeSoulMultiTableSinkCommittable> committables, boolean sort)
             throws IOException, InterruptedException {
+        long start = System.currentTimeMillis();
         if (sort) {
             committables.sort(LakeSoulMultiTableSinkCommittable::compareTo);
         }
-        DBManager lakeSoulDBManager = new DBManager();
+        LOG.info("Committing {} committables, object {}", committables.size(), committables.hashCode());
         for (LakeSoulMultiTableSinkCommittable committable : committables) {
-            LOG.info("Committing {}", committable);
-            for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry : committable.getPendingFilesMap().entrySet()) {
-                List<InProgressFileWriter.PendingFileRecoverable> pendingFiles = entry.getValue();
-
-                // pending files to commit
-                List<String> files = new ArrayList<>();
-                for (InProgressFileWriter.PendingFileRecoverable pendingFileRecoverable :
-                        pendingFiles) {
-                    if (pendingFileRecoverable instanceof NativeParquetWriter.NativeWriterPendingFileRecoverable) {
-                        NativeParquetWriter.NativeWriterPendingFileRecoverable recoverable =
-                                (NativeParquetWriter.NativeWriterPendingFileRecoverable) pendingFileRecoverable;
-                        files.add(recoverable.path);
-                    }
-                }
-
-                LOG.info("Files to commit {}", String.join("; ", files));
-
-                if (files.isEmpty() && !LakeSoulSinkOptions.DELETE.equals(committable.getDmlType())) {
-                    continue;
-                }
-
-                // commit LakeSoul Meta
-                TableSchemaIdentity identity = committable.getIdentity();
-                List<DataFileOp> dataFileOpList = new ArrayList<>();
-                String fileExistCols =
-                        identity.rowType.getFieldNames().stream().filter(name -> !name.equals(SORT_FIELD))
-                                .collect(Collectors.joining(LAKESOUL_FILE_EXISTS_COLUMN_SPLITTER));
-                for (String file : files) {
-                    DataFileOp.Builder dataFileOp = DataFileOp.newBuilder();
-                    dataFileOp.setFileOp(FileOp.add);
-                    dataFileOp.setPath(file);
-                    Path path = new Path(file);
-                    FileStatus fileStatus = FileSystem.get(path.toUri()).getFileStatus(path);
-                    dataFileOp.setSize(fileStatus.getLen());
-                    dataFileOp.setFileExistCols(fileExistCols);
-                    dataFileOpList.add(dataFileOp.build());
-                }
-                String partition = entry.getKey();
-                List<PartitionInfo> readPartitionInfoList = null;
-
-
-                TableNameId tableNameId =
-                        lakeSoulDBManager.shortTableName(identity.tableId.table(), identity.tableId.schema());
-                if (identity.tableId.schema() == null) {
-                    tableNameId = lakeSoulDBManager.shortTableName(identity.tableId.table(), identity.tableId.catalog());
-                }
-
-                DataCommitInfo.Builder dataCommitInfo = DataCommitInfo.newBuilder();
-                dataCommitInfo.setTableId(tableNameId.getTableId());
-                dataCommitInfo.setPartitionDesc(partition.isEmpty() ? LAKESOUL_NON_PARTITION_TABLE_PART_DESC :
-                        partition.replaceAll("/", LAKESOUL_RANGE_PARTITION_SPLITTER));
-                dataCommitInfo.addAllFileOps(dataFileOpList);
-
-                if (!committable.getSourcePartitionInfo().isEmpty()) {
-                    readPartitionInfoList =
-                            JniWrapper
-                                    .parseFrom(Base64.getDecoder().decode(committable.getSourcePartitionInfo()))
-                                    .getPartitionInfoList();
-                }
-
-                if (LakeSoulSinkOptions.DELETE.equals(committable.getDmlType())) {
-                    dataCommitInfo.setCommitOp(CommitOp.UpdateCommit);
-                } else if (LakeSoulSinkOptions.PARTITION_DELETE.equals(committable.getDmlType())) {
-                    dataCommitInfo.setCommitOp(CommitOp.DeleteCommit);
-                } else if (LakeSoulSinkOptions.UPDATE.equals(committable.getDmlType()) && identity.primaryKeys.isEmpty()) {
-                    dataCommitInfo.setCommitOp(CommitOp.UpdateCommit);
-                } else {
-                    dataCommitInfo.setCommitOp(CommitOp.AppendCommit);
-                }
-                dataCommitInfo.setTimestamp(System.currentTimeMillis());
-                assert committable.getCommitId() != null;
-                dataCommitInfo.setCommitId(DBUtil.toProtoUuid(UUID.fromString(committable.getCommitId())));
-
-                if (LOG.isInfoEnabled()) {
-                    String fileOpStr = dataFileOpList.stream()
-                            .map(op -> String.format("%s,%s,%d,%s", op.getPath(), op.getFileOp(), op.getSize(),
-                                    "op.getFileExistCols()")).collect(Collectors.joining("\n\t"));
-                    LOG.info("Commit to LakeSoul: Table={}, TableId={}, Partition={}, Files:\n\t{}, " +
-                                    "CommitOp={}, Timestamp={}, UUID={}", identity.tableId.identifier(),
-                            tableNameId.getTableId(), partition, fileOpStr, dataCommitInfo.getCommitOp(),
-                            dataCommitInfo.getTimestamp(), dataCommitInfo.getCommitId().toString());
-                }
-
-                lakeSoulDBManager.commitDataCommitInfo(dataCommitInfo.build(), readPartitionInfoList);
-            }
-            LOG.info("Committing done, committable={} ", committable);
+            LOG.info("Committing #entries {}, {}",
+                    committable.getPendingFilesMap().size(),
+                    committable);
+            int threadNum = Integer.parseInt(DBUtil.getConfigValue(LAKESOUL_COMMIT_THREAD_NUM,
+                    LAKESOUL_COMMIT_THREAD_NUM, "4"));
+            ForkJoinPool customPool = new ForkJoinPool(threadNum);
+            customPool.submit(() -> {
+                committable.getPendingFilesMap().entrySet().parallelStream()
+                        .forEach(entry -> {
+                            try {
+                                commitEntry(entry, committable);
+                            } catch (IOException e) {
+                                throw new RuntimeException(e);
+                            }
+                        });
+            }).join();
         }
+        long end = System.currentTimeMillis();
+        LOG.info("Committing done, object {}, for {}ms", committables.hashCode(), end - start);
+    }
+
+    private void commitEntry(Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry,
+                             LakeSoulMultiTableSinkCommittable committable) throws IOException {
+        long start = System.currentTimeMillis();
+        List<InProgressFileWriter.PendingFileRecoverable> pendingFiles = entry.getValue();
+
+        // pending files to commit
+        List<String> files = new ArrayList<>();
+        for (InProgressFileWriter.PendingFileRecoverable pendingFileRecoverable :
+                pendingFiles) {
+            if (pendingFileRecoverable instanceof NativeParquetWriter.NativeWriterPendingFileRecoverable) {
+                NativeParquetWriter.NativeWriterPendingFileRecoverable recoverable =
+                        (NativeParquetWriter.NativeWriterPendingFileRecoverable) pendingFileRecoverable;
+                files.add(recoverable.path);
+            }
+        }
+
+        if (files.isEmpty() && !LakeSoulSinkOptions.DELETE.equals(committable.getDmlType())) {
+            return;
+        }
+
+        // commit LakeSoul Meta
+        TableSchemaIdentity identity = committable.getIdentity();
+        LOG.info("Table {}, Partition {}, File num {}, Files to commit {}",
+                identity.tableId,
+                entry.getKey(),
+                files.size(),
+                String.join("; ", files));
+
+        List<DataFileOp> dataFileOpList = new ArrayList<>();
+        String fileExistCols =
+                identity.rowType.getFieldNames().stream().filter(name -> !name.equals(SORT_FIELD))
+                        .collect(Collectors.joining(LAKESOUL_FILE_EXISTS_COLUMN_SPLITTER));
+        for (String file : files) {
+            DataFileOp.Builder dataFileOp = DataFileOp.newBuilder();
+            dataFileOp.setFileOp(FileOp.add);
+            dataFileOp.setPath(file);
+            Path path = new Path(file);
+            FileStatus fileStatus = FileSystem.get(path.toUri()).getFileStatus(path);
+            dataFileOp.setSize(fileStatus.getLen());
+            dataFileOp.setFileExistCols(fileExistCols);
+            dataFileOpList.add(dataFileOp.build());
+        }
+        String partition = entry.getKey();
+        List<PartitionInfo> readPartitionInfoList = null;
+
+
+        TableNameId tableNameId =
+                lakeSoulDBManager.shortTableName(identity.tableId.table(), identity.tableId.schema());
+        if (identity.tableId.schema() == null) {
+            tableNameId = lakeSoulDBManager.shortTableName(identity.tableId.table(), identity.tableId.catalog());
+        }
+
+        DataCommitInfo.Builder dataCommitInfo = DataCommitInfo.newBuilder();
+        dataCommitInfo.setTableId(tableNameId.getTableId());
+        dataCommitInfo.setPartitionDesc(partition.isEmpty() ? LAKESOUL_NON_PARTITION_TABLE_PART_DESC :
+                partition.replaceAll("/", LAKESOUL_RANGE_PARTITION_SPLITTER));
+        dataCommitInfo.addAllFileOps(dataFileOpList);
+
+        if (!committable.getSourcePartitionInfo().isEmpty()) {
+            readPartitionInfoList =
+                    JniWrapper
+                            .parseFrom(Base64.getDecoder().decode(committable.getSourcePartitionInfo()))
+                            .getPartitionInfoList();
+        }
+
+        if (LakeSoulSinkOptions.DELETE.equals(committable.getDmlType())) {
+            dataCommitInfo.setCommitOp(CommitOp.UpdateCommit);
+        } else if (LakeSoulSinkOptions.PARTITION_DELETE.equals(committable.getDmlType())) {
+            dataCommitInfo.setCommitOp(CommitOp.DeleteCommit);
+        } else if (LakeSoulSinkOptions.UPDATE.equals(committable.getDmlType()) && identity.primaryKeys.isEmpty()) {
+            dataCommitInfo.setCommitOp(CommitOp.UpdateCommit);
+        } else {
+            dataCommitInfo.setCommitOp(CommitOp.AppendCommit);
+        }
+        dataCommitInfo.setTimestamp(System.currentTimeMillis());
+        assert committable.getCommitId() != null;
+        dataCommitInfo.setCommitId(DBUtil.toProtoUuid(UUID.fromString(committable.getCommitId())));
+
+        lakeSoulDBManager.commitDataCommitInfo(dataCommitInfo.build(), readPartitionInfoList);
+        if (LOG.isInfoEnabled()) {
+            long end = System.currentTimeMillis();
+            String fileOpStr = dataFileOpList.stream()
+                    .map(op -> String.format("%s,%s,%d,%s", op.getPath(), op.getFileOp(), op.getSize(),
+                            "op.getFileExistCols()")).collect(Collectors.joining("\n\t"));
+            LOG.info("Committed to LakeSoul: Table={}, TableId={}, Partition={}, Files:\n\t{}, " +
+                            "CommitOp={}, Timestamp={}, UUID={}, time={}ms", identity.tableId.identifier(),
+                    tableNameId.getTableId(), partition, fileOpStr, dataCommitInfo.getCommitOp(),
+                    dataCommitInfo.getTimestamp(), dataCommitInfo.getCommitId().toString(), end - start);
+        }
+
     }
 
     @Override
@@ -146,7 +175,8 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
         LOG.info("Found {} committable for LakeSoul to commit", commits.size());
         // commit by file creation time in ascending order
         List<LakeSoulMultiTableSinkCommittable> committables =
-                commits.stream().map(CommitRequest::getCommittable).sorted(LakeSoulMultiTableSinkCommittable::compareTo).collect(Collectors.toList());
+                commits.stream().map(CommitRequest::getCommittable)
+                        .sorted(LakeSoulMultiTableSinkCommittable::compareTo).collect(Collectors.toList());
         this.commit(committables, false);
     }
 

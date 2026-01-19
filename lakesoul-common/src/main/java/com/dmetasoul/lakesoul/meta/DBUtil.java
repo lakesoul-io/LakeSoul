@@ -60,7 +60,7 @@ public class DBUtil {
     private static final String lakeSoulHomeEnv = "LAKESOUL_HOME";
 
     // Retrieve config value in order: ENV, System Prop, Default Value
-    private static String getConfigValue(String envKey, String propKey, String defaultValue) {
+    public static String getConfigValue(String envKey, String propKey, String defaultValue) {
         String value = System.getenv(envKey);
         if (value != null) {
             return value;

@@ -6,6 +6,7 @@ package org.apache.flink.lakesoul.sink;
 
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.connector.source.Source;
+import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.api.java.typeutils.runtime.kryo.JavaSerializer;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
@@ -20,10 +21,15 @@ import org.apache.flink.streaming.api.functions.sink.PrintSinkFunction;
 import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.RowType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import static org.apache.flink.configuration.CoreOptions.DEFAULT_PARALLELISM;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 
 public class LakeSoulMultiTableSinkStreamBuilder {
+
+    private static final Logger LOG = LoggerFactory.getLogger(LakeSoulMultiTableSinkStreamBuilder.class);
 
     public static final class Context {
         public StreamExecutionEnvironment env;
@@ -50,8 +56,32 @@ public class LakeSoulMultiTableSinkStreamBuilder {
                 .setParallelism(context.conf.getInteger(LakeSoulSinkOptions.SOURCE_PARALLELISM));
     }
 
+    private static class HashGen implements KeySelector<BinarySourceRecord, Long> {
+        private static final long serialVersionUID = -4298875987882891700L;
+        private final int hashBucketNum;
+        private final int parallelism;
+        private final LakeSoulRecordConvert convert;
+
+        public HashGen(int hashBucketNum, int parallelism, LakeSoulRecordConvert convert) {
+            this.hashBucketNum = hashBucketNum;
+            this.parallelism = parallelism;
+            this.convert = convert;
+        }
+
+        @Override
+        public Long getKey(BinarySourceRecord binarySourceRecord) throws Exception {
+            return convert.computeBinarySourceRecordPrimaryKeyHash(binarySourceRecord, hashBucketNum, parallelism);
+        }
+    }
+
     public DataStream<BinarySourceRecord> buildHashPartitionedCDCStream(DataStream<BinarySourceRecord> stream) {
-        return stream.partitionCustom(new HashPartitioner(context.conf.getInteger(HASH_BUCKET_NUM)), convert::computeBinarySourceRecordPrimaryKeyHash);
+        boolean dynamicBucketing = context.conf.get(DYNAMIC_BUCKETING);
+        int parallelism = context.conf.get(DEFAULT_PARALLELISM);
+        int hashBucketNum = context.conf.get(HASH_BUCKET_NUM);
+        LOG.info("Building CDC stream partition for parallelism {}, dynamic bucket {}",
+                parallelism, dynamicBucketing);
+        return stream.partitionCustom(new HashPartitioner(hashBucketNum),
+                new HashGen(hashBucketNum, parallelism, convert));
     }
 
     public DataStreamSink<BinarySourceRecord> buildLakeSoulDMLSink(DataStream<BinarySourceRecord> stream) {

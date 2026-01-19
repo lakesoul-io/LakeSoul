@@ -50,6 +50,7 @@ public class  LakeSoulSinkOptions {
     public static final String LAKESOUL_VIEW_KIND = "flink";
     public static final String VIEW_ORIGINAL_QUERY = "original_query";
     public static final String VIEW_EXPANDED_QUERY = "expand_query";
+    public static final String LAKESOUL_COMMIT_THREAD_NUM = "LAKESOUL_COMMIT_THREAD_NUM";
 
     public static final ConfigOption<String> CATALOG_PATH = ConfigOptions
             .key("path")
