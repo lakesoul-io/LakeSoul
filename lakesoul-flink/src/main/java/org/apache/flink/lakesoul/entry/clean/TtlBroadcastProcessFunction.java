@@ -154,6 +154,7 @@ public class TtlBroadcastProcessFunction extends KeyedBroadcastProcessFunction<S
                     partitionDir = path.getParent();
                 }
                 if (fs.exists(path)) {
+                    log.info("====================delete file：{} ======================", path);
                     fs.delete(path, false);
                 }
             } catch (IOException e) {

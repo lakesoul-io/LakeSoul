@@ -3,13 +3,13 @@
 // SPDX-License-Identifier: Apache-2.0
 package org.apache.flink.lakesoul.entry.clean;
 
+import org.apache.flink.core.fs.FileStatus;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.net.URI;
 import java.sql.*;
 import java.util.*;
 
@@ -36,48 +36,23 @@ public class CleanUtils {
     }
 
     public void deleteFile(String filePath) throws SQLException {
+        Path path = new Path(filePath);
         try {
-            URI fileUri;
-            if (filePath.startsWith("hdfs://") || filePath.startsWith("s3://") ||
-                    filePath.startsWith("s3a://") || filePath.startsWith("file://")) {
-                fileUri = URI.create(filePath);
-            } else {
-                // 本地路径，转换为 file:// URI
-                fileUri = new java.io.File(filePath).toURI();
+            FileSystem fs = path.getFileSystem();
+            if (!fs.exists(path)) {
+                logger.info("文件不存在: {}", filePath);
+                return;
             }
-
-            Path path = new Path(fileUri);
-            FileSystem fs = FileSystem.get(fileUri);
-
-            try {
-                if (fs.exists(path)) {
-                    // false 表示不递归删除（只删除文件，不删除目录）
-                    boolean deleted = fs.delete(path, false);
-                    if (deleted) {
-                        logger.info("文件已删除: {}", filePath);
-                        // 尝试删除空的父目录
-                        deleteEmptyParentDirectories(fs, path.getParent());
-                    } else {
-                        logger.warn("文件删除失败: {}", filePath);
-                    }
-                } else {
-                    logger.info("文件不存在: {}", filePath);
-                }
-            } finally {
-                if (fs instanceof java.io.Closeable) {
-                    try {
-                        ((java.io.Closeable) fs).close();
-                    } catch (IOException e) {
-                        logger.warn("关闭文件系统失败", e);
-                    }
-                }
+            if (!fs.delete(path, false)) {
+                logger.warn("文件删除失败: {}", filePath);
+                return;
             }
+            logger.info("文件已删除: {}", filePath);
+            // 尝试删除空父目录
+            deleteEmptyParentDirs(fs, path.getParent());
         } catch (IOException e) {
             logger.error("删除文件失败: {}", filePath, e);
             throw new SQLException("删除文件失败: " + filePath, e);
-        } catch (Exception e) {
-            logger.error("删除文件时发生异常: {}", filePath, e);
-            throw new SQLException("删除文件时发生异常: " + filePath, e);
         }
     }
 
@@ -172,37 +147,26 @@ public class CleanUtils {
                 }
         );
     }
-
     /**
      * 使用 Flink FileSystem API 删除空的父目录
      */
-    private void deleteEmptyParentDirectories(FileSystem fs, Path directory) {
-        if (directory == null) {
-            return;
-        }
+    private void deleteEmptyParentDirs(FileSystem fs, Path dir) {
         try {
-            // 检查目录是否存在
-            if (!fs.exists(directory)) {
-                return;
-            }
-
-            // 获取目录状态
-            org.apache.flink.core.fs.FileStatus[] statuses = fs.listStatus(directory);
-            // 如果目录为空，删除它并递归删除父目录
-            if (statuses == null || statuses.length == 0) {
-                boolean deleted = fs.delete(directory, false);
-                if (deleted) {
-                    logger.debug("删除空目录: {}", directory);
-                    // 递归删除父目录
-                    Path parent = directory.getParent();
-                    if (parent != null && !parent.equals(directory)) {
-                        deleteEmptyParentDirectories(fs, parent);
-                    }
+            while (dir != null && fs.exists(dir)) {
+                FileStatus[] statuses = fs.listStatus(dir);
+                if (statuses != null && statuses.length > 0) {
+                    return;
                 }
+
+                if (!fs.delete(dir, false)) {
+                    return;
+                }
+
+                logger.debug("删除空目录: {}", dir);
+                dir = dir.getParent();
             }
         } catch (IOException e) {
-            // 删除空目录失败不影响主流程，只记录日志
-            logger.debug("删除空目录失败: {}", directory, e);
+            logger.debug("删除空目录失败: {}", dir, e);
         }
     }
 
@@ -228,5 +192,4 @@ public class CleanUtils {
         }
         return tableList;
     }
-
 }
