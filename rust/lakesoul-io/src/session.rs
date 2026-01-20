@@ -240,8 +240,7 @@ impl LakeSoulIOSession {
         // runtime
 
         let mut runtime_conf = RuntimeEnvBuilder::new()
-            .with_max_temp_directory_size(byte_size!("100G") as u64)
-            .with_temp_file_path("/tmp/lakesoul/spill/dev");
+            .with_max_temp_directory_size(byte_size!("100G") as u64);
 
         // mem limit first
 
