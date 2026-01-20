@@ -83,12 +83,14 @@ public class FlinkSqlSubmitter extends Submitter {
         LOG.info(
                 MessageFormatter.format("\n======SQL Script Content from file {}:\n{}",
                         submitOption.getSqlFilePath(), sql).getMessage());
-        Long scheduleTime = submitOption.getScheduleTime();
-        LOG.info("Batch ScheduleTime is: {}", scheduleTime);
-        if (scheduleTime > 0) {
-            sql = replaceSchedulerTime(sql, scheduleTime);
-            LOG.info("replaced ${scheduleTime}, result sql: {}", sql);
+        long scheduleTime = submitOption.getScheduleTime();
+        if (scheduleTime <= 0) {
+            LOG.info("Use current time as scheduleTime");
+            scheduleTime = System.currentTimeMillis();
         }
+        LOG.info("Batch ScheduleTime is: {}", scheduleTime);
+        sql = replaceSchedulerTime(sql, scheduleTime);
+        LOG.info("replaced ${scheduleTime}, result sql: {}", sql);
 
         ExecuteSql.executeSqlFileContent(sql, tEnv, env);
     }
