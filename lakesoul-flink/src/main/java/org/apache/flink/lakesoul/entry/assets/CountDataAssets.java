@@ -121,7 +121,6 @@ public class CountDataAssets {
                     .keyBy(value -> value.tableId).process(new JdbcTableLevelAssets());
         }
 
-
         JdbcConnectionOptions build = (new JdbcConnectionOptions.JdbcConnectionOptionsBuilder()).withUrl(pgUrl).withDriverName("org.postgresql.Driver").withUsername(userName).withPassword(passWord).build();
         String tableLevelAssetsSql = "INSERT INTO table_level_assets (" +
                 "table_id, " +
