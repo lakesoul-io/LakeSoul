@@ -27,6 +27,7 @@ use datafusion_datasource::source::DataSource;
 use datafusion_datasource::{ListingTableUrl, PartitionedFile, TableSchema};
 use datafusion_datasource_parquet::ParquetFormat;
 use datafusion_execution::config::SessionConfig;
+use datafusion_execution::disk_manager::{DiskManagerBuilder, DiskManagerMode};
 use datafusion_execution::memory_pool::FairSpillPool;
 use datafusion_execution::runtime_env::RuntimeEnvBuilder;
 use datafusion_execution::{TaskContext, runtime_env::RuntimeEnv};
@@ -220,8 +221,26 @@ impl LakeSoulIOSession {
             .schema_force_view_types = false;
         let mut runtime_conf = RuntimeEnvBuilder::new();
         if let Some(pool_size) = io_config.pool_size() {
+            let sort_spill_bytes = pool_size / 8;
+            sess_conf = sess_conf.with_sort_spill_reservation_bytes(sort_spill_bytes);
             let memory_pool = FairSpillPool::new(pool_size);
             runtime_conf = runtime_conf.with_memory_pool(Arc::new(memory_pool));
+            let dir = io_config
+                .pool_dir()
+                .unwrap_or("/tmp/lakesoul/spill".to_string());
+            std::fs::create_dir_all(&dir)?;
+            runtime_conf = runtime_conf.with_disk_manager_builder(
+                DiskManagerBuilder::default()
+                    .with_mode(DiskManagerMode::Directories(vec![dir.parse()?])),
+            );
+            info!(
+                "NativeIO spill config with directory {}, pool size {}, \
+                 flush limit {:?}, sort spill reserve bytes {}",
+                dir,
+                pool_size,
+                io_config.mem_limit(),
+                sort_spill_bytes
+            );
         }
         let runtime = runtime_conf.build()?;
         // firstly, parse default fs if exist

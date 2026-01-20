@@ -194,17 +194,10 @@ impl SyncSendableMutableLakeSoulWriter {
 
             if let Some(max_file_size) = new_io_config.max_file_size_option() {
                 new_io_config.max_file_size = Some(max_file_size);
+            } else if let Some(mem_limit) = new_io_config.mem_limit() {
+                new_io_config.max_file_size = Some(mem_limit as u64);
             }
-
-            if let Some(mem_limit) = new_io_config.mem_limit() {
-                if new_io_config.use_dynamic_partition {
-                    new_io_config.max_file_size = Some((mem_limit as f64 * 0.15) as u64);
-                } else if !new_io_config.primary_keys.is_empty()
-                    && !new_io_config.keep_ordering()
-                {
-                    new_io_config.max_file_size = Some((mem_limit as f64 * 0.2) as u64);
-                }
-            }
+            info!("Set max file size {:?}", new_io_config.max_file_size);
 
             Ok(SyncSendableMutableLakeSoulWriter {
                 in_progress: Some(Arc::new(Mutex::new(writer))),
