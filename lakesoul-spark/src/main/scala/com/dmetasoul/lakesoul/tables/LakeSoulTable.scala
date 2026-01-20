@@ -14,6 +14,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
 import org.apache.spark.sql.arrow.{CompactBucketIO, CompressDataFileInfo}
 import org.apache.spark.sql.catalyst.expressions.Expression
+import org.apache.spark.sql.connector.catalog.Identifier
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
 import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
@@ -727,7 +728,12 @@ object LakeSoulTable {
     * `SparkSession.getActiveSession()` is empty.
     */
   def forName(tableOrViewName: String): LakeSoulTable = {
-    forName(tableOrViewName, LakeSoulCatalog.showCurrentNamespace().mkString("."))
+    if (tableOrViewName.contains(".")) {
+      val ident = tableOrViewName.split("\\.")
+      forName(ident(1), ident(0))
+    } else {
+      forName(tableOrViewName, LakeSoulCatalog.showCurrentNamespace().mkString("."))
+    }
   }
 
   def forName(tableOrViewName: String, namespace: String): LakeSoulTable = {

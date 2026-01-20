@@ -317,7 +317,9 @@ abstract class InsertIntoTests(
 
         val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data").select("data", "id")
         doInsert(t1, df, SaveMode.Overwrite)
-        verifyTable(t1, df, Seq("data", "id"))
+        verifyTable(t1,
+          Seq((1L, "a"), (2L, "b"), (3L, "c"), (4L, "keep")).toDF("id", "data").select("data", "id")
+          , Seq("data", "id"))
       }
     }
   }
@@ -335,7 +337,9 @@ abstract class InsertIntoTests(
         doInsert(t1, dfr, SaveMode.Overwrite)
 
         val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data").select("data", "id")
-        verifyTable(t1, df, Seq("data", "id"))
+        verifyTable(t1,
+          Seq((1L, "a"), (2L, "b"), (3L, "c"), (4L, "keep")).toDF("id", "data").select("data", "id")
+          , Seq("data", "id"))
       }
     }
   }
@@ -739,12 +743,13 @@ trait InsertIntoSQLOnlyTests
         val t1 = "tbl"
         withTableAndData(t1) { view =>
           sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY (id)")
-          sql(s"INSERT INTO $t1 VALUES ('dummy',2L), ('also-deleted',4L)")
+          sql(s"INSERT INTO $t1 VALUES ('dummy',2L), ('also-deleted',3L),('not-deleted',4L)")
           sql(s"INSERT OVERWRITE TABLE $t1 PARTITION (id) SELECT data,id FROM $view")
           verifyTable(t1, Seq(
             (1, "a"),
             (2, "b"),
-            (3, "c")).toDF(),
+            (3, "c"),
+            (4, "not-deleted")).toDF(),
             Seq("id", "data"))
         }
       }
@@ -770,12 +775,13 @@ trait InsertIntoSQLOnlyTests
         val t1 = "tbl"
         withTableAndData(t1) { view =>
           sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY (id)")
-          sql(s"INSERT INTO $t1 VALUES ('dummy',2L), ('also-deleted',4L)")
+          sql(s"INSERT INTO $t1 VALUES ('dummy',2L), ('also-deleted',3L),('not-deleted', 4L)")
           sql(s"INSERT OVERWRITE TABLE $t1 SELECT data,id FROM $view")
           verifyTable(t1, Seq(
             (1, "a"),
             (2, "b"),
-            (3, "c")).toDF("id", "data"),
+            (3, "c"),
+            (4, "not-deleted")).toDF("id", "data"),
             Seq("id", "data"))
         }
       }

@@ -108,7 +108,17 @@ case class WriteIntoTable(snapshotManagement: SnapshotManagement,
     val deletedFiles = (mode, partitionFilters) match {
       case (SaveMode.Overwrite, None) =>
         val deleteTime = System.currentTimeMillis()
-        tc.filterFiles().map(_.expire(deleteTime))
+        if (tc.tableInfo.range_partition_schema.isEmpty) {
+          // if no range partition, delete all files
+          tc.filterFiles().map(_.expire(deleteTime))
+        } else {
+          // only delete affected partitions
+          val written_partitions = newFiles
+            .groupBy(_.range_partitions).keys
+            .toSet
+          tc.filterFiles().filter(f => written_partitions.contains(f.range_partitions))
+            .map(_.expire(deleteTime))
+        }
       case (SaveMode.Overwrite, Some(predicates)) =>
         // Check to make sure the files we wrote out were actually valid.
         val matchingFiles = PartitionFilter.filterFileList(

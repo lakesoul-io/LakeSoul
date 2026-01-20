@@ -187,7 +187,10 @@ class CaseSensitivitySuite extends QueryTest
 
       checkAnswer(
         spark.read.format("lakesoul").load(path).select("key", "val", "hash"),
-        Row(3, "d", "3") :: Nil
+        Row(1, "a", "1") ::
+        Row(2, "b", "2") ::
+        Row(3, "d", "3")
+          :: Nil
       )
 
       //can't change partition columns

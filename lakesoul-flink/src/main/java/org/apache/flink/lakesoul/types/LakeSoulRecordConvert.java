@@ -378,7 +378,6 @@ public class LakeSoulRecordConvert implements Serializable {
             case Time.SCHEMA_NAME:
             case MicroTime.SCHEMA_NAME:
             case MicroDuration.SCHEMA_NAME:
-                return new BigIntType(nullable);
             case NanoTime.SCHEMA_NAME:
                 return new BigIntType(nullable);
             case Timestamp.SCHEMA_NAME:
@@ -687,6 +686,7 @@ public class LakeSoulRecordConvert implements Serializable {
                 writeTimeStamp(writer, index, fieldValue, fieldSchema,serverTimeZone);
                 break;
             case Decimal.LOGICAL_NAME:
+            case VariableScaleDecimal.LOGICAL_NAME:
                 writeDecimal(writer, index, fieldValue, fieldSchema);
                 break;
             case Date.SCHEMA_NAME:
@@ -699,22 +699,10 @@ public class LakeSoulRecordConvert implements Serializable {
             case ZonedTimestamp.SCHEMA_NAME:
                 writeUTCTimeStamp(writer, index, fieldValue, fieldSchema);
                 break;
-            case VariableScaleDecimal.LOGICAL_NAME:
-                writeDecimal(writer, index, fieldValue, fieldSchema);
-                break;
             case MicroDuration.SCHEMA_NAME:
                 writeLong(writer, index, fieldValue);
                 break;
 
-            // Geometry and Point can not support now
-//            case Geometry.LOGICAL_NAME:
-//                Object object = convertToGeometry(fieldValue, fieldSchema);
-//                writeBinary(writer, index, object);
-//                break;
-//            case Point.LOGICAL_NAME:
-//                object = convertToPoint(fieldValue, fieldSchema);
-//                writeBinary(writer, index, object);
-//                break;
             default:
                 throw new UnsupportedOperationException("LakeSoul doesn't support type: " + fieldSchema.name());
         }
@@ -737,7 +725,9 @@ public class LakeSoulRecordConvert implements Serializable {
 
     public Object convertToDecimal(Object dbzObj, Schema schema) {
         BigDecimal bigDecimal;
-        if (dbzObj instanceof byte[]) {
+        if (dbzObj instanceof BigDecimal) {
+            bigDecimal = (BigDecimal) dbzObj;
+        } else if (dbzObj instanceof byte[]) {
             // decimal.handling.mode=precise
             bigDecimal = Decimal.toLogical(schema, (byte[]) dbzObj);
         } else if (dbzObj instanceof String) {
@@ -765,8 +755,9 @@ public class LakeSoulRecordConvert implements Serializable {
                     Integer.parseInt(paras.get("scale")));
         }
         if (d == null) {
-            LOG.error("Convert decimal failed, dbz object: {}, java bd object {}@{}:{}, paras: {}",
-                    dbzObj, bigDecimal, bigDecimal.precision(), bigDecimal.scale(), paras);
+            LOG.error("Convert decimal failed, dbz object: {}@{}, schema {}, java bd object {}@{}:{}, paras: {}",
+                    dbzObj, dbzObj.getClass().getName(), schema,
+                    bigDecimal, bigDecimal.precision(), bigDecimal.scale(), paras);
         }
         return d;
     }
@@ -774,7 +765,11 @@ public class LakeSoulRecordConvert implements Serializable {
     public void writeDecimal(BinaryRowWriter writer, int index, Object dbzObj, Schema schema) {
         DecimalData data = (DecimalData) convertToDecimal(dbzObj, schema);
         if (data == null) {
-            LOG.error("Convert decimal failed {}", dbzObj);
+            String err = String.format("Convert decimal failed %s@%s, index %d, schema %s",
+                    dbzObj, dbzObj.getClass().getName(),
+                    index, schema);
+            LOG.error(err);
+            throw new RuntimeException(err);
         }
         writer.writeDecimal(index, data, data.precision());
     }

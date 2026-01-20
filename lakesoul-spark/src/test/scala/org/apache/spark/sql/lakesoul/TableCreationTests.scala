@@ -206,22 +206,22 @@ trait TableCreationTests
       }
     }
 
-    test(s"saveAsTable (overwrite) to an existing table is not support- $isPartitioned") {
+    test(s"saveAsTable (overwrite) to an existing table - supported - $isPartitioned") {
       withTempDir { dir =>
         val tbl = "lakesoul_test"
         withTable(tbl) {
           createTableByPath(dir, Seq(1L -> "a").toDF("v1", "v2"), tbl, cols)
 
-          val e = intercept[AnalysisException] {
-            Seq(2L -> "b").toDF("v1", "v2")
-              .write
-              .partitionBy(cols: _*)
-              .mode(SaveMode.Overwrite)
-              .format(format)
-              .saveAsTable(tbl)
-          }
-
-          assert(e.getMessage().contains("`replaceTable` is not supported for LakeSoul tables"))
+          Seq(2L -> "b").toDF("v1", "v2")
+            .write
+            .partitionBy(cols: _*)
+            .mode(SaveMode.Overwrite)
+            .format(format)
+            .saveAsTable(tbl)
+          if (isPartitioned == "partitioned")
+            checkDatasetUnorderly(spark.table(tbl).as[(Long, String)], 2L -> "b", 1L -> "a")
+          else
+            checkDatasetUnorderly(spark.table(tbl).as[(Long, String)], 2L -> "b")
         }
       }
     }
@@ -1318,7 +1318,15 @@ class TableCreationSuite
                |LOCATION '${dir.getAbsolutePath}'
                """.stripMargin)
         }
-        assert(e.getMessage.contains("`replaceTable` is not supported for LakeSoul tables"))
+        assert(e.getMessage.contains("Table schema is not provided"))
+        sql(
+          s"""CREATE OR REPLACE TABLE lakesoul_test
+             |USING lakesoul
+             |LOCATION '${dir.getAbsolutePath}'
+             |as select 1
+             |""".stripMargin)
+        checkAnswer(
+          spark.table("lakesoul_test"), Row(1L) :: Nil)
       }
     }
   }
