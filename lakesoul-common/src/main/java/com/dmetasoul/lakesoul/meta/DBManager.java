@@ -505,10 +505,8 @@ public class DBManager {
                                                     tableInfo.getTablePath());
                                 }
                             }
-                            curPartitionInfo.clearSnapshot().addAllSnapshot(partitionInfo.getSnapshotList());
-                        } else {
-                            curPartitionInfo = updateSubmitPartitionSnapshot(partitionInfo, curPartitionInfo, readPartition);
                         }
+                        curPartitionInfo.clearSnapshot().addAllSnapshot(partitionInfo.getSnapshotList());
                     } else {
                         if (middleCommitOps.contains(CommitOp.UpdateCommit) || middleCommitOps.contains(CommitOp.CompactionCommit)) {
                             partitionDescList.remove(partitionDesc);

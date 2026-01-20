@@ -103,7 +103,6 @@ object DataOperation {
     val file_res_arr_buf = new ArrayBuffer[DataFileInfo]()
     if (file_arr_buf.length > 1) {
       for (i <- Range(file_arr_buf.size - 1, -1, -1)) {
-        println(s"parse file ${file_arr_buf(i)}")
         if (file_arr_buf(i).file_op.equals("del")) {
           dupCheck.add(file_arr_buf(i).path)
         } else {
@@ -139,7 +138,6 @@ object DataOperation {
     metaPartitionInfoScala.setPartitionDesc(partition_info.range_value)
     metaPartitionInfoScala.addAllSnapshot(JavaConverters.bufferAsJavaList(partition_info.read_files.map(DBUtil.toProtoUuid).toBuffer))
     val dataCommitInfoList = dbManager.getTableSinglePartitionDataInfo(metaPartitionInfoScala.build).asScala.toArray
-    println(s"getSinglePartitionDataInfo: ${dataCommitInfoList}")
     for (metaDataCommitInfo <- dataCommitInfoList) {
       val fileOps = metaDataCommitInfo.getFileOpsList.asScala.toArray
       for (file <- fileOps) {

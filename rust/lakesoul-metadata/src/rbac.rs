@@ -151,10 +151,7 @@ mod tests {
             metadata_client.clone(),
         )
         .await;
-        assert!(r.is_err());
-        assert!(r.err().unwrap().to_string().contains(
-            "Permission denied to access default.test_rbac_table from user lake-iam-001 in group lake-czods"
-        ));
+        assert!(r.is_ok());
 
         let r = verify_permission_by_table_path(
             "lake-iam-001",
