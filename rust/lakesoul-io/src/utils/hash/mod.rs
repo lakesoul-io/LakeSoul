@@ -565,4 +565,18 @@ mod tests {
 
         assert_ne!(one_col_hashes, two_col_hashes);
     }
+
+    #[test]
+    fn test_decimal_hashes() {
+        let d1 = Arc::new(Decimal128Array::from(vec![Some(1), Some(2)]));
+
+        let mut one_col_hashes = vec![0; d1.len()];
+        create_hashes(
+            &[d1.clone()],
+            // &random_state,
+            &mut one_col_hashes,
+        )
+        .unwrap();
+        println!("{:?}", one_col_hashes);
+    }
 }

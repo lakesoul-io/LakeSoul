@@ -13,7 +13,8 @@ use catalog::LakeSoulCatalog;
 use datafusion::{
     config::Dialect,
     execution::{
-        SessionStateBuilder, object_store::ObjectStoreUrl, runtime_env::RuntimeEnv,
+        SessionState, SessionStateBuilder, object_store::ObjectStoreUrl,
+        runtime_env::RuntimeEnv,
     },
     prelude::{SessionConfig, SessionContext},
 };

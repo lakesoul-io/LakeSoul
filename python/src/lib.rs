@@ -5,6 +5,7 @@
 use pyo3::prelude::*;
 use rootcause::Report;
 
+mod context;
 mod dataset;
 mod metadata;
 
@@ -18,6 +19,7 @@ fn _lib(py: Python, m: &Bound<PyModule>) -> PyResult<()> {
         .unwrap();
     metadata::init(py, m)?;
     dataset::init(py, m)?;
+    context::init(py, m)?;
     Ok(())
 }
 

@@ -11,7 +11,7 @@ authors = [
 description = "Python APIs for using LakeSoul"
 readme = "README.md"
 license = { text = "Apache-2.0" }
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 keywords = ["lakesoul", "bigdata", "ai"]
 classifiers = [
   "Development Status :: 5 - Production/Stable",
@@ -22,7 +22,7 @@ classifiers = [
   "Programming Language :: Python :: 3",
 ]
 dependencies = [
-  "pyarrow>=16,<21",
+  "pyarrow>=22",
   "numpy",
   "protobuf>=5.0",
   "typing-extensions>=4.8",
@@ -39,6 +39,7 @@ datasets = ["datasets>=2.20"]
 ray = ["ray>=2.7,<2.11.0"]
 pyspark = ["pyspark==3.3.1"]
 duckdb = ["duckdb>=1.4.0"]
+datafusion = ["datafusion>=51"]
 all = [
   "torch>=1.11,<2.5",
   "pandas>=1.4",
@@ -46,6 +47,7 @@ all = [
   "ray>=2.7,<2.11.0",
   "pyspark==3.3.1",
   "duckdb>=1.4.0",
+  "datafusion>=51",
 ]
 
 [tool.uv.sources]
@@ -65,7 +67,8 @@ all = [
   "ray>=2.7,<2.11.0",
   "pyspark==3.3.1",
   "grpcio-tools == 1.70",
-  "duckdb",
+  "duckdb>=1.4.0",
+  "datafusion>=51",
 ]
 dev = ["pytest>=8", { include-group = "all" }]
 

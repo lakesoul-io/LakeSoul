@@ -13,10 +13,11 @@ crate-type = ["cdylib"]
 pyo3 = { version = "0.26", features = [
   "extension-module",
   "experimental-async",
-  "abi3-py39",
+  "abi3-py310",
 ] }
 pyo3-log = "0.13"
 log = "0.4"
+lakesoul-datafusion = { path = "../rust/lakesoul-datafusion" }
 lakesoul-io = { path = "../rust/lakesoul-io" }
 lakesoul-metadata = { path = "../rust/lakesoul-metadata" }
 tokio.workspace = true
@@ -25,15 +26,12 @@ arrow-schema.workspace = true
 arrow-array.workspace = true
 datafusion-common.workspace = true
 datafusion-execution.workspace = true
+datafusion-python.workspace = true
 futures.workspace = true
 prost.workspace = true
 rootcause.workspace = true
 
-[target.'cfg(target_os = "windows")'.dependencies]
 datafusion-substrait = { workspace = true }
-
-[target.'cfg(not(target_os = "windows"))'.dependencies]
-datafusion-substrait = { workspace = true, features = ["protoc"] }
 
 
 [lints]

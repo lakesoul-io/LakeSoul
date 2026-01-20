@@ -41,7 +41,7 @@ impl AsyncSendableMutableLakeSoulWriter {
         let writer = create_writer(io_session.clone()).await?;
         let schema = writer.schema();
 
-        if let Some(mem_limit) = io_config.mem_limit() {
+        if let Some(mem_limit) = io_config.df_mem_limit() {
             if io_config.use_dynamic_partition {
                 io_config.max_file_size = Some((mem_limit as f64 * 0.15) as u64);
             } else if !io_config.primary_keys.is_empty() && !io_config.keep_ordering() {

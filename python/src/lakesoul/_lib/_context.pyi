@@ -1,0 +1,3 @@
+from datafusion._internal import SessionContext as SessContextInternal
+
+def create_lakesoul_session_ctx_internal() -> SessContextInternal: ...

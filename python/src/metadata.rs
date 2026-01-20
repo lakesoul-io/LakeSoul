@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright 2025 LakeSoul contributors
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use crate::install_module;
-use lakesoul_metadata::{PooledClient, execute_query, pg_config_from_env};
+use lakesoul_metadata::{MetaDataClient, PooledClient, execute_query, pg_config_from_env};
 use pyo3::{exceptions::PyValueError, prelude::*};
 
 pub(crate) fn init(py: Python, parent: &Bound<PyModule>) -> PyResult<()> {
@@ -14,7 +14,7 @@ pub(crate) fn init(py: Python, parent: &Bound<PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
+pub(crate) static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(2)
@@ -27,6 +27,13 @@ static CLIENT: LazyLock<PooledClient> = LazyLock::new(|| {
     RUNTIME
         .block_on(PooledClient::try_new(pg_config_from_env().unwrap()))
         .unwrap()
+});
+
+pub(crate) static METADATA_CLIENT_REF: LazyLock<Arc<MetaDataClient>> = LazyLock::new(|| {
+    let client = RUNTIME
+        .block_on(async { MetaDataClient::from_env().await })
+        .unwrap();
+    Arc::new(client)
 });
 
 #[pyfunction]

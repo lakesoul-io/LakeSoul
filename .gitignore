@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+.zed
 .pytest_cache
 /target/
 /build/
@@ -55,3 +56,6 @@ lakesoul-common/bin
 lakesoul-presto/bin
 lakesoul-spark-gluten/bin
 **/.envrc
+
+**/memory_profiling.png
+**/output.log
