@@ -2,9 +2,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+use std::fs::File;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::{fs::File, os::unix::thread::RawPthread};
 
 use arrow_array::{ArrayRef, RecordBatch, StringArray};
 use arrow_schema::SchemaRef;
@@ -75,6 +75,7 @@ fn get_dir_size(path: &str) -> u64 {
         .sum()
 }
 
+#[cfg(feature = "jemalloc")]
 fn inner() -> Result<(), Report> {
     // 1. 获取所有 Parquet 文件路径
     // let files = get_parquet_files("/data/lakesoul/tpch_sf10/lineitem");
@@ -104,12 +105,12 @@ fn inner() -> Result<(), Report> {
         // .with_files(vec![path.clone()])
         .with_batch_size(8192)
         .set_dynamic_partition(true)
-        .with_hash_bucket_num("4") // 关键：单线程写入，防止内存倍增 (1GB环境下建议为1)
-        .with_option("df_mem_limit", "200MB") // 200MB Limit
+        .with_hash_bucket_num("32") // 关键：单线程写入，防止内存倍增 (1GB环境下建议为1)
+        .with_option("df_mem_limit", "100MB") // 200MB Limit
         // .with_option("max_spill_file_size_bytes", "104857600") // 100MB
         .with_receiver_capacity(2) // 关键：限制 Channel 积压
         .with_schema(schema)
-        // .with_range_partitions(vec!["l_shipdate".to_string()])
+        .with_range_partitions(vec!["o_orderdate".to_string()])
         // 必须设置 PK 才会触发 Sort -> Spill
         .with_primary_keys(vec!["o_orderkey".to_string()])
         // .with_aux_sort_column("col2".to_string())
@@ -181,6 +182,11 @@ fn inner() -> Result<(), Report> {
         human_readable_size(resident.read().unwrap()),
         human_readable_size(active.read().unwrap()),
     );
+    Ok(())
+}
+
+#[cfg(not(feature = "jemalloc"))]
+fn inner() -> Result<(), Report> {
     Ok(())
 }
 
