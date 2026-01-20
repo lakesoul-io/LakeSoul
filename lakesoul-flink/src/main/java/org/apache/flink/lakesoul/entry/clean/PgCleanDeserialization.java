@@ -28,7 +28,6 @@ public class PgCleanDeserialization implements DebeziumDeserializationSchema<Str
         String tableName = fields[2];
         Struct value = (Struct) sourceRecord.value();
         if (value == null) return;
-
         JSONObject result = new JSONObject();
         JSONObject beforeJson = extractStructJson(value.getStruct("before"));
         JSONObject afterJson = extractStructJson(value.getStruct("after"));
@@ -38,13 +37,12 @@ public class PgCleanDeserialization implements DebeziumDeserializationSchema<Str
         result.put("tableName", tableName);
         if (tableName.equals("table_info")) {
             boolean hasPartitionTtlProperty = false;
-            if (beforeJson.containsKey("properties")){
-                String beforeProperties = beforeJson.get("properties").toString();
-                JSONObject beforePropertiesParse = (JSONObject) JSONObject.parse(beforeProperties);
+            if (beforeJson.containsKey("properties") && operation.toString().equalsIgnoreCase("delete")){
                 String tableId = beforeJson.getString("table_id");
-                beforePropertiesParse.put("tableId", tableId);
-                result.put("before", beforePropertiesParse);
-                hasPartitionTtlProperty = ((JSONObject) JSONObject.parse(beforeProperties)).containsKey("partition.ttl");
+                JSONObject deleteJson = new JSONObject();
+                deleteJson.put("tableId",tableId);
+                deleteJson.put("operation","delete");
+                result.put("after",deleteJson);
             }
             if (afterJson.containsKey("properties")) {
                 String afterProperties = afterJson.get("properties").toString();
@@ -52,13 +50,11 @@ public class PgCleanDeserialization implements DebeziumDeserializationSchema<Str
                 String tableId = afterJson.getString("table_id");
                 afterPropertiesParse.put("tableId", tableId);
                 result.put("after", afterPropertiesParse);
-                hasPartitionTtlProperty = hasPartitionTtlProperty || ((JSONObject) JSONObject.parse(afterProperties)).containsKey("partition.ttl");
+                hasPartitionTtlProperty = ((JSONObject) JSONObject.parse(afterProperties)).containsKey("partition.ttl");
             }
-
-            if (hasPartitionTtlProperty){
+            if (hasPartitionTtlProperty || operation.toString().equalsIgnoreCase("delete")){
                 collector.collect(result.toJSONString());
             }
-
         } else {
             result.put("before", beforeJson);
             result.put("after", afterJson);
@@ -72,7 +68,6 @@ public class PgCleanDeserialization implements DebeziumDeserializationSchema<Str
     private JSONObject extractStructJson(Struct struct) {
         JSONObject json = new JSONObject();
         if (struct == null) return json;
-
         Schema schema = struct.schema();
         for (Field field : schema.fields()) {
             Object value = struct.get(field);

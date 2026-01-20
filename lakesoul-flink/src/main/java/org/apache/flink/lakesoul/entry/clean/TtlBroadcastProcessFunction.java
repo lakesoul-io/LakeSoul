@@ -68,7 +68,6 @@ public class TtlBroadcastProcessFunction extends KeyedBroadcastProcessFunction<S
         long nextCheckTime = partitionLatestProcessTimeState.value() + maxProcessIntervalMillis;
         ctx.timerService().registerProcessingTimeTimer(nextCheckTime);
         partitionTimerTimestampState.update(nextCheckTime);
-
     }
 
     @Override
@@ -77,7 +76,14 @@ public class TtlBroadcastProcessFunction extends KeyedBroadcastProcessFunction<S
         int partitionTtl = value.partitionTtl;
         broadcastState = ctx.getBroadcastState(ttlBroadcastStateDesc);
         if (partitionTtl == -1) {
+            log.info("检测到用户取消表：{} partition.ttl配置 ，清理相关状态",tableId);
             broadcastState.clear();
+        } else if (partitionTtl == -5) {
+            log.info("检测到表：{} 已经被删除，清理相关状态",tableId);
+            broadcastState.clear();
+            partitionTimerTimestampState.clear();
+            partitionLatestFreshTimeState.clear();
+            partitionLatestProcessTimeState.clear();
         } else {
             broadcastState.put(tableId, partitionTtl);
         }
@@ -118,6 +124,7 @@ public class TtlBroadcastProcessFunction extends KeyedBroadcastProcessFunction<S
                     partitionTimerTimestampState.clear();
                 } else {
                     long nextCheckTime = currentProcTime + maxProcessIntervalMillis;
+                    log.info("table_id: {},分区 {}并没有过期，将在后续继续判断",tableId,partitionDesc);
                     ctx.timerService().registerProcessingTimeTimer(nextCheckTime);
                     partitionTimerTimestampState.update(nextCheckTime);
                 }
@@ -128,6 +135,7 @@ public class TtlBroadcastProcessFunction extends KeyedBroadcastProcessFunction<S
             partitionTimerTimestampState.update(nextCheckTime);
         }
     }
+
     public void dropPartition(String tableId, String partitionDesc) throws CatalogException {
         DBManager dbManager = new DBManager();
         TableInfo tableInfo = dbManager.getTableInfoByTableId(tableId);

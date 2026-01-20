@@ -17,7 +17,11 @@ public class TableInfoRecordGets {
             if (properties.containsKey("partition.ttl")){
                 int partitionTtl = properties.getInteger("partition.ttl");
                 return new TableInfo(partitionTtl, tableId);
+            } else if (properties.containsKey("operation")){
+                //which means table has been dropped;
+               return new TableInfo(-5, tableId);
             } else {
+                //which means user canceled the partition.ttl
                 return new TableInfo(-1, tableId);
             }
         }
