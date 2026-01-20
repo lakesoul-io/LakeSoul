@@ -1,11 +1,9 @@
-use tikv_jemalloc_ctl::{epoch, stats};
-use tikv_jemallocator::Jemalloc;
-
-#[global_allocator]
-static GLOBAL: Jemalloc = Jemalloc;
-
 #[cfg(feature = "jemalloc")]
 mod jemalloc {
+    use tikv_jemallocator::Jemalloc;
+
+    #[global_allocator]
+    static GLOBAL: Jemalloc = Jemalloc;
     use tikv_jemalloc_ctl::{epoch, stats};
 
     pub fn print_memory_stats() {

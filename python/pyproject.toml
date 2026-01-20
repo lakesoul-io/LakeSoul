@@ -46,6 +46,7 @@ all = [
   "ray>=2.7,<2.11.0",
   "pyspark==3.3.1",
   "duckdb>=1.4.0",
+  "datafusion>=51"
 ]
 
 [tool.uv.sources]

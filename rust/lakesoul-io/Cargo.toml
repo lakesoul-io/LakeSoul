@@ -40,9 +40,8 @@ arrow-cast = { workspace = true }
 parquet = { workspace = true, features = ["async", "arrow", "encryption"] }
 object_store = { workspace = true }
 # memory
-tikv-jemallocator = "0.6"
-# 用于查询监控指标
-tikv-jemalloc-ctl = {version = "0.6", features = ["stats"] }
+tikv-jemallocator = { version = "0.6", features = ["profiling"], optional = true }
+tikv-jemalloc-ctl = { version = "0.6", features = ["stats"], optional = true }
 # async
 futures = { workspace = true }
 async-trait = { workspace = true }
@@ -89,7 +88,7 @@ walkdir = "2.5.0"
 num_cpus = "1.16"
 filetime = "0.2.25"
 linked-hash-map = "0.5.6"
-itertools = { workspace = true}
+itertools = { workspace = true }
 # time
 chrono = "0.4"
 # logging
@@ -103,7 +102,7 @@ hdfs = ["dep:hdrs", "dep:hdfs-sys"]
 default = []
 dhat-heap = ["dep:dhat"]            # if you are doing heap profiling
 dhat-ad-hoc = []                    # if you are doing ad hoc profiling
-jemalloc = []
+jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
 
 [dev-dependencies]
 tokio-test = "0.4.4"
