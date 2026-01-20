@@ -42,11 +42,8 @@ impl AsyncSendableMutableLakeSoulWriter {
         let schema = writer.schema();
 
         if let Some(mem_limit) = io_config.mem_limit() {
-            if io_config.use_dynamic_partition {
-                io_config.max_file_size = Some((mem_limit as f64 * 0.15) as u64);
-            } else if !io_config.primary_keys.is_empty() && !io_config.keep_ordering() {
-                io_config.max_file_size = Some((mem_limit as f64 * 0.2) as u64);
-            }
+            io_config.max_file_size = Some(mem_limit as u64);
+            info!("Set max file size to {:?}", io_config.max_file_size);
         }
         let io_session = Arc::new(io_session.with_io_config(io_config));
 
@@ -95,7 +92,10 @@ impl AsyncSendableMutableLakeSoulWriter {
             guard.write_record_batch(record_batch).await?;
 
             if do_spill {
-                info!("Spilling writer with size: {}", guard.buffered_size());
+                info!(
+                    "Flushing writer with cumulated size: {}",
+                    guard.buffered_size()
+                );
                 drop(guard);
                 if let Some(writer) = self.in_progress.take() {
                     let inner_writer = Arc::try_unwrap(writer)
