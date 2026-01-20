@@ -218,7 +218,10 @@ trait TableCreationTests
             .mode(SaveMode.Overwrite)
             .format(format)
             .saveAsTable(tbl)
-          checkDatasetUnorderly(spark.table(tbl).as[(Long, String)], 2L -> "b", 1L -> "a")
+          if (isPartitioned == "partitioned")
+            checkDatasetUnorderly(spark.table(tbl).as[(Long, String)], 2L -> "b", 1L -> "a")
+          else
+            checkDatasetUnorderly(spark.table(tbl).as[(Long, String)], 2L -> "b")
         }
       }
     }

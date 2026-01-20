@@ -1031,10 +1031,8 @@ mod tests {
         insert_table("ads", metadata_client.clone()).await?;
         read_table("ads", metadata_client.clone()).await?;
 
-        insert_table("dwd", metadata_client.clone())
-            .await?;
-        read_table("dwd", metadata_client.clone())
-            .await?;
+        insert_table("dwd", metadata_client.clone()).await?;
+        read_table("dwd", metadata_client.clone()).await?;
 
         drop_table(&uuid_ads, &table_path_ads, metadata_client.clone()).await?;
         drop_table(&uuid_dwd, &table_path_dwd, metadata_client.clone()).await?;
