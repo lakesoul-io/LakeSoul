@@ -553,7 +553,7 @@ public class LakeSoulRecordConvert implements Serializable {
                 date = instant.atZone(flinkZoneId).toLocalDate();
             }
             if (formatRule == null){
-                formatRule = "yyyy/MM/dd";
+                formatRule = "yyyy-MM-dd";
             }
             DateTimeFormatter customFormatter = DateTimeFormatter.ofPattern(formatRule);
             String formattedDate = date.format(customFormatter);
