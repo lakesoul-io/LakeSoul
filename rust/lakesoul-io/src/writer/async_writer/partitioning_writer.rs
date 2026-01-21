@@ -258,7 +258,7 @@ impl PartitioningAsyncWriter {
         while let Some(batch_result) = data.next().await {
             match batch_result {
                 Ok(batch) => {
-                    debug!("write record_batch with {} rows", batch.num_rows());
+                    debug!("batch[{}]", batch.num_rows());
                     let columnar_values =
                         get_columnar_values(&batch, range_partitions.clone())?;
                     let partition_desc =
@@ -278,6 +278,7 @@ impl PartitioningAsyncWriter {
 
                     if !partitioned_writer.contains_key(&partition_desc) {
                         // TODO only files diff
+                        debug!("new writer for {}", partition_desc);
                         let config = io_config_builder
                             .clone()
                             .with_files(vec![file_absolute_path])
@@ -445,7 +446,11 @@ impl AsyncBatchWriter for PartitioningAsyncWriter {
         if let Some(join_handle) = self.spawned_task {
             let sender = self.sorter_sender;
             drop(sender);
-            join_handle.await?
+            let span = info_span!("partitioning writer flush");
+            let _guard = span.enter();
+            let res = join_handle.await?;
+            info!("flush completed");
+            res
         } else {
             bail!("aborted, cannot flush")
         }
@@ -476,58 +481,5 @@ impl AsyncBatchWriter for PartitioningAsyncWriter {
 
     fn buffered_size(&self) -> u64 {
         self.buffered_size
-    }
-}
-
-mod v2 {
-    use arrow_schema::SchemaRef;
-    use std::sync::Arc;
-    use tokio::{sync::mpsc::Sender, time::Instant};
-
-    use arrow_array::RecordBatch;
-    use datafusion_common::DataFusionError;
-
-    use crate::Result;
-    use crate::session::LakeSoulIOSession;
-    use crate::writer::async_writer::{AsyncBatchWriter, FlushOutput};
-
-    struct RollingPartitionAsyncWriter {
-        schema: SchemaRef,
-        sorter_sender: Sender<Result<RecordBatch, DataFusionError>>,
-    }
-
-    impl RollingPartitionAsyncWriter {
-        pub fn try_new(io_session: Arc<LakeSoulIOSession>) -> Result<Self> {
-            let io_config = io_session.io_config();
-            todo!()
-        }
-
-        pub fn create_partitioning_exec() {
-            todo!()
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl AsyncBatchWriter for RollingPartitionAsyncWriter {
-        async fn write_record_batch(&mut self, batch: RecordBatch) -> Result<()> {
-            self.sorter_sender.send(Ok(batch)).await?;
-            Ok(())
-        }
-
-        async fn flush_and_close(self: Box<Self>) -> Result<Vec<FlushOutput>> {
-            todo!()
-        }
-
-        async fn abort_and_close(self: Box<Self>) -> Result<()> {
-            todo!()
-        }
-
-        fn schema(&self) -> SchemaRef {
-            todo!()
-        }
-
-        fn buffered_size(&self) -> u64 {
-            todo!()
-        }
     }
 }

@@ -177,16 +177,11 @@ impl LakeSoulIOConfig {
             .is_some_and(|x| x.eq("true"))
     }
 
-    /// Maximum memory limit in bytes for query execution
-    pub fn df_mem_limit(&self) -> Option<usize> {
-        std::env::var("LAKESOUL_DF_MEM_LIMIT")
-            .ok()
-            .and_then(|s| s.parse::<ByteSize>().ok())
-            .or_else(|| {
-                self.option(OPTION_KEY_DF_MEM_LIMIT)
-                    .and_then(|x| x.parse::<ByteSize>().ok())
-            })
-            .map(|bs| bs.bytes())
+    /// Maximum flush memory limit in bytes for query execution
+    pub fn mem_limit(&self) -> Option<usize> {
+        // todo change name
+        self.option(OPTION_KEY_MEM_LIMIT)
+            .map(|x| x.parse::<ByteSize>().unwrap().bytes())
     }
 
     /// Returns the maximum file size in bytes if set
@@ -198,7 +193,7 @@ impl LakeSoulIOConfig {
     /// Returns the memory pool size in bytes if set
     pub fn pool_size(&self) -> Option<usize> {
         self.option(OPTION_KEY_POOL_SIZE)
-            .map(|x| x.parse().unwrap())
+            .map(|x| x.parse::<ByteSize>().unwrap().bytes())
     }
 
     /// Returns the memory pool dir if set

@@ -113,6 +113,13 @@ tempfile = "3.3.0"
 whoami = "1.5"
 tracing-subscriber = "0.3.18"
 criterion = { version = "0.7", features = ["html_reports"] }
+gungraun = "0.17.0"
+num-format = "0.4.4"
 
 [lints]
 workspace = true
+
+
+[profile.bench]
+debug = true
+strip = false
