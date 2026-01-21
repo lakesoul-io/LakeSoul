@@ -30,9 +30,7 @@ use datafusion_datasource::source::DataSource;
 use datafusion_datasource::{ListingTableUrl, PartitionedFile, TableSchema};
 use datafusion_datasource_parquet::ParquetFormat;
 use datafusion_execution::config::SessionConfig;
-use datafusion_execution::disk_manager::{DiskManagerBuilder, DiskManagerMode};
-use datafusion_execution::memory_pool::FairSpillPool;
-use datafusion_execution::memory_pool::FairSpillPool;
+use datafusion_execution::memory_pool::{FairSpillPool, TrackConsumersPool};
 use datafusion_execution::runtime_env::RuntimeEnvBuilder;
 use datafusion_execution::{TaskContext, runtime_env::RuntimeEnv};
 use datafusion_expr::execution_props::ExecutionProps;
@@ -226,21 +224,38 @@ impl LakeSoulIOSession {
             .execution
             .parquet
             .schema_force_view_types = false;
+
+        // runtime
         let mut runtime_conf = RuntimeEnvBuilder::new();
         if let Some(pool_size) = io_config.pool_size() {
+            // for now all is default
+            sess_conf.options_mut().execution.spill_compression =
+                SpillCompression::Uncompressed;
             let sort_spill_bytes = pool_size / 8;
-            sess_conf = sess_conf.with_sort_spill_reservation_bytes(sort_spill_bytes);
-            let memory_pool = FairSpillPool::new(pool_size);
-            );
-            runtime_conf = runtime_conf.with_memory_pool(Arc::new(memory_pool));
+            sess_conf
+                .options_mut()
+                .execution
+                .sort_spill_reservation_bytes = sort_spill_bytes;
+            sess_conf
+                .options_mut()
+                .execution
+                .sort_in_place_threshold_bytes = byte_size!("4mb");
+            sess_conf.options_mut().execution.max_spill_file_size_bytes =
+                byte_size!("128mb");
+            runtime_conf =
+                runtime_conf.with_max_temp_directory_size(byte_size!("100G") as u64);
             let dir = io_config
                 .pool_dir()
                 .unwrap_or("/tmp/lakesoul/spill".to_string());
             std::fs::create_dir_all(&dir)?;
-            runtime_conf = runtime_conf.with_disk_manager_builder(
-                DiskManagerBuilder::default()
-                    .with_mode(DiskManagerMode::Directories(vec![dir.parse()?])),
+            runtime_conf = runtime_conf.with_temp_file_path(&dir);
+
+            let memory_pool = TrackConsumersPool::new(
+                FairSpillPool::new(pool_size),
+                NonZeroUsize::new(5).unwrap(),
             );
+            runtime_conf = runtime_conf.with_memory_pool(Arc::new(memory_pool));
+
             info!(
                 "NativeIO spill config with directory {}, pool size {}, \
                  flush limit {:?}, sort spill reserve bytes {}",

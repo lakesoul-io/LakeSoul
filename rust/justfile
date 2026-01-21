@@ -60,6 +60,7 @@ copy level=log_level:
    RUST_LOG={{level}} cargo run --release --bin lakesoul-console -- --worker-threads 16 --file copy.sql
 
 cross:
-    cross build --target x86_64-unknown-linux-gnu --release --package lakesoul-io-c --package lakesoul-metadata-c --all-features
+    cross build --target x86_64-unknown-linux-gnu --release --package lakesoul-io-c -F hdfs
+    cross build --target x86_64-unknown-linux-gnu --release  --package lakesoul-metadata-c --all-features
     cp target/x86_64-unknown-linux-gnu/release/lib*.so target/release
-    cd .. && mvn package -pl lakesoul-flink -Pcross-build -am -DskipTests
+    cd .. && mvn install -pl lakesoul-flink -Pcross-build -am -DskipTests

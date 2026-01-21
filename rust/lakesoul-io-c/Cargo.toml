@@ -35,6 +35,7 @@ rootcause = { workspace = true }
 
 [features]
 hdfs = ["lakesoul-io/hdfs"]
+jemalloc = ["lakesoul-io/jemalloc"]
 default = []
 
 [build-dependencies]

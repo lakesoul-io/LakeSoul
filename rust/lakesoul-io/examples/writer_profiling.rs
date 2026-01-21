@@ -8,12 +8,13 @@ use std::sync::Arc;
 
 use arrow_array::{ArrayRef, RecordBatch, StringArray};
 use arrow_schema::SchemaRef;
-use datafusion_execution::memory_pool::human_readable_size;
 use datafusion_session::Session;
 use lakesoul_io::{
     config::LakeSoulIOConfig, session::LakeSoulIOSession, utils::random_str,
     writer::SyncSendableMutableLakeSoulWriter,
 };
+use num_format::Locale;
+use num_format::ToFormattedString;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use rootcause::Report;
 use tokio::{runtime::Builder, time::Instant};
@@ -75,7 +76,6 @@ fn get_dir_size(path: &str) -> u64 {
         .sum()
 }
 
-#[cfg(feature = "jemalloc")]
 fn inner() -> Result<(), Report> {
     // 1. 获取所有 Parquet 文件路径
     // let files = get_parquet_files("/data/lakesoul/tpch_sf10/lineitem");
@@ -89,25 +89,17 @@ fn inner() -> Result<(), Report> {
 
     println!("prefix: {}", prefix);
 
-    let path = temp_dir
-        // .path()
-        .keep()
-        .join("test.parquet")
-        .into_os_string()
-        .into_string()
-        .unwrap();
-
     // 模拟 Flink 1GB Slot 环境配置
     // Rust 可用内存 ~300-400MB
     // 设置 DataFusion Pool = 200MB, 触发 Spill
     let io_config = LakeSoulIOConfig::builder()
         .with_prefix(prefix)
-        // .with_files(vec![path.clone()])
         .with_batch_size(8192)
         .set_dynamic_partition(true)
-        .with_hash_bucket_num("32") // 关键：单线程写入，防止内存倍增 (1GB环境下建议为1)
-        .with_option("df_mem_limit", "100MB") // 200MB Limit
-        // .with_option("max_spill_file_size_bytes", "104857600") // 100MB
+        .with_hash_bucket_num("1") // 关键：单线程写入，防止内存倍增 (1GB环境下建议为1)
+        .with_option("mem_limit", "30MB")
+        .with_option("pool_size", "100MB")
+        // .with_option("rolling", "true")
         .with_receiver_capacity(2) // 关键：限制 Channel 积压
         .with_schema(schema)
         .with_range_partitions(vec!["o_orderdate".to_string()])
@@ -126,11 +118,6 @@ fn inner() -> Result<(), Report> {
     let mut writer =
         SyncSendableMutableLakeSoulWriter::try_new(io_session.clone(), runtime)?;
 
-    let e = tikv_jemalloc_ctl::epoch::mib().unwrap();
-    let allocated = tikv_jemalloc_ctl::stats::allocated::mib().unwrap();
-    let resident = tikv_jemalloc_ctl::stats::resident::mib().unwrap();
-    let active = tikv_jemalloc_ctl::stats::active::mib().unwrap();
-
     let start = Instant::now();
     let mut total_rows = 0;
     let mut batch_idx = 0;
@@ -146,47 +133,25 @@ fn inner() -> Result<(), Report> {
         for batch_result in reader {
             let b = batch_result.expect("Read batch failed");
             let once_start = Instant::now();
-
             writer.write_batch(b.clone())?;
-
             total_rows += b.num_rows();
-            batch_idx += 1;
-
-            e.advance().unwrap();
-
-            // 监控 Spill 目录大小 (LakeSoul 默认 spill 到 /tmp/lakesoul/spill/...)
-            let spill_size = get_dir_size("/tmp/lakesoul/spill/dev");
-
+            // batch_idx += 1;
+            let spill_size = get_dir_size("/tmp/lakesoul/spill");
             println!(
-                "write batch {}\npool reserve: {}\nspill size: {}\ncost: {} ms\nAllocated: {}\nRsident: {}\nActive: {}\n",
-                batch_idx,
-                human_readable_size(pool.reserved()),
-                human_readable_size(spill_size as usize),
-                once_start.elapsed().as_millis(),
-                human_readable_size(allocated.read().unwrap()),
-                human_readable_size(resident.read().unwrap()),
-                human_readable_size(active.read().unwrap()),
-            );
+                "cost {} ms\nspill size: {spill_size}\n",
+                once_start.elapsed().as_millis()
+            )
         }
     }
 
     let flush_start = Instant::now();
     writer.flush_and_close()?;
-    println!("flush cost: {} ms", flush_start.elapsed().as_millis());
     println!(
-        "total_batches={}, total_rows={}, total_cost_mills={}\nAllocated: {}\nRsident: {}\nActive: {}\n",
-        batch_idx,
-        total_rows,
-        start.elapsed().as_millis(),
-        human_readable_size(allocated.read().unwrap()),
-        human_readable_size(resident.read().unwrap()),
-        human_readable_size(active.read().unwrap()),
+        "total rows:{}\nflush cost: {} ms",
+        total_rows.to_formatted_string(&Locale::en),
+        flush_start.elapsed().as_millis()
     );
-    Ok(())
-}
 
-#[cfg(not(feature = "jemalloc"))]
-fn inner() -> Result<(), Report> {
     Ok(())
 }
 

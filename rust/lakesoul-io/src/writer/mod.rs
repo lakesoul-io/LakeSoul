@@ -196,8 +196,10 @@ impl SyncSendableMutableLakeSoulWriter {
 
             if let Some(max_file_size) = new_io_config.max_file_size_option() {
                 new_io_config.max_file_size = Some(max_file_size);
+            } else if let Some(mem_limit) = new_io_config.mem_limit() {
+                new_io_config.max_file_size = Some(mem_limit as u64);
             }
-
+            info!("Set max file size {:?}", new_io_config.max_file_size);
 
             Ok(SyncSendableMutableLakeSoulWriter {
                 in_progress: Some(Arc::new(Mutex::new(writer))),
@@ -254,7 +256,7 @@ impl SyncSendableMutableLakeSoulWriter {
             }
 
             debug!("target schema: {}", self.io_config().target_schema());
-            debug!("len: {}", new_columns.len());
+            debug!("new cols len: {}", new_columns.len());
 
             let new_record_batch =
                 RecordBatch::try_new(self.io_config().target_schema(), new_columns)?;
@@ -405,7 +407,7 @@ impl SyncSendableMutableLakeSoulWriter {
 mod tests {
     use crate::{
         Result,
-        config::{LakeSoulIOConfigBuilder, OPTION_KEY_DF_MEM_LIMIT},
+        config::{LakeSoulIOConfigBuilder, OPTION_KEY_MEM_LIMIT},
         reader::LakeSoulReader,
     };
 
@@ -890,7 +892,7 @@ mod tests {
                     .map(|i| format!("col_{}", i))
                     .collect::<Vec<String>>(),
             )
-            .with_option(OPTION_KEY_DF_MEM_LIMIT, format!("{}", 1024 * 1024 * 48))
+            .with_option(OPTION_KEY_MEM_LIMIT, format!("{}", 1024 * 1024 * 48))
             .set_dynamic_partition(true)
             .with_hash_bucket_num("4".to_string())
             .build();
@@ -992,7 +994,7 @@ mod tests {
             ])
             .with_hash_bucket_num("2".to_string())
             .set_dynamic_partition(true)
-            .with_option(OPTION_KEY_DF_MEM_LIMIT, format!("{}", 1024 * 1024 * 50))
+            .with_option(OPTION_KEY_MEM_LIMIT, format!("{}", 1024 * 1024 * 50))
             .build();
 
         let io_session = Arc::new(LakeSoulIOSession::try_new(writer_io_config)?);

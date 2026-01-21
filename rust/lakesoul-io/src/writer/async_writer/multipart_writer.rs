@@ -59,6 +59,7 @@ pub struct MultiPartAsyncWriter {
 }
 
 impl MultiPartAsyncWriter {
+    #[instrument(skip_all)]
     pub async fn try_new_with_context(
         config: &LakeSoulIOConfig,
         task_context: Arc<TaskContext>,

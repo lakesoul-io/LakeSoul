@@ -20,7 +20,7 @@ use datafusion::{
     logical_expr::LogicalPlanBuilder,
 };
 use helpers::case_fold_table_name;
-use lakesoul_io::config::OPTION_KEY_DF_MEM_LIMIT;
+use lakesoul_io::config::OPTION_KEY_MEM_LIMIT;
 use lakesoul_io::helpers::get_file_exist_col;
 use lakesoul_io::session::create_session_context_with_planner;
 use lakesoul_io::writer::async_writer::{
@@ -233,7 +233,7 @@ impl LakeSoulTable {
             false,
             self.table_namespace(),
             HashMap::from([(
-                OPTION_KEY_DF_MEM_LIMIT.to_string(),
+                OPTION_KEY_MEM_LIMIT.to_string(),
                 format!("{}", 1024 * 1024 * 1024),
             )]),
             object_store_options,

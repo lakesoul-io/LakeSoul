@@ -18,8 +18,6 @@ pub use partitioning_writer::PartitioningAsyncWriter;
 mod sendable_writer;
 pub use sendable_writer::AsyncSendableMutableLakeSoulWriter;
 
-mod manager;
-
 use std::{
     any::Any,
     fmt::{Debug, Formatter},
