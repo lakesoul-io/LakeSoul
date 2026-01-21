@@ -165,6 +165,9 @@ public class JdbcSourceBuilderTool {
         if (!debeziumProperties.isEmpty()){
             sourceBuilder.debeziumProperties(debeziumProperties);
         }
+        if (cdcParams.containsKey(SERVER_ID.key())){
+            sourceBuilder.serverId(cdcParams.get(SERVER_ID.key()).toString());
+        }
         if (cdcParams.containsKey(SCAN_SNAPSHOT_FETCH_SIZE.key())){
             sourceBuilder.fetchSize(Integer.parseInt(cdcParams.get(SCAN_SNAPSHOT_FETCH_SIZE.key()).toString()));
         }
