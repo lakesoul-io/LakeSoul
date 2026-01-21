@@ -479,7 +479,7 @@ public class LakeSoulRecordConvert implements Serializable {
             List<String> partitionColls = topicsPartitionFields.get(tableName);
             List<Field> fieldNames = schema.fields();
             for (Field fieldName : fieldNames) {
-                if (partitionColls.contains("pt_" + fieldName.name() + "_dt")){
+                if (partitionColls.contains(fieldName.name()) || partitionColls.contains("pt_" + fieldName.name() + "_dt")){
                     if (fieldName.schema().name() != null
                             && (ZonedTimestamp.SCHEMA_NAME.equals(fieldName.schema().name())
                             || ZonedTime.SCHEMA_NAME.equals(fieldName.schema().name()))
@@ -559,7 +559,7 @@ public class LakeSoulRecordConvert implements Serializable {
                 date = instant.atZone(flinkZoneId).toLocalDate();
             }
             if (formatRule == null){
-                formatRule = "yyyy/MM/dd";
+                formatRule = "yyyy-MM-dd";
             }
             DateTimeFormatter customFormatter = DateTimeFormatter.ofPattern(formatRule);
             String formattedDate = date.format(customFormatter);
