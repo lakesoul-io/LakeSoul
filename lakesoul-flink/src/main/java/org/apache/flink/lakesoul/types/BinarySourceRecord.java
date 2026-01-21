@@ -4,10 +4,10 @@
 
 package org.apache.flink.lakesoul.types;
 
-import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.*;
-import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.source.SourceRecord;
 import io.debezium.data.Envelope;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.flink.cdc.connectors.shaded.org.apache.kafka.connect.data.*;
+import org.apache.flink.cdc.connectors.shaded.org.apache.kafka.connect.source.SourceRecord;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 

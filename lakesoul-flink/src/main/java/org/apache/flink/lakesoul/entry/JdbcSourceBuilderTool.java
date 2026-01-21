@@ -3,8 +3,11 @@
 // SPDX-License-Identifier: Apache-2.0
 package org.apache.flink.lakesoul.entry;
 
-import com.ververica.cdc.connectors.mysql.source.MySqlSourceBuilder;
-import com.ververica.cdc.connectors.postgres.source.PostgresSourceBuilder;
+import org.apache.flink.cdc.connectors.base.options.StartupOptions;
+import org.apache.flink.cdc.connectors.mysql.source.MySqlSourceBuilder;
+import org.apache.flink.cdc.connectors.postgres.source.PostgresSourceBuilder;
+import org.apache.flink.cdc.debezium.table.DebeziumOptions;
+import org.apache.flink.cdc.debezium.utils.JdbcUrlUtils;
 import org.apache.flink.lakesoul.types.BinarySourceRecord;
 import org.apache.flink.table.catalog.ObjectPath;
 import org.apache.flink.core.fs.FileSystem;
@@ -12,15 +15,13 @@ import org.apache.flink.core.fs.Path;
 import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.constructor.SafeConstructor;
-import com.ververica.cdc.debezium.table.DebeziumOptions;
-import com.ververica.cdc.debezium.utils.JdbcUrlUtils;
 import java.io.IOException;
 import java.io.InputStream;
 import java.time.Duration;
 import java.util.*;
 import java.util.stream.Collectors;
 
-import static com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions.*;
+import static org.apache.flink.cdc.connectors.mysql.source.config.MySqlSourceOptions.*;
 
 public class JdbcSourceBuilderTool {
 
@@ -123,12 +124,6 @@ public class JdbcSourceBuilderTool {
         }
 
         /* ------------------ behavior flags ------------------ */
-        if (cdcParams.containsKey("include.schema.changes")) {
-            sourceBuilder.includeSchemaChanges(
-                    Boolean.parseBoolean(
-                            cdcParams.get("include.schema.changes").toString()));
-        }
-
         if (cdcParams.containsKey("scan.incremental.close-idle-reader.enabled")) {
             sourceBuilder.closeIdleReaders(
                     Boolean.parseBoolean(
@@ -237,32 +232,32 @@ public class JdbcSourceBuilderTool {
         return sourceBuilder;
     }
 
-    private com.ververica.cdc.connectors.mysql.table.StartupOptions parseMysqlStartupOptions(String mode) {
+    private org.apache.flink.cdc.connectors.mysql.table.StartupOptions parseMysqlStartupOptions(String mode) {
         switch (mode.toLowerCase()) {
             case "initial":
-                return com.ververica.cdc.connectors.mysql.table.StartupOptions.initial();
+                return org.apache.flink.cdc.connectors.mysql.table.StartupOptions.initial();
             case "latest-offset":
             case "latest":
-                return com.ververica.cdc.connectors.mysql.table.StartupOptions.latest();
+                return org.apache.flink.cdc.connectors.mysql.table.StartupOptions.latest();
             case "earliest-offset":
             case "earliest":
-                return com.ververica.cdc.connectors.mysql.table.StartupOptions.earliest();
+                return org.apache.flink.cdc.connectors.mysql.table.StartupOptions.earliest();
             default:
                 throw new IllegalArgumentException(
                         "Unsupported scan.startup.mode: " + mode);
         }
     }
 
-    private com.ververica.cdc.connectors.base.options.StartupOptions parsePgStartupOptions(String mode){
+    private StartupOptions parsePgStartupOptions(String mode){
         switch (mode.toLowerCase()) {
             case "initial":
-                return com.ververica.cdc.connectors.base.options.StartupOptions.initial();
+                return StartupOptions.initial();
             case "latest-offset":
             case "latest":
-                return com.ververica.cdc.connectors.base.options.StartupOptions.latest();
+                return StartupOptions.latest();
             case "earliest-offset":
             case "earliest":
-                return com.ververica.cdc.connectors.base.options.StartupOptions.earliest();
+                return StartupOptions.earliest();
             default:
                 throw new IllegalArgumentException(
                         "Unsupported scan.startup.mode: " + mode);
