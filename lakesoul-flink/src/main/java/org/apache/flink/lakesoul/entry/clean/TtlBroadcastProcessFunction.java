@@ -5,10 +5,7 @@ package org.apache.flink.lakesoul.entry.clean;
 
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
-import org.apache.flink.api.common.state.BroadcastState;
-import org.apache.flink.api.common.state.MapStateDescriptor;
-import org.apache.flink.api.common.state.ValueState;
-import org.apache.flink.api.common.state.ValueStateDescriptor;
+import org.apache.flink.api.common.state.*;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
@@ -77,10 +74,10 @@ public class TtlBroadcastProcessFunction extends KeyedBroadcastProcessFunction<S
         broadcastState = ctx.getBroadcastState(ttlBroadcastStateDesc);
         if (partitionTtl == -1) {
             log.info("检测到用户取消表：{} partition.ttl配置 ，清理相关状态",tableId);
-            broadcastState.clear();
+            broadcastState.remove(tableId);
         } else if (partitionTtl == -5) {
             log.info("检测到表：{} 已经被删除，清理相关状态",tableId);
-            broadcastState.clear();
+            broadcastState.remove(tableId);
             partitionTimerTimestampState.clear();
             partitionLatestFreshTimeState.clear();
             partitionLatestProcessTimeState.clear();
@@ -100,6 +97,11 @@ public class TtlBroadcastProcessFunction extends KeyedBroadcastProcessFunction<S
         String[] split = partitionKey.split("/");
         String tableId = split[0];
         String partitionDesc = split[1];
+        ReadOnlyBroadcastState<String, Integer> broadcastState =
+                ctx.getBroadcastState(ttlBroadcastStateDesc);
+        if (broadcastState == null){
+            return;
+        }
         if (broadcastState.contains(tableId)){
             int partitionTtl = broadcastState.get(tableId);
             if (partitionTtl == -1){
