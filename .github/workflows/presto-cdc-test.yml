@@ -61,6 +61,7 @@ jobs:
                   wget -q https://repo1.maven.org/maven2/org/apache/flink/flink-s3-fs-hadoop/1.20.1/flink-s3-fs-hadoop-1.20.1.jar -O $HOME/flink-s3-fs-hadoop-1.20.1.jar
                   wget -q https://repo1.maven.org/maven2/org/apache/parquet/parquet-hadoop-bundle/1.12.3/parquet-hadoop-bundle-1.12.3.jar -O $HOME/parquet-hadoop-bundle-1.12.3.jar
                   wget -q https://repo1.maven.org/maven2/org/apache/flink/flink-parquet/1.20.1/flink-parquet-1.20.1.jar -O $HOME/flink-parquet-1.20.1.jar
+                  wget -q https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.0.33/mysql-connector-j-8.0.33.jar -O $HOME/mysql-connector-j-8.0.33.jar
             - name: Install Protoc
               uses: arduino/setup-protoc@v2
               with:

@@ -570,13 +570,6 @@ SPDX-License-Identifier: Apache-2.0
                                 <exclude>META-INF/versions/**</exclude>
                             </excludes>
                         </filter>
-                        <filter>
-                            <artifact>com.ververica:flink-sql-connector-mysql-cdc</artifact>
-                            <excludes>
-                                <exclude>org/apache/flink/shaded/guava30/**</exclude>
-                                <exclude>META-INF/maven/com.google.guava/**</exclude>
-                            </excludes>
-                        </filter>
                     </filters>
                     <relocations>
                         <relocation>
