@@ -24,7 +24,6 @@ public class TtlBroadcastProcessFunction extends KeyedBroadcastProcessFunction<S
     private static final Logger log = LoggerFactory.getLogger(TtlBroadcastProcessFunction.class);
     private final long maxProcessIntervalMillis;
 
-    private transient BroadcastState<String, Integer> broadcastState;
     private final MapStateDescriptor<String, Integer> ttlBroadcastStateDesc;
     private transient ValueState<Long> partitionLatestFreshTimeState;
     private transient ValueState<Long> partitionLatestProcessTimeState;
@@ -71,7 +70,7 @@ public class TtlBroadcastProcessFunction extends KeyedBroadcastProcessFunction<S
     public void processBroadcastElement(TableInfoRecordGets.TableInfo value, KeyedBroadcastProcessFunction<String, TableTtlProFunction.PartitionINfoUpdateEvents, TableInfoRecordGets.TableInfo, String>.Context ctx, Collector<String> out) throws Exception {
         String tableId = value.tableId;
         int partitionTtl = value.partitionTtl;
-        broadcastState = ctx.getBroadcastState(ttlBroadcastStateDesc);
+        BroadcastState<String, Integer> broadcastState = ctx.getBroadcastState(ttlBroadcastStateDesc);
         if (partitionTtl == -1) {
             log.info("检测到用户取消表：{} partition.ttl配置 ，清理相关状态",tableId);
             broadcastState.remove(tableId);
