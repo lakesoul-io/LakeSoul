@@ -172,7 +172,8 @@ public class JdbcSourceBuilderTool {
         if (cdcParams.containsKey(SCAN_INCREMENTAL_SNAPSHOT_CHUNK_KEY_COLUMN.key()) && cdcParams.get(SCAN_INCREMENTAL_SNAPSHOT_CHUNK_KEY_COLUMN.key()) != null){
             String databaseName = cdcParams.get(DATABASE_NAME.key()).toString();
             String tableName = cdcParams.get(TABLE_NAME.key()).toString();
-            sourceBuilder.chunkKeyColumn(new ObjectPath(databaseName, tableName), SCAN_INCREMENTAL_SNAPSHOT_CHUNK_KEY_COLUMN.key());
+            sourceBuilder.chunkKeyColumn(new ObjectPath(databaseName, tableName),
+                    cdcParams.get(SCAN_INCREMENTAL_SNAPSHOT_CHUNK_KEY_COLUMN.key()).toString());
         }
         if (cdcParams.containsKey(CHUNK_META_GROUP_SIZE.key())) {
             sourceBuilder.splitMetaGroupSize(
