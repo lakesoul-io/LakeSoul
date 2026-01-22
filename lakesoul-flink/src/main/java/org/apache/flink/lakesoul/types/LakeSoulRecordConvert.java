@@ -4,13 +4,6 @@
 
 package org.apache.flink.lakesoul.types;
 
-import com.ververica.cdc.connectors.mongodb.internal.MongoDBEnvelope;
-import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Decimal;
-import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Field;
-import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Schema;
-import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Struct;
-import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.errors.DataException;
-import com.ververica.cdc.debezium.utils.TemporalConversions;
 import io.debezium.data.Enum;
 import io.debezium.data.EnumSet;
 import io.debezium.data.Envelope;
@@ -30,6 +23,13 @@ import io.debezium.time.Timestamp;
 import io.debezium.time.Year;
 import io.debezium.time.ZonedTime;
 import io.debezium.time.ZonedTimestamp;
+import org.apache.flink.cdc.connectors.mongodb.internal.MongoDBEnvelope;
+import org.apache.flink.cdc.connectors.shaded.org.apache.kafka.connect.data.Decimal;
+import org.apache.flink.cdc.connectors.shaded.org.apache.kafka.connect.data.Field;
+import org.apache.flink.cdc.connectors.shaded.org.apache.kafka.connect.data.Schema;
+import org.apache.flink.cdc.connectors.shaded.org.apache.kafka.connect.data.Struct;
+import org.apache.flink.cdc.connectors.shaded.org.apache.kafka.connect.errors.DataException;
+import org.apache.flink.cdc.debezium.utils.TemporalConversions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakesoul.tool.DynamicBucketingHash;
 import org.apache.flink.table.data.*;
@@ -398,7 +398,7 @@ public class LakeSoulRecordConvert implements Serializable {
                 return new IntType(nullable);
             case ZonedTime.SCHEMA_NAME:
             case ZonedTimestamp.SCHEMA_NAME:
-            case com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Timestamp.LOGICAL_NAME:
+            case org.apache.flink.cdc.connectors.shaded.org.apache.kafka.connect.data.Timestamp.LOGICAL_NAME:
                 return new LocalZonedTimestampType(nullable, LocalZonedTimestampType.DEFAULT_PRECISION);
             case Geometry.LOGICAL_NAME:
             case VariableScaleDecimal.LOGICAL_NAME:
@@ -479,7 +479,7 @@ public class LakeSoulRecordConvert implements Serializable {
             List<String> partitionColls = topicsPartitionFields.get(tableName);
             List<Field> fieldNames = schema.fields();
             for (Field fieldName : fieldNames) {
-                if (partitionColls.contains("pt_" + fieldName.name() + "_dt")){
+                if (partitionColls.contains(fieldName.name()) || partitionColls.contains("pt_" + fieldName.name() + "_dt")){
                     if (fieldName.schema().name() != null
                             && (ZonedTimestamp.SCHEMA_NAME.equals(fieldName.schema().name())
                             || ZonedTime.SCHEMA_NAME.equals(fieldName.schema().name()))
@@ -559,7 +559,7 @@ public class LakeSoulRecordConvert implements Serializable {
                 date = instant.atZone(flinkZoneId).toLocalDate();
             }
             if (formatRule == null){
-                formatRule = "yyyy/MM/dd";
+                formatRule = "yyyy-MM-dd";
             }
             DateTimeFormatter customFormatter = DateTimeFormatter.ofPattern(formatRule);
             String formattedDate = date.format(customFormatter);
@@ -682,7 +682,7 @@ public class LakeSoulRecordConvert implements Serializable {
             case Timestamp.SCHEMA_NAME:
             case MicroTimestamp.SCHEMA_NAME:
             case NanoTimestamp.SCHEMA_NAME:
-            case com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Timestamp.LOGICAL_NAME:
+            case org.apache.flink.cdc.connectors.shaded.org.apache.kafka.connect.data.Timestamp.LOGICAL_NAME:
                 writeTimeStamp(writer, index, fieldValue, fieldSchema,serverTimeZone);
                 break;
             case Decimal.LOGICAL_NAME:

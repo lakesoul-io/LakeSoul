@@ -5,11 +5,11 @@
 package org.apache.flink.lakesoul.entry;
 
 import com.dmetasoul.lakesoul.meta.external.mysql.MysqlDBManager;
-import com.ververica.cdc.connectors.mysql.source.MySqlSource;
-import com.ververica.cdc.connectors.mysql.source.MySqlSourceBuilder;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.api.java.utils.ParameterTool;
+import org.apache.flink.cdc.connectors.mysql.source.MySqlSource;
+import org.apache.flink.cdc.connectors.mysql.source.MySqlSourceBuilder;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTableSinkStreamBuilder;

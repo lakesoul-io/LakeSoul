@@ -5,20 +5,20 @@ package org.apache.flink.lakesoul.entry;
 
 import com.dmetasoul.lakesoul.meta.external.NameSpaceManager;
 import com.dmetasoul.lakesoul.meta.external.mysql.MysqlDBManager;
-import com.ververica.cdc.connectors.base.options.StartupOptions;
-import com.ververica.cdc.connectors.base.source.jdbc.JdbcIncrementalSource;
-import com.ververica.cdc.connectors.mysql.source.MySqlSource;
-import com.ververica.cdc.connectors.mysql.source.MySqlSourceBuilder;
-import com.ververica.cdc.connectors.oracle.source.OracleSourceBuilder;
-import com.ververica.cdc.connectors.postgres.source.PostgresSourceBuilder;
-import com.ververica.cdc.connectors.mongodb.source.MongoDBSource;
 
+import org.apache.flink.cdc.connectors.base.options.StartupOptions;
+import org.apache.flink.cdc.connectors.base.source.jdbc.JdbcIncrementalSource;
+import org.apache.flink.cdc.connectors.mongodb.source.MongoDBSource;
+import org.apache.flink.cdc.connectors.mysql.source.MySqlSource;
+import org.apache.flink.cdc.connectors.mysql.source.MySqlSourceBuilder;
+import org.apache.flink.cdc.connectors.oracle.source.OracleSourceBuilder;
+import org.apache.flink.cdc.connectors.postgres.source.PostgresSourceBuilder;
+import org.apache.flink.cdc.connectors.sqlserver.source.SqlServerSourceBuilder;
 import org.apache.flink.lakesoul.entry.sql.flink.LakeSoulInAndOutputJobListener;
 import org.apache.flink.lakesoul.entry.sql.utils.FileUtil;
 import org.apache.flink.lakesoul.tool.JobOptions;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.time.Time;
-import com.ververica.cdc.connectors.sqlserver.source.SqlServerSourceBuilder;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.GlobalConfiguration;
@@ -39,7 +39,7 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 
-import static com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions.SCAN_SNAPSHOT_FETCH_SIZE;
+import static org.apache.flink.cdc.connectors.base.options.SourceOptions.SCAN_SNAPSHOT_FETCH_SIZE;
 import static org.apache.flink.lakesoul.tool.JobOptions.*;
 import static org.apache.flink.lakesoul.tool.LakeSoulDDLSinkOptions.*;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BUCKET_PARALLELISM;

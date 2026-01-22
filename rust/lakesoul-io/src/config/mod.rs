@@ -153,8 +153,11 @@ impl LakeSoulIOConfig {
     }
 
     /// Returns the value of a configuration option by key
-    pub fn option(&self, key: &str) -> Option<&String> {
-        self.options.get(key)
+    pub fn option(&self, key: &str) -> Option<String> {
+        self.options
+            .get(key)
+            .cloned()
+            .or_else(|| std::env::var(format!("LAKESOUL_{}", key.to_uppercase())).ok())
     }
 
     /// Returns the root directory path for files
@@ -189,6 +192,11 @@ impl LakeSoulIOConfig {
     pub fn pool_size(&self) -> Option<usize> {
         self.option(OPTION_KEY_POOL_SIZE)
             .map(|x| x.parse().unwrap())
+    }
+
+    /// Returns the memory pool dir if set
+    pub fn pool_dir(&self) -> Option<String> {
+        self.option(OPTION_KEY_POOL_DIR).map(|x| x.parse().unwrap())
     }
 
     /// Returns the hash bucket ID for partitioning (defaults to 0)

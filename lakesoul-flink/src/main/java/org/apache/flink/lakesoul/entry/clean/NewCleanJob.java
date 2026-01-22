@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: Apache-2.0
 package org.apache.flink.lakesoul.entry.clean;
 
+import org.apache.flink.cdc.connectors.base.source.jdbc.JdbcIncrementalSource;
+import org.apache.flink.cdc.connectors.postgres.source.PostgresSourceBuilder;
 import org.apache.flink.lakesoul.entry.SourceOptions;
 import org.apache.flink.lakesoul.entry.PgDeserialization;
 import org.apache.flink.lakesoul.entry.clean.PartitionInfoRecordGets.PartitionInfo;
-import com.ververica.cdc.connectors.base.source.jdbc.JdbcIncrementalSource;
-import com.ververica.cdc.connectors.postgres.source.PostgresSourceBuilder;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.state.MapState;
 import org.apache.flink.api.common.state.MapStateDescriptor;

@@ -22,7 +22,7 @@ SPDX-License-Identifier: Apache-2.0
     <properties>
         <flink.version>1.20.0</flink.version>
         <log4j.version>2.17.2</log4j.version>
-        <cdc.version>3.0.0</cdc.version>
+        <cdc.version>3.5.0</cdc.version>
     </properties>
 
     <dependencies>
@@ -176,27 +176,27 @@ SPDX-License-Identifier: Apache-2.0
         </dependency>
 
         <dependency>
-            <groupId>com.ververica</groupId>
+            <groupId>org.apache.flink</groupId>
             <artifactId>flink-sql-connector-sqlserver-cdc</artifactId>
             <version>${cdc.version}</version>
         </dependency>
         <dependency>
-            <groupId>com.ververica</groupId>
+            <groupId>org.apache.flink</groupId>
             <artifactId>flink-sql-connector-mysql-cdc</artifactId>
             <version>${cdc.version}</version>
         </dependency>
         <dependency>
-            <groupId>com.ververica</groupId>
+            <groupId>org.apache.flink</groupId>
             <artifactId>flink-sql-connector-oracle-cdc</artifactId>
             <version>${cdc.version}</version>
         </dependency>
         <dependency>
-            <groupId>com.ververica</groupId>
+            <groupId>org.apache.flink</groupId>
             <artifactId>flink-sql-connector-postgres-cdc</artifactId>
             <version>${cdc.version}</version>
         </dependency>
         <dependency>
-            <groupId>com.ververica</groupId>
+            <groupId>org.apache.flink</groupId>
             <artifactId>flink-sql-connector-mongodb-cdc</artifactId>
             <version>${cdc.version}</version>
         </dependency>
@@ -497,11 +497,11 @@ SPDX-License-Identifier: Apache-2.0
                     <artifactSet>
                         <includes>
                             <include>com.dmetasoul:lakesoul-flink</include>
-                            <include>com.ververica:flink-sql-connector-mysql-cdc</include>
-                            <include>com.ververica:flink-sql-connector-postgres-cdc</include>
-                            <include>com.ververica:flink-sql-connector-mongodb-cdc</include>
-                            <include>com.ververica:flink-sql-connector-sqlserver-cdc</include>
-                            <include>com.ververica:flink-sql-connector-oracle-cdc</include>
+                            <include>org.apache.flink:flink-sql-connector-mysql-cdc</include>
+                            <include>org.apache.flink:flink-sql-connector-postgres-cdc</include>
+                            <include>org.apache.flink:flink-sql-connector-mongodb-cdc</include>
+                            <include>org.apache.flink:flink-sql-connector-sqlserver-cdc</include>
+                            <include>org.apache.flink:flink-sql-connector-oracle-cdc</include>
                             <include>org.apache.flink:flink-connector-mongodb</include>
                             <include>org.mongodb:bson</include>
                             <include>com.dmetasoul:lakesoul-common</include>
@@ -568,13 +568,6 @@ SPDX-License-Identifier: Apache-2.0
                                 <exclude>META-INF/*.DSA</exclude>
                                 <exclude>META-INF/*.RSA</exclude>
                                 <exclude>META-INF/versions/**</exclude>
-                            </excludes>
-                        </filter>
-                        <filter>
-                            <artifact>com.ververica:flink-sql-connector-mysql-cdc</artifact>
-                            <excludes>
-                                <exclude>org/apache/flink/shaded/guava30/**</exclude>
-                                <exclude>META-INF/maven/com.google.guava/**</exclude>
                             </excludes>
                         </filter>
                     </filters>

@@ -3,8 +3,11 @@
 // SPDX-License-Identifier: Apache-2.0
 package org.apache.flink.lakesoul.entry;
 
-import com.ververica.cdc.connectors.mysql.source.MySqlSourceBuilder;
-import com.ververica.cdc.connectors.postgres.source.PostgresSourceBuilder;
+import org.apache.flink.cdc.connectors.base.options.StartupOptions;
+import org.apache.flink.cdc.connectors.mysql.source.MySqlSourceBuilder;
+import org.apache.flink.cdc.connectors.postgres.source.PostgresSourceBuilder;
+import org.apache.flink.cdc.debezium.table.DebeziumOptions;
+import org.apache.flink.cdc.debezium.utils.JdbcUrlUtils;
 import org.apache.flink.lakesoul.types.BinarySourceRecord;
 import org.apache.flink.table.catalog.ObjectPath;
 import org.apache.flink.core.fs.FileSystem;
@@ -12,15 +15,13 @@ import org.apache.flink.core.fs.Path;
 import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.constructor.SafeConstructor;
-import com.ververica.cdc.debezium.table.DebeziumOptions;
-import com.ververica.cdc.debezium.utils.JdbcUrlUtils;
 import java.io.IOException;
 import java.io.InputStream;
 import java.time.Duration;
 import java.util.*;
 import java.util.stream.Collectors;
 
-import static com.ververica.cdc.connectors.mysql.source.config.MySqlSourceOptions.*;
+import static org.apache.flink.cdc.connectors.mysql.source.config.MySqlSourceOptions.*;
 
 public class JdbcSourceBuilderTool {
 
@@ -123,12 +124,6 @@ public class JdbcSourceBuilderTool {
         }
 
         /* ------------------ behavior flags ------------------ */
-        if (cdcParams.containsKey("include.schema.changes")) {
-            sourceBuilder.includeSchemaChanges(
-                    Boolean.parseBoolean(
-                            cdcParams.get("include.schema.changes").toString()));
-        }
-
         if (cdcParams.containsKey("scan.incremental.close-idle-reader.enabled")) {
             sourceBuilder.closeIdleReaders(
                     Boolean.parseBoolean(
@@ -165,6 +160,9 @@ public class JdbcSourceBuilderTool {
         if (!debeziumProperties.isEmpty()){
             sourceBuilder.debeziumProperties(debeziumProperties);
         }
+        if (cdcParams.containsKey(SERVER_ID.key())){
+            sourceBuilder.serverId(cdcParams.get(SERVER_ID.key()).toString());
+        }
         if (cdcParams.containsKey(SCAN_SNAPSHOT_FETCH_SIZE.key())){
             sourceBuilder.fetchSize(Integer.parseInt(cdcParams.get(SCAN_SNAPSHOT_FETCH_SIZE.key()).toString()));
         }
@@ -174,7 +172,8 @@ public class JdbcSourceBuilderTool {
         if (cdcParams.containsKey(SCAN_INCREMENTAL_SNAPSHOT_CHUNK_KEY_COLUMN.key()) && cdcParams.get(SCAN_INCREMENTAL_SNAPSHOT_CHUNK_KEY_COLUMN.key()) != null){
             String databaseName = cdcParams.get(DATABASE_NAME.key()).toString();
             String tableName = cdcParams.get(TABLE_NAME.key()).toString();
-            sourceBuilder.chunkKeyColumn(new ObjectPath(databaseName, tableName), SCAN_INCREMENTAL_SNAPSHOT_CHUNK_KEY_COLUMN.key());
+            sourceBuilder.chunkKeyColumn(new ObjectPath(databaseName, tableName),
+                    cdcParams.get(SCAN_INCREMENTAL_SNAPSHOT_CHUNK_KEY_COLUMN.key()).toString());
         }
         if (cdcParams.containsKey(CHUNK_META_GROUP_SIZE.key())) {
             sourceBuilder.splitMetaGroupSize(
@@ -230,32 +229,32 @@ public class JdbcSourceBuilderTool {
         return sourceBuilder;
     }
 
-    private com.ververica.cdc.connectors.mysql.table.StartupOptions parseMysqlStartupOptions(String mode) {
+    private org.apache.flink.cdc.connectors.mysql.table.StartupOptions parseMysqlStartupOptions(String mode) {
         switch (mode.toLowerCase()) {
             case "initial":
-                return com.ververica.cdc.connectors.mysql.table.StartupOptions.initial();
+                return org.apache.flink.cdc.connectors.mysql.table.StartupOptions.initial();
             case "latest-offset":
             case "latest":
-                return com.ververica.cdc.connectors.mysql.table.StartupOptions.latest();
+                return org.apache.flink.cdc.connectors.mysql.table.StartupOptions.latest();
             case "earliest-offset":
             case "earliest":
-                return com.ververica.cdc.connectors.mysql.table.StartupOptions.earliest();
+                return org.apache.flink.cdc.connectors.mysql.table.StartupOptions.earliest();
             default:
                 throw new IllegalArgumentException(
                         "Unsupported scan.startup.mode: " + mode);
         }
     }
 
-    private com.ververica.cdc.connectors.base.options.StartupOptions parsePgStartupOptions(String mode){
+    private StartupOptions parsePgStartupOptions(String mode){
         switch (mode.toLowerCase()) {
             case "initial":
-                return com.ververica.cdc.connectors.base.options.StartupOptions.initial();
+                return StartupOptions.initial();
             case "latest-offset":
             case "latest":
-                return com.ververica.cdc.connectors.base.options.StartupOptions.latest();
+                return StartupOptions.latest();
             case "earliest-offset":
             case "earliest":
-                return com.ververica.cdc.connectors.base.options.StartupOptions.earliest();
+                return StartupOptions.earliest();
             default:
                 throw new IllegalArgumentException(
                         "Unsupported scan.startup.mode: " + mode);
