@@ -511,14 +511,31 @@ public class LakeSoulCatalog implements Catalog {
         }
         String partitionDesc = DBUtil.formatPartitionDesc(catalogPartitionSpec.getPartitionSpec());
         List<String> deleteFilePath = dbManager.deleteMetaPartitionInfo(tableInfo.getTableId(), partitionDesc);
-        deleteFilePath.forEach(filePath -> {
+        Path partitionDir = null;
+        for (String filePath : deleteFilePath) {
             Path path = new Path(filePath);
             try {
-                path.getFileSystem().delete(path, true);
+                FileSystem fs = path.getFileSystem();
+                if (partitionDir == null) {
+                    partitionDir = path.getParent();
+                }
+                if (fs.exists(path)) {
+                    fs.delete(path, false);
+                }
             } catch (IOException e) {
-                throw new RuntimeException(e);
+                throw new RuntimeException("Failed to delete file: " + filePath, e);
             }
-        });
+        }
+        if (partitionDir != null) {
+            try {
+                FileSystem fs = partitionDir.getFileSystem();
+                if (fs.exists(partitionDir)) {
+                    fs.delete(partitionDir, true);
+                }
+            } catch (IOException e) {
+                throw new RuntimeException("Failed to delete partition directory: " + partitionDir, e);
+            }
+        }
     }
 
     @Override

@@ -479,7 +479,7 @@ public class LakeSoulRecordConvert implements Serializable {
             List<String> partitionColls = topicsPartitionFields.get(tableName);
             List<Field> fieldNames = schema.fields();
             for (Field fieldName : fieldNames) {
-                if (partitionColls.contains("pt_" + fieldName.name() + "_dt")){
+                if (partitionColls.contains("pt_" + fieldName.name() + "_dt") || partitionColls.contains(fieldName.name())){
                     if (fieldName.schema().name() != null
                             && (ZonedTimestamp.SCHEMA_NAME.equals(fieldName.schema().name())
                             || ZonedTime.SCHEMA_NAME.equals(fieldName.schema().name()))
