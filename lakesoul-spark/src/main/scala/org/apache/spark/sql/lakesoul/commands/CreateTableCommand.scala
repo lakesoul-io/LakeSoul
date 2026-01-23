@@ -105,22 +105,10 @@ case class CreateTableCommand(var table: CatalogTable,
 
     val snapshotManagement = SnapshotManagement(modifiedPath.toUri.toString, table.database)
 
-    // don't support replace table
-    operation match {
-      case TableCreationModes.CreateOrReplace if !snapshotManagement.snapshot.isFirstCommit =>
-        throw LakeSoulErrors.operationNotSupportedException("replaceTable")
-      case _ =>
-    }
-
-
     val tc = snapshotManagement.startTransaction()
 
     val shortTableName = table.identifier.table
-    if (SparkMetaVersion.isShortTableNameExists(shortTableName, table.database)._1) {
-      throw LakeSoulErrors.tableExistsException(shortTableName)
-    } else {
-      tc.setShortTableName(shortTableName)
-    }
+    tc.setShortTableName(shortTableName)
 
     var newMode: SaveMode = mode
 
