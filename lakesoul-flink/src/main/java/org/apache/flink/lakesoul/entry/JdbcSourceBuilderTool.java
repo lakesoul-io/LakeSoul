@@ -217,6 +217,10 @@ public class JdbcSourceBuilderTool {
                     Duration.ofSeconds(
                             Long.parseLong(cdcParams.get(HEARTBEAT_INTERVAL.key()).toString())));
         }
+        if (cdcParams.containsKey(SERVER_ID.key())){
+            String serverId = (String) cdcParams.get(SERVER_ID.key());
+            sourceBuilder.serverId(serverId);
+        }
         if (cdcParams.containsKey(SCAN_INCREMENTAL_SNAPSHOT_BACKFILL_SKIP.key())) {
             sourceBuilder.skipSnapshotBackfill(
                     Boolean.parseBoolean(
