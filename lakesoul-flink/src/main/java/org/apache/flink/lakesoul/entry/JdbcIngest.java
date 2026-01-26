@@ -52,7 +52,7 @@ public class JdbcIngest {
         String catalogName = "my_mysql_catalog";
 
         Catalog mysqlCatalog = new MySqlCatalog(
-                Thread.currentThread().getContextClassLoader(),
+                JdbcIngest.class.getClassLoader(),
                 catalogName,
                 defaultDatabase,
                 username,
@@ -120,15 +120,21 @@ public class JdbcIngest {
                             .build());
         }
 
+        assert min != null;
         LocalDate dbStart = min.toLocalDate();
+        assert max != null;
         LocalDate dbEnd = max.toLocalDate();
         LocalDate start = dbStart;
         LocalDate end = dbEnd;
 
-        if (!userStart.isEmpty() && !userEnd.isEmpty()) {
+        if (userStart != null)
+        {
             LocalDate userStartDate = LocalDate.parse(userStart);
-            LocalDate userEndDate = LocalDate.parse(userEnd);
             start = dbStart.isAfter(userStartDate) ? dbStart : userStartDate;
+        }
+
+        if ( userEnd != null){
+            LocalDate userEndDate = LocalDate.parse(userEnd);
             end = dbEnd.isBefore(userEndDate) ? dbEnd : userEndDate;
         }
 
