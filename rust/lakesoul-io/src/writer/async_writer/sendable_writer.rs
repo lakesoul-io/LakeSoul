@@ -64,6 +64,7 @@ impl AsyncSendableMutableLakeSoulWriter {
         debug!(record_batch_row=?record_batch.num_rows(), "write_batch_async");
 
         if let Some(max_file_size) = self.io_session.io_config().max_file_size {
+            // max_file_size -> max_writer_size
             let in_progress_writer = match &mut self.in_progress {
                 Some(writer) => writer,
                 x => x.insert(Arc::new(Mutex::new(

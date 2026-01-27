@@ -30,7 +30,9 @@ use datafusion_datasource::source::DataSource;
 use datafusion_datasource::{ListingTableUrl, PartitionedFile, TableSchema};
 use datafusion_datasource_parquet::ParquetFormat;
 use datafusion_execution::config::SessionConfig;
-use datafusion_execution::memory_pool::{FairSpillPool, TrackConsumersPool};
+use datafusion_execution::memory_pool::{
+    FairSpillPool, GreedyMemoryPool, TrackConsumersPool,
+};
 use datafusion_execution::runtime_env::RuntimeEnvBuilder;
 use datafusion_execution::{TaskContext, runtime_env::RuntimeEnv};
 use datafusion_expr::execution_props::ExecutionProps;
@@ -251,7 +253,7 @@ impl LakeSoulIOSession {
             runtime_conf = runtime_conf.with_temp_file_path(&dir);
 
             let memory_pool = TrackConsumersPool::new(
-                FairSpillPool::new(pool_size),
+                GreedyMemoryPool::new(pool_size), // only one spill operator (sort)
                 NonZeroUsize::new(5).unwrap(),
             );
             runtime_conf = runtime_conf.with_memory_pool(Arc::new(memory_pool));

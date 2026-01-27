@@ -109,7 +109,7 @@ fn inner() -> Result<(), Report> {
         .build();
 
     let io_session = Arc::new(LakeSoulIOSession::try_new(io_config)?);
-    let pool = io_session.runtime_env().memory_pool.clone();
+    // let pool = io_session.runtime_env().memory_pool.clone();
     let runtime = Builder::new_multi_thread()
         .enable_all()
         .worker_threads(2) // 2
@@ -118,9 +118,7 @@ fn inner() -> Result<(), Report> {
     let mut writer =
         SyncSendableMutableLakeSoulWriter::try_new(io_session.clone(), runtime)?;
 
-    let start = Instant::now();
     let mut total_rows = 0;
-    let mut batch_idx = 0;
     println!("Start writing loop...");
 
     for file_path in &files {
@@ -135,7 +133,6 @@ fn inner() -> Result<(), Report> {
             let once_start = Instant::now();
             writer.write_batch(b.clone())?;
             total_rows += b.num_rows();
-            // batch_idx += 1;
             let spill_size = get_dir_size("/tmp/lakesoul/spill");
             println!(
                 "cost {} ms\nspill size: {spill_size}\n",
