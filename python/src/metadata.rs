@@ -3,7 +3,10 @@
 use std::sync::LazyLock;
 
 use crate::install_module;
-use lakesoul_metadata::{PooledClient, execute_query, pg_config_from_env};
+use lakesoul_metadata::{
+    PRIMARY_URL_ENV_KEY, PRIMARY_URL_PROP_KEY, PooledClient, SECONDARY_URL_ENV_KEY,
+    SECONDARY_URL_PROP_KEY, execute_query, pg_config_from_env,
+};
 use pyo3::{exceptions::PyValueError, prelude::*};
 
 pub(crate) fn init(py: Python, parent: &Bound<PyModule>) -> PyResult<()> {
@@ -24,8 +27,10 @@ static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
 });
 
 static CLIENT: LazyLock<PooledClient> = LazyLock::new(|| {
+    let config = pg_config_from_env(PRIMARY_URL_PROP_KEY, PRIMARY_URL_ENV_KEY).unwrap();
+    let secondary_config = pg_config_from_env(SECONDARY_URL_PROP_KEY, SECONDARY_URL_ENV_KEY).ok();
     RUNTIME
-        .block_on(PooledClient::try_new(pg_config_from_env().unwrap()))
+        .block_on(PooledClient::try_new(config, secondary_config))
         .unwrap()
 });
 

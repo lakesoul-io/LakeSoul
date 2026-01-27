@@ -16,6 +16,10 @@ pub use tokio::runtime::{Builder, Runtime};
 pub use tokio_postgres::{Client, NoTls, Statement};
 use tokio_postgres::{Error, Row};
 
+pub use crate::metadata_client::{
+    PRIMARY_URL_ENV_KEY, PRIMARY_URL_PROP_KEY, SECONDARY_URL_ENV_KEY,
+    SECONDARY_URL_PROP_KEY,
+};
 pub use crate::pooled_client::PooledClient;
 use crate::pooled_client::{PgConnection, QueryType};
 pub use error::{LakeSoulMetaDataError, Result};

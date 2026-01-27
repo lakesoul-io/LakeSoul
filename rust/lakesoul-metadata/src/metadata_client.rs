@@ -132,7 +132,7 @@ impl MetaDataClient {
     pub async fn from_env() -> Result<Self> {
         let config = pg_config_from_env(PRIMARY_URL_PROP_KEY, PRIMARY_URL_ENV_KEY)?;
         let secondary_config =
-            pg_config_from_env(PRIMARY_URL_PROP_KEY, PRIMARY_URL_ENV_KEY).ok();
+            pg_config_from_env(SECONDARY_URL_PROP_KEY, SECONDARY_URL_ENV_KEY).ok();
         Self::from_config(config, secondary_config).await
     }
 
