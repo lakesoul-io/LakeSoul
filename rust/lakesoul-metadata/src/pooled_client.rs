@@ -19,10 +19,17 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio_postgres::{Client, Config, Error, NoTls, Row, Statement, ToStatement};
 
+pub enum QueryType {
+    RW,
+    RO,
+}
+
 /// The pooled client for the postgres database.
 pub struct PooledClient {
     /// The pool of [`PgConnectionManager`] for the postgres database.
     pool: Pool<PgConnectionManager>,
+    /// An optional pool for read-only queries
+    secondary_pool: Option<Pool<PgConnectionManager>>,
     /// The statement cache for the postgres database.
     pub statement_cache: Arc<StatementCache>,
 }
@@ -35,82 +42,107 @@ impl Debug for PooledClient {
 
 pub type PgConnection<'a> = PooledConnection<'a, PgConnectionManager>;
 
+async fn create_pool(config: &str) -> Result<Pool<PgConnectionManager>> {
+    trace!("try to build pooled pg client");
+    let config = config.parse::<Config>()?;
+    let manager = PgConnectionManager::new(config);
+    let pool = Pool::builder()
+        .max_size(8)
+        .min_idle(1)
+        .connection_timeout(Duration::from_secs(10))
+        .idle_timeout(Some(Duration::from_secs(30)))
+        .queue_strategy(QueueStrategy::Lifo)
+        .build(manager)
+        .await?;
+    Ok(pool)
+}
+
 impl PooledClient {
     #[instrument(level = "trace")]
-    pub async fn try_new(config: String) -> Result<PooledClient> {
-        let config = config.parse::<Config>()?;
-        trace!("try to build pooled pg client");
-        let manager = PgConnectionManager::new(config);
-        let pool = Pool::builder()
-            .max_size(8)
-            .min_idle(1)
-            .connection_timeout(Duration::from_secs(10))
-            .idle_timeout(Some(Duration::from_secs(30)))
-            .queue_strategy(QueueStrategy::Lifo)
-            .build(manager)
-            .await?;
+    pub async fn try_new(
+        config: String,
+        secondary_config: Option<String>,
+    ) -> Result<PooledClient> {
+        info!("try to create pooled client with config {}, secondary {}", &config, &secondary_config);
+        let pool = create_pool(&config).await?;
+        let secondary_pool = if let Some(sec_conf) = secondary_config {
+            Some(create_pool(&sec_conf).await?)
+        } else {
+            None
+        };
         Ok(Self {
             pool,
+            secondary_pool,
             statement_cache: Arc::new(StatementCache::new()),
         })
     }
 
-    pub async fn get(&self) -> Result<PgConnection<'_>> {
-        self.pool.get().await.map_err(Into::into)
+    pub async fn get(&self, query_type: QueryType) -> Result<PgConnection<'_>> {
+        match query_type {
+            QueryType::RW => self.pool.get().await.map_err(Into::into),
+            QueryType::RO => match self.secondary_pool {
+                Some(ref pool) => pool.get().await.map_err(Into::into),
+                _ => self.pool.get().await.map_err(Into::into),
+            },
+        }
     }
 
     pub async fn prepare_cached(
         &self,
         query: &str,
+        query_type: QueryType,
     ) -> Result<(PgConnection<'_>, Statement)> {
-        let conn = self.get().await?;
+        let conn = self.get(query_type).await?;
         let statement = conn.prepare_cached(query).await?;
         Ok((conn, statement))
     }
 
-    pub async fn prepare(&self, query: &str) -> Result<Statement> {
-        let conn = self.get().await?;
+    pub async fn prepare(&self, query: &str, query_type: QueryType) -> Result<Statement> {
+        let conn = self.get(query_type).await?;
         conn.prepare(query).await.map_err(Into::into)
     }
 
     pub async fn query<T>(
         &self,
         statement: &T,
+        query_type: QueryType,
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<Vec<Row>>
     where
         T: ?Sized + ToStatement,
     {
-        let conn = self.get().await?;
+        let conn = self.get(query_type).await?;
         conn.query(statement, params).await.map_err(Into::into)
     }
 
     pub async fn query_opt<T>(
         &self,
         statement: &T,
+        query_type: QueryType,
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<Option<Row>>
     where
         T: ?Sized + ToStatement,
     {
-        let conn = self.get().await?;
+        let conn = self.get(query_type).await?;
         conn.query_opt(statement, params).await.map_err(Into::into)
     }
 
     pub async fn execute<T>(
         &self,
         statement: &T,
+        query_type: QueryType,
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<u64>
     where
         T: ?Sized + ToStatement,
     {
-        let conn = self.get().await?;
+        let conn = self.get(query_type).await?;
         conn.execute(statement, params).await.map_err(Into::into)
     }
 
-    pub async fn batch_execute(&self, query: &str) -> Result<()> {
-        let conn = self.get().await?;
+    pub async fn batch_execute(&self, query: &str, query_type: QueryType) -> Result<()> {
+        let conn = self.get(query_type).await?;
         conn.batch_execute(query).await.map_err(Into::into)
     }
 }

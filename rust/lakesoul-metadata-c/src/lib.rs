@@ -144,6 +144,14 @@ fn string_from_ptr(ptr: *const c_char) -> String {
     unsafe { CStr::from_ptr(ptr).to_str().unwrap().to_string() }
 }
 
+fn string_from_nullable_ptr(ptr: *const c_char) -> Option<String> {
+    if ptr.is_null() {
+        None
+    } else {
+        unsafe { Some(CStr::from_ptr(ptr).to_str().unwrap().to_string()) }
+    }
+}
+
 /// Execute the insert Data Access Object.
 #[unsafe(no_mangle)]
 pub extern "C" fn execute_insert(
@@ -373,14 +381,17 @@ pub extern "C" fn free_tokio_runtime(runtime: NonNull<CResult<TokioRuntime>>) {
 pub extern "C" fn create_tokio_postgres_client(
     callback: extern "C" fn(bool, *const c_char),
     config: *const c_char,
+    secondary_config: *const c_char,
     runtime: NonNull<CResult<TokioRuntime>>,
 ) -> NonNull<CResult<TokioPostgresClient>> {
     let config = string_from_ptr(config);
+    let secondary_config = string_from_nullable_ptr(secondary_config);
     let runtime =
         unsafe { NonNull::new_unchecked(runtime.as_ref().ptr as *mut Runtime).as_ref() };
 
-    let result =
-        runtime.block_on(async { lakesoul_metadata::create_connection(config).await });
+    let result = runtime.block_on(async {
+        lakesoul_metadata::create_connection(config, secondary_config).await
+    });
 
     let result = match result {
         Ok(client) => {

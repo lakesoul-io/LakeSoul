@@ -186,7 +186,20 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                 dataBaseProperty.getDbName(),
                 dataBaseProperty.getUsername(),
                 dataBaseProperty.getPassword());
+        String secondary = null;
+        if (dataBaseProperty.getSecondaryHost() != null
+            && dataBaseProperty.getSecondaryPort() != null) {
+            secondary = String.format(
+                    "host=%s port=%s dbname=%s user=%s password=%s connect_timeout=10 ",
+                    dataBaseProperty.getSecondaryHost(),
+                    dataBaseProperty.getSecondaryPort(),
+                    dataBaseProperty.getDbName(),
+                    dataBaseProperty.getUsername(),
+                    dataBaseProperty.getPassword());
+        }
         final CompletableFuture<Boolean> future = new CompletableFuture<>();
+        LOG.info("Creating native postgres client primary {}, secondary {}",
+                config, secondary);
         tokioPostgresClient = libLakeSoulMetaData.create_tokio_postgres_client(
                 new ReferencedBooleanCallback((bool, msg) -> {
                     if (msg == null || msg.isEmpty()) {
@@ -197,6 +210,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                     }
                 }, getbooleanCallbackObjectReferenceManager()),
                 config,
+                secondary,
                 tokioRuntime
         );
         try {

@@ -47,12 +47,14 @@ public class DBUtil {
 
     private static final String driverNameKey = "lakesoul.pg.driver";
     public static final String urlKey = "lakesoul.pg.url";
+    public static final String secondaryUrlKey = "lakesoul.pg.secondary.url";
     public static final String usernameKey = "lakesoul.pg.username";
     public static final String passwordKey = "lakesoul.pg.password";
     public static final String domainKey = "lakesoul.current.domain";
 
     private static final String driverNameEnv = "LAKESOUL_PG_DRIVER";
     private static final String urlEnv = "LAKESOUL_PG_URL";
+    private static final String secondaryUrlEnv = "LAKESOUL_PG_SECONDARY_URL";
     private static final String usernameEnv = "LAKESOUL_PG_USERNAME";
     private static final String passwordEnv = "LAKESOUL_PG_PASSWORD";
     private static final String domainENV = "LAKESOUL_CURRENT_DOMAIN";
@@ -102,6 +104,7 @@ public class DBUtil {
         } else {
             properties.setProperty(driverNameKey, getConfigValue(driverNameEnv, driverNameKey, driverNameDefault));
             properties.setProperty(urlKey, getConfigValue(urlEnv, urlKey, urlDefault));
+            properties.setProperty(secondaryUrlKey, getConfigValue(secondaryUrlEnv, secondaryUrlKey, null));
             properties.setProperty(usernameKey, getConfigValue(usernameEnv, usernameKey, usernameDefault));
             properties.setProperty(passwordKey, getConfigValue(passwordEnv, passwordKey, passwordDefault));
         }
@@ -115,6 +118,12 @@ public class DBUtil {
             dataBaseProperty.setDbName(url.getPath().substring(1));
             dataBaseProperty.setHost(url.getHost());
             dataBaseProperty.setPort(String.valueOf(url.getPort()));
+
+            if (properties.getProperty(secondaryUrlKey) != null) {
+                URL secondaryUrl = new URL(properties.getProperty(secondaryUrlKey).replaceFirst("jdbc:postgresql", "http"));
+                dataBaseProperty.setSecondaryHost(url.getHost());
+                dataBaseProperty.setSecondaryPort(String.valueOf(url.getPort()));
+            }
         } catch (MalformedURLException e) {
             throw new RuntimeException(e);
         }

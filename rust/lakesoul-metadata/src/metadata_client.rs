@@ -47,8 +47,16 @@ impl Debug for MetaDataClient {
 
 pub type MetaDataClientRef = Arc<MetaDataClient>;
 
+pub const PRIMARY_URL_PROP_KEY: &'static str = "lakesoul.pg.url=";
+pub const PRIMARY_URL_ENV_KEY: &'static str = "LAKESOUL_PG_URL";
+pub const SECONDARY_URL_PROP_KEY: &'static str = "lakesoul.pg.secondary.url=";
+pub const SECONDARY_URL_ENV_KEY: &'static str = "LAKESOUL_PG_SECONDARY_URL";
+
 /// Generate pg config from environment variable
-pub fn pg_config_from_env() -> Result<String, LakeSoulMetaDataError> {
+pub fn pg_config_from_env(
+    url_prop: &str,
+    url_env: &str,
+) -> Result<String, LakeSoulMetaDataError> {
     if let Ok(config_path) = std::env::var("lakesoul_home") {
         trace!("get config from lakesoul_home: {}", config_path);
         let config = fs::read_to_string(&config_path).unwrap_or_else(|_| {
@@ -61,7 +69,7 @@ pub fn pg_config_from_env() -> Result<String, LakeSoulMetaDataError> {
             })
             .collect::<HashMap<_, _>>();
         let url = Url::parse(
-            &config_map.get("lakesoul.pg.url=").unwrap_or(
+            &config_map.get(url_prop).unwrap_or(
                 &"jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified",
             )[5..],
         )?;
@@ -89,8 +97,8 @@ pub fn pg_config_from_env() -> Result<String, LakeSoulMetaDataError> {
                 .unwrap_or(&"lakesoul_test")
         ));
     }
-    if let Ok(pg_url) = std::env::var("LAKESOUL_PG_URL") {
-        trace!("get config from env LAKESOUL_PG_URL= {}", pg_url);
+    if let Ok(pg_url) = std::env::var(url_env) {
+        trace!("get config from env {}={}", url_env, pg_url);
         let url = Url::parse(&pg_url[5..])?;
         return Ok(format!(
             "host={} port={} dbname={} user={} password={}",
@@ -122,20 +130,28 @@ pub fn pg_config_from_env() -> Result<String, LakeSoulMetaDataError> {
 
 impl MetaDataClient {
     pub async fn from_env() -> Result<Self> {
-        let config = pg_config_from_env()?;
-        Self::from_config(config).await
+        let config = pg_config_from_env(PRIMARY_URL_PROP_KEY, PRIMARY_URL_ENV_KEY)?;
+        let secondary_config =
+            pg_config_from_env(PRIMARY_URL_PROP_KEY, PRIMARY_URL_ENV_KEY).ok();
+        Self::from_config(config, secondary_config).await
     }
 
-    pub async fn from_config(config: String) -> Result<Self> {
-        Self::from_config_and_max_retry(config, 3).await
+    pub async fn from_config(
+        config: String,
+        secondary_config: Option<String>,
+    ) -> Result<Self> {
+        Self::from_config_and_max_retry(config, secondary_config, 3).await
     }
 
     #[instrument]
     pub async fn from_config_and_max_retry(
         config: String,
+        secondary_config: Option<String>,
         max_retry: usize,
     ) -> Result<Self> {
-        let client = Arc::new(Mutex::new(create_connection(config.clone()).await?));
+        let client = Arc::new(Mutex::new(
+            create_connection(config.clone(), secondary_config).await?,
+        ));
         let config = config.parse::<Config>()?;
         Ok(Self {
             client,
