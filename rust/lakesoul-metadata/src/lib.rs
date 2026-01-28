@@ -16,8 +16,12 @@ pub use tokio::runtime::{Builder, Runtime};
 pub use tokio_postgres::{Client, NoTls, Statement};
 use tokio_postgres::{Error, Row};
 
-use crate::pooled_client::PgConnection;
+pub use crate::metadata_client::{
+    PRIMARY_URL_ENV_KEY, PRIMARY_URL_PROP_KEY, SECONDARY_URL_ENV_KEY,
+    SECONDARY_URL_PROP_KEY,
+};
 pub use crate::pooled_client::PooledClient;
+use crate::pooled_client::{PgConnection, QueryType};
 pub use error::{LakeSoulMetaDataError, Result};
 pub use metadata_client::{MetaDataClient, MetaDataClientRef, pg_config_from_env};
 use proto::proto::entity;
@@ -26,7 +30,9 @@ pub mod transfusion;
 
 pub mod error;
 mod jwt;
+use crate::pooled_client::QueryType::{RO, RW};
 pub use jwt::{Claims, JwtServer};
+
 mod metadata_client;
 mod pooled_client;
 pub mod rbac;
@@ -273,6 +279,17 @@ pub enum DaoType {
     DeleteDiscardCompressedFileInfoByTablePath = DAO_TYPE_UPDATE_OFFSET + 18,
 }
 
+fn get_query_type(dao_type: DaoType) -> QueryType {
+    let dao_type = dao_type as i32;
+    if dao_type <= DAO_TYPE_INSERT_ONE_OFFSET
+        || (dao_type >= DAO_TYPE_QUERY_SCALAR_OFFSET && dao_type < DAO_TYPE_UPDATE_OFFSET)
+    {
+        RO
+    } else {
+        RW
+    }
+}
+
 /// Get the prepared statement for the coded Data Access Object.
 async fn get_prepared_statement<'a>(
     client: &'a PooledClient,
@@ -344,10 +361,10 @@ async fn get_prepared_statement<'a>(
             where table_id = $1::TEXT and partition_desc = $2::TEXT and version = $3::INT",
         DaoType::SelectOnePartitionVersionByTableIdAndDesc =>
             "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.timestamp, m.expression, m.domain from (
-                select table_id,partition_desc,max(version) from partition_info
-                where table_id = $1::TEXT and partition_desc = $2::TEXT group by table_id, partition_desc) t
+                select table_id,partition_desc,version from partition_info
+                where table_id = $1::TEXT and partition_desc = $2::TEXT order by table_id, partition_desc, version desc limit 1) t
                 left join partition_info m on t.table_id = m.table_id
-                and t.partition_desc = m.partition_desc and t.max = m.version",
+                and t.partition_desc = m.partition_desc and t.version = m.version",
         DaoType::ListPartitionByTableIdAndDesc =>
             "select table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain
             from partition_info
@@ -555,7 +572,9 @@ async fn get_prepared_statement<'a>(
 
         /* _ => todo!(), */
     };
-    client.prepare_cached(statement).await
+    client
+        .prepare_cached(statement, get_query_type(*dao_type))
+        .await
 }
 
 /// Parse the joined string to the parameters.
@@ -1719,6 +1738,7 @@ pub async fn clean_meta_for_test(client: &PooledClient) -> Result<i32> {
             delete from table_name_id;
             delete from partition_info;
             delete from discard_compressed_file_info",
+            RW,
         )
         .await;
     match result {
@@ -1728,8 +1748,11 @@ pub async fn clean_meta_for_test(client: &PooledClient) -> Result<i32> {
 }
 
 /// Create a pg connection, return pg client.
-pub async fn create_connection(config: String) -> Result<PooledClient> {
-    PooledClient::try_new(config).await
+pub async fn create_connection(
+    config: String,
+    secondary_config: Option<String>,
+) -> Result<PooledClient> {
+    PooledClient::try_new(config, secondary_config).await
 }
 
 /// Convert the uuid list from [`tokio_postgres::Row`] to the [`entity::Uuid`] list.

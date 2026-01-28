@@ -47,12 +47,14 @@ public class DBUtil {
 
     private static final String driverNameKey = "lakesoul.pg.driver";
     public static final String urlKey = "lakesoul.pg.url";
+    public static final String secondaryUrlKey = "lakesoul.pg.secondary.url";
     public static final String usernameKey = "lakesoul.pg.username";
     public static final String passwordKey = "lakesoul.pg.password";
     public static final String domainKey = "lakesoul.current.domain";
 
     private static final String driverNameEnv = "LAKESOUL_PG_DRIVER";
     private static final String urlEnv = "LAKESOUL_PG_URL";
+    private static final String secondaryUrlEnv = "LAKESOUL_PG_SECONDARY_URL";
     private static final String usernameEnv = "LAKESOUL_PG_USERNAME";
     private static final String passwordEnv = "LAKESOUL_PG_PASSWORD";
     private static final String domainENV = "LAKESOUL_CURRENT_DOMAIN";
@@ -63,10 +65,12 @@ public class DBUtil {
     public static String getConfigValue(String envKey, String propKey, String defaultValue) {
         String value = System.getenv(envKey);
         if (value != null) {
+            LOG.info(String.format("Environment variable %s=%s", envKey, value));
             return value;
         }
         value = System.getProperty(propKey);
         if (value != null) {
+            LOG.info(String.format("Property variable %s=%s", propKey, value));
             return value;
         }
         return defaultValue;
@@ -102,6 +106,7 @@ public class DBUtil {
         } else {
             properties.setProperty(driverNameKey, getConfigValue(driverNameEnv, driverNameKey, driverNameDefault));
             properties.setProperty(urlKey, getConfigValue(urlEnv, urlKey, urlDefault));
+            properties.setProperty(secondaryUrlKey, getConfigValue(secondaryUrlEnv, secondaryUrlKey, ""));
             properties.setProperty(usernameKey, getConfigValue(usernameEnv, usernameKey, usernameDefault));
             properties.setProperty(passwordKey, getConfigValue(passwordEnv, passwordKey, passwordDefault));
         }
@@ -115,6 +120,16 @@ public class DBUtil {
             dataBaseProperty.setDbName(url.getPath().substring(1));
             dataBaseProperty.setHost(url.getHost());
             dataBaseProperty.setPort(String.valueOf(url.getPort()));
+
+            String secondary = properties.getProperty(secondaryUrlKey);
+            if (StringUtils.isNotBlank(secondary)) {
+                URL secondaryUrl = new URL(secondary.replaceFirst("jdbc:postgresql", "http"));
+                LOG.info("Secondary URL: {}:{}", secondaryUrl.getHost(), secondaryUrl.getPort());
+                dataBaseProperty.setSecondaryHost(secondaryUrl.getHost());
+                dataBaseProperty.setSecondaryPort(String.valueOf(secondaryUrl.getPort()));
+            } else {
+                LOG.info("Secondary URL is empty, props {}", properties);
+            }
         } catch (MalformedURLException e) {
             throw new RuntimeException(e);
         }
