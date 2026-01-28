@@ -361,10 +361,10 @@ async fn get_prepared_statement<'a>(
             where table_id = $1::TEXT and partition_desc = $2::TEXT and version = $3::INT",
         DaoType::SelectOnePartitionVersionByTableIdAndDesc =>
             "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.timestamp, m.expression, m.domain from (
-                select table_id,partition_desc,max(version) from partition_info
-                where table_id = $1::TEXT and partition_desc = $2::TEXT group by table_id, partition_desc) t
+                select table_id,partition_desc,version from partition_info
+                where table_id = $1::TEXT and partition_desc = $2::TEXT order by table_id, partition_desc, version desc limit 1) t
                 left join partition_info m on t.table_id = m.table_id
-                and t.partition_desc = m.partition_desc and t.max = m.version",
+                and t.partition_desc = m.partition_desc and t.version = m.version",
         DaoType::ListPartitionByTableIdAndDesc =>
             "select table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain
             from partition_info
