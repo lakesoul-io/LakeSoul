@@ -3,6 +3,41 @@
 version = 4
 
 [[package]]
+name = "adbc_core"
+version = "0.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a38cdcc3e43dc645038c2b6339dd98610c48ae593cc67839452e6670fa09f27"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+]
+
+[[package]]
+name = "adbc_driver_manager"
+version = "0.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75c8a313f30eb7d90584eda8760037c746a1827297100b64704b30f3f6cbd203"
+dependencies = [
+ "adbc_core",
+ "adbc_ffi",
+ "arrow-array",
+ "arrow-schema",
+ "libloading",
+ "toml",
+]
+
+[[package]]
+name = "adbc_ffi"
+version = "0.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08d36274376fdc4849cf47a78f3baeef4ae1654ef703dc3148d91adde3336c11"
+dependencies = [
+ "adbc_core",
+ "arrow-array",
+ "arrow-schema",
+]
+
+[[package]]
 name = "addr2line"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3776,6 +3811,8 @@ dependencies = [
 name = "lakesoul-datafusion"
 version = "0.1.0"
 dependencies = [
+ "adbc_core",
+ "adbc_driver_manager",
  "arrow",
  "arrow-arith",
  "arrow-cast",
@@ -4135,6 +4172,16 @@ name = "libc"
 version = "0.2.177"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2874a2af47a2325c2001a6e6fad9b16a53b802102b528163885171cf92b15976"
+
+[[package]]
+name = "libloading"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
 
 [[package]]
 name = "libm"

@@ -39,6 +39,10 @@ pub mod planner;
 pub mod serialize;
 pub mod tpch;
 
+#[cfg(feature = "adbc")]
+#[expect(dead_code)]
+mod adbc;
+
 #[cfg(test)]
 mod tests;
 
