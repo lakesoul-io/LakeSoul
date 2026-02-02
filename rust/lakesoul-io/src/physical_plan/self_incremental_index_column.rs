@@ -7,6 +7,7 @@
 use arrow::array::{ArrayRef, UInt64Array};
 use arrow::datatypes::SchemaRef;
 use arrow::record_batch::{RecordBatch, RecordBatchOptions};
+use arrow_cast::pretty::print_batches;
 use arrow_schema::{DataType, Field, SchemaBuilder};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::{EquivalenceProperties, LexOrdering};
@@ -150,6 +151,7 @@ impl SelfIncrementalIndexStream {
     }
 
     fn add_index_column(&mut self, batch: &RecordBatch) -> Result<RecordBatch> {
+        print_batches(&[batch.clone()]).unwrap();
         let row_count = batch.num_rows();
 
         // Create the index array

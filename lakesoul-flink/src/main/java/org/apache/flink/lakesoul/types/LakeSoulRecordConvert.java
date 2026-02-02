@@ -392,7 +392,7 @@ public class LakeSoulRecordConvert implements Serializable {
                 if (paras.get("connect.decimal.precision") == null) {
                     // this is a patch
                     if (fieldName.equals("id")) {
-                        LOG.info("id convert to Decimal(20,0)");
+                        // LOG.info("id convert to Decimal(20,0)");
                         return new DecimalType(nullable, 20, 0);
                     }
                     return new DecimalType(nullable, 38, 30);
@@ -555,9 +555,11 @@ public class LakeSoulRecordConvert implements Serializable {
             if (timeZone != null) {
                 ZoneId flinkZoneId = ZoneId.of(timeZone);
                 date = instant.atZone(flinkZoneId).toLocalDate();
+                LOG.debug("use timezone: {}, calculated date: {}", flinkZoneId, date);
             } else {
                 ZoneId flinkZoneId = ZoneId.systemDefault();
                 date = instant.atZone(flinkZoneId).toLocalDate();
+                LOG.debug("use timezone: {}, calculated date: {}", flinkZoneId, date);
             }
             if (formatRule == null) {
                 formatRule = "yyyy-MM-dd";
@@ -751,38 +753,41 @@ public class LakeSoulRecordConvert implements Serializable {
         }
         Map<String, String> paras = schema.parameters();
         DecimalData d;
-                if (paras == null || paras.get("connect.decimal.precision") == null) {
-                    // this is a patch
-                    if (fieldName.equals("id")) {
-                        LOG.info("id convert to Decimal(20,0)");
-                        d = DecimalData.fromBigDecimal(bigDecimal, 20, 0);
-                    } else {
-                        d = DecimalData.fromBigDecimal(bigDecimal, 38, 30);
-                    }
-                } else {
-                    d = DecimalData.fromBigDecimal(bigDecimal, Integer.parseInt(paras.get("connect.decimal.precision")),
-                            Integer.parseInt(paras.get("scale")));
-                }
-                if (d == null) {
-                    LOG.error("Convert decimal failed, dbz object: {}@{}, schema {}, java bd object {}@{}:{}, paras: {}",
-                            dbzObj, dbzObj.getClass().getName(), schema,
-                            bigDecimal, bigDecimal.precision(), bigDecimal.scale(), paras);
-                }
-                return d;
+         if (paras == null || paras.get("connect.decimal.precision") == null) {
+             // this is a patch
+             if (fieldName.equals("id")) {
+                // LOG.info("id convert to Decimal(20,0)");
+                 d = DecimalData.fromBigDecimal(bigDecimal, 20, 0);
+             } else {
+                // LOG.info("{} convert to Decimal(38,30)", fieldName);
+                 d = DecimalData.fromBigDecimal(bigDecimal, 38, 30);
             }
 
-            public void writeDecimal (BinaryRowWriter writer,int index, String fieldName, Object
-            dbzObj, Schema schema){
-                DecimalData data = (DecimalData) convertToDecimal(fieldName, dbzObj, schema);
-                if (data == null) {
-                    String err = String.format("Convert decimal failed %s@%s, index %d, schema %s",
-                            dbzObj, dbzObj.getClass().getName(),
-                            index, schema);
-                    LOG.error(err);
-                    throw new RuntimeException(err);
-                }
-                writer.writeDecimal(index, data, data.precision());
-            }
+         } else {
+            // LOG.info("{} convert to Decimal precisely", fieldName);
+             d = DecimalData.fromBigDecimal(bigDecimal, Integer.parseInt(paras.get("connect.decimal.precision")),
+                     Integer.parseInt(paras.get("scale")));
+         }
+         if (d == null) {
+            LOG.error("Convert decimal failed ,field name: {}, dbz object: {}@{}, schema {}, java bd object {}@{}:{}, paras: {}",
+                    fieldName, dbzObj, dbzObj.getClass().getName(), schema,
+                     bigDecimal, bigDecimal.precision(), bigDecimal.scale(), paras);
+         }
+         return d;
+     }
+
+     public void writeDecimal(BinaryRowWriter writer, int index, String fieldName, Object dbzObj, Schema schema) {
+         DecimalData data = (DecimalData) convertToDecimal(fieldName, dbzObj, schema);
+         if (data == null) {
+            String err = String.format("Convert decimal failed for %s %s@%s, index %d, schema %s",
+                    fieldName,
+                     dbzObj, dbzObj.getClass().getName(),
+                     index, schema);
+             LOG.error(err);
+             throw new RuntimeException(err);
+         }
+         writer.writeDecimal(index, data, data.precision());
+     }
 
             public Object convertToDate (Object dbzObj, Schema schema){
                 return (int) TemporalConversions.toLocalDate(dbzObj).toEpochDay();
@@ -854,7 +859,6 @@ public class LakeSoulRecordConvert implements Serializable {
                     return TimestampData.fromInstant(instant);
                 }
                 // fallback to zoned timestamp
-
                 LocalDateTime localDateTime =
                         TemporalConversions.toLocalDateTime(dbzObj, ZoneId.of("UTC"));
                 return TimestampData.fromLocalDateTime(localDateTime);

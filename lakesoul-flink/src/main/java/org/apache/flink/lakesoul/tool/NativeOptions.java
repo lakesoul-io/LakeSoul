@@ -43,9 +43,16 @@ public class NativeOptions {
                     .noDefaultValue()
                     .withDescription("Option to set if keep order of records for native writer");
 
+    public static final ConfigOption<String> STABLE_SORT =
+            key("lakesoul.native_writer.stable_sort")
+                    .stringType()
+                    .defaultValue("false")
+                    .withDescription("Option to set if use stable sort for native writer");
+
     public static final List<ConfigOption<String>> OPTION_LIST = Arrays.asList(
             MEM_LIMIT,
             KEEP_ORDERS,
+            STABLE_SORT,
             SPILL_MEM_POOL_SIZE,
             SPILL_MEM_POOL_DIR);
 }

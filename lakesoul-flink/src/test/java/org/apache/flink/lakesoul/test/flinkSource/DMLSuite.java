@@ -383,6 +383,41 @@ public class DMLSuite extends AbstractTestBase {
         });
     }
 
+    @Test
+    public void testStableSort() throws ExecutionException, InterruptedException {
+        TableEnvironment tEnv = TestUtils.createTableEnv(BATCH_TYPE);
+        String createUserSql = "create table test_stable_sort (" +
+                "    id DECIMAL(10, 5)," +
+                "    op STRING," +
+                "CONSTRAINT `pk` PRIMARY KEY (`id`) NOT ENFORCED" +
+                ")" +
+                " WITH (" +
+                "    'connector'='lakesoul'," +
+                "    'hashBucketNum'='2'," +
+                "    'lakesoul.native_writer.stable_sort'='true'," +
+                "    'use_cdc'='true'," +
+                "    'path'='" + getTempDirUri("/lakeSource/test_stable_sort") +
+                "' )";
+        tEnv.executeSql("DROP TABLE if exists test_stable_sort");
+        tEnv.executeSql(createUserSql);
+        tEnv.executeSql("INSERT INTO test_stable_sort VALUES " +
+                        "(CAST(2 as DECIMAL(10, 5)),  'insert1')," +
+                        "(CAST(2 as DECIMAL(10, 5)),  'insert2')," +
+                        "(CAST(2 as DECIMAL(10, 5)),  'insert3')," +
+                        "(CAST(2 as DECIMAL(10, 5)),  'insert4')" )
+                .await();
+        String testSelect = "select * from test_stable_sort";
+        TableImpl flinkTable = (TableImpl) tEnv.sqlQuery(testSelect);
+        List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
+        System.out.println(results);
+//        TestUtils.checkEqualInAnyOrder(results, new String[]{
+//                "+I[2.00000, 2024-01-01, 2024-02-02T17:01:01.123456Z, value1]",
+//                "+I[123.00000, 2024-05-01, 2024-02-04T17:01:01.123456Z, value4]",
+//                "+I[55.78000, 2024-01-03, 2024-02-03T17:01:01.123456Z, value3]",
+//                "+I[1234.56000, 2024-02-01, 2024-03-02T17:01:01.123456Z, value2]"
+//        });
+    }
+
     private void createLakeSoulSourceNonPkTableUser(TableEnvironment tEnvs)
             throws ExecutionException, InterruptedException {
         String createUserSql = "create table user_info_2 (" +

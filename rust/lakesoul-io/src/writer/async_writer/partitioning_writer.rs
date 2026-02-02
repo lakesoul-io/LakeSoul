@@ -134,7 +134,7 @@ impl PartitioningAsyncWriter {
         let input: Arc<dyn ExecutionPlan> = if io_config.stable_sort() {
             aux_sort_cols.push("__self_incremental_index__".to_string());
             info!(
-                "input schema of self incremental index exec: {:?}",
+                "input schema of self incremental index exec: {}",
                 input.schema()
             );
             Arc::new(SelfIncrementalIndexColumnExec::new(Arc::new(input)))

@@ -89,6 +89,7 @@ pub async fn create_writer(
     } else if !writer_io_config.primary_keys.is_empty()
         && !writer_io_config.keep_ordering()
     {
+        // no need to keep row order
         // sort primary key table
         writer_io_config.target_schema = IOSchema(uniform_schema(writer_schema));
         if writer_io_config.files.is_empty() && !writer_io_config.prefix().is_empty() {
