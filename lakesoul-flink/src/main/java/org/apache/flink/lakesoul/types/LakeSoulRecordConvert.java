@@ -421,18 +421,12 @@ public class LakeSoulRecordConvert implements Serializable {
         return opField != null ? Envelope.Operation.forCode(value.getString(opField.name())) : null;
     }
 
-    public long computeBinarySourceRecordPrimaryKeyHash(BinarySourceRecord sourceRecord,
-                                                        int hashBucketNum,
-                                                        int parallelism) {
+    public long computeBinarySourceRecordPrimaryKeyHash(BinarySourceRecord sourceRecord) {
         LakeSoulRowDataWrapper data = sourceRecord.getData();
         RowType rowType = Objects.equals(data.getOp(), "delete") ? data.getBeforeType() : data.getAfterType();
         RowData rowData = Objects.equals(data.getOp(), "delete") ? data.getBefore() : data.getAfter();
         List<String> pks = sourceRecord.getPrimaryKeys();
-        List<String> partitionKeys = sourceRecord.getPartitionKeys();
-        return DynamicBucketingHash.hash(
-                sourceRecord.getTableId().identifier(),
-                rowType, rowData, pks, partitionKeys,
-                hashBucketNum, parallelism);
+        return DynamicBucketingHash.hash(rowType, rowData, pks);
     }
 
     public RowData addCDCKindField(RowData rowData, RowData.FieldGetter[] fieldGetters) {
@@ -833,7 +827,7 @@ public class LakeSoulRecordConvert implements Serializable {
                             nano / 1000_000, (int) (nano % 1000_000)).toInstant();
             }
             if (instant != null) {
-                ZonedDateTime zonedDateTime = instant.atZone(ZoneId.of("UTC")).withZoneSameLocal(serverTimeZone);
+                ZonedDateTime zonedDateTime = instant.atZone(ZoneId.of("UTC"));
                 return TimestampData.fromInstant(zonedDateTime.toInstant());
             }
             return null;

@@ -92,6 +92,9 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         Schema arrowSchema = ArrowUtils.toArrowSchema(rowType);
         nativeWriter = new NativeIOWriter(arrowSchema);
         nativeWriter.setPrimaryKeys(primaryKeys);
+        if (!primaryKeys.isEmpty()) {
+            nativeWriter.setOption(STABLE_SORT, "true");
+        }
 
         if (conf.getBoolean(LakeSoulSinkOptions.isMultiTableSource)) {
             nativeWriter.setAuxSortColumns(Collections.singletonList(SORT_FIELD));

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 package org.apache.flink.lakesoul.tool;
 
 import org.apache.flink.table.data.RowData;
@@ -13,48 +17,21 @@ public class DynamicBucketingHash implements Serializable {
 
     static Random random = new Random(System.currentTimeMillis());
 
-    public static long hash(String table, RowData rowData,
-                            LakeSoulKeyGen pkKeyGen,
-                            LakeSoulKeyGen partKeyGen) {
-        if (pkKeyGen == null && partKeyGen == null) {
+    public static long hash(RowData rowData,
+                            LakeSoulKeyGen pkKeyGen) {
+        if (pkKeyGen == null) {
             return random.nextLong();
         }
-        long pkHash = 0;
-        if (pkKeyGen != null) {
-            pkHash = pkKeyGen.getRePartitionHash(rowData);
-        }
-        long partHash = 0;
-        if (partKeyGen != null) {
-            partHash = partKeyGen.getRePartitionHash(rowData);
-        }
-        String key = String.format("%s-%d-%d", table, pkHash, partHash);
-        return key.hashCode();
+        return pkKeyGen.getRePartitionHash(rowData);
     }
 
-    public static long hash(String table, RowType rowType, RowData rowData,
-                            List<String> primaryKeyList,
-                            List<String> partitionKeyList,
-                            int hashBucketNum,
-                            int parallelism) {
-        if (primaryKeyList.isEmpty() && partitionKeyList.isEmpty()) {
+    public static long hash(RowType rowType, RowData rowData,
+                            List<String> primaryKeyList) {
+        if (primaryKeyList.isEmpty()) {
             return random.nextLong();
         }
-        long pkHash = 0;
-        if (!primaryKeyList.isEmpty()) {
-            pkHash = hash(rowType, rowData, primaryKeyList);
-        }
-        long partitionHash = 0;
-        if  (!partitionKeyList.isEmpty()) {
-            partitionHash = hash(rowType, rowData, partitionKeyList);
-        }
-        String key = String.format("%s-%d-%d", table, pkHash % hashBucketNum,
-                partitionHash % parallelism);
-        return key.hashCode();
-    }
-
-    private static long hash(RowType rowType, RowData rowData, List<String> keyList) {
         long hash = 42;
-        for (String key : keyList) {
+        for (String key : primaryKeyList) {
             int typeIndex = rowType.getFieldIndex(key);
             if (typeIndex == -1) {
                 continue;

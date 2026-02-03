@@ -58,19 +58,15 @@ public class LakeSoulMultiTableSinkStreamBuilder {
 
     private static class HashGen implements KeySelector<BinarySourceRecord, Long> {
         private static final long serialVersionUID = -4298875987882891700L;
-        private final int hashBucketNum;
-        private final int parallelism;
         private final LakeSoulRecordConvert convert;
 
-        public HashGen(int hashBucketNum, int parallelism, LakeSoulRecordConvert convert) {
-            this.hashBucketNum = hashBucketNum;
-            this.parallelism = parallelism;
+        public HashGen(LakeSoulRecordConvert convert) {
             this.convert = convert;
         }
 
         @Override
         public Long getKey(BinarySourceRecord binarySourceRecord) throws Exception {
-            return convert.computeBinarySourceRecordPrimaryKeyHash(binarySourceRecord, hashBucketNum, parallelism);
+            return convert.computeBinarySourceRecordPrimaryKeyHash(binarySourceRecord);
         }
     }
 
@@ -81,7 +77,7 @@ public class LakeSoulMultiTableSinkStreamBuilder {
         LOG.info("Building CDC stream partition for parallelism {}, dynamic bucket {}",
                 parallelism, dynamicBucketing);
         return stream.partitionCustom(new HashPartitioner(hashBucketNum),
-                new HashGen(hashBucketNum, parallelism, convert));
+                new HashGen(convert));
     }
 
     public DataStreamSink<BinarySourceRecord> buildLakeSoulDMLSink(DataStream<BinarySourceRecord> stream) {

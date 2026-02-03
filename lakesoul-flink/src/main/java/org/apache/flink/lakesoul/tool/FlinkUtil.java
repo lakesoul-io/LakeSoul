@@ -383,22 +383,50 @@ public class FlinkUtil {
         return splited[splited.length - 1];
     }
 
+    private static class IOConfigs {
+        public final Configuration conf;
+        public final org.apache.hadoop.conf.Configuration hadoopConf;
+
+        public IOConfigs(Configuration conf, org.apache.hadoop.conf.Configuration hadoopConf) {
+            this.conf = conf;
+            this.hadoopConf = hadoopConf;
+        }
+
+        private static volatile IOConfigs INSTANCE;
+
+        public static IOConfigs getInstance() {
+            if (INSTANCE == null) {
+                synchronized (IOConfigs.class) {
+                    if (INSTANCE == null) {
+                        org.apache.hadoop.conf.Configuration hadoopConf = null;
+                        Configuration globalConf = GlobalConfiguration.loadConfiguration();
+                        try {
+                            FlinkUtil.class.getClassLoader().loadClass("org.apache.hadoop.hdfs.HdfsConfiguration");
+                            hadoopConf =
+                                HadoopUtils.getHadoopConfiguration(globalConf);
+                        } catch (Exception e) {
+                            // ignore
+                        }
+                        INSTANCE = new IOConfigs(globalConf, hadoopConf);
+                    }
+                }
+            }
+            return INSTANCE;
+        }
+    }
+
+
     public static void setIOConfigs(Configuration conf, NativeIOBase io) {
-        Configuration globalConf = GlobalConfiguration.loadConfiguration();
+        IOConfigs configs = IOConfigs.getInstance();
+        Configuration globalConf = configs.conf;
         globalConf.keySet().forEach(key -> {
             if (!conf.containsKey(key)) {
                 conf.setString(key, globalConf.getString(key, null));
             }
         });
-        try {
-            FlinkUtil.class.getClassLoader().loadClass("org.apache.hadoop.hdfs.HdfsConfiguration");
-            org.apache.hadoop.conf.Configuration
-                    hadoopConf =
-                    HadoopUtils.getHadoopConfiguration(GlobalConfiguration.loadConfiguration());
-            String defaultFS = hadoopConf.get("fs.defaultFS");
+        if (configs.hadoopConf != null) {
+            String defaultFS = configs.hadoopConf.get("fs.defaultFS");
             io.setObjectStoreOption("fs.defaultFS", defaultFS);
-        } catch (Exception e) {
-            // ignore
         }
         if (conf.containsKey(DEFAULT_FS.key())) {
             setFSConf(conf, DEFAULT_FS.key(), DEFAULT_FS.key(), io);

@@ -44,6 +44,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import static org.apache.flink.configuration.CoreOptions.DEFAULT_PARALLELISM;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 
 public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning,
@@ -149,12 +150,12 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
                 .withOutputFileConfig(fileNameConfig).build();
         if (!primaryKeyList.isEmpty() || !partitionKeyList.isEmpty()) {
             LakeSoulKeyGen pkKeyGen = new LakeSoulKeyGen(rowType, primaryKeyList.toArray(new String[0]));
-            Integer hashBucketNum = flinkConf.get(HASH_BUCKET_NUM);
+            int hashBucketNum = flinkConf.get(HASH_BUCKET_NUM);
             if (flinkConf.get(DYNAMIC_BUCKETING)) {
                 // for dynamic bucket, we try to let same hash bucket and partitions rows to fall into same bucket
                 LakeSoulKeyGen partKeygen = new  LakeSoulKeyGen(rowType, partitionKeyList.toArray(new String[0]));
                 dataStream = dataStream.partitionCustom(new HashPartitioner(hashBucketNum),
-                        new HashGen(summaryName, pkKeyGen, partKeygen));
+                        new HashGen(pkKeyGen));
                 return dataStream.sinkTo(sink);
             } else {
                 // before dynamic bucket routing in native, we rely on flink's
@@ -173,17 +174,13 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
     private static class HashGen implements KeySelector<RowData, Long> {
         private static final long serialVersionUID = -1045500398735673526L;
         LakeSoulKeyGen pkKeyGen;
-        LakeSoulKeyGen partKeygen;
-        String summaryName;
-        public HashGen(String summaryName, LakeSoulKeyGen pkKeyGen, LakeSoulKeyGen partKeygen) {
-            this.summaryName = summaryName;
+        public HashGen(LakeSoulKeyGen pkKeyGen) {
             this.pkKeyGen = pkKeyGen;
-            this.partKeygen = partKeygen;
         }
 
         @Override
         public Long getKey(RowData rowData) throws Exception {
-            return DynamicBucketingHash.hash(summaryName, rowData, pkKeyGen, partKeygen);
+            return DynamicBucketingHash.hash(rowData, pkKeyGen);
         }
     }
 
