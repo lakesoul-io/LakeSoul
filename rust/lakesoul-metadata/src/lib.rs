@@ -30,6 +30,7 @@ pub mod transfusion;
 
 pub mod error;
 mod jwt;
+use crate::DaoType::SelectOnePartitionVersionByTableIdAndDesc;
 use crate::pooled_client::QueryType::{RO, RW};
 pub use jwt::{Claims, JwtServer};
 
@@ -370,13 +371,10 @@ async fn get_prepared_statement<'a>(
             from partition_info
             where table_id = $1::TEXT and partition_desc = $2::TEXT ",
         DaoType::ListPartitionByTableId =>
-            "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.timestamp, m.expression, m.domain
-            from (select table_id, partition_desc,max(version)
-                from partition_info
-                where table_id = $1::TEXT
-                group by table_id, partition_desc) t
-            left join partition_info m
-            on t.table_id = m.table_id and t.partition_desc = m.partition_desc and t.max = m.version",
+            "select DISTINCT ON (table_id, partition_desc) table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain
+             from partition_info
+             where table_id = $1::TEXT
+            ORDER BY table_id DESC, partition_desc DESC, version DESC",
         DaoType::ListPartitionVersionByTableIdAndPartitionDescAndTimestampRange =>
             "select table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain
             from partition_info
@@ -614,7 +612,7 @@ pub async fn execute_query(
     }
     let query_type = DaoType::try_from(query_type)
         .map_err(|e| LakeSoulMetaDataError::Other(Box::new(e)))?;
-    let (client, statement) = get_prepared_statement(client, &query_type).await?;
+    let (conn, statement) = get_prepared_statement(client, &query_type).await?;
 
     let params = get_params(joined_string);
 
@@ -624,44 +622,42 @@ pub async fn execute_query(
         | DaoType::ListAllDiscardCompressedFileInfo
             if params.len() == 1 && params[0].is_empty() =>
         {
-            let result = client.query(&statement, &[]).await;
+            let result = conn.query(&statement, &[]).await;
             match result {
                 Ok(rows) => rows,
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
         DaoType::ListNamespacesByDomain if params.len() == 1 => {
-            let result = client.query(&statement, &[&params[0]]).await;
+            let result = conn.query(&statement, &[&params[0]]).await;
             match result {
                 Ok(rows) => rows,
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
         DaoType::ListTableNamesByDomain if params.len() == 1 => {
-            let result = client.query(&statement, &[&params[0]]).await;
+            let result = conn.query(&statement, &[&params[0]]).await;
             match result {
                 Ok(rows) => rows,
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
         DaoType::ListTableNameByNamespace if params.len() == 1 => {
-            let result = client.query(&statement, &[&params[0]]).await;
+            let result = conn.query(&statement, &[&params[0]]).await;
             match result {
                 Ok(rows) => rows,
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
         DaoType::ListDiscardCompressedFileInfoBeforeTimestamp if params.len() == 1 => {
-            let result = client
-                .query(&statement, &[&i64::from_str(&params[0])?])
-                .await;
+            let result = conn.query(&statement, &[&i64::from_str(&params[0])?]).await;
             match result {
                 Ok(rows) => rows,
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
         DaoType::ListDiscardCompressedFileByFilterCondition if params.len() == 3 => {
-            let result = client
+            let result = conn
                 .query(
                     &statement,
                     &[&params[0], &params[1], &i64::from_str(&params[2])?],
@@ -679,7 +675,7 @@ pub async fn execute_query(
         | DaoType::SelectDiscardCompressedFileInfoByFilePath
             if params.len() == 1 =>
         {
-            let result = client.query_opt(&statement, &[&params[0]]).await;
+            let result = conn.query_opt(&statement, &[&params[0]]).await;
             match result {
                 Ok(Some(row)) => vec![row],
                 Ok(None) => vec![],
@@ -689,7 +685,7 @@ pub async fn execute_query(
         DaoType::ListPartitionByTableId | DaoType::ListAllPathTablePathByNamespace
             if params.len() == 1 =>
         {
-            let result = client.query(&statement, &[&params[0]]).await;
+            let result = conn.query(&statement, &[&params[0]]).await;
             match result {
                 Ok(rows) => rows,
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
@@ -699,7 +695,7 @@ pub async fn execute_query(
         | DaoType::ListPartitionByTableIdAndDesc
             if params.len() == 2 =>
         {
-            let result = client.query(&statement, &[&params[0], &params[1]]).await;
+            let result = conn.query(&statement, &[&params[0], &params[1]]).await;
             match result {
                 Ok(rows) => rows,
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
@@ -710,9 +706,7 @@ pub async fn execute_query(
         | DaoType::SelectTableInfoByIdAndTablePath
             if params.len() == 2 =>
         {
-            let result = client
-                .query_opt(&statement, &[&params[0], &params[1]])
-                .await;
+            let result = conn.query_opt(&statement, &[&params[0], &params[1]]).await;
             match result {
                 Ok(Some(row)) => vec![row],
                 Ok(None) => vec![],
@@ -722,7 +716,7 @@ pub async fn execute_query(
         DaoType::SelectOneDataCommitInfoByTableIdAndPartitionDescAndCommitId
             if params.len() == 3 =>
         {
-            let result = client
+            let result = conn
                 .query_opt(
                     &statement,
                     &[&params[0], &params[1], &uuid::Uuid::from_str(&params[2])?],
@@ -737,7 +731,7 @@ pub async fn execute_query(
         DaoType::SelectPartitionVersionByTableIdAndDescAndVersion
             if params.len() == 3 =>
         {
-            let result = client
+            let result = conn
                 .query(
                     &statement,
                     &[&params[0], &params[1], &i32::from_str(&params[2])?],
@@ -749,7 +743,7 @@ pub async fn execute_query(
             }
         }
         DaoType::SelectTableDomainById if params.len() == 1 => {
-            let result = client.query(&statement, &[&params[0]]).await;
+            let result = conn.query(&statement, &[&params[0]]).await;
             match result {
                 Ok(rows) => rows,
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
@@ -759,7 +753,7 @@ pub async fn execute_query(
         | DaoType::ListPartitionVersionByTableIdAndPartitionDescAndVersionRange
             if params.len() == 4 =>
         {
-            let result = client
+            let result = conn
                 .query(
                     &statement,
                     &[
@@ -776,39 +770,18 @@ pub async fn execute_query(
             }
         }
         DaoType::ListPartitionDescByTableIdAndParList if params.len() == 2 => {
-            let statement = "\
-                select
-                    m.table_id,
-                    m.partition_desc,
-                    m.version,
-                    m.commit_op,
-                    m.snapshot,
-                    m.timestamp,
-                    m.expression,
-                    m.domain
-                from
-                    (
-                        select
-                            max(version)
-                        from
-                            partition_info
-                        where
-                            table_id = $1::text
-                            and partition_desc = $2::text
-                    ) t
-                    left join partition_info m on t.max = m.version
-                where
-                    m.table_id = $1::text
-                    and m.partition_desc = $2::text;
-            ";
+            let (conn, statement) = get_prepared_statement(
+                client,
+                &SelectOnePartitionVersionByTableIdAndDesc,
+            )
+            .await?;
             let partitions = params[1].to_owned();
             let partitions = partitions
                 .split(PARTITION_DESC_DELIM)
                 .collect::<Vec<&str>>();
-            let statement = client.prepare_cached(statement).await?;
             let mut all_rows: Vec<Row> = vec![];
             for part in partitions {
-                let result = client.query(&statement, &[&params[0], &part]).await;
+                let result = conn.query(&statement, &[&params[0], &part]).await;
                 match result {
                     Ok(mut rows) => all_rows.append(&mut rows),
                     Err(e) => return Err(LakeSoulMetaDataError::from(e)),
@@ -819,7 +792,7 @@ pub async fn execute_query(
         DaoType::ListPartitionVersionByTableIdAndPartitionDescAndTimestampRange
             if params.len() == 4 =>
         {
-            let result = client
+            let result = conn
                 .query(
                     &statement,
                     &[
@@ -863,8 +836,8 @@ pub async fn execute_query(
             );
 
             let result = {
-                let statement = client.prepare(&statement).await?;
-                client.query(&statement, &[&params[0], &params[1]]).await
+                let statement = conn.prepare(&statement).await?;
+                conn.query(&statement, &[&params[0], &params[1]]).await
             };
             match result {
                 Ok(rows) => rows,
