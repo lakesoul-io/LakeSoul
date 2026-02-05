@@ -77,9 +77,6 @@ public class NativeLakeSoulArrowWrapperWriter implements InProgressFileWriter<La
             nativeWriter.setOption(STABLE_SORT, "true");
         }
         nativeWriter.setRangePartitions(rangeColumns);
-        if (conf.getBoolean(LakeSoulSinkOptions.isMultiTableSource)) {
-            nativeWriter.setAuxSortColumns(Collections.singletonList(SORT_FIELD));
-        }
         nativeWriter.setHashBucketNum(conf.getInteger(LakeSoulSinkOptions.HASH_BUCKET_NUM));
 
         nativeWriter.setRowGroupRowNumber(this.maxRowGroupRows);
