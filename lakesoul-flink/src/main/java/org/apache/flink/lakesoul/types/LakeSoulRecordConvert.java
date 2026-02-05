@@ -326,12 +326,12 @@ public class LakeSoulRecordConvert implements Serializable {
             case MicroDuration.SCHEMA_NAME:
             case NanoTime.SCHEMA_NAME:
                 return new BigIntType(nullable);
+            // Timestamp types will all be converted to timestamp_ltz(6)
+            // for compatibility with spark
             case Timestamp.SCHEMA_NAME:
-                return new TimestampType(nullable, 3);
             case MicroTimestamp.SCHEMA_NAME:
-                return new TimestampType(nullable, 6);
             case NanoTimestamp.SCHEMA_NAME:
-                return new TimestampType(nullable, 9);
+                return new LocalZonedTimestampType(nullable, 6);
             case Decimal.LOGICAL_NAME:
             {
                 int scale =
@@ -672,7 +672,7 @@ public class LakeSoulRecordConvert implements Serializable {
             case MicroTimestamp.SCHEMA_NAME:
             case NanoTimestamp.SCHEMA_NAME:
             case com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Timestamp.LOGICAL_NAME:
-                writeTimeStamp(writer, index, fieldValue, fieldSchema,serverTimeZone);
+                writeTimeStamp(writer, index, fieldValue, fieldSchema, serverTimeZone);
                 break;
             case Decimal.LOGICAL_NAME:
             case VariableScaleDecimal.LOGICAL_NAME:
@@ -787,16 +787,10 @@ public class LakeSoulRecordConvert implements Serializable {
     }
 
     private int getPrecision(Schema schema) {
-        switch (schema.name()) {
-            case Time.SCHEMA_NAME:
-                return 3;
-            case Timestamp.SCHEMA_NAME:
-            case MicroTimestamp.SCHEMA_NAME:
-            case MicroTime.SCHEMA_NAME:
-                return 6;
-            default:
-                return 9;
+        if (schema.name().equals(Time.SCHEMA_NAME)) {
+            return 3;
         }
+        return 6;
     }
 
     public void writeUTCTimeStamp(BinaryRowWriter writer, int index, Object dbzObj, Schema schema) {
@@ -829,7 +823,7 @@ public class LakeSoulRecordConvert implements Serializable {
         } else if (dbzObj instanceof java.util.Date) {
             java.util.Date date = (java.util.Date)dbzObj;
             long timestamp = date.toInstant().toEpochMilli();
-            Instant instant = TimestampData.fromEpochMillis( timestamp).toInstant();
+            Instant instant = TimestampData.fromEpochMillis(timestamp).toInstant();
             return TimestampData.fromInstant(instant);
         }
         // fallback to zoned timestamp
