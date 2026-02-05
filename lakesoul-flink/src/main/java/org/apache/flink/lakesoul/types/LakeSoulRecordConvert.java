@@ -326,12 +326,12 @@ public class LakeSoulRecordConvert implements Serializable {
             case MicroDuration.SCHEMA_NAME:
             case NanoTime.SCHEMA_NAME:
                 return new BigIntType(nullable);
+            // Timestamp types will all be converted to timestamp_ltz(6)
+            // for compatibility with spark
             case Timestamp.SCHEMA_NAME:
-                return new TimestampType(nullable, 3);
             case MicroTimestamp.SCHEMA_NAME:
-                return new TimestampType(nullable, 6);
             case NanoTimestamp.SCHEMA_NAME:
-                return new TimestampType(nullable, 9);
+                return new LocalZonedTimestampType(nullable, 6);
             case Decimal.LOGICAL_NAME:
             {
                 int scale =
@@ -741,14 +741,83 @@ public class LakeSoulRecordConvert implements Serializable {
         }
         Map<String, String> paras = schema.parameters();
         DecimalData d;
-         if (paras == null || paras.get("connect.decimal.precision") == null) {
-             // this is a patch
-             if (fieldName.equals("id")) {
-                // LOG.info("id convert to Decimal(20,0)");
-                 d = DecimalData.fromBigDecimal(bigDecimal, 20, 0);
-             } else {
-                // LOG.info("{} convert to Decimal(38,30)", fieldName);
-                 d = DecimalData.fromBigDecimal(bigDecimal, 38, 30);
+        if ( paras == null || paras.get("connect.decimal.precision") == null) {
+            d = DecimalData.fromBigDecimal(bigDecimal, 38, 30);
+        } else {
+            d = DecimalData.fromBigDecimal(bigDecimal, Integer.parseInt(paras.get("connect.decimal.precision")),
+                    Integer.parseInt(paras.get("scale")));
+        }
+        if (d == null) {
+            LOG.error("Convert decimal failed, dbz object: {}@{}, schema {}, java bd object {}@{}:{}, paras: {}",
+                    dbzObj, dbzObj.getClass().getName(), schema,
+                    bigDecimal, bigDecimal.precision(), bigDecimal.scale(), paras);
+        }
+        return d;
+    }
+
+    public void writeDecimal(BinaryRowWriter writer, int index, Object dbzObj, Schema schema) {
+        DecimalData data = (DecimalData) convertToDecimal(dbzObj, schema);
+        if (data == null) {
+            String err = String.format("Convert decimal failed %s@%s, index %d, schema %s",
+                    dbzObj, dbzObj.getClass().getName(),
+                    index, schema);
+            LOG.error(err);
+            throw new RuntimeException(err);
+        }
+        writer.writeDecimal(index, data, data.precision());
+    }
+
+    public Object convertToDate(Object dbzObj, Schema schema) {
+        return (int) TemporalConversions.toLocalDate(dbzObj).toEpochDay();
+    }
+
+    public void writeDate(BinaryRowWriter writer, int index, Object dbzObj) {
+        Integer data = (Integer) convertToDate(dbzObj, null);
+        writer.writeInt(index, data);
+    }
+
+    public Object convertToUTCTimeStamp(Object dbzObj) {
+        if (dbzObj instanceof String) {
+            String str = (String) dbzObj;
+            // TIMESTAMP_LTZ type is encoded in string type
+            Instant instant = Instant.parse(str);
+            return TimestampData.fromInstant(instant);
+        }
+        throw new IllegalArgumentException(
+                "Unable to convert to TimestampData from unexpected value '"
+                        + dbzObj
+                        + "' of type "
+                        + dbzObj.getClass().getName());
+    }
+
+    private int getPrecision(Schema schema) {
+        if (schema.name().equals(Time.SCHEMA_NAME)) {
+            return 3;
+        }
+        return 6;
+    }
+
+    public void writeUTCTimeStamp(BinaryRowWriter writer, int index, Object dbzObj, Schema schema) {
+        TimestampData data = (TimestampData) convertToUTCTimeStamp(dbzObj);
+        writer.writeTimestamp(index, data, getPrecision(schema));
+    }
+
+    public Object convertToTimeStamp(Object dbzObj, Schema schema, ZoneId serverTimeZone) {
+        if (dbzObj instanceof Long) {
+            Instant instant = null;
+            switch (schema.name()) {
+                case Timestamp.SCHEMA_NAME:
+                    instant = TimestampData.fromEpochMillis((Long) dbzObj).toInstant();
+                    break;
+                case MicroTimestamp.SCHEMA_NAME:
+                    long micro = (long) dbzObj;
+                    instant = TimestampData.fromEpochMillis(
+                            micro / 1000, (int) (micro % 1000 * 1000)).toInstant();
+                    break;
+                case NanoTimestamp.SCHEMA_NAME:
+                    long nano = (long) dbzObj;
+                    instant = TimestampData.fromEpochMillis(
+                            nano / 1000_000, (int) (nano % 1000_000)).toInstant();
             }
 
          } else {
@@ -780,6 +849,9 @@ public class LakeSoulRecordConvert implements Serializable {
             public Object convertToDate (Object dbzObj, Schema schema){
                 return (int) TemporalConversions.toLocalDate(dbzObj).toEpochDay();
             }
+
+
+        // fallback to zoned timestamp
 
             public void writeDate (BinaryRowWriter writer,int index, Object dbzObj){
                 Integer data = (Integer) convertToDate(dbzObj, null);
