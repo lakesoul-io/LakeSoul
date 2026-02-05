@@ -330,8 +330,9 @@ public class LakeSoulRecordConvert implements Serializable {
             // for compatibility with spark
             case Timestamp.SCHEMA_NAME:
             case MicroTimestamp.SCHEMA_NAME:
-            case NanoTimestamp.SCHEMA_NAME:
                 return new LocalZonedTimestampType(nullable, 6);
+            case NanoTimestamp.SCHEMA_NAME:
+                return new LocalZonedTimestampType(nullable, 9);
             case Decimal.LOGICAL_NAME:
             {
                 int scale =
@@ -787,10 +788,16 @@ public class LakeSoulRecordConvert implements Serializable {
     }
 
     private int getPrecision(Schema schema) {
-        if (schema.name().equals(Time.SCHEMA_NAME)) {
-            return 3;
+        switch (schema.name()) {
+            case Time.SCHEMA_NAME:
+                return 3;
+            case Timestamp.SCHEMA_NAME:
+            case MicroTimestamp.SCHEMA_NAME:
+            case MicroTime.SCHEMA_NAME:
+                return 6;
+            default:
+                return 9;
         }
-        return 6;
     }
 
     public void writeUTCTimeStamp(BinaryRowWriter writer, int index, Object dbzObj, Schema schema) {
@@ -823,8 +830,7 @@ public class LakeSoulRecordConvert implements Serializable {
         } else if (dbzObj instanceof java.util.Date) {
             java.util.Date date = (java.util.Date)dbzObj;
             long timestamp = date.toInstant().toEpochMilli();
-            Instant instant = TimestampData.fromEpochMillis(timestamp).toInstant();
-            return TimestampData.fromInstant(instant);
+            return TimestampData.fromEpochMillis(timestamp);
         }
         // fallback to zoned timestamp
 
