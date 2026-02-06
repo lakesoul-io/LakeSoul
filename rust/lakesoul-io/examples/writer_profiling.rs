@@ -2,110 +2,167 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// use std::sync::Arc;
+use std::fs::File;
+use std::path::PathBuf;
+use std::sync::Arc;
 
-// use arrow_array::{ArrayRef, RecordBatch, StringArray};
-// use datafusion_common::Result;
-// use lakesoul_io::{
-//     lakesoul_io_config::LakeSoulIOConfigBuilder,
-//     lakesoul_writer::SyncSendableMutableLakeSoulWriter,
-// };
-// use rand::distr::SampleString;
-// use tokio::{runtime::Builder, time::Instant};
+use arrow_array::{ArrayRef, RecordBatch, StringArray};
+use arrow_schema::SchemaRef;
+use datafusion_session::Session;
+use lakesoul_io::{
+    config::LakeSoulIOConfig, session::LakeSoulIOSession, utils::random_str,
+    writer::SyncSendableMutableLakeSoulWriter,
+};
+use num_format::Locale;
+use num_format::ToFormattedString;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use rootcause::Report;
+use tokio::{runtime::Builder, time::Instant};
+use walkdir::WalkDir;
 
-// #[cfg(feature = "dhat-heap")]
-// #[global_allocator]
-// static ALLOC: dhat::Alloc = dhat::Alloc;
+fn _create_batches(
+    num_batch: usize,
+    num_columns: usize,
+    num_rows: usize,
+    str_len: usize,
+) -> Vec<RecordBatch> {
+    let mut v = vec![];
+    for _ in 0..num_batch {
+        let iter = (0..num_columns)
+            .map(|i| {
+                (
+                    format!("col_{}", i),
+                    Arc::new(StringArray::from(
+                        (0..num_rows)
+                            .map(|_| random_str(str_len))
+                            .collect::<Vec<_>>(),
+                    )) as ArrayRef,
+                    true,
+                )
+            })
+            .collect::<Vec<_>>();
+        let b = RecordBatch::try_from_iter_with_nullable(iter).unwrap();
+        v.push(b);
+    }
+    v
+}
 
-// fn create_batch(num_columns: usize, num_rows: usize, str_len: usize) -> RecordBatch {
-//     let mut rng = rand::rng();
-//     let iter = (0..num_columns)
-//         .map(|i| {
-//             (
-//                 format!("col_{}", i),
-//                 Arc::new(StringArray::from(
-//                     (0..num_rows)
-//                         .map(|_| {
-//                             rand::distr::Alphanumeric.sample_string(&mut rng, str_len)
-//                         })
-//                         .collect::<Vec<_>>(),
-//                 )) as ArrayRef,
-//                 true,
-//             )
-//         })
-//         .collect::<Vec<_>>();
-//     RecordBatch::try_from_iter_with_nullable(iter).unwrap()
-// }
+pub fn get_parquet_files(dir_path: &str) -> Vec<PathBuf> {
+    WalkDir::new(dir_path)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map_or(false, |ext| ext == "parquet"))
+        .map(|e| e.path().to_owned())
+        .collect()
+}
 
-// fn main() -> Result<()> {
-//     #[cfg(feature = "dhat-heap")]
-//     let _profiler = dhat::Profiler::new_heap();
+pub fn get_schema_from_first_file(files: &[PathBuf]) -> SchemaRef {
+    if files.is_empty() {
+        panic!("No parquet files found");
+    }
+    let first_file = File::open(&files[0]).expect("Open first file failed");
+    let first_builder = ParquetRecordBatchReaderBuilder::try_new(first_file)
+        .expect("Create first builder failed");
+    first_builder.schema().clone()
+}
 
-//     let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
-//     let num_batch = 1000;
-//     let num_rows = 1000;
-//     let num_columns = 20;
-//     let str_len = 4;
+fn get_dir_size(path: &str) -> u64 {
+    WalkDir::new(path)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| entry.metadata().ok())
+        .filter(|metadata| metadata.is_file())
+        .map(|metadata| metadata.len())
+        .sum()
+}
 
-//     let to_write = create_batch(num_columns, num_rows, str_len);
-//     let temp_dir = tempfile::tempdir()?;
-//     let path = temp_dir
-//         .keep()
-//         .join("test.parquet")
-//         .into_os_string()
-//         .into_string()
-//         .unwrap();
-//     let writer_conf = LakeSoulIOConfigBuilder::new()
-//         .with_files(vec![path.clone()])
-//         .with_thread_num(2)
-//         .with_batch_size(num_rows)
-//         // .with_max_row_group_size(2000)
-//         // .with_max_row_group_num_values(4_00_000)
-//         .with_schema(to_write.schema())
-//         // .with_primary_keys(vec!["col_2".to_string()])
-//         .with_primary_keys(
-//             (0..num_columns - 1)
-//                 .map(|i| format!("col_{}", i))
-//                 .collect::<Vec<String>>(),
-//         )
-//         // .with_aux_sort_column("col2".to_string())
-//         .build();
+fn inner() -> Result<(), Report> {
+    // 1. 获取所有 Parquet 文件路径
+    // let files = get_parquet_files("/data/lakesoul/tpch_sf10/lineitem");
+    let files = vec![PathBuf::from("/data/lakesoul/tpch_sf1/orders.parquet")];
 
-//     let mut writer = SyncSendableMutableLakeSoulWriter::try_new(writer_conf, runtime)?;
+    // 2. 获取 Schema
+    let schema = get_schema_from_first_file(&files);
 
-//     let start = Instant::now();
-//     for _ in 0..num_batch {
-//         let once_start = Instant::now();
-//         writer.write_batch(create_batch(num_columns, num_rows, str_len))?;
-//         println!(
-//             "write batch once cost: {}",
-//             once_start.elapsed().as_millis()
-//         );
-//     }
-//     let flush_start = Instant::now();
-//     writer.flush_and_close()?;
-//     println!("flush cost: {}", flush_start.elapsed().as_millis());
-//     println!(
-//         "num_batch={}, num_columns={}, num_rows={}, str_len={}, cost_mills={}",
-//         num_batch,
-//         num_columns,
-//         num_rows,
-//         str_len,
-//         start.elapsed().as_millis()
-//     );
+    let temp_dir = tempfile::tempdir()?;
+    let prefix = temp_dir.path().to_str().unwrap().to_string();
 
-//     // let file = File::open(path.clone())?;
-//     // let mut record_batch_reader = ParquetRecordBatchReader::try_new(file, 100_000).unwrap();
+    println!("prefix: {}", prefix);
 
-//     // let actual_batch = record_batch_reader
-//     //     .next()
-//     //     .expect("No batch found")
-//     //     .expect("Unable to get batch");
+    // 模拟 Flink 1GB Slot 环境配置
+    // Rust 可用内存 ~300-400MB
+    // 设置 DataFusion Pool = 200MB, 触发 Spill
+    let io_config = LakeSoulIOConfig::builder()
+        .with_prefix(prefix)
+        .with_batch_size(8192)
+        .set_dynamic_partition(true)
+        .with_hash_bucket_num("1") // 关键：单线程写入，防止内存倍增 (1GB环境下建议为1)
+        .with_option("mem_limit", "30MB")
+        .with_option("pool_size", "100MB")
+        // .with_option("rolling", "true")
+        .with_receiver_capacity(2) // 关键：限制 Channel 积压
+        .with_schema(schema)
+        .with_range_partitions(vec!["o_orderdate".to_string()])
+        // 必须设置 PK 才会触发 Sort -> Spill
+        .with_primary_keys(vec!["o_orderkey".to_string()])
+        // .with_aux_sort_column("col2".to_string())
+        .build();
 
-//     // assert_eq!(to_write.schema(), actual_batch.schema());
-//     // assert_eq!(num_columns, actual_batch.num_columns());
-//     // assert_eq!(num_rows * num_batch, actual_batch.num_rows());
-//     Ok(())
-// }
+    let io_session = Arc::new(LakeSoulIOSession::try_new(io_config)?);
+    // let pool = io_session.runtime_env().memory_pool.clone();
+    let runtime = Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2) // 2
+        .build()
+        .unwrap();
+    let mut writer =
+        SyncSendableMutableLakeSoulWriter::try_new(io_session.clone(), runtime)?;
 
-fn main() {}
+    let mut total_rows = 0;
+    println!("Start writing loop...");
+
+    for file_path in &files {
+        let file = File::open(file_path).expect("Open file failed");
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+            .expect("Create builder failed")
+            .with_batch_size(8192);
+        let reader = builder.build().expect("Build reader failed");
+
+        for batch_result in reader {
+            let b = batch_result.expect("Read batch failed");
+            let once_start = Instant::now();
+            writer.write_batch(b.clone())?;
+            total_rows += b.num_rows();
+            let spill_size = get_dir_size("/tmp/lakesoul/spill");
+            println!(
+                "cost {} ms\nspill size: {spill_size}\n",
+                once_start.elapsed().as_millis()
+            )
+        }
+    }
+
+    let flush_start = Instant::now();
+    writer.flush_and_close()?;
+    println!(
+        "total rows:{}\nflush cost: {} ms",
+        total_rows.to_formatted_string(&Locale::en),
+        flush_start.elapsed().as_millis()
+    );
+
+    Ok(())
+}
+
+fn main() -> Result<(), Report> {
+    //     #[cfg(feature = "dhat-heap")]
+    //     let _profiler = dhat::Profiler::new_heap();
+    tracing_subscriber::fmt()
+        .with_target(false)
+        .with_thread_names(true)
+        .with_file(true)
+        .with_line_number(true)
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+    inner()?;
+
+    Ok(())
+}

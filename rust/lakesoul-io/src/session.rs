@@ -5,9 +5,11 @@
 use std::any::Any;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::iter::zip;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use arrow_schema::{Schema, SchemaBuilder, SchemaRef};
+use datafusion::config::SpillCompression;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::context::QueryPlanner;
 use datafusion::optimizer::analyzer::type_coercion::TypeCoercion;
@@ -27,7 +29,9 @@ use datafusion_datasource::source::DataSource;
 use datafusion_datasource::{ListingTableUrl, PartitionedFile, TableSchema};
 use datafusion_datasource_parquet::ParquetFormat;
 use datafusion_execution::config::SessionConfig;
-use datafusion_execution::memory_pool::FairSpillPool;
+use datafusion_execution::memory_pool::{
+    FairSpillPool, GreedyMemoryPool, TrackConsumersPool,
+};
 use datafusion_execution::runtime_env::RuntimeEnvBuilder;
 use datafusion_execution::{TaskContext, runtime_env::RuntimeEnv};
 use datafusion_expr::execution_props::ExecutionProps;
@@ -45,6 +49,7 @@ use rootcause::prelude::ResultExt;
 use rootcause::{Report, report};
 use tokio::sync::OnceCell;
 
+use crate::byte_size;
 use crate::config::LakeSoulIOConfig;
 use crate::file_format::LakeSoulParquetFormat;
 use crate::helpers::transform::uniform_schema;
@@ -206,11 +211,13 @@ impl LakeSoulIOSession {
             .with_parquet_pruning(true)
             .with_information_schema(true)
             .with_create_default_catalog_and_schema(true);
+        // optimizer
         sess_conf
             .options_mut()
             .optimizer
             .enable_round_robin_repartition = false; // if true, the record_batches poll from stream become unordered
         sess_conf.options_mut().optimizer.prefer_hash_join = false; //if true, panicked at 'range end out of bounds'
+        // execution
         sess_conf.options_mut().execution.target_partitions = 1;
         sess_conf.options_mut().execution.parquet.dictionary_enabled = Some(false);
         sess_conf
@@ -218,11 +225,48 @@ impl LakeSoulIOSession {
             .execution
             .parquet
             .schema_force_view_types = false;
+
+        // runtime
         let mut runtime_conf = RuntimeEnvBuilder::new();
         if let Some(pool_size) = io_config.pool_size() {
-            let memory_pool = FairSpillPool::new(pool_size);
+            // for now all is default
+            sess_conf.options_mut().execution.spill_compression =
+                SpillCompression::Uncompressed;
+            let sort_spill_bytes = pool_size / 8;
+            sess_conf
+                .options_mut()
+                .execution
+                .sort_spill_reservation_bytes = sort_spill_bytes;
+            sess_conf
+                .options_mut()
+                .execution
+                .sort_in_place_threshold_bytes = byte_size!("4mb");
+            sess_conf.options_mut().execution.max_spill_file_size_bytes =
+                byte_size!("128mb");
+            runtime_conf =
+                runtime_conf.with_max_temp_directory_size(byte_size!("100G") as u64);
+            let dir = io_config
+                .pool_dir()
+                .unwrap_or("/tmp/lakesoul/spill".to_string());
+            std::fs::create_dir_all(&dir)?;
+            runtime_conf = runtime_conf.with_temp_file_path(&dir);
+
+            let memory_pool = TrackConsumersPool::new(
+                GreedyMemoryPool::new(pool_size), // only one spill operator (sort)
+                NonZeroUsize::new(5).unwrap(),
+            );
             runtime_conf = runtime_conf.with_memory_pool(Arc::new(memory_pool));
+
+            info!(
+                "NativeIO spill config with directory {}, pool size {}, \
+                 flush limit {:?}, sort spill reserve bytes {}",
+                dir,
+                pool_size,
+                io_config.mem_limit(),
+                sort_spill_bytes
+            );
         }
+
         let runtime = runtime_conf.build()?;
         // firstly, parse default fs if exist
         let default_fs = io_config

@@ -11,6 +11,8 @@ pub static OPTION_DEFAULT_VALUE_KEEP_ORDERS: &str = "false";
 pub static OPTION_KEY_MEM_LIMIT: &str = "mem_limit";
 /// Key for memory pool size in bytes
 pub static OPTION_KEY_POOL_SIZE: &str = "pool_size";
+/// Key for memory pool spill dir
+pub static OPTION_KEY_POOL_DIR: &str = "pool_dir";
 /// Key for hash bucket ID for partitioning
 pub static OPTION_KEY_HASH_BUCKET_ID: &str = "hash_bucket_id";
 /// Key for number of hash buckets for partitioning

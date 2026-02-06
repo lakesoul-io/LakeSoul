@@ -8,6 +8,10 @@ use arrow_array::{
 use arrow_schema::{DataType, SchemaRef, TimeUnit};
 use rand::{Rng, distr::Alphanumeric};
 
+#[macro_use]
+mod byte_size;
+pub use byte_size::ByteSize;
+
 pub mod hash;
 
 pub fn random_str(len: usize) -> String {

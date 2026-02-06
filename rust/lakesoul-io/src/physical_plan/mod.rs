@@ -6,6 +6,8 @@ pub mod merge;
 pub mod repartition;
 pub mod self_incremental_index_column;
 
+mod spill;
+
 mod datasource {
     // todo!("Implement the datasource module")
     // mod parquet;

@@ -22,7 +22,7 @@ use datafusion_physical_plan::{
 use datafusion_session::Session;
 use futures::{StreamExt, TryStreamExt};
 use rootcause::{Report, bail, report};
-use tokio::sync::mpsc::Sender;
+use tokio::{sync::mpsc::Sender, time::Instant};
 
 use crate::{
     Result,
@@ -99,6 +99,7 @@ impl PartitioningAsyncWriter {
         let write_id = random_str(16);
         // this task_ctx can be shared
         let task_ctx = io_session.task_ctx();
+
         for i in 0..partitioning_exec.output_partitioning().partition_count() {
             let sink_task = SpawnedTask::spawn(Self::pull_and_sink(
                 partitioning_exec.clone(),
@@ -133,7 +134,7 @@ impl PartitioningAsyncWriter {
         let input: Arc<dyn ExecutionPlan> = if io_config.stable_sort() {
             aux_sort_cols.push("__self_incremental_index__".to_string());
             info!(
-                "input schema of self incremental index exec: {:?}",
+                "input schema of self incremental index exec: {}",
                 input.schema()
             );
             Arc::new(SelfIncrementalIndexColumnExec::new(Arc::new(input)))
@@ -254,11 +255,10 @@ impl PartitioningAsyncWriter {
 
         let mut partitioned_writer = HashMap::<String, Box<MultiPartAsyncWriter>>::new();
         let mut flush_join_set = JoinSet::new();
-        // let mut partitioned_flush_result_locked = partitioned_flush_result.lock().await;
         while let Some(batch_result) = data.next().await {
             match batch_result {
                 Ok(batch) => {
-                    debug!("write record_batch with {} rows", batch.num_rows());
+                    debug!("batch[{}]", batch.num_rows());
                     let columnar_values =
                         get_columnar_values(&batch, range_partitions.clone())?;
                     let partition_desc =
@@ -278,6 +278,7 @@ impl PartitioningAsyncWriter {
 
                     if !partitioned_writer.contains_key(&partition_desc) {
                         // TODO only files diff
+                        debug!("new writer for {}", partition_desc);
                         let config = io_config_builder
                             .clone()
                             .with_files(vec![file_absolute_path])
@@ -302,30 +303,31 @@ impl PartitioningAsyncWriter {
                 }
                 // received abort signal
                 Err(e) => {
+                    // error!("{}", e);
                     err = Some(e);
                     break;
                 }
             }
         }
         if let Some(e) = err {
-            error!("partitioned writer write error: {:?}", e);
-            for (_, writer) in partitioned_writer.into_iter() {
-                match writer.abort_and_close().await {
-                    Ok(_) => match e {
-                        DataFusionError::Internal(ref err_msg)
-                            if err_msg == "external abort" =>
-                        {
-                            debug!("External abort signal received")
-                        }
-                        _ => return Err(e.into()),
-                    },
-                    Err(abort_err) => return Err(abort_err),
+            for (desc, writer) in partitioned_writer {
+                if let Err(abort_err) = writer.abort_and_close().await {
+                    warn!("Failed to abort writer for partition {desc}: {abort_err}");
                 }
             }
-            Ok(flush_join_set)
+
+            if let DataFusionError::Internal(ref msg) = e
+                && msg == "external abort"
+            {
+                debug!("External abort signal received");
+                return Ok(flush_join_set);
+            }
+
+            Err(e.into())
         } else {
             for (partition_desc, writer) in partitioned_writer.into_iter() {
                 flush_join_set.spawn(async move {
+                    let instant = Instant::now();
                     let writer_flush_results = writer.flush_and_close().await?;
                     info!(
                         "Flushed writer {:?}",
@@ -340,6 +342,11 @@ impl PartitioningAsyncWriter {
                                 )
                             })
                             .collect::<Vec<_>>()
+                    );
+                    debug!(
+                        "Partition {} flushed in {:?} ms\n",
+                        partition_desc,
+                        instant.elapsed().as_millis()
                     );
                     Ok(writer_flush_results
                         .into_iter()
@@ -399,16 +406,38 @@ impl AsyncBatchWriter for PartitioningAsyncWriter {
             // channel has been closed, indicating error happened during sort write
             Err(e) => {
                 error!("Error sending record batch to sorter: {:?}", e);
-                if let Some(task) = self.spawned_task.take() {
-                    let result = task
-                        .await
-                        .map_err(|e| DataFusionError::External(Box::new(e)))?;
-                    self.err = result.err();
-                    Err(report!("by {:?}", self.err))
-                } else {
-                    self.err = Some(e.into());
-                    Err(report!("by {:?}", self.err))
+                // 1. 如果已经存过错误了，直接返回
+                if let Some(ref e) = self.err {
+                    return Err(report!("Previous error: {}", e));
                 }
+
+                if let Some(task) = self.spawned_task.take() {
+                    match tokio::time::timeout(std::time::Duration::from_secs(5), task)
+                        .await
+                    {
+                        Ok(Ok(result)) => {
+                            self.err = result.err();
+                        }
+                        Ok(Err(join_err)) => {
+                            self.err = Some(report!(join_err).into_dynamic());
+                        }
+                        Err(_) => {
+                            self.err = Some(
+                                report!("Task timeout during error recovery")
+                                    .into_dynamic(),
+                            );
+                        }
+                    }
+                } else {
+                    self.err = Some(report!(format!("{e}")).into_dynamic());
+                }
+
+                // 3. 确保最终一定返回一个有内容的错误
+                Err(self
+                    .err
+                    .as_ref()
+                    .map(|e| report!("{e}"))
+                    .unwrap_or_else(|| report!("Channel closed due to {e})")))
             }
         }
     }
@@ -417,7 +446,11 @@ impl AsyncBatchWriter for PartitioningAsyncWriter {
         if let Some(join_handle) = self.spawned_task {
             let sender = self.sorter_sender;
             drop(sender);
-            join_handle.await?
+            let span = info_span!("partitioning writer flush");
+            let _guard = span.enter();
+            let res = join_handle.await?;
+            info!("flush completed");
+            res
         } else {
             bail!("aborted, cannot flush")
         }

@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 services:
     lakesoul-meta-db:
-        image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/postgres:14.5 
+        image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/postgres:14.5
         container_name: lakesoul-test-pg
         hostname: lakesoul-docker-compose-env-lakesoul-meta-db-1
         ports:
@@ -83,6 +83,7 @@ services:
             - "$HADOOP_HOME:/opt/hadoop"
             - "$HOME/flink-s3-fs-hadoop-1.20.1.jar:/opt/flink/plugins/s3/flink-s3-fs-hadoop-1.20.1.jar"
             - "$HOME/flink-parquet-1.20.1.jar:/opt/flink/lib/flink-parquet-1.20.1.jar"
+            - "$HOME/mysql-connector-j-8.0.33.jar:/opt/flink/lib/mysql-connector-j-8.0.33.jar"
             - "$HOME/parquet-hadoop-bundle-1.13.1.jar:/opt/flink/lib/parquet-hadoop-bundle-1.13.1.jar"
 
     taskmanager:
@@ -118,6 +119,7 @@ services:
             - "$HADOOP_HOME:/opt/hadoop"
             - "$HOME/flink-s3-fs-hadoop-1.20.1.jar:/opt/flink/plugins/s3/flink-s3-fs-hadoop-1.20.1.jar"
             - "$HOME/flink-parquet-1.20.1.jar:/opt/flink/lib/flink-parquet-1.20.1.jar"
+            - "$HOME/mysql-connector-j-8.0.33.jar:/opt/flink/lib/mysql-connector-j-8.0.33.jar"
             - "$HOME/parquet-hadoop-bundle-1.13.1.jar:/opt/flink/lib/parquet-hadoop-bundle-1.13.1.jar"
 
 networks:

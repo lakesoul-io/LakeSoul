@@ -16,4 +16,3 @@ pub mod cursor;
 pub mod merge_operator;
 pub mod sort_key_range;
 pub mod sorted_stream_merger;
-pub mod stream;

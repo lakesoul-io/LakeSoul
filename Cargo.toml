@@ -43,6 +43,7 @@ datafusion-execution = { version = "51" }
 datafusion-datasource = { version = "51" }
 datafusion-datasource-parquet = { version = "51" }
 datafusion-substrait = { version = "51" }
+datafusion-python = { version = "51" }
 # arrow
 arrow = { version = "57" }
 arrow-schema = { version = "57" }

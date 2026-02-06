@@ -623,6 +623,7 @@ pub extern "C" fn rust_logger_init() {
     match tracing_subscriber::fmt()
         .with_timer(timer)
         .with_target(false)
+        .with_ansi(false)
         .with_thread_names(true)
         .with_file(true)
         .with_line_number(true)

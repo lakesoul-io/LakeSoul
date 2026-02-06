@@ -1242,6 +1242,7 @@ pub extern "C" fn rust_logger_init() {
         .with_timer(timer)
         .with_target(false)
         .with_thread_names(true)
+        .with_ansi(false)
         .with_file(true)
         .with_line_number(true)
         .with_env_filter(EnvFilter::from_default_env())
