@@ -76,7 +76,6 @@ jobs:
         env:
           LAKESOUL_SOURCE_DIR: ${{ github.workspace }}
         run: |
-          export LD_LIBRARY_PATH=$JAVA_HOME/lib/server:$LD_LIBRARY_PATH
           mvn package -pl lakesoul-spark -am -DskipTests
           cd python
           uv sync
