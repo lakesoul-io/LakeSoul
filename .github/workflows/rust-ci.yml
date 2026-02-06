@@ -71,6 +71,9 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> rust/target"
       - name: Install requirement
         uses: ConorMacBride/install-package@v1
         with:

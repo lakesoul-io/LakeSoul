@@ -50,8 +50,8 @@ import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 
-import static com.ververica.cdc.debezium.event.DebeziumSchemaDataTypeInference.DEFAULT_DECIMAL_PRECISION;
-import static com.ververica.cdc.debezium.event.DebeziumSchemaDataTypeInference.PRECISION_PARAMETER_KEY;
+import static org.apache.flink.cdc.debezium.event.DebeziumSchemaDataTypeInference.DEFAULT_DECIMAL_PRECISION;
+import static org.apache.flink.cdc.debezium.event.DebeziumSchemaDataTypeInference.PRECISION_PARAMETER_KEY;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 import static org.apache.flink.lakesoul.types.ParseDocument.convertBSONToStruct;
 
@@ -590,7 +590,6 @@ public class LakeSoulRecordConvert implements Serializable {
         }
     }
 
-
     private void primitiveTypeWrite(BinaryRowWriter writer, int index, String fieldName, Object
             fieldValue, Schema fieldSchema) {
         if (fieldValue == null) {
@@ -625,9 +624,6 @@ public class LakeSoulRecordConvert implements Serializable {
                 case ARRAY:
                     writeArray(writer, index, fieldValue, fieldSchema);
                     break;
-//                case STRUCT:
-//                    writeRow(writer, index, fieldValue);
-//                    break;
                 default:
                     throw new UnsupportedOperationException("LakeSoul doesn't support type: " + fieldSchema.type());
             }
@@ -691,7 +687,7 @@ public class LakeSoulRecordConvert implements Serializable {
         writer.writeLong(index, data);
     }
 
-    public Object convertToDecimal(String fieldName, Object dbzObj, Schema schema) {
+    public Object convertToDecimal(Object dbzObj, Schema schema) {
         BigDecimal bigDecimal;
         if (dbzObj instanceof BigDecimal) {
             bigDecimal = (BigDecimal) dbzObj;
@@ -815,7 +811,7 @@ public class LakeSoulRecordConvert implements Serializable {
      }
 
      public void writeDecimal(BinaryRowWriter writer, int index, String fieldName, Object dbzObj, Schema schema) {
-         DecimalData data = (DecimalData) convertToDecimal(fieldName, dbzObj, schema);
+         DecimalData data = (DecimalData) convertToDecimal(dbzObj, schema);
          if (data == null) {
             String err = String.format("Convert decimal failed for %s %s@%s, index %d, schema %s",
                     fieldName,
@@ -827,219 +823,142 @@ public class LakeSoulRecordConvert implements Serializable {
          writer.writeDecimal(index, data, data.precision());
      }
 
-            public Object convertToDate (Object dbzObj, Schema schema){
-                return (int) TemporalConversions.toLocalDate(dbzObj).toEpochDay();
-            }
-        // fallback to zoned timestamp
-
-            public void writeDate (BinaryRowWriter writer,int index, Object dbzObj){
-                Integer data = (Integer) convertToDate(dbzObj, null);
-                writer.writeInt(index, data);
-            }
-
-            public Object convertToUTCTimeStamp (Object dbzObj){
-                if (dbzObj instanceof String) {
-                    String str = (String) dbzObj;
-                    // TIMESTAMP_LTZ type is encoded in string type
-                    Instant instant = Instant.parse(str);
-                    return TimestampData.fromInstant(instant);
-                }
-                throw new IllegalArgumentException(
-                        "Unable to convert to TimestampData from unexpected value '"
-                                + dbzObj
-                                + "' of type "
-                                + dbzObj.getClass().getName());
-            }
-
-            private int getPrecision (Schema schema){
-                switch (schema.name()) {
-                    case Time.SCHEMA_NAME:
-                        return 3;
-                    case Timestamp.SCHEMA_NAME:
-                    case MicroTimestamp.SCHEMA_NAME:
-                    case MicroTime.SCHEMA_NAME:
-                        return 6;
-                    default:
-                        return 9;
-                }
-            }
-
-            public void writeUTCTimeStamp (BinaryRowWriter writer,int index, Object dbzObj, Schema schema){
-                TimestampData data = (TimestampData) convertToUTCTimeStamp(dbzObj);
-                writer.writeTimestamp(index, data, getPrecision(schema));
-            }
-
-            // TODO remove serverTimeZone parameters
-            public Object convertToTimeStamp (Object dbzObj, Schema schema, ZoneId serverTimeZone){
-                if (dbzObj instanceof Long) {
-                    Instant instant = null;
-                    switch (schema.name()) {
-                        case Timestamp.SCHEMA_NAME:
-                            instant = TimestampData.fromEpochMillis((Long) dbzObj).toInstant();
-                            break;
-                        case MicroTimestamp.SCHEMA_NAME:
-                            long micro = (long) dbzObj;
-                            instant = TimestampData.fromEpochMillis(
-                                    micro / 1000, (int) (micro % 1000 * 1000)).toInstant();
-                            break;
-                        case NanoTimestamp.SCHEMA_NAME:
-                            long nano = (long) dbzObj;
-                            instant = TimestampData.fromEpochMillis(
-                                    nano / 1000_000, (int) (nano % 1000_000)).toInstant();
-                    }
-                    if (instant != null) {
-                        ZonedDateTime zonedDateTime = instant.atZone(ZoneId.of("UTC"));
-                        return TimestampData.fromInstant(zonedDateTime.toInstant());
-                    }
-                    return null;
-                } else if (dbzObj instanceof java.util.Date) {
-                    java.util.Date date = (java.util.Date) dbzObj;
-                    long timestamp = date.toInstant().toEpochMilli();
-                    Instant instant = TimestampData.fromEpochMillis(timestamp).toInstant();
-                    return TimestampData.fromInstant(instant);
-                }
-                // fallback to zoned timestamp
-                LocalDateTime localDateTime =
-                        TemporalConversions.toLocalDateTime(dbzObj, ZoneId.of("UTC"));
-                return TimestampData.fromLocalDateTime(localDateTime);
-            }
-
-            public Object convertToGeometry (Object dbzObj, Schema schema){
-                if (dbzObj instanceof Struct) {
-                    return ((Struct) dbzObj).getBytes("wkb");
-                } else {
-                    throw new UnsupportedOperationException(
-                            "Unsupported Struct value type: " + dbzObj.getClass().getSimpleName());
-                }
-            }
-
-            private Object convertToPoint (Object dbzObj, Schema schema){
-                if (dbzObj instanceof Struct) {
-                    return ((Struct) dbzObj).getBytes("wkb");
-                } else {
-                    throw new UnsupportedOperationException(
-                            "Unsupported Struct value type: " + dbzObj.getClass().getSimpleName());
-                }
-            }
-
-            public void writeArray (BinaryRowWriter writer,int index, Object dbzObj, Schema schema){
-                if (dbzObj instanceof ArrayList) {
-                    ArrayList<Object> arrayList = (ArrayList<Object>) dbzObj;
-                    ArrayData arrayData = null;
-                    ArrayDataSerializer arrayDataSerializer = null;
-                    switch (schema.valueSchema().type()) {
-                        case STRING:
-                            StringData[] stringDataArray = new StringData[arrayList.size()];
-                            for (int i = 0; i < arrayList.size(); i++) {
-                                Object element = arrayList.get(i);
-                                stringDataArray[i] = StringData.fromString(element.toString());
-                            }
-                            arrayData = new GenericArrayData(stringDataArray);
-                            arrayDataSerializer = new ArrayDataSerializer(new VarCharType(Integer.MAX_VALUE));
-                            break;
-                        case INT8:
-                        case INT16:
-                        case INT32:
-                            Object[] array = arrayList.toArray();
-                            arrayData = new GenericArrayData(array);
-                            arrayDataSerializer =
-                                    new ArrayDataSerializer(new IntType());
-                            break;
-                        case FLOAT32:
-                        case FLOAT64:
-                            array = arrayList.toArray();
-                            arrayDataSerializer =
-                                    new ArrayDataSerializer(new DoubleType());
-                            arrayData = new GenericArrayData(array);
-                            break;
-                    }
-                    writer.writeArray(index, arrayData, arrayDataSerializer);
-                }
-            }
-
-            public void writeTimeStamp (BinaryRowWriter writer,int index, Object dbzObj, Schema
-            schema, ZoneId serverTimeZone){
-                TimestampData data = (TimestampData) convertToTimeStamp(dbzObj, schema, serverTimeZone);
-                writer.writeTimestamp(index, data, getPrecision(schema));
-            }
-
-            public void writeBoolean (BinaryRowWriter writer,int index, Object dbzObj){
-                if (dbzObj instanceof Integer) {
-                    writer.writeBoolean(index, (Integer) dbzObj != 0);
-                } else if (dbzObj instanceof Long) {
-                    writer.writeBoolean(index, (Long) dbzObj != 0);
-                } else if (Character.isDigit(dbzObj.toString().indexOf(0))) {
-                    writer.writeBoolean(index, Integer.parseInt(dbzObj.toString()) != 0);
-                } else {
-                    writer.writeBoolean(index, Boolean.parseBoolean(dbzObj.toString()));
-                }
-            }
-
-            public void writeInt (BinaryRowWriter writer,int index, Object dbzObj){
-                if (dbzObj instanceof Integer) {
-                    writer.writeInt(index, (Integer) dbzObj);
-                } else if (dbzObj instanceof Long) {
-                    writer.writeInt(index, ((Long) dbzObj).intValue());
-                } else {
-                    writer.writeInt(index, Integer.parseInt(dbzObj.toString()));
-                }
-            }
-
-            public void writeFloat (BinaryRowWriter writer,int index, Object dbzObj){
-                if (dbzObj instanceof Float) {
-                    writer.writeFloat(index, (Float) dbzObj);
-                } else if (dbzObj instanceof Double) {
-                    writer.writeFloat(index, ((Double) dbzObj).floatValue());
-                } else {
-                    writer.writeFloat(index, Float.parseFloat(dbzObj.toString()));
-                }
-            }
-
-            public void writeDouble (BinaryRowWriter writer,int index, Object dbzObj){
-                if (dbzObj instanceof Float) {
-                    writer.writeDouble(index, ((Float) dbzObj).doubleValue());
-                } else if (dbzObj instanceof Double) {
-                    writer.writeDouble(index, (Double) dbzObj);
-                } else {
-                    writer.writeDouble(index, Double.parseDouble(dbzObj.toString()));
-                }
-            }
-
-            public void writeLong (BinaryRowWriter writer,int index, Object dbzObj){
-                if (dbzObj instanceof Integer) {
-                    writer.writeLong(index, ((Integer) dbzObj).longValue());
-                } else if (dbzObj instanceof Long) {
-                    writer.writeLong(index, (Long) dbzObj);
-                } else {
-                    writer.writeLong(index, Long.parseLong(dbzObj.toString()));
-                }
-            }
-
-            public void writeString (BinaryRowWriter writer,int index, Object dbzObj){
-                writer.writeString(index, StringData.fromString(dbzObj.toString()));
-            }
-
-            public void writeRow (BinaryRowWriter writer,int index, Object dbzObj){
-                RowData rowData = null;
-                if (dbzObj instanceof Struct) {
-                    Struct struct = (Struct) dbzObj;
-                    rowData = convertDocumentStruct(struct);
-                }
-                RowDataSerializer rowDataSerializer = new RowDataSerializer();
-                writer.writeRow(index, rowData, rowDataSerializer);
-            }
-
-            public void writeBinary (BinaryRowWriter writer,int index, Object dbzObj){
-                if (dbzObj instanceof byte[]) {
-                    writer.writeBinary(index, (byte[]) dbzObj);
-                } else if (dbzObj instanceof ByteBuffer) {
-                    ByteBuffer byteBuffer = (ByteBuffer) dbzObj;
-                    byte[] bytes = new byte[byteBuffer.remaining()];
-                    byteBuffer.get(bytes);
-                    writer.writeBinary(index, bytes);
-                } else {
-                    throw new UnsupportedOperationException(
-                            "Unsupported BYTES value type: " + dbzObj.getClass().getSimpleName());
-                }
-            }
+    public Object convertToGeometry (Object dbzObj, Schema schema){
+        if (dbzObj instanceof Struct) {
+            return ((Struct) dbzObj).getBytes("wkb");
+        } else {
+            throw new UnsupportedOperationException(
+                    "Unsupported Struct value type: " + dbzObj.getClass().getSimpleName());
         }
+    }
+
+    private Object convertToPoint (Object dbzObj, Schema schema){
+        if (dbzObj instanceof Struct) {
+            return ((Struct) dbzObj).getBytes("wkb");
+        } else {
+            throw new UnsupportedOperationException(
+                    "Unsupported Struct value type: " + dbzObj.getClass().getSimpleName());
+        }
+    }
+
+    public void writeArray (BinaryRowWriter writer,int index, Object dbzObj, Schema schema){
+        if (dbzObj instanceof ArrayList) {
+            ArrayList<Object> arrayList = (ArrayList<Object>) dbzObj;
+            ArrayData arrayData = null;
+            ArrayDataSerializer arrayDataSerializer = null;
+            switch (schema.valueSchema().type()) {
+                case STRING:
+                    StringData[] stringDataArray = new StringData[arrayList.size()];
+                    for (int i = 0; i < arrayList.size(); i++) {
+                        Object element = arrayList.get(i);
+                        stringDataArray[i] = StringData.fromString(element.toString());
+                    }
+                    arrayData = new GenericArrayData(stringDataArray);
+                    arrayDataSerializer = new ArrayDataSerializer(new VarCharType(Integer.MAX_VALUE));
+                    break;
+                case INT8:
+                case INT16:
+                case INT32:
+                    Object[] array = arrayList.toArray();
+                    arrayData = new GenericArrayData(array);
+                    arrayDataSerializer =
+                            new ArrayDataSerializer(new IntType());
+                    break;
+                case FLOAT32:
+                case FLOAT64:
+                    array = arrayList.toArray();
+                    arrayDataSerializer =
+                            new ArrayDataSerializer(new DoubleType());
+                    arrayData = new GenericArrayData(array);
+                    break;
+            }
+            writer.writeArray(index, arrayData, arrayDataSerializer);
+        }
+    }
+
+    public void writeTimeStamp (BinaryRowWriter writer,int index, Object dbzObj, Schema
+            schema, ZoneId serverTimeZone){
+        TimestampData data = (TimestampData) convertToTimeStamp(dbzObj, schema, serverTimeZone);
+        writer.writeTimestamp(index, data, getPrecision(schema));
+    }
+
+    public void writeBoolean (BinaryRowWriter writer,int index, Object dbzObj){
+        if (dbzObj instanceof Integer) {
+            writer.writeBoolean(index, (Integer) dbzObj != 0);
+        } else if (dbzObj instanceof Long) {
+            writer.writeBoolean(index, (Long) dbzObj != 0);
+        } else if (Character.isDigit(dbzObj.toString().indexOf(0))) {
+            writer.writeBoolean(index, Integer.parseInt(dbzObj.toString()) != 0);
+        } else {
+            writer.writeBoolean(index, Boolean.parseBoolean(dbzObj.toString()));
+        }
+    }
+
+    public void writeInt (BinaryRowWriter writer,int index, Object dbzObj){
+        if (dbzObj instanceof Integer) {
+            writer.writeInt(index, (Integer) dbzObj);
+        } else if (dbzObj instanceof Long) {
+            writer.writeInt(index, ((Long) dbzObj).intValue());
+        } else {
+            writer.writeInt(index, Integer.parseInt(dbzObj.toString()));
+        }
+    }
+
+    public void writeFloat (BinaryRowWriter writer,int index, Object dbzObj){
+        if (dbzObj instanceof Float) {
+            writer.writeFloat(index, (Float) dbzObj);
+        } else if (dbzObj instanceof Double) {
+            writer.writeFloat(index, ((Double) dbzObj).floatValue());
+        } else {
+            writer.writeFloat(index, Float.parseFloat(dbzObj.toString()));
+        }
+    }
+
+    public void writeDouble (BinaryRowWriter writer,int index, Object dbzObj){
+        if (dbzObj instanceof Float) {
+            writer.writeDouble(index, ((Float) dbzObj).doubleValue());
+        } else if (dbzObj instanceof Double) {
+            writer.writeDouble(index, (Double) dbzObj);
+        } else {
+            writer.writeDouble(index, Double.parseDouble(dbzObj.toString()));
+        }
+    }
+
+    public void writeLong (BinaryRowWriter writer,int index, Object dbzObj){
+        if (dbzObj instanceof Integer) {
+            writer.writeLong(index, ((Integer) dbzObj).longValue());
+        } else if (dbzObj instanceof Long) {
+            writer.writeLong(index, (Long) dbzObj);
+        } else {
+            writer.writeLong(index, Long.parseLong(dbzObj.toString()));
+        }
+    }
+
+    public void writeString (BinaryRowWriter writer,int index, Object dbzObj){
+        writer.writeString(index, StringData.fromString(dbzObj.toString()));
+    }
+
+    public void writeRow (BinaryRowWriter writer,int index, Object dbzObj){
+        RowData rowData = null;
+        if (dbzObj instanceof Struct) {
+            Struct struct = (Struct) dbzObj;
+            rowData = convertDocumentStruct(struct);
+        }
+        RowDataSerializer rowDataSerializer = new RowDataSerializer();
+        writer.writeRow(index, rowData, rowDataSerializer);
+    }
+
+    public void writeBinary (BinaryRowWriter writer,int index, Object dbzObj){
+        if (dbzObj instanceof byte[]) {
+            writer.writeBinary(index, (byte[]) dbzObj);
+        } else if (dbzObj instanceof ByteBuffer) {
+            ByteBuffer byteBuffer = (ByteBuffer) dbzObj;
+            byte[] bytes = new byte[byteBuffer.remaining()];
+            byteBuffer.get(bytes);
+            writer.writeBinary(index, bytes);
+        } else {
+            throw new UnsupportedOperationException(
+                    "Unsupported BYTES value type: " + dbzObj.getClass().getSimpleName());
+        }
+    }
+}
