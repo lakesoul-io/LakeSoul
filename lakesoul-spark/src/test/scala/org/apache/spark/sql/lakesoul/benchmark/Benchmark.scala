@@ -167,9 +167,9 @@ object Benchmark {
     if (!result) {
       println(printLine + table + " result: " + result + printLine)
       println("*************diff1**************")
-      spark.createDataFrame(diff1, lakesoulDF.schema).show()
+      spark.createDataFrame(diff1, lakesoulDF.schema).sort(lakesoulDF.schema.fields(0).name).show()
       println("*************diff2**************")
-      spark.createDataFrame(diff2, lakesoulDF.schema).show()
+      spark.createDataFrame(diff2, lakesoulDF.schema).sort(lakesoulDF.schema.fields(0).name).show()
       println(table + " data verification ERROR!!!")
       System.exit(1)
     }
