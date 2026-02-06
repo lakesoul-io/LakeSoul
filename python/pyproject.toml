@@ -11,7 +11,7 @@ authors = [
 description = "Python APIs for using LakeSoul"
 readme = "README.md"
 license = { text = "Apache-2.0" }
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 keywords = ["lakesoul", "bigdata", "ai"]
 classifiers = [
   "Development Status :: 5 - Production/Stable",
@@ -22,7 +22,7 @@ classifiers = [
   "Programming Language :: Python :: 3",
 ]
 dependencies = [
-  "pyarrow>=16,<21",
+  "pyarrow>=22",
   "numpy",
   "protobuf>=5.0",
   "typing-extensions>=4.8",
