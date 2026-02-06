@@ -4,7 +4,7 @@
 
 [project]
 name = "lakesoul"
-version = "1.1.0"
+version = "1.2.0"
 authors = [
   { name = "LakeSoul Team", email = "lakesoul-technical-discuss@lists.lfaidata.foundation" },
 ]
