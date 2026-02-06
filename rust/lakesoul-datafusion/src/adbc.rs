@@ -4,7 +4,6 @@ mod mysql;
 
 mod federation;
 
-
 #[cfg(test)]
 mod tests {
     use adbc_core::options::{AdbcVersion, OptionDatabase};
@@ -35,7 +34,9 @@ mod tests {
 
         let mut statement: adbc_driver_manager::ManagedStatement =
             conn.new_statement().unwrap();
-        statement.set_sql_query("select * from wide_table limit 10").unwrap();
+        statement
+            .set_sql_query("select * from wide_table limit 10")
+            .unwrap();
         let reader = statement.execute().unwrap();
         let batches: Vec<RecordBatch> = reader.collect::<Result<_, _>>().unwrap();
 

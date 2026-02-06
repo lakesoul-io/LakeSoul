@@ -316,14 +316,14 @@ impl PartitioningAsyncWriter {
                 }
             }
 
-            if let DataFusionError::Internal(ref msg) = e {
-                if msg == "external abort" {
-                    debug!("External abort signal received");
-                    return Ok(flush_join_set);
-                }
+            if let DataFusionError::Internal(ref msg) = e
+                && msg == "external abort"
+            {
+                debug!("External abort signal received");
+                return Ok(flush_join_set);
             }
 
-            return Err(e.into());
+            Err(e.into())
         } else {
             for (partition_desc, writer) in partitioned_writer.into_iter() {
                 flush_join_set.spawn(async move {

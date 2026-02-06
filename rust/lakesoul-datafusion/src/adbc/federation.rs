@@ -1,6 +1,5 @@
 //! Code from https://github.com/datafusion-contrib/datafusion-federation
 
-
 // mod optimizer;
 // mod plan_node;
 // pub mod schema_cast;

@@ -6,7 +6,7 @@ mod jemalloc {
     static GLOBAL: Jemalloc = Jemalloc;
     use tikv_jemalloc_ctl::{epoch, stats};
 
-    pub fn print_memory_stats() {
+    pub fn _print_memory_stats() {
         // 必须先调用 epoch::advance() 才能刷新缓存中的统计数据
         epoch::advance().unwrap();
         let allocated = stats::allocated::read().unwrap();

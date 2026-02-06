@@ -7,7 +7,6 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::iter::zip;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::usize;
 
 use arrow_schema::{Schema, SchemaBuilder, SchemaRef};
 use datafusion::config::SpillCompression;
