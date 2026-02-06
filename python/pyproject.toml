@@ -4,14 +4,14 @@
 
 [project]
 name = "lakesoul"
-version = "1.2.0"
+version = "1.1.0"
 authors = [
   { name = "LakeSoul Team", email = "lakesoul-technical-discuss@lists.lfaidata.foundation" },
 ]
 description = "Python APIs for using LakeSoul"
 readme = "README.md"
 license = { text = "Apache-2.0" }
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 keywords = ["lakesoul", "bigdata", "ai"]
 classifiers = [
   "Development Status :: 5 - Production/Stable",
@@ -22,7 +22,7 @@ classifiers = [
   "Programming Language :: Python :: 3",
 ]
 dependencies = [
-  "pyarrow>=22",
+  "pyarrow>=16,<21",
   "numpy",
   "protobuf>=5.0",
   "typing-extensions>=4.8",
@@ -46,7 +46,6 @@ all = [
   "ray>=2.7,<2.11.0",
   "pyspark==3.3.1",
   "duckdb>=1.4.0",
-  "datafusion>=51"
 ]
 
 [tool.uv.sources]
