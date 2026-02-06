@@ -357,33 +357,7 @@ public class LakeSoulRecordConvert implements Serializable {
             case ZonedTime.SCHEMA_NAME:
             case ZonedTimestamp.SCHEMA_NAME:
             case com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Timestamp.LOGICAL_NAME:
-            {
-                if (fieldValue == null) {
-                    return new LocalZonedTimestampType(nullable, LocalZonedTimestampType.DEFAULT_PRECISION);
-                }
-                if (fieldValue instanceof String) {
-                    int nano =
-                            Optional.ofNullable((String) fieldValue)
-                                    .map(s -> ZonedTimestamp.FORMATTER.parse(s, Instant::from))
-                                    .map(Instant::getNano)
-                                    .orElse(0);
-
-                    int precision;
-                    if (nano == 0) {
-                        precision = 0;
-                    } else if (nano % 1000 > 0) {
-                        precision = 9;
-                    } else if (nano % 1000_000 > 0) {
-                        precision = 6;
-                    } else if (nano % 1000_000_000 > 0) {
-                        precision = 3;
-                    } else {
-                        precision = 0;
-                    }
-                    return new LocalZonedTimestampType(nullable, precision);
-                }
                 return new LocalZonedTimestampType(nullable, LocalZonedTimestampType.DEFAULT_PRECISION);
-            }
             case VariableScaleDecimal.LOGICAL_NAME:
             {
                 if (fieldValue instanceof BigDecimal) {
