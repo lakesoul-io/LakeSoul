@@ -28,7 +28,6 @@ import java.util.stream.Collectors;
 
 import static com.dmetasoul.lakesoul.meta.DBConfig.*;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.LAKESOUL_COMMIT_THREAD_NUM;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SORT_FIELD;
 
 /**
  * Committer implementation for {@link LakeSoulMultiTablesSink}.
@@ -107,7 +106,7 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
 
         List<DataFileOp> dataFileOpList = new ArrayList<>();
         String fileExistCols =
-                identity.rowType.getFieldNames().stream().filter(name -> !name.equals(SORT_FIELD))
+                identity.rowType.getFieldNames().stream()
                         .collect(Collectors.joining(LAKESOUL_FILE_EXISTS_COLUMN_SPLITTER));
         for (String file : files) {
             DataFileOp.Builder dataFileOp = DataFileOp.newBuilder();
