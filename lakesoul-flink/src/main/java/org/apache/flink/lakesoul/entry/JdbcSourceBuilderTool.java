@@ -10,6 +10,7 @@ import java.io.InputStream;
 import java.time.Duration;
 import java.util.*;
 import java.util.stream.Collectors;
+
 import org.apache.flink.cdc.connectors.base.options.StartupOptions;
 import org.apache.flink.cdc.connectors.mysql.source.MySqlSourceBuilder;
 import org.apache.flink.cdc.connectors.postgres.source.PostgresSourceBuilder;
@@ -166,7 +167,7 @@ public class JdbcSourceBuilderTool {
             sourceBuilder.connectionPoolSize(Integer.parseInt(cdcParams.get(CONNECTION_POOL_SIZE.key()).toString()));
         }
         if (cdcParams.containsKey(SCAN_STARTUP_MODE.key())) {
-            sourceBuilder.startupOptions(parseMysqlStartupOptions(cdcParams.get(SCAN_STARTUP_MODE.key()).toString()));
+            sourceBuilder.startupOptions(parseMysqlStartupOptions(cdcParams, cdcParams.get(SCAN_STARTUP_MODE.key()).toString()));
         }
         if (cdcParams.containsKey(SCAN_INCREMENTAL_SNAPSHOT_CHUNK_SIZE.key())) {
             sourceBuilder.splitSize(Integer.parseInt(cdcParams.get(SCAN_INCREMENTAL_SNAPSHOT_CHUNK_SIZE.key()).toString()));
@@ -174,7 +175,7 @@ public class JdbcSourceBuilderTool {
         if (cdcParams.containsKey(HEARTBEAT_INTERVAL.key())) {
             sourceBuilder.heartbeatInterval(Duration.ofSeconds(Long.parseLong(cdcParams.get(HEARTBEAT_INTERVAL.key()).toString())));
         }
-        if (cdcParams.containsKey(SERVER_ID.key())){
+        if (cdcParams.containsKey(SERVER_ID.key())) {
             String serverId = (String) cdcParams.get(SERVER_ID.key());
             sourceBuilder.serverId(serverId);
         }
@@ -187,8 +188,21 @@ public class JdbcSourceBuilderTool {
         return sourceBuilder;
     }
 
-    private org.apache.flink.cdc.connectors.mysql.table.StartupOptions parseMysqlStartupOptions(String mode) {
+    private org.apache.flink.cdc.connectors.mysql.table.StartupOptions parseMysqlStartupOptions(Map<String, Object> cdcParams, String mode) {
         switch (mode.toLowerCase()) {
+            case "timestamp":
+                Object tsObj = cdcParams.get(SCAN_STARTUP_TIMESTAMP_MILLIS.key());
+                if (tsObj == null) {
+                    throw new IllegalArgumentException("Timestamp mode requires a valid timestamp-millis");
+                }
+                try {
+                    Long ts = Long.parseLong(tsObj.toString());
+                    System.out.println("INFO: mysql cdc from timestamp " + ts);
+                    return org.apache.flink.cdc.connectors.mysql.table.StartupOptions.timestamp(ts);
+                } catch (NumberFormatException e) {
+                    throw new IllegalArgumentException("Invalid timestamp format: " + tsObj, e);
+                }
+
             case "initial":
                 return org.apache.flink.cdc.connectors.mysql.table.StartupOptions.initial();
             case "latest-offset":
@@ -272,9 +286,9 @@ public class JdbcSourceBuilderTool {
                 }
 
                 List<String> partitionCols = Arrays.stream(cols.split(","))
-                    .map(String::trim)
-                    .filter(s -> !s.isEmpty())
-                    .collect(Collectors.toList());
+                        .map(String::trim)
+                        .filter(s -> !s.isEmpty())
+                        .collect(Collectors.toList());
 
                 tablePartitions.put(tableName, partitionCols);
             }

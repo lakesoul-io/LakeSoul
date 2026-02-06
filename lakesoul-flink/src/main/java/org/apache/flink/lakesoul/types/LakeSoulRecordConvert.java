@@ -830,6 +830,7 @@ public class LakeSoulRecordConvert implements Serializable {
                 writer.writeTimestamp(index, data, getPrecision(schema));
             }
 
+            // TODO remove serverTimeZone parameters
             public Object convertToTimeStamp (Object dbzObj, Schema schema, ZoneId serverTimeZone){
                 if (dbzObj instanceof Long) {
                     Instant instant = null;

@@ -63,7 +63,7 @@ public class JdbcIngest {
         Catalog lakesoulCatalog = new LakeSoulCatalog();
         tEnv.registerCatalog("lakesoul", lakesoulCatalog);
 
-        for(String tableName: tableArray) {
+        for (String tableName : tableArray) {
             tEnv.getConfig().getConfiguration().setString("pipeline.name", defaultDatabase + "-lakesoul-" + tableName);
             tEnv.getConfig().getConfiguration()
                     .setString("table.exec.resource.default-parallelism", "1");
@@ -85,7 +85,6 @@ public class JdbcIngest {
                             .option("password", password)
                             .option("scan.fetch-size", "-2147483648")
                             .build());
-
 
 
             // sink table
@@ -112,10 +111,8 @@ public class JdbcIngest {
             String lakesoulCatalogDBTable = "lakesoul." + lakesoulDBTable;
 
             if (!lakesoulCatalog.tableExists(ObjectPath.fromString(lakesoulDBTable))) {
-                // create sink table
-                Schema sinkSchema = Schema.newBuilder()
-                        .fromSchema(sourceSchema)
-                        .column(formatedCol, DataTypes.STRING())
+                System.out.println("Create sink table");
+                Schema sinkSchema = Schema.newBuilder().fromSchema(sourceSchema).column(formatedCol, DataTypes.STRING())
                         .build();
                 System.out.println("Sink schema: " + sinkSchema);
 
@@ -156,7 +153,7 @@ public class JdbcIngest {
                 String dayStart = date.atStartOfDay().format(formatter);
                 String dayEnd = date.plusDays(1).atStartOfDay().format(formatter);
                 System.out.println("Submitting date: " + formatedCol + "=" + date);
-                // 生成 SQL
+
                 String sql = String.format(
                         "INSERT INTO %s " +
                                 "SELECT *, date_format(%s,'yyyy-MM') as %s " +
@@ -164,8 +161,7 @@ public class JdbcIngest {
                                 "WHERE %s >= '%s' AND %s < '%s'",
                         lakesoulCatalogDBTable, partitionColumn, formatedCol,
                         jdbcTableName,
-                        partitionColumn, dayStart, partitionColumn, dayEnd
-                );
+                        partitionColumn, dayStart, partitionColumn, dayEnd);
 
                 System.out.println("add sql: " + sql);
 
