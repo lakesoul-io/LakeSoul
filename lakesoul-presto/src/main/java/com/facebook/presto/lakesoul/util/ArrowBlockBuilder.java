@@ -26,6 +26,7 @@ import org.apache.arrow.vector.complex.MapVector;
 import org.apache.arrow.vector.complex.StructVector;
 import org.apache.arrow.vector.dictionary.Dictionary;
 import org.apache.arrow.vector.dictionary.DictionaryProvider;
+import org.apache.arrow.vector.types.TimeUnit;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
 
@@ -35,7 +36,6 @@ import java.time.Duration;
 import java.time.LocalTime;
 import java.util.List;
 import java.util.Optional;
-import java.util.concurrent.TimeUnit;
 
 import static com.facebook.presto.common.Utils.checkArgument;
 import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
@@ -86,7 +86,11 @@ public class ArrowBlockBuilder
             case Date:
                 return DateType.DATE;
             case Timestamp:
-                return TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
+                ArrowType.Timestamp timestampType = (ArrowType.Timestamp) field.getType();
+                if (timestampType.getUnit() == TimeUnit.MICROSECOND)
+                    return TimestampType.TIMESTAMP_MICROSECONDS;
+                else
+                    return TimestampType.TIMESTAMP;
             case Utf8:
             case LargeUtf8:
                 return VarcharType.VARCHAR;
