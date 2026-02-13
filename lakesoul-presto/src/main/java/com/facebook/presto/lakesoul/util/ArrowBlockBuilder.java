@@ -396,8 +396,7 @@ public class ArrowBlockBuilder
             else {
                 long micros = vector.get(i);
                 long millis = TimeUnit.MICROSECONDS.toMillis(micros);
-                long value = DateTimeEncoding.packDateTimeWithZone(millis, TimeZoneKey.UTC_KEY);
-                type.writeLong(builder, value);
+                type.writeLong(builder, millis);
             }
         }
     }
