@@ -385,7 +385,7 @@ public class ArrowBlockBuilder
 
     public void assignBlockFromTimeStampMicroTZVector(TimeStampMicroTZVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
     {
-        if (!(type instanceof TimestampWithTimeZoneType)) {
+        if (!(type instanceof TimestampType)) {
             throw new IllegalArgumentException("Expected TimestampType but got " + type.getClass().getName());
         }
 
