@@ -86,7 +86,7 @@ public class ArrowBlockBuilder
             case Date:
                 return DateType.DATE;
             case Timestamp:
-                return TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
+                return TimestampType.TIMESTAMP;
             case Utf8:
             case LargeUtf8:
                 return VarcharType.VARCHAR;
@@ -385,7 +385,7 @@ public class ArrowBlockBuilder
 
     public void assignBlockFromTimeStampMicroTZVector(TimeStampMicroTZVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
     {
-        if (!(type instanceof TimestampWithTimeZoneType)) {
+        if (!(type instanceof TimestampType)) {
             throw new IllegalArgumentException("Expected TimestampType but got " + type.getClass().getName());
         }
 
@@ -396,8 +396,7 @@ public class ArrowBlockBuilder
             else {
                 long micros = vector.get(i);
                 long millis = TimeUnit.MICROSECONDS.toMillis(micros);
-                long value = DateTimeEncoding.packDateTimeWithZone(millis, TimeZoneKey.UTC_KEY);
-                type.writeLong(builder, value);
+                type.writeLong(builder, millis);
             }
         }
     }
