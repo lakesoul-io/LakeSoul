@@ -530,15 +530,14 @@ public class LakeSoulRecordConvert implements Serializable {
             }
             String timeZone = globalConfig.getString("table.local-time-zone", null);
             LocalDate date;
+            ZoneId flinkZoneId;
             if (timeZone != null) {
-                ZoneId flinkZoneId = ZoneId.of(timeZone);
-                date = instant.atZone(flinkZoneId).toLocalDate();
-                LOG.debug("use timezone: {}, calculated date: {}", flinkZoneId, date);
+                flinkZoneId = ZoneId.of(timeZone);
             } else {
-                ZoneId flinkZoneId = ZoneId.systemDefault();
-                date = instant.atZone(flinkZoneId).toLocalDate();
-                LOG.debug("use timezone: {}, calculated date: {}", flinkZoneId, date);
+                flinkZoneId = ZoneId.systemDefault();
             }
+            date = instant.atZone(flinkZoneId).toLocalDate();
+            LOG.debug("use timezone: {}, calculated date: {}", flinkZoneId, date);
             if (formatRule == null) {
                 formatRule = "yyyy-MM-dd";
             }
@@ -729,7 +728,8 @@ public class LakeSoulRecordConvert implements Serializable {
         Map<String, String> paras = schema.parameters();
         DecimalData d;
         if (paras == null || paras.get("connect.decimal.precision") == null) {
-            d = DecimalData.fromBigDecimal(bigDecimal, 38, 30);
+            // directly use bigDecimal's precision and scale, same as type inference
+            d = DecimalData.fromBigDecimal(bigDecimal, bigDecimal.precision(), bigDecimal.scale());
         } else {
             d = DecimalData.fromBigDecimal(bigDecimal, Integer.parseInt(paras.get("connect.decimal.precision")),
                     Integer.parseInt(paras.get("scale")));
@@ -740,18 +740,6 @@ public class LakeSoulRecordConvert implements Serializable {
                     bigDecimal, bigDecimal.precision(), bigDecimal.scale(), paras);
         }
         return d;
-    }
-
-    public void writeDecimal(BinaryRowWriter writer, int index, Object dbzObj, Schema schema) {
-        DecimalData data = (DecimalData) convertToDecimal(dbzObj, schema);
-        if (data == null) {
-            String err = String.format("Convert decimal failed %s@%s, index %d, schema %s",
-                    dbzObj, dbzObj.getClass().getName(),
-                    index, schema);
-            LOG.error(err);
-            throw new RuntimeException(err);
-        }
-        writer.writeDecimal(index, data, data.precision());
     }
 
     public Object convertToDate(Object dbzObj, Schema schema) {
