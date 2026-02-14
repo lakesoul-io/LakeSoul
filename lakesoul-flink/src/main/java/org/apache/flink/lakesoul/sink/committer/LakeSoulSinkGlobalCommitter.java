@@ -328,10 +328,10 @@ public class LakeSoulSinkGlobalCommitter
                         throw new SuppressRestartsException(new IllegalStateException(msg));
                     }
                     for (LakeSoulMultiTableSinkCommittable committable : lakeSoulMultiTableSinkCommittable) {
-                        if (committable.getTsMs() > schemaLastChangeTime) {
+                        if (committable.getCreationTime() > schemaLastChangeTime) {
                             LOG.error("Incompatible cast data {} created and delayThreshold time: {}, dml create time: {}",
                                     msg,
-                                    schemaLastChangeTime, committable.getTsMs());
+                                    schemaLastChangeTime, committable.getCreationTime());
                             throw new IOException(msg);
                         }
                     }

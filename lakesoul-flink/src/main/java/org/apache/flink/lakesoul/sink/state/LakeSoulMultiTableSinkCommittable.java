@@ -38,10 +38,7 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
     @Nullable
     private final String commitId;
 
-    private final long tsMs;
-
     private final String dmlType;
-
 
     /**
      * Constructor for {@link org.apache.flink.lakesoul.sink.writer.LakeSoulWriterBucket} to prepare commit
@@ -52,7 +49,6 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
             List<InProgressFileWriter.PendingFileRecoverable> pendingFiles,
             long creationTime,
             TableSchemaIdentity identity,
-            long tsMs,
             String dmlType,
             String sourcePartitionInfo
     ) {
@@ -61,7 +57,6 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
                 pendingFiles,
                 creationTime,
                 UUID.randomUUID().toString(),
-                tsMs,
                 dmlType,
                 sourcePartitionInfo
         );
@@ -77,7 +72,6 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
             @Nullable List<InProgressFileWriter.PendingFileRecoverable> pendingFiles,
             long time,
             @Nullable String commitId,
-            long tsMs,
             String dmlType,
             String sourcePartitionInfo
     ) {
@@ -88,7 +82,6 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
         this.pendingFilesMap.put(bucketId, pendingFiles);
         this.creationTime = time;
         this.commitId = commitId;
-        this.tsMs = tsMs;
         this.dmlType = dmlType;
         this.sourcePartitionInfo = sourcePartitionInfo;
     }
@@ -102,7 +95,6 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
             Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFilesMap,
             long time,
             @Nullable String commitId,
-            long tsMs,
             String dmlType,
             String sourcePartitionInfo
     ) {
@@ -113,22 +105,8 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
         this.pendingFilesMap = pendingFilesMap;
         this.creationTime = time;
         this.commitId = commitId;
-        this.tsMs = tsMs;
         this.dmlType = dmlType;
         this.sourcePartitionInfo = sourcePartitionInfo;
-    }
-
-
-    public long getTsMs() {
-        return tsMs;
-    }
-
-    public boolean hasPendingFile() {
-        if (dynamicBucketing) {
-            return !pendingFilesMap.isEmpty();
-        } else {
-            return hasPendingFile(bucketId);
-        }
     }
 
     public boolean hasPendingFile(String bucketId) {
@@ -183,7 +161,6 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
                 ", identity=" + identity +
                 ", pendingFilesMap=" + pendingFilesMap +
                 ", commitId='" + commitId + '\'' +
-                ", tsMs=" + tsMs +
                 ", dmlType='" + dmlType + '\'' +
                 '}';
     }
