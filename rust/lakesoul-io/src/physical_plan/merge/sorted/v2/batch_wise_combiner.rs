@@ -1,0 +1,669 @@
+// SPDX-FileCopyrightText: LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
+//! This module provides the implementation of a batch-wise range combiner that
+//! optimizes the sorted merge by checking range overlaps using batch min/max values
+//! before doing row-level comparisons.
+
+use crate::Result;
+use crate::physical_plan::merge::sorted::cursor::CursorValues;
+use crate::physical_plan::merge::sorted::sorted_stream_merger::CursorStream;
+use crate::physical_plan::merge::sorted::v2::batch_range::BatchRange;
+use crate::physical_plan::merge::sorted::v2::deduplicate::DeduplicateStream;
+use crate::physical_plan::merge::sorted::v2::loser_tree_merger::LoserTreeRangeMerge;
+use arrow::datatypes::SchemaRef;
+use arrow::record_batch::RecordBatch;
+use datafusion_common::DataFusionError;
+use datafusion_execution::{RecordBatchStream, SendableRecordBatchStream};
+use futures::stream::{FusedStream, Peekable};
+use futures::{Stream, StreamExt};
+use nohash::BuildNoHashHasher;
+use rootcause::compat::boxed_error::IntoBoxedError;
+use rootcause::{Report, report};
+use std::collections::HashMap;
+use std::future;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
+use tokio::sync::mpsc::Sender;
+use tokio::sync::{Mutex, mpsc};
+use tokio_stream::wrappers::ReceiverStream;
+
+pub(crate) type CursorStreamWithId<C> =
+    Pin<Box<dyn Stream<Item = Result<(C, RecordBatch, usize)>> + Send + 'static>>;
+
+/// A combiner that uses batch min/max values to determine range overlaps before
+/// doing row-level merge operations. This can significantly optimize the merge
+/// process when batches have non-overlapping ranges.
+pub struct BatchWiseRangeCombiner<C: CursorValues> {
+    streams: Vec<Pin<Box<Peekable<CursorStreamWithId<C>>>>>,
+
+    /// The schema of the record batch.
+    schema: SchemaRef,
+
+    /// Target batch size for generated record batch
+    target_batch_size: usize,
+
+    /// Number of active streams
+    num_streams: usize,
+
+    /// Counter for tracking initialized ranges
+    ranges_counter: usize,
+
+    ranges: HashMap<usize, BatchRange<C>, BuildNoHashHasher<usize>>,
+}
+
+impl<C: CursorValues + Send + Sync + 'static> BatchWiseRangeCombiner<C> {
+    /// Create a new BatchWiseRangeCombiner
+    ///
+    /// # Arguments
+    ///
+    /// * `schema` - The schema of the record batch
+    /// * `streams_num` - The number of streams to merge
+    /// * `fields_map` - The fields map from source schemas to target schema
+    /// * `target_batch_size` - The target batch size for generated record batch
+    pub fn new(
+        streams: Vec<(CursorStream<C>, bool)>,
+        schema: SchemaRef,
+        streams_num: usize,
+        target_batch_size: usize,
+    ) -> Result<Self> {
+        let streams: Vec<CursorStreamWithId<C>> = streams
+            .into_iter()
+            .enumerate()
+            .map(|(idx, (stream, require_dedup))| {
+                let stream = if require_dedup {
+                    let dedup_stream =
+                        DeduplicateStream::new_from_stream(stream, schema.clone())?;
+                    dedup_stream.create_deduplicated_stream()
+                } else {
+                    stream
+                };
+                Ok(Box::pin(
+                    stream
+                        .map(move |e| {
+                            if let Ok((c, b)) = e {
+                                Ok((c, b, idx))
+                            } else {
+                                Err(e.err().unwrap())
+                            }
+                        })
+                        .map(|e| future::ready(e))
+                        .buffered(4),
+                ) as CursorStreamWithId<C>)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let streams = streams
+            .into_iter()
+            .map(|stream: CursorStreamWithId<C>| Box::pin(stream.peekable()))
+            .collect::<Vec<_>>();
+        Ok(Self {
+            streams,
+            schema,
+            target_batch_size,
+            num_streams: streams_num,
+            ranges_counter: 0,
+            ranges: HashMap::<usize, BatchRange<C>, BuildNoHashHasher<usize>>::with_capacity_and_hasher(
+                streams_num * 2,
+                BuildNoHashHasher::default(),
+            ),
+        })
+    }
+
+    pub async fn pull_from_stream(&mut self, idx: usize) -> Result<()> {
+        if !self.streams[idx].is_terminated() {
+            if let Some(batch) = self.streams[idx].next().await {
+                let batch = batch?;
+                if batch.1.num_rows() > 0 {
+                    let end_row_for_merge = batch.1.num_rows() - 1;
+                    self.ranges.insert(
+                        self.ranges_counter,
+                        BatchRange::new(
+                            batch.0,
+                            batch.1,
+                            batch.2,
+                            self.ranges_counter,
+                            end_row_for_merge,
+                        ),
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // Algorithm to merge current batches in `self.ranges`:
+    // 1. Find the range with the smallest first-row value, as `r_star`, its min value is r_start
+    // 2. Find all ranges whose r.min is lte to `r_star.max`, store the set in `overlap_ranges`
+    // 3. Find the minimum value of r.max in `overlap_ranges`, as `window_end`
+    // 4. Merge all ranges in `overlap_ranges` whose r.min is lte to `window_end`
+    //   4.1. For each r in `overlap_ranges`: merge its range in [r.min, min(r.max, window_end)]
+    //   4.2. Merge these ranges row-by-row with loser tree
+    // 5. If no overlap ranges found for [r_star.min, r_star.max], produce r_star directly as next batch
+    // 6. For all merged ranges (either fully or partially), update their begin row to end + 1, and end to num_rows - 1
+    // 7. For all ranges having begin > end, pull from streams
+    // 8. repeat until ranges is empty
+    //
+    // Use sender-receiver as this function may produce multiple batches
+    pub async fn merge_next_batch<'a>(
+        &'a mut self,
+        mut tx: Sender<Result<RecordBatch>>,
+    ) -> Result<Sender<Result<RecordBatch>>> {
+        if self.ranges.is_empty() {
+            return Ok(tx);
+        }
+        // Fast path 1: only one range, produce it directly
+        if self.ranges.len() == 1 {
+            let range = self.ranges.values_mut().next().unwrap();
+            range.slice_range_remaining();
+            tx.send(Ok(range.batch().clone())).await?;
+        }
+        // Step 1. Find the two ranges with the smallest first-row values
+        let mut r_star_range_idx = *self.ranges.iter().next().unwrap().0;
+        let mut second_smallest_range = None;
+
+        self.ranges.iter().for_each(|(batch_idx, range)| {
+            let r_star_range = self.ranges.get(&r_star_range_idx).unwrap();
+            let cmp_with_first = C::compare(
+                &range.cursor(),
+                range.begin_row(),
+                &r_star_range.cursor(),
+                r_star_range.begin_row(),
+            );
+            if cmp_with_first.is_lt() {
+                // Current range is smaller than the first, so shift first to second and update first
+                second_smallest_range = Some(r_star_range);
+                r_star_range_idx = *batch_idx;
+            } else if second_smallest_range.is_none()
+                || C::compare(
+                    &range.cursor(),
+                    range.begin_row(),
+                    &second_smallest_range.unwrap().cursor(),
+                    second_smallest_range.unwrap().begin_row(),
+                )
+                .is_lt()
+            {
+                // Current range is larger than first but smaller than second
+                second_smallest_range = Some(range);
+            }
+        });
+        let r_star_end = self.ranges.get(&r_star_range_idx).unwrap().num_rows() - 1;
+        // Step 2.
+        let mut overlap_ranges = Vec::with_capacity(self.ranges.len());
+        for (batch_idx, range) in self.ranges.iter() {
+            let cmp = C::compare(
+                &range.cursor(),
+                0,
+                self.ranges.get(&r_star_range_idx).unwrap().cursor(),
+                r_star_end,
+            );
+            if cmp.is_lt() || cmp.is_eq() {
+                overlap_ranges.push(*batch_idx);
+            }
+        }
+        // Fast path 2: if overlap ranges contains only one range, produce it directly
+        if overlap_ranges.len() == 1 {
+            let range = self.ranges.get_mut(&overlap_ranges.pop().unwrap()).unwrap();
+            range.slice_range_remaining();
+            tx.send(Ok(range.batch().clone())).await?;
+            return Ok(tx);
+        }
+        // Step 3. Find the minimum value of r.max in `overlap_ranges`, as `window_end`
+        let overlap_range_iter = overlap_ranges.iter();
+        let mut window_end_range = *overlap_ranges.iter().next().unwrap();
+        overlap_range_iter.for_each(|range| {
+            let cmp = C::compare(
+                &self.ranges.get(&range).unwrap().cursor(),
+                self.ranges.get(&range).unwrap().end_row_for_merge(),
+                &self.ranges.get(&window_end_range).unwrap().cursor(),
+                self.ranges
+                    .get(&window_end_range)
+                    .unwrap()
+                    .end_row_for_merge(),
+            );
+            if cmp.is_lt() {
+                window_end_range = *range;
+            }
+        });
+        let mut r_star_begin_num = 0;
+        // update overlapped ranges' begin_row and end_row_for_merge
+        let mut new_overlap_range_idx = Vec::with_capacity(overlap_ranges.len());
+        // Step 4.1
+        for range in overlap_ranges.iter() {
+            if C::compare(
+                &self.ranges.get(&range).unwrap().cursor(),
+                self.ranges.get(&range).unwrap().begin_row(),
+                &self.ranges.get(&r_star_range_idx).unwrap().cursor(),
+                self.ranges.get(&r_star_range_idx).unwrap().begin_row(),
+            )
+            .is_eq()
+            {
+                r_star_begin_num += 1;
+            }
+            // update this range's end_row_for_merge to be lte window_end
+            if let Some(end_row_for_merge) =
+                self.ranges.get(&range).unwrap().find_le_start_index(
+                    &self.ranges.get(&window_end_range).unwrap(),
+                    self.ranges
+                        .get(&window_end_range)
+                        .unwrap()
+                        .end_row_for_merge(),
+                )
+            {
+                self.ranges
+                    .get_mut(&range)
+                    .unwrap()
+                    .set_end_row_for_merge(end_row_for_merge);
+                new_overlap_range_idx.push(*range);
+            }
+        }
+        // new_overlap_range should have at least two elements
+        if new_overlap_range_idx.len() < 2 {
+            tx.send(Err(report!("Not enough overlap ranges"))).await?;
+            return Ok(tx);
+        }
+        // Step 5. Merge all ranges in `new_overlap_ranges`
+        // let mut new_overlap_ranges: Vec<&'a mut BatchRange<C>> = Vec::with_capacity(new_overlap_range_idx.len());
+        let new_overlap_ranges = self
+            .ranges
+            .iter_mut()
+            .filter(|(batch_idx, _)| new_overlap_range_idx.contains(batch_idx))
+            .map(|(_, range)| range)
+            .collect();
+        let mut merger = LoserTreeRangeMerge::new(
+            self.schema.clone(),
+            new_overlap_ranges,
+            self.target_batch_size,
+        );
+        tx = merger.merge(tx).await?;
+        Ok(tx)
+    }
+
+    pub async fn build_merged_stream(
+        this: Arc<Mutex<Self>>,
+    ) -> Result<SendableRecordBatchStream> {
+        let (tx, rx) = mpsc::channel(10);
+        let schema;
+        {
+            // initialize ranges
+            let mut self_ref = this.lock().await;
+            schema = self_ref.schema.clone();
+            for i in 0..self_ref.streams.len() {
+                self_ref.pull_from_stream(i).await?;
+            }
+        }
+        let self_cloned = this.clone();
+        // ignore JoinHandle, as when caller needs to cancel, it could just drop the receiver
+        tokio::spawn(async move {
+            let mut self_ref = self_cloned.lock().await;
+            let mut tx = tx;
+            while !self_ref.ranges.is_empty() && !tx.is_closed() {
+                tx = self_ref.merge_next_batch(tx).await?;
+                // update ranges
+                let mut to_pull_stream_indices =
+                    Vec::with_capacity(self_ref.ranges.len());
+                self_ref.ranges.iter_mut().for_each(|(batch_idx, range)| {
+                    range.reset();
+                    // this range has ended, need to remove from ranges and pull from streams
+                    if !range.has_more_rows() {
+                        to_pull_stream_indices.push((*batch_idx, range.stream_idx()))
+                    }
+                });
+                // pull from streams
+                for i in 0..to_pull_stream_indices.len() {
+                    self_ref.ranges.remove(&to_pull_stream_indices[i].0);
+                    self_ref
+                        .pull_from_stream(to_pull_stream_indices[i].1)
+                        .await?;
+                }
+            }
+            Ok::<(), Report>(())
+        });
+        Ok(Box::pin(MergedStream {
+            stream: ReceiverStream::new(rx),
+            schema,
+        }))
+    }
+}
+
+struct MergedStream {
+    stream: ReceiverStream<Result<RecordBatch>>,
+    schema: SchemaRef,
+}
+
+impl Stream for MergedStream {
+    type Item = Result<RecordBatch, DataFusionError>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        let p = self.stream.poll_next_unpin(cx);
+        match p {
+            Poll::Ready(Some(batch)) => Poll::Ready(Some(
+                batch.map_err(|e| DataFusionError::External(e.into_boxed_error())),
+            )),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl RecordBatchStream for MergedStream {
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use crate::Result;
+    use crate::helpers::InMemGenerator;
+    use crate::physical_plan::merge::sorted::cursor::RowValues;
+    use crate::physical_plan::merge::sorted::sorted_stream_merger::CursorStream;
+    use crate::physical_plan::merge::sorted::v2::batch_wise_combiner::BatchWiseRangeCombiner;
+    use crate::stream::RowCursorStream;
+    use arrow::array::ArrayRef;
+    use arrow::array::{Int32Array, StringArray};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
+    use arrow_array::Float64Array;
+    use arrow_schema::SortOptions;
+    use datafusion::assert_batches_eq;
+    use datafusion::execution::context::TaskContext;
+    use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryConsumer};
+    use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+    use datafusion::physical_plan::ExecutionPlan;
+    use datafusion::physical_plan::memory::LazyMemoryExec;
+    use datafusion::prelude::SessionContext;
+    use datafusion_common::DataFusionError;
+    use datafusion_execution::memory_pool::MemoryReservation;
+    use datafusion_physical_expr::expressions::col;
+    use parking_lot::lock_api::RwLock;
+    use tokio::sync::Mutex;
+    use tokio_stream::StreamExt;
+
+    fn create_batch_one_col_i32(name: &str, vec: &[i32]) -> RecordBatch {
+        let a: ArrayRef = Arc::new(Int32Array::from(Vec::from(vec)));
+        RecordBatch::try_from_iter(vec![(name, a)]).unwrap()
+    }
+
+    async fn create_stream(
+        batches: Vec<RecordBatch>,
+        context: Arc<TaskContext>,
+        primary_keys: Vec<String>,
+        reservation: MemoryReservation,
+    ) -> Result<CursorStream<RowValues>> {
+        let schema = batches[0].schema();
+        let exec = LazyMemoryExec::try_new(
+            schema.clone(),
+            vec![Arc::new(RwLock::new(
+                InMemGenerator::try_new(batches).unwrap(),
+            ))],
+        )?;
+        let stream = exec.execute(0, context.clone())?;
+        let schema = stream.schema();
+        let sort_exprs = primary_keys
+            .iter()
+            .map(|k| {
+                let col_expr = col(k.as_str(), &schema)?;
+                Ok(PhysicalSortExpr::new(col_expr, SortOptions::default()))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let stream = RowCursorStream::try_new(
+            schema.as_ref(),
+            &LexOrdering::new(sort_exprs)
+                .ok_or(DataFusionError::Execution("empty sort expr".into()))?,
+            stream,
+            reservation.new_empty(),
+        )?;
+        let stream: CursorStream<RowValues> = Box::pin(stream);
+        Ok(stream)
+    }
+
+    #[tokio::test]
+    async fn test_sorted_stream_merger() -> Result<()> {
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+        let s1b1 = create_batch_one_col_i32("a", &[1, 1, 3, 3, 4]);
+        let schema = s1b1.schema();
+        let primary_keys = vec!["a".to_string()];
+
+        let pool = Arc::new(GreedyMemoryPool::new(100 * 1024 * 1024)) as _;
+        let a1 = MemoryConsumer::new("a1").register(&pool);
+
+        let s1b2 = create_batch_one_col_i32("a", &[4, 5]);
+        let s1b3 = create_batch_one_col_i32("a", &[]);
+        let s1b4 = create_batch_one_col_i32("a", &[5]);
+        let s1b5 = create_batch_one_col_i32("a", &[5, 6, 6]);
+        let s1 = create_stream(
+            vec![s1b1, s1b2, s1b3, s1b4, s1b5],
+            task_ctx.clone(),
+            primary_keys.clone(),
+            a1.new_empty(),
+        )
+        .await?;
+
+        let s2b1 = create_batch_one_col_i32("a", &[3, 4]);
+        let s2b2 = create_batch_one_col_i32("a", &[4, 5]);
+        let s2b3 = create_batch_one_col_i32("a", &[]);
+        let s2b4 = create_batch_one_col_i32("a", &[5]);
+        let s2b5 = create_batch_one_col_i32("a", &[5, 7]);
+        let s2 = create_stream(
+            vec![s2b1, s2b2, s2b3, s2b4, s2b5],
+            task_ctx.clone(),
+            primary_keys.clone(),
+            a1.new_empty(),
+        )
+        .await?;
+
+        let s3b1 = create_batch_one_col_i32("a", &[]);
+        let s3b2 = create_batch_one_col_i32("a", &[5]);
+        let s3b3 = create_batch_one_col_i32("a", &[5, 7]);
+        let s3b4 = create_batch_one_col_i32("a", &[7, 9]);
+        let s3b5 = create_batch_one_col_i32("a", &[]);
+        let s3b6 = create_batch_one_col_i32("a", &[10]);
+        let s3 = create_stream(
+            vec![s3b1, s3b2, s3b3, s3b4, s3b5, s3b6],
+            task_ctx.clone(),
+            primary_keys.clone(),
+            a1.new_empty(),
+        )
+        .await?;
+        let combiner = Arc::new(Mutex::new(BatchWiseRangeCombiner::new(
+            vec![(s1, true), (s2, true), (s3, true)],
+            schema,
+            3,
+            10,
+        )?));
+        let mut stream = BatchWiseRangeCombiner::build_merged_stream(combiner)
+            .await?;
+        while let Some(batch) = stream.next().await {
+            println!("batch: {:?}", batch)
+        }
+        Ok(())
+    }
+
+    fn create_batch_i32(names: Vec<&str>, values: Vec<&[i32]>) -> RecordBatch {
+        let values = values
+            .into_iter()
+            .map(|vec| Arc::new(Int32Array::from(Vec::from(vec))) as ArrayRef)
+            .collect::<Vec<ArrayRef>>();
+        let iter = names.into_iter().zip(values).collect::<Vec<_>>();
+        RecordBatch::try_from_iter(iter).unwrap()
+    }
+
+    fn create_batch(
+        names: Vec<&str>,
+        first_col_value: &[i32],
+        second_col_value: &[i32],
+        third_col_value: Vec<Option<f64>>,
+        fourth_col_value: Vec<&str>,
+    ) -> RecordBatch {
+        let mut values: Vec<ArrayRef> = vec![];
+        values.push(Arc::new(Int32Array::from(Vec::from(first_col_value))) as ArrayRef);
+        values.push(Arc::new(Int32Array::from(Vec::from(second_col_value))) as ArrayRef);
+        values.push(Arc::new(Float64Array::from(third_col_value)) as ArrayRef);
+        values.push(Arc::new(StringArray::from(fourth_col_value)) as ArrayRef);
+        let iter = names.into_iter().zip(values).collect::<Vec<_>>();
+        RecordBatch::try_from_iter(iter).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_sorted_stream_merger_multi_columns() {
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+
+        let schema = Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("a", DataType::Int32, true),
+            Field::new("b", DataType::Int32, true),
+            Field::new("c", DataType::Int32, true),
+        ]);
+
+        let primary_keys = vec!["id".to_string()];
+        let pool = Arc::new(GreedyMemoryPool::new(100 * 1024 * 1024)) as _;
+        let a1 = MemoryConsumer::new("a1").register(&pool);
+
+        let schema = Arc::new(schema);
+        let s1b1 = create_batch_i32(
+            vec!["id", "a"],
+            vec![&[1, 1, 3, 3, 4], &[10001, 10002, 10003, 10004, 10005]],
+        );
+        let s1b2 = create_batch_i32(vec!["id", "a"], vec![&[4, 5], &[10006, 10007]]);
+        let s1b3 = create_batch_i32(vec!["id", "a"], vec![&[], &[]]);
+        let s1b4 = create_batch_i32(vec!["id", "a"], vec![&[5], &[10008]]);
+        let s1b5 =
+            create_batch_i32(vec!["id", "a"], vec![&[5, 5, 6], &[10009, 10010, 10011]]);
+        assert_batches_eq!(
+            &[
+                "+----+-------+",
+                "| id | a     |",
+                "+----+-------+",
+                "| 1  | 10001 |",
+                "| 1  | 10002 |",
+                "| 3  | 10003 |",
+                "| 3  | 10004 |",
+                "| 4  | 10005 |",
+                "| 4  | 10006 |",
+                "| 5  | 10007 |",
+                "| 5  | 10008 |",
+                "| 5  | 10009 |",
+                "| 5  | 10010 |",
+                "| 6  | 10011 |",
+                "+----+-------+",
+            ],
+            &[
+                s1b1.clone(),
+                s1b2.clone(),
+                s1b3.clone(),
+                s1b4.clone(),
+                s1b5.clone()
+            ]
+        );
+
+        let s2b1 = create_batch_i32(vec!["id", "b"], vec![&[3, 4], &[20001, 20002]]);
+        let s2b2 = create_batch_i32(vec!["id", "b"], vec![&[4, 5], &[20003, 20004]]);
+        let s2b3 = create_batch_i32(vec!["id", "b"], vec![&[], &[]]);
+        let s2b4 = create_batch_i32(vec!["id", "b"], vec![&[5], &[20005]]);
+        let s2b5 = create_batch_i32(vec!["id", "b"], vec![&[5, 7], &[20006, 20007]]);
+        assert_batches_eq!(
+            &[
+                "+----+-------+",
+                "| id | b     |",
+                "+----+-------+",
+                "| 3  | 20001 |",
+                "| 4  | 20002 |",
+                "| 4  | 20003 |",
+                "| 5  | 20004 |",
+                "| 5  | 20005 |",
+                "| 5  | 20006 |",
+                "| 7  | 20007 |",
+                "+----+-------+",
+            ],
+            &[
+                s2b1.clone(),
+                s2b2.clone(),
+                s2b3.clone(),
+                s2b4.clone(),
+                s2b5.clone()
+            ]
+        );
+        let s3b1 = create_batch_i32(vec!["id", "c"], vec![&[], &[]]);
+        let s3b2 = create_batch_i32(vec!["id", "c"], vec![&[5, 5], &[30001, 30002]]);
+        let s3b3 = create_batch_i32(vec!["id", "c"], vec![&[5, 7], &[30003, 30004]]);
+        let s3b4 = create_batch_i32(vec!["id", "c"], vec![&[], &[]]);
+        let s3b5 = create_batch_i32(vec!["id", "c"], vec![&[7, 9], &[30005, 30006]]);
+        let s3b6 = create_batch_i32(vec!["id", "c"], vec![&[10], &[30007]]);
+        assert_batches_eq!(
+            &[
+                "+----+-------+",
+                "| id | c     |",
+                "+----+-------+",
+                "| 5  | 30001 |",
+                "| 5  | 30002 |",
+                "| 5  | 30003 |",
+                "| 7  | 30004 |",
+                "| 7  | 30005 |",
+                "| 9  | 30006 |",
+                "| 10 | 30007 |",
+                "+----+-------+",
+            ],
+            &[
+                s3b1.clone(),
+                s3b2.clone(),
+                s3b3.clone(),
+                s3b4.clone(),
+                s3b5.clone(),
+                s3b6.clone()
+            ]
+        );
+
+        let s1 = create_stream(
+            vec![
+                s1b1.clone(),
+                s1b2.clone(),
+                s1b3.clone(),
+                s1b4.clone(),
+                s1b5.clone(),
+            ],
+            task_ctx.clone(),
+            primary_keys.clone(),
+            a1.new_empty(),
+        )
+        .await
+        .unwrap();
+        let s2 = create_stream(
+            vec![
+                s2b1.clone(),
+                s2b2.clone(),
+                s2b3.clone(),
+                s2b4.clone(),
+                s2b5.clone(),
+            ],
+            task_ctx.clone(),
+            primary_keys.clone(),
+            a1.new_empty(),
+        )
+        .await
+        .unwrap();
+        let s3 = create_stream(
+            vec![
+                s3b1.clone(),
+                s3b2.clone(),
+                s3b3.clone(),
+                s3b4.clone(),
+                s3b5.clone(),
+                s3b6.clone(),
+            ],
+            task_ctx.clone(),
+            primary_keys.clone(),
+            a1.new_empty(),
+        )
+        .await
+        .unwrap();
+    }
+}

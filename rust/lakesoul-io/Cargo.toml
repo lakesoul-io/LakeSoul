@@ -45,6 +45,7 @@ tikv-jemalloc-ctl = { version = "0.6", features = ["stats"], optional = true }
 # async
 futures = { workspace = true }
 async-trait = { workspace = true }
+async-stream = "0.3.6"
 # runtime
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
@@ -118,6 +119,3 @@ num-format = "0.4.4"
 
 [lints]
 workspace = true
-
-
-

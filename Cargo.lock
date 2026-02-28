@@ -3903,6 +3903,7 @@ dependencies = [
  "arrow-buffer",
  "arrow-cast",
  "arrow-schema",
+ "async-stream",
  "async-trait",
  "atomic_refcell",
  "bytes",

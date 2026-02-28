@@ -1104,6 +1104,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_real_file_merge() {
+        let schema = Schema::new(vec![
+            Field::new("rowKinds", DataType::Utf8, false),
+            Field::new("id", DataType::Int64, true),
+            Field::new("seller_id", DataType::Int64, true),
+            Field::new("order_no", DataType::Utf8, true),
+            Field::new("goods_id", DataType::Int64, true),
+            Field::new("item_id", DataType::Utf8, true),
+            Field::new("item_name", DataType::Utf8, true),
+            Field::new("item_image", DataType::Utf8, true),
+            Field::new("item_spec", DataType::Utf8, true),
+            Field::new("item_unit", DataType::Utf8, true),
+            Field::new("item_barcode", DataType::Utf8, true),
+            Field::new("item_sign", DataType::Utf8, true),
+            Field::new("market_price", DataType::Int32, true),
+            Field::new("cost_price", DataType::Int32, true),
+            Field::new("member_price", DataType::Int32, true),
+            Field::new("item_price", DataType::Int32, true),
+            Field::new("num", DataType::Decimal64(12, 3), true),
+            Field::new("source_id", DataType::Utf8, true),
+            Field::new("is_gift", DataType::Int32, true),
+            Field::new("discount_amount", DataType::Int32, true),
+            Field::new("is_time_discount", DataType::Int32, true),
+            Field::new("activity_id", DataType::Int64, true),
+            Field::new("created_at", DataType::Int64, true),
+            Field::new("updated_at", DataType::Int64, true),
+            Field::new("is_deleted", DataType::Int32, true),
+            Field::new("item_type", DataType::Int32, true),
+            Field::new("status", DataType::Int32, true),
+            Field::new("user_id", DataType::Int64, true),
+            Field::new("features", DataType::Utf8, true),
+            Field::new("owner_id", DataType::Int64, true),
+            Field::new("pt_created_at_dt", DataType::Utf8, true),
+        ]);
+        let conf = LakeSoulIOConfigBuilder::new()
+            .with_primary_keys(vec!["id".to_string()])
+            .with_files(vec![
+                "/home/chenxu/program/data/test_merge_data/1.parquet".to_string(),
+                "/home/chenxu/program/data/test_merge_data/2.parquet".to_string(),
+                "/home/chenxu/program/data/test_merge_data/3.parquet".to_string(),
+                "/home/chenxu/program/data/test_merge_data/4.parquet".to_string(),
+                "/home/chenxu/program/data/test_merge_data/5.parquet".to_string(),
+                "/home/chenxu/program/data/test_merge_data/6.parquet".to_string(),
+                "/home/chenxu/program/data/test_merge_data/7.parquet".to_string(),
+                "/home/chenxu/program/data/test_merge_data/8.parquet".to_string(),
+                "/home/chenxu/program/data/test_merge_data/9.parquet".to_string(),
+                "/home/chenxu/program/data/test_merge_data/10.parquet".to_string(),
+                "/home/chenxu/program/data/test_merge_data/11.parquet".to_string(),
+                "/home/chenxu/program/data/test_merge_data/12.parquet".to_string(),
+            ])
+            .with_schema(Arc::new(schema))
+            .with_thread_num(2)
+            .with_batch_size(256)
+            .with_max_row_group_size(250000)
+            .with_object_store_option(
+                "fs.s3a.access.key".to_string(),
+                "minioadmin1".to_string(),
+            )
+            .with_object_store_option(
+                "fs.s3a.secret.key".to_string(),
+                "minioadmin1".to_string(),
+            )
+            .with_object_store_option(
+                "fs.s3a.endpoint".to_string(),
+                "http://localhost:9000".to_string(),
+            )
+            .build();
+        let mut reader = LakeSoulReader::new(conf).unwrap();
+        reader.start().await.unwrap();
+        let mut len = 0;
+        while let Some(rb) = reader.next_rb().await {
+            let rb = rb.unwrap();
+            len += rb.num_rows();
+        }
+        println!("total rows: {}", len);
+    }
+
+    #[tokio::test]
     async fn parquet_viewer() {
         let session_config = SessionConfig::default().with_batch_size(2);
         let session_ctx = SessionContext::new_with_config(session_config);

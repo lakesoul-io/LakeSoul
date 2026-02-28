@@ -26,8 +26,14 @@ license = "Apache-2.0"
 readme = "README.md"
 version = "0.1.0"
 
-[profile.release]
-#lto = true
+[profile.bench]
+debug = true
+strip = false
+
+[profile.profiling]
+inherits = "release"
+debug = true
+opt-level = 2
 
 [workspace.dependencies]
 # datafusion
