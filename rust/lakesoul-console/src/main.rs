@@ -97,6 +97,9 @@ fn init_log(mut log_dir: &str) -> WorkerGuard {
         .with_writer(non_blocking)
         .with_env_filter(level)
         .with_ansi(false)
+        .with_file(true)
+        .with_line_number(true)
+        .with_target(false)
         .with_thread_ids(true)
         .with_timer(timer)
         .init();

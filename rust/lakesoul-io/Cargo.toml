@@ -120,6 +120,4 @@ num-format = "0.4.4"
 workspace = true
 
 
-[profile.bench]
-debug = true
-strip = false
+

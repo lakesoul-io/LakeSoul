@@ -122,7 +122,7 @@ public class LakeSoulSinkGlobalCommitter
      * @param globalCommittables a list of {@link LakeSoulMultiTableSinkGlobalCommittable}.
      * @return A list of {@link LakeSoulMultiTableSinkGlobalCommittable} needed to re-commit, which is needed in case we
      * implement a "commit-with-retry" pattern.
-     * @throws IOException if the commit operation fail and do not want to retry any more.
+     * @throws IOException if the commit operation fail and do not want to retry anymore.
      */
     @Override
     public List<LakeSoulMultiTableSinkGlobalCommittable> commit(
@@ -136,17 +136,22 @@ public class LakeSoulSinkGlobalCommitter
                 globalCommittable.hashCode(),
                 globalCommittable);
         ForkJoinPool commitPool = new ForkJoinPool(4);
-        commitPool.submit(() -> {
-            globalCommittable.getGroupedCommittable().entrySet().parallelStream()
-                    .forEach(entry -> {
-                        try {
-                            commitEntry(entry);
-                        } catch (IOException | InterruptedException e) {
-                            throw new RuntimeException(e);
-                        }
-                    });
-        }).join();
-
+        try {
+            commitPool.submit(() -> {
+                globalCommittable.getGroupedCommittable().entrySet().parallelStream()
+                        .forEach(entry -> {
+                            try {
+                                commitEntry(entry);
+                            } catch (IOException | InterruptedException e) {
+                                throw new RuntimeException(e);
+                            }
+                        });
+            }).join();
+        } catch (Exception e) {
+            throw e;
+        } finally {
+            commitPool.shutdown();
+        }
         long endTime = System.currentTimeMillis();
         LOG.info("Global Committing done, #{}, object {}, time {}ms",
                 globalCommittable.getGroupedCommittable().size(),

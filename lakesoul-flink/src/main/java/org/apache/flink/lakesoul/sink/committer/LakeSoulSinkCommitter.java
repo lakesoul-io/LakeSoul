@@ -62,16 +62,22 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
             int threadNum = Integer.parseInt(DBUtil.getConfigValue(LAKESOUL_COMMIT_THREAD_NUM,
                     LAKESOUL_COMMIT_THREAD_NUM, "4"));
             ForkJoinPool customPool = new ForkJoinPool(threadNum);
-            customPool.submit(() -> {
-                committable.getPendingFilesMap().entrySet().parallelStream()
-                        .forEach(entry -> {
-                            try {
-                                commitEntry(entry, committable);
-                            } catch (IOException e) {
-                                throw new RuntimeException(e);
-                            }
-                        });
-            }).join();
+            try {
+                customPool.submit(() -> {
+                    committable.getPendingFilesMap().entrySet().parallelStream()
+                            .forEach(entry -> {
+                                try {
+                                    commitEntry(entry, committable);
+                                } catch (IOException e) {
+                                    throw new RuntimeException(e);
+                                }
+                            });
+                }).join();
+            } catch (Exception e) {
+                throw e;
+            } finally {
+                customPool.shutdown();
+            }
         }
         long end = System.currentTimeMillis();
         LOG.info("Committing done, object {}, for {}ms", committables.hashCode(), end - start);

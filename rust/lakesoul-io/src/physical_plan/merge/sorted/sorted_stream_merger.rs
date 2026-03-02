@@ -456,7 +456,6 @@ impl<C: CursorValues, R: RangeCombinerTrait<C>> SortedStreamMerger<C, R> {
                     let stream_idx = range.stream_idx();
 
                     if !range.is_finished() {
-                        debug!("push range in {}:{}", file!(), line!());
                         self.range_combiner.push_range(range)
                     } else {
                         // we should mark this stream uninitialized

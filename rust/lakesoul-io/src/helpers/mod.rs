@@ -38,6 +38,7 @@ use object_store::path::Path;
 use parquet::file::metadata::ParquetMetaData;
 use proto::proto::entity::JniWrapper;
 use rand::distr::SampleString;
+use rootcause::prelude::ResultExt;
 use rootcause::{Report, bail, report};
 use std::collections::VecDeque;
 use std::fmt::{Debug, Display, Formatter};
@@ -209,7 +210,7 @@ pub fn format_scalar_value(v: &ScalarValue) -> String {
                 .unwrap()
                 .format(DATE32_FORMAT)
         ),
-        ScalarValue::Null => LAKESOUL_NULL_STRING.to_string(),
+        ScalarValue::Date32(None) | ScalarValue::Null => LAKESOUL_NULL_STRING.to_string(),
         ScalarValue::Utf8(Some(s)) => {
             if s.is_empty() {
                 LAKESOUL_EMPTY_STRING.to_string()
@@ -265,7 +266,10 @@ pub fn format_scalar_value(v: &ScalarValue) -> String {
             Some(bytes) => hex::encode(bytes),
             None => LAKESOUL_NULL_STRING.to_string(),
         },
-        other => other.to_string(),
+        other => {
+            warn!(other = ?other);
+            other.to_string()
+        }
     }
 }
 
@@ -838,7 +842,8 @@ fn batch_from_partition(
 
 /// Converts a date string to epoch days.
 pub fn date_str_to_epoch_days(value: &str) -> Result<i32> {
-    let date = chrono::NaiveDate::parse_from_str(value, DATE32_FORMAT)?;
+    let date = chrono::NaiveDate::parse_from_str(value, DATE32_FORMAT)
+        .attach(value.to_string())?;
     let datetime = date
         .and_hms_opt(12, 12, 12)
         .ok_or(report!("invalid h/m/s"))?;

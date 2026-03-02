@@ -526,7 +526,7 @@ public class LakeSoulCatalog implements Catalog {
                 throw new RuntimeException("Failed to delete file: " + filePath, e);
             }
         }
-        if (partitionDir != null) {
+      /*  if (partitionDir != null) {
             try {
                 FileSystem fs = partitionDir.getFileSystem();
                 if (fs.exists(partitionDir)) {
@@ -535,7 +535,7 @@ public class LakeSoulCatalog implements Catalog {
             } catch (IOException e) {
                 throw new RuntimeException("Failed to delete partition directory: " + partitionDir, e);
             }
-        }
+        }*/
     }
 
     @Override

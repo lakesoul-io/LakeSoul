@@ -128,11 +128,11 @@ public class LakeSoulCatalogTest extends AbstractTestBase {
                 "'hashBucketNum'='2'," +
                 "'path'='file:///tmp/table_with_comments')");
         List<Row> showCreateTableResult = CollectionUtil.iteratorToList(
-            tEnvs.executeSql("show create table table_with_comments").collect());
+                tEnvs.executeSql("show create table table_with_comments").collect());
         Assertions.assertThat(showCreateTableResult.get(0).getField(0).toString())
-                        .contains("COMMENT 'this is user table'");
+                .contains("COMMENT 'this is user table'");
         List<Row> descTableResult = CollectionUtil.iteratorToList(
-            tEnvs.executeSql("desc table_with_comments").collect());
+                tEnvs.executeSql("desc table_with_comments").collect());
         System.out.println(descTableResult);
         Assertions.assertThat(descTableResult.get(0).getField(6).toString())
                 .contains("user id");
