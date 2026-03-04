@@ -46,6 +46,13 @@ public class JobOptions {
             .withDescription(
                     "The cache TTL (e.g. 10min) for the build table in lookup join.");
 
+    public static final ConfigOption<Long> LOOKUP_JOIN_CACHE_SIZE = ConfigOptions
+            .key("lookup.join.cache.size")
+            .longType()
+            .defaultValue(100000L)
+            .withDescription(
+                    "The cache size limit for the build table in lookup join.");
+
     public static final ConfigOption<Boolean> STREAMING_SOURCE_ENABLE =
             key("streaming-source.enable")
                     .booleanType()

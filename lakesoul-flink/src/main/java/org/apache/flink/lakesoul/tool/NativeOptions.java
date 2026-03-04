@@ -28,7 +28,7 @@ public class NativeOptions {
     public static final ConfigOption<String> SPILL_MEM_POOL_DIR =
             key("lakesoul.native_writer.pool_dir")
                     .stringType()
-                    .defaultValue(TMP_DIRS.defaultValue())
+                    .noDefaultValue()
                     .withDescription("Option to set mem pool spill dir");
 
     public static final ConfigOption<String> HASH_BUCKET_ID =
@@ -53,6 +53,5 @@ public class NativeOptions {
             MEM_LIMIT,
             KEEP_ORDERS,
             STABLE_SORT,
-            SPILL_MEM_POOL_SIZE,
-            SPILL_MEM_POOL_DIR);
+            SPILL_MEM_POOL_SIZE);
 }

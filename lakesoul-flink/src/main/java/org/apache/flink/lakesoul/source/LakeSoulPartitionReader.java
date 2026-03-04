@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-package org.apache.flink.lakesoul.connector;
+package org.apache.flink.lakesoul.source;
 
 import com.dmetasoul.lakesoul.LakeSoulArrowReader;
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOReader;
@@ -12,11 +12,18 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.connector.file.table.PartitionReader;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.LakeSoulOptions;
+import org.apache.flink.lakesoul.connector.LakeSoulPartition;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
+import org.apache.flink.lakesoul.types.TableId;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.runtime.arrow.ArrowReader;
 import org.apache.flink.table.runtime.arrow.ArrowUtils;
 import org.apache.flink.table.types.logical.RowType;
+import org.apache.flink.table.types.logical.VarCharType;
+import org.apache.flink.types.RowKind;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 import java.io.IOException;
@@ -26,9 +33,9 @@ import java.util.Optional;
 public class LakeSoulPartitionReader implements PartitionReader<LakeSoulPartition, RowData> {
 
     private static final long serialVersionUID = 9049145796236544669L;
-    private NativeIOReader nativeIOReader;
+    private static final Logger LOG = LoggerFactory.getLogger(LakeSoulPartitionReader.class);
     private transient LakeSoulArrowReader lakesoulArrowReader;
-    private final List<String> filePathList;
+    private final TableId tableId;
     private final List<String> primaryKeys;
     private final RowType schema;
     private final int capacity;
@@ -41,17 +48,25 @@ public class LakeSoulPartitionReader implements PartitionReader<LakeSoulPartitio
     private int curPartitionId;
 
     private List<LakeSoulPartition> partitions;
+    private final String cdcColumn;
+    private RowData.FieldGetter cdcFieldGetter;
 
 
-    public LakeSoulPartitionReader(Configuration conf, RowType schema, List<String> primaryKeys) {
-        this.filePathList = null;
+    public LakeSoulPartitionReader(Configuration conf, TableId tableId, RowType schema,
+                                   List<String> primaryKeys,
+                                   String cdcColumn) {
+        this.tableId = tableId;
         this.primaryKeys = primaryKeys;
         this.schema = schema;
         this.capacity = conf.getInteger(LakeSoulOptions.LAKESOUL_NATIVE_IO_BATCH_SIZE);
         this.conf = new Configuration(conf);
-        ;
         this.awaitTimeout = 10000;
         this.curPartitionId = -1;
+        this.cdcColumn = cdcColumn;
+        if (cdcColumn != null && !cdcColumn.isEmpty()) {
+            int cdcField = schema.getFieldIndex(cdcColumn);
+            cdcFieldGetter = RowData.createFieldGetter(new VarCharType(), cdcField);
+        }
     }
 
     /**
@@ -65,6 +80,7 @@ public class LakeSoulPartitionReader implements PartitionReader<LakeSoulPartitio
         this.curPartitionId = -1;
         this.currentVSR = null;
         this.curArrowReader = null;
+        LOG.info("(Re)open for {}", tableId);
     }
 
     /**
@@ -89,6 +105,12 @@ public class LakeSoulPartitionReader implements PartitionReader<LakeSoulPartitio
         if (curArrowReader == null) return Optional.empty();
         RowData rd = curArrowReader.read(curRecordId);
         curRecordId++;
+        if (cdcColumn != null && !cdcColumn.isEmpty() && rd != null) {
+            if (FlinkUtil.isCDCDelete((StringData) cdcFieldGetter.getFieldOrNull(rd))) {
+                // batch read from cdc table should filter delete rows
+                return nextRecord();
+            }
+        }
         return Optional.of(rd);
     }
 
@@ -96,6 +118,7 @@ public class LakeSoulPartitionReader implements PartitionReader<LakeSoulPartitio
         while (lakesoulArrowReader == null || !lakesoulArrowReader.hasNext()) {
             curPartitionId++;
             if (curPartitionId >= partitions.size()) return null;
+            LOG.info("{}, Read partition index {} of {}", tableId, curPartitionId, partitions.size());
             recreateInnerReaderForSinglePartition(curPartitionId);
         }
         if (lakesoulArrowReader == null) return null;
@@ -110,7 +133,7 @@ public class LakeSoulPartitionReader implements PartitionReader<LakeSoulPartitio
             lakesoulArrowReader = null;
             return;
         }
-        nativeIOReader = new NativeIOReader();
+        NativeIOReader nativeIOReader = new NativeIOReader();
         LakeSoulPartition partition = partitions.get(partitionIndex);
         for (Path path : partition.getPaths()) {
             nativeIOReader.addFile(FlinkUtil.makeQualifiedPath(path).toString());
@@ -127,9 +150,11 @@ public class LakeSoulPartitionReader implements PartitionReader<LakeSoulPartitio
         FlinkUtil.setIOConfigs(conf, nativeIOReader);
         nativeIOReader.setSchema(arrowSchema);
         nativeIOReader.setBatchSize(capacity);
+        LOG.info("Initializing arrow reader for table {}, partition {}, cdc {}", tableId, partitionIndex, cdcColumn);
         nativeIOReader.initializeReader();
 
         lakesoulArrowReader = new LakeSoulArrowReader(nativeIOReader, awaitTimeout);
+        LOG.info("{} Created partition reader for {}, pk {}, cdc {}", tableId, partition, primaryKeys, cdcColumn);
     }
 
     /**
@@ -139,7 +164,14 @@ public class LakeSoulPartitionReader implements PartitionReader<LakeSoulPartitio
      */
     @Override
     public void close() throws IOException {
-        if (lakesoulArrowReader != null) lakesoulArrowReader.close();
-        if (currentVSR != null) currentVSR.close();
+        if (lakesoulArrowReader != null) {
+            lakesoulArrowReader.close();
+            lakesoulArrowReader = null;
+        }
+        if (currentVSR != null) {
+            currentVSR.close();
+            currentVSR = null;
+        }
+        LOG.info("Partition reader closed for {}", tableId);
     }
 }

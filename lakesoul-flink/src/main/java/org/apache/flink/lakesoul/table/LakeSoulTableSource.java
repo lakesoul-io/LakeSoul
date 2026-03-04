@@ -282,7 +282,7 @@ public class LakeSoulTableSource
                 Arrays.stream(fieldIndexs).mapToObj(this.tableRowType.getFieldNames()::get).toArray(String[]::new));
     }
 
-    private RowType readFieldsAddPk(String cdcColumn) {
+    protected RowType readFieldsAddPk(String cdcColumn) {
         int[] fieldIndexs = getFieldIndexs();
         List<LogicalType> projectTypes =
                 Arrays.stream(fieldIndexs).mapToObj(this.tableRowType::getTypeAt).collect(Collectors.toList());
@@ -299,7 +299,7 @@ public class LakeSoulTableSource
         }
         projectNames.addAll(pkNamesNotExistInReadFields);
         projectTypes.addAll(pkTypesNotExistInReadFields);
-        if (!cdcColumn.equals("") && !projectNames.contains(cdcColumn)) {
+        if (!cdcColumn.isEmpty() && !projectNames.contains(cdcColumn)) {
             projectNames.add(cdcColumn);
             projectTypes.add(new VarCharType());
         }
