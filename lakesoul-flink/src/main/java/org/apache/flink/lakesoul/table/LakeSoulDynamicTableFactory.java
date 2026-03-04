@@ -105,13 +105,17 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
             }
         }
 
+        Configuration conf = new Configuration();
+        catalogTable.getOptions().forEach(conf::setString);
         return new LakeSoulLookupTableSource(
                 new TableId(io.debezium.relational.TableId.parse(objectIdentifier.asSummaryString())),
                 tableRowType,
                 isBounded,
                 pkColumns,
                 partitionColumns,
-                catalogTable,
+                catalogTable.getResolvedSchema().toPhysicalRowDataType(),
+                catalogTable.getPartitionKeys(),
+                new Configuration(),
                 options.toMap()
         );
     }

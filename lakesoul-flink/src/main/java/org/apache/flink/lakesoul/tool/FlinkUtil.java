@@ -17,9 +17,7 @@ import com.dmetasoul.lakesoul.meta.dao.TableInfoDao;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
-import org.apache.flink.configuration.ConfigOption;
-import org.apache.flink.configuration.Configuration;
-import org.apache.flink.configuration.GlobalConfiguration;
+import org.apache.flink.configuration.*;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.fs.SafetyNetWrapperFileSystem;
@@ -70,8 +68,10 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import static java.time.ZoneId.SHORT_IDS;
+import static org.apache.flink.configuration.ClusterOptions.PROCESS_WORKING_DIR_BASE;
 import static org.apache.flink.lakesoul.tool.JobOptions.*;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
+import static org.apache.flink.lakesoul.tool.NativeOptions.SPILL_MEM_POOL_DIR;
 import static org.apache.flink.table.api.config.ExecutionConfigOptions.TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM;
 import static org.apache.flink.table.types.logical.utils.LogicalTypeChecks.isCompositeType;
 
@@ -211,8 +211,10 @@ public class FlinkUtil {
         return null;
     }
 
+    private static final StringData delete = StringData.fromString("delete");
+
     public static boolean isCDCDelete(StringData operation) {
-        return StringData.fromString("delete").equals(operation);
+        return delete.equals(operation);
     }
 
     public static boolean isView(TableInfo tableInfo) {
@@ -456,6 +458,12 @@ public class FlinkUtil {
                 io.setOption(key, value);
             }
         }
+        String tmpDir = conf.getOptional(SPILL_MEM_POOL_DIR)
+                        .orElseGet(() -> conf.getOptional(ClusterOptions.TASK_MANAGER_PROCESS_WORKING_DIR_BASE)
+                                .orElseGet(() -> conf.getOptional(PROCESS_WORKING_DIR_BASE)
+                                        .orElseGet(() -> conf.get(CoreOptions.TMP_DIRS))));
+        LOG.info("Set spilling pool dir to {}", tmpDir);
+        io.setOption("pool_dir",  tmpDir);
     }
 
     public static void setFSConf(Configuration conf, String confKey, String fsConfKey, NativeIOBase io) {

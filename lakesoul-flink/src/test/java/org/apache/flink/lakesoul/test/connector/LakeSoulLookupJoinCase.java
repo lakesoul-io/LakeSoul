@@ -9,6 +9,7 @@ import org.apache.flink.lakesoul.source.LakeSoulLookupTableSource;
 import org.apache.flink.lakesoul.table.LakeSoulTableLookupFunction;
 import org.apache.flink.lakesoul.test.AbstractTestBase;
 import org.apache.flink.lakesoul.test.LakeSoulTestUtils;
+import org.apache.flink.lakesoul.test.flinkSource.TestUtils;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.tool.JobOptions;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
@@ -224,7 +225,6 @@ public class LakeSoulLookupJoinCase extends AbstractTestBase {
         List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
         checkEqualInAnyOrder(results,
                 new String[]{"+I[1, a, 8, 2019, 08, 01]", "+I[1, a, 10, 2020, 08, 31]", "+I[2, b, 22, 2020, 08, 31]"});
-//        checkEqualInExpectedOrder(results, "[+I[1, a, 8, 2019, 08, 01], +I[1, a, 10, 2020, 08, 31], +I[2, b, 22, 2020, 08, 31]]");
         tableEnv.executeSql("drop table if exists bounded_partition_hash_table");
     }
 
@@ -265,9 +265,7 @@ public class LakeSoulLookupJoinCase extends AbstractTestBase {
                                         +
                                         " join partition_table_1 for system_time as of p.p as b on p.x=b.x and p.y=b.y");
         List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
-        assertThat(results.toString())
-                .isEqualTo(
-                        "[+I[1, a, 10, 2020, 09, 31], +I[2, b, 22, 2020, 09, 31], +I[3, c, 33, 2020, 09, 31]]");
+        TestUtils.checkEqualInAnyOrder(results, new String[]{"+I[1, a, 8, 2019, 09, 01]", "+I[1, a, 101, 2020, 08, 01]", "+I[1, a, 10, 2020, 09, 31]", "+I[2, b, 122, 2020, 08, 01]", "+I[2, b, 22, 2020, 09, 31]", "+I[3, c, 33, 2020, 09, 31]"});
         tableEnv.executeSql("drop table if exists partition_table_1");
     }
 
@@ -314,9 +312,7 @@ public class LakeSoulLookupJoinCase extends AbstractTestBase {
                                         +
                                         " join partition_table_2 for system_time as of p.p as b on p.x=b.x and p.y=b.y");
         List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
-        assertThat(results.toString())
-                .isEqualTo(
-                        "[+I[1, a, 10, 2020, 10, 31], +I[2, b, 22, 2020, 10, 31], +I[2, b, 50, 2020, 09, 31], +I[3, c, 33, 2020, 10, 31], +I[4, d, 50, 2020, 09, 31]]");
+        TestUtils.checkEqualInAnyOrder(results, new String[]{"+I[1, a, 11, 2019, 09, 01]", "+I[1, a, 101, 2020, 08, 01]", "+I[1, a, 10, 2020, 10, 31]", "+I[2, b, 122, 2020, 08, 01]", "+I[2, b, 22, 2020, 10, 31]", "+I[2, b, 50, 2020, 09, 31]", "+I[3, c, 33, 2020, 10, 31]", "+I[4, d, 50, 2020, 09, 31]"});
         tableEnv.executeSql("drop table if exists partition_table_2");
     }
 
@@ -510,6 +506,40 @@ public class LakeSoulLookupJoinCase extends AbstractTestBase {
 //    }
 
     @Test
+    public void testLookupJoinWithDelete() throws Exception {
+        // create table with primary key and CDC enabled
+        tableEnv.executeSql(
+                String.format(
+                        "create table if not exists delete_test_table (x int primary key not enforced, y string, z int) with ('format'='lakesoul','%s'='5min', '%s'='true', 'hashBucketNum'='2', 'path'='%s')",
+                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
+                        LakeSoulSinkOptions.USE_CDC.key(),
+                        getTempDirUri("/delete_test_table")));
+
+        TableEnvironment batchEnv = FlinkUtil.createTableEnvInBatchMode(SqlDialect.DEFAULT);
+        batchEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
+        batchEnv.useCatalog(lakeSoulCatalog.getName());
+
+        // Insert initial data including row to be deleted
+        batchEnv.executeSql("insert into delete_test_table values (1,'a',10),(2,'b',22),(3,'c',33)").await();
+
+        // Delete a row
+        batchEnv.executeSql("delete from delete_test_table where x=1").await();
+
+        // Execute lookup join
+        TableImpl flinkTable =
+                (TableImpl)
+                        tableEnv.sqlQuery(
+                                "select p.x, p.y, b.z from "
+                                        + " default_catalog.default_database.probe as p "
+                                        + " join delete_test_table for system_time as of p.p as b on p.x=b.x and p.y=b.y");
+        
+        List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
+        // Verify deleted row (x=1) is not present
+        checkEqualInAnyOrder(results, new String[]{"+I[2, b, 22]", "+I[3, c, 33]"});
+        tableEnv.executeSql("drop table if exists delete_test_table");
+    }
+
+    @Test
     public void testLookupJoinWithLookUpSourceProjectPushDown() throws Exception {
         // create the lakesoul non-partitioned non-hashed table
         tableEnv.executeSql(
@@ -525,7 +555,6 @@ public class LakeSoulLookupJoinCase extends AbstractTestBase {
         batchEnv.executeSql(
                         "insert overwrite bounded_table1 values (1,'a',10),(2,'b',22),(3,'c',33)")
                 .await();
-        tableEnv.getConfig().setSqlDialect(SqlDialect.DEFAULT);
         TableImpl flinkTable =
                 (TableImpl)
                         tableEnv.sqlQuery(
