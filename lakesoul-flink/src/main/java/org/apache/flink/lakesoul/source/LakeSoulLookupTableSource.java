@@ -30,6 +30,7 @@ import org.apache.flink.util.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.Serializable;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -41,12 +42,12 @@ import java.util.Optional;
 import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_RANGE_PARTITION_SPLITTER;
 import static org.apache.flink.lakesoul.tool.JobOptions.*;
 
-public class LakeSoulLookupTableSource extends LakeSoulTableSource implements LookupTableSource {
+public class LakeSoulLookupTableSource extends LakeSoulTableSource implements LookupTableSource, Serializable {
 
     private static final Logger LOG = LoggerFactory.getLogger(LakeSoulLookupTableSource.class);
     private final Configuration configuration;
     protected DataType producedDataType;
-    protected ResolvedCatalogTable catalogTable;
+    protected List<String> partitionKeys;
     private Duration lakeSoulTableReloadInterval;
     private long maxCacheSize;
     private String cdcColumn;
@@ -56,7 +57,9 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
                                      boolean isStreaming,
                                      List<String> pkColumns,
                                      List<String> partitionColumns,
-                                     ResolvedCatalogTable catalogTable,
+                                     DataType producedDataType,
+                                     List<String> partitionKeys,
+                                     Configuration conf,
                                      Map<String, String> optionParams) {
         super(tableId,
                 rowType,
@@ -64,10 +67,9 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
                 pkColumns,
                 partitionColumns,
                 optionParams);
-        this.catalogTable = catalogTable;
-        this.producedDataType = catalogTable.getResolvedSchema().toPhysicalRowDataType();
-        this.configuration = new Configuration();
-        catalogTable.getOptions().forEach(configuration::setString);
+        this.producedDataType = producedDataType;
+        this.partitionKeys = partitionKeys;
+        this.configuration = conf;
         this.cdcColumn = optionParams.getOrDefault(LakeSoulSinkOptions.CDC_CHANGE_COLUMN, "");
         validateLookupConfigurations();
     }
@@ -113,7 +115,7 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
     private TableFunction<RowData> getLookupFunction(int[] keys) {
         PartitionFetcher.Context<LakeSoulPartition> fetcherContext =
                 new LakeSoulTablePartitionFetcherContext(tableId,
-                        catalogTable.getPartitionKeys(),
+                        partitionKeys,
                         configuration.get(PARTITION_ORDER_KEYS));
         int latestPartitionNumber = getLatestPartitionNumber(); // the number of latest partitions to fetch
         final PartitionFetcher<LakeSoulPartition> partitionFetcher;
@@ -121,7 +123,7 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
         // TODO: delete the option
         int simpleLatestPartition = 1; // 1: true; other: false
 
-        if (catalogTable.getPartitionKeys().isEmpty()) {
+        if (partitionKeys.isEmpty()) {
             // non-partitioned table, the fetcher fetches the partition which represents the given table
             partitionFetcher = context -> {
                 List<LakeSoulPartition> partValueList = new ArrayList<>();
@@ -220,26 +222,23 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
 
     protected List<String> getPartitionKeys() {
         List<String> res = new ArrayList<>();
-        for (int i = 0; i < catalogTable.getPartitionKeys().size(); i++) {
-            res.add(catalogTable.getPartitionKeys().get(i));
+        for (int i = 0; i < partitionKeys.size(); i++) {
+            res.add(partitionKeys.get(i));
         }
         return res;
     }
 
     protected boolean isStreamingSource() {
-        return Boolean.parseBoolean(catalogTable.getOptions()
-                .getOrDefault(STREAMING_SOURCE_ENABLE.key(),
-                        STREAMING_SOURCE_ENABLE.defaultValue().toString()));
+        return configuration
+                .get(STREAMING_SOURCE_ENABLE);
     }
 
     protected int getLatestPartitionNumber() {
-        return Integer.parseInt(catalogTable.getOptions().getOrDefault(STREAMING_SOURCE_LATEST_PARTITION_NUMBER.key(),
-                STREAMING_SOURCE_LATEST_PARTITION_NUMBER.defaultValue().toString()));
+        return configuration.get(STREAMING_SOURCE_LATEST_PARTITION_NUMBER);
     }
 
     protected boolean isReadingLatest() {
-        return catalogTable.getOptions().getOrDefault(STREAMING_SOURCE_PARTITION_INCLUDE.key(),
-                STREAMING_SOURCE_PARTITION_INCLUDE.defaultValue()).equals("latest");
+        return configuration.get(STREAMING_SOURCE_PARTITION_INCLUDE).equals("latest");
     }
 
     /**
@@ -254,7 +253,9 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
                         this.isBounded,
                         this.pkColumns,
                         this.partitionColumns,
-                        this.catalogTable,
+                        this.producedDataType,
+                        this.partitionKeys,
+                        this.configuration,
                         this.optionParams);
         newInstance.projectedFields = this.projectedFields;
         newInstance.remainingPartitions = this.remainingPartitions;

@@ -49,7 +49,6 @@ pub enum FilterContainer {
 
 impl Parser {
     pub fn parse(filter_str: String, schema: SchemaRef) -> Result<Expr> {
-        debug!(filter_str=%filter_str);
         info!("parsing filter str {}", filter_str);
         let (op, left, right) = Parser::parse_filter_str(filter_str)?;
         let expr = if op.eq("or") {
@@ -453,19 +452,5 @@ fn _from_nullability(nullability: Nullability) -> bool {
         Nullability::Unspecified => true,
         Nullability::Nullable => true,
         Nullability::Required => false,
-    }
-}
-
-mod tests {
-    use crate::filter::Parser;
-    use arrow_schema::{DataType, Field, Schema};
-    use std::sync::Arc;
-
-    #[test]
-    fn test_parse_filter_string() {
-        let schema = Schema::new(vec![Field::new("rowKinds", DataType::Utf8, false)]);
-        let filter = "not(eq(rowKinds, Binary{\"delete\"}))";
-        let f = Parser::parse(filter.to_string(), Arc::new(schema));
-        println!("{:?}", f);
     }
 }

@@ -211,8 +211,10 @@ public class FlinkUtil {
         return null;
     }
 
+    private static final StringData delete = StringData.fromString("delete");
+
     public static boolean isCDCDelete(StringData operation) {
-        return StringData.fromString("delete").equals(operation);
+        return delete.equals(operation);
     }
 
     public static boolean isView(TableInfo tableInfo) {

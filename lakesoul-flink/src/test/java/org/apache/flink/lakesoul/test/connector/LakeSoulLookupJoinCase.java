@@ -9,6 +9,7 @@ import org.apache.flink.lakesoul.source.LakeSoulLookupTableSource;
 import org.apache.flink.lakesoul.table.LakeSoulTableLookupFunction;
 import org.apache.flink.lakesoul.test.AbstractTestBase;
 import org.apache.flink.lakesoul.test.LakeSoulTestUtils;
+import org.apache.flink.lakesoul.test.flinkSource.TestUtils;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.tool.JobOptions;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
@@ -224,7 +225,6 @@ public class LakeSoulLookupJoinCase extends AbstractTestBase {
         List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
         checkEqualInAnyOrder(results,
                 new String[]{"+I[1, a, 8, 2019, 08, 01]", "+I[1, a, 10, 2020, 08, 31]", "+I[2, b, 22, 2020, 08, 31]"});
-//        checkEqualInExpectedOrder(results, "[+I[1, a, 8, 2019, 08, 01], +I[1, a, 10, 2020, 08, 31], +I[2, b, 22, 2020, 08, 31]]");
         tableEnv.executeSql("drop table if exists bounded_partition_hash_table");
     }
 
@@ -265,9 +265,7 @@ public class LakeSoulLookupJoinCase extends AbstractTestBase {
                                         +
                                         " join partition_table_1 for system_time as of p.p as b on p.x=b.x and p.y=b.y");
         List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
-        assertThat(results.toString())
-                .isEqualTo(
-                        "[+I[1, a, 10, 2020, 09, 31], +I[2, b, 22, 2020, 09, 31], +I[3, c, 33, 2020, 09, 31]]");
+        TestUtils.checkEqualInAnyOrder(results, new String[]{"+I[1, a, 8, 2019, 09, 01]", "+I[1, a, 101, 2020, 08, 01]", "+I[1, a, 10, 2020, 09, 31]", "+I[2, b, 122, 2020, 08, 01]", "+I[2, b, 22, 2020, 09, 31]", "+I[3, c, 33, 2020, 09, 31]"});
         tableEnv.executeSql("drop table if exists partition_table_1");
     }
 
@@ -314,9 +312,7 @@ public class LakeSoulLookupJoinCase extends AbstractTestBase {
                                         +
                                         " join partition_table_2 for system_time as of p.p as b on p.x=b.x and p.y=b.y");
         List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
-        assertThat(results.toString())
-                .isEqualTo(
-                        "[+I[1, a, 10, 2020, 10, 31], +I[2, b, 22, 2020, 10, 31], +I[2, b, 50, 2020, 09, 31], +I[3, c, 33, 2020, 10, 31], +I[4, d, 50, 2020, 09, 31]]");
+        TestUtils.checkEqualInAnyOrder(results, new String[]{"+I[1, a, 11, 2019, 09, 01]", "+I[1, a, 101, 2020, 08, 01]", "+I[1, a, 10, 2020, 10, 31]", "+I[2, b, 122, 2020, 08, 01]", "+I[2, b, 22, 2020, 10, 31]", "+I[2, b, 50, 2020, 09, 31]", "+I[3, c, 33, 2020, 10, 31]", "+I[4, d, 50, 2020, 09, 31]"});
         tableEnv.executeSql("drop table if exists partition_table_2");
     }
 
