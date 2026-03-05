@@ -41,6 +41,7 @@ import static com.dmetasoul.lakesoul.lakesoul.io.substrait.SubstraitUtil.applyPa
 import static com.dmetasoul.lakesoul.lakesoul.io.substrait.SubstraitUtil.and;
 import static com.dmetasoul.lakesoul.lakesoul.io.substrait.SubstraitUtil.substraitExprToProto;
 import static com.dmetasoul.lakesoul.lakesoul.io.substrait.SubstraitUtil.arrowFieldToSubstraitField;
+import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_NON_PARTITION_TABLE_PART_DESC;
 
 
 public class LakeSoulSplitManager implements ConnectorSplitManager {
