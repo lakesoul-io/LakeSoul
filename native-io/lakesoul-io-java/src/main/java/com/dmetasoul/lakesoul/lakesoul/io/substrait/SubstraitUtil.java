@@ -1,29 +1,25 @@
 package com.dmetasoul.lakesoul.lakesoul.io.substrait;
 
-import com.dmetasoul.lakesoul.lakesoul.io.DateTimeUtils;
-import com.dmetasoul.lakesoul.lakesoul.io.NativeIOBase;
-import com.dmetasoul.lakesoul.lakesoul.io.jnr.JnrLoader;
-import com.dmetasoul.lakesoul.lakesoul.io.jnr.LibLakeSoulIO;
-import com.dmetasoul.lakesoul.lakesoul.memory.ArrowMemoryUtils;
-import com.dmetasoul.lakesoul.meta.entity.JniWrapper;
-import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
-import com.google.protobuf.InvalidProtocolBufferException;
-import io.substrait.dsl.SubstraitBuilder;
-import io.substrait.expression.Expression;
+import java.io.IOException;
+import java.math.BigDecimal;
+import java.sql.SQLException;
+import java.sql.Timestamp;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.Collections;
+import java.util.Date;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
-import io.substrait.expression.ExpressionCreator;
-import io.substrait.expression.FieldReference;
-import io.substrait.expression.ImmutableMapKey;
-import io.substrait.expression.proto.ExpressionProtoConverter;
-import io.substrait.extension.DefaultExtensionCatalog;
-import io.substrait.extension.SimpleExtension;
-import io.substrait.plan.Plan;
-import io.substrait.plan.PlanProtoConverter;
-import io.substrait.relation.NamedScan;
-import io.substrait.type.Type;
-import io.substrait.type.TypeCreator;
-import jnr.ffi.Pointer;
-import jnr.ffi.Runtime;
 import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.c.CDataDictionaryProvider;
 import org.apache.arrow.c.Data;
@@ -35,23 +31,32 @@ import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.spark.sql.catalyst.util.DateTimeUtils$;
 
-import java.io.IOException;
-import java.math.BigDecimal;
-import java.sql.SQLException;
-import java.sql.Timestamp;
-import java.time.Instant;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.util.*;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
+import com.dmetasoul.lakesoul.lakesoul.io.DateTimeUtils;
+import com.dmetasoul.lakesoul.lakesoul.io.NativeIOBase;
+import com.dmetasoul.lakesoul.lakesoul.io.jnr.JnrLoader;
+import com.dmetasoul.lakesoul.lakesoul.io.jnr.LibLakeSoulIO;
+import com.dmetasoul.lakesoul.lakesoul.memory.ArrowMemoryUtils;
+import com.dmetasoul.lakesoul.meta.entity.JniWrapper;
+import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
+import com.google.protobuf.InvalidProtocolBufferException;
 
-import static io.substrait.extension.DefaultExtensionCatalog.*;
+import io.substrait.dsl.SubstraitBuilder;
+import io.substrait.expression.Expression;
+import io.substrait.expression.ExpressionCreator;
+import io.substrait.expression.FieldReference;
+import io.substrait.expression.ImmutableMapKey;
+import io.substrait.expression.proto.ExpressionProtoConverter;
+import io.substrait.extension.DefaultExtensionCatalog;
+import static io.substrait.extension.DefaultExtensionCatalog.FUNCTIONS_BOOLEAN;
+import static io.substrait.extension.DefaultExtensionCatalog.FUNCTIONS_COMPARISON;
+import io.substrait.extension.SimpleExtension;
+import io.substrait.plan.Plan;
+import io.substrait.plan.PlanProtoConverter;
+import io.substrait.relation.NamedScan;
+import io.substrait.type.Type;
+import io.substrait.type.TypeCreator;
+import jnr.ffi.Pointer;
+import jnr.ffi.Runtime;
 
 public class SubstraitUtil {
     public static final SimpleExtension.ExtensionCollection EXTENSIONS;
@@ -439,7 +444,9 @@ public class SubstraitUtil {
         if (type instanceof Type.Date) {
             if (any instanceof Integer) {
                 return ExpressionCreator.date(false, (Integer) any);
-            } else if (any instanceof Date || any instanceof LocalDate) {
+            } else if(any instanceof Long) {
+		return ExpressionCreator.date(false, ((Long) any).intValue());
+	    } else if (any instanceof Date || any instanceof LocalDate) {
                 return ExpressionCreator.date(false, DateTimeUtils$.MODULE$.anyToDays(any));
             }
         }
