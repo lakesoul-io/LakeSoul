@@ -92,11 +92,24 @@ impl<C: CursorValues + Send + Sync + 'static> DeduplicateStream<C> {
                     // now we finished this batch.
                     // 1. peek next batch to see if there's duplicate
                     // 2. if not, we produce [last_begin, i]
-                    if let Some(Ok((peek_c, peek_batch))) = self.input_stream.as_mut().peek().await {
-                        if peek_batch.num_rows() == 0 {
-                            continue;
+                    let mut next_non_empty_exists = false;
+                    let mut last_equal_next_first = false;
+                    loop {
+                        if let Some(Ok((peek_c, peek_batch))) = self.input_stream.as_mut().peek().await {
+                            if peek_batch.num_rows() == 0 {
+                                // consume empty batch and continue peeking
+                                let _ = self.input_stream.next().await;
+                                continue;
+                            }
+                            next_non_empty_exists = true;
+                            last_equal_next_first = C::eq(&c, i - 1, &peek_c, 0);
+                            break;
                         }
-                        if C::eq(&c, i - 1, &peek_c, 0) {
+                        break;
+                    }
+
+                    if next_non_empty_exists {
+                        if last_equal_next_first {
                             // try produce [last_begin, i - 2]
                             // just skip last row when it's only one non-dup row
                             if i > last_begin + 1 {
@@ -316,6 +329,52 @@ mod tests {
         // Should return None immediately
         let mut stream = dedup_stream.create_deduplicated_stream();
         assert!(stream.next().await.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_deduplicate_skip_empty_batches_while_peeking() -> crate::Result<()> {
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+        let pool = Arc::new(GreedyMemoryPool::new(1024 * 1024 * 1024)) as _;
+        let r1 = MemoryConsumer::new("r1").register(&pool);
+        let primary_keys = vec!["id".to_string()];
+
+        let schema = create_test_schema();
+
+        // batch1 ends with 2, then there is an empty batch, and batch3 starts with 3.
+        // previous bug: peeking empty batch caused `continue`, dropping tail output of batch1.
+        let batch1 = create_test_batch(vec![1, 2], vec!["1", "2"]);
+        let empty_batch = create_test_batch(vec![], vec![]);
+        let batch3 = create_test_batch(vec![3, 4], vec!["3", "4"]);
+
+        let stream = create_stream(
+            vec![batch1, empty_batch, batch3],
+            task_ctx,
+            primary_keys,
+            r1.new_empty(),
+        )
+        .await?;
+
+        let mut dedup_stream = DeduplicateStream::new_from_stream(stream, schema)?;
+        let mut result = dedup_stream.create_deduplicated_stream();
+        let batches = result.try_collect::<Vec<_>>().await?;
+        let batches = batches.into_iter().map(|(_, b)| b).collect::<Vec<_>>();
+
+        assert_batches_eq!(
+            &[
+                "+----+------+",
+                "| id | name |",
+                "+----+------+",
+                "| 1  | 1    |",
+                "| 2  | 2    |",
+                "| 3  | 3    |",
+                "| 4  | 4    |",
+                "+----+------+",
+            ],
+            &batches
+        );
 
         Ok(())
     }

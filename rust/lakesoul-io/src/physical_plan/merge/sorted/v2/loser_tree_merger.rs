@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::physical_plan::merge::sorted::cursor::CursorValues;
 use crate::physical_plan::merge::sorted::v2::batch_range::BatchRange;
 use arrow::compute::interleave;
