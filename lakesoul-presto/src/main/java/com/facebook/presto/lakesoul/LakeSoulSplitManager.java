@@ -157,10 +157,11 @@ public class LakeSoulSplitManager implements ConnectorSplitManager {
             } else {
                 allPartitionInfo = MetaVersion.getAllPartitionInfo(tid);
             }
-
+            
             List<FilterPredicate> parFilters = tableLayout.getParFilters();
+            log.info("DEBUG: parFilters = " + parFilters);
             io.substrait.proto.Plan partitionFilterPlan = buildSubstraitPlan(parFilters, partitionSchema, tableName);
-            log.info("partiitonFilterPlan " + partitionFilterPlan );
+            log.info("DEBUG: partiitonFilterPlan " + partitionFilterPlan );
             List<PartitionInfo> filteredPartitionInfo = SubstraitUtil.applyPartitionFilters(allPartitionInfo, partitionSchema, partitionFilterPlan);   
 
             if (filteredPartitionInfo != null) {
@@ -180,7 +181,6 @@ public class LakeSoulSplitManager implements ConnectorSplitManager {
         log.info("LakeSoul table %s, split partitions %s",
                 tableLayout.getTableHandle().getNames(),
                 partitions);
-        //DataFileInfo[] dfinfos = DataOperation.getTableDataInfo(tid, JavaConverters.asScalaBuffer(partitions).toList());
         List<DataFileInfo> allDataFiles = new ArrayList<>();
         for (String partition : partitions) {
             List<String> singlePartition = Collections.singletonList(partition);
@@ -199,18 +199,16 @@ public class LakeSoulSplitManager implements ConnectorSplitManager {
                 if (tableLayout.getPrimaryKeys().isEmpty()) {
                     for (Path path : split.getValue()) {
                         splits.add(new LakeSoulSplit(tableLayout, Collections.singletonList(path)));
-                        log.info("Add LakeSoul table split %s, path %s",
-                                tableLayout.getTableHandle().getNames(),
-                                path);
                     }
                 } else {
                     splits.add(new LakeSoulSplit(tableLayout, split.getValue()));
-                    log.info("Add LakeSoul table split %s, paths %s",
-                            tableLayout.getTableHandle().getNames(),
-                            split.getValue());
                 }
             }
         }
+        String tableNames = tableLayout.getTableHandle().getNames().toString();
+        log.info("Finished building LakeSoul splits for table " + tableLayout.getTableHandle().getNames() +
+         ". Total split count: " + splits.size() +
+         ". Splits: " + splits);
         return new LakeSoulSplitSource(splits);
     }
 
