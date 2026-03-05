@@ -443,9 +443,9 @@ public class SubstraitUtil {
     public static Expression.Literal anyToSubstraitLiteral(Type type, Object any) throws IOException {
         if (type instanceof Type.Date) {
             if (any instanceof Integer) {
-                return ExpressionCreator.date(false, (Integer) any);
+               return ExpressionCreator.date(false, (Integer) any);
             } else if(any instanceof Long) {
-		return ExpressionCreator.date(false, ((Long) any).intValue());
+               return ExpressionCreator.date(false, ((Long) any).intValue());
 	    } else if (any instanceof Date || any instanceof LocalDate) {
                 return ExpressionCreator.date(false, DateTimeUtils$.MODULE$.anyToDays(any));
             }
