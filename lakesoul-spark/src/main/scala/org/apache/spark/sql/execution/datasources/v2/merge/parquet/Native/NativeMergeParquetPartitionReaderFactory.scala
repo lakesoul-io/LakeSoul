@@ -38,15 +38,15 @@ import scala.collection.mutable.ArrayBuffer
 
 
 /**
-  * A factory used to create Parquet readers.
-  *
-  * @param sqlConf         SQL configuration.
-  * @param broadcastedConf Broadcast serializable Hadoop Configuration.
-  * @param dataSchema      Schema of Parquet files.
-  * @param readDataSchema  Required schema of Parquet files.
-  * @param partitionSchema Schema of partitions.
-  *                        //  * @param filterMap Filters to be pushed down in the batch scan.
-  */
+ * A factory used to create Parquet readers.
+ *
+ * @param sqlConf         SQL configuration.
+ * @param broadcastedConf Broadcast serializable Hadoop Configuration.
+ * @param dataSchema      Schema of Parquet files.
+ * @param readDataSchema  Required schema of Parquet files.
+ * @param partitionSchema Schema of partitions.
+ *                        //  * @param filterMap Filters to be pushed down in the batch scan.
+ */
 case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
                                                     broadcastedConf: Broadcast[SerializableConfiguration],
                                                     dataSchema: StructType,
@@ -184,7 +184,6 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
       options += ("cdc_column" -> nativeIOCdcColumn)
     }
     options += ("is_compacted" -> nativeIOIsCompacted)
-    options += ("hash_bucket_num" -> "32")
     if (nativeIOSkipMOR.nonEmpty) {
       options += ("skip_merge_on_read" -> nativeIOSkipMOR)
     }

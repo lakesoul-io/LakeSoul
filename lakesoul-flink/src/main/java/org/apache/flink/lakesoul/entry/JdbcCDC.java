@@ -5,20 +5,20 @@ package org.apache.flink.lakesoul.entry;
 
 import com.dmetasoul.lakesoul.meta.external.NameSpaceManager;
 import com.dmetasoul.lakesoul.meta.external.mysql.MysqlDBManager;
-import com.ververica.cdc.connectors.base.options.StartupOptions;
-import com.ververica.cdc.connectors.base.source.jdbc.JdbcIncrementalSource;
-import com.ververica.cdc.connectors.mysql.source.MySqlSource;
-import com.ververica.cdc.connectors.mysql.source.MySqlSourceBuilder;
-import com.ververica.cdc.connectors.oracle.source.OracleSourceBuilder;
-import com.ververica.cdc.connectors.postgres.source.PostgresSourceBuilder;
-import com.ververica.cdc.connectors.mongodb.source.MongoDBSource;
 
+import org.apache.flink.cdc.connectors.base.options.StartupOptions;
+import org.apache.flink.cdc.connectors.base.source.jdbc.JdbcIncrementalSource;
+import org.apache.flink.cdc.connectors.mongodb.source.MongoDBSource;
+import org.apache.flink.cdc.connectors.mysql.source.MySqlSource;
+import org.apache.flink.cdc.connectors.mysql.source.MySqlSourceBuilder;
+import org.apache.flink.cdc.connectors.oracle.source.OracleSourceBuilder;
+import org.apache.flink.cdc.connectors.postgres.source.PostgresSourceBuilder;
+import org.apache.flink.cdc.connectors.sqlserver.source.SqlServerSourceBuilder;
 import org.apache.flink.lakesoul.entry.sql.flink.LakeSoulInAndOutputJobListener;
 import org.apache.flink.lakesoul.entry.sql.utils.FileUtil;
 import org.apache.flink.lakesoul.tool.JobOptions;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.time.Time;
-import com.ververica.cdc.connectors.sqlserver.source.SqlServerSourceBuilder;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.GlobalConfiguration;
@@ -39,6 +39,7 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 
+import static org.apache.flink.cdc.connectors.base.options.SourceOptions.SCAN_SNAPSHOT_FETCH_SIZE;
 import static org.apache.flink.lakesoul.tool.JobOptions.*;
 import static org.apache.flink.lakesoul.tool.LakeSoulDDLSinkOptions.*;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BUCKET_PARALLELISM;
@@ -63,6 +64,8 @@ public class JdbcCDC {
     private static String lineageUrl;
     private static String appName;
     private static String namespace;
+    private static int fetchSize;
+    private static String cdcYamlPath;
 
     public static void main(String[] args) throws Exception {
         ParameterTool parameter = ParameterTool.fromArgs(args);
@@ -75,21 +78,35 @@ public class JdbcCDC {
         String sinkDBName = parameter.get(SINK_DBNAME.key(), SINK_DBNAME.defaultValue());
         //Postgres Oracle
         if (dbType.equalsIgnoreCase("oracle") || dbType.equalsIgnoreCase("postgres") ) {
-            schemaList = parameter.get(SOURCE_DB_SCHEMA_LIST.key()).split(",");
             String[] tables = parameter.get(SOURCE_DB_SCHEMA_TABLES.key()).split(",");
-            tableList = new String[tables.length];
-            for (int i = 0; i < tables.length; i++) {
-                tableList[i] = dbName + "."+tables[i].toUpperCase();
+            HashSet<String> schemaListSet = new HashSet<>();
+            for (String table : tables) {
+                schemaListSet.add(table.split("\\.")[0]);
             }
+            schemaList = schemaListSet.toArray(new String[0]);
+            tableList = new String[tables.length];
+            System.arraycopy(tables, 0, tableList, 0, tables.length);
             splitSize = parameter.getInt(SOURCE_DB_SPLIT_SIZE.key(), SOURCE_DB_SPLIT_SIZE.defaultValue());
+            cdcYamlPath = parameter.get(CONNFIG_YAML_PATH.key(),null);
         }
-        if (dbType.equalsIgnoreCase("sqlserver") ){
+        if (dbType.equalsIgnoreCase("sqlserver")){
             tableList = parameter.get(SOURCE_DB_SCHEMA_TABLES.key()).split(",");
         }
-        if ( dbType.equalsIgnoreCase("mongodb")){
+        if (dbType.equalsIgnoreCase("mongodb")){
             batchSize = parameter.getInt(BATCH_SIZE.key(), BATCH_SIZE.defaultValue());
             tableList = parameter.get(SOURCE_DB_SCHEMA_TABLES.key()).split(",");
         }
+        if (dbType.equalsIgnoreCase("mysql")) {
+            if (parameter.get(SOURCE_DB_SCHEMA_TABLES.key()) == null
+                    || "__NO_VALUE_KEY".equals(parameter.get(SOURCE_DB_SCHEMA_TABLES.key()))){
+                tableList = new String[1];
+                tableList[0] = dbName + ".*";
+            } else {
+                tableList = parameter.get(SOURCE_DB_SCHEMA_TABLES.key()).split(",");
+            }
+            cdcYamlPath = parameter.get(CONNFIG_YAML_PATH.key(),null);
+        }
+        fetchSize = parameter.getInt(SCAN_SNAPSHOT_FETCH_SIZE.key(), SCAN_SNAPSHOT_FETCH_SIZE.defaultValue());
         pluginName = parameter.get(PLUGIN_NAME.key(), PLUGIN_NAME.defaultValue());
         //flink
         String databasePrefixPath = parameter.get(WAREHOUSE_PATH.key());
@@ -101,6 +118,9 @@ public class JdbcCDC {
         Configuration globalConfig = GlobalConfiguration.loadConfiguration();
         String warehousePath = databasePrefixPath == null ? globalConfig.getString("flink.warehouse.dir", null): databasePrefixPath;
         Configuration conf = new Configuration();
+        if (sinkDBName == null){
+            sinkDBName = dbName;
+        }
         // parameters for mutil tables ddl sink
         conf.set(SOURCE_DB_DB_NAME, dbName);
         conf.set(SOURCE_DB_USER, userName);
@@ -119,8 +139,18 @@ public class JdbcCDC {
         conf.set(LakeSoulSinkOptions.BUCKET_PARALLELISM, bucketParallelism);
         conf.set(LakeSoulSinkOptions.HASH_BUCKET_NUM, bucketParallelism);
         conf.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
-        HashMap<String, List<String>> partitionMap = new HashMap<>();
-        parameter.toMap().forEach((confKey,confValue) -> {if (confKey.contains("topic_partitions_")) partitionMap.put(confKey.substring(17), Arrays.asList(confValue.split(","))); else return;});
+        HashMap<String, List<String>> partitionMap = new HashMap<>();;
+        HashMap<String, List<String>> finalPartitionMap = partitionMap;
+        parameter.toMap().forEach((confKey, confValue) -> {if (confKey.contains("topic_partitions_")) finalPartitionMap.put(confKey.substring(17), Arrays.asList(confValue.split(","))); else return;});
+        if (partitionMap.isEmpty() && cdcYamlPath != null){
+            JdbcSourceBuilderTool mysqlSourceBuilderTool = new JdbcSourceBuilderTool();
+            partitionMap = mysqlSourceBuilderTool.getTablePartitionList(cdcYamlPath);
+        }
+        HashMap<String, String> partitionFormatRuleMap = new HashMap<>();;
+        if (cdcYamlPath != null){
+            JdbcSourceBuilderTool mysqlSourceBuilderTool = new JdbcSourceBuilderTool();
+            partitionFormatRuleMap = mysqlSourceBuilderTool.getTablePartitionFormatRuleList(cdcYamlPath);
+        }
         listener = null;
         StreamExecutionEnvironment env;
         appName = null;
@@ -167,7 +197,8 @@ public class JdbcCDC {
                 Time.of(10, TimeUnit.MINUTES), //time interval for measuring failure rate
                 Time.of(20, TimeUnit.SECONDS) // delay
         ));
-        LakeSoulRecordConvert lakeSoulRecordConvert = new LakeSoulRecordConvert(conf, conf.getString(SERVER_TIME_ZONE), partitionMap);
+
+        LakeSoulRecordConvert lakeSoulRecordConvert = new LakeSoulRecordConvert(conf, conf.getString(SERVER_TIME_ZONE), partitionMap, partitionFormatRuleMap, globalConfig);
 
         if (dbType.equalsIgnoreCase("mysql")) {
             mysqlCdc(lakeSoulRecordConvert, conf, env, sinkDBName);
@@ -189,29 +220,44 @@ public class JdbcCDC {
     }
 
     private static void mysqlCdc(LakeSoulRecordConvert lakeSoulRecordConvert, Configuration conf, StreamExecutionEnvironment env,String sinkDBName) throws Exception {
+
         MySqlSourceBuilder<BinarySourceRecord> sourceBuilder = MySqlSource.<BinarySourceRecord>builder()
                 .hostname(host)
                 .port(port)
                 .databaseList(dbName) // set captured database
-                .tableList(dbName + ".*") // set captured table
+                .tableList(tableList) // set captured table
                 .serverTimeZone(serverTimezone)  // default -- Asia/Shanghai
-                //.scanNewlyAddedTableEnabled(true)
                 .username(userName)
                 .password(passWord);
-        sourceBuilder.deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert,
-                conf.getString(WAREHOUSE_PATH), sinkDBName));
-        Properties jdbcProperties = new Properties();
-        jdbcProperties.put("allowPublicKeyRetrieval", "true");
-        jdbcProperties.put("useSSL", "false");
-        sourceBuilder.jdbcProperties(jdbcProperties);
-        MySqlSource<BinarySourceRecord> mySqlSource = sourceBuilder.build();
 
+        if (cdcYamlPath != null){
+            JdbcSourceBuilderTool mysqlSourceBuilderTool = new JdbcSourceBuilderTool();
+            sourceBuilder =  mysqlSourceBuilderTool.mySqlSourceBuilder(cdcYamlPath, sourceBuilder);
+        } else {
+            Properties jdbcProperties = new Properties();
+            jdbcProperties.put("allowPublicKeyRetrieval", "true");
+            jdbcProperties.put("useSSL", "false");
+            sourceBuilder.jdbcProperties(jdbcProperties);
+        }
+        sourceBuilder.deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert,
+                conf.get(WAREHOUSE_PATH), sinkDBName));
+
+        MySqlSource<BinarySourceRecord> mySqlSource = sourceBuilder.build();
         NameSpaceManager manager = new NameSpaceManager();
         manager.importOrSyncLakeSoulNamespace(dbName);
 
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;
-        context.conf = (Configuration) env.getConfiguration();
+        if (lineageUrl != null){
+            Map<String, String> confs = ((Configuration) env.getConfiguration()).toMap();
+            confs.put(linageJobName.key(), appName);
+            confs.put(linageJobNamespace.key(), namespace);
+            confs.put(lineageJobUUID.key(), listener.getRunId());
+            confs.put(lineageOption.key(), "true");
+            context.conf = Configuration.fromMap(confs);
+        } else {
+            context.conf = (Configuration) env.getConfiguration();
+        }
         LakeSoulMultiTableSinkStreamBuilder
                 builder =
                 new LakeSoulMultiTableSinkStreamBuilder(mySqlSource, context, lakeSoulRecordConvert);
@@ -224,7 +270,8 @@ public class JdbcCDC {
     }
 
     private static void postgresCdc(LakeSoulRecordConvert lakeSoulRecordConvert, Configuration conf, StreamExecutionEnvironment env, String sinkDBName) throws Exception {
-        JdbcIncrementalSource<BinarySourceRecord> pgSource = PostgresSourceBuilder.PostgresIncrementalSource.<BinarySourceRecord>builder()
+
+        PostgresSourceBuilder<BinarySourceRecord> pgSourcebuilder = PostgresSourceBuilder.PostgresIncrementalSource.<BinarySourceRecord>builder()
                 .hostname(host)
                 .schemaList(schemaList)
                 .tableList(tableList)
@@ -235,8 +282,12 @@ public class JdbcCDC {
                 .decodingPluginName(pluginName)
                 .splitSize(splitSize)
                 .slotName(slotName)
-                .deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert, conf.getString(WAREHOUSE_PATH), sinkDBName))
-                .build();
+                .deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert, conf.getString(WAREHOUSE_PATH), sinkDBName));
+        if (cdcYamlPath != null){
+            JdbcSourceBuilderTool sourceBuilderTool = new JdbcSourceBuilderTool();
+            pgSourcebuilder = sourceBuilderTool.buildPostgresSource(cdcYamlPath, pgSourcebuilder);
+        }
+        PostgresSourceBuilder.PostgresIncrementalSource<BinarySourceRecord> pgSourceBuilder = pgSourcebuilder.build();
 
         NameSpaceManager manager = new NameSpaceManager();
         for (String schema : schemaList) {
@@ -244,10 +295,19 @@ public class JdbcCDC {
         }
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;
-        context.conf = (Configuration) env.getConfiguration();
+        if (lineageUrl != null) {
+            Map<String, String> confs = ((Configuration) env.getConfiguration()).toMap();
+            confs.put(linageJobName.key(), appName);
+            confs.put(linageJobNamespace.key(), namespace);
+            confs.put(lineageJobUUID.key(), listener.getRunId());
+            confs.put(lineageOption.key(), "true");
+            context.conf = Configuration.fromMap(confs);
+        } else {
+            context.conf = (Configuration) env.getConfiguration();
+        }
         LakeSoulMultiTableSinkStreamBuilder
                 builder =
-                new LakeSoulMultiTableSinkStreamBuilder(pgSource, context, lakeSoulRecordConvert);
+                new LakeSoulMultiTableSinkStreamBuilder(pgSourceBuilder, context, lakeSoulRecordConvert);
         DataStreamSource<BinarySourceRecord> source = builder.buildMultiTableSource("Postgres Source");
 
         DataStream<BinarySourceRecord> stream = builder.buildHashPartitionedCDCStream(source);
@@ -270,6 +330,7 @@ public class JdbcCDC {
                         .username(userName)
                         .serverTimeZone(serverTimezone)
                         .password(passWord)
+                        .fetchSize(fetchSize)
                         .deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert, conf.getString(WAREHOUSE_PATH), sinkDBName))
                         .includeSchemaChanges(true) // output the schema changes as well
                         .startupOptions(StartupOptions.initial())
@@ -313,6 +374,7 @@ public class JdbcCDC {
                         .tableList(tableList)
                         .username(userName)
                         .password(passWord)
+                        .fetchSize(fetchSize)
                         .splitSize(splitSize)
                         .deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert, conf.getString(WAREHOUSE_PATH), sinkDBName))
                         .startupOptions(StartupOptions.initial())
@@ -374,8 +436,6 @@ public class JdbcCDC {
                 builder =
                 new LakeSoulMultiTableSinkStreamBuilder(mongoSource, context, lakeSoulRecordConvert);
         DataStreamSource<BinarySourceRecord> source = builder.buildMultiTableSource("mongodb Source");
-
-        source.print();
         DataStream<BinarySourceRecord> stream = builder.buildHashPartitionedCDCStream(source);
         DataStreamSink<BinarySourceRecord> dmlSink = builder.buildLakeSoulDMLSink(stream);
         env.execute("LakeSoul CDC Sink From mongo Database " + dbName);

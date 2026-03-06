@@ -13,7 +13,9 @@ public interface LibLakeSoulMetaData {
 
     void free_tokio_runtime(Pointer runtime);
 
-    Pointer create_tokio_postgres_client(BooleanCallback booleanCallback, String config, Pointer runtime);
+    Pointer create_tokio_postgres_client(BooleanCallback booleanCallback, String config,
+                                         String secondaryConfig,
+                                         Pointer runtime);
 
     void free_tokio_postgres_client(Pointer client);
 

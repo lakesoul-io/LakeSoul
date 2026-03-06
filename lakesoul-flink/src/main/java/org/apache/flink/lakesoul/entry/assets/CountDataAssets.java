@@ -3,12 +3,12 @@
 // SPDX-License-Identifier: Apache-2.0
 package org.apache.flink.lakesoul.entry.assets;
 
+import org.apache.flink.cdc.connectors.base.options.StartupOptions;
+import org.apache.flink.cdc.connectors.base.source.jdbc.JdbcIncrementalSource;
+import org.apache.flink.cdc.connectors.postgres.source.PostgresSourceBuilder;
 import org.apache.flink.connector.jdbc.JdbcConnectionOptions;
 import org.apache.flink.lakesoul.entry.PgDeserialization;
 import org.apache.flink.lakesoul.entry.SourceOptions;
-import com.ververica.cdc.connectors.base.options.StartupOptions;
-import com.ververica.cdc.connectors.base.source.jdbc.JdbcIncrementalSource;
-import com.ververica.cdc.connectors.postgres.source.PostgresSourceBuilder;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.api.java.utils.ParameterTool;
@@ -24,7 +24,6 @@ import org.apache.flink.streaming.api.windowing.assigners.TumblingProcessingTime
 import org.apache.flink.streaming.api.windowing.time.Time;
 
 import java.util.Properties;
-
 
 public class CountDataAssets {
     private static String host;
@@ -90,7 +89,6 @@ public class CountDataAssets {
                         .slotName(slotName)
                         .decodingPluginName(pluginName) // use pgoutput for PostgreSQL 10+
                         .deserializer(deserialization)
-                        .includeSchemaChanges(true)
                         .startupOptions(startupOptions)
                         .fetchSize(fetchSize)
                         .splitSize(splitSize) // the split size of each snapshot split
@@ -98,8 +96,8 @@ public class CountDataAssets {
                         .build();
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         DataStreamSource<String> postgresParallelSource = env.fromSource(postgresIncrementalSource, WatermarkStrategy.noWatermarks(), "PostgresParallelSource").setParallelism(sourceParallelism);
-
         SingleOutputStreamOperator<Tuple3<String, String, String[]>> mainProcess = postgresParallelSource.map(new PartitionLevelAssets.metaMapper());
+
         DataStream<TableCounts> datacommitInfoStream = mainProcess.keyBy((value) -> {
             return (String)value.f1;
         }).process(new PartitionLevelAssets.PartitionLevelProcessFunction()).keyBy((value) -> {
@@ -120,14 +118,6 @@ public class CountDataAssets {
             tableCountsStreaming = tableCountsLatestStreaming
                     .keyBy(value -> value.tableId).process(new JdbcTableLevelAssets());
         }
-
-        //tableCountsStreaming.print();
-
-//        SingleOutputStreamOperator<TableCountsWithTableInfo> tableCountsStreaming = mainProcess.getSideOutput(tableInfoTag).keyBy((value) -> {
-//            return (String)value.f1;
-//        }).connect(datacommitInfoStream.keyBy((value) -> {
-//            return value.tableId;
-//        })).process(new TableLevelAsstes.MergeFunction());
 
         JdbcConnectionOptions build = (new JdbcConnectionOptions.JdbcConnectionOptionsBuilder()).withUrl(pgUrl).withDriverName("org.postgresql.Driver").withUsername(userName).withPassword(passWord).build();
         String tableLevelAssetsSql = "INSERT INTO table_level_assets (" +

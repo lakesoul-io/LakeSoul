@@ -4,10 +4,10 @@
 
 package org.apache.flink.lakesoul.types;
 
-import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.source.SourceRecord;
-import com.ververica.cdc.debezium.DebeziumDeserializationSchema;
 import org.apache.flink.api.common.typeinfo.TypeHint;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.cdc.connectors.shaded.org.apache.kafka.connect.source.SourceRecord;
+import org.apache.flink.cdc.debezium.DebeziumDeserializationSchema;
 import org.apache.flink.util.Collector;
 
 public class BinaryDebeziumDeserializationSchema implements DebeziumDeserializationSchema<BinarySourceRecord> {

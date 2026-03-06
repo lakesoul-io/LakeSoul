@@ -5,8 +5,7 @@
 use std::ops::Not;
 use std::sync::Arc;
 
-use anyhow::anyhow;
-use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef};
+use arrow_schema::{DataType, Field, Fields, SchemaRef};
 use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::logical_expr::Expr;
 use datafusion::prelude::{SessionContext, col};
@@ -33,6 +32,8 @@ use datafusion_substrait::substrait::proto::{
 #[allow(deprecated)]
 use datafusion_substrait::variation_const::TIMESTAMP_MICRO_TYPE_VARIATION_REF;
 use prost::Message;
+use rootcause::compat::boxed_error::IntoBoxedError;
+use rootcause::report;
 use tokio::runtime::{Builder, Handle};
 use tokio::task;
 
@@ -48,6 +49,7 @@ pub enum FilterContainer {
 
 impl Parser {
     pub fn parse(filter_str: String, schema: SchemaRef) -> Result<Expr> {
+        info!("parsing filter str {}", filter_str);
         let (op, left, right) = Parser::parse_filter_str(filter_str)?;
         let expr = if op.eq("or") {
             let left_expr = Parser::parse(left, schema.clone())?;
@@ -91,10 +93,10 @@ impl Parser {
     fn parse_filter_str(filter: String) -> Result<(String, String, String)> {
         let op_offset = filter
             .find('(')
-            .ok_or(External(anyhow!("wrong filter str").into()))?;
+            .ok_or(External(report!("wrong filter str").into_boxed_error()))?;
         let (op, filter) = filter.split_at(op_offset);
         if !filter.ends_with(')') {
-            return Err(External(anyhow!("wrong filter str").into()));
+            return Err(External(report!("wrong filter str").into_boxed_error()));
         }
         let filter = &filter[1..filter.len() - 1];
         let mut k: usize = 0;
@@ -151,8 +153,9 @@ impl Parser {
                         None,
                     )
                 } else {
-                    let binary_vec = Parser::parse_binary_array(value.as_str())?
-                        .ok_or(External(anyhow!("parse binary array failed").into()))?;
+                    let binary_vec = Parser::parse_binary_array(value.as_str())?.ok_or(
+                        External(report!("parse binary array failed").into_boxed_error()),
+                    )?;
                     let mut arr = [0u8; 16];
                     for idx in 0..binary_vec.len() {
                         arr[idx + 16 - binary_vec.len()] = binary_vec[idx];
@@ -370,11 +373,10 @@ impl Parser {
         match container {
             FilterContainer::RawBuf(buf) => {
                 let c = parse_buf(&buf)?;
-                return Box::pin(Parser::parse_filter_container(context, schema, c))
-                    .await;
+                Box::pin(Parser::parse_filter_container(context, schema, c)).await
             }
             FilterContainer::String(s) => {
-                let arrow_schema = Arc::new(Schema::from(schema));
+                let arrow_schema = Arc::new(schema.as_arrow().clone());
                 Ok(vec![Parser::parse(s, arrow_schema)?])
             }
             FilterContainer::Plan(plan) => {

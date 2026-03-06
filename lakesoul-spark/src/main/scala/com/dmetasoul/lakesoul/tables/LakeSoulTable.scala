@@ -14,6 +14,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
 import org.apache.spark.sql.arrow.{CompactBucketIO, CompressDataFileInfo}
 import org.apache.spark.sql.catalyst.expressions.Expression
+import org.apache.spark.sql.connector.catalog.Identifier
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
 import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
@@ -405,24 +406,14 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
           }
         }
         val dataFileInfoSeq = compactResult.flatMap(ff => ff).collect().toSeq
-        if (dataFileInfoSeq.nonEmpty) {
-          val dataFileInfoAfterFilter = dataFileInfoSeq
-          .filter(file => !file.range_partitions.equals(CompactBucketIO.DISCARD_FILE_LIST_KEY))
-          val incrementalFiles = dataFileInfoAfterFilter.filter(!_.path.contains("compactdir"))
-          if(incrementalFiles.isEmpty) {
-            val discardFileInfo = dataFileInfoSeq.filter(file => file.range_partitions.equals(CompactBucketIO.DISCARD_FILE_LIST_KEY))
-            if(discardFileInfo.nonEmpty) {
-              println(f"[compaction-$uuid]: $partitionValues finished")
-            }else {
-              println(f"[compaction-$uuid]: $partitionValues error")
-            }
-            commitMetadata(dataFileInfoSeq, partitionValues, tableInfo, part)
-          }else {
+        val discardFiles = dataFileInfoSeq.filter(_.range_partitions == CompactBucketIO.DISCARD_FILE_LIST_KEY)
+        val hasEffectiveCompaction = discardFiles.nonEmpty
+        if (hasEffectiveCompaction) {
             println(f"[compaction-$uuid]: $partitionValues finished")
-            println("Level0 compaction below threshold, skipping commit")   
-          }
-        } else {
-          println(s"[WARN] read file size is ${files.length}, but without file created after compaction")
+            commitMetadata(dataFileInfoSeq, partitionValues, tableInfo, part)
+        }else {
+            println(f"[compaction-$uuid]: $partitionValues finished")
+            println("All bucket below threshold, skipping commit")
         }
       }
 
@@ -727,7 +718,12 @@ object LakeSoulTable {
     * `SparkSession.getActiveSession()` is empty.
     */
   def forName(tableOrViewName: String): LakeSoulTable = {
-    forName(tableOrViewName, LakeSoulCatalog.showCurrentNamespace().mkString("."))
+    if (tableOrViewName.contains(".")) {
+      val ident = tableOrViewName.split("\\.")
+      forName(ident(1), ident(0))
+    } else {
+      forName(tableOrViewName, LakeSoulCatalog.showCurrentNamespace().mkString("."))
+    }
   }
 
   def forName(tableOrViewName: String, namespace: String): LakeSoulTable = {

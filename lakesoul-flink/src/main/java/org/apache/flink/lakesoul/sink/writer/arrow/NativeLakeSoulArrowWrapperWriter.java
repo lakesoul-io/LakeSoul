@@ -73,6 +73,9 @@ public class NativeLakeSoulArrowWrapperWriter implements InProgressFileWriter<La
         Schema arrowSchema = ArrowUtils.toArrowSchema(rowType);
         nativeWriter = new NativeIOWriter(arrowSchema);
         nativeWriter.setPrimaryKeys(primaryKeys);
+        if (!primaryKeys.isEmpty()) {
+            nativeWriter.setOption(STABLE_SORT, "true");
+        }
         nativeWriter.setRangePartitions(rangeColumns);
         if (conf.getBoolean(LakeSoulSinkOptions.isMultiTableSource)) {
             nativeWriter.setAuxSortColumns(Collections.singletonList(SORT_FIELD));

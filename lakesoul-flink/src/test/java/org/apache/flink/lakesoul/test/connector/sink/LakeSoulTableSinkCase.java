@@ -249,7 +249,7 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                         "    \"parallelism\" : 2,\n" +
                         "    \"predecessors\" : [ {\n" +
                         "      \"id\" : ,\n" +
-                        "      \"ship_strategy\" : \"FORWARD\",\n" +
+                        "      \"ship_strategy\" : \"CUSTOM\",\n" +
                         "      \"side\" : \"second\"\n" +
                         "    } ]\n" +
                         "  }, {\n" +

@@ -4,20 +4,14 @@
 
 package org.apache.flink.lakesoul.types;
 
-import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Field;
-import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Schema;
-import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.SchemaAndValue;
-import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Struct;
-import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.source.SourceRecord;
 import io.debezium.data.Envelope;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.flink.cdc.connectors.shaded.org.apache.kafka.connect.data.*;
+import org.apache.flink.cdc.connectors.shaded.org.apache.kafka.connect.source.SourceRecord;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
+import java.util.*;
 
 public class BinarySourceRecord {
 
@@ -29,7 +23,7 @@ public class BinarySourceRecord {
 
     private String tableLocation;
 
-    private final List<String> partitionKeys;
+    public  List<String> partitionKeys ;
 
     private final boolean isDDLRecord;
 
@@ -55,7 +49,9 @@ public class BinarySourceRecord {
                               LakeSoulRowDataWrapper data,
                               String sourceRecordValue,
                               TableId tableId,
-                              boolean isDDL) {
+                              boolean isDDL)
+    {
+
         this.topic = topic;
         this.primaryKeys = primaryKeys;
         this.partitionKeys = partitionKeys;
@@ -71,14 +67,30 @@ public class BinarySourceRecord {
                                                            String sinkDBName) throws Exception {
         Schema keySchema = sourceRecord.keySchema();
         TableId tableId = new TableId(io.debezium.relational.TableId.parse(sourceRecord.topic()).toLowercase());
-        String originalNamespace = tableId.schema() == null ? tableId.catalog() : tableId.schema();
-        String newNamespace = StringUtils.isNotBlank(sinkDBName) ? sinkDBName : originalNamespace;
-        String tableName = String.format("s_%s_%s", originalNamespace, tableId.table()).toLowerCase();
-        tableId = new TableId(newNamespace, newNamespace , tableName);
-        List<String> partitionFields = Collections.emptyList();
+        String sourceSchemaName = tableId.schema() == null ? tableId.catalog() : tableId.schema();
+        String tableName;
+        String originTableName;
+        if (sinkDBName.equals(sourceSchemaName)
+                || sourceRecord.topic().split("\\.")[0].equals("mysql_binlog_source")){
+            tableName = String.format("s_%s_%s", sourceSchemaName, tableId.table()).toLowerCase();
+            originTableName = tableId.table();
+            tableId = new TableId(sourceSchemaName, sinkDBName, tableName);
+        } else {
+            tableName = String.format("s_%s_%s_%s", sinkDBName, sourceSchemaName, tableId.table()).toLowerCase();
+            originTableName = tableId.table();
+            tableId = new TableId( sourceSchemaName, sinkDBName , tableName);
+        }
         HashMap<String, List<String>> topicsPartitionFields = convert.topicsPartitionFields;
-        if (topicsPartitionFields.containsKey(tableId.table())) {
-            partitionFields = topicsPartitionFields.get(tableId.table());
+        if (topicsPartitionFields.containsKey(originTableName)) {
+            List<String> partitionColls = topicsPartitionFields.get(originTableName);
+            topicsPartitionFields.remove(originTableName);
+            topicsPartitionFields.put(tableName, partitionColls);
+            if (convert.formatRuleList.containsKey(originTableName)){
+                HashMap<String, String> formatRuleList = convert.formatRuleList;
+                String fomatRule = formatRuleList.get(originTableName);
+                formatRuleList.remove(originTableName);
+                formatRuleList.put(tableName, fomatRule);
+            }
         }
 
         boolean isDDL = "io.debezium.connector.mysql.SchemaChangeKey".equalsIgnoreCase(keySchema.name());
@@ -89,7 +101,6 @@ public class BinarySourceRecord {
             keySchema.fields().forEach(f -> primaryKeys.add(f.name()));
             Schema valueSchema = sourceRecord.valueSchema();
             Struct value = (Struct) sourceRecord.value();
-
             // retrieve source event time if exist and non-zero
             Field sourceField = valueSchema.field(Envelope.FieldName.SOURCE);
             long binlogFileIndex = 0;
@@ -121,9 +132,10 @@ public class BinarySourceRecord {
             } else {
                 tablePath = new Path(new Path(basePath, tableId.schema()), tableId.table()).toString();
             }
+            List<String> newPartitionFields = convert.topicsPartitionFields.get(tableId.table());
             return new BinarySourceRecord(sourceRecord.topic(), primaryKeys, tableId,
                     FlinkUtil.makeQualifiedPath(tablePath).toString(),
-                    partitionFields, false, data, null);
+                    newPartitionFields == null ? Collections.emptyList(): newPartitionFields, false, data, null);
         }
     }
 
@@ -162,6 +174,37 @@ public class BinarySourceRecord {
     public SchemaAndValue getDDLStructValue() {
         SourceRecordJsonSerde serde = SourceRecordJsonSerde.getInstance();
         return serde.deserializeValue(topic, sourceRecordValue);
+    }
+    public static SourceRecord addEventDate(SourceRecord record, String eventDate) {
+
+        Schema oldSchema = record.valueSchema();
+        Struct oldValue = (Struct) record.value();
+        SchemaBuilder newSchemaBuilder = SchemaBuilder.struct()
+                .name(oldSchema.name())
+                .optional();
+
+        oldSchema.fields().forEach(field ->
+                newSchemaBuilder.field(field.name(), field.schema())
+        );
+        newSchemaBuilder.field("eventDate", Schema.STRING_SCHEMA);
+        Schema newSchema = newSchemaBuilder.build();
+        Struct newValue = new Struct(newSchema);
+        oldSchema.fields().forEach(field ->
+                newValue.put(field.name(), oldValue.get(field))
+        );
+
+        newValue.put("eventDate", eventDate);
+        return new SourceRecord(
+                record.sourcePartition(),
+                record.sourceOffset(),
+                record.topic(),
+                record.kafkaPartition(),
+                record.keySchema(),
+                record.key(),
+                newSchema,
+                newValue,
+                record.timestamp()
+        );
     }
 
     @Override

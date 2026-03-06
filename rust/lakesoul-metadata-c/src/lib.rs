@@ -144,6 +144,14 @@ fn string_from_ptr(ptr: *const c_char) -> String {
     unsafe { CStr::from_ptr(ptr).to_str().unwrap().to_string() }
 }
 
+fn string_from_nullable_ptr(ptr: *const c_char) -> Option<String> {
+    if ptr.is_null() {
+        None
+    } else {
+        unsafe { Some(CStr::from_ptr(ptr).to_str().unwrap().to_string()) }
+    }
+}
+
 /// Execute the insert Data Access Object.
 #[unsafe(no_mangle)]
 pub extern "C" fn execute_insert(
@@ -373,14 +381,17 @@ pub extern "C" fn free_tokio_runtime(runtime: NonNull<CResult<TokioRuntime>>) {
 pub extern "C" fn create_tokio_postgres_client(
     callback: extern "C" fn(bool, *const c_char),
     config: *const c_char,
+    secondary_config: *const c_char,
     runtime: NonNull<CResult<TokioRuntime>>,
 ) -> NonNull<CResult<TokioPostgresClient>> {
     let config = string_from_ptr(config);
+    let secondary_config = string_from_nullable_ptr(secondary_config);
     let runtime =
         unsafe { NonNull::new_unchecked(runtime.as_ref().ptr as *mut Runtime).as_ref() };
 
-    let result =
-        runtime.block_on(async { lakesoul_metadata::create_connection(config).await });
+    let result = runtime.block_on(async {
+        lakesoul_metadata::create_connection(config, secondary_config).await
+    });
 
     let result = match result {
         Ok(client) => {
@@ -608,10 +619,14 @@ pub unsafe extern "C" fn free_c_string(c_string: *mut c_char) {
 /// now use RUST_LOG=LEVEL to activate
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_logger_init() {
-    // TODO add logger format
     let timer = tracing_subscriber::fmt::time::ChronoLocal::rfc_3339();
     match tracing_subscriber::fmt()
         .with_timer(timer)
+        .with_target(false)
+        .with_ansi(false)
+        .with_thread_names(true)
+        .with_file(true)
+        .with_line_number(true)
         .with_env_filter(EnvFilter::from_default_env())
         .try_init()
     {

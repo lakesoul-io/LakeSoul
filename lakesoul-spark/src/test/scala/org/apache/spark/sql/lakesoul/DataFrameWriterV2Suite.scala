@@ -112,7 +112,7 @@ trait DataFrameWriterV2Tests
 
     checkAnswer(
       spark.table("table_name").select("id", "data"),
-      Seq(Row(4L, "d"), Row(5L, "e"), Row(6L, "f")))
+      Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c"), Row(4L, "d"), Row(5L, "e"), Row(6L, "f")))
   }
 
   test("Overwrite: overwrite by expression: id = 3") {
@@ -318,16 +318,16 @@ trait DataFrameWriterV2Tests
     assert(e.getMessage().contains("`replaceTable` is not supported for LakeSoul tables"))
   }
 
-  test("CreateOrReplace: failed when table exist") {
+  test("CreateOrReplace: supported") {
     spark.table("source").writeTo("table_name").using("lakesoul").createOrReplace()
     checkAnswer(
       spark.table("table_name").select("id", "data"),
       Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c")))
 
-    val e = intercept[AnalysisException] {
-      spark.table("source2").writeTo("table_name").using("lakesoul").createOrReplace()
-    }
-    assert(e.getMessage().contains("`replaceTable` is not supported for LakeSoul tables"))
+    spark.table("source2").writeTo("table_name").using("lakesoul").createOrReplace()
+    checkAnswer(
+      spark.table("table_name").select("id", "data"),
+      Seq(Row(4L, "d"), Row(5L, "e"), Row(6L, "f")))
   }
 
   test("Create: partitioned by years(ts) - not supported") {

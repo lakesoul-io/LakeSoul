@@ -129,7 +129,7 @@ object DataOperation {
     filterFiles(file_arr_buf)
   }
 
-  //get fies info in this partition that match the current read version
+  //get files info in this partition that match the current read version
   def getSinglePartitionDataInfo(partition_info: PartitionInfoScala): ArrayBuffer[DataFileInfo] = {
     val file_arr_buf = new ArrayBuffer[DataFileInfo]()
 

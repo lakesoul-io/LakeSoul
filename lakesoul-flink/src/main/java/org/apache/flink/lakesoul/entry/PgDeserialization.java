@@ -3,16 +3,15 @@
 // SPDX-License-Identifier: Apache-2.0
 package org.apache.flink.lakesoul.entry;
 
-
 import com.alibaba.fastjson.JSONObject;
-import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Field;
-import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Schema;
-import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Struct;
-import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.source.SourceRecord;
-import com.ververica.cdc.debezium.DebeziumDeserializationSchema;
 import io.debezium.data.Envelope;
 import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.cdc.connectors.shaded.org.apache.kafka.connect.data.Field;
+import org.apache.flink.cdc.connectors.shaded.org.apache.kafka.connect.data.Schema;
+import org.apache.flink.cdc.connectors.shaded.org.apache.kafka.connect.data.Struct;
+import org.apache.flink.cdc.connectors.shaded.org.apache.kafka.connect.source.SourceRecord;
+import org.apache.flink.cdc.debezium.DebeziumDeserializationSchema;
 import org.apache.flink.util.Collector;
 
 import java.nio.ByteBuffer;
@@ -38,19 +37,20 @@ public class PgDeserialization implements DebeziumDeserializationSchema<String> 
             List<Field> beforeFields = beforeSchema.fields();
             for (Field beforeField : beforeFields) {
                 Object beforeValue = before.get(beforeField);
-
                 String name = beforeField.name();
                 if (name.equals("file_ops")){
-                    ArrayList afterValue1 = (ArrayList) before.get(beforeField);
-                    Object[] objects = afterValue1.toArray();
-                    ArrayList<byte[]> arrayList = new ArrayList();
-                    for (Object object : objects) {
-                        ByteBuffer o = (ByteBuffer) object;
-                        byte[] array = o.array();
-                        arrayList.add(array);
+                    ArrayList beforeValue1 = (ArrayList) before.get(beforeField);
+                    if (beforeValue1 != null){
+                        Object[] objects = beforeValue1.toArray();
+                        ArrayList<byte[]> arrayList = new ArrayList();
+                        for (Object object : objects) {
+                            ByteBuffer o = (ByteBuffer) object;
+                            byte[] array = o.array();
+                            arrayList.add(array);
+                        }
+                        beforeJson.put(beforeField.name(), arrayList);
+                        continue;
                     }
-                    beforeJson.put(beforeField.name(), arrayList);
-                    continue;
                 }
                 beforeJson.put(beforeField.name(), beforeValue);
             }

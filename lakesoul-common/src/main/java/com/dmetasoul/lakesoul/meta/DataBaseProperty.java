@@ -14,6 +14,8 @@ public class DataBaseProperty implements Serializable {
     private String dbName;
     private String host;
     private String port;
+    private String secondaryHost;
+    private String secondaryPort;
     private int maxCommitAttempt;
 
     public String getDriver() {
@@ -73,12 +75,28 @@ public class DataBaseProperty implements Serializable {
         return host;
     }
 
+    public String getSecondaryHost() {
+        return secondaryHost;
+    }
+
+    public String getSecondaryPort() {
+        return secondaryPort;
+    }
+
     public void setHost(String host) {
         this.host = host;
     }
 
     public String getPort() {
         return port;
+    }
+
+    public void setSecondaryPort(String secondaryPort) {
+        this.secondaryPort = secondaryPort;
+    }
+
+    public void setSecondaryHost(String secondaryHost) {
+        this.secondaryHost = secondaryHost;
     }
 
     public void setPort(String port) {

@@ -22,7 +22,7 @@ SPDX-License-Identifier: Apache-2.0
     <properties>
         <flink.version>1.20.0</flink.version>
         <log4j.version>2.17.2</log4j.version>
-        <cdc.version>3.0.0</cdc.version>
+        <cdc.version>3.5.0</cdc.version>
     </properties>
 
     <dependencies>
@@ -176,27 +176,27 @@ SPDX-License-Identifier: Apache-2.0
         </dependency>
 
         <dependency>
-            <groupId>com.ververica</groupId>
+            <groupId>org.apache.flink</groupId>
             <artifactId>flink-sql-connector-sqlserver-cdc</artifactId>
             <version>${cdc.version}</version>
         </dependency>
         <dependency>
-            <groupId>com.ververica</groupId>
+            <groupId>org.apache.flink</groupId>
             <artifactId>flink-sql-connector-mysql-cdc</artifactId>
             <version>${cdc.version}</version>
         </dependency>
         <dependency>
-            <groupId>com.ververica</groupId>
+            <groupId>org.apache.flink</groupId>
             <artifactId>flink-sql-connector-oracle-cdc</artifactId>
             <version>${cdc.version}</version>
         </dependency>
         <dependency>
-            <groupId>com.ververica</groupId>
+            <groupId>org.apache.flink</groupId>
             <artifactId>flink-sql-connector-postgres-cdc</artifactId>
             <version>${cdc.version}</version>
         </dependency>
         <dependency>
-            <groupId>com.ververica</groupId>
+            <groupId>org.apache.flink</groupId>
             <artifactId>flink-sql-connector-mongodb-cdc</artifactId>
             <version>${cdc.version}</version>
         </dependency>
@@ -302,6 +302,11 @@ SPDX-License-Identifier: Apache-2.0
             <artifactId>parquet-hadoop-bundle</artifactId>
             <version>1.12.3</version>
             <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.yaml</groupId>
+            <artifactId>snakeyaml</artifactId>
+            <version>2.2</version>
         </dependency>
 
         <!--The following 3 are required to run tests with access to s3/hdfs-->
@@ -446,6 +451,10 @@ SPDX-License-Identifier: Apache-2.0
                         </goals>
                     </execution>
                 </executions>
+                <configuration>
+                    <source>11</source>
+                    <target>11</target>
+                </configuration>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -492,11 +501,11 @@ SPDX-License-Identifier: Apache-2.0
                     <artifactSet>
                         <includes>
                             <include>com.dmetasoul:lakesoul-flink</include>
-                            <include>com.ververica:flink-sql-connector-mysql-cdc</include>
-                            <include>com.ververica:flink-sql-connector-postgres-cdc</include>
-                            <include>com.ververica:flink-sql-connector-mongodb-cdc</include>
-                            <include>com.ververica:flink-sql-connector-sqlserver-cdc</include>
-                            <include>com.ververica:flink-sql-connector-oracle-cdc</include>
+                            <include>org.apache.flink:flink-sql-connector-mysql-cdc</include>
+                            <include>org.apache.flink:flink-sql-connector-postgres-cdc</include>
+                            <include>org.apache.flink:flink-sql-connector-mongodb-cdc</include>
+                            <include>org.apache.flink:flink-sql-connector-sqlserver-cdc</include>
+                            <include>org.apache.flink:flink-sql-connector-oracle-cdc</include>
                             <include>org.apache.flink:flink-connector-mongodb</include>
                             <include>org.mongodb:bson</include>
                             <include>com.dmetasoul:lakesoul-common</include>
@@ -599,8 +608,16 @@ SPDX-License-Identifier: Apache-2.0
                             <shadedPattern>com.lakesoul.shaded.org.apache.spark</shadedPattern>
                         </relocation>
                         <relocation>
-                            <pattern>org.apache.flink.table.runtime</pattern>
-                            <shadedPattern>com.lakesoul.shaded.org.apache.flink.table.runtime</shadedPattern>
+                            <pattern>org.apache.flink.table.runtime.arrow</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.apache.flink.table.runtime.arrow</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.apache.flink.table.runtime.typeutils.serializers.python</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.apache.flink.table.runtime.typeutils.serializers.python</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.apache.flink.table.runtime.typeutils.PythonTypeUtils</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.apache.flink.table.runtime.typeutils.PythonTypeUtils</shadedPattern>
                         </relocation>
                         <relocation>
                             <pattern>org.apache.flink.fnexecution</pattern>

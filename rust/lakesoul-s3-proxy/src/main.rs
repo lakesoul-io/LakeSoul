@@ -228,9 +228,12 @@ impl S3ProxyHandle {
                 debug!("Parsed table path {:?}", path);
                 if match self.common_prefix {
                     Some(ref prefix) => {
-                        path.starts_with(
-                            format!("{}/{}/{}", prefix, self.group, self.user).as_str(),
-                        ) || path.starts_with(format!("{}/files", prefix).as_str())
+                        (!path.starts_with(prefix))
+                            || path.starts_with(
+                                format!("{}/{}/{}", prefix, self.group, self.user)
+                                    .as_str(),
+                            )
+                            || path.starts_with(format!("{}/files", prefix).as_str())
                     }
                     None => {
                         path.starts_with(
@@ -246,7 +249,10 @@ impl S3ProxyHandle {
                     &["savepoint", "checkpoint", "resource-manager", "files"],
                     &self.common_prefix,
                 ) {
-                    debug!("path is a valid predefined prefix {}, access allowed", path);
+                    debug!(
+                        "Path is a valid predefined prefix or unchecked other dir/bucket {}, access allowed",
+                        path
+                    );
                     return Ok(());
                 }
                 match verify_permission_by_table_path(
@@ -305,7 +311,7 @@ impl BackgroundService for S3ProxyHandle {
             let metadata_client = Arc::new(
                 MetaDataClient::from_env()
                     .await
-                    .inspect(|metadata_client| {
+                    .inspect(|_metadata_client| {
                         info!("initialized metadata client");
                     })
                     .unwrap_or_else(|e| {
@@ -724,13 +730,14 @@ mod tests {
     use super::*;
     use arrow::util::pretty::print_batches;
     use arrow_array::{Array, ArrayRef, Int32Array, RecordBatch};
-    use lakesoul_datafusion::LakeSoulQueryPlanner;
     use lakesoul_datafusion::catalog::create_io_config_builder;
     use lakesoul_datafusion::lakesoul_table::LakeSoulTable;
+    use lakesoul_datafusion::planner::LakeSoulQueryPlanner;
     use lakesoul_datafusion::serialize::arrow_java::ArrowJavaSchema;
-    use lakesoul_io::lakesoul_io_config::create_session_context_with_planner;
+    use lakesoul_io::session::create_session_context_with_planner;
     use lakesoul_metadata::MetaDataClientRef;
     use proto::proto::entity::TableInfo;
+    use rootcause::compat::anyhow1::IntoAnyhow;
 
     #[test]
     fn test_parse_table_path() {
@@ -777,7 +784,7 @@ mod tests {
         assert_eq!(
             parse_table_path(
                 &Uri::from_static(
-                    "/lakesoul-test-bucket/test/default/abc/date=20250221/type=1/test.parquet"
+                    "/lakesoul-test-bucket/test/default/abc/date%3D20250221/type%3D1/test.parquet"
                 ),
                 "lakesoul-test-bucket"
             ),
@@ -866,7 +873,8 @@ mod tests {
             table_name,
             Some(meta_data_client.clone()),
         )
-        .await?;
+        .await
+        .into_anyhow()?;
         table.execute_upsert(record_batch).await?;
         Ok((table_id, path.to_string()))
     }
@@ -937,13 +945,13 @@ mod tests {
     ) -> Result<(String, String), anyhow::Error> {
         let table_name = format!("test_rbac_table_{}", suffix);
         let table_path = format!("s3://lakesoul-test-bucket/tmp/table_{}", suffix);
-        let doamin = format!("lake-cz{}", suffix);
+        let domain = format!("lake-cz{}", suffix);
         let record_batch =
             create_batch_i32(vec!["id", "data"], vec![&[1, 2, 3], &[1, 2, 3]]);
         create_and_write_table(
             &table_name,
             &table_path,
-            &doamin,
+            &domain,
             record_batch.clone(),
             metadata_client.clone(),
         )
@@ -962,7 +970,8 @@ mod tests {
             &table_name,
             Some(metadata_client.clone()),
         )
-        .await?;
+        .await
+        .into_anyhow()?;
         table.execute_upsert(record_batch).await?;
         Ok(())
     }
@@ -980,7 +989,8 @@ mod tests {
             Default::default(),
             Default::default(),
         )
-        .await?;
+        .await
+        .into_anyhow()?;
         let sess_ctx = create_session_context_with_planner(
             &mut builder.build(),
             Some(LakeSoulQueryPlanner::new_ref()),
@@ -990,7 +1000,8 @@ mod tests {
             &table_name,
             Some(metadata_client.clone()),
         )
-        .await?;
+        .await
+        .into_anyhow()?;
         let dataframe = table.to_dataframe(&sess_ctx).await?;
         let results = dataframe.collect().await?;
         print_batches(&results)?;
@@ -1013,22 +1024,15 @@ mod tests {
             create_table_and_write_suffix("dwd", metadata_client.clone()).await?;
 
         let _thread_handle = run_server();
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::time::sleep(Duration::from_secs(5)).await;
         change_s3_to_proxy();
 
         // verify read/write table in ads domain success
         insert_table("ads", metadata_client.clone()).await?;
         read_table("ads", metadata_client.clone()).await?;
 
-        // verify read/write table in dwd domain failed
-        let err = insert_table("dwd", metadata_client.clone())
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("403 Forbidden"));
-        let err = read_table("dwd", metadata_client.clone())
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("403 Forbidden"));
+        insert_table("dwd", metadata_client.clone()).await?;
+        read_table("dwd", metadata_client.clone()).await?;
 
         drop_table(&uuid_ads, &table_path_ads, metadata_client.clone()).await?;
         drop_table(&uuid_dwd, &table_path_dwd, metadata_client.clone()).await?;

@@ -4,18 +4,17 @@
 
 //! The [`datafusion::datasource::file_format::FileFormat`] implementation for the LakeSoul Parquet format with metadata.
 
-use arrow::array::{ArrayRef, StringArray, UInt64Array};
-use arrow::record_batch::RecordBatch;
-use async_trait::async_trait;
-use datafusion::catalog::memory::DataSourceExec;
-use rand::distr::SampleString;
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Debug};
 use std::sync::Arc;
 
-use arrow::datatypes::{DataType, Field, Schema, SchemaBuilder, SchemaRef};
+use arrow::array::{ArrayRef, StringArray, UInt64Array};
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use arrow::record_batch::RecordBatch;
+use async_trait::async_trait;
 use datafusion::catalog::Session;
+use datafusion::catalog::memory::DataSourceExec;
 use datafusion::common::parsers::CompressionTypeVariant;
 use datafusion::common::{DFSchema, GetExt, Statistics, project_schema};
 use datafusion::datasource::file_format::file_compression_type::FileCompressionType;
@@ -26,7 +25,8 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::physical_expr::{
-    EquivalenceProperties, LexOrdering, LexRequirement, create_physical_expr,
+    EquivalenceProperties, LexOrdering, LexRequirement, OrderingRequirements,
+    create_physical_expr,
 };
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::filter::FilterExec;
@@ -44,29 +44,31 @@ use datafusion::{
         file_format::{FileFormat, parquet::ParquetFormat},
         physical_plan::{FileScanConfig, FileSinkConfig},
     },
-    error::Result,
+    error::Result as DFResult,
     physical_plan::ExecutionPlan,
 };
 use futures::StreamExt;
-use lakesoul_io::async_writer::{AsyncBatchWriter, MultiPartAsyncWriter};
-use lakesoul_io::datasource::file_format::{
+use lakesoul_io::config::LakeSoulIOConfig;
+use lakesoul_io::file_format::{
     compute_project_column_indices, flatten_file_scan_config,
 };
-use lakesoul_io::datasource::physical_plan::MergeParquetExec;
 use lakesoul_io::helpers::{
     columnar_values_to_partition_desc, columnar_values_to_sub_path, get_columnar_values,
     partition_desc_from_file_scan_config,
 };
-use lakesoul_io::lakesoul_io_config::LakeSoulIOConfig;
+use lakesoul_io::physical_plan::MergeParquetExec;
+use lakesoul_io::writer::async_writer::{AsyncBatchWriter, MultiPartAsyncWriter};
 use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 use object_store::{ObjectMeta, ObjectStore};
 use proto::proto::entity::TableInfo;
-
-use crate::catalog::{commit_data, parse_table_info_partitions};
-use crate::lakesoul_table::helpers::create_io_config_builder_from_table_info;
-use log::debug;
+use rand::distr::SampleString;
+use rootcause::compat::boxed_error::IntoBoxedError;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
+
+use crate::Result;
+use crate::catalog::{commit_data, parse_table_info_partitions};
+use crate::lakesoul_table::helpers::create_io_config_builder_from_table_info;
 
 /// The wrapper of the [`ParquetFormat`] with LakeSoul metadata. It is used to read and write data files while interacting with LakeSoul metadata.
 pub struct LakeSoulMetaDataParquetFormat {
@@ -92,7 +94,7 @@ impl LakeSoulMetaDataParquetFormat {
         parquet_format: Arc<ParquetFormat>,
         table_info: Arc<TableInfo>,
         conf: LakeSoulIOConfig,
-    ) -> crate::error::Result<Self> {
+    ) -> Result<Self> {
         debug!("LakeSoulMetaDataParquetFormat::new, conf: {:?}", conf);
         Ok(Self {
             parquet_format,
@@ -122,8 +124,7 @@ impl LakeSoulMetaDataParquetFormat {
                 Arc::new(TableInfo::default()),
                 LakeSoulIOConfig::default(),
             )
-            .await
-            .map_err(|e| DataFusionError::External(Box::new(e)))?,
+            .await?,
         )))
     }
 }
@@ -141,7 +142,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
     fn get_ext_with_compression(
         &self,
         file_compression_type: &FileCompressionType,
-    ) -> Result<String> {
+    ) -> DFResult<String> {
         let ext = self.get_ext();
         match file_compression_type.get_variant() {
             CompressionTypeVariant::UNCOMPRESSED => Ok(ext),
@@ -156,7 +157,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         state: &dyn Session,
         store: &Arc<dyn ObjectStore>,
         objects: &[ObjectMeta],
-    ) -> Result<SchemaRef> {
+    ) -> DFResult<SchemaRef> {
         self.parquet_format
             .infer_schema(state, store, objects)
             .await
@@ -168,7 +169,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         store: &Arc<dyn ObjectStore>,
         table_schema: SchemaRef,
         object: &ObjectMeta,
-    ) -> Result<Statistics> {
+    ) -> DFResult<Statistics> {
         self.parquet_format
             .infer_stats(state, store, table_schema, object)
             .await
@@ -185,22 +186,21 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         &self,
         state: &dyn Session,
         conf: FileScanConfig,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
+    ) -> DFResult<Arc<dyn ExecutionPlan>> {
         info!(
             "LakeSoulMetaDataParquetFormat::create_physical_plan with conf= {:?}",
             &conf,
         );
 
-        let file_schema = conf.file_schema.clone();
-        let mut builder = SchemaBuilder::from(file_schema.fields());
-        for field in &conf.table_partition_cols {
-            builder.push(Field::new(field.name(), field.data_type().clone(), false));
-        }
+        let table_schema = conf.table_schema.table_schema().clone();
 
-        let table_schema = Arc::new(builder.finish());
+        // lakesoul only use column indices
+        let projection_indices = conf
+            .projection_exprs
+            .as_ref()
+            .map(|expr| expr.ordered_column_indices());
 
-        let projection = conf.projection.clone();
-        let target_schema = project_schema(&table_schema, projection.as_ref())?;
+        let target_schema = project_schema(&table_schema, projection_indices.as_ref())?;
 
         let merged_projection = compute_project_column_indices(
             table_schema.clone(),
@@ -208,6 +208,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
             self.conf.primary_keys_slice(),
             &self.conf.cdc_column(),
         );
+
         let merged_schema = project_schema(&table_schema, merged_projection.as_ref())?;
 
         // files to read
@@ -230,7 +231,9 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
 
         for config in flatten_conf {
             let (partition_desc, partition_columnar_value) =
-                partition_desc_from_file_scan_config(&config)?;
+                partition_desc_from_file_scan_config(&config).map_err(|report| {
+                    DataFusionError::External(report.into_boxed_error())
+                })?;
             let partition_columnar_value = Arc::new(partition_columnar_value);
 
             let parquet_exec = DataSourceExec::from_data_source(config);
@@ -266,16 +269,22 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
 
         let mut partitioned_exec = Vec::new();
         for (_, (partition_columnar_values, inputs)) in inputs_map {
-            let merge_exec = Arc::new(MergeParquetExec::new_with_inputs(
-                merged_schema.clone(),
-                inputs,
-                self.conf.clone(),
-                partition_columnar_values.clone(),
-            )?) as Arc<dyn ExecutionPlan>;
+            let merge_exec = Arc::new(
+                MergeParquetExec::new_with_inputs(
+                    merged_schema.clone(),
+                    inputs,
+                    self.conf.clone(),
+                    partition_columnar_values.clone(),
+                )
+                .map_err(|e| {
+                    error!("{e}");
+                    e.into_boxed_error()
+                })?,
+            ) as Arc<dyn ExecutionPlan>;
             partitioned_exec.push(merge_exec);
         }
         let exec = if partitioned_exec.len() > 1 {
-            Arc::new(UnionExec::new(partitioned_exec)) as Arc<dyn ExecutionPlan>
+            UnionExec::try_new(partitioned_exec)?
         } else {
             partitioned_exec.first().unwrap().clone()
         };
@@ -320,7 +329,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         _state: &dyn Session,
         conf: FileSinkConfig,
         order_requirements: Option<LexRequirement>,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
+    ) -> DFResult<Arc<dyn ExecutionPlan>> {
         if conf.insert_op == InsertOp::Overwrite {
             return Err(DataFusionError::NotImplemented(
                 "Overwrites are not implemented yet for Parquet".to_string(),
@@ -334,7 +343,8 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
                 self.table_info(),
                 self.client(),
             )
-            .await?,
+            .await
+            .map_err(|report| DataFusionError::External(report.into_boxed_error()))?,
         ) as _)
     }
 
@@ -342,6 +352,10 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         self.parquet_format
             .file_source()
             .with_statistics(Statistics::default())
+    }
+
+    fn compression_type(&self) -> Option<FileCompressionType> {
+        self.parquet_format.compression_type()
     }
 }
 
@@ -383,10 +397,7 @@ impl LakeSoulHashSinkExec {
         table_info: Arc<TableInfo>,
         metadata_client: MetaDataClientRef,
     ) -> Result<Self> {
-        let (range_partitions, _) = parse_table_info_partitions(&table_info.partitions)
-            .map_err(|_| {
-            DataFusionError::External("parse table_info.partitions failed".into())
-        })?;
+        let (range_partitions, _) = parse_table_info_partitions(&table_info.partitions)?;
         let range_partitions = Arc::new(range_partitions);
         Ok(Self {
             input,
@@ -410,7 +421,7 @@ impl LakeSoulHashSinkExec {
     }
 
     /// Optional sort order for output data
-    pub fn sort_order(&self) -> &Option<LexRequirement> {
+    pub fn _sort_order(&self) -> &Option<LexRequirement> {
         &self.sort_order
     }
 
@@ -474,8 +485,7 @@ impl LakeSoulHashSinkExec {
                     table_info.clone(),
                     HashMap::new(),
                     HashMap::new(),
-                )
-                .map_err(|e| DataFusionError::External(Box::new(e)))?
+                )?
                 .with_files(vec![file_absolute_path])
                 .with_schema(batch_excluding_range.schema())
                 .build();
@@ -542,8 +552,7 @@ impl LakeSoulHashSinkExec {
 
         for (partition_desc, (files, _)) in partitioned_file_path_and_row_count.iter() {
             commit_data(client.clone(), &table_name, partition_desc.clone(), files)
-                .await
-                .map_err(|e| DataFusionError::External(Box::new(e)))?;
+                .await?;
             debug!(
                 "table: {} insert success at {:?}",
                 &table_name,
@@ -607,7 +616,7 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         vec![Distribution::SinglePartition; self.children().len()]
     }
 
-    fn required_input_ordering(&self) -> Vec<Option<LexRequirement>> {
+    fn required_input_ordering(&self) -> Vec<Option<OrderingRequirements>> {
         // The input order is either explicitly set (such as by a ListingTable),
         // or require that the [FileSinkExec] gets the data in the order the
         // input produced it (otherwise the optimizer may choose to reorder
@@ -616,7 +625,9 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         // More rationale:
         // https://github.com/apache/arrow-datafusion/pull/6354#discussion_r1195284178
         match &self.sort_order {
-            Some(requirements) => vec![Some(requirements.clone())],
+            Some(requirements) => {
+                vec![Some(OrderingRequirements::Soft(vec![requirements.clone()]))] // TODO check this
+            }
             None => vec![],
         }
     }
@@ -638,7 +649,7 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
+    ) -> DFResult<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(Self {
             input: if children.is_empty() {
                 self.input.clone()
@@ -661,7 +672,7 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         &self,
         partition: usize,
         context: Arc<TaskContext>,
-    ) -> Result<SendableRecordBatchStream> {
+    ) -> DFResult<SendableRecordBatchStream> {
         if partition != 0 {
             return Err(DataFusionError::NotImplemented(
                 "FileSinkExec can only be called on partition 0!".to_string(),
@@ -686,8 +697,8 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
                 write_id.clone(),
                 partitioned_file_path_and_row_count.clone(),
             ));
-            // // In a separate task, wait for each input to be done
-            // // (and pass along any errors, including panic!s)
+            // In a separate task, wait for each input to be done
+            // (and pass along any errors, including panic!s)
             join_handles.push(sink_task);
         }
 
@@ -707,12 +718,12 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         let stream = futures::stream::once(async move {
             match join_handle.await {
                 Ok(Ok(count)) => Ok(make_sink_batch(count, String::from(""))),
-                Ok(Err(e)) => {
-                    debug!("{e:?}");
-                    Err(e)
+                Ok(Err(report)) => {
+                    debug!("{report}");
+                    Err(DataFusionError::External(report.into_boxed_error()))
                 }
                 Err(e) => {
-                    debug!("{e:?}");
+                    debug!("{e}");
                     Err(DataFusionError::Execution(e.to_string()))
                 }
             }

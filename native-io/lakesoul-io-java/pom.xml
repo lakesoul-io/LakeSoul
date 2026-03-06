@@ -381,12 +381,25 @@ SPDX-License-Identifier: Apache-2.0
                             <include>lakesoul_io_c.dll</include>
                         </includes>
                         <excludes>
-                            <exclude>deps</exclude>
-                            <exclude>.fingerprint</exclude>
-                            <exclude>build</exclude>
-                            <exclude>examples</exclude>
-                            <exclude>*.d</exclude>
+                            <exclude>deps/**</exclude>
+                            <exclude>.fingerprint/**</exclude>
+                            <exclude>build/**</exclude>
+                            <exclude>examples/**</exclude>
+                            <exclude>**/*.d</exclude>
                         </excludes>
+                        <!--                        <directory>${basedir}/../../rust/target/release/</directory>-->
+                        <!--                        <includes>-->
+                        <!--                            <include>liblakesoul_io_c.dylib</include>-->
+                        <!--                            <include>liblakesoul_io_c.so</include>-->
+                        <!--                            <include>lakesoul_io_c.dll</include>-->
+                        <!--                        </includes>-->
+                        <!--                        <excludes>-->
+                        <!--                            <exclude>deps</exclude>-->
+                        <!--                            <exclude>.fingerprint</exclude>-->
+                        <!--                            <exclude>build</exclude>-->
+                        <!--                            <exclude>examples</exclude>-->
+                        <!--                            <exclude>*.d</exclude>-->
+                        <!--                        </excludes>-->
                     </resource>
                 </resources>
                 <plugins>

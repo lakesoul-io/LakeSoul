@@ -10,11 +10,10 @@ extern crate tracing;
 pub mod args;
 mod flight_sql_service;
 
-use datafusion::error::DataFusionError;
 pub use flight_sql_service::FlightSqlServiceImpl;
 
-use lakesoul_datafusion::LakeSoulError;
 use lakesoul_metadata::LakeSoulMetaDataError;
+use rootcause::Report;
 use tonic::Status;
 
 mod token_codec;
@@ -38,10 +37,15 @@ macro_rules! impl_error_to_status {
     };
 }
 
-impl_error_to_status!(lakesoul_error_to_status, LakeSoulError, internal);
-impl_error_to_status!(datafusion_error_to_status, DataFusionError, internal);
+type Result<T, E = Report> = std::result::Result<T, E>;
+
 impl_error_to_status!(
     lakesoul_metadata_error_to_status,
     LakeSoulMetaDataError,
     internal
 );
+
+fn report_to_status(report: Report) -> Status {
+    error!("Converting report to status: {}", report);
+    Status::internal(report.to_string())
+}

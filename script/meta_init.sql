@@ -77,6 +77,7 @@ create table if not exists data_commit_info
     primary key (table_id, partition_desc, commit_id)
 );
 CREATE INDEX CONCURRENTLY IF NOT EXISTS data_commit_info_commit_id ON data_commit_info (commit_id);
+ALTER TABLE data_commit_info REPLICA IDENTITY FULL;
 
 create table if not exists partition_info
 (

@@ -310,9 +310,11 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
             while (index < fileList.size()) {
                 long batchFileSize = 0;
                 List<CompressDataFileInfo> batchFileList = new ArrayList<>();
+                List<CompressDataFileInfo> tempInfoList = new ArrayList<>();
                 while (index < fileList.size() && batchFileList.size() < readFileNumLimit) {
                     CompressDataFileInfo curFile = fileList.get(index);
                     batchFileList.add(curFile);
+                    tempInfoList.add(curFile);
                     batchFileSize += curFile.getFileSize();
                     index++;
                     if (batchFileSize > compactionReadFileMaxSize) {
@@ -333,11 +335,12 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
                 for (Map.Entry<String, List<FlushResult>> entry : outFile.entrySet()) {
                     resultList.addAll(changeFlushFileToCompressDataFileInfo(entry.getValue()));
                 }
+                discardInfoList.addAll(tempInfoList);
             }
             rsMap.put(this.metaPartitionExpr, resultList);
             for (int level = this.maxNumLevelLimit; level >= 1; --level) {
                 if (levelFileMap.containsKey(COMPACT_DIR + level)) {
-                    rsMap.put(DISCARD_FILE_LIST_KEY, levelFileMap.get(COMPACT_DIR + level));
+                    discardInfoList.addAll(levelFileMap.get(COMPACT_DIR + level));
                 }
             }
         } else {
@@ -496,8 +499,8 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
                 List<CompressDataFileInfo> totalIncreFileList = levelFileMap.get(INCREMENTAL_FILE);
                 rsMap.computeIfAbsent(this.metaPartitionExpr, value -> new ArrayList<>()).addAll(totalIncreFileList);
             }
-            rsMap.put(DISCARD_FILE_LIST_KEY, discardInfoList);
         }
+        rsMap.put(DISCARD_FILE_LIST_KEY, discardInfoList);
         LOG.info("discard_file_info {}", discardInfoList);
 
         return rsMap;

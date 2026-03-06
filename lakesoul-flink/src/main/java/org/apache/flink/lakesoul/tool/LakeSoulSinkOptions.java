@@ -34,6 +34,7 @@ public class  LakeSoulSinkOptions {
     public static final String CDC_CHANGE_COLUMN_DEFAULT = "rowKinds";
 
     public static final String SORT_FIELD = "__sort_filed__";
+    public static final String STABLE_SORT = "stable_sort";
 
     public static final Long DEFAULT_BUCKET_ROLLING_SIZE = 1000000L;
 
@@ -50,6 +51,7 @@ public class  LakeSoulSinkOptions {
     public static final String LAKESOUL_VIEW_KIND = "flink";
     public static final String VIEW_ORIGINAL_QUERY = "original_query";
     public static final String VIEW_EXPANDED_QUERY = "expand_query";
+    public static final String LAKESOUL_COMMIT_THREAD_NUM = "LAKESOUL_COMMIT_THREAD_NUM";
 
     public static final ConfigOption<String> CATALOG_PATH = ConfigOptions
             .key("path")
@@ -200,6 +202,12 @@ public class  LakeSoulSinkOptions {
             .defaultValue(1024)
             .withDescription("The split size (number of rows) of table snapshot, captured tables are split into multiple splits when read the snapshot of table.");
 
+    public static final ConfigOption<Integer> SOURCE_DB_FETCH_SIZE = ConfigOptions
+            .key("source_db.fetchSize")
+            .intType()
+            .defaultValue(2048)
+            .withDescription("");
+
     //for pg
     public static final ConfigOption<String> PLUGIN_NAME = ConfigOptions
             .key("pluginName")
@@ -231,11 +239,18 @@ public class  LakeSoulSinkOptions {
             .booleanType()
             .defaultValue(false)
             .withDescription("If true, lakesoul sink will auto change sink table's schema");
+
     public static final ConfigOption<Long> LIMIT = ConfigOptions
             .key("lakesoul.limit")
             .longType()
             .defaultValue(Long.MAX_VALUE)
             .withDescription("limit io read num");
+
+    public static final ConfigOption<String> PARTITION_FORMAT_RULE = ConfigOptions
+            .key("format.rule")
+            .stringType()
+            .defaultValue("dd/MM/yyyy")
+            .withDescription("when timestamp col as partition col, the col can be formated");
 }
 
 

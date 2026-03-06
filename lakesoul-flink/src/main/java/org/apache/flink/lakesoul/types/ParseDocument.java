@@ -4,7 +4,7 @@
 
 package org.apache.flink.lakesoul.types;
 
-import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.*;
+import org.apache.flink.cdc.connectors.shaded.org.apache.kafka.connect.data.*;
 import org.bson.BsonTimestamp;
 import org.bson.Document;
 import org.bson.types.Binary;

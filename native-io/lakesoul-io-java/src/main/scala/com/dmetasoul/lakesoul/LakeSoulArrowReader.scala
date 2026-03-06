@@ -53,15 +53,10 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
     override def next(): VectorSchemaRoot = {
       root
     }
-
-    private def finish(): Unit = {
-      if (!finished) {
-        finished = true
-      }
-    }
   }
 
   override def close(): Unit = {
+    iterator.finished = true
     iterator.root.close()
     iterator.provider.close()
     reader.close()

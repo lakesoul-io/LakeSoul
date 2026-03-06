@@ -17,9 +17,7 @@ import com.dmetasoul.lakesoul.meta.dao.TableInfoDao;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
-import org.apache.flink.configuration.ConfigOption;
-import org.apache.flink.configuration.Configuration;
-import org.apache.flink.configuration.GlobalConfiguration;
+import org.apache.flink.configuration.*;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.fs.SafetyNetWrapperFileSystem;
@@ -70,8 +68,10 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import static java.time.ZoneId.SHORT_IDS;
+import static org.apache.flink.configuration.ClusterOptions.PROCESS_WORKING_DIR_BASE;
 import static org.apache.flink.lakesoul.tool.JobOptions.*;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
+import static org.apache.flink.lakesoul.tool.NativeOptions.SPILL_MEM_POOL_DIR;
 import static org.apache.flink.table.api.config.ExecutionConfigOptions.TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM;
 import static org.apache.flink.table.types.logical.utils.LogicalTypeChecks.isCompositeType;
 
@@ -211,8 +211,10 @@ public class FlinkUtil {
         return null;
     }
 
+    private static final StringData delete = StringData.fromString("delete");
+
     public static boolean isCDCDelete(StringData operation) {
-        return StringData.fromString("delete").equals(operation);
+        return delete.equals(operation);
     }
 
     public static boolean isView(TableInfo tableInfo) {
@@ -383,22 +385,50 @@ public class FlinkUtil {
         return splited[splited.length - 1];
     }
 
+    private static class IOConfigs {
+        public final Configuration conf;
+        public final org.apache.hadoop.conf.Configuration hadoopConf;
+
+        public IOConfigs(Configuration conf, org.apache.hadoop.conf.Configuration hadoopConf) {
+            this.conf = conf;
+            this.hadoopConf = hadoopConf;
+        }
+
+        private static volatile IOConfigs INSTANCE;
+
+        public static IOConfigs getInstance() {
+            if (INSTANCE == null) {
+                synchronized (IOConfigs.class) {
+                    if (INSTANCE == null) {
+                        org.apache.hadoop.conf.Configuration hadoopConf = null;
+                        Configuration globalConf = GlobalConfiguration.loadConfiguration();
+                        try {
+                            FlinkUtil.class.getClassLoader().loadClass("org.apache.hadoop.hdfs.HdfsConfiguration");
+                            hadoopConf =
+                                HadoopUtils.getHadoopConfiguration(globalConf);
+                        } catch (Exception e) {
+                            // ignore
+                        }
+                        INSTANCE = new IOConfigs(globalConf, hadoopConf);
+                    }
+                }
+            }
+            return INSTANCE;
+        }
+    }
+
+
     public static void setIOConfigs(Configuration conf, NativeIOBase io) {
-        Configuration globalConf = GlobalConfiguration.loadConfiguration();
+        IOConfigs configs = IOConfigs.getInstance();
+        Configuration globalConf = configs.conf;
         globalConf.keySet().forEach(key -> {
             if (!conf.containsKey(key)) {
                 conf.setString(key, globalConf.getString(key, null));
             }
         });
-        try {
-            FlinkUtil.class.getClassLoader().loadClass("org.apache.hadoop.hdfs.HdfsConfiguration");
-            org.apache.hadoop.conf.Configuration
-                    hadoopConf =
-                    HadoopUtils.getHadoopConfiguration(GlobalConfiguration.loadConfiguration());
-            String defaultFS = hadoopConf.get("fs.defaultFS");
+        if (configs.hadoopConf != null) {
+            String defaultFS = configs.hadoopConf.get("fs.defaultFS");
             io.setObjectStoreOption("fs.defaultFS", defaultFS);
-        } catch (Exception e) {
-            // ignore
         }
         if (conf.containsKey(DEFAULT_FS.key())) {
             setFSConf(conf, DEFAULT_FS.key(), DEFAULT_FS.key(), io);
@@ -428,6 +458,12 @@ public class FlinkUtil {
                 io.setOption(key, value);
             }
         }
+        String tmpDir = conf.getOptional(SPILL_MEM_POOL_DIR)
+                        .orElseGet(() -> conf.getOptional(ClusterOptions.TASK_MANAGER_PROCESS_WORKING_DIR_BASE)
+                                .orElseGet(() -> conf.getOptional(PROCESS_WORKING_DIR_BASE)
+                                        .orElseGet(() -> conf.get(CoreOptions.TMP_DIRS))));
+        LOG.info("Set spilling pool dir to {}", tmpDir);
+        io.setOption("pool_dir",  tmpDir);
     }
 
     public static void setFSConf(Configuration conf, String confKey, String fsConfKey, NativeIOBase io) {

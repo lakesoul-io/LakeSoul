@@ -71,12 +71,12 @@ jobs:
             uv.lock
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "./rust -> target"
+          workspaces: ". -> rust/target" 
+          env-vars: "JAVA_HOME"
       - name: pytest
         env:
           LAKESOUL_SOURCE_DIR: ${{ github.workspace }}
         run: |
-          export LD_LIBRARY_PATH=$JAVA_HOME/lib/server:$LD_LIBRARY_PATH
           mvn package -pl lakesoul-spark -am -DskipTests
           cd python
           uv sync

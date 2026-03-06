@@ -4,10 +4,10 @@
 
 package org.apache.flink.lakesoul.types;
 
-import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.SchemaAndValue;
-import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.json.JsonConverter;
-import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.source.SourceRecord;
-import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.storage.ConverterType;
+import org.apache.flink.cdc.connectors.shaded.org.apache.kafka.connect.data.SchemaAndValue;
+import org.apache.flink.cdc.connectors.shaded.org.apache.kafka.connect.json.JsonConverter;
+import org.apache.flink.cdc.connectors.shaded.org.apache.kafka.connect.source.SourceRecord;
+import org.apache.flink.cdc.connectors.shaded.org.apache.kafka.connect.storage.ConverterType;
 
 import java.io.Serializable;
 import java.nio.charset.StandardCharsets;
