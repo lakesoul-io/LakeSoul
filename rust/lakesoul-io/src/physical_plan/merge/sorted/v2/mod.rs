@@ -4,5 +4,6 @@
 
 mod batch_range;
 pub mod batch_wise_combiner;
+mod binary_merger;
 mod deduplicate;
 mod loser_tree_merger;

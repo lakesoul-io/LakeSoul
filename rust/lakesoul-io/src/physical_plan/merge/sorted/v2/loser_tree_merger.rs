@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::physical_plan::merge::sorted::cursor::CursorValues;
-use crate::physical_plan::merge::sorted::v2::batch_range::BatchRange;
+use crate::physical_plan::merge::sorted::v2::batch_range::{BatchRange, InProgressRow};
 use arrow::compute::interleave;
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::SchemaRef;
@@ -23,11 +23,6 @@ pub struct LoserTreeRangeMerge<'a, C: CursorValues> {
     schema: SchemaRef,
 }
 
-struct InProgressRow {
-    range_idx: usize,
-    row_idx: usize,
-}
-
 impl<'a, C: CursorValues> LoserTreeRangeMerge<'a, C> {
     pub fn new(
         schema: SchemaRef,
@@ -39,7 +34,7 @@ impl<'a, C: CursorValues> LoserTreeRangeMerge<'a, C> {
             ranges,
             loser_tree: Vec::with_capacity(len),
             loser_tree_has_updated: false,
-            in_progress_row: Vec::with_capacity(target_batch_size),
+            in_progress_row: Vec::with_capacity(target_batch_size + 1),
             target_batch_size,
             schema,
         }

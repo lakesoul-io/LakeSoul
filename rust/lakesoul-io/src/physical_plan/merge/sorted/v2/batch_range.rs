@@ -10,9 +10,10 @@ pub struct BatchRange<C: CursorValues> {
     cursor: C,
     batch: RecordBatch,
     stream_idx: usize,
-    begin_row: usize,
+    pub(crate) begin_row: usize,
     batch_idx: usize,
-    end_row_for_merge: usize,
+    // end row is inclusive
+    pub(crate) end_row_for_merge: usize,
 }
 
 impl<C: CursorValues> BatchRange<C> {
@@ -34,13 +35,12 @@ impl<C: CursorValues> BatchRange<C> {
     }
 
     // produce this range from begin to num_rows - 1
-    pub fn slice_range_remaining(&mut self) {
-        if self.begin_row > 0 {
-            self.batch = self
-                .batch
-                .slice(self.begin_row, self.batch.num_rows() - self.begin_row);
-        }
-        self.begin_row = self.batch.num_rows();
+    pub fn slice_remaining_and_advance(&mut self) -> RecordBatch {
+        let sliced = self
+            .batch
+            .slice(self.begin_row, self.end_row_for_merge - self.begin_row + 1);
+        self.begin_row = self.end_row_for_merge + 1;
+        sliced
     }
 
     /// Find the starting index in this BatchRange where the value is greater than or equal to
@@ -60,7 +60,7 @@ impl<C: CursorValues> BatchRange<C> {
         other: &BatchRange<C>,
         other_row_idx: usize,
     ) -> Option<usize> {
-        if other_row_idx >= other.batch.num_rows() {
+        if other_row_idx > other.end_row_for_merge() {
             return None;
         }
 
@@ -109,7 +109,7 @@ impl<C: CursorValues> BatchRange<C> {
         other: &BatchRange<C>,
         other_row_idx: usize,
     ) -> Option<usize> {
-        if other_row_idx >= other.batch.num_rows() {
+        if other_row_idx > other.end_row_for_merge() {
             return None;
         }
 
@@ -199,8 +199,11 @@ impl<C: CursorValues> BatchRange<C> {
     }
 
     pub fn reset(&mut self) {
-        self.begin_row = self.end_row_for_merge + 1;
         self.end_row_for_merge = self.batch.num_rows() - 1;
+    }
+
+    pub fn remaining_rows(&self) -> usize {
+        self.end_row_for_merge - self.begin_row + 1
     }
 }
 
@@ -225,13 +228,18 @@ impl<C: CursorValues> Ord for BatchRange<C> {
     }
 }
 
+pub struct InProgressRow {
+    pub(crate) range_idx: usize,
+    pub(crate) row_idx: usize,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::physical_plan::merge::sorted::cursor::RowValues;
+    use arrow::array::{ArrayRef, Int32Array};
     use arrow::compute::SortOptions;
     use arrow::row::{RowConverter, SortField};
-    use arrow::array::{ArrayRef, Int32Array};
     use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryConsumer};
     use std::sync::Arc;
 
