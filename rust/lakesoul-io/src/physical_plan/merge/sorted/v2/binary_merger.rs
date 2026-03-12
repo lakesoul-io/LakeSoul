@@ -90,13 +90,11 @@ impl<'a, C: CursorValues> BinaryMerger<'a, C> {
         }
 
         if left_valid {
-            self.process_remaining_rows(0, &tx)
-                .await?;
+            self.process_remaining_rows(0, &tx).await?;
         }
 
         if right_valid {
-            self.process_remaining_rows(1, &tx)
-                .await?;
+            self.process_remaining_rows(1, &tx).await?;
         }
 
         Ok(tx)

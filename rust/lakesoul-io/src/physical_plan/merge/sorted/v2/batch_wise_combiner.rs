@@ -15,10 +15,12 @@ use crate::physical_plan::merge::sorted::v2::deduplicate::DeduplicateStream;
 use crate::physical_plan::merge::sorted::v2::loser_tree_merger::LoserTreeRangeMerge;
 use arrow::datatypes::SchemaRef;
 use arrow::record_batch::RecordBatch;
+use arrow_cast::pretty::pretty_format_batches;
 use datafusion_common::DataFusionError;
 use datafusion_execution::{RecordBatchStream, SendableRecordBatchStream};
 use futures::stream::{FusedStream, Peekable};
 use futures::{Stream, StreamExt};
+use itertools::Itertools;
 use nohash::BuildNoHashHasher;
 use rootcause::compat::boxed_error::IntoBoxedError;
 use rootcause::{Report, report};
@@ -27,7 +29,6 @@ use std::future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use arrow_cast::pretty::pretty_format_batches;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::{Mutex, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
@@ -117,7 +118,11 @@ impl<C: CursorValues + Send + Sync + 'static> BatchWiseRangeCombiner<C> {
         if !self.streams[idx].is_terminated() {
             if let Some(batch) = self.streams[idx].next().await {
                 let batch = batch?;
-                println!("Add range {}: \n{}", self.ranges_counter, pretty_format_batches(&[batch.1.clone()])?);
+                debug!(
+                    "Add range {}: \n{}",
+                    self.ranges_counter,
+                    pretty_format_batches(&[batch.1.clone()])?
+                );
                 if batch.1.num_rows() > 0 {
                     let end_row_for_merge = batch.1.num_rows() - 1;
                     self.ranges.insert(
@@ -161,7 +166,10 @@ impl<C: CursorValues + Send + Sync + 'static> BatchWiseRangeCombiner<C> {
         if self.ranges.len() == 1 {
             let range = self.ranges.values_mut().next().unwrap();
             let batch = range.slice_remaining_and_advance();
-                println!("Sending 1 batch\n{}", pretty_format_batches(&[batch.clone()])?);
+            debug!(
+                "Sending 1 batch\n{}",
+                pretty_format_batches(&[batch.clone()])?
+            );
             tx.send(Ok(batch)).await?;
             return Ok(tx);
         }
@@ -194,13 +202,28 @@ impl<C: CursorValues + Send + Sync + 'static> BatchWiseRangeCombiner<C> {
                 second_smallest_range = Some(range);
             }
         });
-        let r_star_end = self.ranges.get(&r_star_range_idx).unwrap().num_rows() - 1;
+        let r_star_end = self
+            .ranges
+            .get(&r_star_range_idx)
+            .unwrap()
+            .end_row_for_merge();
+        debug!(
+            "r_star_range: \n{}, idx: {}, end row {}",
+            pretty_format_batches(&[self
+                .ranges
+                .get(&r_star_range_idx)
+                .unwrap()
+                .batch()
+                .clone()])?,
+            r_star_range_idx,
+            r_star_end
+        );
         // Step 2.
         let mut overlap_ranges = Vec::with_capacity(self.ranges.len());
         for (batch_idx, range) in self.ranges.iter() {
             let cmp = C::compare(
                 &range.cursor(),
-                0,
+                range.begin_row(),
                 self.ranges.get(&r_star_range_idx).unwrap().cursor(),
                 r_star_end,
             );
@@ -212,7 +235,10 @@ impl<C: CursorValues + Send + Sync + 'static> BatchWiseRangeCombiner<C> {
         if overlap_ranges.len() == 1 {
             let range = self.ranges.get_mut(&overlap_ranges.pop().unwrap()).unwrap();
             let batch = range.slice_remaining_and_advance();
-                println!("Sending 1 batch\n{}", pretty_format_batches(&[batch.clone()])?);
+            debug!(
+                "Sending 1 batch\n{}",
+                pretty_format_batches(&[batch.clone()])?
+            );
             tx.send(Ok(batch)).await?;
             return Ok(tx);
         }
@@ -223,12 +249,24 @@ impl<C: CursorValues + Send + Sync + 'static> BatchWiseRangeCombiner<C> {
                 .iter_mut()
                 .filter(|(batch_idx, _)| overlap_ranges.contains(batch_idx))
                 .map(|(_, range)| range)
+                .sorted_by(|a, b| {
+                    a.stream_idx()
+                        .cmp(&b.stream_idx())
+                        .then_with(|| a.batch_idx().cmp(&b.batch_idx()))
+                })
                 .collect::<Vec<_>>();
-            println!(
+            debug!(
                 "Merging two ranges\n{:?}",
                 new_overlap_ranges
                     .iter()
-                    .map(|r| (format!("\n{}", pretty_format_batches(&[r.batch().clone()]).unwrap()), r.begin_row(), r.end_row_for_merge()))
+                    .map(|r| (
+                        format!(
+                            "\n{}",
+                            pretty_format_batches(&[r.batch().clone()]).unwrap()
+                        ),
+                        r.begin_row(),
+                        r.end_row_for_merge()
+                    ))
                     .collect::<Vec<_>>()
             );
             let mut merger = BinaryMerger::new(
@@ -281,6 +319,17 @@ impl<C: CursorValues + Send + Sync + 'static> BatchWiseRangeCombiner<C> {
                         .end_row_for_merge(),
                 )
             {
+                debug!(
+                    "Updating range \n{}'s end_row_for_merge to {}",
+                    pretty_format_batches(&[self
+                        .ranges
+                        .get(&range)
+                        .unwrap()
+                        .batch()
+                        .clone()])
+                    .unwrap(),
+                    end_row_for_merge
+                );
                 self.ranges
                     .get_mut(&range)
                     .unwrap()
@@ -300,12 +349,21 @@ impl<C: CursorValues + Send + Sync + 'static> BatchWiseRangeCombiner<C> {
             .iter_mut()
             .filter(|(batch_idx, _)| new_overlap_range_idx.contains(batch_idx))
             .map(|(_, range)| range)
+            .sorted_by(|a, b| {
+                a.stream_idx()
+                    .cmp(&b.stream_idx())
+                    .then_with(|| a.batch_idx().cmp(&b.batch_idx()))
+            })
             .collect();
-        println!(
+        debug!(
             "Merging multiple ranges {:?}",
             new_overlap_ranges
                 .iter()
-                .map(|r| (format!("\n{}", pretty_format_batches(&[r.batch().clone()]).unwrap()), r.begin_row(), r.end_row_for_merge()))
+                .map(|r| (
+                    format!("\n{}", pretty_format_batches(&[r.batch().clone()]).unwrap()),
+                    r.begin_row(),
+                    r.end_row_for_merge()
+                ))
                 .collect::<Vec<_>>()
         );
         let mut merger = LoserTreeRangeMerge::new(
@@ -532,188 +590,11 @@ mod tests {
         )?));
         let mut stream = BatchWiseRangeCombiner::build_merged_stream(combiner).await?;
         while let Some(batch) = stream.next().await {
-            println!("result batch: \n{}", pretty_format_batches(&[batch?.clone()])?);
+            println!(
+                "result batch: \n{}",
+                pretty_format_batches(&[batch?.clone()])?
+            );
         }
         Ok(())
-    }
-
-    fn create_batch_i32(names: Vec<&str>, values: Vec<&[i32]>) -> RecordBatch {
-        let values = values
-            .into_iter()
-            .map(|vec| Arc::new(Int32Array::from(Vec::from(vec))) as ArrayRef)
-            .collect::<Vec<ArrayRef>>();
-        let iter = names.into_iter().zip(values).collect::<Vec<_>>();
-        RecordBatch::try_from_iter(iter).unwrap()
-    }
-
-    fn create_batch(
-        names: Vec<&str>,
-        first_col_value: &[i32],
-        second_col_value: &[i32],
-        third_col_value: Vec<Option<f64>>,
-        fourth_col_value: Vec<&str>,
-    ) -> RecordBatch {
-        let mut values: Vec<ArrayRef> = vec![];
-        values.push(Arc::new(Int32Array::from(Vec::from(first_col_value))) as ArrayRef);
-        values.push(Arc::new(Int32Array::from(Vec::from(second_col_value))) as ArrayRef);
-        values.push(Arc::new(Float64Array::from(third_col_value)) as ArrayRef);
-        values.push(Arc::new(StringArray::from(fourth_col_value)) as ArrayRef);
-        let iter = names.into_iter().zip(values).collect::<Vec<_>>();
-        RecordBatch::try_from_iter(iter).unwrap()
-    }
-
-    #[tokio::test]
-    async fn test_sorted_stream_merger_multi_columns() {
-        let session_ctx = SessionContext::new();
-        let task_ctx = session_ctx.task_ctx();
-
-        let schema = Schema::new(vec![
-            Field::new("id", DataType::Int32, false),
-            Field::new("a", DataType::Int32, true),
-            Field::new("b", DataType::Int32, true),
-            Field::new("c", DataType::Int32, true),
-        ]);
-
-        let primary_keys = vec!["id".to_string()];
-        let pool = Arc::new(GreedyMemoryPool::new(100 * 1024 * 1024)) as _;
-        let a1 = MemoryConsumer::new("a1").register(&pool);
-
-        let schema = Arc::new(schema);
-        let s1b1 = create_batch_i32(
-            vec!["id", "a"],
-            vec![&[1, 1, 3, 3, 4], &[10001, 10002, 10003, 10004, 10005]],
-        );
-        let s1b2 = create_batch_i32(vec!["id", "a"], vec![&[4, 5], &[10006, 10007]]);
-        let s1b3 = create_batch_i32(vec!["id", "a"], vec![&[], &[]]);
-        let s1b4 = create_batch_i32(vec!["id", "a"], vec![&[5], &[10008]]);
-        let s1b5 =
-            create_batch_i32(vec!["id", "a"], vec![&[5, 5, 6], &[10009, 10010, 10011]]);
-        assert_batches_eq!(
-            &[
-                "+----+-------+",
-                "| id | a     |",
-                "+----+-------+",
-                "| 1  | 10001 |",
-                "| 1  | 10002 |",
-                "| 3  | 10003 |",
-                "| 3  | 10004 |",
-                "| 4  | 10005 |",
-                "| 4  | 10006 |",
-                "| 5  | 10007 |",
-                "| 5  | 10008 |",
-                "| 5  | 10009 |",
-                "| 5  | 10010 |",
-                "| 6  | 10011 |",
-                "+----+-------+",
-            ],
-            &[
-                s1b1.clone(),
-                s1b2.clone(),
-                s1b3.clone(),
-                s1b4.clone(),
-                s1b5.clone()
-            ]
-        );
-
-        let s2b1 = create_batch_i32(vec!["id", "b"], vec![&[3, 4], &[20001, 20002]]);
-        let s2b2 = create_batch_i32(vec!["id", "b"], vec![&[4, 5], &[20003, 20004]]);
-        let s2b3 = create_batch_i32(vec!["id", "b"], vec![&[], &[]]);
-        let s2b4 = create_batch_i32(vec!["id", "b"], vec![&[5], &[20005]]);
-        let s2b5 = create_batch_i32(vec!["id", "b"], vec![&[5, 7], &[20006, 20007]]);
-        assert_batches_eq!(
-            &[
-                "+----+-------+",
-                "| id | b     |",
-                "+----+-------+",
-                "| 3  | 20001 |",
-                "| 4  | 20002 |",
-                "| 4  | 20003 |",
-                "| 5  | 20004 |",
-                "| 5  | 20005 |",
-                "| 5  | 20006 |",
-                "| 7  | 20007 |",
-                "+----+-------+",
-            ],
-            &[
-                s2b1.clone(),
-                s2b2.clone(),
-                s2b3.clone(),
-                s2b4.clone(),
-                s2b5.clone()
-            ]
-        );
-        let s3b1 = create_batch_i32(vec!["id", "c"], vec![&[], &[]]);
-        let s3b2 = create_batch_i32(vec!["id", "c"], vec![&[5, 5], &[30001, 30002]]);
-        let s3b3 = create_batch_i32(vec!["id", "c"], vec![&[5, 7], &[30003, 30004]]);
-        let s3b4 = create_batch_i32(vec!["id", "c"], vec![&[], &[]]);
-        let s3b5 = create_batch_i32(vec!["id", "c"], vec![&[7, 9], &[30005, 30006]]);
-        let s3b6 = create_batch_i32(vec!["id", "c"], vec![&[10], &[30007]]);
-        assert_batches_eq!(
-            &[
-                "+----+-------+",
-                "| id | c     |",
-                "+----+-------+",
-                "| 5  | 30001 |",
-                "| 5  | 30002 |",
-                "| 5  | 30003 |",
-                "| 7  | 30004 |",
-                "| 7  | 30005 |",
-                "| 9  | 30006 |",
-                "| 10 | 30007 |",
-                "+----+-------+",
-            ],
-            &[
-                s3b1.clone(),
-                s3b2.clone(),
-                s3b3.clone(),
-                s3b4.clone(),
-                s3b5.clone(),
-                s3b6.clone()
-            ]
-        );
-
-        let s1 = create_stream(
-            vec![
-                s1b1.clone(),
-                s1b2.clone(),
-                s1b3.clone(),
-                s1b4.clone(),
-                s1b5.clone(),
-            ],
-            task_ctx.clone(),
-            primary_keys.clone(),
-            a1.new_empty(),
-        )
-        .await
-        .unwrap();
-        let s2 = create_stream(
-            vec![
-                s2b1.clone(),
-                s2b2.clone(),
-                s2b3.clone(),
-                s2b4.clone(),
-                s2b5.clone(),
-            ],
-            task_ctx.clone(),
-            primary_keys.clone(),
-            a1.new_empty(),
-        )
-        .await
-        .unwrap();
-        let s3 = create_stream(
-            vec![
-                s3b1.clone(),
-                s3b2.clone(),
-                s3b3.clone(),
-                s3b4.clone(),
-                s3b5.clone(),
-                s3b6.clone(),
-            ],
-            task_ctx.clone(),
-            primary_keys.clone(),
-            a1.new_empty(),
-        )
-        .await
-        .unwrap();
     }
 }

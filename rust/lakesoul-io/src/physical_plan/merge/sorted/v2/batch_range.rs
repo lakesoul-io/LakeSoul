@@ -225,6 +225,7 @@ impl<C: CursorValues> Ord for BatchRange<C> {
     fn cmp(&self, other: &Self) -> Ordering {
         C::compare(&self.cursor, self.begin_row, &other.cursor, other.begin_row)
             .then_with(|| self.stream_idx.cmp(&other.stream_idx))
+            .then_with(|| self.batch_idx.cmp(&other.batch_idx))
     }
 }
 
