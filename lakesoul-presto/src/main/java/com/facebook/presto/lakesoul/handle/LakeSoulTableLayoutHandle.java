@@ -215,7 +215,6 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
         if (domain.isNullAllowed()) {
             disjuncts.add(eq(type, name, null));
         }
-
         Optional<FilterPredicate> predicate = disjuncts.stream().filter(Objects::nonNull).reduce(FilterApi::or);
         return predicate.orElse(null);
 
@@ -339,6 +338,17 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
                 throw new RuntimeException("time/timestamptype except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.gt(FilterApi.longColumn(name), (Long) value * 1000);
+        }else if (type instanceof VarcharType) {
+            if (value == null) {
+                return FilterApi.gt(FilterApi.binaryColumn(name), null);
+            }
+            if (!(value instanceof Slice)) {
+                throw new RuntimeException("except filter value type is string, but it is " + value.getClass());
+            }
+
+            return FilterApi.gt(
+                    FilterApi.binaryColumn(name),
+                    Binary.fromString(((Slice) value).toStringUtf8()));
         }
         return null;
     }
@@ -378,6 +388,17 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
                 throw new RuntimeException("time/timestamptype except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.gtEq(FilterApi.longColumn(name), (Long) value * 1000);
+        }else if (type instanceof VarcharType) {
+            if (value == null) {
+                return FilterApi.gtEq(FilterApi.binaryColumn(name), null);
+            }
+            if (!(value instanceof Slice)) {
+                throw new RuntimeException("except filter value type is string, but it is " + value.getClass());
+            }
+
+            return FilterApi.gtEq(
+                    FilterApi.binaryColumn(name),
+                    Binary.fromString(((Slice) value).toStringUtf8()));
         }
         return null;
     }
@@ -417,6 +438,17 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
                 throw new RuntimeException("time/timestamptype except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.lt(FilterApi.longColumn(name), (Long) value * 1000);
+        }else if (type instanceof VarcharType) {
+            if (value == null) {
+                return FilterApi.lt(FilterApi.binaryColumn(name), null);
+            }
+            if (!(value instanceof Slice)) {
+                throw new RuntimeException("except filter value type is string, but it is " + value.getClass());
+            }
+
+            return FilterApi.lt(
+                    FilterApi.binaryColumn(name),
+                    Binary.fromString(((Slice) value).toStringUtf8()));
         }
         return null;
     }
@@ -456,6 +488,17 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
                 throw new RuntimeException("time/timestamptype except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.ltEq(FilterApi.longColumn(name), (Long) value * 1000);
+        } else if (type instanceof VarcharType) {
+            if (value == null) {
+                return FilterApi.ltEq(FilterApi.binaryColumn(name), null);
+            }
+            if (!(value instanceof Slice)) {
+                throw new RuntimeException("except filter value type is string, but it is " + value.getClass());
+            }
+
+            return FilterApi.ltEq(
+                    FilterApi.binaryColumn(name),
+                    Binary.fromString(((Slice) value).toStringUtf8()));
         }
         return null;
     }

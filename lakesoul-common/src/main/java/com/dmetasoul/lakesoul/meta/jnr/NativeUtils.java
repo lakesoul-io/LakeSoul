@@ -54,6 +54,7 @@ public class NativeUtils {
         ListPartitionVersionByTableIdAndPartitionDescAndVersionRange(DAO_TYPE_QUERY_LIST_OFFSET + 7, 4),
         ListPartitionVersionByTableIdAndPartitionDescAndTimestampRange(DAO_TYPE_QUERY_LIST_OFFSET + 8, 4),
         ListCommitOpsBetweenVersions(DAO_TYPE_QUERY_LIST_OFFSET + 9, 4),
+        ListPartitionByTableIdAndFilterCondition(DAO_TYPE_QUERY_LIST_OFFSET + 16, 2),
 
         // Query DataCommitInfo List
         ListDataCommitInfoByTableIdAndPartitionDescAndCommitList(DAO_TYPE_QUERY_LIST_OFFSET + 10, 3),
