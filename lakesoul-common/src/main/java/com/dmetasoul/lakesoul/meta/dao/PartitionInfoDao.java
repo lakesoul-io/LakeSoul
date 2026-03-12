@@ -6,11 +6,14 @@ package com.dmetasoul.lakesoul.meta.dao;
 
 import com.dmetasoul.lakesoul.meta.DBConnector;
 import com.dmetasoul.lakesoul.meta.DBUtil;
-import com.dmetasoul.lakesoul.meta.entity.*;
+import com.dmetasoul.lakesoul.meta.entity.CommitOp;
+import com.dmetasoul.lakesoul.meta.entity.JniWrapper;
+import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
 import com.dmetasoul.lakesoul.meta.jnr.NativeMetadataJavaClient;
 import com.dmetasoul.lakesoul.meta.jnr.NativeUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 
 import java.sql.*;
 import java.util.*;
@@ -543,6 +546,13 @@ public class PartitionInfoDao {
     }
 
     public List<PartitionInfo> getAllPartitionInfoByTableIdAndPartialFilter(String tableId, String filter) {
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
+            JniWrapper jniWrapper = NativeMetadataJavaClient.query(
+                    NativeUtils.CodedDaoType.ListPartitionByTableIdAndFilterCondition,
+                    Arrays.asList(tableId, filter));
+            if (jniWrapper == null) return null;
+            return jniWrapper.getPartitionInfoList();
+        }
         String sql = String.format(
                 "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.timestamp, m.expression, m.domain\n" +
                         "            from (\n" +

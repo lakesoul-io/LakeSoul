@@ -7,6 +7,8 @@
 #[macro_use]
 extern crate tracing;
 use std::io::ErrorKind;
+use std::os::linux::raw::stat;
+use std::path;
 use std::str::FromStr;
 
 use chrono::NaiveDate;
@@ -189,6 +191,8 @@ pub enum DaoType {
     ListNamespacesByDomain = DAO_TYPE_QUERY_LIST_OFFSET + 14,
     /// The coded type for the Data Access Object for list table name by domain.
     ListTableNamesByDomain = DAO_TYPE_QUERY_LIST_OFFSET + 15,
+
+    ListPartitionByTableIdAndFilterCondition = DAO_TYPE_QUERY_LIST_OFFSET + 16,
 
     // ==== Coded Insert One ====
     /// The coded type for the Data Access Object for insert namespace.
@@ -410,7 +414,17 @@ async fn get_prepared_statement<'a>(
             "select file_path, table_path, partition_desc, timestamp, t_date
             from discard_compressed_file_info
             where table_path = $1::TEXT and partition_desc = $2::TEXT and timestamp < $3::BIGINT",
-
+        DaoType::ListPartitionByTableIdAndFilterCondition =>
+            "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.timestamp, m.expression, m.domain
+            from (
+                select table_id,partition_desc,max(version)
+                from partition_info
+                where table_id = $1::TEXT
+                and to_tsvector('english', partition_desc) @@ to_tsquery($2::TEXT)
+                group by table_id, partition_desc
+            ) t
+            left join partition_info m
+            on t.table_id = m.table_id and t.partition_desc = m.partition_desc and t.max = m.version",
         // Select Table Domain by id
         DaoType::SelectTableDomainById =>
             "select table_name, table_id, table_namespace, domain
@@ -808,6 +822,17 @@ pub async fn execute_query(
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
+        DaoType::ListPartitionByTableIdAndFilterCondition
+            if params.len() == 2 =>
+        {
+            let result = conn.query(&statement, &[&params[0], &params[1]]).await;
+            match result {
+                Ok(rows) => {
+                    rows
+                }
+                Err(e) => return Err(LakeSoulMetaDataError::from(e)),
+            }
+        }
         DaoType::ListDataCommitInfoByTableIdAndPartitionDescAndCommitList
             if params.len() == 3 =>
         {
@@ -878,7 +903,8 @@ pub async fn execute_query(
         | DaoType::SelectOnePartitionVersionByTableIdAndDesc
         | DaoType::ListPartitionByTableIdAndDesc
         | DaoType::ListPartitionVersionByTableIdAndPartitionDescAndTimestampRange
-        | DaoType::ListPartitionVersionByTableIdAndPartitionDescAndVersionRange => {
+        | DaoType::ListPartitionVersionByTableIdAndPartitionDescAndVersionRange
+        | DaoType::ListPartitionByTableIdAndFilterCondition => {
             ResultType::PartitionInfo
         }
 

@@ -4,25 +4,47 @@
 
 package com.facebook.presto.lakesoul.handle;
 
-import com.alibaba.fastjson.JSONObject;
-import com.facebook.presto.common.predicate.Domain;
-import com.facebook.presto.common.predicate.Range;
-import com.facebook.presto.common.predicate.TupleDomain;
-import com.facebook.presto.common.type.*;
-import com.facebook.presto.spi.ColumnHandle;
-import com.facebook.presto.spi.ConnectorTableLayoutHandle;
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonProperty;
-import io.airlift.slice.Slice;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import static java.util.Objects.requireNonNull;
+import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
+
 import org.apache.parquet.filter2.predicate.FilterApi;
 import org.apache.parquet.filter2.predicate.FilterPredicate;
 import org.apache.parquet.io.api.Binary;
 import org.apache.spark.sql.types.LongType;
 
-import java.util.*;
-import java.util.stream.Collectors;
+import com.alibaba.fastjson.JSONObject;
+import com.facebook.presto.common.predicate.Domain;
+import com.facebook.presto.common.predicate.Range;
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.type.BigintType;
+import com.facebook.presto.common.type.BooleanType;
+import com.facebook.presto.common.type.DateType;
+import com.facebook.presto.common.type.DecimalType;
+import com.facebook.presto.common.type.DoubleType;
+import com.facebook.presto.common.type.IntegerType;
+import com.facebook.presto.common.type.RealType;
+import com.facebook.presto.common.type.SmallintType;
+import com.facebook.presto.common.type.TimeType;
+import com.facebook.presto.common.type.TimeWithTimeZoneType;
+import com.facebook.presto.common.type.TimestampType;
+import com.facebook.presto.common.type.TimestampWithTimeZoneType;
+import com.facebook.presto.common.type.TinyintType;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.VarcharType;
+import com.facebook.presto.spi.ColumnHandle;
+import com.facebook.presto.spi.ConnectorTableLayoutHandle;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
-import static java.util.Objects.requireNonNull;
+import io.airlift.slice.Slice;
 
 public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
     private final LakeSoulTableHandle tableHandle;
@@ -152,20 +174,29 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
             if (range.isSingleValue()) {
                 singleValues.add(range.getSingleValue());
             } else {
-                FilterPredicate rangeConjuncts = null;
+                FilterPredicate lowerBound = null;
+                FilterPredicate upperBound = null;
                 if (!range.isLowUnbounded()) {
                     if (range.isLowInclusive()) {
-                        rangeConjuncts = gte(type, name, range.getLowBoundedValue());
+                        lowerBound = gte(type, name, range.getLowBoundedValue());
                     } else {
-                        rangeConjuncts = gt(type, name, range.getLowBoundedValue());
+                        lowerBound = gt(type, name, range.getLowBoundedValue());
                     }
                 }
                 if (!range.isHighUnbounded()) {
                     if (range.isHighInclusive()) {
-                        rangeConjuncts = lte(type, name, range.getHighBoundedValue());
+                        upperBound = lte(type, name, range.getHighBoundedValue());
                     } else {
-                        rangeConjuncts = lt(type, name, range.getHighBoundedValue());
+                        upperBound = lt(type, name, range.getHighBoundedValue());
                     }
+                }
+                FilterPredicate rangeConjuncts = null;
+                if (lowerBound != null && upperBound != null) {
+                    rangeConjuncts = FilterApi.and(lowerBound, upperBound);
+                }else if(lowerBound != null) {
+                    rangeConjuncts = lowerBound;
+                }else if(upperBound != null) {
+                    rangeConjuncts = upperBound;
                 }
                 // If rangeConjuncts is null, then the range was ALL, which should already have been checked for
                 if (rangeConjuncts != null) {
@@ -184,7 +215,6 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
         if (domain.isNullAllowed()) {
             disjuncts.add(eq(type, name, null));
         }
-
         Optional<FilterPredicate> predicate = disjuncts.stream().filter(Objects::nonNull).reduce(FilterApi::or);
         return predicate.orElse(null);
 
@@ -308,6 +338,17 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
                 throw new RuntimeException("time/timestamptype except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.gt(FilterApi.longColumn(name), (Long) value * 1000);
+        }else if (type instanceof VarcharType) {
+            if (value == null) {
+                return FilterApi.gt(FilterApi.binaryColumn(name), null);
+            }
+            if (!(value instanceof Slice)) {
+                throw new RuntimeException("except filter value type is string, but it is " + value.getClass());
+            }
+
+            return FilterApi.gt(
+                    FilterApi.binaryColumn(name),
+                    Binary.fromString(((Slice) value).toStringUtf8()));
         }
         return null;
     }
@@ -347,6 +388,17 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
                 throw new RuntimeException("time/timestamptype except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.gtEq(FilterApi.longColumn(name), (Long) value * 1000);
+        }else if (type instanceof VarcharType) {
+            if (value == null) {
+                return FilterApi.gtEq(FilterApi.binaryColumn(name), null);
+            }
+            if (!(value instanceof Slice)) {
+                throw new RuntimeException("except filter value type is string, but it is " + value.getClass());
+            }
+
+            return FilterApi.gtEq(
+                    FilterApi.binaryColumn(name),
+                    Binary.fromString(((Slice) value).toStringUtf8()));
         }
         return null;
     }
@@ -386,6 +438,17 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
                 throw new RuntimeException("time/timestamptype except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.lt(FilterApi.longColumn(name), (Long) value * 1000);
+        }else if (type instanceof VarcharType) {
+            if (value == null) {
+                return FilterApi.lt(FilterApi.binaryColumn(name), null);
+            }
+            if (!(value instanceof Slice)) {
+                throw new RuntimeException("except filter value type is string, but it is " + value.getClass());
+            }
+
+            return FilterApi.lt(
+                    FilterApi.binaryColumn(name),
+                    Binary.fromString(((Slice) value).toStringUtf8()));
         }
         return null;
     }
@@ -425,6 +488,17 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
                 throw new RuntimeException("time/timestamptype except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.ltEq(FilterApi.longColumn(name), (Long) value * 1000);
+        } else if (type instanceof VarcharType) {
+            if (value == null) {
+                return FilterApi.ltEq(FilterApi.binaryColumn(name), null);
+            }
+            if (!(value instanceof Slice)) {
+                throw new RuntimeException("except filter value type is string, but it is " + value.getClass());
+            }
+
+            return FilterApi.ltEq(
+                    FilterApi.binaryColumn(name),
+                    Binary.fromString(((Slice) value).toStringUtf8()));
         }
         return null;
     }
