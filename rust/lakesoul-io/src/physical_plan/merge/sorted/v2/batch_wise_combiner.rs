@@ -6,13 +6,13 @@
 //! optimizes the sorted merge by checking range overlaps using batch min/max values
 //! before doing row-level comparisons.
 
-use crate::Result;
 use crate::physical_plan::merge::sorted::cursor::CursorValues;
 use crate::physical_plan::merge::sorted::sorted_stream_merger::CursorStream;
 use crate::physical_plan::merge::sorted::v2::batch_range::BatchRange;
 use crate::physical_plan::merge::sorted::v2::binary_merger::BinaryMerger;
 use crate::physical_plan::merge::sorted::v2::deduplicate::DeduplicateStream;
 use crate::physical_plan::merge::sorted::v2::loser_tree_merger::LoserTreeRangeMerge;
+use crate::Result;
 use arrow::datatypes::SchemaRef;
 use arrow::record_batch::RecordBatch;
 use arrow_cast::pretty::pretty_format_batches;
@@ -23,14 +23,14 @@ use futures::{Stream, StreamExt};
 use itertools::Itertools;
 use nohash::BuildNoHashHasher;
 use rootcause::compat::boxed_error::IntoBoxedError;
-use rootcause::{Report, report};
+use rootcause::{report, Report};
 use std::collections::HashMap;
 use std::future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc::Sender;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{mpsc, Mutex};
 use tokio_stream::wrappers::ReceiverStream;
 
 pub(crate) type CursorStreamWithId<C> =
@@ -72,6 +72,7 @@ impl<C: CursorValues + Send + Sync + 'static> BatchWiseRangeCombiner<C> {
         streams_num: usize,
         target_batch_size: usize,
     ) -> Result<Self> {
+        info!("Create BatchWiseRangeCombiner with {} streams, target_batch_size: {}", streams_num, target_batch_size);
         let streams: Vec<CursorStreamWithId<C>> = streams
             .into_iter()
             .enumerate()
@@ -118,11 +119,11 @@ impl<C: CursorValues + Send + Sync + 'static> BatchWiseRangeCombiner<C> {
         if !self.streams[idx].is_terminated() {
             if let Some(batch) = self.streams[idx].next().await {
                 let batch = batch?;
-                debug!(
-                    "Add range {}: \n{}",
-                    self.ranges_counter,
-                    pretty_format_batches(&[batch.1.clone()])?
-                );
+                // println!(
+                //     "Add range {}: \n{}",
+                //     self.ranges_counter,
+                //     pretty_format_batches(&[batch.1.clone()])?
+                // );
                 if batch.1.num_rows() > 0 {
                     let end_row_for_merge = batch.1.num_rows() - 1;
                     self.ranges.insert(
@@ -166,10 +167,10 @@ impl<C: CursorValues + Send + Sync + 'static> BatchWiseRangeCombiner<C> {
         if self.ranges.len() == 1 {
             let range = self.ranges.values_mut().next().unwrap();
             let batch = range.slice_remaining_and_advance();
-            debug!(
-                "Sending 1 batch\n{}",
-                pretty_format_batches(&[batch.clone()])?
-            );
+                // println!(
+                //     "Sending 1 batch\n{}",
+                //     pretty_format_batches(&[batch.clone()])?
+                // );
             tx.send(Ok(batch)).await?;
             return Ok(tx);
         }
@@ -207,17 +208,17 @@ impl<C: CursorValues + Send + Sync + 'static> BatchWiseRangeCombiner<C> {
             .get(&r_star_range_idx)
             .unwrap()
             .end_row_for_merge();
-        debug!(
-            "r_star_range: \n{}, idx: {}, end row {}",
-            pretty_format_batches(&[self
-                .ranges
-                .get(&r_star_range_idx)
-                .unwrap()
-                .batch()
-                .clone()])?,
-            r_star_range_idx,
-            r_star_end
-        );
+                // println!(
+                //     "r_star_range: \n{}, idx: {}, end row {}",
+                //     pretty_format_batches(&[self
+                //         .ranges
+                //         .get(&r_star_range_idx)
+                //         .unwrap()
+                //         .batch()
+                //         .clone()])?,
+                //     r_star_range_idx,
+                //     r_star_end
+                // );
         // Step 2.
         let mut overlap_ranges = Vec::with_capacity(self.ranges.len());
         for (batch_idx, range) in self.ranges.iter() {
@@ -235,46 +236,11 @@ impl<C: CursorValues + Send + Sync + 'static> BatchWiseRangeCombiner<C> {
         if overlap_ranges.len() == 1 {
             let range = self.ranges.get_mut(&overlap_ranges.pop().unwrap()).unwrap();
             let batch = range.slice_remaining_and_advance();
-            debug!(
-                "Sending 1 batch\n{}",
-                pretty_format_batches(&[batch.clone()])?
-            );
+                // println!(
+                //     "Sending 1 batch\n{}",
+                //     pretty_format_batches(&[batch.clone()])?
+                // );
             tx.send(Ok(batch)).await?;
-            return Ok(tx);
-        }
-        // Fast path 3: if overlap ranges contains only two ranges, merge them directly
-        if overlap_ranges.len() == 2 {
-            let new_overlap_ranges = self
-                .ranges
-                .iter_mut()
-                .filter(|(batch_idx, _)| overlap_ranges.contains(batch_idx))
-                .map(|(_, range)| range)
-                .sorted_by(|a, b| {
-                    a.stream_idx()
-                        .cmp(&b.stream_idx())
-                        .then_with(|| a.batch_idx().cmp(&b.batch_idx()))
-                })
-                .collect::<Vec<_>>();
-            debug!(
-                "Merging two ranges\n{:?}",
-                new_overlap_ranges
-                    .iter()
-                    .map(|r| (
-                        format!(
-                            "\n{}",
-                            pretty_format_batches(&[r.batch().clone()]).unwrap()
-                        ),
-                        r.begin_row(),
-                        r.end_row_for_merge()
-                    ))
-                    .collect::<Vec<_>>()
-            );
-            let mut merger = BinaryMerger::new(
-                new_overlap_ranges,
-                self.target_batch_size,
-                self.schema.clone(),
-            );
-            tx = merger.merge(tx).await?;
             return Ok(tx);
         }
         // Step 3. Find the minimum value of r.max in `overlap_ranges`, as `window_end`
@@ -319,17 +285,17 @@ impl<C: CursorValues + Send + Sync + 'static> BatchWiseRangeCombiner<C> {
                         .end_row_for_merge(),
                 )
             {
-                debug!(
-                    "Updating range \n{}'s end_row_for_merge to {}",
-                    pretty_format_batches(&[self
-                        .ranges
-                        .get(&range)
-                        .unwrap()
-                        .batch()
-                        .clone()])
-                    .unwrap(),
-                    end_row_for_merge
-                );
+                // println!(
+                //     "Updating range \n{}'s end_row_for_merge to {}",
+                //     pretty_format_batches(&[self
+                //         .ranges
+                //         .get(&range)
+                //         .unwrap()
+                //         .batch()
+                //         .clone()])
+                //     .unwrap(),
+                //     end_row_for_merge
+                // );
                 self.ranges
                     .get_mut(&range)
                     .unwrap()
@@ -355,43 +321,80 @@ impl<C: CursorValues + Send + Sync + 'static> BatchWiseRangeCombiner<C> {
                     .then_with(|| a.batch_idx().cmp(&b.batch_idx()))
             })
             .collect();
-        debug!(
-            "Merging multiple ranges {:?}",
-            new_overlap_ranges
-                .iter()
-                .map(|r| (
-                    format!("\n{}", pretty_format_batches(&[r.batch().clone()]).unwrap()),
-                    r.begin_row(),
-                    r.end_row_for_merge()
-                ))
-                .collect::<Vec<_>>()
-        );
-        let mut merger = LoserTreeRangeMerge::new(
-            self.schema.clone(),
-            new_overlap_ranges,
-            self.target_batch_size,
-        );
-        tx = merger.merge(tx).await?;
+                // println!(
+                //     "Merging multiple ranges {:?}",
+                //     new_overlap_ranges
+                //         .iter()
+                //         .map(|r| (
+                //             format!("\n{}", pretty_format_batches(&[r.batch().clone()]).unwrap()),
+                //             r.begin_row(),
+                //             r.end_row_for_merge()
+                //         ))
+        //         .collect::<Vec<_>>()
+        // );
+        // Fast path 3: if overlap ranges contains only two ranges, merge them directly
+        if overlap_ranges.len() == 2 {
+            let new_overlap_ranges = self
+                .ranges
+                .iter_mut()
+                .filter(|(batch_idx, _)| overlap_ranges.contains(batch_idx))
+                .map(|(_, range)| range)
+                .sorted_by(|a, b| {
+                    a.stream_idx()
+                        .cmp(&b.stream_idx())
+                        .then_with(|| a.batch_idx().cmp(&b.batch_idx()))
+                })
+                .collect::<Vec<_>>();
+            // println!(
+            //     "Merging two ranges\n{:?}",
+            //     new_overlap_ranges
+            //         .iter()
+            //         .map(|r| (
+            //             format!(
+            //                 "\n{}",
+            //                 pretty_format_batches(&[r.batch().clone()]).unwrap()
+            //             ),
+            //             r.begin_row(),
+            //             r.end_row_for_merge()
+            //         ))
+            //         .collect::<Vec<_>>()
+            // );
+            let mut merger = BinaryMerger::new(
+                new_overlap_ranges,
+                self.target_batch_size,
+                self.schema.clone(),
+            );
+            tx = merger.merge(tx).await?;
+            return Ok(tx);
+        } else {
+            let mut merger = LoserTreeRangeMerge::new(
+                self.schema.clone(),
+                new_overlap_ranges,
+                self.target_batch_size,
+            );
+            tx = merger.merge(tx).await?;
+        }
         Ok(tx)
     }
 
-    pub async fn build_merged_stream(
+    pub fn build_merged_stream(
         this: Arc<Mutex<Self>>,
     ) -> Result<SendableRecordBatchStream> {
         let (tx, rx) = mpsc::channel(10);
-        let schema;
-        {
-            // initialize ranges
-            let mut self_ref = this.lock().await;
-            schema = self_ref.schema.clone();
-            for i in 0..self_ref.streams.len() {
-                self_ref.pull_from_stream(i).await?;
-            }
-        }
+        let self_cloned = this.clone();
+        let schema = futures::executor::block_on(async move
+            {
+                // initialize ranges
+                let self_ref = self_cloned.lock().await;
+                self_ref.schema.clone()
+            });
         let self_cloned = this.clone();
         // ignore JoinHandle, as when caller needs to cancel, it could just drop the receiver
         tokio::spawn(async move {
             let mut self_ref = self_cloned.lock().await;
+            for i in 0..self_ref.streams.len() {
+                self_ref.pull_from_stream(i).await?;
+            }
             let mut tx = tx;
             while !self_ref.ranges.is_empty() && !tx.is_closed() {
                 tx = self_ref.merge_next_batch(tx).await?;
@@ -456,32 +459,29 @@ impl RecordBatchStream for MergedStream {
 mod tests {
     use std::sync::Arc;
 
-    use crate::Result;
     use crate::helpers::InMemGenerator;
     use crate::physical_plan::merge::sorted::cursor::RowValues;
     use crate::physical_plan::merge::sorted::sorted_stream_merger::CursorStream;
     use crate::physical_plan::merge::sorted::v2::batch_wise_combiner::BatchWiseRangeCombiner;
     use crate::stream::RowCursorStream;
+    use crate::Result;
     use arrow::array::ArrayRef;
-    use arrow::array::{Int32Array, StringArray};
-    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::array::Int32Array;
     use arrow::record_batch::RecordBatch;
-    use arrow_array::Float64Array;
-    use arrow_cast::pretty::pretty_format_batches;
     use arrow_schema::SortOptions;
     use datafusion::assert_batches_eq;
     use datafusion::execution::context::TaskContext;
     use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryConsumer};
     use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
-    use datafusion::physical_plan::ExecutionPlan;
     use datafusion::physical_plan::memory::LazyMemoryExec;
+    use datafusion::physical_plan::ExecutionPlan;
     use datafusion::prelude::SessionContext;
     use datafusion_common::DataFusionError;
     use datafusion_execution::memory_pool::MemoryReservation;
     use datafusion_physical_expr::expressions::col;
+    use futures::TryStreamExt;
     use parking_lot::lock_api::RwLock;
     use tokio::sync::Mutex;
-    use tokio_stream::StreamExt;
 
     fn create_batch_two_col_i32(
         name1: &str,
@@ -588,13 +588,25 @@ mod tests {
             3,
             10,
         )?));
-        let mut stream = BatchWiseRangeCombiner::build_merged_stream(combiner).await?;
-        while let Some(batch) = stream.next().await {
-            println!(
-                "result batch: \n{}",
-                pretty_format_batches(&[batch?.clone()])?
-            );
-        }
+        let stream = BatchWiseRangeCombiner::build_merged_stream(combiner)?;
+        let batches: Vec<RecordBatch> = stream.try_collect().await?;
+        assert_batches_eq!(
+            &[
+                "+----+-----+",
+                "| a  | b   |",
+                "+----+-----+",
+                "| 1  | 102 |",
+                "| 3  | 201 |",
+                "| 4  | 203 |",
+                "| 5  | 302 |",
+                "| 6  | 111 |",
+                "| 7  | 304 |",
+                "| 9  | 305 |",
+                "| 10 | 306 |",
+                "+----+-----+",
+            ],
+            &batches
+        );
         Ok(())
     }
 }

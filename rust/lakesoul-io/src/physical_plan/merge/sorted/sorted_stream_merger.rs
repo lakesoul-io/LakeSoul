@@ -29,11 +29,13 @@ use datafusion_common::DataFusionError;
 use futures::stream::{Fuse, FusedStream};
 use futures::{Stream, StreamExt};
 use rootcause::compat::boxed_error::IntoBoxedError;
+use tokio::sync::Mutex;
 
 use super::combiner::*;
 use super::cursor::{ArrayValues, CursorArray, CursorValues, RowValues};
 use super::merge_operator::MergeOperator;
 use super::sort_key_range::SortKeyBatchRange;
+use super::v2::batch_wise_combiner::BatchWiseRangeCombiner;
 use crate::Result;
 use crate::stream::{
     FieldCursorStream, RowCursorStream, default_column::DefaultColumnStream,
@@ -194,6 +196,7 @@ macro_rules! create_merger {
                     ),
                 ));
             } else {
+                /*
                 let combiner = UseLastRangeCombiner::<$t, false>::new(
                     $physical_schema.clone(),
                     streams_num,
@@ -208,6 +211,22 @@ macro_rules! create_merger {
                 return Ok(Box::pin(
                     DefaultColumnStream::new_from_streams_with_default(
                         vec![Box::pin(merge_stream)],
+                        $merged_schema,
+                        $default_column_value,
+                    ),
+                ));
+                */
+                println!("using new batch wise combiner");
+                let combiner = Arc::new(Mutex::new(BatchWiseRangeCombiner::new(
+                    $streams.into_iter().map(|s| (s, true)).collect(),
+                    $physical_schema,
+                    streams_num,
+                    $batch_size,
+                )?));
+                let merge_stream = BatchWiseRangeCombiner::build_merged_stream(combiner)?;
+                return Ok(Box::pin(
+                    DefaultColumnStream::new_from_streams_with_default(
+                        vec![merge_stream],
                         $merged_schema,
                         $default_column_value,
                     ),
@@ -519,6 +538,7 @@ mod tests {
     use arrow::record_batch::RecordBatch;
     use arrow::util::pretty::print_batches;
     use arrow_array::Float64Array;
+    use arrow_cast::pretty::pretty_format_batches;
     use datafusion::assert_batches_eq;
     use datafusion::execution::context::TaskContext;
     use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryConsumer};
@@ -1157,19 +1177,6 @@ mod tests {
             .with_schema(Arc::new(schema))
             .with_thread_num(2)
             .with_batch_size(256)
-            .with_max_row_group_size(250000)
-            .with_object_store_option(
-                "fs.s3a.access.key".to_string(),
-                "minioadmin1".to_string(),
-            )
-            .with_object_store_option(
-                "fs.s3a.secret.key".to_string(),
-                "minioadmin1".to_string(),
-            )
-            .with_object_store_option(
-                "fs.s3a.endpoint".to_string(),
-                "http://localhost:9000".to_string(),
-            )
             .build();
         let mut reader = LakeSoulReader::new(conf).unwrap();
         reader.start().await.unwrap();
@@ -1177,6 +1184,10 @@ mod tests {
         while let Some(rb) = reader.next_rb().await {
             let rb = rb.unwrap();
             len += rb.num_rows();
+            // println!("{}", pretty_format_batches(&[rb]).unwrap());
+            // if len >= 300 {
+            //     break;
+            // }
         }
         println!("total rows: {}", len);
     }
