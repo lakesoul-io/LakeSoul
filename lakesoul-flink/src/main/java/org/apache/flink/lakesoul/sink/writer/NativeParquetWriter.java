@@ -96,9 +96,6 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
             nativeWriter.setOption(STABLE_SORT, "true");
         }
 
-        if (conf.getBoolean(LakeSoulSinkOptions.isMultiTableSource)) {
-            nativeWriter.setAuxSortColumns(Collections.singletonList(SORT_FIELD));
-        }
         nativeWriter.setHashBucketNum(conf.getInteger(LakeSoulSinkOptions.HASH_BUCKET_NUM));
 
         nativeWriter.setRowGroupRowNumber(this.maxRowGroupRows);

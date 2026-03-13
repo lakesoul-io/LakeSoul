@@ -76,7 +76,7 @@ public class LakeSoulArrowMultiTableSinkWriter extends AbstractLakeSoulMultiTabl
 
         final LakeSoulArrowWriterBucket bucket = getOrCreateBucketForTableId(identity);
         if (conf.get(DYNAMIC_BUCKETING)) {
-            bucket.write(element, processingTimeService.getCurrentProcessingTime(), Long.MAX_VALUE);
+            bucket.write(element, processingTimeService.getCurrentProcessingTime());
 
         } else {
             throw new RuntimeException("Static Bucketing Not Support");

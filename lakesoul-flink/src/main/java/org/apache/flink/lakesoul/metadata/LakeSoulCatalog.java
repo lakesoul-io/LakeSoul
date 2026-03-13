@@ -501,7 +501,7 @@ public class LakeSoulCatalog implements Catalog {
     }
 
     @Override
-    public void dropPartition(ObjectPath tablePath, CatalogPartitionSpec catalogPartitionSpec, boolean ignoreIfExists)
+    public void dropPartition(ObjectPath tablePath, CatalogPartitionSpec catalogPartitionSpec, boolean ignoreIfNotExists)
             throws CatalogException {
 
         TableInfo tableInfo =
@@ -510,6 +510,13 @@ public class LakeSoulCatalog implements Catalog {
             throw new CatalogException(tablePath + " does not exist");
         }
         String partitionDesc = DBUtil.formatPartitionDesc(catalogPartitionSpec.getPartitionSpec());
+        List<PartitionInfo> info = dbManager.getOnePartition(tableInfo.getTableId(), partitionDesc);
+        if (info == null || info.isEmpty()) {
+            if (!ignoreIfNotExists) {
+                throw new CatalogException("Partition " + partitionDesc + " does not exist in table " + tablePath);
+            }
+            return;
+        }
         List<String> deleteFilePath = dbManager.deleteMetaPartitionInfo(tableInfo.getTableId(), partitionDesc);
         Path partitionDir = null;
         for (String filePath : deleteFilePath) {

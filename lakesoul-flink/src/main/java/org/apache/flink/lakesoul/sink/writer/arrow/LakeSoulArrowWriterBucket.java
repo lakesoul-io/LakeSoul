@@ -48,8 +48,6 @@ public class LakeSoulArrowWriterBucket {
 
     private final String uniqueId;
 
-    private long tsMs;
-
     private final Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFilesMap =
             new HashMap<>();
 
@@ -142,14 +140,12 @@ public class LakeSoulArrowWriterBucket {
         LOG.info("Merging buckets for bucket id={}", getBucketId());
     }
 
-    void write(LakeSoulArrowWrapper element, long currentTime, long tsMs) throws IOException {
+    void write(LakeSoulArrowWrapper element, long currentTime) throws IOException {
         if (inProgressPartWriter == null || rollingPolicy.shouldRollOnEvent(inProgressPartWriter, element)) {
             LOG.info(
-                    "Opening new part file for bucket id={} at {}.",
-                    getBucketId(),
-                    tsMs);
+                    "Opening new part file for bucket id={}.",
+                    getBucketId());
             inProgressPartWriter = rollPartFile(currentTime);
-            this.tsMs = tsMs;
         }
 
         inProgressPartWriter.write(element, currentTime);
@@ -180,7 +176,6 @@ public class LakeSoulArrowWriterBucket {
                     new HashMap<>(pendingFilesMap),
                     time,
                     UUID.randomUUID().toString(),
-                    tsMs,
                     dmlType,
                     sourcePartitionInfo
             ));
