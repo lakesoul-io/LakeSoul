@@ -8,6 +8,8 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.connector.file.table.PartitionFetcher;
 import org.apache.flink.connector.file.table.PartitionReader;
+import org.apache.flink.lakesoul.types.TableId;
+import org.apache.flink.runtime.execution.SuppressRestartsException;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.functions.FunctionContext;
@@ -33,7 +35,8 @@ public class LakeSoulTableLookupFunction<P> extends TableFunction<RowData> {
     // interval between retries
     private static final Duration RETRY_INTERVAL = Duration.ofSeconds(5);
 
-    private static final long CACHE_MAX_SIZE = 10000L;
+    private final long cacheMaxSize;
+    private final TableId tableId;
 
     private final TypeSerializer<RowData> serializer;
 
@@ -53,14 +56,16 @@ public class LakeSoulTableLookupFunction<P> extends TableFunction<RowData> {
     // timestamp when cache expires
     private transient long nextLoadTime;
 
-
     public LakeSoulTableLookupFunction(
+            TableId tableId,
             PartitionFetcher<P> partitionFetcher,
             PartitionFetcher.Context<P> fetcherContext,
             PartitionReader<P, RowData> partitionReader,
             RowType rowType,
             int[] lookupKeys,
-            Duration reloadInterval) {
+            Duration reloadInterval,
+            long cacheMaxSize) {
+        this.tableId = tableId;
         this.rowType = rowType;
         this.reloadInterval = reloadInterval;
         this.fetcherContext = fetcherContext;
@@ -72,8 +77,8 @@ public class LakeSoulTableLookupFunction<P> extends TableFunction<RowData> {
                     RowData.createFieldGetter(rowType.getTypeAt(lookupKeys[i]), lookupKeys[i]);
         }
         this.serializer = InternalSerializers.create(rowType);
+        this.cacheMaxSize = cacheMaxSize;
     }
-
 
     @Override
     public void open(FunctionContext context) throws Exception {
@@ -100,10 +105,13 @@ public class LakeSoulTableLookupFunction<P> extends TableFunction<RowData> {
         }
         if (nextLoadTime > 0) {
             LOG.info(
-                    "Lookup join cache has expired after {} minute(s), reloading",
-                    reloadInterval.toMinutes());
+                    "Lookup join cache for {} has expired after {}, reloading, cache max size {}",
+                    tableId,
+                    reloadInterval,
+                    cacheMaxSize);
         } else {
-            LOG.info("Populating lookup join cache");
+            LOG.info("Populating lookup join cache for {}, cache max size {}, interval {}",
+                    tableId,  cacheMaxSize, reloadInterval);
         }
         int numRetry = 0;
         // load data from lakesoul to cache
@@ -112,7 +120,6 @@ public class LakeSoulTableLookupFunction<P> extends TableFunction<RowData> {
             try {
                 long count = 0;
                 GenericRowData reuse = new GenericRowData(rowType.getFieldCount());
-//                List<LakeSoulPartition> partitionList = (List<LakeSoulPartition>) partitionFetcher.fetch(fetcherContext);
                 partitionReader.
                         open(partitionFetcher.fetch(fetcherContext));
                 RowData row;
@@ -123,38 +130,34 @@ public class LakeSoulTableLookupFunction<P> extends TableFunction<RowData> {
                     List<RowData> rows = cache.computeIfAbsent(key, k -> new ArrayList<>());
                     rows.add(rowData);
 
-                    if (cache.size() >= CACHE_MAX_SIZE) {
-                        LOG.warn(
-                                String.format(
-                                        "Lookup Cache has cached %d records with %d rows, other rows will not be cached",
-                                        cache.size(),
-                                        count)
-                                );
-                        break;
+                    if (cache.size() >= this.cacheMaxSize) {
+                        String err = String.format(
+                                "Lookup Cache for %s has too many rows than cache limit %s",
+                                tableId.toString(),
+                                cacheMaxSize);
+                        LOG.error(err);
+                        throw new SuppressRestartsException(new IllegalStateException(err));
                     }
                 }
                 partitionReader.close();
                 nextLoadTime = System.currentTimeMillis() + reloadInterval.toMillis();
-                LOG.info("Loaded {} row(s) into lookup join cache", count);
+                LOG.info("Loaded {} row(s) into lookup join cache for {}, next load time {}",
+                        count, tableId, nextLoadTime);
                 return;
             } catch (Exception e) {
                 if (numRetry >= MAX_RETRIES) {
-                    throw new FlinkRuntimeException(
+                    throw new SuppressRestartsException(new FlinkRuntimeException(
                             String.format(
                                     "Failed to load table into cache after %d retries", numRetry),
-                            e);
+                            e));
                 }
                 numRetry++;
                 long toSleep = numRetry * RETRY_INTERVAL.toMillis();
-                LOG.warn(
-                        String.format(
-                                "Failed to load table into cache, will retry in %d seconds",
-                                toSleep / 1000),
-                        e);
+                LOG.warn("Failed to load table {} into cache, will retry in {} seconds", tableId, toSleep / 1000, e);
                 try {
                     Thread.sleep(toSleep);
                 } catch (InterruptedException ex) {
-                    LOG.warn("Interrupted while waiting to retry failed cache load, aborting");
+                    LOG.warn("Interrupted while waiting to retry failed cache load for {}, aborting", tableId, ex);
                     throw new FlinkRuntimeException(ex);
                 }
             }

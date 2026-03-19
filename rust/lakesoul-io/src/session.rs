@@ -206,6 +206,7 @@ struct IOSessionInner {
 
 impl LakeSoulIOSession {
     pub fn try_new(mut io_config: LakeSoulIOConfig) -> Result<Self, Report> {
+        info!("Initializing from io config: {:?}", io_config);
         let mut sess_conf = SessionConfig::default()
             .with_batch_size(io_config.batch_size)
             .with_parquet_pruning(true)
