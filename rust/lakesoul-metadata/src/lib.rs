@@ -7,8 +7,6 @@
 #[macro_use]
 extern crate tracing;
 use std::io::ErrorKind;
-use std::os::linux::raw::stat;
-use std::path;
 use std::str::FromStr;
 
 use chrono::NaiveDate;
@@ -823,14 +821,10 @@ pub async fn execute_query(
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
-        DaoType::ListPartitionByTableIdAndFilterCondition
-            if params.len() == 2 =>
-        {
+        DaoType::ListPartitionByTableIdAndFilterCondition if params.len() == 2 => {
             let result = conn.query(&statement, &[&params[0], &params[1]]).await;
             match result {
-                Ok(rows) => {
-                    rows
-                }
+                Ok(rows) => rows,
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
@@ -905,9 +899,7 @@ pub async fn execute_query(
         | DaoType::ListPartitionByTableIdAndDesc
         | DaoType::ListPartitionVersionByTableIdAndPartitionDescAndTimestampRange
         | DaoType::ListPartitionVersionByTableIdAndPartitionDescAndVersionRange
-        | DaoType::ListPartitionByTableIdAndFilterCondition => {
-            ResultType::PartitionInfo
-        }
+        | DaoType::ListPartitionByTableIdAndFilterCondition => ResultType::PartitionInfo,
 
         DaoType::SelectOneDataCommitInfoByTableIdAndPartitionDescAndCommitId
         | DaoType::ListDataCommitInfoByTableIdAndPartitionDescAndCommitList => {
