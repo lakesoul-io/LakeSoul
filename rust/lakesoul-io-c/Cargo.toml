@@ -32,6 +32,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 # err
 rootcause = { workspace = true }
+base64 = { version = "0.22", features = ["std"] }
 
 [features]
 hdfs = ["lakesoul-io/hdfs"]

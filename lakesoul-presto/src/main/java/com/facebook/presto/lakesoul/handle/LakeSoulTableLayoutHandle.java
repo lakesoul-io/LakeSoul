@@ -5,6 +5,7 @@
 package com.facebook.presto.lakesoul.handle;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
@@ -21,6 +22,7 @@ import org.apache.parquet.io.api.Binary;
 import org.apache.spark.sql.types.LongType;
 
 import com.alibaba.fastjson.JSONObject;
+import com.facebook.airlift.log.Logger;
 import com.facebook.presto.common.predicate.Domain;
 import com.facebook.presto.common.predicate.Range;
 import com.facebook.presto.common.predicate.TupleDomain;
@@ -43,10 +45,19 @@ import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ConnectorTableLayoutHandle;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import org.apache.arrow.vector.types.pojo.Schema;
+import org.apache.arrow.vector.types.pojo.ArrowType;
+import org.apache.arrow.vector.types.pojo.Field;
 
+import com.facebook.presto.lakesoul.LakeSoulSplitManager;
+import com.facebook.presto.lakesoul.substrait.SubstraitPlanBuilder;
 import io.airlift.slice.Slice;
+import io.substrait.dsl.SubstraitBuilder;
 
 public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
+
+    private static final Logger log = Logger.get(LakeSoulTableLayoutHandle.class);
+
     private final LakeSoulTableHandle tableHandle;
     private final Optional<Set<ColumnHandle>> dataColumns;
     private final List<String> primaryKeys;
@@ -58,6 +69,7 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
     private final TupleDomain<ColumnHandle> tupleDomain;
 
     private List<String> filterStrList;
+    private List<String> filterProtosList;
 
     @JsonCreator
     public LakeSoulTableLayoutHandle(
@@ -79,8 +91,20 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
         this.tupleDomain = requireNonNull(tupleDomain, "tupleDomain should not be null");
         this.allColumns = requireNonNull(allColumns, "allColumns should not be null");
         this.filters = buildFilters();
-        this.filterStrList = this.filters.stream().map(Object::toString)
-                .collect(Collectors.toList());
+        this.filterStrList = new ArrayList<>();
+        this.filterProtosList = new ArrayList<>();
+        for (FilterPredicate filter : this.parFilters) {
+            try {
+                String substraitPlan = SubstraitPlanBuilder.convertToBase64(Collections.singletonList(filter), allColumns, tableHandle.getNames().getTableName());
+                if (substraitPlan != null) {
+                    this.filterProtosList.add(substraitPlan);
+                } else {
+                    log.warn("LakeSoul Pushdown Warning: Filter too complex for Substrait, skipping pushdown. Filter: " + filter.toString());
+                }
+            } catch (Exception e) {
+                log.error("LakeSoul Pushdown Error: Substrait conversion crashed, skipping pushdown. Filter: " + filter.toString(), e);
+            }
+        }
     }
 
     @JsonProperty("filterStrList")
@@ -93,6 +117,15 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
         this.filterStrList = filterStrList;
     }
 
+    @JsonProperty("filterProtosList")
+    public void setFilterProtosList(List<String> filterProtosList) {
+        this.filterProtosList = filterProtosList;
+    }
+
+    @JsonProperty("filterProtosList")
+    public List<String> getFilterProtosList() {
+        return this.filterProtosList;
+    }
 
     @JsonProperty
     public Optional<Set<ColumnHandle>> getDataColumns() {
@@ -516,6 +549,7 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
                 ", parFilters=" + parFilters +
                 ", tupleDomain=" + tupleDomain +
                 ", filterStrList=" + filterStrList +
+                ", filterProtosList=" + filterProtosList +
                 '}';
     }
 }

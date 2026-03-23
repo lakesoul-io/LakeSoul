@@ -3977,6 +3977,7 @@ dependencies = [
  "arrow-array",
  "arrow-ipc",
  "arrow-schema",
+ "base64",
  "bytes",
  "cbindgen",
  "datafusion-common",

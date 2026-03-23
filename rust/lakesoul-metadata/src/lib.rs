@@ -417,14 +417,15 @@ async fn get_prepared_statement<'a>(
         DaoType::ListPartitionByTableIdAndFilterCondition =>
             "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.timestamp, m.expression, m.domain
             from (
-                select table_id,partition_desc,max(version)
+                select table_id,partition_desc,version
                 from partition_info
                 where table_id = $1::TEXT
-                and to_tsvector('english', partition_desc) @@ to_tsquery($2::TEXT)
-                group by table_id, partition_desc
+                and to_tsvector('english', partition_desc) @@ websearch_to_tsquery('english', $2::TEXT)
+                and partition_desc LIKE '%' || $2::TEXT || '%'
+                order by table_id, partition_desc desc limit 1
             ) t
             left join partition_info m
-            on t.table_id = m.table_id and t.partition_desc = m.partition_desc and t.max = m.version",
+            on t.table_id = m.table_id and t.partition_desc = m.partition_desc and t.version = m.version",
         // Select Table Domain by id
         DaoType::SelectTableDomainById =>
             "select table_name, table_id, table_namespace, domain

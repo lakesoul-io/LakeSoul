@@ -24,7 +24,7 @@ import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_NULL_STRING;
 public class SubstraitPlanBuilder {
 
     private static final Logger log = Logger.get(SubstraitPlanBuilder.class);
-    
+
     public static io.substrait.proto.Plan buildSubstraitPlan(List<FilterPredicate> parFilters, Map<String, ColumnHandle> allColumns, String tableName) throws Exception {
         if (parFilters == null || parFilters.isEmpty()) {
             return null;
@@ -49,10 +49,8 @@ public class SubstraitPlanBuilder {
     }
 
     public static String convertToBase64(List<FilterPredicate> fp,  Map<String, ColumnHandle> allColumns, String tableName) throws Exception {
-        
-        
-        io.substrait.proto.Plan plan = buildSubstraitPlan(fp, allColumns, tableName); 
-      
+    
+        io.substrait.proto.Plan plan = buildSubstraitPlan(fp, allColumns, tableName);  
         return SubstraitUtil.encodeBase64String(plan);
     }
 
@@ -62,7 +60,7 @@ public class SubstraitPlanBuilder {
         }
 
         Map<String, String> equalityKeys = new HashMap<>();
-    
+
         for (FilterPredicate fp : parFilters) {
             if (fp instanceof Operators.Eq) {
                 Operators.Eq eq = (Operators.Eq) fp;

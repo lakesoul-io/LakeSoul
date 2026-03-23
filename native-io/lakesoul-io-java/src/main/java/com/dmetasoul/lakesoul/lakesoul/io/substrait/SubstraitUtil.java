@@ -58,6 +58,7 @@ import io.substrait.type.TypeCreator;
 import jnr.ffi.Pointer;
 import jnr.ffi.Runtime;
 
+
 public class SubstraitUtil {
     public static final SimpleExtension.ExtensionCollection EXTENSIONS;
     public static final SubstraitBuilder BUILDER;
@@ -109,6 +110,14 @@ public class SubstraitUtil {
 
     public static Expression not(Expression expression) {
         return makeUnary(expression, FUNCTIONS_BOOLEAN, "not:bool", TypeCreator.NULLABLE.BOOLEAN);
+    }
+
+    public static Expression notNull(Expression expression) {
+        return makeUnary(expression, FUNCTIONS_COMPARISON, "is_not_null:any", TypeCreator.NULLABLE.BOOLEAN);
+    }
+
+    public static Expression isNull(Expression expression) {
+        return makeUnary(expression, SubstraitUtil.CompNamespace, "is_null:any", TypeCreator.NULLABLE.BOOLEAN);
     }
 
     public static Expression in(Expression expr, List<Expression.Literal> set) {
@@ -438,6 +447,10 @@ public class SubstraitUtil {
         public Type visit(ArrowType.Duration duration) {
             return null;
         }
+    }
+
+    public static Expression.Literal typedNull(Type type) {
+        return ExpressionCreator.typedNull(type);
     }
 
     public static Expression.Literal anyToSubstraitLiteral(Type type, Object any) throws IOException {

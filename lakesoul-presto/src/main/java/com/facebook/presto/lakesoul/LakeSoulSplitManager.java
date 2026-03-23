@@ -15,6 +15,7 @@ import com.facebook.airlift.log.Logger;
 import com.facebook.presto.lakesoul.handle.LakeSoulTableLayoutHandle;
 import com.facebook.presto.lakesoul.pojo.Path;
 import com.facebook.presto.lakesoul.util.PrestoUtil;
+import com.facebook.presto.lakesoul.substrait.SubstraitPlanBuilder;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorSplit;
 import com.facebook.presto.spi.ConnectorSplitSource;
@@ -50,127 +51,6 @@ import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_RANGE_PARTITION_SPLI
 public class LakeSoulSplitManager implements ConnectorSplitManager {
     private static final Logger log = Logger.get(LakeSoulSplitManager.class);
 
-
-    private io.substrait.proto.Plan buildSubstraitPlan(List<FilterPredicate> parFilters,
-                                                   Schema arrowSchema,
-                                                   String tableName) throws Exception {
-        if (parFilters == null || parFilters.isEmpty()) {
-            return null;
-        }
-        Expression finalExpr = null;
-
-        for (FilterPredicate fp : parFilters) {
-            Expression expr = convertToSubstraitExpr(fp, arrowSchema);
-            if (expr != null) {
-                if (finalExpr == null) {
-                    finalExpr = expr;
-                } else {
-                    finalExpr = SubstraitUtil.and(finalExpr, expr);
-                }
-            }
-        }
-
-        if (finalExpr == null) {
-            return null;
-        }
-        return SubstraitUtil.substraitExprToProto(finalExpr, tableName);
-    }
-
-
-    private Expression convertToSubstraitExpr(FilterPredicate fp, Schema arrowSchema) throws Exception {
-        log.info("DEBUG: Converting FilterPredicate type: " + fp.getClass().getSimpleName());
-        if (fp instanceof Operators.Eq) {
-            return buildBinaryExpr(((Operators.Eq) fp).getColumn(), ((Operators.Eq) fp).getValue(),
-                               "equal:any_any", arrowSchema);
-        } else if (fp instanceof Operators.GtEq) {
-            return buildBinaryExpr(((Operators.GtEq) fp).getColumn(), ((Operators.GtEq) fp).getValue(),
-                               "gte:any_any", arrowSchema);
-        } else if (fp instanceof Operators.Lt) {
-            return buildBinaryExpr(((Operators.Lt) fp).getColumn(), ((Operators.Lt) fp).getValue(),
-                               "lt:any_any", arrowSchema);
-        } else if (fp instanceof Operators.Gt) {
-            return buildBinaryExpr(((Operators.Gt) fp).getColumn(), ((Operators.Gt) fp).getValue(),
-                               "gt:any_any", arrowSchema);
-        } else if (fp instanceof Operators.LtEq) {
-            return buildBinaryExpr(((Operators.LtEq) fp).getColumn(), ((Operators.LtEq) fp).getValue(),
-                               "lte:any_any", arrowSchema);
-        } else if (fp instanceof Operators.And) {
-            Expression left = convertToSubstraitExpr(((Operators.And) fp).getLeft(), arrowSchema);
-            Expression right = convertToSubstraitExpr(((Operators.And) fp).getRight(), arrowSchema);
-            return SubstraitUtil.and(left, right);
-        } else if (fp instanceof Operators.Or) {
-            Expression left = convertToSubstraitExpr(((Operators.Or) fp).getLeft(), arrowSchema);
-            Expression right = convertToSubstraitExpr(((Operators.Or) fp).getRight(), arrowSchema);
-            return SubstraitUtil.or(left, right);
-        }
-        log.info("DEBUG: Unsupported FilterPredicate:" + fp.getClass().getName());
-        return null;
-    }
-
-    private Expression buildBinaryExpr(Operators.Column column, Object value, String funcKey, Schema arrowSchema) throws Exception {
-        String columnName = column.getColumnPath().toDotString();
-        log.info("DEBUG: Building binary expr for column: " + columnName + ", value: " + value + ", func: " + funcKey);
-        Field arrowField = arrowSchema.findField(columnName);
-
-        if (arrowField == null) {
-            return null;
-        }
-        Object realValue = value;
-        if (value instanceof org.apache.parquet.io.api.Binary) {
-            realValue = ((org.apache.parquet.io.api.Binary) value).toStringUsingUTF8();
-        }
-;
-        io.substrait.type.Type subType = SubstraitUtil.arrowFieldToSubstraitType(arrowField);
-        Expression literal = SubstraitUtil.anyToSubstraitLiteral(subType, realValue);
-
-        Expression fieldRef = SubstraitUtil.arrowFieldToSubstraitField(arrowField);
-        log.info("DEBUG: Successfully built binary expr for columnName = " + columnName + ", fieldRef = " + fieldRef + ", literal = " + literal + ", subType = " + subType);
-        return SubstraitUtil.makeBinary(
-                fieldRef,
-                literal,
-                SubstraitUtil.CompNamespace,
-                funcKey,
-                subType
-        );
-    }
-
-    private Map<String, String> extractEqualityFilters(List<FilterPredicate> parFilters, Schema partitionSchema) {
-        if (parFilters == null) {
-            return null;
-        }
-
-        Map<String, String> equalityKeys = new HashMap<>();
-    
-        for (FilterPredicate fp : parFilters) {
-            if (fp instanceof Operators.Eq) {
-                Operators.Eq eq = (Operators.Eq) fp;
-                String colName = eq.getColumn().getColumnPath().toDotString();
-                Object value = eq.getValue();
-                Field arrowField = partitionSchema.findField(colName);
-                if (arrowField == null) {
-                    return null;
-                }
-
-                String strValue;
-                if ((value instanceof Integer  || value instanceof Long ) && arrowField.getType() instanceof ArrowType.Date) {
-                    long epochDay = ((Number) value).longValue();
-                    strValue = LocalDate.ofEpochDay(epochDay).toString();
-                }
-                else if (value instanceof org.apache.parquet.io.api.Binary) {
-                    strValue = ((org.apache.parquet.io.api.Binary) value).toStringUsingUTF8();
-                }
-                else {
-                    strValue = String.valueOf(value);
-                }
-                equalityKeys.put(colName, strValue);
-            
-            } else {
-                return null;
-            }
-        }
-        return equalityKeys;
-    }
-
     @Override
     public ConnectorSplitSource getSplits(ConnectorTransactionHandle transactionHandle,
                                           ConnectorSession session,
@@ -189,7 +69,7 @@ public class LakeSoulSplitManager implements ConnectorSplitManager {
             Schema partitionSchema = new Schema(partitionFields);
             List<PartitionInfo> allPartitionInfo;
             List<FilterPredicate> parFilters = tableLayout.getParFilters();
-            Map<String, String> eqFilters = extractEqualityFilters(parFilters, partitionSchema);
+            Map<String, String> eqFilters = SubstraitPlanBuilder.extractEqualityFilters(parFilters, partitionSchema);
             log.info("DEBUG: parFilters = " + parFilters + ", partitionColumns = " + partitionColumns);
             if (eqFilters != null && !eqFilters.isEmpty()) {
                 log.info("DEBUG: eqFilters = " + eqFilters  );
@@ -211,7 +91,8 @@ public class LakeSoulSplitManager implements ConnectorSplitManager {
                 log.info("DEBUG: Full fetch table:" + tid);
                 allPartitionInfo = MetaVersion.getAllPartitionInfo(tid);
             }
-            io.substrait.proto.Plan partitionFilterPlan = buildSubstraitPlan(parFilters, partitionSchema, tableName);
+            
+            io.substrait.proto.Plan partitionFilterPlan = SubstraitPlanBuilder.buildSubstraitPlan(parFilters, tableLayout.getAllColumns(), tableName);
             log.info("DEBUG: partiitonFilterPlan " + partitionFilterPlan );
             List<PartitionInfo> filteredPartitionInfo = SubstraitUtil.applyPartitionFilters(allPartitionInfo, partitionSchema, partitionFilterPlan);   
 
@@ -258,7 +139,7 @@ public class LakeSoulSplitManager implements ConnectorSplitManager {
             }
         }
         String tableNames = tableLayout.getTableHandle().getNames().toString();
-        log.info("Finished building LakeSoul splits for table " + tableLayout.getTableHandle().getNames() +
+        log.info("Finished building LakeSoul splits for table " + tableNames +
          ". Total split count: " + splits.size() +
          ". Splits: " + splits);
         return new LakeSoulSplitSource(splits);
