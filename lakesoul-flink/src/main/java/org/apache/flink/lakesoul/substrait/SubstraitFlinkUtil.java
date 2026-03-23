@@ -39,8 +39,30 @@ public class SubstraitFlinkUtil {
     }
 
     public static Expression toSubstraitExpr(ResolvedExpression flinkExpression) {
+        int nested_depth = calculateDepth(flinkExpression);
+        if (nested_depth > 10) {
+            // do not convert too deeply nested expressions
+            return null;
+        }
         SubstraitVisitor substraitVisitor = new SubstraitVisitor();
         return flinkExpression.accept(substraitVisitor);
+    }
+
+    private static int calculateDepth(ResolvedExpression expr) {
+        if (expr instanceof FieldReferenceExpression || expr instanceof ValueLiteralExpression) {
+            return 1;
+        } else if (expr instanceof CallExpression) {
+            int maxDepth = 0;
+            for (ResolvedExpression child : ((CallExpression) expr).getResolvedChildren()) {
+                int childDepth = calculateDepth(child);
+                if (childDepth > maxDepth) {
+                    maxDepth = childDepth;
+                }
+            }
+            return 1 + maxDepth;
+        } else {
+            return 1;
+        }
     }
 
     public static boolean filterAllPartitionColumn(ResolvedExpression expression, Set<String> partitionCols) {
