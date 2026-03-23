@@ -4,56 +4,27 @@
 
 package com.facebook.presto.lakesoul.handle;
 
-import java.util.ArrayList;
-import java.util.Base64;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import static java.util.Objects.requireNonNull;
-import java.util.Optional;
-import java.util.Set;
-import java.util.stream.Collectors;
-
-import org.apache.parquet.filter2.predicate.FilterApi;
-import org.apache.parquet.filter2.predicate.FilterPredicate;
-import org.apache.parquet.io.api.Binary;
-import org.apache.spark.sql.types.LongType;
-
 import com.alibaba.fastjson.JSONObject;
 import com.facebook.airlift.log.Logger;
 import com.facebook.presto.common.predicate.Domain;
 import com.facebook.presto.common.predicate.Range;
 import com.facebook.presto.common.predicate.TupleDomain;
-import com.facebook.presto.common.type.BigintType;
-import com.facebook.presto.common.type.BooleanType;
-import com.facebook.presto.common.type.DateType;
-import com.facebook.presto.common.type.DecimalType;
-import com.facebook.presto.common.type.DoubleType;
-import com.facebook.presto.common.type.IntegerType;
-import com.facebook.presto.common.type.RealType;
-import com.facebook.presto.common.type.SmallintType;
-import com.facebook.presto.common.type.TimeType;
-import com.facebook.presto.common.type.TimeWithTimeZoneType;
-import com.facebook.presto.common.type.TimestampType;
-import com.facebook.presto.common.type.TimestampWithTimeZoneType;
-import com.facebook.presto.common.type.TinyintType;
-import com.facebook.presto.common.type.Type;
-import com.facebook.presto.common.type.VarcharType;
+import com.facebook.presto.common.type.*;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ConnectorTableLayoutHandle;
+import com.facebook.presto.lakesoul.substrait.SubstraitPlanBuilder;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import org.apache.arrow.vector.types.pojo.Schema;
-import org.apache.arrow.vector.types.pojo.ArrowType;
-import org.apache.arrow.vector.types.pojo.Field;
-
-import com.facebook.presto.lakesoul.LakeSoulSplitManager;
-import com.facebook.presto.lakesoul.substrait.SubstraitPlanBuilder;
 import io.airlift.slice.Slice;
-import io.substrait.dsl.SubstraitBuilder;
+import org.apache.parquet.filter2.predicate.FilterApi;
+import org.apache.parquet.filter2.predicate.FilterPredicate;
+import org.apache.parquet.io.api.Binary;
+import org.apache.spark.sql.types.LongType;
+
+import java.util.*;
+import java.util.stream.Collectors;
+
+import static java.util.Objects.requireNonNull;
 
 public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
 
