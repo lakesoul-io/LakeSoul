@@ -50,7 +50,7 @@ public class SubstraitPlanBuilder {
 
     public static String convertToBase64(List<FilterPredicate> fp,  Map<String, ColumnHandle> allColumns, String tableName) throws Exception {
     
-        io.substrait.proto.Plan plan = buildSubstraitPlan(fp, allColumns, tableName);  
+        io.substrait.proto.Plan plan = buildSubstraitPlan(fp, allColumns, tableName);
         return SubstraitUtil.encodeBase64String(plan);
     }
 
@@ -160,13 +160,7 @@ public class SubstraitPlanBuilder {
             realValue = ((org.apache.parquet.io.api.Binary) value).toStringUsingUTF8();
         }
         io.substrait.type.Type subType = SubstraitUtil.arrowFieldToSubstraitType(arrowField);
-        Expression literal;
-        //if(realValue == null) {
-        //    io.substrait.type.Type nullableSubType = io.substrait.type.TypeCreator.asNullable(subType); 
-        //    literal = SubstraitUtil.typedNull(nullableSubType);
-        //} else {
-        literal = SubstraitUtil.anyToSubstraitLiteral(subType, realValue);
-        //}
+        Expression literal = SubstraitUtil.anyToSubstraitLiteral(subType, realValue);
         Expression fieldRef = SubstraitUtil.arrowFieldToSubstraitField(arrowField);
         log.info("buildBinaryExpr Successfully built binary expr for columnName = " + columnName + ", fieldRef = " + fieldRef + ", literal = " + literal + ", subType = " + subType);
         return SubstraitUtil.makeBinary(
