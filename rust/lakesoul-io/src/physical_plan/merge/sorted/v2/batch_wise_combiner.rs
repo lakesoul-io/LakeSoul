@@ -334,17 +334,6 @@ impl<C: CursorValues + Send + Sync + 'static> BatchWiseRangeCombiner<C> {
         // );
         // Fast path 3: if overlap ranges contains only two ranges, merge them directly
         if overlap_ranges.len() == 2 {
-            let new_overlap_ranges = self
-                .ranges
-                .iter_mut()
-                .filter(|(batch_idx, _)| overlap_ranges.contains(batch_idx))
-                .map(|(_, range)| range)
-                .sorted_by(|a, b| {
-                    a.stream_idx()
-                        .cmp(&b.stream_idx())
-                        .then_with(|| a.batch_idx().cmp(&b.batch_idx()))
-                })
-                .collect::<Vec<_>>();
             // println!(
             //     "Merging two ranges\n{:?}",
             //     new_overlap_ranges

@@ -1154,7 +1154,7 @@ mod tests {
             Field::new("item_type", DataType::Int32, true),
             Field::new("status", DataType::Int32, true),
             Field::new("user_id", DataType::Int64, true),
-            Field::new("features", DataType::Utf8, true),
+            // Field::new("features", DataType::Utf8, true),
             Field::new("owner_id", DataType::Int64, true),
             Field::new("pt_created_at_dt", DataType::Utf8, true),
         ]);
