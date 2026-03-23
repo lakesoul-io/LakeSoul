@@ -1,6 +1,5 @@
 package com.facebook.presto.lakesoul.substrait;
 
-import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.util.HashMap;
 import java.util.List;
@@ -14,7 +13,6 @@ import org.apache.parquet.filter2.predicate.FilterPredicate;
 import org.apache.parquet.filter2.predicate.Operators;
 import com.dmetasoul.lakesoul.lakesoul.io.substrait.SubstraitUtil;
 import io.substrait.expression.Expression;
-import io.substrait.type.TypeCreator;
 
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.lakesoul.handle.LakeSoulTableColumnHandle;
@@ -47,13 +45,6 @@ public class SubstraitPlanBuilder {
         }
         log.info("buildSubstraitPlan finalExpr: " + finalExpr);
         return SubstraitUtil.substraitExprToProto(finalExpr, tableName);
-    }
-
-    public static byte[] convertToString(List<FilterPredicate> fp,  Map<String, ColumnHandle> allColumns, String tableName) throws Exception {
-    
-        io.substrait.proto.Plan plan = buildSubstraitPlan(fp, allColumns, tableName);
-        byte[] bytes = plan.toByteArray();
-        return bytes;
     }
 
     public static Map<String, String> extractEqualityFilters(List<FilterPredicate> parFilters, Schema partitionSchema) {

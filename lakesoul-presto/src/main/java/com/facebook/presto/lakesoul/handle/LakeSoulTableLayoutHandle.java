@@ -96,8 +96,9 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
         this.filterProtosList = new ArrayList<>();
         for (FilterPredicate filter : this.parFilters) {
             try {
-                byte[] bytes = SubstraitPlanBuilder.convertToString(Collections.singletonList(filter), allColumns, tableHandle.getNames().getTableName());
-                if (bytes != null) {
+                io.substrait.proto.Plan substraitPlan = SubstraitPlanBuilder.buildSubstraitPlan(Collections.singletonList(filter), allColumns, tableHandle.getNames().getTableName());
+                if (substraitPlan != null) {
+                    byte[] bytes = substraitPlan.toByteArray();
                     this.filterProtosList.add(bytes);
                 } else {
                     log.warn("LakeSoul Pushdown Warning: Filter too complex for Substrait, skipping pushdown. Filter: " + filter.toString());

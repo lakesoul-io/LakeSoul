@@ -245,7 +245,6 @@ pub extern "C" fn lakesoul_config_builder_add_filter_proto(
     }
 }
 
-
 /// Set the schema of the IO config.
 #[unsafe(no_mangle)]
 pub extern "C" fn lakesoul_config_builder_set_schema(
