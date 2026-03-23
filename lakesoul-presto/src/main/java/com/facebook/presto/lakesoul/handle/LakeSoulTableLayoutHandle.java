@@ -5,6 +5,7 @@
 package com.facebook.presto.lakesoul.handle;
 
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedList;
@@ -69,7 +70,7 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
     private final TupleDomain<ColumnHandle> tupleDomain;
 
     private List<String> filterStrList;
-    private List<String> filterProtosList;
+    private List<byte[]> filterProtosList;
 
     @JsonCreator
     public LakeSoulTableLayoutHandle(
@@ -95,9 +96,9 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
         this.filterProtosList = new ArrayList<>();
         for (FilterPredicate filter : this.parFilters) {
             try {
-                String substraitPlan = SubstraitPlanBuilder.convertToBase64(Collections.singletonList(filter), allColumns, tableHandle.getNames().getTableName());
-                if (substraitPlan != null) {
-                    this.filterProtosList.add(substraitPlan);
+                byte[] bytes = SubstraitPlanBuilder.convertToString(Collections.singletonList(filter), allColumns, tableHandle.getNames().getTableName());
+                if (bytes != null) {
+                    this.filterProtosList.add(bytes);
                 } else {
                     log.warn("LakeSoul Pushdown Warning: Filter too complex for Substrait, skipping pushdown. Filter: " + filter.toString());
                 }
@@ -118,12 +119,12 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
     }
 
     @JsonProperty("filterProtosList")
-    public void setFilterProtosList(List<String> filterProtosList) {
+    public void setFilterProtosList(List<byte[]> filterProtosList) {
         this.filterProtosList = filterProtosList;
     }
 
     @JsonProperty("filterProtosList")
-    public List<String> getFilterProtosList() {
+    public List<byte[]> getFilterProtosList() {
         return this.filterProtosList;
     }
 

@@ -1,5 +1,6 @@
 package com.facebook.presto.lakesoul.substrait;
 
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.util.HashMap;
 import java.util.List;
@@ -48,10 +49,11 @@ public class SubstraitPlanBuilder {
         return SubstraitUtil.substraitExprToProto(finalExpr, tableName);
     }
 
-    public static String convertToBase64(List<FilterPredicate> fp,  Map<String, ColumnHandle> allColumns, String tableName) throws Exception {
+    public static byte[] convertToString(List<FilterPredicate> fp,  Map<String, ColumnHandle> allColumns, String tableName) throws Exception {
     
         io.substrait.proto.Plan plan = buildSubstraitPlan(fp, allColumns, tableName);
-        return SubstraitUtil.encodeBase64String(plan);
+        byte[] bytes = plan.toByteArray();
+        return bytes;
     }
 
     public static Map<String, String> extractEqualityFilters(List<FilterPredicate> parFilters, Schema partitionSchema) {

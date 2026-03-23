@@ -19,7 +19,6 @@ use arrow_array::RecordBatch;
 use arrow_array::ffi::{FFI_ArrowArray, FFI_ArrowSchema, from_ffi};
 use arrow_array::{Array, StructArray};
 use arrow_schema::{Schema, SchemaRef};
-use base64::{Engine as _, engine::general_purpose};
 use datafusion_substrait::substrait::proto::Plan;
 use lakesoul_io::config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_io::helpers;
@@ -237,16 +236,15 @@ pub extern "C" fn lakesoul_config_builder_add_filter_proto(
         debug!("proto_addr: {:#x}, len:{}", proto_addr, len);
         let dst: &mut [u8] =
             slice::from_raw_parts_mut(proto_addr as *mut u8, len as usize);
-        let decoded_bytes = general_purpose::STANDARD.decode(dst).unwrap();
-        let plan = Plan::decode(decoded_bytes.as_slice()).unwrap();
-
-        debug!("lakesoul_config_builder_add_filter_proto {:#?}", plan);
+        let plan = Plan::decode(&*dst).unwrap();
+        debug!("{:#?}", plan);
         convert_to_opaque(
             from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
                 .with_filter_proto(plan),
         )
     }
 }
+
 
 /// Set the schema of the IO config.
 #[unsafe(no_mangle)]
