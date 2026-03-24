@@ -558,7 +558,7 @@ public class PartitionInfoDao {
                         "                select table_id,partition_desc,max(version)\n" +
                         "                from partition_info\n" +
                         "                where table_id = '%s'\n" +
-                        "                and to_tsvector('english', partition_desc) @@ to_tsquery('%s')" +
+                        "                and to_tsvector('english', partition_desc) @@ websearch_to_tsquery('english','%s')" +
                         "                group by table_id, partition_desc) t\n" +
                         "            left join partition_info m\n" +
                         "            on t.table_id = m.table_id and t.partition_desc = m.partition_desc and t.max = m.version",

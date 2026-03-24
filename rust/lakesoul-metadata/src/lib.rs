@@ -419,7 +419,6 @@ async fn get_prepared_statement<'a>(
                 from partition_info
                 where table_id = $1::TEXT
                 and to_tsvector('english', partition_desc) @@ websearch_to_tsquery('english', $2::TEXT)
-                and partition_desc LIKE '%' || $2::TEXT || '%'
                 group by table_id, partition_desc
             ) t
             left join partition_info m
