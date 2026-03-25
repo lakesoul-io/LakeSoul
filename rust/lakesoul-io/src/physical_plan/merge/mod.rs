@@ -25,6 +25,8 @@ use datafusion::{
 };
 use datafusion_common::{DFSchemaRef, DataFusionError, Result as DFResult};
 use datafusion_substrait::substrait::proto::Plan;
+use futures::StreamExt;
+use num_format::Locale::is;
 use rootcause::compat::boxed_error::IntoBoxedError;
 
 use self::sorted::merge_operator::MergeOperator;
@@ -347,16 +349,27 @@ fn merge_stream(
                 )))
             })
             .collect();
-        build_sorted_stream_merger(
+        let is_compacted = config
+            .files
+            .iter()
+            .map(|f| f.contains("/compactdir"))
+            .collect::<Vec<_>>();
+        let streams = build_sorted_stream_merger(
             streams,
             primary_keys,
             physical_schema,
-            merged_schema,
+            merged_schema.clone(),
             batch_size,
-            default_column_value,
+            default_column_value.clone(),
             merge_ops,
             reservation,
-        )?
+            is_compacted,
+        )?;
+        Box::pin(DefaultColumnStream::new_from_streams_with_default(
+            vec![streams],
+            merged_schema,
+            default_column_value,
+        ))
     };
     Ok(merge_stream)
 }

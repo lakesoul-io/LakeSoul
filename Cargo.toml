@@ -60,7 +60,7 @@ arrow-arith = { version = "57" }
 arrow-ipc = { version = "57" }
 arrow-flight = { version = "57", features = ["flight-sql-experimental"] }
 arrow-pyarrow = { version = "57" }
-parquet = { version = "57" }
+parquet = { version = "57", default-features = true, features = ["async", "encryption"]}
 object_store = { version = "0.12", features = ["aws", "http"] }
 # async
 futures = "0.3"

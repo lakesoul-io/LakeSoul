@@ -6,31 +6,33 @@
 //! optimizes the sorted merge by checking range overlaps using batch min/max values
 //! before doing row-level comparisons.
 
+use crate::Result;
+use crate::cache::disk_cache::lru_cache::CountableMeter;
 use crate::physical_plan::merge::sorted::cursor::CursorValues;
 use crate::physical_plan::merge::sorted::sorted_stream_merger::CursorStream;
 use crate::physical_plan::merge::sorted::v2::batch_range::BatchRange;
 use crate::physical_plan::merge::sorted::v2::binary_merger::BinaryMerger;
 use crate::physical_plan::merge::sorted::v2::deduplicate::DeduplicateStream;
 use crate::physical_plan::merge::sorted::v2::loser_tree_merger::LoserTreeRangeMerge;
-use crate::Result;
 use arrow::datatypes::SchemaRef;
 use arrow::record_batch::RecordBatch;
 use arrow_cast::pretty::pretty_format_batches;
+use atomic_refcell::AtomicRefCell;
 use datafusion_common::DataFusionError;
 use datafusion_execution::{RecordBatchStream, SendableRecordBatchStream};
-use futures::stream::{FusedStream, Peekable};
-use futures::{Stream, StreamExt};
+use futures::stream::{FusedStream, FuturesUnordered, Peekable};
+use futures::{FutureExt, Stream, StreamExt, TryStreamExt};
 use itertools::Itertools;
 use nohash::BuildNoHashHasher;
 use rootcause::compat::boxed_error::IntoBoxedError;
-use rootcause::{report, Report};
+use rootcause::{Report, report};
 use std::collections::HashMap;
 use std::future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc::Sender;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 
 pub(crate) type CursorStreamWithId<C> =
@@ -39,8 +41,8 @@ pub(crate) type CursorStreamWithId<C> =
 /// A combiner that uses batch min/max values to determine range overlaps before
 /// doing row-level merge operations. This can significantly optimize the merge
 /// process when batches have non-overlapping ranges.
-pub struct BatchWiseRangeCombiner<C: CursorValues> {
-    streams: Vec<Pin<Box<Peekable<CursorStreamWithId<C>>>>>,
+pub struct WindowSlidingRangeCombiner<C: CursorValues> {
+    streams: Vec<Arc<Mutex<Peekable<CursorStreamWithId<C>>>>>,
 
     /// The schema of the record batch.
     schema: SchemaRef,
@@ -57,7 +59,7 @@ pub struct BatchWiseRangeCombiner<C: CursorValues> {
     ranges: HashMap<usize, BatchRange<C>, BuildNoHashHasher<usize>>,
 }
 
-impl<C: CursorValues + Send + Sync + 'static> BatchWiseRangeCombiner<C> {
+impl<C: CursorValues + Send + Sync + 'static> WindowSlidingRangeCombiner<C> {
     /// Create a new BatchWiseRangeCombiner
     ///
     /// # Arguments
@@ -72,7 +74,10 @@ impl<C: CursorValues + Send + Sync + 'static> BatchWiseRangeCombiner<C> {
         streams_num: usize,
         target_batch_size: usize,
     ) -> Result<Self> {
-        info!("Create BatchWiseRangeCombiner with {} streams, target_batch_size: {}", streams_num, target_batch_size);
+        info!(
+            "Create WindowSlidingRangeCombiner with {} streams, target_batch_size: {}",
+            streams_num, target_batch_size
+        );
         let streams: Vec<CursorStreamWithId<C>> = streams
             .into_iter()
             .enumerate()
@@ -100,7 +105,7 @@ impl<C: CursorValues + Send + Sync + 'static> BatchWiseRangeCombiner<C> {
             .collect::<Result<Vec<_>>>()?;
         let streams = streams
             .into_iter()
-            .map(|stream: CursorStreamWithId<C>| Box::pin(stream.peekable()))
+            .map(|stream: CursorStreamWithId<C>| Arc::new(Mutex::new(stream.peekable())))
             .collect::<Vec<_>>();
         Ok(Self {
             streams,
@@ -113,34 +118,6 @@ impl<C: CursorValues + Send + Sync + 'static> BatchWiseRangeCombiner<C> {
                 BuildNoHashHasher::default(),
             ),
         })
-    }
-
-    pub async fn pull_from_stream(&mut self, idx: usize) -> Result<()> {
-        if !self.streams[idx].is_terminated() {
-            if let Some(batch) = self.streams[idx].next().await {
-                let batch = batch?;
-                // println!(
-                //     "Add range {}: \n{}",
-                //     self.ranges_counter,
-                //     pretty_format_batches(&[batch.1.clone()])?
-                // );
-                if batch.1.num_rows() > 0 {
-                    let end_row_for_merge = batch.1.num_rows() - 1;
-                    self.ranges.insert(
-                        self.ranges_counter,
-                        BatchRange::new(
-                            batch.0,
-                            batch.1,
-                            batch.2,
-                            self.ranges_counter,
-                            end_row_for_merge,
-                        ),
-                    );
-                    self.ranges_counter += 1;
-                }
-            }
-        }
-        Ok(())
     }
 
     // Algorithm to merge current batches in `self.ranges`:
@@ -167,10 +144,10 @@ impl<C: CursorValues + Send + Sync + 'static> BatchWiseRangeCombiner<C> {
         if self.ranges.len() == 1 {
             let range = self.ranges.values_mut().next().unwrap();
             let batch = range.slice_remaining_and_advance();
-                // println!(
-                //     "Sending 1 batch\n{}",
-                //     pretty_format_batches(&[batch.clone()])?
-                // );
+            // println!(
+            //     "Sending 1 batch\n{}",
+            //     pretty_format_batches(&[batch.clone()])?
+            // );
             tx.send(Ok(batch)).await?;
             return Ok(tx);
         }
@@ -208,17 +185,17 @@ impl<C: CursorValues + Send + Sync + 'static> BatchWiseRangeCombiner<C> {
             .get(&r_star_range_idx)
             .unwrap()
             .end_row_for_merge();
-                // println!(
-                //     "r_star_range: \n{}, idx: {}, end row {}",
-                //     pretty_format_batches(&[self
-                //         .ranges
-                //         .get(&r_star_range_idx)
-                //         .unwrap()
-                //         .batch()
-                //         .clone()])?,
-                //     r_star_range_idx,
-                //     r_star_end
-                // );
+        // println!(
+        //     "r_star_range: \n{}, idx: {}, end row {}",
+        //     pretty_format_batches(&[self
+        //         .ranges
+        //         .get(&r_star_range_idx)
+        //         .unwrap()
+        //         .batch()
+        //         .clone()])?,
+        //     r_star_range_idx,
+        //     r_star_end
+        // );
         // Step 2.
         let mut overlap_ranges = Vec::with_capacity(self.ranges.len());
         for (batch_idx, range) in self.ranges.iter() {
@@ -236,10 +213,10 @@ impl<C: CursorValues + Send + Sync + 'static> BatchWiseRangeCombiner<C> {
         if overlap_ranges.len() == 1 {
             let range = self.ranges.get_mut(&overlap_ranges.pop().unwrap()).unwrap();
             let batch = range.slice_remaining_and_advance();
-                // println!(
-                //     "Sending 1 batch\n{}",
-                //     pretty_format_batches(&[batch.clone()])?
-                // );
+            // println!(
+            //     "Sending 1 batch\n{}",
+            //     pretty_format_batches(&[batch.clone()])?
+            // );
             tx.send(Ok(batch)).await?;
             return Ok(tx);
         }
@@ -321,15 +298,15 @@ impl<C: CursorValues + Send + Sync + 'static> BatchWiseRangeCombiner<C> {
                     .then_with(|| a.batch_idx().cmp(&b.batch_idx()))
             })
             .collect();
-                // println!(
-                //     "Merging multiple ranges {:?}",
-                //     new_overlap_ranges
-                //         .iter()
-                //         .map(|r| (
-                //             format!("\n{}", pretty_format_batches(&[r.batch().clone()]).unwrap()),
-                //             r.begin_row(),
-                //             r.end_row_for_merge()
-                //         ))
+        // println!(
+        //     "Merging multiple ranges {:?}",
+        //     new_overlap_ranges
+        //         .iter()
+        //         .map(|r| (
+        //             format!("\n{}", pretty_format_batches(&[r.batch().clone()]).unwrap()),
+        //             r.begin_row(),
+        //             r.end_row_for_merge()
+        //         ))
         //         .collect::<Vec<_>>()
         // );
         // Fast path 3: if overlap ranges contains only two ranges, merge them directly
@@ -371,40 +348,41 @@ impl<C: CursorValues + Send + Sync + 'static> BatchWiseRangeCombiner<C> {
     ) -> Result<SendableRecordBatchStream> {
         let (tx, rx) = mpsc::channel(10);
         let self_cloned = this.clone();
-        let schema = futures::executor::block_on(async move
-            {
-                // initialize ranges
-                let self_ref = self_cloned.lock().await;
-                self_ref.schema.clone()
-            });
+        let schema = futures::executor::block_on(async move {
+            // initialize ranges
+            let self_ref = self_cloned.lock().await;
+            self_ref.schema.clone()
+        });
         let self_cloned = this.clone();
         // ignore JoinHandle, as when caller needs to cancel, it could just drop the receiver
         tokio::spawn(async move {
             let mut self_ref = self_cloned.lock().await;
-            for i in 0..self_ref.streams.len() {
-                self_ref.pull_from_stream(i).await?;
-            }
+            let stream_num = self_ref.num_streams;
+            self_ref.pull_all_from_streams(0..stream_num).await?;
             let mut tx = tx;
             while !self_ref.ranges.is_empty() && !tx.is_closed() {
                 tx = self_ref.merge_next_batch(tx).await?;
                 // update ranges
                 let mut to_pull_stream_indices =
                     Vec::with_capacity(self_ref.ranges.len());
+                let mut to_remove_range_indices =
+                    Vec::with_capacity(self_ref.ranges.len());
                 self_ref.ranges.iter_mut().for_each(|(batch_idx, range)| {
                     // reset end to last row so it can continue to be merged
                     range.reset();
                     // if this range has ended, need to remove from ranges and pull from streams
                     if !range.has_more_rows() {
-                        to_pull_stream_indices.push((*batch_idx, range.stream_idx()))
+                        to_remove_range_indices.push(*batch_idx);
+                        to_pull_stream_indices.push(range.stream_idx())
                     }
                 });
                 // pull from streams
-                for i in 0..to_pull_stream_indices.len() {
-                    self_ref.ranges.remove(&to_pull_stream_indices[i].0);
-                    self_ref
-                        .pull_from_stream(to_pull_stream_indices[i].1)
-                        .await?;
-                }
+                to_remove_range_indices.into_iter().for_each(|batch_idx| {
+                    self_ref.ranges.remove(&batch_idx);
+                });
+                self_ref
+                    .pull_all_from_streams(to_pull_stream_indices.into_iter())
+                    .await?;
             }
             Ok::<(), Report>(())
         });
@@ -412,6 +390,48 @@ impl<C: CursorValues + Send + Sync + 'static> BatchWiseRangeCombiner<C> {
             stream: ReceiverStream::new(rx),
             schema,
         }))
+    }
+
+    async fn pull_all_from_streams(
+        &mut self,
+        stream_idx: impl Iterator<Item = usize>,
+    ) -> Result<()> {
+        let mut futures = FuturesUnordered::new();
+        for idx in stream_idx {
+            futures.push(Self::pull_one_stream(self.streams[idx].clone()));
+        }
+        while let Some(result) = futures.next().await {
+            if let Some(batch) = result {
+                self.add_batch(batch)?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn pull_one_stream(
+        stream: Arc<Mutex<Peekable<CursorStreamWithId<C>>>>,
+    ) -> Option<Result<(C, RecordBatch, usize)>> {
+        let mut s = stream.lock().await;
+        s.next().await
+    }
+
+    fn add_batch(&mut self, batch: Result<(C, RecordBatch, usize)>) -> Result<()> {
+        let batch = batch?;
+        if batch.1.num_rows() > 0 {
+            let end_row_for_merge = batch.1.num_rows() - 1;
+            self.ranges.insert(
+                self.ranges_counter,
+                BatchRange::new(
+                    batch.0,
+                    batch.1,
+                    batch.2,
+                    self.ranges_counter,
+                    end_row_for_merge,
+                ),
+            );
+            self.ranges_counter += 1;
+        }
+        Ok(())
     }
 }
 
@@ -448,12 +468,12 @@ impl RecordBatchStream for MergedStream {
 mod tests {
     use std::sync::Arc;
 
+    use crate::Result;
     use crate::helpers::InMemGenerator;
     use crate::physical_plan::merge::sorted::cursor::RowValues;
     use crate::physical_plan::merge::sorted::sorted_stream_merger::CursorStream;
-    use crate::physical_plan::merge::sorted::v2::batch_wise_combiner::BatchWiseRangeCombiner;
+    use crate::physical_plan::merge::sorted::v2::window_sliding_combine::WindowSlidingRangeCombiner;
     use crate::stream::RowCursorStream;
-    use crate::Result;
     use arrow::array::ArrayRef;
     use arrow::array::Int32Array;
     use arrow::record_batch::RecordBatch;
@@ -462,8 +482,8 @@ mod tests {
     use datafusion::execution::context::TaskContext;
     use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryConsumer};
     use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
-    use datafusion::physical_plan::memory::LazyMemoryExec;
     use datafusion::physical_plan::ExecutionPlan;
+    use datafusion::physical_plan::memory::LazyMemoryExec;
     use datafusion::prelude::SessionContext;
     use datafusion_common::DataFusionError;
     use datafusion_execution::memory_pool::MemoryReservation;
@@ -571,13 +591,13 @@ mod tests {
             a1.new_empty(),
         )
         .await?;
-        let combiner = Arc::new(Mutex::new(BatchWiseRangeCombiner::new(
+        let combiner = Arc::new(Mutex::new(WindowSlidingRangeCombiner::new(
             vec![(s1, true), (s2, true), (s3, true)],
             schema,
             3,
             10,
         )?));
-        let stream = BatchWiseRangeCombiner::build_merged_stream(combiner)?;
+        let stream = WindowSlidingRangeCombiner::build_merged_stream(combiner)?;
         let batches: Vec<RecordBatch> = stream.try_collect().await?;
         assert_batches_eq!(
             &[

@@ -37,7 +37,7 @@ arrow-schema = { workspace = true, features = ["serde"] }
 arrow-array = { workspace = true, features = ["chrono-tz"] }
 arrow-buffer = { workspace = true }
 arrow-cast = { workspace = true }
-parquet = { workspace = true, features = ["async", "arrow", "encryption"] }
+parquet = { workspace = true }
 object_store = { workspace = true }
 # memory
 tikv-jemallocator = { version = "0.6", features = ["profiling"], optional = true }
