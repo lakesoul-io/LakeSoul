@@ -256,13 +256,14 @@ pub unsafe extern "C" fn lakesoul_config_builder_set_schema(
     builder: NonNull<IOConfigBuilder>,
     schema_addr: c_ptrdiff_t,
 ) -> NonNull<IOConfigBuilder> {
-    let ffi_schema = schema_addr as *mut FFI_ArrowSchema;
-    let schema_data = unsafe { std::ptr::replace(ffi_schema, FFI_ArrowSchema::empty()) };
-    let schema = Schema::try_from(&schema_data).unwrap();
-    convert_to_opaque(
-        from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
-            .with_schema(Arc::new(schema)),
-    )
+    unsafe {
+        let ffi_schema = FFI_ArrowSchema::from_raw(schema_addr as *mut FFI_ArrowSchema);
+        let schema = Schema::try_from(&ffi_schema).unwrap();
+        convert_to_opaque(
+            from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
+                .with_schema(Arc::new(schema)),
+        )
+    }
 }
 
 /// Set the partition schema of the IO config
@@ -276,13 +277,14 @@ pub unsafe extern "C" fn lakesoul_config_builder_set_partition_schema(
     builder: NonNull<IOConfigBuilder>,
     schema_addr: c_ptrdiff_t,
 ) -> NonNull<IOConfigBuilder> {
-    let ffi_schema = schema_addr as *mut FFI_ArrowSchema;
-    let schema_data = unsafe { std::ptr::replace(ffi_schema, FFI_ArrowSchema::empty()) };
-    let schema = Schema::try_from(&schema_data).unwrap();
-    convert_to_opaque(
-        from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
-            .with_partition_schema(Arc::new(schema)),
-    )
+    unsafe {
+        let ffi_schema = FFI_ArrowSchema::from_raw(schema_addr as *mut FFI_ArrowSchema);
+        let schema = Schema::try_from(&ffi_schema).unwrap();
+        convert_to_opaque(
+            from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
+                .with_partition_schema(Arc::new(schema)),
+        )
+    }
 }
 
 /// Set the thread number of the IO config
@@ -994,25 +996,32 @@ pub extern "C" fn free_lakesoul_writer(writer: NonNull<CResult<Writer>>) {
 ///
 /// for writer this is called when writer is failed to create
 #[unsafe(no_mangle)]
-pub extern "C" fn free_lakesoul_io_config_builder(
-    writer: NonNull<CResult<IOConfigBuilder>>,
-) {
-    from_nonnull(writer).free::<LakeSoulIOConfigBuilder>();
+pub extern "C" fn free_lakesoul_io_config_builder(builder: NonNull<IOConfigBuilder>) {
+    let _ = from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder);
 }
 
 /// Free the [`IOConfig`].
 ///
 #[unsafe(no_mangle)]
-pub extern "C" fn free_lakesoul_io_config(writer: NonNull<CResult<IOConfig>>) {
-    from_nonnull(writer).free::<LakeSoulIOConfig>();
+pub extern "C" fn free_lakesoul_io_config(io_config: NonNull<IOConfig>) {
+    let _ = from_opaque::<IOConfig, LakeSoulIOConfig>(io_config);
 }
 
 /// Free the [`TokioRuntimeBuilder`].
 #[unsafe(no_mangle)]
-pub extern "C" fn free_tokio_runtime_builder(
-    writer: NonNull<CResult<TokioRuntimeBuilder>>,
-) {
-    from_nonnull(writer).free::<Builder>();
+pub extern "C" fn free_tokio_runtime_builder(builder: NonNull<TokioRuntimeBuilder>) {
+    let _ = from_opaque::<TokioRuntimeBuilder, Builder>(builder);
+}
+
+/// runtime is usually moved to create reader/writer,
+/// so you don't need to free it unless it's used independently
+///
+/// # Safety
+///
+/// * `runtime` must be a valid pointer to a [`CResult<TokioRuntime>`] struct
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn free_tokio_runtime(runtime: NonNull<TokioRuntime>) {
+    let _ = from_opaque::<TokioRuntime, Runtime>(runtime);
 }
 
 /// Create a new [`SyncSendableMutableLakeSoulWriter`] from the [`IOConfig`] and return a [`Writer`] wrapped in [`CResult`].
@@ -1193,7 +1202,7 @@ pub unsafe extern "C" fn write_record_batch_ipc_blocked(
     }
 }
 
-/// Export the byte result of the [`Writer`].
+/// Export the byte result to ffi side
 ///
 /// # Safety
 ///
@@ -1363,17 +1372,6 @@ pub unsafe extern "C" fn create_tokio_runtime_from_builder(
     convert_to_opaque(runtime)
 }
 
-/// runtime is usually moved to create reader/writer,
-/// so you don't need to free it unless it's used independently
-///
-/// # Safety
-///
-/// * `runtime` must be a valid pointer to a [`CResult<TokioRuntime>`] struct
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn free_tokio_runtime(runtime: NonNull<CResult<TokioRuntime>>) {
-    from_nonnull(runtime).free::<Runtime>();
-}
-
 /// Apply the partition filter to the [`entity::JniWrapper`] and return the [`BytesResult`] wrapped in [`CResult`].
 ///
 /// # Safety
@@ -1402,9 +1400,8 @@ pub unsafe extern "C" fn apply_partition_filter(
         let dst = slice::from_raw_parts(filter_addr as *const u8, filter_len as usize);
         let filter = Plan::decode(dst).unwrap();
 
-        let ffi_schema = schema_addr as *mut FFI_ArrowSchema;
-        let schema_data = std::ptr::replace(ffi_schema, FFI_ArrowSchema::empty());
-        let schema = SchemaRef::from(Schema::try_from(&schema_data).unwrap());
+        let ffi_schema = FFI_ArrowSchema::from_raw(schema_addr as *mut FFI_ArrowSchema);
+        let schema = SchemaRef::from(Schema::try_from(&ffi_schema).unwrap());
 
         let filtered_partition = helpers::apply_partition_filter(wrapper, schema, filter);
 
