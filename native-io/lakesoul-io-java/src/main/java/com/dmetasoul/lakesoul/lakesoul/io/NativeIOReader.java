@@ -62,14 +62,18 @@ public class NativeIOReader extends NativeIOBase implements AutoCloseable {
         assert ioConfigBuilder != null;
 
         tokioRuntime = libLakeSoulIO.create_tokio_runtime_from_builder(tokioRuntimeBuilder);
+        tokioRuntimeBuilder = null;
         config = libLakeSoulIO.create_lakesoul_io_config_from_builder(ioConfigBuilder);
         ioConfigBuilder = null;
         // tokioRuntime will be moved to reader
         reader = libLakeSoulIO.create_lakesoul_reader_from_config(config, tokioRuntime);
+        config = null;
         tokioRuntime = null;
         Pointer p = libLakeSoulIO.check_reader_created(reader);
         if (p != null) {
-            throw new IOException(p.getString(0));
+            String err = p.getString(0);
+            libLakeSoulIO.free_lakesoul_reader(p);
+            throw new IOException(err);
         }
         AtomicReference<String> errMsg = new AtomicReference<>();
         // startReader in C is a blocking call
@@ -135,10 +139,18 @@ public class NativeIOReader extends NativeIOBase implements AutoCloseable {
     }
 
     public int nextBatchBlocked(long arrayAddr) throws IOException {
+        AtomicReference<String> errMsg = new AtomicReference<>();
+        BooleanCallback nativeBooleanCallback = new BooleanCallback((status, err) -> {
+            if (!status && err != null) {
+                errMsg.set(err);
+            }
+        }, boolReferenceManager);
+        nativeBooleanCallback.registerReferenceKey();
+
         IntByReference count = new IntByReference();
-        String err = libLakeSoulIO.next_record_batch_blocked(reader, arrayAddr, count);
-        if (err != null) {
-            throw new IOException(err);
+        libLakeSoulIO.next_record_batch_blocked(reader, arrayAddr, count, nativeBooleanCallback);
+        if (errMsg.get() != null && !errMsg.get().isEmpty()) {
+            throw new IOException(errMsg.get());
         }
         return count.getValue();
     }

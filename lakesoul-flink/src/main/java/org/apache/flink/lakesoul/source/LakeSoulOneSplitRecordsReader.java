@@ -156,7 +156,18 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
                 projectedRowTypeWithPk,
                 cdcColumn,
                 filter);
-        reader.initializeReader();
+        try {
+            reader.initializeReader();
+        } catch (Throwable t) {
+            LOG.error("Failed to initialize LakeSoul Reader for split: {}", split, t);
+            try {
+                reader.close();
+            } catch (Exception e) {
+                t.addSuppressed(e);
+            }
+            if (t instanceof IOException) throw (IOException) t;
+            throw new IOException("Initialize native reader failed", t);
+        }
         this.reader = new LakeSoulArrowReader(reader,
                 10000);
         LOG.info("Initialized reader for split {}, time {}ms", split, System.currentTimeMillis() - startTime);

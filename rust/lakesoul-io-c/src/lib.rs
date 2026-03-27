@@ -226,6 +226,8 @@ pub unsafe extern "C" fn lakesoul_config_builder_add_filter(
 ///
 /// * `builder` must be a valid pointer to an [`IOConfigBuilder`]
 /// * `proto_addr` must be a valid pointer with `len` bytes available
+///
+/// panic on invalid protobuf
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lakesoul_config_builder_add_filter_proto(
     builder: NonNull<IOConfigBuilder>,
@@ -834,21 +836,22 @@ pub unsafe extern "C" fn next_record_batch_blocked(
     reader: NonNull<CResult<Reader>>,
     array_addr: c_ptrdiff_t,
     count: *mut c_int,
-) -> *const c_char {
+    callback: extern "C" fn(bool, *const c_char),
+) {
     unsafe {
         let reader = NonNull::new_unchecked(
             reader.as_ref().ptr as *mut SyncSendableMutableLakeSoulReader,
         );
         let result = reader.as_ref().next_rb_blocked();
-        match result {
+        let (status, err): (bool, *const c_char) = match result {
             None => {
                 *count = 0;
-                std::ptr::null()
+                (true, std::ptr::null())
             }
             Some(rb_result) => match rb_result {
                 Err(e) => {
                     *count = -1;
-                    CString::new(e.to_string()).unwrap().into_raw()
+                    (false, CString::new(e.to_string()).unwrap().into_raw())
                 }
                 Ok(rb) => {
                     let rows = rb.num_rows() as i32;
@@ -858,10 +861,11 @@ pub unsafe extern "C" fn next_record_batch_blocked(
                         .copy_to(array_addr as *mut FFI_ArrowArray, 1);
                     std::mem::forget(ffi_array);
                     *count = rows;
-                    std::ptr::null()
+                    (true, std::ptr::null())
                 }
             },
-        }
+        };
+        call_result_callback(callback, status, err);
     }
 }
 
@@ -976,6 +980,39 @@ pub unsafe extern "C" fn lakesoul_reader_get_schema(
 #[unsafe(no_mangle)]
 pub extern "C" fn free_lakesoul_reader(reader: NonNull<CResult<Reader>>) {
     from_nonnull(reader).free::<SyncSendableMutableLakeSoulReader>();
+}
+
+/// Free the [`Writer`].
+///
+/// for writer this is called when writer is failed to create
+#[unsafe(no_mangle)]
+pub extern "C" fn free_lakesoul_writer(writer: NonNull<CResult<Writer>>) {
+    from_nonnull(writer).free::<SyncSendableMutableLakeSoulWriter>();
+}
+
+/// Free the [`IOConfigBuiler`].
+///
+/// for writer this is called when writer is failed to create
+#[unsafe(no_mangle)]
+pub extern "C" fn free_lakesoul_io_config_builder(
+    writer: NonNull<CResult<IOConfigBuilder>>,
+) {
+    from_nonnull(writer).free::<LakeSoulIOConfigBuilder>();
+}
+
+/// Free the [`IOConfig`].
+///
+#[unsafe(no_mangle)]
+pub extern "C" fn free_lakesoul_io_config(writer: NonNull<CResult<IOConfig>>) {
+    from_nonnull(writer).free::<LakeSoulIOConfig>();
+}
+
+/// Free the [`TokioRuntimeBuilder`].
+#[unsafe(no_mangle)]
+pub extern "C" fn free_tokio_runtime_builder(
+    writer: NonNull<CResult<TokioRuntimeBuilder>>,
+) {
+    from_nonnull(writer).free::<Builder>();
 }
 
 /// Create a new [`SyncSendableMutableLakeSoulWriter`] from the [`IOConfig`] and return a [`Writer`] wrapped in [`CResult`].
@@ -1173,8 +1210,14 @@ pub unsafe extern "C" fn export_bytes_result(
 ) {
     unsafe {
         let len = len as usize;
-        let bytes =
-            NonNull::new_unchecked(bytes.as_ref().ptr as *mut Vec<c_uchar>).as_mut();
+
+        let mut c_result = from_nonnull(bytes);
+        let inner_ptr = c_result.ptr;
+
+        let mut bytes =
+            from_opaque::<BytesResult, Vec<c_uchar>>(NonNull::new_unchecked(inner_ptr));
+        c_result.ptr = std::ptr::null_mut::<BytesResult>();
+        c_result.free::<BytesResult>();
 
         if bytes.len() != len {
             call_result_callback(
@@ -1211,10 +1254,14 @@ pub unsafe extern "C" fn flush_and_close_writer(
     callback: I32ResultCallback,
 ) -> NonNull<CResult<BytesResult>> {
     unsafe {
+        let mut c_result = from_nonnull(writer);
+        let inner_ptr = c_result.ptr;
         let writer = from_opaque::<Writer, SyncSendableMutableLakeSoulWriter>(
-            NonNull::new_unchecked(writer.as_ref().ptr),
+            NonNull::new_unchecked(inner_ptr),
         );
         let result = writer.flush_and_close();
+        c_result.ptr = std::ptr::null_mut::<Writer>();
+        c_result.free::<Writer>();
         match result {
             Ok(bytes) => {
                 call_i32_result_callback(callback, bytes.len() as i32, std::ptr::null());
@@ -1245,10 +1292,14 @@ pub unsafe extern "C" fn abort_and_close_writer(
     callback: ResultCallback,
 ) {
     unsafe {
+        let mut c_result = from_nonnull(writer);
+        let inner_ptr = c_result.ptr;
         let writer = from_opaque::<Writer, SyncSendableMutableLakeSoulWriter>(
-            NonNull::new_unchecked(writer.as_ref().ptr),
+            NonNull::new_unchecked(inner_ptr),
         );
         let result = writer.abort_and_close();
+        c_result.ptr = std::ptr::null_mut::<Writer>();
+        c_result.free::<Writer>();
         match result {
             Ok(_) => call_result_callback(callback, true, std::ptr::null()),
             Err(e) => call_result_callback(

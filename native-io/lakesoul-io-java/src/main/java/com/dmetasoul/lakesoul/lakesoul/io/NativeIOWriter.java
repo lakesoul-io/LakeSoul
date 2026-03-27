@@ -19,6 +19,8 @@ import org.apache.arrow.util.Preconditions;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.ipc.ArrowStreamReader;
 import org.apache.arrow.vector.types.pojo.Schema;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -29,6 +31,8 @@ import java.util.stream.Collectors;
 import static com.dmetasoul.lakesoul.meta.DBConfig.TableInfoProperty.HASH_BUCKET_NUM;
 
 public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
+
+    private final static Logger LOG = LoggerFactory.getLogger(NativeIOWriter.class);
 
     private Pointer writer = null;
 
@@ -91,14 +95,18 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
         assert ioConfigBuilder != null;
 
         tokioRuntime = libLakeSoulIO.create_tokio_runtime_from_builder(tokioRuntimeBuilder);
+        tokioRuntimeBuilder = null;
         config = libLakeSoulIO.create_lakesoul_io_config_from_builder(ioConfigBuilder);
+        ioConfigBuilder = null;
         writer = libLakeSoulIO.create_lakesoul_writer_from_config(config, tokioRuntime);
-        // tokioRuntime will be moved to writer, we don't need to free it
+        config = null;
         tokioRuntime = null;
         Pointer p = libLakeSoulIO.check_writer_created(writer);
         if (p != null) {
             writer = null;
-            throw new IOException("Init native writer failed with error: " + p.getString(0));
+            String err = p.getString(0);
+            libLakeSoulIO.free_lakesoul_writer(writer);
+            throw new IOException("Init native writer failed with error: " + err);
         }
     }
 
@@ -116,17 +124,9 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
         int batchSize = 0;
         try (ArrowStreamReader reader = new ArrowStreamReader(new ByteArrayInputStream(encodedBatch), allocator)) {
             if (reader.loadNextBatch()) {
-                ArrowArray array = ArrowArray.allocateNew(allocator);
-                ArrowSchema schema = ArrowSchema.allocateNew(allocator);
                 VectorSchemaRoot batch = reader.getVectorSchemaRoot();
                 batchSize = batch.getRowCount();
-                Data.exportVectorSchemaRoot(allocator, batch, provider, array, schema);
-                String errMsg = libLakeSoulIO.write_record_batch_blocked(writer, schema.memoryAddress(), array.memoryAddress());
-                array.close();
-                schema.close();
-                if (errMsg != null && !errMsg.isEmpty()) {
-                    throw new IOException("Native writer write batch failed with error: " + errMsg);
-                }
+                this.write(batch);
             }
         }
         return batchSize;
@@ -136,11 +136,18 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
         ArrowArray array = ArrowArray.allocateNew(allocator);
         ArrowSchema schema = ArrowSchema.allocateNew(allocator);
         Data.exportVectorSchemaRoot(allocator, batch, provider, array, schema);
-        String errMsg = libLakeSoulIO.write_record_batch_blocked(writer, schema.memoryAddress(), array.memoryAddress());
+        AtomicReference<String> errMsg = new AtomicReference<>();
+        BooleanCallback nativeBooleanCallback = new BooleanCallback((status, err) -> {
+            if (!status && err != null) {
+                errMsg.set(err);
+            }
+        }, boolReferenceManager);
+        nativeBooleanCallback.registerReferenceKey();
+        libLakeSoulIO.write_record_batch_blocked(writer, schema.memoryAddress(), array.memoryAddress(), nativeBooleanCallback);
         array.close();
         schema.close();
-        if (errMsg != null && !errMsg.isEmpty()) {
-            throw new IOException("Native writer write batch failed with error: " + errMsg);
+        if (errMsg.get() != null && !errMsg.get().isEmpty()) {
+            throw new IOException("Native writer write batch failed with error: " + errMsg.get());
         }
     }
 
@@ -199,6 +206,7 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
         Pointer ptrResult = libLakeSoulIO.flush_and_close_writer(writer, nativeIntegerCallback);
         writer = null;
         if (errMsg.get() != null && !errMsg.get().isEmpty()) {
+            libLakeSoulIO.free_bytes_result(ptrResult);
             throw new IOException("Native writer flush failed with error: " + errMsg.get());
         }
 
@@ -221,7 +229,7 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
             }, boolReferenceManager);
             nativeBooleanCallback.registerReferenceKey();
             libLakeSoulIO.export_bytes_result(nativeBooleanCallback, ptrResult, len, buffer.address());
-
+            ptrResult = null;
             if (exported.get() != null && exported.get()) {
                 byte[] bytes = new byte[len];
                 buffer.get(0, bytes, 0, len);
@@ -246,6 +254,10 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
     }
 
     public void abort() throws IOException {
+        if (writer == null) {
+            return;
+        }
+        LOG.info("NativeIOWriter start abort");
         AtomicReference<String> errMsg = new AtomicReference<>();
         BooleanCallback nativeBooleanCallback = new BooleanCallback((status, err) -> {
             if (!status && err != null) {
@@ -262,9 +274,29 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
 
     @Override
     public void close() throws Exception {
-        if (writer != null) {
+        LOG.info("NativeIOWriter start close");
+        Throwable firstException = null;
+        try {
             abort();
+        } catch (Throwable t) {
+            firstException = t;
+        } finally {
+            try {
+                super.close();
+            } catch (Throwable t) {
+                if (firstException == null) {
+                    firstException = t;
+                } else {
+                    firstException.addSuppressed(t);
+                }
+            }
         }
-        super.close();
+        if (firstException != null) {
+            if (firstException instanceof Error) {
+                throw (Error) firstException;
+            } else {
+                throw (Exception) firstException;
+            }
+        }
     }
 }

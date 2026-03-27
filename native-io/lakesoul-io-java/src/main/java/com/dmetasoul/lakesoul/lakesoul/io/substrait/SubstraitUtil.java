@@ -254,6 +254,7 @@ public class SubstraitUtil {
             );
             Boolean b = importFuture.get(TIMEOUT, TimeUnit.MILLISECONDS);
             if (!b) {
+                LIB.free_bytes_result(filterResult);
                 throw new RuntimeException("applyPartitionFilters importFuture returned false");
             }
 

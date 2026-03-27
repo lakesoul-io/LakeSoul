@@ -88,21 +88,31 @@ public interface LibLakeSoulIO {
 
     void next_record_batch(Pointer reader, @LongLong long schemaAddr, @LongLong long arrayAddr, IntegerCallback callback);
 
-    String next_record_batch_blocked(Pointer reader, @LongLong long arrayAddr, @Out IntByReference count);
+    void next_record_batch_blocked(Pointer reader, @LongLong long arrayAddr, @Out IntByReference count, BooleanCallback callback);
 
     void write_record_batch(Pointer writer, @LongLong long schemaAddr, @LongLong long arrayAddr, BooleanCallback callback);
 
-    String write_record_batch_blocked(Pointer writer, @LongLong long schemaAddr, @LongLong long arrayAddr);
+    void write_record_batch_blocked(Pointer writer, @LongLong long schemaAddr, @LongLong long arrayAddr, BooleanCallback callback);
 
     String write_record_batch_ipc_blocked(Pointer writer, @LongLong long ipcAddr, @LongLong long len);
 
     void free_lakesoul_reader(Pointer reader);
+
+    void free_lakesoul_writer(Pointer writer);
 
     Pointer flush_and_close_writer(Pointer writer, IntegerCallback callback);
 
     void abort_and_close_writer(Pointer writer, BooleanCallback callback);
 
     void free_tokio_runtime(Pointer runtime);
+
+    void free_tokio_runtime_builder(Pointer builder);
+
+    void free_lakesoul_io_config(Pointer IOConfig);
+
+    void free_lakesoul_io_config_builder(Pointer builder);
+
+    void free_c_string(Pointer str);
 
     Pointer apply_partition_filter(IntegerCallback callback, int pbLen, long jniWrapperAddr, long schemaAddr, int filterLen, long filterAddr);
 
