@@ -241,6 +241,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
             if (totalRead >= this.limit) {
                 this.reader.close();
                 LOG.info("Reach limit condition {}", split);
+                this.reader = null;
                 return null;
             }
             if (curRecordIdx >= currentVCR.getRowCount()) {
@@ -250,6 +251,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
                     curRecordIdx = 0;
                 } else {
                     this.reader.close();
+                    this.reader = null;
                     LOG.info("Reach end of split file {}", split);
                     return null;
                 }
