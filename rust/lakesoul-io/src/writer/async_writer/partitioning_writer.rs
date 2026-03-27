@@ -403,45 +403,34 @@ impl AsyncBatchWriter for PartitioningAsyncWriter {
         self.buffered_size += memory_size;
         match send_result {
             Ok(_) => Ok(()),
-            // channel has been closed, indicating error happened during sort write
-            Err(e) => {
-                error!("Error sending record batch to sorter: {:?}", e);
-                // 1. 如果已经存过错误了，直接返回
-                if let Some(ref e) = self.err {
-                    return Err(report!("Previous error: {}", e));
-                }
+            // cannel has been closed, indicating error happened during sort write
+            Err(send_err) => {
+                error!("Error sending record batch to sorter: {}", send_err);
 
                 if let Some(task) = self.spawned_task.take() {
-                    match tokio::time::timeout(std::time::Duration::from_secs(5), task)
-                        .await
-                    {
-                        Ok(Ok(result)) => {
-                            self.err = result.err();
+                    match task.await {
+                        Ok(res) => {
+                            self.err = res.err();
                         }
-                        Ok(Err(join_err)) => {
+                        Err(join_err) => {
                             self.err = Some(report!(join_err).into_dynamic());
                         }
-                        Err(_) => {
-                            self.err = Some(
-                                report!("Task timeout during error recovery")
-                                    .into_dynamic(),
-                            );
-                        }
                     }
+                    info!("wait spawned tasks finished");
                 } else {
-                    self.err = Some(report!(format!("{e}")).into_dynamic());
+                    self.err = Some(report!(format!("{send_err}")).into_dynamic());
                 }
 
-                // 3. 确保最终一定返回一个有内容的错误
                 Err(self
                     .err
                     .as_ref()
                     .map(|e| report!("{e}"))
-                    .unwrap_or_else(|| report!("Channel closed due to {e})")))
+                    .unwrap_or_else(|| report!("write failed by {send_err})")))
             }
         }
     }
 
+    #[instrument(skip(self), err)]
     async fn flush_and_close(self: Box<Self>) -> Result<Vec<FlushOutput>> {
         if let Some(join_handle) = self.spawned_task {
             let sender = self.sorter_sender;
@@ -452,10 +441,11 @@ impl AsyncBatchWriter for PartitioningAsyncWriter {
             info!("flush completed");
             res
         } else {
-            bail!("aborted, cannot flush")
+            bail!("writer already aborted, cannot flush")
         }
     }
 
+    #[instrument(skip(self), err)]
     async fn abort_and_close(self: Box<Self>) -> Result<()> {
         if let Some(join_handle) = self.spawned_task {
             let sender = self.sorter_sender;
