@@ -71,8 +71,8 @@ public class NewCleanJob {
         StartupOptions startupOptions = StartupOptions.initial();
         if (startMode.equals("latest")) {
             startupOptions = StartupOptions.latest();
-        } else if (startMode.equals("earliest")) {
-            startupOptions = StartupOptions.earliest();
+        } else if (startMode.equals("earliest") || startMode.equals("initial")) {
+            startupOptions = StartupOptions.initial();
         }
 
         //int ontimerInterval = 60000;
