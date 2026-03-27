@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2023 LakeSoul Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-//! The C API for the [`lakesoul-io`] crate.
+//! The C API for the [`lakesoul-io`] crate
 
 extern crate core;
 #[macro_use]
@@ -35,7 +35,7 @@ pub type c_size_t = usize;
 #[allow(non_camel_case_types)]
 pub type c_ptrdiff_t = isize;
 
-/// Opaque wrapper for the result of a function call.
+/// Opaque wrapper for the result of a function call
 #[repr(C)]
 pub struct CResult<OpaqueT> {
     ptr: *mut OpaqueT,
@@ -69,219 +69,227 @@ impl<OpaqueT> CResult<OpaqueT> {
     }
 }
 
-/// Convert the object to a raw opaque pointer.
+/// Convert the object to a raw opaque pointer
 fn convert_to_opaque_raw<F, T>(obj: F) -> *mut T {
     Box::into_raw(Box::new(obj)) as *mut T
 }
 
-/// Convert the object to a [`NonNull`] opaque pointer.
+/// Convert the object to a [`NonNull`] opaque pointer
 fn convert_to_opaque<F, T>(obj: F) -> NonNull<T> {
     unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(obj)) as *mut T) }
 }
 
-/// Convert the [`NonNull`] opaque pointer to the object.
+/// Convert the [`NonNull`] opaque pointer to the object
 fn from_opaque<F, T>(obj: NonNull<F>) -> T {
     unsafe { *Box::from_raw(obj.as_ptr() as *mut T) }
 }
 
-/// Convert the object to a [`NonNull`] opaque pointer.
+/// Convert the object to a [`NonNull`] opaque pointer
 fn convert_to_nonnull<T>(obj: T) -> NonNull<T> {
     unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(obj))) }
 }
 
-/// Convert the [`NonNull`] opaque pointer to the object.
+/// Convert the [`NonNull`] opaque pointer to the object
 fn from_nonnull<T>(obj: NonNull<T>) -> T {
     unsafe { *Box::from_raw(obj.as_ptr()) }
 }
 
-// C interface for lakesoul native io
-
-// opaque types to pass as raw pointers
-
-/// The opaque builder of the IO config.
+/// The opaque builder of the IO config
 #[repr(C)]
 pub struct IOConfigBuilder {
     private: [u8; 0],
 }
 
-/// The opaque IO config.
+/// The opaque IO config
 #[repr(C)]
 pub struct IOConfig {
     private: [u8; 0],
 }
 
-/// The opaque reader.
+/// The opaque reader
 #[repr(C)]
 pub struct Reader {
     private: [u8; 0],
 }
 
-/// The opaque writer.
+/// The opaque writer
 #[repr(C)]
 pub struct Writer {
     private: [u8; 0],
 }
 
-/// The opaque bytes result.
+/// The opaque bytes result
 #[repr(C)]
 pub struct BytesResult {
     private: [u8; 0],
 }
 
-/// Create a new [`IOConfigBuilder`].
+/// Create a new [`IOConfigBuilder`]
 #[unsafe(no_mangle)]
 pub extern "C" fn new_lakesoul_io_config_builder() -> NonNull<IOConfigBuilder> {
     convert_to_opaque(LakeSoulIOConfigBuilder::new())
 }
 
-/// Set the prefix of the IO config.
+/// Set the prefix of the IO config
+///
 /// # Safety
 ///
-/// `prefix` must be a valid pointer to a null-terminated string.
+/// * `builder` must be a valid pointer to an [`IOConfigBuilder`]
+/// * `prefix` must be a valid pointer to a c-string (null-terminated string)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lakesoul_config_builder_with_prefix(
     builder: NonNull<IOConfigBuilder>,
     prefix: *const c_char,
 ) -> NonNull<IOConfigBuilder> {
-    unsafe {
-        let prefix = CStr::from_ptr(prefix).to_str().unwrap().to_string();
-        convert_to_opaque(
-            from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
-                .with_prefix(prefix),
-        )
-    }
+    let prefix = unsafe { CStr::from_ptr(prefix).to_str().unwrap().to_string() };
+    convert_to_opaque(
+        from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
+            .with_prefix(prefix),
+    )
 }
 
-/// Add a single file to the IO config.
+/// Add a single file to the IO config
+///
 /// # Safety
 ///
-/// `file` must be a valid pointer to a null-terminated string.
+/// * `builder` must be a valid pointer to an [`IOConfigBuilder`]
+/// * `file` must be a valid pointer to a c-string (null-terminated string)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lakesoul_config_builder_add_single_file(
     builder: NonNull<IOConfigBuilder>,
     file: *const c_char,
 ) -> NonNull<IOConfigBuilder> {
-    unsafe {
-        let file = CStr::from_ptr(file).to_str().unwrap().to_string();
-        convert_to_opaque(
-            from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
-                .with_file(file),
-        )
-    }
+    let file = unsafe { CStr::from_ptr(file).to_str().unwrap().to_string() };
+    convert_to_opaque(
+        from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_file(file),
+    )
 }
 
-/// Add a single column to the IO config.
+/// Add a single column to the IO config
+///
 /// # Safety
 ///
-/// `column` must be a valid pointer to a null-terminated string.
+/// * `builder` must be a valid pointer to an [`IOConfigBuilder`]
+/// * `column` must be a valid pointer to a c-string (null-terminated string)
 #[unsafe(no_mangle)]
 #[allow(deprecated)]
 pub unsafe extern "C" fn lakesoul_config_builder_add_single_column(
     builder: NonNull<IOConfigBuilder>,
     column: *const c_char,
 ) -> NonNull<IOConfigBuilder> {
-    unsafe {
-        let column = CStr::from_ptr(column).to_str().unwrap().to_string();
-        convert_to_opaque(
-            from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
-                .with_column(column),
-        )
-    }
+    let column = unsafe { CStr::from_ptr(column).to_str().unwrap().to_string() };
+    convert_to_opaque(
+        from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
+            .with_column(column),
+    )
 }
 
-/// Add a single aux sort column to the IO config.
+/// Add a single aux sort column to the IO config
+///
 /// # Safety
 ///
-/// `column` must be a valid pointer to a null-terminated string.
+/// * `builder` must be a valid pointer to an [`IOConfigBuilder`]
+/// * `column` must be a valid pointer to a c-string (null-terminated string)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lakesoul_config_builder_add_single_aux_sort_column(
     builder: NonNull<IOConfigBuilder>,
     column: *const c_char,
 ) -> NonNull<IOConfigBuilder> {
-    unsafe {
-        let column = CStr::from_ptr(column).to_str().unwrap().to_string();
-        convert_to_opaque(
-            from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
-                .with_aux_sort_column(column),
-        )
-    }
+    let column = unsafe { CStr::from_ptr(column).to_str().unwrap().to_string() };
+    convert_to_opaque(
+        from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
+            .with_aux_sort_column(column),
+    )
 }
 
-/// Add a filter to the IO config.
+/// Add a filter to the IO config
+///
 /// # Safety
 ///
-/// `filter` must be a valid pointer to a null-terminated string.
+/// * `builder` must be a valid pointer to an [`IOConfigBuilder`]
+/// * `filter` must be a valid pointer to a c-string (null-terminated string)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lakesoul_config_builder_add_filter(
     builder: NonNull<IOConfigBuilder>,
     filter: *const c_char,
 ) -> NonNull<IOConfigBuilder> {
-    unsafe {
-        let filter = CStr::from_ptr(filter).to_str().unwrap().to_string();
-        convert_to_opaque(
-            from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
-                .with_filter_str(filter),
-        )
-    }
+    let filter = unsafe { CStr::from_ptr(filter).to_str().unwrap().to_string() };
+    convert_to_opaque(
+        from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
+            .with_filter_str(filter),
+    )
 }
 
-/// Add a filter to the IO config from a protobuf.
+/// Add a filter to the IO config from a protobuf
+///
+/// # Safety
+///
+/// * `builder` must be a valid pointer to an [`IOConfigBuilder`]
+/// * `proto_addr` must be a valid pointer with `len` bytes available
 #[unsafe(no_mangle)]
-pub extern "C" fn lakesoul_config_builder_add_filter_proto(
+pub unsafe extern "C" fn lakesoul_config_builder_add_filter_proto(
     builder: NonNull<IOConfigBuilder>,
     proto_addr: c_ptrdiff_t,
     len: i32,
 ) -> NonNull<IOConfigBuilder> {
-    unsafe {
-        debug!("proto_addr: {:#x}, len:{}", proto_addr, len);
-        let dst: &mut [u8] =
-            slice::from_raw_parts_mut(proto_addr as *mut u8, len as usize);
-        let plan = Plan::decode(&*dst).unwrap();
-        debug!("{:#?}", plan);
-        convert_to_opaque(
-            from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
-                .with_filter_proto(plan),
-        )
-    }
+    debug!("proto_addr: {:#x}, len:{}", proto_addr, len);
+    let dst: &mut [u8] =
+        unsafe { slice::from_raw_parts_mut(proto_addr as *mut u8, len as usize) };
+    let plan = Plan::decode(&*dst).unwrap();
+    debug!("{:#?}", plan);
+    convert_to_opaque(
+        from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
+            .with_filter_proto(plan),
+    )
 }
 
-/// Set the schema of the IO config.
+/// Set the schema of the IO config
+///
+/// # Safety
+///
+/// * `builder` must be a valid pointer to an [`IOConfigBuilder`]
+/// * `schema_addr` must be a valid pointer to an [`FFI_ArrowSchema`]
 #[unsafe(no_mangle)]
-pub extern "C" fn lakesoul_config_builder_set_schema(
+pub unsafe extern "C" fn lakesoul_config_builder_set_schema(
     builder: NonNull<IOConfigBuilder>,
     schema_addr: c_ptrdiff_t,
 ) -> NonNull<IOConfigBuilder> {
-    unsafe {
-        let ffi_schema = schema_addr as *mut FFI_ArrowSchema;
-        let schema_data = std::ptr::replace(ffi_schema, FFI_ArrowSchema::empty());
-        let schema = Schema::try_from(&schema_data).unwrap();
-        convert_to_opaque(
-            from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
-                .with_schema(Arc::new(schema)),
-        )
-    }
+    let ffi_schema = schema_addr as *mut FFI_ArrowSchema;
+    let schema_data = unsafe { std::ptr::replace(ffi_schema, FFI_ArrowSchema::empty()) };
+    let schema = Schema::try_from(&schema_data).unwrap();
+    convert_to_opaque(
+        from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
+            .with_schema(Arc::new(schema)),
+    )
 }
 
-/// Set the partition schema of the IO config.
+/// Set the partition schema of the IO config
+///
+/// # Safety
+///
+/// * `builder` must be a valid pointer to an [`IOConfigBuilder`]
+/// * `schema_addr` must be a valid pointer to an [`FFI_ArrowSchema`]
 #[unsafe(no_mangle)]
-pub extern "C" fn lakesoul_config_builder_set_partition_schema(
+pub unsafe extern "C" fn lakesoul_config_builder_set_partition_schema(
     builder: NonNull<IOConfigBuilder>,
     schema_addr: c_ptrdiff_t,
 ) -> NonNull<IOConfigBuilder> {
-    unsafe {
-        let ffi_schema = schema_addr as *mut FFI_ArrowSchema;
-        let schema_data = std::ptr::replace(ffi_schema, FFI_ArrowSchema::empty());
-        let schema = Schema::try_from(&schema_data).unwrap();
-        convert_to_opaque(
-            from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
-                .with_partition_schema(Arc::new(schema)),
-        )
-    }
+    let ffi_schema = schema_addr as *mut FFI_ArrowSchema;
+    let schema_data = unsafe { std::ptr::replace(ffi_schema, FFI_ArrowSchema::empty()) };
+    let schema = Schema::try_from(&schema_data).unwrap();
+    convert_to_opaque(
+        from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
+            .with_partition_schema(Arc::new(schema)),
+    )
 }
 
-/// Set the thread number of the IO config.
+/// Set the thread number of the IO config
+///
+/// # Safety
+///
+/// * `builder` must be a valid pointer to an [`IOConfigBuilder`]
 #[unsafe(no_mangle)]
-pub extern "C" fn lakesoul_config_builder_set_thread_num(
+pub unsafe extern "C" fn lakesoul_config_builder_set_thread_num(
     builder: NonNull<IOConfigBuilder>,
     thread_num: c_size_t,
 ) -> NonNull<IOConfigBuilder> {
@@ -291,9 +299,13 @@ pub extern "C" fn lakesoul_config_builder_set_thread_num(
     )
 }
 
-/// Set whether to use dynamic partition of the IO config.
+/// Set whether to use dynamic partition of the IO config
+///
+/// # Safety
+///
+/// * `builder` must be a valid pointer to an [`IOConfigBuilder`]
 #[unsafe(no_mangle)]
-pub extern "C" fn lakesoul_config_builder_set_dynamic_partition(
+pub unsafe extern "C" fn lakesoul_config_builder_set_dynamic_partition(
     builder: NonNull<IOConfigBuilder>,
     enable: bool,
 ) -> NonNull<IOConfigBuilder> {
@@ -303,9 +315,13 @@ pub extern "C" fn lakesoul_config_builder_set_dynamic_partition(
     )
 }
 
-/// Set whether to infer the schema of the IO config.
+/// Set whether to infer the schema of the IO config
+///
+/// # Safety
+///
+/// * `builder` must be a valid pointer to an [`IOConfigBuilder`]
 #[unsafe(no_mangle)]
-pub extern "C" fn lakesoul_config_builder_set_inferring_schema(
+pub unsafe extern "C" fn lakesoul_config_builder_set_inferring_schema(
     builder: NonNull<IOConfigBuilder>,
     enable: bool,
 ) -> NonNull<IOConfigBuilder> {
@@ -315,9 +331,14 @@ pub extern "C" fn lakesoul_config_builder_set_inferring_schema(
     )
 }
 
-/// Set the batch size of the IO config.
+/// Set the batch size of the IO config
+///
+/// # Safety
+///
+/// * `builder` must be a valid pointer to an [`IOConfigBuilder`]
+/// * `batch_size` must be a valid batch size.
 #[unsafe(no_mangle)]
-pub extern "C" fn lakesoul_config_builder_set_batch_size(
+pub unsafe extern "C" fn lakesoul_config_builder_set_batch_size(
     builder: NonNull<IOConfigBuilder>,
     batch_size: c_size_t,
 ) -> NonNull<IOConfigBuilder> {
@@ -327,9 +348,13 @@ pub extern "C" fn lakesoul_config_builder_set_batch_size(
     )
 }
 
-/// Set the max row group size of the IO config.
+/// Set the max row group size of the IO config
+///
+/// # Safety
+///
+/// * `builder` must be a valid pointer to an [`IOConfigBuilder`]
 #[unsafe(no_mangle)]
-pub extern "C" fn lakesoul_config_builder_set_max_row_group_size(
+pub unsafe extern "C" fn lakesoul_config_builder_set_max_row_group_size(
     builder: NonNull<IOConfigBuilder>,
     max_row_group_size: c_size_t,
 ) -> NonNull<IOConfigBuilder> {
@@ -339,9 +364,13 @@ pub extern "C" fn lakesoul_config_builder_set_max_row_group_size(
     )
 }
 
-/// Set the max row group num values of the IO config.
+/// Set the max row group num values of the IO config
+///
+/// # Safety
+///
+/// * `builder` must be a valid pointer to an [`IOConfigBuilder`]
 #[unsafe(no_mangle)]
-pub extern "C" fn lakesoul_config_builder_set_max_row_group_num_values(
+pub unsafe extern "C" fn lakesoul_config_builder_set_max_row_group_num_values(
     builder: NonNull<IOConfigBuilder>,
     max_row_group_num_values: c_size_t,
 ) -> NonNull<IOConfigBuilder> {
@@ -351,9 +380,13 @@ pub extern "C" fn lakesoul_config_builder_set_max_row_group_num_values(
     )
 }
 
-/// Set the buffer size of the IO config.
+/// Set the buffer size of the IO config
+///
+/// # Safety
+///
+/// * `builder` must be a valid pointer to an [`IOConfigBuilder`]
 #[unsafe(no_mangle)]
-pub extern "C" fn lakesoul_config_builder_set_buffer_size(
+pub unsafe extern "C" fn lakesoul_config_builder_set_buffer_size(
     builder: NonNull<IOConfigBuilder>,
     buffer_size: c_size_t,
 ) -> NonNull<IOConfigBuilder> {
@@ -364,8 +397,12 @@ pub extern "C" fn lakesoul_config_builder_set_buffer_size(
 }
 
 /// Set the hash bucket number of the IO config.
+///
+/// # Safety
+///
+/// * `builder` must be a valid pointer to an [`IOConfigBuilder`]
 #[unsafe(no_mangle)]
-pub extern "C" fn lakesoul_config_builder_set_hash_bucket_num(
+pub unsafe extern "C" fn lakesoul_config_builder_set_hash_bucket_num(
     builder: NonNull<IOConfigBuilder>,
     hash_bucket_num: c_size_t,
 ) -> NonNull<IOConfigBuilder> {
@@ -376,9 +413,11 @@ pub extern "C" fn lakesoul_config_builder_set_hash_bucket_num(
 }
 
 /// Set the object store option of the IO config.
+///
 /// # Safety
 ///
-/// `key` and `value` must be valid pointers to null-terminated strings.
+/// * `builder` must be a valid pointer to an [`IOConfigBuilder`]
+/// * `key` and `value` must be valid pointers to c-string (null-terminated string)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lakesoul_config_builder_set_object_store_option(
     builder: NonNull<IOConfigBuilder>,
@@ -398,7 +437,8 @@ pub unsafe extern "C" fn lakesoul_config_builder_set_object_store_option(
 /// Add a option to the IO config.
 /// # Safety
 ///
-/// `key` and `value` must be valid pointers to null-terminated strings.
+/// * `builder` must be a valid pointer to an [`IOConfigBuilder`]
+/// * `key` and `value` must be valid pointers to c-strings (null-terminated strings)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lakesoul_config_builder_set_option(
     builder: NonNull<IOConfigBuilder>,
@@ -416,10 +456,11 @@ pub unsafe extern "C" fn lakesoul_config_builder_set_option(
 }
 
 /// Add a files to the IO config.
+///
 /// # Safety
 ///
-/// `files` must be a valid pointer to an array of pointers to null-terminated strings.
-/// Elements must be valid pointers to null-terminated strings.
+/// * `builder` must be a valid pointer to an [`IOConfigBuilder`]
+/// * `files` must be a valid pointer to an array of pointers to c-strings (null-terminated strings) with `file_num` elements.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lakesoul_config_builder_add_files(
     builder: NonNull<IOConfigBuilder>,
@@ -442,9 +483,11 @@ pub unsafe extern "C" fn lakesoul_config_builder_add_files(
 }
 
 /// Add a single primary key to the IO config.
+///
 /// # Safety
 ///
-/// `pk` must be a valid pointer to a null-terminated string.
+/// * `builder` must be a valid pointer to an [`IOConfigBuilder`]
+/// * `pk` must be a valid pointer to a c-string (null-terminated string)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lakesoul_config_builder_add_single_primary_key(
     builder: NonNull<IOConfigBuilder>,
@@ -460,9 +503,11 @@ pub unsafe extern "C" fn lakesoul_config_builder_add_single_primary_key(
 }
 
 /// Add a single range partition to the IO config.
+///
 /// # Safety
 ///
-/// `col` must be a valid pointer to a null-terminated string.
+/// * `builder` must be a valid pointer to an [`IOConfigBuilder`]
+/// * `col` must be a valid pointer to a c-string (null-terminated string)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lakesoul_config_builder_add_single_range_partition(
     builder: NonNull<IOConfigBuilder>,
@@ -478,9 +523,11 @@ pub unsafe extern "C" fn lakesoul_config_builder_add_single_range_partition(
 }
 
 /// Add a merge operation to the IO config.
+///
 /// # Safety
 ///
-/// `field` and `merge_op` must be valid pointers to null-terminated strings.
+/// * `builder` must be a valid pointer to an [`IOConfigBuilder`]
+/// * `field` and `merge_op` must be valid pointers to c-string (null-terminated string)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lakesoul_config_builder_add_merge_op(
     builder: NonNull<IOConfigBuilder>,
@@ -497,11 +544,12 @@ pub unsafe extern "C" fn lakesoul_config_builder_add_merge_op(
     }
 }
 
-/// Add collection of primary keys to the IO config.
+/// Add collection of primary keys to the IO config
+///
 /// # Safety
 ///
-/// `pks` must be a valid pointer to an array of pointers to null-terminated strings.
-/// Elements must be valid pointers to null-terminated strings.
+/// * `builder` must be a valid pointer to an [`IOConfigBuilder`]
+/// * `pks` must be a valid pointer to an array of pointers to c-string (null-terminated string) with `pk_num` elements
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lakesoul_config_builder_add_primary_keys(
     builder: NonNull<IOConfigBuilder>,
@@ -524,9 +572,11 @@ pub unsafe extern "C" fn lakesoul_config_builder_add_primary_keys(
 }
 
 /// Set the default column value of the IO config.
+///
 /// # Safety
 ///
-/// `field` and `value` must be valid pointers to null-terminated strings.
+/// * `builder` must be a valid pointer to a [`IOConfigBuilder`] struct
+/// * `field` and `value` must be valid pointers to c-string (null-terminated string)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lakesoul_config_builder_set_default_column_value(
     builder: NonNull<IOConfigBuilder>,
@@ -543,9 +593,7 @@ pub unsafe extern "C" fn lakesoul_config_builder_set_default_column_value(
     }
 }
 
-// C interface for reader
-
-/// Create a new [`IOConfig`] from the [`IOConfigBuilder`].
+/// Create a new [`IOConfig`] from the [`IOConfigBuilder`]
 #[unsafe(no_mangle)]
 pub extern "C" fn create_lakesoul_io_config_from_builder(
     builder: NonNull<IOConfigBuilder>,
@@ -555,7 +603,8 @@ pub extern "C" fn create_lakesoul_io_config_from_builder(
     )
 }
 
-/// Create a new [`SyncSendableMutableLakeSoulReader`] from the [`IOConfig`] and return a [`Reader`] wrapped in [`CResult`].
+/// Create a new [`SyncSendableMutableLakeSoulReader`] from the [`IOConfig`]
+/// and return a [`Reader`] wrapped in [`CResult`]
 #[unsafe(no_mangle)]
 pub extern "C" fn create_lakesoul_reader_from_config(
     config: NonNull<IOConfig>,
@@ -586,12 +635,12 @@ pub extern "C" fn check_reader_created(
     }
 }
 
-/// The callback function with bool result and error string.
+/// The callback function with bool result and error string
 pub type ResultCallback = extern "C" fn(bool, *const c_char);
-/// The callback function with bool result, error string and data pointer.
+/// The callback function with bool result, error string and data pointer
 pub type DataResultCallback = extern "C" fn(bool, *const c_char, *const c_void);
 
-/// Function to call the callback function with bool result and error string.
+/// Function to call the callback function with bool result and error string
 fn call_result_callback(callback: ResultCallback, status: bool, err: *const c_char) {
     callback(status, err);
     // release error string
@@ -609,10 +658,10 @@ fn call_data_result_callback(
     err: *const c_char,
     data: Cvoid,
 ) {
-    // release error string
     callback(status, err, data.data);
     if !err.is_null() {
         unsafe {
+            // release error string
             let _ = CString::from_raw(err as *mut c_char);
         }
     }
@@ -654,9 +703,14 @@ fn call_i32_data_result_callback(
     }
 }
 
-/// Call [`SyncSendableMutableLakeSoulReader::start_blocked`] of the [`Reader`].
+/// Call [`SyncSendableMutableLakeSoulReader::start_blocked`] of the [`Reader`]
+///
+/// # Safety
+///
+/// * `reader` must be a valid pointer to a [`CResult<Reader>`] struct
+/// * `callback` must be a safe function pointer.
 #[unsafe(no_mangle)]
-pub extern "C" fn start_reader(
+pub unsafe extern "C" fn start_reader(
     reader: NonNull<CResult<Reader>>,
     callback: ResultCallback,
 ) {
@@ -676,9 +730,15 @@ pub extern "C" fn start_reader(
     }
 }
 
-/// Call [`SyncSendableMutableLakeSoulReader::start_blocked`] of the [`Reader`] with data.
+/// Call [`SyncSendableMutableLakeSoulReader::start_blocked`] of the [`Reader`] with data
+///
+/// # Safety
+///
+/// * `reader` must be a valid pointer to a [`CResult<Reader>`] struct
+/// * `data` must be a valid pointer to the data to be passed to the reader
+/// * `callback` must be a safe function pointer
 #[unsafe(no_mangle)]
-pub extern "C" fn start_reader_with_data(
+pub unsafe extern "C" fn start_reader_with_data(
     reader: NonNull<CResult<Reader>>,
     data: *const c_void,
     callback: DataResultCallback,
@@ -701,9 +761,16 @@ pub extern "C" fn start_reader_with_data(
     }
 }
 
-/// Call [`SyncSendableMutableLakeSoulReader::next_rb_callback`] of the [`Reader`].
+/// Call [`SyncSendableMutableLakeSoulReader::next_rb_callback`] of the [`Reader`]
+///
+/// # Safety
+///
+/// * `reader` must be a valid pointer to a [`CResult<Reader>`] struct
+/// * `schema_addr` must be a valid pointer to the schema address
+/// * `array_addr` must be a valid pointer to the array address
+/// * `callback` must be a safe function pointer
 #[unsafe(no_mangle)]
-pub extern "C" fn next_record_batch(
+pub unsafe extern "C" fn next_record_batch(
     reader: NonNull<CResult<Reader>>,
     schema_addr: c_ptrdiff_t,
     array_addr: c_ptrdiff_t,
@@ -755,10 +822,13 @@ pub extern "C" fn next_record_batch(
     }
 }
 
-/// Call [`SyncSendableMutableLakeSoulReader::next_rb_blocked`] of the [`Reader`].
+/// Call [`SyncSendableMutableLakeSoulReader::next_rb_blocked`] of the [`Reader`]
+///
 /// # Safety
 ///
-/// `count` must be a valid pointer to an integer.
+/// * `reader` must be a valid pointer to a [`CResult<Reader>`] struct
+/// * `array_addr` must be a valid pointer to the array address
+/// * `count` must be a valid pointer to an integer
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn next_record_batch_blocked(
     reader: NonNull<CResult<Reader>>,
@@ -805,12 +875,17 @@ unsafe impl Send for Cvoid {}
 
 unsafe impl Sync for Cvoid {}
 
-/// Call [`SyncSendableMutableLakeSoulReader::next_rb_callback`] of the [`Reader`].
+/// Call [`SyncSendableMutableLakeSoulReader::next_rb_callback`] of the [`Reader`]
+///
 /// # Safety
 ///
-/// `data` must be a valid pointer
+/// * `reader` must be a valid pointer to a [`CResult<Reader>`] struct
+/// * `schema_addr` must be a valid pointer to the schema address
+/// * `array_addr` must be a valid pointer to the array address
+/// * `data` must be a valid pointer
+/// * `callback` must be a valid callback function
 #[unsafe(no_mangle)]
-pub extern "C" fn next_record_batch_with_data(
+pub unsafe extern "C" fn next_record_batch_with_data(
     reader: NonNull<CResult<Reader>>,
     schema_addr: c_ptrdiff_t,
     array_addr: c_ptrdiff_t,
@@ -872,8 +947,13 @@ pub extern "C" fn next_record_batch_with_data(
 }
 
 /// Export the schema of the [`Reader`].
+///
+/// # Safety
+///
+/// * `reader` must be a valid pointer to a [`CResult<Reader>`] struct
+/// * `schema_addr` must be a valid pointer to the schema address
 #[unsafe(no_mangle)]
-pub extern "C" fn lakesoul_reader_get_schema(
+pub unsafe extern "C" fn lakesoul_reader_get_schema(
     reader: NonNull<CResult<Reader>>,
     schema_addr: c_ptrdiff_t,
 ) {
@@ -898,11 +978,14 @@ pub extern "C" fn free_lakesoul_reader(reader: NonNull<CResult<Reader>>) {
     from_nonnull(reader).free::<SyncSendableMutableLakeSoulReader>();
 }
 
-// C interface for writer
-
 /// Create a new [`SyncSendableMutableLakeSoulWriter`] from the [`IOConfig`] and return a [`Writer`] wrapped in [`CResult`].
+///
+/// # Safety
+///
+/// * `io_config` must be a valid pointer to an [`IOConfig`] struct
+/// * `runtime` must be a valid pointer to a [`TokioRuntime`] struct
 #[unsafe(no_mangle)]
-pub extern "C" fn create_lakesoul_writer_from_config(
+pub unsafe extern "C" fn create_lakesoul_writer_from_config(
     io_config: NonNull<IOConfig>,
     runtime: NonNull<TokioRuntime>,
 ) -> NonNull<CResult<Writer>> {
@@ -916,8 +999,13 @@ pub extern "C" fn create_lakesoul_writer_from_config(
     convert_to_nonnull(result)
 }
 
+/// Check if the [`Writer`] was created successfully.
+///
+/// # Safety
+///
+/// * `writer` must be a valid pointer to a [`CResult<Writer>`] struct
 #[unsafe(no_mangle)]
-pub extern "C" fn check_writer_created(
+pub unsafe extern "C" fn check_writer_created(
     writer: NonNull<CResult<Reader>>,
 ) -> *const c_char {
     unsafe {
@@ -930,8 +1018,15 @@ pub extern "C" fn check_writer_created(
 }
 
 /// Call [`SyncSendableMutableLakeSoulWriter::write_batch`] of the [`Writer`] with callback.
+///
+/// # Safety
+///
+/// * `writer` must be a valid pointer to a [`CResult<Writer>`] struct
+/// * `schema_addr` must be a valid pointer to the schema address
+/// * `array_addr` must be a valid pointer to the array address
+/// * `callback` must be a valid pointer to a [`ResultCallback`] function
 #[unsafe(no_mangle)]
-pub extern "C" fn write_record_batch(
+pub unsafe extern "C" fn write_record_batch(
     writer: NonNull<CResult<Writer>>,
     schema_addr: c_ptrdiff_t,
     array_addr: c_ptrdiff_t,
@@ -969,8 +1064,14 @@ pub extern "C" fn write_record_batch(
 }
 
 /// Call [`SyncSendableMutableLakeSoulWriter::write_batch`] of the [`Writer`] by blocking mode.
+///
+/// # Safety
+///
+/// * `writer` must be a valid pointer to a [`CResult<Writer>`] struct
+/// * `schema_addr` must be a valid pointer to the schema address
+/// * `array_addr` must be a valid pointer to the array address
 #[unsafe(no_mangle)]
-pub extern "C" fn write_record_batch_blocked(
+pub unsafe extern "C" fn write_record_batch_blocked(
     writer: NonNull<CResult<Writer>>,
     schema_addr: c_ptrdiff_t,
     array_addr: c_ptrdiff_t,
@@ -1002,88 +1103,110 @@ pub extern "C" fn write_record_batch_blocked(
     }
 }
 
-/// Call [`SyncSendableMutableLakeSoulWriter::write_batch`] of the [`Writer`] by blocking mode, record batch is read from ipc protocol.
+/// Call [`SyncSendableMutableLakeSoulWriter::write_batch`] of the [`Writer`] by blocking mode,
+/// record batch is read from ipc protocol.
+///
+/// # Safety
+///
+/// * `writer` must be a valid pointer to a [`CResult<Writer>`] struct
+/// * `ipc_addr` must be a valid pointer to the ipc address
+/// * `len` must be the length of the ipc data
 #[unsafe(no_mangle)]
-pub extern "C" fn write_record_batch_ipc_blocked(
+pub unsafe extern "C" fn write_record_batch_ipc_blocked(
     writer: NonNull<CResult<Writer>>,
     ipc_addr: c_ptrdiff_t,
     len: i64,
 ) -> *const c_char {
-    let writer = unsafe {
-        NonNull::new_unchecked(
+    unsafe {
+        let writer = NonNull::new_unchecked(
             writer.as_ref().ptr as *mut SyncSendableMutableLakeSoulWriter,
         )
-        .as_mut()
-    };
-    let raw_parts =
-        unsafe { std::slice::from_raw_parts(ipc_addr as *const u8, len as usize) };
+        .as_mut();
 
-    let reader = std::io::Cursor::new(raw_parts);
-    let mut reader = arrow_ipc::reader::StreamReader::try_new(reader, None).unwrap();
-    let mut row_count = 0;
-    loop {
-        if reader.is_finished() {
-            break;
-        }
-        match reader.next().transpose() {
-            Ok(Some(batch)) => {
-                let num_rows = batch.num_rows();
-                match writer.write_batch(batch) {
-                    Ok(_) => row_count += num_rows,
-                    Err(e) => {
-                        return CString::new(e.to_string()).unwrap().into_raw();
-                    }
-                }
-            }
-            Ok(None) => {
+        let raw_parts = std::slice::from_raw_parts(ipc_addr as *const u8, len as usize);
+
+        let reader = std::io::Cursor::new(raw_parts);
+        let mut reader = arrow_ipc::reader::StreamReader::try_new(reader, None).unwrap();
+        let mut row_count = 0;
+        loop {
+            if reader.is_finished() {
                 break;
             }
-            Err(e) => {
-                return CString::new(e.to_string()).unwrap().into_raw();
+            match reader.next().transpose() {
+                Ok(Some(batch)) => {
+                    let num_rows = batch.num_rows();
+                    match writer.write_batch(batch) {
+                        Ok(_) => row_count += num_rows,
+                        Err(e) => {
+                            return CString::new(e.to_string()).unwrap().into_raw();
+                        }
+                    }
+                }
+                Ok(None) => {
+                    break;
+                }
+                Err(e) => {
+                    return CString::new(e.to_string()).unwrap().into_raw();
+                }
             }
         }
+        CString::new(format!("Number of rows: {}", row_count))
+            .unwrap()
+            .into_raw()
     }
-    CString::new(format!("Number of rows: {}", row_count))
-        .unwrap()
-        .into_raw()
 }
 
 /// Export the byte result of the [`Writer`].
+///
+/// # Safety
+///
+/// * `callback` must be a valid function pointer
+/// * `bytes` must be a valid pointer to a [`CResult<BytesResult>`] struct
+/// * `len` must be the length of the byte result
+/// * `addr` must be a valid pointer to the byte result
 #[unsafe(no_mangle)]
-pub extern "C" fn export_bytes_result(
+pub unsafe extern "C" fn export_bytes_result(
     callback: extern "C" fn(bool, *const c_char),
     bytes: NonNull<CResult<BytesResult>>,
     len: i32,
     addr: c_ptrdiff_t,
 ) {
-    let len = len as usize;
-    let bytes = unsafe {
-        NonNull::new_unchecked(bytes.as_ref().ptr as *mut Vec<c_uchar>).as_mut()
-    };
+    unsafe {
+        let len = len as usize;
+        let bytes =
+            NonNull::new_unchecked(bytes.as_ref().ptr as *mut Vec<c_uchar>).as_mut();
 
-    if bytes.len() != len {
-        call_result_callback(
-            callback,
-            false,
-            CString::new("Size of buffer and result mismatch at export_bytes_result.")
+        if bytes.len() != len {
+            call_result_callback(
+                callback,
+                false,
+                CString::new(
+                    "Size of buffer and result mismatch at export_bytes_result.",
+                )
                 .unwrap()
                 .into_raw(),
-        );
-        return;
+            );
+            return;
+        }
+        bytes.push(0u8);
+        bytes.shrink_to_fit();
+
+        let dst = std::slice::from_raw_parts_mut(addr as *mut u8, len + 1);
+        let mut writer = dst.writer();
+        let _ = writer.write_all(bytes.as_slice());
+
+        call_result_callback(callback, true, std::ptr::null());
     }
-    bytes.push(0u8);
-    bytes.shrink_to_fit();
-
-    let dst = unsafe { std::slice::from_raw_parts_mut(addr as *mut u8, len + 1) };
-    let mut writer = dst.writer();
-    let _ = writer.write_all(bytes.as_slice());
-
-    call_result_callback(callback, true, std::ptr::null());
 }
 
 /// Flush and close the [`Writer`] and return the [`BytesResult`] wrapped in [`CResult`].
+///
+/// # Safety
+///
+/// * `writer` must be a valid pointer to a [`CResult<Writer>`] struct
+/// * `callback` must be a valid function pointer
 #[unsafe(no_mangle)]
-pub extern "C" fn flush_and_close_writer(
+pub unsafe extern "C" fn flush_and_close_writer(
     writer: NonNull<CResult<Writer>>,
     callback: I32ResultCallback,
 ) -> NonNull<CResult<BytesResult>> {
@@ -1109,9 +1232,15 @@ pub extern "C" fn flush_and_close_writer(
     }
 }
 
-/// Abort and close the [`Writer`] and return the [`BytesResult`] wrapped in [`CResult`], when encountering an external error.
+/// Abort and close the [`Writer`] and return the [`BytesResult`] wrapped in [`CResult`],
+/// when encountering an external error.
+///
+/// # Safety
+///
+/// * `writer` must be a valid pointer to a [`CResult<Writer>`] struct
+/// * `callback` must be a valid function pointer
 #[unsafe(no_mangle)]
-pub extern "C" fn abort_and_close_writer(
+pub unsafe extern "C" fn abort_and_close_writer(
     writer: NonNull<CResult<Writer>>,
     callback: ResultCallback,
 ) {
@@ -1130,8 +1259,6 @@ pub extern "C" fn abort_and_close_writer(
         }
     }
 }
-
-// C interface for tokio::runtime
 
 /// The opaque type for the [`TokioRuntimeBuilder`].
 #[repr(C)]
@@ -1156,8 +1283,13 @@ pub extern "C" fn new_tokio_runtime_builder() -> NonNull<TokioRuntimeBuilder> {
 }
 
 /// Set the number of threads of the [`TokioRuntimeBuilder`].
+///
+/// # Safety
+///
+/// * `builder` must be a valid pointer to a [`TokioRuntimeBuilder`] struct
+/// * `thread_num` must be a valid number of threads
 #[unsafe(no_mangle)]
-pub extern "C" fn tokio_runtime_builder_set_thread_num(
+pub unsafe extern "C" fn tokio_runtime_builder_set_thread_num(
     builder: NonNull<TokioRuntimeBuilder>,
     thread_num: c_size_t,
 ) -> NonNull<TokioRuntimeBuilder> {
@@ -1167,8 +1299,12 @@ pub extern "C" fn tokio_runtime_builder_set_thread_num(
 }
 
 /// Create a new [`TokioRuntime`] from the [`TokioRuntimeBuilder`].
+///
+/// # Safety
+///
+/// * `builder` must be a valid pointer to a [`TokioRuntimeBuilder`] struct
 #[unsafe(no_mangle)]
-pub extern "C" fn create_tokio_runtime_from_builder(
+pub unsafe extern "C" fn create_tokio_runtime_from_builder(
     builder: NonNull<TokioRuntimeBuilder>,
 ) -> NonNull<TokioRuntime> {
     let mut builder = from_opaque::<TokioRuntimeBuilder, Builder>(builder);
@@ -1176,16 +1312,29 @@ pub extern "C" fn create_tokio_runtime_from_builder(
     convert_to_opaque(runtime)
 }
 
-// runtime is usually moved to create reader/writer,
-// so you don't need to free it unless it's used independently
+/// runtime is usually moved to create reader/writer,
+/// so you don't need to free it unless it's used independently
+///
+/// # Safety
+///
+/// * `runtime` must be a valid pointer to a [`CResult<TokioRuntime>`] struct
 #[unsafe(no_mangle)]
-pub extern "C" fn free_tokio_runtime(runtime: NonNull<CResult<TokioRuntime>>) {
+pub unsafe extern "C" fn free_tokio_runtime(runtime: NonNull<CResult<TokioRuntime>>) {
     from_nonnull(runtime).free::<Runtime>();
 }
 
 /// Apply the partition filter to the [`entity::JniWrapper`] and return the [`BytesResult`] wrapped in [`CResult`].
+///
+/// # Safety
+///
+/// * `callback` must be a valid function pointer
+/// * `len` must be a valid length of the [`entity::JniWrapper`] bytes
+/// * `jni_wrapper_addr` must be a valid pointer to the [`entity::JniWrapper`] bytes
+/// * `schema_addr` must be a valid pointer to an [`FFI_ArrowSchema`] struct
+/// * `filter_len` must be a valid length of the filter bytes
+/// * `filter_addr` must be a valid pointer to the filter bytes
 #[unsafe(no_mangle)]
-pub extern "C" fn apply_partition_filter(
+pub unsafe extern "C" fn apply_partition_filter(
     callback: extern "C" fn(i32, *const c_char),
     len: i32,
     jni_wrapper_addr: c_ptrdiff_t,
@@ -1193,36 +1342,36 @@ pub extern "C" fn apply_partition_filter(
     filter_len: i32,
     filter_addr: c_ptrdiff_t,
 ) -> NonNull<CResult<BytesResult>> {
-    let raw_parts = unsafe {
-        std::slice::from_raw_parts(jni_wrapper_addr as *const u8, len as usize)
-    };
-    let wrapper =
-        entity::JniWrapper::decode(prost::bytes::Bytes::from(raw_parts)).unwrap();
+    unsafe {
+        let raw_parts =
+            std::slice::from_raw_parts(jni_wrapper_addr as *const u8, len as usize);
+        let wrapper =
+            entity::JniWrapper::decode(prost::bytes::Bytes::from(raw_parts)).unwrap();
 
-    let dst =
-        unsafe { slice::from_raw_parts(filter_addr as *const u8, filter_len as usize) };
-    let filter = Plan::decode(dst).unwrap();
+        let dst = slice::from_raw_parts(filter_addr as *const u8, filter_len as usize);
+        let filter = Plan::decode(dst).unwrap();
 
-    let ffi_schema = schema_addr as *mut FFI_ArrowSchema;
-    let schema_data = unsafe { std::ptr::replace(ffi_schema, FFI_ArrowSchema::empty()) };
-    let schema = SchemaRef::from(Schema::try_from(&schema_data).unwrap());
+        let ffi_schema = schema_addr as *mut FFI_ArrowSchema;
+        let schema_data = std::ptr::replace(ffi_schema, FFI_ArrowSchema::empty());
+        let schema = SchemaRef::from(Schema::try_from(&schema_data).unwrap());
 
-    let filtered_partition = helpers::apply_partition_filter(wrapper, schema, filter);
+        let filtered_partition = helpers::apply_partition_filter(wrapper, schema, filter);
 
-    match filtered_partition {
-        Ok(wrapper) => {
-            let u8_vec = wrapper.encode_to_vec();
-            let len = u8_vec.len();
-            call_i32_result_callback(callback, len as i32, std::ptr::null());
-            convert_to_nonnull(CResult::<BytesResult>::new::<Vec<u8>>(u8_vec))
-        }
-        Err(e) => {
-            call_i32_result_callback(
-                callback,
-                -1,
-                CString::new(e.to_string().as_str()).unwrap().into_raw(),
-            );
-            convert_to_nonnull(CResult::<BytesResult>::new::<Vec<u8>>(vec![]))
+        match filtered_partition {
+            Ok(wrapper) => {
+                let u8_vec = wrapper.encode_to_vec();
+                let len = u8_vec.len();
+                call_i32_result_callback(callback, len as i32, std::ptr::null());
+                convert_to_nonnull(CResult::<BytesResult>::new::<Vec<u8>>(u8_vec))
+            }
+            Err(e) => {
+                call_i32_result_callback(
+                    callback,
+                    -1,
+                    CString::new(e.to_string().as_str()).unwrap().into_raw(),
+                );
+                convert_to_nonnull(CResult::<BytesResult>::new::<Vec<u8>>(vec![]))
+            }
         }
     }
 }
@@ -1254,9 +1403,9 @@ pub extern "C" fn rust_logger_init() {
                 .to_string()
                 .contains("a global default trace dispatcher has already been set")
             {
-                let msg = format!("Failed to initialize tracing subscriber {:?}", e);
+                let msg = format!("Failed to initialize tracing subscriber {}", e);
                 eprintln!("{}", msg);
-                panic!("{}", msg)
+                // do nothing
             }
         }
     }
@@ -1410,12 +1559,12 @@ mod tests {
 
     #[test]
     fn test_native_read_write() {
-        let mut reader_config_builder = crate::new_lakesoul_io_config_builder();
-        reader_config_builder =
-            lakesoul_config_builder_set_batch_size(reader_config_builder, 8192);
-        reader_config_builder =
-            lakesoul_config_builder_set_thread_num(reader_config_builder, 2);
         unsafe {
+            let mut reader_config_builder = crate::new_lakesoul_io_config_builder();
+            reader_config_builder =
+                lakesoul_config_builder_set_batch_size(reader_config_builder, 8192);
+            reader_config_builder =
+                lakesoul_config_builder_set_thread_num(reader_config_builder, 2);
             reader_config_builder = lakesoul_config_builder_add_single_file(
                 reader_config_builder,
                 CString::from_vec_unchecked(Vec::from(
@@ -1423,30 +1572,31 @@ mod tests {
                 ))
                 .as_ptr() as *const c_char,
             );
-        }
-        reader_config_builder = set_object_store_kv(
-            reader_config_builder,
-            "fs.s3a.access.key",
-            "minioadmin1",
-        );
-        reader_config_builder = set_object_store_kv(
-            reader_config_builder,
-            "fs.s3a.secret.key",
-            "minioadmin1",
-        );
-        reader_config_builder = set_object_store_kv(
-            reader_config_builder,
-            "fs.s3a.endpoint",
-            "http://localhost:9000",
-        );
+            reader_config_builder = set_object_store_kv(
+                reader_config_builder,
+                "fs.s3a.access.key",
+                "minioadmin1",
+            );
+            reader_config_builder = set_object_store_kv(
+                reader_config_builder,
+                "fs.s3a.secret.key",
+                "minioadmin1",
+            );
+            reader_config_builder = set_object_store_kv(
+                reader_config_builder,
+                "fs.s3a.endpoint",
+                "http://localhost:9000",
+            );
 
-        let mut runtime_builder = crate::new_tokio_runtime_builder();
-        runtime_builder = tokio_runtime_builder_set_thread_num(runtime_builder, 4);
-        let reader_runtime = crate::create_tokio_runtime_from_builder(runtime_builder);
-        let reader_config = create_lakesoul_io_config_from_builder(reader_config_builder);
-        let reader = create_lakesoul_reader_from_config(reader_config, reader_runtime);
+            let mut runtime_builder = crate::new_tokio_runtime_builder();
+            runtime_builder = tokio_runtime_builder_set_thread_num(runtime_builder, 4);
+            let reader_runtime =
+                crate::create_tokio_runtime_from_builder(runtime_builder);
+            let reader_config =
+                create_lakesoul_io_config_from_builder(reader_config_builder);
+            let reader =
+                create_lakesoul_reader_from_config(reader_config, reader_runtime);
 
-        unsafe {
             if let Some(err) = reader.as_ref().err.as_ref() {
                 assert!(
                     false,
@@ -1457,28 +1607,26 @@ mod tests {
                         .to_string()
                 )
             }
-        }
 
-        start_reader(reader, reader_callback);
-        unsafe {
+            start_reader(reader, reader_callback);
             assert!(!READER_FINISHED, "{:?}", READER_FAILED.as_ref());
-        }
 
-        let schema_ffi = FFI_ArrowSchema::empty();
-        lakesoul_reader_get_schema(reader, std::ptr::addr_of!(schema_ffi) as isize);
+            let schema_ffi = FFI_ArrowSchema::empty();
+            lakesoul_reader_get_schema(reader, std::ptr::addr_of!(schema_ffi) as isize);
 
-        let mut writer_config_builder = crate::new_lakesoul_io_config_builder();
-        writer_config_builder =
-            lakesoul_config_builder_set_batch_size(writer_config_builder, 8192);
-        writer_config_builder =
-            lakesoul_config_builder_set_thread_num(writer_config_builder, 2);
-        writer_config_builder =
-            lakesoul_config_builder_set_max_row_group_size(writer_config_builder, 250000);
-        writer_config_builder = lakesoul_config_builder_set_schema(
-            writer_config_builder,
-            std::ptr::addr_of!(schema_ffi) as isize,
-        );
-        unsafe {
+            let mut writer_config_builder = crate::new_lakesoul_io_config_builder();
+            writer_config_builder =
+                lakesoul_config_builder_set_batch_size(writer_config_builder, 8192);
+            writer_config_builder =
+                lakesoul_config_builder_set_thread_num(writer_config_builder, 2);
+            writer_config_builder = lakesoul_config_builder_set_max_row_group_size(
+                writer_config_builder,
+                250000,
+            );
+            writer_config_builder = lakesoul_config_builder_set_schema(
+                writer_config_builder,
+                std::ptr::addr_of!(schema_ffi) as isize,
+            );
             writer_config_builder = lakesoul_config_builder_add_single_file(
                 writer_config_builder,
                 CString::from_vec_unchecked(Vec::from(
@@ -1486,28 +1634,29 @@ mod tests {
                 ))
                 .as_ptr() as *const c_char,
             );
-        }
-        writer_config_builder = set_object_store_kv(
-            writer_config_builder,
-            "fs.s3a.access.key",
-            "minioadmin1",
-        );
-        writer_config_builder = set_object_store_kv(
-            writer_config_builder,
-            "fs.s3a.secret.key",
-            "minioadmin1",
-        );
-        writer_config_builder = set_object_store_kv(
-            writer_config_builder,
-            "fs.s3a.endpoint",
-            "http://localhost:9000",
-        );
-        let mut runtime_builder = crate::new_tokio_runtime_builder();
-        runtime_builder = tokio_runtime_builder_set_thread_num(runtime_builder, 4);
-        let writer_runtime = crate::create_tokio_runtime_from_builder(runtime_builder);
-        let writer_config = create_lakesoul_io_config_from_builder(writer_config_builder);
-        let writer = create_lakesoul_writer_from_config(writer_config, writer_runtime);
-        unsafe {
+            writer_config_builder = set_object_store_kv(
+                writer_config_builder,
+                "fs.s3a.access.key",
+                "minioadmin1",
+            );
+            writer_config_builder = set_object_store_kv(
+                writer_config_builder,
+                "fs.s3a.secret.key",
+                "minioadmin1",
+            );
+            writer_config_builder = set_object_store_kv(
+                writer_config_builder,
+                "fs.s3a.endpoint",
+                "http://localhost:9000",
+            );
+            let mut runtime_builder = crate::new_tokio_runtime_builder();
+            runtime_builder = tokio_runtime_builder_set_thread_num(runtime_builder, 4);
+            let writer_runtime =
+                crate::create_tokio_runtime_from_builder(runtime_builder);
+            let writer_config =
+                create_lakesoul_io_config_from_builder(writer_config_builder);
+            let writer =
+                create_lakesoul_writer_from_config(writer_config, writer_runtime);
             if let Some(err) = writer.as_ref().err.as_ref() {
                 assert!(
                     false,
@@ -1518,46 +1667,38 @@ mod tests {
                         .to_string()
                 )
             }
-        }
 
-        loop {
-            unsafe {
+            loop {
                 let mut called = CALL_BACK_CV.0.lock().unwrap();
                 *called = false;
-            }
-            let array_ptr = FFI_ArrowArray::empty();
-            let schema_ptr = FFI_ArrowSchema::empty();
+                let array_ptr = FFI_ArrowArray::empty();
+                let schema_ptr = FFI_ArrowSchema::empty();
 
-            next_record_batch(
-                reader,
-                std::ptr::addr_of!(schema_ptr) as isize,
-                std::ptr::addr_of!(array_ptr) as isize,
-                reader_i32_callback,
-            );
-            wait_callback();
+                next_record_batch(
+                    reader,
+                    std::ptr::addr_of!(schema_ptr) as isize,
+                    std::ptr::addr_of!(array_ptr) as isize,
+                    reader_i32_callback,
+                );
+                wait_callback();
 
-            unsafe {
                 if READER_FINISHED {
                     if let Some(err) = READER_FAILED.as_ref() {
                         assert!(false, "Reader failed {}", err);
                     }
                     break;
                 }
-            }
 
-            unsafe {
                 let mut called = CALL_BACK_CV.0.lock().unwrap();
                 *called = false;
-            }
-            write_record_batch(
-                writer,
-                std::ptr::addr_of!(schema_ptr) as isize,
-                std::ptr::addr_of!(array_ptr) as isize,
-                result_callback,
-            );
-            wait_callback();
+                write_record_batch(
+                    writer,
+                    std::ptr::addr_of!(schema_ptr) as isize,
+                    std::ptr::addr_of!(array_ptr) as isize,
+                    result_callback,
+                );
+                wait_callback();
 
-            unsafe {
                 if WRITER_FINISHED {
                     if let Some(err) = WRITER_FAILED.as_ref() {
                         assert!(false, "Writer {}", err);
@@ -1565,20 +1706,20 @@ mod tests {
                     break;
                 }
             }
-        }
 
-        flush_and_close_writer(writer, writer_callback);
-        free_lakesoul_reader(reader);
+            flush_and_close_writer(writer, writer_callback);
+            free_lakesoul_reader(reader);
+        }
     }
 
     #[test]
     fn test_native_read_sort_write() {
-        let mut reader_config_builder = crate::new_lakesoul_io_config_builder();
-        reader_config_builder =
-            lakesoul_config_builder_set_batch_size(reader_config_builder, 8192);
-        reader_config_builder =
-            lakesoul_config_builder_set_thread_num(reader_config_builder, 2);
         unsafe {
+            let mut reader_config_builder = crate::new_lakesoul_io_config_builder();
+            reader_config_builder =
+                lakesoul_config_builder_set_batch_size(reader_config_builder, 8192);
+            reader_config_builder =
+                lakesoul_config_builder_set_thread_num(reader_config_builder, 2);
             reader_config_builder = lakesoul_config_builder_add_single_file(
                 reader_config_builder,
                 CString::from_vec_unchecked(Vec::from(
@@ -1586,30 +1727,31 @@ mod tests {
                 ))
                 .as_ptr() as *const c_char,
             );
-        }
-        reader_config_builder = set_object_store_kv(
-            reader_config_builder,
-            "fs.s3a.access.key",
-            "minioadmin1",
-        );
-        reader_config_builder = set_object_store_kv(
-            reader_config_builder,
-            "fs.s3a.secret.key",
-            "minioadmin1",
-        );
-        reader_config_builder = set_object_store_kv(
-            reader_config_builder,
-            "fs.s3a.endpoint",
-            "http://localhost:9000",
-        );
+            reader_config_builder = set_object_store_kv(
+                reader_config_builder,
+                "fs.s3a.access.key",
+                "minioadmin1",
+            );
+            reader_config_builder = set_object_store_kv(
+                reader_config_builder,
+                "fs.s3a.secret.key",
+                "minioadmin1",
+            );
+            reader_config_builder = set_object_store_kv(
+                reader_config_builder,
+                "fs.s3a.endpoint",
+                "http://localhost:9000",
+            );
 
-        let mut runtime_builder = crate::new_tokio_runtime_builder();
-        runtime_builder = tokio_runtime_builder_set_thread_num(runtime_builder, 4);
-        let reader_runtime = crate::create_tokio_runtime_from_builder(runtime_builder);
-        let reader_config = create_lakesoul_io_config_from_builder(reader_config_builder);
-        let reader = create_lakesoul_reader_from_config(reader_config, reader_runtime);
+            let mut runtime_builder = crate::new_tokio_runtime_builder();
+            runtime_builder = tokio_runtime_builder_set_thread_num(runtime_builder, 4);
+            let reader_runtime =
+                crate::create_tokio_runtime_from_builder(runtime_builder);
+            let reader_config =
+                create_lakesoul_io_config_from_builder(reader_config_builder);
+            let reader =
+                create_lakesoul_reader_from_config(reader_config, reader_runtime);
 
-        unsafe {
             if let Some(err) = reader.as_ref().err.as_ref() {
                 assert!(
                     false,
@@ -1620,61 +1762,60 @@ mod tests {
                         .to_string()
                 )
             }
-        }
 
-        start_reader(reader, reader_callback);
-        unsafe {
+            start_reader(reader, reader_callback);
             assert!(!READER_FINISHED, "{:?}", READER_FAILED.as_ref());
-        }
 
-        let schema_ffi = FFI_ArrowSchema::empty();
-        lakesoul_reader_get_schema(reader, std::ptr::addr_of!(schema_ffi) as isize);
+            let schema_ffi = FFI_ArrowSchema::empty();
+            lakesoul_reader_get_schema(reader, std::ptr::addr_of!(schema_ffi) as isize);
 
-        let mut writer_config_builder = crate::new_lakesoul_io_config_builder();
-        writer_config_builder =
-            lakesoul_config_builder_set_batch_size(writer_config_builder, 8192);
-        writer_config_builder =
-            lakesoul_config_builder_set_thread_num(writer_config_builder, 2);
-        writer_config_builder =
-            lakesoul_config_builder_set_max_row_group_size(writer_config_builder, 250000);
-        writer_config_builder = lakesoul_config_builder_set_schema(
-            writer_config_builder,
-            std::ptr::addr_of!(schema_ffi) as isize,
-        );
-        writer_config_builder = add_pk(writer_config_builder, "str2");
-        writer_config_builder = add_pk(writer_config_builder, "str3");
-        writer_config_builder = add_pk(writer_config_builder, "int2");
-        writer_config_builder = add_pk(writer_config_builder, "int6");
-        unsafe {
-            writer_config_builder = lakesoul_config_builder_add_single_file(
+            let mut writer_config_builder = crate::new_lakesoul_io_config_builder();
+            writer_config_builder =
+                lakesoul_config_builder_set_batch_size(writer_config_builder, 8192);
+            writer_config_builder =
+                lakesoul_config_builder_set_thread_num(writer_config_builder, 2);
+            writer_config_builder = lakesoul_config_builder_set_max_row_group_size(
                 writer_config_builder,
-                CString::from_vec_unchecked(Vec::from(
-                    "s3://lakesoul-test-bucket/data/native-io-test/large_file_written_sorted_c.parquet",
-                ))
-                .as_ptr() as *const c_char,
+                250000,
             );
-        }
-        writer_config_builder = set_object_store_kv(
-            writer_config_builder,
-            "fs.s3a.access.key",
-            "minioadmin1",
-        );
-        writer_config_builder = set_object_store_kv(
-            writer_config_builder,
-            "fs.s3a.secret.key",
-            "minioadmin1",
-        );
-        writer_config_builder = set_object_store_kv(
-            writer_config_builder,
-            "fs.s3a.endpoint",
-            "http://localhost:9000",
-        );
-        let mut runtime_builder = crate::new_tokio_runtime_builder();
-        runtime_builder = tokio_runtime_builder_set_thread_num(runtime_builder, 4);
-        let writer_runtime = crate::create_tokio_runtime_from_builder(runtime_builder);
-        let writer_config = create_lakesoul_io_config_from_builder(writer_config_builder);
-        let writer = create_lakesoul_writer_from_config(writer_config, writer_runtime);
-        unsafe {
+            writer_config_builder = lakesoul_config_builder_set_schema(
+                writer_config_builder,
+                std::ptr::addr_of!(schema_ffi) as isize,
+            );
+            writer_config_builder = add_pk(writer_config_builder, "str2");
+            writer_config_builder = add_pk(writer_config_builder, "str3");
+            writer_config_builder = add_pk(writer_config_builder, "int2");
+            writer_config_builder = add_pk(writer_config_builder, "int6");
+            writer_config_builder = lakesoul_config_builder_add_single_file(
+                    writer_config_builder,
+                    CString::from_vec_unchecked(Vec::from(
+                        "s3://lakesoul-test-bucket/data/native-io-test/large_file_written_sorted_c.parquet",
+                    ))
+                    .as_ptr() as *const c_char,
+                );
+            writer_config_builder = set_object_store_kv(
+                writer_config_builder,
+                "fs.s3a.access.key",
+                "minioadmin1",
+            );
+            writer_config_builder = set_object_store_kv(
+                writer_config_builder,
+                "fs.s3a.secret.key",
+                "minioadmin1",
+            );
+            writer_config_builder = set_object_store_kv(
+                writer_config_builder,
+                "fs.s3a.endpoint",
+                "http://localhost:9000",
+            );
+            let mut runtime_builder = crate::new_tokio_runtime_builder();
+            runtime_builder = tokio_runtime_builder_set_thread_num(runtime_builder, 4);
+            let writer_runtime =
+                crate::create_tokio_runtime_from_builder(runtime_builder);
+            let writer_config =
+                create_lakesoul_io_config_from_builder(writer_config_builder);
+            let writer =
+                create_lakesoul_writer_from_config(writer_config, writer_runtime);
             if let Some(err) = writer.as_ref().err.as_ref() {
                 assert!(
                     false,
@@ -1685,46 +1826,38 @@ mod tests {
                         .to_string()
                 )
             }
-        }
 
-        loop {
-            unsafe {
+            loop {
                 let mut called = CALL_BACK_CV.0.lock().unwrap();
                 *called = false;
-            }
-            let array_ptr = FFI_ArrowArray::empty();
-            let schema_ptr = FFI_ArrowSchema::empty();
+                let array_ptr = FFI_ArrowArray::empty();
+                let schema_ptr = FFI_ArrowSchema::empty();
 
-            next_record_batch(
-                reader,
-                std::ptr::addr_of!(schema_ptr) as isize,
-                std::ptr::addr_of!(array_ptr) as isize,
-                reader_i32_callback,
-            );
-            wait_callback();
+                next_record_batch(
+                    reader,
+                    std::ptr::addr_of!(schema_ptr) as isize,
+                    std::ptr::addr_of!(array_ptr) as isize,
+                    reader_i32_callback,
+                );
+                wait_callback();
 
-            unsafe {
                 if READER_FINISHED {
                     if let Some(err) = READER_FAILED.as_ref() {
                         assert!(false, "Reader failed {}", err);
                     }
                     break;
                 }
-            }
 
-            unsafe {
                 let mut called = CALL_BACK_CV.0.lock().unwrap();
                 *called = false;
-            }
-            write_record_batch(
-                writer,
-                std::ptr::addr_of!(schema_ptr) as isize,
-                std::ptr::addr_of!(array_ptr) as isize,
-                result_callback,
-            );
-            wait_callback();
+                write_record_batch(
+                    writer,
+                    std::ptr::addr_of!(schema_ptr) as isize,
+                    std::ptr::addr_of!(array_ptr) as isize,
+                    result_callback,
+                );
+                wait_callback();
 
-            unsafe {
                 if WRITER_FINISHED {
                     if let Some(err) = WRITER_FAILED.as_ref() {
                         assert!(false, "Writer {}", err);
@@ -1732,10 +1865,10 @@ mod tests {
                     break;
                 }
             }
-        }
 
-        flush_and_close_writer(writer, writer_callback);
-        free_lakesoul_reader(reader);
+            flush_and_close_writer(writer, writer_callback);
+            free_lakesoul_reader(reader);
+        }
     }
 
     #[test]

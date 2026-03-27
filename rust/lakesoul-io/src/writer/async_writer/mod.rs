@@ -51,6 +51,7 @@ pub struct FlushOutput {
 #[async_trait::async_trait]
 pub trait AsyncBatchWriter {
     /// Write a record batch to the writer.
+    /// When error occured, writer will clean the resource.
     async fn write_record_batch(&mut self, batch: RecordBatch) -> Result<()>;
 
     /// Flush the writer and close it.
