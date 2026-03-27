@@ -1,5 +1,6 @@
 package com.dmetasoul.lakesoul.lakesoul.io.substrait;
 
+import com.dmetasoul.lakesoul.lakesoul.GlobalResourceManager;
 import com.dmetasoul.lakesoul.lakesoul.io.DateTimeUtils;
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOBase;
 import com.dmetasoul.lakesoul.lakesoul.io.jnr.JnrLoader;
@@ -85,13 +86,7 @@ public class SubstraitUtil {
             e.printStackTrace();
             throw new RuntimeException("load simple extension failed", e);
         }
-        java.lang.Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            try {
-                NATIVE_IO_BASE.close();
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        }));
+        GlobalResourceManager.register(NATIVE_IO_BASE);
     }
 
     public static Expression and(Expression left, Expression right) {
@@ -254,14 +249,12 @@ public class SubstraitUtil {
             );
             Boolean b = importFuture.get(TIMEOUT, TimeUnit.MILLISECONDS);
             if (!b) {
-                LIB.free_bytes_result(filterResult);
                 throw new RuntimeException("applyPartitionFilters importFuture returned false");
             }
 
             byte[] bytes = new byte[len];
             exportBuffer.get(0, bytes, 0, len);
             resultPartitionInfo = JniWrapper.parseFrom(bytes).getPartitionInfoList();
-            LIB.free_bytes_result(filterResult);
         } catch (InterruptedException | ExecutionException | TimeoutException | InvalidProtocolBufferException e) {
             throw new RuntimeException(e);
         } finally {
