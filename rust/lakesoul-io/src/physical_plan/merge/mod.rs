@@ -26,7 +26,6 @@ use datafusion::{
 use datafusion_common::{DFSchemaRef, DataFusionError, Result as DFResult};
 use datafusion_substrait::substrait::proto::Plan;
 use futures::StreamExt;
-use num_format::Locale::is;
 use rootcause::compat::boxed_error::IntoBoxedError;
 
 use self::sorted::merge_operator::MergeOperator;

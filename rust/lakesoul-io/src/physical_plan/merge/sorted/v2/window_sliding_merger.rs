@@ -38,10 +38,10 @@ use tokio_stream::wrappers::ReceiverStream;
 pub(crate) type CursorStreamWithId<C> =
     Pin<Box<dyn Stream<Item = Result<(C, RecordBatch, usize)>> + Send + 'static>>;
 
-/// A combiner that uses batch min/max values to determine range overlaps before
+/// A sorted runs merger that uses batch-wise(range) min/max values to determine range overlaps before
 /// doing row-level merge operations. This can significantly optimize the merge
-/// process when batches have non-overlapping ranges.
-pub struct WindowSlidingRangeCombiner<C: CursorValues> {
+/// process because its highly likelybatches have non-overlapping ranges.
+pub struct WindowSlidingMerger<C: CursorValues> {
     streams: Vec<Arc<Mutex<Peekable<CursorStreamWithId<C>>>>>,
 
     /// The schema of the record batch.
@@ -59,8 +59,8 @@ pub struct WindowSlidingRangeCombiner<C: CursorValues> {
     ranges: HashMap<usize, BatchRange<C>, BuildNoHashHasher<usize>>,
 }
 
-impl<C: CursorValues + Send + Sync + 'static> WindowSlidingRangeCombiner<C> {
-    /// Create a new BatchWiseRangeCombiner
+impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
+    /// Create a new WindowSlidingMerger
     ///
     /// # Arguments
     ///
@@ -75,7 +75,7 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingRangeCombiner<C> {
         target_batch_size: usize,
     ) -> Result<Self> {
         info!(
-            "Create WindowSlidingRangeCombiner with {} streams, target_batch_size: {}",
+            "Create WindowSlidingMerger with {} streams, target_batch_size: {}",
             streams_num, target_batch_size
         );
         let streams: Vec<CursorStreamWithId<C>> = streams
@@ -472,7 +472,7 @@ mod tests {
     use crate::helpers::InMemGenerator;
     use crate::physical_plan::merge::sorted::cursor::RowValues;
     use crate::physical_plan::merge::sorted::sorted_stream_merger::CursorStream;
-    use crate::physical_plan::merge::sorted::v2::window_sliding_combine::WindowSlidingRangeCombiner;
+    use crate::physical_plan::merge::sorted::v2::window_sliding_merger::WindowSlidingMerger;
     use crate::stream::RowCursorStream;
     use arrow::array::ArrayRef;
     use arrow::array::Int32Array;
@@ -591,13 +591,13 @@ mod tests {
             a1.new_empty(),
         )
         .await?;
-        let combiner = Arc::new(Mutex::new(WindowSlidingRangeCombiner::new(
+        let combiner = Arc::new(Mutex::new(WindowSlidingMerger::new(
             vec![(s1, true), (s2, true), (s3, true)],
             schema,
             3,
             10,
         )?));
-        let stream = WindowSlidingRangeCombiner::build_merged_stream(combiner)?;
+        let stream = WindowSlidingMerger::build_merged_stream(combiner)?;
         let batches: Vec<RecordBatch> = stream.try_collect().await?;
         assert_batches_eq!(
             &[

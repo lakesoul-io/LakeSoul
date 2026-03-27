@@ -6,4 +6,4 @@ mod batch_range;
 mod binary_merger;
 mod deduplicate;
 mod loser_tree_merger;
-pub mod window_sliding_combine;
+pub mod window_sliding_merger;

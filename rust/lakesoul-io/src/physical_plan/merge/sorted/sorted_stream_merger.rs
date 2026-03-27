@@ -35,7 +35,7 @@ use super::combiner::*;
 use super::cursor::{ArrayValues, CursorArray, CursorValues, RowValues};
 use super::merge_operator::MergeOperator;
 use super::sort_key_range::SortKeyBatchRange;
-use super::v2::window_sliding_combine::WindowSlidingRangeCombiner;
+use super::v2::window_sliding_merger::WindowSlidingMerger;
 use crate::Result;
 use crate::stream::{
     FieldCursorStream, RowCursorStream, default_column::DefaultColumnStream,
@@ -218,7 +218,7 @@ macro_rules! create_merger {
                 ));
                 */
                 println!("using new batch wise combiner");
-                let combiner = Arc::new(Mutex::new(WindowSlidingRangeCombiner::new(
+                let combiner = Arc::new(Mutex::new(WindowSlidingMerger::new(
                     $streams
                         .into_iter()
                         .enumerate()
@@ -228,7 +228,7 @@ macro_rules! create_merger {
                     streams_num,
                     $batch_size,
                 )?));
-                return WindowSlidingRangeCombiner::build_merged_stream(combiner);
+                return WindowSlidingMerger::build_merged_stream(combiner);
             }
         } else {
             let combiner = MinHeapSortKeyBatchRangeCombiner::new(
