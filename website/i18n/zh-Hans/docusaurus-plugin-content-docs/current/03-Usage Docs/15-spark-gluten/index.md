@@ -4,7 +4,7 @@
 自 LakeSoul 2.5.0 起支持
 :::
 
-Spark Gluten (https://github.com/apache/incubator-gluten) 是一个基于 Spark 插件接口开发的开源项目，旨在为 Apache Spark 注入原生代码向量化执行的能力，以极大优化 Spark 的执行效率和成本。该项目由 Intel 和 Kyligence 自2021年开始合作共建，底层使用 Meta 开源的 Velox 物理执行层框架，专注于为 Spark 注入更高效的指令来执行物理计划。
+Spark Gluten (https://github.com/apache/gluten) 是一个基于 Spark 插件接口开发的开源项目，旨在为 Apache Spark 注入原生代码向量化执行的能力，以极大优化 Spark 的执行效率和成本。该项目由 Intel 和 Kyligence 自2021年开始合作共建，底层使用 Meta 开源的 Velox 物理执行层框架，专注于为 Spark 注入更高效的指令来执行物理计划。
 
 在 Spark Gluten 项目中，开发人员不需要侵入 Spark 代码库，而是通过 Spark 的扩展机制，替换物理执行层实现，来达到优化效果。对于物理计划之前的步骤则可延用Spark现有代码，这样既结合了 Spark 的框架能力又增强了执行器的性能。
 
@@ -34,4 +34,4 @@ $SPARK_HOME/bin/spark-shell --master local\[1\] --driver-memory 4g \
 ```
 以这样的方式启动 Spark 任务后，即可同时启用 Gluten 和 LakeSoul，实现 IO 性能、计算性能的双重加速。注意 LakeSoul 的包名为 `lakesoul-spark-gluten-3.3-VAR::VERSION.jar`，其中 `3.3` 为 Spark 版本，`VAR::VERSION` 为 LakeSoul 版本。
 
-Gluten 的 Jar 可以从 https://github.com/apache/incubator-gluten/releases 这里下载，需要选择 Spark 3.3 版本。
+Gluten 的 Jar 可以从 https://github.com/apache/gluten/releases 这里下载，需要选择 Spark 3.3 版本。
