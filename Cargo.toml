@@ -106,7 +106,7 @@ tracing-subscriber = { version = "0.3.19", features = [
   "env-filter",
 ] }
 # for test
-test-log = "0.2.17"
+test-log = {version = "0.2", features = ["trace"]}
 tempfile = "3.3.0"
 # error handling
 thiserror = "1.0"

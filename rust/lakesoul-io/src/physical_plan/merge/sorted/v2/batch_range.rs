@@ -55,6 +55,7 @@ impl<C: CursorValues> BatchRange<C> {
     ///
     /// The starting index in this BatchRange where values are >= the value at `other_row_idx` in `other`,
     /// or None if all values in this range are less than the target value
+    #[allow(dead_code)]
     pub fn find_ge_start_index(
         &self,
         other: &BatchRange<C>,
@@ -140,11 +141,6 @@ impl<C: CursorValues> BatchRange<C> {
         Some(left - 1)
     }
 
-    /// Get the number of rows in this batch range
-    pub fn num_rows(&self) -> usize {
-        self.batch.num_rows()
-    }
-
     /// Get the cursor associated with this batch range
     pub fn cursor(&self) -> &C {
         &self.cursor
@@ -182,15 +178,6 @@ impl<C: CursorValues> BatchRange<C> {
     /// Check if this range has more rows to process
     pub fn has_more_rows(&self) -> bool {
         self.begin_row <= self.end_row_for_merge
-    }
-
-    /// Get the current row value for comparison
-    pub fn current_row_value(&self) -> Option<&C> {
-        if self.has_more_rows() {
-            Some(&self.cursor)
-        } else {
-            None
-        }
     }
 
     /// Advance to next row

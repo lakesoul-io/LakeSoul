@@ -7,7 +7,6 @@
 //! before doing row-level comparisons.
 
 use crate::Result;
-use crate::cache::disk_cache::lru_cache::CountableMeter;
 use crate::physical_plan::merge::sorted::cursor::CursorValues;
 use crate::physical_plan::merge::sorted::sorted_stream_merger::CursorStream;
 use crate::physical_plan::merge::sorted::v2::batch_range::BatchRange;
@@ -16,12 +15,10 @@ use crate::physical_plan::merge::sorted::v2::deduplicate::DeduplicateStream;
 use crate::physical_plan::merge::sorted::v2::loser_tree_merger::LoserTreeRangeMerge;
 use arrow::datatypes::SchemaRef;
 use arrow::record_batch::RecordBatch;
-use arrow_cast::pretty::pretty_format_batches;
-use atomic_refcell::AtomicRefCell;
 use datafusion_common::DataFusionError;
 use datafusion_execution::{RecordBatchStream, SendableRecordBatchStream};
-use futures::stream::{FusedStream, FuturesUnordered, Peekable};
-use futures::{FutureExt, Stream, StreamExt, TryStreamExt};
+use futures::stream::{FuturesUnordered, Peekable};
+use futures::{Stream, StreamExt};
 use itertools::Itertools;
 use nohash::BuildNoHashHasher;
 use rootcause::compat::boxed_error::IntoBoxedError;
@@ -83,8 +80,7 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
             .enumerate()
             .map(|(idx, (stream, require_dedup))| {
                 let stream = if require_dedup {
-                    let dedup_stream =
-                        DeduplicateStream::new_from_stream(stream, schema.clone())?;
+                    let dedup_stream = DeduplicateStream::new_from_stream(stream)?;
                     dedup_stream.create_deduplicated_stream()
                 } else {
                     stream
@@ -98,7 +94,7 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
                                 Err(e.err().unwrap())
                             }
                         })
-                        .map(|e| future::ready(e))
+                        .map(future::ready)
                         .buffered(4),
                 ) as CursorStreamWithId<C>)
             })
@@ -133,8 +129,8 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
     // 8. repeat until ranges is empty
     //
     // Use sender-receiver as this function may produce multiple batches
-    pub async fn merge_next_batch<'a>(
-        &'a mut self,
+    pub async fn merge_next_batch(
+        &mut self,
         mut tx: Sender<Result<RecordBatch>>,
     ) -> Result<Sender<Result<RecordBatch>>> {
         if self.ranges.is_empty() {
@@ -144,40 +140,23 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
         if self.ranges.len() == 1 {
             let range = self.ranges.values_mut().next().unwrap();
             let batch = range.slice_remaining_and_advance();
-            // println!(
-            //     "Sending 1 batch\n{}",
-            //     pretty_format_batches(&[batch.clone()])?
-            // );
             tx.send(Ok(batch)).await?;
             return Ok(tx);
         }
         // Step 1. Find the two ranges with the smallest first-row values
         let mut r_star_range_idx = *self.ranges.iter().next().unwrap().0;
-        let mut second_smallest_range = None;
 
         self.ranges.iter().skip(1).for_each(|(batch_idx, range)| {
             let r_star_range = self.ranges.get(&r_star_range_idx).unwrap();
             let cmp_with_first = C::compare(
-                &range.cursor(),
+                range.cursor(),
                 range.begin_row(),
-                &r_star_range.cursor(),
+                r_star_range.cursor(),
                 r_star_range.begin_row(),
             );
             if cmp_with_first.is_lt() {
                 // Current range is smaller than the first, so shift first to second and update first
-                second_smallest_range = Some(r_star_range);
                 r_star_range_idx = *batch_idx;
-            } else if second_smallest_range.is_none()
-                || C::compare(
-                    &range.cursor(),
-                    range.begin_row(),
-                    &second_smallest_range.unwrap().cursor(),
-                    second_smallest_range.unwrap().begin_row(),
-                )
-                .is_lt()
-            {
-                // Current range is larger than first but smaller than second
-                second_smallest_range = Some(range);
             }
         });
         let r_star_end = self
@@ -185,22 +164,11 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
             .get(&r_star_range_idx)
             .unwrap()
             .end_row_for_merge();
-        // println!(
-        //     "r_star_range: \n{}, idx: {}, end row {}",
-        //     pretty_format_batches(&[self
-        //         .ranges
-        //         .get(&r_star_range_idx)
-        //         .unwrap()
-        //         .batch()
-        //         .clone()])?,
-        //     r_star_range_idx,
-        //     r_star_end
-        // );
         // Step 2.
         let mut overlap_ranges = Vec::with_capacity(self.ranges.len());
         for (batch_idx, range) in self.ranges.iter() {
             let cmp = C::compare(
-                &range.cursor(),
+                range.cursor(),
                 range.begin_row(),
                 self.ranges.get(&r_star_range_idx).unwrap().cursor(),
                 r_star_end,
@@ -213,21 +181,17 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
         if overlap_ranges.len() == 1 {
             let range = self.ranges.get_mut(&overlap_ranges.pop().unwrap()).unwrap();
             let batch = range.slice_remaining_and_advance();
-            // println!(
-            //     "Sending 1 batch\n{}",
-            //     pretty_format_batches(&[batch.clone()])?
-            // );
             tx.send(Ok(batch)).await?;
             return Ok(tx);
         }
         // Step 3. Find the minimum value of r.max in `overlap_ranges`, as `window_end`
         let overlap_range_iter = overlap_ranges.iter();
-        let mut window_end_range = *overlap_ranges.iter().next().unwrap();
-        overlap_range_iter.for_each(|range| {
+        let mut window_end_range = *overlap_ranges.first().unwrap();
+        overlap_range_iter.skip(1).for_each(|range| {
             let cmp = C::compare(
-                &self.ranges.get(&range).unwrap().cursor(),
-                self.ranges.get(&range).unwrap().end_row_for_merge(),
-                &self.ranges.get(&window_end_range).unwrap().cursor(),
+                self.ranges.get(range).unwrap().cursor(),
+                self.ranges.get(range).unwrap().end_row_for_merge(),
+                self.ranges.get(&window_end_range).unwrap().cursor(),
                 self.ranges
                     .get(&window_end_range)
                     .unwrap()
@@ -237,44 +201,22 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
                 window_end_range = *range;
             }
         });
-        let mut r_star_begin_num = 0;
         // update overlapped ranges' begin_row and end_row_for_merge
         let mut new_overlap_range_idx = Vec::with_capacity(overlap_ranges.len());
         // Step 4.1
         for range in overlap_ranges.iter() {
-            if C::compare(
-                &self.ranges.get(&range).unwrap().cursor(),
-                self.ranges.get(&range).unwrap().begin_row(),
-                &self.ranges.get(&r_star_range_idx).unwrap().cursor(),
-                self.ranges.get(&r_star_range_idx).unwrap().begin_row(),
-            )
-            .is_eq()
-            {
-                r_star_begin_num += 1;
-            }
             // update this range's end_row_for_merge to be lte window_end
             if let Some(end_row_for_merge) =
-                self.ranges.get(&range).unwrap().find_le_start_index(
-                    &self.ranges.get(&window_end_range).unwrap(),
+                self.ranges.get(range).unwrap().find_le_start_index(
+                    self.ranges.get(&window_end_range).unwrap(),
                     self.ranges
                         .get(&window_end_range)
                         .unwrap()
                         .end_row_for_merge(),
                 )
             {
-                // println!(
-                //     "Updating range \n{}'s end_row_for_merge to {}",
-                //     pretty_format_batches(&[self
-                //         .ranges
-                //         .get(&range)
-                //         .unwrap()
-                //         .batch()
-                //         .clone()])
-                //     .unwrap(),
-                //     end_row_for_merge
-                // );
                 self.ranges
-                    .get_mut(&range)
+                    .get_mut(range)
                     .unwrap()
                     .set_end_row_for_merge(end_row_for_merge);
                 new_overlap_range_idx.push(*range);
@@ -298,33 +240,8 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
                     .then_with(|| a.batch_idx().cmp(&b.batch_idx()))
             })
             .collect();
-        // println!(
-        //     "Merging multiple ranges {:?}",
-        //     new_overlap_ranges
-        //         .iter()
-        //         .map(|r| (
-        //             format!("\n{}", pretty_format_batches(&[r.batch().clone()]).unwrap()),
-        //             r.begin_row(),
-        //             r.end_row_for_merge()
-        //         ))
-        //         .collect::<Vec<_>>()
-        // );
         // Fast path 3: if overlap ranges contains only two ranges, merge them directly
         if overlap_ranges.len() == 2 {
-            // println!(
-            //     "Merging two ranges\n{:?}",
-            //     new_overlap_ranges
-            //         .iter()
-            //         .map(|r| (
-            //             format!(
-            //                 "\n{}",
-            //                 pretty_format_batches(&[r.batch().clone()]).unwrap()
-            //             ),
-            //             r.begin_row(),
-            //             r.end_row_for_merge()
-            //         ))
-            //         .collect::<Vec<_>>()
-            // );
             let mut merger = BinaryMerger::new(
                 new_overlap_ranges,
                 self.target_batch_size,

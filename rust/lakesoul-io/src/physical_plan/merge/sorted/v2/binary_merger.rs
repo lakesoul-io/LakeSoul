@@ -123,9 +123,9 @@ impl<'a, C: CursorValues> BinaryMerger<'a, C> {
                 });
                 self.advance(range_idx); // 移动到末尾
             }
-            self.build_record_batch(&tx).await?;
+            self.build_record_batch(tx).await?;
         } else {
-            self.build_record_batch(&tx).await?;
+            self.build_record_batch(tx).await?;
 
             let range = &mut self.ranges[range_idx];
             // 剩余行数高于阈值，直接 slice 输出
@@ -148,14 +148,12 @@ impl<'a, C: CursorValues> BinaryMerger<'a, C> {
         }
         let column_num = self.ranges[0].batch().num_columns();
         let result = (0..column_num)
-            .into_iter()
             .map(|i| {
                 let columns = [
                     self.ranges[0].batch().column(i).as_ref(),
                     self.ranges[1].batch().column(i).as_ref(),
                 ];
-                let col = interleave(columns.as_slice(), indices.as_slice());
-                col
+                interleave(columns.as_slice(), indices.as_slice())
             })
             .collect::<arrow::error::Result<Vec<ArrayRef>>>()?;
         self.in_progress_row.clear();
@@ -291,7 +289,6 @@ mod tests {
 
         let results =
             collect_merge_results(&mut left, &mut right, target_batch_size).await;
-        println!("{:?}", results);
 
         // 验证结果只包含右侧的数据
         assert_eq!(results.len(), 1);

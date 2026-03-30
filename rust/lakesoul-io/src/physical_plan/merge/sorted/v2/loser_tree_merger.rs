@@ -53,9 +53,9 @@ impl<'a, C: CursorValues> LoserTreeRangeMerge<'a, C> {
             // if key is equal, we replace the last row
             if let Some(last_row) = self.in_progress_row.last_mut() {
                 if C::eq(
-                    &self.ranges[last_row.range_idx].cursor(),
+                    self.ranges[last_row.range_idx].cursor(),
                     last_row.row_idx,
-                    &self.ranges[winner].cursor(),
+                    self.ranges[winner].cursor(),
                     self.ranges[winner].begin_row(),
                 ) {
                     // replace last row and continue
@@ -110,7 +110,6 @@ impl<'a, C: CursorValues> LoserTreeRangeMerge<'a, C> {
         let column_num = self.ranges[0].batch().num_columns();
         let mut columns = Vec::with_capacity(column_num);
         let result = (0..column_num)
-            .into_iter()
             .map(|i| {
                 self.ranges.iter().for_each(|range| {
                     columns.push(range.batch().column(i).as_ref());

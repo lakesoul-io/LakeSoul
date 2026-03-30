@@ -127,7 +127,7 @@ impl MultiPartAsyncWriter {
                     .set_max_row_group_size(max_row_group_size)
                     .set_write_batch_size(config.batch_size)
                     .set_compression(Compression::ZSTD(ZstdLevel::default())) // TODO use conf?
-                    .set_dictionary_enabled(false)
+                    .set_dictionary_enabled(true)
                     .build(),
             ),
         )?;

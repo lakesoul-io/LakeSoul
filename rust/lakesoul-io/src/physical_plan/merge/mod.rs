@@ -25,7 +25,6 @@ use datafusion::{
 };
 use datafusion_common::{DFSchemaRef, DataFusionError, Result as DFResult};
 use datafusion_substrait::substrait::proto::Plan;
-use futures::StreamExt;
 use rootcause::compat::boxed_error::IntoBoxedError;
 
 use self::sorted::merge_operator::MergeOperator;
@@ -311,7 +310,6 @@ fn merge_stream(
         ))
     } else {
         info!("use sorted merger");
-        // is file schema?
         let physical_schema = Arc::new(Schema::new(
             merged_schema
                 .fields
@@ -326,8 +324,9 @@ fn merge_stream(
                 })
                 .collect::<Vec<_>>(),
         ));
+        info!("physical_schema: {:?}", physical_schema);
 
-        let merge_ops = merged_schema
+        let merge_ops = physical_schema
             .fields()
             .iter()
             .map(|field| {

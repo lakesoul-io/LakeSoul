@@ -1,2 +1,5 @@
 [build]
 target-dir = "rust/target"
+
+[target."x86_64-unknown-linux-gnu"]
+rustflags = ["-C", "target-feature=+avx2"]

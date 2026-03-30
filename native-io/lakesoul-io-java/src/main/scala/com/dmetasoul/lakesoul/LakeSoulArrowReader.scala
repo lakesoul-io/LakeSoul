@@ -36,6 +36,7 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
         try {
           val rowCount = reader.nextBatchBlocked(consumerArray.memoryAddress());
           if (rowCount > 0) {
+            root.close()
             Data.importIntoVectorSchemaRoot(reader.getAllocator, consumerArray, root, provider)
             root.setRowCount(rowCount)
             true
