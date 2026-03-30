@@ -5,7 +5,7 @@ use arrow_schema::{DataType, Field, SchemaBuilder, SchemaRef};
 use lakesoul_io::{
     config::LakeSoulIOConfig,
     reader::LakeSoulReader,
-    utils::{create_random_batch, lakesoul_file_name, random_str},
+    utils::{gen_random_batch, lakesoul_file_name, random_str},
     writer::create_writer_with_io_config,
 };
 use tempfile::env::temp_dir;
@@ -38,7 +38,7 @@ async fn test_read_for_one_partition() {
         .await
         .unwrap();
     writer
-        .write_record_batch(create_random_batch(schema.clone(), 3, 0.0))
+        .write_record_batch(gen_random_batch(schema.clone(), 3, 0.0))
         .await
         .unwrap();
     writer.flush_and_close().await.unwrap();
