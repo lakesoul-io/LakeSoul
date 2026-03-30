@@ -68,8 +68,8 @@ public class CountDataAssets {
         StartupOptions startupOptions = StartupOptions.initial();
         if (startMode.equals("latest")) {
             startupOptions = StartupOptions.latest();
-        } else if (startMode.equals("earliest")) {
-            startupOptions = StartupOptions.earliest();
+        } else if (startMode.equals("earliest") || startMode.equals("initial")) {
+            startupOptions = StartupOptions.initial();
         }
         PgDeserialization deserialization = new PgDeserialization();
         Properties debeziumProperties = new Properties();
