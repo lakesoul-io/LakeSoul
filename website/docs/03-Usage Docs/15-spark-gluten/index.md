@@ -4,7 +4,7 @@
 Since 2.5.0
 :::
 
-Spark Gluten (https://github.com/apache/incubator-gluten) is an open source project developed based on the Spark plug-in interface. It aims to inject native code vectorization execution capabilities into Apache Spark to greatly optimize the execution efficiency of Spark. The project has been jointly built by Intel and Kyligence since 2021. The underlying layer uses Meta's open source Velox physical execution framework, focusing on injecting more efficient instructions into Spark to execute physical plans.
+Spark Gluten (https://github.com/apache/gluten) is an open source project developed based on the Spark plug-in interface. It aims to inject native code vectorization execution capabilities into Apache Spark to greatly optimize the execution efficiency of Spark. The project has been jointly built by Intel and Kyligence since 2021. The underlying layer uses Meta's open source Velox physical execution framework, focusing on injecting more efficient instructions into Spark to execute physical plans.
 
 In the Spark Gluten project, developers do not need to invade the Spark code base, but use Spark's extension mechanism to replace the physical execution layer implementation to achieve optimization effects. For the steps before physical planning, Spark's existing code can be used, which combines Spark's framework capabilities and enhances the performance of the executor.
 
@@ -37,4 +37,4 @@ Note that the name of lakesoul's jar is `lakesoul-spark-gluten-3.3-VAR::VERSION.
 
 After starting the Spark task in this way, Gluten and LakeSoul can be enabled at the same time to achieve dual acceleration of IO performance and computing performance.
 
-Gluten's Jar can be downloaded from https://github.com/apache/incubator-gluten/releases. Please choose Spark 3.3's jar.
+Gluten's Jar can be downloaded from https://github.com/apache/gluten/releases. Please choose Spark 3.3's jar.
