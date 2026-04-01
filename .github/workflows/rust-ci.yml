@@ -104,4 +104,4 @@ jobs:
           cargo test --package lakesoul-datafusion
           cargo test --package lakesoul-flight --test flight_sql -- --nocapture
           cargo test --color=always --package lakesoul-metadata --lib rbac::tests::test_verify_permission -- --nocapture
-          cargo test --color=always --package lakesoul-s3-proxy --bin lakesoul-s3-proxy tests --profile test --no-fail-fast -- --nocapture
+          cargo test --color=always --package lakesoul-s3-proxy --bin lakesoul-s3-proxy tests --no-fail-fast -- --nocapture

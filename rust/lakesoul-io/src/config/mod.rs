@@ -249,6 +249,10 @@ impl LakeSoulIOConfig {
         self.option(OPTION_KEY_STABLE_SORT)
             .is_some_and(|x| x.eq("true"))
     }
+
+    pub fn set_files(&mut self, files: Vec<String>) {
+        self.files = files
+    }
 }
 
 #[derive(Debug, Default, Clone)]

@@ -352,6 +352,7 @@ fn merge_stream(
             .iter()
             .map(|f| f.contains("/compactdir"))
             .collect::<Vec<_>>();
+        info!("is_compacted: {:?}", is_compacted);
         let streams = build_sorted_stream_merger(
             streams,
             primary_keys,

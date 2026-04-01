@@ -225,7 +225,10 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
 
         let mut inputs_map: HashMap<
             String,
-            (Arc<HashMap<String, String>>, Vec<Arc<dyn ExecutionPlan>>),
+            (
+                Arc<HashMap<String, String>>,
+                (Vec<Arc<dyn ExecutionPlan>>, Vec<String>),
+            ),
         > = HashMap::new();
         let mut column_nullable = HashSet::<String>::new();
 
@@ -236,6 +239,8 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
                 })?;
             let partition_columnar_value = Arc::new(partition_columnar_value);
 
+            info!("Create parquet exec input with config= {:?}", config);
+            let file_path = config.file_groups[0].files()[0].path().to_string();
             let parquet_exec = DataSourceExec::from_data_source(config);
             for field in parquet_exec.schema().fields().iter() {
                 if field.is_nullable() {
@@ -244,11 +249,15 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
             }
 
             if let Some((_, inputs)) = inputs_map.get_mut(&partition_desc) {
-                inputs.push(parquet_exec);
+                inputs.0.push(parquet_exec);
+                inputs.1.push(file_path);
             } else {
                 inputs_map.insert(
                     partition_desc.clone(),
-                    (partition_columnar_value.clone(), vec![parquet_exec]),
+                    (
+                        partition_columnar_value.clone(),
+                        (vec![parquet_exec], vec![file_path]),
+                    ),
                 );
             }
         }
@@ -268,12 +277,14 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         ));
 
         let mut partitioned_exec = Vec::new();
-        for (_, (partition_columnar_values, inputs)) in inputs_map {
+        for (_, (partition_columnar_values, (inputs, file_paths))) in inputs_map {
+            let mut conf = self.conf.clone();
+            conf.set_files(file_paths);
             let merge_exec = Arc::new(
                 MergeParquetExec::new_with_inputs(
                     merged_schema.clone(),
                     inputs,
-                    self.conf.clone(),
+                    conf,
                     partition_columnar_values.clone(),
                 )
                 .map_err(|e| {

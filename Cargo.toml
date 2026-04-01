@@ -35,6 +35,10 @@ inherits = "release"
 debug = true
 opt-level = 2
 
+[profile.test]
+# Use a slightly better optimization level for tests
+opt-level = 1
+
 [workspace.dependencies]
 # datafusion
 datafusion = { version = "51" }
