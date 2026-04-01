@@ -8,7 +8,6 @@ use std::sync::Arc;
 
 use arrow_array::{ArrayRef, RecordBatch, StringArray};
 use arrow_schema::SchemaRef;
-use datafusion_session::Session;
 use lakesoul_io::{
     config::LakeSoulIOConfig, session::LakeSoulIOSession, utils::random_str,
     writer::SyncSendableMutableLakeSoulWriter,

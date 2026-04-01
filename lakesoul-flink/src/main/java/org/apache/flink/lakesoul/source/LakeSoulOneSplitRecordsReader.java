@@ -156,7 +156,18 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
                 projectedRowTypeWithPk,
                 cdcColumn,
                 filter);
-        reader.initializeReader();
+        try {
+            reader.initializeReader();
+        } catch (Throwable t) {
+            LOG.error("Failed to initialize LakeSoul Reader for split: {}", split, t);
+            try {
+                reader.close();
+            } catch (Exception e) {
+                t.addSuppressed(e);
+            }
+            if (t instanceof IOException) throw (IOException) t;
+            throw new IOException("Initialize native reader failed", t);
+        }
         this.reader = new LakeSoulArrowReader(reader,
                 10000);
         LOG.info("Initialized reader for split {}, time {}ms", split, System.currentTimeMillis() - startTime);
@@ -230,6 +241,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
             if (totalRead >= this.limit) {
                 this.reader.close();
                 LOG.info("Reach limit condition {}", split);
+                this.reader = null;
                 return null;
             }
             if (curRecordIdx >= currentVCR.getRowCount()) {
@@ -239,6 +251,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
                     curRecordIdx = 0;
                 } else {
                     this.reader.close();
+                    this.reader = null;
                     LOG.info("Reach end of split file {}", split);
                     return null;
                 }

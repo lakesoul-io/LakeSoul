@@ -13,6 +13,7 @@ import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
 import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketState;
 import org.apache.flink.lakesoul.sink.writer.AbstractLakeSoulMultiTableSinkWriter;
 import org.apache.flink.lakesoul.sink.writer.DefaultLakeSoulWriterBucketFactory;
+import org.apache.flink.lakesoul.sink.writer.LakeSoulWriterBucket;
 import org.apache.flink.lakesoul.sink.writer.TableSchemaWriterCreator;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
@@ -151,8 +152,33 @@ public class LakeSoulArrowMultiTableSinkWriter extends AbstractLakeSoulMultiTabl
     @Override
     public void close() {
         super.close();
-        if (activeArrowBuckets != null) {
-            activeArrowBuckets.values().forEach(LakeSoulArrowWriterBucket::disposePartFile);
+        if (activeArrowBuckets == null || activeArrowBuckets.isEmpty()) {
+            return;
+        }
+        Throwable firstException = null;
+        for (LakeSoulArrowWriterBucket bucket : activeArrowBuckets.values()) {
+            try {
+                if (bucket != null) {
+                    bucket.disposePartFile();
+                }
+            } catch (Throwable t) {
+                LOG.error("Error while disposing bucket: " + bucket, t);
+                if (firstException == null) {
+                    firstException = t;
+                } else {
+                    firstException.addSuppressed(t);
+                }
+            }
+        }
+
+        activeArrowBuckets.clear();
+
+        if (firstException != null) {
+            LOG.error("Close completed with errors, native memory may have leaked if close() failed critically.");
+            if (firstException instanceof RuntimeException) {
+                throw (RuntimeException) firstException;
+            }
+            throw new RuntimeException("Error during LakeSoulWriter close", firstException);
         }
     }
 

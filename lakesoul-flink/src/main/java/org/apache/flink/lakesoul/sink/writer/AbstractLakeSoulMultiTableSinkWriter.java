@@ -43,7 +43,7 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  * @param <IN> The type of input elements.
  */
 public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
-    implements
+        implements
         StatefulSink.StatefulSinkWriter<IN, LakeSoulWriterBucketState>,
         TwoPhaseCommittingSink.PrecommittingSinkWriter<IN, LakeSoulMultiTableSinkCommittable> {
 
@@ -244,8 +244,33 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
 
     @Override
     public void close() {
-        if (activeBuckets != null) {
-            activeBuckets.values().forEach(LakeSoulWriterBucket::disposePartFile);
+        if (activeBuckets == null || activeBuckets.isEmpty()) {
+            return;
+        }
+        Throwable firstException = null;
+        for (LakeSoulWriterBucket bucket : activeBuckets.values()) {
+            try {
+                if (bucket != null) {
+                    bucket.disposePartFile();
+                }
+            } catch (Throwable t) {
+                LOG.error("Error while disposing bucket: " + bucket, t);
+                if (firstException == null) {
+                    firstException = t;
+                } else {
+                    firstException.addSuppressed(t);
+                }
+            }
+        }
+
+        activeBuckets.clear();
+
+        if (firstException != null) {
+            LOG.error("Close completed with errors, native memory may have leaked if close() failed critically.");
+            if (firstException instanceof RuntimeException) {
+                throw (RuntimeException) firstException;
+            }
+            throw new RuntimeException("Error during LakeSoulWriter close", firstException);
         }
     }
 

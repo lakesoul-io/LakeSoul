@@ -331,6 +331,7 @@ impl SyncSendableMutableLakeSoulWriter {
         }
     }
 
+    #[instrument(skip(self), err)]
     pub fn flush_and_close(self) -> Result<Vec<u8>> {
         if let Some(inner_writer) = self.in_progress {
             let inner_writer = match Arc::try_unwrap(inner_writer) {
@@ -381,6 +382,7 @@ impl SyncSendableMutableLakeSoulWriter {
         }
     }
 
+    #[instrument(skip(self), err)]
     pub fn abort_and_close(self) -> Result<()> {
         if let Some(inner_writer) = self.in_progress {
             let inner_writer = match Arc::try_unwrap(inner_writer) {
