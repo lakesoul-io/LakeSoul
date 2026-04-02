@@ -131,19 +131,19 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
     // Use sender-receiver as this function may produce multiple batches
     pub async fn merge_next_batch(
         &mut self,
-        mut tx: Sender<Result<RecordBatch>>,
-    ) -> Result<Sender<Result<RecordBatch>>> {
+        tx: &Sender<Result<RecordBatch>>,
+    ) -> Result<()> {
         if self.ranges.is_empty() {
-            return Ok(tx);
+            return Ok(());
         }
         // Fast path 1: only one range, produce it directly
         if self.ranges.len() == 1 {
             let range = self.ranges.values_mut().next().unwrap();
             let batch = range.slice_remaining_and_advance();
             tx.send(Ok(batch)).await?;
-            return Ok(tx);
+            return Ok(());
         }
-        // Step 1. Find the two ranges with the smallest first-row values
+        // Step 1. Find the range with the smallest first-row value, as r_star
         let mut r_star_range_idx = *self.ranges.iter().next().unwrap().0;
 
         self.ranges.iter().skip(1).for_each(|(batch_idx, range)| {
@@ -182,7 +182,7 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
             let range = self.ranges.get_mut(&overlap_ranges.pop().unwrap()).unwrap();
             let batch = range.slice_remaining_and_advance();
             tx.send(Ok(batch)).await?;
-            return Ok(tx);
+            return Ok(());
         }
         // Step 3. Find the minimum value of r.max in `overlap_ranges`, as `window_end`
         let overlap_range_iter = overlap_ranges.iter();
@@ -225,10 +225,9 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
         // new_overlap_range should have at least two elements
         if new_overlap_range_idx.len() < 2 {
             tx.send(Err(report!("Not enough overlap ranges"))).await?;
-            return Ok(tx);
+            return Ok(());
         }
         // Step 5. Merge all ranges in `new_overlap_ranges`
-        // let mut new_overlap_ranges: Vec<&'a mut BatchRange<C>> = Vec::with_capacity(new_overlap_range_idx.len());
         let new_overlap_ranges: Vec<&mut BatchRange<C>> = self
             .ranges
             .iter_mut()
@@ -247,17 +246,16 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
                 self.target_batch_size,
                 self.schema.clone(),
             );
-            tx = merger.merge(tx).await?;
-            return Ok(tx);
+            merger.merge(&tx).await?;
         } else {
             let mut merger = LoserTreeRangeMerge::new(
                 self.schema.clone(),
                 new_overlap_ranges,
                 self.target_batch_size,
             );
-            tx = merger.merge(tx).await?;
+            merger.merge(&tx).await?;
         }
-        Ok(tx)
+        Ok(())
     }
 
     pub fn build_merged_stream(
@@ -275,10 +273,10 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
         tokio::spawn(async move {
             let mut self_ref = self_cloned.lock().await;
             let stream_num = self_ref.num_streams;
-            self_ref.pull_all_from_streams(0..stream_num).await?;
-            let mut tx = tx;
+            Self::handle_error(self_ref.pull_all_from_streams(0..stream_num).await, &tx)
+                .await?;
             while !self_ref.ranges.is_empty() && !tx.is_closed() {
-                tx = self_ref.merge_next_batch(tx).await?;
+                Self::handle_error(self_ref.merge_next_batch(&tx).await, &tx).await?;
                 // update ranges
                 let mut to_pull_stream_indices =
                     Vec::with_capacity(self_ref.ranges.len());
@@ -297,9 +295,13 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
                 to_remove_range_indices.into_iter().for_each(|batch_idx| {
                     self_ref.ranges.remove(&batch_idx);
                 });
-                self_ref
-                    .pull_all_from_streams(to_pull_stream_indices.into_iter())
-                    .await?;
+                Self::handle_error(
+                    self_ref
+                        .pull_all_from_streams(to_pull_stream_indices.into_iter())
+                        .await,
+                    &tx,
+                )
+                .await?;
             }
             Ok::<(), Report>(())
         });
@@ -347,6 +349,18 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
                 ),
             );
             self.ranges_counter += 1;
+        }
+        Ok(())
+    }
+
+    async fn handle_error(
+        result: Result<()>,
+        tx: &Sender<Result<RecordBatch>>,
+    ) -> Result<()> {
+        if let Err(e) = result {
+            if !tx.is_closed() {
+                tx.send(Err(e)).await?;
+            }
         }
         Ok(())
     }

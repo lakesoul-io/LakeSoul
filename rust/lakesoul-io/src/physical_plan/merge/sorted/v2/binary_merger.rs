@@ -39,10 +39,7 @@ impl<'a, C: CursorValues> BinaryMerger<'a, C> {
         }
     }
 
-    pub async fn merge(
-        &mut self,
-        tx: Sender<Result<RecordBatch>>,
-    ) -> Result<Sender<Result<RecordBatch>>> {
+    pub async fn merge(&mut self, tx: &Sender<Result<RecordBatch>>) -> Result<()> {
         let mut left_valid = self.ranges[0].has_more_rows();
         let mut right_valid = self.ranges[1].has_more_rows();
 
@@ -86,7 +83,7 @@ impl<'a, C: CursorValues> BinaryMerger<'a, C> {
 
         if !left_valid && !right_valid {
             self.build_record_batch(&tx).await?;
-            return Ok(tx);
+            return Ok(());
         }
 
         if left_valid {
@@ -97,7 +94,7 @@ impl<'a, C: CursorValues> BinaryMerger<'a, C> {
             self.process_remaining_rows(1, &tx).await?;
         }
 
-        Ok(tx)
+        Ok(())
     }
 
     fn advance(&mut self, idx: usize) -> bool {
@@ -218,7 +215,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(10);
 
         let mut merger = BinaryMerger::new(vec![left, right], target_batch_size, schema);
-        merger.merge(tx).await.unwrap();
+        merger.merge(&tx).await.unwrap();
 
         let mut results = Vec::new();
         while let Some(result) = rx.recv().await {

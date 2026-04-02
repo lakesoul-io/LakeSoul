@@ -42,8 +42,8 @@ impl<'a, C: CursorValues> LoserTreeRangeMerge<'a, C> {
 
     pub async fn merge(
         &mut self,
-        tx: Sender<crate::Result<RecordBatch>>,
-    ) -> crate::Result<Sender<crate::Result<RecordBatch>>> {
+        tx: &Sender<crate::Result<RecordBatch>>,
+    ) -> crate::Result<()> {
         self.init_loser_tree();
         loop {
             let winner = self.loser_tree[0];
@@ -66,13 +66,8 @@ impl<'a, C: CursorValues> LoserTreeRangeMerge<'a, C> {
                 } else {
                     // this is not first row and not duplicate, first try to output previous rows
                     if self.in_progress_row.len() >= self.target_batch_size {
-                        match self.build_record_batch() {
-                            Ok(batch) => tx.send(Ok(batch)).await?,
-                            Err(e) => {
-                                tx.send(Err(e)).await?;
-                                return Ok(tx);
-                            }
-                        }
+                        let batch = self.build_record_batch()?;
+                        tx.send(Ok(batch)).await?;
                     }
                     self.in_progress_row.push(InProgressRow {
                         range_idx: winner,
@@ -91,15 +86,10 @@ impl<'a, C: CursorValues> LoserTreeRangeMerge<'a, C> {
         }
         // check end
         if !self.in_progress_row.is_empty() {
-            match self.build_record_batch() {
-                Ok(batch) => tx.send(Ok(batch)).await?,
-                Err(e) => {
-                    tx.send(Err(e)).await?;
-                    return Ok(tx);
-                }
-            }
+            let batch = self.build_record_batch()?;
+            tx.send(Ok(batch)).await?;
         }
-        Ok(tx)
+        Ok(())
     }
 
     fn build_record_batch(&mut self) -> crate::Result<RecordBatch> {
@@ -291,7 +281,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(10);
 
         // Run the merge operation
-        merger.merge(tx).await?;
+        merger.merge(&tx).await?;
 
         // Collect results
         let mut batches = Vec::new();
@@ -346,7 +336,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(10);
 
-        merger.merge(tx).await?;
+        merger.merge(&tx).await?;
 
         let mut batches = Vec::new();
         while let Some(result) = rx.recv().await {
@@ -397,7 +387,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(10);
 
-        merger.merge(tx).await?;
+        merger.merge(&tx).await?;
 
         let mut batches = Vec::new();
         while let Some(result) = rx.recv().await {

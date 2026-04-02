@@ -176,7 +176,15 @@ macro_rules! create_merger {
         {
             let is_partial_merge = $fields_map
                 .iter()
-                .any(|f| f.len() != $physical_schema.fields().len());
+                .enumerate()
+                .any(|(i, f)| {
+                    let is_partial_merge = f.len() != $physical_schema.fields().len();
+                    if is_partial_merge {
+                        info!("{}th stream is partial merge, field count: {}, physical schema count: {}",
+                            i, f.len(), $physical_schema.fields().len());
+                    }
+                    is_partial_merge
+                });
             info!("lakesoul is_partial_merge: {}", is_partial_merge);
             if is_partial_merge {
                 let combiner = UseLastRangeCombiner::<$t, true>::new(
@@ -281,6 +289,13 @@ pub(crate) fn build_sorted_stream_merger(
     reservation: MemoryReservation,
     is_compacted: Vec<bool>,
 ) -> Result<SendableRecordBatchStream> {
+    streams.iter().enumerate().for_each(|(i, s)| {
+        info!(
+            "{}th input stream schema for merge: {:?}",
+            i,
+            s.stream.schema()
+        );
+    });
     let fields_map = streams
         .iter()
         .map(|s| {

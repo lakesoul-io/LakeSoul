@@ -85,7 +85,6 @@ impl<C: CursorValues + Send + Sync + 'static> DeduplicateStream<C> {
                         }
                         next_non_empty_exists = true;
                         last_equal_next_first = C::eq(&c, i - 1, peek_c, 0);
-                        break;
                     }
                     break;
                 }
