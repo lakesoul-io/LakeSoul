@@ -40,6 +40,8 @@ pub struct SortAsyncWriter {
     err: Option<Report>,
     /// The buffered size of the sort writer.
     buffered_size: u64,
+    /// The ['LakeSoulIOSession'] associated with this sort writer.
+    io_session: Arc<LakeSoulIOSession>,
 }
 
 impl SortAsyncWriter {
@@ -139,6 +141,7 @@ impl SortAsyncWriter {
             task: Some(task),
             err: None,
             buffered_size: 0,
+            io_session,
         })
     }
 }
@@ -205,5 +208,9 @@ impl AsyncBatchWriter for SortAsyncWriter {
 
     fn buffered_size(&self) -> u64 {
         self.buffered_size
+    }
+
+    fn io_session(&self) -> &Arc<LakeSoulIOSession> {
+        &self.io_session
     }
 }

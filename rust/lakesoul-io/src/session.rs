@@ -332,6 +332,7 @@ impl LakeSoulIOSession {
             execution_props: ExecutionProps::new(),
         })
     }
+
     pub fn io_config(&self) -> &LakeSoulIOConfig {
         &self.io_config
     }

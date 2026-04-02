@@ -249,6 +249,11 @@ impl LakeSoulIOConfig {
         self.option(OPTION_KEY_STABLE_SORT)
             .is_some_and(|x| x.eq("true"))
     }
+
+    /// Returns the record batch size for reading/writing data, default is 8192
+    pub fn batch_size(&self) -> usize {
+        self.batch_size
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -584,12 +589,10 @@ impl LakeSoulIOConfigBuilder {
     ///
     /// * `key` - The key to add the option for
     /// * `value` - The value to add the option for
-    pub fn with_option(
-        mut self,
-        key: impl Into<String>,
-        value: impl Into<String>,
-    ) -> Self {
-        self.config.options.insert(key.into(), value.into());
+    pub fn with_option(mut self, key: impl ToString, value: impl ToString) -> Self {
+        self.config
+            .options
+            .insert(key.to_string(), value.to_string());
         self
     }
 

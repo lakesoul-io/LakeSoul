@@ -481,7 +481,7 @@ impl LakeSoulHashSinkExec {
 
             if !partitioned_writer.contains_key(&partition_desc) {
                 debug!("create writer for partition {partition_desc}");
-                let mut config = create_io_config_builder_from_table_info(
+                let _config = create_io_config_builder_from_table_info(
                     table_info.clone(),
                     HashMap::new(),
                     HashMap::new(),
@@ -489,12 +489,14 @@ impl LakeSoulHashSinkExec {
                 .with_files(vec![file_absolute_path])
                 .with_schema(batch_excluding_range.schema())
                 .build();
-                let writer = MultiPartAsyncWriter::try_new_with_context(
-                    &mut config,
-                    context.clone(),
-                )
-                .await?;
-                partitioned_writer.insert(partition_desc.clone(), Box::new(writer));
+                todo!()
+                // let new_session = LakeSoulIOSession::try_new(io_config)
+                // // let writer = MultiPartAsyncWriter::try_new_with_context(
+                //     &mut config,
+                //     context.clone(),
+                // )
+                // .await?;
+                // partitioned_writer.insert(partition_desc.clone(), Box::new(writer));
             }
 
             if let Some(async_writer) = partitioned_writer.get_mut(&partition_desc) {

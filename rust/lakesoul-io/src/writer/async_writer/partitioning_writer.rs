@@ -10,7 +10,6 @@ use arrow_array::RecordBatch;
 use arrow_schema::{SchemaRef, SortOptions};
 use datafusion_common::DataFusionError;
 use datafusion_common_runtime::{JoinSet, SpawnedTask};
-use datafusion_execution::TaskContext;
 use datafusion_physical_expr::{
     LexOrdering, PhysicalSortExpr,
     expressions::{Column, col},
@@ -53,6 +52,8 @@ pub struct PartitioningAsyncWriter {
     err: Option<Report>,
     /// The buffered size of the partitioning writer.
     buffered_size: u64,
+    /// The ['LakeSoulIOSession'] used by the partitioning writer.
+    io_session: Arc<LakeSoulIOSession>,
 }
 
 type NestedFlushOutputResult = Result<JoinSet<Result<Vec<FlushOutput>>>>;
@@ -97,8 +98,6 @@ impl PartitioningAsyncWriter {
         let mut spawned_tasks = vec![];
 
         let write_id = random_str(16);
-        // this task_ctx can be shared
-        let task_ctx = io_session.task_ctx();
 
         for i in 0..partitioning_exec.output_partitioning().partition_count() {
             let sink_task = SpawnedTask::spawn(Self::pull_and_sink(
@@ -107,7 +106,7 @@ impl PartitioningAsyncWriter {
                 LakeSoulIOConfigBuilder::from(writer_io_config.clone()),
                 Arc::new(range_partitions.clone()), // TODO clone and arc
                 write_id.clone(),
-                task_ctx.clone(),
+                io_session.clone(),
             ));
 
             // In a separate task, wait for each input to be done
@@ -123,6 +122,7 @@ impl PartitioningAsyncWriter {
             spawned_task: Some(spawned_task),
             err: None,
             buffered_size: 0,
+            io_session,
         })
     }
 
@@ -234,9 +234,9 @@ impl PartitioningAsyncWriter {
         io_config_builder: LakeSoulIOConfigBuilder,
         range_partitions: Arc<Vec<String>>,
         write_id: String,
-        task_ctx: Arc<TaskContext>,
+        io_session: Arc<LakeSoulIOSession>,
     ) -> Result<JoinSet<Result<Vec<FlushOutput>>>> {
-        let mut data = input.execute(partition, task_ctx.clone())?;
+        let mut data = input.execute(partition, io_session.task_ctx())?;
         // O(nm), n = number of data fields, m = number of range partitions
         let schema_projection_excluding_range = data
             .schema()
@@ -284,11 +284,9 @@ impl PartitioningAsyncWriter {
                             .with_files(vec![file_absolute_path])
                             .build();
 
-                        let writer = MultiPartAsyncWriter::try_new_with_context(
-                            &config,
-                            task_ctx.clone(),
-                        )
-                        .await?;
+                        let new_session = Arc::new(io_session.with_io_config(config));
+
+                        let writer = MultiPartAsyncWriter::try_new(new_session).await?;
                         partitioned_writer
                             .insert(partition_desc.clone(), Box::new(writer));
                     }
@@ -303,7 +301,7 @@ impl PartitioningAsyncWriter {
                 }
                 // received abort signal
                 Err(e) => {
-                    // error!("{}", e);
+                    error!("received abort signal: {}", e);
                     err = Some(e);
                     break;
                 }
@@ -357,6 +355,9 @@ impl PartitioningAsyncWriter {
                         .collect::<Vec<_>>())
                 });
             }
+
+            println!("?SDFKSDKFJLKSFS");
+            println!("{:?}", input.metrics());
             Ok(flush_join_set)
         }
     }
@@ -471,5 +472,9 @@ impl AsyncBatchWriter for PartitioningAsyncWriter {
 
     fn buffered_size(&self) -> u64 {
         self.buffered_size
+    }
+
+    fn io_session(&self) -> &Arc<LakeSoulIOSession> {
+        &self.io_session
     }
 }
