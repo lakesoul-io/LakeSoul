@@ -246,14 +246,14 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
                 self.target_batch_size,
                 self.schema.clone(),
             );
-            merger.merge(&tx).await?;
+            merger.merge(tx).await?;
         } else {
             let mut merger = LoserTreeRangeMerge::new(
                 self.schema.clone(),
                 new_overlap_ranges,
                 self.target_batch_size,
             );
-            merger.merge(&tx).await?;
+            merger.merge(tx).await?;
         }
         Ok(())
     }
@@ -357,10 +357,10 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
         result: Result<()>,
         tx: &Sender<Result<RecordBatch>>,
     ) -> Result<()> {
-        if let Err(e) = result {
-            if !tx.is_closed() {
-                tx.send(Err(e)).await?;
-            }
+        if let Err(e) = result
+            && !tx.is_closed()
+        {
+            tx.send(Err(e)).await?;
         }
         Ok(())
     }

@@ -77,21 +77,21 @@ impl<'a, C: CursorValues> BinaryMerger<'a, C> {
                 }
             }
             if self.in_progress_row.len() >= self.target_batch_size {
-                self.build_record_batch(&tx).await?;
+                self.build_record_batch(tx).await?;
             }
         }
 
         if !left_valid && !right_valid {
-            self.build_record_batch(&tx).await?;
+            self.build_record_batch(tx).await?;
             return Ok(());
         }
 
         if left_valid {
-            self.process_remaining_rows(0, &tx).await?;
+            self.process_remaining_rows(0, tx).await?;
         }
 
         if right_valid {
-            self.process_remaining_rows(1, &tx).await?;
+            self.process_remaining_rows(1, tx).await?;
         }
 
         Ok(())
