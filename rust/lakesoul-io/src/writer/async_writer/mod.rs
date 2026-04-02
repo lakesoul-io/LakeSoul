@@ -37,7 +37,7 @@ use datafusion_physical_plan::{
 };
 use parquet::file::metadata::ParquetMetaData;
 
-use crate::Result;
+use crate::{Result, session::LakeSoulIOSession};
 
 #[derive(Debug, Clone)]
 pub struct FlushOutput {
@@ -66,6 +66,11 @@ pub trait AsyncBatchWriter {
     /// Get the buffered size of rows in the writer.
     fn buffered_size(&self) -> u64 {
         0
+    }
+
+    /// Get the LakeSoul io session of this writer.
+    fn io_session(&self) -> &Arc<LakeSoulIOSession> {
+        unimplemented!()
     }
 }
 

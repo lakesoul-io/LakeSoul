@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use arrow_schema::{DataType, SchemaRef, TimeUnit};
-use rand::{Rng, distr::Alphanumeric};
 use arrow_array::{
     ArrayRef, BooleanArray, Date32Array, Date64Array, Float32Array, Float64Array,
     Int8Array, Int16Array, Int32Array, Int64Array, RecordBatch, StringArray,
     TimestampMicrosecondArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
 };
+use arrow_schema::{DataType, SchemaRef, TimeUnit};
+use rand::{Rng, distr::Alphanumeric};
 
 #[macro_use]
 mod byte_size;
