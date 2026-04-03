@@ -10,7 +10,6 @@ import org.apache.flink.core.memory.DataInputDeserializer;
 import org.apache.flink.core.memory.DataInputView;
 import org.apache.flink.core.memory.DataOutputSerializer;
 import org.apache.flink.core.memory.DataOutputView;
-import org.apache.flink.lakesoul.sink.writer.NativeBucketWriter;
 import org.apache.flink.lakesoul.sink.writer.NativeParquetWriter;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter;
@@ -88,7 +87,6 @@ public class LakeSoulSinkCommittableSerializer
 
             dataOutputView.writeLong(committable.getCreationTime());
             dataOutputView.writeUTF(committable.getCommitId());
-            dataOutputView.writeLong(committable.getTsMs());
             dataOutputView.writeUTF(committable.getDmlType());
             dataOutputView.writeUTF(committable.getSourcePartitionInfo());
         } else {
@@ -104,7 +102,6 @@ public class LakeSoulSinkCommittableSerializer
         Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFileMap = new HashMap<>();
         String commitId = null;
         long time = Long.MIN_VALUE;
-        long dataTsMs = Long.MAX_VALUE;
         String dmlType = null;
         String sourcePartitionInfo = "";
         if (dataInputView.readBoolean()) {
@@ -123,7 +120,6 @@ public class LakeSoulSinkCommittableSerializer
                 }
                 time = dataInputView.readLong();
                 commitId = dataInputView.readUTF();
-                dataTsMs = dataInputView.readLong();
                 dmlType = dataInputView.readUTF();
                 sourcePartitionInfo = dataInputView.readUTF();
             }
@@ -131,10 +127,9 @@ public class LakeSoulSinkCommittableSerializer
 
         TableSchemaIdentity identity = SimpleVersionedSerialization.readVersionAndDeSerialize(
                 tableSchemaIdentitySerializer, dataInputView);
-//        String bucketId = dataInputView.readUTF();
 
         return new LakeSoulMultiTableSinkCommittable(
-                identity, pendingFileMap, time, commitId, dataTsMs, dmlType, sourcePartitionInfo);
+                identity, pendingFileMap, time, commitId, dmlType, sourcePartitionInfo);
     }
 
     private static void validateMagicNumber(DataInputView in) throws IOException {

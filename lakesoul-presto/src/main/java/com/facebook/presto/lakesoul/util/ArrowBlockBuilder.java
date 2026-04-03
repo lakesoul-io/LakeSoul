@@ -582,7 +582,7 @@ public class ArrowBlockBuilder
 
     public void assignBlockFromTimeStampSecTZVector(TimeStampSecTZVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
     {
-        if (!(type instanceof TimestampWithTimeZoneType)) {
+        if (!(type instanceof TimestampType)) {
             throw new IllegalArgumentException("Type must be a TimestampType for TimeStampSecVector");
         }
 
@@ -593,8 +593,7 @@ public class ArrowBlockBuilder
             else {
                 long value = vector.get(i);
                 long millis = TimeUnit.SECONDS.toMillis(value);
-                long v = DateTimeEncoding.packDateTimeWithZone(millis, TimeZoneKey.UTC_KEY);
-                type.writeLong(builder, v);
+                type.writeLong(builder, millis);
             }
         }
     }
@@ -629,7 +628,7 @@ public class ArrowBlockBuilder
 
     public void assignBlockFromTimeStampMilliTZVector(TimeStampMilliTZVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
     {
-        if (!(type instanceof TimestampWithTimeZoneType)) {
+        if (!(type instanceof TimestampType)) {
             throw new IllegalArgumentException("Type must be a TimestampType for TimeStampMilliTZVector");
         }
 
@@ -639,8 +638,7 @@ public class ArrowBlockBuilder
             }
             else {
                 long millis = vector.get(i);
-                long value = DateTimeEncoding.packDateTimeWithZone(millis, TimeZoneKey.UTC_KEY);
-                type.writeLong(builder, value);
+                type.writeLong(builder, millis);
             }
         }
     }
