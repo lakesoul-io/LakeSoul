@@ -207,31 +207,34 @@ mod tests {
     }
 
     async fn collect_merge_results(
-        left: &mut BatchRange<RowValues>,
-        right: &mut BatchRange<RowValues>,
+        mut left: BatchRange<RowValues>,
+        mut right: BatchRange<RowValues>,
         target_batch_size: usize,
     ) -> Vec<RecordBatch> {
         let schema = left.batch().schema();
         let (tx, mut rx) = mpsc::channel(10);
 
-        let mut merger = BinaryMerger::new(vec![left, right], target_batch_size, schema);
-        merger.merge(&tx).await.unwrap();
+        let handle = tokio::spawn(async move {
+            let mut merger =
+                BinaryMerger::new(vec![&mut left, &mut right], target_batch_size, schema);
+            merger.merge(&tx).await.unwrap();
+        });
 
         let mut results = Vec::new();
         while let Some(result) = rx.recv().await {
             results.push(result.unwrap());
         }
+        handle.await.unwrap();
         results
     }
 
     #[tokio::test]
     async fn test_merge_basic() {
-        let mut left = create_range(&[1, 3, 5], 0);
-        let mut right = create_range(&[2, 4, 6], 1);
+        let left = create_range(&[1, 3, 5], 0);
+        let right = create_range(&[2, 4, 6], 1);
         let target_batch_size = 10;
 
-        let results =
-            collect_merge_results(&mut left, &mut right, target_batch_size).await;
+        let results = collect_merge_results(left, right, target_batch_size).await;
 
         // 验证结果
         assert_eq!(results.len(), 1);
@@ -246,12 +249,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_merge_with_batch_size() {
-        let mut left = create_range(&[1, 3, 5, 7, 9], 0);
-        let mut right = create_range(&[2, 4, 6, 8, 10], 1);
+        let left = create_range(&[1, 3, 5, 7, 9], 0);
+        let right = create_range(&[2, 4, 6, 8, 10], 1);
         let target_batch_size = 6;
 
-        let results =
-            collect_merge_results(&mut left, &mut right, target_batch_size).await;
+        let results = collect_merge_results(left, right, target_batch_size).await;
 
         // 验证结果被分成多个批次
         assert_eq!(results.len(), 2);
@@ -281,11 +283,10 @@ mod tests {
     async fn test_merge_with_empty_left() {
         let mut left = create_range(&[1], 0);
         left.advance(); // 移动到末尾，使其没有更多行
-        let mut right = create_range(&[2, 4, 6], 1);
+        let right = create_range(&[2, 4, 6], 1);
         let target_batch_size = 10;
 
-        let results =
-            collect_merge_results(&mut left, &mut right, target_batch_size).await;
+        let results = collect_merge_results(left, right, target_batch_size).await;
 
         // 验证结果只包含右侧的数据
         assert_eq!(results.len(), 1);
@@ -300,13 +301,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_merge_with_empty_right() {
-        let mut left = create_range(&[1, 3, 5], 0);
+        let left = create_range(&[1, 3, 5], 0);
         let mut right = create_range(&[2], 1);
         right.advance(); // 移动到末尾，使其没有更多行
         let target_batch_size = 10;
 
-        let results =
-            collect_merge_results(&mut left, &mut right, target_batch_size).await;
+        let results = collect_merge_results(left, right, target_batch_size).await;
 
         // 验证结果只包含左侧的数据
         assert_eq!(results.len(), 1);
@@ -321,12 +321,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_merge_with_equal_values() {
-        let mut left = create_range(&[1, 2, 3], 0);
-        let mut right = create_range(&[2, 3, 4], 1);
+        let left = create_range(&[1, 2, 3], 0);
+        let right = create_range(&[2, 3, 4], 1);
         let target_batch_size = 10;
 
-        let results =
-            collect_merge_results(&mut left, &mut right, target_batch_size).await;
+        let results = collect_merge_results(left, right, target_batch_size).await;
 
         assert_eq!(results.len(), 1);
         let batch = &results[0];

@@ -254,6 +254,31 @@ mod tests {
         ArrayValues::new(options, &array, reservation)
     }
 
+    async fn collect_merge_results<C: CursorValues + Send + Sync + 'static>(
+        mut left: BatchRange<C>,
+        mut right: BatchRange<C>,
+        target_batch_size: usize,
+    ) -> Vec<RecordBatch> {
+        let schema = left.batch().schema();
+        let (tx, mut rx) = mpsc::channel(10);
+
+        let handle = tokio::spawn(async move {
+            let mut merger = LoserTreeRangeMerge::new(
+                schema.clone(),
+                vec![&mut left, &mut right],
+                target_batch_size,
+            );
+            merger.merge(&tx).await.unwrap();
+        });
+
+        let mut results = Vec::new();
+        while let Some(result) = rx.recv().await {
+            results.push(result.unwrap());
+        }
+        handle.await.unwrap();
+        results
+    }
+
     // Test the basic functionality of the loser tree merger
     #[tokio::test]
     async fn test_basic_merge() -> crate::Result<()> {
@@ -268,28 +293,10 @@ mod tests {
         let cursor2 = create_int32_cursor(vec![2, 4, 6], r1.new_empty());
 
         // Create BatchRange instances
-        let mut range1 = BatchRange::new(cursor1, batch1, 0, 0, 2); // Process all 3 rows
-        let mut range2 = BatchRange::new(cursor2, batch2, 1, 0, 2); // Process all 3 rows
+        let range1 = BatchRange::new(cursor1, batch1, 0, 0, 2); // Process all 3 rows
+        let range2 = BatchRange::new(cursor2, batch2, 1, 0, 2); // Process all 3 rows
 
-        // Create mutable references to ranges
-        let ranges = vec![&mut range1, &mut range2];
-
-        // Create the merger
-        let mut merger = LoserTreeRangeMerge::new(schema.clone(), ranges, 10);
-
-        // Create channel for receiving batches
-        let (tx, mut rx) = mpsc::channel(10);
-
-        // Run the merge operation
-        merger.merge(&tx).await?;
-
-        // Collect results
-        let mut batches = Vec::new();
-        while let Some(result) = rx.recv().await {
-            if let Ok(batch) = result {
-                batches.push(batch);
-            }
-        }
+        let batches = collect_merge_results(range1, range2, 10).await;
 
         assert!(!batches.is_empty());
         assert_eq!(batches.len(), 1);
@@ -327,23 +334,10 @@ mod tests {
         let cursor2 = create_int32_cursor(vec![1, 2, 3], r1.new_empty());
 
         // Create BatchRange instances
-        let mut range1 = BatchRange::new(cursor1, batch1, 0, 0, 2);
-        let mut range2 = BatchRange::new(cursor2, batch2, 1, 0, 2);
+        let range1 = BatchRange::new(cursor1, batch1, 0, 0, 2);
+        let range2 = BatchRange::new(cursor2, batch2, 1, 0, 2);
 
-        let ranges = vec![&mut range1, &mut range2];
-
-        let mut merger = LoserTreeRangeMerge::new(schema.clone(), ranges, 10);
-
-        let (tx, mut rx) = mpsc::channel(10);
-
-        merger.merge(&tx).await?;
-
-        let mut batches = Vec::new();
-        while let Some(result) = rx.recv().await {
-            if let Ok(batch) = result {
-                batches.push(batch);
-            }
-        }
+        let batches = collect_merge_results(range1, range2, 10).await;
 
         assert!(!batches.is_empty());
         assert_eq!(batches.len(), 1);
@@ -378,23 +372,10 @@ mod tests {
         let cursor2 = create_int32_cursor(vec![2, 4, 4], r1.new_empty());
 
         // Create BatchRange instances
-        let mut range1 = BatchRange::new(cursor1, batch1, 0, 0, 2);
-        let mut range2 = BatchRange::new(cursor2, batch2, 1, 0, 2);
+        let range1 = BatchRange::new(cursor1, batch1, 0, 0, 2);
+        let range2 = BatchRange::new(cursor2, batch2, 1, 0, 2);
 
-        let ranges = vec![&mut range1, &mut range2];
-
-        let mut merger = LoserTreeRangeMerge::new(schema.clone(), ranges, 1);
-
-        let (tx, mut rx) = mpsc::channel(10);
-
-        merger.merge(&tx).await?;
-
-        let mut batches = Vec::new();
-        while let Some(result) = rx.recv().await {
-            if let Ok(batch) = result {
-                batches.push(batch);
-            }
-        }
+        let batches = collect_merge_results(range1, range2, 1).await;
 
         assert!(!batches.is_empty());
         assert_eq!(batches.len(), 3);

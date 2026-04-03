@@ -258,6 +258,8 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
         Ok(())
     }
 
+    // This function needs to be called from ExecutionPlan::execute
+    // so make synchronous
     pub fn build_merged_stream(
         this: Arc<Mutex<Self>>,
     ) -> Result<SendableRecordBatchStream> {
