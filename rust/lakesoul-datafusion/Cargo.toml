@@ -64,7 +64,7 @@ rootcause = { workspace = true }
 
 [dev-dependencies]
 ctor = "0.4"
-test-log = { version = "0.2.14", features = ["trace"] }
+test-log = { workspace = true }
 rand = { workspace = true }
 
 [features]

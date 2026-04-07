@@ -17,8 +17,6 @@
 
 // Adpated from Datafusion 47.0.0
 
-use std::cmp::Ordering;
-
 use arrow::array::{
     Array, ArrowPrimitiveType, GenericByteArray, GenericByteViewArray, OffsetSizeTrait,
     PrimitiveArray, StringViewArray, types::ByteArrayType,
@@ -26,8 +24,11 @@ use arrow::array::{
 use arrow::buffer::{Buffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::SortOptions;
 use arrow::datatypes::ArrowNativeTypeOp;
-use arrow::row::Rows;
+use arrow::row::{RowConverter, Rows};
+use atomic_refcell::AtomicRefCell;
 use datafusion::execution::memory_pool::MemoryReservation;
+use std::cmp::Ordering;
+use std::sync::Arc;
 
 /// A comparable collection of values for use with [`Cursor`]
 ///
@@ -49,6 +50,8 @@ pub trait CursorValues {
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    fn slice(&self, offset: usize, length: usize) -> Self;
 }
 
 /// A comparable cursor, used by sort operations
@@ -155,13 +158,15 @@ impl<T: CursorValues> Ord for Cursor<T> {
 /// Implements [`CursorValues`] for [`Rows`]
 ///
 /// Used for sorting when there are multiple columns in the sort key
-#[derive(Debug)]
 pub struct RowValues {
-    rows: Rows,
+    rows: AtomicRefCell<Rows>,
 
     /// Tracks for the memory used by in the `Rows` of this
     /// cursor. Freed on drop
     _reservation: MemoryReservation,
+
+    // for use in slice
+    row_converter: Arc<RowConverter>,
 }
 
 impl RowValues {
@@ -170,7 +175,11 @@ impl RowValues {
     ///
     /// Panics if the reservation is not for exactly `rows.size()`
     /// bytes or if `rows` is empty.
-    pub fn new(rows: Rows, reservation: MemoryReservation) -> Self {
+    pub fn new(
+        rows: Rows,
+        row_converter: Arc<RowConverter>,
+        reservation: MemoryReservation,
+    ) -> Self {
         assert_eq!(
             rows.size(),
             reservation.size(),
@@ -178,7 +187,8 @@ impl RowValues {
         );
         assert!(rows.num_rows() > 0);
         Self {
-            rows,
+            rows: AtomicRefCell::new(rows),
+            row_converter,
             _reservation: reservation,
         }
     }
@@ -186,20 +196,46 @@ impl RowValues {
 
 impl CursorValues for RowValues {
     fn len(&self) -> usize {
-        self.rows.num_rows()
+        self.rows.borrow().num_rows()
     }
 
     fn eq(l: &Self, l_idx: usize, r: &Self, r_idx: usize) -> bool {
-        l.rows.row(l_idx) == r.rows.row(r_idx)
+        l.rows.borrow().row(l_idx) == r.rows.borrow().row(r_idx)
     }
 
     fn eq_to_previous(cursor: &Self, idx: usize) -> bool {
         assert!(idx > 0);
-        cursor.rows.row(idx) == cursor.rows.row(idx - 1)
+        cursor.rows.borrow().row(idx) == cursor.rows.borrow().row(idx - 1)
     }
 
     fn compare(l: &Self, l_idx: usize, r: &Self, r_idx: usize) -> Ordering {
-        l.rows.row(l_idx).cmp(&r.rows.row(r_idx))
+        l.rows.borrow().row(l_idx).cmp(&r.rows.borrow().row(r_idx))
+    }
+
+    fn slice(&self, offset: usize, length: usize) -> Self {
+        if length == 1 {
+            let borrowed = self.rows.borrow();
+            let row = borrowed.row(offset);
+            let mut new_rows = self.row_converter.empty_rows(1, row.data().len());
+            new_rows.push(row);
+            let mut rows_reservation = self._reservation.new_empty();
+            rows_reservation.try_grow(new_rows.size()).unwrap();
+            RowValues::new(new_rows, self.row_converter.clone(), rows_reservation)
+        } else {
+            let empty_rows = self.row_converter.empty_rows(1, 1);
+            unsafe {
+                let old_rows_ref = &mut *self.rows.as_ptr();
+                let old_rows = std::mem::replace(old_rows_ref, empty_rows);
+                let binary_array = old_rows.try_into_binary().unwrap();
+                let sliced = binary_array.slice(offset, length);
+                let new_rows = self.row_converter.from_binary(sliced);
+                let old_rows = self.row_converter.from_binary(binary_array);
+                let _ = std::mem::replace(old_rows_ref, old_rows);
+                let mut rows_reservation = self._reservation.new_empty();
+                rows_reservation.try_grow(new_rows.size()).unwrap();
+                RowValues::new(new_rows, self.row_converter.clone(), rows_reservation)
+            }
+        }
     }
 }
 
@@ -238,6 +274,10 @@ impl<T: ArrowNativeTypeOp> CursorValues for PrimitiveValues<T> {
     fn compare(l: &Self, l_idx: usize, r: &Self, r_idx: usize) -> Ordering {
         l.0[l_idx].compare(r.0[r_idx])
     }
+
+    fn slice(&self, offset: usize, length: usize) -> Self {
+        Self(self.0.slice(offset, length))
+    }
 }
 
 pub struct ByteArrayValues<T: OffsetSizeTrait> {
@@ -273,6 +313,16 @@ impl<T: OffsetSizeTrait> CursorValues for ByteArrayValues<T> {
 
     fn compare(l: &Self, l_idx: usize, r: &Self, r_idx: usize) -> Ordering {
         l.value(l_idx).cmp(r.value(r_idx))
+    }
+
+    fn slice(&self, offset: usize, length: usize) -> Self {
+        unsafe {
+            let value_start = self.offsets.get_unchecked(offset).as_usize();
+            Self {
+                offsets: self.offsets.slice(offset, length),
+                values: self.values.slice(value_start),
+            }
+        }
     }
 }
 
@@ -337,6 +387,10 @@ impl CursorValues for StringViewArray {
         // Null-checks are assumed to have been handled in the wrapper (e.g., ArrayValues).
         // And the bound is checked in is_finished, it is safe to call get_unchecked
         unsafe { GenericByteViewArray::compare_unchecked(l, l_idx, r, r_idx) }
+    }
+
+    fn slice(&self, offset: usize, length: usize) -> Self {
+        self.slice(offset, length)
     }
 }
 
@@ -422,6 +476,15 @@ impl<T: CursorValues> CursorValues for ArrayValues<T> {
                 true => T::compare(&r.values, r_idx, &l.values, l_idx),
                 false => T::compare(&l.values, l_idx, &r.values, r_idx),
             },
+        }
+    }
+
+    fn slice(&self, offset: usize, length: usize) -> Self {
+        Self {
+            values: self.values.slice(offset, length),
+            null_threshold: self.null_threshold,
+            options: self.options,
+            _reservation: self._reservation.new_empty(),
         }
     }
 }

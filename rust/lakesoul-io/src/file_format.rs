@@ -169,6 +169,10 @@ impl FileFormat for LakeSoulParquetFormat {
             .get_ext_with_compression(file_compression_type)
     }
 
+    fn compression_type(&self) -> Option<FileCompressionType> {
+        self.parquet_format.compression_type()
+    }
+
     async fn infer_schema(
         &self,
         state: &dyn Session,
@@ -321,10 +325,6 @@ impl FileFormat for LakeSoulParquetFormat {
         self.parquet_format
             .file_source()
             .with_statistics(Statistics::default())
-    }
-
-    fn compression_type(&self) -> Option<FileCompressionType> {
-        self.parquet_format.compression_type()
     }
 }
 

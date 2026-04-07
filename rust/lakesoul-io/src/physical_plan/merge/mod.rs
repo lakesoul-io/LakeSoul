@@ -310,7 +310,6 @@ fn merge_stream(
         ))
     } else {
         info!("use sorted merger");
-        // is file schema?
         let physical_schema = Arc::new(Schema::new(
             merged_schema
                 .fields
@@ -326,7 +325,7 @@ fn merge_stream(
                 .collect::<Vec<_>>(),
         ));
 
-        let merge_ops = merged_schema
+        let merge_ops = physical_schema
             .fields()
             .iter()
             .map(|field| {
@@ -347,16 +346,28 @@ fn merge_stream(
                 )))
             })
             .collect();
-        build_sorted_stream_merger(
+        let is_compacted = config
+            .files
+            .iter()
+            .map(|f| f.contains("/compactdir"))
+            .collect::<Vec<_>>();
+        info!("is_compacted: {:?}", is_compacted);
+        let streams = build_sorted_stream_merger(
             streams,
             primary_keys,
             physical_schema,
-            merged_schema,
+            merged_schema.clone(),
             batch_size,
-            default_column_value,
+            default_column_value.clone(),
             merge_ops,
             reservation,
-        )?
+            is_compacted,
+        )?;
+        Box::pin(DefaultColumnStream::new_from_streams_with_default(
+            vec![streams],
+            merged_schema,
+            default_column_value,
+        ))
     };
     Ok(merge_stream)
 }

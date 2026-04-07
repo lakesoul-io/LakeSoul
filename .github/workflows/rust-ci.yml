@@ -71,10 +71,14 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> rust/target"
+          env-vars: "JAVA_HOME"
       - name: Install requirement
         uses: ConorMacBride/install-package@v1
         with:
-          apt: postgresql-client-16 cargo
+          apt: postgresql-client-16
       - name: Init PG
         run: |
           ./script/meta_init_for_local_test.sh -j 1
@@ -87,8 +91,17 @@ jobs:
         run: |
           rm -f Cargo.lock
           cargo clean
-          RUST_BACKTRACE=full cargo test --package lakesoul-datafusion
-          RUST_BACKTRACE=full cargo test --package lakesoul-flight --test flight_sql -- --color always --nocapture
-          RUST_BACKTRACE=full cargo test --color=always --package lakesoul-metadata --lib rbac::tests::test_verify_permission -- --nocapture
-          cargo clean
-          RUST_BACKTRACE=full cargo test --color=always --package lakesoul-s3-proxy --bin lakesoul-s3-proxy tests --profile test --no-fail-fast -- --nocapture
+          export RUST_LOG=info
+          export RUST_BACKTRACE=full
+          cargo test --lib --no-fail-fast -- physical_plan::merge::sorted::v2::batch_range::tests --nocapture
+          cargo test --lib --no-fail-fast -- physical_plan::merge::sorted::v2::binary_merger::tests --nocapture
+          cargo test --lib --no-fail-fast -- physical_plan::merge::sorted::v2::loser_tree_merger::tests --nocapture
+          cargo test --lib --no-fail-fast -- physical_plan::merge::sorted::v2::deduplicate::tests --nocapture
+          cargo test --lib --no-fail-fast -- physical_plan::merge::sorted::v2::window_sliding_merger::tests --nocapture
+          cargo test --lib --no-fail-fast -- physical_plan::merge::sorted::sorted_stream_merger::tests --nocapture
+          export LAKESOUL_IO_USE_V2_MERGE=true
+          cargo test --lib --no-fail-fast -- physical_plan::merge::sorted::sorted_stream_merger::tests --nocapture
+          cargo test --package lakesoul-datafusion
+          cargo test --package lakesoul-flight --test flight_sql -- --nocapture
+          cargo test --color=always --package lakesoul-metadata --lib rbac::tests::test_verify_permission -- --nocapture
+          cargo test --color=always --package lakesoul-s3-proxy --bin lakesoul-s3-proxy tests --no-fail-fast -- --nocapture

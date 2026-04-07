@@ -78,6 +78,9 @@ services:
             - FLINK_HOME=/opt/flink
             - HADOOP_HOME=/opt/hadoop
             - HADOOP_CLASSPATH="/opt/hadoop/etc/hadoop:/opt/hadoop/share/hadoop/common/lib/*:/opt/hadoop/share/hadoop/common/*:/opt/hadoop/share/hadoop/hdfs:/opt/hadoop/share/hadoop/hdfs/lib/*:/opt/hadoop/share/hadoop/hdfs/*:/opt/hadoop/share/hadoop/mapreduce/*:/opt/hadoop/share/hadoop/yarn:/opt/hadoop/share/hadoop/yarn/lib/*:/opt/hadoop/share/hadoop/yarn/*"
+            - RUST_LOG=info
+            - RUST_BACKTRACE=full
+            - LAKESOUL_IO_USE_V2_MERGE=${LAKESOUL_IO_USE_V2_MERGE:-false}
         volumes:
             - ../../script/benchmark/work-dir/:/opt/flink/work-dir/
             - "$HADOOP_HOME:/opt/hadoop"
@@ -114,6 +117,9 @@ services:
             - FLINK_HOME=/opt/flink
             - HADOOP_HOME=/opt/hadoop
             - HADOOP_CLASSPATH="/opt/hadoop/etc/hadoop:/opt/hadoop/share/hadoop/common/lib/*:/opt/hadoop/share/hadoop/common/*:/opt/hadoop/share/hadoop/hdfs:/opt/hadoop/share/hadoop/hdfs/lib/*:/opt/hadoop/share/hadoop/hdfs/*:/opt/hadoop/share/hadoop/mapreduce/*:/opt/hadoop/share/hadoop/yarn:/opt/hadoop/share/hadoop/yarn/lib/*:/opt/hadoop/share/hadoop/yarn/*"
+            - RUST_LOG=info
+            - RUST_BACKTRACE=full
+            - LAKESOUL_IO_USE_V2_MERGE=${LAKESOUL_IO_USE_V2_MERGE:-false}
         volumes:
             - ../../script/benchmark/work-dir/:/opt/flink/work-dir/
             - "$HADOOP_HOME:/opt/hadoop"

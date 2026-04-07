@@ -68,7 +68,7 @@ impl FusedStream {
 #[derive(Debug)]
 pub struct RowCursorStream {
     /// Converter to convert output of physical expressions
-    converter: RowConverter,
+    converter: Arc<RowConverter>,
     /// The physical expressions to sort by
     column_expressions: Vec<Arc<dyn PhysicalExpr>>,
     /// Input streams
@@ -92,7 +92,7 @@ impl RowCursorStream {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        let converter = RowConverter::new(sort_fields)?;
+        let converter = Arc::new(RowConverter::new(sort_fields)?);
         Ok(Self {
             converter,
             reservation,
@@ -114,7 +114,11 @@ impl RowCursorStream {
         // track the memory in the newly created Rows.
         let mut rows_reservation = self.reservation.new_empty();
         rows_reservation.try_grow(rows.size())?;
-        Ok(RowValues::new(rows, rows_reservation))
+        Ok(RowValues::new(
+            rows,
+            self.converter.clone(),
+            rows_reservation,
+        ))
     }
 }
 
