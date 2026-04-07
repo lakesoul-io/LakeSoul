@@ -289,13 +289,6 @@ pub(crate) fn build_sorted_stream_merger(
     reservation: MemoryReservation,
     is_compacted: Vec<bool>,
 ) -> Result<SendableRecordBatchStream> {
-    streams.iter().enumerate().for_each(|(i, s)| {
-        info!(
-            "{}th input stream schema for merge: {:?}",
-            i,
-            s.stream.schema()
-        );
-    });
     let fields_map = streams
         .iter()
         .map(|s| {

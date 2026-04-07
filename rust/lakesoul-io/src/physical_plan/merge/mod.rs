@@ -324,7 +324,6 @@ fn merge_stream(
                 })
                 .collect::<Vec<_>>(),
         ));
-        info!("physical_schema: {:?}", physical_schema);
 
         let merge_ops = physical_schema
             .fields()
