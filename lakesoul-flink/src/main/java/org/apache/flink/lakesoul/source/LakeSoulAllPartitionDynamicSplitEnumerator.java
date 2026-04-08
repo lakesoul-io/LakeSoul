@@ -17,6 +17,7 @@ import org.apache.flink.api.connector.source.SplitEnumerator;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
+import org.apache.flink.runtime.execution.SuppressRestartsException;
 import org.apache.flink.shaded.guava31.com.google.common.collect.Maps;
 import org.apache.flink.shaded.guava31.com.google.common.collect.Sets;
 import org.apache.flink.table.runtime.arrow.ArrowUtils;
@@ -192,6 +193,14 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator
             allPartitionInfo = MetaVersion.getAllPartitionInfo(tableId);
         }
         long e = System.currentTimeMillis();
+        if (allPartitionInfo == null || allPartitionInfo.isEmpty()) {
+            String err = String.format("Table %s with tableId %s does not exist. " +
+                            "This table may have been dropped, please restart this streaming job " +
+                            "without savepoint recovery",
+                    fullTableName, tableId);
+            LOG.error(err);
+            throw new SuppressRestartsException(new RuntimeException(err));
+        }
         LOG.info("Table {} allPartitionInfo={}, queryTime={}ms, interval={}",
                 fullTableName, allPartitionInfo, e - s, discoveryInterval);
         List<PartitionInfo> filteredPartition = SubstraitUtil.applyPartitionFilters(
