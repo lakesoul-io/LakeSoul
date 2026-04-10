@@ -297,6 +297,10 @@ mod tests {
     fn test_find_le_start_index_basic_and_none() {
         let r = create_range(&[1, 3, 5, 7]);
 
+        // target = 1 => last <= 1 is idx 0
+        let target_eq = create_range(&[1]);
+        assert_eq!(r.find_le_start_index(&target_eq, 0), Some(0));
+
         // target = 3 => last <= 3 is idx 1
         let target_eq = create_range(&[3]);
         assert_eq!(r.find_le_start_index(&target_eq, 0), Some(1));
@@ -305,6 +309,10 @@ mod tests {
         let target_between = create_range(&[4]);
         assert_eq!(r.find_le_start_index(&target_between, 0), Some(1));
 
+        // target = 7 => last <= 7 is idx 3 (value 7)
+        let target_between = create_range(&[7]);
+        assert_eq!(r.find_le_start_index(&target_between, 0), Some(3));
+
         // target = 0 => none
         let target_small = create_range(&[0]);
         assert_eq!(r.find_le_start_index(&target_small, 0), None);
@@ -312,11 +320,24 @@ mod tests {
 
     #[test]
     fn test_find_le_start_index_respect_end_row_for_merge() {
-        let mut r = create_range(&[1, 3, 5, 7]);
+        let mut r = create_range(&[1, 3, 5, 7, 7]);
         // restrict merge window to [0..=1]
         r.set_end_row_for_merge(1);
         let target = create_range(&[10]);
         // although 5/7 <= 10, they are outside merge window, so answer is 1
         assert_eq!(r.find_le_start_index(&target, 0), Some(1));
+
+        let target = create_range(&[3]);
+        assert_eq!(r.find_le_start_index(&target, 0), Some(1));
+
+        // reset after slice_remaining_and_advance
+        r.slice_remaining_and_advance();
+        r.reset();
+        let target = create_range(&[5]);
+        assert_eq!(r.find_le_start_index(&target, 0), Some(2));
+
+        r.advance();
+        let target = create_range(&[7]);
+        assert_eq!(r.find_le_start_index(&target, 0), Some(4));
     }
 }

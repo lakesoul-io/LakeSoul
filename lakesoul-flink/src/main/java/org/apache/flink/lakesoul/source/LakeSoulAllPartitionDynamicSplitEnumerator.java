@@ -201,11 +201,11 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator
             LOG.error(err);
             throw new SuppressRestartsException(new RuntimeException(err));
         }
-        LOG.info("Table {} allPartitionInfo={}, queryTime={}ms, interval={}",
-                fullTableName, allPartitionInfo, e - s, discoveryInterval);
+        LOG.info("Table {} allPartitionInfo num {}, queryTime={}ms, interval={}",
+                fullTableName, allPartitionInfo.size(), e - s, discoveryInterval);
         List<PartitionInfo> filteredPartition = SubstraitUtil.applyPartitionFilters(
                 allPartitionInfo, partitionArrowSchema, partitionFilters);
-        LOG.info("Table {} filteredPartition={}, filter={}", fullTableName, filteredPartition, partitionFilters);
+        LOG.info("Table {} filteredPartition num {}, filter={}", fullTableName, filteredPartition.size(), partitionFilters);
 
         ArrayList<LakeSoulPartitionSplit> splits = new ArrayList<>(16);
         for (PartitionInfo partitionInfo : filteredPartition) {

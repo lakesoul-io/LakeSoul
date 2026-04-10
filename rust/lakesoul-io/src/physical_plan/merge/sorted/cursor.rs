@@ -316,12 +316,9 @@ impl<T: OffsetSizeTrait> CursorValues for ByteArrayValues<T> {
     }
 
     fn slice(&self, offset: usize, length: usize) -> Self {
-        unsafe {
-            let value_start = self.offsets.get_unchecked(offset).as_usize();
-            Self {
-                offsets: self.offsets.slice(offset, length),
-                values: self.values.slice(value_start),
-            }
+        Self {
+            offsets: self.offsets.slice(offset, length),
+            values: self.values.clone(),
         }
     }
 }

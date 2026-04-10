@@ -64,13 +64,13 @@ public class DBUtil {
     // Retrieve config value in order: ENV, System Prop, Default Value
     public static String getConfigValue(String envKey, String propKey, String defaultValue) {
         String value = System.getenv(envKey);
-        if (value != null) {
-            LOG.info(String.format("Environment variable %s=%s", envKey, value));
+        if (value != null && !envKey.equals(passwordEnv)) {
+            LOG.info("Environment variable {}={}", envKey, value);
             return value;
         }
         value = System.getProperty(propKey);
-        if (value != null) {
-            LOG.info(String.format("Property variable %s=%s", propKey, value));
+        if (value != null && !propKey.equals(passwordKey)) {
+            LOG.info("Property variable {}={}", propKey, value);
             return value;
         }
         return defaultValue;
@@ -128,7 +128,7 @@ public class DBUtil {
                 dataBaseProperty.setSecondaryHost(secondaryUrl.getHost());
                 dataBaseProperty.setSecondaryPort(String.valueOf(secondaryUrl.getPort()));
             } else {
-                LOG.info("Secondary URL is empty, props {}", properties);
+                LOG.info("Secondary URL is empty");
             }
         } catch (MalformedURLException e) {
             throw new RuntimeException(e);
