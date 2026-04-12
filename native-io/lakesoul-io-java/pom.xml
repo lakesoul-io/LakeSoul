@@ -26,6 +26,8 @@ SPDX-License-Identifier: Apache-2.0
         <maven.compiler.source>8</maven.compiler.source>
         <maven.compiler.target>8</maven.compiler.target>
         <arrow.version>15.0.2</arrow.version>
+        <scala.binary.version>2.12</scala.binary.version>
+        <scala.version>2.12.15</scala.version>
         <scalatest.version>3.1.0</scalatest.version>
         <substrait.version>0.30.0</substrait.version>
         <protobuf.version>3.25.5</protobuf.version>
