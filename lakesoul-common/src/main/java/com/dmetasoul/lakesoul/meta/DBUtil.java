@@ -64,13 +64,17 @@ public class DBUtil {
     // Retrieve config value in order: ENV, System Prop, Default Value
     public static String getConfigValue(String envKey, String propKey, String defaultValue) {
         String value = System.getenv(envKey);
-        if (value != null && !envKey.equals(passwordEnv)) {
-            LOG.info("Environment variable {}={}", envKey, value);
+        if (value != null) {
+            if (!envKey.equals(passwordEnv)) {
+                LOG.info("Environment variable {}={}", envKey, value);
+            }
             return value;
         }
         value = System.getProperty(propKey);
-        if (value != null && !propKey.equals(passwordKey)) {
-            LOG.info("Property variable {}={}", propKey, value);
+        if (value != null) {
+            if (!propKey.equals(passwordKey)) {
+                LOG.info("Property variable {}={}", propKey, value);
+            }
             return value;
         }
         return defaultValue;
