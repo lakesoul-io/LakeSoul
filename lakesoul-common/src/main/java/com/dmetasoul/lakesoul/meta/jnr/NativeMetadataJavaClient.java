@@ -198,6 +198,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                     dataBaseProperty.getPassword());
         }
         final CompletableFuture<Boolean> future = new CompletableFuture<>();
+        long startTime = System.currentTimeMillis();
         LOG.info("Creating native postgres client primary {}:{}, secondary {}:{}",
                 dataBaseProperty.getHost(), dataBaseProperty.getPort(),
                 dataBaseProperty.getSecondaryHost(), dataBaseProperty.getSecondaryPort());
@@ -216,20 +217,20 @@ public class NativeMetadataJavaClient implements AutoCloseable {
         );
         try {
             future.get(timeout, TimeUnit.MILLISECONDS);
-        } catch (InterruptedException | ExecutionException e) {
+        } catch (InterruptedException | ExecutionException | TimeoutException e) {
+            LOG.error("Create native postgres client timeout", e);
             throw new RuntimeException(e);
-        } catch (TimeoutException e) {
-            LOG.error("Configuring postgres with {} timeout", dataBaseProperty);
-            throw new RuntimeException(e);
+        } finally {
+            LOG.info("Create native postgres client cost {} ms", System.currentTimeMillis() - startTime);
         }
     }
-
 
     public JniWrapper executeQuery(Integer queryType, List<String> params) {
         try {
             getReadLock();
             int retryCounter = NATIVE_METADATA_MAX_RETRY_ATTEMPTS;
             while (retryCounter >= 0) {
+                long startTime = System.currentTimeMillis();
                 try {
                     final CompletableFuture<Integer> queryFuture = new CompletableFuture<>();
                     Pointer queryResult = getLibLakeSoulMetaData().execute_query(
@@ -273,24 +274,18 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                     getLibLakeSoulMetaData().free_bytes_result(queryResult);
                     return jniWrapper;
 
-                } catch (InvalidProtocolBufferException | InterruptedException | ExecutionException e) {
-                    LOG.error("Failed to execute postgres query, retry {}", retryCounter, e);
+                } catch (InvalidProtocolBufferException | InterruptedException | ExecutionException | TimeoutException e) {
+                    LOG.error("Failed to execute postgres query, type {}, params {}, retry {}",
+                            NativeUtils.getQueryName(queryType), params, retryCounter, e);
                     if (retryCounter == 0) {
-                        shutDownInstance();
                         throw new RuntimeException(e);
                     } else {
                         enlargeTimeout();
                         retryCounter--;
                     }
-                } catch (TimeoutException e) {
-                    LOG.error("Failed to execute postgres query, retry {}", retryCounter, e);
-                    if (retryCounter == 0) {
-                        LOG.error("Execute Query {} with {} timeout", queryType, params);
-                        throw new RuntimeException(e);
-                    } else {
-                        enlargeTimeout();
-                        retryCounter--;
-                    }
+                } finally {
+                    LOG.info("Execute postgres query, type {}, cost {} ms",
+                            NativeUtils.getQueryName(queryType), System.currentTimeMillis() - startTime);
                 }
             }
         } finally {
@@ -319,12 +314,12 @@ public class NativeMetadataJavaClient implements AutoCloseable {
         lock.writeLock().unlock();
     }
 
-
     public Integer executeInsert(Integer insertType, JniWrapper jniWrapper) {
         try {
             getWriteLock();
             int retryCounter = NATIVE_METADATA_MAX_RETRY_ATTEMPTS;
             while (retryCounter >= 0) {
+                long startTime = System.currentTimeMillis();
                 try {
                     final CompletableFuture<Integer> future = new CompletableFuture<>();
 
@@ -347,24 +342,18 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                             bytes.length
                     );
                     return future.get(timeout, TimeUnit.MILLISECONDS);
-                } catch (InterruptedException | ExecutionException e) {
-                    LOG.error("Failed to execute postgres query, retry {}", retryCounter, e);
+                } catch (InterruptedException | ExecutionException | TimeoutException e) {
+                    LOG.error("Failed to execute postgres insert, type {}, retry {}",
+                            NativeUtils.getQueryName(insertType), retryCounter, e);
                     if (retryCounter == 0) {
-                        shutDownInstance();
                         throw new RuntimeException(e);
                     } else {
                         enlargeTimeout();
                         retryCounter--;
                     }
-                } catch (TimeoutException e) {
-                    LOG.error("Failed to execute postgres query, retry {}", retryCounter, e);
-                    if (retryCounter == 0) {
-                        LOG.error("Execute Insert {} with {} timeout", insertType, jniWrapper);
-                        throw new RuntimeException(e);
-                    } else {
-                        enlargeTimeout();
-                        retryCounter--;
-                    }
+                } finally {
+                    LOG.info("Execute postgres insert, type {}, cost {} ms",
+                            NativeUtils.getQueryName(insertType), System.currentTimeMillis() - startTime);
                 }
             }
         } finally {
@@ -378,6 +367,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
             getWriteLock();
             int retryCounter = NATIVE_METADATA_MAX_RETRY_ATTEMPTS;
             while (retryCounter >= 0) {
+                long startTime = System.currentTimeMillis();
                 try {
                     final CompletableFuture<Integer> future = new CompletableFuture<>();
 
@@ -395,24 +385,18 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                             String.join(PARAM_DELIM, params)
                     );
                     return future.get(timeout, TimeUnit.MILLISECONDS);
-                } catch (InterruptedException | ExecutionException e) {
-                    LOG.error("Failed to execute postgres query, retry {}", retryCounter, e);
+                } catch (InterruptedException | ExecutionException | TimeoutException e) {
+                    LOG.error("Failed to execute postgres update, type {}, params {}, retry {}",
+                            NativeUtils.getQueryName(updateType), params, retryCounter, e);
                     if (retryCounter == 0) {
-                        shutDownInstance();
                         throw new RuntimeException(e);
                     } else {
                         enlargeTimeout();
                         retryCounter--;
                     }
-                } catch (TimeoutException e) {
-                    LOG.error("Failed to execute postgres query, retry {}", retryCounter, e);
-                    if (retryCounter == 0) {
-                        LOG.error("Execute Update {} with {} timeout", updateType, params);
-                        throw new RuntimeException(e);
-                    } else {
-                        enlargeTimeout();
-                        retryCounter--;
-                    }
+                } finally {
+                    LOG.info("Execute postgres update, type {}, cost {} ms",
+                            NativeUtils.getQueryName(updateType), System.currentTimeMillis() - startTime);
                 }
             }
         } finally {
@@ -426,6 +410,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
             getReadLock();
             int retryCounter = NATIVE_METADATA_MAX_RETRY_ATTEMPTS;
             while (retryCounter >= 0) {
+                long startTime = System.currentTimeMillis();
                 try {
                     final CompletableFuture<String> future = new CompletableFuture<>();
 
@@ -445,24 +430,18 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                     String result = future.get(timeout, TimeUnit.MILLISECONDS);
                     if (result.isEmpty()) return Collections.emptyList();
                     return Arrays.stream(result.split(PARAM_DELIM)).collect(Collectors.toList());
-                } catch (InterruptedException | ExecutionException e) {
-                    LOG.error("Failed to execute postgres query, retry {}", retryCounter, e);
+                } catch (InterruptedException | ExecutionException | TimeoutException e) {
+                    LOG.error("Failed to execute postgres query scalar, type {}, params {}, retry {}",
+                            NativeUtils.getQueryName(queryScalarType), params, retryCounter, e);
                     if (retryCounter == 0) {
-                        shutDownInstance();
                         throw new RuntimeException(e);
                     } else {
                         enlargeTimeout();
                         retryCounter--;
                     }
-                } catch (TimeoutException e) {
-                    LOG.error("Failed to execute postgres query, retry {}", retryCounter, e);
-                    if (retryCounter == 0) {
-                        LOG.error("Execute QueryScalar {} with {} timeout", queryScalarType, params);
-                        throw new RuntimeException(e);
-                    } else {
-                        enlargeTimeout();
-                        retryCounter--;
-                    }
+                } finally {
+                    LOG.info("Execute postgres query scalar, type {}, cost {} ms",
+                            NativeUtils.getQueryName(queryScalarType), System.currentTimeMillis() - startTime);
                 }
             }
         } finally {
@@ -526,6 +505,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
 
     @Override
     public void close() {
+        LOG.info("Close native metadata java client");
         if (tokioRuntime != null) {
             libLakeSoulMetaData.free_tokio_runtime(tokioRuntime);
             tokioRuntime = null;

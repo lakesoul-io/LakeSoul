@@ -19,10 +19,10 @@ datafusion-common = { workspace = true }
 datafusion-substrait = { workspace = true }
 # arrow
 arrow-schema = { workspace = true }
-arrow-array = { workspace = true, features = ["ffi"] }
+arrow-array = { workspace = true }
 arrow-ipc = { workspace = true }
 # runtime
-tokio = { version = "1", features = ["full"] }
+tokio = { workspace = true }
 # utils
 bytes = { workspace = true }
 # protobuf

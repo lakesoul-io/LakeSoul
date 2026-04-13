@@ -11,7 +11,7 @@ edition = "2024"
 lakesoul-metadata = { path = "../lakesoul-metadata" }
 pingora = { version = "0.8.0", features = ["lb", "openssl"] }
 pingora-core = { version = "0.8.0", features = ["openssl"] }
-async-trait = "0.1"
+async-trait = { workspace = true }
 hickory-resolver = "0.24.4"
 aws-sigv4 = "1.3.3"
 aws-smithy-http = "0.60.12"
@@ -19,27 +19,27 @@ aws-smithy-runtime-api = "1.8.5"
 aws-credential-types = "1.2.1"
 aws-config = "1.8.3"
 arc-swap = "1.7.1"
-anyhow = "1.0.96"
-http = "1.0.0"
+anyhow = { workspace = true }
+http = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-lazy_static = "1.5"
+lazy_static = { workspace = true }
 tower-service = "0.3"
 prometheus = { version = "0.13", features = ["process"] }
-bytes = "1.0"
-uuid = { version = "1.17.0", features = ["v4"] }
+bytes = { workspace = true }
+uuid = { workspace = true }
 ring = { version = "0.17", features = ["std"] }
-rand = "0.9"
+rand = { workspace = true }
 base64 = { version = "0.22", features = ["std"] }
-url = "2.5.7"
-chrono = { version = "0.4", features = ["clock"] }
+url = { workspace = true }
+chrono = { workspace = true }
 serde = { workspace = true }
 quick-xml = { version = "0.38", features = ["serialize"] }
 regex = { workspace = true }
 pad = "0.1"
 reqwest = "0.12"
-hex = "0.4.3"
+hex = { workspace = true }
 
 [dev-dependencies]
 lakesoul-io = { path = "../lakesoul-io" }
