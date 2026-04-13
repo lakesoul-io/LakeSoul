@@ -155,7 +155,7 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
                 r_star_range.begin_row(),
             );
             if cmp_with_first.is_lt() {
-                // Current range is smaller than the first, so shift first to second and update first
+                // Current range is smaller than r_star, so update r_star
                 r_star_range_idx = *batch_idx;
             }
         });
@@ -176,6 +176,9 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
             if cmp.is_lt() || cmp.is_eq() {
                 overlap_ranges.push(*batch_idx);
             }
+        }
+        if overlap_ranges.is_empty() {
+            panic!("overlap_ranges is empty");
         }
         // Fast path 2: if overlap ranges contains only one range, produce it directly
         if overlap_ranges.len() == 1 {
@@ -225,7 +228,7 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
         // new_overlap_range should have at least two elements
         if new_overlap_range_idx.len() < 2 {
             tx.send(Err(report!("Not enough overlap ranges"))).await?;
-            return Ok(());
+            return Err(report!("Not enough overlap ranges"));
         }
         // Step 5. Merge all ranges in `new_overlap_ranges`
         let new_overlap_ranges: Vec<&mut BatchRange<C>> = self
@@ -359,10 +362,14 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
         result: Result<()>,
         tx: &Sender<Result<RecordBatch>>,
     ) -> Result<()> {
-        if let Err(e) = result
-            && !tx.is_closed()
-        {
-            tx.send(Err(e)).await?;
+        if let Err(e) = result {
+            if !tx.is_closed() {
+                let msg = format!("{}", e);
+                tx.send(Err(report!(e).into())).await?;
+                return Err(report!(msg).into());
+            } else {
+                return Err(e);
+            }
         }
         Ok(())
     }

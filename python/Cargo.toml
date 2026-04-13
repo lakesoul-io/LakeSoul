@@ -16,7 +16,7 @@ pyo3 = { version = "0.26", features = [
   "abi3-py39",
 ] }
 pyo3-log = "0.13"
-log = "0.4"
+log = { workspace = true }
 lakesoul-io = { path = "../rust/lakesoul-io" }
 lakesoul-metadata = { path = "../rust/lakesoul-metadata" }
 tokio.workspace = true

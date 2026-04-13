@@ -47,7 +47,7 @@ async fn create_pool(config: &str) -> Result<Pool<PgConnectionManager>> {
     let config = config.parse::<Config>()?;
     let manager = PgConnectionManager::new(config);
     let pool = Pool::builder()
-        .max_size(8)
+        .max_size(16)
         .min_idle(1)
         .connection_timeout(Duration::from_secs(10))
         .idle_timeout(Some(Duration::from_secs(30)))

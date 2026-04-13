@@ -535,6 +535,9 @@ impl ProxyHttp for S3Proxy {
     where
         Self::CTX: Send + Sync,
     {
+        if upstream_response.status.as_u16() >= 400 {
+            error!("Upstream returned error {:?}", upstream_response);
+        }
         self.handle
             .http_handle
             .handle_response_header(ctx, upstream_response)

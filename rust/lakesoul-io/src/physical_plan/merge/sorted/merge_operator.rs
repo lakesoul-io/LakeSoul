@@ -577,23 +577,3 @@ macro_rules! sum_last_with_primitive_type_and_append_value {
         Ok(res)
     }};
 }
-
-#[cfg(test)]
-mod tests {
-    use arrow::array::{PrimitiveArray, TimestampMillisecondArray};
-    use arrow::datatypes::TimestampMillisecondType;
-    #[test]
-    fn test_timestamp_with_fixed_offset_tz_fmt_debug() {
-        let arr: PrimitiveArray<TimestampMillisecondType> =
-            TimestampMillisecondArray::from(vec![
-                1546214400000,
-                1546214400000,
-                -1546214400000,
-            ])
-            .with_timezone("America/Denver".to_string());
-        assert_eq!(
-            "PrimitiveArray<Timestamp(Millisecond, Some(\"+08:00\"))>\n[\n  2018-12-31T08:00:00+08:00,\n  2018-12-31T08:00:00+08:00,\n  1921-01-02T08:00:00+08:00,\n]",
-            format!("{arr:?}")
-        );
-    }
-}

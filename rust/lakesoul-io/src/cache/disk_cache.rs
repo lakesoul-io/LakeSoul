@@ -159,7 +159,7 @@ impl DiskCache {
     ///
     /// ```
     /// # use std::time::Duration;
-    /// use lakesoul_io::lakesoul_cache::cache::DiskCache;
+    /// use lakesoul_io::cache::DiskCache;
     ///
     /// let cache = DiskCache::builder(8*1024*1024)
     ///     .page_size(4096)

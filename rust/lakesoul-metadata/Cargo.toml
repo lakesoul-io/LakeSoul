@@ -23,11 +23,11 @@ tokio-postgres = { version = "0.7.8", features = [
 bb8-postgres = "0.8.1"
 postgres-types = { version = "0.2.5", features = ["derive"] }
 # utils
-bytes = { version = "1.5.0" }
+bytes = { workspace = true }
 # time
-chrono = "0.4"
+chrono = { workspace = true }
 # async
-async-trait = "0.1"
+async-trait = { workspace = true }
 # runtime
 tokio = { workspace = true }
 # serialization
@@ -39,7 +39,7 @@ prost = { workspace = true }
 # cache
 cached = { workspace = true }
 # web
-jsonwebtoken = { version = "9", default-features = false }
+jsonwebtoken = { workspace = true }
 # utils
 num_enum = "0.5.1"
 uuid = { workspace = true }

@@ -55,9 +55,9 @@ datafusion-datasource-parquet = { version = "51" }
 datafusion-substrait = { version = "51" }
 datafusion-python = { version = "51" }
 # arrow
-arrow = { version = "57" }
-arrow-schema = { version = "57" }
-arrow-array = { version = "57" }
+arrow = { version = "57", features = ["prettyprint"] }
+arrow-schema = { version = "57", features = ["serde"] }
+arrow-array = { version = "57", features = ["chrono-tz", "ffi"] }
 arrow-buffer = { version = "57" }
 arrow-cast = { version = "57" }
 arrow-arith = { version = "57" }
@@ -77,21 +77,26 @@ tokio-stream = "0.1.9"
 tower = "0.4.13"
 tonic = "0.14"
 tonic-build = "0.14"
-http = "1.2.0"
-metrics = "0.21"
+http = "1"
+metrics = "0.24"
 # cache
 cached = { version = "0.54.0", features = ["async_tokio_rt_multi_thread"] }
 # cli
 clap = { version = "4.4", features = ["derive"] }
 # utils
 atomic_refcell = "0.1.8"
-bytes = "1.4.0"
-url = "2.2"
+bytes = "1"
+chrono = { version = "0.4", features = ["clock", "unstable-locales"] }
+hex = "0.4"
+jsonwebtoken = { version = "9", default-features = false }
+url = "2"
 half = "^2.1"
-uuid = { version = "1.4.0", features = ["v4", "fast-rng", "macro-diagnostics"] }
+uuid = { version = "1", features = ["v4", "fast-rng", "macro-diagnostics"] }
 derivative = "2.2.0"
 regex = "1.11"
 itertools = "0.14"
+lazy_static = "1.4.0"
+log = "0.4.27"
 # serialization
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive", "std", "rc"] }
@@ -114,7 +119,7 @@ test-log = {version = "0.2", features = ["trace"]}
 tempfile = "3.3.0"
 # error handling
 thiserror = "1.0"
-anyhow = "1.0.79"
+anyhow = "1"
 rootcause = "0.11"
 
 [workspace.lints.clippy]
