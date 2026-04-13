@@ -78,7 +78,7 @@ tower = "0.4.13"
 tonic = "0.14"
 tonic-build = "0.14"
 http = "1"
-metrics = "0.21"
+metrics = "0.24"
 # cache
 cached = { version = "0.54.0", features = ["async_tokio_rt_multi_thread"] }
 # cli

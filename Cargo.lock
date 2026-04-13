@@ -3949,7 +3949,7 @@ dependencies = [
  "lakesoul-datafusion",
  "lakesoul-io",
  "lakesoul-metadata",
- "metrics 0.21.1",
+ "metrics",
  "metrics-exporter-prometheus",
  "object_store",
  "prost",
@@ -4463,17 +4463,6 @@ dependencies = [
 
 [[package]]
 name = "metrics"
-version = "0.21.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fde3af1a009ed76a778cb84fdef9e7dbbdf5775ae3e4cc1f434a6a307f6f76c5"
-dependencies = [
- "ahash",
- "metrics-macros",
- "portable-atomic",
-]
-
-[[package]]
-name = "metrics"
 version = "0.24.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d5312e9ba3771cfa961b585728215e3d972c950a3eed9252aa093d6301277e8"
@@ -4495,23 +4484,12 @@ dependencies = [
  "hyper-util",
  "indexmap 2.14.0",
  "ipnet",
- "metrics 0.24.3",
+ "metrics",
  "metrics-util",
  "quanta",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "metrics-macros"
-version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38b4faf00617defe497754acde3024865bc143d44a86799b24e191ecff91354f"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
 ]
 
 [[package]]
@@ -4523,7 +4501,7 @@ dependencies = [
  "crossbeam-epoch",
  "crossbeam-utils",
  "hashbrown 0.15.5",
- "metrics 0.24.3",
+ "metrics",
  "quanta",
  "rand 0.9.3",
  "rand_xoshiro",

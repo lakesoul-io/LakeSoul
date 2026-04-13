@@ -598,6 +598,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[test_log::test]
     async fn test_sorted_stream_merger() {
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
@@ -684,6 +685,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[test_log::test]
     async fn test_sorted_stream_merger_multi_columns() {
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
@@ -847,6 +849,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[test_log::test]
     async fn test_sorted_stream_merger_with_sum_and_last() {
         let session_config = SessionConfig::default().with_batch_size(2);
         let session_ctx = SessionContext::new_with_config(session_config);

@@ -89,19 +89,8 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and test
         run: |
-          rm -f Cargo.lock
-          cargo clean
           export RUST_LOG=info
           export RUST_BACKTRACE=full
-          cargo test --lib --manifest-path rust/lakesoul-io/Cargo.toml --no-fail-fast -- physical_plan::merge::sorted::v2::batch_range::tests --nocapture
-          cargo test --lib --manifest-path rust/lakesoul-io/Cargo.toml --no-fail-fast -- physical_plan::merge::sorted::v2::binary_merger::tests --nocapture
-          cargo test --lib --manifest-path rust/lakesoul-io/Cargo.toml --no-fail-fast -- physical_plan::merge::sorted::v2::loser_tree_merger::tests --nocapture
-          cargo test --lib --manifest-path rust/lakesoul-io/Cargo.toml --no-fail-fast -- physical_plan::merge::sorted::v2::deduplicate::tests --nocapture
-          cargo test --lib --manifest-path rust/lakesoul-io/Cargo.toml --no-fail-fast -- physical_plan::merge::sorted::v2::window_sliding_merger::tests --nocapture
-          cargo test --lib --manifest-path rust/lakesoul-io/Cargo.toml --no-fail-fast -- physical_plan::merge::sorted::sorted_stream_merger::tests --nocapture
+          cargo test --lib --bins --tests
           export LAKESOUL_IO_USE_V2_MERGE=true
-          cargo test --lib --manifest-path rust/lakesoul-io/Cargo.toml --no-fail-fast -- physical_plan::merge::sorted::sorted_stream_merger::tests --nocapture
-          cargo test --package lakesoul-datafusion
-          cargo test --package lakesoul-flight --test flight_sql -- --nocapture
-          cargo test --color=always --package lakesoul-metadata --lib rbac::tests::test_verify_permission -- --nocapture
-          cargo test --color=always --package lakesoul-s3-proxy --bin lakesoul-s3-proxy tests --no-fail-fast -- --nocapture
+          cargo test --lib --bins --tests

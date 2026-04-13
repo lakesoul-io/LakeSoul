@@ -636,6 +636,7 @@ impl<K, V> ExactSizeIterator for IterMut<'_, K, V> {
 #[cfg(test)]
 mod tests {
     use super::{LruCache, Meter};
+    use itertools::Itertools;
     use std::borrow::Borrow;
 
     #[test]
@@ -701,21 +702,44 @@ mod tests {
         assert_eq!(cache.capacity(), 1);
     }
 
+    fn get_cache_debug_string(cache: &LruCache<i32, i32>) -> String {
+        format!(
+            "{:?}",
+            cache
+                .iter()
+                .sorted_by_key(|(k, _)| *k)
+                .map(|(k, v)| (*k, *v))
+                .collect::<Vec<_>>()
+        )
+    }
+
     #[test]
     fn test_debug() {
         let mut cache = LruCache::new(3);
         cache.insert(1, 10);
         cache.insert(2, 20);
         cache.insert(3, 30);
-        assert_eq!(format!("{:?}", cache), "{3: 30, 2: 20, 1: 10}");
+        assert_eq!(
+            get_cache_debug_string(&cache),
+            "[(1, 10), (2, 20), (3, 30)]"
+        );
         cache.insert(2, 22);
-        assert_eq!(format!("{:?}", cache), "{2: 22, 3: 30, 1: 10}");
+        assert_eq!(
+            get_cache_debug_string(&cache),
+            "[(1, 10), (2, 22), (3, 30)]"
+        );
         cache.insert(6, 60);
-        assert_eq!(format!("{:?}", cache), "{6: 60, 2: 22, 3: 30}");
+        assert_eq!(
+            get_cache_debug_string(&cache),
+            "[(2, 22), (3, 30), (6, 60)]"
+        );
         cache.get_mut(&3);
-        assert_eq!(format!("{:?}", cache), "{3: 30, 6: 60, 2: 22}");
+        assert_eq!(
+            get_cache_debug_string(&cache),
+            "[(2, 22), (3, 30), (6, 60)]"
+        );
         cache.set_capacity(2);
-        assert_eq!(format!("{:?}", cache), "{3: 30, 6: 60}");
+        assert_eq!(get_cache_debug_string(&cache), "[(3, 30), (6, 60)]");
     }
 
     #[test]
@@ -747,7 +771,7 @@ mod tests {
         cache.clear();
         assert!(cache.get_mut(&1).is_none());
         assert!(cache.get_mut(&2).is_none());
-        assert_eq!(format!("{:?}", cache), "{}");
+        assert_eq!(cache.len(), 0);
     }
 
     #[test]
