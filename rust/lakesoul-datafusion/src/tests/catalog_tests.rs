@@ -18,6 +18,7 @@ mod catalog_tests {
     use rand::Rng;
     use rand::distr::Alphanumeric;
 
+    use test_log::test;
     use tokio::runtime::Runtime;
 
     use crate::catalog::{LakeSoulCatalog, LakeSoulNamespace, LakeSoulTableProperty};

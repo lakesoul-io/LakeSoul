@@ -14,7 +14,7 @@ tokio = { workspace = true }
 clap = { workspace = true }
 rustyline = "16.0.0"
 # async
-futures = "0.3"
+futures = { workspace = true }
 # rand
 rand = { workspace = true }
 # logging

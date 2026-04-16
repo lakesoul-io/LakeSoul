@@ -71,10 +71,14 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> rust/target"
+          env-vars: "JAVA_HOME"
       - name: Install requirement
         uses: ConorMacBride/install-package@v1
         with:
-          apt: postgresql-client-16 cargo
+          apt: postgresql-client-16
       - name: Init PG
         run: |
           ./script/meta_init_for_local_test.sh -j 1
@@ -85,10 +89,8 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and test
         run: |
-          rm -f Cargo.lock
-          cargo clean
-          RUST_BACKTRACE=full cargo test --package lakesoul-datafusion
-          RUST_BACKTRACE=full cargo test --package lakesoul-flight --test flight_sql -- --color always --nocapture
-          RUST_BACKTRACE=full cargo test --color=always --package lakesoul-metadata --lib rbac::tests::test_verify_permission -- --nocapture
-          cargo clean
-          RUST_BACKTRACE=full cargo test --color=always --package lakesoul-s3-proxy --bin lakesoul-s3-proxy tests --profile test --no-fail-fast -- --nocapture
+          export RUST_LOG=info
+          export RUST_BACKTRACE=full
+          cargo test --lib --bins --tests
+          export LAKESOUL_IO_USE_V2_MERGE=true
+          cargo test --lib --bins --tests

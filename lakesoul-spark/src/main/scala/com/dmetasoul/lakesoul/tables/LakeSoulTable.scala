@@ -370,9 +370,10 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
         } else {
           files.groupBy(_.file_bucket_id).values.toSeq
         }
+        val identifier = s"${tableInfo.namespace}.${tableInfo.short_table_name.getOrElse(tableInfo.table_path)}/${part.range_value}"
         sparkSession.sparkContext.setJobDescription(
-         s"Compact(${tableInfo.namespace}.${tableInfo.short_table_name.getOrElse(tableInfo.table_path)}/$condition" +
-         s",n=$fileNumLimit,s=$fileSizeLimit,b=$newBucketNum)")
+         s"Compact($identifier" +
+           s",n=$fileNumLimit,s=$fileSizeLimit,b=$newBucketNum)")
         val fileRDD = spark.sparkContext.parallelize(bucketToFiles, bucketToFiles.size)
         val configuration = new SerializableWritable(spark.sessionState.newHadoopConf())
         val partitionValues = part.range_value
@@ -409,23 +410,25 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
         val discardFiles = dataFileInfoSeq.filter(_.range_partitions == CompactBucketIO.DISCARD_FILE_LIST_KEY)
         val hasEffectiveCompaction = discardFiles.nonEmpty
         if (hasEffectiveCompaction) {
-            println(f"[compaction-$uuid]: $partitionValues finished")
-            commitMetadata(dataFileInfoSeq, partitionValues, tableInfo, part)
-        }else {
-            println(f"[compaction-$uuid]: $partitionValues finished")
-            println("All bucket below threshold, skipping commit")
+          commitMetadata(dataFileInfoSeq, partitionValues, tableInfo, part)
+          println(f"[compaction-$uuid]: $identifier finished")
+        } else {
+            println(f"[compaction-$uuid]: $identifier finished")
+            println(f"$identifier All bucket below threshold, skipping commit")
         }
       }
 
       def commitMetadata(dataFileInfo: Seq[DataFileInfo], rangePartition: String, tableInfo: TableInfo,
                          readPartitionInfo: PartitionInfoScala): Unit = {
+        val identifier = s"${tableInfo.namespace}.${tableInfo.short_table_name.getOrElse(tableInfo.table_path)}/$rangePartition"
+        println(f"Committing compaction results for $identifier")
         val add_file_arr_buf = List.newBuilder[DataCommitInfo]
         val addUUID = UUID.randomUUID()
         val timestampFormatter =
           TimestampFormatter("yyy-MM-dd", java.util.TimeZone.getDefault)
         val discardFileInfo = dataFileInfo
           .filter(file => file.range_partitions.equals(CompactBucketIO.DISCARD_FILE_LIST_KEY))
-        logInfo(s"compaction discarded files $discardFileInfo")
+        logInfo(s"$identifier compaction discarded files $discardFileInfo")
         val discardCompressedFileList = discardFileInfo.map { file =>
           DiscardCompressedFileInfo.newBuilder()
             .setFilePath(file.path)
@@ -475,10 +478,12 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
 
         MetaCommit.doMetaCommit(meta_info, changeSchema = false)
         MetaCommit.recordDiscardFileInfo(discardCompressedFileList.toList.asJava)
+        println(s"Committing done for compaction $identifier")
       }
     }
-    val uuid = UUID.randomUUID(); 
-    println(f"[compaction-$uuid]: beging") 
+    val uuid = UUID.randomUUID();
+    val identifier = s"${tableInfo.namespace}.${tableInfo.short_table_name.getOrElse(tableInfo.table_path)}/$condition"
+    println(f"[compaction-$uuid]: $identifier begining")
     if (condition.isDefined) {
       val partitionFilters = Seq(condition.get).flatMap { filter =>
         LakeSoulUtils.splitMetadataAndDataPredicates(filter, tableInfo.range_partition_columns, spark)._1
@@ -507,7 +512,7 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
         executeCompactOnePartition(part, uuid)
       })
     }
-    println(f"[compaction-$uuid]: ending") 
+    println(f"[compaction-$uuid]: $identifier ending")
 
     if (newBucketNum.isDefined) {
       val properties = SparkMetaVersion.dbManager.getTableInfoByTableId(tableInfo.table_id).getProperties

@@ -126,6 +126,8 @@ jobs:
                   path: ./rust/target/release/
             - name: Build with Maven
               run: |
+                  export RUST_LOG=info
+                  export LAKESOUL_IO_USE_V2_MERGE=true
                   mvn -B clean test -pl lakesoul-spark -am -Pcross-build -Pparallel-test --file pom.xml -Dtest='!ANNCase,UpdateScalaSuite,AlterTableByNameSuite,ReadSuite,UpdateSQLSuite,ParquetNativeFilterSuite,DeleteScalaSuite,DeleteSQLSuite,ParquetV2FilterSuite,ParquetScanSuite,UpsertSuiteBase' -Dsurefire.failIfNoSpecifiedTests=false
             - name: Generate Report Site
               if: always()
@@ -267,6 +269,8 @@ jobs:
                   mkdir -p ~/.m2/repository
                   tar xf gluten-1.6.0-84ac41874-snapshot.tar.gz -C ~/.m2/repository
                   rm -f gluten-1.6.0-84ac41874-snapshot.tar.gz
+                  export RUST_LOG=info
+                  export LAKESOUL_IO_USE_V2_MERGE=true
                   MAVEN_OPTS="-Xmx4g -Dio.netty.tryReflectionSetAccessible=true" mvn -B clean test -pl lakesoul-spark-gluten -am -Pgluten -Pcross-build --file pom.xml -Dtest='LakeSoulGlutenCompatSuite,UpdateGlutenTestSuite,UpsertGlutenTestSuite,DeleteSQLGlutenTestSuite,MergeIntoSQLGlutenTestSuite,' -Dsurefire.failIfNoSpecifiedTests=false
             - name: Generate Report Site
               if: always()
@@ -415,6 +419,8 @@ jobs:
                   path: ./rust/target/release/
             - name: Build with Maven
               run: |
+                  export RUST_LOG=info
+                  export LAKESOUL_IO_USE_V2_MERGE=true
                   MAVEN_OPTS="-Xmx5g" mvn -B clean test -pl lakesoul-flink -am -Pcross-build --file pom.xml -Dtest='!LakeSoulRBACTest' -Dsurefire.failIfNoSpecifiedTests=false
             - name: Generate Report Site
               if: always()
@@ -502,6 +508,7 @@ jobs:
                   path: ./rust/target/release/
             - name: Build with Maven
               run: |
+                  export LAKESOUL_IO_USE_V2_MERGE=true
                   MAVEN_OPTS="-Xmx5g" mvn -B clean test -pl lakesoul-flink -am -Pcross-build --file pom.xml -Dtest='LakeSoulRBACTest' -Dsurefire.failIfNoSpecifiedTests=false
             - name: Generate Report Site
               if: always()

@@ -4,6 +4,9 @@
 
 package com.dmetasoul.lakesoul.meta.jnr;
 
+import java.util.HashMap;
+import java.util.Map;
+
 public class NativeUtils {
 
     public static boolean NATIVE_METADATA_QUERY_ENABLED = true;
@@ -22,6 +25,19 @@ public class NativeUtils {
     public static final String PARAM_DELIM = "__DELIM__";
 
     public static final String PARTITION_DESC_DELIM = "_DELIM_";
+
+    private static final Map<Integer, CodedDaoType> codeToEnumMap = new HashMap<>();
+
+    static {
+        for (CodedDaoType s : CodedDaoType.values()) {
+            codeToEnumMap.put(s.code, s);
+        }
+    }
+
+    public static String getQueryName(int code) {
+        CodedDaoType s = codeToEnumMap.get(code);
+        return (s != null) ? s.name() : null;
+    }
 
     public enum CodedDaoType {
         // ==== Query One ====

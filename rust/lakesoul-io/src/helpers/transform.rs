@@ -118,8 +118,8 @@ pub fn transform_record_batch(
         } else {
             None
         };
-    let mut transform_arrays = Vec::new();
-    let mut fields = vec![];
+    let mut transform_arrays = Vec::with_capacity(merged_schema.fields().len());
+    let mut fields = Vec::with_capacity(merged_schema.fields().len());
     // O(nm) n = orig_schema.fields().len(), m = target_schema.fields().len()
     merged_schema.fields().iter().enumerate().try_for_each(
         |(_, target_field)| -> Result<()> {
@@ -131,19 +131,20 @@ pub fn transform_record_batch(
                 Some((idx, _)) => {
                     // in batch schema
                     let data_type = target_field.data_type();
-                    let transformed_array = transform_array(
-                        target_field.name().to_string(),
-                        data_type.clone(),
-                        batch.column(idx).clone(),
-                        num_rows,
-                        use_default,
-                        default_column_value.clone(),
-                    )?;
-                    fields.push(Arc::new(Field::new(
-                        target_field.name(),
-                        transformed_array.data_type().clone(),
-                        target_field.is_nullable(),
-                    )));
+                    let transformed_array =
+                        if target_field.data_type() != batch.column(idx).data_type() {
+                            transform_array(
+                                target_field.name().to_string(),
+                                data_type.clone(),
+                                batch.column(idx).clone(),
+                                num_rows,
+                                use_default,
+                                default_column_value.clone(),
+                            )?
+                        } else {
+                            batch.column(idx).clone()
+                        };
+                    fields.push(target_field.clone());
                     transform_arrays.push(transformed_array);
                     Ok(())
                 }

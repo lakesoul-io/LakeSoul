@@ -9,7 +9,7 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.connector.read.Scan
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
-import org.apache.spark.sql.execution.datasources.v2.merge.MergeDeltaParquetScan
+import org.apache.spark.sql.execution.datasources.v2.merge.{MergeDeltaParquetScan, OnePartitionMergeBucketScan}
 import org.apache.spark.sql.execution.{ColumnarRule, ColumnarToRowExec, SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.vectorized.GlutenUtils
 
@@ -25,7 +25,8 @@ case class GlutenCompatPostInjectColumnar(session: SparkSession)
 
   private def isLakeSoulScan(scan: Scan): Boolean = {
     scan.getClass.getSimpleName.contains("NativeParquetScan") ||
-      scan.isInstanceOf[MergeDeltaParquetScan]
+      scan.isInstanceOf[MergeDeltaParquetScan] ||
+      scan.isInstanceOf[OnePartitionMergeBucketScan]
   }
 
   private lazy val offloadArrowDataExecCtor = {
@@ -34,13 +35,18 @@ case class GlutenCompatPostInjectColumnar(session: SparkSession)
   }
 
   private def transform(plan: SparkPlan): SparkPlan = plan match {
-    case UnaryExecNode(plan, ColumnarToRowExec(scan: BatchScanExec))
+    case UnaryExecNode(plan, ColumnarToRowExec(BatchScan(scan)))
       if plan.getClass.getName == "org.apache.gluten.execution.RowToVeloxColumnarExec" &&
-        isLakeSoulScan(scan.scan)
+        isLakeSoulScan(scan match {
+          case scan: BatchScanExec => scan.scan
+          case w: withPartitionAndOrdering => w.child.asInstanceOf[BatchScanExec].scan
+          case _ => throw new IllegalArgumentException(s"Unknown scan type: ${scan.getClass.getSimpleName}")
+        })
     =>
-      logInfo(s"Replace RowToVeloxColumnarExec with OffloadArrowDataExec for LakeSoul: ${plan}")
       val args = Array[AnyRef](scan)
-      offloadArrowDataExecCtor.newInstance(args: _*).asInstanceOf[SparkPlan]
+      val newPlan = offloadArrowDataExecCtor.newInstance(args: _*).asInstanceOf[SparkPlan]
+      logInfo(s"Replace RowToVeloxColumnarExec with OffloadArrowDataExec for LakeSoul: Original:\n${plan}, New:\n${newPlan}")
+      newPlan
     case p =>
       p.withNewChildren(p.children.map(transform))
   }
@@ -50,5 +56,15 @@ case class GlutenCompatPostInjectColumnar(session: SparkSession)
       transform(plan)
     else
       plan
+  }
+}
+
+object BatchScan {
+  def unapply(plan: SparkPlan): Option[SparkPlan] = {
+    plan match {
+      case scan: BatchScanExec => Some(scan)
+      case w: withPartitionAndOrdering => Some(w)
+      case _ => None
+    }
   }
 }

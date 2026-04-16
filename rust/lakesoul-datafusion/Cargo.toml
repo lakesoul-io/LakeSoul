@@ -43,7 +43,7 @@ uuid = { workspace = true }
 bytes = { workspace = true }
 url = { workspace = true }
 # time
-chrono = { version = "0.4", features = ["unstable-locales"] }
+chrono = { workspace = true }
 # serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -58,13 +58,13 @@ adbc_driver_manager = { version = "0.21.0", optional = true }
 # logging
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-log = "0.4.27"
+log = { workspace = true }
 # error
 rootcause = { workspace = true }
 
 [dev-dependencies]
 ctor = "0.4"
-test-log = { version = "0.2.14", features = ["trace"] }
+test-log = { workspace = true }
 rand = { workspace = true }
 
 [features]

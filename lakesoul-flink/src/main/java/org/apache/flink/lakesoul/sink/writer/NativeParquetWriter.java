@@ -92,9 +92,6 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         Schema arrowSchema = ArrowUtils.toArrowSchema(rowType);
         nativeWriter = new NativeIOWriter(arrowSchema);
         nativeWriter.setPrimaryKeys(primaryKeys);
-        if (!primaryKeys.isEmpty()) {
-            nativeWriter.setOption(STABLE_SORT, "true");
-        }
 
         if (conf.getBoolean(LakeSoulSinkOptions.isMultiTableSource)) {
             nativeWriter.setAuxSortColumns(Collections.singletonList(SORT_FIELD));
@@ -113,6 +110,9 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         }
 
         FlinkUtil.setIOConfigs(conf, nativeWriter);
+        if (!primaryKeys.isEmpty()) {
+            nativeWriter.setOption(STABLE_SORT, "true");
+        }
         nativeWriter.initializeWriter();
         LOG.info("Initialized NativeParquetWriter: {}", this);
     }
@@ -260,15 +260,46 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
 
     @Override
     public void dispose() {
-        try {
-            this.arrowWriter.finish();
-            this.batch.close();
-            this.nativeWriter.close();
-            this.nativeWriter = null;
-        } catch (Exception e) {
-            throw new RuntimeException(e);
+        LOG.info("Disposing NativeParquetWriter...");
+        Throwable firstException = null;
+
+        if (this.arrowWriter != null) {
+            try {
+                this.arrowWriter.finish();
+            } catch (Throwable t) {
+                LOG.warn("Error finishing arrow writer, memory will still be cleared", t);
+                firstException = t;
+            }
+        }
+
+        if (this.batch != null) {
+            try {
+                this.batch.close();
+            } catch (Throwable t) {
+                LOG.warn("Error closing arrow batch", t);
+                if (firstException == null) firstException = t;
+            }
+        }
+
+        if (this.nativeWriter != null) {
+            try {
+                this.nativeWriter.close();
+            } catch (Throwable t) {
+                LOG.error("CRITICAL: Error closing native writer, native memory leak potential!", t);
+                if (firstException == null) firstException = t;
+            } finally {
+                this.nativeWriter = null;
+            }
+        }
+
+        if (firstException != null) {
+            if (firstException instanceof RuntimeException) {
+                throw (RuntimeException) firstException;
+            }
+            throw new RuntimeException("Error during writer disposal", firstException);
         }
     }
+
 
     @Override
     public String getBucketId() {
