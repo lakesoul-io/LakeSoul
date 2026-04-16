@@ -257,6 +257,7 @@ impl ExecutionPlan for MergeParquetExec {
         }
 
         let reservation = MemoryConsumer::new(format!("LakeSoulMerge[{partition}]"))
+            .with_can_spill(true)
             .register(&context.runtime_env().memory_pool);
 
         let merged_stream = merge_stream(

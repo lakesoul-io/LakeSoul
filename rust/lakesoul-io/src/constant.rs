@@ -32,6 +32,8 @@ pub static TIMESTAMP_NANOSECOND_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.9f";
 
 pub static NUM_COLUMN_OPTIMIZE_THRESHOLD: usize = 200;
 
+pub static LAKESOUL_REPARTITION_RATIO: f64 = 0.45;
+
 lazy_static! {
     pub static ref ARROW_CAST_OPTIONS: CastOptions<'static> = CastOptions {
         safe: false,
