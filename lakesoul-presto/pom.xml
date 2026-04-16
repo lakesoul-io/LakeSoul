@@ -21,7 +21,7 @@
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <presto.version>0.292</presto.version>
+        <presto.version>0.296</presto.version>
         <jackson.version>2.15.4</jackson.version>
         <local.scope>provided</local.scope>
     </properties>

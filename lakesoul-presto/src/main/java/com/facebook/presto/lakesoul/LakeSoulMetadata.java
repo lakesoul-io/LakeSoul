@@ -243,7 +243,7 @@ public class LakeSoulMetadata implements ConnectorMetadata {
                         .setName(field.getName())
                         .setType(typeConverter.getPrestoTypeFromArrowField(field))
                         .setNullable(field.isNullable())
-                        .setComment("")
+                        .setComment(field.getMetadata().getOrDefault("spark_comment", ""))
                         .setExtraInfo("")
                         .setHidden(false)
                         .setProperties(properties)

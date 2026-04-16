@@ -8,9 +8,12 @@ import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.NamespaceTableName;
 import com.facebook.airlift.log.Logger;
 import com.facebook.presto.common.CatalogSchemaName;
+import com.facebook.presto.common.QualifiedObjectName;
 import com.facebook.presto.spi.CatalogSchemaTableName;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.security.*;
+import com.facebook.presto.spi.analyzer.ViewDefinition;
+import com.facebook.presto.spi.MaterializedViewDefinition;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -368,7 +371,7 @@ public class LakeSoulSystemAccessControl implements SystemAccessControl {
     }
 
     @Override
-    public void checkQueryIntegrity(Identity identity, AccessControlContext context, String query) {
+    public void checkQueryIntegrity(Identity identity, AccessControlContext context, String query, Map<QualifiedObjectName, ViewDefinition> viewDefinitions, Map<QualifiedObjectName, MaterializedViewDefinition> materializedViewDefinitions) {
         // no-op
     }
 }
