@@ -18,6 +18,7 @@ import com.facebook.presto.lakesoul.util.ArrowBlockBuilder;
 import com.facebook.presto.spi.*;
 import com.facebook.presto.spi.connector.ConnectorMetadata;
 import com.google.common.collect.ImmutableList;
+import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.spark.sql.types.StructType;
 
@@ -161,7 +162,7 @@ public class LakeSoulMetadata implements ConnectorMetadata {
                     .setName(field.getName())
                     .setType(typeConverter.getPrestoTypeFromArrowField(field))
                     .setNullable(field.isNullable())
-                    .setComment("")
+                    .setComment(field.getMetadata().getOrDefault("spark_comment", ""))
                     .setExtraInfo("")
                     .setHidden(false)
                     .setProperties(props)
@@ -173,7 +174,7 @@ public class LakeSoulMetadata implements ConnectorMetadata {
                 handle.getNames(),
                 columns,
                 properties,
-                Optional.of("")
+                Optional.of(properties.getString("comment"))
         );
     }
 
@@ -220,38 +221,17 @@ public class LakeSoulMetadata implements ConnectorMetadata {
                                             ConnectorTableHandle tableHandle,
                                             ColumnHandle columnHandle) {
         LakeSoulTableColumnHandle handle = (LakeSoulTableColumnHandle) columnHandle;
-        TableInfo tableInfo = dbManager.getTableInfoByTableId(handle.getTableHandle().getId());
-        if (tableInfo == null) {
-            throw new RuntimeException("no such table: " + handle.getTableHandle().getNames());
-        }
-
-        org.apache.arrow.vector.types.pojo.Schema arrowSchema = null;
-        if (TableInfoDao.isArrowKindSchema(tableInfo.getTableSchema())) {
-            try {
-                arrowSchema = Schema.fromJSON(tableInfo.getTableSchema());
-            } catch (IOException e) {
-                throw new RuntimeException(e);
-            }
-        } else {
-            StructType struct = (StructType) StructType.fromJson(tableInfo.getTableSchema());
-            arrowSchema = org.apache.spark.sql.arrow.ArrowUtils.toArrowSchema(struct, ZoneId.of("UTC").toString());
-        }
-        for (org.apache.arrow.vector.types.pojo.Field field : arrowSchema.getFields()) {
-            Map<String, Object> properties = new HashMap<>(field.getMetadata());
-            if (field.getName().equals(handle.getColumnName())) {
-                return ColumnMetadata.builder()
-                        .setName(field.getName())
-                        .setType(typeConverter.getPrestoTypeFromArrowField(field))
-                        .setNullable(field.isNullable())
-                        .setComment(field.getMetadata().getOrDefault("spark_comment", ""))
-                        .setExtraInfo("")
-                        .setHidden(false)
-                        .setProperties(properties)
-                        .build();
-            }
-        }
-
-        throw new RuntimeException("no such column: " + handle.getColumnName());
+        Field field = handle.getArrowField();
+        Map<String, Object> properties = new HashMap<>(field.getMetadata());
+        return ColumnMetadata.builder()
+                .setName(field.getName())
+                .setType(typeConverter.getPrestoTypeFromArrowField(field))
+                .setNullable(field.isNullable())
+                .setComment(field.getMetadata().getOrDefault("spark_comment", ""))
+                .setExtraInfo("")
+                .setHidden(false)
+                .setProperties(properties)
+                .build();
     }
 
     @Override
