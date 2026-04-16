@@ -38,11 +38,15 @@ use datafusion_physical_plan::{
     stream::RecordBatchStreamAdapter,
 };
 use datafusion_session::Session;
+use itertools::Itertools;
 use lakesoul_io::{
     byte_size,
     config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder, OPTION_KEY_POOL_SIZE},
+    session::LakeSoulIOSession,
     utils::{lakesoul_file_name, random_str},
-    writer::{async_writer::AsyncBatchWriter, create_writer_with_io_config},
+    writer::{
+        async_writer::AsyncBatchWriter, create_writer, create_writer_with_io_config,
+    },
 };
 use rootcause::{Report, report};
 use tempfile::env::temp_dir;
@@ -77,10 +81,11 @@ async fn run_sort_test_with_limited_memory(
     let scan_schema = Arc::new(Schema::new(vec![
         Field::new("col_0", DataType::UInt64, true),
         Field::new("col_1", DataType::Utf8, true),
+        Field::new("col_2", DataType::Utf8, true),
     ]));
     let writer = {
         // let dir = temp_dir();
-        let prefix = "/data/jiax_space/LakeSoul";
+        let prefix = "/data/jiax_space/LakeSoul/rust/spill_test";
         // let writer_id = random_str(16);
         // let file_name = lakesoul_file_name(&writer_id, 0);
         let io_config = LakeSoulIOConfig::builder()
@@ -88,13 +93,23 @@ async fn run_sort_test_with_limited_memory(
             .with_option(OPTION_KEY_POOL_SIZE, args.pool_size)
             .with_primary_key("col_0")
             .set_dynamic_partition(true)
-            .with_hash_bucket_num("1")
+            .with_hash_bucket_num("2")
+            .with_thread_num(8)
+            .with_range_partition("col_2".to_string())
             .with_prefix(prefix.to_string())
             .with_schema(scan_schema.clone())
             .with_object_store_option("fs.s3a.path.style.access", "false")
             .with_object_store_option("fs.defaultFS", "file://")
             .build();
-        create_writer_with_io_config(io_config).await?
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "test-utils")] {
+                let mut io_session = LakeSoulIOSession::try_new(io_config)?;
+                io_session.set_logged_pool();
+                create_writer(Arc::new(io_session)).await?
+            } else {
+                create_writer_with_io_config(io_config).await?
+            }
+        }
     };
 
     let schema = Arc::clone(&scan_schema);
@@ -103,17 +118,33 @@ async fn run_sort_test_with_limited_memory(
         futures::stream::iter((0..args.number_of_record_batches as u64).map(
             move |index| -> Result<RecordBatch, DataFusionError> {
                 // bytes
-                let mut string_array_size =
+                let c = ('a'..='z').nth((index as usize) % 26).unwrap();
+                let total_batch_size =
                     get_size_of_record_batch_to_generate(index as usize);
+                let range_array_size = c.len_utf8() * args.record_batch_size;
+
+                // println!("total_batch_size: {}", total_batch_size);
+
+                // println!("range_array_size: {}", range_array_size);
                 let uint64_array_size =
                     size_of::<u64>() * args.record_batch_size as usize;
 
-                string_array_size = string_array_size.saturating_sub(uint64_array_size);
+                // println!("uint64 array size: {}", uint64_array_size);
+
+                let string_array_size = total_batch_size
+                    .saturating_sub(uint64_array_size.saturating_add(range_array_size));
+
+                // println!("string array size: {}", string_array_size);
 
                 let string_item_size =
                     string_array_size / args.record_batch_size as usize;
                 let string_array = Arc::new(StringArray::from_iter_values(
-                    (0..args.record_batch_size).map(|_| "a".repeat(string_item_size)),
+                    (0..args.record_batch_size)
+                        .map(|_| c.to_string().repeat(string_item_size)),
+                ));
+
+                let range_array = Arc::new(StringArray::from_iter_values(
+                    (0..args.record_batch_size).map(|_| c.to_string()),
                 ));
 
                 RecordBatch::try_new(
@@ -125,6 +156,7 @@ async fn run_sort_test_with_limited_memory(
                                     + args.record_batch_size as u64,
                         )),
                         string_array,
+                        range_array,
                     ],
                 )
                 .map_err(|err| err.into())
@@ -269,23 +301,25 @@ async fn run_test(
 async fn sort_with_limited_memory_test() -> Result<(), Report> {
     let record_batch_size = 8192;
     // let mem_limit = "100mb";
-    let pool_size = byte_size!("2mb");
+    let pool_size = byte_size!("100mb");
 
-    let generate_batch_size = pool_size / 16;
+    // let generate_batch_size = pool_size / 16;
+    // let generate_batch_size = 1024 * 1024 * 2;
+    let generate_batch_size = pool_size / 5;
     println!("{generate_batch_size}");
 
     // Basic test with a lot of groups that cannot all fit in memory and 1 record batch
     // from each spill file is too much memory
-    let spill_count = run_sort_test_with_limited_memory(RunTestWithLimitedMemoryArgs {
+    let _spill_count = run_sort_test_with_limited_memory(RunTestWithLimitedMemoryArgs {
         record_batch_size,
         pool_size,
-        number_of_record_batches: 100,
+        number_of_record_batches: 84,
         get_size_of_record_batch_to_generate: Box::pin(move |_| generate_batch_size),
         memory_behavior: MemoryBehavior::default(),
     })
     .await?;
 
-    println!("spill count: {}", spill_count);
+    // println!("spill count: {}", spill_count);
 
     // let total_spill_files_size = spill_count * generate_batch_size;
     // assert!(
@@ -440,3 +474,8 @@ async fn sort_with_limited_memory_test() -> Result<(), Report> {
 
 //     Ok(())
 // }
+
+#[test]
+fn some() {
+    print!("test\n")
+}
