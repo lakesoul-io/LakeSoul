@@ -22,6 +22,7 @@ use datafusion_common::internal_datafusion_err;
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
 use datafusion_physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion_physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion_physical_plan::metrics::MetricValue;
 use datafusion_physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
 };
@@ -111,5 +112,34 @@ impl ExecutionPlan for OnceExec {
         let stream = self.stream.lock().unwrap().take();
 
         stream.ok_or_else(|| internal_datafusion_err!("Stream already consumed"))
+    }
+}
+
+pub fn assert_spill_count_metric(
+    expect_spill: bool,
+    plan_that_spills: Arc<dyn ExecutionPlan>,
+) -> usize {
+    if let Some(metrics_set) = plan_that_spills.metrics() {
+        let mut spill_count = 0;
+
+        // Inspect metrics for SpillCount
+        for metric in metrics_set.iter() {
+            if let MetricValue::SpillCount(count) = metric.value() {
+                spill_count = count.value();
+                break;
+            }
+        }
+
+        if expect_spill && spill_count == 0 {
+            panic!("Expected spill but SpillCount metric not found or SpillCount was 0.");
+        } else if !expect_spill && spill_count > 0 {
+            panic!(
+                "Expected no spill but found SpillCount metric with value greater than 0."
+            );
+        }
+
+        spill_count
+    } else {
+        panic!("No metrics returned from the operator; cannot verify spilling.");
     }
 }

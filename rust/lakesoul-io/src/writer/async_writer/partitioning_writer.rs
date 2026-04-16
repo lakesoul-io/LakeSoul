@@ -26,13 +26,15 @@ use tokio::{sync::mpsc::Sender, time::Instant};
 use crate::{
     Result,
     config::{IOSchema, LakeSoulIOConfig, LakeSoulIOConfigBuilder},
-    helpers::transform::uniform_schema,
     helpers::{
         columnar_values_to_partition_desc, columnar_values_to_sub_path,
-        get_batch_memory_size, get_columnar_values,
+        get_batch_memory_size, get_columnar_values, transform::uniform_schema,
     },
-    physical_plan::repartition::RepartitionByRangeAndHashExec,
-    physical_plan::self_incremental_index_column::SelfIncrementalIndexColumnExec,
+    mem::pool::MainMemoryPool,
+    physical_plan::{
+        repartition::RepartitionByRangeAndHashExec,
+        self_incremental_index_column::SelfIncrementalIndexColumnExec,
+    },
     session::LakeSoulIOSession,
     utils::random_str,
 };
@@ -69,8 +71,11 @@ impl PartitioningAsyncWriter {
         );
         let tx = receiver_stream_builder.tx();
         let recv_exec = ReceiverStreamExec::new(receiver_stream_builder, schema.clone());
-        let partitioning_exec =
-            PartitioningAsyncWriter::create_partitioning_exec(recv_exec, io_config)?;
+        let partitioning_exec = PartitioningAsyncWriter::create_partitioning_exec(
+            recv_exec,
+            io_config,
+            io_session.main_pool().clone(),
+        )?;
 
         // launch one async task per *input* partition
 
@@ -126,9 +131,11 @@ impl PartitioningAsyncWriter {
         })
     }
 
+    /// return [`RepartitionBydRangeAndHashExec`]
     fn create_partitioning_exec(
         input: ReceiverStreamExec,
         io_config: &LakeSoulIOConfig,
+        main_pool: Arc<MainMemoryPool>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let mut aux_sort_cols = io_config.aux_sort_cols.clone();
         let input: Arc<dyn ExecutionPlan> = if io_config.stable_sort() {
@@ -222,6 +229,7 @@ impl PartitioningAsyncWriter {
                 sort_exec,
                 range_partitioning_expr,
                 hash_partitioning,
+                main_pool,
             )?)
         };
 
@@ -356,8 +364,6 @@ impl PartitioningAsyncWriter {
                 });
             }
 
-            println!("?SDFKSDKFJLKSFS");
-            println!("{:?}", input.metrics());
             Ok(flush_join_set)
         }
     }

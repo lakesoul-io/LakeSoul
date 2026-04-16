@@ -40,8 +40,13 @@ arrow-cast = { workspace = true }
 parquet = { workspace = true, features = ["async", "arrow", "encryption"] }
 object_store = { workspace = true }
 # memory
-tikv-jemallocator = { version = "0.6", features = ["profiling"], optional = true }
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = { version = "0.6.0", features = [
+  "profiling",
+  "unprefixed_malloc_on_supported_platforms",
+], optional = true }
 tikv-jemalloc-ctl = { version = "0.6", features = ["stats"], optional = true }
+jemalloc_pprof = { version = "0.8", features = ["flamegraph"], optional = true }
 # async
 futures = { workspace = true }
 async-trait = { workspace = true }
@@ -96,13 +101,19 @@ tracing = { workspace = true }
 # error
 rootcause = { workspace = true }
 fs-err = "3.1.0"
+cfg-if = "1.0"
 
 [features]
 hdfs = ["dep:hdrs", "dep:hdfs-sys"]
 default = []
-dhat-heap = ["dep:dhat"]            # if you are doing heap profiling
-dhat-ad-hoc = []                    # if you are doing ad hoc profiling
-jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
+dhat-heap = ["dep:dhat"] # if you are doing heap profiling
+dhat-ad-hoc = [] # if you are doing ad hoc profiling
+jemalloc = [
+  "dep:tikv-jemallocator",
+  "dep:tikv-jemalloc-ctl",
+  "dep:jemalloc_pprof",
+]
+test-utils = []
 
 [dev-dependencies]
 tokio-test = "0.4.4"
@@ -118,6 +129,3 @@ num-format = "0.4.4"
 
 [lints]
 workspace = true
-
-
-
