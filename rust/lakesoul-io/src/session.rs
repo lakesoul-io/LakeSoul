@@ -233,8 +233,7 @@ impl LakeSoulIOSession {
             // for now all is default
             sess_conf.options_mut().execution.spill_compression =
                 SpillCompression::Uncompressed;
-            let reserve_bytes = pool_size / 20;
-            // let reserve_bytes = (pool_size / 50).min(byte_size!("10mb"));
+            let reserve_bytes = (pool_size / 50).min(byte_size!("10mb"));
             sess_conf
                 .options_mut()
                 .execution

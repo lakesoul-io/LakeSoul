@@ -60,6 +60,21 @@ pub trait AsyncBatchWriter {
     /// Flush the writer and close it.
     async fn flush_and_close(self: Box<Self>) -> Result<Vec<FlushOutput>>;
 
+    /// Flush the writer, this can only be called once.
+    async fn flush(&mut self) -> Result<Vec<FlushOutput>> {
+        unimplemented!()
+    }
+
+    /// Close the writer
+    async fn close(self: Box<Self>) -> Result<()> {
+        unimplemented!()
+    }
+
+    /// Abort the writer
+    async fn abort(&mut self) -> Result<()> {
+        unimplemented!()
+    }
+
     /// Abort the writer and close it when an error occurs.
     async fn abort_and_close(self: Box<Self>) -> Result<()>;
 
@@ -77,7 +92,7 @@ pub trait AsyncBatchWriter {
     }
 
     /// Get the metrics of this writer.
-    fn metrics(&self) -> Option<&MetricsSet> {
+    fn metrics(&self) -> Option<MetricsSet> {
         None
     }
 }

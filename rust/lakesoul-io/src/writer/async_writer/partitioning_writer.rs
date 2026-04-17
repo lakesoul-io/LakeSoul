@@ -16,7 +16,9 @@ use datafusion_physical_expr::{
 };
 use datafusion_physical_plan::{
     ExecutionPlan, ExecutionPlanProperties, Partitioning, PhysicalExpr,
-    metrics::MetricsSet, projection::ProjectionExec, sorts::sort::SortExec,
+    metrics::{ExecutionPlanMetricsSet, MetricsSet},
+    projection::ProjectionExec,
+    sorts::sort::SortExec,
     stream::RecordBatchReceiverStream,
 };
 use datafusion_session::Session;
@@ -48,7 +50,7 @@ pub struct PartitioningAsyncWriter {
     /// The schema of the partitioning writer.
     schema: SchemaRef,
     /// The sender to async multi-part file writer.
-    sorter_sender: Sender<Result<RecordBatch, DataFusionError>>,
+    sorter_sender: Option<Sender<Result<RecordBatch, DataFusionError>>>,
     /// The join handle of the partitioning execution plan.
     spawned_task: Option<SpawnedTask<Result<Vec<FlushOutput>>>>,
     /// The external error of the partitioning execution plan.
@@ -58,16 +60,16 @@ pub struct PartitioningAsyncWriter {
     /// The ['LakeSoulIOSession'] used by the partitioning writer.
     io_session: Arc<LakeSoulIOSession>,
     /// The metric set of the partitioning writer.
-    metric_set: MetricsSet,
+    metrics: ExecutionPlanMetricsSet,
 }
 
 type NestedFlushOutputResult = Result<JoinSet<Result<Vec<FlushOutput>>>>;
 
 impl PartitioningAsyncWriter {
     pub fn try_new(io_session: Arc<LakeSoulIOSession>) -> Result<Self> {
-        // TODO: need clone?
         let io_config = io_session.io_config();
         let schema = io_config.target_schema.0.clone();
+        let metrics = ExecutionPlanMetricsSet::new();
         let receiver_stream_builder = RecordBatchReceiverStream::builder(
             schema.clone(),
             io_config.receiver_capacity,
@@ -78,13 +80,8 @@ impl PartitioningAsyncWriter {
             recv_exec,
             io_config,
             io_session.main_pool().clone(),
+            metrics.clone(),
         )?;
-        let mut metric_set = MetricsSet::new();
-        if let Some(ms) = partitioning_exec.metrics() {
-            for m in ms.iter() {
-                metric_set.push(m.clone());
-            }
-        }
 
         // launch one async task per *input* partition
 
@@ -132,12 +129,12 @@ impl PartitioningAsyncWriter {
 
         Ok(Self {
             schema,
-            sorter_sender: tx,
+            sorter_sender: Some(tx),
             spawned_task: Some(spawned_task),
             err: None,
             buffered_size: 0,
             io_session,
-            metric_set,
+            metrics,
         })
     }
 
@@ -146,6 +143,7 @@ impl PartitioningAsyncWriter {
         input: ReceiverStreamExec,
         io_config: &LakeSoulIOConfig,
         main_pool: Arc<MainMemoryPool>,
+        metrics: ExecutionPlanMetricsSet,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let mut aux_sort_cols = io_config.aux_sort_cols.clone();
         let input: Arc<dyn ExecutionPlan> = if io_config.stable_sort() {
@@ -240,6 +238,7 @@ impl PartitioningAsyncWriter {
                 range_partitioning_expr,
                 hash_partitioning,
                 main_pool,
+                metrics,
             )?)
         };
 
@@ -416,7 +415,11 @@ impl AsyncBatchWriter for PartitioningAsyncWriter {
         }
 
         let memory_size = get_batch_memory_size(&batch)? as u64;
-        let send_result = self.sorter_sender.send(Ok(batch)).await;
+        let sender = self
+            .sorter_sender
+            .as_ref()
+            .ok_or(report!("sorter sender not available"))?;
+        let send_result = sender.send(Ok(batch)).await;
         self.buffered_size += memory_size;
         match send_result {
             Ok(_) => Ok(()),
@@ -447,25 +450,32 @@ impl AsyncBatchWriter for PartitioningAsyncWriter {
         }
     }
 
-    #[instrument(skip(self), err)]
-    async fn flush_and_close(self: Box<Self>) -> Result<Vec<FlushOutput>> {
-        if let Some(join_handle) = self.spawned_task {
-            let sender = self.sorter_sender;
+    async fn flush(&mut self) -> Result<Vec<FlushOutput>> {
+        if let Some(join_handle) = self.spawned_task.take() {
+            let sender = self
+                .sorter_sender
+                .take()
+                .ok_or(report!("already flushed or aborted"))?;
             drop(sender);
+
             let span = info_span!("partitioning writer flush");
             let _guard = span.enter();
+
             let res = join_handle.await?;
+
             info!("flush completed");
             res
         } else {
-            bail!("writer already aborted, cannot flush")
+            bail!("writer already aborted or flushed, cannot flush")
         }
     }
 
-    #[instrument(skip(self), err)]
-    async fn abort_and_close(self: Box<Self>) -> Result<()> {
-        if let Some(join_handle) = self.spawned_task {
-            let sender = self.sorter_sender;
+    async fn abort(&mut self) -> Result<()> {
+        if let Some(join_handle) = self.spawned_task.take() {
+            let sender = self
+                .sorter_sender
+                .take()
+                .ok_or(report!("already flushed or aborted"))?;
             // send abort signal to the task
             sender
                 .send(Err(DataFusionError::Internal("external abort".to_string())))
@@ -482,6 +492,25 @@ impl AsyncBatchWriter for PartitioningAsyncWriter {
         }
     }
 
+    async fn close(mut self: Box<Self>) -> Result<()> {
+        Ok(())
+    }
+
+    #[instrument(skip(self), err)]
+    async fn flush_and_close(mut self: Box<Self>) -> Result<Vec<FlushOutput>> {
+        let this = &mut *self;
+        let output = this.flush().await?;
+        self.close().await?;
+        Ok(output)
+    }
+
+    #[instrument(skip(self), err)]
+    async fn abort_and_close(mut self: Box<Self>) -> Result<()> {
+        let this = &mut *self;
+        this.abort().await?;
+        self.close().await
+    }
+
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }
@@ -495,7 +524,7 @@ impl AsyncBatchWriter for PartitioningAsyncWriter {
     }
 
     /// Get the metrics of this writer.
-    fn metrics(&self) -> Option<&MetricsSet> {
-        Some(&self.metric_set)
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
     }
 }
