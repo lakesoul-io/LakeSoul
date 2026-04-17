@@ -1053,7 +1053,6 @@ mod tests {
                 format!("col_{}", i),
                 Arc::new(StringArray::from(
                     (0..num_rows)
-                        .into_iter()
                         .map(|_| {
                             rand::distr::Alphanumeric.sample_string(
                                 &mut rng,

@@ -1646,8 +1646,7 @@ mod tests {
                 create_lakesoul_reader_from_config(reader_config, reader_runtime);
 
             if let Some(err) = reader.as_ref().err.as_ref() {
-                assert!(
-                    false,
+                panic!(
                     "{}",
                     CStr::from_ptr(err as *const c_char)
                         .to_str()
@@ -1706,8 +1705,7 @@ mod tests {
             let writer =
                 create_lakesoul_writer_from_config(writer_config, writer_runtime);
             if let Some(err) = writer.as_ref().err.as_ref() {
-                assert!(
-                    false,
+                panic!(
                     "{}",
                     CStr::from_ptr(err as *const c_char)
                         .to_str()
@@ -1732,7 +1730,7 @@ mod tests {
 
                 if READER_FINISHED {
                     if let Some(err) = READER_FAILED.as_ref() {
-                        assert!(false, "Reader failed {}", err);
+                        panic!("Reader failed {}", err);
                     }
                     break;
                 }
@@ -1749,7 +1747,7 @@ mod tests {
 
                 if WRITER_FINISHED {
                     if let Some(err) = WRITER_FAILED.as_ref() {
-                        assert!(false, "Writer {}", err);
+                        panic!("Writer {}", err);
                     }
                     break;
                 }
@@ -1801,8 +1799,7 @@ mod tests {
                 create_lakesoul_reader_from_config(reader_config, reader_runtime);
 
             if let Some(err) = reader.as_ref().err.as_ref() {
-                assert!(
-                    false,
+                panic!(
                     "{}",
                     CStr::from_ptr(err as *const c_char)
                         .to_str()
@@ -1865,8 +1862,7 @@ mod tests {
             let writer =
                 create_lakesoul_writer_from_config(writer_config, writer_runtime);
             if let Some(err) = writer.as_ref().err.as_ref() {
-                assert!(
-                    false,
+                panic!(
                     "{}",
                     CStr::from_ptr(err as *const c_char)
                         .to_str()
@@ -1891,7 +1887,7 @@ mod tests {
 
                 if READER_FINISHED {
                     if let Some(err) = READER_FAILED.as_ref() {
-                        assert!(false, "Reader failed {}", err);
+                        panic!("Reader failed {}", err);
                     }
                     break;
                 }
@@ -1908,7 +1904,7 @@ mod tests {
 
                 if WRITER_FINISHED {
                     if let Some(err) = WRITER_FAILED.as_ref() {
-                        assert!(false, "Writer {}", err);
+                        panic!("Writer {}", err);
                     }
                     break;
                 }

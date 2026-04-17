@@ -70,6 +70,8 @@ use crate::Result;
 use crate::catalog::{commit_data, parse_table_info_partitions};
 use crate::lakesoul_table::helpers::create_io_config_builder_from_table_info;
 
+type PartitionedFile = HashMap<String, (Vec<String>, u64)>;
+
 /// The wrapper of the [`ParquetFormat`] with LakeSoul metadata. It is used to read and write data files while interacting with LakeSoul metadata.
 pub struct LakeSoulMetaDataParquetFormat {
     /// The inner [`ParquetFormat`].
@@ -441,9 +443,7 @@ impl LakeSoulHashSinkExec {
         table_info: Arc<TableInfo>,
         range_partitions: Arc<Vec<String>>,
         write_id: String,
-        partitioned_file_path_and_row_count: Arc<
-            Mutex<HashMap<String, (Vec<String>, u64)>>,
-        >,
+        partitioned_file_path_and_row_count: Arc<Mutex<PartitionedFile>>,
     ) -> Result<u64> {
         debug!("{}", input.name());
         let mut data = input.execute(partition, context.clone())?;
@@ -537,9 +537,7 @@ impl LakeSoulHashSinkExec {
         join_handles: Vec<JoinHandle<Result<u64>>>,
         client: MetaDataClientRef,
         table_name: String,
-        partitioned_file_path_and_row_count: Arc<
-            Mutex<HashMap<String, (Vec<String>, u64)>>,
-        >,
+        partitioned_file_path_and_row_count: Arc<Mutex<PartitionedFile>>,
     ) -> Result<u64> {
         let count = futures::future::join_all(join_handles)
             .await

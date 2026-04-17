@@ -540,13 +540,13 @@ mod tests {
                 .iter()
                 .cloned()
                 .collect::<DictionaryArray<Int32Type>>(),
-        );
+        ) as ArrayRef;
 
         // let random_state = RandomState::with_seeds(0, 0, 0, 0);
 
         let mut one_col_hashes = vec![0; strings1.len()];
         create_hashes(
-            &[dict_array.clone()],
+            std::slice::from_ref(&dict_array),
             // &random_state,
             &mut one_col_hashes,
         )
@@ -568,11 +568,11 @@ mod tests {
 
     #[test]
     fn test_decimal_hashes() {
-        let d1 = Arc::new(Decimal128Array::from(vec![Some(1), Some(2)]));
+        let d1 = Arc::new(Decimal128Array::from(vec![Some(1), Some(2)])) as ArrayRef;
 
         let mut one_col_hashes = vec![0; d1.len()];
         create_hashes(
-            &[d1.clone()],
+            std::slice::from_ref(&d1),
             // &random_state,
             &mut one_col_hashes,
         )

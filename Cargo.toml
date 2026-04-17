@@ -10,7 +10,7 @@ members = [
   "rust/lakesoul-metadata-c",
   "rust/lakesoul-io",
   "rust/lakesoul-io-c",
-  # "rust/lakesoul-datafusion",
+  "rust/lakesoul-datafusion",
   # "rust/lakesoul-flight",
   # "rust/lakesoul-s3-proxy",
   # "rust/lakesoul-console",
