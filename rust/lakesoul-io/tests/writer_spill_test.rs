@@ -184,12 +184,11 @@ async fn consume_stream_and_simulate_other_running_memory_consumers(
     args: RunTestWithLimitedMemoryArgs,
     mut input_stream: SendableRecordBatchStream,
     mut writer: Box<dyn AsyncBatchWriter + Send>,
-) -> Result<(), Report> {
+) -> Result<usize, Report> {
     let mut number_of_rows = 0;
     let record_batch_size = args.record_batch_size as u64;
 
     // same memory pool
-    // todo
     let memory_pool = writer.io_session().task_ctx().memory_pool().clone();
     let memory_consumer = MemoryConsumer::new("mock_memory_consumer");
     let mut memory_reservation = memory_consumer.register(&memory_pool);
@@ -237,38 +236,14 @@ async fn consume_stream_and_simulate_other_running_memory_consumers(
         args.number_of_record_batches * record_batch_size as usize
     );
 
+    let metrics_set = writer.metrics().unwrap();
+
+    // println!("spill count: {:?}", metrics_set);
+
+    // let spill_count = metrics_set.spill_count().unwrap();
+
     let _output = writer.flush_and_close().await?;
-    // println!("{:?}", output);
-    Ok(())
-}
-
-pub(crate) fn assert_spill_count_metric(
-    expect_spill: bool,
-    plan_that_spills: Arc<dyn ExecutionPlan>,
-) -> usize {
-    if let Some(metrics_set) = plan_that_spills.metrics() {
-        let mut spill_count = 0;
-
-        // Inspect metrics for SpillCount
-        for metric in metrics_set.iter() {
-            if let MetricValue::SpillCount(count) = metric.value() {
-                spill_count = count.value();
-                break;
-            }
-        }
-
-        if expect_spill && spill_count == 0 {
-            panic!("Expected spill but SpillCount metric not found or SpillCount was 0.");
-        } else if !expect_spill && spill_count > 0 {
-            panic!(
-                "Expected no spill but found SpillCount metric with value greater than 0."
-            );
-        }
-
-        spill_count
-    } else {
-        panic!("No metrics returned from the operator; cannot verify spilling.");
-    }
+    Ok(0)
 }
 
 async fn run_test(
@@ -276,9 +251,9 @@ async fn run_test(
     batch_stream: SendableRecordBatchStream,
     writer: Box<dyn AsyncBatchWriter + Send>,
 ) -> Result<usize, Report> {
-    let _number_of_record_batches = args.number_of_record_batches;
+    let number_of_record_batches = args.number_of_record_batches;
 
-    consume_stream_and_simulate_other_running_memory_consumers(
+    let spill_count = consume_stream_and_simulate_other_running_memory_consumers(
         args,
         batch_stream,
         writer,
@@ -287,26 +262,21 @@ async fn run_test(
 
     // let spill_count = assert_spill_count_metric(true, plan);
 
-    // assert!(
-    //     spill_count > 0,
-    //     "Expected spill, but did not, number of record batches: {number_of_record_batches}",
-    // );
+    assert!(
+        spill_count > 0,
+        "Expected spill, but did not, number of record batches: {number_of_record_batches}",
+    );
 
-    // Ok(spill_count)
-    Ok(0)
+    Ok(spill_count)
 }
 
 #[tokio::test]
 #[test_log::test]
 async fn sort_with_limited_memory_test() -> Result<(), Report> {
     let record_batch_size = 8192;
-    // let mem_limit = "100mb";
-    let pool_size = byte_size!("100mb");
+    let pool_size = byte_size!("10mb");
 
-    // let generate_batch_size = pool_size / 16;
-    // let generate_batch_size = 1024 * 1024 * 2;
     let generate_batch_size = pool_size / 5;
-    println!("{generate_batch_size}");
 
     // Basic test with a lot of groups that cannot all fit in memory and 1 record batch
     // from each spill file is too much memory
@@ -474,8 +444,3 @@ async fn sort_with_limited_memory_test() -> Result<(), Report> {
 
 //     Ok(())
 // }
-
-#[test]
-fn some() {
-    print!("test\n")
-}
