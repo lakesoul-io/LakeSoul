@@ -8,10 +8,10 @@ use rootcause::Report;
 
 cfg_if! {
     if #[cfg(feature = "test-utils")] {
+        pub mod logged;
         pub use logged::*;
     }
 }
-pub mod logged;
 
 #[derive(Debug)]
 pub struct MainMemoryPool {

@@ -18,49 +18,21 @@
 //! Test for writer in memory constrained environment
 //! Original code from ['apache/datafusion'](https://github.com/apache/datafusion)
 
-use std::{path::PathBuf, pin::Pin, sync::Arc};
+use std::{pin::Pin, sync::Arc};
 
 use arrow_array::{RecordBatch, StringArray, UInt64Array};
-use arrow_schema::{DataType, Field, Schema, SortOptions};
-use datafusion::prelude::SessionConfig;
+use arrow_schema::{DataType, Field, Schema};
 use datafusion_common::DataFusionError;
-use datafusion_execution::{
-    SendableRecordBatchStream, TaskContext,
-    memory_pool::{
-        FairSpillPool, GreedyMemoryPool, MemoryConsumer, MemoryPool, MemoryReservation,
-        units::{KB, MB},
-    },
-    runtime_env::RuntimeEnvBuilder,
-};
-use datafusion_physical_expr::{LexOrdering, PhysicalSortExpr, expressions::col};
-use datafusion_physical_plan::{
-    ExecutionPlan, metrics::MetricValue, sorts::sort::SortExec,
-    stream::RecordBatchStreamAdapter,
-};
-use datafusion_session::Session;
-use itertools::Itertools;
+use datafusion_execution::{SendableRecordBatchStream, memory_pool::units::KB};
+use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use lakesoul_io::{
     byte_size,
-    config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder, OPTION_KEY_POOL_SIZE},
-    session::LakeSoulIOSession,
-    utils::{lakesoul_file_name, random_str},
-    writer::{
-        async_writer::AsyncBatchWriter, create_writer, create_writer_with_io_config,
-    },
+    config::{LakeSoulIOConfig, OPTION_KEY_POOL_SIZE},
+    writer::async_writer::AsyncBatchWriter,
 };
-use rootcause::{Report, report};
+use rootcause::Report;
 use tempfile::env::temp_dir;
 use tokio_stream::StreamExt;
-
-mod common;
-
-#[derive(Default)]
-enum MemoryBehavior {
-    #[default]
-    AsIs,
-    TakeAllMemoryAtTheBeginning,
-    TakeAllMemoryAndReleaseEveryNthBatch(usize),
-}
 
 struct RunTestWithLimitedMemoryArgs {
     record_batch_size: usize,
@@ -68,7 +40,6 @@ struct RunTestWithLimitedMemoryArgs {
     number_of_record_batches: usize,
     get_size_of_record_batch_to_generate:
         Pin<Box<dyn Fn(usize) -> usize + Send + 'static>>,
-    memory_behavior: MemoryBehavior,
 }
 
 async fn run_sort_test_with_limited_memory(
@@ -84,10 +55,7 @@ async fn run_sort_test_with_limited_memory(
         Field::new("col_2", DataType::Utf8, true),
     ]));
     let writer = {
-        // let dir = temp_dir();
-        let prefix = "/data/jiax_space/LakeSoul/rust/spill_test";
-        // let writer_id = random_str(16);
-        // let file_name = lakesoul_file_name(&writer_id, 0);
+        let prefix = temp_dir();
         let io_config = LakeSoulIOConfig::builder()
             .with_batch_size(args.record_batch_size)
             .with_option(OPTION_KEY_POOL_SIZE, args.pool_size)
@@ -96,18 +64,18 @@ async fn run_sort_test_with_limited_memory(
             .with_hash_bucket_num("2")
             .with_thread_num(8)
             .with_range_partition("col_2".to_string())
-            .with_prefix(prefix.to_string())
+            .with_prefix(format!("{}", prefix.as_path().display()))
             .with_schema(scan_schema.clone())
             .with_object_store_option("fs.s3a.path.style.access", "false")
             .with_object_store_option("fs.defaultFS", "file://")
             .build();
         cfg_if::cfg_if! {
             if #[cfg(feature = "test-utils")] {
-                let mut io_session = LakeSoulIOSession::try_new(io_config)?;
+                let mut io_session = lakesoul_io::session::LakeSoulIOSession::try_new(io_config)?;
                 io_session.set_logged_pool();
-                create_writer(Arc::new(io_session)).await?
+                lakesoul_io::writer::create_writer(Arc::new(io_session)).await?
             } else {
-                create_writer_with_io_config(io_config).await?
+                lakesoul_io::writer::create_writer_with_io_config(io_config).await?
             }
         }
     };
@@ -123,18 +91,11 @@ async fn run_sort_test_with_limited_memory(
                     get_size_of_record_batch_to_generate(index as usize);
                 let range_array_size = c.len_utf8() * args.record_batch_size;
 
-                // println!("total_batch_size: {}", total_batch_size);
-
-                // println!("range_array_size: {}", range_array_size);
                 let uint64_array_size =
                     size_of::<u64>() * args.record_batch_size as usize;
 
-                // println!("uint64 array size: {}", uint64_array_size);
-
                 let string_array_size = total_batch_size
                     .saturating_sub(uint64_array_size.saturating_add(range_array_size));
-
-                // println!("string array size: {}", string_array_size);
 
                 let string_item_size =
                     string_array_size / args.record_batch_size as usize;
@@ -167,18 +128,6 @@ async fn run_sort_test_with_limited_memory(
     run_test(args, batch_stream, writer).await
 }
 
-fn grow_memory_as_much_as_possible(
-    memory_step: usize,
-    memory_reservation: &mut MemoryReservation,
-) -> Result<bool, Report> {
-    let mut was_able_to_grow = false;
-    while memory_reservation.try_grow(memory_step).is_ok() {
-        was_able_to_grow = true;
-    }
-
-    Ok(was_able_to_grow)
-}
-
 /// Consume the stream and change the amount of memory used while consuming it based on the [`MemoryBehavior`] provided
 async fn consume_stream_and_simulate_other_running_memory_consumers(
     args: RunTestWithLimitedMemoryArgs,
@@ -188,47 +137,13 @@ async fn consume_stream_and_simulate_other_running_memory_consumers(
     let mut number_of_rows = 0;
     let record_batch_size = args.record_batch_size as u64;
 
-    // same memory pool
-    let memory_pool = writer.io_session().task_ctx().memory_pool().clone();
-    let memory_consumer = MemoryConsumer::new("mock_memory_consumer");
-    let mut memory_reservation = memory_consumer.register(&memory_pool);
-
-    let mut index = 0;
-    let mut memory_took = false;
-
     while let Some(batch) = input_stream.next().await {
-        match args.memory_behavior {
-            MemoryBehavior::AsIs => {
-                // Do nothing
-            }
-            MemoryBehavior::TakeAllMemoryAtTheBeginning => {
-                if !memory_took {
-                    memory_took = true;
-                    grow_memory_as_much_as_possible(10, &mut memory_reservation)?;
-                }
-            }
-            MemoryBehavior::TakeAllMemoryAndReleaseEveryNthBatch(n) => {
-                if !memory_took {
-                    memory_took = true;
-                    grow_memory_as_much_as_possible(
-                        args.pool_size,
-                        &mut memory_reservation,
-                    )?;
-                } else if index % n == 0 {
-                    // release memory
-                    memory_reservation.free();
-                }
-            }
-        }
-
         let batch = batch?;
         let batch_rows = batch.num_rows();
 
         writer.write_record_batch(batch).await?;
 
         number_of_rows += batch_rows;
-
-        index += 1;
     }
 
     assert_eq!(
@@ -236,14 +151,11 @@ async fn consume_stream_and_simulate_other_running_memory_consumers(
         args.number_of_record_batches * record_batch_size as usize
     );
 
-    let metrics_set = writer.metrics().unwrap();
-
-    // println!("spill count: {:?}", metrics_set);
-
-    // let spill_count = metrics_set.spill_count().unwrap();
-
-    let _output = writer.flush_and_close().await?;
-    Ok(0)
+    let _output = writer.flush().await?;
+    let metrics_set = writer.metrics().unwrap().clone();
+    writer.close().await?;
+    let spill_count = metrics_set.spill_count().unwrap();
+    Ok(spill_count)
 }
 
 async fn run_test(
@@ -260,8 +172,6 @@ async fn run_test(
     )
     .await?;
 
-    // let spill_count = assert_spill_count_metric(true, plan);
-
     assert!(
         spill_count > 0,
         "Expected spill, but did not, number of record batches: {number_of_record_batches}",
@@ -271,176 +181,75 @@ async fn run_test(
 }
 
 #[tokio::test]
-#[test_log::test]
 async fn sort_with_limited_memory_test() -> Result<(), Report> {
     let record_batch_size = 8192;
-    let pool_size = byte_size!("10mb");
-
-    let generate_batch_size = pool_size / 5;
+    let pool_size = byte_size!("2mb");
+    let generate_batch_size = pool_size / 16;
 
     // Basic test with a lot of groups that cannot all fit in memory and 1 record batch
     // from each spill file is too much memory
-    let _spill_count = run_sort_test_with_limited_memory(RunTestWithLimitedMemoryArgs {
+    let spill_count = run_sort_test_with_limited_memory(RunTestWithLimitedMemoryArgs {
         record_batch_size,
         pool_size,
-        number_of_record_batches: 84,
+        number_of_record_batches: 100,
         get_size_of_record_batch_to_generate: Box::pin(move |_| generate_batch_size),
-        memory_behavior: MemoryBehavior::default(),
     })
     .await?;
 
-    // println!("spill count: {}", spill_count);
-
-    // let total_spill_files_size = spill_count * generate_batch_size;
-    // assert!(
-    //     total_spill_files_size > pool_size,
-    //     "Total spill files size {total_spill_files_size} should be greater than pool size {pool_size}",
-    // );
+    let total_spill_files_size = spill_count * generate_batch_size;
+    assert!(
+        total_spill_files_size > pool_size,
+        "Total spill files size {total_spill_files_size} should be greater than pool size {pool_size}",
+    );
 
     Ok(())
 }
 
-// #[tokio::test]
-// async fn sort_with_different_sizes_of_record_batch_test() -> Result<(), Report> {
-//     let record_batch_size = 8192;
-//     let pool_size = 2 * MB as usize;
-//     let task_ctx = {
-//         let memory_pool = Arc::new(FairSpillPool::new(pool_size));
-//         TaskContext::default()
-//             .with_session_config(
-//                 SessionConfig::new()
-//                     .with_batch_size(record_batch_size)
-//                     .with_sort_spill_reservation_bytes(1),
-//             )
-//             .with_runtime(Arc::new(
-//                 RuntimeEnvBuilder::new()
-//                     .with_memory_pool(memory_pool)
-//                     .build()
-//                     .unwrap(),
-//             ))
-//     };
-//     let generate_batch_size = pool_size / 16;
-//     println!("{generate_batch_size}");
+#[tokio::test]
+async fn sort_with_different_sizes_of_record_batch_test() -> Result<(), Report> {
+    let record_batch_size = 8192;
+    let pool_size = byte_size!("2mb");
+    // Basic test with a lot of groups that cannot all fit in memory and 1 record batch
+    // from each spill file is too much memory
+    run_sort_test_with_limited_memory(RunTestWithLimitedMemoryArgs {
+        record_batch_size,
+        pool_size,
+        number_of_record_batches: 100,
+        get_size_of_record_batch_to_generate: Box::pin(move |i| {
+            if i % 25 == 1 {
+                pool_size / 6
+            } else {
+                16 * KB as usize
+            }
+        }),
+    })
+    .await?;
 
-//     run_sort_test_with_limited_memory(RunTestWithLimitedMemoryArgs {
-//         pool_size,
-//         task_ctx: Arc::new(task_ctx),
-//         number_of_record_batches: 100,
-//         get_size_of_record_batch_to_generate: Box::pin(move |i| {
-//             if i % 25 == 1 {
-//                 pool_size / 6
-//             } else {
-//                 16 * KB as usize
-//             }
-//         }),
-//         memory_behavior: Default::default(),
-//     })
-//     .await?;
-//     Ok(())
-// }
+    Ok(())
+}
 
-// #[tokio::test]
-// async fn sort_with_different_memory_reservation_test() -> Result<(), Report> {
-//     let record_batch_size = 8192;
-//     let pool_size = 2 * MB as usize;
-//     let task_ctx = {
-//         let memory_pool = Arc::new(FairSpillPool::new(pool_size));
-//         TaskContext::default()
-//             .with_session_config(
-//                 SessionConfig::new()
-//                     .with_batch_size(record_batch_size)
-//                     .with_sort_spill_reservation_bytes(1),
-//             )
-//             .with_runtime(Arc::new(
-//                 RuntimeEnvBuilder::new()
-//                     .with_memory_pool(memory_pool)
-//                     .build()?,
-//             ))
-//     };
+#[tokio::test]
+#[test_log::test]
+async fn sort_with_large_record_batch_test() -> Result<(), Report> {
+    let record_batch_size = 8192;
+    let pool_size = byte_size!("10mb");
+    let generate_batch_size = pool_size / 5;
 
-//     run_sort_test_with_limited_memory(RunTestWithLimitedMemoryArgs {
-//         pool_size,
-//         task_ctx: Arc::new(task_ctx),
-//         number_of_record_batches: 100,
-//         get_size_of_record_batch_to_generate: Box::pin(move |i| {
-//             if i % 25 == 1 {
-//                 pool_size / 6
-//             } else {
-//                 16 * KB as usize
-//             }
-//         }),
-//         memory_behavior: MemoryBehavior::TakeAllMemoryAndReleaseEveryNthBatch(10),
-//     })
-//     .await?;
+    // Basic test with a lot of groups that cannot all fit in memory and 1 record batch
+    // from each spill file is too much memory
+    let spill_count = run_sort_test_with_limited_memory(RunTestWithLimitedMemoryArgs {
+        record_batch_size,
+        pool_size,
+        number_of_record_batches: 100,
+        get_size_of_record_batch_to_generate: Box::pin(move |_| generate_batch_size),
+    })
+    .await?;
 
-//     Ok(())
-// }
+    let total_spill_files_size = spill_count * generate_batch_size;
+    assert!(
+        total_spill_files_size > pool_size,
+        "Total spill files size {total_spill_files_size} should be greater than pool size {pool_size}",
+    );
 
-// #[tokio::test]
-// async fn sort_with_taking_all_memory() -> Result<(), Report> {
-//     let record_batch_size = 8192;
-//     let pool_size = 2 * MB as usize;
-//     let task_ctx = {
-//         let memory_pool = Arc::new(FairSpillPool::new(pool_size));
-//         TaskContext::default()
-//             .with_session_config(
-//                 SessionConfig::new()
-//                     .with_batch_size(record_batch_size)
-//                     .with_sort_spill_reservation_bytes(1),
-//             )
-//             .with_runtime(Arc::new(
-//                 RuntimeEnvBuilder::new()
-//                     .with_memory_pool(memory_pool)
-//                     .build()?,
-//             ))
-//     };
-
-//     run_sort_test_with_limited_memory(RunTestWithLimitedMemoryArgs {
-//         pool_size,
-//         task_ctx: Arc::new(task_ctx),
-//         number_of_record_batches: 100,
-//         get_size_of_record_batch_to_generate: Box::pin(move |i| {
-//             if i % 25 == 1 {
-//                 pool_size / 6
-//             } else {
-//                 16 * KB as usize
-//             }
-//         }),
-//         memory_behavior: MemoryBehavior::TakeAllMemoryAtTheBeginning,
-//     })
-//     .await?;
-
-//     Ok(())
-// }
-
-// #[tokio::test]
-// async fn sort_with_large_record_batch() -> Result<(), Report> {
-//     let record_batch_size = 8192;
-//     let pool_size = 2 * MB as usize;
-//     let task_ctx = {
-//         let memory_pool = Arc::new(FairSpillPool::new(pool_size));
-//         TaskContext::default()
-//             .with_session_config(
-//                 SessionConfig::new()
-//                     .with_batch_size(record_batch_size)
-//                     .with_sort_spill_reservation_bytes(1),
-//             )
-//             .with_runtime(Arc::new(
-//                 RuntimeEnvBuilder::new()
-//                     .with_memory_pool(memory_pool)
-//                     .build()?,
-//             ))
-//     };
-
-//     // Test that the merge degree of multi level merge sort cannot be fixed size when there is not enough memory
-//     run_sort_test_with_limited_memory(RunTestWithLimitedMemoryArgs {
-//         pool_size,
-//         task_ctx: Arc::new(task_ctx),
-//         number_of_record_batches: 100,
-//         get_size_of_record_batch_to_generate: Box::pin(move |_| pool_size / 6),
-//         memory_behavior: Default::default(),
-//     })
-//     .await?;
-
-//     Ok(())
-// }
+    Ok(())
+}

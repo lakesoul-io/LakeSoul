@@ -7,7 +7,8 @@ pub mod jemalloc {
 
     #[allow(non_upper_case_globals)]
     #[unsafe(export_name = "malloc_conf")]
-    pub static malloc_conf: &[u8] = b"prof:true,prof_gdump:true,prof_prefix:/data/jiax_space/LakeSoul/rust/peak\0";
+    pub static malloc_conf: &[u8] =
+        b"prof:true,prof_gdump:true,prof_prefix:/data/jiax_space/LakeSoul/rust/peak\0";
     use tikv_jemalloc_ctl::{epoch, stats};
 
     pub fn _print_memory_stats() {
