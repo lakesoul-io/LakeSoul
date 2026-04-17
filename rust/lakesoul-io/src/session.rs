@@ -5,7 +5,6 @@
 use std::any::Any;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::iter::zip;
-use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::usize;
 
@@ -30,11 +29,7 @@ use datafusion_datasource::source::DataSource;
 use datafusion_datasource::{ListingTableUrl, PartitionedFile, TableSchema};
 use datafusion_datasource_parquet::ParquetFormat;
 use datafusion_execution::config::SessionConfig;
-#[cfg(test)]
-use datafusion_execution::memory_pool::MemoryPool;
-use datafusion_execution::memory_pool::{
-    FairSpillPool, GreedyMemoryPool, TrackConsumersPool,
-};
+use datafusion_execution::memory_pool::FairSpillPool;
 use datafusion_execution::runtime_env::RuntimeEnvBuilder;
 use datafusion_execution::{TaskContext, runtime_env::RuntimeEnv};
 use datafusion_expr::execution_props::ExecutionProps;
@@ -238,12 +233,12 @@ impl LakeSoulIOSession {
             // for now all is default
             sess_conf.options_mut().execution.spill_compression =
                 SpillCompression::Uncompressed;
-            let sort_spill_bytes = pool_size / 20;
+            let reserve_bytes = pool_size / 20;
+            // let reserve_bytes = (pool_size / 50).min(byte_size!("10mb"));
             sess_conf
                 .options_mut()
                 .execution
-                .sort_spill_reservation_bytes = sort_spill_bytes;
-            println!("sort_spill_reservation_bytes: {sort_spill_bytes}");
+                .sort_spill_reservation_bytes = reserve_bytes;
             sess_conf
                 .options_mut()
                 .execution
@@ -269,7 +264,7 @@ impl LakeSoulIOSession {
                 dir,
                 pool_size,
                 io_config.mem_limit(),
-                sort_spill_bytes
+                reserve_bytes
             );
             main_pool
         } else {
@@ -620,13 +615,10 @@ impl LakeSoulIOSession {
 
         let indices: Vec<usize> = required_indices.into_iter().collect();
 
-        // 3. 结果判断
         if indices.is_empty() {
-            // 如果 target 和 filter 都不引用物理列（例如 SELECT 1 WHERE 1=1）
             return Ok(Some(vec![]));
         }
 
-        // 如果物理读取的列正好是全表且顺序一致，返回 None 触发 DataFusion 默认优化
         if indices.len() == table_schema.fields().len()
             && indices.iter().enumerate().all(|(i, &idx)| i == idx)
         {
@@ -855,7 +847,7 @@ impl LakeSoulIOSession {
         };
         let memory_pool = crate::mem::pool::LoggedMemoryPool::new(
             fair_pool,
-            NonZeroUsize::new(5).unwrap(),
+            std::num::NonZeroUsize::new(5).unwrap(),
         );
         let runtime_builder =
             RuntimeEnvBuilder::from_runtime_env(&self.inner.runtime_env)

@@ -16,7 +16,8 @@ use datafusion_physical_expr::{
 };
 use datafusion_physical_plan::{
     ExecutionPlan, ExecutionPlanProperties, Partitioning, PhysicalExpr,
-    projection::ProjectionExec, sorts::sort::SortExec, stream::RecordBatchReceiverStream,
+    metrics::MetricsSet, projection::ProjectionExec, sorts::sort::SortExec,
+    stream::RecordBatchReceiverStream,
 };
 use datafusion_session::Session;
 use futures::{StreamExt, TryStreamExt};
@@ -56,6 +57,8 @@ pub struct PartitioningAsyncWriter {
     buffered_size: u64,
     /// The ['LakeSoulIOSession'] used by the partitioning writer.
     io_session: Arc<LakeSoulIOSession>,
+    /// The metric set of the partitioning writer.
+    metric_set: MetricsSet,
 }
 
 type NestedFlushOutputResult = Result<JoinSet<Result<Vec<FlushOutput>>>>;
@@ -76,6 +79,12 @@ impl PartitioningAsyncWriter {
             io_config,
             io_session.main_pool().clone(),
         )?;
+        let mut metric_set = MetricsSet::new();
+        if let Some(ms) = partitioning_exec.metrics() {
+            for m in ms.iter() {
+                metric_set.push(m.clone());
+            }
+        }
 
         // launch one async task per *input* partition
 
@@ -128,6 +137,7 @@ impl PartitioningAsyncWriter {
             err: None,
             buffered_size: 0,
             io_session,
+            metric_set,
         })
     }
 
@@ -482,5 +492,10 @@ impl AsyncBatchWriter for PartitioningAsyncWriter {
 
     fn io_session(&self) -> &Arc<LakeSoulIOSession> {
         &self.io_session
+    }
+
+    /// Get the metrics of this writer.
+    fn metrics(&self) -> Option<&MetricsSet> {
+        Some(&self.metric_set)
     }
 }
