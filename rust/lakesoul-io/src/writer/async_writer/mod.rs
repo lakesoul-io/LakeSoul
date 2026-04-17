@@ -30,10 +30,13 @@ use arrow_schema::SchemaRef;
 use atomic_refcell::AtomicRefCell;
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
 use datafusion_physical_expr::{EquivalenceProperties, LexOrdering};
-use datafusion_physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion_physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, Partitioning,
     PlanProperties, stream::RecordBatchReceiverStreamBuilder,
+};
+use datafusion_physical_plan::{
+    execution_plan::{Boundedness, EmissionType},
+    metrics::MetricsSet,
 };
 use parquet::file::metadata::ParquetMetaData;
 
@@ -71,6 +74,11 @@ pub trait AsyncBatchWriter {
     /// Get the LakeSoul io session of this writer.
     fn io_session(&self) -> &Arc<LakeSoulIOSession> {
         unimplemented!()
+    }
+
+    /// Get the metrics of this writer.
+    fn metrics(&self) -> Option<&MetricsSet> {
+        None
     }
 }
 
