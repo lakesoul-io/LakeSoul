@@ -3,19 +3,12 @@ use std::{
     fs::OpenOptions,
     io::Write,
     num::NonZeroUsize,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::atomic::{AtomicUsize, Ordering},
     time::Instant,
 };
 
-use cfg_if::cfg_if;
-use datafusion_execution::memory_pool::{
-    FairSpillPool, GreedyMemoryPool, MemoryConsumer, MemoryPool, MemoryReservation,
-};
+use datafusion_execution::memory_pool::MemoryPool;
 use parking_lot::Mutex;
-use rootcause::Report;
 
 #[derive(Debug)]
 struct TrackedConsumer {
@@ -32,7 +25,7 @@ impl TrackedConsumer {
     }
 
     /// Return the peak value
-    fn peak(&self) -> usize {
+    fn _peak(&self) -> usize {
         self.peak.load(Ordering::Relaxed)
     }
 

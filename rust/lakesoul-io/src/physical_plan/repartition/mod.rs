@@ -150,6 +150,7 @@ impl RepartitionByRangeAndHashExecState {
                     range_partitioning_expr.clone(),
                     hash_partitioning.clone(),
                     r_metrics,
+                    metrics.clone(),
                     context.clone(),
                 ));
 
@@ -463,6 +464,7 @@ impl RepartitionByRangeAndHashExec {
         range_partitioning_expr: Vec<Arc<dyn PhysicalExpr>>,
         hash_partitioning: Partitioning,
         main_pool: Arc<MainMemoryPool>,
+        metrics: ExecutionPlanMetricsSet,
     ) -> Result<Self> {
         let preserve_order = false;
         if let Some(ordering) = input.output_ordering() {
@@ -484,14 +486,6 @@ impl RepartitionByRangeAndHashExec {
             ]
             .concat();
 
-            let epms = ExecutionPlanMetricsSet::new();
-
-            if let Some(ms) = input.metrics() {
-                for m in ms.iter() {
-                    epms.register(m.clone());
-                }
-            }
-
             if physical_exprs_equal(&lhs, &rhs) {
                 return Ok(Self {
                     plan_properties: PlanProperties::new(
@@ -504,7 +498,7 @@ impl RepartitionByRangeAndHashExec {
                     range_partitioning_expr,
                     hash_partitioning,
                     state: Default::default(),
-                    metrics: epms,
+                    metrics,
                     preserve_order,
                     main_pool,
                 });
@@ -523,40 +517,6 @@ impl RepartitionByRangeAndHashExec {
         self.input.output_ordering()
     }
 
-    async fn create_state_once(
-        &self,
-        context: Arc<TaskContext>,
-    ) -> Result<RepartitionByRangeAndHashExecState> {
-        // repartition memory size
-        let size =
-            (self.main_pool.pool_size() as f64 * LAKESOUL_REPARTITION_RATIO) as usize;
-        let repartition_pool = self.main_pool.split(size)?;
-
-        // construct context
-        let repartition_ctx = Arc::new(TaskContext::new(
-            Some("Repartition".to_string()),
-            "Default".to_string(),
-            context.session_config().clone(),
-            HashMap::new(),
-            HashMap::new(),
-            HashMap::new(),
-            RuntimeEnvBuilder::from_runtime_env(&context.runtime_env())
-                .with_memory_pool(repartition_pool)
-                .build_arc()?,
-        ));
-
-        Ok(RepartitionByRangeAndHashExecState::new(
-            self.input.clone(),
-            self.range_partitioning_expr.clone(),
-            self.hash_partitioning.clone(),
-            self.metrics.clone(),
-            self.preserve_order,
-            self.name().to_string(),
-            context,
-            repartition_ctx,
-        ))
-    }
-
     /// Pulls data from the specified input plan, feeding it to the
     /// output partitions based on the desired partitioning
     ///
@@ -571,6 +531,7 @@ impl RepartitionByRangeAndHashExec {
         range_partitioning: Vec<Arc<dyn PhysicalExpr>>,
         hash_partitioning: Partitioning,
         metrics: RepartitionMetrics,
+        all_metrics: ExecutionPlanMetricsSet,
         context: Arc<TaskContext>,
     ) -> Result<()> {
         let mut partitioner = BatchPartitioner::try_new(
@@ -647,7 +608,13 @@ impl RepartitionByRangeAndHashExec {
         println!("??????");
         println!("??????");
         println!("??????");
-        println!("XXXXXXXXXX metrics: {:?}", input.metrics());
+        // println!("XXXXXXXXXX metrics: {:?}", input.metrics());
+
+        if let Some(ms) = input.metrics() {
+            for m in ms.iter() {
+                all_metrics.register(Arc::clone(m));
+            }
+        }
 
         Ok(())
     }
@@ -775,6 +742,7 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
             self.range_partitioning_expr.clone(),
             self.hash_partitioning.clone(),
             self.main_pool.clone(),
+            ExecutionPlanMetricsSet::new(), // children's metrics is not propagated
         )
         .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
 
