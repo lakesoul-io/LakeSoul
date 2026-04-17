@@ -6,7 +6,6 @@ use std::any::Any;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::iter::zip;
 use std::sync::Arc;
-use std::usize;
 
 use arrow_schema::{Schema, SchemaBuilder, SchemaRef};
 use datafusion::config::SpillCompression;
@@ -963,6 +962,6 @@ mod tests {
         assert_eq!(io_config.max_row_group_size, 250000);
         assert_eq!(io_config.max_row_group_num_values, 2147483647);
         assert_eq!(io_config.prefetch_size, 1);
-        assert_eq!(io_config.parquet_filter_pushdown, false);
+        assert!(!io_config.parquet_filter_pushdown);
     }
 }

@@ -91,14 +91,11 @@ async fn run_sort_test_with_limited_memory(
                     get_size_of_record_batch_to_generate(index as usize);
                 let range_array_size = c.len_utf8() * args.record_batch_size;
 
-                let uint64_array_size =
-                    size_of::<u64>() * args.record_batch_size as usize;
-
+                let uint64_array_size = size_of::<u64>() * args.record_batch_size;
                 let string_array_size = total_batch_size
                     .saturating_sub(uint64_array_size.saturating_add(range_array_size));
 
-                let string_item_size =
-                    string_array_size / args.record_batch_size as usize;
+                let string_item_size = string_array_size / args.record_batch_size;
                 let string_array = Arc::new(StringArray::from_iter_values(
                     (0..args.record_batch_size)
                         .map(|_| c.to_string().repeat(string_item_size)),
