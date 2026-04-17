@@ -50,7 +50,7 @@ pub fn get_parquet_files(dir_path: &str) -> Vec<PathBuf> {
     WalkDir::new(dir_path)
         .into_iter()
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "parquet"))
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "parquet"))
         .map(|e| e.path().to_owned())
         .collect()
 }

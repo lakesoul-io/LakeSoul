@@ -35,10 +35,9 @@ impl MainMemoryPool {
     /// Splits `pool_size` bytes out of this pool and returns a child [`MemoryPool`]
     /// backed by that reservation.
     ///
-    /// Thread-safe: the atomic check-and-increment inside [`GreedyMemoryPool::try_grow`]
-    /// is the single authoritative gate. No separate mutex is needed — a pre-check
-    /// + mutex would introduce a TOCTOU race with concurrent `grow`/`try_grow` callers
-    /// that bypass any such lock.
+    /// Thread-safe:
+    /// The atomic check-and-increment inside `GreedyMemoryPool::try_grow`
+    /// is the single authoritative gate.
     pub fn split(
         self: &Arc<Self>,
         pool_size: usize,

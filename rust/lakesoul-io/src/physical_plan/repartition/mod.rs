@@ -795,7 +795,7 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
                             paras_captured_move.range_exprs.clone(),
                             paras_captured_move.hash_partitioning.clone(),
                             paras_captured_move.metrics.clone(),
-                            paras_captured_move.preserve_order.clone(),
+                            paras_captured_move.preserve_order,
                             paras_captured_move.name.clone(),
                             context_captured,
                             repartition_ctx,
