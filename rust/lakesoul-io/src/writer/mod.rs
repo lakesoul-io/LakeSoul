@@ -425,6 +425,7 @@ mod tests {
     use rand::{Rng, distr::SampleString};
     use std::{fs::File, sync::Arc};
     use tokio::{runtime::Builder, time::Instant};
+    use tracing_subscriber::layer::SubscriberExt;
 
     use super::SortAsyncWriter;
     use arrow::array::{Date32Array, Decimal128Array, TimestampMicrosecondArray};
@@ -677,7 +678,6 @@ mod tests {
                 .with_source_location(true)
                 .with_file(true),
         );
-        // .with_max_level(Level::TRACE);
         tracing_subscriber::registry().with(subscriber);
 
         #[cfg(feature = "dhat-heap")]

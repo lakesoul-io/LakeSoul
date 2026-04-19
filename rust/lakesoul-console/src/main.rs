@@ -127,8 +127,8 @@ async fn main_inner(cli: Cli) -> Result<()> {
 
     let printer = Printer::default();
 
-    if cli.command.is_some() {
-        return exec_command(cli.command.unwrap(), &printer, &ctx).await;
+    if let Some(cmd) = cli.command {
+        return exec_command(cmd, &printer, &ctx).await;
     }
 
     if !files.is_empty() {
