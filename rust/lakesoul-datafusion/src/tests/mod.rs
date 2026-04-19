@@ -8,8 +8,11 @@ use arrow::array::RecordBatch;
 
 use lakesoul_metadata::MetaDataClient;
 
+#[cfg(test)]
 mod hash_tests;
+#[cfg(test)]
 mod insert_tests;
+#[cfg(test)]
 mod upsert_tests;
 // mod compaction_tests;
 // mod streaming_tests;
@@ -19,6 +22,7 @@ mod integration_tests;
 #[cfg(feature = "ci")]
 mod benchmarks;
 
+#[cfg(test)]
 mod catalog_tests;
 
 // in cargo test, this executed only once
