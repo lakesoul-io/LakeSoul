@@ -87,7 +87,7 @@ fn one_reader(
     let partition_schema = partition_schema.map(|s| Arc::new(s.0));
     let readers = file_urls
         .into_iter()
-        .zip(primary_keys.into_iter())
+        .zip(primary_keys)
         .map(|(files, pks)| {
             LakeSoulReader::new(build_io_config(
                 batch_size,
