@@ -35,15 +35,16 @@ use datafusion::{
 };
 use datafusion::{physical_expr::physical_exprs_equal, physical_plan::metrics};
 use datafusion_common::{DataFusionError, Result as DFResult, Statistics};
+use datafusion_execution::runtime_env::RuntimeEnvBuilder;
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt};
 use parking_lot::Mutex;
-use rootcause::{bail, compat::boxed_error::IntoBoxedError};
+use rootcause::{Report, bail, compat::boxed_error::IntoBoxedError};
 
 use self::distributor_channels::{
     DistributionReceiver, DistributionSender, channels, partition_aware_channels,
 };
-use crate::Result;
-use crate::utils::hash::create_hashes;
+use crate::{Result, mem::pool::MainMemoryPool};
+use crate::{constant::LAKESOUL_REPARTITION_RATIO, utils::hash::create_hashes};
 
 mod distributor_channels;
 
@@ -94,6 +95,7 @@ impl RepartitionByRangeAndHashExecState {
         preserve_order: bool,
         name: String,
         context: Arc<TaskContext>,
+        repartition_ctx: Arc<TaskContext>,
     ) -> Self {
         let num_input_partitions = input.output_partitioning().partition_count();
         let num_output_partitions = hash_partitioning.partition_count();
@@ -123,7 +125,8 @@ impl RepartitionByRangeAndHashExecState {
         for (partition, (tx, rx)) in txs.into_iter().zip(rxs).enumerate() {
             let reservation = Arc::new(Mutex::new(
                 MemoryConsumer::new(format!("{}[{partition}]", name))
-                    .register(context.memory_pool()),
+                    .with_can_spill(true)
+                    .register(repartition_ctx.memory_pool()),
             ));
             channels.insert(partition, (tx, rx, reservation));
         }
@@ -147,6 +150,7 @@ impl RepartitionByRangeAndHashExecState {
                     range_partitioning_expr.clone(),
                     hash_partitioning.clone(),
                     r_metrics,
+                    metrics.clone(),
                     context.clone(),
                 ));
 
@@ -268,10 +272,8 @@ impl BatchPartitioner {
             create_hashes(&hash_arrays, hash_buffer)?;
             create_hashes(&range_arrays, &mut range_buffer)?;
 
-            let mut indices: Vec<HashMap<u32, UInt64Builder>> = (0..*partitions)
-                .map(|_| HashMap::new())
-                // .map(|_| UInt64Builder::with_capacity(batch.num_rows()))
-                .collect();
+            let mut indices: Vec<HashMap<u32, UInt64Builder>> =
+                (0..*partitions).map(|_| HashMap::new()).collect();
 
             for (index, (hash, range_hash)) in
                 hash_buffer.iter().zip(range_buffer).enumerate()
@@ -333,7 +335,6 @@ struct RepartitionMetrics {
     /// Repartitioning elapsed time in nanos
     repartition_time: metrics::Time,
     /// Time in nanos for sending resulting batches to channels.
-    ///
     /// One metric per output partition.
     send_time: Vec<metrics::Time>,
 }
@@ -401,6 +402,9 @@ pub struct RepartitionByRangeAndHashExec {
 
     /// Execution properties
     plan_properties: PlanProperties,
+
+    /// Main Memory Pool, this is a hack
+    main_pool: Arc<MainMemoryPool>,
 }
 
 impl RepartitionByRangeAndHashExec {
@@ -459,6 +463,8 @@ impl RepartitionByRangeAndHashExec {
         input: Arc<dyn ExecutionPlan>,
         range_partitioning_expr: Vec<Arc<dyn PhysicalExpr>>,
         hash_partitioning: Partitioning,
+        main_pool: Arc<MainMemoryPool>,
+        metrics: ExecutionPlanMetricsSet,
     ) -> Result<Self> {
         let preserve_order = false;
         if let Some(ordering) = input.output_ordering() {
@@ -492,8 +498,9 @@ impl RepartitionByRangeAndHashExec {
                     range_partitioning_expr,
                     hash_partitioning,
                     state: Default::default(),
-                    metrics: ExecutionPlanMetricsSet::new(),
+                    metrics,
                     preserve_order,
+                    main_pool,
                 });
             }
         }
@@ -524,6 +531,7 @@ impl RepartitionByRangeAndHashExec {
         range_partitioning: Vec<Arc<dyn PhysicalExpr>>,
         hash_partitioning: Partitioning,
         metrics: RepartitionMetrics,
+        all_metrics: ExecutionPlanMetricsSet,
         context: Arc<TaskContext>,
     ) -> Result<()> {
         let mut partitioner = BatchPartitioner::try_new(
@@ -539,6 +547,7 @@ impl RepartitionByRangeAndHashExec {
 
         // While there are still outputs to send to, keep pulling inputs
         let mut batches_until_yield = partitioner.num_partitions();
+
         while !output_channels.is_empty() {
             // fetch the next batch
             let timer = metrics.fetch_time.timer();
@@ -593,7 +602,27 @@ impl RepartitionByRangeAndHashExec {
             }
         }
 
+        if let Some(ms) = input.metrics() {
+            for m in ms.iter() {
+                all_metrics.register(Arc::clone(m));
+            }
+        }
+
         Ok(())
+    }
+
+    fn capture_params(&self) -> Arc<RepartitionParams> {
+        Arc::new(RepartitionParams {
+            input: self.input.clone(),
+            range_exprs: self.range_partitioning_expr.clone(),
+            hash_partitioning: self.hash_partitioning.clone(),
+            metrics: self.metrics.clone(),
+            preserve_order: self.preserve_order,
+            sort_exprs: self.sort_exprs().cloned(),
+            schema: self.schema(),
+            main_pool: self.main_pool.clone(),
+            name: self.name().to_string(),
+        })
     }
 
     /// Waits for `input_task` which is consuming one of the inputs to
@@ -669,6 +698,10 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
         self.name()
     }
 
+    fn metrics(&self) -> Option<metrics::MetricsSet> {
+        Some(self.metrics.clone_inner())
+    }
+
     /// Return a reference to Any that can be used for downcasting
     fn as_any(&self) -> &dyn Any {
         self
@@ -700,6 +733,8 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
             children.swap_remove(0),
             self.range_partitioning_expr.clone(),
             self.hash_partitioning.clone(),
+            self.main_pool.clone(),
+            ExecutionPlanMetricsSet::new(), // children's metrics is not propagated
         )
         .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
 
@@ -711,43 +746,60 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
-        // clone all data that needs to be used in async block
-        let metrics = self.metrics.clone();
-        let lazy_state = self.state.clone();
-        let preserve_order = self.preserve_order;
-        let name = self.name().to_string();
-        let schema = self.schema();
-        let schema_captured = Arc::clone(&schema);
-        let sort_exprs = self.sort_exprs().cloned();
-        let input = self.input.clone();
-        let input_schema = input.schema();
-        let range_partitioning_expr = self.range_partitioning_expr.clone();
-        let hash_partitioning = self.hash_partitioning.clone();
-
+        let params = self.capture_params();
+        let paras_captured = Arc::clone(&params);
+        let paras_captured_move = Arc::clone(&params);
+        let state_ref = Arc::clone(&self.state);
         let stream = futures::stream::once(async move {
-            let metrics_captured = metrics.clone();
-            let name_captured = name.clone();
-            let num_input_partitions = input.output_partitioning().partition_count();
-
             let context_captured = Arc::clone(&context);
+            // only exec once
+            let state = state_ref
+                .get_or_try_init(|| async move {
+                    // split memory pool
+                    let size = (paras_captured_move.main_pool.pool_size() as f64
+                        * LAKESOUL_REPARTITION_RATIO)
+                        as usize;
+                    info!("repartition's pool size: {}", size);
+                    let repartition_pool = paras_captured_move
+                        .main_pool
+                        .split(size)
+                        .map_err(|rep| DataFusionError::External(rep.into()))?;
 
-            let state = lazy_state
-                .get_or_init(|| async move {
-                    Mutex::new(RepartitionByRangeAndHashExecState::new(
-                        input,
-                        range_partitioning_expr,
-                        hash_partitioning,
-                        metrics_captured,
-                        preserve_order,
-                        name_captured,
-                        context_captured,
+                    let runtime = RuntimeEnvBuilder::from_runtime_env(
+                        &context_captured.runtime_env(),
+                    )
+                    .with_memory_pool(repartition_pool)
+                    .build_arc()?;
+
+                    let repartition_ctx = Arc::new(TaskContext::new(
+                        Some("Repartition".to_string()),
+                        "Default".to_string(),
+                        context_captured.session_config().clone(),
+                        HashMap::new(),
+                        HashMap::new(),
+                        HashMap::new(),
+                        runtime,
+                    ));
+
+                    Ok::<Mutex<RepartitionByRangeAndHashExecState>, Report>(Mutex::new(
+                        RepartitionByRangeAndHashExecState::new(
+                            paras_captured_move.input.clone(),
+                            paras_captured_move.range_exprs.clone(),
+                            paras_captured_move.hash_partitioning.clone(),
+                            paras_captured_move.metrics.clone(),
+                            paras_captured_move.preserve_order,
+                            paras_captured_move.name.clone(),
+                            context_captured,
+                            repartition_ctx,
+                        ),
                     ))
                 })
-                .await;
+                .await
+                .map_err(|rep| DataFusionError::External(rep.into()))?;
 
             trace!(
                 "Before returning stream in {}::execute for partition: {}",
-                name, partition
+                paras_captured.name, partition
             );
 
             // lock scope
@@ -761,13 +813,13 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
                 (rx, reservation, Arc::clone(&state.abort_helper))
             };
 
-            if preserve_order {
+            if paras_captured.preserve_order {
                 // Store streams from all the input partitions:
                 let input_streams = rx
                     .into_iter()
                     .map(|receiver| {
                         Box::pin(PerPartitionStream {
-                            schema: Arc::clone(&schema_captured),
+                            schema: Arc::clone(&paras_captured.schema),
                             receiver,
                             _drop_helper: Arc::clone(&abort_helper),
                             reservation: Arc::clone(&reservation),
@@ -779,14 +831,20 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
                 // Merge streams (while preserving ordering) coming from
                 // input partitions to this partition:
                 let fetch = None;
-                let merge_reservation =
-                    MemoryConsumer::new(format!("{}[Merge {partition}]", name))
-                        .register(context.memory_pool());
-                let sort_exprs = sort_exprs.as_ref();
+                let merge_reservation = MemoryConsumer::new(format!(
+                    "{}[Merge {partition}]",
+                    paras_captured.name
+                ))
+                .with_can_spill(true)
+                .register(context.memory_pool());
+                let sort_exprs = paras_captured.sort_exprs.as_ref();
                 let mut builder = StreamingMergeBuilder::new()
                     .with_streams(input_streams)
-                    .with_schema(schema_captured)
-                    .with_metrics(BaselineMetrics::new(&metrics, partition))
+                    .with_schema(Arc::clone(&paras_captured.schema))
+                    .with_metrics(BaselineMetrics::new(
+                        &paras_captured.metrics,
+                        partition,
+                    ))
                     .with_batch_size(context.session_config().batch_size())
                     .with_fetch(fetch)
                     .with_reservation(merge_reservation);
@@ -796,9 +854,12 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
                 builder.build()
             } else {
                 Ok(Box::pin(RepartitionStream {
-                    num_input_partitions,
+                    num_input_partitions: paras_captured
+                        .input
+                        .output_partitioning()
+                        .partition_count(),
                     num_input_partitions_processed: 0,
-                    schema: input_schema,
+                    schema: paras_captured.input.schema(),
                     input: rx.swap_remove(0),
                     _drop_helper: abort_helper,
                     reservation,
@@ -807,13 +868,25 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
         })
         .try_flatten();
 
-        let stream = RecordBatchStreamAdapter::new(schema, stream);
+        let stream = RecordBatchStreamAdapter::new(Arc::clone(&params.schema), stream);
         Ok(Box::pin(stream))
     }
 
     fn partition_statistics(&self, partition: Option<usize>) -> DFResult<Statistics> {
         self.input.partition_statistics(partition)
     }
+}
+
+struct RepartitionParams {
+    input: Arc<dyn ExecutionPlan>,
+    range_exprs: Vec<Arc<dyn PhysicalExpr>>,
+    hash_partitioning: Partitioning,
+    metrics: ExecutionPlanMetricsSet,
+    preserve_order: bool,
+    sort_exprs: Option<LexOrdering>,
+    schema: SchemaRef,
+    main_pool: Arc<MainMemoryPool>,
+    name: String,
 }
 
 /// [`RepartitionStream`] is executed stream for [`RepartitionByRangeAndHashExec`].

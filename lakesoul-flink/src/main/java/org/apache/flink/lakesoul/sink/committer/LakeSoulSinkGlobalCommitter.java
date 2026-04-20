@@ -227,6 +227,7 @@ public class LakeSoulSinkGlobalCommitter
                 }
                 if (partitionKeys.rangeKeys.size() != identity.partitionKeyList.size() ||
                         !new HashSet<>(partitionKeys.rangeKeys).containsAll(identity.partitionKeyList)) {
+                    LOG.error("rangeKeys: {}, partitionKeyList: {}",partitionKeys.rangeKeys,identity.partitionKeyList);
                     throw new IOException("Change of partition key column of table " + tableName + " is forbidden");
                 }
                 StructType origSchema;

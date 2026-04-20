@@ -5,7 +5,6 @@
 use std::any::Any;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::iter::zip;
-use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use arrow_schema::{Schema, SchemaBuilder, SchemaRef};
@@ -29,9 +28,7 @@ use datafusion_datasource::source::DataSource;
 use datafusion_datasource::{ListingTableUrl, PartitionedFile, TableSchema};
 use datafusion_datasource_parquet::ParquetFormat;
 use datafusion_execution::config::SessionConfig;
-use datafusion_execution::memory_pool::{
-    FairSpillPool, GreedyMemoryPool, TrackConsumersPool,
-};
+use datafusion_execution::memory_pool::FairSpillPool;
 use datafusion_execution::runtime_env::RuntimeEnvBuilder;
 use datafusion_execution::{TaskContext, runtime_env::RuntimeEnv};
 use datafusion_expr::execution_props::ExecutionProps;
@@ -54,6 +51,7 @@ use crate::config::LakeSoulIOConfig;
 use crate::file_format::LakeSoulParquetFormat;
 use crate::helpers::transform::uniform_schema;
 use crate::helpers::{get_file_object_meta, infer_schema};
+use crate::mem::pool::MainMemoryPool;
 use crate::physical_plan::empty_schema::EmptyScanCountExec;
 use crate::utils::random_str;
 
@@ -197,6 +195,7 @@ struct IOSessionInner {
     pub session_id: String,
     pub session_config: SessionConfig,
     pub runtime_env: Arc<RuntimeEnv>,
+    pub memory_pool: Arc<MainMemoryPool>,
     pub listing_metas: OnceCell<ListingMetas>,
     pub file_format: OnceCell<Arc<LakeSoulParquetFormat>>,
     pub file_schema: OnceCell<Arc<Schema>>,
@@ -229,21 +228,22 @@ impl LakeSoulIOSession {
 
         // runtime
         let mut runtime_conf = RuntimeEnvBuilder::new();
-        if let Some(pool_size) = io_config.pool_size() {
+        let pool = if let Some(pool_size) = io_config.pool_size() {
             // for now all is default
             sess_conf.options_mut().execution.spill_compression =
                 SpillCompression::Uncompressed;
-            let sort_spill_bytes = pool_size / 8;
+            let reserve_bytes = (pool_size / 50).min(byte_size!("10mb"));
             sess_conf
                 .options_mut()
                 .execution
-                .sort_spill_reservation_bytes = sort_spill_bytes;
+                .sort_spill_reservation_bytes = reserve_bytes;
             sess_conf
                 .options_mut()
                 .execution
                 .sort_in_place_threshold_bytes = byte_size!("4mb");
+            // this is used in df's reparition
             sess_conf.options_mut().execution.max_spill_file_size_bytes =
-                byte_size!("128mb");
+                byte_size!("256mb");
             runtime_conf =
                 runtime_conf.with_max_temp_directory_size(byte_size!("100G") as u64);
             let dir = io_config
@@ -252,11 +252,9 @@ impl LakeSoulIOSession {
             std::fs::create_dir_all(&dir)?;
             runtime_conf = runtime_conf.with_temp_file_path(&dir);
 
-            let memory_pool = TrackConsumersPool::new(
-                GreedyMemoryPool::new(pool_size), // only one spill operator (sort)
-                NonZeroUsize::new(5).unwrap(),
-            );
-            runtime_conf = runtime_conf.with_memory_pool(Arc::new(memory_pool));
+            let main_pool = Arc::new(MainMemoryPool::new(pool_size));
+
+            runtime_conf = runtime_conf.with_memory_pool(main_pool.clone());
 
             info!(
                 "NativeIO spill config with directory {}, pool size {}, \
@@ -264,9 +262,13 @@ impl LakeSoulIOSession {
                 dir,
                 pool_size,
                 io_config.mem_limit(),
-                sort_spill_bytes
+                reserve_bytes
             );
-        }
+            main_pool
+        } else {
+            // Unbound
+            Arc::new(MainMemoryPool::new(usize::MAX))
+        };
 
         let runtime = runtime_conf.build()?;
         // firstly, parse default fs if exist
@@ -325,6 +327,7 @@ impl LakeSoulIOSession {
             file_schema: OnceCell::new(),
             partition_schema: OnceCell::new(),
             table_schema: OnceCell::new(),
+            memory_pool: pool,
         };
         Ok(Self {
             io_config,
@@ -332,6 +335,42 @@ impl LakeSoulIOSession {
             execution_props: ExecutionProps::new(),
         })
     }
+
+    /// this api is prepared for `lakesoul-datafusion` only
+    pub fn from_plain_config_and_context(
+        io_config: LakeSoulIOConfig,
+        task_ctx: Arc<TaskContext>,
+    ) -> Self {
+        let pool_size = {
+            match task_ctx.memory_pool().memory_limit() {
+                datafusion_execution::memory_pool::MemoryLimit::Infinite => usize::MAX,
+                datafusion_execution::memory_pool::MemoryLimit::Finite(sz) => sz,
+                datafusion_execution::memory_pool::MemoryLimit::Unknown => usize::MAX,
+            }
+        };
+
+        let inner = Arc::new(IOSessionInner {
+            session_id: task_ctx.session_id().clone(),
+            session_config: task_ctx.session_config().clone(),
+            runtime_env: task_ctx.runtime_env().clone(),
+            memory_pool: Arc::new(MainMemoryPool::new(pool_size)),
+            listing_metas: OnceCell::new(),
+            file_format: OnceCell::new(),
+            file_schema: OnceCell::new(),
+            partition_schema: OnceCell::new(),
+            table_schema: OnceCell::new(),
+        });
+        Self {
+            io_config,
+            inner,
+            execution_props: ExecutionProps::new(),
+        }
+    }
+
+    pub fn main_pool(&self) -> &Arc<MainMemoryPool> {
+        &self.inner.memory_pool
+    }
+
     pub fn io_config(&self) -> &LakeSoulIOConfig {
         &self.io_config
     }
@@ -605,13 +644,10 @@ impl LakeSoulIOSession {
 
         let indices: Vec<usize> = required_indices.into_iter().collect();
 
-        // 3. 结果判断
         if indices.is_empty() {
-            // 如果 target 和 filter 都不引用物理列（例如 SELECT 1 WHERE 1=1）
             return Ok(Some(vec![]));
         }
 
-        // 如果物理读取的列正好是全表且顺序一致，返回 None 触发 DataFusion 默认优化
         if indices.len() == table_schema.fields().len()
             && indices.iter().enumerate().all(|(i, &idx)| i == idx)
         {
@@ -829,6 +865,26 @@ impl LakeSoulIOSession {
             inner: self.inner.clone(),
         }
     }
+
+    #[cfg(feature = "test-utils")]
+    pub fn set_logged_pool(&mut self) {
+        let fair_pool = match self.inner.runtime_env.memory_pool.memory_limit() {
+            datafusion_execution::memory_pool::MemoryLimit::Finite(pool_size) => {
+                FairSpillPool::new(pool_size)
+            }
+            _ => panic!("must have memory limit"),
+        };
+        let memory_pool = crate::mem::pool::LoggedMemoryPool::new(
+            fair_pool,
+            std::num::NonZeroUsize::new(5).unwrap(),
+        );
+        let runtime_builder =
+            RuntimeEnvBuilder::from_runtime_env(&self.inner.runtime_env)
+                .with_memory_pool(Arc::new(memory_pool));
+
+        let inner = Arc::get_mut(&mut self.inner).unwrap();
+        inner.runtime_env = runtime_builder.build_arc().unwrap();
+    }
 }
 
 #[async_trait::async_trait]
@@ -937,6 +993,6 @@ mod tests {
         assert_eq!(io_config.max_row_group_size, 250000);
         assert_eq!(io_config.max_row_group_num_values, 2147483647);
         assert_eq!(io_config.prefetch_size, 1);
-        assert_eq!(io_config.parquet_filter_pushdown, false);
+        assert!(!io_config.parquet_filter_pushdown);
     }
 }

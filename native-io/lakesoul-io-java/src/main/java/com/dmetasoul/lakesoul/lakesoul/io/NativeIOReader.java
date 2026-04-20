@@ -72,7 +72,9 @@ public class NativeIOReader extends NativeIOBase implements AutoCloseable {
         Pointer p = libLakeSoulIO.check_reader_created(reader);
         if (p != null) {
             String err = p.getString(0);
-            libLakeSoulIO.free_lakesoul_reader(p);
+            // p will be freed together
+            libLakeSoulIO.free_lakesoul_reader(reader);
+            reader = null;
             throw new IOException(err);
         }
         AtomicReference<String> errMsg = new AtomicReference<>();

@@ -675,11 +675,12 @@ mod tests {
         third_col_value: Vec<Option<f64>>,
         fourth_col_value: Vec<&str>,
     ) -> RecordBatch {
-        let mut values: Vec<ArrayRef> = vec![];
-        values.push(Arc::new(Int32Array::from(Vec::from(first_col_value))) as ArrayRef);
-        values.push(Arc::new(Int32Array::from(Vec::from(second_col_value))) as ArrayRef);
-        values.push(Arc::new(Float64Array::from(third_col_value)) as ArrayRef);
-        values.push(Arc::new(StringArray::from(fourth_col_value)) as ArrayRef);
+        let values: Vec<ArrayRef> = vec![
+            Arc::new(Int32Array::from(Vec::from(first_col_value))) as ArrayRef,
+            Arc::new(Int32Array::from(Vec::from(second_col_value))) as ArrayRef,
+            Arc::new(Float64Array::from(third_col_value)) as ArrayRef,
+            Arc::new(StringArray::from(fourth_col_value)) as ArrayRef,
+        ];
         let iter = names.into_iter().zip(values).collect::<Vec<_>>();
         RecordBatch::try_from_iter(iter).unwrap()
     }

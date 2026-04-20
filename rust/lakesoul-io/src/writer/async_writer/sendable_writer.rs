@@ -163,4 +163,8 @@ impl AsyncBatchWriter for AsyncSendableMutableLakeSoulWriter {
             0
         }
     }
+
+    fn io_session(&self) -> &Arc<LakeSoulIOSession> {
+        &self.io_session
+    }
 }

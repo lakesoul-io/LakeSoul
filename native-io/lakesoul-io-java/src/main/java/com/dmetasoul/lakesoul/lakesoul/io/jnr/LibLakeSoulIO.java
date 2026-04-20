@@ -92,7 +92,7 @@ public interface LibLakeSoulIO {
 
     void write_record_batch(Pointer writer, @LongLong long schemaAddr, @LongLong long arrayAddr, BooleanCallback callback);
 
-    void write_record_batch_blocked(Pointer writer, @LongLong long schemaAddr, @LongLong long arrayAddr, BooleanCallback callback);
+    Pointer write_record_batch_blocked(Pointer writer, @LongLong long schemaAddr, @LongLong long arrayAddr);
 
     String write_record_batch_ipc_blocked(Pointer writer, @LongLong long ipcAddr, @LongLong long len);
 
