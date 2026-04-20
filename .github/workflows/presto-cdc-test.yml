@@ -132,7 +132,7 @@ jobs:
                   docker run -d --net lakesoul-docker-compose-env_default --name=presto-worker --env LAKESOUL_IO_USE_V2_MERGE=true -v ${PWD}/rust/target/release/liblakesoul_io_c.so:/usr/lib64/prestissimo-libs/liblakesoul_io_c.so -v ${PWD}/script/benchmark/presto-native-worker:/opt/presto-server/etc \
                     -v ${PWD}/script/benchmark/presto-native-worker/catalog:/opt/presto-server/etc/catalog \
                     --env RUST_BACKTRACE=full  -v ${PWD}/script/benchmark/presto-native-worker/config.properties:/opt/etc/config.properties \
-                    -v ${PWD}/script/benchmark/presto-native-worker/lakesoul.properties:/root/lakesoul.properties 
+                    -v ${PWD}/script/benchmark/presto-native-worker/lakesoul.properties:/root/lakesoul.properties  \
                     swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/prestissimo-runtime:0.296-hotfix
             - name: Start compaction task
               run: |
