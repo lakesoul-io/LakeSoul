@@ -106,9 +106,7 @@ impl Parser {
             match ch {
                 '(' => k += 1,
                 ')' => k -= 1,
-                ',' if k == 0 && left_offset == 0 => {
-                    left_offset = offset_counter
-                }
+                ',' if k == 0 && left_offset == 0 => left_offset = offset_counter,
                 _ => {}
             }
             offset_counter += ch.len_utf8()
