@@ -8,9 +8,12 @@ import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.NamespaceTableName;
 import com.facebook.airlift.log.Logger;
 import com.facebook.presto.common.CatalogSchemaName;
+import com.facebook.presto.common.QualifiedObjectName;
 import com.facebook.presto.spi.CatalogSchemaTableName;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.security.*;
+import com.facebook.presto.spi.analyzer.ViewDefinition;
+import com.facebook.presto.spi.MaterializedViewDefinition;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -28,6 +31,7 @@ public class LakeSoulSystemAccessControl implements SystemAccessControl {
     private final boolean principalNeedMatchUsername;
     private final boolean sensitiveSystemSessionPropertiesEnableRestrictions;
     private final Set<String> sensitiveSystemSessionPropertiesAllowUsernames;
+
     private final Set<String> sensitiveSystemSessionPropertiesAllowDomains;
     private final Set<String> systemSchemas;
 
@@ -172,22 +176,6 @@ public class LakeSoulSystemAccessControl implements SystemAccessControl {
         // no-op
     }
 
-    @Override
-    public void checkCanCreateSchema(Identity identity, AccessControlContext context, CatalogSchemaName schema) {
-        // no-op
-    }
-
-    @Override
-    public void checkCanDropSchema(Identity identity, AccessControlContext context, CatalogSchemaName schema) {
-        // no-op
-    }
-
-    @Override
-    public void checkCanRenameSchema(Identity identity, AccessControlContext context, CatalogSchemaName schema,
-            String newSchemaName) {
-        // no-op
-    }
-
     // ===== For tables, we filter them by domain. =====
 
     @Override
@@ -260,115 +248,18 @@ public class LakeSoulSystemAccessControl implements SystemAccessControl {
     }
 
     @Override
-    public void checkCanCreateTable(Identity identity, AccessControlContext context, CatalogSchemaTableName table) {
+    public void checkCanShowColumnsMetadata(Identity identity, AccessControlContext context,
+                                            CatalogSchemaTableName table) {
         // no-op
     }
 
     @Override
-    public void checkCanSetTableProperties(Identity identity, AccessControlContext context,
-            CatalogSchemaTableName table) {
+    public void checkCanShowCreateTable(Identity identity, AccessControlContext context, CatalogSchemaTableName table) {
         // no-op
     }
 
     @Override
-    public void checkCanDropTable(Identity identity, AccessControlContext context, CatalogSchemaTableName table) {
-        // no-op
-    }
-
-    @Override
-    public void checkCanRenameTable(Identity identity, AccessControlContext context, CatalogSchemaTableName table,
-            CatalogSchemaTableName newTable) {
-        // no-op
-    }
-
-    @Override
-    public void checkCanAddColumn(Identity identity, AccessControlContext context, CatalogSchemaTableName table) {
-        // no-op
-    }
-
-    @Override
-    public void checkCanDropColumn(Identity identity, AccessControlContext context, CatalogSchemaTableName table) {
-        // no-op
-    }
-
-    @Override
-    public void checkCanRenameColumn(Identity identity, AccessControlContext context, CatalogSchemaTableName table) {
-        // no-op
-    }
-
-    @Override
-    public void checkCanSelectFromColumns(Identity identity, AccessControlContext context, CatalogSchemaTableName table,
-            Set<String> columns) {
-        // no-op
-    }
-
-    @Override
-    public void checkCanInsertIntoTable(Identity identity, AccessControlContext context, CatalogSchemaTableName table) {
-        // no-op
-    }
-
-    @Override
-    public void checkCanDeleteFromTable(Identity identity, AccessControlContext context, CatalogSchemaTableName table) {
-        // no-op
-    }
-
-    @Override
-    public void checkCanTruncateTable(Identity identity, AccessControlContext context, CatalogSchemaTableName table) {
-        // no-op
-    }
-
-    @Override
-    public void checkCanUpdateTableColumns(Identity identity, AccessControlContext context,
-            CatalogSchemaTableName table, Set<String> updatedColumnNames) {
-        // no-op
-    }
-
-    @Override
-    public void checkCanGrantTablePrivilege(Identity identity, AccessControlContext context, Privilege privilege,
-            CatalogSchemaTableName table, PrestoPrincipal grantee, boolean withGrantOption) {
-        // no-op
-    }
-
-    @Override
-    public void checkCanRevokeTablePrivilege(Identity identity, AccessControlContext context, Privilege privilege,
-            CatalogSchemaTableName table, PrestoPrincipal revokee, boolean grantOptionFor) {
-        // no-op
-    }
-
-    @Override
-    public void checkCanDropConstraint(Identity identity, AccessControlContext context, CatalogSchemaTableName table) {
-        // no-op
-    }
-
-    @Override
-    public void checkCanAddConstraint(Identity identity, AccessControlContext context, CatalogSchemaTableName table) {
-        // no-op
-    }
-
-    @Override
-    public void checkCanCreateView(Identity identity, AccessControlContext context, CatalogSchemaTableName view) {
-        // no-op
-    }
-
-    @Override
-    public void checkCanRenameView(Identity identity, AccessControlContext context, CatalogSchemaTableName view,
-            CatalogSchemaTableName newView) {
-        // no-op
-    }
-
-    @Override
-    public void checkCanDropView(Identity identity, AccessControlContext context, CatalogSchemaTableName view) {
-        // no-op
-    }
-
-    @Override
-    public void checkCanCreateViewWithSelectFromColumns(Identity identity, AccessControlContext context,
-            CatalogSchemaTableName table, Set<String> columns) {
-        // no-op
-    }
-
-    @Override
-    public void checkQueryIntegrity(Identity identity, AccessControlContext context, String query) {
+    public void checkQueryIntegrity(Identity identity, AccessControlContext context, String query, Map<QualifiedObjectName, ViewDefinition> viewDefinitions, Map<QualifiedObjectName, MaterializedViewDefinition> materializedViewDefinitions) {
         // no-op
     }
 }

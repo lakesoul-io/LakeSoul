@@ -101,6 +101,14 @@ public class SubstraitUtil {
         return makeUnary(expression, FUNCTIONS_BOOLEAN, "not:bool", TypeCreator.NULLABLE.BOOLEAN);
     }
 
+    public static Expression notNull(Expression expression) {
+        return makeUnary(expression, FUNCTIONS_COMPARISON, "is_not_null:any", TypeCreator.NULLABLE.BOOLEAN);
+    }
+
+    public static Expression isNull(Expression expression) {
+        return makeUnary(expression, SubstraitUtil.CompNamespace, "is_null:any", TypeCreator.NULLABLE.BOOLEAN);
+    }
+
     public static Expression in(Expression expr, List<Expression.Literal> set) {
         List<Expression> eqList = set.stream().map(
                 lit -> makeBinary(expr, lit, FUNCTIONS_COMPARISON, "equal:any_any", TypeCreator.NULLABLE.BOOLEAN)
@@ -429,11 +437,17 @@ public class SubstraitUtil {
         }
     }
 
+    public static Expression.Literal typedNull(Type type) {
+        return ExpressionCreator.typedNull(type);
+    }
+
     public static Expression.Literal anyToSubstraitLiteral(Type type, Object any) throws IOException {
         if (type instanceof Type.Date) {
             if (any instanceof Integer) {
-                return ExpressionCreator.date(false, (Integer) any);
-            } else if (any instanceof Date || any instanceof LocalDate) {
+               return ExpressionCreator.date(false, (Integer) any);
+            } else if(any instanceof Long) {
+               return ExpressionCreator.date(false, ((Long) any).intValue());
+	    } else if (any instanceof Date || any instanceof LocalDate) {
                 return ExpressionCreator.date(false, DateTimeUtils$.MODULE$.anyToDays(any));
             }
         }

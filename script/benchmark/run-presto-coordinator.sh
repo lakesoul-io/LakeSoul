@@ -20,8 +20,7 @@ if [ "$2" = "start" ]; then
   -v ${PWD}/script/benchmark/work-dir:/opt/spark/work-dir \
   -v ${COORDINATOR_ETC_DIR}/lakesoul.properties:/root/lakesoul.properties \
   --env lakesoul_home=/root/lakesoul.properties \
-  -p 8080:8080 \
-  prestodb/presto:0.292
+  prestodb/presto:0.296
 elif [ "$2" = "stop" ]; then
   docker rm -f presto
 fi

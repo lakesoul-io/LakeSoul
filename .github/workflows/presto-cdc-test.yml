@@ -90,7 +90,15 @@ jobs:
                   mkdir -p rust/target/release
                   cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so rust/target/release
                   cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so rust/target/release
-                  MAVEN_OPTS="-Xmx4000m" mvn -q -B package -f pom.xml -Pcross-build -DskipTests
+                  MAVEN_OPTS="-Xmx4000m" mvn -q -B package -f pom.xml -pl "!lakesoul-presto" -am -Pcross-build -DskipTests
+            - name: Set up JDK 17
+              uses: actions/setup-java@v4
+              with:
+                  java-version: "17"
+                  distribution: "temurin"
+            - name: Build LakeSoul Presto with Java 17
+              run: |
+                  MAVEN_OPTS="-Xmx4000m" mvn -q -B package -f pom.xml -pl lakesoul-presto -am -Pcross-build -DskipTests
             - name: Get jar names
               run: |
                   echo "FLINK_JAR_NAME=$(python script/get_jar_name.py lakesoul-flink)" >> $GITHUB_ENV
@@ -119,7 +127,13 @@ jobs:
             - name: Deploy Presto Server
               run: |
                   echo "deploy presto server pwd: ${PWD}"
-                  docker run -d --net lakesoul-docker-compose-env_default --name=presto --env LAKESOUL_IO_USE_V2_MERGE=true --env RUST_LOG=true --env RUST_BACKTRACE=full -v ${PWD}/script/benchmark/work-dir/${PRESTO_JAR_NAME}:/opt/presto-server/plugin/lakesoul/${PRESTO_JAR_NAME} -v ${PWD}/script/benchmark/presto/catalog:/opt/presto-server/etc/catalog -v ${PWD}/script/benchmark/presto/config.properties:/opt/presto-server/etc/config.properties -v ${PWD}/script/benchmark/presto/jvm.config:/opt/presto-server/etc/jvm.config -v ${PWD}/script/benchmark/work-dir:/opt/spark/work-dir -v ${PWD}/script/benchmark/presto/lakesoul.properties:/root/lakesoul.properties --env lakesoul_home=/root/lakesoul.properties prestodb/presto:0.292
+                  docker run -d --net lakesoul-docker-compose-env_default --name=presto --env LAKESOUL_IO_USE_V2_MERGE=true --env RUST_LOG=true --env RUST_BACKTRACE=full -v ${PWD}/script/benchmark/work-dir/${PRESTO_JAR_NAME}:/opt/presto-server/plugin/lakesoul/${PRESTO_JAR_NAME} -v ${PWD}/script/benchmark/presto/catalog:/opt/presto-server/etc/catalog -v ${PWD}/script/benchmark/presto/config.properties:/opt/presto-server/etc/config.properties -v ${PWD}/script/benchmark/presto/jvm.config:/opt/presto-server/etc/jvm.config -v ${PWD}/script/benchmark/work-dir:/opt/spark/work-dir -v ${PWD}/script/benchmark/presto/lakesoul.properties:/root/lakesoul.properties --env lakesoul_home=/root/lakesoul.properties swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/presto:0.296
+                  sleep 15s
+                  docker run -d --net lakesoul-docker-compose-env_default --name=presto-worker --env LAKESOUL_IO_USE_V2_MERGE=true -v ${PWD}/rust/target/release/liblakesoul_io_c.so:/usr/lib64/prestissimo-libs/liblakesoul_io_c.so -v ${PWD}/script/benchmark/presto-native-worker:/opt/presto-server/etc \
+                    -v ${PWD}/script/benchmark/presto-native-worker/catalog:/opt/presto-server/etc/catalog \
+                    --env RUST_BACKTRACE=full  -v ${PWD}/script/benchmark/presto-native-worker/config.properties:/opt/etc/config.properties \
+                    -v ${PWD}/script/benchmark/presto-native-worker/lakesoul.properties:/root/lakesoul.properties  \
+                    swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/prestissimo-runtime:0.296-hotfix
             - name: Start compaction task
               run: |
                   cd ./script/benchmark/work-dir
@@ -204,6 +218,7 @@ jobs:
                   docker logs lakesoul-docker-compose-env-taskmanager-1 > flink-task-manager-1.log
                   docker logs lakesoul-docker-compose-env-taskmanager-2 > flink-task-manager-2.log
                   docker logs presto > presto-server.log 2>&1
+                  docker logs presto-native-worker > presto-native-worker.log 2>&1
             - name: Upload Log
               if: always()
               continue-on-error: true

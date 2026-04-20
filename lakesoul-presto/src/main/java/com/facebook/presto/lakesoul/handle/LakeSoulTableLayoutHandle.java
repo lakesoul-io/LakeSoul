@@ -5,12 +5,14 @@
 package com.facebook.presto.lakesoul.handle;
 
 import com.alibaba.fastjson.JSONObject;
+import com.facebook.airlift.log.Logger;
 import com.facebook.presto.common.predicate.Domain;
 import com.facebook.presto.common.predicate.Range;
 import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.common.type.*;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ConnectorTableLayoutHandle;
+import com.facebook.presto.lakesoul.substrait.SubstraitPlanBuilder;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.airlift.slice.Slice;
@@ -25,6 +27,9 @@ import java.util.stream.Collectors;
 import static java.util.Objects.requireNonNull;
 
 public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
+
+    private static final Logger log = Logger.get(LakeSoulTableLayoutHandle.class);
+
     private final LakeSoulTableHandle tableHandle;
     private final Optional<Set<ColumnHandle>> dataColumns;
     private final List<String> primaryKeys;
@@ -36,6 +41,7 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
     private final TupleDomain<ColumnHandle> tupleDomain;
 
     private List<String> filterStrList;
+    private List<byte[]> filterProtosList;
 
     @JsonCreator
     public LakeSoulTableLayoutHandle(
@@ -57,8 +63,21 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
         this.tupleDomain = requireNonNull(tupleDomain, "tupleDomain should not be null");
         this.allColumns = requireNonNull(allColumns, "allColumns should not be null");
         this.filters = buildFilters();
-        this.filterStrList = this.filters.stream().map(Object::toString)
-                .collect(Collectors.toList());
+        this.filterStrList = new ArrayList<>();
+        this.filterProtosList = new ArrayList<>();
+        for (FilterPredicate filter : this.parFilters) {
+            try {
+                io.substrait.proto.Plan substraitPlan = SubstraitPlanBuilder.buildSubstraitPlan(Collections.singletonList(filter), allColumns, tableHandle.getNames().getTableName());
+                if (substraitPlan != null) {
+                    byte[] bytes = substraitPlan.toByteArray();
+                    this.filterProtosList.add(bytes);
+                } else {
+                    log.warn("LakeSoul Pushdown Warning: Filter too complex for Substrait, skipping pushdown. Filter: " + filter.toString());
+                }
+            } catch (Exception e) {
+                log.error("LakeSoul Pushdown Error: Substrait conversion crashed, skipping pushdown. Filter: " + filter.toString(), e);
+            }
+        }
     }
 
     @JsonProperty("filterStrList")
@@ -71,6 +90,15 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
         this.filterStrList = filterStrList;
     }
 
+    @JsonProperty("filterProtosList")
+    public void setFilterProtosList(List<byte[]> filterProtosList) {
+        this.filterProtosList = filterProtosList;
+    }
+
+    @JsonProperty("filterProtosList")
+    public List<byte[]> getFilterProtosList() {
+        return this.filterProtosList;
+    }
 
     @JsonProperty
     public Optional<Set<ColumnHandle>> getDataColumns() {
@@ -152,20 +180,29 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
             if (range.isSingleValue()) {
                 singleValues.add(range.getSingleValue());
             } else {
-                FilterPredicate rangeConjuncts = null;
+                FilterPredicate lowerBound = null;
+                FilterPredicate upperBound = null;
                 if (!range.isLowUnbounded()) {
                     if (range.isLowInclusive()) {
-                        rangeConjuncts = gte(type, name, range.getLowBoundedValue());
+                        lowerBound = gte(type, name, range.getLowBoundedValue());
                     } else {
-                        rangeConjuncts = gt(type, name, range.getLowBoundedValue());
+                        lowerBound = gt(type, name, range.getLowBoundedValue());
                     }
                 }
                 if (!range.isHighUnbounded()) {
                     if (range.isHighInclusive()) {
-                        rangeConjuncts = lte(type, name, range.getHighBoundedValue());
+                        upperBound = lte(type, name, range.getHighBoundedValue());
                     } else {
-                        rangeConjuncts = lt(type, name, range.getHighBoundedValue());
+                        upperBound = lt(type, name, range.getHighBoundedValue());
                     }
+                }
+                FilterPredicate rangeConjuncts = null;
+                if (lowerBound != null && upperBound != null) {
+                    rangeConjuncts = FilterApi.and(lowerBound, upperBound);
+                }else if(lowerBound != null) {
+                    rangeConjuncts = lowerBound;
+                }else if(upperBound != null) {
+                    rangeConjuncts = upperBound;
                 }
                 // If rangeConjuncts is null, then the range was ALL, which should already have been checked for
                 if (rangeConjuncts != null) {
@@ -184,7 +221,6 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
         if (domain.isNullAllowed()) {
             disjuncts.add(eq(type, name, null));
         }
-
         Optional<FilterPredicate> predicate = disjuncts.stream().filter(Objects::nonNull).reduce(FilterApi::or);
         return predicate.orElse(null);
 
@@ -308,6 +344,17 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
                 throw new RuntimeException("time/timestamptype except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.gt(FilterApi.longColumn(name), (Long) value * 1000);
+        }else if (type instanceof VarcharType) {
+            if (value == null) {
+                return FilterApi.gt(FilterApi.binaryColumn(name), null);
+            }
+            if (!(value instanceof Slice)) {
+                throw new RuntimeException("except filter value type is string, but it is " + value.getClass());
+            }
+
+            return FilterApi.gt(
+                    FilterApi.binaryColumn(name),
+                    Binary.fromString(((Slice) value).toStringUtf8()));
         }
         return null;
     }
@@ -347,6 +394,17 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
                 throw new RuntimeException("time/timestamptype except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.gtEq(FilterApi.longColumn(name), (Long) value * 1000);
+        }else if (type instanceof VarcharType) {
+            if (value == null) {
+                return FilterApi.gtEq(FilterApi.binaryColumn(name), null);
+            }
+            if (!(value instanceof Slice)) {
+                throw new RuntimeException("except filter value type is string, but it is " + value.getClass());
+            }
+
+            return FilterApi.gtEq(
+                    FilterApi.binaryColumn(name),
+                    Binary.fromString(((Slice) value).toStringUtf8()));
         }
         return null;
     }
@@ -386,6 +444,17 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
                 throw new RuntimeException("time/timestamptype except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.lt(FilterApi.longColumn(name), (Long) value * 1000);
+        }else if (type instanceof VarcharType) {
+            if (value == null) {
+                return FilterApi.lt(FilterApi.binaryColumn(name), null);
+            }
+            if (!(value instanceof Slice)) {
+                throw new RuntimeException("except filter value type is string, but it is " + value.getClass());
+            }
+
+            return FilterApi.lt(
+                    FilterApi.binaryColumn(name),
+                    Binary.fromString(((Slice) value).toStringUtf8()));
         }
         return null;
     }
@@ -425,6 +494,17 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
                 throw new RuntimeException("time/timestamptype except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.ltEq(FilterApi.longColumn(name), (Long) value * 1000);
+        } else if (type instanceof VarcharType) {
+            if (value == null) {
+                return FilterApi.ltEq(FilterApi.binaryColumn(name), null);
+            }
+            if (!(value instanceof Slice)) {
+                throw new RuntimeException("except filter value type is string, but it is " + value.getClass());
+            }
+
+            return FilterApi.ltEq(
+                    FilterApi.binaryColumn(name),
+                    Binary.fromString(((Slice) value).toStringUtf8()));
         }
         return null;
     }
@@ -442,6 +522,7 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
                 ", parFilters=" + parFilters +
                 ", tupleDomain=" + tupleDomain +
                 ", filterStrList=" + filterStrList +
+                ", filterProtosList=" + filterProtosList +
                 '}';
     }
 }

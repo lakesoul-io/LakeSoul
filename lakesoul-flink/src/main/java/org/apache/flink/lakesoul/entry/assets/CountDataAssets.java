@@ -76,6 +76,7 @@ public class CountDataAssets {
         debeziumProperties.setProperty("include.unknown.datatypes", "true");
         debeziumProperties.setProperty("event.deserialization.failure.handling.mode", "warn");
         debeziumProperties.setProperty("schema.history.internal.store.only.captured.tables.ddl", "true");
+        debeziumProperties.setProperty("heartbeat.interval.ms", "10000");
         String[] tableList = new String[]{"public.data_commit_info"};
         JdbcIncrementalSource<String> postgresIncrementalSource =
                 PostgresSourceBuilder.PostgresIncrementalSource.<String>builder()
