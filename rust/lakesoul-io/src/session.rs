@@ -336,6 +336,37 @@ impl LakeSoulIOSession {
         })
     }
 
+    /// this api is prepared for `lakesoul-datafusion` only
+    pub fn from_plain_config_and_context(
+        io_config: LakeSoulIOConfig,
+        task_ctx: Arc<TaskContext>,
+    ) -> Self {
+        let pool_size = {
+            match task_ctx.memory_pool().memory_limit() {
+                datafusion_execution::memory_pool::MemoryLimit::Infinite => usize::MAX,
+                datafusion_execution::memory_pool::MemoryLimit::Finite(sz) => sz,
+                datafusion_execution::memory_pool::MemoryLimit::Unknown => usize::MAX,
+            }
+        };
+
+        let inner = Arc::new(IOSessionInner {
+            session_id: task_ctx.session_id().clone(),
+            session_config: task_ctx.session_config().clone(),
+            runtime_env: task_ctx.runtime_env().clone(),
+            memory_pool: Arc::new(MainMemoryPool::new(pool_size)),
+            listing_metas: OnceCell::new(),
+            file_format: OnceCell::new(),
+            file_schema: OnceCell::new(),
+            partition_schema: OnceCell::new(),
+            table_schema: OnceCell::new(),
+        });
+        Self {
+            io_config,
+            inner,
+            execution_props: ExecutionProps::new(),
+        }
+    }
+
     pub fn main_pool(&self) -> &Arc<MainMemoryPool> {
         &self.inner.memory_pool
     }

@@ -61,9 +61,11 @@ impl<OpaqueT> CResult<OpaqueT> {
         unsafe {
             if !self.ptr.is_null() {
                 drop(from_opaque::<OpaqueT, T>(NonNull::new_unchecked(self.ptr)));
+                self.ptr = std::ptr::null_mut();
             }
             if !self.err.is_null() {
                 drop(CString::from_raw(self.err as *mut c_char));
+                self.err = std::ptr::null();
             }
         }
     }
@@ -1116,6 +1118,7 @@ pub unsafe extern "C" fn write_record_batch(
 /// * `writer` must be a valid pointer to a [`CResult<Writer>`] struct
 /// * `schema_addr` must be a valid pointer to the schema address
 /// * `array_addr` must be a valid pointer to the array address
+/// * `callback` must be a valid pointer to a [`ResultCallback`] function
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn write_record_batch_blocked(
     writer: NonNull<CResult<Writer>>,

@@ -137,13 +137,12 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
         ArrowSchema schema = ArrowSchema.allocateNew(allocator);
         Data.exportVectorSchemaRoot(allocator, batch, provider, array, schema);
         AtomicReference<String> errMsg = new AtomicReference<>();
-        BooleanCallback nativeBooleanCallback = new BooleanCallback((status, err) -> {
-            if (!status && err != null) {
-                errMsg.set(err);
-            }
-        }, boolReferenceManager);
-        nativeBooleanCallback.registerReferenceKey();
-        libLakeSoulIO.write_record_batch_blocked(writer, schema.memoryAddress(), array.memoryAddress(), nativeBooleanCallback);
+        Pointer ptr = libLakeSoulIO.write_record_batch_blocked(writer, schema.memoryAddress(), array.memoryAddress());
+        if (ptr != null) {
+            String err = ptr.getString(0);
+            libLakeSoulIO.free_c_string(ptr);
+            errMsg.set(err);
+        }
         array.close();
         schema.close();
         if (errMsg.get() != null && !errMsg.get().isEmpty()) {

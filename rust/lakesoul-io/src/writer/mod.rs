@@ -413,23 +413,21 @@ mod tests {
         config::{LakeSoulIOConfigBuilder, OPTION_KEY_MEM_LIMIT},
     };
 
+    use super::SortAsyncWriter;
     use super::*;
 
+    use arrow::array::{Date32Array, Decimal128Array, TimestampMicrosecondArray};
     use arrow::{
         array::{ArrayRef, Int64Array},
         record_batch::RecordBatch,
     };
     use arrow_array::{Array, StringArray};
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
+    use chrono::{NaiveDate, NaiveDateTime};
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use rand::{Rng, distr::SampleString};
     use std::{fs::File, sync::Arc};
     use tokio::{runtime::Builder, time::Instant};
-    use tracing_subscriber::layer::SubscriberExt;
-
-    use super::SortAsyncWriter;
-    use arrow::array::{Date32Array, Decimal128Array, TimestampMicrosecondArray};
-    use chrono::{NaiveDate, NaiveDateTime};
 
     #[test]
     fn test_parquet_async_write() -> Result<()> {
@@ -662,12 +660,13 @@ mod tests {
     }
 
     #[cfg(feature = "dhat-heap")]
-    #[global_allocator]
-    static ALLOC: dhat::Alloc = dhat::Alloc;
-
-    #[test]
     #[tracing::instrument]
+    #[test]
     fn writer_profiling() -> Result<()> {
+        use tracing_subscriber::layer::SubscriberExt;
+        #[global_allocator]
+        static ALLOC: dhat::Alloc = dhat::Alloc;
+
         use tracing_subscriber::fmt;
 
         tracing_subscriber::fmt::init();
@@ -680,7 +679,6 @@ mod tests {
         );
         tracing_subscriber::registry().with(subscriber);
 
-        #[cfg(feature = "dhat-heap")]
         let _profiler = dhat::Profiler::new_heap();
 
         let runtime = Builder::new_multi_thread().enable_all().build().unwrap();

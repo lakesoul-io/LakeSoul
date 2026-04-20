@@ -65,13 +65,8 @@ impl<M: MemoryPool> LoggedMemoryPool<M> {
                 .open("spill.out")
                 .unwrap();
             let mut log = std::io::BufWriter::new(f);
-            loop {
-                match rx.recv() {
-                    Ok(s) => {
-                        log.write(s.as_bytes()).unwrap();
-                    }
-                    Err(_) => break,
-                }
+            while let Ok(s) = rx.recv() {
+                log.write_all(s.as_bytes()).unwrap();
             }
         });
 
@@ -103,7 +98,7 @@ impl<M: MemoryPool> LoggedMemoryPool<M> {
                 )
             })
             .collect::<Vec<_>>();
-        consumers.sort_by(|a, b| b.1.cmp(&a.1)); // inverse ordering
+        consumers.sort_by_key(|b| std::cmp::Reverse(b.1)); // inverse ordering
 
         #[allow(unused_mut)]
         let mut info = consumers[..std::cmp::min(top, consumers.len())]
