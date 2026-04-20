@@ -112,7 +112,7 @@ BEGIN
         order by version desc
         limit 1;
         if rs_version >= 0 then
-            if NEW.version - rs_version >= 10 then
+            if NEW.version - rs_version >= 1 then
                 select table_path, table_namespace
                 into rs_table_path, rs_table_namespace
                 from table_info
@@ -122,7 +122,7 @@ BEGIN
                                          NEW.partition_desc, '","table_namespace":"', rs_table_namespace, '"}'));
             end if;
         else
-            if NEW.version >= 10 then
+            if NEW.version >= 1 then
                 select table_path, table_namespace
                 into rs_table_path, rs_table_namespace
                 from table_info

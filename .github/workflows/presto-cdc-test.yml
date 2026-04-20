@@ -84,7 +84,7 @@ jobs:
               with:
                   use-cross: true
                   command: build
-                  args: "--target x86_64-unknown-linux-gnu --package lakesoul-io-c --package lakesoul-metadata-c --release --all-features"
+                  args: "--target x86_64-unknown-linux-gnu --package lakesoul-io-c --package lakesoul-metadata-c --release"
             - name: Build with Maven
               run: |
                   mkdir -p rust/target/release
@@ -127,13 +127,16 @@ jobs:
             - name: Deploy Presto Server
               run: |
                   echo "deploy presto server pwd: ${PWD}"
-                  docker run -d --net lakesoul-docker-compose-env_default --name=presto --env LAKESOUL_IO_USE_V2_MERGE=true --env RUST_LOG=true --env RUST_BACKTRACE=full -v ${PWD}/script/benchmark/work-dir/${PRESTO_JAR_NAME}:/opt/presto-server/plugin/lakesoul/${PRESTO_JAR_NAME} -v ${PWD}/script/benchmark/presto/catalog:/opt/presto-server/etc/catalog -v ${PWD}/script/benchmark/presto/config.properties:/opt/presto-server/etc/config.properties -v ${PWD}/script/benchmark/presto/jvm.config:/opt/presto-server/etc/jvm.config -v ${PWD}/script/benchmark/work-dir:/opt/spark/work-dir -v ${PWD}/script/benchmark/presto/lakesoul.properties:/root/lakesoul.properties --env lakesoul_home=/root/lakesoul.properties swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/presto:0.296
+                  docker run -d --net lakesoul-docker-compose-env_default --name=presto --network-alias presto-discovery  --env LAKESOUL_IO_USE_V2_MERGE=true --env RUST_LOG=true --env RUST_BACKTRACE=full -v ${PWD}/script/benchmark/work-dir/${PRESTO_JAR_NAME}:/opt/presto-server/plugin/lakesoul/${PRESTO_JAR_NAME} -v ${PWD}/script/benchmark/presto-native-coordinator/catalog:/opt/presto-server/etc/catalog -v ${PWD}/script/benchmark/presto-native-coordinator/config.properties:/opt/presto-server/etc/config.properties -v ${PWD}/script/benchmark/presto-native-coordinator/jvm.config:/opt/presto-server/etc/jvm.config -v ${PWD}/script/benchmark/work-dir:/opt/spark/work-dir -v ${PWD}/script/benchmark/presto-native-coordinator/lakesoul.properties:/root/lakesoul.properties --env lakesoul_home=/root/lakesoul.properties swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/presto:0.296
                   sleep 15s
                   docker run -d --net lakesoul-docker-compose-env_default --name=presto-worker --env LAKESOUL_IO_USE_V2_MERGE=true -v ${PWD}/rust/target/release/liblakesoul_io_c.so:/usr/lib64/prestissimo-libs/liblakesoul_io_c.so -v ${PWD}/script/benchmark/presto-native-worker:/opt/presto-server/etc \
                     -v ${PWD}/script/benchmark/presto-native-worker/catalog:/opt/presto-server/etc/catalog \
                     --env RUST_BACKTRACE=full  -v ${PWD}/script/benchmark/presto-native-worker/config.properties:/opt/etc/config.properties \
                     -v ${PWD}/script/benchmark/presto-native-worker/lakesoul.properties:/root/lakesoul.properties  \
                     swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/prestissimo-runtime:0.296-hotfix
+            - name: Wait for Presto worker to become active
+              run: |
+                  TIMEOUT_SECONDS=20 ./script/benchmark/wait_presto_worker.sh
             - name: Start compaction task
               run: |
                   cd ./script/benchmark/work-dir
@@ -157,9 +160,9 @@ jobs:
                   python 1_create_table.py
                   docker exec -i lakesoul-docker-compose-env-mysql-1 bash /2_insert_table_data.sh
                   sleep 30s
-            - name: Presto Server Liveness Probe
+            - name: Presto worker health check
               run: |
-                  docker ps | grep presto
+                  TIMEOUT_SECONDS=20 ./script/benchmark/wait_presto_worker.sh
             - name: "[Check] Mysql cdc data accuracy verification task"
               run: |
                   cd ./script/benchmark
@@ -175,6 +178,9 @@ jobs:
                   python3 delete_data.py
                   docker exec -i lakesoul-docker-compose-env-mysql-1 bash /2_insert_table_data.sh
                   sleep 60s
+            - name: Presto worker health check
+              run: |
+                  TIMEOUT_SECONDS=20 ./script/benchmark/wait_presto_worker.sh
             - name: "[Check] Mysql cdc data accuracy verification task"
               run: |
                   cd ./script/benchmark
@@ -188,6 +194,9 @@ jobs:
                   cd ./script/benchmark
                   python3 4_update_data.py
                   sleep 60s
+            - name: Presto worker health check
+              run: |
+                  TIMEOUT_SECONDS=20 ./script/benchmark/wait_presto_worker.sh
             - name: "[Check] Mysql cdc data accuracy verification task"
               run: |
                   cd ./script/benchmark
@@ -203,6 +212,9 @@ jobs:
                   python3 delete_data.py
                   docker exec -i lakesoul-docker-compose-env-mysql-1 bash /2_insert_table_data.sh
                   sleep 60s
+            - name: Presto worker health check
+              run: |
+                  TIMEOUT_SECONDS=20 ./script/benchmark/wait_presto_worker.sh
             - name: "[Check] Mysql cdc data accuracy verification task"
               run: |
                   cd ./script/benchmark
@@ -218,7 +230,7 @@ jobs:
                   docker logs lakesoul-docker-compose-env-taskmanager-1 > flink-task-manager-1.log
                   docker logs lakesoul-docker-compose-env-taskmanager-2 > flink-task-manager-2.log
                   docker logs presto > presto-server.log 2>&1
-                  docker logs presto-native-worker > presto-native-worker.log 2>&1
+                  docker logs presto-worker > presto-worker.log 2>&1
             - name: Upload Log
               if: always()
               continue-on-error: true

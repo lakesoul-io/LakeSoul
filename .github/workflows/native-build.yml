@@ -184,7 +184,15 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Build with Maven
         run: |
-          MAVEN_OPTS="-Xmx4000m" mvn -q -B package --file pom.xml -Pcross-build -DskipTests -Dmaven.test.skip=true
+          MAVEN_OPTS="-Xmx4000m" mvn -B install --file pom.xml -pl "!lakesoul-presto" -Pcross-build -DskipTests -Dmaven.test.skip=true -e
+      - name: Set up JDK 17 for Presto
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+      - name: Build Presto with Java 17
+        run: |
+          MAVEN_OPTS="-Xmx4000m" mvn -B package --file pom.xml -pl lakesoul-presto -Pcross-build -DskipTests -Dmaven.test.skip=true -e
       - name: Upload Package
         uses: actions/upload-artifact@v4
         with:
