@@ -14,6 +14,7 @@ import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.security.*;
 import com.facebook.presto.spi.analyzer.ViewDefinition;
 import com.facebook.presto.spi.MaterializedViewDefinition;
+import com.facebook.presto.spi.ColumnMetadata;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -134,6 +135,11 @@ public class LakeSoulSystemAccessControl implements SystemAccessControl {
     @Override
     public Set<String> filterCatalogs(Identity identity, AccessControlContext context, Set<String> catalogs) {
         return catalogs;
+    }
+
+    @Override
+    public List<ColumnMetadata> filterColumns(Identity identity, AccessControlContext context, CatalogSchemaTableName table, List<ColumnMetadata> columns) {
+        return columns;
     }
 
     @Override
@@ -262,4 +268,11 @@ public class LakeSoulSystemAccessControl implements SystemAccessControl {
     public void checkQueryIntegrity(Identity identity, AccessControlContext context, String query, Map<QualifiedObjectName, ViewDefinition> viewDefinitions, Map<QualifiedObjectName, MaterializedViewDefinition> materializedViewDefinitions) {
         // no-op
     }
+
+    @Override
+    public void checkCanSelectFromColumns(Identity identity, AccessControlContext context, CatalogSchemaTableName table,
+        Set<String> columns) {
+    // no-op
+    }
+
 }

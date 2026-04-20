@@ -165,7 +165,7 @@ public class LakeSoulMetadata implements ConnectorMetadata {
                     .setComment(field.getMetadata().getOrDefault("spark_comment", ""))
                     .setExtraInfo("")
                     .setHidden(false)
-                    .setProperties(props)
+                    .setProperties(Collections.emptyMap())
                     .build();
             columns.add(columnMetadata);
         }
@@ -173,7 +173,7 @@ public class LakeSoulMetadata implements ConnectorMetadata {
         return new ConnectorTableMetadata(
                 handle.getNames(),
                 columns,
-                properties,
+                Collections.emptyMap(),
                 Optional.ofNullable(properties.getString("comment"))
         );
     }
