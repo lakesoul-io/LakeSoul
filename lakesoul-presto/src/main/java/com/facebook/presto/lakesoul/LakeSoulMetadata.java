@@ -174,7 +174,7 @@ public class LakeSoulMetadata implements ConnectorMetadata {
                 handle.getNames(),
                 columns,
                 properties,
-                Optional.of(properties.getString("comment"))
+                Optional.ofNullable(properties.getString("comment"))
         );
     }
 

@@ -139,12 +139,7 @@ public class SubstraitPlanBuilder {
     private static Expression buildBinaryExpr(Operators.Column column, Object value, String funcKey,  Map<String, ColumnHandle> allColumns) throws Exception {
         String columnName = column.getColumnPath().toDotString();
         LakeSoulTableColumnHandle handle = (LakeSoulTableColumnHandle) allColumns.get(columnName);
-        org.apache.arrow.vector.types.pojo.Field arrowField = null;
-        try {
-            arrowField = handle.getArrowField();
-        } catch (JsonProcessingException e) {
-            throw new RuntimeException("Fatal Error: Failed to parse Arrow Schema for column: " + columnName, e);
-        }
+        org.apache.arrow.vector.types.pojo.Field arrowField = handle.getArrowField();
         if (arrowField == null) {
             return null;
         }
