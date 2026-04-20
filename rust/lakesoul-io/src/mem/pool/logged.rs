@@ -3,12 +3,17 @@ use std::{
     fs::OpenOptions,
     io::Write,
     num::NonZeroUsize,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Instant,
 };
 
 use datafusion_execution::memory_pool::MemoryPool;
 use parking_lot::Mutex;
+
+use crate::mem::pool::MainMemoryPool;
 
 #[derive(Debug)]
 struct TrackedConsumer {
@@ -44,8 +49,8 @@ impl TrackedConsumer {
 }
 
 #[derive(Debug)]
-pub struct LoggedMemoryPool<M> {
-    inner: M,
+pub struct LoggedMemoryPool {
+    inner: Arc<MainMemoryPool>,
     top: NonZeroUsize,
     tracked_consumers: Mutex<HashMap<usize, TrackedConsumer>>,
     log_sender: Option<std::sync::mpsc::Sender<String>>,
@@ -53,8 +58,8 @@ pub struct LoggedMemoryPool<M> {
     start_instant: std::time::Instant,
 }
 
-impl<M: MemoryPool> LoggedMemoryPool<M> {
-    pub fn new(inner: M, top: NonZeroUsize) -> Self {
+impl LoggedMemoryPool {
+    pub fn new(inner: Arc<MainMemoryPool>, top: NonZeroUsize) -> Self {
         let (tx, rx) = std::sync::mpsc::channel::<String>();
         let join_handle = std::thread::spawn(move || {
             let f = OpenOptions::new()
@@ -128,7 +133,7 @@ impl<M: MemoryPool> LoggedMemoryPool<M> {
     }
 }
 
-impl<M> Drop for LoggedMemoryPool<M> {
+impl Drop for LoggedMemoryPool {
     fn drop(&mut self) {
         let sender = self.log_sender.take().unwrap();
         drop(sender);
@@ -137,7 +142,7 @@ impl<M> Drop for LoggedMemoryPool<M> {
     }
 }
 
-impl<M: MemoryPool> MemoryPool for LoggedMemoryPool<M> {
+impl MemoryPool for LoggedMemoryPool {
     fn register(&self, consumer: &datafusion_execution::memory_pool::MemoryConsumer) {
         self.inner.register(consumer);
 

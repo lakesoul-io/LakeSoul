@@ -195,7 +195,7 @@ struct IOSessionInner {
     pub session_id: String,
     pub session_config: SessionConfig,
     pub runtime_env: Arc<RuntimeEnv>,
-    pub memory_pool: Arc<MainMemoryPool>,
+    pub main_pool: Arc<MainMemoryPool>,
     pub listing_metas: OnceCell<ListingMetas>,
     pub file_format: OnceCell<Arc<LakeSoulParquetFormat>>,
     pub file_schema: OnceCell<Arc<Schema>>,
@@ -327,7 +327,7 @@ impl LakeSoulIOSession {
             file_schema: OnceCell::new(),
             partition_schema: OnceCell::new(),
             table_schema: OnceCell::new(),
-            memory_pool: pool,
+            main_pool: pool,
         };
         Ok(Self {
             io_config,
@@ -353,7 +353,7 @@ impl LakeSoulIOSession {
             session_id: task_ctx.session_id().clone(),
             session_config: task_ctx.session_config().clone(),
             runtime_env: task_ctx.runtime_env().clone(),
-            memory_pool: Arc::new(MainMemoryPool::new(pool_size)),
+            main_pool: Arc::new(MainMemoryPool::new(pool_size)),
             listing_metas: OnceCell::new(),
             file_format: OnceCell::new(),
             file_schema: OnceCell::new(),
@@ -368,7 +368,7 @@ impl LakeSoulIOSession {
     }
 
     pub fn main_pool(&self) -> &Arc<MainMemoryPool> {
-        &self.inner.memory_pool
+        &self.inner.main_pool
     }
 
     pub fn io_config(&self) -> &LakeSoulIOConfig {
@@ -868,14 +868,9 @@ impl LakeSoulIOSession {
 
     #[cfg(feature = "test-utils")]
     pub fn set_logged_pool(&mut self) {
-        let fair_pool = match self.inner.runtime_env.memory_pool.memory_limit() {
-            datafusion_execution::memory_pool::MemoryLimit::Finite(pool_size) => {
-                FairSpillPool::new(pool_size)
-            }
-            _ => panic!("must have memory limit"),
-        };
+        let mem_pool = { self.inner.main_pool.clone() };
         let memory_pool = crate::mem::pool::LoggedMemoryPool::new(
-            fair_pool,
+            mem_pool,
             std::num::NonZeroUsize::new(5).unwrap(),
         );
         let runtime_builder =

@@ -205,7 +205,7 @@ async fn sort_with_limited_memory_test() -> Result<(), Report> {
 #[tokio::test]
 async fn sort_with_different_sizes_of_record_batch_test() -> Result<(), Report> {
     let record_batch_size = 8192;
-    let pool_size = byte_size!("20mb");
+    let pool_size = byte_size!("10mb");
     // Basic test with a lot of groups that cannot all fit in memory and 1 record batch
     // from each spill file is too much memory
     run_sort_test_with_limited_memory(RunTestWithLimitedMemoryArgs {
@@ -214,9 +214,9 @@ async fn sort_with_different_sizes_of_record_batch_test() -> Result<(), Report> 
         number_of_record_batches: 100,
         get_size_of_record_batch_to_generate: Box::pin(move |i| {
             if i % 25 == 1 {
-                pool_size / 6
+                pool_size / 8
             } else {
-                16 * KB as usize
+                1024 * KB as usize
             }
         }),
     })
@@ -230,7 +230,7 @@ async fn sort_with_different_sizes_of_record_batch_test() -> Result<(), Report> 
 async fn sort_with_large_record_batch_test() -> Result<(), Report> {
     let record_batch_size = 8192;
     let pool_size = byte_size!("10mb");
-    let generate_batch_size = pool_size / 5;
+    let generate_batch_size = pool_size / 8;
 
     // Basic test with a lot of groups that cannot all fit in memory and 1 record batch
     // from each spill file is too much memory
