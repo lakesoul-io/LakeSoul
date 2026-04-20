@@ -548,7 +548,6 @@ impl RepartitionByRangeAndHashExec {
         // While there are still outputs to send to, keep pulling inputs
         let mut batches_until_yield = partitioner.num_partitions();
 
-        println!("??????");
         while !output_channels.is_empty() {
             // fetch the next batch
             let timer = metrics.fetch_time.timer();
@@ -602,13 +601,6 @@ impl RepartitionByRangeAndHashExec {
                 batches_until_yield -= 1;
             }
         }
-
-        println!("??????");
-        println!("??????");
-        println!("??????");
-        println!("??????");
-        println!("??????");
-        // println!("XXXXXXXXXX metrics: {:?}", input.metrics());
 
         if let Some(ms) = input.metrics() {
             for m in ms.iter() {

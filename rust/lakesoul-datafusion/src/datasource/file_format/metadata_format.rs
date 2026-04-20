@@ -57,6 +57,7 @@ use lakesoul_io::helpers::{
     partition_desc_from_file_scan_config,
 };
 use lakesoul_io::physical_plan::MergeParquetExec;
+use lakesoul_io::session::LakeSoulIOSession;
 use lakesoul_io::writer::async_writer::{AsyncBatchWriter, MultiPartAsyncWriter};
 use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 use object_store::{ObjectMeta, ObjectStore};
@@ -492,7 +493,7 @@ impl LakeSoulHashSinkExec {
 
             if !partitioned_writer.contains_key(&partition_desc) {
                 debug!("create writer for partition {partition_desc}");
-                let _config = create_io_config_builder_from_table_info(
+                let io_config = create_io_config_builder_from_table_info(
                     table_info.clone(),
                     HashMap::new(),
                     HashMap::new(),
@@ -500,14 +501,13 @@ impl LakeSoulHashSinkExec {
                 .with_files(vec![file_absolute_path])
                 .with_schema(batch_excluding_range.schema())
                 .build();
-                todo!()
-                // let new_session = LakeSoulIOSession::try_new(io_config)
-                // // let writer = MultiPartAsyncWriter::try_new_with_context(
-                //     &mut config,
-                //     context.clone(),
-                // )
-                // .await?;
-                // partitioned_writer.insert(partition_desc.clone(), Box::new(writer));
+                let new_session =
+                    Arc::new(LakeSoulIOSession::from_plain_config_and_context(
+                        io_config,
+                        context.clone(),
+                    ));
+                let writer = MultiPartAsyncWriter::try_new(new_session).await?;
+                partitioned_writer.insert(partition_desc.clone(), Box::new(writer));
             }
 
             if let Some(async_writer) = partitioned_writer.get_mut(&partition_desc) {

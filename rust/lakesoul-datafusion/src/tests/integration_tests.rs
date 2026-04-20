@@ -102,7 +102,7 @@ async fn load_tpch_data() -> Result<()> {
             .with_primary_keys(get_tbl_tpch_table_primary_keys(table))
             .with_range_partitions(get_tbl_tpch_table_range_partitions(table));
 
-        create_table(client.clone(), &table, builder.build()).await?;
+        create_table(client.clone(), table, builder.build()).await?;
         let lakesoul_table = LakeSoulTable::for_name(table).await?;
         lakesoul_table.upsert_dataframe(dataframe).await?;
         dbg!(table);
