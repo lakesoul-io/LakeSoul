@@ -5,10 +5,9 @@
 package com.dmetasoul.lakesoul.lakesoul.io.jnr;
 
 import jnr.ffi.Pointer;
-import jnr.ffi.annotations.Delegate;
-import jnr.ffi.annotations.LongLong;
-import jnr.ffi.annotations.Out;
-import jnr.ffi.byref.IntByReference;
+import jnr.ffi.Runtime;
+import jnr.ffi.Struct;
+import jnr.ffi.annotations.*;
 
 public interface LibLakeSoulIO {
 
@@ -84,17 +83,25 @@ public interface LibLakeSoulIO {
         void invoke(Integer status, String err); // function name doesn't matter, it just needs to be the only function and have @Delegate
     }
 
-    void start_reader(Pointer reader, BooleanCallback callback);
+    class CStatus extends Struct {
+        public final UTF8StringRef err = new UTF8StringRef();
+
+        public final Signed32 status = new Signed32();
+
+        public CStatus(Runtime runtime) {
+            super(runtime);
+        }
+    }
+
+    CStatus start_reader(Pointer reader);
 
     void next_record_batch(Pointer reader, @LongLong long schemaAddr, @LongLong long arrayAddr, IntegerCallback callback);
 
-    void next_record_batch_blocked(Pointer reader, @LongLong long arrayAddr, @Out IntByReference count, BooleanCallback callback);
+    CStatus next_record_batch_blocked(Pointer reader, @LongLong long arrayAddr);
 
     void write_record_batch(Pointer writer, @LongLong long schemaAddr, @LongLong long arrayAddr, BooleanCallback callback);
 
-    void write_record_batch_blocked(Pointer writer, @LongLong long schemaAddr, @LongLong long arrayAddr, BooleanCallback callback);
-
-    String write_record_batch_ipc_blocked(Pointer writer, @LongLong long ipcAddr, @LongLong long len);
+    CStatus write_record_batch_blocked(Pointer writer, @LongLong long schemaAddr, @LongLong long arrayAddr);
 
     void free_lakesoul_reader(Pointer reader);
 
@@ -113,6 +120,8 @@ public interface LibLakeSoulIO {
     void free_lakesoul_io_config_builder(Pointer builder);
 
     void free_c_string(Pointer str);
+
+    void free_c_status(@Pinned @In @Transient CStatus status);
 
     Pointer apply_partition_filter(IntegerCallback callback, int pbLen, long jniWrapperAddr, long schemaAddr, int filterLen, long filterAddr);
 
