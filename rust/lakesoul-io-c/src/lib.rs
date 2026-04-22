@@ -1043,6 +1043,11 @@ pub unsafe extern "C" fn free_tokio_runtime(runtime: NonNull<TokioRuntime>) {
     let _ = from_opaque::<TokioRuntime, Runtime>(runtime);
 }
 
+/// free the [`CStatus`].
+///
+/// # Safety
+///
+/// * `status` must be a valid pointer to a [`CStatus`] struct
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn free_c_status(status: NonNull<CStatus>) {
     from_nonnull(status).free();
