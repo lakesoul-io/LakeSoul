@@ -25,11 +25,12 @@ trait LakeSoulSQLCommandGlutenTest
       .set("spark.default.parallelism", "1")
       .set("spark.memory.offHeap.enabled", "true")
       .set("spark.memory.offHeap.size", "1024MB")
-      .set("spark.ui.enabled", "false")
+      .set("spark.sql.parquet.columnarReaderBatchSize", "1024")
       .set(GlutenConfig.GLUTEN_UI_ENABLED.key, "false")
       .set("spark.ui.enabled", "false")
       .set("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
       .set("spark.sql.extensions", "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension")
+      .set("spark.gluten.sql.native.writer.enabled", "true")
       .set(SQLConf.DEFAULT_CATALOG.key, LakeSoulCatalog.CATALOG_NAME)
   }
 

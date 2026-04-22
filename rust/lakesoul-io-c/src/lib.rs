@@ -757,9 +757,7 @@ pub unsafe extern "C" fn start_reader(
         let result = reader.as_mut().start_blocked();
         match result {
             Ok(_) => convert_to_nonnull(CStatus::new(0)),
-            Err(e) => convert_to_nonnull(
-                CStatus::error(e.to_string(), -1)
-            ),
+            Err(e) => convert_to_nonnull(CStatus::error(e.to_string(), -1)),
         }
     }
 }
@@ -874,13 +872,9 @@ pub unsafe extern "C" fn next_record_batch_blocked(
         );
         let result = reader.as_ref().next_rb_blocked();
         let (status, err): (c_int, *const c_char) = match result {
-            None => {
-                (0, std::ptr::null())
-            }
+            None => (0, std::ptr::null()),
             Some(rb_result) => match rb_result {
-                Err(e) => {
-                    (-1, CString::new(e.to_string()).unwrap().into_raw())
-                }
+                Err(e) => (-1, CString::new(e.to_string()).unwrap().into_raw()),
                 Ok(rb) => {
                     let rows = rb.num_rows() as i32;
                     let batch: Arc<StructArray> = Arc::new(rb.into());
@@ -1174,8 +1168,7 @@ pub unsafe extern "C" fn write_record_batch_blocked(
         let result: lakesoul_io::Result<()> = result_fn();
         match result {
             Ok(_) => convert_to_nonnull(CStatus::new(0)),
-            Err(e) => convert_to_nonnull(
-                CStatus::error(e.to_string(), -1))
+            Err(e) => convert_to_nonnull(CStatus::error(e.to_string(), -1)),
         }
     }
 }
@@ -1215,8 +1208,7 @@ pub unsafe extern "C" fn write_record_batch_ipc_blocked(
                     match writer.write_batch(batch) {
                         Ok(_) => row_count += num_rows,
                         Err(e) => {
-                            return convert_to_nonnull(
-                                CStatus::error(e.to_string(), -1));
+                            return convert_to_nonnull(CStatus::error(e.to_string(), -1));
                         }
                     }
                 }
@@ -1224,14 +1216,11 @@ pub unsafe extern "C" fn write_record_batch_ipc_blocked(
                     break;
                 }
                 Err(e) => {
-                    return convert_to_nonnull(
-                        CStatus::error(e.to_string(), -1));
+                    return convert_to_nonnull(CStatus::error(e.to_string(), -1));
                 }
             }
         }
-        convert_to_nonnull(
-            CStatus::new(row_count as c_int)
-        )
+        convert_to_nonnull(CStatus::new(row_count as c_int))
     }
 }
 

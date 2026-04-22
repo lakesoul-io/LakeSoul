@@ -29,8 +29,8 @@ case class GlutenCompatPostInjectColumnar(session: SparkSession)
       scan.isInstanceOf[OnePartitionMergeBucketScan]
   }
 
-  private lazy val offloadArrowDataExecCtor = {
-    val cls = Class.forName("org.apache.gluten.execution.OffloadArrowDataExec")
+  private lazy val offloadExecCtor = {
+    val cls = Class.forName("org.apache.spark.sql.execution.OffloadToVeloxExec")
     cls.getConstructor(classOf[SparkPlan])
   }
 
@@ -44,8 +44,8 @@ case class GlutenCompatPostInjectColumnar(session: SparkSession)
         })
     =>
       val args = Array[AnyRef](scan)
-      val newPlan = offloadArrowDataExecCtor.newInstance(args: _*).asInstanceOf[SparkPlan]
-      logInfo(s"Replace RowToVeloxColumnarExec with OffloadArrowDataExec for LakeSoul: Original:\n${plan}, New:\n${newPlan}")
+      val newPlan = offloadExecCtor.newInstance(args: _*).asInstanceOf[SparkPlan]
+      logInfo(s"Replace RowToVeloxColumnarExec with OffloadArrowDataExec for LakeSoul:\nOriginal:\n${plan}New:\n${newPlan}")
       newPlan
     case p =>
       p.withNewChildren(p.children.map(transform))
