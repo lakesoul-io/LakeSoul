@@ -156,7 +156,10 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                                     sort_exec,
                                     range_partitioning_expr,
                                     hash_partitioning,
+                                    // todo(jiax): add solid interface
                                     Arc::new(MainMemoryPool::new(usize::MAX)),
+                                    // todo(jiax): add solid interface
+                                    0.45,
                                     ExecutionPlanMetricsSet::new(),
                                 )
                                 .map_err(|report| {

@@ -43,8 +43,8 @@ use rootcause::{Report, bail, compat::boxed_error::IntoBoxedError};
 use self::distributor_channels::{
     DistributionReceiver, DistributionSender, channels, partition_aware_channels,
 };
+use crate::utils::hash::create_hashes;
 use crate::{Result, mem::pool::MainMemoryPool};
-use crate::{constant::LAKESOUL_REPARTITION_RATIO, utils::hash::create_hashes};
 
 mod distributor_channels;
 
@@ -405,6 +405,9 @@ pub struct RepartitionByRangeAndHashExec {
 
     /// Main Memory Pool, this is a hack
     main_pool: Arc<MainMemoryPool>,
+
+    /// repartition mem ratio
+    repartition_mem_ratio: f64,
 }
 
 impl RepartitionByRangeAndHashExec {
@@ -464,6 +467,7 @@ impl RepartitionByRangeAndHashExec {
         range_partitioning_expr: Vec<Arc<dyn PhysicalExpr>>,
         hash_partitioning: Partitioning,
         main_pool: Arc<MainMemoryPool>,
+        repartition_mem_ratio: f64,
         metrics: ExecutionPlanMetricsSet,
     ) -> Result<Self> {
         let preserve_order = false;
@@ -501,6 +505,7 @@ impl RepartitionByRangeAndHashExec {
                     metrics,
                     preserve_order,
                     main_pool,
+                    repartition_mem_ratio,
                 });
             }
         }
@@ -734,6 +739,7 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
             self.range_partitioning_expr.clone(),
             self.hash_partitioning.clone(),
             self.main_pool.clone(),
+            self.repartition_mem_ratio,
             ExecutionPlanMetricsSet::new(), // children's metrics is not propagated
         )
         .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
@@ -750,36 +756,42 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
         let paras_captured = Arc::clone(&params);
         let paras_captured_move = Arc::clone(&params);
         let state_ref = Arc::clone(&self.state);
+        let repartition_ratio = self.repartition_mem_ratio;
         let stream = futures::stream::once(async move {
             let context_captured = Arc::clone(&context);
             // only exec once
             let state = state_ref
                 .get_or_try_init(|| async move {
-                    // split memory pool
-                    let size = (paras_captured_move.main_pool.pool_size() as f64
-                        * LAKESOUL_REPARTITION_RATIO)
-                        as usize;
-                    info!("repartition's pool size: {}", size);
-                    let repartition_pool = paras_captured_move
-                        .main_pool
-                        .split(size)
-                        .map_err(|rep| DataFusionError::External(rep.into()))?;
+                    let repartition_ctx = if repartition_ratio <= 0.0 {
+                        // this disable repartition memory pool split
+                        Arc::clone(&context_captured)
+                    } else {
+                        // split memory pool
+                        let size = (paras_captured_move.main_pool.pool_size() as f64
+                            * repartition_ratio)
+                            as usize;
+                        info!("repartition's pool size: {}", size);
+                        let repartition_pool = paras_captured_move
+                            .main_pool
+                            .split(size)
+                            .map_err(|rep| DataFusionError::External(rep.into()))?;
 
-                    let runtime = RuntimeEnvBuilder::from_runtime_env(
-                        &context_captured.runtime_env(),
-                    )
-                    .with_memory_pool(repartition_pool)
-                    .build_arc()?;
+                        let runtime = RuntimeEnvBuilder::from_runtime_env(
+                            &context_captured.runtime_env(),
+                        )
+                        .with_memory_pool(repartition_pool)
+                        .build_arc()?;
 
-                    let repartition_ctx = Arc::new(TaskContext::new(
-                        Some("Repartition".to_string()),
-                        "Default".to_string(),
-                        context_captured.session_config().clone(),
-                        HashMap::new(),
-                        HashMap::new(),
-                        HashMap::new(),
-                        runtime,
-                    ));
+                        Arc::new(TaskContext::new(
+                            Some("Repartition".to_string()),
+                            "Default".to_string(),
+                            context_captured.session_config().clone(),
+                            HashMap::new(),
+                            HashMap::new(),
+                            HashMap::new(),
+                            runtime,
+                        ))
+                    };
 
                     Ok::<Mutex<RepartitionByRangeAndHashExecState>, Report>(Mutex::new(
                         RepartitionByRangeAndHashExecState::new(

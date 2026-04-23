@@ -238,6 +238,7 @@ impl PartitioningAsyncWriter {
                 range_partitioning_expr,
                 hash_partitioning,
                 main_pool,
+                io_config.repartition_mem_ratio(),
                 metrics,
             )?)
         };
