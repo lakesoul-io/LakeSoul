@@ -96,7 +96,6 @@ public class FlinkUtil {
 
         for (RowType.RowField field : rowType.getFields()) {
             String name = field.getName();
-            if (name.equals(SORT_FIELD)) continue;
 
             LogicalType logicalType = field.getType();
             Field arrowField = ArrowUtils.toArrowField(name, logicalType);
@@ -145,7 +144,6 @@ public class FlinkUtil {
             }
             String name = tableSchema.getFieldName(i).get();
             DataType dataType = tableSchema.getFieldDataType(i).get();
-            if (name.equals(SORT_FIELD)) continue;
 
             LogicalType logicalType = dataType.getLogicalType();
             Field arrowField = ArrowUtils.toArrowField(name, logicalType);
