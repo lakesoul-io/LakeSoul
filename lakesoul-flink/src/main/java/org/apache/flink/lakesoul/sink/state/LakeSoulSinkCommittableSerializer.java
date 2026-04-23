@@ -87,6 +87,8 @@ public class LakeSoulSinkCommittableSerializer
 
             dataOutputView.writeLong(committable.getCreationTime());
             dataOutputView.writeUTF(committable.getCommitId());
+            // compatible with old state with tsMs
+            dataOutputView.writeLong(0);
             dataOutputView.writeUTF(committable.getDmlType());
             dataOutputView.writeUTF(committable.getSourcePartitionInfo());
         } else {
@@ -120,6 +122,8 @@ public class LakeSoulSinkCommittableSerializer
                 }
                 time = dataInputView.readLong();
                 commitId = dataInputView.readUTF();
+                // compatible with old state with tsMs
+                dataInputView.readLong();
                 dmlType = dataInputView.readUTF();
                 sourcePartitionInfo = dataInputView.readUTF();
             }

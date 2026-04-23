@@ -22,6 +22,7 @@ import org.apache.flink.cdc.connectors.shaded.org.apache.kafka.connect.errors.Da
 import org.apache.flink.cdc.debezium.utils.TemporalConversions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakesoul.tool.DynamicBucketingHash;
+import org.apache.flink.runtime.execution.SuppressRestartsException;
 import org.apache.flink.table.data.*;
 import org.apache.flink.table.data.binary.BinaryRowData;
 import org.apache.flink.table.data.writer.BinaryRowWriter;
@@ -49,11 +50,10 @@ import static org.apache.flink.lakesoul.types.ParseDocument.convertBSONToStruct;
 public class LakeSoulRecordConvert implements Serializable {
 
     private static final long serialVersionUID = -3907477067300265746L;
-    private final ZoneId serverTimeZone;
     private static final Logger LOG = LoggerFactory.getLogger(LakeSoulRecordConvert.class);
-
-    private final String cdcColumn;
     final boolean useCDC;
+    private final ZoneId serverTimeZone;
+    private final String cdcColumn;
     HashMap<String, String> formatRuleList;
     List<String> partitionFields;
     HashMap<String, List<String>> topicsPartitionFields;
@@ -132,26 +132,32 @@ public class LakeSoulRecordConvert implements Serializable {
                 String fullDocument = value.getString(MongoDBEnvelope.FULL_DOCUMENT_FIELD);
                 Struct bsonStruct = convertBSONToStruct(fullDocument);
                 Schema documentSchema = bsonStruct.schema();
-                Tuple2<RowType, RowData> insert = convert(bsonStruct, documentSchema, RowKind.INSERT, null, null);
+                Tuple2<RowType, RowData>
+                        insert =
+                        convert(tableId, bsonStruct, documentSchema, RowKind.INSERT, null, null);
                 insert.f1.setRowKind(RowKind.INSERT);
                 builder.setOperation("insert").setAfterRowData(insert.f1).setAfterType(insert.f0);
             } else if (op.equals("delete")) {
                 String fullDocumentValue = value.getString("fullDocumentBeforeChange");
                 Struct before = convertBSONToStruct(fullDocumentValue);
                 Schema beforSchema = before.schema();
-                Tuple2<RowType, RowData> delete = convert(before, beforSchema, RowKind.DELETE, null, null);
+                Tuple2<RowType, RowData> delete = convert(tableId, before, beforSchema, RowKind.DELETE, null, null);
                 builder.setOperation("delete").setBeforeRowData(delete.f1).setBeforeRowType(delete.f0);
                 delete.f1.setRowKind(RowKind.DELETE);
             } else {
                 String fullDocumentBeforChange = value.getString("fullDocumentBeforeChange");
                 Struct before = convertBSONToStruct(fullDocumentBeforChange);
                 Schema beforeSchema = before.schema();
-                Tuple2<RowType, RowData> beforeData = convert(before, beforeSchema, RowKind.UPDATE_BEFORE, null, null);
+                Tuple2<RowType, RowData>
+                        beforeData =
+                        convert(tableId, before, beforeSchema, RowKind.UPDATE_BEFORE, null, null);
                 beforeData.f1.setRowKind(RowKind.UPDATE_BEFORE);
                 String fullDocument = value.getString(MongoDBEnvelope.FULL_DOCUMENT_FIELD);
                 Struct after = convertBSONToStruct(fullDocument);
                 Schema afterSchema = after.schema();
-                Tuple2<RowType, RowData> afterData = convert(after, afterSchema, RowKind.UPDATE_AFTER, null, null);
+                Tuple2<RowType, RowData>
+                        afterData =
+                        convert(tableId, after, afterSchema, RowKind.UPDATE_AFTER, null, null);
                 afterData.f1.setRowKind(RowKind.UPDATE_AFTER);
                 if (partitionFieldsChanged(beforeData.f0, beforeData.f1, afterData.f0, afterData.f1)) {
                     // partition fields changed. we need to emit both before and after RowData
@@ -175,7 +181,7 @@ public class LakeSoulRecordConvert implements Serializable {
                                 topicsTimestampPartitionFields);
                 Tuple2<RowType, RowData>
                         insert =
-                        convert(after, afterSchema, RowKind.INSERT, timeStampPartitionCol,
+                        convert(tableId, after, afterSchema, RowKind.INSERT, timeStampPartitionCol,
                                 formatRuleList.get(tableId.table()));
                 insert.f1.setRowKind(RowKind.INSERT);
                 builder.setOperation("insert").setAfterRowData(insert.f1).setAfterType(insert.f0);
@@ -188,7 +194,7 @@ public class LakeSoulRecordConvert implements Serializable {
                                 topicsTimestampPartitionFields);
                 Tuple2<RowType, RowData>
                         delete =
-                        convert(before, beforeSchema, RowKind.DELETE, timeStampPartitionCol,
+                        convert(tableId, before, beforeSchema, RowKind.DELETE, timeStampPartitionCol,
                                 formatRuleList.get(tableId.table()));
                 delete.f1.setRowKind(RowKind.DELETE);
                 delete.f1.setRowKind(RowKind.DELETE);
@@ -202,7 +208,7 @@ public class LakeSoulRecordConvert implements Serializable {
                                 topicsTimestampPartitionFields);
                 Tuple2<RowType, RowData>
                         beforeData =
-                        convert(before, beforeSchema, RowKind.UPDATE_BEFORE, timeStampPartitionCol,
+                        convert(tableId, before, beforeSchema, RowKind.UPDATE_BEFORE, timeStampPartitionCol,
                                 formatRuleList.get(tableId.table()));
                 //boolean beforNullable = beforeSchema.isOptional();
                 beforeData.f1.setRowKind(RowKind.UPDATE_BEFORE);
@@ -210,7 +216,7 @@ public class LakeSoulRecordConvert implements Serializable {
                 Struct after = value.getStruct(Envelope.FieldName.AFTER);
                 Tuple2<RowType, RowData>
                         afterData =
-                        convert(after, afterSchema, RowKind.UPDATE_AFTER, timeStampPartitionCol,
+                        convert(tableId, after, afterSchema, RowKind.UPDATE_AFTER, timeStampPartitionCol,
                                 formatRuleList.get(tableId.table()));
                 afterData.f1.setRowKind(RowKind.UPDATE_AFTER);
                 afterData.f1.setRowKind(RowKind.UPDATE_AFTER);
@@ -479,6 +485,7 @@ public class LakeSoulRecordConvert implements Serializable {
     }
 
     public Tuple2<RowType, RowData> convert(
+            TableId tableId,
             Struct struct,
             Schema schema,
             RowKind rowKind,
@@ -522,22 +529,37 @@ public class LakeSoulRecordConvert implements Serializable {
             colNames[pos] = "pt_" + timestampPartitionCol + "_dt";
             colTypes[pos] = new VarCharType(false, Integer.MAX_VALUE);
             Object fieldValue = struct.getWithoutDefault(timestampPartitionCol);
-            Instant instant;
-            if (fieldValue instanceof Long) {
+            Schema tsColSchema = schema.field(timestampPartitionCol).schema();
+            LocalDate date = null;
+            Instant instant = null;
+            if (tsColSchema.name().equalsIgnoreCase(Date.SCHEMA_NAME)) {
+                date = TemporalConversions.toLocalDate(fieldValue);
+            } else if (fieldValue instanceof Long) {
                 instant = Instant.ofEpochMilli((Long) fieldValue);
+            } else if (fieldValue instanceof Integer) {
+                date = LocalDate.ofEpochDay((long)(Integer) fieldValue);
             } else {
                 instant = Instant.parse(fieldValue.toString());
             }
-            String timeZone = globalConfig.getString("table.local-time-zone", null);
-            LocalDate date;
-            ZoneId flinkZoneId;
-            if (timeZone != null) {
-                flinkZoneId = ZoneId.of(timeZone);
-            } else {
-                flinkZoneId = ZoneId.systemDefault();
+            if (date == null && instant != null) {
+                String timeZone = globalConfig.getString("table.local-time-zone", null);
+                ZoneId flinkZoneId;
+                if (timeZone != null) {
+                    flinkZoneId = ZoneId.of(timeZone);
+                } else {
+                    flinkZoneId = ZoneId.systemDefault();
+                }
+                date = instant.atZone(flinkZoneId).toLocalDate();
+                LOG.debug("use timezone: {}, calculated date: {}", flinkZoneId, date);
             }
-            date = instant.atZone(flinkZoneId).toLocalDate();
-            LOG.debug("use timezone: {}, calculated date: {}", flinkZoneId, date);
+            // we cannot find a valid date object
+            if (date == null) {
+                throw new SuppressRestartsException(
+                        new DataException(
+                                "Timestamp partition column is not a known date/timestamp type: "
+                                        + tableId + "/" + timestampPartitionCol + ", class: "
+                                        + fieldValue.getClass().getName() + ", schema: " + tsColSchema.name()));
+            }
             if (formatRule == null) {
                 formatRule = "yyyy-MM-dd";
             }
