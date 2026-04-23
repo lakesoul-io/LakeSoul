@@ -54,6 +54,7 @@ public class NewCleanJob {
         PgCleanDeserialization deserialization = new PgCleanDeserialization();
         Properties debeziumProperties = new Properties();
         debeziumProperties.setProperty("include.unknown.datatypes", "true");
+        debeziumProperties.setProperty("heartbeat.interval.ms", "10000");
         String[] tableList = new String[]{"public.partition_info", "public.discard_compressed_file_info", "public.table_info"};
         userName = parameter.get(SourceOptions.SOURCE_DB_USER.key());
         dbName = parameter.get(SourceOptions.SOURCE_DB_DB_NAME.key());

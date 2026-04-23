@@ -12,7 +12,7 @@ import org.scalatestplus.junit.JUnitRunner
 
 import java.io.File
 
-@RunWith(classOf[JUnitRunner])
+//@RunWith(classOf[JUnitRunner])
 class LakeSoulGlutenCompatSuite extends LakeSoulSQLCommandGlutenTest {
   import testImplicits._
 

@@ -5,6 +5,7 @@
 package com.dmetasoul.lakesoul.lakesoul.io;
 
 import com.dmetasoul.lakesoul.lakesoul.LakeSoulArrowUtils;
+import com.dmetasoul.lakesoul.lakesoul.io.jnr.LibLakeSoulIO;
 import com.dmetasoul.lakesoul.meta.DBConfig;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
@@ -111,16 +112,6 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
     }
 
     public int writeIpc(byte[] encodedBatch) throws IOException {
-//        Pointer ipc = getRuntime().getMemoryManager().allocateDirect(encodedBatch.length + 1, true);
-//        ipc.put(0, encodedBatch, 0, encodedBatch.length);
-//        ipc.putByte(encodedBatch.length, (byte) 0);
-//        String msg = libLakeSoulIO.write_record_batch_ipc_blocked(writer, ipc.address(), ipc.size());
-//        if (!msg.startsWith("Ok: ")) {
-//            throw new IOException("Native writer write batch failed with error: " + msg);
-//        }
-//
-//        return Integer.parseInt(msg.substring(4));
-
         int batchSize = 0;
         try (ArrowStreamReader reader = new ArrowStreamReader(new ByteArrayInputStream(encodedBatch), allocator)) {
             if (reader.loadNextBatch()) {
@@ -136,18 +127,16 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
         ArrowArray array = ArrowArray.allocateNew(allocator);
         ArrowSchema schema = ArrowSchema.allocateNew(allocator);
         Data.exportVectorSchemaRoot(allocator, batch, provider, array, schema);
-        AtomicReference<String> errMsg = new AtomicReference<>();
-        BooleanCallback nativeBooleanCallback = new BooleanCallback((status, err) -> {
-            if (!status && err != null) {
-                errMsg.set(err);
+        LibLakeSoulIO.CStatus status = libLakeSoulIO.write_record_batch_blocked(writer, schema.memoryAddress(), array.memoryAddress());
+        try {
+            if (status.status.get() < 0) {
+                throw new IOException("Native writer write batch failed with error: " +
+                        (status.err.get() != null ? status.err.get() : "unknown"));
             }
-        }, boolReferenceManager);
-        nativeBooleanCallback.registerReferenceKey();
-        libLakeSoulIO.write_record_batch_blocked(writer, schema.memoryAddress(), array.memoryAddress(), nativeBooleanCallback);
-        array.close();
-        schema.close();
-        if (errMsg.get() != null && !errMsg.get().isEmpty()) {
-            throw new IOException("Native writer write batch failed with error: " + errMsg.get());
+        } finally {
+            array.close();
+            schema.close();
+            libLakeSoulIO.free_c_status(status);
         }
     }
 
