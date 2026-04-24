@@ -7,6 +7,8 @@ package com.facebook.presto.benchmark;
 import java.sql.*;
 import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.HashSet;
+import java.util.Set;
 
 public class Benchmark {
     static String hostname = "mysql";
@@ -118,35 +120,108 @@ public class Benchmark {
     }
 
 
-    public static void verifyQuery (String sourceSchema, String sinkSchema, String table) throws SQLException {
-        String sourceSchemaTableName = sourceSchema + "." + table;
+     public static void verifyQuery(String sourceSchema, String sinkSchema, String table) throws SQLException {
+        
+        String sourceSchemaTableName = table; 
         String sinkSchemaTableName =  sinkSchema + ".s_test_cdc_" + table;
-        String sql1 = String.format("select count(*) from lakesoul.%s", sinkSchemaTableName) ;
-        String sql2 = String.format("select count(*) from mysql.%s", sourceSchemaTableName) ;
-        String sql3 = String.format("select count(*) from (select * from lakesoul.%s except select * from mysql.%s)", sinkSchemaTableName, sourceSchemaTableName);
-        String sql4 = String.format("select count(*) from (select * from mysql.%s except select * from lakesoul.%s)", sourceSchemaTableName, sinkSchemaTableName);
-        String sql5 = String.format("select * from lakesoul.%s", sinkSchemaTableName) ;
-        String sql6 = String.format("select * from mysql.%s", sourceSchemaTableName) ;
+
+        String prestoSqlCount = String.format("select count(*) from lakesoul.%s", sinkSchemaTableName);
+        String mysqlSqlCount = String.format("select count(*) from %s", sourceSchemaTableName);
+
+        String prestoSqlData = String.format("select * from lakesoul.%s", sinkSchemaTableName);
+        String mysqlSqlData = String.format("select * from %s", sourceSchemaTableName);
+
         try {
-            int count1 = getCount(prestoCon.prepareStatement(sql1).executeQuery());
-            int count2 = getCount(prestoCon.prepareStatement(sql2).executeQuery());
-            int count3 = getCount(prestoCon.prepareStatement(sql3).executeQuery());
-            int count4 = getCount(prestoCon.prepareStatement(sql4).executeQuery());
-            if(count1 == 0 || count2 == 0 || count3 != 0 || count4 != 0){
-                System.out.println("lakesoul." + table + " count1=" + count1);
-                System.out.println("mysql." + table + " count2=" + count2);
-                System.out.println(table + " lakesoul - mysql count3=" + count3);
-                System.out.println(table + " mysql - lakesoul count4=" + count4);
-                throw new RuntimeException("table " + table + " is not matched");
+            int countLakeSoul = getCount(prestoCon.prepareStatement(prestoSqlCount).executeQuery());
+            int countMysql = getCount(mysqlCon.prepareStatement(mysqlSqlCount).executeQuery());
+            if (countLakeSoul != countMysql) {
+                System.out.println("lakesoul." + table + " count=" + countLakeSoul);
+                System.out.println("mysql." + table + " count=" + countMysql);
+                throw new RuntimeException("table " + table + " count is not matched!");
             }
+
+            ResultSet rsPresto = prestoCon.prepareStatement(prestoSqlData).executeQuery();
+            ResultSet rsMysql = mysqlCon.prepareStatement(mysqlSqlData).executeQuery();
+
+            Set<String> prestoRows = extractRowsToSet(rsPresto);
+            Set<String> mysqlRows = extractRowsToSet(rsMysql);
+
+            Set<String> lakesoulExceptMysql = new HashSet<>(prestoRows);
+            lakesoulExceptMysql.removeAll(mysqlRows);
+
+        
+            Set<String> mysqlExceptLakesoul = new HashSet<>(mysqlRows);
+            mysqlExceptLakesoul.removeAll(prestoRows);
+
+            if (!lakesoulExceptMysql.isEmpty() || !mysqlExceptLakesoul.isEmpty()) {
+                System.out.println(table + " lakesoul - mysql diff count=" + lakesoulExceptMysql.size());
+                System.out.println(table + " mysql - lakesoul diff count=" + mysqlExceptLakesoul.size());
+                throw new RuntimeException("table " + table + " data content is not matched");
+            }
+
             System.out.println("table " + table + " matched");
-        }catch (Exception e){
-            System.out.println("table " + table + " not matched lakesoul - mysql");
-            ResultSetPrinter.printResultSet(prestoCon.prepareStatement(sql5).executeQuery());
-            System.out.println("table " + table + " not matched mysql - lakesoul");
-            ResultSetPrinter.printResultSet(prestoCon.prepareStatement(sql6).executeQuery());
-            throw e;
+
+        } catch (Exception e) {
+            System.out.println("table " + table + " not matched! Exception: " + e.getMessage());
+            try {
+                System.out.println("========= LakeSoul Data =========");
+                ResultSetPrinter.printResultSet(prestoCon.prepareStatement(prestoSqlData).executeQuery());
+                System.out.println("========= MySQL Data =========");
+                ResultSetPrinter.printResultSet(mysqlCon.prepareStatement(mysqlSqlData).executeQuery());
+            } catch (Exception ex) {
+                System.out.println("Failed to print results: " + ex.getMessage());
+            }
+            throw new RuntimeException(e);
         }
+    }
+
+    private static Set<String> extractRowsToSet(ResultSet rs) throws SQLException {
+        Set<String> rows = new HashSet<>();
+        int columnCount = rs.getMetaData().getColumnCount();
+
+        java.time.format.DateTimeFormatter dateTimeFormatter = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+        java.time.format.DateTimeFormatter dateFormatter = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd");
+
+        while (rs.next()) {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 1; i <= columnCount; i++) {
+                Object obj = rs.getObject(i);
+                if (obj == null) {
+                    sb.append("NULL|");
+                    continue;
+                }
+
+                String val;
+                if (obj instanceof byte[]) {
+                    byte[] bytes = (byte[]) obj;
+                    StringBuilder hex = new StringBuilder();
+                    for (byte b : bytes) {
+                        hex.append(String.format("%02x", b));
+                    }
+                    val = hex.toString();
+                } else if (obj instanceof java.sql.Timestamp) {
+                    val = ((java.sql.Timestamp) obj)
+                            .toLocalDateTime()
+                            .format(dateTimeFormatter);
+                } else if (obj instanceof java.time.LocalDateTime) {
+                    val = ((java.time.LocalDateTime) obj)
+                            .format(dateTimeFormatter);
+                } else if (obj instanceof java.sql.Date) {
+                    val = ((java.sql.Date) obj)
+                            .toLocalDate()
+                            .format(dateFormatter);
+                } else if (obj instanceof java.time.LocalDate) {
+                    val = ((java.time.LocalDate) obj)
+                            .format(dateFormatter);
+                } else {
+                    val = obj.toString().trim();
+                }
+
+                sb.append(val).append("|");
+            }
+            rows.add(sb.toString());
+        }
+        return rows;
     }
 
     static int getCount(ResultSet res) throws SQLException {
@@ -172,7 +247,15 @@ class ResultSetPrinter {
         while (rs.next()) {
             String[] columnStr = new String[ColumnCount];
             for (int i = 0; i < ColumnCount; i++) {
-                columnStr[i] = rs.getString(i + 1);
+                Object obj = rs.getObject(i + 1);
+                if (obj instanceof byte[]) {
+                    byte[] bytes = (byte[]) obj;
+                    StringBuilder hex = new StringBuilder();
+                    for (int j = 0; j < Math.min(bytes.length, 10); j++) hex.append(String.format("%02x", bytes[j]));
+                    columnStr[i] = hex.toString() + (bytes.length > 10 ? "..." : "");
+                } else {
+                    columnStr[i] = (obj == null) ? "NULL" : obj.toString();
+                }
                 columnMaxLengths[i] = Math.max(columnMaxLengths[i], (columnStr[i] == null) ? 0 : columnStr[i].length());
             }
             results.add(columnStr);

@@ -111,7 +111,15 @@ jobs:
                   mkdir -p rust/target/release
                   cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so rust/target/release
                   cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so rust/target/release
-                  MAVEN_OPTS="-Xmx4000m" mvn -q -B package -f pom.xml -Pcross-build -DskipTests
+                  MAVEN_OPTS="-Xmx4000m" mvn -B install -f pom.xml -pl "!lakesoul-presto" -Pcross-build -DskipTests
+            - name: Set up JDK 17
+              uses: actions/setup-java@v4
+              with:
+                  java-version: "17"
+                  distribution: "temurin"
+            - name: Build LakeSoul Presto with Java 17
+              run: |
+                  MAVEN_OPTS="-Xmx4000m" mvn -B package -f pom.xml -pl lakesoul-presto -Pcross-build -DskipTests -e
             - name: Get jar names
               run: |
                   echo "FLINK_JAR_NAME=$(python script/get_jar_name.py lakesoul-flink)" >> $GITHUB_ENV

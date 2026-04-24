@@ -79,16 +79,6 @@ public class LakeSoulConnector implements Connector {
     }
 
     @Override
-    public ConnectorMetadataUpdaterProvider getConnectorMetadataUpdaterProvider() {
-        return Connector.super.getConnectorMetadataUpdaterProvider();
-    }
-
-    @Override
-    public ConnectorTypeSerdeProvider getConnectorTypeSerdeProvider() {
-        return Connector.super.getConnectorTypeSerdeProvider();
-    }
-
-    @Override
     public Set<SystemTable> getSystemTables() {
         return Connector.super.getSystemTables();
     }

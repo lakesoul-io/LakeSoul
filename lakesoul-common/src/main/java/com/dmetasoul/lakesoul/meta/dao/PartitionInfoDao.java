@@ -6,7 +6,9 @@ package com.dmetasoul.lakesoul.meta.dao;
 
 import com.dmetasoul.lakesoul.meta.DBConnector;
 import com.dmetasoul.lakesoul.meta.DBUtil;
-import com.dmetasoul.lakesoul.meta.entity.*;
+import com.dmetasoul.lakesoul.meta.entity.CommitOp;
+import com.dmetasoul.lakesoul.meta.entity.JniWrapper;
+import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
 import com.dmetasoul.lakesoul.meta.jnr.NativeMetadataJavaClient;
 import com.dmetasoul.lakesoul.meta.jnr.NativeUtils;
 import org.slf4j.Logger;
@@ -539,13 +541,20 @@ public class PartitionInfoDao {
     }
 
     public List<PartitionInfo> getAllPartitionInfoByTableIdAndPartialFilter(String tableId, String filter) {
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
+            JniWrapper jniWrapper = NativeMetadataJavaClient.query(
+                    NativeUtils.CodedDaoType.ListPartitionByTableIdAndFilterCondition,
+                    Arrays.asList(tableId, filter));
+            if (jniWrapper == null) return null;
+            return jniWrapper.getPartitionInfoList();
+        }
         String sql = String.format(
                 "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.timestamp, m.expression, m.domain\n" +
                         "            from (\n" +
                         "                select table_id,partition_desc,max(version)\n" +
                         "                from partition_info\n" +
                         "                where table_id = '%s'\n" +
-                        "                and to_tsvector('english', partition_desc) @@ to_tsquery('%s')" +
+                        "                and to_tsvector('english', partition_desc) @@ websearch_to_tsquery('english','%s')" +
                         "                group by table_id, partition_desc) t\n" +
                         "            left join partition_info m\n" +
                         "            on t.table_id = m.table_id and t.partition_desc = m.partition_desc and t.max = m.version",

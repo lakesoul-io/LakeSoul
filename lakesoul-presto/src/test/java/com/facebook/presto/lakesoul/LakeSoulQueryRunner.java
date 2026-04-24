@@ -6,6 +6,7 @@ package com.facebook.presto.lakesoul;
 
 import com.facebook.presto.Session;
 import com.facebook.presto.tests.DistributedQueryRunner;
+import com.facebook.presto.testing.QueryRunner;
 import com.google.common.collect.ImmutableMap;
 
 import java.util.HashMap;
@@ -14,20 +15,17 @@ import java.util.Map;
 import static com.facebook.airlift.testing.Closeables.closeAllSuppress;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 
-public class LakeSoulQueryRunner extends DistributedQueryRunner {
+public class LakeSoulQueryRunner  {
 
+    private LakeSoulQueryRunner() {};
 
-    public LakeSoulQueryRunner(Session defaultSession, int node) throws Exception {
-        super(defaultSession, node);
-    }
-
-
-    public static LakeSoulQueryRunner createLakeSoulQueryRunner()
+    public static  DistributedQueryRunner createLakeSoulQueryRunner()
             throws Exception
     {
-        LakeSoulQueryRunner queryRunner = null;
+        DistributedQueryRunner queryRunner = null;
         try {
-            queryRunner = new LakeSoulQueryRunner(createSession(), 1);
+            int nodeCount = 1;
+            queryRunner =  DistributedQueryRunner.builder(createSession()).setNodeCount(nodeCount).build();
             Map<String, String> properties = new HashMap<>();
             properties.put("fs.s3a.access.key", "minioadmin1");
             properties.put("fs.s3a.secret.key", "minioadmin1");
@@ -54,8 +52,4 @@ public class LakeSoulQueryRunner extends DistributedQueryRunner {
                 .build();
     }
 
-    public void shutdown()
-    {
-        close();
-    }
 }

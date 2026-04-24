@@ -17,7 +17,6 @@ import com.facebook.presto.lakesoul.util.ArrowBlockBuilder;
 import com.facebook.presto.lakesoul.util.PrestoUtil;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ConnectorPageSource;
-import com.fasterxml.jackson.core.JsonProcessingException;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.ArrowType;
@@ -55,13 +54,7 @@ public class LakeSoulPageSource implements ConnectorPageSource {
         }
         this.partitions = PrestoUtil.extractPartitionSpecFromPath(split.getPaths().get(0));
 
-        List<Field> fields = columns.stream().map(columnHandle -> {
-            try {
-                return columnHandle.getArrowField();
-            } catch (JsonProcessingException e) {
-                throw new RuntimeException(e);
-            }
-        }).collect(Collectors.toList());
+        List<Field> fields = columns.stream().map(LakeSoulTableColumnHandle::getArrowField).collect(Collectors.toList());
         HashMap<String, ColumnHandle> allcolumns = split.getLayout().getAllColumns();
         List<String> dataCols = columns.stream().map(LakeSoulTableColumnHandle::getColumnName).collect(Collectors.toList());
         // add extra pks
@@ -69,11 +62,7 @@ public class LakeSoulPageSource implements ConnectorPageSource {
         for (String item : prikeys) {
             if (!dataCols.contains(item)) {
                 LakeSoulTableColumnHandle columnHandle = (LakeSoulTableColumnHandle) allcolumns.get(item);
-                try {
-                    fields.add(columnHandle.getArrowField());
-                } catch (JsonProcessingException e) {
-                    throw new RuntimeException(e);
-                }
+                fields.add(columnHandle.getArrowField());
             }
         }
         // add extra cdc column
