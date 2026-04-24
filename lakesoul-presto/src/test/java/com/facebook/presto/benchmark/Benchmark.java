@@ -146,11 +146,10 @@ public class Benchmark {
             Set<String> prestoRows = extractRowsToSet(rsPresto);
             Set<String> mysqlRows = extractRowsToSet(rsMysql);
 
-            // lakesoul except mysql
             Set<String> lakesoulExceptMysql = new HashSet<>(prestoRows);
             lakesoulExceptMysql.removeAll(mysqlRows);
 
-            // mysql except lakesoul
+        
             Set<String> mysqlExceptLakesoul = new HashSet<>(mysqlRows);
             mysqlExceptLakesoul.removeAll(prestoRows);
 
@@ -216,11 +215,6 @@ public class Benchmark {
                             .format(dateFormatter);
                 } else {
                     val = obj.toString().trim();
-                }
-
-                // 数字型字符串兼容处理，可留可不留
-                if (val.endsWith(".0")) {
-                    val = val.substring(0, val.length() - 2);
                 }
 
                 sb.append(val).append("|");
