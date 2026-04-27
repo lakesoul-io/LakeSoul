@@ -43,6 +43,7 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
     private NativeIOWriter nativeWriter;
     private final Configuration conf;
     private final int maxRowGroupRows;
+    private final int batchSize;
 
     private final long creationTime;
 
@@ -71,6 +72,7 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         this.creationTime = creationTime;
         this.bucketID = bucketID;
         this.isDynamicBucket = DYNAMIC_BUCKET.equals(bucketID);
+        this.batchSize = conf.get(BATCH_SIZE);
         this.rowsInBatch = 0;
         this.rowType = rowType;
         this.primaryKeys = primaryKeys;
@@ -120,7 +122,7 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         this.arrowWriter.write(element);
         this.rowsInBatch++;
         this.totalRows++;
-        if (this.rowsInBatch >= this.maxRowGroupRows) {
+        if (this.rowsInBatch >= this.batchSize) {
             this.arrowWriter.finish();
             this.nativeWriter.write(this.batch);
             // in native writer, batch may be kept in memory for sorting,
