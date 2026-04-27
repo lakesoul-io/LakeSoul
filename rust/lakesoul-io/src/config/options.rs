@@ -31,3 +31,5 @@ pub static OPTION_KEY_SPILL_DIR: &str = "spill_dir";
 pub static OPTION_KEY_COMPUTE_LSH: &str = "compute_lsh";
 /// Key for using stable sort algorithm
 pub static OPTION_KEY_STABLE_SORT: &str = "stable_sort";
+/// Key for repartition memory
+pub static OPTION_KEY_REPARTITION_MEM_RATIO: &str = "repartition_mem_ratio";

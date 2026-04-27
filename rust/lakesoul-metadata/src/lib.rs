@@ -283,7 +283,7 @@ pub enum DaoType {
 fn get_query_type(dao_type: DaoType) -> QueryType {
     let dao_type = dao_type as i32;
     if dao_type <= DAO_TYPE_INSERT_ONE_OFFSET
-        || (dao_type >= DAO_TYPE_QUERY_SCALAR_OFFSET && dao_type < DAO_TYPE_UPDATE_OFFSET)
+        || (DAO_TYPE_QUERY_SCALAR_OFFSET..DAO_TYPE_UPDATE_OFFSET).contains(&dao_type)
     {
         RO
     } else {

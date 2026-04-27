@@ -413,22 +413,21 @@ mod tests {
         config::{LakeSoulIOConfigBuilder, OPTION_KEY_MEM_LIMIT},
     };
 
+    use super::SortAsyncWriter;
     use super::*;
 
+    use arrow::array::{Date32Array, Decimal128Array, TimestampMicrosecondArray};
     use arrow::{
         array::{ArrayRef, Int64Array},
         record_batch::RecordBatch,
     };
     use arrow_array::{Array, StringArray};
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
+    use chrono::{NaiveDate, NaiveDateTime};
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use rand::{Rng, distr::SampleString};
     use std::{fs::File, sync::Arc};
     use tokio::{runtime::Builder, time::Instant};
-
-    use super::SortAsyncWriter;
-    use arrow::array::{Date32Array, Decimal128Array, TimestampMicrosecondArray};
-    use chrono::{NaiveDate, NaiveDateTime};
 
     #[test]
     fn test_parquet_async_write() -> Result<()> {
@@ -575,13 +574,11 @@ mod tests {
         let mut rng = rand::rng();
         let mut len_rng = rand::rng();
         let iter = (0..num_columns)
-            .into_iter()
             .map(|i| {
                 (
                     format!("col_{}", i),
                     Arc::new(StringArray::from(
                         (0..num_rows)
-                            .into_iter()
                             .map(|_| {
                                 rand::distr::Alphanumeric.sample_string(
                                     &mut rng,
@@ -663,8 +660,86 @@ mod tests {
     }
 
     #[cfg(feature = "dhat-heap")]
-    #[global_allocator]
-    static ALLOC: dhat::Alloc = dhat::Alloc;
+    #[tracing::instrument]
+    #[test]
+    fn writer_profiling() -> Result<()> {
+        use tracing_subscriber::layer::SubscriberExt;
+        #[global_allocator]
+        static ALLOC: dhat::Alloc = dhat::Alloc;
+
+        use tracing_subscriber::fmt;
+
+        tracing_subscriber::fmt::init();
+
+        let subscriber = fmt::layer().event_format(
+            fmt::format::Format::default()
+                .with_level(true)
+                .with_source_location(true)
+                .with_file(true),
+        );
+        tracing_subscriber::registry().with(subscriber);
+
+        let _profiler = dhat::Profiler::new_heap();
+
+        let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
+        let num_batch = 100;
+        let num_rows = 1000;
+        let num_columns = 100;
+        let str_len = 4;
+
+        let to_write = create_batch(num_columns, num_rows, str_len);
+        let temp_dir = tempfile::tempdir()?;
+        let path = temp_dir
+            .keep()
+            .join("test.parquet")
+            .into_os_string()
+            .into_string()
+            .unwrap();
+        let writer_io_config = LakeSoulIOConfigBuilder::new()
+            .with_files(vec![path.clone()])
+            .with_prefix(
+                tempfile::tempdir()?
+                    .keep()
+                    .into_os_string()
+                    .into_string()
+                    .unwrap(),
+            )
+            .with_thread_num(2)
+            .with_batch_size(num_rows)
+            .with_schema(to_write.schema())
+            .with_primary_keys(
+                (0..3)
+                    .map(|i| format!("col_{}", i))
+                    .collect::<Vec<String>>(),
+            )
+            .with_option(OPTION_KEY_MEM_LIMIT, format!("{}", 1024 * 1024 * 48))
+            .set_dynamic_partition(true)
+            .with_hash_bucket_num("4".to_string())
+            .build();
+
+        let io_session = Arc::new(LakeSoulIOSession::try_new(writer_io_config)?);
+
+        let mut writer =
+            SyncSendableMutableLakeSoulWriter::try_new(io_session.clone(), runtime)?;
+
+        let start = Instant::now();
+        for _ in 0..num_batch {
+            writer.write_batch(create_batch(num_columns, num_rows, str_len))?;
+        }
+        let flush_start = Instant::now();
+        writer.flush_and_close()?;
+        println!("flush cost: {}", flush_start.elapsed().as_millis());
+        println!(
+            "num_batch={}, num_columns={}, num_rows={}, str_len={}, cost_mills={}",
+            num_batch,
+            num_columns,
+            num_rows,
+            str_len,
+            start.elapsed().as_millis()
+        );
+
+        Ok(())
+    }
 
     #[test]
     fn test_writer_with_complex_pk_types() -> Result<()> {

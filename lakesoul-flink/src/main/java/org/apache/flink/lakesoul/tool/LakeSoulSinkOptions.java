@@ -168,6 +168,7 @@ public class  LakeSoulSinkOptions {
             .withDescription("mongodb database");
 
     public static final ConfigOption<Integer> BATCH_SIZE = ConfigOptions
+            // Jiax: rename to batch_size ?
             .key("lakesoul.io.batch.size")
             .intType()
             .defaultValue(1024)

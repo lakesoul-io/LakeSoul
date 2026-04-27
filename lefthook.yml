@@ -9,4 +9,4 @@ pre-push:
         - name: Rust Format
           run: cargo fmt --all -- --check
         - name: Rust Clippy
-          run: cargo clippy --all-targets --workspace -- -D warnings
+          run: cargo clippy --no-deps --all-features --all-targets --workspace -- -D warnings

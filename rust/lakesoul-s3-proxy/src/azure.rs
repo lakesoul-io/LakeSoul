@@ -925,7 +925,7 @@ impl HTTPHandler for AzureHandler {
             aws_req
                 .object
                 .into_iter()
-                .zip(split.into_iter())
+                .zip(split)
                 .try_for_each(|(mut obj, split)| {
                     let key = std::mem::take(&mut obj.key);
                     let caps = re.captures(split).ok_or(anyhow!(

@@ -6,12 +6,8 @@ pub fn qualify_path(path: &str) -> Result<String, LakeSoulMetaDataError> {
     match url::Url::parse(path) {
         Ok(mut url) => {
             match url.scheme() {
-                "s3" | "s3a" => {
-                    if url.domain().is_none() {
-                        return Err(LakeSoulMetaDataError::Other(
-                            "invalid s3 url".into(),
-                        ));
-                    }
+                "s3" | "s3a" if url.domain().is_none() => {
+                    return Err(LakeSoulMetaDataError::Other("invalid s3 url".into()));
                 }
                 _ => {}
             };

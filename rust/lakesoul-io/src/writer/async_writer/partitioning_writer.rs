@@ -10,14 +10,16 @@ use arrow_array::RecordBatch;
 use arrow_schema::{SchemaRef, SortOptions};
 use datafusion_common::DataFusionError;
 use datafusion_common_runtime::{JoinSet, SpawnedTask};
-use datafusion_execution::TaskContext;
 use datafusion_physical_expr::{
     LexOrdering, PhysicalSortExpr,
     expressions::{Column, col},
 };
 use datafusion_physical_plan::{
     ExecutionPlan, ExecutionPlanProperties, Partitioning, PhysicalExpr,
-    projection::ProjectionExec, sorts::sort::SortExec, stream::RecordBatchReceiverStream,
+    metrics::{ExecutionPlanMetricsSet, MetricsSet},
+    projection::ProjectionExec,
+    sorts::sort::SortExec,
+    stream::RecordBatchReceiverStream,
 };
 use datafusion_session::Session;
 use futures::{StreamExt, TryStreamExt};
@@ -27,13 +29,14 @@ use tokio::{sync::mpsc::Sender, time::Instant};
 use crate::{
     Result,
     config::{IOSchema, LakeSoulIOConfig, LakeSoulIOConfigBuilder},
-    helpers::transform::uniform_schema,
     helpers::{
         columnar_values_to_partition_desc, columnar_values_to_sub_path,
-        get_batch_memory_size, get_columnar_values,
+        get_batch_memory_size, get_columnar_values, transform::uniform_schema,
     },
-    physical_plan::repartition::RepartitionByRangeAndHashExec,
-    physical_plan::self_incremental_index_column::SelfIncrementalIndexColumnExec,
+    physical_plan::{
+        repartition::RepartitionByRangeAndHashExec,
+        self_incremental_index_column::SelfIncrementalIndexColumnExec,
+    },
     session::LakeSoulIOSession,
     utils::random_str,
 };
@@ -46,30 +49,37 @@ pub struct PartitioningAsyncWriter {
     /// The schema of the partitioning writer.
     schema: SchemaRef,
     /// The sender to async multi-part file writer.
-    sorter_sender: Sender<Result<RecordBatch, DataFusionError>>,
+    sorter_sender: Option<Sender<Result<RecordBatch, DataFusionError>>>,
     /// The join handle of the partitioning execution plan.
     spawned_task: Option<SpawnedTask<Result<Vec<FlushOutput>>>>,
     /// The external error of the partitioning execution plan.
     err: Option<Report>,
     /// The buffered size of the partitioning writer.
     buffered_size: u64,
+    /// The ['LakeSoulIOSession'] used by the partitioning writer.
+    io_session: Arc<LakeSoulIOSession>,
+    /// The metric set of the partitioning writer.
+    metrics: ExecutionPlanMetricsSet,
 }
 
 type NestedFlushOutputResult = Result<JoinSet<Result<Vec<FlushOutput>>>>;
 
 impl PartitioningAsyncWriter {
     pub fn try_new(io_session: Arc<LakeSoulIOSession>) -> Result<Self> {
-        // TODO: need clone?
         let io_config = io_session.io_config();
         let schema = io_config.target_schema.0.clone();
+        let metrics = ExecutionPlanMetricsSet::new();
         let receiver_stream_builder = RecordBatchReceiverStream::builder(
             schema.clone(),
             io_config.receiver_capacity,
         );
         let tx = receiver_stream_builder.tx();
         let recv_exec = ReceiverStreamExec::new(receiver_stream_builder, schema.clone());
-        let partitioning_exec =
-            PartitioningAsyncWriter::create_partitioning_exec(recv_exec, io_config)?;
+        let partitioning_exec = PartitioningAsyncWriter::create_partitioning_exec(
+            recv_exec,
+            io_config,
+            metrics.clone(),
+        )?;
 
         // launch one async task per *input* partition
 
@@ -97,8 +107,6 @@ impl PartitioningAsyncWriter {
         let mut spawned_tasks = vec![];
 
         let write_id = random_str(16);
-        // this task_ctx can be shared
-        let task_ctx = io_session.task_ctx();
 
         for i in 0..partitioning_exec.output_partitioning().partition_count() {
             let sink_task = SpawnedTask::spawn(Self::pull_and_sink(
@@ -107,7 +115,7 @@ impl PartitioningAsyncWriter {
                 LakeSoulIOConfigBuilder::from(writer_io_config.clone()),
                 Arc::new(range_partitions.clone()), // TODO clone and arc
                 write_id.clone(),
-                task_ctx.clone(),
+                io_session.clone(),
             ));
 
             // In a separate task, wait for each input to be done
@@ -119,16 +127,20 @@ impl PartitioningAsyncWriter {
 
         Ok(Self {
             schema,
-            sorter_sender: tx,
+            sorter_sender: Some(tx),
             spawned_task: Some(spawned_task),
             err: None,
             buffered_size: 0,
+            io_session,
+            metrics,
         })
     }
 
+    /// return [`RepartitionBydRangeAndHashExec`]
     fn create_partitioning_exec(
         input: ReceiverStreamExec,
         io_config: &LakeSoulIOConfig,
+        metrics: ExecutionPlanMetricsSet,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let mut aux_sort_cols = io_config.aux_sort_cols.clone();
         let input: Arc<dyn ExecutionPlan> = if io_config.stable_sort() {
@@ -222,6 +234,7 @@ impl PartitioningAsyncWriter {
                 sort_exec,
                 range_partitioning_expr,
                 hash_partitioning,
+                metrics,
             )?)
         };
 
@@ -234,9 +247,9 @@ impl PartitioningAsyncWriter {
         io_config_builder: LakeSoulIOConfigBuilder,
         range_partitions: Arc<Vec<String>>,
         write_id: String,
-        task_ctx: Arc<TaskContext>,
+        io_session: Arc<LakeSoulIOSession>,
     ) -> Result<JoinSet<Result<Vec<FlushOutput>>>> {
-        let mut data = input.execute(partition, task_ctx.clone())?;
+        let mut data = input.execute(partition, io_session.task_ctx())?;
         // O(nm), n = number of data fields, m = number of range partitions
         let schema_projection_excluding_range = data
             .schema()
@@ -284,11 +297,9 @@ impl PartitioningAsyncWriter {
                             .with_files(vec![file_absolute_path])
                             .build();
 
-                        let writer = MultiPartAsyncWriter::try_new_with_context(
-                            &config,
-                            task_ctx.clone(),
-                        )
-                        .await?;
+                        let new_session = Arc::new(io_session.with_io_config(config));
+
+                        let writer = MultiPartAsyncWriter::try_new(new_session).await?;
                         partitioned_writer
                             .insert(partition_desc.clone(), Box::new(writer));
                     }
@@ -303,7 +314,7 @@ impl PartitioningAsyncWriter {
                 }
                 // received abort signal
                 Err(e) => {
-                    // error!("{}", e);
+                    error!("received abort signal: {}", e);
                     err = Some(e);
                     break;
                 }
@@ -357,6 +368,7 @@ impl PartitioningAsyncWriter {
                         .collect::<Vec<_>>())
                 });
             }
+
             Ok(flush_join_set)
         }
     }
@@ -399,7 +411,11 @@ impl AsyncBatchWriter for PartitioningAsyncWriter {
         }
 
         let memory_size = get_batch_memory_size(&batch)? as u64;
-        let send_result = self.sorter_sender.send(Ok(batch)).await;
+        let sender = self
+            .sorter_sender
+            .as_ref()
+            .ok_or(report!("sorter sender not available"))?;
+        let send_result = sender.send(Ok(batch)).await;
         self.buffered_size += memory_size;
         match send_result {
             Ok(_) => Ok(()),
@@ -430,25 +446,32 @@ impl AsyncBatchWriter for PartitioningAsyncWriter {
         }
     }
 
-    #[instrument(skip(self), err)]
-    async fn flush_and_close(self: Box<Self>) -> Result<Vec<FlushOutput>> {
-        if let Some(join_handle) = self.spawned_task {
-            let sender = self.sorter_sender;
+    async fn flush(&mut self) -> Result<Vec<FlushOutput>> {
+        if let Some(join_handle) = self.spawned_task.take() {
+            let sender = self
+                .sorter_sender
+                .take()
+                .ok_or(report!("already flushed or aborted"))?;
             drop(sender);
+
             let span = info_span!("partitioning writer flush");
             let _guard = span.enter();
+
             let res = join_handle.await?;
+
             info!("flush completed");
             res
         } else {
-            bail!("writer already aborted, cannot flush")
+            bail!("writer already aborted or flushed, cannot flush")
         }
     }
 
-    #[instrument(skip(self), err)]
-    async fn abort_and_close(self: Box<Self>) -> Result<()> {
-        if let Some(join_handle) = self.spawned_task {
-            let sender = self.sorter_sender;
+    async fn abort(&mut self) -> Result<()> {
+        if let Some(join_handle) = self.spawned_task.take() {
+            let sender = self
+                .sorter_sender
+                .take()
+                .ok_or(report!("already flushed or aborted"))?;
             // send abort signal to the task
             sender
                 .send(Err(DataFusionError::Internal("external abort".to_string())))
@@ -465,11 +488,39 @@ impl AsyncBatchWriter for PartitioningAsyncWriter {
         }
     }
 
+    async fn close(mut self: Box<Self>) -> Result<()> {
+        Ok(())
+    }
+
+    #[instrument(skip(self), err)]
+    async fn flush_and_close(mut self: Box<Self>) -> Result<Vec<FlushOutput>> {
+        let this = &mut *self;
+        let output = this.flush().await?;
+        self.close().await?;
+        Ok(output)
+    }
+
+    #[instrument(skip(self), err)]
+    async fn abort_and_close(mut self: Box<Self>) -> Result<()> {
+        let this = &mut *self;
+        this.abort().await?;
+        self.close().await
+    }
+
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }
 
     fn buffered_size(&self) -> u64 {
         self.buffered_size
+    }
+
+    fn io_session(&self) -> &Arc<LakeSoulIOSession> {
+        &self.io_session
+    }
+
+    /// Get the metrics of this writer.
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
     }
 }

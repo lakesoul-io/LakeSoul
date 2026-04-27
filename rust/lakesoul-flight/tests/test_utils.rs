@@ -47,12 +47,9 @@ impl TestServer {
 impl Drop for TestServer {
     fn drop(&mut self) {
         self.process.kill().unwrap();
-        match self.process.wait().unwrap().code() {
-            Some(n) => {
-                // this means error occured
-                panic!("server error code: {}", n)
-            }
-            None => return, // kill by sig is ok
+        if let Some(n) = self.process.wait().unwrap().code() {
+            // this means error occured
+            panic!("server error code: {}", n)
         }
     }
 }
@@ -153,5 +150,5 @@ pub async fn handle_sql(
     sql: &str,
 ) -> Result<Vec<RecordBatch>> {
     let info = client.execute(sql.to_string(), None).await?;
-    Ok(handle_flight_info(&info, client).await?)
+    handle_flight_info(&info, client).await
 }
