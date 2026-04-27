@@ -69,12 +69,13 @@ async fn run_sort_test_with_limited_memory(
             .with_object_store_option("fs.s3a.path.style.access", "false")
             .with_object_store_option("fs.defaultFS", "file://")
             .build();
-        cfg_if::cfg_if! {
-            if #[cfg(feature = "test-utils")] {
+        cfg_select! {
+            feature =  "test-utils" => {
                 let mut io_session = lakesoul_io::session::LakeSoulIOSession::try_new(io_config)?;
                 io_session.set_logged_pool();
                 lakesoul_io::writer::create_writer(Arc::new(io_session)).await?
-            } else {
+            }
+            _ => {
                 lakesoul_io::writer::create_writer_with_io_config(io_config).await?
             }
         }

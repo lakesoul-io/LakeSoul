@@ -33,7 +33,6 @@ use crate::{
         columnar_values_to_partition_desc, columnar_values_to_sub_path,
         get_batch_memory_size, get_columnar_values, transform::uniform_schema,
     },
-    mem::pool::MainMemoryPool,
     physical_plan::{
         repartition::RepartitionByRangeAndHashExec,
         self_incremental_index_column::SelfIncrementalIndexColumnExec,
@@ -79,7 +78,6 @@ impl PartitioningAsyncWriter {
         let partitioning_exec = PartitioningAsyncWriter::create_partitioning_exec(
             recv_exec,
             io_config,
-            io_session.main_pool().clone(),
             metrics.clone(),
         )?;
 
@@ -142,7 +140,6 @@ impl PartitioningAsyncWriter {
     fn create_partitioning_exec(
         input: ReceiverStreamExec,
         io_config: &LakeSoulIOConfig,
-        main_pool: Arc<MainMemoryPool>,
         metrics: ExecutionPlanMetricsSet,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let mut aux_sort_cols = io_config.aux_sort_cols.clone();
@@ -237,8 +234,6 @@ impl PartitioningAsyncWriter {
                 sort_exec,
                 range_partitioning_expr,
                 hash_partitioning,
-                main_pool,
-                io_config.repartition_mem_ratio(),
                 metrics,
             )?)
         };

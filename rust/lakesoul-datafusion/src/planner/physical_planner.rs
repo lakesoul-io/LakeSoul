@@ -23,7 +23,6 @@ use datafusion::logical_expr::{DmlStatement, WriteOp};
 use lakesoul_io::helpers::{
     column_names_to_physical_expr, column_names_to_physical_sort_expr,
 };
-use lakesoul_io::mem::pool::MainMemoryPool;
 use lakesoul_io::physical_plan::RepartitionByRangeAndHashExec;
 use rootcause::compat::boxed_error::IntoBoxedError;
 
@@ -156,10 +155,6 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                                     sort_exec,
                                     range_partitioning_expr,
                                     hash_partitioning,
-                                    // todo(jiax): add solid interface
-                                    Arc::new(MainMemoryPool::new(usize::MAX)),
-                                    // todo(jiax): add solid interface
-                                    0.45,
                                     ExecutionPlanMetricsSet::new(),
                                 )
                                 .map_err(|report| {

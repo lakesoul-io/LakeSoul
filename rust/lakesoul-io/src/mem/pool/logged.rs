@@ -13,8 +13,6 @@ use std::{
 use datafusion_execution::memory_pool::MemoryPool;
 use parking_lot::Mutex;
 
-use crate::mem::pool::MainMemoryPool;
-
 #[derive(Debug)]
 struct TrackedConsumer {
     name: String,
@@ -50,7 +48,7 @@ impl TrackedConsumer {
 
 #[derive(Debug)]
 pub struct LoggedMemoryPool {
-    inner: Arc<MainMemoryPool>,
+    inner: Arc<dyn MemoryPool>,
     top: NonZeroUsize,
     tracked_consumers: Mutex<HashMap<usize, TrackedConsumer>>,
     log_sender: Option<std::sync::mpsc::Sender<String>>,
@@ -59,7 +57,7 @@ pub struct LoggedMemoryPool {
 }
 
 impl LoggedMemoryPool {
-    pub fn new(inner: Arc<MainMemoryPool>, top: NonZeroUsize) -> Self {
+    pub fn new(pool: Arc<dyn MemoryPool>, top: NonZeroUsize) -> Self {
         let (tx, rx) = std::sync::mpsc::channel::<String>();
         let join_handle = std::thread::spawn(move || {
             let f = OpenOptions::new()
@@ -76,7 +74,7 @@ impl LoggedMemoryPool {
         });
 
         Self {
-            inner,
+            inner: pool,
             top,
             tracked_consumers: Mutex::new(HashMap::new()),
             log_sender: Some(tx),

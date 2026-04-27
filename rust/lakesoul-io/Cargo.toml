@@ -94,7 +94,6 @@ tracing = { workspace = true }
 # error
 rootcause = { workspace = true }
 fs-err = "3.1.0"
-cfg-if = "1.0"
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { version = "0.6.0", features = [

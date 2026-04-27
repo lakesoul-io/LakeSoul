@@ -28,7 +28,7 @@ use datafusion_datasource::source::DataSource;
 use datafusion_datasource::{ListingTableUrl, PartitionedFile, TableSchema};
 use datafusion_datasource_parquet::ParquetFormat;
 use datafusion_execution::config::SessionConfig;
-use datafusion_execution::memory_pool::FairSpillPool;
+use datafusion_execution::memory_pool::{FairSpillPool, GreedyMemoryPool};
 use datafusion_execution::runtime_env::RuntimeEnvBuilder;
 use datafusion_execution::{TaskContext, runtime_env::RuntimeEnv};
 use datafusion_expr::execution_props::ExecutionProps;
@@ -51,7 +51,6 @@ use crate::config::LakeSoulIOConfig;
 use crate::file_format::LakeSoulParquetFormat;
 use crate::helpers::transform::uniform_schema;
 use crate::helpers::{get_file_object_meta, infer_schema};
-use crate::mem::pool::MainMemoryPool;
 use crate::physical_plan::empty_schema::EmptyScanCountExec;
 use crate::utils::random_str;
 
@@ -195,7 +194,6 @@ struct IOSessionInner {
     pub session_id: String,
     pub session_config: SessionConfig,
     pub runtime_env: Arc<RuntimeEnv>,
-    pub main_pool: Arc<MainMemoryPool>,
     pub listing_metas: OnceCell<ListingMetas>,
     pub file_format: OnceCell<Arc<LakeSoulParquetFormat>>,
     pub file_schema: OnceCell<Arc<Schema>>,
@@ -228,7 +226,7 @@ impl LakeSoulIOSession {
 
         // runtime
         let mut runtime_conf = RuntimeEnvBuilder::new();
-        let pool = if let Some(pool_size) = io_config.pool_size() {
+        if let Some(pool_size) = io_config.pool_size() {
             // for now all is default
             sess_conf.options_mut().execution.spill_compression =
                 SpillCompression::Uncompressed;
@@ -252,9 +250,9 @@ impl LakeSoulIOSession {
             std::fs::create_dir_all(&dir)?;
             runtime_conf = runtime_conf.with_temp_file_path(&dir);
 
-            let main_pool = Arc::new(MainMemoryPool::new(pool_size));
+            let mem_pool = Arc::new(GreedyMemoryPool::new(pool_size));
 
-            runtime_conf = runtime_conf.with_memory_pool(main_pool.clone());
+            runtime_conf = runtime_conf.with_memory_pool(mem_pool);
 
             info!(
                 "NativeIO spill config with directory {}, pool size {}, \
@@ -264,11 +262,7 @@ impl LakeSoulIOSession {
                 io_config.mem_limit(),
                 reserve_bytes
             );
-            main_pool
-        } else {
-            // Unbound
-            Arc::new(MainMemoryPool::new(usize::MAX))
-        };
+        }
 
         let runtime = runtime_conf.build()?;
         // firstly, parse default fs if exist
@@ -327,7 +321,6 @@ impl LakeSoulIOSession {
             file_schema: OnceCell::new(),
             partition_schema: OnceCell::new(),
             table_schema: OnceCell::new(),
-            main_pool: pool,
         };
         Ok(Self {
             io_config,
@@ -341,19 +334,10 @@ impl LakeSoulIOSession {
         io_config: LakeSoulIOConfig,
         task_ctx: Arc<TaskContext>,
     ) -> Self {
-        let pool_size = {
-            match task_ctx.memory_pool().memory_limit() {
-                datafusion_execution::memory_pool::MemoryLimit::Infinite => usize::MAX,
-                datafusion_execution::memory_pool::MemoryLimit::Finite(sz) => sz,
-                datafusion_execution::memory_pool::MemoryLimit::Unknown => usize::MAX,
-            }
-        };
-
         let inner = Arc::new(IOSessionInner {
             session_id: task_ctx.session_id().clone(),
             session_config: task_ctx.session_config().clone(),
             runtime_env: task_ctx.runtime_env().clone(),
-            main_pool: Arc::new(MainMemoryPool::new(pool_size)),
             listing_metas: OnceCell::new(),
             file_format: OnceCell::new(),
             file_schema: OnceCell::new(),
@@ -365,10 +349,6 @@ impl LakeSoulIOSession {
             inner,
             execution_props: ExecutionProps::new(),
         }
-    }
-
-    pub fn main_pool(&self) -> &Arc<MainMemoryPool> {
-        &self.inner.main_pool
     }
 
     pub fn io_config(&self) -> &LakeSoulIOConfig {
@@ -868,7 +848,7 @@ impl LakeSoulIOSession {
 
     #[cfg(feature = "test-utils")]
     pub fn set_logged_pool(&mut self) {
-        let mem_pool = { self.inner.main_pool.clone() };
+        let mem_pool = self.inner.runtime_env.memory_pool.clone();
         let memory_pool = crate::mem::pool::LoggedMemoryPool::new(
             mem_pool,
             std::num::NonZeroUsize::new(5).unwrap(),

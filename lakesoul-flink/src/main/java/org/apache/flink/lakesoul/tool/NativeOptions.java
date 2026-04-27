@@ -31,12 +31,6 @@ public class NativeOptions {
                     .noDefaultValue()
                     .withDescription("Option to set mem pool spill dir");
 
-    public static final ConfigOption<String> REPARTITION_MEM_RATION =
-            key("lakesoul.native_writer.repartition_mem_ratio")
-                    .stringType()
-                    .defaultValue("0.0")
-                    .withDescription("Option to set the memory use in repartition state");
-
     public static final ConfigOption<String> HASH_BUCKET_ID =
             key("hash_bucket_id")
                     .stringType()
