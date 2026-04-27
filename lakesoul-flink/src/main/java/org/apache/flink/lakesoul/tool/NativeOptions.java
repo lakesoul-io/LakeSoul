@@ -53,7 +53,6 @@ public class NativeOptions {
             MEM_LIMIT,
             KEEP_ORDERS,
             STABLE_SORT,
-            SPILL_MEM_POOL_SIZE,
-            REPARTITION_MEM_RATION
+            SPILL_MEM_POOL_SIZE
     );
 }
