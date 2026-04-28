@@ -11,6 +11,8 @@ PRESTO_SERVER_BINARY=$(realpath $1)
 if [ "$2" = "start" ]; then
   export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2
   export RUST_LOG=info
+  export LAKESOUL_IO_USE_V2_MERGE=true
+  export LAKESOUL_IO_FILE_META_CACHE_LIMIT=268435456
   nohup $PRESTO_SERVER_BINARY \
   -etc_dir $WORKER_ETC_DIR \
   -logtostderr true \

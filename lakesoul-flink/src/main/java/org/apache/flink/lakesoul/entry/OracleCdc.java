@@ -15,6 +15,7 @@ import org.apache.flink.cdc.connectors.oracle.source.OracleSourceBuilder;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTableSinkStreamBuilder;
+import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.BinaryDebeziumDeserializationSchema;
 import org.apache.flink.lakesoul.types.BinarySourceRecord;
@@ -73,7 +74,7 @@ public class OracleCdc {
         for (String schema : schemaList) {
             dbManager.importOrSyncLakeSoulNamespace(schema);
         }
-        Configuration globalConfig = GlobalConfiguration.loadConfiguration();
+        Configuration globalConfig = FlinkUtil.IOConfigs.getInstance().conf;
         String warehousePath = databasePrefixPath == null ? globalConfig.getString(WAREHOUSE_PATH.key(), null): databasePrefixPath;
         Configuration conf = new Configuration();
         conf.set(LakeSoulSinkOptions.USE_CDC, true);

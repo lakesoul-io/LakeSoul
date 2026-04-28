@@ -195,7 +195,7 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
                 committables.addAll(entry.getValue().prepareCommit(dmlType, sourcePartitionInfo));
             }
         }
-        LOG.info("PrepareCommit with conf={}, \n activeBuckets={}, \n committables={}", conf, activeBuckets, committables);
+        LOG.info("PrepareCommit activeBuckets={}, \n committables={}", activeBuckets, committables);
         return committables;
     }
 

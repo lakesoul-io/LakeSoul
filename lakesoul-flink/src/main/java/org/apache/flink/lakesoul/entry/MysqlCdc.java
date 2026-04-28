@@ -11,8 +11,8 @@ import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.cdc.connectors.mysql.source.MySqlSource;
 import org.apache.flink.cdc.connectors.mysql.source.MySqlSourceBuilder;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTableSinkStreamBuilder;
+import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.BinaryDebeziumDeserializationSchema;
 import org.apache.flink.lakesoul.types.BinarySourceRecord;
@@ -66,7 +66,7 @@ public class MysqlCdc {
                 true);
 
         mysqlDBManager.importOrSyncLakeSoulNamespace(dbName);
-        Configuration globalConfig = GlobalConfiguration.loadConfiguration();
+        Configuration globalConfig = FlinkUtil.IOConfigs.getInstance().conf;
         String warehousePath = databasePrefixPath == null ? globalConfig.getString(WAREHOUSE_PATH.key(), null): databasePrefixPath;
         Configuration conf = new Configuration();
         if (sinkDBName == null){

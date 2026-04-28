@@ -14,14 +14,14 @@ import org.apache.flink.cdc.connectors.mysql.source.MySqlSourceBuilder;
 import org.apache.flink.cdc.connectors.oracle.source.OracleSourceBuilder;
 import org.apache.flink.cdc.connectors.postgres.source.PostgresSourceBuilder;
 import org.apache.flink.cdc.connectors.sqlserver.source.SqlServerSourceBuilder;
-import org.apache.flink.lakesoul.entry.sql.flink.LakeSoulInAndOutputJobListener;
+import org.apache.flink.lakesoul.tool.LakeSoulInAndOutputJobListener;
 import org.apache.flink.lakesoul.entry.sql.utils.FileUtil;
+import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.tool.JobOptions;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTableSinkStreamBuilder;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.BinaryDebeziumDeserializationSchema;
@@ -115,7 +115,7 @@ public class JdbcCDC {
         int bucketParallelism = parameter.getInt(BUCKET_PARALLELISM.key());
         int checkpointInterval = parameter.getInt(JOB_CHECKPOINT_INTERVAL.key(),
                 JOB_CHECKPOINT_INTERVAL.defaultValue());//mill second
-        Configuration globalConfig = GlobalConfiguration.loadConfiguration();
+        Configuration globalConfig = FlinkUtil.IOConfigs.getInstance().conf;
         String warehousePath = databasePrefixPath == null ? globalConfig.getString("flink.warehouse.dir", null): databasePrefixPath;
         Configuration conf = new Configuration();
         if (sinkDBName == null){
@@ -244,7 +244,7 @@ public class JdbcCDC {
 
         MySqlSource<BinarySourceRecord> mySqlSource = sourceBuilder.build();
         NameSpaceManager manager = new NameSpaceManager();
-        manager.importOrSyncLakeSoulNamespace(dbName);
+        manager.importOrSyncLakeSoulNamespace(sinkDBName);
 
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;
@@ -290,9 +290,7 @@ public class JdbcCDC {
         PostgresSourceBuilder.PostgresIncrementalSource<BinarySourceRecord> pgSourceBuilder = pgSourcebuilder.build();
 
         NameSpaceManager manager = new NameSpaceManager();
-        for (String schema : schemaList) {
-            manager.importOrSyncLakeSoulNamespace(schema);
-        }
+        manager.importOrSyncLakeSoulNamespace(sinkDBName);
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;
         if (lineageUrl != null) {
@@ -339,9 +337,7 @@ public class JdbcCDC {
                         .build();
 
         NameSpaceManager manager = new NameSpaceManager();
-        for (String schema : schemaList) {
-            manager.importOrSyncLakeSoulNamespace(schema);
-        }
+        manager.importOrSyncLakeSoulNamespace(sinkDBName);
 
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;
@@ -380,8 +376,7 @@ public class JdbcCDC {
                         .startupOptions(StartupOptions.initial())
                         .build();
         NameSpaceManager manager = new NameSpaceManager();
-        String schema = tableList[0].split("\\.")[0];
-        manager.importOrSyncLakeSoulNamespace(schema);
+        manager.importOrSyncLakeSoulNamespace(sinkDBName);
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
         env.getCheckpointConfig().enableUnalignedCheckpoints(false);
         context.env = env;
@@ -419,7 +414,7 @@ public class JdbcCDC {
                         .deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert, conf.getString(WAREHOUSE_PATH), sinkDBName))
                         .build();
         NameSpaceManager manager = new NameSpaceManager();
-        manager.importOrSyncLakeSoulNamespace(dbName);
+        manager.importOrSyncLakeSoulNamespace(sinkDBName);
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;
         if (lineageUrl != null){

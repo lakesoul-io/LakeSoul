@@ -39,6 +39,7 @@ use futures::StreamExt;
 use rootcause::{bail, compat::boxed_error::IntoBoxedError};
 use tokio::{runtime::Runtime, sync::Mutex, task::JoinHandle};
 
+use crate::session::GLOBAL_RUNTIME;
 use crate::{
     Result,
     config::LakeSoulIOConfig,
@@ -291,6 +292,19 @@ impl SyncSendableMutableLakeSoulReader {
         SyncSendableMutableLakeSoulReader {
             inner: Arc::new(Mutex::new(reader)),
             runtime: Arc::new(runtime),
+            schema: None,
+        }
+    }
+
+    /// Creates a new SyncSendableMutableLakeSoulReader with the given reader and use global runtime.
+    ///
+    /// # Arguments
+    ///
+    /// * `reader` - The LakeSoulReader instance to wrap
+    pub fn new_with_global_runtime(reader: LakeSoulReader) -> Self {
+        SyncSendableMutableLakeSoulReader {
+            inner: Arc::new(Mutex::new(reader)),
+            runtime: GLOBAL_RUNTIME.clone(),
             schema: None,
         }
     }

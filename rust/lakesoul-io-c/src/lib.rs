@@ -660,6 +660,22 @@ pub extern "C" fn create_lakesoul_reader_from_config(
     convert_to_nonnull(result)
 }
 
+/// Create a new [`SyncSendableMutableLakeSoulReader`] from the [`IOConfig`] with global runtime
+/// and return a [`Reader`] wrapped in [`CResult`]
+#[unsafe(no_mangle)]
+pub extern "C" fn create_lakesoul_reader_from_config_with_global_runtime(
+    config: NonNull<IOConfig>,
+) -> NonNull<CResult<Reader>> {
+    let config: LakeSoulIOConfig = from_opaque(config);
+    let result = match LakeSoulReader::new(config) {
+        Ok(reader) => CResult::<Reader>::new(
+            SyncSendableMutableLakeSoulReader::new_with_global_runtime(reader),
+        ),
+        Err(e) => CResult::<Reader>::error(e.to_string()),
+    };
+    convert_to_nonnull(result)
+}
+
 /// Check if the [`Reader`] is created successfully.
 #[unsafe(no_mangle)]
 pub extern "C" fn check_reader_created(
