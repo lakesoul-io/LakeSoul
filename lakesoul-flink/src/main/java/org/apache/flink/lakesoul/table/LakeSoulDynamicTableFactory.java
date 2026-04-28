@@ -33,7 +33,8 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
 
     @Override
     public DynamicTableSink createDynamicTableSink(Context context) {
-        Configuration options = FlinkUtil.IOConfigs.getInstance().conf;
+        Configuration options = new Configuration();
+        options.addAll(FlinkUtil.IOConfigs.getInstance().conf);
         options.addAll((Configuration) FactoryUtil.createTableFactoryHelper(this, context).getOptions());
         FlinkUtil.setLocalTimeZone(options,
                 FlinkUtil.getLocalTimeZone(((TableConfig) context.getConfiguration()).getConfiguration()));
@@ -76,7 +77,8 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
 
     @Override
     public DynamicTableSource createDynamicTableSource(Context context) {
-        Configuration options = FlinkUtil.IOConfigs.getInstance().conf;
+        Configuration options = new Configuration();
+        options.addAll(FlinkUtil.IOConfigs.getInstance().conf);
         options.addAll((Configuration) FactoryUtil.createTableFactoryHelper(this, context).getOptions());
         FlinkUtil.setLocalTimeZone(options,
                 FlinkUtil.getLocalTimeZone(((TableConfig) context.getConfiguration()).getConfiguration()));
