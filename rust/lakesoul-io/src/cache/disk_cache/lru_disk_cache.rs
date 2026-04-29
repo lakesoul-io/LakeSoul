@@ -282,7 +282,6 @@ impl LruDiskCache {
         }
         let rel_path = key.as_ref();
         let path = self.rel_to_abs_path(rel_path);
-        fs::create_dir_all(path.parent().expect("Bad path?"))?;
         let mut files_lock = self.file_lock.write().unwrap();
         if files_lock.contains_key(rel_path) {
             return Ok(());
