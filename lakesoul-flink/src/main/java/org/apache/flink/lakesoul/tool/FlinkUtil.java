@@ -383,11 +383,11 @@ public class FlinkUtil {
         return splited[splited.length - 1];
     }
 
-    private static class IOConfigs {
+    public static class IOConfigs {
         public final Configuration conf;
         public final org.apache.hadoop.conf.Configuration hadoopConf;
 
-        public IOConfigs(Configuration conf, org.apache.hadoop.conf.Configuration hadoopConf) {
+        private IOConfigs(Configuration conf, org.apache.hadoop.conf.Configuration hadoopConf) {
             this.conf = conf;
             this.hadoopConf = hadoopConf;
         }
@@ -414,7 +414,6 @@ public class FlinkUtil {
             return INSTANCE;
         }
     }
-
 
     public static void setIOConfigs(Configuration conf, NativeIOBase io) {
         IOConfigs configs = IOConfigs.getInstance();
@@ -467,7 +466,9 @@ public class FlinkUtil {
     public static void setFSConf(Configuration conf, String confKey, String fsConfKey, NativeIOBase io) {
         String value = conf.getString(confKey, "");
         if (!value.isEmpty()) {
-            LOG.info("Set native object store option {}={}", fsConfKey, value);
+            if (!fsConfKey.toLowerCase().contains("secret")) {
+                LOG.info("Set native object store option {}={}", fsConfKey, value);
+            }
             io.setObjectStoreOption(fsConfKey, value);
         }
     }

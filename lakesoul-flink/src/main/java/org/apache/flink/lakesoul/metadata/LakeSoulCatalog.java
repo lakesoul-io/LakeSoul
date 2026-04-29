@@ -13,6 +13,7 @@ import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.text.StringEscapeUtils;
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
@@ -338,7 +339,7 @@ public class LakeSoulCatalog implements Catalog {
             if (tableOptions.containsKey(TABLE_PATH)) {
                 path = tableOptions.get(TABLE_PATH);
             } else {
-                String flinkWarehouseDir = GlobalConfiguration.loadConfiguration().get(FLINK_WAREHOUSE_DIR);
+                String flinkWarehouseDir = FlinkUtil.IOConfigs.getInstance().conf.get(FLINK_WAREHOUSE_DIR);
                 if (null != flinkWarehouseDir) {
                     path = String.join("/", flinkWarehouseDir, tablePath.getDatabaseName(), tablePath.getObjectName());
                 } else {

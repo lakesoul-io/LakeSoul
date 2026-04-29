@@ -282,7 +282,6 @@ impl LruDiskCache {
         }
         let rel_path = key.as_ref();
         let path = self.rel_to_abs_path(rel_path);
-        fs::create_dir_all(path.parent().expect("Bad path?"))?;
         let mut files_lock = self.file_lock.write().unwrap();
         if files_lock.contains_key(rel_path) {
             return Ok(());
@@ -498,16 +497,16 @@ mod tests {
     fn test_insert_bytes() {
         let f = TestFixture::new();
         let c = LruDiskCache::new(f.tmp(), 25).unwrap();
-        c.insert_bytes("a/b/c", &[0; 10]).unwrap();
-        assert!(c.contains_key("a/b/c"));
-        c.insert_bytes("a/b/d", &[0; 10]).unwrap();
+        c.insert_bytes("abc", &[0; 10]).unwrap();
+        assert!(c.contains_key("abc"));
+        c.insert_bytes("abd", &[0; 10]).unwrap();
         assert_eq!(c.size(), 20);
         // Adding this third file should put the cache above the limit.
-        c.insert_bytes("x/y/z", &[0; 10]).unwrap();
+        c.insert_bytes("xyz", &[0; 10]).unwrap();
         assert_eq!(c.size(), 20);
         // The least-recently-used file should have been removed.
-        assert!(!c.contains_key("a/b/c"));
-        assert!(!f.tmp().join("a/b/c").exists());
+        assert!(!c.contains_key("abc"));
+        assert!(!f.tmp().join("abc").exists());
     }
 
     #[test]

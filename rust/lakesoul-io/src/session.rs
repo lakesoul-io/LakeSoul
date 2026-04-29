@@ -5,7 +5,7 @@
 use std::any::Any;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::iter::zip;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use arrow_schema::{Schema, SchemaBuilder, SchemaRef};
 use datafusion::config::SpillCompression;
@@ -27,6 +27,10 @@ use datafusion_datasource::file_scan_config::{FileScanConfig, FileScanConfigBuil
 use datafusion_datasource::source::DataSource;
 use datafusion_datasource::{ListingTableUrl, PartitionedFile, TableSchema};
 use datafusion_datasource_parquet::ParquetFormat;
+use datafusion_execution::cache::cache_manager::CacheManagerConfig;
+use datafusion_execution::cache::cache_unit::{
+    DefaultFileStatisticsCache, DefaultFilesMetadataCache, DefaultListFilesCache,
+};
 use datafusion_execution::config::SessionConfig;
 use datafusion_execution::memory_pool::{FairSpillPool, GreedyMemoryPool};
 use datafusion_execution::runtime_env::RuntimeEnvBuilder;
@@ -44,6 +48,7 @@ use datafusion_session::Session;
 use object_store::ObjectMeta;
 use rootcause::prelude::ResultExt;
 use rootcause::{Report, report};
+use tokio::runtime::{Builder, Runtime};
 use tokio::sync::OnceCell;
 
 use crate::byte_size;
@@ -53,6 +58,44 @@ use crate::helpers::transform::uniform_schema;
 use crate::helpers::{get_file_object_meta, infer_schema};
 use crate::physical_plan::empty_schema::EmptyScanCountExec;
 use crate::utils::random_str;
+
+// Define the global static runtime
+pub static GLOBAL_RUNTIME: LazyLock<Arc<Runtime>> = LazyLock::new(|| {
+    let threads = std::env::var("LAKESOUL_IO_WORKER_THREADS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4); // Default to 4
+    info!("global tokio runtime threads: {}", threads);
+    Arc::new(
+        Builder::new_multi_thread()
+            .worker_threads(threads) // Customize as needed
+            .max_blocking_threads(threads * 2)
+            .enable_all()
+            .build()
+            .expect("Failed to create global runtime"),
+    )
+});
+
+static GLOBAL_META_CACHE: LazyLock<CacheManagerConfig> = LazyLock::new(|| {
+    let file_meta_cache_limit = std::env::var("LAKESOUL_IO_FILE_META_CACHE_LIMIT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    info!("file metadata cache limit: {}", file_meta_cache_limit);
+    if file_meta_cache_limit == 0 {
+        CacheManagerConfig::default().with_metadata_cache_limit(0)
+    } else {
+        CacheManagerConfig::default()
+            .with_list_files_cache(Some(Arc::new(DefaultListFilesCache::default())))
+            .with_files_statistics_cache(Some(Arc::new(
+                DefaultFileStatisticsCache::default(),
+            )))
+            .with_file_metadata_cache(Some(Arc::new(DefaultFilesMetadataCache::new(
+                file_meta_cache_limit,
+            ))))
+            .with_metadata_cache_limit(file_meta_cache_limit)
+    }
+});
 
 /// Creates a new session context
 ///
@@ -111,6 +154,7 @@ pub fn create_session_context_with_planner(
         let memory_pool = FairSpillPool::new(pool_size);
         runtime_conf = runtime_conf.with_memory_pool(Arc::new(memory_pool));
     }
+    runtime_conf = runtime_conf.with_cache_manager(GLOBAL_META_CACHE.clone());
     let runtime = runtime_conf.build()?;
 
     // firstly, parse default fs if exist
@@ -226,6 +270,7 @@ impl LakeSoulIOSession {
 
         // runtime
         let mut runtime_conf = RuntimeEnvBuilder::new();
+        runtime_conf = runtime_conf.with_cache_manager(GLOBAL_META_CACHE.clone());
         if let Some(pool_size) = io_config.pool_size() {
             // for now all is default
             sess_conf.options_mut().execution.spill_compression =

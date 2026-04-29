@@ -14,7 +14,7 @@ import org.apache.flink.connector.base.DeliveryGuarantee;
 import org.apache.flink.connector.mongodb.sink.MongoSink;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.RestOptions;
-import org.apache.flink.lakesoul.entry.sql.flink.LakeSoulInAndOutputJobListener;
+import org.apache.flink.lakesoul.tool.LakeSoulInAndOutputJobListener;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
 import org.apache.flink.lakesoul.tool.JobOptions;
 import org.apache.flink.streaming.api.CheckpointingMode;
@@ -36,7 +36,6 @@ import java.sql.*;
 import java.util.*;
 import java.util.stream.Collectors;
 
-import static org.apache.flink.lakesoul.entry.MongoSinkUtils.*;
 import static org.apache.flink.lakesoul.tool.JobOptions.JOB_CHECKPOINT_INTERVAL;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkDatabasesOptions.*;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkDatabasesOptions.IS_TABLE_EXISTS;

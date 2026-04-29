@@ -12,6 +12,7 @@ import io.debezium.data.geometry.Point;
 import io.debezium.time.*;
 import io.debezium.time.Date;
 import io.debezium.time.Year;
+import org.apache.commons.lang3.time.DateUtils;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.cdc.connectors.mongodb.internal.MongoDBEnvelope;
 import org.apache.flink.cdc.connectors.shaded.org.apache.kafka.connect.data.Decimal;
@@ -36,8 +37,10 @@ import org.slf4j.LoggerFactory;
 import java.io.Serializable;
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
+import java.text.ParseException;
 import java.time.*;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.*;
 
 import static org.apache.flink.cdc.debezium.event.DebeziumSchemaDataTypeInference.DEFAULT_DECIMAL_PRECISION;
@@ -462,21 +465,21 @@ public class LakeSoulRecordConvert implements Serializable {
         if (topicsPartitionFields.containsKey(tableName)) {
             List<String> partitionColls = topicsPartitionFields.get(tableName);
             List<Field> fieldNames = schema.fields();
-            for (Field fieldName : fieldNames) {
-                if (partitionColls.contains(fieldName.name()) ||
-                        partitionColls.contains("pt_" + fieldName.name() + "_dt")) {
-                    if (fieldName.schema().name() != null
-                            && (ZonedTimestamp.SCHEMA_NAME.equals(fieldName.schema().name())
-                            || ZonedTime.SCHEMA_NAME.equals(fieldName.schema().name()))
-                            || Timestamp.SCHEMA_NAME.equals(fieldName.schema().name())
-                            || Date.SCHEMA_NAME.equals(fieldName.schema().name())
-                            || Time.SCHEMA_NAME.equals(fieldName.schema().name())
-                            || Schema.Type.INT64.getName().equals(fieldName.schema().name())
-                            || ZonedTimestamp.SCHEMA_NAME.equals(fieldName.schema().name())
-                            || MicroTimestamp.SCHEMA_NAME.equals(fieldName.schema().name())
-                            || MicroTime.SCHEMA_NAME.equals(fieldName.schema().name())
-                            || fieldName.schema().type().getName().equalsIgnoreCase("INT64")) {
-                        return fieldName.name();
+            for (Field field : fieldNames) {
+                if (partitionColls.contains(field.name()) ||
+                        partitionColls.contains("pt_" + field.name() + "_dt")) {
+                    if (field.schema().name() != null
+                            && (ZonedTimestamp.SCHEMA_NAME.equals(field.schema().name())
+                            || ZonedTime.SCHEMA_NAME.equals(field.schema().name()))
+                            || Timestamp.SCHEMA_NAME.equals(field.schema().name())
+                            || Date.SCHEMA_NAME.equals(field.schema().name())
+                            || Time.SCHEMA_NAME.equals(field.schema().name())
+                            || Schema.Type.INT64.getName().equals(field.schema().name())
+                            || ZonedTimestamp.SCHEMA_NAME.equals(field.schema().name())
+                            || MicroTimestamp.SCHEMA_NAME.equals(field.schema().name())
+                            || MicroTime.SCHEMA_NAME.equals(field.schema().name())
+                            || field.schema().type().getName().equalsIgnoreCase("INT64")) {
+                        return field.name();
                     }
                 }
             }
@@ -538,8 +541,31 @@ public class LakeSoulRecordConvert implements Serializable {
                 instant = Instant.ofEpochMilli((Long) fieldValue);
             } else if (fieldValue instanceof Integer) {
                 date = LocalDate.ofEpochDay((long)(Integer) fieldValue);
+            } else if (fieldValue instanceof String) {
+                String[] parsePatterns = {
+                        "yyyy-MM-dd HH:mm:ss",
+                        "yyyy-MM-dd HH:mm:ss.SSS",
+                        "yyyy-MM-dd'T'HH:mm:ssX",
+                        "yyyy-MM-dd'T'HH:mm:ss.SSSX",
+                        "yyyy-MM-dd HH:mm:ss Z",
+                        "yyyy-MM-dd HH:mm",
+                        "yyyy/MM/dd HH:mm:ss",
+                        "yyyy/MM/dd",
+                        "yyyy-MM-dd",
+                        "yyyyMMdd",
+                        "yyyyMMddHHmmss"
+                };
+                try {
+                    instant = DateUtils.parseDate(fieldValue.toString(), parsePatterns).toInstant();
+                } catch (ParseException e) {
+                    LOG.warn("Unable to parse date string: {}", fieldValue, e);
+                }
             } else {
-                instant = Instant.parse(fieldValue.toString());
+                try {
+                    instant = Instant.parse(fieldValue.toString());
+                } catch (DateTimeParseException e) {
+                    LOG.warn("Unable to parse date string: {}", fieldValue, e);
+                }
             }
             if (date == null && instant != null) {
                 String timeZone = globalConfig.getString("table.local-time-zone", null);
@@ -557,8 +583,8 @@ public class LakeSoulRecordConvert implements Serializable {
                 throw new SuppressRestartsException(
                         new DataException(
                                 "Timestamp partition column is not a known date/timestamp type: "
-                                        + tableId + "/" + timestampPartitionCol + ", class: "
-                                        + fieldValue.getClass().getName() + ", schema: " + tsColSchema.name()));
+                                        + tableId + "/" + timestampPartitionCol + ", value: " + fieldValue +
+                                        ", class: " + fieldValue.getClass().getName() + ", schema: " + tsColSchema.name()));
             }
             if (formatRule == null) {
                 formatRule = "yyyy-MM-dd";
