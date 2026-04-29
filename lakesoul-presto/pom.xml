@@ -21,9 +21,12 @@
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <presto.version>0.292</presto.version>
+        <presto.version>0.296</presto.version>
         <jackson.version>2.15.4</jackson.version>
         <local.scope>provided</local.scope>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <maven.compiler.release>17</maven.compiler.release>
     </properties>
 
     <dependencies>
@@ -172,6 +175,12 @@
             <version>${jackson.version}</version>
             <scope>test</scope>
         </dependency>
+        <dependency>
+          <groupId>org.antlr</groupId>
+          <artifactId>antlr4-runtime</artifactId>
+          <version>4.13.1</version>
+          <scope>compile</scope>
+       </dependency>
     </dependencies>
 
     <build>
@@ -193,7 +202,7 @@
                     <artifactSet>
                         <includes>
                             <include>**</include>
-                        </includes>
+		                </includes>
                     </artifactSet>
                     <filters>
                         <filter>

@@ -14,7 +14,6 @@ import com.facebook.presto.lakesoul.pojo.Path;
 import com.facebook.presto.lakesoul.util.PrestoUtil;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.RecordCursor;
-import com.fasterxml.jackson.core.JsonProcessingException;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 import org.apache.arrow.vector.*;
@@ -52,11 +51,7 @@ public class LakeSoulRecordCursor implements RecordCursor {
 
         List<Field> fields = recordSet.getColumnHandles().stream().map(item -> {
             LakeSoulTableColumnHandle columnHandle = (LakeSoulTableColumnHandle) item;
-            try {
-                return columnHandle.getArrowField();
-            } catch (JsonProcessingException e) {
-                throw new RuntimeException(e);
-            }
+            return columnHandle.getArrowField();
         }).collect(Collectors.toList());
         HashMap<String, ColumnHandle> allcolumns = split.getLayout().getAllColumns();
         List<String> dataCols = recordSet.getColumnHandles().stream().map(item -> {

@@ -6,9 +6,7 @@ package com.facebook.presto.lakesoul.handle;
 
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.ColumnHandle;
-import com.facebook.presto.spi.ColumnMetadata;
 import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonFormat;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -16,7 +14,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectReader;
 import com.fasterxml.jackson.databind.ObjectWriter;
 import org.apache.arrow.vector.types.pojo.Field;
-import org.apache.arrow.vector.types.pojo.Schema;
 
 import static java.util.Objects.requireNonNull;
 
@@ -78,7 +75,7 @@ public class LakeSoulTableColumnHandle implements ColumnHandle {
     }
 
     @JsonIgnore
-    public Field getArrowField() throws JsonProcessingException {
+    public Field getArrowField() {
         return arrowField;
     }
 
