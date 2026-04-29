@@ -253,6 +253,16 @@ impl LakeSoulIOConfig {
     pub fn set_files(&mut self, files: Vec<String>) {
         self.files = files
     }
+
+    /// Returns the repartition ratio
+    ///
+    /// The repartition ratio determines the proportion of memory used for repartitioning.
+    /// A value <= 0.0 means no independent repartitioning memory pool will be used.
+    pub fn repartition_mem_ratio(&self) -> f64 {
+        self.option(OPTION_KEY_REPARTITION_MEM_RATIO)
+            .and_then(|x| x.parse::<f64>().ok())
+            .unwrap_or(0.0) // not use
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -588,12 +598,10 @@ impl LakeSoulIOConfigBuilder {
     ///
     /// * `key` - The key to add the option for
     /// * `value` - The value to add the option for
-    pub fn with_option(
-        mut self,
-        key: impl Into<String>,
-        value: impl Into<String>,
-    ) -> Self {
-        self.config.options.insert(key.into(), value.into());
+    pub fn with_option(mut self, key: impl ToString, value: impl ToString) -> Self {
+        self.config
+            .options
+            .insert(key.to_string(), value.to_string());
         self
     }
 

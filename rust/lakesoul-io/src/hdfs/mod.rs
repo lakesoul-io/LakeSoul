@@ -539,7 +539,8 @@ fn add_leading_slash(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::lakesoul_io_config::{LakeSoulIOConfigBuilder, create_session_context};
+    use crate::config::LakeSoulIOConfigBuilder;
+    use crate::session::create_session_context;
     use bytes::Bytes;
     use datafusion::datasource::object_store::ObjectStoreUrl;
     use futures::StreamExt;
@@ -643,17 +644,16 @@ mod tests {
         let read_concurrency = 16;
         let step = size / read_concurrency;
         let ranges = (0..read_concurrency)
-            .into_iter()
             .map(|i| std::ops::Range::<u64> {
                 start: (i * step) as u64,
                 end: ((i + 1) * step) as u64,
             })
             .collect::<Vec<std::ops::Range<u64>>>();
         let mut result = Vec::new();
-        for i in 0..16 {
+        for item in ranges.iter().take(16) {
             result.push(
                 object_store
-                    .get_range(&Path::from(write_path.as_str()), ranges[i].clone())
+                    .get_range(&Path::from(write_path.as_str()), item.clone())
                     .await
                     .unwrap(),
             );

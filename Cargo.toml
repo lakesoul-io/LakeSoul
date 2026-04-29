@@ -64,7 +64,10 @@ arrow-arith = { version = "57" }
 arrow-ipc = { version = "57" }
 arrow-flight = { version = "57", features = ["flight-sql-experimental"] }
 arrow-pyarrow = { version = "57" }
-parquet = { version = "57", default-features = true, features = ["async", "encryption"]}
+parquet = { version = "57", default-features = true, features = [
+  "async",
+  "encryption",
+] }
 object_store = { version = "0.12", features = ["aws", "http"] }
 # async
 futures = "0.3"
@@ -115,7 +118,7 @@ tracing-subscriber = { version = "0.3.19", features = [
   "env-filter",
 ] }
 # for test
-test-log = {version = "0.2", features = ["trace"]}
+test-log = { version = "0.2", features = ["trace"] }
 tempfile = "3.3.0"
 # error handling
 thiserror = "1.0"

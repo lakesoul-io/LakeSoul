@@ -25,7 +25,6 @@ use criterion::{
     BatchSize, BenchmarkGroup, BenchmarkId, Criterion, criterion_group, criterion_main,
 };
 use datafusion_common::config::SpillCompression;
-// use datafusion_common::human_readable_size;
 use datafusion_common::instant::Instant;
 use datafusion_execution::runtime_env::RuntimeEnv;
 use datafusion_physical_plan::SpillManager;

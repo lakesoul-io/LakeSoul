@@ -167,11 +167,11 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
             TableSchemaWriterCreator creator = getOrCreateTableSchemaWriterCreator(identity);
             if (conf.get(DYNAMIC_BUCKETING)) {
                 final LakeSoulWriterBucket bucket = getOrCreateBucketForBucketId(identity, DYNAMIC_BUCKET, creator);
-                bucket.write(rowData, processingTimeService.getCurrentProcessingTime(), dataDmlTsMs);
+                bucket.write(rowData, processingTimeService.getCurrentProcessingTime());
             } else {
                 final String bucketId = creator.bucketAssigner.getBucketId(rowData, bucketerContext);
                 final LakeSoulWriterBucket bucket = getOrCreateBucketForBucketId(identity, bucketId, creator);
-                bucket.write(rowData, processingTimeService.getCurrentProcessingTime(), dataDmlTsMs);
+                bucket.write(rowData, processingTimeService.getCurrentProcessingTime());
             }
             recordsOutCounter.inc();
         }

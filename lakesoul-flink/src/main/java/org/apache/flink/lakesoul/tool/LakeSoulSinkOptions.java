@@ -33,7 +33,6 @@ public class  LakeSoulSinkOptions {
 
     public static final String CDC_CHANGE_COLUMN_DEFAULT = "rowKinds";
 
-    public static final String SORT_FIELD = "__sort_filed__";
     public static final String STABLE_SORT = "stable_sort";
 
     public static final Long DEFAULT_BUCKET_ROLLING_SIZE = 1000000L;
@@ -169,6 +168,7 @@ public class  LakeSoulSinkOptions {
             .withDescription("mongodb database");
 
     public static final ConfigOption<Integer> BATCH_SIZE = ConfigOptions
+            // Jiax: rename to batch_size ?
             .key("lakesoul.io.batch.size")
             .intType()
             .defaultValue(1024)

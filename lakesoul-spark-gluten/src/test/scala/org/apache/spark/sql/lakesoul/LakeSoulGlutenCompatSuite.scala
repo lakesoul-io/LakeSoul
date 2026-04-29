@@ -30,7 +30,7 @@ class LakeSoulGlutenCompatSuite extends LakeSoulSQLCommandGlutenTest {
       assert(plan.matches("(?:.|\\n)*VeloxColumnarToRow(?:.|\\n)*" +
         "\\bProjectExecTransformer\\b(?:.|\\n)*" +
         "\\bInputIteratorTransformer\\b(?:.|\\n)*" +
-        "\\bOffloadArrowData(?:.|\\n)*" +
+        "\\bOffloadToVelox(?:.|\\n)*" +
         "\\bBatchScan\\b.*\\bNativeParquetScan\\b(?:.|\\n)*"))
       checkAnswer(dfRead, Seq(("2021-01-01","rice",1),("2021-01-01","bread",2)).toDF("date", "name", "id"))
     })
@@ -51,7 +51,7 @@ class LakeSoulGlutenCompatSuite extends LakeSoulSQLCommandGlutenTest {
       assert(plan.matches("(?:.|\\n)*VeloxColumnarToRow(?:.|\\n)*" +
         "\\bProjectExecTransformer\\b(?:.|\\n)*" +
         "\\bInputIteratorTransformer\\b(?:.|\\n)*" +
-        "\\bOffloadArrowData(?:.|\\n)*" +
+        "\\bOffloadToVelox(?:.|\\n)*" +
         "\\bBatchScan\\b.*\\bNativeParquetScan\\b(?:.|\\n)*"))
       checkAnswer(dfRead, Seq(("2021-01-01",1,"rice"),("2021-01-01",2,"bread")).toDF("date", "id", "name"))
     })
@@ -75,7 +75,7 @@ class LakeSoulGlutenCompatSuite extends LakeSoulSQLCommandGlutenTest {
         "\\bwithPartitionAndOrdering\\b(?:.|\\n)*" +
         "\\bProjectExecTransformer\\b(?:.|\\n)*" +
         "\\bInputIteratorTransformer\\b(?:.|\\n)*" +
-        "\\bOffloadArrowData(?:.|\\n)*" +
+        "\\bOffloadToVelox(?:.|\\n)*" +
         "\\bBatchScan\\b.*BucketScan\\b(?:.|\\n)*"))
       checkAnswer(dfRead, Seq(("2021-01-01","rice",1),("2021-01-01","bread",2)).toDF("date", "name", "id"))
     })
@@ -97,7 +97,7 @@ class LakeSoulGlutenCompatSuite extends LakeSoulSQLCommandGlutenTest {
         "\\bwithPartitionAndOrdering\\b(?:.|\\n)*" +
         "\\bProjectExecTransformer\\b(?:.|\\n)*" +
         "\\bInputIteratorTransformer\\b(?:.|\\n)*" +
-        "\\bOffloadArrowData(?:.|\\n)*" +
+        "\\bOffloadToVelox(?:.|\\n)*" +
         "\\bBatchScan\\b.*BucketScan\\b(?:.|\\n)*"))
       checkAnswer(dfRead, Seq(("2021-01-01",1,"rice"),("2021-01-01",2,"bread")).toDF("date", "id", "name"))
     })
@@ -127,7 +127,7 @@ class LakeSoulGlutenCompatSuite extends LakeSoulSQLCommandGlutenTest {
         "\\bwithPartitionAndOrdering\\b(?:.|\\n)*" +
         "\\bProjectExecTransformer\\b(?:.|\\n)*" +
         "\\bInputIteratorTransformer\\b(?:.|\\n)*" +
-        "\\bOffloadArrowData(?:.|\\n)*" +
+        "\\bOffloadToVelox(?:.|\\n)*" +
         "\\bBatchScan\\b.*BucketScan\\b.*PushedFilters: \\[IsNotNull\\(rowKinds\\), Not\\(EqualTo\\(rowKinds,delete\\)\\)\\](?:.|\\n)*"
       ))
       checkAnswer(dfRead, Seq(("2021-01-01",2,"noodle")).toDF("date", "id", "name"))

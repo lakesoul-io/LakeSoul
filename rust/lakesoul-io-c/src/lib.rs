@@ -36,6 +36,7 @@ pub type c_size_t = usize;
 pub type c_ptrdiff_t = isize;
 
 /// Opaque wrapper for the result of a function call
+/// containing a pointer to a type and an error msg
 #[repr(C)]
 pub struct CResult<OpaqueT> {
     ptr: *mut OpaqueT,
@@ -61,7 +62,41 @@ impl<OpaqueT> CResult<OpaqueT> {
         unsafe {
             if !self.ptr.is_null() {
                 drop(from_opaque::<OpaqueT, T>(NonNull::new_unchecked(self.ptr)));
+                self.ptr = std::ptr::null_mut();
             }
+            if !self.err.is_null() {
+                drop(CString::from_raw(self.err as *mut c_char));
+                self.err = std::ptr::null();
+            }
+        }
+    }
+}
+
+/// Opaque wrapper for the result of a function call
+/// containing a status and an error msg
+#[repr(C)]
+pub struct CStatus {
+    err: *const c_char,
+    status: c_int,
+}
+
+impl CStatus {
+    pub fn new(status: c_int) -> Self {
+        CStatus {
+            err: std::ptr::null(),
+            status,
+        }
+    }
+
+    pub fn error<T: Into<Vec<u8>>>(err_msg: T, status: c_int) -> Self {
+        CStatus {
+            err: CString::new(err_msg).unwrap().into_raw(),
+            status,
+        }
+    }
+
+    pub fn free(&mut self) {
+        unsafe {
             if !self.err.is_null() {
                 drop(CString::from_raw(self.err as *mut c_char));
             }
@@ -712,24 +747,19 @@ fn call_i32_data_result_callback(
 /// # Safety
 ///
 /// * `reader` must be a valid pointer to a [`CResult<Reader>`] struct
-/// * `callback` must be a safe function pointer.
+/// * return a [`CStatus`] struct with the result of the operation
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn start_reader(
     reader: NonNull<CResult<Reader>>,
-    callback: ResultCallback,
-) {
+) -> NonNull<CStatus> {
     unsafe {
         let mut reader = NonNull::new_unchecked(
             reader.as_ref().ptr as *mut SyncSendableMutableLakeSoulReader,
         );
         let result = reader.as_mut().start_blocked();
         match result {
-            Ok(_) => call_result_callback(callback, true, std::ptr::null()),
-            Err(e) => call_result_callback(
-                callback,
-                false,
-                CString::new(e.to_string()).unwrap().into_raw(),
-            ),
+            Ok(_) => convert_to_nonnull(CStatus::new(0)),
+            Err(e) => convert_to_nonnull(CStatus::error(e.to_string(), -1)),
         }
     }
 }
@@ -832,29 +862,21 @@ pub unsafe extern "C" fn next_record_batch(
 ///
 /// * `reader` must be a valid pointer to a [`CResult<Reader>`] struct
 /// * `array_addr` must be a valid pointer to the array address
-/// * `count` must be a valid pointer to an integer
+/// * return a [`CStatus`] struct with the result of the operation
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn next_record_batch_blocked(
     reader: NonNull<CResult<Reader>>,
     array_addr: c_ptrdiff_t,
-    count: *mut c_int,
-    callback: extern "C" fn(bool, *const c_char),
-) {
+) -> NonNull<CStatus> {
     unsafe {
         let reader = NonNull::new_unchecked(
             reader.as_ref().ptr as *mut SyncSendableMutableLakeSoulReader,
         );
         let result = reader.as_ref().next_rb_blocked();
-        let (status, err): (bool, *const c_char) = match result {
-            None => {
-                *count = 0;
-                (true, std::ptr::null())
-            }
+        let (status, err): (c_int, *const c_char) = match result {
+            None => (0, std::ptr::null()),
             Some(rb_result) => match rb_result {
-                Err(e) => {
-                    *count = -1;
-                    (false, CString::new(e.to_string()).unwrap().into_raw())
-                }
+                Err(e) => (-1, CString::new(e.to_string()).unwrap().into_raw()),
                 Ok(rb) => {
                     let rows = rb.num_rows() as i32;
                     let batch: Arc<StructArray> = Arc::new(rb.into());
@@ -862,12 +884,11 @@ pub unsafe extern "C" fn next_record_batch_blocked(
                     (&ffi_array as *const FFI_ArrowArray)
                         .copy_to(array_addr as *mut FFI_ArrowArray, 1);
                     std::mem::forget(ffi_array);
-                    *count = rows;
-                    (true, std::ptr::null())
+                    (rows, std::ptr::null())
                 }
             },
         };
-        call_result_callback(callback, status, err);
+        convert_to_nonnull(CStatus { status, err })
     }
 }
 
@@ -1024,6 +1045,16 @@ pub unsafe extern "C" fn free_tokio_runtime(runtime: NonNull<TokioRuntime>) {
     let _ = from_opaque::<TokioRuntime, Runtime>(runtime);
 }
 
+/// free the [`CStatus`].
+///
+/// # Safety
+///
+/// * `status` must be a valid pointer to a [`CStatus`] struct
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn free_c_status(status: NonNull<CStatus>) {
+    from_nonnull(status).free();
+}
+
 /// Create a new [`SyncSendableMutableLakeSoulWriter`] from the [`IOConfig`] and return a [`Writer`] wrapped in [`CResult`].
 ///
 /// # Safety
@@ -1116,12 +1147,13 @@ pub unsafe extern "C" fn write_record_batch(
 /// * `writer` must be a valid pointer to a [`CResult<Writer>`] struct
 /// * `schema_addr` must be a valid pointer to the schema address
 /// * `array_addr` must be a valid pointer to the array address
+/// * `callback` must be a valid pointer to a [`ResultCallback`] function
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn write_record_batch_blocked(
     writer: NonNull<CResult<Writer>>,
     schema_addr: c_ptrdiff_t,
     array_addr: c_ptrdiff_t,
-) -> *const c_char {
+) -> NonNull<CStatus> {
     unsafe {
         let writer = NonNull::new_unchecked(
             writer.as_ref().ptr as *mut SyncSendableMutableLakeSoulWriter,
@@ -1143,8 +1175,8 @@ pub unsafe extern "C" fn write_record_batch_blocked(
         };
         let result: lakesoul_io::Result<()> = result_fn();
         match result {
-            Ok(_) => std::ptr::null(),
-            Err(e) => CString::new(e.to_string()).unwrap().into_raw(),
+            Ok(_) => convert_to_nonnull(CStatus::new(0)),
+            Err(e) => convert_to_nonnull(CStatus::error(e.to_string(), -1)),
         }
     }
 }
@@ -1162,7 +1194,7 @@ pub unsafe extern "C" fn write_record_batch_ipc_blocked(
     writer: NonNull<CResult<Writer>>,
     ipc_addr: c_ptrdiff_t,
     len: i64,
-) -> *const c_char {
+) -> NonNull<CStatus> {
     unsafe {
         let writer = NonNull::new_unchecked(
             writer.as_ref().ptr as *mut SyncSendableMutableLakeSoulWriter,
@@ -1184,7 +1216,7 @@ pub unsafe extern "C" fn write_record_batch_ipc_blocked(
                     match writer.write_batch(batch) {
                         Ok(_) => row_count += num_rows,
                         Err(e) => {
-                            return CString::new(e.to_string()).unwrap().into_raw();
+                            return convert_to_nonnull(CStatus::error(e.to_string(), -1));
                         }
                     }
                 }
@@ -1192,13 +1224,11 @@ pub unsafe extern "C" fn write_record_batch_ipc_blocked(
                     break;
                 }
                 Err(e) => {
-                    return CString::new(e.to_string()).unwrap().into_raw();
+                    return convert_to_nonnull(CStatus::error(e.to_string(), -1));
                 }
             }
         }
-        CString::new(format!("Number of rows: {}", row_count))
-            .unwrap()
-            .into_raw()
+        convert_to_nonnull(CStatus::new(row_count as c_int))
     }
 }
 

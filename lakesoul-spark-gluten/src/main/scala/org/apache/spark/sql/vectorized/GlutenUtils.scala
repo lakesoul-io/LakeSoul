@@ -97,7 +97,7 @@ object GlutenUtils extends Logging {
 
   def createArrowColumnVector(vector: ValueVector): ColumnVector = {
     if (isGlutenEnabled) {
-      new org.apache.gluten.vectorized.ArrowWritableColumnVector(vector, null, 0, vector.getValueCapacity, false)
+      new org.apache.gluten.vectorized.ArrowWritableColumnVector(vector, null, 0, 0, false)
     } else {
       new org.apache.spark.sql.arrow.ArrowColumnVector(vector)
     }
@@ -123,7 +123,8 @@ object GlutenUtils extends Logging {
             aqe.isSubquery,
             supportsColumnar = true)
         // In case there's no gluten transform exist, or is already columnar to row
-        case ColumnarToRowExec(_) | VeloxColumnarToRowExec(_) | WholeStageCodegenExec(_) => return (plan.execute(), false)
+        case ColumnarToRowExec(_) | WholeStageCodegenExec(_) => return (plan.execute(), false)
+        case VeloxColumnarToRowExec(child) => child
         // In case gluten transform fallback to vanilla plan
         case FallbackNode(fallbackPlan) => return (fallbackPlan.execute(), false)
         case _ =>
@@ -144,7 +145,7 @@ object GlutenUtils extends Logging {
                   ColumnarCollapseTransformStages.wrapInputIteratorTransformer(plan1)
                 }
                 WholeStageTransformer(plan2)(
-                  ColumnarCollapseTransformStages.transformStageCounter.incrementAndGet())
+                  ColumnarCollapseTransformStages.getTransformStageCounter(plan1).incrementAndGet())
               }
             case _ => return (plan.execute(), false)
           }
@@ -229,7 +230,7 @@ object GlutenUtils extends Logging {
     plan match {
       case t if supportTransform(t) =>
         WholeStageTransformer(t.withNewChildren(t.children.map(insertInputIteratorTransformer)))(
-          ColumnarCollapseTransformStages.transformStageCounter.incrementAndGet())
+          ColumnarCollapseTransformStages.getTransformStageCounter(t).incrementAndGet())
       case other =>
         other.withNewChildren(other.children.map(insertWholeStageTransformer))
     }
