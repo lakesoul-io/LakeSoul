@@ -12,6 +12,7 @@ use datafusion::execution::context::SessionState;
 use datafusion::logical_expr::{Expr, LogicalPlan};
 use datafusion::physical_expr::{LexOrdering, PhysicalExpr, create_physical_expr};
 use datafusion::physical_plan::filter::FilterExec;
+use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
@@ -154,6 +155,7 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                                     sort_exec,
                                     range_partitioning_expr,
                                     hash_partitioning,
+                                    ExecutionPlanMetricsSet::new(),
                                 )
                                 .map_err(|report| {
                                     DataFusionError::External(report.into_boxed_error())

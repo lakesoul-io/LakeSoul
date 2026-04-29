@@ -41,6 +41,7 @@ impl AsyncSendableMutableLakeSoulWriter {
         let writer = create_writer(io_session.clone()).await?;
         let schema = writer.schema();
 
+        // jiax: maybe rename mem_limit
         if let Some(mem_limit) = io_config.mem_limit() {
             io_config.max_file_size = Some(mem_limit as u64);
             info!("Set max file size to {:?}", io_config.max_file_size);
@@ -162,5 +163,9 @@ impl AsyncBatchWriter for AsyncSendableMutableLakeSoulWriter {
         } else {
             0
         }
+    }
+
+    fn io_session(&self) -> &Arc<LakeSoulIOSession> {
+        &self.io_session
     }
 }

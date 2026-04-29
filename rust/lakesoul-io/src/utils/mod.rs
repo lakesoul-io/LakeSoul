@@ -31,8 +31,8 @@ pub fn lakesoul_file_name(writer_id: &str, partition: usize) -> String {
     format!("part-{}_{:0>4}.parquet", writer_id, partition)
 }
 
-/// According to the schema, create a random record batch with the given row number.
-pub fn create_random_batch(
+/// According to the schema, generate a random record batch with the given row number.
+pub fn gen_random_batch(
     schema: SchemaRef,
     row_num: usize,
     null_prop: f64,
@@ -233,7 +233,6 @@ pub fn create_random_batch(
 
     RecordBatch::try_new(schema, columns).expect("Failed to create record batch")
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

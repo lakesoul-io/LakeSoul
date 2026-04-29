@@ -97,15 +97,24 @@ pub fn transform_schema(
     }
 }
 
+/// Transforms an input `RecordBatch` to match a target `merged_schema`.
+///
+/// This handles:
+/// 1. Column reordering/alignment with the target schema.
+/// 2. Filling missing columns with default values or Nulls.
+/// 3. Recursive type casting for nested structures (e.g., Structs).
 #[instrument(skip(batch))]
 pub fn transform_record_batch(
     merged_schema: SchemaRef,
     batch: RecordBatch,
-    use_default: bool,
-    default_column_value: Arc<HashMap<String, String>>,
+    use_default: bool, // Flag to enable/disable default value filling
+    default_column_value: Arc<HashMap<String, String>>, // Mapping of field names to their string-represented default values
 ) -> Result<RecordBatch> {
     let num_rows = batch.num_rows();
     let batch_schema = batch.schema(); // file schema?
+
+    // Optimization: Use a HashMap for O(1) field lookup if the schema is large (exceeds threshold),
+    // preventing the O(N*M) complexity of linear scanning.
     let name_to_index =
         if batch_schema.fields().len() > crate::constant::NUM_COLUMN_OPTIMIZE_THRESHOLD {
             Some(HashMap::<String, usize>::from_iter(
@@ -118,9 +127,10 @@ pub fn transform_record_batch(
         } else {
             None
         };
-    let mut transform_arrays = Vec::with_capacity(merged_schema.fields().len());
-    let mut fields = Vec::with_capacity(merged_schema.fields().len());
-    // O(nm) n = orig_schema.fields().len(), m = target_schema.fields().len()
+    let mut transform_arrays = Vec::new();
+    let mut fields = vec![];
+
+    // Iterate through each field in the target schema to align the input batch
     merged_schema.fields().iter().enumerate().try_for_each(
         |(_, target_field)| -> Result<()> {
             match column_with_name_and_name2index(
@@ -128,35 +138,39 @@ pub fn transform_record_batch(
                 target_field.name(),
                 &name_to_index,
             ) {
+                // Case A: The column exists in the current batch
                 Some((idx, _)) => {
-                    // in batch schema
                     let data_type = target_field.data_type();
-                    let transformed_array =
-                        if target_field.data_type() != batch.column(idx).data_type() {
-                            transform_array(
-                                target_field.name().to_string(),
-                                data_type.clone(),
-                                batch.column(idx).clone(),
-                                num_rows,
-                                use_default,
-                                default_column_value.clone(),
-                            )?
-                        } else {
-                            batch.column(idx).clone()
-                        };
-                    fields.push(target_field.clone());
+                    // Perform recursive transformation (type casting, nested struct alignment)
+                    let transformed_array = transform_array(
+                        target_field.name().to_string(),
+                        data_type.clone(),
+                        batch.column(idx).clone(),
+                        num_rows,
+                        use_default,
+                        default_column_value.clone(),
+                    )?;
+                    fields.push(Arc::new(Field::new(
+                        target_field.name(),
+                        transformed_array.data_type().clone(),
+                        target_field.is_nullable(),
+                    )));
                     transform_arrays.push(transformed_array);
                     Ok(())
                 }
+
+                // Case B: The column is missing but default values are enabled
                 None if use_default => {
                     let default_value_array = match default_column_value
                         .get(target_field.name())
                     {
+                        // Generate a constant array with the provided default value
                         Some(value) => make_default_array(
                             &target_field.data_type().clone(),
                             value,
                             num_rows,
                         )?,
+                        // Default to a Null array if no specific value is provided
                         _ => new_null_array(&target_field.data_type().clone(), num_rows),
                     };
                     fields.push(Arc::new(Field::new(
@@ -167,10 +181,13 @@ pub fn transform_record_batch(
                     transform_arrays.push(default_value_array);
                     Ok(())
                 }
+                // Case C: Column is missing and no default is used; it will be excluded from the output
                 _ => Ok(()),
             }
         },
     )?;
+
+    // Construct the final aligned RecordBatch
     Ok(RecordBatch::try_new_with_options(
         Arc::new(Schema::new(fields)),
         transform_arrays,
@@ -178,6 +195,12 @@ pub fn transform_record_batch(
     )?)
 }
 
+/// Transforms a single `ArrayRef` to a target `DataType`.
+///
+/// Specifically handles:
+/// - Timestamp coercion from Int64, Utf8, or different precision Timestamps.
+/// - Recursive transformation for nested `StructArray` fields.
+/// - Fast-path cloning for compatible View types (e.g., Utf8View to Utf8).
 pub fn transform_array(
     name: String,
     target_datatype: DataType,
@@ -187,8 +210,10 @@ pub fn transform_array(
     default_column_value: Arc<HashMap<String, String>>,
 ) -> Result<ArrayRef> {
     Ok(match target_datatype {
+        // 1. Specialized Timestamp Handling: Coerce from various sources (Int, String, other Timestamps)
         DataType::Timestamp(target_unit, Some(target_tz)) => {
             let array = match array.data_type() {
+                // Extract underlying data for primitive timestamps
                 DataType::Timestamp(TimeUnit::Second, _) => {
                     as_primitive_array::<TimestampSecondType>(&array)
                         .clone()
@@ -225,6 +250,7 @@ pub fn transform_array(
             let target_datatype =
                 DataType::Timestamp(target_unit, Some(target_tz.clone()));
 
+            // Utilize arrow-cast for final unit conversion and timezone application
             (cast_with_options(
                 &array_ref,
                 &DataType::Timestamp(target_unit, Some(target_tz.clone())),
@@ -238,6 +264,7 @@ pub fn transform_array(
                 )
             })?) as _
         }
+        // 2. Nested Struct Handling: Recursively transform each child field within the Struct
         DataType::Struct(target_child_fields) => {
             let orig_array = as_struct_array(&array);
             let mut child_array = vec![];
@@ -245,6 +272,7 @@ pub fn transform_array(
                 .iter()
                 .try_for_each(|field| -> Result<()> {
                     match orig_array.column_by_name(field.name()) {
+                        // Child exists: recurse to transform the nested array
                         Some(array) => {
                             child_array.push((
                                 field.clone(),
@@ -259,6 +287,7 @@ pub fn transform_array(
                             ));
                             Ok(())
                         }
+                        // Child missing: apply default value logic at the nested level
                         None if use_default => {
                             let default_value_array = match default_column_value
                                 .get(field.name())
@@ -278,6 +307,7 @@ pub fn transform_array(
                 })?;
             let (schema, arrays): (SchemaBuilder, _) = child_array.into_iter().unzip();
             match orig_array.nulls() {
+                // Reconstruct the StructArray, preserving the original null bitmap
                 Some(buffer) => Arc::new(StructArray::new(
                     schema.finish().fields,
                     arrays,
@@ -286,11 +316,13 @@ pub fn transform_array(
                 None => Arc::new(StructArray::new(schema.finish().fields, arrays, None)),
             }
         }
+        // 3. General Transformation Path
         target_datatype => {
             let array_type = array.data_type();
             if target_datatype != *array.data_type() {
                 match (target_datatype.clone(), array_type) {
-                    // skip view type cast
+                    // Fast-path: Skip explicit casting for compatible View types if possible
+                    // (e.g., from Utf8View to Utf8/LargeUtf8)
                     (DataType::Utf8 | DataType::LargeUtf8, DataType::Utf8View) => {
                         array.clone()
                     }
@@ -314,6 +346,7 @@ pub fn transform_array(
                     }
                 }
             } else {
+                // Types match exactly, return a shallow clone (increment RefCount)
                 array.clone()
             }
         }

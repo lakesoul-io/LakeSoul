@@ -11,7 +11,6 @@ use arrow_schema::SchemaRef;
 use bytes::BytesMut;
 use datafusion_common::{DataFusionError, project_schema};
 use datafusion_datasource::ListingTableUrl;
-use datafusion_execution::TaskContext;
 use datafusion_execution::object_store::ObjectStoreUrl;
 use datafusion_session::Session;
 use object_store::{ObjectStore, WriteMultipart, path::Path};
@@ -25,7 +24,6 @@ use url::Url;
 use crate::session::LakeSoulIOSession;
 use crate::{
     Result,
-    config::LakeSoulIOConfig,
     constant::TBD_PARTITION_DESC,
     helpers::get_batch_memory_size,
     helpers::transform::{uniform_record_batch, uniform_schema},
@@ -56,14 +54,15 @@ pub struct MultiPartAsyncWriter {
     num_rows: u64,
     /// The number of bytes buffered in the in-memory buffer.
     buffered_size: u64,
+    /// The LakeSoul IO session of the multi-part async writer.
+    io_session: Arc<LakeSoulIOSession>,
 }
 
 impl MultiPartAsyncWriter {
-    #[instrument(skip_all)]
-    pub async fn try_new_with_context(
-        config: &LakeSoulIOConfig,
-        task_context: Arc<TaskContext>,
-    ) -> Result<Self> {
+    #[instrument(skip_all, fields(err))]
+    pub async fn try_new(io_session: Arc<LakeSoulIOSession>) -> Result<Self> {
+        let config = io_session.io_config();
+        let task_context = io_session.task_ctx();
         if config.files.is_empty() {
             bail!("wrong number of file names provided for writer");
         }
@@ -141,12 +140,8 @@ impl MultiPartAsyncWriter {
             absolute_path: file_name.to_string(),
             num_rows: 0,
             buffered_size: 0,
+            io_session,
         })
-    }
-
-    pub async fn try_new(io_session: Arc<LakeSoulIOSession>) -> Result<Self> {
-        let io_config = io_session.io_config();
-        Self::try_new_with_context(io_config, io_session.task_ctx()).await
     }
 
     async fn write_batch(
@@ -245,5 +240,9 @@ impl AsyncBatchWriter for MultiPartAsyncWriter {
 
     fn buffered_size(&self) -> u64 {
         self.buffered_size
+    }
+
+    fn io_session(&self) -> &Arc<LakeSoulIOSession> {
+        &self.io_session
     }
 }
