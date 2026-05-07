@@ -29,7 +29,6 @@ use datafusion_common::DataFusionError;
 use futures::stream::{Fuse, FusedStream};
 use futures::{Stream, StreamExt};
 use rootcause::compat::boxed_error::IntoBoxedError;
-use tokio::sync::Mutex;
 
 use super::combiner::*;
 use super::cursor::{ArrayValues, CursorArray, CursorValues, RowValues};
@@ -233,7 +232,7 @@ macro_rules! create_merger {
                     ));
                 } else {
                     info!("lakesoul using new batch wise combiner");
-                    let combiner = Arc::new(Mutex::new(WindowSlidingMerger::new(
+                    let combiner = WindowSlidingMerger::new(
                         $streams
                             .into_iter()
                             .enumerate()
@@ -242,7 +241,7 @@ macro_rules! create_merger {
                         $physical_schema,
                         streams_num,
                         $batch_size,
-                    )?));
+                    )?;
                     let merge_stream =
                         WindowSlidingMerger::build_merged_stream(combiner)?;
                     return Ok(Box::pin(

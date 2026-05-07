@@ -263,31 +263,20 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
 
     // This function needs to be called from ExecutionPlan::execute
     // so make synchronous
-    pub fn build_merged_stream(
-        this: Arc<Mutex<Self>>,
-    ) -> Result<SendableRecordBatchStream> {
+    pub fn build_merged_stream(mut self) -> Result<SendableRecordBatchStream> {
         let (tx, rx) = mpsc::channel(10);
-        let self_cloned = this.clone();
-        let schema = futures::executor::block_on(async move {
-            // initialize ranges
-            let self_ref = self_cloned.lock().await;
-            self_ref.schema.clone()
-        });
-        let self_cloned = this.clone();
+        let schema = self.schema.clone();
         // ignore JoinHandle, as when caller needs to cancel, it could just drop the receiver
         tokio::spawn(async move {
-            let mut self_ref = self_cloned.lock().await;
-            let stream_num = self_ref.num_streams;
-            Self::handle_error(self_ref.pull_all_from_streams(0..stream_num).await, &tx)
+            let stream_num = self.num_streams;
+            Self::handle_error(self.pull_all_from_streams(0..stream_num).await, &tx)
                 .await?;
-            while !self_ref.ranges.is_empty() && !tx.is_closed() {
-                Self::handle_error(self_ref.merge_next_batch(&tx).await, &tx).await?;
+            while !self.ranges.is_empty() && !tx.is_closed() {
+                Self::handle_error(self.merge_next_batch(&tx).await, &tx).await?;
                 // update ranges
-                let mut to_pull_stream_indices =
-                    Vec::with_capacity(self_ref.ranges.len());
-                let mut to_remove_range_indices =
-                    Vec::with_capacity(self_ref.ranges.len());
-                self_ref.ranges.iter_mut().for_each(|(batch_idx, range)| {
+                let mut to_pull_stream_indices = Vec::with_capacity(self.ranges.len());
+                let mut to_remove_range_indices = Vec::with_capacity(self.ranges.len());
+                self.ranges.iter_mut().for_each(|(batch_idx, range)| {
                     // reset end to last row so it can continue to be merged
                     range.reset();
                     // if this range has ended, need to remove from ranges and pull from streams
@@ -298,11 +287,10 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
                 });
                 // pull from streams
                 to_remove_range_indices.into_iter().for_each(|batch_idx| {
-                    self_ref.ranges.remove(&batch_idx);
+                    self.ranges.remove(&batch_idx);
                 });
                 Self::handle_error(
-                    self_ref
-                        .pull_all_from_streams(to_pull_stream_indices.into_iter())
+                    self.pull_all_from_streams(to_pull_stream_indices.into_iter())
                         .await,
                     &tx,
                 )
@@ -430,7 +418,6 @@ mod tests {
     use datafusion_physical_expr::expressions::col;
     use futures::TryStreamExt;
     use parking_lot::lock_api::RwLock;
-    use tokio::sync::Mutex;
 
     fn create_batch_two_col_i32(
         name1: &str,
@@ -531,12 +518,12 @@ mod tests {
             a1.new_empty(),
         )
         .await?;
-        let combiner = Arc::new(Mutex::new(WindowSlidingMerger::new(
+        let combiner = WindowSlidingMerger::new(
             vec![(s1, true), (s2, true), (s3, true)],
             schema,
             3,
             10,
-        )?));
+        )?;
         let stream = WindowSlidingMerger::build_merged_stream(combiner)?;
         let batches: Vec<RecordBatch> = stream.try_collect().await?;
         assert_batches_eq!(

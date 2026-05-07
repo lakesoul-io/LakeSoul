@@ -291,6 +291,9 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
             // change rowkind if needed
             rd.setRowKind(rk);
             totalRead++;
+            if (totalRead % 1000000 == 0) {
+                LOG.info("Read {} records from split {}", totalRead, split);
+            }
             return rd;
         }
     }
