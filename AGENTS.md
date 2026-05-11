@@ -1,4 +1,4 @@
-# CLAUDE.md — LakeSoul Codebase Guide
+# Agent Guidelines for LakeSoul
 
 ## Project Overview
 
