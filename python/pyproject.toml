@@ -84,6 +84,9 @@ features = ["pyo3/extension-module"]
 
 [tool.pytest.ini_options]
 addopts = ["--import-mode=importlib"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
 
 [[tool.uv.index]]
 url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
