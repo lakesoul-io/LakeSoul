@@ -2,14 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import ray
-
 from typing import List
 
-from ray.data.datasource.datasource import Reader
-from ray.data.datasource.datasource import ReadTask
-from ray.data.datasource.datasource import Datasource
+import ray
 from ray.data.block import BlockMetadata
+from ray.data.datasource.datasource import Datasource, Reader, ReadTask
 
 from ..metadata.meta_ops import (
     get_arrow_schema_by_table_name,
@@ -29,6 +26,7 @@ def _read_lakesoul_data_file(
     object_store_configs={},
 ):
     import pyarrow as pa
+
     from ..arrow import lakesoul_dataset
 
     arrow_dataset = lakesoul_dataset(
@@ -147,7 +145,11 @@ def read_lakesoul(
     partitions=None,
     retain_partition_columns=False,
     namespace="default",
+    parallelism=None,
 ):
+    kwargs = {}
+    if parallelism is not None:
+        kwargs["parallelism"] = parallelism
     ds = ray.data.read_datasource(
         LakeSoulDatasource(),
         table_name=table_name,
@@ -156,6 +158,7 @@ def read_lakesoul(
         partitions=partitions,
         retain_partition_columns=retain_partition_columns,
         namespace=namespace,
+        **kwargs,
     )
     return ds
 
