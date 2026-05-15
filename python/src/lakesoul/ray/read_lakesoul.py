@@ -54,6 +54,12 @@ def _read_lakesoul_data_file(
         yield pa.Table.from_batches([batch])
 
 
+def _read_empty_lakesoul_table(arrow_schema: "pa.Schema") -> Iterator["pa.Table"]:
+    import pyarrow as pa
+
+    yield pa.Table.from_batches([], schema=arrow_schema)
+
+
 class _LakeSoulDatasourceReader(Reader):
     def __init__(
         self,
@@ -89,6 +95,7 @@ class _LakeSoulDatasourceReader(Reader):
         return table_metadata
 
     def get_read_tasks(self, parallelism: int) -> List[ReadTask]:
+        # useless parallelism parameter
         read_tasks: List[ReadTask] = []
         table_metadata = self._get_table_metadata()
         data_files, arrow_schema = table_metadata
@@ -99,6 +106,22 @@ class _LakeSoulDatasourceReader(Reader):
             input_files=None,
             exec_stats=None,
         )
+        if not data_files:
+            empty_metadata = BlockMetadata(
+                num_rows=0,
+                size_bytes=0,
+                schema=arrow_schema,
+                input_files=[],
+                exec_stats=None,
+            )
+            return [
+                ReadTask(
+                    lambda arrow_schema=arrow_schema: _read_empty_lakesoul_table(
+                        arrow_schema
+                    ),
+                    empty_metadata,
+                )
+            ]
         for index, _data_file in enumerate(data_files):
             read_task = ReadTask(
                 lambda table_name=self._table_name,
@@ -158,11 +181,12 @@ def read_lakesoul(
     partitions: Optional[Mapping[str, str]] = None,
     retain_partition_columns: bool = False,
     namespace: str = "default",
-    parallelism: Optional[int] = None,  # useless
 ) -> Dataset:
-    kwargs: Dict[str, int] = {}
-    if parallelism is not None:
-        kwargs["parallelism"] = parallelism
+    arrow_schema = get_arrow_schema_by_table_name(
+        table_name=table_name,
+        namespace=namespace,
+        exclude_partition=not retain_partition_columns,
+    )
     ds = ray.data.read_datasource(
         LakeSoulDatasource(),
         table_name=table_name,
@@ -171,8 +195,8 @@ def read_lakesoul(
         partitions=partitions,
         retain_partition_columns=retain_partition_columns,
         namespace=namespace,
-        **kwargs,
     )
+    ds._plan.cache_schema(arrow_schema)
     return ds
 
 
