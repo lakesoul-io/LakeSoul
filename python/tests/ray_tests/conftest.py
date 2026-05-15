@@ -2,8 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import pytest
+from typing import List
 
+import pyarrow as pa
+import pytest
 
 TABLE_NAME_PART = "part"
 TABLE_NAME_TEST_LFS = "test_lfs"
@@ -19,21 +21,21 @@ def ray_session():
 
 
 @pytest.fixture(scope="session")
-def part_schema(ray_session):
+def part_schema(ray_session) -> pa.Schema:
     from lakesoul.arrow import lakesoul_dataset
 
     return lakesoul_dataset(TABLE_NAME_PART).schema
 
 
 @pytest.fixture(scope="session")
-def part_arrow_table(ray_session):
+def part_arrow_table(ray_session) -> pa.Table:
     from lakesoul.arrow import lakesoul_dataset
 
     return lakesoul_dataset(TABLE_NAME_PART).to_table()
 
 
 @pytest.fixture(scope="session")
-def part_data_files(ray_session):
+def part_data_files(ray_session) -> List[str]:
     from lakesoul.metadata.meta_ops import get_data_files_and_pks_by_table_name
 
     data_files, _ = get_data_files_and_pks_by_table_name(
