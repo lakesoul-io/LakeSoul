@@ -2,9 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import List
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Mapping, Optional, Tuple
 
 import ray
+from ray.data import Dataset
 from ray.data.block import BlockMetadata
 from ray.data.datasource.datasource import Datasource, Reader, ReadTask
 
@@ -13,21 +16,28 @@ from ..metadata.meta_ops import (
     get_data_files_and_pks_by_table_name,
 )
 
+if TYPE_CHECKING:
+    import pyarrow as pa
+
 
 def _read_lakesoul_data_file(
-    table_name,
-    batch_size=16,
-    thread_count=1,
-    rank=None,
-    world_size=None,
-    partitions=None,
-    retain_partition_columns=False,
-    namespace="default",
-    object_store_configs={},
-):
+    table_name: str,
+    batch_size: int = 16,
+    thread_count: int = 1,
+    rank: Optional[int] = None,
+    world_size: Optional[int] = None,
+    partitions: Optional[Dict[str, str]] = None,
+    retain_partition_columns: bool = False,
+    namespace: str = "default",
+    object_store_configs: Optional[Dict[str, str]] = None,
+) -> Iterator["pa.Table"]:
     import pyarrow as pa
 
     from ..arrow import lakesoul_dataset
+
+    normalized_partitions: Optional[Dict[str, str]] = (
+        dict(partitions) if partitions is not None else None
+    )
 
     arrow_dataset = lakesoul_dataset(
         table_name,
@@ -35,10 +45,10 @@ def _read_lakesoul_data_file(
         thread_count=thread_count,
         rank=rank,
         world_size=world_size,
-        partitions=partitions,
+        partitions=normalized_partitions,
         retain_partition_columns=retain_partition_columns,
         namespace=namespace,
-        object_store_configs=object_store_configs,
+        object_store_configs=object_store_configs or {},
     )
     for batch in arrow_dataset.to_batches():
         yield pa.Table.from_batches([batch])
@@ -47,13 +57,13 @@ def _read_lakesoul_data_file(
 class _LakeSoulDatasourceReader(Reader):
     def __init__(
         self,
-        table_name,
-        batch_size=16,
-        thread_count=1,
-        partitions=None,
-        retain_partition_columns=False,
-        namespace="default",
-    ):
+        table_name: str,
+        batch_size: int = 16,
+        thread_count: int = 1,
+        partitions: Optional[Dict[str, str]] = None,
+        retain_partition_columns: bool = False,
+        namespace: str = "default",
+    ) -> None:
         self._table_name = table_name
         self._batch_size = batch_size
         self._thread_count = thread_count
@@ -61,10 +71,10 @@ class _LakeSoulDatasourceReader(Reader):
         self._retain_partition_columns = retain_partition_columns
         self._namespace = namespace
 
-    def estimate_inmemory_data_size(self):
+    def estimate_inmemory_data_size(self) -> Optional[int]:
         return None
 
-    def _get_table_metadata(self):
+    def _get_table_metadata(self) -> Tuple[List[str], "pa.Schema"]:
         data_files, pk_cols = get_data_files_and_pks_by_table_name(
             table_name=self._table_name,
             partitions=self._partitions or {},
@@ -79,7 +89,7 @@ class _LakeSoulDatasourceReader(Reader):
         return table_metadata
 
     def get_read_tasks(self, parallelism: int) -> List[ReadTask]:
-        read_tasks = []
+        read_tasks: List[ReadTask] = []
         table_metadata = self._get_table_metadata()
         data_files, arrow_schema = table_metadata
         metadata = BlockMetadata(
@@ -117,37 +127,40 @@ class _LakeSoulDatasourceReader(Reader):
 class LakeSoulDatasource(Datasource):
     def create_reader(
         self,
-        table_name,
-        batch_size=16,
-        thread_count=1,
-        partitions=None,
-        retain_partition_columns=False,
-        namespace="default",
+        table_name: str,
+        batch_size: int = 16,
+        thread_count: int = 1,
+        partitions: Optional[Mapping[str, str]] = None,
+        retain_partition_columns: bool = False,
+        namespace: str = "default",
     ) -> Reader:
+        normalized_partitions: Optional[Dict[str, str]] = (
+            dict(partitions) if partitions is not None else None
+        )
         return _LakeSoulDatasourceReader(
             table_name=table_name,
             batch_size=batch_size,
             thread_count=thread_count,
-            partitions=partitions,
+            partitions=normalized_partitions,
             retain_partition_columns=retain_partition_columns,
             namespace=namespace,
         )
 
-    def do_write(self, *args, **kwargs):
+    def do_write(self, *args: Any, **kwargs: Any) -> None:
         message = "write to LakeSoul is not implemented yet"
         raise NotImplementedError(message)
 
 
 def read_lakesoul(
-    table_name,
-    batch_size=16,
-    thread_count=1,
-    partitions=None,
-    retain_partition_columns=False,
-    namespace="default",
-    parallelism=None,
-):
-    kwargs = {}
+    table_name: str,
+    batch_size: int = 16,
+    thread_count: int = 1,
+    partitions: Optional[Mapping[str, str]] = None,
+    retain_partition_columns: bool = False,
+    namespace: str = "default",
+    parallelism: Optional[int] = None,  # useless
+) -> Dataset:
+    kwargs: Dict[str, int] = {}
     if parallelism is not None:
         kwargs["parallelism"] = parallelism
     ds = ray.data.read_datasource(
