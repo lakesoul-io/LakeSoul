@@ -175,7 +175,6 @@ async fn exec(
     ctx: &SessionContext,
     sql: &str,
 ) -> Result<(usize, Vec<RecordBatch>, Arc<Schema>)> {
-    trace!("begin exec sql");
     let stmt = ctx.state().sql_to_statement(sql, &Dialect::PostgreSQL)?;
     if let Some(u) = parse_use(stmt.clone()) {
         match u {
