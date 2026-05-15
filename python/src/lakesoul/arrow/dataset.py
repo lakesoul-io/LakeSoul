@@ -191,7 +191,7 @@ class Dataset(ds.Dataset):
 
     def scanner(
         self,
-        columns: list[str] | None = None,
+        columns: list[str] | list[int] | int | None = None,
         filter: ds.Expression | None = None,
         batch_size: int = DEFAULT_BATCH_SIZE,
         batch_readahead: int | None = None,

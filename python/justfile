@@ -5,7 +5,8 @@ clean-data:
     rm -rf /tmp/lakesoul/tpch_data
 
 gen-data:
-    cd .. &&  cargo run -p lakesoul-console -- tpch-gen -p "file:///tmp/lakesoul/tpch_data" --scale-factor 0.1 -n 8
+    cargo run -p lakesoul-console -- tpch-gen -p "file:///tmp/lakesoul/tpch_data" --scale-factor 0.1 -n 8
+    cargo run --release -p lakesoul-console -- -f test.sql
 
 pytest:
     {{env}} uv run pytest -s tests
