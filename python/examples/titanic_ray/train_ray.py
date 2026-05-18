@@ -115,10 +115,8 @@ def one_hot_and_assemble(batch: dict) -> dict:
         vec.append(float(batch["Fare"][i]))
         feature_vecs.append(vec)
 
-    batch["features"] = np.array(feature_vecs, dtype=np.float32)
-    batch["label"] = np.array(
-        [int(s) for s in batch["Survived"]], dtype=np.int64
-    )
+    batch["features"] = feature_vecs
+    batch["label"] = np.array([int(s) for s in batch["Survived"]], dtype=np.int64)
     return batch
 
 
@@ -146,20 +144,22 @@ def train_func(config: dict):
     import torch.nn as nn
     from ray.train.torch import get_device
 
+    feature_dim = int(config["feature_dim"])
+
     class TitanicDNN(nn.Module):
-        def __init__(self, input_dim=FEATURE_DIM):
+        def __init__(self, input_dim: int):
             super().__init__()
-            self.bn = nn.BatchNorm1d(input_dim)
+            self.norm = nn.LayerNorm(input_dim)
             self.fc1 = nn.Linear(input_dim, 256)
             self.fc2 = nn.Linear(256, 2)
 
         def forward(self, x):
-            x = self.bn(x)
+            x = self.norm(x)
             x = torch.relu(self.fc1(x))
             x = self.fc2(x)
             return x
 
-    model = TitanicDNN()
+    model = TitanicDNN(feature_dim)
     device = get_device()
     model.to(device)
 
@@ -172,7 +172,7 @@ def train_func(config: dict):
     for epoch in range(config["num_epochs"]):
         model.train()
         for batch in train_loader.iter_torch_batches(batch_size=50):
-            x = batch["features"].to(device)
+            x = batch["features"].to(device).float()
             y = batch["label"].to(device)
             optimizer.zero_grad()
             loss = criterion(model(x), y)
@@ -183,7 +183,7 @@ def train_func(config: dict):
         correct, total = 0, 0
         with torch.no_grad():
             for batch in val_loader.iter_torch_batches(batch_size=50):
-                x = batch["features"].to(device)
+                x = batch["features"].to(device).float()
                 y = batch["label"].to(device)
                 pred = model(x).argmax(dim=1)
                 correct += (pred == y).sum().item()
@@ -197,11 +197,15 @@ def main():
     ray.init("local")
 
     ds = build_pipeline()
-    train_ds, val_ds = ds.random_split([0.9, 0.1], seed=42)
+    train_ds, val_ds = ds.train_test_split(
+        test_size=0.1,
+        shuffle=True,
+        seed=42,
+    )
 
     trainer = TorchTrainer(
         train_func,
-        train_loop_config={"num_epochs": 50},
+        train_loop_config={"num_epochs": 50, "feature_dim": FEATURE_DIM},
         datasets={"train": train_ds, "val": val_ds},
         scaling_config=ray.train.ScalingConfig(
             num_workers=1,

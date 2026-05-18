@@ -29,7 +29,7 @@ read_lakesoul("titanic_raw")
   → map_batches(impute_missing)
   → map_batches(one_hot_and_assemble)
   → select_columns(["features", "label"])
-  → random_split(90/10)
+  → train_test_split(90/10)
   → TorchTrainer(DNN)
 ```
 
