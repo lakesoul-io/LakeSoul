@@ -12,14 +12,13 @@ from typing import Iterable, Sequence
 import pyarrow
 
 from .dao import (
-    select_table_info_by_table_name,
     get_partition_info_by_table_id,
-    list_data_commit_info,
     get_partition_info_by_table_id_and_desc,
+    list_data_commit_info,
+    select_table_info_by_table_name,
 )
-from .generated.entity_pb2 import TableInfo, PartitionInfo, DataCommitInfo
+from .generated.entity_pb2 import DataCommitInfo, PartitionInfo, TableInfo
 from .utils import to_arrow_schema, to_arrow_schemas
-
 
 __all__ = [
     "get_table_info_by_name",
@@ -52,24 +51,24 @@ def get_table_single_partition_data_info(
 
 
 def get_arrow_schema_by_table_name(
-    table_name: str, namespace: str = "default", exclude_partition: bool = False
+    table_name: str, namespace: str = "default", retain_partition_columns: bool = True
 ) -> pyarrow.Schema:
     table_info = get_table_info_by_name(table_name, namespace)
     schema = table_info.table_schema
     exclude_partitions = None
-    if exclude_partition and len(table_info.partitions) > 0:
+    if not retain_partition_columns and len(table_info.partitions) > 0:
         exclude_partitions = frozenset(table_info.partitions.split(";")[0].split(","))
 
     return to_arrow_schema(schema, exclude_partitions)
 
 
 def get_schemas_by_table_name(
-    table_name: str, namespace: str = "default", exclude_partition: bool = False
+    table_name: str, namespace: str = "default", retain_partition_columns: bool = True
 ) -> tuple[pyarrow.Schema, pyarrow.Schema | None]:
     table_info = get_table_info_by_name(table_name, namespace)
     schema = table_info.table_schema
     exclude_partitions = None
-    if exclude_partition and len(table_info.partitions) > 0:
+    if not retain_partition_columns and len(table_info.partitions) > 0:
         exclude_partitions = frozenset(table_info.partitions.split(";")[0].split(","))
 
     return to_arrow_schemas(schema, exclude_partitions)
