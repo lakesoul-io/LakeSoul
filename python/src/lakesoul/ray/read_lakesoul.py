@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 def _read_lakesoul_data_file(
     table_name: str,
     batch_size: int = 16,
-    thread_count: int = 1,
+    thread_count: int = 1,  # 0 means use cpu count
     rank: Optional[int] = None,
     world_size: Optional[int] = None,
     partitions: Optional[Dict[str, str]] = None,
@@ -89,7 +89,7 @@ class _LakeSoulDatasourceReader(Reader):
         arrow_schema = get_arrow_schema_by_table_name(
             table_name=self._table_name,
             namespace=self._namespace,
-            exclude_partition=not self._retain_partition_columns,
+            retain_partition_columns=self._retain_partition_columns,
         )
         table_metadata = data_files, arrow_schema
         return table_metadata
@@ -131,6 +131,7 @@ class _LakeSoulDatasourceReader(Reader):
                 world_size=len(data_files),
                 partitions=self._partitions,
                 retain_partition_columns=self._retain_partition_columns,
+                # entry
                 namespace=self._namespace: _read_lakesoul_data_file(
                     table_name=table_name,
                     batch_size=batch_size,
@@ -185,7 +186,7 @@ def read_lakesoul(
     arrow_schema = get_arrow_schema_by_table_name(
         table_name=table_name,
         namespace=namespace,
-        exclude_partition=not retain_partition_columns,
+        retain_partition_columns=retain_partition_columns,
     )
     ds = ray.data.read_datasource(
         LakeSoulDatasource(),

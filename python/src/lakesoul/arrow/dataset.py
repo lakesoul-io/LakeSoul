@@ -37,6 +37,10 @@ class Dataset(ds.Dataset):
         namespace: str = "default",
         object_store_configs: dict[str, str] | None = None,
     ) -> None:
+        """
+        lakeSoul dataset backed by Arrow reader
+        thread_count: 0 means use cpu count
+        """
         self._lakesoul_table_name = lakesoul_table_name
         self._thread_count = thread_count
         self._namespace = namespace
@@ -75,7 +79,7 @@ class Dataset(ds.Dataset):
         target_schema, partition_schema = get_schemas_by_table_name(
             table_name=self._lakesoul_table_name,
             namespace=self._namespace,
-            exclude_partition=not self._retain_partition_columns,
+            retain_partition_columns=self._retain_partition_columns,
         )
         self._schema = target_schema
         self._partition_schema = partition_schema
@@ -831,7 +835,7 @@ def lakesoul_dataset(
     rank: int | None = None,
     world_size: int | None = None,
     partitions: dict[str, str] | None = None,
-    retain_partition_columns: bool = True,
+    retain_partition_columns: bool = False,
     namespace: str = "default",
     object_store_configs: dict[str, str] | None = None,
 ) -> Dataset:
