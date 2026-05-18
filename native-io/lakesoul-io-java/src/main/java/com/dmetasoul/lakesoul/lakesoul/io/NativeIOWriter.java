@@ -102,7 +102,7 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
         Pointer newWriter = libLakeSoulIO.create_lakesoul_writer_from_config(config, tokioRuntime);
         config = null;
         tokioRuntime = null;
-        LibLakeSoulIO.CStatus status = libLakeSoulIO.check_writer_created(writer);
+        LibLakeSoulIO.CStatus status = libLakeSoulIO.check_writer_created(newWriter);
         IOException pending = null;
         try {
             if (status.status.get() < 0) {
