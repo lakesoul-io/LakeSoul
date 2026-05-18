@@ -69,7 +69,7 @@ public interface LibLakeSoulIO {
 
     Pointer create_lakesoul_writer_from_config(Pointer config, Pointer runtime);
 
-    Pointer check_writer_created(Pointer writer);
+    CStatus check_writer_created(Pointer writer);
 
     Pointer lakesoul_config_builder_set_default_column_value(Pointer ioConfigBuilder, String column, String value);
 

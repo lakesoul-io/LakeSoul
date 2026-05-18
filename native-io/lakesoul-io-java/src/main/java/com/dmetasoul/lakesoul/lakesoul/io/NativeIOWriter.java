@@ -99,15 +99,39 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
         tokioRuntimeBuilder = null;
         config = libLakeSoulIO.create_lakesoul_io_config_from_builder(ioConfigBuilder);
         ioConfigBuilder = null;
-        writer = libLakeSoulIO.create_lakesoul_writer_from_config(config, tokioRuntime);
+        Pointer newWriter = libLakeSoulIO.create_lakesoul_writer_from_config(config, tokioRuntime);
         config = null;
         tokioRuntime = null;
-        Pointer p = libLakeSoulIO.check_writer_created(writer);
-        if (p != null) {
-            writer = null;
-            String err = p.getString(0);
-            libLakeSoulIO.free_lakesoul_writer(writer);
-            throw new IOException("Init native writer failed with error: " + err);
+        LibLakeSoulIO.CStatus status = libLakeSoulIO.check_writer_created(writer);
+        IOException pending = null;
+        try {
+            if (status.status.get() < 0) {
+                pending = new IOException(
+                        "Init native writer failed with error: " +
+                                (status.err.get() != null ? status.err.get() : "unknown")
+                );
+            }
+            writer = newWriter;
+            newWriter = null;
+        } finally {
+            if (status != null) {
+                libLakeSoulIO.free_c_status(status);
+            }
+            if (newWriter != null) {
+                libLakeSoulIO.free_lakesoul_writer(newWriter);
+            }
+            if (pending != null) {
+                try {
+                    super.close();
+                } catch (Exception e) {
+                    IOException closeError = new IOException("Failed to close native writer", e);
+                    pending.addSuppressed(closeError);
+                }
+            }
+        }
+
+        if (pending != null) {
+            throw pending;
         }
     }
 
