@@ -63,3 +63,4 @@ lakesoul-spark-gluten/bin
 **/.codex
 
 **/.mcp.json
+**/internal*
