@@ -4,7 +4,7 @@
 
 [project]
 name = "lakesoul"
-version = "1.1.0"
+version = "1.2.0.dev0"
 authors = [
   { name = "LakeSoul Team", email = "lakesoul-technical-discuss@lists.lfaidata.foundation" },
 ]
@@ -84,6 +84,9 @@ features = ["pyo3/extension-module"]
 
 [tool.pytest.ini_options]
 addopts = ["--import-mode=importlib"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
 
 [[tool.uv.index]]
 url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
