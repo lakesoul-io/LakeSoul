@@ -16,7 +16,7 @@ def test_row_count_part(ray_session):
 
 def test_row_count_test_lfs(ray_session):
     ds = read_lakesoul(TABLE_NAME_TEST_LFS)
-    assert ds.count() == 1
+    assert ds.count() == 7
 
 
 def test_schema_vs_arrow(ray_session, part_schema: pa.Schema):
