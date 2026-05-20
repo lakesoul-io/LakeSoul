@@ -17,12 +17,13 @@ use datafusion::datasource::file_format::file_compression_type::FileCompressionT
 use datafusion::datasource::file_format::{FileFormat, parquet::ParquetFormat};
 use datafusion::datasource::physical_plan::parquet::metadata::DFParquetMetadata;
 use datafusion::datasource::physical_plan::{
-    FileGroup, FileScanConfig, FileSinkConfig, FileSource, ParquetSource,
+    FileGroup, FileScanConfig, FileScanConfigBuilder, FileSinkConfig, FileSource,
+    ParquetSource,
 };
 use datafusion::datasource::table_schema::TableSchema;
 use datafusion::physical_expr::LexRequirement;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::physical_plan::projection::{ProjectionExec, ProjectionExprs};
+use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion_common::{DataFusionError, Result, Statistics, project_schema};
 use futures::{StreamExt, TryStreamExt};
 use object_store::{ObjectMeta, ObjectStore};
@@ -236,7 +237,7 @@ impl FileFormat for LakeSoulParquetFormat {
         state: &dyn Session,
         mut conf: FileScanConfig,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let table_schema = conf.table_schema.table_schema();
+        let table_schema = Arc::clone(conf.file_source.table_schema().table_schema());
 
         // adapted file source with metadata size hint
         let mut parquet_source = conf
@@ -253,7 +254,7 @@ impl FileFormat for LakeSoulParquetFormat {
 
         // projection for Table Schema instead of File Schema
         let projection = conf.file_column_projection_indices();
-        let target_schema = project_schema(table_schema, projection.as_ref())?;
+        let target_schema = project_schema(&table_schema, projection.as_ref())?;
 
         // merge cdc and pks
         let merged_projection = compute_project_column_indices(
@@ -262,7 +263,7 @@ impl FileFormat for LakeSoulParquetFormat {
             self.io_config.primary_keys_slice(),
             &self.io_config.cdc_column(),
         );
-        let merged_schema = project_schema(table_schema, merged_projection.as_ref())?;
+        let merged_schema = project_schema(&table_schema, merged_projection.as_ref())?;
 
         // files to read
         let flatten_conf = flatten_file_scan_config(
@@ -321,10 +322,8 @@ impl FileFormat for LakeSoulParquetFormat {
             .await
     }
 
-    fn file_source(&self) -> Arc<dyn FileSource> {
-        self.parquet_format
-            .file_source()
-            .with_statistics(Statistics::default())
+    fn file_source(&self, table_schema: TableSchema) -> Arc<dyn FileSource> {
+        self.parquet_format.file_source(table_schema)
     }
 }
 
@@ -396,24 +395,40 @@ pub async fn flatten_file_scan_config(
                             debug!("flatten: file_schema: {}", file_schema);
                             // only file schema
                             let table_schema = TableSchema::new(file_schema, cols);
-                            let projection_exprs = projection_indices.map(|indices| {
-                                ProjectionExprs::from_indices(
-                                    &indices,
-                                    table_schema.table_schema(),
-                                )
-                            });
-                            let config = FileScanConfig {
-                                table_schema,
-                                projection_exprs,
-                                file_source: conf
-                                    .file_source
-                                    .with_statistics(statistics.clone()),
-                                file_groups: vec![
+                            let mut parquet_source = format
+                                .file_source(table_schema)
+                                .as_any()
+                                .downcast_ref::<ParquetSource>()
+                                .ok_or(DataFusionError::Internal("file source".into()))?
+                                .clone();
+                            if let Some(predicate) = conf.file_source.filter() {
+                                parquet_source = parquet_source.with_predicate(predicate);
+                            }
+                            if let Some(metadata_size_hint) = format.metadata_size_hint()
+                            {
+                                parquet_source = parquet_source
+                                    .with_metadata_size_hint(metadata_size_hint);
+                            }
+                            if let Some(reader_factory) = conf
+                                .file_source
+                                .as_any()
+                                .downcast_ref::<ParquetSource>()
+                                .and_then(|source| {
+                                    source.parquet_file_reader_factory().cloned()
+                                })
+                            {
+                                parquet_source = parquet_source
+                                    .with_parquet_file_reader_factory(reader_factory);
+                            }
+                            let config = FileScanConfigBuilder::from(conf)
+                                .with_source(Arc::new(parquet_source))
+                                .with_file_groups(vec![
                                     FileGroup::new(files)
-                                        .with_statistics(Arc::new(statistics)),
-                                ],
-                                ..conf
-                            };
+                                        .with_statistics(Arc::new(statistics.clone())),
+                                ])
+                                .with_statistics(statistics)
+                                .with_projection_indices(projection_indices)?
+                                .build();
 
                             Ok::<FileScanConfig, DataFusionError>(config)
                         }

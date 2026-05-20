@@ -27,9 +27,10 @@ use datafusion_datasource::file_scan_config::{FileScanConfig, FileScanConfigBuil
 use datafusion_datasource::source::DataSource;
 use datafusion_datasource::{ListingTableUrl, PartitionedFile, TableSchema};
 use datafusion_datasource_parquet::ParquetFormat;
+use datafusion_execution::cache::DefaultListFilesCache;
 use datafusion_execution::cache::cache_manager::CacheManagerConfig;
 use datafusion_execution::cache::cache_unit::{
-    DefaultFileStatisticsCache, DefaultFilesMetadataCache, DefaultListFilesCache,
+    DefaultFileStatisticsCache, DefaultFilesMetadataCache,
 };
 use datafusion_execution::config::SessionConfig;
 use datafusion_execution::memory_pool::{FairSpillPool, GreedyMemoryPool};
@@ -780,27 +781,16 @@ impl LakeSoulIOSession {
             .await?;
 
         // 4. Build initial Scan Config
-        let source = file_format.file_source();
-        let mut scan_config = FileScanConfigBuilder::new(
-            object_store_url,
-            table_schema.file_schema().clone(),
-            source,
-        )
-        .with_file_groups(vec![
-            FileGroup::new(partition_files).with_statistics(Arc::new(statistics.clone())),
-        ])
-        .with_file_compression_type(FileCompressionType::ZSTD)
-        .with_newlines_in_values(false)
-        .with_statistics(statistics)
-        .with_table_partition_cols(
-            table_schema
-                .table_partition_cols()
-                .iter()
-                .map(|f| f.as_ref().clone())
-                .collect(),
-        )
-        .with_projection_indices(indices)
-        .build();
+        let source = file_format.file_source(table_schema.as_ref().clone());
+        let mut scan_config = FileScanConfigBuilder::new(object_store_url, source)
+            .with_file_groups(vec![
+                FileGroup::new(partition_files)
+                    .with_statistics(Arc::new(statistics.clone())),
+            ])
+            .with_file_compression_type(FileCompressionType::ZSTD)
+            .with_statistics(statistics)
+            .with_projection_indices(indices)?
+            .build();
 
         // 5. Pushdown Filters (Exact + Inexact)
         let pushdown_filters: Vec<Expr> =

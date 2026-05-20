@@ -1079,13 +1079,15 @@ pub fn extract_scalar_value_from_expr(equality: &ColumnEquality) -> Option<&Scal
 
 #[derive(Debug)]
 pub struct InMemGenerator {
+    initial_batches: Vec<RecordBatch>,
     batches: VecDeque<RecordBatch>,
 }
 
 impl InMemGenerator {
     pub fn try_new(batches: Vec<RecordBatch>) -> Result<Self> {
         Ok(Self {
-            batches: VecDeque::from(batches),
+            batches: VecDeque::from(batches.clone()),
+            initial_batches: batches,
         })
     }
 }
@@ -1103,6 +1105,13 @@ impl LazyBatchGenerator for InMemGenerator {
 
     fn generate_next_batch(&mut self) -> Result<Option<RecordBatch>, DataFusionError> {
         Ok(self.batches.pop_front())
+    }
+
+    fn reset_state(&self) -> Arc<parking_lot::RwLock<dyn LazyBatchGenerator>> {
+        Arc::new(parking_lot::RwLock::new(Self {
+            initial_batches: self.initial_batches.clone(),
+            batches: VecDeque::from(self.initial_batches.clone()),
+        }))
     }
 }
 

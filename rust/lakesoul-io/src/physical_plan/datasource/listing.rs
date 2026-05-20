@@ -25,6 +25,7 @@ use datafusion::datasource::physical_plan::{
     FileGroup, FileScanConfig, FileScanConfigBuilder, FileSource,
 };
 use datafusion::datasource::source::DataSource;
+use datafusion::datasource::table_schema::TableSchema;
 use datafusion::execution::context::SessionState;
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::logical_expr::utils::conjunction;
@@ -60,17 +61,21 @@ impl LakeSoulTableProvider {
         file_format: Arc<dyn FileFormat>,
         as_sink: bool,
     ) -> Result<Self> {
-        let file_source = file_format.file_source();
         let (file_schema, listing_table) = listing_table_from_lakesoul_io_config(
             session_state,
             lakesoul_io_config.clone(),
-            file_format,
+            Arc::clone(&file_format),
             as_sink,
         )
         .await?;
         let file_schema = file_schema
             .ok_or_else(|| DataFusionError::Internal("No schema provided.".into()))?;
-        let table_schema = Self::compute_table_schema(file_schema, &lakesoul_io_config)?;
+        let table_schema =
+            Self::compute_table_schema(Arc::clone(&file_schema), &lakesoul_io_config)?;
+        let file_source =
+            file_format.file_source(TableSchema::from_file_schema(Arc::clone(
+                &table_schema,
+            )));
         let listing_options = listing_table.options().clone();
         let listing_table_paths = listing_table.table_paths().clone();
 
@@ -166,15 +171,14 @@ impl TableProvider for LakeSoulTableProvider {
             .await;
 
         let mut scan_config =
-            FileScanConfigBuilder::new(object_store_url, self.schema().clone(), source)
+            FileScanConfigBuilder::new(object_store_url, source)
                 .with_file_groups(vec![
                     FileGroup::new(partition_files?)
                         .with_statistics(Arc::new(statistics)),
                 ])
-                .with_projection_indices(projection.cloned())
+                .with_projection_indices(projection.cloned())?
                 .with_limit(limit)
                 .with_file_compression_type(FileCompressionType::ZSTD)
-                .with_newlines_in_values(false)
                 .build();
 
         if let Some(expr) = conjunction(filters.to_vec()) {
