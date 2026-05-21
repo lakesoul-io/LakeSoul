@@ -53,13 +53,12 @@ jobs:
                     RUSTFS_ACCESS_KEY: rustfsadmin
                     RUSTFS_SECRET_KEY: rustfsadmin
                     RUSTFS_CONSOLE_ENABLE: true
-                    RUSTFS_SERVER_DOMAINS: rustfs.com
 
         steps:
             - name: Wait for RustFS
               run: |
                   for i in {1..60}; do
-                    if curl -fsS http://127.0.0.1:9000/health/live \
+                    if curl -fsS http://127.0.0.1:9000/health \
                       && curl -fsS http://127.0.0.1:9001/rustfs/console/health; then
                       echo "RustFS is ready"
                       exit 0
@@ -73,19 +72,24 @@ jobs:
             - name: Setup RustFS bucket
               run: |
                   docker run --rm --network host \
+                    --entrypoint /bin/sh \
                     swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/rustfs/rc:v0.1.16 \
-                    /bin/sh -c '
+                    -c '
                       set -e
 
-                      until mc alias set rustfs http://127.0.0.1:9000 rustfsadmin rustfsadmin; do
+                      until rc alias set rustfs http://127.0.0.1:9000 rustfsadmin rustfsadmin; do
                         echo "RustFS is not ready yet, retrying in 2 seconds..."
                         sleep 2
                       done
 
                       echo "Create test bucket if not exists"
-                      mc mb rustfs/lakesoul-test-bucket --ignore-existing
+                      until rc mb rustfs/lakesoul-test-bucket --ignore-existing; do
+                        echo "Bucket creation failed, retrying in 2 seconds..."
+                        sleep 2
+                      done
 
                       echo "RustFS Configuration Complete!"
+                    '
             - name: Free Disk Space (Ubuntu)
               uses: jlumbroso/free-disk-space@main
               with:

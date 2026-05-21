@@ -58,6 +58,7 @@ services:
             interval: 3s
             timeout: 5s
             retries: 3
+        profiles: ["s3"]
 
     rc_setup:
         image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/rustfs/rc:v0.1.16
@@ -81,6 +82,7 @@ services:
 
         restart: "no"
         pull_policy: if_not_present
+        profiles: ["s3"]
 
     jobmanager:
         image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/flink:1.20.1-scala_2.12-java11
