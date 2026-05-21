@@ -9,7 +9,9 @@ use datafusion::{
     catalog::{Session, TableProvider, memory::DataSourceExec},
     datasource::source::DataSource,
     physical_expr::EquivalenceProperties,
-    physical_plan::{ExecutionPlan, stream::RecordBatchStreamAdapter},
+    physical_plan::{
+        ExecutionPlan, projection::ProjectionExprs, stream::RecordBatchStreamAdapter,
+    },
 };
 use datafusion_common::Statistics;
 use datafusion_expr::{Expr, TableType};
@@ -88,7 +90,7 @@ impl DataSource for TpchSource {
 
     fn try_swapping_with_projection(
         &self,
-        _projection: &[datafusion::physical_plan::projection::ProjectionExpr],
+        _projection: &ProjectionExprs,
     ) -> datafusion_common::Result<Option<Arc<dyn DataSource>>> {
         Ok(None)
     }

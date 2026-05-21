@@ -21,6 +21,7 @@ use datafusion::datasource::file_format::file_compression_type::FileCompressionT
 use datafusion::datasource::file_format::parquet::ParquetFormatFactory;
 use datafusion::datasource::listing::ListingOptions;
 use datafusion::datasource::physical_plan::FileSource;
+use datafusion::datasource::table_schema::TableSchema;
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::dml::InsertOp;
@@ -199,13 +200,15 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
             &conf,
         );
 
-        let table_schema = conf.table_schema.table_schema().clone();
+        let table_schema = Arc::clone(conf.file_source.table_schema().table_schema());
 
         // lakesoul only use column indices
-        let projection_indices = conf
-            .projection_exprs
-            .as_ref()
-            .map(|expr| expr.ordered_column_indices());
+        let projection_indices = conf.file_source.projection().as_ref().map(|p| {
+            p.ordered_column_indices()
+                .into_iter()
+                .filter(|&i| i < table_schema.fields().len())
+                .collect::<Vec<_>>()
+        });
 
         let target_schema = project_schema(&table_schema, projection_indices.as_ref())?;
 
@@ -366,10 +369,8 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         ) as _)
     }
 
-    fn file_source(&self) -> Arc<dyn FileSource> {
-        self.parquet_format
-            .file_source()
-            .with_statistics(Statistics::default())
+    fn file_source(&self, table_schema: TableSchema) -> Arc<dyn FileSource> {
+        self.parquet_format.file_source(table_schema)
     }
 }
 

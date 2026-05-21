@@ -473,12 +473,7 @@ impl TableProvider for LakeSoulTableProvider {
         let table_schema =
             TableSchema::new(self.file_schema.clone(), table_partition_cols.clone());
         let statistics = Arc::new(statistics);
-        let file_source = self
-            .options()
-            .format
-            .file_source()
-            .with_statistics(Statistics::new_unknown(&self.schema()))
-            .with_schema(table_schema.clone());
+        let file_source = self.options().format.file_source(table_schema);
 
         let object_store_url = if let Some(url) = self.table_paths().first() {
             url.object_store()
@@ -486,32 +481,24 @@ impl TableProvider for LakeSoulTableProvider {
             return Ok(Arc::new(EmptyExec::new(Arc::new(Schema::empty()))));
         };
 
-        let mut scan_config = FileScanConfigBuilder::new(
-            object_store_url,
-            table_schema.file_schema().clone(), // TODO: change logic when datafusion 52
-            file_source,
-        )
-        .with_file_groups(
-            partitioned_file_lists
-                .into_iter()
-                .map(|files| FileGroup::new(files).with_statistics(statistics.clone()))
-                .collect(),
-        )
-        .with_projection_indices(projection.cloned())
-        .with_limit(limit)
-        .with_newlines_in_values(false)
-        .with_output_ordering(
-            self.try_create_output_ordering()
-                .map_err(|report| DataFusionError::External(report.into_boxed_error()))?,
-        )
-        .with_table_partition_cols(
-            table_partition_cols
-                .into_iter()
-                .map(|field_ref| field_ref.as_ref().clone())
-                .collect(),
-        )
-        .with_file_compression_type(FileCompressionType::ZSTD) // TODO CONF;
-        .build();
+        let mut scan_config =
+            FileScanConfigBuilder::new(object_store_url, file_source)
+                .with_file_groups(
+                    partitioned_file_lists
+                        .into_iter()
+                        .map(|files| {
+                            FileGroup::new(files).with_statistics(statistics.clone())
+                        })
+                        .collect(),
+                )
+                .with_statistics((*statistics).clone())
+                .with_projection_indices(projection.cloned())?
+                .with_limit(limit)
+                .with_output_ordering(self.try_create_output_ordering().map_err(
+                    |report| DataFusionError::External(report.into_boxed_error()),
+                )?)
+                .with_file_compression_type(FileCompressionType::ZSTD) // TODO CONF;
+                .build();
 
         if let Some(expr) = conjunction(filters.to_vec()) {
             // NOTE: Use the table schema (NOT file schema) here because `expr` may contain references to partition columns.
