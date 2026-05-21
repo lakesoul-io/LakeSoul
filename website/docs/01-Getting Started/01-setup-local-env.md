@@ -79,7 +79,7 @@ It is necessary to add information such as object storage access key, secret key
   ./bin/spark-shell --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog --conf spark.sql.defaultCatalog=lakesoul --conf spark.hadoop.fs.s3a.access.key=XXXXXX --conf spark.hadoop.fs.s3a.secret.key=XXXXXX --conf spark.hadoop.fs.s3a.endpoint=XXXXXX --conf spark.hadoop.fs.s3.impl=org.apache.hadoop.fs.s3a.S3AFileSystem
   ```
 
-If it is a storage service compatible with S3 such as Minio, you also need to add `--conf spark.hadoop.fs.s3a.path.style.access=true`.
+If it is a storage service compatible with S3 such as RustFS, you also need to add `--conf spark.hadoop.fs.s3a.path.style.access=true`.
   
 #### LakeSoul Spark Conf Parameters
 Before start to use Lakesoul, we should add some paramethers in `spark-defaults.conf` or `Spark Session Builder`。
@@ -111,7 +111,7 @@ s3.access-key: XXXXXX
 s3.secret-key: XXXXXX
 s3.endpoint: XXXXXX
 ```
-If it is a storage service compatible with S3 such as Minio, you also need to add:
+If it is a storage service compatible with S3 such as RustFS, you also need to add:
 ```yaml
 s3.path.style.access: true
 ```
@@ -186,7 +186,7 @@ source env.sh
 
 ## 3. Use Docker Compose to Start a Local Cluster
 ### 3.1 Docker Compose Files
-We provide a docker compose env to quickly start a local PostgreSQL service and a MinIO S3 Storage service. The docker compose env is located under [lakesoul-docker-compose-env](https://github.com/lakesoul-io/LakeSoul/tree/main/docker/lakesoul-docker-compose-env).
+We provide a docker compose env to quickly start a local PostgreSQL service and a RustFS S3 Storage service. The docker compose env is located under [lakesoul-docker-compose-env](https://github.com/lakesoul-io/LakeSoul/tree/main/docker/lakesoul-docker-compose-env).
 
 ### 3.2 Install Docker Compose
 To install docker compose, please refer to [Install Docker Engine](https://docs.docker.com/engine/install/)
@@ -197,7 +197,7 @@ To start the docker compose env, cd into the docker compose env dir, and execute
 cd docker/lakesoul-docker-compose-env/
 docker compose up -d
 ```
-Then use `docker compose ps` to check both services' statuses are `running(healthy)`. The PostgreSQL service would automatically setup the database and tables required by LakeSoul Meta. And the MinIO service would setup a public bucket. You can change the user, password, database name and MinIO bucket name accordingly in the `docker-compose.yml` file.
+Then use `docker compose ps` to check both services' statuses are `running(healthy)`. The PostgreSQL service would automatically setup the database and tables required by LakeSoul Meta. And the RustFS service would setup a public bucket. You can change the user, password, database name and RustFS bucket name accordingly in the `docker-compose.yml` file.
 
 ### 3.4 Run LakeSoul Tests in Docker Compose Env
 #### 3.4.1 Prepare LakeSoul Properties File
@@ -226,7 +226,7 @@ docker run --net lakesoul-docker-compose-env_default --rm -ti \
     --conf spark.hadoop.fs.s3.impl=org.apache.hadoop.fs.s3a.S3AFileSystem \
     --conf spark.hadoop.fs.s3a.buffer.dir=/opt/spark/work-dir/s3a \
     --conf spark.hadoop.fs.s3a.path.style.access=true \
-    --conf spark.hadoop.fs.s3a.endpoint=http://minio:9000 \
+    --conf spark.hadoop.fs.s3a.endpoint=http://locolhost:9000 \
     --conf spark.hadoop.fs.s3a.aws.credentials.provider=org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider
 ```
 
@@ -244,17 +244,17 @@ df.write
 ```
 
 #### 3.4.5 Verify Data Written Successfully
-Open link http://127.0.0.1:9001/buckets/lakesoul-test-bucket/browse/ in your browser to verify that LakeSoul table has been written to MinIO successfully.
-Use minioadmin1:minioadmin1 to login into MinIO's console.
+Open link http://127.0.0.1:9001/buckets/lakesoul-test-bucket/ in your browser to verify that LakeSoul table has been written to RustFS successfully.
+Use rustfsadmin:rustfsadmin to login into RustFS's console.
 
-### 3.5 Cleanup Meta Tables and MinIO Bucket
+### 3.5 Cleanup Meta Tables and RustFS Bucket
 To cleanup all contents in LakeSoul meta tables, execute:
 ```bash
 docker exec -ti lakesoul-docker-compose-env-lakesoul-meta-db-1 psql -h localhost -U lakesoul_test -d lakesoul_test -f /meta_cleanup.sql
 ```
-To cleanup all contents in MinIO bucket, execute:
+To cleanup all contents in RustFS bucket, execute:
 ```bash
-docker run --net lakesoul-docker-compose-env_default --rm -t swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/bitnami/spark:3.3.1 aws --no-sign-request --endpoint-url http://minio:9000 s3 rm --recursive s3://lakesoul-test-bucket/
+docker run --net lakesoul-docker-compose-env_default --rm -t swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/bitnami/spark:3.3.1 aws --no-sign-request --endpoint-url http://localhost:9000 s3 rm --recursive s3://lakesoul-test-bucket/
 ```
 
 ### 3.6 Shutdown Docker Compose Env

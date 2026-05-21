@@ -12,7 +12,7 @@ LakeSoul is an end-to-end real-time lake warehouse storage framework that uses a
 
    The NativeIO layer uses the native IO library implemented by Rust, and uniformly encapsulates Java and Python interfaces, allowing LakeSoul to easily implement native connectors with various big data and AI frameworks, eliminating the need for conversion overhead in file formats or memory, and improving execution efficiency.
 
-   The NativeIO layer supports common storage services such as HDFS, S3, OSS, OBS, and MinIO.
+   The NativeIO layer supports common storage services such as HDFS, S3, OSS, OBS, and RustFS.
 
 3. Engine docking layer. We are also continuously integrating Catalog and DataSource that implement frameworks such as Spark, Flink, Presto, PyTorch, Pandas, and Ray. Seamless connection between multiple engines, especially big data processing and AI computing. Therefore, LakeSoul is very suitable as the lake warehouse data base of the Data+AI integrated architecture.
 

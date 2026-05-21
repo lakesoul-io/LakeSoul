@@ -15,10 +15,10 @@ LakeSoul 实现了 Presto Connector，目前支持读取湖仓表，能够读取
 新建 `etc/catalog/lakesoul.properties` 文件（具体的 etc 目录位置根据 presto 部署情况修改）：
 ```properties
 connector.name=lakesoul
-fs.s3a.access.key=minioadmin1
-fs.s3a.secret.key=minioadmin1
+fs.s3a.access.key=rustfsadmin
+fs.s3a.secret.key=rustfsadmin
 fs.s3a.bucket=lakesoul-test-bucket
-fs.s3a.endpoint=http://minio:9000
+fs.s3a.endpoint=http://localhost:9000
 ```
 其中 `fs.s3a` 开头的设置项为访问 S3 的配置，可以根据需要修改。
 

@@ -338,8 +338,8 @@ async fn test_flight_sql_obj_store() {
         warehouse_prefix: Some("s3://lakesoul-bucket/flight-test".to_string()),
         endpoint: Some("http://localhost:9000".to_string()),
         s3_bucket: Some("lakesoul-test-bucket".to_string()),
-        s3_access_key: Some("minioadmin1".to_string()),
-        s3_secret_key: Some("minioadmin1".to_string()),
+        s3_access_key: Some("rustfsadmin".to_string()),
+        s3_secret_key: Some("rustfsadmin".to_string()),
         worker_threads: 2,
     };
     let ctx = create_lakesoul_session_ctx(meta_client.clone(), &core_args).unwrap();
@@ -456,9 +456,9 @@ async fn test_flight_sql_server() {
                 "--s3-bucket",
                 "lakesoul-test-bucket",
                 "--s3-access-key",
-                "minioadmin1",
+                "rustfsadmin",
                 "--s3-secret-key",
-                "minioadmin1",
+                "rustfsadmin",
             ],
             vec![
                 ("JWT_AUTH_ENABLED", "false"),

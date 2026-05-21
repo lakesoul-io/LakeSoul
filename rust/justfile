@@ -14,8 +14,8 @@ flight-sql-s3 level=log_level:
       --warehouse-prefix "s3://lakesoul-bucket/flight-test" \
       --endpoint  "http://localhost:9000" \
       --s3-bucket  "lakesoul-test-bucket" \
-      --s3-access-key "minioadmin1" \
-      --s3-secret-key "minioadmin1"
+      --s3-access-key "rustfsadmin" \
+      --s3-secret-key "rustfsadmin"
 
 clean-tpch:
    rm -rf /tmp/lakesoul/tpch_data/*
@@ -28,8 +28,8 @@ console-s3 level=log_level:
     --warehouse-prefix "s3://lakesoul-bucket/tpch" \
       --endpoint  "http://localhost:9000" \
       --s3-bucket  "lakesoul-test-bucket" \
-      --s3-access-key "minioadmin1" \
-      --s3-secret-key "minioadmin1"
+      --s3-access-key "rustfsadmin" \
+      --s3-secret-key "rustfsadmin"
 
 console level=log_level:
     RUST_LOG={{level}} cargo run --release --bin lakesoul-console -- --worker-threads 16
@@ -39,8 +39,8 @@ tpch-gen-s3:
     --warehouse-prefix "s3://lakesoul-bucket" \
       --endpoint  "http://localhost:9000" \
       --s3-bucket  "lakesoul-test-bucket" \
-      --s3-access-key "minioadmin1" \
-      --s3-secret-key "minioadmin1" tpch-gen -p "s3://lakesoul-bucket" --scale-factor 0.1 -n 8
+      --s3-access-key "rustfsadmin" \
+      --s3-secret-key "rustfsadmin" tpch-gen -p "s3://lakesoul-bucket" --scale-factor 0.1 -n 8
 
 tpch-gen-lfs level=log_level:
    RUST_LOG={{level}} cargo run --release --bin lakesoul-console -- --worker-threads 16  \
@@ -54,8 +54,8 @@ tpch-gen-s3-1 level=log_level:
     --warehouse-prefix "s3://lakesoul-bucket" \
       --endpoint  "http://localhost:31099" \
       --s3-bucket  "lakesoul-bucket" \
-      --s3-access-key "minioadmin" \
-      --s3-secret-key "minioadmin" tpch-gen -p "s3://lakesoul-bucket" --scale-factor 0.1 -n 8
+      --s3-access-key "rustfsadmin" \
+      --s3-secret-key "rustfsadmin" tpch-gen -p "s3://lakesoul-bucket" --scale-factor 0.1 -n 8
 copy level=log_level:
    RUST_LOG={{level}} cargo run --release --bin lakesoul-console -- --worker-threads 16 --file copy.sql
 

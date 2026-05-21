@@ -67,9 +67,9 @@ pub mod test {
     // "--s3-bucket",
     // "lakesoul-test-bucket",
     // "--s3-access-key",
-    // "minioadmin1",
+    // "rustfsadmin",
     // "--s3-secret-key",
-    // "minioadmin1",
+    // "rustfsadmin",
     // (flavor = "multi_thread", worker_threads = 10)
     #[tokio::test]
     async fn test_local_s3_cache() {
@@ -88,8 +88,8 @@ pub mod test {
 
         let s3 = aws::AmazonS3Builder::new()
             .with_bucket_name("lakesoul-test-bucket")
-            .with_access_key_id("minioadmin1")
-            .with_secret_access_key("minioadmin1")
+            .with_access_key_id("rustfsadmin")
+            .with_secret_access_key("rustfsadmin")
             .with_allow_http(true)
             .with_endpoint("http://localhost:9000")
             .with_region("cn-southwest-2")

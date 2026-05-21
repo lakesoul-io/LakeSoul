@@ -27,8 +27,8 @@ public class LakeSoulQueryRunner  {
             int nodeCount = 1;
             queryRunner =  DistributedQueryRunner.builder(createSession()).setNodeCount(nodeCount).build();
             Map<String, String> properties = new HashMap<>();
-            properties.put("fs.s3a.access.key", "minioadmin1");
-            properties.put("fs.s3a.secret.key", "minioadmin1");
+            properties.put("fs.s3a.access.key", "rustfsadmin");
+            properties.put("fs.s3a.secret.key", "rustfsadmin");
             properties.put("fs.s3a.bucket", "lakesoul-test-bucket");
             properties.put("fs.s3a.endpoint", "http://localhost:9000");
             queryRunner.installPlugin(new LakeSoulPlugin());
