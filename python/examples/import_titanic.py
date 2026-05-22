@@ -20,10 +20,6 @@ if __name__ == "__main__":
         .config("spark.hadoop.fs.s3a.buffer.dir", "/opt/spark/work-dir/s3a")
         .config("spark.hadoop.fs.s3a.path.style.access", "true")
         .config("spark.hadoop.fs.s3a.endpoint", "http://localhost:9000")
-        .config(
-            "spark.hadoop.fs.s3a.aws.credentials.provider",
-            "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider",
-        )
         .config("spark.hadoop.fs.s3a.access.key", "rustfsadmin")
         .config("spark.hadoop.fs.s3a.secret.key", "rustfsadmin")
         .getOrCreate()

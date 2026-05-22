@@ -237,8 +237,10 @@ docker run --net lakesoul-docker-compose-env_default --rm -ti \
     --conf spark.hadoop.fs.s3.impl=org.apache.hadoop.fs.s3a.S3AFileSystem \
     --conf spark.hadoop.fs.s3a.buffer.dir=/opt/spark/work-dir/s3a \
     --conf spark.hadoop.fs.s3a.path.style.access=true \
-    --conf spark.hadoop.fs.s3a.endpoint=http://localhost:9000 \
-    --conf spark.hadoop.fs.s3a.aws.credentials.provider=org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider
+    --conf spark.hadoop.fs.s3a.endpoint=http://rustfs:9000 \
+    --conf spark.hadoop.fs.s3a.endpoint.region=us-east-1 \
+    --conf spark.hadoop.fs.s3a.access.key=rustfsadmin \
+    --conf spark.hadoop.fs.s3a.secret.key=rustfsadmin
 ```
 
 #### 3.4.4 执行 LakeSoul Scala API
@@ -265,7 +267,7 @@ docker exec -ti lakesoul-docker-compose-env-lakesoul-meta-db-1 psql -h localhost
 ```
 清理 RustFS 桶内容:
 ```bash
-docker run --net lakesoul-docker-compose-env_default --rm -t swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/bitnami/spark:3.3.1 aws --no-sign-request --endpoint-url http://localhost:9000 s3 rm --recursive s3://lakesoul-test-bucket/
+docker run --net lakesoul-docker-compose-env_default --rm -t -e AWS_ACCESS_KEY_ID=rustfsadmin -e AWS_SECRET_ACCESS_KEY=rustfsadmin -e AWS_DEFAULT_REGION=us-east-1 swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/bitnami/spark:3.3.1 aws --endpoint-url http://rustfs:9000 s3 rm --recursive s3://lakesoul-test-bucket/
 ```
 
 ### 3.6 停止 Docker Compose 环境
