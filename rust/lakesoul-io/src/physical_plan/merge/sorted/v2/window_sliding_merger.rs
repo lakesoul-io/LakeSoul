@@ -54,6 +54,9 @@ pub struct WindowSlidingMerger<C: CursorValues> {
     ranges_counter: usize,
 
     ranges: HashMap<usize, BatchRange<C>, BuildNoHashHasher<usize>>,
+
+    /// fields_map[stream_idx][stream_col_idx] = target_schema_col_idx
+    fields_map: Arc<Vec<Vec<usize>>>,
 }
 
 impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
@@ -70,6 +73,7 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
         schema: SchemaRef,
         streams_num: usize,
         target_batch_size: usize,
+        fields_map: Arc<Vec<Vec<usize>>>,
     ) -> Result<Self> {
         info!(
             "Create WindowSlidingMerger with {} streams, target_batch_size: {}",
@@ -113,6 +117,7 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
                 streams_num * 2,
                 BuildNoHashHasher::default(),
             ),
+            fields_map,
         })
     }
 
@@ -331,6 +336,7 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
         let batch = batch?;
         if batch.1.num_rows() > 0 {
             let end_row_for_merge = batch.1.num_rows() - 1;
+            let stream_fields_map = Arc::new(self.fields_map[batch.2].clone());
             self.ranges.insert(
                 self.ranges_counter,
                 BatchRange::new(
@@ -339,6 +345,7 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
                     batch.2,
                     self.ranges_counter,
                     end_row_for_merge,
+                    stream_fields_map,
                 ),
             );
             self.ranges_counter += 1;
@@ -518,11 +525,13 @@ mod tests {
             a1.new_empty(),
         )
         .await?;
+        let fields_map = Arc::new(vec![vec![0, 1], vec![0, 1], vec![0, 1]]);
         let combiner = WindowSlidingMerger::new(
             vec![(s1, true), (s2, true), (s3, true)],
             schema,
             3,
             10,
+            fields_map,
         )?;
         let stream = WindowSlidingMerger::build_merged_stream(combiner)?;
         let batches: Vec<RecordBatch> = stream.try_collect().await?;

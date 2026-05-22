@@ -4,7 +4,9 @@
 
 use crate::physical_plan::merge::sorted::cursor::CursorValues;
 use arrow_array::RecordBatch;
+use smallvec::SmallVec;
 use std::cmp::Ordering;
+use std::sync::Arc;
 
 pub struct BatchRange<C: CursorValues> {
     cursor: C,
@@ -14,6 +16,9 @@ pub struct BatchRange<C: CursorValues> {
     batch_idx: usize,
     // end row is inclusive
     pub(crate) end_row_for_merge: usize,
+    /// Maps this stream's column indices to target (physical) schema column indices.
+    /// stream_fields_map[stream_col_idx] = target_schema_col_idx
+    pub(crate) stream_fields_map: Arc<Vec<usize>>,
 }
 
 impl<C: CursorValues> BatchRange<C> {
@@ -23,6 +28,7 @@ impl<C: CursorValues> BatchRange<C> {
         stream_idx: usize,
         batch_idx: usize,
         end_row_for_merge: usize,
+        stream_fields_map: Arc<Vec<usize>>,
     ) -> Self {
         Self {
             cursor,
@@ -31,6 +37,7 @@ impl<C: CursorValues> BatchRange<C> {
             begin_row: 0,
             batch_idx,
             end_row_for_merge,
+            stream_fields_map,
         }
     }
 
@@ -192,7 +199,24 @@ impl<C: CursorValues> BatchRange<C> {
     pub fn remaining_rows(&self) -> usize {
         self.end_row_for_merge - self.begin_row + 1
     }
+
+    pub fn has_target_col(&self, target_col_idx: usize) -> bool {
+        self.stream_fields_map.iter().any(|&t| t == target_col_idx)
+    }
+
+    pub fn source_col_for_target(&self, target_col_idx: usize) -> Option<usize> {
+        self.stream_fields_map
+            .iter()
+            .position(|&t| t == target_col_idx)
+    }
 }
+
+pub struct InProgressRow {
+    pub(crate) range_idx: usize,
+    pub(crate) row_idx: usize,
+}
+
+pub type InProgressPkGroup = SmallVec<[InProgressRow; 4]>;
 
 impl<C: CursorValues> PartialEq for BatchRange<C> {
     fn eq(&self, other: &Self) -> bool {
@@ -214,11 +238,6 @@ impl<C: CursorValues> Ord for BatchRange<C> {
             .then_with(|| self.stream_idx.cmp(&other.stream_idx))
             .then_with(|| self.batch_idx.cmp(&other.batch_idx))
     }
-}
-
-pub struct InProgressRow {
-    pub(crate) range_idx: usize,
-    pub(crate) row_idx: usize,
 }
 
 #[cfg(test)]
@@ -263,7 +282,7 @@ mod tests {
         } else {
             batch.num_rows() - 1
         };
-        BatchRange::new(cursor, batch, 0, 0, end_row_for_merge)
+        BatchRange::new(cursor, batch, 0, 0, end_row_for_merge, Arc::new(vec![0]))
     }
 
     #[test]

@@ -3,10 +3,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::physical_plan::merge::sorted::cursor::CursorValues;
-use crate::physical_plan::merge::sorted::v2::batch_range::{BatchRange, InProgressRow};
+use crate::physical_plan::merge::sorted::v2::batch_range::{
+    BatchRange, InProgressPkGroup, InProgressRow,
+};
+use arrow::array::Array;
 use arrow::compute::interleave;
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::SchemaRef;
+use smallvec::smallvec;
+use std::collections::HashMap;
 use tokio::sync::mpsc::Sender;
 
 pub struct LoserTreeRangeMerge<'a, C: CursorValues> {
@@ -16,7 +21,7 @@ pub struct LoserTreeRangeMerge<'a, C: CursorValues> {
 
     loser_tree_has_updated: bool,
 
-    in_progress_row: Vec<InProgressRow>,
+    pk_groups: Vec<InProgressPkGroup>,
 
     target_batch_size: usize,
 
@@ -34,7 +39,7 @@ impl<'a, C: CursorValues> LoserTreeRangeMerge<'a, C> {
             ranges,
             loser_tree: Vec::with_capacity(len),
             loser_tree_has_updated: false,
-            in_progress_row: Vec::with_capacity(target_batch_size + 1),
+            pk_groups: Vec::with_capacity(target_batch_size + 1),
             target_batch_size,
             schema,
         }
@@ -50,71 +55,102 @@ impl<'a, C: CursorValues> LoserTreeRangeMerge<'a, C> {
             if !self.ranges[winner].has_more_rows() {
                 break;
             }
-            // if key is equal, we replace the last row
-            if let Some(last_row) = self.in_progress_row.last_mut() {
-                if C::eq(
-                    self.ranges[last_row.range_idx].cursor(),
-                    last_row.row_idx,
+
+            let is_same_pk = self.pk_groups.last().map_or(false, |group| {
+                let first = &group[0];
+                C::eq(
+                    self.ranges[first.range_idx].cursor(),
+                    first.row_idx,
                     self.ranges[winner].cursor(),
                     self.ranges[winner].begin_row(),
-                ) {
-                    // replace last row and continue
-                    *last_row = InProgressRow {
-                        range_idx: winner,
-                        row_idx: self.ranges[winner].begin_row(),
-                    };
-                } else {
-                    // this is not first row and not duplicate, first try to output previous rows
-                    if self.in_progress_row.len() >= self.target_batch_size {
-                        let batch = self.build_record_batch()?;
-                        tx.send(Ok(batch)).await?;
-                    }
-                    self.in_progress_row.push(InProgressRow {
-                        range_idx: winner,
-                        row_idx: self.ranges[winner].begin_row(),
-                    });
-                }
-            } else {
-                // first row, we need to continue to see if there's duplicate
-                self.in_progress_row.push(InProgressRow {
+                )
+            });
+
+            if is_same_pk {
+                self.pk_groups.last_mut().unwrap().push(InProgressRow {
                     range_idx: winner,
                     row_idx: self.ranges[winner].begin_row(),
                 });
+            } else {
+                if self.pk_groups.len() >= self.target_batch_size {
+                    let batch = self.flush_pk_groups()?;
+                    tx.send(Ok(batch)).await?;
+                }
+                self.pk_groups.push(smallvec![InProgressRow {
+                    range_idx: winner,
+                    row_idx: self.ranges[winner].begin_row(),
+                }]);
             }
+
             self.ranges[winner].advance();
             self.update_loser_tree();
         }
-        // check end
-        if !self.in_progress_row.is_empty() {
-            let batch = self.build_record_batch()?;
+        if !self.pk_groups.is_empty() {
+            let batch = self.flush_pk_groups()?;
             tx.send(Ok(batch)).await?;
         }
         Ok(())
     }
 
-    fn build_record_batch(&mut self) -> crate::Result<RecordBatch> {
-        let mut indices = Vec::with_capacity(self.in_progress_row.len());
-        for row in self.in_progress_row.iter() {
-            indices.push((row.range_idx, row.row_idx));
+    fn flush_pk_groups(&mut self) -> crate::Result<RecordBatch> {
+        let num_target_cols = self.schema.fields().len();
+        let num_output_rows = self.pk_groups.len();
+        let mut columns = Vec::with_capacity(num_target_cols);
+
+        for target_col in 0..num_target_cols {
+            let mut source_arrs: Vec<&dyn Array> = Vec::new();
+            let mut ref_to_arr_idx: HashMap<(usize, usize), usize> = HashMap::new();
+            let mut indices: Vec<(usize, usize)> = Vec::with_capacity(num_output_rows);
+
+            let null_arr: ArrayRef = arrow::array::new_null_array(
+                self.schema.field(target_col).data_type(),
+                1,
+            );
+            source_arrs.push(null_arr.as_ref());
+
+            for group in &self.pk_groups {
+                let winner = group
+                    .iter()
+                    .rev()
+                    .find(|row| self.ranges[row.range_idx].has_target_col(target_col));
+
+                if let Some(winner) = winner {
+                    let key = (winner.range_idx, winner.row_idx);
+                    let arr_idx = *ref_to_arr_idx.entry(key).or_insert_with(|| {
+                        let src_col = self.ranges[winner.range_idx]
+                            .source_col_for_target(target_col)
+                            .unwrap();
+                        let idx = source_arrs.len();
+                        source_arrs.push(
+                            self.ranges[winner.range_idx]
+                                .batch()
+                                .column(src_col)
+                                .as_ref(),
+                        );
+                        idx
+                    });
+                    indices.push((arr_idx, winner.row_idx));
+                } else {
+                    indices.push((0, 0));
+                }
+            }
+
+            if source_arrs.len() == 1 {
+                columns.push(arrow::array::new_null_array(
+                    self.schema.field(target_col).data_type(),
+                    num_output_rows,
+                ));
+            } else {
+                let col = interleave(&source_arrs, &indices)?;
+                columns.push(col);
+            }
         }
-        let column_num = self.ranges[0].batch().num_columns();
-        let mut columns = Vec::with_capacity(column_num);
-        let result = (0..column_num)
-            .map(|i| {
-                self.ranges.iter().for_each(|range| {
-                    columns.push(range.batch().column(i).as_ref());
-                });
-                let col = interleave(columns.as_slice(), indices.as_slice());
-                columns.clear();
-                col
-            })
-            .collect::<arrow::error::Result<Vec<ArrayRef>>>()?;
-        self.in_progress_row.clear();
-        Ok(RecordBatch::try_new(self.schema.clone(), result)?)
+
+        self.pk_groups.clear();
+        Ok(RecordBatch::try_new(self.schema.clone(), columns)?)
     }
 
     fn init_loser_tree(&mut self) {
-        // Init loser tree
         unsafe {
             self.loser_tree.resize(self.ranges.len(), usize::MAX);
             for i in 0..self.ranges.len() {
@@ -130,7 +166,6 @@ impl<'a, C: CursorValues> LoserTreeRangeMerge<'a, C> {
                         winner_range.has_more_rows(),
                         challenger_range.has_more_rows(),
                     ) {
-                        // None means the stream is exhausted, always mark None as loser
                         (false, _) => {
                             self.update_winner(cmp_node, &mut winner, *challenger)
                         }
@@ -155,18 +190,11 @@ impl<'a, C: CursorValues> LoserTreeRangeMerge<'a, C> {
         (self.ranges.len() + cursor_index) / 2
     }
 
-    /// Find the parent node index for the given node index
     #[inline]
     fn loser_tree_parent_node_index(&self, node_idx: usize) -> usize {
         node_idx / 2
     }
 
-    /// Updates the loser tree to reflect the new winner after the previous winner is consumed.
-    /// This function adjusts the tree by comparing the current winner with challengers from
-    /// other partitions.
-    ///
-    /// If `enable_round_robin_tie_breaker` is true and a tie occurs at the final level, the
-    /// tie-breaker logic will be applied to ensure fair selection among equal elements.
     fn update_loser_tree(&mut self) {
         unsafe {
             let mut winner = *self.loser_tree.get_unchecked(0);
@@ -174,7 +202,6 @@ impl<'a, C: CursorValues> LoserTreeRangeMerge<'a, C> {
 
             while cmp_node != 0 {
                 let challenger = *self.loser_tree.get_unchecked(cmp_node);
-                // None means the stream is exhausted, always mark None as loser
                 let winner_range = self.ranges.get_unchecked(winner);
                 let challenger_range = self.ranges.get_unchecked(challenger);
                 match (
@@ -196,7 +223,6 @@ impl<'a, C: CursorValues> LoserTreeRangeMerge<'a, C> {
         self.loser_tree_has_updated = true;
     }
 
-    /// Update the winner of the loser tree.
     #[inline]
     fn update_winner(&mut self, cmp_node: usize, winner: &mut usize, challenger: usize) {
         unsafe {
@@ -239,7 +265,6 @@ mod tests {
         .unwrap()
     }
 
-    // Helper function to create ArrayValues for testing
     fn create_int32_cursor(
         values: Vec<i32>,
         reservation: MemoryReservation,
@@ -279,7 +304,6 @@ mod tests {
         results
     }
 
-    // Test the basic functionality of the loser tree merger
     #[tokio::test]
     async fn test_basic_merge() -> crate::Result<()> {
         let pool = Arc::new(GreedyMemoryPool::new(50)) as _;
@@ -288,13 +312,12 @@ mod tests {
         let batch1 = create_test_batch(vec![1, 3, 5], vec!["a", "c", "e"]);
         let batch2 = create_test_batch(vec![2, 4, 6], vec!["b", "d", "f"]);
 
-        // Create cursors for each batch (using first column as sort key)
         let cursor1 = create_int32_cursor(vec![1, 3, 5], r1.new_empty());
         let cursor2 = create_int32_cursor(vec![2, 4, 6], r1.new_empty());
 
-        // Create BatchRange instances
-        let range1 = BatchRange::new(cursor1, batch1, 0, 0, 2); // Process all 3 rows
-        let range2 = BatchRange::new(cursor2, batch2, 1, 0, 2); // Process all 3 rows
+        let stream_fields_map = Arc::new(vec![0, 1]);
+        let range1 = BatchRange::new(cursor1, batch1, 0, 0, 2, stream_fields_map.clone());
+        let range2 = BatchRange::new(cursor2, batch2, 1, 0, 2, stream_fields_map);
 
         let batches = collect_merge_results(range1, range2, 10).await;
 
@@ -320,7 +343,6 @@ mod tests {
         Ok(())
     }
 
-    // Test with equal values to check the equality handling
     #[tokio::test]
     async fn test_equal_values_merge() -> crate::Result<()> {
         let pool = Arc::new(GreedyMemoryPool::new(50)) as _;
@@ -329,13 +351,12 @@ mod tests {
         let batch1 = create_test_batch(vec![1, 2, 3], vec!["a", "b", "c"]);
         let batch2 = create_test_batch(vec![1, 2, 3], vec!["x", "y", "z"]);
 
-        // Create cursors for each batch
         let cursor1 = create_int32_cursor(vec![1, 2, 3], r1.new_empty());
         let cursor2 = create_int32_cursor(vec![1, 2, 3], r1.new_empty());
 
-        // Create BatchRange instances
-        let range1 = BatchRange::new(cursor1, batch1, 0, 0, 2);
-        let range2 = BatchRange::new(cursor2, batch2, 1, 0, 2);
+        let stream_fields_map = Arc::new(vec![0, 1]);
+        let range1 = BatchRange::new(cursor1, batch1, 0, 0, 2, stream_fields_map.clone());
+        let range2 = BatchRange::new(cursor2, batch2, 1, 0, 2, stream_fields_map);
 
         let batches = collect_merge_results(range1, range2, 10).await;
 
@@ -358,7 +379,6 @@ mod tests {
         Ok(())
     }
 
-    // Test with duplicate values
     #[tokio::test]
     async fn test_range_with_duplicate_values_merge() -> crate::Result<()> {
         let pool = Arc::new(GreedyMemoryPool::new(50)) as _;
@@ -367,13 +387,12 @@ mod tests {
         let batch1 = create_test_batch(vec![1, 1, 2], vec!["a", "b", "c"]);
         let batch2 = create_test_batch(vec![2, 4, 4], vec!["x", "y", "z"]);
 
-        // Create cursors for each batch
         let cursor1 = create_int32_cursor(vec![1, 1, 2], r1.new_empty());
         let cursor2 = create_int32_cursor(vec![2, 4, 4], r1.new_empty());
 
-        // Create BatchRange instances
-        let range1 = BatchRange::new(cursor1, batch1, 0, 0, 2);
-        let range2 = BatchRange::new(cursor2, batch2, 1, 0, 2);
+        let stream_fields_map = Arc::new(vec![0, 1]);
+        let range1 = BatchRange::new(cursor1, batch1, 0, 0, 2, stream_fields_map.clone());
+        let range2 = BatchRange::new(cursor2, batch2, 1, 0, 2, stream_fields_map);
 
         let batches = collect_merge_results(range1, range2, 1).await;
 

@@ -173,19 +173,60 @@ macro_rules! create_merger {
                 .iter()
                 .all(|op| *op == MergeOperator::UseLast)
         {
+            let use_v2_merge: bool = std::env::var("LAKESOUL_IO_USE_V2_MERGE")
+                .unwrap_or("false".into())
+                .parse()
+                .unwrap_or(false);
+            info!("lakesoul use_v2_merge: {}", use_v2_merge);
+            if use_v2_merge {
+                let is_partial_merge = $fields_map
+                    .iter()
+                    .enumerate()
+                    .any(|(i, f)| {
+                        let is_partial = f.len() != $physical_schema.fields().len();
+                        if is_partial {
+                            info!("{}th stream is partial merge, field count: {}, physical schema count: {}",
+                                i, f.len(), $physical_schema.fields().len());
+                        }
+                        is_partial
+                    });
+                info!("lakesoul is_partial_merge: {}", is_partial_merge);
+                info!("lakesoul using new batch wise combiner");
+                let combiner = WindowSlidingMerger::new(
+                    $streams
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, s)| (s, !$is_compacted[i]))
+                        .collect(),
+                    $physical_schema,
+                    streams_num,
+                    $batch_size,
+                    $fields_map,
+                )?;
+                let merge_stream =
+                    WindowSlidingMerger::build_merged_stream(combiner)?;
+                return Ok(Box::pin(
+                    DefaultColumnStream::new_from_streams_with_default(
+                        vec![merge_stream],
+                        $merged_schema,
+                        $default_column_value,
+                    ),
+                ));
+            }
             let is_partial_merge = $fields_map
                 .iter()
                 .enumerate()
                 .any(|(i, f)| {
-                    let is_partial_merge = f.len() != $physical_schema.fields().len();
-                    if is_partial_merge {
+                    let is_partial = f.len() != $physical_schema.fields().len();
+                    if is_partial {
                         info!("{}th stream is partial merge, field count: {}, physical schema count: {}",
                             i, f.len(), $physical_schema.fields().len());
                     }
-                    is_partial_merge
+                    is_partial
                 });
             info!("lakesoul is_partial_merge: {}", is_partial_merge);
             if is_partial_merge {
+                info!("lakesoul using old row wise combiner");
                 let combiner = UseLastRangeCombiner::<$t, true>::new(
                     $physical_schema.clone(),
                     streams_num,
@@ -205,53 +246,25 @@ macro_rules! create_merger {
                     ),
                 ));
             } else {
-                let use_v2_merge: bool = std::env::var("LAKESOUL_IO_USE_V2_MERGE")
-                    .unwrap_or("false".into())
-                    .parse()
-                    .unwrap_or(false);
-                info!("lakesoul use_v2_merge: {}", use_v2_merge);
-                if !use_v2_merge {
-                    info!("lakesoul using old row wise combiner");
-                    let combiner = UseLastRangeCombiner::<$t, false>::new(
-                        $physical_schema.clone(),
-                        streams_num,
-                        $fields_map,
-                        $batch_size,
-                    );
-                    let merge_stream = SortedStreamMerger::new_from_streams(
-                        $streams,
-                        $physical_schema,
-                        combiner,
-                    )?;
-                    return Ok(Box::pin(
-                        DefaultColumnStream::new_from_streams_with_default(
-                            vec![Box::pin(merge_stream)],
-                            $merged_schema,
-                            $default_column_value,
-                        ),
-                    ));
-                } else {
-                    info!("lakesoul using new batch wise combiner");
-                    let combiner = WindowSlidingMerger::new(
-                        $streams
-                            .into_iter()
-                            .enumerate()
-                            .map(|(i, s)| (s, !$is_compacted[i]))
-                            .collect(),
-                        $physical_schema,
-                        streams_num,
-                        $batch_size,
-                    )?;
-                    let merge_stream =
-                        WindowSlidingMerger::build_merged_stream(combiner)?;
-                    return Ok(Box::pin(
-                        DefaultColumnStream::new_from_streams_with_default(
-                            vec![merge_stream],
-                            $merged_schema,
-                            $default_column_value,
-                        ),
-                    ));
-                }
+                info!("lakesoul using old row wise combiner");
+                let combiner = UseLastRangeCombiner::<$t, false>::new(
+                    $physical_schema.clone(),
+                    streams_num,
+                    $fields_map,
+                    $batch_size,
+                );
+                let merge_stream = SortedStreamMerger::new_from_streams(
+                    $streams,
+                    $physical_schema,
+                    combiner,
+                )?;
+                return Ok(Box::pin(
+                    DefaultColumnStream::new_from_streams_with_default(
+                        vec![Box::pin(merge_stream)],
+                        $merged_schema,
+                        $default_column_value,
+                    ),
+                ));
             }
         } else {
             let combiner = MinHeapSortKeyBatchRangeCombiner::new(
@@ -1100,6 +1113,90 @@ mod tests {
                 "| 9  | 90  |      |       | 30006  |",
                 "| 10 | 100 | 1.51 |       | 300007 |",
                 "+----+-----+------+-------+--------+",
+            ],
+            &merged
+        );
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn test_v2_partial_merge_different_schemas() {
+        unsafe { std::env::set_var("LAKESOUL_IO_USE_V2_MERGE", "true") };
+
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+
+        let s1b1 = create_batch_i32(
+            vec!["id", "a", "b"],
+            vec![&[1, 2, 3], &[10, 20, 30], &[100, 200, 300]],
+        );
+        let s1b2 = create_batch_i32(
+            vec!["id", "a", "b"],
+            vec![&[4, 5], &[40, 50], &[400, 500]],
+        );
+        let s1 = create_stream(vec![s1b1, s1b2], task_ctx.clone())
+            .await
+            .unwrap();
+
+        let s2b1 = create_batch_i32(
+            vec!["id", "b", "c"],
+            vec![&[1, 2, 3], &[101, 201, 301], &[1000, 2000, 3000]],
+        );
+        let s2b2 = create_batch_i32(
+            vec!["id", "b", "c"],
+            vec![&[4, 5], &[401, 501], &[4000, 5000]],
+        );
+        let s2 = create_stream(vec![s2b1, s2b2], task_ctx.clone())
+            .await
+            .unwrap();
+
+        let s3b1 = create_batch_i32(
+            vec!["id", "a", "c"],
+            vec![&[1, 2, 3], &[11, 21, 31], &[1001, 2001, 3001]],
+        );
+        let s3b2 = create_batch_i32(
+            vec!["id", "a", "c"],
+            vec![&[4, 5], &[41, 51], &[4001, 5001]],
+        );
+        let s3 = create_stream(vec![s3b1, s3b2], task_ctx.clone())
+            .await
+            .unwrap();
+
+        let physical_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("a", DataType::Int32, true),
+            Field::new("b", DataType::Int32, true),
+            Field::new("c", DataType::Int32, true),
+        ]));
+
+        let primary_keys = vec!["id".to_string()];
+        let pool = Arc::new(GreedyMemoryPool::new(100 * 1024 * 1024)) as _;
+        let a1 = MemoryConsumer::new("a1").register(&pool);
+
+        let merge_stream = build_sorted_stream_merger(
+            vec![s1, s2, s3],
+            Arc::from(primary_keys),
+            physical_schema.clone(),
+            physical_schema.clone(),
+            2,
+            Arc::new(HashMap::new()),
+            vec![],
+            a1,
+            vec![false, false, false],
+        )
+        .unwrap();
+        let merged = common::collect(merge_stream).await.unwrap();
+        assert_batches_eq!(
+            &[
+                "+----+----+-----+------+",
+                "| id | a  | b   | c    |",
+                "+----+----+-----+------+",
+                "| 1  | 11 | 101 | 1001 |",
+                "| 2  | 21 | 201 | 2001 |",
+                "| 3  | 31 | 301 | 3001 |",
+                "| 4  | 41 | 401 | 4001 |",
+                "| 5  | 51 | 501 | 5001 |",
+                "+----+----+-----+------+",
             ],
             &merged
         );
