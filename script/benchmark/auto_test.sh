@@ -111,7 +111,7 @@ function clean_up_metadata {
 # Clean up data in rustfs
 function clean_up_rustfs_data {
   echo "====== Cleaning up data in rustfs ======"
-  docker run --net lakesoul-docker-compose-env_default --rm -t swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/bitnami/spark:3.3.1 aws --no-sign-request --endpoint-url http://localhost:9000 s3 rm --recursive s3://lakesoul-test-bucket/
+  docker run --net lakesoul-docker-compose-env_default --rm -t -e AWS_ACCESS_KEY_ID=rustfsadmin -e AWS_SECRET_ACCESS_KEY=rustfsadmin -e AWS_DEFAULT_REGION=us-east-1 swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/bitnami/spark:3.3.1 aws --endpoint-url http://rustfs:9000 s3 rm --recursive s3://lakesoul-test-bucket/
   echo "====== Cleaning up data in rustfs has been completed! ======"
 }
 

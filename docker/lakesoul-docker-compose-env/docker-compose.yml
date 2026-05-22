@@ -134,7 +134,7 @@ services:
                 taskmanager.memory.jvm-overhead.min: 40m
                 taskmanager.memory.jvm-metaspace.size: 512m
                 taskmanager.numberOfTaskSlots: 4
-                s3.endpoint: http://localhost:9000
+                s3.endpoint: http://rustfs:9000
                 s3.access-key: rustfsadmin
                 s3.secret-key: rustfsadmin
                 s3.path.style.access: true
