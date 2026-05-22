@@ -15,10 +15,10 @@ Create a new lakesoul subdirectory in the plugin subdirectory under the Presto d
 Create a new `etc/catalog/lakesoul.properties` file (the specific etc directory location can be modified according to the presto deployment):
 ```properties
 connector.name=lakesoul
-fs.s3a.access.key=minioadmin1
-fs.s3a.secret.key=minioadmin1
+fs.s3a.access.key=rustfsadmin
+fs.s3a.secret.key=rustfsadmin
 fs.s3a.bucket=lakesoul-test-bucket
-fs.s3a.endpoint=http://minio:9000
+fs.s3a.endpoint=http://localhost:9000
 ```
 The setting items starting with `fs.s3a` are the configuration for accessing S3 and can be modified as needed.
 

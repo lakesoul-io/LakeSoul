@@ -22,13 +22,9 @@ if __name__ == "__main__":
         .config("spark.hadoop.fs.s3.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
         .config("spark.hadoop.fs.s3a.buffer.dir", "/opt/spark/work-dir/s3a")
         .config("spark.hadoop.fs.s3a.path.style.access", "true")
-        .config("spark.hadoop.fs.s3a.endpoint", "http://minio:9000")
-        .config(
-            "spark.hadoop.fs.s3a.aws.credentials.provider",
-            "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider",
-        )
-        .config("spark.hadoop.fs.s3a.access.key", "minioadmin1")
-        .config("spark.hadoop.fs.s3a.secret.key", "minioadmin1")
+        .config("spark.hadoop.fs.s3a.endpoint", "http://localhost:9000")
+        .config("spark.hadoop.fs.s3a.access.key", "rustfsadmin")
+        .config("spark.hadoop.fs.s3a.secret.key", "rustfsadmin")
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("ERROR")

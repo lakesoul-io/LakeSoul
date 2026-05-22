@@ -921,8 +921,8 @@ mod tests {
         unsafe {
             std::env::set_var("AWS_ENDPOINT", "http://localhost:9000");
             std::env::set_var("AWS_REGION", "us-east-1");
-            std::env::set_var("AWS_ACCESS_KEY_ID", "minioadmin1");
-            std::env::set_var("AWS_SECRET_ACCESS_KEY", "minioadmin1");
+            std::env::set_var("AWS_ACCESS_KEY_ID", "rustfsadmin");
+            std::env::set_var("AWS_SECRET_ACCESS_KEY", "rustfsadmin");
         }
     }
 

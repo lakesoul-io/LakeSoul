@@ -35,8 +35,8 @@ source lakesoul_env.sh
 ```
 The content of `lakesoul_env.sh` is the following:
 ```shell
-export AWS_SECRET_ACCESS_KEY=minioadmin1
-export AWS_ACCESS_KEY_ID=minioadmin1
+export AWS_SECRET_ACCESS_KEY=rustfsadmin
+export AWS_ACCESS_KEY_ID=rustfsadmin
 export AWS_ENDPOINT=http://localhost:9000
 
 export LAKESOUL_PG_URL=jdbc:postgresql://localhost:5432/lakesoul_test?stringtype=unspecified

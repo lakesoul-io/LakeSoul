@@ -38,22 +38,50 @@ services:
             - ../../script/benchmark/2_insert_table_data.sh:/2_insert_table_data.sh
             - ../../script/benchmark/properties:/properties
 
-    minio:
-        image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/bitnami/minio:2025.4.22-debian-12-r1
+    rustfs:
+        image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/rustfs/rustfs:1.0.0-beta.3
         ports:
             - "9000:9000"
             - "9001:9001"
         environment:
-            MINIO_DEFAULT_BUCKETS: lakesoul-test-bucket:public
-            MINIO_ROOT_USER: minioadmin1
-            MINIO_ROOT_PASSWORD: minioadmin1
+            RUSTFS_ACCESS_KEY: rustfsadmin
+            RUSTFS_SECRET_KEY: rustfsadmin
+            RUSTFS_CONSOLE_ENABLE: true
         healthcheck:
             test:
-                ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+                [
+                    "CMD",
+                    "sh",
+                    "-c",
+                    "curl -f http://localhost:9000/health && curl -f http://localhost:9001/rustfs/console/health",
+                ]
             interval: 3s
             timeout: 5s
             retries: 3
-        hostname: minio
+        profiles: ["s3"]
+
+    rc_setup:
+        image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/rustfs/rc:v0.1.16
+        depends_on:
+            rustfs:
+                condition: service_healthy
+        entrypoint:
+            - /bin/sh
+            - -c
+            - |
+                set -e
+                until rc alias set rustfs http://rustfs:9000 rustfsadmin rustfsadmin; do
+                          echo 'RustFS is not ready yet, retrying in 2 seconds...'
+                          sleep 2
+                        done
+
+                        echo '2. Create public bucket if not exists'
+                        rc mb rustfs/lakesoul-test-bucket --ignore-existing
+
+                        echo 'RustFS Configuration Complete!'
+
+        restart: "no"
+        pull_policy: if_not_present
         profiles: ["s3"]
 
     jobmanager:
@@ -67,9 +95,9 @@ services:
                 jobmanager.rpc.address: jobmanager
                 taskmanager.memory.process.size: 3000m
                 taskmanager.memory.flink.size: 2748m
-                s3.endpoint: http://minio:9000
-                s3.access-key: minioadmin1
-                s3.secret-key: minioadmin1
+                s3.endpoint: http://rustfs:9000
+                s3.access-key: rustfsadmin
+                s3.secret-key: rustfsadmin
                 s3.path.style.access: true
             - LAKESOUL_PG_DRIVER=com.lakesoul.shaded.org.postgresql.Driver
             - LAKESOUL_PG_URL=jdbc:postgresql://lakesoul-meta-db:5432/lakesoul_test?stringtype=unspecified
@@ -106,9 +134,9 @@ services:
                 taskmanager.memory.jvm-overhead.min: 40m
                 taskmanager.memory.jvm-metaspace.size: 512m
                 taskmanager.numberOfTaskSlots: 4
-                s3.endpoint: http://minio:9000
-                s3.access-key: minioadmin1
-                s3.secret-key: minioadmin1
+                s3.endpoint: http://rustfs:9000
+                s3.access-key: rustfsadmin
+                s3.secret-key: rustfsadmin
                 s3.path.style.access: true
             - LAKESOUL_PG_DRIVER=com.lakesoul.shaded.org.postgresql.Driver
             - LAKESOUL_PG_URL=jdbc:postgresql://lakesoul-meta-db:5432/lakesoul_test?stringtype=unspecified

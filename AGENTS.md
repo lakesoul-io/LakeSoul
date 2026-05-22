@@ -212,7 +212,7 @@ Local config files:
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `rust-ci.yml` | Push/PR to `rust/**` | Cargo test with PostgreSQL + MinIO services |
+| `rust-ci.yml` | Push/PR to `rust/**` | Cargo test with PostgreSQL + RustFS services |
 | `rust-clippy.yml` | Push/PR to `rust/**` | `cargo clippy` lint check |
 | `maven-test.yml` | Push/PR (non-rust paths) | Builds Rust `.so`, then runs Spark + Flink Maven tests |
 | `flink-cdc-test.yml` | Scheduled/PR | End-to-end Flink CDC tests |

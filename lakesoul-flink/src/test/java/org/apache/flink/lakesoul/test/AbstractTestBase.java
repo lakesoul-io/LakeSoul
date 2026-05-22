@@ -31,7 +31,7 @@ public abstract class AbstractTestBase {
 
     private static final int DEFAULT_PARALLELISM = 16;
 
-    // disable LOCAL_FS for local minio test
+    // disable LOCAL_FS for local rustfs test
     public static final boolean LOCAL_FS = true;
 
     public static final Configuration fsConfig;
@@ -42,8 +42,8 @@ public abstract class AbstractTestBase {
         if (!LOCAL_FS) {
             fsConfig.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
             fsConfig.set(S3_ENDPOINT, "http://localhost:9002");
-            fsConfig.set(S3_ACCESS_KEY, "minioadmin1");
-            fsConfig.set(S3_SECRET_KEY, "minioadmin1");
+            fsConfig.set(S3_ACCESS_KEY, "rustfsadmin");
+            fsConfig.set(S3_SECRET_KEY, "rustfsadmin");
             fsConfig.set(S3_PATH_STYLE_ACCESS, "true");
             fsConfig.set(DEFAULT_FS, "s3://");
             fsConfig.set(S3_BUCKET, "lakesoul-test-s3");

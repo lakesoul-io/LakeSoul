@@ -108,11 +108,11 @@ function clean_up_metadata {
   echo "====== Cleaning up metadata in lakesoul-meta-db has been completed! ======"
 }
 
-# Clean up data in minio
-function clean_up_minio_data {
-  echo "====== Cleaning up data in minio ======"
-  docker run --net lakesoul-docker-compose-env_default --rm -t swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/bitnami/spark:3.3.1 aws --no-sign-request --endpoint-url http://minio:9000 s3 rm --recursive s3://lakesoul-test-bucket/
-  echo "====== Cleaning up data in minio has been completed! ======"
+# Clean up data in rustfs
+function clean_up_rustfs_data {
+  echo "====== Cleaning up data in rustfs ======"
+  docker run --net lakesoul-docker-compose-env_default --rm -t -e AWS_ACCESS_KEY_ID=rustfsadmin -e AWS_SECRET_ACCESS_KEY=rustfsadmin -e AWS_DEFAULT_REGION=us-east-1 swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/bitnami/spark:3.3.1 aws --endpoint-url http://rustfs:9000 s3 rm --recursive s3://lakesoul-test-bucket/
+  echo "====== Cleaning up data in rustfs has been completed! ======"
 }
 
 # Note: If cluster is on k8s, mysql, pg and s3 services will not be started through the docker in the following ways.
@@ -245,7 +245,7 @@ if [ !$IS_ON_K8S ]; then
   python3 drop_table.py
   echo "====== Dropping tables has been completed! ======"
   clean_up_metadata
-  clean_up_minio_data
+  clean_up_rustfs_data
   change_dir_from_script_benchmark_to_docker_compose
   echo "====== Stopping docker compose services ======"
   docker compose down # Use docker-compose to stop services

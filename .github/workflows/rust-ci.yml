@@ -3,94 +3,129 @@
 # SPDX-License-Identifier: Apache-2.0
 
 on:
-  push:
-    paths:
-      - "rust/**"
-    branches:
-      - 'main'
-  pull_request:
-    paths:
-      - "rust/**"
-    branches:
-      - 'main'
-      - 'release/**'
-  workflow_dispatch:
+    push:
+        paths:
+            - "rust/**"
+        branches:
+            - "main"
+    pull_request:
+        paths:
+            - "rust/**"
+        branches:
+            - "main"
+            - "release/**"
+    workflow_dispatch:
 
 name: Rust CI
 
 env:
-  RUSTFLAGS: "-Awarnings"
+    RUSTFLAGS: "-Awarnings"
 
 jobs:
-  rust_ci:
-    runs-on: ubuntu-24.04
-    services:
-      # Label used to access the service container
-      postgres:
-        # Docker Hub image
-        image: postgres:14.5
-        # Provide the password for postgres
-        env:
-          POSTGRES_PASSWORD: lakesoul_test
-          POSTGRES_USER: lakesoul_test
-          POSTGRES_DB: lakesoul_test
-        # Set health checks to wait until postgres has started
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-          --name lakesoul-test-pg
-        ports:
-          # Maps tcp port 5432 on service container to the host
-          - 5432:5432
-      minio:
-        image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/bitnami/minio:2025.4.22-debian-12-r1
-        ports:
-          - "9000:9000"
-          - "9001:9001"
-        env:
-          MINIO_DEFAULT_BUCKETS: lakesoul-test-bucket:public
-          MINIO_ROOT_USER: minioadmin1
-          MINIO_ROOT_PASSWORD: minioadmin1
+    rust_ci:
+        runs-on: ubuntu-24.04
+        services:
+            # Label used to access the service container
+            postgres:
+                # Docker Hub image
+                image: postgres:14.5
+                # Provide the password for postgres
+                env:
+                    POSTGRES_PASSWORD: lakesoul_test
+                    POSTGRES_USER: lakesoul_test
+                    POSTGRES_DB: lakesoul_test
+                # Set health checks to wait until postgres has started
+                options: >-
+                    --health-cmd pg_isready
+                    --health-interval 10s
+                    --health-timeout 5s
+                    --health-retries 5
+                    --name lakesoul-test-pg
+                ports:
+                    # Maps tcp port 5432 on service container to the host
+                    - 5432:5432
+            rustfs:
+                image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/rustfs/rustfs:1.0.0-beta.3
+                ports:
+                    - "9000:9000"
+                    - "9001:9001"
+                env:
+                    RUSTFS_ACCESS_KEY: rustfsadmin
+                    RUSTFS_SECRET_KEY: rustfsadmin
+                    RUSTFS_CONSOLE_ENABLE: true
 
-    steps:
-      - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: false
-          docker-images: true
-          swap-storage: true
-      - uses: actions/checkout@v4
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: stable
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: ". -> rust/target"
-          env-vars: "JAVA_HOME"
-      - name: Install requirement
-        uses: ConorMacBride/install-package@v1
-        with:
-          apt: postgresql-client-16
-      - name: Init PG
-        run: |
-          ./script/meta_init_for_local_test.sh -j 1
-      - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and test
-        run: |
-          export RUST_LOG=info
-          export RUST_BACKTRACE=full
-          cargo test --lib --bins --tests
-          export LAKESOUL_IO_USE_V2_MERGE=true
-          cargo test --lib --bins --tests
+        steps:
+            - name: Wait for RustFS
+              run: |
+                  for i in {1..60}; do
+                    if curl -fsS http://127.0.0.1:9000/health \
+                      && curl -fsS http://127.0.0.1:9001/rustfs/console/health; then
+                      echo "RustFS is ready"
+                      exit 0
+                    fi
+
+                    echo "Waiting for RustFS..."
+                    sleep 2
+                  done
+                  echo "RustFS failed to become ready"
+                  exit 1
+            - name: Setup RustFS bucket
+              run: |
+                  docker run --rm --network host \
+                    --entrypoint /bin/sh \
+                    swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/rustfs/rc:v0.1.16 \
+                    -c '
+                      set -e
+
+                      until rc alias set rustfs http://127.0.0.1:9000 rustfsadmin rustfsadmin; do
+                        echo "RustFS is not ready yet, retrying in 2 seconds..."
+                        sleep 2
+                      done
+
+                      echo "Create test bucket if not exists"
+                      until rc mb rustfs/lakesoul-test-bucket --ignore-existing; do
+                        echo "Bucket creation failed, retrying in 2 seconds..."
+                        sleep 2
+                      done
+
+                      echo "RustFS Configuration Complete!"
+                    '
+            - name: Free Disk Space (Ubuntu)
+              uses: jlumbroso/free-disk-space@main
+              with:
+                  tool-cache: false
+                  android: true
+                  dotnet: true
+                  haskell: true
+                  large-packages: false
+                  docker-images: true
+                  swap-storage: true
+            - uses: actions/checkout@v4
+            - name: Install Rust toolchain
+              uses: dtolnay/rust-toolchain@master
+              with:
+                  toolchain: stable
+                  components: rustfmt, clippy
+            - uses: Swatinem/rust-cache@v2
+              with:
+                  workspaces: ". -> rust/target"
+                  env-vars: "JAVA_HOME"
+            - name: Install requirement
+              uses: ConorMacBride/install-package@v1
+              with:
+                  apt: postgresql-client-16
+            - name: Init PG
+              run: |
+                  ./script/meta_init_for_local_test.sh -j 1
+            - name: Install Protoc
+              uses: arduino/setup-protoc@v2
+              with:
+                  version: "23.x"
+                  repo-token: ${{ secrets.GITHUB_TOKEN }}
+            - name: Build and test
+              run: |
+                  export RUST_LOG=info
+                  export RUST_BACKTRACE=full
+                  cargo test --lib --bins --tests
+                  export LAKESOUL_IO_USE_V2_MERGE=true
+                  cargo test --lib --bins --tests

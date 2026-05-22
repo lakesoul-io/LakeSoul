@@ -23,8 +23,8 @@ public class DebugMain {
         org.apache.flink.configuration.Configuration config = new org.apache.flink.configuration.Configuration();
         config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
         config.setString("s3.endpoint", "http://localhost:9000");
-        config.setString("s3.access-key", "minioadmin1");
-        config.setString("s3.secret-key", "minioadmin1");
+        config.setString("s3.access-key", "rustfsadmin");
+        config.setString("s3.secret-key", "rustfsadmin");
         config.setString("s3.path.style.access", "true");
         final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(config);
         env.setParallelism(2);

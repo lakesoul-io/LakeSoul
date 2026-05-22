@@ -81,7 +81,7 @@ export lakesoul_home=/opt/soft/pg.property
   ./bin/spark-shell --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog --conf spark.sql.defaultCatalog=lakesoul --conf spark.hadoop.fs.s3a.access.key=XXXXXX --conf spark.hadoop.fs.s3a.secret.key=XXXXXX --conf spark.hadoop.fs.s3a.endpoint=XXXXXX --conf spark.hadoop.fs.s3.impl=org.apache.hadoop.fs.s3a.S3AFileSystem
   ```
 
-如果是 Minio 等兼容 S3 的存储服务，还需要添加 `--conf spark.hadoop.fs.s3a.path.style.access=true`。
+如果是 RustFS 等兼容 S3 的存储服务，还需要添加 `--conf spark.hadoop.fs.s3a.path.style.access=true`。
 
 #### Spark 作业 LakeSoul 相关参数设置
 可以将以下配置添加到 spark-defaults.conf 或者 Spark Session Builder 部分。
@@ -117,7 +117,7 @@ s3.access-key: XXXXXX
 s3.secret-key: XXXXXX
 s3.endpoint: XXXXXX
 ```
-如果是 Minio 等兼容 S3 的存储服务，还需要添加：
+如果是 RustFS 等兼容 S3 的存储服务，还需要添加：
 ```yaml
 s3.path.style.access: true
 ```
@@ -197,7 +197,7 @@ source env.sh
 ## 3. 使用 Docker Compose 搭建本地集群环境
 
 ### 3.1 Docker Compose 文件
-我们提供了 docker compose 环境方便快速启动一个本地的 PostgreSQL 服务和一个 MinIO S3 存储服务。Docker Compose 环境可以在代码库中找到：[lakesoul-docker-compose-env](https://github.com/lakesoul-io/LakeSoul/tree/main/docker/lakesoul-docker-compose-env).
+我们提供了 docker compose 环境方便快速启动一个本地的 PostgreSQL 服务和一个 RustFS S3 存储服务。Docker Compose 环境可以在代码库中找到：[lakesoul-docker-compose-env](https://github.com/lakesoul-io/LakeSoul/tree/main/docker/lakesoul-docker-compose-env).
 
 ### 3.2 安装 Docker Compose
 安装 Docker Compose 可以参考 Docker 官方文档：[Install Docker Engine](https://docs.docker.com/engine/install/)
@@ -208,7 +208,7 @@ source env.sh
 cd docker/lakesoul-docker-compose-env/
 docker compose up -d
 ```
-然后可以使用 `docker compose ps` 命令来检查服务状态是否是 `running`. PostgreSQL 服务会自动初始化好 LakeSoul 需要的 database 和 表结构。MinIO 服务会创建一个公共读写的桶。PostgreSQL 的用户名、密码、DB名字、MinIO 的桶名可以在 `docker-compose.yml` 文件中修改。
+然后可以使用 `docker compose ps` 命令来检查服务状态是否是 `running`. PostgreSQL 服务会自动初始化好 LakeSoul 需要的 database 和 表结构。RustFS 服务会创建一个公共读写的桶。PostgreSQL 的用户名、密码、DB名字、RustFS 的桶名可以在 `docker-compose.yml` 文件中修改。
 
 ### 3.4 在 Docker Compose 环境中运行 LakeSoul 测试
 #### 3.4.1 准备 LakeSoul 配置文件
@@ -237,8 +237,10 @@ docker run --net lakesoul-docker-compose-env_default --rm -ti \
     --conf spark.hadoop.fs.s3.impl=org.apache.hadoop.fs.s3a.S3AFileSystem \
     --conf spark.hadoop.fs.s3a.buffer.dir=/opt/spark/work-dir/s3a \
     --conf spark.hadoop.fs.s3a.path.style.access=true \
-    --conf spark.hadoop.fs.s3a.endpoint=http://minio:9000 \
-    --conf spark.hadoop.fs.s3a.aws.credentials.provider=org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider
+    --conf spark.hadoop.fs.s3a.endpoint=http://rustfs:9000 \
+    --conf spark.hadoop.fs.s3a.endpoint.region=us-east-1 \
+    --conf spark.hadoop.fs.s3a.access.key=rustfsadmin \
+    --conf spark.hadoop.fs.s3a.secret.key=rustfsadmin
 ```
 
 #### 3.4.4 执行 LakeSoul Scala API
@@ -255,17 +257,17 @@ df.write
 ```
 
 #### 3.4.5 检查数据是否成功写入
-可以打开链接 http://127.0.0.1:9001/buckets/lakesoul-test-bucket/browse/ 查看数据是否已经成功写入。
-MinIO console 的登录用户名密码是 minioadmin1:minioadmin1。
+可以打开链接 http://127.0.0.1:9001/buckets/lakesoul-test-bucket/ 查看数据是否已经成功写入。
+RustFS console 的登录用户名密码是 rustfsadmin:rustfsadmin。
 
-### 3.5 清理元数据表和 MinIO 桶
+### 3.5 清理元数据表和 RustFS 桶
 清理元数据表内容:
 ```bash
 docker exec -ti lakesoul-docker-compose-env-lakesoul-meta-db-1 psql -h localhost -U lakesoul_test -d lakesoul_test -f /meta_cleanup.sql
 ```
-清理 MinIO 桶内容:
+清理 RustFS 桶内容:
 ```bash
-docker run --net lakesoul-docker-compose-env_default --rm -t swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/bitnami/spark:3.3.1 aws --no-sign-request --endpoint-url http://minio:9000 s3 rm --recursive s3://lakesoul-test-bucket/
+docker run --net lakesoul-docker-compose-env_default --rm -t -e AWS_ACCESS_KEY_ID=rustfsadmin -e AWS_SECRET_ACCESS_KEY=rustfsadmin -e AWS_DEFAULT_REGION=us-east-1 swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/bitnami/spark:3.3.1 aws --endpoint-url http://rustfs:9000 s3 rm --recursive s3://lakesoul-test-bucket/
 ```
 
 ### 3.6 停止 Docker Compose 环境
