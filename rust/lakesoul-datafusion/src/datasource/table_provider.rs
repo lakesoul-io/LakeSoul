@@ -46,6 +46,7 @@ use lakesoul_metadata::MetaDataClientRef;
 use lakesoul_metadata::utils::qualify_path;
 use proto::proto::entity::TableInfo;
 use rootcause::compat::boxed_error::IntoBoxedError;
+use rootcause::prelude::ResultExt;
 use rootcause::report;
 
 use crate::Result;
@@ -354,7 +355,9 @@ impl LakeSoulTableProvider {
         _limit: Option<usize>,
     ) -> Result<(Vec<Vec<PartitionedFile>>, Statistics)> {
         let store = if let Some(url) = self.table_paths().first() {
-            ctx.runtime_env().object_store(url)?
+            ctx.runtime_env()
+                .object_store(url)
+                .attach(format!("{:?}", ctx.runtime_env().object_store_registry))?
         } else {
             return Ok((vec![], Statistics::new_unknown(&self.file_schema())));
         };

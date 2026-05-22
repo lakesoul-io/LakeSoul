@@ -78,8 +78,9 @@ def spark_and_file(tmp_path):
     warehouse_dir = Path(tmp_path) / "warehouse"
     warehouse_dir.mkdir(parents=True)
     lakesoul_source_dir = os.environ.get("LAKESOUL_SOURCE_DIR")
+    assert lakesoul_source_dir
     jar_pattern = os.path.join(
-        lakesoul_source_dir,  # type:ignore
+        lakesoul_source_dir,
         "lakesoul-spark",
         "target",
         "lakesoul-spark*.jar",
@@ -361,7 +362,7 @@ def test_streaming_incremental_query(spark_and_file):
     #     .writeStream.format("console")
     #     .trigger(processingTime="2 seconds")
     #     .start()
-    #     .awaitTermination()  # type: ignore
+    #     .awaitTermination()
     # )
     # df = spark.createDataFrame([("d", 4), ("e", 55)], ["key", "value"])
     # table.upsert(df)
