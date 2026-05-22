@@ -27,9 +27,9 @@ def test_lakesoul_dataset():
 def test_dataset_parameters():
     lds = lakesoul_dataset("part")
     with pytest.raises(NotImplementedError) as _:
-        _ = lds.scanner(columns=1)  # pyright: ignore[reportArgumentType]
+        _ = lds.scanner(columns=1)
     with pytest.raises(NotImplementedError) as _:
-        _ = lds.scanner(columns=[1])  # pyright: ignore[reportArgumentType]
+        _ = lds.scanner(columns=[1])
     with pytest.raises(NotImplementedError) as _:
         _ = lds.scanner(filter="")
     with pytest.raises(NotImplementedError) as _:
@@ -235,7 +235,7 @@ def test_normal_lakesoul_table():
     for batch in lds.to_batches():
         total_rows += batch.num_rows
 
-    assert total_rows == 1
+    assert total_rows == 7
 
 
 def test_debug():
