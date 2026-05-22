@@ -37,6 +37,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::scalar::ScalarValue;
 use datafusion::{execution::context::SessionState, logical_expr::Expr};
+use datafusion_datasource::file_sink_config::FileOutputMode;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 
@@ -415,6 +416,7 @@ impl LakeSoulTableProvider {
                     partition_values: partition_values.clone(),
                     range: None,
                     statistics: None,
+                    ordering: None,
                     extensions: None,
                     metadata_size_hint: None,
                 })
@@ -590,6 +592,7 @@ impl TableProvider for LakeSoulTableProvider {
             insert_op,
             keep_partition_by_columns: false,
             file_extension: "parquet".to_string(),
+            file_output_mode: FileOutputMode::Automatic,
         };
 
         let _unsorted: Vec<Vec<Expr>> = vec![];

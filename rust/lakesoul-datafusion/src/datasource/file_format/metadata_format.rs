@@ -395,7 +395,7 @@ pub struct LakeSoulHashSinkExec {
     range_partitions: Arc<Vec<String>>,
 
     /// The properties of the plan.
-    properties: PlanProperties,
+    properties: Arc<PlanProperties>,
 }
 
 impl Debug for LakeSoulHashSinkExec {
@@ -421,12 +421,12 @@ impl LakeSoulHashSinkExec {
             table_info,
             metadata_client,
             range_partitions,
-            properties: PlanProperties::new(
+            properties: Arc::new(PlanProperties::new(
                 EquivalenceProperties::new(make_sink_schema()),
                 Partitioning::UnknownPartitioning(1),
                 EmissionType::Incremental,
                 Boundedness::Bounded,
-            ),
+            )),
         })
     }
 
@@ -618,7 +618,7 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         self.sink_schema.clone()
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
 

@@ -44,7 +44,7 @@ use datafusion_expr::{
 use datafusion_physical_expr::PhysicalExpr;
 use datafusion_physical_plan::ExecutionPlan;
 use datafusion_physical_plan::empty::EmptyExec;
-use datafusion_physical_plan::filter::FilterExec;
+use datafusion_physical_plan::filter::{FilterExec, FilterExecBuilder};
 use datafusion_session::Session;
 use object_store::ObjectMeta;
 use rootcause::prelude::ResultExt;
@@ -842,12 +842,11 @@ impl LakeSoulIOSession {
                 )
                 .await?;
 
-            let mut filter_exec = FilterExec::try_new(predicate, exec)?;
-
             match indices {
                 Some(proj_indices) => {
                     if proj_indices.is_empty() {
                         debug!("use empty scan (count only)");
+                        let filter_exec = FilterExec::try_new(predicate, exec)?;
                         let empty = EmptyScanCountExec::new(
                             Arc::new(Schema::empty()),
                             self.io_config().batch_size,
@@ -856,12 +855,15 @@ impl LakeSoulIOSession {
                         Ok(Arc::new(empty))
                     } else {
                         debug!("filter scan with indices: {:?}", proj_indices);
-                        filter_exec = filter_exec.with_projection(Some(proj_indices))?;
+                        let filter_exec = FilterExecBuilder::new(predicate, exec)
+                            .apply_projection(Some(proj_indices))?
+                            .build()?;
                         Ok(Arc::new(filter_exec))
                     }
                 }
                 None => {
                     debug!("filter scan");
+                    let filter_exec = FilterExec::try_new(predicate, exec)?;
                     Ok(Arc::new(filter_exec))
                 }
             }

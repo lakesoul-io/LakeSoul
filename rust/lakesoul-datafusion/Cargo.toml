@@ -17,6 +17,7 @@ proto = { path = "../proto" }
 datafusion = { workspace = true }
 datafusion-expr = { workspace = true }
 datafusion-common = { workspace = true }
+datafusion-datasource = { workspace = true }
 # arrow
 arrow = { workspace = true }
 arrow-cast = { workspace = true }

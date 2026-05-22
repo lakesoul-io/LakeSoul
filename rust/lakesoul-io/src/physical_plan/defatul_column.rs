@@ -27,7 +27,7 @@ pub struct DefaultColumnExec {
     input: Arc<dyn ExecutionPlan>,
     target_schema: SchemaRef,
     default_column_value: Arc<HashMap<String, String>>,
-    properties: PlanProperties,
+    properties: Arc<PlanProperties>,
 }
 
 impl DefaultColumnExec {
@@ -40,12 +40,12 @@ impl DefaultColumnExec {
             input,
             target_schema: target_schema.clone(),
             default_column_value,
-            properties: PlanProperties::new(
+            properties: Arc::new(PlanProperties::new(
                 EquivalenceProperties::new(target_schema),
                 Partitioning::UnknownPartitioning(1),
                 EmissionType::Incremental,
                 Boundedness::Bounded,
-            ),
+            )),
         })
     }
 }
@@ -95,7 +95,7 @@ impl ExecutionPlan for DefaultColumnExec {
         self.target_schema.clone()
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
 

@@ -407,7 +407,8 @@ mod tests {
 
     use bytes::{BufMut, BytesMut};
     use chrono::TimeZone as _;
-    use object_store::{ObjectStore, local::LocalFileSystem};
+    use object_store::ObjectStoreExt;
+    use object_store::local::LocalFileSystem;
     use tempfile::tempdir;
 
     #[tokio::test]

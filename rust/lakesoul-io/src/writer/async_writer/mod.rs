@@ -126,7 +126,7 @@ impl Write for InMemBuf {
 pub struct ReceiverStreamExec {
     receiver_stream_builder: AtomicRefCell<Option<RecordBatchReceiverStreamBuilder>>,
     schema: SchemaRef,
-    properties: PlanProperties,
+    properties: Arc<PlanProperties>,
 }
 
 impl ReceiverStreamExec {
@@ -137,12 +137,12 @@ impl ReceiverStreamExec {
         Self {
             receiver_stream_builder: AtomicRefCell::new(Some(receiver_stream_builder)),
             schema: schema.clone(),
-            properties: PlanProperties::new(
+            properties: Arc::new(PlanProperties::new(
                 EquivalenceProperties::new(schema),
                 Partitioning::UnknownPartitioning(1),
                 EmissionType::Incremental,
                 Boundedness::Bounded,
-            ),
+            )),
         }
     }
 }
@@ -198,7 +198,7 @@ impl ExecutionPlan for ReceiverStreamExec {
         Arc::clone(&self.schema)
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
 

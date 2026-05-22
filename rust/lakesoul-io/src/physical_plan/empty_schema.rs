@@ -8,6 +8,7 @@ use datafusion_physical_plan::{
     DisplayAs, ExecutionPlan, PlanProperties,
     execution_plan::{Boundedness, EmissionType},
 };
+use std::sync::Arc;
 use tokio::runtime::Handle;
 use tokio_stream::StreamExt;
 
@@ -18,7 +19,7 @@ pub struct EmptySchemaExec {
     schema: SchemaRef,
     batch_size: usize,
     remaining_num_rows: usize,
-    plan_props: PlanProperties,
+    plan_props: Arc<PlanProperties>,
 }
 
 impl EmptySchemaExec {
@@ -27,12 +28,12 @@ impl EmptySchemaExec {
             schema: schema.clone(),
             batch_size,
             remaining_num_rows,
-            plan_props: PlanProperties::new(
+            plan_props: Arc::new(PlanProperties::new(
                 EquivalenceProperties::new(schema),
                 Partitioning::UnknownPartitioning(1),
                 EmissionType::Incremental,
                 Boundedness::Bounded,
-            ),
+            )),
         }
     }
 }
@@ -70,7 +71,7 @@ impl ExecutionPlan for EmptySchemaExec {
         self
     }
 
-    fn properties(&self) -> &datafusion_physical_plan::PlanProperties {
+    fn properties(&self) -> &Arc<datafusion_physical_plan::PlanProperties> {
         &self.plan_props
     }
 
@@ -103,7 +104,7 @@ pub(crate) struct EmptyScanCountExec {
     schema: SchemaRef,
     batch_size: usize,
     child: std::sync::Arc<dyn ExecutionPlan>,
-    plan_props: PlanProperties,
+    plan_props: Arc<PlanProperties>,
 }
 
 impl EmptyScanCountExec {
@@ -116,12 +117,12 @@ impl EmptyScanCountExec {
             schema: schema.clone(),
             batch_size,
             child,
-            plan_props: PlanProperties::new(
+            plan_props: Arc::new(PlanProperties::new(
                 EquivalenceProperties::new(schema),
                 Partitioning::UnknownPartitioning(1),
                 EmissionType::Incremental,
                 Boundedness::Bounded,
-            ),
+            )),
         }
     }
 }
@@ -154,7 +155,7 @@ impl ExecutionPlan for EmptyScanCountExec {
         self
     }
 
-    fn properties(&self) -> &datafusion_physical_plan::PlanProperties {
+    fn properties(&self) -> &Arc<datafusion_physical_plan::PlanProperties> {
         &self.plan_props
     }
 

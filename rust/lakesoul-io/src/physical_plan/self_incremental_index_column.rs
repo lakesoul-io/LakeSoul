@@ -31,7 +31,7 @@ use std::task::{Context, Poll};
 pub struct SelfIncrementalIndexColumnExec {
     input: Arc<dyn ExecutionPlan>,
     target_schema: SchemaRef,
-    properties: PlanProperties,
+    properties: Arc<PlanProperties>,
 }
 
 impl SelfIncrementalIndexColumnExec {
@@ -46,12 +46,12 @@ impl SelfIncrementalIndexColumnExec {
             false,
         ));
         let target_schema = Arc::new(schema_builder.finish());
-        let properties = PlanProperties::new(
+        let properties = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(target_schema.clone()),
             Partitioning::UnknownPartitioning(1),
             EmissionType::Incremental,
             Boundedness::Bounded,
-        );
+        ));
         Self {
             input,
             target_schema,
@@ -105,7 +105,7 @@ impl ExecutionPlan for SelfIncrementalIndexColumnExec {
         self.target_schema.clone()
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
 
