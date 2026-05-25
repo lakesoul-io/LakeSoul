@@ -7,14 +7,11 @@ use crate::physical_plan::merge::sorted::cursor::CursorValues;
 use crate::physical_plan::merge::sorted::v2::batch_range::{
     BatchRange, InProgressPkGroup, InProgressRow,
 };
-use arrow::array::Array;
-use arrow::compute::interleave;
+use crate::physical_plan::merge::sorted::v2::record_batch_builder::build_record_batch_from_pk_groups;
 use arrow::record_batch::RecordBatch;
-use arrow_array::ArrayRef;
 use arrow_schema::SchemaRef;
 use smallvec::smallvec;
 use std::cmp::Ordering;
-use std::collections::HashMap;
 use tokio::sync::mpsc::Sender;
 
 pub struct BinaryMerger<'a, C: CursorValues> {
@@ -146,67 +143,23 @@ impl<'a, C: CursorValues> BinaryMerger<'a, C> {
         Ok(())
     }
 
-    async fn flush_pk_groups(&mut self, tx: &Sender<Result<RecordBatch>>) -> Result<()> {
+    async fn flush_pk_groups(
+        &mut self,
+        tx: &Sender<Result<RecordBatch>>,
+    ) -> Result<()> {
         if self.pk_groups.is_empty() {
             return Ok(());
         }
 
-        let num_target_cols = self.schema.fields().len();
-        let num_output_rows = self.pk_groups.len();
-        let mut columns = Vec::with_capacity(num_target_cols);
-
-        for target_col in 0..num_target_cols {
-            let mut source_arrs: Vec<&dyn Array> = Vec::new();
-            let mut ref_to_arr_idx: HashMap<(usize, usize), usize> = HashMap::new();
-            let mut indices: Vec<(usize, usize)> = Vec::with_capacity(num_output_rows);
-
-            let null_arr: ArrayRef = arrow::array::new_null_array(
-                self.schema.field(target_col).data_type(),
-                1,
-            );
-            source_arrs.push(null_arr.as_ref());
-
-            for group in &self.pk_groups {
-                let winner = group
-                    .iter()
-                    .rev()
-                    .find(|row| self.ranges[row.range_idx].has_target_col(target_col));
-
-                if let Some(winner) = winner {
-                    let key = (winner.range_idx, winner.row_idx);
-                    let arr_idx = *ref_to_arr_idx.entry(key).or_insert_with(|| {
-                        let src_col = self.ranges[winner.range_idx]
-                            .source_col_for_target(target_col)
-                            .unwrap();
-                        let idx = source_arrs.len();
-                        source_arrs.push(
-                            self.ranges[winner.range_idx]
-                                .batch()
-                                .column(src_col)
-                                .as_ref(),
-                        );
-                        idx
-                    });
-                    indices.push((arr_idx, winner.row_idx));
-                } else {
-                    indices.push((0, 0));
-                }
-            }
-
-            if source_arrs.len() == 1 {
-                columns.push(arrow::array::new_null_array(
-                    self.schema.field(target_col).data_type(),
-                    num_output_rows,
-                ));
-            } else {
-                let col = interleave(&source_arrs, &indices)?;
-                columns.push(col);
-            }
-        }
-
+        let ranges_ref: Vec<&BatchRange<C>> =
+            self.ranges.iter().map(|r| &**r).collect();
+        let batch = build_record_batch_from_pk_groups(
+            &self.pk_groups,
+            &ranges_ref,
+            &self.schema,
+        )?;
         self.pk_groups.clear();
-        tx.send(Ok(RecordBatch::try_new(self.schema.clone(), columns)?))
-            .await?;
+        tx.send(Ok(batch)).await?;
         Ok(())
     }
 }
