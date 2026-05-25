@@ -72,10 +72,8 @@ impl LakeSoulTableProvider {
             .ok_or_else(|| DataFusionError::Internal("No schema provided.".into()))?;
         let table_schema =
             Self::compute_table_schema(Arc::clone(&file_schema), &lakesoul_io_config)?;
-        let file_source =
-            file_format.file_source(TableSchema::from_file_schema(Arc::clone(
-                &table_schema,
-            )));
+        let file_source = file_format
+            .file_source(TableSchema::from_file_schema(Arc::clone(&file_schema)));
         let listing_options = listing_table.options().clone();
         let listing_table_paths = listing_table.table_paths().clone();
 
@@ -170,16 +168,14 @@ impl TableProvider for LakeSoulTableProvider {
             }))
             .await;
 
-        let mut scan_config =
-            FileScanConfigBuilder::new(object_store_url, source)
-                .with_file_groups(vec![
-                    FileGroup::new(partition_files?)
-                        .with_statistics(Arc::new(statistics)),
-                ])
-                .with_projection_indices(projection.cloned())?
-                .with_limit(limit)
-                .with_file_compression_type(FileCompressionType::ZSTD)
-                .build();
+        let mut scan_config = FileScanConfigBuilder::new(object_store_url, source)
+            .with_file_groups(vec![
+                FileGroup::new(partition_files?).with_statistics(Arc::new(statistics)),
+            ])
+            .with_projection_indices(projection.cloned())?
+            .with_limit(limit)
+            .with_file_compression_type(FileCompressionType::ZSTD)
+            .build();
 
         if let Some(expr) = conjunction(filters.to_vec()) {
             // NOTE: Use the table schema (NOT file schema) here because `expr` may contain references to partition columns.
