@@ -37,8 +37,8 @@ use tokio::sync::Mutex;
 
 use crate::Result;
 use crate::config::{IOSchema, LakeSoulIOConfig};
+use crate::helpers::get_batch_memory_size;
 use crate::helpers::transform::uniform_schema;
-use crate::helpers::{get_batch_memory_size, get_file_exist_col};
 use crate::local_sensitive_hash::LSH;
 use crate::session::LakeSoulIOSession;
 use crate::utils::random_str;
@@ -350,14 +350,15 @@ impl SyncSendableMutableLakeSoulWriter {
                     partition_desc,
                     file_path,
                     object_meta,
-                    file_meta,
+                    file_exist_cols,
+                    ..
                 } in self.flush_results.into_iter().chain(results)
                 {
                     let encoded = format!(
                         "{}\x03{}\x03{}",
                         file_path,
                         object_meta.size,
-                        get_file_exist_col(&file_meta)
+                        file_exist_cols.join(",")
                     );
                     match grouped_results.get_mut(&partition_desc) {
                         Some(files) => {

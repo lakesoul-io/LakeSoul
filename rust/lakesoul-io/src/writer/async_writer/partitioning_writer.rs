@@ -348,8 +348,8 @@ impl PartitioningAsyncWriter {
                                 (
                                     o.file_path.clone(),
                                     o.object_meta.size,
-                                    o.file_meta.file_metadata().num_rows(),
-                                    o.file_meta.num_row_groups(),
+                                    o.row_count,
+                                    &o.other_info,
                                 )
                             })
                             .collect::<Vec<_>>()

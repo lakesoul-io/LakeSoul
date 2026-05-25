@@ -47,6 +47,10 @@ arrow-buffer = { workspace = true }
 arrow-cast = { workspace = true }
 parquet = { workspace = true }
 object_store = { workspace = true }
+# vortex
+vortex = { workspace = true }
+vortex-datafusion = { workspace = true}
+
 # async
 futures = { workspace = true }
 async-trait = { workspace = true }

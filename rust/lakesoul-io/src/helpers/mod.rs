@@ -46,6 +46,7 @@ use std::iter::zip;
 use std::{collections::HashMap, fmt, sync::Arc};
 use tokio::runtime::Builder;
 use url::Url;
+use vortex::file::WriteSummary;
 
 use self::transform::uniform_schema;
 use crate::{
@@ -892,17 +893,32 @@ pub fn get_batch_memory_size(batch: &RecordBatch) -> Result<usize> {
         .sum())
 }
 
-/// Gets the file exist columns of a [`ParquetMetaData`].
-/// This function is only used for Parquet
-pub fn get_file_exist_col(metadata: &ParquetMetaData) -> String {
-    metadata
-        .file_metadata()
-        .schema_descr()
-        .columns()
-        .iter()
-        .map(|col| col.name().to_string())
-        .collect::<Vec<_>>()
-        .join(",")
+/// Gets the file exist columns of underlying file format.
+pub trait FileExistCols {
+    fn get_file_exists_cols(&self) -> Vec<String>;
+}
+
+impl FileExistCols for ParquetMetaData {
+    fn get_file_exists_cols(&self) -> Vec<String> {
+        self.file_metadata()
+            .schema_descr()
+            .columns()
+            .iter()
+            .map(|col| col.name().to_string())
+            .collect::<Vec<_>>()
+    }
+}
+
+impl FileExistCols for WriteSummary {
+    fn get_file_exists_cols(&self) -> Vec<String> {
+        match self.footer().dtype().as_struct_fields_opt() {
+            Some(sf) => sf.names().iter().map(ToString::to_string).collect(),
+            None => {
+                warn!("file has no struct fields");
+                vec![]
+            }
+        }
+    }
 }
 
 /// Extracts the hash bucket ID from a file path.

@@ -3,9 +3,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Module for the async writer implementation of LakeSoul.
-mod multipart_writer;
 use bytes::BytesMut;
 use datafusion_common::DataFusionError;
+
+mod file_sink_writer;
+
+mod multipart_writer;
 pub use multipart_writer::MultiPartAsyncWriter;
 
 mod sort_writer;
@@ -20,6 +23,7 @@ pub use sendable_writer::AsyncSendableMutableLakeSoulWriter;
 
 use std::{
     any::Any,
+    collections::HashMap,
     fmt::{Debug, Formatter},
     io::Write,
     sync::Arc,
@@ -38,7 +42,6 @@ use datafusion_physical_plan::{
     execution_plan::{Boundedness, EmissionType},
     metrics::MetricsSet,
 };
-use parquet::file::metadata::ParquetMetaData;
 
 use crate::{Result, session::LakeSoulIOSession};
 
@@ -47,7 +50,10 @@ pub struct FlushOutput {
     pub partition_desc: String,
     pub file_path: String,
     pub object_meta: ObjectMeta,
-    pub file_meta: ParquetMetaData,
+    pub file_exist_cols: Vec<String>,
+    /// The total number of rows in the written file.
+    pub row_count: usize,
+    pub other_info: HashMap<String, String>,
 }
 
 /// The trait for the async batch writer.
