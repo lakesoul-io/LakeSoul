@@ -11,6 +11,7 @@ use std::{
     collections::HashMap,
     future::Future,
     ops::Range,
+    path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
@@ -140,6 +141,9 @@ pub struct DiskCache {
     // HybridCache<(u64, u32),
     cache: LruDiskCache,
 
+    #[cfg(test)]
+    _cache_tempdir: Option<tempfile::TempDir>,
+
     /// Metadata cache
     // metadata_cache: Cache<u64, ObjectMeta>,
     metadata_cache: Cache<u64, ObjectMeta>,
@@ -178,20 +182,23 @@ impl DiskCache {
     /// - `page_size`: The maximum size of each page.
     ///
     pub fn new(disk_capacity: usize, page_size: usize) -> Self {
-        Self::with_params(disk_capacity, page_size, DEFAULT_TIME_TO_IDLE)
+        Self::with_params(disk_capacity, page_size, DEFAULT_TIME_TO_IDLE, None)
     }
 
     fn with_params(
         disk_capacity: usize,
         page_size: usize,
         _time_to_idle: Duration,
+        cache_path: Option<PathBuf>,
     ) -> Self {
-        let path = match std::env::var("LAKESOUL_CACHE_PATH") {
-            Ok(path) => path,
-            _ => "lakesoul_cache_dir".to_string(),
-        };
+        #[cfg(test)]
+        let (path, cache_tempdir) = resolve_cache_path(cache_path);
 
-        let cache = LruDiskCache::new(&path, disk_capacity.try_into().unwrap()).unwrap();
+        #[cfg(not(test))]
+        let path = resolve_cache_path(cache_path);
+
+        let cache =
+            LruDiskCache::new(path.clone(), disk_capacity.try_into().unwrap()).unwrap();
 
         debug!(
             "create DiskCache with path: {:?}, disk_capacity: {:?}",
@@ -205,6 +212,8 @@ impl DiskCache {
             disk_capacity,
             page_size,
             cache,
+            #[cfg(test)]
+            _cache_tempdir: cache_tempdir,
             metadata_cache,
             location_lookup: RwLock::new(HashMap::new()),
             next_location_id: AtomicU64::new(0),
@@ -228,6 +237,31 @@ impl DiskCache {
 
         id
     }
+}
+
+fn configured_cache_path(cache_path: Option<PathBuf>) -> Option<PathBuf> {
+    cache_path.or_else(|| std::env::var("LAKESOUL_CACHE_PATH").ok().map(PathBuf::from))
+}
+
+#[cfg(test)]
+fn resolve_cache_path(
+    cache_path: Option<PathBuf>,
+) -> (PathBuf, Option<tempfile::TempDir>) {
+    if let Some(path) = configured_cache_path(cache_path) {
+        return (path, None);
+    }
+
+    let tempdir = tempfile::Builder::new()
+        .prefix("lakesoul-cache-")
+        .tempdir()
+        .unwrap();
+    (tempdir.path().to_path_buf(), Some(tempdir))
+}
+
+#[cfg(not(test))]
+fn resolve_cache_path(cache_path: Option<PathBuf>) -> PathBuf {
+    configured_cache_path(cache_path)
+        .unwrap_or_else(|| PathBuf::from("lakesoul_cache_dir"))
 }
 
 #[async_trait::async_trait]
@@ -413,10 +447,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_range() {
-        let cache = DiskCache::new(1024 * 1024, 16 * 1024);
+        let tmp_dir = tempdir().unwrap();
+        let cache = DiskCache::builder(1024 * 1024)
+            .page_size(16 * 1024)
+            .cache_path(tmp_dir.path().join("cache"))
+            .build();
         let local_fs = Arc::new(LocalFileSystem::new());
 
-        let tmp_dir = tempdir().unwrap();
         let file_path = tmp_dir.path().join("test.bin");
         std::fs::write(&file_path, "test data").unwrap();
         let location = Path::from(file_path.as_path().to_str().unwrap());
@@ -456,10 +493,13 @@ mod tests {
     #[tokio::test]
     async fn test_eviction() {
         const PAGE_SIZE: usize = 512;
-        let cache = DiskCache::new(1024, PAGE_SIZE);
+        let tmp_dir = tempdir().unwrap();
+        let cache = DiskCache::builder(1024)
+            .page_size(PAGE_SIZE)
+            .cache_path(tmp_dir.path().join("cache"))
+            .build();
         let local_fs = Arc::new(LocalFileSystem::new());
 
-        let tmp_dir = tempdir().unwrap();
         let file_path = tmp_dir.path().join("test.bin");
         {
             let mut file = std::fs::File::create(&file_path).unwrap();
@@ -512,10 +552,13 @@ mod tests {
     #[tokio::test]
     async fn test_head() {
         const PAGE_SIZE: usize = 16 * 1024;
-        let cache = DiskCache::new(1024 * 1024, PAGE_SIZE);
+        let tmp_dir = tempdir().unwrap();
+        let cache = DiskCache::builder(1024 * 1024)
+            .page_size(PAGE_SIZE)
+            .cache_path(tmp_dir.path().join("cache"))
+            .build();
         let local_fs = Arc::new(LocalFileSystem::new());
 
-        let tmp_dir = tempdir().unwrap();
         let file_path = tmp_dir.path().join("test.bin");
         let path = Path::from(file_path.as_path().to_str().unwrap());
 

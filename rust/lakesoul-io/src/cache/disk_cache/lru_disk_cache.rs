@@ -1,18 +1,18 @@
-use fs::File;
-// use fs_err::os::unix::fs::FileExt;
-// use fs_err as fs;
 use std::borrow::Borrow;
 use std::boxed::Box;
 use std::collections::HashMap;
 use std::collections::hash_map::RandomState;
 use std::error::Error as StdError;
 use std::ffi::{OsStr, OsString};
+use std::fs::File;
 use std::hash::BuildHasher;
 use std::io;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::{fmt, fs};
+
+use rootcause::prelude::ResultExt;
 use tracing::{debug, error, warn};
 
 pub use super::lru_cache::{LruCache, Meter};
@@ -78,11 +78,24 @@ fn get_all_files<P: AsRef<Path>>(path: P) -> Box<dyn Iterator<Item = (PathBuf, u
     Box::new(files.into_iter())
 }
 
+fn remove_cache_file(path: &Path) {
+    if let Err(e) = fs::remove_file(path) {
+        if e.kind() == io::ErrorKind::NotFound {
+            debug!("Cache file already removed: `{}`", path.display());
+            return;
+        }
+
+        Err::<(), _>(e)
+            .attach(format!("{}", path.display()))
+            .unwrap();
+    }
+}
+
 impl<S: BuildHasher> Drop for LruDiskCache<S> {
     fn drop(&mut self) {
         let root = self.root.clone();
         for (file, _) in get_all_files(root) {
-            fs::remove_file(file).unwrap();
+            remove_cache_file(file.as_path());
         }
     }
 }
@@ -155,7 +168,7 @@ impl LruDiskCache {
         // temp, remove all files in path
         let root = PathBuf::from(path).clone();
         for (file, _) in get_all_files(root.clone()) {
-            fs::remove_file(file).unwrap();
+            remove_cache_file(file.as_path());
         }
         // println!("drop LruDiskCache");
         LruDiskCache {
