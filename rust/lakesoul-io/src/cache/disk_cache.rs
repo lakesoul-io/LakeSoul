@@ -233,6 +233,31 @@ impl DiskCache {
     }
 }
 
+fn configured_cache_path(cache_path: Option<PathBuf>) -> Option<PathBuf> {
+    cache_path.or_else(|| std::env::var("LAKESOUL_CACHE_PATH").ok().map(PathBuf::from))
+}
+
+#[cfg(test)]
+fn resolve_cache_path(
+    cache_path: Option<PathBuf>,
+) -> (PathBuf, Option<tempfile::TempDir>) {
+    if let Some(path) = configured_cache_path(cache_path) {
+        return (path, None);
+    }
+
+    let tempdir = tempfile::Builder::new()
+        .prefix("lakesoul-cache-")
+        .tempdir()
+        .unwrap();
+    (tempdir.path().to_path_buf(), Some(tempdir))
+}
+
+#[cfg(not(test))]
+fn resolve_cache_path(cache_path: Option<PathBuf>) -> PathBuf {
+    configured_cache_path(cache_path)
+        .unwrap_or_else(|| PathBuf::from("lakesoul_cache_dir"))
+}
+
 #[async_trait::async_trait]
 impl PageCache for DiskCache {
     fn page_size(&self) -> usize {
@@ -627,7 +652,6 @@ mod tests {
         let cache = DiskCache::new(1024 * 1024, 16 * 1024);
         let local_fs = Arc::new(LocalFileSystem::new());
 
-        let tmp_dir = tempdir().unwrap();
         let file_path = tmp_dir.path().join("test.bin");
         std::fs::write(&file_path, "test data").unwrap();
         let location = Path::from(file_path.as_path().to_str().unwrap());
@@ -667,10 +691,13 @@ mod tests {
     #[tokio::test]
     async fn test_eviction() {
         const PAGE_SIZE: usize = 512;
-        let cache = DiskCache::new(1024, PAGE_SIZE);
+        let tmp_dir = tempdir().unwrap();
+        let cache = DiskCache::builder(1024)
+            .page_size(PAGE_SIZE)
+            .cache_path(tmp_dir.path().join("cache"))
+            .build();
         let local_fs = Arc::new(LocalFileSystem::new());
 
-        let tmp_dir = tempdir().unwrap();
         let file_path = tmp_dir.path().join("test.bin");
         {
             let mut file = std::fs::File::create(&file_path).unwrap();
@@ -719,7 +746,6 @@ mod tests {
         let cache = DiskCache::new(1024 * 1024, 16 * 1024);
         let local_fs = Arc::new(LocalFileSystem::new());
 
-        let tmp_dir = tempdir().unwrap();
         let file_path = tmp_dir.path().join("test.bin");
         let path = Path::from(file_path.as_path().to_str().unwrap());
 
