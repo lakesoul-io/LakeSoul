@@ -80,6 +80,7 @@ atomic_refcell = { workspace = true }
 derivative = { workspace = true }
 url = { workspace = true }
 bytes = { workspace = true }
+dashmap = { workspace = true }
 half = { workspace = true }
 uuid = { workspace = true }
 regex = { workspace = true }

@@ -33,6 +33,10 @@ use rootcause::compat::boxed_error::IntoBoxedError;
 use crate::config::LakeSoulIOConfig;
 use crate::physical_plan::merge::MergeParquetExec;
 
+
+mod vortex;
+
+
 /// LakeSoul `FileFormat` implementation for supporting Apache Parquet
 ///
 /// Note it is recommended these are instead configured on the [`ConfigOptions`]
