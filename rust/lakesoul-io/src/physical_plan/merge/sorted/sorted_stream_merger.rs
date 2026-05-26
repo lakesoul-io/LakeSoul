@@ -209,7 +209,14 @@ macro_rules! create_merger {
                     $batch_size,
                     column_mapping,
                 )?;
-                return WindowSlidingMerger::build_merged_stream(combiner);
+                let merge_stream = WindowSlidingMerger::build_merged_stream(combiner)?;
+                return Ok(Box::pin(
+                    DefaultColumnStream::new_from_streams_with_default(
+                        vec![merge_stream],
+                        $merged_schema,
+                        $default_column_value,
+                    ),
+                ));
             }
             let is_partial_merge = $fields_map
                 .iter()
