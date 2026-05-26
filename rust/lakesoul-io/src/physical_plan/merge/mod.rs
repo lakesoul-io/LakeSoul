@@ -253,6 +253,7 @@ impl ExecutionPlan for MergeParquetExec {
                 )));
             }
             let stream = input.execute(partition, context.clone())?;
+            info!("Input[{}], schema {}", i, stream.schema());
             stream_init_futs.push(stream);
         }
 
@@ -353,7 +354,7 @@ fn merge_stream(
             .map(|f| f.contains("/compactdir"))
             .collect::<Vec<_>>();
         info!("is_compacted: {:?}", is_compacted);
-        let streams = build_sorted_stream_merger(
+        build_sorted_stream_merger(
             streams,
             primary_keys,
             physical_schema,
@@ -363,12 +364,7 @@ fn merge_stream(
             merge_ops,
             reservation,
             is_compacted,
-        )?;
-        Box::pin(DefaultColumnStream::new_from_streams_with_default(
-            vec![streams],
-            merged_schema,
-            default_column_value,
-        ))
+        )?
     };
     Ok(merge_stream)
 }

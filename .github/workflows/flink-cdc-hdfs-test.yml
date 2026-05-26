@@ -127,6 +127,7 @@ jobs:
                   sed -i 's/if NEW.version - rs_version >= 10 then/if NEW.version - rs_version >= 1 then/' script/meta_init.sql
                   sed -i 's/if NEW.version >= 10 then/if NEW.version >= 1 then/' script/meta_init.sql
                   cd ./docker/lakesoul-docker-compose-env
+                  export LAKESOUL_IO_USE_V2_MERGE=true
                   docker compose pull -q
                   docker compose up -d
                   sleep 30s

@@ -4,20 +4,26 @@
 
 use crate::Result;
 use crate::physical_plan::merge::sorted::cursor::CursorValues;
-use crate::physical_plan::merge::sorted::v2::batch_range::{BatchRange, InProgressRow};
-use arrow::compute::interleave;
+use crate::physical_plan::merge::sorted::v2::batch_range::{
+    BatchRange, InProgressPkGroup, InProgressRow,
+};
+use crate::physical_plan::merge::sorted::v2::record_batch_builder::{
+    ColumnMapping, build_record_batch_from_pk_groups,
+};
 use arrow::record_batch::RecordBatch;
-use arrow_array::ArrayRef;
 use arrow_schema::SchemaRef;
+use smallvec::smallvec;
 use std::cmp::Ordering;
+use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
 pub struct BinaryMerger<'a, C: CursorValues> {
     ranges: Vec<&'a mut BatchRange<C>>,
-    in_progress_row: Vec<InProgressRow>,
+    pk_groups: Vec<InProgressPkGroup>,
     schema: SchemaRef,
     target_batch_size: usize,
     remaining_rows_threshold: usize,
+    column_mapping: Arc<ColumnMapping>,
 }
 
 impl<'a, C: CursorValues> BinaryMerger<'a, C> {
@@ -25,17 +31,18 @@ impl<'a, C: CursorValues> BinaryMerger<'a, C> {
         ranges: Vec<&'a mut BatchRange<C>>,
         target_batch_size: usize,
         schema: SchemaRef,
+        column_mapping: Arc<ColumnMapping>,
     ) -> Self {
-        // 确保只有两个 ranges
         assert_eq!(ranges.len(), 2, "BinaryMerger expects exactly two ranges");
 
         let remaining_rows_threshold = 32;
         BinaryMerger {
             ranges,
-            in_progress_row: Vec::with_capacity(target_batch_size + 1),
+            pk_groups: Vec::with_capacity(target_batch_size + 1),
             target_batch_size,
             schema,
             remaining_rows_threshold,
+            column_mapping,
         }
     }
 
@@ -44,8 +51,6 @@ impl<'a, C: CursorValues> BinaryMerger<'a, C> {
         let mut right_valid = self.ranges[1].has_more_rows();
 
         while left_valid && right_valid {
-            // we cannot use left.cmp(right) because it will compare the stream idx
-            // instead, we need to compare the cursor values at the current positions
             let cmp = C::compare(
                 self.ranges[0].cursor(),
                 self.ranges[0].begin_row(),
@@ -54,35 +59,31 @@ impl<'a, C: CursorValues> BinaryMerger<'a, C> {
             );
             match cmp {
                 Ordering::Less => {
-                    self.in_progress_row.push(InProgressRow {
-                        range_idx: 0,
-                        row_idx: self.ranges[0].begin_row(),
-                    });
+                    self.add_row_to_pk_group(0);
                     left_valid = self.advance(0);
                 }
                 Ordering::Equal => {
-                    self.in_progress_row.push(InProgressRow {
+                    self.add_row_to_pk_group(0);
+                    let right_row = InProgressRow {
                         range_idx: 1,
                         row_idx: self.ranges[1].begin_row(),
-                    });
+                    };
+                    self.pk_groups.last_mut().unwrap().push(right_row);
                     left_valid = self.advance(0);
                     right_valid = self.advance(1);
                 }
                 Ordering::Greater => {
-                    self.in_progress_row.push(InProgressRow {
-                        range_idx: 1,
-                        row_idx: self.ranges[1].begin_row(),
-                    });
+                    self.add_row_to_pk_group(1);
                     right_valid = self.advance(1);
                 }
             }
-            if self.in_progress_row.len() >= self.target_batch_size {
-                self.build_record_batch(tx).await?;
+            if self.pk_groups.len() >= self.target_batch_size {
+                self.flush_pk_groups(tx).await?;
             }
         }
 
         if !left_valid && !right_valid {
-            self.build_record_batch(tx).await?;
+            self.flush_pk_groups(tx).await?;
             return Ok(());
         }
 
@@ -97,65 +98,71 @@ impl<'a, C: CursorValues> BinaryMerger<'a, C> {
         Ok(())
     }
 
+    fn add_row_to_pk_group(&mut self, range_idx: usize) {
+        let row = InProgressRow {
+            range_idx,
+            row_idx: self.ranges[range_idx].begin_row(),
+        };
+
+        let is_same_pk = self.pk_groups.last().is_some_and(|group| {
+            let first = &group[0];
+            C::eq(
+                self.ranges[first.range_idx].cursor(),
+                first.row_idx,
+                self.ranges[row.range_idx].cursor(),
+                row.row_idx,
+            )
+        });
+
+        if is_same_pk {
+            self.pk_groups.last_mut().unwrap().push(row);
+        } else {
+            self.pk_groups.push(smallvec![row]);
+        }
+    }
+
     fn advance(&mut self, idx: usize) -> bool {
         self.ranges[idx].advance();
         self.ranges[idx].has_more_rows()
     }
 
-    /// 处理剩余行的逻辑
     async fn process_remaining_rows(
         &mut self,
         range_idx: usize,
         tx: &Sender<Result<RecordBatch>>,
     ) -> Result<()> {
         let remaining = self.ranges[range_idx].remaining_rows();
-        if remaining <= self.remaining_rows_threshold && !self.in_progress_row.is_empty()
-        {
-            let range = &mut self.ranges[range_idx];
-            // 剩余行数低于阈值且有未处理的行，将剩余行添加到 in_progress_row
-            for i in range.begin_row..=range.end_row_for_merge {
-                self.in_progress_row.push(InProgressRow {
-                    range_idx,
-                    row_idx: i,
-                });
-                self.advance(range_idx); // 移动到末尾
+        if remaining <= self.remaining_rows_threshold && !self.pk_groups.is_empty() {
+            let remaining_end = self.ranges[range_idx].end_row_for_merge;
+            for _i in self.ranges[range_idx].begin_row..=remaining_end {
+                self.add_row_to_pk_group(range_idx);
+                self.ranges[range_idx].advance();
             }
-            self.build_record_batch(tx).await?;
+            self.flush_pk_groups(tx).await?;
         } else {
-            self.build_record_batch(tx).await?;
+            self.flush_pk_groups(tx).await?;
 
             let range = &mut self.ranges[range_idx];
-            // 剩余行数高于阈值，直接 slice 输出
             let batch = range.slice_remaining_and_advance();
             tx.send(Ok(batch)).await?;
         }
         Ok(())
     }
 
-    async fn build_record_batch(
-        &mut self,
-        tx: &Sender<Result<RecordBatch>>,
-    ) -> Result<()> {
-        if self.in_progress_row.is_empty() {
+    async fn flush_pk_groups(&mut self, tx: &Sender<Result<RecordBatch>>) -> Result<()> {
+        if self.pk_groups.is_empty() {
             return Ok(());
         }
-        let mut indices = Vec::with_capacity(self.in_progress_row.len());
-        for row in self.in_progress_row.iter() {
-            indices.push((row.range_idx, row.row_idx));
-        }
-        let column_num = self.ranges[0].batch().num_columns();
-        let result = (0..column_num)
-            .map(|i| {
-                let columns = [
-                    self.ranges[0].batch().column(i).as_ref(),
-                    self.ranges[1].batch().column(i).as_ref(),
-                ];
-                interleave(columns.as_slice(), indices.as_slice())
-            })
-            .collect::<arrow::error::Result<Vec<ArrayRef>>>()?;
-        self.in_progress_row.clear();
-        tx.send(Ok(RecordBatch::try_new(self.schema.clone(), result)?))
-            .await?;
+
+        let ranges_ref: Vec<&BatchRange<C>> = self.ranges.iter().map(|r| &**r).collect();
+        let batch = build_record_batch_from_pk_groups(
+            &self.pk_groups,
+            &ranges_ref,
+            &self.schema,
+            &self.column_mapping,
+        )?;
+        self.pk_groups.clear();
+        tx.send(Ok(batch)).await?;
         Ok(())
     }
 }
@@ -179,7 +186,6 @@ mod tests {
     fn create_range(values: &[i32], stream_idx: usize) -> BatchRange<RowValues> {
         let batch = create_batch(values);
         if batch.num_rows() == 0 {
-            // RowValues::new 要求至少 1 行；空批次在当前测试中不需要构造 cursor
             panic!("create_range does not support empty batch in this test helper");
         }
 
@@ -215,8 +221,13 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(10);
 
         let handle = tokio::spawn(async move {
-            let mut merger =
-                BinaryMerger::new(vec![&mut left, &mut right], target_batch_size, schema);
+            let cm = Arc::new(ColumnMapping::from_fields_map(&[vec![0]], 1));
+            let mut merger = BinaryMerger::new(
+                vec![&mut left, &mut right],
+                target_batch_size,
+                schema,
+                cm,
+            );
             merger.merge(&tx).await.unwrap();
         });
 
@@ -236,7 +247,6 @@ mod tests {
 
         let results = collect_merge_results(left, right, target_batch_size).await;
 
-        // 验证结果
         assert_eq!(results.len(), 1);
         let batch = &results[0];
         let col = batch
@@ -255,10 +265,8 @@ mod tests {
 
         let results = collect_merge_results(left, right, target_batch_size).await;
 
-        // 验证结果被分成多个批次
         assert_eq!(results.len(), 2);
 
-        // 第一个批次应该有 6 行
         let batch1 = &results[0];
         assert_eq!(batch1.num_rows(), 6);
         let col1 = batch1
@@ -268,7 +276,6 @@ mod tests {
             .unwrap();
         assert_eq!(col1.values(), &[1, 2, 3, 4, 5, 6]);
 
-        // 第二个批次应该有 4 行
         let batch2 = &results[1];
         assert_eq!(batch2.num_rows(), 4);
         let col2 = batch2
@@ -282,13 +289,12 @@ mod tests {
     #[tokio::test]
     async fn test_merge_with_empty_left() {
         let mut left = create_range(&[1], 0);
-        left.advance(); // 移动到末尾，使其没有更多行
+        left.advance();
         let right = create_range(&[2, 4, 6], 1);
         let target_batch_size = 10;
 
         let results = collect_merge_results(left, right, target_batch_size).await;
 
-        // 验证结果只包含右侧的数据
         assert_eq!(results.len(), 1);
         let batch = &results[0];
         let col = batch
@@ -303,12 +309,11 @@ mod tests {
     async fn test_merge_with_empty_right() {
         let left = create_range(&[1, 3, 5], 0);
         let mut right = create_range(&[2], 1);
-        right.advance(); // 移动到末尾，使其没有更多行
+        right.advance();
         let target_batch_size = 10;
 
         let results = collect_merge_results(left, right, target_batch_size).await;
 
-        // 验证结果只包含左侧的数据
         assert_eq!(results.len(), 1);
         let batch = &results[0];
         let col = batch

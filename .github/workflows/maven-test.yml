@@ -196,6 +196,7 @@ jobs:
                   path: ./rust/target/release/
             - name: Build with Maven
               run: |
+                  export LAKESOUL_IO_USE_V2_MERGE=true
                   mvn -B clean test -pl lakesoul-spark -am -Pcross-build -Pparallel-test --file pom.xml -Dtest='!ANNCase,!UpdateScalaSuite,!AlterTableByNameSuite,!ReadSuite,!UpdateSQLSuite,!ParquetNativeFilterSuite,!DeleteScalaSuite,!DeleteSQLSuite,!ParquetV2FilterSuite,!ParquetScanSuite,!UpsertSuiteBase,!RBACOperationSuite,!DeltaJoinSuite' -Dsurefire.failIfNoSpecifiedTests=false
             - name: Generate Report Site
               if: always()
