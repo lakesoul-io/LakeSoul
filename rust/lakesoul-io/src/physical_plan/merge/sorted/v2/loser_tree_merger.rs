@@ -61,7 +61,7 @@ impl<'a, C: CursorValues> LoserTreeRangeMerge<'a, C> {
                 break;
             }
 
-            let is_same_pk = self.pk_groups.last().map_or(false, |group| {
+            let is_same_pk = self.pk_groups.last().is_some_and(|group| {
                 let first = &group[0];
                 C::eq(
                     self.ranges[first.range_idx].cursor(),

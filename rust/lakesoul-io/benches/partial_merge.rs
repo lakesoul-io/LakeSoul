@@ -21,6 +21,7 @@ use lakesoul_io::reader::LakeSoulReader;
 use lakesoul_io::writer::create_writer_with_io_config;
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
+use tracing_subscriber;
 
 const TOTAL_ROWS: usize = 10_000_000;
 const FILES: usize = 3;
@@ -31,6 +32,7 @@ fn bench_dir() -> PathBuf {
     PathBuf::from(BENCH_DIR)
 }
 
+/// Full merged schema — all columns that exist across all streams.
 fn merged_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
@@ -45,6 +47,15 @@ fn merged_schema() -> SchemaRef {
     ]))
 }
 
+/// Schema for a single stream — only the columns it actually has.
+fn stream_schema(col_names: &[&str]) -> SchemaRef {
+    let mut fields: Vec<Field> = vec![Field::new("id", DataType::Int64, false)];
+    for &name in col_names {
+        fields.push(Field::new(name, DataType::Utf8, true));
+    }
+    Arc::new(Schema::new(fields))
+}
+
 fn gen_str(rng: &mut StdRng) -> String {
     const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
     const LEN: usize = 8;
@@ -53,34 +64,25 @@ fn gen_str(rng: &mut StdRng) -> String {
         .collect()
 }
 
-fn make_column(col_name: &str, num_rows: usize, ids_start: i64, rng: &mut StdRng) -> ArrayRef {
-    if col_name == "id" {
-        let ids: Vec<i64> = (ids_start..ids_start + num_rows as i64).collect();
-        Arc::new(Int64Array::from(ids))
-    } else {
-        let mut builder = StringBuilder::with_capacity(num_rows, 32);
-        for _ in 0..num_rows {
-            builder.append_value(gen_str(rng));
-        }
-        Arc::new(builder.finish())
-    }
-}
-
 fn make_batch(
     schema: &SchemaRef,
     num_rows: usize,
     ids_start: i64,
-    col_names: &[&str],
     rng: &mut StdRng,
 ) -> RecordBatch {
     let columns: Vec<ArrayRef> = schema
         .fields()
         .iter()
         .map(|field| {
-            if col_names.contains(&field.name().as_str()) || field.name() == "id" {
-                make_column(field.name().as_str(), num_rows, ids_start, rng)
+            if field.name() == "id" {
+                let ids: Vec<i64> = (ids_start..ids_start + num_rows as i64).collect();
+                Arc::new(Int64Array::from(ids)) as ArrayRef
             } else {
-                Arc::new(arrow::array::new_null_array(field.data_type(), num_rows))
+                let mut builder = StringBuilder::with_capacity(num_rows, 32);
+                for _ in 0..num_rows {
+                    builder.append_value(gen_str(rng));
+                }
+                Arc::new(builder.finish()) as ArrayRef
             }
         })
         .collect();
@@ -93,7 +95,7 @@ async fn generate_and_write(
     rows_per_stream: usize,
     rng: &mut StdRng,
 ) -> Vec<String> {
-    let schema = merged_schema();
+    let schema = stream_schema(col_names);
     std::fs::create_dir_all(bench_dir()).unwrap();
 
     // Determine if files already exist
@@ -120,7 +122,6 @@ async fn generate_and_write(
         let start_id = (i * rows_per_stream / FILES) as i64;
         let end_id = ((i + 1) * rows_per_stream / FILES) as i64;
 
-        // Drop this file first so writer starts fresh
         let _ = std::fs::remove_file(&path);
 
         let config = LakeSoulIOConfigBuilder::new()
@@ -133,7 +134,7 @@ async fn generate_and_write(
         let mut cursor = start_id;
         while cursor < end_id {
             let chunk_size = BATCH_SIZE.min((end_id - cursor) as usize);
-            let batch = make_batch(&schema, chunk_size, cursor, col_names, rng);
+            let batch = make_batch(&schema, chunk_size, cursor, rng);
             writer.write_record_batch(batch).await.unwrap();
             cursor += chunk_size as i64;
         }
@@ -147,11 +148,11 @@ async fn prepare_overlapping_files() -> Vec<String> {
     let mut rng = StdRng::seed_from_u64(42);
     let rows_per_stream = TOTAL_ROWS / 3;
 
-    let mut files = Vec::new();
     let s1_cols = ["col_a", "col_b", "col_c", "col_d", "col_e"];
     let s2_cols = ["col_c", "col_d", "col_e", "col_f", "col_g"];
     let s3_cols = ["col_a", "col_b", "col_f", "col_g", "col_h"];
 
+    let mut files = Vec::new();
     for (prefix, cols) in &[
         ("overlap_s1", &s1_cols[..]),
         ("overlap_s2", &s2_cols[..]),

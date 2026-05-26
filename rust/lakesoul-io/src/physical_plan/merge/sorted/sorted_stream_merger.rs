@@ -209,15 +209,7 @@ macro_rules! create_merger {
                     $batch_size,
                     column_mapping,
                 )?;
-                let merge_stream =
-                    WindowSlidingMerger::build_merged_stream(combiner)?;
-                return Ok(Box::pin(
-                    DefaultColumnStream::new_from_streams_with_default(
-                        vec![merge_stream],
-                        $merged_schema,
-                        $default_column_value,
-                    ),
-                ));
+                return WindowSlidingMerger::build_merged_stream(combiner);
             }
             let is_partial_merge = $fields_map
                 .iter()
@@ -1127,8 +1119,6 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     async fn test_v2_partial_merge_different_schemas() {
-        unsafe { std::env::set_var("LAKESOUL_IO_USE_V2_MERGE", "true") };
-
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
 

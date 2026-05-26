@@ -253,6 +253,7 @@ impl ExecutionPlan for MergeParquetExec {
                 )));
             }
             let stream = input.execute(partition, context.clone())?;
+            info!("Input[{}], schema {}", i, stream.schema());
             stream_init_futs.push(stream);
         }
 

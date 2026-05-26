@@ -5,13 +5,12 @@
 use crate::Result;
 use crate::physical_plan::merge::sorted::cursor::CursorValues;
 use crate::physical_plan::merge::sorted::v2::batch_range::{
-    BatchRange, InProgressPkGroup,
+    BatchRange, InProgressPkGroup, InProgressRow,
 };
 use arrow::array::Array;
 use arrow::compute::interleave;
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::SchemaRef;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Precomputed once at merge setup from `fields_map`, reused by every batch.
@@ -71,20 +70,25 @@ pub(crate) fn build_record_batch_from_pk_groups<C: CursorValues>(
 ) -> Result<RecordBatch> {
     let num_target_cols = schema.fields().len();
     let num_output_rows = pk_groups.len();
+    let num_ranges = ranges.len();
+    let source_col = &column_mapping.source_col;
 
     // Layer 1: global fast path — every stream has every column
     if column_mapping.all_non_partial() {
         let mut indices: Vec<(usize, usize)> = Vec::with_capacity(num_output_rows);
         for group in pk_groups {
-            let winner = group.last().unwrap();
+            let winner = unsafe { group.last().unwrap_unchecked() };
             indices.push((winner.range_idx, winner.row_idx));
         }
 
         let result = (0..num_target_cols)
             .map(|i| {
-                let mut columns: Vec<&dyn Array> = Vec::with_capacity(ranges.len());
-                for r in ranges {
-                    columns.push(r.batch().column(i).as_ref());
+                let mut columns: Vec<&dyn Array> = Vec::with_capacity(num_ranges);
+                unsafe {
+                    for r_idx in 0..num_ranges {
+                        let r = ranges.get_unchecked(r_idx);
+                        columns.push(r.batch().column(i).as_ref());
+                    }
                 }
                 interleave(&columns, &indices)
             })
@@ -96,72 +100,87 @@ pub(crate) fn build_record_batch_from_pk_groups<C: CursorValues>(
     // Shared indices for all non-partial columns
     let mut fast_indices: Vec<(usize, usize)> = Vec::with_capacity(num_output_rows);
     for group in pk_groups {
-        let winner = group.last().unwrap();
+        let winner = unsafe { group.last().unwrap_unchecked() };
         fast_indices.push((winner.range_idx, winner.row_idx));
     }
 
     let mut columns: Vec<ArrayRef> = Vec::with_capacity(num_target_cols);
 
     // Layer 2 & 3: dispatch per column using precomputed source_col
-    for target_col in 0..num_target_cols {
-        if column_mapping.is_all_null(target_col) {
-            columns.push(arrow::array::new_null_array(
-                schema.field(target_col).data_type(),
-                num_output_rows,
-            ));
-            continue;
-        }
-
-        if column_mapping.is_non_partial(target_col) {
-            let mut source_arrs: Vec<&dyn Array> = Vec::with_capacity(ranges.len());
-            for r in ranges {
-                let src_col =
-                    column_mapping.source_col[r.stream_idx()][target_col].unwrap();
-                source_arrs.push(r.batch().column(src_col).as_ref());
+    unsafe {
+        for target_col in 0..num_target_cols {
+            if column_mapping.is_all_null(target_col) {
+                columns.push(arrow::array::new_null_array(
+                    schema.field(target_col).data_type(),
+                    num_output_rows,
+                ));
+                continue;
             }
-            columns.push(interleave(&source_arrs, &fast_indices)?);
-            continue;
-        }
 
-        // Partial column: reverse scan per group
-        let mut source_arrs: Vec<&dyn Array> = Vec::new();
-        let mut ref_to_arr_idx: HashMap<(usize, usize), usize> = HashMap::new();
-        let mut indices: Vec<(usize, usize)> = Vec::with_capacity(num_output_rows);
+            if column_mapping.is_non_partial(target_col) {
+                let mut source_arrs: Vec<&dyn Array> = Vec::with_capacity(num_ranges);
+                for r_idx in 0..num_ranges {
+                    let r = ranges.get_unchecked(r_idx);
+                    let stream_col_map = source_col.get_unchecked(r.stream_idx());
+                    let src_col =
+                        (*stream_col_map.get_unchecked(target_col)).unwrap_unchecked();
+                    source_arrs.push(r.batch().column(src_col).as_ref());
+                }
+                columns.push(interleave(&source_arrs, &fast_indices)?);
+                continue;
+            }
 
-        let null_arr: ArrayRef =
-            arrow::array::new_null_array(schema.field(target_col).data_type(), 1);
-        source_arrs.push(null_arr.as_ref());
+            // Partial column: pre-build source arrays indexed by range_idx,
+            // then reverse-scan each PK group to find the last contributing range.
+            let mut source_arrs: Vec<&dyn Array> = Vec::with_capacity(num_ranges + 1);
 
-        for group in pk_groups {
-            let winner = group.iter().rev().find(|row| {
-                column_mapping.source_col[ranges[row.range_idx].stream_idx()][target_col]
-                    .is_some()
-            });
+            let null_arr: ArrayRef =
+                arrow::array::new_null_array(schema.field(target_col).data_type(), 1);
+            source_arrs.push(null_arr.as_ref()); // index 0 = null placeholder
 
-            if let Some(winner) = winner {
-                let key = (winner.range_idx, winner.row_idx);
-                let arr_idx = *ref_to_arr_idx.entry(key).or_insert_with(|| {
-                    let src_col = column_mapping.source_col
-                        [ranges[winner.range_idx].stream_idx()][target_col]
-                        .unwrap();
-                    let idx = source_arrs.len();
-                    source_arrs
-                        .push(ranges[winner.range_idx].batch().column(src_col).as_ref());
-                    idx
-                });
-                indices.push((arr_idx, winner.row_idx));
+            // range_to_arr_idx[range_idx] = index into source_arrs
+            // Default 0 means no source (null). Ranges WITH the column get real indices.
+            let mut range_to_arr_idx = vec![0usize; num_ranges];
+            for (r_idx, idx) in range_to_arr_idx.iter_mut().enumerate().take(num_ranges) {
+                let r = ranges.get_unchecked(r_idx);
+                let stream_col_map = source_col.get_unchecked(r.stream_idx());
+                let opt = stream_col_map.get_unchecked(target_col);
+                if opt.is_some() {
+                    let src_col = (*opt).unwrap_unchecked();
+                    *idx = source_arrs.len();
+                    source_arrs.push(r.batch().column(src_col).as_ref());
+                }
+            }
+
+            let mut indices: Vec<(usize, usize)> = Vec::with_capacity(num_output_rows);
+
+            for group in pk_groups {
+                let mut winner: Option<&InProgressRow> = None;
+                for row in group.iter().rev() {
+                    let r = ranges.get_unchecked(row.range_idx);
+                    let stream_col_map = source_col.get_unchecked(r.stream_idx());
+                    if stream_col_map.get_unchecked(target_col).is_some() {
+                        winner = Some(row);
+                        break;
+                    }
+                }
+
+                if let Some(w) = winner {
+                    let arr_idx = *range_to_arr_idx.get_unchecked(w.range_idx);
+                    indices.push((arr_idx, w.row_idx));
+                } else {
+                    indices.push((0, 0));
+                }
+            }
+
+            if source_arrs.len() == 1 {
+                columns.push(arrow::array::new_null_array(
+                    schema.field(target_col).data_type(),
+                    num_output_rows,
+                ));
             } else {
-                indices.push((0, 0));
+                columns.push(interleave(&source_arrs, &indices)?);
             }
-        }
-
-        if source_arrs.len() == 1 {
-            columns.push(arrow::array::new_null_array(
-                schema.field(target_col).data_type(),
-                num_output_rows,
-            ));
-        } else {
-            columns.push(interleave(&source_arrs, &indices)?);
         }
     }
 
