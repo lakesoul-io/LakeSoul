@@ -41,19 +41,19 @@ opt-level = 1
 
 [workspace.dependencies]
 # datafusion
-datafusion = { version = "51" }
-datafusion-common = { version = "51" }
-datafusion-common-runtime = { version = "51" }
-datafusion-session = { version = "51" }
-datafusion-catalog-listing = { version = "51" }
-datafusion-expr = { version = "51" }
-datafusion-physical-expr = { version = "51" }
-datafusion-physical-plan = { version = "51" }
-datafusion-execution = { version = "51" }
-datafusion-datasource = { version = "51" }
-datafusion-datasource-parquet = { version = "51" }
-datafusion-substrait = { version = "51" }
-datafusion-python = { version = "51" }
+datafusion = { version = "52" }
+datafusion-common = { version = "52" }
+datafusion-common-runtime = { version = "52" }
+datafusion-session = { version = "52" }
+datafusion-catalog-listing = { version = "52" }
+datafusion-expr = { version = "52" }
+datafusion-physical-expr = { version = "52" }
+datafusion-physical-plan = { version = "52" }
+datafusion-execution = { version = "52" }
+datafusion-datasource = { version = "52" }
+datafusion-datasource-parquet = { version = "52" }
+datafusion-substrait = { version = "52" }
+datafusion-python = { version = "52" }
 # arrow
 arrow = { version = "57", features = ["prettyprint"] }
 arrow-schema = { version = "57", features = ["serde"] }

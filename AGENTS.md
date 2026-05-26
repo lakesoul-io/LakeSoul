@@ -208,6 +208,29 @@ Local config files:
 
 ---
 
+## Context budget
+
+This repo has large generated/lock files. Do not open them unless the user asks
+or the task requires them.
+
+Avoid:
+- Cargo.lock
+- target/
+- result
+- .direnv/
+- node_modules/
+
+For dependency questions, read Cargo.toml first. Only inspect Cargo.lock for
+lockfile conflicts, exact resolved versions, supply-chain audit, or reproducible
+build issues.
+Do not read `Cargo.lock` unless the task is specifically about dependency resolution, lockfile conflicts, version auditing, or reproducible builds. 
+Prefer reading `Cargo.toml` first for dependency questions.
+When searching the repository, exclude generated or lock files where possible: `rg --glob '!Cargo.lock' ...`
+
+
+## Repository instructions
+
+
 ## CI / GitHub Actions Workflows
 
 | Workflow | Trigger | What it does |
