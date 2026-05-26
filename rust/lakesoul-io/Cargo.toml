@@ -15,6 +15,10 @@ harness = false
 name = "spill_bench"
 harness = false
 
+[[bench]]
+name = "partial_merge"
+harness = false
+
 [dependencies]
 # lakesoul
 proto = { path = "../proto" }

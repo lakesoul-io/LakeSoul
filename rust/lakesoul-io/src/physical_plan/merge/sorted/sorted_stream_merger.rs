@@ -192,6 +192,12 @@ macro_rules! create_merger {
                     });
                 info!("lakesoul is_partial_merge: {}", is_partial_merge);
                 info!("lakesoul using new batch wise combiner");
+                let column_mapping = Arc::new(
+                    crate::physical_plan::merge::sorted::v2::record_batch_builder::ColumnMapping::from_fields_map(
+                        &$fields_map,
+                        $physical_schema.fields().len(),
+                    ),
+                );
                 let combiner = WindowSlidingMerger::new(
                     $streams
                         .into_iter()
@@ -201,7 +207,7 @@ macro_rules! create_merger {
                     $physical_schema,
                     streams_num,
                     $batch_size,
-                    $fields_map,
+                    column_mapping,
                 )?;
                 let merge_stream =
                     WindowSlidingMerger::build_merged_stream(combiner)?;
@@ -1130,10 +1136,8 @@ mod tests {
             vec!["id", "a", "b"],
             vec![&[1, 2, 3], &[10, 20, 30], &[100, 200, 300]],
         );
-        let s1b2 = create_batch_i32(
-            vec!["id", "a", "b"],
-            vec![&[4, 5], &[40, 50], &[400, 500]],
-        );
+        let s1b2 =
+            create_batch_i32(vec!["id", "a", "b"], vec![&[4, 5], &[40, 50], &[400, 500]]);
         let s1 = create_stream(vec![s1b1, s1b2], task_ctx.clone())
             .await
             .unwrap();

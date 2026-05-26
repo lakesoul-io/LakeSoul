@@ -13,6 +13,7 @@ use crate::physical_plan::merge::sorted::v2::batch_range::BatchRange;
 use crate::physical_plan::merge::sorted::v2::binary_merger::BinaryMerger;
 use crate::physical_plan::merge::sorted::v2::deduplicate::DeduplicateStream;
 use crate::physical_plan::merge::sorted::v2::loser_tree_merger::LoserTreeRangeMerge;
+use crate::physical_plan::merge::sorted::v2::record_batch_builder::ColumnMapping;
 use arrow::datatypes::SchemaRef;
 use arrow::record_batch::RecordBatch;
 use datafusion_common::DataFusionError;
@@ -55,8 +56,7 @@ pub struct WindowSlidingMerger<C: CursorValues> {
 
     ranges: HashMap<usize, BatchRange<C>, BuildNoHashHasher<usize>>,
 
-    /// fields_map[stream_idx][stream_col_idx] = target_schema_col_idx
-    fields_map: Arc<Vec<Vec<usize>>>,
+    column_mapping: Arc<ColumnMapping>,
 }
 
 impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
@@ -68,12 +68,12 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
     /// * `streams_num` - The number of streams to merge
     /// * `fields_map` - The fields map from source schemas to target schema
     /// * `target_batch_size` - The target batch size for generated record batch
-    pub fn new(
+    pub(crate) fn new(
         streams: Vec<(CursorStream<C>, bool)>,
         schema: SchemaRef,
         streams_num: usize,
         target_batch_size: usize,
-        fields_map: Arc<Vec<Vec<usize>>>,
+        column_mapping: Arc<ColumnMapping>,
     ) -> Result<Self> {
         info!(
             "Create WindowSlidingMerger with {} streams, target_batch_size: {}",
@@ -117,7 +117,7 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
                 streams_num * 2,
                 BuildNoHashHasher::default(),
             ),
-            fields_map,
+            column_mapping,
         })
     }
 
@@ -253,6 +253,7 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
                 new_overlap_ranges,
                 self.target_batch_size,
                 self.schema.clone(),
+                self.column_mapping.clone(),
             );
             merger.merge(tx).await?;
         } else {
@@ -260,6 +261,7 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
                 self.schema.clone(),
                 new_overlap_ranges,
                 self.target_batch_size,
+                self.column_mapping.clone(),
             );
             merger.merge(tx).await?;
         }
@@ -336,7 +338,6 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
         let batch = batch?;
         if batch.1.num_rows() > 0 {
             let end_row_for_merge = batch.1.num_rows() - 1;
-            let stream_fields_map = Arc::new(self.fields_map[batch.2].clone());
             self.ranges.insert(
                 self.ranges_counter,
                 BatchRange::new(
@@ -345,7 +346,6 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
                     batch.2,
                     self.ranges_counter,
                     end_row_for_merge,
-                    stream_fields_map,
                 ),
             );
             self.ranges_counter += 1;
@@ -407,6 +407,7 @@ mod tests {
     use crate::helpers::InMemGenerator;
     use crate::physical_plan::merge::sorted::cursor::RowValues;
     use crate::physical_plan::merge::sorted::sorted_stream_merger::CursorStream;
+    use crate::physical_plan::merge::sorted::v2::record_batch_builder::ColumnMapping;
     use crate::physical_plan::merge::sorted::v2::window_sliding_merger::WindowSlidingMerger;
     use crate::stream::RowCursorStream;
     use arrow::array::ArrayRef;
@@ -525,13 +526,14 @@ mod tests {
             a1.new_empty(),
         )
         .await?;
-        let fields_map = Arc::new(vec![vec![0, 1], vec![0, 1], vec![0, 1]]);
+        let fields_map = vec![vec![0, 1], vec![0, 1], vec![0, 1]];
+        let cm = Arc::new(ColumnMapping::from_fields_map(&fields_map, 2));
         let combiner = WindowSlidingMerger::new(
             vec![(s1, true), (s2, true), (s3, true)],
             schema,
             3,
             10,
-            fields_map,
+            cm,
         )?;
         let stream = WindowSlidingMerger::build_merged_stream(combiner)?;
         let batches: Vec<RecordBatch> = stream.try_collect().await?;

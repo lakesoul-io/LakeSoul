@@ -7,11 +7,14 @@ use crate::physical_plan::merge::sorted::cursor::CursorValues;
 use crate::physical_plan::merge::sorted::v2::batch_range::{
     BatchRange, InProgressPkGroup, InProgressRow,
 };
-use crate::physical_plan::merge::sorted::v2::record_batch_builder::build_record_batch_from_pk_groups;
+use crate::physical_plan::merge::sorted::v2::record_batch_builder::{
+    ColumnMapping, build_record_batch_from_pk_groups,
+};
 use arrow::record_batch::RecordBatch;
 use arrow_schema::SchemaRef;
 use smallvec::smallvec;
 use std::cmp::Ordering;
+use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
 pub struct BinaryMerger<'a, C: CursorValues> {
@@ -20,6 +23,7 @@ pub struct BinaryMerger<'a, C: CursorValues> {
     schema: SchemaRef,
     target_batch_size: usize,
     remaining_rows_threshold: usize,
+    column_mapping: Arc<ColumnMapping>,
 }
 
 impl<'a, C: CursorValues> BinaryMerger<'a, C> {
@@ -27,6 +31,7 @@ impl<'a, C: CursorValues> BinaryMerger<'a, C> {
         ranges: Vec<&'a mut BatchRange<C>>,
         target_batch_size: usize,
         schema: SchemaRef,
+        column_mapping: Arc<ColumnMapping>,
     ) -> Self {
         assert_eq!(ranges.len(), 2, "BinaryMerger expects exactly two ranges");
 
@@ -37,6 +42,7 @@ impl<'a, C: CursorValues> BinaryMerger<'a, C> {
             target_batch_size,
             schema,
             remaining_rows_threshold,
+            column_mapping,
         }
     }
 
@@ -143,20 +149,17 @@ impl<'a, C: CursorValues> BinaryMerger<'a, C> {
         Ok(())
     }
 
-    async fn flush_pk_groups(
-        &mut self,
-        tx: &Sender<Result<RecordBatch>>,
-    ) -> Result<()> {
+    async fn flush_pk_groups(&mut self, tx: &Sender<Result<RecordBatch>>) -> Result<()> {
         if self.pk_groups.is_empty() {
             return Ok(());
         }
 
-        let ranges_ref: Vec<&BatchRange<C>> =
-            self.ranges.iter().map(|r| &**r).collect();
+        let ranges_ref: Vec<&BatchRange<C>> = self.ranges.iter().map(|r| &**r).collect();
         let batch = build_record_batch_from_pk_groups(
             &self.pk_groups,
             &ranges_ref,
             &self.schema,
+            &self.column_mapping,
         )?;
         self.pk_groups.clear();
         tx.send(Ok(batch)).await?;
@@ -206,14 +209,7 @@ mod tests {
         } else {
             batch.num_rows() - 1
         };
-        BatchRange::new(
-            cursor,
-            batch,
-            stream_idx,
-            0,
-            end_row_for_merge,
-            Arc::new((0..end_row_for_merge + 1).collect()),
-        )
+        BatchRange::new(cursor, batch, stream_idx, 0, end_row_for_merge)
     }
 
     async fn collect_merge_results(
@@ -225,8 +221,13 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(10);
 
         let handle = tokio::spawn(async move {
-            let mut merger =
-                BinaryMerger::new(vec![&mut left, &mut right], target_batch_size, schema);
+            let cm = Arc::new(ColumnMapping::from_fields_map(&[vec![0]], 1));
+            let mut merger = BinaryMerger::new(
+                vec![&mut left, &mut right],
+                target_batch_size,
+                schema,
+                cm,
+            );
             merger.merge(&tx).await.unwrap();
         });
 

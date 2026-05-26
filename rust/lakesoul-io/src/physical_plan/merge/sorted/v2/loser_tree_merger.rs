@@ -6,10 +6,13 @@ use crate::physical_plan::merge::sorted::cursor::CursorValues;
 use crate::physical_plan::merge::sorted::v2::batch_range::{
     BatchRange, InProgressPkGroup, InProgressRow,
 };
-use crate::physical_plan::merge::sorted::v2::record_batch_builder::build_record_batch_from_pk_groups;
+use crate::physical_plan::merge::sorted::v2::record_batch_builder::{
+    ColumnMapping, build_record_batch_from_pk_groups,
+};
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use smallvec::smallvec;
+use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
 pub struct LoserTreeRangeMerge<'a, C: CursorValues> {
@@ -24,6 +27,8 @@ pub struct LoserTreeRangeMerge<'a, C: CursorValues> {
     target_batch_size: usize,
 
     schema: SchemaRef,
+
+    column_mapping: Arc<ColumnMapping>,
 }
 
 impl<'a, C: CursorValues> LoserTreeRangeMerge<'a, C> {
@@ -31,6 +36,7 @@ impl<'a, C: CursorValues> LoserTreeRangeMerge<'a, C> {
         schema: SchemaRef,
         ranges: Vec<&'a mut BatchRange<C>>,
         target_batch_size: usize,
+        column_mapping: Arc<ColumnMapping>,
     ) -> Self {
         let len = ranges.len();
         Self {
@@ -40,6 +46,7 @@ impl<'a, C: CursorValues> LoserTreeRangeMerge<'a, C> {
             pk_groups: Vec::with_capacity(target_batch_size + 1),
             target_batch_size,
             schema,
+            column_mapping,
         }
     }
 
@@ -91,12 +98,12 @@ impl<'a, C: CursorValues> LoserTreeRangeMerge<'a, C> {
     }
 
     fn flush_pk_groups(&mut self) -> crate::Result<RecordBatch> {
-        let ranges_ref: Vec<&BatchRange<C>> =
-            self.ranges.iter().map(|r| &**r).collect();
+        let ranges_ref: Vec<&BatchRange<C>> = self.ranges.iter().map(|r| &**r).collect();
         let batch = build_record_batch_from_pk_groups(
             &self.pk_groups,
             &ranges_ref,
             &self.schema,
+            &self.column_mapping,
         )?;
         self.pk_groups.clear();
         Ok(batch)
@@ -240,10 +247,12 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(10);
 
         let handle = tokio::spawn(async move {
+            let cm = Arc::new(ColumnMapping::from_fields_map(&[vec![0, 1]], 2));
             let mut merger = LoserTreeRangeMerge::new(
                 schema.clone(),
                 vec![&mut left, &mut right],
                 target_batch_size,
+                cm,
             );
             merger.merge(&tx).await.unwrap();
         });
@@ -267,9 +276,8 @@ mod tests {
         let cursor1 = create_int32_cursor(vec![1, 3, 5], r1.new_empty());
         let cursor2 = create_int32_cursor(vec![2, 4, 6], r1.new_empty());
 
-        let stream_fields_map = Arc::new(vec![0, 1]);
-        let range1 = BatchRange::new(cursor1, batch1, 0, 0, 2, stream_fields_map.clone());
-        let range2 = BatchRange::new(cursor2, batch2, 1, 0, 2, stream_fields_map);
+        let range1 = BatchRange::new(cursor1, batch1, 0, 0, 2);
+        let range2 = BatchRange::new(cursor2, batch2, 1, 0, 2);
 
         let batches = collect_merge_results(range1, range2, 10).await;
 
@@ -306,9 +314,8 @@ mod tests {
         let cursor1 = create_int32_cursor(vec![1, 2, 3], r1.new_empty());
         let cursor2 = create_int32_cursor(vec![1, 2, 3], r1.new_empty());
 
-        let stream_fields_map = Arc::new(vec![0, 1]);
-        let range1 = BatchRange::new(cursor1, batch1, 0, 0, 2, stream_fields_map.clone());
-        let range2 = BatchRange::new(cursor2, batch2, 1, 0, 2, stream_fields_map);
+        let range1 = BatchRange::new(cursor1, batch1, 0, 0, 2);
+        let range2 = BatchRange::new(cursor2, batch2, 1, 0, 2);
 
         let batches = collect_merge_results(range1, range2, 10).await;
 
@@ -342,9 +349,8 @@ mod tests {
         let cursor1 = create_int32_cursor(vec![1, 1, 2], r1.new_empty());
         let cursor2 = create_int32_cursor(vec![2, 4, 4], r1.new_empty());
 
-        let stream_fields_map = Arc::new(vec![0, 1]);
-        let range1 = BatchRange::new(cursor1, batch1, 0, 0, 2, stream_fields_map.clone());
-        let range2 = BatchRange::new(cursor2, batch2, 1, 0, 2, stream_fields_map);
+        let range1 = BatchRange::new(cursor1, batch1, 0, 0, 2);
+        let range2 = BatchRange::new(cursor2, batch2, 1, 0, 2);
 
         let batches = collect_merge_results(range1, range2, 1).await;
 

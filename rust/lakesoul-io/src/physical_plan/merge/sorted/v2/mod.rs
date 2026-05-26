@@ -6,5 +6,5 @@ mod batch_range;
 mod binary_merger;
 mod deduplicate;
 mod loser_tree_merger;
-mod record_batch_builder;
+pub(crate) mod record_batch_builder;
 pub mod window_sliding_merger;
