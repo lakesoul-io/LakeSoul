@@ -54,13 +54,13 @@ LakeSoul/
 | Component | Technology |
 |---|---|
 | Metadata store | PostgreSQL 14+ (ACID, MVCC, RBAC row-level security) |
-| Native IO/merge | Rust — DataFusion 51, Arrow 57, Parquet, object_store 0.12 |
+| Native IO/merge | Rust — DataFusion, Arrow, Parquet, object_store|
 | Async runtime | Tokio (full features) |
-| gRPC | Tonic 0.14 |
+| gRPC | Tonic |
 | Java bridge | JNI via `lakesoul-io-c` / `lakesoul-metadata-c` (C FFI) |
 | Spark | Apache Spark 3.3.1, Scala 2.12 |
 | Flink | Apache Flink (Java + Scala) |
-| Python | PyO3 + maturin, pyarrow ≥ 16 |
+| Python | PyO3 + maturin, pyarrow |
 | Build (Rust) | Cargo stable toolchain + rustfmt + clippy |
 | Build (JVM) | Maven, Java 8 target |
 
