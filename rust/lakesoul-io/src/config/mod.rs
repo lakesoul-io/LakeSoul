@@ -13,6 +13,7 @@ use itertools::Itertools;
 
 use crate::{
     Result,
+    file_format::PhysicalFormat,
     filter::parser::{FilterContainer, Parser},
     helpers::coerce_filter_type,
     utils::ByteSize,
@@ -248,6 +249,19 @@ impl LakeSoulIOConfig {
     pub fn stable_sort(&self) -> bool {
         self.option(OPTION_KEY_STABLE_SORT)
             .is_some_and(|x| x.eq("true"))
+    }
+
+    /// Returns the physical file format selected for writes.
+    pub fn physical_format(&self) -> Result<PhysicalFormat> {
+        if let Some(format) = self.option(OPTION_KEY_PHYSICAL_FORMAT) {
+            return format.parse().map_err(Into::into);
+        }
+
+        self.files
+            .iter()
+            .rev()
+            .find_map(|path| PhysicalFormat::from_extension(path))
+            .map_or(Ok(PhysicalFormat::default()), Ok)
     }
 
     pub fn set_files(&mut self, files: Vec<String>) {
@@ -602,6 +616,14 @@ impl LakeSoulIOConfigBuilder {
         self.config
             .options
             .insert(key.to_string(), value.to_string());
+        self
+    }
+
+    /// Sets the physical file format for writers.
+    pub fn with_physical_format(mut self, format: PhysicalFormat) -> Self {
+        self.config
+            .options
+            .insert(OPTION_KEY_PHYSICAL_FORMAT.to_string(), format.to_string());
         self
     }
 

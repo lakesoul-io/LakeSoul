@@ -6,6 +6,8 @@
 
 use std::any::Any;
 use std::collections::HashMap;
+use std::fmt::{Display, Formatter};
+use std::str::FromStr;
 use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
@@ -33,9 +35,57 @@ use rootcause::compat::boxed_error::IntoBoxedError;
 use crate::config::LakeSoulIOConfig;
 use crate::physical_plan::merge::MergeParquetExec;
 
+pub(crate) mod vortex;
 
-mod vortex;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhysicalFormat {
+    Parquet,
+    Vortex,
+}
 
+impl PhysicalFormat {
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Parquet => "parquet",
+            Self::Vortex => "vortex",
+        }
+    }
+
+    pub fn from_extension(path: &str) -> Option<Self> {
+        let path_without_query = path.split_once('?').map_or(path, |(path, _)| path);
+        let extension = path_without_query
+            .rsplit('/')
+            .next()
+            .and_then(|file_name| file_name.rsplit_once('.').map(|(_, ext)| ext))?;
+        Self::from_str(extension).ok()
+    }
+}
+
+impl Default for PhysicalFormat {
+    fn default() -> Self {
+        Self::Parquet
+    }
+}
+
+impl Display for PhysicalFormat {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.extension())
+    }
+}
+
+impl FromStr for PhysicalFormat {
+    type Err = DataFusionError;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "parquet" => Ok(Self::Parquet),
+            "vortex" => Ok(Self::Vortex),
+            other => Err(DataFusionError::Configuration(format!(
+                "Unsupported physical format: {other}"
+            ))),
+        }
+    }
+}
 
 /// LakeSoul `FileFormat` implementation for supporting Apache Parquet
 ///

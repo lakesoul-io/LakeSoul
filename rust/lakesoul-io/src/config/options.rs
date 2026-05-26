@@ -33,3 +33,5 @@ pub static OPTION_KEY_COMPUTE_LSH: &str = "compute_lsh";
 pub static OPTION_KEY_STABLE_SORT: &str = "stable_sort";
 /// Key for repartition memory
 pub static OPTION_KEY_REPARTITION_MEM_RATIO: &str = "repartition_mem_ratio";
+/// Key for selecting the physical file format used by writers
+pub static OPTION_KEY_PHYSICAL_FORMAT: &str = "physical_format";
