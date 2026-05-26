@@ -259,12 +259,11 @@ mod tests {
     #[tokio::test]
     async fn test_get_end_of_file() {
         let cache_dir = tempfile::tempdir().unwrap();
-        let cache = Arc::new(
-            DiskCache::builder(64 * 1024 * 1024)
-                .page_size(16 * 1024)
-                .cache_path(cache_dir.path().join("cache"))
-                .build(),
-        );
+        let cache = Arc::new(DiskCache::with_path(
+            64 * 1024 * 1024,
+            16 * 1024,
+            cache_dir.path().join("cache"),
+        ));
         let store = Arc::new(object_store::local::LocalFileSystem::new());
         let cache = Arc::new(ReadThroughCache::new(store, cache));
 
