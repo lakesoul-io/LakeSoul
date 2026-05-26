@@ -1,4 +1,4 @@
-//! This Code is Copy from vorte
+//! These codes are copy from vortex
 //
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright the Vortex contributors
@@ -48,6 +48,7 @@ pub struct VortexSink {
 }
 
 impl VortexSink {
+    /// schema without partition columns
     pub fn new(
         config: FileSinkConfig,
         schema: SchemaRef,

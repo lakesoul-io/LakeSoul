@@ -46,7 +46,7 @@ use std::iter::zip;
 use std::{collections::HashMap, fmt, sync::Arc};
 use tokio::runtime::Builder;
 use url::Url;
-use vortex::file::WriteSummary;
+use vortex::file::{Footer, WriteSummary};
 
 use self::transform::uniform_schema;
 use crate::{
@@ -912,6 +912,18 @@ impl FileExistCols for ParquetMetaData {
 impl FileExistCols for WriteSummary {
     fn get_file_exists_cols(&self) -> Vec<String> {
         match self.footer().dtype().as_struct_fields_opt() {
+            Some(sf) => sf.names().iter().map(ToString::to_string).collect(),
+            None => {
+                warn!("file has no struct fields");
+                vec![]
+            }
+        }
+    }
+}
+
+impl FileExistCols for Footer {
+    fn get_file_exists_cols(&self) -> Vec<String> {
+        match self.dtype().as_struct_fields_opt() {
             Some(sf) => sf.names().iter().map(ToString::to_string).collect(),
             None => {
                 warn!("file has no struct fields");

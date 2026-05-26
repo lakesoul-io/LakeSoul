@@ -7,6 +7,7 @@ use bytes::BytesMut;
 use datafusion_common::DataFusionError;
 
 mod file_sink_writer;
+pub use file_sink_writer::FileSinkWriter;
 
 mod multipart_writer;
 pub use multipart_writer::MultiPartAsyncWriter;
