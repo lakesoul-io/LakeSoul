@@ -35,7 +35,7 @@ use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::{datasource::TableProvider, logical_expr::Expr};
 use datafusion_common::{DataFusionError, Result, Statistics, ToDFSchema};
 use futures::future;
-use object_store::path::Path;
+use object_store::{ObjectStoreExt, path::Path};
 use tracing::debug;
 use url::Url;
 

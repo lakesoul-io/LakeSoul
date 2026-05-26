@@ -41,34 +41,34 @@ opt-level = 1
 
 [workspace.dependencies]
 # datafusion
-datafusion = { version = "52" }
-datafusion-common = { version = "52" }
-datafusion-common-runtime = { version = "52" }
-datafusion-session = { version = "52" }
-datafusion-catalog-listing = { version = "52" }
-datafusion-expr = { version = "52" }
-datafusion-physical-expr = { version = "52" }
-datafusion-physical-plan = { version = "52" }
-datafusion-execution = { version = "52" }
-datafusion-datasource = { version = "52" }
-datafusion-datasource-parquet = { version = "52" }
-datafusion-substrait = { version = "52" }
-datafusion-python = { version = "52" }
+datafusion = { version = "53" }
+datafusion-common = { version = "53" }
+datafusion-common-runtime = { version = "53" }
+datafusion-session = { version = "53" }
+datafusion-catalog-listing = { version = "53" }
+datafusion-expr = { version = "53" }
+datafusion-physical-expr = { version = "53" }
+datafusion-physical-plan = { version = "53" }
+datafusion-execution = { version = "53" }
+datafusion-datasource = { version = "53" }
+datafusion-datasource-parquet = { version = "53" }
+datafusion-substrait = { version = "53" }
+datafusion-python = { version = "53" }
 # arrow
-arrow = { version = "57", features = ["prettyprint"] }
-arrow-schema = { version = "57", features = ["serde"] }
-arrow-array = { version = "57", features = ["chrono-tz", "ffi"] }
-arrow-buffer = { version = "57" }
-arrow-cast = { version = "57" }
-arrow-arith = { version = "57" }
-arrow-ipc = { version = "57" }
-arrow-flight = { version = "57", features = ["flight-sql-experimental"] }
-arrow-pyarrow = { version = "57" }
-parquet = { version = "57", default-features = true, features = [
+arrow = { version = "58", features = ["prettyprint"] }
+arrow-schema = { version = "58", features = ["serde"] }
+arrow-array = { version = "58", features = ["chrono-tz", "ffi"] }
+arrow-buffer = { version = "58" }
+arrow-cast = { version = "58" }
+arrow-arith = { version = "58" }
+arrow-ipc = { version = "58" }
+arrow-flight = { version = "58", features = ["flight-sql-experimental"] }
+arrow-pyarrow = { version = "58" }
+parquet = { version = "58", default-features = true, features = [
   "async",
   "encryption",
 ] }
-object_store = { version = "0.12", features = ["aws", "http"] }
+object_store = { version = "0.13", features = ["aws", "http"] }
 # async
 futures = "0.3"
 async-trait = "0.1"

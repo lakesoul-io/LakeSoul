@@ -11,12 +11,12 @@ use datafusion_common::DataFusionError;
 use futures::stream::{BoxStream, empty};
 use futures::{FutureExt, StreamExt};
 use hdrs::{Client, ClientBuilder, File};
-use object_store::Error::{Generic, Precondition};
+use object_store::Error::{AlreadyExists, Generic};
 use object_store::path::Path;
 use object_store::{
-    Attributes, GetOptions, GetRange, GetResult, GetResultPayload, ListResult,
-    MultipartUpload, ObjectMeta, ObjectStore, PutMode, PutMultipartOptions, PutOptions,
-    PutPayload, PutResult, UploadPart,
+    Attributes, CopyMode, CopyOptions, GetOptions, GetResult, GetResultPayload,
+    ListResult, MultipartUpload, ObjectMeta, ObjectStore, PutMode, PutMultipartOptions,
+    PutOptions, PutPayload, PutResult, RenameOptions, RenameTargetMode, UploadPart,
 };
 use std::fmt::{Debug, Display, Formatter};
 use std::io::ErrorKind::NotFound;
@@ -75,6 +75,28 @@ impl Hdfs {
         maybe_spawn_blocking(Box::new(move || Self::file_exist(client, t.as_str()))).await
     }
 
+    async fn head(&self, location: &Path) -> object_store::Result<ObjectMeta> {
+        let path = add_leading_slash(location);
+        let client = self.client.clone();
+        maybe_spawn_blocking(move || {
+            let meta = client.metadata(path.as_str()).map_err(|e| Generic {
+                store: "hdfs",
+                source: Box::new(e),
+            })?;
+            Ok(ObjectMeta {
+                location: Path::parse(meta.path()).map_err(|e| Generic {
+                    store: "hdfs",
+                    source: Box::new(e),
+                })?,
+                last_modified: meta.modified().into(),
+                size: meta.len(),
+                e_tag: None,
+                version: None,
+            })
+        })
+        .await
+    }
+
     async fn delete(client: Arc<Client>, location: &Path) -> object_store::Result<()> {
         let t = add_leading_slash(location);
         let location = location.clone();
@@ -87,6 +109,81 @@ impl Hdfs {
                 store: "hdfs",
                 source: Box::new(e),
             }),
+        })
+        .await
+    }
+
+    async fn copy(
+        &self,
+        from: &Path,
+        to: &Path,
+        mode: CopyMode,
+    ) -> object_store::Result<()> {
+        if mode == CopyMode::Create && self.is_file_exist(to).await? {
+            return Err(AlreadyExists {
+                path: add_leading_slash(to),
+                source: "Destination already exist".into(),
+            });
+        }
+
+        let from = add_leading_slash(from);
+        let to = add_leading_slash(to);
+        let mut async_read = self
+            .client
+            .open_file()
+            .read(true)
+            .async_open(from.as_str())
+            .await
+            .map_err(|e| Generic {
+                store: "hdfs",
+                source: Box::new(e),
+            })?
+            .compat();
+        let mut async_write = self
+            .client
+            .open_file()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .async_open(to.as_str())
+            .await
+            .map_err(|e| Generic {
+                store: "hdfs",
+                source: Box::new(e),
+            })?
+            .compat_write();
+        tokio::io::copy(&mut async_read, &mut async_write)
+            .await
+            .map_err(|e| Generic {
+                store: "hdfs",
+                source: Box::new(e),
+            })?;
+        Ok(())
+    }
+
+    async fn rename(
+        &self,
+        from: &Path,
+        to: &Path,
+        mode: RenameTargetMode,
+    ) -> object_store::Result<()> {
+        if mode == RenameTargetMode::Create && self.is_file_exist(to).await? {
+            return Err(AlreadyExists {
+                path: add_leading_slash(to),
+                source: "Destination already exist".into(),
+            });
+        }
+
+        let from = add_leading_slash(from);
+        let to = add_leading_slash(to);
+        let client = self.client.clone();
+        maybe_spawn_blocking(move || {
+            client
+                .rename_file(from.as_str(), to.as_str())
+                .map_err(|e| Generic {
+                    store: "hdfs",
+                    source: Box::new(e),
+                })
         })
         .await
     }
@@ -185,6 +282,7 @@ impl ObjectStore for Hdfs {
         options: GetOptions,
     ) -> object_store::Result<GetResult> {
         let object_meta = self.head(location).await?;
+        options.check_preconditions(&object_meta)?;
         if options.head {
             return Ok(GetResult {
                 payload: GetResultPayload::Stream(
@@ -196,38 +294,11 @@ impl ObjectStore for Hdfs {
             });
         }
         let location = add_leading_slash(location);
-        let range = if let Some(r) = options.range {
-            match r {
-                GetRange::Bounded(range) => Ok(range),
-                GetRange::Offset(offset) => {
-                    if offset >= object_meta.size {
-                        Err(Precondition {
-                            path: location.clone(),
-                            source: format!(
-                                "Request offset {} invalid against file size {}",
-                                offset, object_meta.size
-                            )
-                            .into(),
-                        })
-                    } else {
-                        Ok(offset..object_meta.size)
-                    }
-                }
-                GetRange::Suffix(last) => {
-                    if last > object_meta.size {
-                        Err(Precondition {
-                            path: location.clone(),
-                            source: format!(
-                                "Request last offset {} invalid against file size {}",
-                                last, object_meta.size
-                            )
-                            .into(),
-                        })
-                    } else {
-                        Ok((object_meta.size - last)..object_meta.size)
-                    }
-                }
-            }
+        let range = if let Some(range) = options.range {
+            range.as_range(object_meta.size).map_err(|source| Generic {
+                store: "hdfs",
+                source: Box::new(source),
+            })
         } else {
             Ok(0..object_meta.size)
         }?;
@@ -263,37 +334,6 @@ impl ObjectStore for Hdfs {
             range,
             attributes: Attributes::default(),
         })
-    }
-
-    async fn get_range(
-        &self,
-        location: &Path,
-        range: Range<u64>,
-    ) -> object_store::Result<Bytes> {
-        let location = add_leading_slash(location);
-        let client = self.client.clone();
-        maybe_spawn_blocking(move || {
-            let file = client
-                .open_file()
-                .read(true)
-                .open(location.as_ref())
-                .map_err(|e| Generic {
-                    store: "hdfs",
-                    source: Box::new(e),
-                })?;
-            let to_read = range.end - range.start;
-            let mut buf = vec![0; to_read as usize];
-            let read_size = read_at(&file, &mut buf, range.start)?;
-            if read_size != to_read as usize {
-                Err(Generic {
-                    store: "hdfs",
-                    source: format!("read file {} range not complete", location).into(),
-                })
-            } else {
-                Ok(buf.into())
-            }
-        })
-        .await
     }
 
     async fn get_ranges(
@@ -344,30 +384,22 @@ impl ObjectStore for Hdfs {
         .await
     }
 
-    async fn head(&self, location: &Path) -> object_store::Result<ObjectMeta> {
-        let path = add_leading_slash(location);
+    fn delete_stream(
+        &self,
+        locations: BoxStream<'static, object_store::Result<Path>>,
+    ) -> BoxStream<'static, object_store::Result<Path>> {
         let client = self.client.clone();
-        maybe_spawn_blocking(move || {
-            let meta = client.metadata(path.as_str()).map_err(|e| Generic {
-                store: "hdfs",
-                source: Box::new(e),
-            })?;
-            Ok(ObjectMeta {
-                location: Path::parse(meta.path()).map_err(|e| Generic {
-                    store: "hdfs",
-                    source: Box::new(e),
-                })?,
-                last_modified: meta.modified().into(),
-                size: meta.len(),
-                e_tag: None,
-                version: None,
+        locations
+            .map(move |location| {
+                let client = client.clone();
+                async move {
+                    let location = location?;
+                    Hdfs::delete(client, &location).await?;
+                    Ok(location)
+                }
             })
-        })
-        .await
-    }
-
-    async fn delete(&self, location: &Path) -> object_store::Result<()> {
-        Hdfs::delete(self.client.clone(), location).await
+            .buffered(8)
+            .boxed()
     }
 
     fn list(
@@ -384,87 +416,22 @@ impl ObjectStore for Hdfs {
         todo!()
     }
 
-    async fn copy(&self, from: &Path, to: &Path) -> object_store::Result<()> {
-        let from = add_leading_slash(from);
-        let to = add_leading_slash(to);
-        let mut async_read = self
-            .client
-            .open_file()
-            .read(true)
-            .async_open(from.as_str())
-            .await
-            .map_err(|e| Generic {
-                store: "hdfs",
-                source: Box::new(e),
-            })?
-            .compat();
-        let mut async_write = self
-            .client
-            .open_file()
-            .truncate(true)
-            .async_open(to.as_str())
-            .await
-            .map_err(|e| Generic {
-                store: "hdfs",
-                source: Box::new(e),
-            })?
-            .compat_write();
-        tokio::io::copy(&mut async_read, &mut async_write)
-            .await
-            .map_err(|e| Generic {
-                store: "hdfs",
-                source: Box::new(e),
-            })?;
-        Ok(())
-    }
-
-    async fn rename(&self, from: &Path, to: &Path) -> object_store::Result<()> {
-        let from = add_leading_slash(from);
-        let to = add_leading_slash(to);
-        let client = self.client.clone();
-        maybe_spawn_blocking(move || {
-            client
-                .rename_file(from.as_str(), to.as_str())
-                .map_err(|e| Generic {
-                    store: "hdfs",
-                    source: Box::new(e),
-                })
-        })
-        .await
-    }
-
-    async fn copy_if_not_exists(
+    async fn copy_opts(
         &self,
         from: &Path,
         to: &Path,
+        options: CopyOptions,
     ) -> object_store::Result<()> {
-        let t = add_leading_slash(to);
-        let file_exist = self.is_file_exist(to).await?;
-        if file_exist {
-            Err(object_store::Error::AlreadyExists {
-                path: t.clone(),
-                source: "Destination already exist".into(),
-            })
-        } else {
-            self.copy(from, to).await
-        }
+        self.copy(from, to, options.mode).await
     }
 
-    async fn rename_if_not_exists(
+    async fn rename_opts(
         &self,
         from: &Path,
         to: &Path,
+        options: RenameOptions,
     ) -> object_store::Result<()> {
-        let t = add_leading_slash(to);
-        let file_exist = self.is_file_exist(to).await?;
-        if file_exist {
-            Err(object_store::Error::AlreadyExists {
-                path: t.clone(),
-                source: "Destination already exist".into(),
-            })
-        } else {
-            self.rename(from, to).await
-        }
+        self.rename(from, to, options.target_mode).await
     }
 }
 
@@ -546,6 +513,7 @@ mod tests {
     use futures::StreamExt;
     use object_store::GetResultPayload::Stream;
     use object_store::ObjectStore;
+    use object_store::ObjectStoreExt;
     use object_store::buffered::BufWriter;
     use object_store::path::Path;
     use rand::distr::{Alphanumeric, SampleString};

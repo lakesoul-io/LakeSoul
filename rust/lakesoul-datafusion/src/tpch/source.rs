@@ -69,10 +69,6 @@ impl DataSource for TpchSource {
         EquivalenceProperties::new(self.kind.schema())
     }
 
-    fn statistics(&self) -> datafusion_common::Result<datafusion::common::Statistics> {
-        Ok(Statistics::new_unknown(&self.kind.schema()))
-    }
-
     fn with_fetch(
         &self,
         _limit: Option<usize>,

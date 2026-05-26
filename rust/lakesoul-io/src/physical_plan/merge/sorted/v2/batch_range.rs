@@ -255,7 +255,7 @@ mod tests {
 
         let pool = Arc::new(GreedyMemoryPool::new(1024 * 1024)) as _;
         let consumer = MemoryConsumer::new("batch_range_test").register(&pool);
-        let mut reservation = consumer.new_empty();
+        let reservation = consumer.new_empty();
         reservation.try_grow(rows.size()).unwrap();
         let cursor = RowValues::new(rows, converter, reservation);
         let end_row_for_merge = if batch.num_rows() == 0 {

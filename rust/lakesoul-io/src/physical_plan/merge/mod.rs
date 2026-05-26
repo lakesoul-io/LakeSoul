@@ -53,7 +53,7 @@ pub struct MergeParquetExec {
     /// The io config of the merge on read operation.
     io_config: LakeSoulIOConfig, // try use arc
     /// The properties of the merge on read operation.
-    properties: PlanProperties,
+    properties: Arc<PlanProperties>,
 }
 
 impl MergeParquetExec {
@@ -110,12 +110,12 @@ impl MergeParquetExec {
             default_column_value,
             merge_operators,
             io_config: config,
-            properties: PlanProperties::new(
+            properties: Arc::new(PlanProperties::new(
                 EquivalenceProperties::new(merged_schema),
                 Partitioning::UnknownPartitioning(1),
                 EmissionType::Incremental,
                 Boundedness::Bounded,
-            ),
+            )),
         })
     }
 
@@ -140,12 +140,12 @@ impl MergeParquetExec {
             default_column_value,
             merge_operators,
             io_config: config,
-            properties: PlanProperties::new(
+            properties: Arc::new(PlanProperties::new(
                 EquivalenceProperties::new(schema),
                 Partitioning::UnknownPartitioning(1),
                 EmissionType::Incremental,
                 Boundedness::Bounded,
-            ),
+            )),
         })
     }
 
@@ -207,7 +207,7 @@ impl ExecutionPlan for MergeParquetExec {
         self.merged_schema.clone()
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
 

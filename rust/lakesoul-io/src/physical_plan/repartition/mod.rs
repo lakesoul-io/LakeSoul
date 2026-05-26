@@ -380,7 +380,7 @@ pub struct RepartitionByRangeAndHashExec {
     metrics: ExecutionPlanMetricsSet,
 
     /// Execution properties
-    plan_properties: PlanProperties,
+    plan_properties: Arc<PlanProperties>,
 }
 
 impl RepartitionByRangeAndHashExec {
@@ -463,12 +463,12 @@ impl RepartitionByRangeAndHashExec {
 
             if physical_exprs_equal(&lhs, &rhs) {
                 return Ok(Self {
-                    plan_properties: PlanProperties::new(
+                    plan_properties: Arc::new(PlanProperties::new(
                         EquivalenceProperties::new(input.schema()),
                         hash_partitioning.clone(),
                         EmissionType::Incremental,
                         Boundedness::Bounded,
-                    ),
+                    )),
                     input,
                     range_partitioning_expr,
                     hash_partitioning,
@@ -678,7 +678,7 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
         self.input.schema()
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.plan_properties
     }
 

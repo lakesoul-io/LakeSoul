@@ -1,7 +1,7 @@
 //! Disk cache Builder.
 //!
 
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use super::{DEFAULT_PAGE_SIZE, DEFAULT_TIME_TO_IDLE, DiskCache};
 
@@ -9,6 +9,7 @@ use super::{DEFAULT_PAGE_SIZE, DEFAULT_TIME_TO_IDLE, DiskCache};
 pub struct DiskCacheBuilder {
     capacity: usize,
     page_size: usize,
+    cache_path: Option<PathBuf>,
 
     time_to_idle: Duration,
 }
@@ -18,6 +19,7 @@ impl DiskCacheBuilder {
         Self {
             capacity,
             page_size: DEFAULT_PAGE_SIZE,
+            cache_path: None,
             time_to_idle: DEFAULT_TIME_TO_IDLE,
         }
     }
@@ -25,6 +27,12 @@ impl DiskCacheBuilder {
     /// Set the page size.
     pub fn page_size(&mut self, size: usize) -> &mut Self {
         self.page_size = size;
+        self
+    }
+
+    /// Set the directory used to store disk cache files.
+    pub fn cache_path<T: Into<PathBuf>>(&mut self, path: T) -> &mut Self {
+        self.cache_path = Some(path.into());
         self
     }
 
@@ -39,6 +47,11 @@ impl DiskCacheBuilder {
 
     #[must_use]
     pub fn build(&self) -> DiskCache {
-        DiskCache::with_params(self.capacity, self.page_size, self.time_to_idle)
+        DiskCache::with_params(
+            self.capacity,
+            self.page_size,
+            self.time_to_idle,
+            self.cache_path.clone(),
+        )
     }
 }

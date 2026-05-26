@@ -13,7 +13,7 @@ use datafusion_common::{DataFusionError, project_schema};
 use datafusion_datasource::ListingTableUrl;
 use datafusion_execution::object_store::ObjectStoreUrl;
 use datafusion_session::Session;
-use object_store::{ObjectStore, WriteMultipart, path::Path};
+use object_store::{ObjectStore, ObjectStoreExt, WriteMultipart, path::Path};
 use parquet::basic::ZstdLevel;
 use parquet::{
     arrow::ArrowWriter, basic::Compression, file::properties::WriterProperties,
