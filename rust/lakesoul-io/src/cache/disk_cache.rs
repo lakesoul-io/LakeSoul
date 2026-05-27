@@ -549,6 +549,14 @@ mod tests {
         assert_eq!(result, Some(data));
     }
 
+    fn count_files(path: &std::path::Path) -> usize {
+        std::fs::read_dir(path)
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .filter(|entry| entry.file_type().map(|ty| ty.is_file()).unwrap_or(false))
+            .count()
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn test_put_same_key_race_creates_multiple_backing_files() {
         let tmp_dir = tempdir().unwrap();
@@ -569,13 +577,7 @@ mod tests {
             let max_files = max_files.clone();
             tokio::spawn(async move {
                 while observing.load(Ordering::SeqCst) {
-                    let count = std::fs::read_dir(&root)
-                        .unwrap()
-                        .filter_map(std::result::Result::ok)
-                        .filter(|entry| {
-                            entry.file_type().map(|ty| ty.is_file()).unwrap_or(false)
-                        })
-                        .count();
+                    let count = count_files(&root);
                     max_files.fetch_max(count, Ordering::SeqCst);
                     tokio::task::yield_now().await;
                 }
@@ -599,6 +601,9 @@ mod tests {
         for task in tasks {
             task.await.unwrap();
         }
+
+        let final_files = count_files(tmp_dir.path());
+        max_files.fetch_max(final_files, Ordering::SeqCst);
         observing.store(false, Ordering::SeqCst);
         observer.await.unwrap();
 
