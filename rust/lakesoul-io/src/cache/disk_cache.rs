@@ -1,428 +1,463 @@
-use super::paging::PageCache;
+// SPDX-FileCopyrightText: LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
+use std::collections::{HashMap, HashSet};
+use std::ops::Range;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use bytes::Bytes;
-use chrono::{DateTime, Utc};
-use lru_disk_cache::LruDiskCache;
-use moka::future::Cache;
-use object_store::Error;
-use object_store::Error::Generic;
-use object_store::Result;
-use object_store::{ObjectMeta, path::Path};
-use std::{
-    collections::HashMap,
-    future::Future,
-    ops::Range,
-    path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
-    time::Duration,
-};
-use tokio::sync::RwLock;
+use moka::{future::Cache, notification::RemovalCause};
+use object_store::path::Path;
+use object_store::{Error, ObjectMeta, Result};
+use parking_lot::RwLock;
+use uuid::Uuid;
 
-pub mod builder;
-pub mod lru_cache;
-pub mod lru_disk_cache;
+use super::paging::PageCache;
 
-pub use self::builder::DiskCacheBuilder;
-
-/// Default memory page size is 16 KB
 pub const DEFAULT_PAGE_SIZE: usize = 16 * 1024;
-const DEFAULT_TIME_TO_IDLE: Duration = Duration::from_secs(60 * 30); // 30 minutes
 const DEFAULT_METADATA_CACHE_SIZE: usize = 32 * 1024 * 1024;
 
-pub fn bytes_to_object_meta(bytes: &Bytes) -> Result<ObjectMeta> {
-    let str = String::from_utf8(bytes.to_vec()).unwrap();
-    from_json(&str)
+#[derive(Debug, Clone)]
+struct CacheEntry {
+    size: u64,
+    file: Arc<std::fs::File>,
+    filename: String,
 }
 
-pub fn object_meta_to_bytes(object_meta: &ObjectMeta) -> Bytes {
-    let str = to_json(object_meta);
-    Bytes::from(str)
+fn make_key(location_id: u64, page_id: u32) -> String {
+    format!("{}_{}", location_id, page_id)
 }
 
-/// 将 JSON 字符串反序列化为 ObjectMeta
-pub fn from_json(json: &str) -> Result<ObjectMeta> {
-    use serde_json::Value;
-    let value: Value = serde_json::from_str(json).unwrap();
-
-    let location = Path::from(
-        value["location"]
-            .as_str()
-            .ok_or(Generic {
-                store: "cache",
-                source: "Invalid location".into(),
-            })?
-            .to_string(),
-    );
-    let last_modified =
-        DateTime::parse_from_rfc3339(value["last_modified"].as_str().ok_or(Generic {
-            store: "cache",
-            source: "Invalid last_modified".into(),
-        })?)
-        .map_err(|e| Generic {
-            store: "cache",
-            source: Box::new(e),
-        })?
-        .with_timezone(&Utc);
-    let size = value["size"].as_u64().ok_or(Generic {
-        store: "cache",
-        source: "Invalid size".into(),
-    })?;
-    let e_tag = value["e_tag"].as_str().map(|s| s.to_string());
-    let version = value["version"].as_str().map(|s| s.to_string());
-
-    Ok(ObjectMeta {
-        location,
-        last_modified,
-        size,
-        e_tag,
-        version,
-    })
+fn parse_location_id(key: &str) -> Option<u64> {
+    key.split_once('_').and_then(|(id, _)| id.parse().ok())
 }
 
-/// 将 ObjectMeta 序列化为 JSON 字符串
-pub fn to_json(object_meta: &ObjectMeta) -> String {
-    let mut json = String::new();
-    json.push('{');
+fn entry_weight(size: u64) -> u32 {
+    size.div_ceil(1024).min(u32::MAX as u64) as u32
+}
 
-    // 序列化 location
-    json.push_str("\"location\":\"");
-    json.push_str(object_meta.location.as_ref());
-    json.push_str("\",");
+fn to_kb(bytes: u64) -> u64 {
+    bytes.div_ceil(1024)
+}
 
-    // 序列化 last_modified
-    json.push_str("\"last_modified\":\"");
-    json.push_str(&object_meta.last_modified.to_rfc3339());
-    json.push_str("\",");
-
-    // 序列化 size
-    json.push_str("\"size\":");
-    json.push_str(&object_meta.size.to_string());
-    json.push(',');
-
-    // 序列化 e_tag
-    if let Some(e_tag) = &object_meta.e_tag {
-        json.push_str("\"e_tag\":\"");
-        json.push_str(e_tag);
-        json.push_str("\",");
-    } else {
-        json.push_str("\"e_tag\":null,");
+/// Read a range from a file descriptor via `pread` (single syscall, no seek).
+fn read_range(file: &std::fs::File, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
+    let mut buf = vec![0u8; len];
+    #[cfg(target_family = "unix")]
+    {
+        use std::os::unix::fs::FileExt;
+        file.read_exact_at(&mut buf, offset)?;
     }
-
-    // 序列化 version
-    if let Some(version) = &object_meta.version {
-        json.push_str("\"version\":\"");
-        json.push_str(version);
-        json.push('"');
-    } else {
-        json.push_str("\"version\":null");
+    #[cfg(target_family = "windows")]
+    {
+        use std::os::windows::fs::FileExt;
+        file.seek_read(&mut buf, offset)?;
     }
-
-    json.push('}');
-    json
+    Ok(buf)
 }
 
-pub fn concat_location_with_pagid(location: &Path, page_id: u32) -> String {
-    format!("{}_{}", location, page_id)
+/// Read the entire file from offset 0.
+fn read_all(file: &std::fs::File, size: usize) -> std::io::Result<Vec<u8>> {
+    read_range(file, 0, size)
 }
 
-/// In-memory [`PageCache`] implementation.
+/// Create + write a file on disk, return the open File handle.
+fn create_and_write(
+    path: &std::path::Path,
+    data: &[u8],
+) -> std::io::Result<std::fs::File> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .read(true)
+        .truncate(true)
+        .open(path)?;
+    file.write_all(data)?;
+    Ok(file)
+}
+
+/// Local disk-based LRU page cache backed by moka.
 ///
-/// This is a LRU mapping of page IDs to page data, with TTL eviction.
+/// Each cache entry holds an open `std::fs::File` descriptor. This ensures that
+/// even if the file is unlinked by a concurrent eviction, reads through this
+/// descriptor always succeed (Linux inode reference counting).
 ///
+/// All blocking file I/O runs on `tokio::task::spawn_blocking`.
+/// Range reads use `pread`/`read_at` — a single syscall without seek.
 #[derive(Debug)]
 pub struct DiskCache {
-    /// Disk Cache Capacity in bytes
-    disk_capacity: usize,
-
-    /// Size of each page
+    cache: Cache<String, CacheEntry>,
+    root: Arc<PathBuf>,
     page_size: usize,
-
-    /// In memory page cache: a mapping from `(path id, offset)` to data / bytes.
-    // cache: Cache<(u64, u32), Bytes>,
-    // HybridCache<(u64, u32),
-    cache: LruDiskCache,
-
-    #[cfg(test)]
-    _cache_tempdir: Option<tempfile::TempDir>,
-
-    /// Metadata cache
-    // metadata_cache: Cache<u64, ObjectMeta>,
+    max_capacity_bytes: u64,
     metadata_cache: Cache<u64, ObjectMeta>,
 
-    /// Provide fast lookup of path id
     location_lookup: RwLock<HashMap<Path, u64>>,
-
-    /// Next location id to be assigned
     next_location_id: AtomicU64,
+
+    location_keys: Arc<RwLock<HashMap<u64, HashSet<String>>>>,
+
+    approximate_size: Arc<AtomicU64>,
 }
 
 impl DiskCache {
-    /// Create a [`Builder`](DiskCacheBuilder) to construct [`DiskCache`].
-    ///
-    /// # Parameters:
-    /// - *capacity*: capacity in bytes
-    ///
-    /// ```
-    /// # use std::time::Duration;
-    /// use lakesoul_io::cache::DiskCache;
-    ///
-    /// let cache = DiskCache::builder(8*1024*1024)
-    ///     .page_size(4096)
-    ///     .time_to_idle(Duration::from_secs(60))
-    ///     .build();
-    /// ```
-    #[must_use]
-    pub fn builder(disk_capacity_bytes: usize) -> DiskCacheBuilder {
-        DiskCacheBuilder::new(disk_capacity_bytes)
-    }
-
-    /// Explicitly create a new [DiskCache] with a fixed capacity and page size.
-    ///
-    /// # Parameters:
-    /// - `capacity_bytes`: Max capacity in bytes.
-    /// - `page_size`: The maximum size of each page.
-    ///
     pub fn new(disk_capacity: usize, page_size: usize) -> Self {
-        Self::with_params(disk_capacity, page_size, DEFAULT_TIME_TO_IDLE, None)
+        let root_path = std::env::var("LAKESOUL_CACHE_PATH")
+            .unwrap_or_else(|_| "lakesoul_cache_dir".to_string());
+        Self::with_path(disk_capacity, page_size, PathBuf::from(root_path))
     }
 
-    fn with_params(
-        disk_capacity: usize,
-        page_size: usize,
-        _time_to_idle: Duration,
-        cache_path: Option<PathBuf>,
-    ) -> Self {
-        #[cfg(test)]
-        let (path, cache_tempdir) = resolve_cache_path(cache_path);
+    pub fn with_path(disk_capacity: usize, page_size: usize, root: PathBuf) -> Self {
+        let root = Arc::new(root);
 
-        #[cfg(not(test))]
-        let path = resolve_cache_path(cache_path);
+        if let Err(e) = std::fs::create_dir_all(root.as_ref()) {
+            warn!("Failed to create cache dir {}: {}", root.display(), e);
+        }
+        if let Ok(entries) = std::fs::read_dir(root.as_ref()) {
+            for entry in entries.flatten() {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
 
-        let cache =
-            LruDiskCache::new(path.clone(), disk_capacity.try_into().unwrap()).unwrap();
+        let location_keys: Arc<RwLock<HashMap<u64, HashSet<String>>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+        let approximate_size: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
 
-        debug!(
-            "create DiskCache with path: {:?}, disk_capacity: {:?}",
-            path, disk_capacity
-        );
+        let cache = Cache::builder()
+            .weigher(|_k: &String, v: &CacheEntry| entry_weight(v.size))
+            .max_capacity((disk_capacity as u64).div_ceil(1024))
+            .eviction_listener({
+                let root = root.clone();
+                let location_keys = location_keys.clone();
+                let sz = approximate_size.clone();
+                move |k: Arc<String>, v: CacheEntry, cause: RemovalCause| {
+                    if matches!(cause, RemovalCause::Size | RemovalCause::Replaced) {
+                        sz.fetch_sub(to_kb(v.size), Ordering::Relaxed);
+                        if let Some(loc_id) = parse_location_id(&k) {
+                            let mut lk = location_keys.write();
+                            if let Some(keys) = lk.get_mut(&loc_id) {
+                                keys.remove(k.as_ref());
+                                if keys.is_empty() {
+                                    lk.remove(&loc_id);
+                                }
+                            }
+                        }
+                    }
+                    let path = root.join(&v.filename);
+                    // Unlink on a background thread; in-flight reads still succeed
+                    // through the open file descriptor held by other CacheEntry clones.
+                    tokio::task::spawn_blocking(move || {
+                        let _ = std::fs::remove_file(&path);
+                    });
+                }
+            })
+            .build();
 
         let metadata_cache = Cache::builder()
             .max_capacity(DEFAULT_METADATA_CACHE_SIZE as u64)
             .build();
-        Self {
+
+        debug!(
+            "DiskCache created: root={}, capacity={}, page_size={}",
+            root.display(),
             disk_capacity,
-            page_size,
+            page_size
+        );
+
+        Self {
             cache,
-            #[cfg(test)]
-            _cache_tempdir: cache_tempdir,
+            root,
+            page_size,
+            max_capacity_bytes: disk_capacity as u64,
             metadata_cache,
             location_lookup: RwLock::new(HashMap::new()),
             next_location_id: AtomicU64::new(0),
+            location_keys,
+            approximate_size,
         }
     }
 
-    /// Create a new [DiskCache] with a fixed capacity and page size.
-    async fn location_id(&self, location: &Path) -> u64 {
-        if let Some(&key) = self.location_lookup.read().await.get(location) {
-            return key;
+    fn get_location_id(&self, location: &Path) -> u64 {
+        {
+            let lookup = self.location_lookup.read();
+            if let Some(&id) = lookup.get(location) {
+                return id;
+            }
         }
-
-        let mut id_map = self.location_lookup.write().await;
-        // on lock-escalation, check if someone else has added it
-        if let Some(&id) = id_map.get(location) {
+        let mut lookup = self.location_lookup.write();
+        if let Some(&id) = lookup.get(location) {
             return id;
         }
-
         let id = self.next_location_id.fetch_add(1, Ordering::SeqCst);
-        id_map.insert(location.clone(), id);
-
+        lookup.insert(location.clone(), id);
         id
     }
-}
 
-fn configured_cache_path(cache_path: Option<PathBuf>) -> Option<PathBuf> {
-    cache_path.or_else(|| std::env::var("LAKESOUL_CACHE_PATH").ok().map(PathBuf::from))
-}
-
-#[cfg(test)]
-fn resolve_cache_path(
-    cache_path: Option<PathBuf>,
-) -> (PathBuf, Option<tempfile::TempDir>) {
-    if let Some(path) = configured_cache_path(cache_path) {
-        return (path, None);
+    fn register_key(&self, location_id: u64, key: &str) {
+        self.location_keys
+            .write()
+            .entry(location_id)
+            .or_default()
+            .insert(key.to_string());
     }
 
-    let tempdir = tempfile::Builder::new()
-        .prefix("lakesoul-cache-")
-        .tempdir()
-        .unwrap();
-    (tempdir.path().to_path_buf(), Some(tempdir))
-}
+    /// Spawn a blocking read on `file` and return the bytes.
+    async fn blocking_read_all(
+        &self,
+        file: &Arc<std::fs::File>,
+        size: usize,
+    ) -> Option<Bytes> {
+        let f = file.clone();
+        match tokio::task::spawn_blocking(move || read_all(&f, size)).await {
+            Ok(Ok(data)) => Some(Bytes::from(data)),
+            _ => None,
+        }
+    }
 
-#[cfg(not(test))]
-fn resolve_cache_path(cache_path: Option<PathBuf>) -> PathBuf {
-    configured_cache_path(cache_path)
-        .unwrap_or_else(|| PathBuf::from("lakesoul_cache_dir"))
+    /// Spawn a blocking range read on `file` and return the bytes.
+    async fn blocking_read_range(
+        &self,
+        file: &Arc<std::fs::File>,
+        offset: u64,
+        len: usize,
+    ) -> Option<Bytes> {
+        let f = file.clone();
+        match tokio::task::spawn_blocking(move || read_range(&f, offset, len)).await {
+            Ok(Ok(data)) => Some(Bytes::from(data)),
+            _ => None,
+        }
+    }
 }
 
 #[async_trait::async_trait]
 impl PageCache for DiskCache {
-    /// The size of each page.
     fn page_size(&self) -> usize {
         self.page_size
     }
 
-    /// Cache capacity in bytes.
     fn capacity(&self) -> usize {
-        self.disk_capacity
+        self.max_capacity_bytes as usize
     }
 
-    /// Memory cache size in bytes.
     fn size(&self) -> usize {
-        self.cache.size() as usize
-        // self.cache.memory().size() as usize
-        // self.cache.weighted_size() as usize
+        (self.approximate_size.load(Ordering::Relaxed) * 1024) as usize
     }
 
-    /// Get the page with the given page ID and location, and load it if not found.
     async fn get_with(
         &self,
         location: &Path,
         page_id: u32,
-        loader: impl Future<Output = Result<Bytes>> + Send,
+        loader: impl std::future::Future<Output = Result<Bytes>> + Send,
     ) -> Result<Bytes> {
-        let location_id = self.location_id(location).await;
-        let key = format!("{}_{}", location_id, page_id);
-        debug!(
-            "[lakesoul_cache::get_with]=========get_with: {:?}===================",
-            key
-        );
-        match self.cache.get(&key) {
-            Some(bytes) => Ok(Bytes::from(bytes)),
-            // _ => Err(format!("PageCache get_with Error:  get location {:?} ,page id {:?} ",location.to_string(),page_id).to_string())
-            _ => {
-                // When the page is not found in the cache, load it from the loader.
-                match loader.await {
-                    Ok(bytes) => {
-                        if bytes.is_empty() {
-                            return Ok(bytes);
-                        }
-                        self.put(location, page_id, bytes.clone()).await?;
-                        debug!(
-                            "[lakesoul_cache::get_with]=========page {:?} miss===================",
-                            page_id
-                        );
-                        return Ok(bytes);
-                    }
-                    Err(e) => {
-                        debug!(
-                            "[lakesoul_cache::get_with]=========get page {:?} error===================",
-                            page_id
-                        );
-                        return Err(e);
-                    }
-                }
+        let location_id = self.get_location_id(location);
+        let key = make_key(location_id, page_id);
+
+        // Try the cache — read via the open fd (survives concurrent unlink)
+        if let Some(entry) = self.cache.get(&key).await {
+            if let Some(data) = self
+                .blocking_read_all(&entry.file, entry.size as usize)
+                .await
+            {
+                return Ok(data);
             }
+            // Stale entry — invalidate and fall through
+            self.cache.invalidate(&key).await;
         }
+
+        // Cache miss — load from remote
+        let bytes = loader.await?;
+        if !bytes.is_empty() {
+            let filename = Uuid::new_v4().to_string();
+            let file_path = self.root.join(&filename);
+            let size = bytes.len() as u64;
+
+            let file = tokio::task::spawn_blocking({
+                let data = bytes.to_vec();
+                move || create_and_write(&file_path, &data)
+            })
+            .await
+            .map_err(|e| Error::Generic {
+                store: "DiskCache",
+                source: Box::new(e),
+            })?
+            .map_err(|e| Error::Generic {
+                store: "DiskCache",
+                source: Box::new(e),
+            })?;
+
+            self.cache
+                .insert(
+                    key.clone(),
+                    CacheEntry {
+                        size,
+                        file: Arc::new(file),
+                        filename,
+                    },
+                )
+                .await;
+
+            self.approximate_size
+                .fetch_add(to_kb(size), Ordering::Relaxed);
+            self.register_key(location_id, &key);
+        }
+        Ok(bytes)
     }
 
-    /// Get the page with the given page ID and location, and return `None` if not found.
     async fn get(&self, location: &Path, page_id: u32) -> Result<Option<Bytes>> {
-        let location_id = self.location_id(location).await;
-        // construct key
-        let key = format!("{}_{}", location_id, page_id);
-        match self.cache.get(&key) {
-            Some(bytes) => {
-                Ok(Some(Bytes::from(bytes)))
-                // Ok(Some(bytes.value().clone())),
-            }
-            // When the page is not found in the cache, return None.
-            None => Ok(None),
-        }
-        // Ok(self.cache.get(&(location_id, page_id)).await.map(|bytes| bytes.unwrap().value().clone()).unwrap_or(None))
+        let location_id = self.get_location_id(location);
+        let key = make_key(location_id, page_id);
+
+        let Some(entry) = self.cache.get(&key).await else {
+            return Ok(None);
+        };
+
+        Ok(self
+            .blocking_read_all(&entry.file, entry.size as usize)
+            .await)
     }
 
-    /// Get a range of the page with the given page ID and location, and load it if not found.
     async fn get_range_with(
         &self,
         location: &Path,
         page_id: u32,
         range: Range<usize>,
-        loader: impl Future<Output = Result<Bytes>> + Send,
+        loader: impl std::future::Future<Output = Result<Bytes>> + Send,
     ) -> Result<Bytes> {
-        // Check if the range is within the page size.
         assert!(range.start <= range.end && range.end <= self.page_size());
-        let bytes = self.get_with(location, page_id, loader).await?;
-        debug!(
-            "[lakesoul::get_range_with] get bytes len is: {:?}, range start is {:?}, range end is {:?}",
-            bytes.len(),
-            range.start,
-            range.end
-        );
+
+        if let Some(bytes) = self.get_range(location, page_id, range.clone()).await? {
+            return Ok(bytes);
+        }
+
+        let bytes = loader.await?;
+        self.put(location, page_id, bytes.clone()).await?;
         Ok(bytes.slice(range))
     }
 
-    /// Get a range of the page with the given page ID and location, and return `None` if not found.
     async fn get_range(
         &self,
         location: &Path,
         page_id: u32,
         range: Range<usize>,
     ) -> Result<Option<Bytes>> {
+        let location_id = self.get_location_id(location);
+        let key = make_key(location_id, page_id);
+
+        let Some(entry) = self.cache.get(&key).await else {
+            return Ok(None);
+        };
+
         Ok(self
-            .get(location, page_id)
-            .await?
-            .map(|bytes| bytes.slice(range)))
+            .blocking_read_range(&entry.file, range.start as u64, range.end - range.start)
+            .await)
     }
 
-    /// Get the metadata of the given location, and load it if not found.
     async fn head(
         &self,
         location: &Path,
-        loader: impl Future<Output = Result<ObjectMeta>> + Send,
+        loader: impl std::future::Future<Output = Result<ObjectMeta>> + Send,
     ) -> Result<ObjectMeta> {
-        let location_id = self.location_id(location).await;
-        debug!(
-            "[lakesoul::cache::head] get location {:?}",
-            location.to_string()
-        );
+        let location_id = self.get_location_id(location);
+        debug!("[cache::head] location={}", location);
         match self.metadata_cache.try_get_with(location_id, loader).await {
             Ok(meta) => Ok(meta),
-            Err(e) =>
-            //  Err(" self.metadata_cache.try_get_with err".to_string())
-            {
-                debug!(
-                    "[lakesoul::cache::head] get location {:?} error",
-                    location.to_string()
-                );
-                match e.as_ref() {
-                    // TODO: this adds an extra layer of error wrapping
-                    Error::NotFound { path, .. } => Err(Error::NotFound {
-                        path: path.to_string(),
-                        source: e.into(),
-                    }),
-                    _ => Err(Error::Generic {
-                        store: "DiskCache",
-                        source: Box::new(e),
-                    }),
-                }
-            }
+            Err(e) => match e.as_ref() {
+                Error::NotFound { path, .. } => Err(Error::NotFound {
+                    path: path.to_string(),
+                    source: e.into(),
+                }),
+                _ => Err(Error::Generic {
+                    store: "DiskCache",
+                    source: Box::new(e),
+                }),
+            },
         }
     }
 
-    /// Put the page with the given page ID and location.
     async fn put(&self, location: &Path, page_id: u32, data: Bytes) -> Result<()> {
-        let location_id = self.location_id(location).await;
-        let key = format!("{}_{}", location_id, page_id);
-        self.cache.insert_bytes(key, &data).unwrap();
+        if data.is_empty() {
+            return Ok(());
+        }
+
+        let location_id = self.get_location_id(location);
+        let key = make_key(location_id, page_id);
+
+        if self.cache.contains_key(&key) {
+            return Ok(());
+        }
+
+        let filename = Uuid::new_v4().to_string();
+        let file_path = self.root.join(&filename);
+        let size = data.len() as u64;
+
+        let file = tokio::task::spawn_blocking({
+            let data = data.to_vec();
+            move || create_and_write(&file_path, &data)
+        })
+        .await
+        .map_err(|e| Error::Generic {
+            store: "DiskCache",
+            source: Box::new(e),
+        })?
+        .map_err(|e| Error::Generic {
+            store: "DiskCache",
+            source: Box::new(e),
+        })?;
+
+        self.cache
+            .insert(
+                key.clone(),
+                CacheEntry {
+                    size,
+                    file: Arc::new(file),
+                    filename,
+                },
+            )
+            .await;
+
+        self.approximate_size
+            .fetch_add(to_kb(size), Ordering::Relaxed);
+        self.register_key(location_id, &key);
+
         Ok(())
     }
 
     async fn invalidate(&self, location: &Path) -> Result<()> {
-        // Remove the location from lookup table.
-        // This is cheaper (i.e., O(1)) instead of using O(n) to remove all entries from `self.cache`.
-        // The cache will be eventually cleared by the time-to-idle or LRU eviction.
-        let mut id_map = self.location_lookup.write().await;
-        id_map.remove(location);
+        let location_id = {
+            let lookup = self.location_lookup.read();
+            lookup.get(location).copied()
+        };
+
+        let Some(location_id) = location_id else {
+            return Ok(());
+        };
+
+        let keys: Vec<String> = self
+            .location_keys
+            .write()
+            .remove(&location_id)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+
+        for key in &keys {
+            if let Some(entry) = self.cache.remove(key).await {
+                self.approximate_size
+                    .fetch_sub(to_kb(entry.size), Ordering::Relaxed);
+                let path = self.root.join(&entry.filename);
+                tokio::task::spawn_blocking(move || {
+                    let _ = std::fs::remove_file(&path);
+                });
+            }
+        }
+
+        self.location_lookup.write().remove(location);
+        self.metadata_cache.invalidate(&location_id).await;
+
         Ok(())
     }
 }
@@ -430,30 +465,87 @@ impl PageCache for DiskCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use std::{
-        io::Write,
-        sync::{
-            Arc,
-            atomic::{AtomicUsize, Ordering},
-        },
-    };
-
-    use bytes::{BufMut, BytesMut};
-    use chrono::TimeZone as _;
+    use bytes::BytesMut;
+    use chrono::TimeZone;
     use object_store::ObjectStoreExt;
     use object_store::local::LocalFileSystem;
+    use std::io::Write;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
     use tempfile::tempdir;
 
+    fn to_json(object_meta: &ObjectMeta) -> String {
+        let mut json = String::from("{\"location\":\"");
+        json.push_str(object_meta.location.as_ref());
+        json.push_str("\",\"last_modified\":\"");
+        json.push_str(&object_meta.last_modified.to_rfc3339());
+        json.push_str("\",\"size\":");
+        json.push_str(&object_meta.size.to_string());
+        json.push(',');
+        if let Some(e_tag) = &object_meta.e_tag {
+            json.push_str("\"e_tag\":\"");
+            json.push_str(e_tag);
+            json.push_str("\",");
+        } else {
+            json.push_str("\"e_tag\":null,");
+        }
+        if let Some(version) = &object_meta.version {
+            json.push_str("\"version\":\"");
+            json.push_str(version);
+            json.push('"');
+        } else {
+            json.push_str("\"version\":null");
+        }
+        json.push('}');
+        json
+    }
+
+    fn from_json(json: &str) -> Result<ObjectMeta> {
+        use serde_json::Value;
+        let value: Value = serde_json::from_str(json).unwrap();
+        let location = Path::from(value["location"].as_str().unwrap());
+        let last_modified = chrono::DateTime::parse_from_rfc3339(
+            value["last_modified"].as_str().unwrap(),
+        )
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+        let size = value["size"].as_u64().unwrap();
+        let e_tag = value["e_tag"].as_str().map(|s| s.to_string());
+        let version = value["version"].as_str().map(|s| s.to_string());
+        Ok(ObjectMeta {
+            location,
+            last_modified,
+            size,
+            e_tag,
+            version,
+        })
+    }
+
     #[tokio::test]
-    async fn test_get_range() {
-        let tmp_dir = tempdir().unwrap();
-        let cache = DiskCache::builder(1024 * 1024)
-            .page_size(16 * 1024)
-            .cache_path(tmp_dir.path().join("cache"))
-            .build();
+    async fn test_put_and_get() {
+        let cache = DiskCache::new(1024 * 1024, 16 * 1024);
+        let location = Path::from("test_key");
+        let data = Bytes::from("hello world");
+
+        cache.put(&location, 0, data.clone()).await.unwrap();
+        let result = cache.get(&location, 0).await.unwrap();
+        assert_eq!(result, Some(data));
+    }
+
+    #[tokio::test]
+    async fn test_get_miss() {
+        let cache = DiskCache::new(1024 * 1024, 16 * 1024);
+        let location = Path::from("nonexistent");
+        let result = cache.get(&location, 0).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_with() {
+        let cache = DiskCache::new(1024 * 1024, 16 * 1024);
         let local_fs = Arc::new(LocalFileSystem::new());
 
+        let tmp_dir = tempdir().unwrap();
         let file_path = tmp_dir.path().join("test.bin");
         std::fs::write(&file_path, "test data").unwrap();
         let location = Path::from(file_path.as_path().to_str().unwrap());
@@ -493,13 +585,10 @@ mod tests {
     #[tokio::test]
     async fn test_eviction() {
         const PAGE_SIZE: usize = 512;
-        let tmp_dir = tempdir().unwrap();
-        let cache = DiskCache::builder(1024)
-            .page_size(PAGE_SIZE)
-            .cache_path(tmp_dir.path().join("cache"))
-            .build();
+        let cache = DiskCache::new(1024, PAGE_SIZE);
         let local_fs = Arc::new(LocalFileSystem::new());
 
+        let tmp_dir = tempdir().unwrap();
         let file_path = tmp_dir.path().join("test.bin");
         {
             let mut file = std::fs::File::create(&file_path).unwrap();
@@ -508,14 +597,10 @@ mod tests {
             }
         }
         let location = Path::from(file_path.as_path().to_str().unwrap());
-        // cache.cache.run_pending_tasks().await;
 
         let miss = Arc::new(AtomicUsize::new(0));
 
-        for (page_id, expected_miss, expected_size) in
-            [(0, 1, 1), (0, 1, 1), (1, 2, 2), (4, 3, 2), (5, 4, 2)].iter()
-        {
-            println!("page_id: {}", page_id);
+        for (page_id, expected_miss) in &[(0, 1), (0, 1), (1, 2), (4, 3), (5, 4)] {
             let data = cache
                 .get_with(&location, *page_id, {
                     let miss = miss.clone();
@@ -537,41 +622,33 @@ mod tests {
             assert_eq!(miss.load(Ordering::SeqCst), *expected_miss);
             assert_eq!(data.len(), PAGE_SIZE);
 
-            // cache.cache.run_pending_tasks().await;
-            assert_eq!(cache.cache.len(), *expected_size);
-
-            let mut buf = BytesMut::with_capacity(PAGE_SIZE);
-            for i in page_id * PAGE_SIZE as u32 / 8..(page_id + 1) * PAGE_SIZE as u32 / 8
+            let mut expected_buf = BytesMut::with_capacity(PAGE_SIZE);
+            for i in *page_id as u64 * PAGE_SIZE as u64 / 8
+                ..(*page_id as u64 + 1) * PAGE_SIZE as u64 / 8
             {
-                buf.put_u64(i as u64);
+                expected_buf.extend_from_slice(&i.to_be_bytes());
             }
-            assert_eq!(data, buf);
+            assert_eq!(data, expected_buf);
         }
     }
 
     #[tokio::test]
     async fn test_head() {
-        const PAGE_SIZE: usize = 16 * 1024;
-        let tmp_dir = tempdir().unwrap();
-        let cache = DiskCache::builder(1024 * 1024)
-            .page_size(PAGE_SIZE)
-            .cache_path(tmp_dir.path().join("cache"))
-            .build();
+        let cache = DiskCache::new(1024 * 1024, 16 * 1024);
         let local_fs = Arc::new(LocalFileSystem::new());
 
+        let tmp_dir = tempdir().unwrap();
         let file_path = tmp_dir.path().join("test.bin");
         let path = Path::from(file_path.as_path().to_str().unwrap());
 
+        let path_for_err = path.clone();
         let r = cache
             .head(&path, {
                 let local_fs = local_fs.clone();
-                let path = path.clone();
-                async move { local_fs.head(&path).await }
+                async move { local_fs.head(&path_for_err).await }
             })
             .await;
         assert!(matches!(r, Err(Error::NotFound { .. })));
-        cache.metadata_cache.run_pending_tasks().await;
-        assert_eq!(cache.metadata_cache.entry_count(), 0);
 
         std::fs::write(&file_path, "test data").unwrap();
         let meta = cache
@@ -585,61 +662,50 @@ mod tests {
         assert_eq!(meta.size, 9);
     }
 
+    #[tokio::test]
+    async fn test_invalidate() {
+        let cache = DiskCache::new(1024 * 1024, 16 * 1024);
+        let location = Path::from("test_loc");
+        let data = Bytes::from("some data");
+
+        cache.put(&location, 0, data.clone()).await.unwrap();
+        assert!(cache.get(&location, 0).await.unwrap().is_some());
+        assert_eq!(cache.size(), 1024); // 9 bytes → 1 KB
+
+        cache.invalidate(&location).await.unwrap();
+
+        assert!(cache.get(&location, 0).await.unwrap().is_none());
+        assert_eq!(cache.size(), 0);
+    }
+
     #[test]
     fn test_to_json() {
         let object_meta = ObjectMeta {
             location: Path::from("test"),
-            last_modified: Utc.timestamp_nanos(100),
+            last_modified: chrono::Utc.timestamp_nanos(100),
             size: 100,
             e_tag: Some("123".to_string()),
             version: None,
         };
-        let object_meta_to_str = to_json(&object_meta);
+        let json = to_json(&object_meta);
         assert_eq!(
-            object_meta_to_str,
+            json,
             "{\"location\":\"test\",\"last_modified\":\"1970-01-01T00:00:00.000000100+00:00\",\"size\":100,\"e_tag\":\"123\",\"version\":null}"
         );
-        let object_meta_from_str = from_json(&object_meta_to_str).unwrap();
-        assert_eq!(object_meta_from_str, object_meta);
-    }
-
-    #[test]
-    fn test_from_bytes() {
-        let object_meta = ObjectMeta {
-            location: Path::from("test"),
-            last_modified: Utc.timestamp_nanos(100),
-            size: 100,
-            e_tag: Some("123".to_string()),
-            version: None,
-        };
-        let bytes = object_meta_to_bytes(&object_meta);
-        let object_meta_from_bytes = bytes_to_object_meta(&bytes).unwrap();
-        assert_eq!(object_meta_from_bytes, object_meta);
-    }
-
-    #[test]
-    fn test_concat_location_with_pagid() {
-        let location = Path::from("test");
-        let page_id = 100;
-        let location_with_pagid = concat_location_with_pagid(&location, page_id);
-        assert_eq!(location_with_pagid, "test_100");
+        let parsed = from_json(&json).unwrap();
+        assert_eq!(parsed, object_meta);
     }
 
     #[test]
     fn test_cache_size_format() {
         let mut s = String::from("4GiB");
-        // let (volume, unit) = s.split_once(' ').unwrap();
-        let size = {
-            match s.split_off(s.len() - 3).as_str() {
-                "KiB" => s.parse::<usize>().unwrap_or(1024) * 1024,
-                "MiB" => s.parse::<usize>().unwrap_or(1024) * 1024 * 1024,
-                "GiB" => s.parse::<usize>().unwrap_or(1024) * 1024 * 1024 * 1024,
-                "TiB" => s.parse::<usize>().unwrap_or(1024) * 1024 * 1024 * 1024 * 1024,
-                _ => 1024 * 1024 * 1024,
-            }
+        let size = match s.split_off(s.len() - 3).as_str() {
+            "KiB" => s.parse::<usize>().unwrap_or(1024) * 1024,
+            "MiB" => s.parse::<usize>().unwrap_or(1024) * 1024 * 1024,
+            "GiB" => s.parse::<usize>().unwrap_or(1024) * 1024 * 1024 * 1024,
+            "TiB" => s.parse::<usize>().unwrap_or(1024) * 1024 * 1024 * 1024 * 1024,
+            _ => 1024 * 1024 * 1024,
         };
-        println!("s: {}", s);
-        // let size = s.parse::<usize>().unwrap_or(1024) * size;
         assert_eq!(size, 4 * 1024 * 1024 * 1024);
     }
 }

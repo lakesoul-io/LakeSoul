@@ -16,6 +16,10 @@ name = "spill_bench"
 harness = false
 
 [[bench]]
+name = "cache_bench"
+harness = false
+
+[[bench]]
 name = "partial_merge"
 harness = false
 

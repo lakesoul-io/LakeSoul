@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use bytes::{Bytes, BytesMut};
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::{collections::VecDeque, hint::black_box};
