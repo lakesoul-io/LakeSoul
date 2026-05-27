@@ -1009,3 +1009,272 @@ async fn test_vortex_with_primary_key_sort() {
     let ids = int64_values(&batches, "id");
     assert_eq!(ids, vec![1, 2, 3]);
 }
+
+// --- Mixed Parquet+Vortex tests ---
+
+#[test_log::test(tokio::test)]
+async fn test_mixed_hash_bucket_skip_optimization() {
+    let dir = tempdir().unwrap();
+    // Both files have hash_bucket_id=0 (from file name suffix _0000)
+    let parquet_path = dir
+        .path()
+        .join("part-mixed_0000.parquet")
+        .into_os_string()
+        .into_string()
+        .unwrap();
+    let vortex_path = dir
+        .path()
+        .join("part-mixed_0000.vortex")
+        .into_os_string()
+        .into_string()
+        .unwrap();
+    let schema =
+        SchemaRef::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let batch = int64_batch("id", [10, 20]);
+
+    // Write Parquet file (hash_bucket_id=0)
+    let writer_conf = LakeSoulIOConfig::builder()
+        .with_file(parquet_path.clone())
+        .with_schema(schema.clone())
+        .with_primary_key("id")
+        .with_hash_bucket_num("1")
+        .build();
+    let mut writer = create_writer_with_io_config(writer_conf).await.unwrap();
+    writer.write_record_batch(batch.clone()).await.unwrap();
+    writer.flush_and_close().await.unwrap();
+
+    // Write Vortex file (hash_bucket_id=0)
+    let writer_conf = LakeSoulIOConfig::builder()
+        .with_file(vortex_path.clone())
+        .with_schema(schema.clone())
+        .with_primary_key("id")
+        .with_hash_bucket_num("1")
+        .build();
+    let mut writer = create_writer_with_io_config(writer_conf).await.unwrap();
+    writer.write_record_batch(batch).await.unwrap();
+    writer.flush_and_close().await.unwrap();
+
+    // hash_bucket_num=1 → all values hash to {0}
+    // Both files have hash_bucket_id=0, which is in {0} → both read
+    // Verifies hash bucket metadata works across mixed Parquet+Vortex formats
+    let reader_conf = LakeSoulIOConfig::builder()
+        .with_files(vec![parquet_path, vortex_path])
+        .with_schema(schema)
+        .with_primary_key("id")
+        .with_hash_bucket_num("1")
+        .with_filters(vec![
+            col("id").eq(lit(10_i64)).or(col("id").eq(lit(20_i64))),
+        ])
+        .with_option(OPTION_KEY_SKIP_MERGE_ON_READ, "true")
+        .build();
+    let mut reader = LakeSoulReader::new(reader_conf).unwrap();
+    reader.start().await.unwrap();
+
+    let mut values = vec![];
+    while let Some(Ok(batch)) = reader.next_rb().await {
+        values.extend(int64_values(&[batch], "id"));
+    }
+    values.sort_unstable();
+    assert_eq!(values, vec![10, 10, 20, 20]); // both files contribute
+}
+
+#[test_log::test(tokio::test)]
+async fn test_mixed_filter_on_non_projected_column() {
+    let dir = tempdir().unwrap();
+    let parquet_path = dir
+        .path()
+        .join("mixed-proj-0.parquet")
+        .into_os_string()
+        .into_string()
+        .unwrap();
+    let vortex_path = dir
+        .path()
+        .join("mixed-proj-1.vortex")
+        .into_os_string()
+        .into_string()
+        .unwrap();
+
+    let batch = two_int64_batch("id", [1, 2, 3], "score", [5, 15, 25]);
+    let target_schema =
+        SchemaRef::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+
+    write_batch(parquet_path.clone(), batch.clone()).await;
+    write_batch(vortex_path.clone(), batch.clone()).await;
+
+    let batches = read_batches_with_options(
+        vec![parquet_path, vortex_path],
+        target_schema,                      // id only
+        vec![col("score").gt(lit(10_i64))], // score > 10
+        vec![],
+        true, // file_filter_pushdown
+    )
+    .await;
+
+    assert_single_column_schema(&batches, "id");
+    let mut ids = int64_values(&batches, "id");
+    ids.sort_unstable();
+    assert_eq!(ids, vec![2, 2, 3, 3]); // rows with score=15,25 from both files
+}
+
+#[test_log::test(tokio::test)]
+async fn test_mixed_column_types() {
+    let dir = tempdir().unwrap();
+    let parquet_path = dir
+        .path()
+        .join("mixed-cols-0.parquet")
+        .into_os_string()
+        .into_string()
+        .unwrap();
+    let vortex_path = dir
+        .path()
+        .join("mixed-cols-1.vortex")
+        .into_os_string()
+        .into_string()
+        .unwrap();
+
+    let schema = SchemaRef::new(Schema::new(vec![
+        Field::new("int_col", DataType::Int64, false),
+        Field::new("float_col", DataType::Float64, false),
+        Field::new("str_col", DataType::Utf8, false),
+        Field::new("bool_col", DataType::Boolean, false),
+    ]));
+
+    let batch1 = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int64Array::from_iter_values([1_i64, 2])),
+            Arc::new(Float64Array::from_iter_values([1.5_f64, 2.5])),
+            Arc::new(StringArray::from_iter_values(["a", "b"])),
+            Arc::new(BooleanArray::from(vec![true, false])),
+        ],
+    )
+    .unwrap();
+    let batch2 = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int64Array::from_iter_values([3_i64, 4])),
+            Arc::new(Float64Array::from_iter_values([3.5_f64, 4.5])),
+            Arc::new(StringArray::from_iter_values(["c", "d"])),
+            Arc::new(BooleanArray::from(vec![false, true])),
+        ],
+    )
+    .unwrap();
+
+    write_batch(parquet_path.clone(), batch1).await;
+    write_batch(vortex_path.clone(), batch2).await;
+
+    let batches = read_batches(vec![parquet_path, vortex_path], schema.clone(), vec![]).await;
+    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(total_rows, 4);
+
+    let result_schema = &batches[0].schema();
+    assert_eq!(result_schema.fields().len(), 4);
+
+    let mut ints: Vec<i64> = vec![];
+    let mut floats: Vec<f64> = vec![];
+    let mut strs: Vec<String> = vec![];
+    let mut bools: Vec<bool> = vec![];
+
+    for batch in &batches {
+        let str_col = batch.column_by_name("str_col").unwrap();
+        for i in 0..batch.num_rows() {
+            ints.push(
+                batch
+                    .column_by_name("int_col")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .value(i),
+            );
+            floats.push(
+                batch
+                    .column_by_name("float_col")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .unwrap()
+                    .value(i),
+            );
+            strs.push(match str_col.data_type() {
+                DataType::Utf8 => str_col
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap()
+                    .value(i)
+                    .to_string(),
+                DataType::Utf8View => {
+                    use arrow_array::StringViewArray;
+                    str_col
+                        .as_any()
+                        .downcast_ref::<StringViewArray>()
+                        .unwrap()
+                        .value(i)
+                        .to_string()
+                }
+                _ => unreachable!(),
+            });
+            bools.push(
+                batch
+                    .column_by_name("bool_col")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<BooleanArray>()
+                    .unwrap()
+                    .value(i),
+            );
+        }
+    }
+    ints.sort_unstable();
+    floats.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+    strs.sort();
+    bools.sort_unstable();
+    assert_eq!(ints, vec![1, 2, 3, 4]);
+    assert_eq!(floats, vec![1.5, 2.5, 3.5, 4.5]);
+    assert_eq!(
+        strs,
+        vec![
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string()
+        ]
+    );
+    assert_eq!(bools, vec![false, false, true, true]);
+}
+
+#[test_log::test(tokio::test)]
+async fn test_mixed_filter_zero_results() {
+    let dir = tempdir().unwrap();
+    let parquet_path = dir
+        .path()
+        .join("mixed-zero-0.parquet")
+        .into_os_string()
+        .into_string()
+        .unwrap();
+    let vortex_path = dir
+        .path()
+        .join("mixed-zero-1.vortex")
+        .into_os_string()
+        .into_string()
+        .unwrap();
+
+    let batch = int64_batch("id", [1, 2, 3]);
+    let schema = batch.schema();
+
+    write_batch(parquet_path.clone(), batch.clone()).await;
+    write_batch(vortex_path.clone(), batch.clone()).await;
+
+    let batches = read_batches(
+        vec![parquet_path, vortex_path],
+        schema.clone(),
+        vec![col("id").gt(lit(100_i64))],
+    )
+    .await;
+
+    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(total_rows, 0);
+    for batch in &batches {
+        assert_eq!(batch.schema().field(0).name(), "id");
+    }
+}
