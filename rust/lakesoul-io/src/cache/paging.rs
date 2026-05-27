@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Trait for page cache
 //!
 //! A Page cache caches data in fixed-size pages.

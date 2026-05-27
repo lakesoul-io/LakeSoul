@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::cache::disk_cache::DiskCache;
 use std::sync::{Arc, OnceLock};
 

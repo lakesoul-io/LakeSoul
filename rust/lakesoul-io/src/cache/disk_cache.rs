@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::PathBuf;
@@ -32,11 +36,11 @@ fn parse_location_id(key: &str) -> Option<u64> {
 }
 
 fn entry_weight(size: u64) -> u32 {
-    ((size + 1023) / 1024).min(u32::MAX as u64) as u32
+    size.div_ceil(1024).min(u32::MAX as u64) as u32
 }
 
 fn to_kb(bytes: u64) -> u64 {
-    (bytes + 1023) / 1024
+    bytes.div_ceil(1024)
 }
 
 /// Read a range from a file descriptor via `pread` (single syscall, no seek).
@@ -125,7 +129,7 @@ impl DiskCache {
 
         let cache = Cache::builder()
             .weigher(|_k: &String, v: &CacheEntry| entry_weight(v.size))
-            .max_capacity((disk_capacity as u64 + 1023) / 1024)
+            .max_capacity((disk_capacity as u64).div_ceil(1024))
             .eviction_listener({
                 let root = root.clone();
                 let location_keys = location_keys.clone();
