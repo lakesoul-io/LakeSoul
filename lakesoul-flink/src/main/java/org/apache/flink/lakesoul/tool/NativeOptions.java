@@ -49,6 +49,12 @@ public class NativeOptions {
                     .defaultValue("false")
                     .withDescription("Option to set if use stable sort for native writer");
 
+    public static final ConfigOption<String> PHYSICAL_FORMAT =
+            key("lakesoul.native_writer.physical_format")
+                    .stringType()
+                    .defaultValue("parquet")
+                    .withDescription("Option to set the phycial file format for native writer");
+
     public static final List<ConfigOption<String>> OPTION_LIST = Arrays.asList(
             MEM_LIMIT,
             KEEP_ORDERS,

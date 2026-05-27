@@ -35,8 +35,9 @@ inherits = "release"
 debug = true
 opt-level = 2
 
-[profile.test]
-# Use a slightly better optimization level for tests
+[profile.test-fast]
+inherits = "test"
+# Use a slightly better optimization level for ci-tests
 opt-level = 1
 
 [workspace.dependencies]

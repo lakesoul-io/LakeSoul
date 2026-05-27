@@ -10,6 +10,7 @@ use datafusion_expr::Expr;
 use datafusion_substrait::substrait::proto::Plan;
 use educe::Educe;
 use itertools::Itertools;
+use rootcause::report;
 
 use crate::{
     Result,
@@ -260,8 +261,10 @@ impl LakeSoulIOConfig {
         self.files
             .iter()
             .rev()
-            .find_map(|path| PhysicalFormat::from_extension(path))
-            .map_or(Ok(PhysicalFormat::default()), Ok)
+            .find_map(|path| PhysicalFormat::from_extension(path).ok())
+            .ok_or(
+                report!("No physical format found").attach(format!("{:?}", self.files)),
+            )
     }
 
     pub fn set_files(&mut self, files: Vec<String>) {
@@ -723,6 +726,7 @@ impl LakeSoulIOConfig {
     /// This will consume all filters
     pub async fn get_filter_exprs(&mut self, table_schema: &Schema) -> Result<Vec<Expr>> {
         let filter_strs = std::mem::take(&mut self.filter_strs);
+        let filters = std::mem::take(&mut self.filters);
         let filter_protos = std::mem::take(&mut self.filter_protos);
         let filter_bufs = std::mem::take(&mut self.filter_buf);
         let iter = filter_strs
@@ -733,7 +737,7 @@ impl LakeSoulIOConfig {
 
         let df_schema = DFSchema::try_from(table_schema.clone())?;
 
-        let mut exprs: Vec<Expr> = Vec::new();
+        let mut exprs: Vec<Expr> = filters;
 
         let dummy_ctx = datafusion::prelude::SessionContext::new();
 
