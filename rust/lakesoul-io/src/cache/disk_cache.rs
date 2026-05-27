@@ -32,7 +32,11 @@ fn parse_location_id(key: &str) -> Option<u64> {
 }
 
 fn entry_weight(size: u64) -> u32 {
-    size.min(u32::MAX as u64) as u32
+    ((size + 1023) / 1024).min(u32::MAX as u64) as u32
+}
+
+fn to_kb(bytes: u64) -> u64 {
+    (bytes + 1023) / 1024
 }
 
 /// Read a range from a file descriptor via `pread` (single syscall, no seek).
@@ -57,7 +61,10 @@ fn read_all(file: &std::fs::File, size: usize) -> std::io::Result<Vec<u8>> {
 }
 
 /// Create + write a file on disk, return the open File handle.
-fn create_and_write(path: &std::path::Path, data: &[u8]) -> std::io::Result<std::fs::File> {
+fn create_and_write(
+    path: &std::path::Path,
+    data: &[u8],
+) -> std::io::Result<std::fs::File> {
     use std::io::Write;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
@@ -66,7 +73,6 @@ fn create_and_write(path: &std::path::Path, data: &[u8]) -> std::io::Result<std:
         .truncate(true)
         .open(path)?;
     file.write_all(data)?;
-    file.sync_all()?;
     Ok(file)
 }
 
@@ -119,14 +125,14 @@ impl DiskCache {
 
         let cache = Cache::builder()
             .weigher(|_k: &String, v: &CacheEntry| entry_weight(v.size))
-            .max_capacity(disk_capacity as u64)
+            .max_capacity((disk_capacity as u64 + 1023) / 1024)
             .eviction_listener({
                 let root = root.clone();
                 let location_keys = location_keys.clone();
                 let sz = approximate_size.clone();
                 move |k: Arc<String>, v: CacheEntry, cause: RemovalCause| {
                     if matches!(cause, RemovalCause::Size | RemovalCause::Replaced) {
-                        sz.fetch_sub(v.size, Ordering::Relaxed);
+                        sz.fetch_sub(to_kb(v.size), Ordering::Relaxed);
                         if let Some(loc_id) = parse_location_id(&k) {
                             let mut lk = location_keys.write();
                             if let Some(keys) = lk.get_mut(&loc_id) {
@@ -196,7 +202,11 @@ impl DiskCache {
     }
 
     /// Spawn a blocking read on `file` and return the bytes.
-    async fn blocking_read_all(&self, file: &Arc<std::fs::File>, size: usize) -> Option<Bytes> {
+    async fn blocking_read_all(
+        &self,
+        file: &Arc<std::fs::File>,
+        size: usize,
+    ) -> Option<Bytes> {
         let f = file.clone();
         match tokio::task::spawn_blocking(move || read_all(&f, size)).await {
             Ok(Ok(data)) => Some(Bytes::from(data)),
@@ -230,7 +240,7 @@ impl PageCache for DiskCache {
     }
 
     fn size(&self) -> usize {
-        self.approximate_size.load(Ordering::Relaxed) as usize
+        (self.approximate_size.load(Ordering::Relaxed) * 1024) as usize
     }
 
     async fn get_with(
@@ -244,7 +254,10 @@ impl PageCache for DiskCache {
 
         // Try the cache — read via the open fd (survives concurrent unlink)
         if let Some(entry) = self.cache.get(&key).await {
-            if let Some(data) = self.blocking_read_all(&entry.file, entry.size as usize).await {
+            if let Some(data) = self
+                .blocking_read_all(&entry.file, entry.size as usize)
+                .await
+            {
                 return Ok(data);
             }
             // Stale entry — invalidate and fall through
@@ -283,7 +296,8 @@ impl PageCache for DiskCache {
                 )
                 .await;
 
-            self.approximate_size.fetch_add(size, Ordering::Relaxed);
+            self.approximate_size
+                .fetch_add(to_kb(size), Ordering::Relaxed);
             self.register_key(location_id, &key);
         }
         Ok(bytes)
@@ -297,7 +311,9 @@ impl PageCache for DiskCache {
             return Ok(None);
         };
 
-        Ok(self.blocking_read_all(&entry.file, entry.size as usize).await)
+        Ok(self
+            .blocking_read_all(&entry.file, entry.size as usize)
+            .await)
     }
 
     async fn get_range_with(
@@ -399,7 +415,8 @@ impl PageCache for DiskCache {
             )
             .await;
 
-        self.approximate_size.fetch_add(size, Ordering::Relaxed);
+        self.approximate_size
+            .fetch_add(to_kb(size), Ordering::Relaxed);
         self.register_key(location_id, &key);
 
         Ok(())
@@ -426,7 +443,7 @@ impl PageCache for DiskCache {
         for key in &keys {
             if let Some(entry) = self.cache.remove(key).await {
                 self.approximate_size
-                    .fetch_sub(entry.size, Ordering::Relaxed);
+                    .fetch_sub(to_kb(entry.size), Ordering::Relaxed);
                 let path = self.root.join(&entry.filename);
                 tokio::task::spawn_blocking(move || {
                     let _ = std::fs::remove_file(&path);
@@ -446,8 +463,8 @@ mod tests {
     use super::*;
     use bytes::BytesMut;
     use chrono::TimeZone;
-    use object_store::local::LocalFileSystem;
     use object_store::ObjectStoreExt;
+    use object_store::local::LocalFileSystem;
     use std::io::Write;
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
@@ -649,7 +666,7 @@ mod tests {
 
         cache.put(&location, 0, data.clone()).await.unwrap();
         assert!(cache.get(&location, 0).await.unwrap().is_some());
-        assert_eq!(cache.size(), data.len());
+        assert_eq!(cache.size(), 1024); // 9 bytes → 1 KB
 
         cache.invalidate(&location).await.unwrap();
 
@@ -682,9 +699,7 @@ mod tests {
             "KiB" => s.parse::<usize>().unwrap_or(1024) * 1024,
             "MiB" => s.parse::<usize>().unwrap_or(1024) * 1024 * 1024,
             "GiB" => s.parse::<usize>().unwrap_or(1024) * 1024 * 1024 * 1024,
-            "TiB" => {
-                s.parse::<usize>().unwrap_or(1024) * 1024 * 1024 * 1024 * 1024
-            }
+            "TiB" => s.parse::<usize>().unwrap_or(1024) * 1024 * 1024 * 1024 * 1024,
             _ => 1024 * 1024 * 1024,
         };
         assert_eq!(size, 4 * 1024 * 1024 * 1024);

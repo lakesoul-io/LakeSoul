@@ -6,8 +6,8 @@ use lakesoul_io::cache::disk_cache::DiskCache;
 use lakesoul_io::cache::paging::PageCache;
 use object_store::path::Path;
 use rand::Rng;
-use rand::rngs::StdRng;
 use rand::SeedableRng;
+use rand::rngs::StdRng;
 use tempfile::TempDir;
 
 const PAGE_SIZE: usize = 64 * 1024;
@@ -210,9 +210,7 @@ fn bench_eviction_stress(c: &mut Criterion) {
             rt.block_on(async {
                 let pid = write_page_id.fetch_add(1, Ordering::Relaxed) as u32;
                 let data = random_data(PAGE_SIZE);
-                let _ = cache
-                    .put(&location, pid, bytes::Bytes::from(data))
-                    .await;
+                let _ = cache.put(&location, pid, bytes::Bytes::from(data)).await;
                 let _ = cache.get(&location, 0).await;
                 black_box(());
             });
@@ -258,12 +256,10 @@ fn bench_stability_extended(c: &mut Criterion) {
                             let choice = rng.random_range(0..100);
                             let pid = rng.random_range(0..(num_pages as u32 * 2));
                             let result: Result<(), object_store::Error> = match choice {
-                                0..=59 => {
-                                    cache
-                                        .get_range(&loc, pid, 0..PAGE_SIZE.min(4096))
-                                        .await
-                                        .map(|_| ())
-                                }
+                                0..=59 => cache
+                                    .get_range(&loc, pid, 0..PAGE_SIZE.min(4096))
+                                    .await
+                                    .map(|_| ()),
                                 60..=89 => {
                                     let loc2 = loc.clone();
                                     cache
@@ -275,9 +271,7 @@ fn bench_stability_extended(c: &mut Criterion) {
                                 }
                                 _ => {
                                     let data = random_data(PAGE_SIZE);
-                                    cache
-                                        .put(&loc, pid, bytes::Bytes::from(data))
-                                        .await
+                                    cache.put(&loc, pid, bytes::Bytes::from(data)).await
                                 }
                             };
                             if let Err(ref e) = result {
@@ -311,7 +305,8 @@ fn bench_invalidate_cycle(c: &mut Criterion) {
     c.bench_function("cache_invalidate_and_repopulate", |b| {
         b.iter(|| {
             rt.block_on(async {
-                let location = Path::from(format!("cycle_{}", rand::rng().random::<u64>()));
+                let location =
+                    Path::from(format!("cycle_{}", rand::rng().random::<u64>()));
 
                 for i in 0u32..50 {
                     let data = random_data(PAGE_SIZE);
