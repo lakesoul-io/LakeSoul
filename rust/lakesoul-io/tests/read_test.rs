@@ -2,10 +2,10 @@ use std::sync::Arc;
 
 use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch};
 use arrow_cast::pretty::print_batches;
-use arrow_schema::{DataType, Field, SchemaBuilder, SchemaRef};
+use arrow_schema::{DataType, Field, Schema, SchemaBuilder, SchemaRef};
 use datafusion_expr::{col, lit};
 use lakesoul_io::{
-    config::LakeSoulIOConfig,
+    config::{LakeSoulIOConfig, OPTION_KEY_FILE_FILTER_PUSHDOWN},
     reader::LakeSoulReader,
     utils::{gen_random_batch, lakesoul_file_name, random_str},
     writer::create_writer_with_io_config,
@@ -163,11 +163,112 @@ async fn test_read_mixed_parquet_and_vortex_with_primary_key_merge() {
     assert_eq!(int64_values(&batches, "id"), vec![1, 2, 3, 4]);
 }
 
+#[test_log::test(tokio::test)]
+async fn test_read_filter_on_non_projected_column_preserves_projection() {
+    let dir = tempdir().unwrap();
+    let path = dir
+        .path()
+        .join("projected-filter.parquet")
+        .into_os_string()
+        .into_string()
+        .unwrap();
+    let batch = two_int64_batch("id", [1, 2, 3], "score", [5, 15, 25]);
+    let target_schema =
+        SchemaRef::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+
+    write_batch(path.clone(), batch).await;
+
+    let batches = read_batches(
+        vec![path],
+        target_schema,                      // id
+        vec![col("score").gt(lit(10_i64))], // score > 10
+    )
+    .await;
+
+    assert_single_column_schema(&batches, "id");
+    assert_eq!(int64_values(&batches, "id"), vec![2, 3]);
+}
+
+#[test_log::test(tokio::test)]
+async fn test_read_parquet_pushdown_preserves_projection() {
+    let dir = tempdir().unwrap();
+    let path = dir
+        .path()
+        .join("projected-filter-pushdown.parquet")
+        .into_os_string()
+        .into_string()
+        .unwrap();
+    let batch = two_int64_batch("id", [1, 2, 3], "score", [5, 15, 25]);
+    let target_schema =
+        SchemaRef::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+
+    write_batch(path.clone(), batch).await;
+
+    let batches = read_batches_with_options(
+        vec![path],
+        target_schema,
+        vec![col("score").gt(lit(10_i64))],
+        vec![],
+        true,
+    )
+    .await;
+
+    assert_single_column_schema(&batches, "id");
+    assert_eq!(int64_values(&batches, "id"), vec![2, 3]);
+}
+
+#[test_log::test(tokio::test)]
+async fn test_read_vortex_filter_pushdown_on_non_projected_column_preserves_projection() {
+    let dir = tempdir().unwrap();
+    let path = dir
+        .path()
+        .join("projected-filter.vortex")
+        .into_os_string()
+        .into_string()
+        .unwrap();
+    let batch = two_int64_batch("id", [1, 2, 3], "score", [5, 15, 25]);
+    let target_schema =
+        SchemaRef::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+
+    write_batch(path.clone(), batch).await;
+
+    let batches = read_batches_with_options(
+        vec![path],
+        target_schema,
+        vec![col("score").gt(lit(10_i64))],
+        vec![],
+        true,
+    )
+    .await;
+
+    assert_single_column_schema(&batches, "id");
+    assert_eq!(int64_values(&batches, "id"), vec![2, 3]);
+}
+
 fn int64_batch<const N: usize>(name: &str, values: [i64; N]) -> RecordBatch {
     RecordBatch::try_from_iter([(
         name,
         Arc::new(Int64Array::from_iter_values(values)) as ArrayRef,
     )])
+    .unwrap()
+}
+
+fn two_int64_batch<const N: usize>(
+    left_name: &str,
+    left_values: [i64; N],
+    right_name: &str,
+    right_values: [i64; N],
+) -> RecordBatch {
+    RecordBatch::try_from_iter([
+        (
+            left_name,
+            Arc::new(Int64Array::from_iter_values(left_values)) as ArrayRef,
+        ),
+        (
+            right_name,
+            Arc::new(Int64Array::from_iter_values(right_values)) as ArrayRef,
+        ),
+    ])
     .unwrap()
 }
 
@@ -206,14 +307,27 @@ async fn read_batches_with_primary_keys(
     filters: Vec<datafusion_expr::Expr>,
     primary_keys: Vec<String>,
 ) -> Vec<RecordBatch> {
-    let reader_conf = LakeSoulIOConfig::builder()
+    read_batches_with_options(paths, schema, filters, primary_keys, false).await
+}
+
+async fn read_batches_with_options(
+    paths: Vec<String>,
+    schema: SchemaRef,
+    filters: Vec<datafusion_expr::Expr>,
+    primary_keys: Vec<String>,
+    file_filter_pushdown: bool,
+) -> Vec<RecordBatch> {
+    let mut reader_conf = LakeSoulIOConfig::builder()
         .with_files(paths)
         .with_thread_num(2)
         .with_batch_size(2)
         .with_schema(schema)
         .with_primary_keys(primary_keys)
-        .with_filters(filters)
-        .build();
+        .with_filters(filters);
+    if file_filter_pushdown {
+        reader_conf = reader_conf.with_option(OPTION_KEY_FILE_FILTER_PUSHDOWN, "true");
+    }
+    let reader_conf = reader_conf.build();
     let mut reader = LakeSoulReader::new(reader_conf).unwrap();
     reader.start().await.unwrap();
 
@@ -222,6 +336,14 @@ async fn read_batches_with_primary_keys(
         batches.push(batch.unwrap());
     }
     batches
+}
+
+fn assert_single_column_schema(batches: &[RecordBatch], column: &str) {
+    assert!(!batches.is_empty());
+    for batch in batches {
+        assert_eq!(batch.schema().fields().len(), 1);
+        assert_eq!(batch.schema().field(0).name(), column);
+    }
 }
 
 fn int64_values(batches: &[RecordBatch], column: &str) -> Vec<i64> {
@@ -238,3 +360,5 @@ fn int64_values(batches: &[RecordBatch], column: &str) -> Vec<i64> {
         })
         .collect()
 }
+
+// TODO(jiax)

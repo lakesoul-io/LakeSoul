@@ -76,9 +76,6 @@ pub struct LakeSoulIOConfig {
     /// Number of batches to prefetch
     #[educe(Default = 1)]
     pub(crate) prefetch_size: usize,
-    /// Whether to enable Parquet filter pushdown
-    #[educe(Default = false)]
-    pub(crate) parquet_filter_pushdown: bool,
     /// Target Arrow schema for the reader and writer
     pub(crate) target_schema: IOSchema,
     /// Arrow schema for partition columns
@@ -169,8 +166,9 @@ impl LakeSoulIOConfig {
     }
 
     /// Returns whether to support parquet pushdown filters
-    pub fn parquet_pushdown_filters(&self) -> bool {
-        self.parquet_filter_pushdown
+    pub fn file_filter_pushdown(&self) -> bool {
+        self.option(OPTION_KEY_FILE_FILTER_PUSHDOWN)
+            .is_some_and(|x| x.eq("true"))
     }
 
     /// Returns whether to keep row order in output
@@ -480,16 +478,6 @@ impl LakeSoulIOConfigBuilder {
     /// * `prefetch_size` - The number of batches to prefetch
     pub fn with_prefetch_size(mut self, prefetch_size: usize) -> Self {
         self.config.prefetch_size = prefetch_size;
-        self
-    }
-
-    /// Sets whether to enable Parquet filter pushdown
-    ///
-    /// # Arguments
-    ///
-    /// * `enable` - Whether to enable Parquet filter pushdown
-    pub fn with_parquet_filter_pushdown(mut self, enable: bool) -> Self {
-        self.config.parquet_filter_pushdown = enable;
         self
     }
 

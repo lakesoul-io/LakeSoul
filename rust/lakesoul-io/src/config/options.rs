@@ -23,6 +23,8 @@ pub static OPTION_KEY_IS_COMPACTED: &str = "is_compacted";
 pub static OPTION_KEY_SKIP_MERGE_ON_READ: &str = "skip_merge_on_read";
 /// Key for maximum file size in bytes
 pub static OPTION_KEY_MAX_FILE_SIZE: &str = "max_file_size";
+/// Key for pushdown filters in file format
+pub static OPTION_KEY_FILE_FILTER_PUSHDOWN: &str = "file_filter_pushdown";
 /// Key for spill dir
 pub static OPTION_KEY_SPILL_DIR: &str = "spill_dir";
 /// Key for computing Local Sensitive Hash

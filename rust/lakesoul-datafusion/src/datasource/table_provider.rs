@@ -151,7 +151,7 @@ impl LakeSoulTableProvider {
             file_schema,
             primary_keys: hash_partitions,
             range_partitions,
-            pushdown_filters: lakesoul_io_config.parquet_pushdown_filters(), // TODO after add more format
+            pushdown_filters: lakesoul_io_config.file_filter_pushdown(),
         })
     }
 
