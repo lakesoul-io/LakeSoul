@@ -252,7 +252,7 @@ impl LakeSoulIOConfig {
     /// Returns the physical file format selected for writes.
     pub fn physical_format(&self) -> Result<PhysicalFormat> {
         if let Some(format) = self.option(OPTION_KEY_PHYSICAL_FORMAT) {
-            return format.parse().map_err(Into::into);
+            return format.parse();
         }
 
         self.files

@@ -43,8 +43,9 @@ use crate::physical_plan::merge::MergeParquetExec;
 
 pub(crate) mod vortex;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum PhysicalFormat {
+    #[default]
     Parquet,
     Vortex,
 }
@@ -65,12 +66,6 @@ impl PhysicalFormat {
             .and_then(|file_name| file_name.rsplit_once('.').map(|(_, ext)| ext))
             .ok_or(report!("No physical format found").attach(path.to_string()))?;
         Self::from_str(extension)
-    }
-}
-
-impl Default for PhysicalFormat {
-    fn default() -> Self {
-        Self::Parquet
     }
 }
 

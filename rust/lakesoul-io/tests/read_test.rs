@@ -8,7 +8,8 @@ use arrow_schema::{DataType, Field, Schema, SchemaBuilder, SchemaRef};
 use datafusion_expr::{col, lit};
 use lakesoul_io::{
     config::{
-        LakeSoulIOConfig, OPTION_KEY_FILE_FILTER_PUSHDOWN, OPTION_KEY_IS_COMPACTED, OPTION_KEY_SKIP_MERGE_ON_READ
+        LakeSoulIOConfig, OPTION_KEY_FILE_FILTER_PUSHDOWN, OPTION_KEY_IS_COMPACTED,
+        OPTION_KEY_SKIP_MERGE_ON_READ,
     },
     reader::LakeSoulReader,
     utils::{gen_random_batch, lakesoul_file_name, random_str},
@@ -1163,7 +1164,8 @@ async fn test_mixed_column_types() {
     write_batch(parquet_path.clone(), batch1).await;
     write_batch(vortex_path.clone(), batch2).await;
 
-    let batches = read_batches(vec![parquet_path, vortex_path], schema.clone(), vec![]).await;
+    let batches =
+        read_batches(vec![parquet_path, vortex_path], schema.clone(), vec![]).await;
     let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
     assert_eq!(total_rows, 4);
 

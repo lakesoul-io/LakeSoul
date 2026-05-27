@@ -21,7 +21,6 @@ use lakesoul_io::reader::LakeSoulReader;
 use lakesoul_io::writer::create_writer_with_io_config;
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
-use tracing_subscriber;
 
 const TOTAL_ROWS: usize = 10_000_000;
 const FILES: usize = 3;

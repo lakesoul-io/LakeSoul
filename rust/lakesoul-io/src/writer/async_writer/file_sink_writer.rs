@@ -130,7 +130,7 @@ impl FileSinkWriter {
                     .as_any()
                     .downcast_ref::<ParquetSink>()
                     .ok_or(report!("downcast ParquetSink failed"))?;
-                self.collect_parquet_outputs(&sink).await
+                self.collect_parquet_outputs(sink).await
             }
             PhysicalFormat::Vortex => {
                 let sink = self
@@ -138,7 +138,7 @@ impl FileSinkWriter {
                     .as_any()
                     .downcast_ref::<VortexSink>()
                     .ok_or(report!("downcast VortexSink failed"))?;
-                self.collect_vortex_outputs(&sink).await
+                self.collect_vortex_outputs(sink).await
             }
         }
     }

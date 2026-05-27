@@ -52,7 +52,8 @@ fn bench_put(c: &mut Criterion) {
             let data = random_data(PAGE_SIZE);
             let bytes = bytes::Bytes::from(data.clone());
             rt.block_on(async {
-                black_box(cache.put(&location, 0, bytes).await.unwrap());
+                cache.put(&location, 0, bytes).await.unwrap();
+                black_box(());
             });
             // Invalidate so next put doesn't short-circuit
             rt.block_on(async { cache.invalidate(&location).await.unwrap() });

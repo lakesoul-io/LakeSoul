@@ -620,8 +620,7 @@ impl<C: CursorValues, const IS_PARTIAL_MERGE: bool>
         let columns = flatten_arrays
             .iter()
             .map(|array| {
-                let refs: Vec<&dyn Array> =
-                    array.iter().map(|a| a.as_ref()).collect();
+                let refs: Vec<&dyn Array> = array.iter().map(|a| a.as_ref()).collect();
                 interleave_normalized(&refs, interleave_idx.as_slice())
             })
             .collect::<ArrowResult<Vec<ArrayRef>>>()?;
@@ -684,7 +683,10 @@ impl<C: CursorValues, const IS_PARTIAL_MERGE: bool>
                     }
                 }
 
-                interleave_normalized(flatten_arrays.as_slice(), interleave_idx.as_slice())
+                interleave_normalized(
+                    flatten_arrays.as_slice(),
+                    interleave_idx.as_slice(),
+                )
             })
             .collect::<ArrowResult<Vec<ArrayRef>>>()?;
 

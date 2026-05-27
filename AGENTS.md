@@ -295,3 +295,16 @@ Output (focus on building a data-flow mental model, not file-by-file summaries):
 Finally:
 - Provide an ASCII data flow diagram
 - Explicitly point out areas of uncertainty or assumptions
+
+
+## Code review instructions
+
+When reviewing pull requests, ignore changes to `Cargo.lock`.
+
+Do not leave review comments on `Cargo.lock` unless:
+- the lockfile change introduces an obvious supply-chain/security risk;
+- the PR is specifically about dependency updates;
+- the user explicitly asks to review lockfile changes.
+
+For normal code reviews, treat `Cargo.lock` changes as generated dependency-resolution output.
+Focus review comments on source code, build configuration, tests, and public API behavior.
