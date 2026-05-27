@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytes::Bytes;
-use moka::{future::Cache, notification::RemovalCause};
+use moka::{future::Cache, notification::RemovalCause, ops::compute};
 use object_store::path::Path;
 use object_store::{Error, ObjectMeta, Result};
 use parking_lot::RwLock;
@@ -386,42 +386,58 @@ impl PageCache for DiskCache {
         let location_id = self.get_location_id(location);
         let key = make_key(location_id, page_id);
 
-        if self.cache.contains_key(&key) {
-            return Ok(());
-        }
-
-        let filename = Uuid::new_v4().to_string();
-        let file_path = self.root.join(&filename);
         let size = data.len() as u64;
+        let root = self.root.clone();
 
-        let file = tokio::task::spawn_blocking({
-            let data = data.to_vec();
-            move || create_and_write(&file_path, &data)
-        })
-        .await
-        .map_err(|e| Error::Generic {
-            store: "DiskCache",
-            source: Box::new(e),
-        })?
-        .map_err(|e| Error::Generic {
-            store: "DiskCache",
-            source: Box::new(e),
-        })?;
+        let result = self
+            .cache
+            .entry(key.clone())
+            .and_try_compute_with(|entry| async move {
+                if entry.is_some() {
+                    return Ok::<compute::Op<CacheEntry>, Error>(compute::Op::Nop);
+                }
 
-        self.cache
-            .insert(
-                key.clone(),
-                CacheEntry {
+                let filename = Uuid::new_v4().to_string();
+                let file_path = root.join(&filename);
+
+                let cleanup_path = file_path.clone();
+                let write_result = tokio::task::spawn_blocking({
+                    let data = data.to_vec();
+                    move || create_and_write(&file_path, &data)
+                })
+                .await;
+
+                let file = match write_result {
+                    Ok(Ok(file)) => file,
+                    Ok(Err(e)) => {
+                        let _ = std::fs::remove_file(&cleanup_path);
+                        return Err(Error::Generic {
+                            store: "DiskCache",
+                            source: Box::new(e),
+                        });
+                    }
+                    Err(e) => {
+                        let _ = std::fs::remove_file(&cleanup_path);
+                        return Err(Error::Generic {
+                            store: "DiskCache",
+                            source: Box::new(e),
+                        });
+                    }
+                };
+
+                Ok::<compute::Op<CacheEntry>, Error>(compute::Op::Put(CacheEntry {
                     size,
                     file: Arc::new(file),
                     filename,
-                },
-            )
-            .await;
+                }))
+            })
+            .await?;
 
-        self.approximate_size
-            .fetch_add(to_kb(size), Ordering::Relaxed);
-        self.register_key(location_id, &key);
+        if matches!(result, compute::CompResult::Inserted(_)) {
+            self.approximate_size
+                .fetch_add(to_kb(size), Ordering::Relaxed);
+            self.register_key(location_id, &key);
+        }
 
         Ok(())
     }
@@ -471,8 +487,9 @@ mod tests {
     use object_store::local::LocalFileSystem;
     use std::io::Write;
     use std::sync::Arc;
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
     use tempfile::tempdir;
+    use tokio::sync::Barrier;
 
     fn to_json(object_meta: &ObjectMeta) -> String {
         let mut json = String::from("{\"location\":\"");
@@ -530,6 +547,66 @@ mod tests {
         cache.put(&location, 0, data.clone()).await.unwrap();
         let result = cache.get(&location, 0).await.unwrap();
         assert_eq!(result, Some(data));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn test_put_same_key_race_creates_multiple_backing_files() {
+        let tmp_dir = tempdir().unwrap();
+        let cache = Arc::new(DiskCache::with_path(
+            512 * 1024 * 1024,
+            16 * 1024,
+            tmp_dir.path().to_path_buf(),
+        ));
+        let location = Path::from("same_key");
+        let writers = 64;
+        let barrier = Arc::new(Barrier::new(writers));
+        let observing = Arc::new(AtomicBool::new(true));
+        let max_files = Arc::new(AtomicUsize::new(0));
+
+        let observer = {
+            let root = tmp_dir.path().to_path_buf();
+            let observing = observing.clone();
+            let max_files = max_files.clone();
+            tokio::spawn(async move {
+                while observing.load(Ordering::SeqCst) {
+                    let count = std::fs::read_dir(&root)
+                        .unwrap()
+                        .filter_map(std::result::Result::ok)
+                        .filter(|entry| {
+                            entry.file_type().map(|ty| ty.is_file()).unwrap_or(false)
+                        })
+                        .count();
+                    max_files.fetch_max(count, Ordering::SeqCst);
+                    tokio::task::yield_now().await;
+                }
+            })
+        };
+
+        let mut tasks = Vec::with_capacity(writers);
+        for i in 0..writers {
+            let cache = cache.clone();
+            let location = location.clone();
+            let barrier = barrier.clone();
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                cache
+                    .put(&location, 0, Bytes::from(vec![i as u8; 2 * 1024 * 1024]))
+                    .await
+                    .unwrap();
+            }));
+        }
+
+        for task in tasks {
+            task.await.unwrap();
+        }
+        observing.store(false, Ordering::SeqCst);
+        observer.await.unwrap();
+
+        assert_eq!(
+            max_files.load(Ordering::SeqCst),
+            1,
+            "concurrent put for one cache key created multiple backing files"
+        );
     }
 
     #[tokio::test]
