@@ -507,7 +507,9 @@ impl SyncSendableMutableLakeSoulWriter {
 mod tests {
     use crate::{
         Result,
-        config::{LakeSoulIOConfigBuilder, OPTION_KEY_MEM_LIMIT},
+        config::{
+            LakeSoulIOConfigBuilder, OPTION_KEY_MEM_LIMIT, OPTION_KEY_PHYSICAL_FORMAT,
+        },
     };
 
     use super::SortAsyncWriter;
@@ -878,7 +880,7 @@ mod tests {
     fn test_writer_with_complex_pk_types() -> Result<()> {
         let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
 
-        // 创建测试数据
+        // create test data
         let id1 = Arc::new(
             Decimal128Array::from_iter_values([
                 123456000, // 1234.56000
@@ -948,6 +950,7 @@ mod tests {
             .with_hash_bucket_num("2".to_string())
             .set_dynamic_partition(true)
             .with_option(OPTION_KEY_MEM_LIMIT, format!("{}", 1024 * 1024 * 50))
+            .with_option(OPTION_KEY_PHYSICAL_FORMAT, "parquet")
             .build();
 
         let io_session = Arc::new(LakeSoulIOSession::try_new(writer_io_config)?);
@@ -955,11 +958,7 @@ mod tests {
         writer.write_batch(to_write.clone())?;
         let result = writer.flush_and_close()?;
 
-        println!("result: {:?}", result);
-
-        // 验证结果不为空
         assert!(result.len() > 1);
-
         Ok(())
     }
 }
