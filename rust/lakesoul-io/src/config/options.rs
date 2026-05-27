@@ -15,8 +15,6 @@ pub static OPTION_KEY_POOL_SIZE: &str = "pool_size";
 pub static OPTION_KEY_POOL_DIR: &str = "pool_dir";
 /// Key for hash bucket ID for partitioning
 pub static OPTION_KEY_HASH_BUCKET_ID: &str = "hash_bucket_id";
-/// Key for number of hash buckets for partitioning
-pub static OPTION_KEY_HASH_BUCKET_NUM: &str = "hash_bucket_num";
 /// Key for CDC (Change Data Capture) column name
 pub static OPTION_KEY_CDC_COLUMN: &str = "cdc_column";
 /// Key for indicating if data is compacted

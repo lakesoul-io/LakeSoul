@@ -211,11 +211,10 @@ impl LakeSoulIOConfig {
 
     /// Returns the number of hash buckets for partitioning (defaults to 1, equvalent to not partitioning)
     pub fn hash_bucket_num(&self) -> usize {
-        self.option(OPTION_KEY_HASH_BUCKET_NUM)
-            .map_or(1, |x| x.parse().unwrap())
+        self.get_hash_bucket_num().expect("invalid hash_bucket_num")
     }
 
-    // Get hash_bucket_num field directly, not from option
+    /// Returns the number of hash buckets for partitioning.
     pub fn get_hash_bucket_num(&self) -> Result<usize> {
         let mut tmp = self.hash_bucket_num.parse::<isize>()?;
         tmp = tmp.max(1);
@@ -760,5 +759,31 @@ impl LakeSoulIOConfig {
 impl From<LakeSoulIOConfig> for LakeSoulIOConfigBuilder {
     fn from(val: LakeSoulIOConfig) -> Self {
         LakeSoulIOConfigBuilder { config: val }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn with_hash_bucket_num_sets_config_field() {
+        let config = LakeSoulIOConfigBuilder::new()
+            .with_hash_bucket_num("4")
+            .build();
+
+        assert_eq!(config.hash_bucket_num, "4");
+        assert_eq!(config.hash_bucket_num(), 4);
+        assert_eq!(config.get_hash_bucket_num().unwrap(), 4);
+    }
+
+    #[test]
+    fn hash_bucket_num_clamps_non_positive_values() {
+        let config = LakeSoulIOConfigBuilder::new()
+            .with_hash_bucket_num("-1")
+            .build();
+
+        assert_eq!(config.hash_bucket_num(), 1);
+        assert_eq!(config.get_hash_bucket_num().unwrap(), 1);
     }
 }

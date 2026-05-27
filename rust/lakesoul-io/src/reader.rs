@@ -162,7 +162,7 @@ impl LakeSoulReader {
                     or_conjunctive_filter.len()
                 );
 
-                let hash_bucket_num = io_config.hash_bucket_num() as u32;
+                let hash_bucket_num = io_config.get_hash_bucket_num()? as u32;
                 // Collect all scalar values from optimizable expressions that match the hash bucket
                 let mut matching_scalar_values = std::collections::HashSet::new();
 
