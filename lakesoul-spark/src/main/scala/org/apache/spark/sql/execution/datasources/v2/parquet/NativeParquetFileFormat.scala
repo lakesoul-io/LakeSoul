@@ -28,6 +28,9 @@ class NativeParquetFileFormat extends FileFormat
 
     val timeZoneId = options
       .getOrElse(DateTimeUtils.TIMEZONE_OPTION, sparkSession.sessionState.conf.sessionLocalTimeZone)
+    val physicalFormat = sparkSession.sessionState.conf
+      .getConf(org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf.NATIVE_IO_PHYSICAL_FORMAT)
+    val extension = if (physicalFormat == "vortex") ".vortex" else ".parquet"
 
     if (options.getOrElse("isNative", "true").toBoolean) {
       new OutputWriterFactory {
@@ -35,12 +38,12 @@ class NativeParquetFileFormat extends FileFormat
                                   path: String,
                                   dataSchema: StructType,
                                   context: TaskAttemptContext): OutputWriter = {
-          logInfo(s"Use native columnar parquet writer for $path")
-          new NativeParquetColumnarOutputWriter(path, dataSchema, timeZoneId, context)
+          logInfo(s"Use native columnar $physicalFormat writer for $path")
+          new NativeParquetColumnarOutputWriter(path, dataSchema, timeZoneId, context, physicalFormat)
         }
 
         override def getFileExtension(context: TaskAttemptContext): String = {
-          CodecConfig.from(context).getCodec.getExtension + ".parquet"
+          CodecConfig.from(context).getCodec.getExtension + extension
         }
       }
     } else {
@@ -49,12 +52,12 @@ class NativeParquetFileFormat extends FileFormat
                                   path: String,
                                   dataSchema: StructType,
                                   context: TaskAttemptContext): OutputWriter = {
-          logInfo(s"Use native parquet writer for $path")
-          new NativeParquetOutputWriter(path, dataSchema, timeZoneId, context)
+          logInfo(s"Use native $physicalFormat writer for $path")
+          new NativeParquetOutputWriter(path, dataSchema, timeZoneId, context, physicalFormat)
         }
 
         override def getFileExtension(context: TaskAttemptContext): String = {
-          CodecConfig.from(context).getCodec.getExtension + ".parquet"
+          CodecConfig.from(context).getCodec.getExtension + extension
         }
       }
     }

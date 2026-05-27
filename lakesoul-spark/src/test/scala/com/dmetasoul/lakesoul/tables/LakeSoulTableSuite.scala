@@ -12,6 +12,7 @@ import org.apache.spark.sql.lakesoul.LakeSoulUtils
 import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
 import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.test.SharedSparkSession
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.{AnalysisException, QueryTest}
 import org.junit.runner.RunWith
 import org.scalatestplus.junit.JUnitRunner
@@ -120,5 +121,15 @@ class LakeSoulTableSuite extends QueryTest
     assert(e.getMessage.toLowerCase(Locale.ROOT).contains(expectedMsg.toLowerCase(Locale.ROOT)))
   }
 
+  test("vortex write and read roundtrip") {
+    withSQLConf(LakeSoulSQLConf.NATIVE_IO_PHYSICAL_FORMAT.key -> "vortex") {
+      withTempDir { dir =>
+        testData.write.format("lakesoul").save(dir.getAbsolutePath)
+        checkAnswer(
+          LakeSoulTable.forPath(spark, dir.getAbsolutePath).toDF,
+          testData.collect().toSeq)
+      }
+    }
+  }
 
 }

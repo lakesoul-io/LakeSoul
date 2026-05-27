@@ -18,8 +18,8 @@ import scala.collection.JavaConverters.{asScalaBufferConverter, seqAsJavaListCon
 // for compaction write, we directly get ColumnarBatch of ArrowVectors
 // from RDD[ArrowFakeRow]
 class NativeParquetColumnarOutputWriter(path: String, dataSchema: StructType, timeZoneId: String,
-                                        context: TaskAttemptContext)
-  extends NativeParquetOutputWriter(path, dataSchema, timeZoneId, context) {
+                                        context: TaskAttemptContext, physicalFormat: String = "parquet")
+  extends NativeParquetOutputWriter(path, dataSchema, timeZoneId, context, physicalFormat) {
   override def write(row: InternalRow): Unit = {
     if (!row.isInstanceOf[ArrowFakeRow]) {
       throw new IllegalStateException(

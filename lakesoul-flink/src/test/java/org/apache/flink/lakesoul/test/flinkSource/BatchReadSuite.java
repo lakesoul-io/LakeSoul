@@ -163,4 +163,74 @@ public class BatchReadSuite extends AbstractTestBase {
         tEnvs.executeSql(createOrderSql);
         tEnvs.executeSql("INSERT INTO order_noPK VALUES (1,'apple',20), (2,'tomato',10), (3,'water',15)").await();
     }
+
+    // --- Vortex format tests ---
+
+    @Test
+    public void testLakesoulSourceSnapshotReadVortex() throws ExecutionException, InterruptedException {
+        TableEnvironment createTableEnv = TestUtils.createTableEnv(BATCH_TYPE);
+        String path = getTempDirUri("/lakesoulSource/user_test_vortex");
+        String createUserSql =
+                "create table user_test_vortex (" +
+                "    order_id INT," +
+                "    name STRING PRIMARY KEY NOT ENFORCED," +
+                "    score INT" +
+                ") WITH (" +
+                "    'format'='lakesoul'," +
+                "    'hashBucketNum'='2'," +
+                "    'lakesoul.native_writer.physical_format'='vortex'," +
+                "    'path'='" + path + "' )";
+        createTableEnv.executeSql("DROP TABLE if exists user_test_vortex");
+        createTableEnv.executeSql(createUserSql);
+        createTableEnv.executeSql(
+                "INSERT INTO user_test_vortex VALUES (1, 'Bob', 90), (2, 'Alice', 80), (3, 'Jack', 75)")
+                .await();
+        Thread.sleep(1000L);
+        String endTimeStr = TestUtils.getDateTimeFromTimestamp(Instant.ofEpochMilli(System.currentTimeMillis()));
+        String testSql = String.format(
+                "select * from user_test_vortex /*+ OPTIONS('readendtime'='%s','readtype'='snapshot'," +
+                        "'timezone'='Africa/Accra')*/",
+                endTimeStr);
+        StreamTableEnvironment tEnvs = TestUtils.createStreamTableEnv(BATCH_TYPE);
+        TableImpl flinkTable = (TableImpl) tEnvs.sqlQuery(testSql);
+        List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
+        TestUtils.checkEqualInAnyOrder(results,
+                new String[]{"+I[3, Jack, 75]", "+I[2, Alice, 80]", "+I[1, Bob, 90]"});
+    }
+
+    @Test
+    public void testLakesoulSourceIncrementalReadVortex() throws ExecutionException, InterruptedException {
+        TableEnvironment createTableEnv = TestUtils.createTableEnv(BATCH_TYPE);
+        String path = getTempDirUri("/lakesoulSource/user_test_incr_vortex");
+        String createUserSql =
+                "create table user_test_incr_vortex (" +
+                "    order_id INT," +
+                "    name STRING PRIMARY KEY NOT ENFORCED," +
+                "    score INT" +
+                ") WITH (" +
+                "    'format'='lakesoul'," +
+                "    'hashBucketNum'='2'," +
+                "    'lakesoul.native_writer.physical_format'='vortex'," +
+                "    'path'='" + path + "' )";
+        createTableEnv.executeSql("DROP TABLE if exists user_test_incr_vortex");
+        createTableEnv.executeSql(createUserSql);
+        createTableEnv.executeSql(
+                "INSERT INTO user_test_incr_vortex VALUES (1, 'Bob', 90), (2, 'Alice', 80)")
+                .await();
+        Thread.sleep(1000L);
+        String startTimeStr = TestUtils.getDateTimeFromTimestamp(Instant.ofEpochMilli(System.currentTimeMillis()));
+        createTableEnv.executeSql(
+                "INSERT INTO user_test_incr_vortex VALUES (3, 'Jack', 75)")
+                .await();
+        Thread.sleep(1000L);
+        String endTimeStr = TestUtils.getDateTimeFromTimestamp(Instant.ofEpochMilli(System.currentTimeMillis()));
+        String testSql = String.format(
+                "select * from user_test_incr_vortex /*+ OPTIONS('readstarttime'='%s','readendtime'='%s'," +
+                        "'readtype'='incremental','timezone'='Africa/Accra')*/",
+                startTimeStr, endTimeStr);
+        StreamTableEnvironment tEnvs = TestUtils.createStreamTableEnv(BATCH_TYPE);
+        TableImpl flinkTable = (TableImpl) tEnvs.sqlQuery(testSql);
+        List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
+        TestUtils.checkEqualInAnyOrder(results, new String[]{"+I[3, Jack, 75]"});
+    }
 }

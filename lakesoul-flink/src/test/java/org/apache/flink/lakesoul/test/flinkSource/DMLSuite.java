@@ -520,4 +520,62 @@ public class DMLSuite extends AbstractTestBase {
         streamEnv.executeSql("select count(1) from lakesoul_test_table").print();
         System.out.println(results);
     }
+
+    // --- Vortex format tests ---
+
+    @Test
+    public void testInsertSQLVortex() throws ExecutionException, InterruptedException {
+        TableEnvironment tEnv = TestUtils.createTableEnv(BATCH_TYPE);
+        String path = getTempDirUri("/lakeSource/user_vortex");
+        tEnv.executeSql("DROP TABLE if exists user_info_vortex");
+        tEnv.executeSql(
+                "create table user_info_vortex (" +
+                "    order_id INT," +
+                "    name STRING PRIMARY KEY NOT ENFORCED," +
+                "    score DECIMAL" +
+                ") WITH (" +
+                "    'format'='lakesoul'," +
+                "    'hashBucketNum'='2'," +
+                "    'lakesoul.native_writer.physical_format'='vortex'," +
+                "    'path'='" + path + "' )");
+        tEnv.executeSql("INSERT INTO user_info_vortex VALUES (2, 'Alice', 80),(3, 'Jack', 75)").await();
+        StreamTableEnvironment streamEnv = TestUtils.createStreamTableEnv(BATCH_TYPE);
+        String testSelect = "select * from user_info_vortex";
+        TableImpl flinkTable = (TableImpl) streamEnv.sqlQuery(testSelect);
+        List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
+        TestUtils.checkEqualInAnyOrder(results, new String[]{"+I[2, Alice, 80]", "+I[3, Jack, 75]"});
+        tEnv.executeSql("INSERT INTO user_info_vortex VALUES (4, 'Mike', 70)").await();
+        TableImpl flinkTable1 = (TableImpl) streamEnv.sqlQuery(testSelect);
+        List<Row> results1 = CollectionUtil.iteratorToList(flinkTable1.execute().collect());
+        TestUtils.checkEqualInAnyOrder(results1,
+                new String[]{"+I[2, Alice, 80]", "+I[3, Jack, 75]", "+I[4, Mike, 70]"});
+    }
+
+    @Test
+    public void testInsertPkPartitionTableSQLVortex() throws ExecutionException, InterruptedException {
+        TableEnvironment tEnv = TestUtils.createTableEnv(BATCH_TYPE);
+        String path = getTempDirUri("/lakeSource/user_vortex_range");
+        tEnv.executeSql("DROP TABLE if exists user_info_vortex_1");
+        tEnv.executeSql(
+                "create table user_info_vortex_1 (" +
+                "    order_id INT," +
+                "    name STRING PRIMARY KEY NOT ENFORCED," +
+                "    score DECIMAL" +
+                ") WITH (" +
+                "    'format'='lakesoul'," +
+                "    'hashBucketNum'='2'," +
+                "    'lakesoul.native_writer.physical_format'='vortex'," +
+                "    'path'='" + path + "' )");
+        tEnv.executeSql("INSERT INTO user_info_vortex_1 VALUES (2, 'Alice', 80),(3, 'Jack', 75)").await();
+        StreamTableEnvironment streamEnv = TestUtils.createStreamTableEnv(BATCH_TYPE);
+        String testSelect = "select * from user_info_vortex_1";
+        TableImpl flinkTable = (TableImpl) streamEnv.sqlQuery(testSelect);
+        List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
+        TestUtils.checkEqualInAnyOrder(results, new String[]{"+I[2, Alice, 80]", "+I[3, Jack, 75]"});
+        tEnv.executeSql("INSERT INTO user_info_vortex_1 VALUES (4, 'Mike', 70)").await();
+        TableImpl flinkTable1 = (TableImpl) streamEnv.sqlQuery(testSelect);
+        List<Row> results1 = CollectionUtil.iteratorToList(flinkTable1.execute().collect());
+        TestUtils.checkEqualInAnyOrder(results1,
+                new String[]{"+I[2, Alice, 80]", "+I[3, Jack, 75]", "+I[4, Mike, 70]"});
+    }
 }
