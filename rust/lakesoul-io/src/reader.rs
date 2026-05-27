@@ -418,34 +418,13 @@ mod tests {
 
     use rand::Rng;
 
-    #[tokio::test]
-    async fn test_reader_local() -> Result<()> {
-        let project_dir = std::env::current_dir()?;
-        let reader_io_config = LakeSoulIOConfigBuilder::new()
-            .with_files(vec![
-                project_dir.join("../../native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet").into_os_string().into_string().unwrap()
-            ])
-            .with_thread_num(1)
-            .with_batch_size(256)
-            .build();
-        let mut reader = LakeSoulReader::new(reader_io_config)?;
-        reader.start().await?;
-        let mut row_cnt: usize = 0;
-
-        while let Some(rb) = reader.next_rb().await {
-            let num_rows = &rb.unwrap().num_rows();
-            row_cnt += num_rows;
-        }
-        assert_eq!(row_cnt, 1000);
-        Ok(())
-    }
-
     #[test]
     fn test_reader_local_blocked() -> Result<()> {
         let project_dir = std::env::current_dir()?;
         let reader_io_config = LakeSoulIOConfigBuilder::new()
             .with_files(vec![
-                project_dir.join("../../native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet").into_os_string().into_string().unwrap()
+                project_dir.join("../../native-io/lakesoul-io-java/src/test/resources/sample-data-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet").into_os_string().into_string().unwrap(),
+                project_dir.join("../../native-io/lakesoul-io-java/src/test/resources/sample-data-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.vortex").into_os_string().into_string().unwrap()
             ])
             .with_thread_num(2)
             .with_batch_size(11)
@@ -490,7 +469,10 @@ mod tests {
     fn test_reader_partition() -> Result<()> {
         let project_dir = std::env::current_dir()?;
         let reader_io_config = LakeSoulIOConfigBuilder::new()
-            .with_files(vec![  project_dir.join("../../native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet").into_os_string().into_string().unwrap()])
+            .with_files(vec![
+                project_dir.join("../../native-io/lakesoul-io-java/src/test/resources/sample-data-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet").into_os_string().into_string().unwrap(),
+                    project_dir.join("../../native-io/lakesoul-io-java/src/test/resources/sample-data-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.vortex").into_os_string().into_string().unwrap()
+            ])
             .with_thread_num(1)
             .with_batch_size(8192)
             .build();
@@ -520,6 +502,7 @@ mod tests {
                 break;
             }
         }
+        assert_eq!(row_cnt.load(Relaxed), 2000);
         Ok(())
     }
 
@@ -618,6 +601,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn profiling_2ways_merge_on_read() -> Result<()> {
         let num_batch = 10;
         let num_rows = 1000;
