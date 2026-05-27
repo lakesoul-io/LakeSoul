@@ -295,10 +295,3 @@ Output (focus on building a data-flow mental model, not file-by-file summaries):
 Finally:
 - Provide an ASCII data flow diagram
 - Explicitly point out areas of uncertainty or assumptions
-
-## Agent Skills
-
-Repository-specific agent skills live under `.ai/skills/`. Each subdirectory is
-a single skill with a `SKILL.md` (YAML frontmatter + body). Check that
-directory for applicable skills before working on a task; new skills go in
-`.ai/skills/<skill-name>/SKILL.md`.
