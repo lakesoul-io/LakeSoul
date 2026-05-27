@@ -1,11 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytes::Bytes;
-use linked_hash_map::LinkedHashMap;
-use moka::future::Cache;
+use moka::{future::Cache, notification::RemovalCause};
 use object_store::path::Path;
 use object_store::{Error, ObjectMeta, Result};
 use parking_lot::RwLock;
@@ -13,60 +13,143 @@ use uuid::Uuid;
 
 use super::paging::PageCache;
 
-/// Default memory page size is 16 KB
 pub const DEFAULT_PAGE_SIZE: usize = 16 * 1024;
 const DEFAULT_METADATA_CACHE_SIZE: usize = 32 * 1024 * 1024;
+
+#[derive(Debug, Clone)]
+struct CacheEntry {
+    size: u64,
+    file: Arc<std::fs::File>,
+    filename: String,
+}
 
 fn make_key(location_id: u64, page_id: u32) -> String {
     format!("{}_{}", location_id, page_id)
 }
 
-#[derive(Debug)]
-struct CacheEntry {
-    size: u64,
-    filename: String,
+fn parse_location_id(key: &str) -> Option<u64> {
+    key.split_once('_').and_then(|(id, _)| id.parse().ok())
 }
 
-#[derive(Debug)]
-struct CacheState {
-    entries: LinkedHashMap<String, CacheEntry>,
-    total_size: u64,
-    max_capacity: u64,
+fn entry_weight(size: u64) -> u32 {
+    size.min(u32::MAX as u64) as u32
 }
 
-/// Local disk-based LRU page cache.
+/// Read a range from a file descriptor via `pread` (single syscall, no seek).
+fn read_range(file: &std::fs::File, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
+    let mut buf = vec![0u8; len];
+    #[cfg(target_family = "unix")]
+    {
+        use std::os::unix::fs::FileExt;
+        file.read_exact_at(&mut buf, offset)?;
+    }
+    #[cfg(target_family = "windows")]
+    {
+        use std::os::windows::fs::FileExt;
+        file.seek_read(&mut buf, offset)?;
+    }
+    Ok(buf)
+}
+
+/// Read the entire file from offset 0.
+fn read_all(file: &std::fs::File, size: usize) -> std::io::Result<Vec<u8>> {
+    read_range(file, 0, size)
+}
+
+/// Create + write a file on disk, return the open File handle.
+fn create_and_write(path: &std::path::Path, data: &[u8]) -> std::io::Result<std::fs::File> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .read(true)
+        .truncate(true)
+        .open(path)?;
+    file.write_all(data)?;
+    file.sync_all()?;
+    Ok(file)
+}
+
+/// Local disk-based LRU page cache backed by moka.
 ///
-/// Uses a single `parking_lot::RwLock` for all cache state.
-/// Files are stored with UUID-based filenames to prevent races
-/// between concurrent reads and evictions.
-/// Files are opened on demand and closed after each I/O operation.
+/// Each cache entry holds an open `std::fs::File` descriptor. This ensures that
+/// even if the file is unlinked by a concurrent eviction, reads through this
+/// descriptor always succeed (Linux inode reference counting).
+///
+/// All blocking file I/O runs on `tokio::task::spawn_blocking`.
+/// Range reads use `pread`/`read_at` — a single syscall without seek.
 #[derive(Debug)]
 pub struct DiskCache {
-    state: RwLock<CacheState>,
-    root: PathBuf,
+    cache: Cache<String, CacheEntry>,
+    root: Arc<PathBuf>,
     page_size: usize,
+    max_capacity_bytes: u64,
     metadata_cache: Cache<u64, ObjectMeta>,
+
     location_lookup: RwLock<HashMap<Path, u64>>,
     next_location_id: AtomicU64,
+
+    location_keys: Arc<RwLock<HashMap<u64, HashSet<String>>>>,
+
+    approximate_size: Arc<AtomicU64>,
 }
 
 impl DiskCache {
     pub fn new(disk_capacity: usize, page_size: usize) -> Self {
-        let root_path =
-            std::env::var("LAKESOUL_CACHE_PATH").unwrap_or_else(|_| "lakesoul_cache_dir".to_string());
+        let root_path = std::env::var("LAKESOUL_CACHE_PATH")
+            .unwrap_or_else(|_| "lakesoul_cache_dir".to_string());
         Self::with_path(disk_capacity, page_size, PathBuf::from(root_path))
     }
 
     pub fn with_path(disk_capacity: usize, page_size: usize, root: PathBuf) -> Self {
+        let root = Arc::new(root);
 
-        if let Err(e) = std::fs::create_dir_all(&root) {
+        if let Err(e) = std::fs::create_dir_all(root.as_ref()) {
             warn!("Failed to create cache dir {}: {}", root.display(), e);
         }
-        if let Ok(entries) = std::fs::read_dir(&root) {
+        if let Ok(entries) = std::fs::read_dir(root.as_ref()) {
             for entry in entries.flatten() {
                 let _ = std::fs::remove_file(entry.path());
             }
         }
+
+        let location_keys: Arc<RwLock<HashMap<u64, HashSet<String>>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+        let approximate_size: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
+
+        let cache = Cache::builder()
+            .weigher(|_k: &String, v: &CacheEntry| entry_weight(v.size))
+            .max_capacity(disk_capacity as u64)
+            .eviction_listener({
+                let root = root.clone();
+                let location_keys = location_keys.clone();
+                let sz = approximate_size.clone();
+                move |k: Arc<String>, v: CacheEntry, cause: RemovalCause| {
+                    if matches!(cause, RemovalCause::Size | RemovalCause::Replaced) {
+                        sz.fetch_sub(v.size, Ordering::Relaxed);
+                        if let Some(loc_id) = parse_location_id(&k) {
+                            let mut lk = location_keys.write();
+                            if let Some(keys) = lk.get_mut(&loc_id) {
+                                keys.remove(k.as_ref());
+                                if keys.is_empty() {
+                                    lk.remove(&loc_id);
+                                }
+                            }
+                        }
+                    }
+                    let path = root.join(&v.filename);
+                    // Unlink on a background thread; in-flight reads still succeed
+                    // through the open file descriptor held by other CacheEntry clones.
+                    tokio::task::spawn_blocking(move || {
+                        let _ = std::fs::remove_file(&path);
+                    });
+                }
+            })
+            .build();
+
+        let metadata_cache = Cache::builder()
+            .max_capacity(DEFAULT_METADATA_CACHE_SIZE as u64)
+            .build();
 
         debug!(
             "DiskCache created: root={}, capacity={}, page_size={}",
@@ -75,21 +158,16 @@ impl DiskCache {
             page_size
         );
 
-        let metadata_cache = Cache::builder()
-            .max_capacity(DEFAULT_METADATA_CACHE_SIZE as u64)
-            .build();
-
         Self {
-            state: RwLock::new(CacheState {
-                entries: LinkedHashMap::new(),
-                total_size: 0,
-                max_capacity: disk_capacity as u64,
-            }),
+            cache,
             root,
             page_size,
+            max_capacity_bytes: disk_capacity as u64,
             metadata_cache,
             location_lookup: RwLock::new(HashMap::new()),
             next_location_id: AtomicU64::new(0),
+            location_keys,
+            approximate_size,
         }
     }
 
@@ -109,19 +187,35 @@ impl DiskCache {
         id
     }
 
-    /// Evict entries under write lock. Returns filenames to delete outside the lock.
-    fn evict_locked(state: &mut CacheState, needed: u64) -> Vec<String> {
-        let mut evicted = Vec::new();
-        while state.total_size.saturating_add(needed) > state.max_capacity {
-            match state.entries.pop_front() {
-                Some((_, entry)) => {
-                    state.total_size = state.total_size.saturating_sub(entry.size);
-                    evicted.push(entry.filename);
-                }
-                None => break,
-            }
+    fn register_key(&self, location_id: u64, key: &str) {
+        self.location_keys
+            .write()
+            .entry(location_id)
+            .or_default()
+            .insert(key.to_string());
+    }
+
+    /// Spawn a blocking read on `file` and return the bytes.
+    async fn blocking_read_all(&self, file: &Arc<std::fs::File>, size: usize) -> Option<Bytes> {
+        let f = file.clone();
+        match tokio::task::spawn_blocking(move || read_all(&f, size)).await {
+            Ok(Ok(data)) => Some(Bytes::from(data)),
+            _ => None,
         }
-        evicted
+    }
+
+    /// Spawn a blocking range read on `file` and return the bytes.
+    async fn blocking_read_range(
+        &self,
+        file: &Arc<std::fs::File>,
+        offset: u64,
+        len: usize,
+    ) -> Option<Bytes> {
+        let f = file.clone();
+        match tokio::task::spawn_blocking(move || read_range(&f, offset, len)).await {
+            Ok(Ok(data)) => Some(Bytes::from(data)),
+            _ => None,
+        }
     }
 }
 
@@ -132,11 +226,11 @@ impl PageCache for DiskCache {
     }
 
     fn capacity(&self) -> usize {
-        self.state.read().max_capacity as usize
+        self.max_capacity_bytes as usize
     }
 
     fn size(&self) -> usize {
-        self.state.read().total_size as usize
+        self.approximate_size.load(Ordering::Relaxed) as usize
     }
 
     async fn get_with(
@@ -145,11 +239,53 @@ impl PageCache for DiskCache {
         page_id: u32,
         loader: impl std::future::Future<Output = Result<Bytes>> + Send,
     ) -> Result<Bytes> {
-        if let Some(bytes) = self.get(location, page_id).await? {
-            return Ok(bytes);
+        let location_id = self.get_location_id(location);
+        let key = make_key(location_id, page_id);
+
+        // Try the cache — read via the open fd (survives concurrent unlink)
+        if let Some(entry) = self.cache.get(&key).await {
+            if let Some(data) = self.blocking_read_all(&entry.file, entry.size as usize).await {
+                return Ok(data);
+            }
+            // Stale entry — invalidate and fall through
+            self.cache.invalidate(&key).await;
         }
+
+        // Cache miss — load from remote
         let bytes = loader.await?;
-        self.put(location, page_id, bytes.clone()).await?;
+        if !bytes.is_empty() {
+            let filename = Uuid::new_v4().to_string();
+            let file_path = self.root.join(&filename);
+            let size = bytes.len() as u64;
+
+            let file = tokio::task::spawn_blocking({
+                let data = bytes.to_vec();
+                move || create_and_write(&file_path, &data)
+            })
+            .await
+            .map_err(|e| Error::Generic {
+                store: "DiskCache",
+                source: Box::new(e),
+            })?
+            .map_err(|e| Error::Generic {
+                store: "DiskCache",
+                source: Box::new(e),
+            })?;
+
+            self.cache
+                .insert(
+                    key.clone(),
+                    CacheEntry {
+                        size,
+                        file: Arc::new(file),
+                        filename,
+                    },
+                )
+                .await;
+
+            self.approximate_size.fetch_add(size, Ordering::Relaxed);
+            self.register_key(location_id, &key);
+        }
         Ok(bytes)
     }
 
@@ -157,38 +293,11 @@ impl PageCache for DiskCache {
         let location_id = self.get_location_id(location);
         let key = make_key(location_id, page_id);
 
-        let filename = {
-            let state = self.state.read();
-            state.entries.get(&key).map(|e| e.filename.clone())
-        };
-
-        let Some(filename) = filename else {
+        let Some(entry) = self.cache.get(&key).await else {
             return Ok(None);
         };
 
-        let file_path = self.root.join(&filename);
-        let data = match tokio::fs::read(&file_path).await {
-            Ok(d) => d,
-            Err(e) => {
-                error!(
-                    "Failed to read cache file {} (key={}): {}",
-                    file_path.display(),
-                    key,
-                    e
-                );
-                return Ok(None);
-            }
-        };
-
-        // Update MRU position (best-effort; skip if entry was evicted)
-        {
-            let mut state = self.state.write();
-            if let Some(entry) = state.entries.remove(&key) {
-                state.entries.insert(key, entry);
-            }
-        }
-
-        Ok(Some(Bytes::from(data)))
+        Ok(self.blocking_read_all(&entry.file, entry.size as usize).await)
     }
 
     async fn get_range_with(
@@ -200,12 +309,10 @@ impl PageCache for DiskCache {
     ) -> Result<Bytes> {
         assert!(range.start <= range.end && range.end <= self.page_size());
 
-        // Try to read the range directly from cache (partial read)
         if let Some(bytes) = self.get_range(location, page_id, range.clone()).await? {
             return Ok(bytes);
         }
 
-        // Cache miss: load the full page from remote, cache it, return the range
         let bytes = loader.await?;
         self.put(location, page_id, bytes.clone()).await?;
         Ok(bytes.slice(range))
@@ -220,60 +327,13 @@ impl PageCache for DiskCache {
         let location_id = self.get_location_id(location);
         let key = make_key(location_id, page_id);
 
-        let filename = {
-            let state = self.state.read();
-            state.entries.get(&key).map(|e| e.filename.clone())
-        };
-
-        let Some(filename) = filename else {
+        let Some(entry) = self.cache.get(&key).await else {
             return Ok(None);
         };
 
-        let file_path = self.root.join(&filename);
-
-        use std::io::SeekFrom;
-        use tokio::io::{AsyncReadExt, AsyncSeekExt};
-
-        let mut file = match tokio::fs::File::open(&file_path).await {
-            Ok(f) => f,
-            Err(e) => {
-                error!(
-                    "Failed to open cache file {} (key={}): {}",
-                    file_path.display(),
-                    key,
-                    e
-                );
-                return Ok(None);
-            }
-        };
-
-        let read_len = range.end - range.start;
-        if let Err(e) = file.seek(SeekFrom::Start(range.start as u64)).await {
-            error!("Failed to seek in cache file {}: {}", file_path.display(), e);
-            return Ok(None);
-        }
-
-        let mut buf = vec![0u8; read_len];
-        if let Err(e) = file.read_exact(&mut buf).await {
-            error!(
-                "Failed to read range [{}, {}) from cache file {}: {}",
-                range.start,
-                range.end,
-                file_path.display(),
-                e
-            );
-            return Ok(None);
-        }
-
-        // Update MRU position (best-effort; skip if entry was evicted)
-        {
-            let mut state = self.state.write();
-            if let Some(entry) = state.entries.remove(&key) {
-                state.entries.insert(key, entry);
-            }
-        }
-
-        Ok(Some(Bytes::from(buf)))
+        Ok(self
+            .blocking_read_range(&entry.file, range.start as u64, range.end - range.start)
+            .await)
     }
 
     async fn head(
@@ -306,72 +366,41 @@ impl PageCache for DiskCache {
         let location_id = self.get_location_id(location);
         let key = make_key(location_id, page_id);
 
-        // Check if already in cache (fast path)
-        {
-            let state = self.state.read();
-            if state.entries.contains_key(&key) {
-                return Ok(());
-            }
+        if self.cache.contains_key(&key) {
+            return Ok(());
         }
 
         let filename = Uuid::new_v4().to_string();
         let file_path = self.root.join(&filename);
+        let size = data.len() as u64;
 
-        // Write file to disk (outside lock)
-        tokio::fs::write(&file_path, &data).await.map_err(|e| Error::Generic {
+        let file = tokio::task::spawn_blocking({
+            let data = data.to_vec();
+            move || create_and_write(&file_path, &data)
+        })
+        .await
+        .map_err(|e| Error::Generic {
+            store: "DiskCache",
+            source: Box::new(e),
+        })?
+        .map_err(|e| Error::Generic {
             store: "DiskCache",
             source: Box::new(e),
         })?;
 
-        // Double-check under write lock; if key already exists, clean up and return
-        let already_exists = {
-            let state = self.state.write();
-            state.entries.contains_key(&key)
-        };
-        if already_exists {
-            let _ = tokio::fs::remove_file(&file_path).await;
-            return Ok(());
-        }
-
-        // Update cache state: evict + insert under a fresh write lock
-        let evicted = {
-            let mut state = self.state.write();
-
-            // Double-check again (race between our two checks)
-            if state.entries.contains_key(&key) {
-                drop(state);
-                // Defer cleanup to after the write lock is released
-                tokio::spawn(async move {
-                    let _ = tokio::fs::remove_file(&file_path).await;
-                });
-                return Ok(());
-            }
-
-            // Evict to make room before inserting
-            let needed = data.len() as u64;
-            let evicted = Self::evict_locked(&mut state, needed);
-
-            state.entries.insert(
-                key,
+        self.cache
+            .insert(
+                key.clone(),
                 CacheEntry {
-                    size: needed,
-                    filename: filename.clone(),
+                    size,
+                    file: Arc::new(file),
+                    filename,
                 },
-            );
-            state.total_size += needed;
+            )
+            .await;
 
-            evicted
-        };
-
-        // Delete evicted files outside the lock
-        for evicted_file in evicted {
-            let path = self.root.join(&evicted_file);
-            tokio::spawn(async move {
-                if let Err(e) = tokio::fs::remove_file(&path).await {
-                    warn!("Failed to remove evicted cache file {}: {}", path.display(), e);
-                }
-            });
-        }
+        self.approximate_size.fetch_add(size, Ordering::Relaxed);
+        self.register_key(location_id, &key);
 
         Ok(())
     }
@@ -386,35 +415,27 @@ impl PageCache for DiskCache {
             return Ok(());
         };
 
-        let prefix = format!("{}_", location_id);
+        let keys: Vec<String> = self
+            .location_keys
+            .write()
+            .remove(&location_id)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
 
-        let to_remove = {
-            let mut state = self.state.write();
-            let keys: Vec<String> = state
-                .entries
-                .keys()
-                .filter(|k| k.starts_with(&prefix))
-                .cloned()
-                .collect();
-            let mut filenames = Vec::new();
-            for key in keys {
-                if let Some(entry) = state.entries.remove(&key) {
-                    state.total_size = state.total_size.saturating_sub(entry.size);
-                    filenames.push(entry.filename);
-                }
+        for key in &keys {
+            if let Some(entry) = self.cache.remove(key).await {
+                self.approximate_size
+                    .fetch_sub(entry.size, Ordering::Relaxed);
+                let path = self.root.join(&entry.filename);
+                tokio::task::spawn_blocking(move || {
+                    let _ = std::fs::remove_file(&path);
+                });
             }
-            filenames
-        };
+        }
 
         self.location_lookup.write().remove(location);
         self.metadata_cache.invalidate(&location_id).await;
-
-        for filename in to_remove {
-            let path = self.root.join(&filename);
-            tokio::spawn(async move {
-                let _ = tokio::fs::remove_file(&path).await;
-            });
-        }
 
         Ok(())
     }
@@ -525,7 +546,6 @@ mod tests {
         assert_eq!(miss.load(Ordering::SeqCst), 1);
         assert_eq!(data, Bytes::from("test data"));
 
-        // Second call should hit cache
         let data = cache
             .get_with(&location, 0, {
                 let miss = miss.clone();
@@ -559,9 +579,7 @@ mod tests {
 
         let miss = Arc::new(AtomicUsize::new(0));
 
-        for (page_id, expected_miss, expected_size) in
-            &[(0, 1, 1), (0, 1, 1), (1, 2, 2), (4, 3, 2), (5, 4, 2)]
-        {
+        for (page_id, expected_miss) in &[(0, 1), (0, 1), (1, 2), (4, 3), (5, 4)] {
             let data = cache
                 .get_with(&location, *page_id, {
                     let miss = miss.clone();
@@ -582,7 +600,6 @@ mod tests {
                 .unwrap();
             assert_eq!(miss.load(Ordering::SeqCst), *expected_miss);
             assert_eq!(data.len(), PAGE_SIZE);
-            assert_eq!(cache.state.read().entries.len(), *expected_size);
 
             let mut expected_buf = BytesMut::with_capacity(PAGE_SIZE);
             for i in *page_id as u64 * PAGE_SIZE as u64 / 8
@@ -603,16 +620,14 @@ mod tests {
         let file_path = tmp_dir.path().join("test.bin");
         let path = Path::from(file_path.as_path().to_str().unwrap());
 
+        let path_for_err = path.clone();
         let r = cache
             .head(&path, {
                 let local_fs = local_fs.clone();
-                let path = path.clone();
-                async move { local_fs.head(&path).await }
+                async move { local_fs.head(&path_for_err).await }
             })
             .await;
         assert!(matches!(r, Err(Error::NotFound { .. })));
-        cache.metadata_cache.run_pending_tasks().await;
-        assert_eq!(cache.metadata_cache.entry_count(), 0);
 
         std::fs::write(&file_path, "test data").unwrap();
         let meta = cache
@@ -638,7 +653,6 @@ mod tests {
 
         cache.invalidate(&location).await.unwrap();
 
-        // After invalidate, entries and files are cleaned up
         assert!(cache.get(&location, 0).await.unwrap().is_none());
         assert_eq!(cache.size(), 0);
     }

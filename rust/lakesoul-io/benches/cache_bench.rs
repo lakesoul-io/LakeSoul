@@ -257,7 +257,7 @@ fn bench_stability_extended(c: &mut Criterion) {
                         for _ in 0..ops_per_thread {
                             let choice = rng.random_range(0..100);
                             let pid = rng.random_range(0..(num_pages as u32 * 2));
-                            let result = match choice {
+                            let result: Result<(), object_store::Error> = match choice {
                                 0..=59 => {
                                     cache
                                         .get_range(&loc, pid, 0..PAGE_SIZE.min(4096))
@@ -280,7 +280,8 @@ fn bench_stability_extended(c: &mut Criterion) {
                                         .await
                                 }
                             };
-                            if let Err(_e) = result {
+                            if let Err(ref e) = result {
+                                eprintln!("cache error: {:?}", e);
                                 errors.fetch_add(1, Ordering::Relaxed);
                             }
                         }

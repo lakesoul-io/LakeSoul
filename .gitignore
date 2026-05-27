@@ -32,6 +32,7 @@ __pycache__/
 /python/lakesoul/arrow/_lakesoul_dataset.so
 /python/pyarrow
 /rust/lakesoul-io/temp_dir/
+/rust/lakesoul-io/lakesoul_cache_dir/
 /rust/lakesoul-io-c/lakesoul_c_bindings.h
 /rust/lakesoul-io-java/target/
 /rust/lakesoul-io-java/.idea/

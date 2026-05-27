@@ -70,7 +70,7 @@ pub static GLOBAL_RUNTIME: LazyLock<Arc<Runtime>> = LazyLock::new(|| {
     Arc::new(
         Builder::new_multi_thread()
             .worker_threads(threads) // Customize as needed
-            .max_blocking_threads(threads * 2)
+            .max_blocking_threads(threads * 4)
             .enable_all()
             .build()
             .expect("Failed to create global runtime"),
