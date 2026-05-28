@@ -21,7 +21,7 @@ import org.apache.spark.sql.execution.datasources.parquet.{ParquetReadSupport, P
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.MergeParquetPartitionReaderFactory
 import org.apache.spark.sql.execution.streaming.LongOffset
-import org.apache.spark.sql.execution.datasources.v2.merge.parquet.Native.NativeMergeParquetPartitionReaderFactory
+import org.apache.spark.sql.execution.datasources.v2.merge.parquet.Native.NativeMergePartitionReaderFactory
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.LakeSoulOptions.ReadType
 import org.apache.spark.sql.sources.{EqualTo, Filter, Not}
@@ -171,7 +171,7 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
       .asInstanceOf[MergeOperator[Any]]
     val nativeIOEnable = sparkSession.sessionState.conf.getConf(LakeSoulSQLConf.NATIVE_IO_ENABLE)
     if (nativeIOEnable) {
-      NativeMergeParquetPartitionReaderFactory(sparkSession.sessionState.conf, broadcastedConf,
+      NativeMergePartitionReaderFactory(sparkSession.sessionState.conf, broadcastedConf,
         dataSchema, readDataSchema, readPartitionSchema, pushedFilters, mergeOperatorInfo, defaultMergeOp, options.asScala.toMap)
     } else {
       MergeParquetPartitionReaderFactory(sparkSession.sessionState.conf, broadcastedConf,

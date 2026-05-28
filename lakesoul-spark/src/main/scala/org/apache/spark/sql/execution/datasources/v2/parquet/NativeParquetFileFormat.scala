@@ -33,7 +33,7 @@ class NativeParquetFileFormat extends FileFormat
     val physicalFormat = sparkSession.sessionState.conf
       .getConf(org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf.NATIVE_IO_PHYSICAL_FORMAT)
       .toLowerCase(Locale.ROOT)
-    val extension = if (physicalFormat == "vortex") ".vortex" else ".parquet"
+    val extension = if (physicalFormat == "vortex") ".vortex" else ".parquet" // vortex is only supported when native io is enabled
 
     if (options.getOrElse("isNative", "true").toBoolean) {
       new OutputWriterFactory {

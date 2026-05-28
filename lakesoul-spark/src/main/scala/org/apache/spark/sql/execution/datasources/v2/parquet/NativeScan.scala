@@ -25,7 +25,7 @@ import org.apache.spark.util.SerializableConfiguration
 
 import java.util.TimeZone
 
-case class NativeParquetScan(
+case class NativeScan(
                               sparkSession: SparkSession,
                               hadoopConf: Configuration,
                               fileIndex: LakeSoulFileIndexV2,
@@ -64,7 +64,7 @@ case class NativeParquetScan(
     val broadcastedConf = sparkSession.sparkContext.broadcast(
       new SerializableConfiguration(hadoopConf))
 
-    NativeParquetPartitionReaderFactory(sparkSession.sessionState.conf, broadcastedConf,
+    NativePartitionReaderFactory(sparkSession.sessionState.conf, broadcastedConf,
       dataSchema, readDataSchema, readPartitionSchema, pushedFilters)
   }
 
