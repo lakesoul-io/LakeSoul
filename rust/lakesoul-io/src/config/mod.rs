@@ -10,7 +10,6 @@ use datafusion_expr::Expr;
 use datafusion_substrait::substrait::proto::Plan;
 use educe::Educe;
 use itertools::Itertools;
-use rootcause::report;
 
 use crate::{
     Result,
@@ -255,13 +254,12 @@ impl LakeSoulIOConfig {
             return format.parse();
         }
 
-        self.files
+        Ok(self
+            .files
             .iter()
             .rev()
             .find_map(|path| PhysicalFormat::from_extension(path).ok())
-            .ok_or(
-                report!("No physical format found").attach(format!("{:?}", self.files)),
-            )
+            .unwrap_or_default()) // no files
     }
 
     pub fn set_files(&mut self, files: Vec<String>) {
