@@ -68,6 +68,25 @@ impl Stream for SortedStream {
     }
 }
 
+fn single_primary_key_stream_data_type(
+    streams: &[SortedStream],
+    col_name: &str,
+) -> Result<Option<DataType>> {
+    let mut data_type = None;
+
+    for stream in streams {
+        let schema = stream.stream.schema();
+        let stream_data_type = schema.field_with_name(col_name)?.data_type().clone();
+        match &data_type {
+            Some(existing) if existing != &stream_data_type => return Ok(None),
+            Some(_) => {}
+            None => data_type = Some(stream_data_type),
+        }
+    }
+
+    Ok(data_type)
+}
+
 pub(crate) type CursorStream<C> =
     Pin<Box<dyn Stream<Item = Result<(C, RecordBatch)>> + Send>>;
 
@@ -323,15 +342,17 @@ pub(crate) fn build_sorted_stream_merger(
     // use FieldCursorStream to avoid RowConverter overhead
     if primary_keys.len() == 1 {
         let col_name = primary_keys[0].as_str();
-        let data_type = physical_schema.field_with_name(col_name)?.data_type();
-        downcast_primitive! {
-            data_type => (primitive_merge_helper, streams, col_name, physical_schema, merged_schema, batch_size, default_column_value, reservation, merge_operator, fields_map, is_compacted),
-            DataType::Utf8 => merge_helper!(StringArray, streams, col_name, physical_schema, merged_schema, batch_size, default_column_value, reservation, merge_operator, fields_map, is_compacted),
-            DataType::Utf8View => merge_helper!(StringViewArray, streams, col_name, physical_schema, merged_schema, batch_size, default_column_value, reservation, merge_operator, fields_map, is_compacted),
-            DataType::LargeUtf8 => merge_helper!(LargeStringArray, streams, col_name, physical_schema, merged_schema, batch_size, default_column_value, reservation, merge_operator, fields_map, is_compacted),
-            DataType::Binary => merge_helper!(BinaryArray, streams, col_name, physical_schema, merged_schema, batch_size, default_column_value, reservation, merge_operator, fields_map, is_compacted),
-            DataType::LargeBinary => merge_helper!(LargeBinaryArray, streams, col_name, physical_schema, merged_schema, batch_size, default_column_value, reservation, merge_operator, fields_map, is_compacted),
-            _ => {}
+        if let Some(data_type) = single_primary_key_stream_data_type(&streams, col_name)?
+        {
+            downcast_primitive! {
+                &data_type => (primitive_merge_helper, streams, col_name, physical_schema, merged_schema, batch_size, default_column_value, reservation, merge_operator, fields_map, is_compacted),
+                DataType::Utf8 => merge_helper!(StringArray, streams, col_name, physical_schema, merged_schema, batch_size, default_column_value, reservation, merge_operator, fields_map, is_compacted),
+                DataType::Utf8View => merge_helper!(StringViewArray, streams, col_name, physical_schema, merged_schema, batch_size, default_column_value, reservation, merge_operator, fields_map, is_compacted),
+                DataType::LargeUtf8 => merge_helper!(LargeStringArray, streams, col_name, physical_schema, merged_schema, batch_size, default_column_value, reservation, merge_operator, fields_map, is_compacted),
+                DataType::Binary => merge_helper!(BinaryArray, streams, col_name, physical_schema, merged_schema, batch_size, default_column_value, reservation, merge_operator, fields_map, is_compacted),
+                DataType::LargeBinary => merge_helper!(LargeBinaryArray, streams, col_name, physical_schema, merged_schema, batch_size, default_column_value, reservation, merge_operator, fields_map, is_compacted),
+                _ => {}
+            }
         }
     }
 

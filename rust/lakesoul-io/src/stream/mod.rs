@@ -27,7 +27,7 @@ use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion_common::{DataFusionError, Result as DFResult};
 use futures::Stream;
 use futures::stream::{Fuse, StreamExt};
-use rootcause::report;
+use rootcause::{bail, report};
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -176,8 +176,28 @@ impl<T: CursorArray> FieldCursorStream<T> {
     fn convert_batch(&mut self, batch: &RecordBatch) -> Result<ArrayValues<T::Values>> {
         let value = self.sort.expr.evaluate(batch)?;
         let array = value.into_array(batch.num_rows())?;
+        if let Some(array) = array.as_any().downcast_ref::<T>() {
+            let size_in_mem = array.get_buffer_memory_size();
+            let array_reservation = self.reservation.new_empty();
+            array_reservation.try_grow(size_in_mem)?;
+            return Ok(ArrayValues::new(
+                self.sort.options,
+                array,
+                array_reservation,
+            ));
+        }
+
+        let data_type = <T as CursorArray>::data_type();
+        let array = arrow::compute::cast(array.as_ref(), &data_type)?;
         let size_in_mem = array.get_buffer_memory_size();
-        let array = array.as_any().downcast_ref::<T>().expect("field values");
+        let Some(array) = array.as_any().downcast_ref::<T>() else {
+            bail!(
+                "Sort field value type mismatch after cast to {:?}: expected {}, got {:?}",
+                data_type,
+                std::any::type_name::<T>(),
+                array.data_type()
+            );
+        };
         let array_reservation = self.reservation.new_empty();
         array_reservation.try_grow(size_in_mem)?;
         Ok(ArrayValues::new(

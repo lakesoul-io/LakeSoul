@@ -561,7 +561,8 @@ public class DMLSuite extends AbstractTestBase {
                 "    order_id INT," +
                 "    name STRING PRIMARY KEY NOT ENFORCED," +
                 "    score DECIMAL" +
-                ") WITH (" +
+                ") PARTITIONED BY ( order_id )" +
+                " WITH (" +
                 "    'format'='lakesoul'," +
                 "    'hashBucketNum'='2'," +
                 "    'lakesoul.native_writer.physical_format'='vortex'," +

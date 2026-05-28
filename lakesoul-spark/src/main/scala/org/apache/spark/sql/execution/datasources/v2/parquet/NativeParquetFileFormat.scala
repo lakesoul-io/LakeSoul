@@ -4,6 +4,8 @@
 
 package org.apache.spark.sql.execution.datasources.v2.parquet
 
+import java.util.Locale
+
 import org.apache.hadoop.fs.FileStatus
 import org.apache.hadoop.mapreduce.{Job, TaskAttemptContext}
 import org.apache.parquet.hadoop.codec.CodecConfig
@@ -30,6 +32,7 @@ class NativeParquetFileFormat extends FileFormat
       .getOrElse(DateTimeUtils.TIMEZONE_OPTION, sparkSession.sessionState.conf.sessionLocalTimeZone)
     val physicalFormat = sparkSession.sessionState.conf
       .getConf(org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf.NATIVE_IO_PHYSICAL_FORMAT)
+      .toLowerCase(Locale.ROOT)
     val extension = if (physicalFormat == "vortex") ".vortex" else ".parquet"
 
     if (options.getOrElse("isNative", "true").toBoolean) {
