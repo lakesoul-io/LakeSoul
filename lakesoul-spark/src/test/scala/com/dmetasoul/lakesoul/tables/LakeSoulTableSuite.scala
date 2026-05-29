@@ -121,7 +121,7 @@ class LakeSoulTableSuite extends QueryTest
     assert(e.getMessage.toLowerCase(Locale.ROOT).contains(expectedMsg.toLowerCase(Locale.ROOT)))
   }
 
-  test("vortex write and read roundtrip") {
+  test("vortex write and read round trip") {
     withSQLConf(LakeSoulSQLConf.NATIVE_IO_PHYSICAL_FORMAT.key -> "vortex") {
       withTempDir { dir =>
         testData.write.format("lakesoul").save(dir.getAbsolutePath)
