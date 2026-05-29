@@ -132,7 +132,7 @@ case class NativePartitionReaderFactory(sqlConf: SQLConf,
 
     // Try to push down filters when filter push-down is enabled.
     val pushed = if (enableParquetFilterPushDown) {
-      val parquetSchema = new SparkToParquetSchemaConverter(sqlConf).convert(dataSchema)
+      val parquetSchema = new SparkToParquetSchemaConverter().convert(dataSchema)
       val parquetFilters = new ParquetFilters(parquetSchema, pushDownDate, pushDownTimestamp,
         pushDownDecimal, pushDownStringStartWith, pushDownInFilterThreshold, isCaseSensitive, datetimeRebaseSpec)
       filters

@@ -138,9 +138,14 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
                            StructType requestSchema,
                            Map<String, String> mergeOperatorInfo)
             throws IOException, InterruptedException, UnsupportedOperationException {
-        super.initialize(inputSplits[0], taskAttemptContext);
         FileSplit split = (FileSplit) inputSplits[0];
         this.file = split.getPath();
+        boolean isVortex = this.file.getName().endsWith(".vortex");
+        if (isVortex) {
+            this.sparkSchema = requestSchema;
+        } else {
+            super.initialize(split, taskAttemptContext);
+        }
         this.nativeIOOptions = NativeIOUtils.getNativeIOOptions(taskAttemptContext, this.file);
         this.filePathList = new ArrayList<>();
 
