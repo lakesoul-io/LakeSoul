@@ -58,6 +58,9 @@ case class NativePartitionReaderFactory(sqlConf: SQLConf,
   private val pushDownDecimal = sqlConf.parquetFilterPushDownDecimal
   private val pushDownStringStartWith = sqlConf.parquetFilterPushDownStringStartWith
   private val pushDownInFilterThreshold = sqlConf.parquetFilterPushDownInFilterThreshold
+  private val writeLegacyParquetFormat = sqlConf.writeLegacyParquetFormat
+  private val parquetOutputTimestampType = sqlConf.parquetOutputTimestampType
+  private val parquetFieldIdWriteEnabled = sqlConf.parquetFieldIdWriteEnabled
   private val nativeIOEnable = sqlConf.getConf(NATIVE_IO_ENABLE)
   private val nativeIOPrefecherBufferSize = sqlConf.getConf(NATIVE_IO_PREFETCHER_BUFFER_SIZE)
   private val nativeIOThreadNum = sqlConf.getConf(NATIVE_IO_THREAD_NUM)
@@ -132,7 +135,11 @@ case class NativePartitionReaderFactory(sqlConf: SQLConf,
 
     // Try to push down filters when filter push-down is enabled.
     val pushed = if (enableParquetFilterPushDown) {
-      val parquetSchema = new SparkToParquetSchemaConverter().convert(dataSchema)
+      val parquetSchema = new SparkToParquetSchemaConverter(
+        writeLegacyParquetFormat,
+        parquetOutputTimestampType,
+        parquetFieldIdWriteEnabled
+      ).convert(dataSchema)
       val parquetFilters = new ParquetFilters(parquetSchema, pushDownDate, pushDownTimestamp,
         pushDownDecimal, pushDownStringStartWith, pushDownInFilterThreshold, isCaseSensitive, datetimeRebaseSpec)
       filters
