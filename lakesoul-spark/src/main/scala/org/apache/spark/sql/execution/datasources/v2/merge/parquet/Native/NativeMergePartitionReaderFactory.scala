@@ -172,6 +172,7 @@ case class NativeMergePartitionReaderFactory(sqlConf: SQLConf,
     vectorizedReader.setPrefetchBufferSize(nativeIOPrefecherBufferSize)
     vectorizedReader.setThreadNum(nativeIOThreadNum)
     vectorizedReader.setAwaitTimeout(nativeIOAwaitTimeout)
+    vectorizedReader.deferNativeReaderCloseUntilTaskCompletion()
 
 
     val iter = new RecordReaderIterator(vectorizedReader)

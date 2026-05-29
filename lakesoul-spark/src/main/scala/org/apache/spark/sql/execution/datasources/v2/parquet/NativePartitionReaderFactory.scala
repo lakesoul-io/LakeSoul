@@ -203,6 +203,7 @@ case class NativePartitionReaderFactory(sqlConf: SQLConf,
     vectorizedReader.setPrefetchBufferSize(nativeIOPrefecherBufferSize)
     vectorizedReader.setThreadNum(nativeIOThreadNum)
     vectorizedReader.setAwaitTimeout(nativeIOAwaitTimeout)
+    vectorizedReader.deferNativeReaderCloseUntilTaskCompletion()
 
     val options = mutable.Map[String, String]()
 
