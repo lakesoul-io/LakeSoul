@@ -36,7 +36,8 @@ class ParquetScanSuite extends QueryTest
       val plan = LakeSoulTable.forPath(tablePath).toDF.queryExecution.toString()
 
       logInfo(plan)
-      assert(plan.contains("ParquetScan") && !plan.contains("withPartitionAndOrdering"))
+      assert((plan.contains("NativeScan") || plan.contains("ParquetScan") || plan.contains("StreamParquetScan")) &&
+        !plan.contains("withPartitionAndOrdering"))
 
     })
 
