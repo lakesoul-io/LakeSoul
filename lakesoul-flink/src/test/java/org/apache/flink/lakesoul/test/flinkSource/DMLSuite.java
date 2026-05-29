@@ -536,7 +536,7 @@ public class DMLSuite extends AbstractTestBase {
                 ") WITH (" +
                 "    'format'='lakesoul'," +
                 "    'hashBucketNum'='2'," +
-                "    'lakesoul.native_writer.physical_format'='vortex'," +
+                "    'file_format'='vortex'," +
                 "    'path'='" + path + "' )");
         tEnv.executeSql("INSERT INTO user_info_vortex VALUES (2, 'Alice', 80),(3, 'Jack', 75)").await();
         StreamTableEnvironment streamEnv = TestUtils.createStreamTableEnv(BATCH_TYPE);
@@ -565,7 +565,7 @@ public class DMLSuite extends AbstractTestBase {
                 " WITH (" +
                 "    'format'='lakesoul'," +
                 "    'hashBucketNum'='2'," +
-                "    'lakesoul.native_writer.physical_format'='vortex'," +
+                "    'file_format'='vortex'," +
                 "    'path'='" + path + "' )");
         tEnv.executeSql("INSERT INTO user_info_vortex_1 VALUES (2, 'Alice', 80),(3, 'Jack', 75)").await();
         StreamTableEnvironment streamEnv = TestUtils.createStreamTableEnv(BATCH_TYPE);

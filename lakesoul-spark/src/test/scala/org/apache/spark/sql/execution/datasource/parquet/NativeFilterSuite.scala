@@ -43,10 +43,7 @@ import org.apache.spark.sql.internal.SQLConf.{
   ParquetOutputTimestampType
 }
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
-import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf.{
-  NATIVE_IO_ENABLE,
-  NATIVE_IO_PHYSICAL_FORMAT
-}
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf.NATIVE_IO_ENABLE
 import org.apache.spark.sql.lakesoul.test.LakeSoulTestUtils
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types._

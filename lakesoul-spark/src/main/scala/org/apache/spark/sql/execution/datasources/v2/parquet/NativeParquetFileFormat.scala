@@ -14,6 +14,8 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetFileFormat, ParquetUtils}
 import org.apache.spark.sql.execution.datasources.{FileFormat, OutputWriter, OutputWriterFactory}
+import org.apache.spark.sql.lakesoul.LakeSoulOptions
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.sources.DataSourceRegister
 import org.apache.spark.sql.types._
 
@@ -30,8 +32,10 @@ class NativeParquetFileFormat extends FileFormat
 
     val timeZoneId = options
       .getOrElse(DateTimeUtils.TIMEZONE_OPTION, sparkSession.sessionState.conf.sessionLocalTimeZone)
-    val physicalFormat = sparkSession.sessionState.conf
-      .getConf(org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf.NATIVE_IO_PHYSICAL_FORMAT)
+    val physicalFormat = options
+      .get(LakeSoulOptions.FILE_FORMAT)
+      .orElse(Option(job.getConfiguration.get(LakeSoulOptions.FILE_FORMAT)))
+      .getOrElse(sparkSession.sessionState.conf.getConf(LakeSoulSQLConf.NATIVE_IO_PHYSICAL_FORMAT))
       .toLowerCase(Locale.ROOT)
     val extension = if (physicalFormat == "vortex") ".vortex" else ".parquet" // vortex is only supported when native io is enabled
 

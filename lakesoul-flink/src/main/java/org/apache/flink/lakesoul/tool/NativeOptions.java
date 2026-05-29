@@ -50,10 +50,10 @@ public class NativeOptions {
                     .withDescription("Option to set if use stable sort for native writer");
 
     public static final ConfigOption<String> PHYSICAL_FORMAT =
-            key("lakesoul.native_writer.physical_format")
+            key("file_format")
                     .stringType()
                     .defaultValue("parquet")
-                    .withDescription("Option to set the phycial file format for native writer");
+                    .withDescription("Option to set the physical file format for native writer");
 
     public static final ConfigOption<String> FILE_FILTER_PUSHDOWN =
             key("lakesoul.native_writer.file_filter_pushdown")

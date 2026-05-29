@@ -452,6 +452,9 @@ public class FlinkUtil {
             if (value != null) {
                 int lastDot = option.key().lastIndexOf('.');
                 String key = lastDot == -1 ? option.key() : option.key().substring(lastDot + 1);
+                if (option == NativeOptions.PHYSICAL_FORMAT) {
+                    key = "physical_format";
+                }
                 io.setOption(key, value);
             }
         }

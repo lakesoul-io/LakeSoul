@@ -522,20 +522,19 @@ class ReadSuite extends QueryTest
   }
 
   test("vortex write and snapshot read") {
-    withSQLConf(LakeSoulSQLConf.NATIVE_IO_PHYSICAL_FORMAT.key -> "vortex") {
-      withTempDir(dir => {
-        val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toUri.toString
-        Seq((1, "Alice", 90), (2, "Bob", 80), (3, "Charlie", 75))
-          .toDF("id", "name", "score")
-          .write
-          .mode("append")
-          .format("lakesoul")
-          .option(LakeSoulOptions.HASH_PARTITIONS, "id")
-          .option(LakeSoulOptions.HASH_BUCKET_NUM, "2")
-          .save(tablePath)
-        val df = spark.read.format("lakesoul").load(tablePath)
-        checkAnswer(df, Seq((1, "Alice", 90), (2, "Bob", 80), (3, "Charlie", 75)).toDF("id", "name", "score"))
-      })
-    }
+    withTempDir(dir => {
+      val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toUri.toString
+      Seq((1, "Alice", 90), (2, "Bob", 80), (3, "Charlie", 75))
+        .toDF("id", "name", "score")
+        .write
+        .mode("append")
+        .format("lakesoul")
+        .option(LakeSoulOptions.HASH_PARTITIONS, "id")
+        .option(LakeSoulOptions.HASH_BUCKET_NUM, "2")
+        .option(LakeSoulOptions.FILE_FORMAT, "vortex")
+        .save(tablePath)
+      val df = spark.read.format("lakesoul").load(tablePath)
+      checkAnswer(df, Seq((1, "Alice", 90), (2, "Bob", 80), (3, "Charlie", 75)).toDF("id", "name", "score"))
+    })
   }
 }

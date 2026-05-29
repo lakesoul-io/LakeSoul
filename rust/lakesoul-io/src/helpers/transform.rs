@@ -338,50 +338,6 @@ pub fn transform_array(
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use arrow_array::StringViewArray;
-
-    #[test]
-    fn transform_record_batch_materializes_utf8_view_as_utf8() {
-        let target_schema =
-            Arc::new(Schema::new(vec![Field::new("value", DataType::Utf8, true)]));
-        let input_schema = Arc::new(Schema::new(vec![Field::new(
-            "value",
-            DataType::Utf8View,
-            true,
-        )]));
-        let input_array: ArrayRef = Arc::new(StringViewArray::from(vec![
-            Some("aa"),
-            Some("bbb"),
-            None,
-            Some("long string over twelve bytes"),
-        ]));
-        let input_batch = RecordBatch::try_new(input_schema, vec![input_array]).unwrap();
-
-        let transformed = transform_record_batch(
-            target_schema,
-            input_batch,
-            false,
-            Arc::new(HashMap::new()),
-        )
-        .unwrap();
-
-        assert_eq!(transformed.schema().field(0).data_type(), &DataType::Utf8);
-        assert_eq!(transformed.column(0).data_type(), &DataType::Utf8);
-        let values = transformed
-            .column(0)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
-        assert_eq!(values.value(0), "aa");
-        assert_eq!(values.value(1), "bbb");
-        assert!(values.is_null(2));
-        assert_eq!(values.value(3), "long string over twelve bytes");
-    }
-}
-
 pub fn make_default_array(
     datatype: &DataType,
     value: &String,
@@ -539,4 +495,48 @@ pub fn make_default_array(
             }
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_array::StringViewArray;
+
+    #[test]
+    fn transform_record_batch_materializes_utf8_view_as_utf8() {
+        let target_schema =
+            Arc::new(Schema::new(vec![Field::new("value", DataType::Utf8, true)]));
+        let input_schema = Arc::new(Schema::new(vec![Field::new(
+            "value",
+            DataType::Utf8View,
+            true,
+        )]));
+        let input_array: ArrayRef = Arc::new(StringViewArray::from(vec![
+            Some("aa"),
+            Some("bbb"),
+            None,
+            Some("long string over twelve bytes"),
+        ]));
+        let input_batch = RecordBatch::try_new(input_schema, vec![input_array]).unwrap();
+
+        let transformed = transform_record_batch(
+            target_schema,
+            input_batch,
+            false,
+            Arc::new(HashMap::new()),
+        )
+        .unwrap();
+
+        assert_eq!(transformed.schema().field(0).data_type(), &DataType::Utf8);
+        assert_eq!(transformed.column(0).data_type(), &DataType::Utf8);
+        let values = transformed
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(values.value(0), "aa");
+        assert_eq!(values.value(1), "bbb");
+        assert!(values.is_null(2));
+        assert_eq!(values.value(3), "long string over twelve bytes");
+    }
 }

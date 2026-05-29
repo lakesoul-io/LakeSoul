@@ -8,11 +8,10 @@ import org.apache.hadoop.fs.Path
 import org.apache.hadoop.hive.ql.exec.spark.session.SparkSession
 
 import java.util.Locale
-import org.apache.spark.sql.lakesoul.LakeSoulUtils
+import org.apache.spark.sql.lakesoul.{LakeSoulOptions, LakeSoulUtils, SnapshotManagement}
 import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
 import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.test.SharedSparkSession
-import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.{AnalysisException, QueryTest}
 import org.junit.runner.RunWith
 import org.scalatestplus.junit.JUnitRunner
@@ -21,6 +20,8 @@ import org.scalatestplus.junit.JUnitRunner
 class LakeSoulTableSuite extends QueryTest
   with SharedSparkSession
   with LakeSoulSQLCommandTest {
+
+  import testImplicits._
 
   test("forPath") {
     withTempDir { dir =>
@@ -122,12 +123,34 @@ class LakeSoulTableSuite extends QueryTest
   }
 
   test("vortex write and read round trip") {
-    withSQLConf(LakeSoulSQLConf.NATIVE_IO_PHYSICAL_FORMAT.key -> "vortex") {
+    withTable("vortex_round_trip") {
       withTempDir { dir =>
-        testData.write.format("lakesoul").save(dir.getAbsolutePath)
+        spark.sql(
+          s"""
+             |CREATE TABLE vortex_round_trip (
+             |  key INT,
+             |  value STRING,
+             |  dt STRING
+             |)
+             |USING lakesoul
+             |PARTITIONED BY (dt)
+             |LOCATION '${dir.toURI}'
+             |TBLPROPERTIES (
+             |  '${LakeSoulOptions.FILE_FORMAT}' = 'vortex'
+             |)
+             |""".stripMargin)
+        spark.sql(
+          """
+            |INSERT INTO vortex_round_trip VALUES
+            |  (1, 'a', '2026-05-29'),
+            |  (2, 'b', '2026-05-29')
+            |""".stripMargin)
         checkAnswer(
           LakeSoulTable.forPath(spark, dir.getAbsolutePath).toDF,
-          testData.collect().toSeq)
+          Seq((1, "a", "2026-05-29"), (2, "b", "2026-05-29")).toDF("key", "value", "dt"))
+        val snapshot = SnapshotManagement(
+          SparkUtil.makeQualifiedTablePath(new Path(dir.getAbsolutePath))).snapshot
+        assert(SparkUtil.allDataInfo(snapshot).exists(_.path.endsWith(".vortex")))
       }
     }
   }

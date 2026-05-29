@@ -178,7 +178,7 @@ public class BatchReadSuite extends AbstractTestBase {
                 ") WITH (" +
                 "    'format'='lakesoul'," +
                 "    'hashBucketNum'='2'," +
-                "    'lakesoul.native_writer.physical_format'='vortex'," +
+                "    'file_format'='vortex'," +
                 "    'path'='" + path + "' )";
         createTableEnv.executeSql("DROP TABLE if exists user_test_vortex");
         createTableEnv.executeSql(createUserSql);
@@ -210,7 +210,7 @@ public class BatchReadSuite extends AbstractTestBase {
                 ") WITH (" +
                 "    'format'='lakesoul'," +
                 "    'hashBucketNum'='2'," +
-                "    'lakesoul.native_writer.physical_format'='vortex'," +
+                "    'file_format'='vortex'," +
                 "    'path'='" + path + "' )";
         createTableEnv.executeSql("DROP TABLE if exists user_test_incr_vortex");
         createTableEnv.executeSql(createUserSql);
