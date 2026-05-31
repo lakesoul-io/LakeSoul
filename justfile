@@ -25,6 +25,16 @@ flink-test-1:
         -Dlog4j2.statusLoggerLevel=OFF
     mvn -q surefire-report:report-only -pl lakesoul-flink -am
 
+spark-test-gluten:
+    -MAVEN_OPTS="-Xmx4g -Dio.netty.tryReflectionSetAccessible=true" \
+        mvn -q -B test -pl lakesoul-spark-gluten -am -Pgluten -Pcross-build --file pom.xml -Dtest='LakeSoulGlutenCompatSuite,UpdateGlutenTestSuite,UpsertGlutenTestSuite,DeleteSQLGlutenTestSuite,MergeIntoSQLGlutenTestSuite,' -Dsurefire.failIfNoSpecifiedTests=false
+    mvn -q surefire-report:report-only -pl lakesoul-spark-gluten -am -Pgluten
+
+cross:
+    cross build --target x86_64-unknown-linux-gnu --release --package lakesoul-io-c -F hdfs
+    cross build --target x86_64-unknown-linux-gnu --release  --package lakesoul-metadata-c --all-features
+    cp rust/target/x86_64-unknown-linux-gnu/release/lib*.so rust/target/release
+
 copy-to-java ext="dylib":
   cargo build -p lakesoul-io-c -p lakesoul-metadata-c
   mkdir -p lakesoul-common/target/classes/

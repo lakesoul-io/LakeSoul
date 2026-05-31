@@ -24,7 +24,7 @@ case class GlutenCompatPostInjectColumnar(session: SparkSession)
   with Logging {
 
   private def isLakeSoulScan(scan: Scan): Boolean = {
-    scan.getClass.getSimpleName.contains("NativeParquetScan") ||
+    scan.getClass.getSimpleName.contains("NativeScan") ||
       scan.isInstanceOf[MergeDeltaParquetScan] ||
       scan.isInstanceOf[OnePartitionMergeBucketScan]
   }
