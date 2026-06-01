@@ -1,7 +1,7 @@
 package org.apache.spark.sql.lakesoul.benchmark
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.functions.column
+import org.apache.spark.sql.functions.{column, to_csv}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.types._
@@ -9,7 +9,7 @@ import org.apache.spark.sql.types._
 object ConsistencyCI {
 
 
-  val tpchTable = Seq(
+  val tpchTable: Seq[(String, StructType, String, Option[String])] = Seq(
     ("customer",
       StructType(Array(
         StructField("c_custkey", LongType, nullable = false),
@@ -109,14 +109,12 @@ object ConsistencyCI {
   def load_data(spark: SparkSession): Unit = {
 
     val tpchPath = System.getenv("TPCH_DATA")
-    //    val tpchPath = "/Users/ceng/Documents/GitHub/LakeSoul/test_files/tpch/data"
     val lakeSoulPath = "/tmp/lakesoul/tpch"
     tpchTable.foreach(tup => {
       val (name, schema, hashPartitions, rangePartitions) = tup
       val df = spark.read.option("delimiter", "|")
         .schema(schema)
         .csv(s"$tpchPath/$name.tbl")
-      //      df.show
       rangePartitions match {
         case Some(value) =>
           df.write.format("lakesoul")

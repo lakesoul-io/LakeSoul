@@ -70,6 +70,8 @@ class NativeParquetOutputWriter(val path: String,
     if (recordCount >= NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE) {
       recordWriter.finish()
       nativeIOWriter.write(root)
+      root.clear()
+      root.allocateNew()
       recordWriter.reset()
       recordCount = 0
     }
