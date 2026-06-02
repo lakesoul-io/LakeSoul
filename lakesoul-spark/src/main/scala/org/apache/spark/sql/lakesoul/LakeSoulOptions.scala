@@ -114,6 +114,7 @@ object LakeSoulOptions {
   val RANGE_PARTITIONS = "rangePartitions"
   val HASH_PARTITIONS = "hashPartitions"
   val HASH_BUCKET_NUM = "hashBucketNum"
+  val FILE_FORMAT = "file_format"
 
   val SHORT_TABLE_NAME = "shortTableName"
 

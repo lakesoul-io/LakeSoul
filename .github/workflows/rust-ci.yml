@@ -126,6 +126,6 @@ jobs:
               run: |
                   export RUST_LOG=info
                   export RUST_BACKTRACE=full
-                  cargo test --lib --bins --tests
+                  cargo test --profile test-fast --lib --bins --tests
                   export LAKESOUL_IO_USE_V2_MERGE=true
-                  cargo test --lib --bins --tests
+                  cargo test --profile test-fast --lib --bins --tests

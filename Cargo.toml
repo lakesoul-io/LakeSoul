@@ -35,8 +35,9 @@ inherits = "release"
 debug = true
 opt-level = 2
 
-[profile.test]
-# Use a slightly better optimization level for tests
+[profile.test-fast]
+inherits = "test"
+# Use a slightly better optimization level for ci-tests
 opt-level = 1
 
 [workspace.dependencies]
@@ -69,6 +70,9 @@ parquet = { version = "58", default-features = true, features = [
   "encryption",
 ] }
 object_store = { version = "0.13", features = ["aws", "http"] }
+# vortex
+vortex = { version = "0.71" }
+vortex-datafusion = { version = "0.71"}
 # async
 futures = "0.3"
 async-trait = "0.1"
@@ -86,10 +90,10 @@ metrics = "0.24"
 cached = { version = "0.54.0", features = ["async_tokio_rt_multi_thread"] }
 # cli
 clap = { version = "4.4", features = ["derive"] }
-# utils
 atomic_refcell = "0.1.8"
 bytes = "1"
 chrono = { version = "0.4", features = ["clock", "unstable-locales"] }
+dashmap = { version = "6.1" }
 hex = "0.4"
 jsonwebtoken = { version = "9", default-features = false }
 url = "2"

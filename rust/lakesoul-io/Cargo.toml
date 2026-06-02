@@ -47,6 +47,10 @@ arrow-buffer = { workspace = true }
 arrow-cast = { workspace = true }
 parquet = { workspace = true }
 object_store = { workspace = true }
+# vortex
+vortex = { workspace = true }
+vortex-datafusion = { workspace = true}
+
 # async
 futures = { workspace = true }
 async-trait = { workspace = true }
@@ -76,6 +80,7 @@ atomic_refcell = { workspace = true }
 derivative = { workspace = true }
 url = { workspace = true }
 bytes = { workspace = true }
+dashmap = { workspace = true }
 half = { workspace = true }
 uuid = { workspace = true }
 regex = { workspace = true }

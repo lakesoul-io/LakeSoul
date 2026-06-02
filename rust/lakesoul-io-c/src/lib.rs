@@ -1133,15 +1133,15 @@ pub unsafe extern "C" fn write_record_batch(
             writer.as_ref().ptr as *mut SyncSendableMutableLakeSoulWriter,
         )
         .as_mut();
-        let mut ffi_array = FFI_ArrowArray::empty();
-        (array_addr as *mut FFI_ArrowArray)
-            .copy_to(&mut ffi_array as *mut FFI_ArrowArray, 1);
-        let mut ffi_schema = FFI_ArrowSchema::empty();
-        (schema_addr as *mut FFI_ArrowSchema)
-            .copy_to(&mut ffi_schema as *mut FFI_ArrowSchema, 1);
+        let ffi_array = FFI_ArrowArray::from_raw(array_addr as *mut FFI_ArrowArray);
+        let ffi_schema = FFI_ArrowSchema::from_raw(schema_addr as *mut FFI_ArrowSchema);
         let result_fn = move || {
             let mut array_data = from_ffi(ffi_array, &ffi_schema)?;
             array_data.align_buffers();
+            #[cfg(debug_assertions)]
+            {
+                array_data.validate_full()?;
+            }
             let struct_array = StructArray::from(array_data);
             let rb = RecordBatch::from(struct_array);
             writer.write_batch(rb)?;
@@ -1177,15 +1177,17 @@ pub unsafe extern "C" fn write_record_batch_blocked(
             writer.as_ref().ptr as *mut SyncSendableMutableLakeSoulWriter,
         )
         .as_mut();
-        let mut ffi_array = FFI_ArrowArray::empty();
-        (array_addr as *mut FFI_ArrowArray)
-            .copy_to(&mut ffi_array as *mut FFI_ArrowArray, 1);
-        let mut ffi_schema = FFI_ArrowSchema::empty();
-        (schema_addr as *mut FFI_ArrowSchema)
-            .copy_to(&mut ffi_schema as *mut FFI_ArrowSchema, 1);
+
+        let ffi_array = FFI_ArrowArray::from_raw(array_addr as *mut FFI_ArrowArray);
+        let ffi_schema = FFI_ArrowSchema::from_raw(schema_addr as *mut FFI_ArrowSchema);
+
         let result_fn = move || {
             let mut array_data = from_ffi(ffi_array, &ffi_schema)?;
             array_data.align_buffers();
+            #[cfg(debug_assertions)]
+            {
+                array_data.validate_full()?;
+            }
             let struct_array = StructArray::from(array_data);
             let rb = RecordBatch::from(struct_array);
             writer.write_batch(rb)?;

@@ -61,7 +61,7 @@ pub fn create_lakesoul_session_ctx(
     session_config
         .options_mut()
         .sql_parser
-        .map_string_types_to_utf8view = false;
+        .map_string_types_to_utf8view = false; // TODO(jiax): check this
     session_config
         .options_mut()
         .optimizer

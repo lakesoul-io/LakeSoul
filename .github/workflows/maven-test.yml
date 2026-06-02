@@ -36,13 +36,13 @@ jobs:
             - name: Free Disk Space (Ubuntu)
               uses: jlumbroso/free-disk-space@main
               with:
-                tool-cache: false
-                android: true
-                dotnet: true
-                haskell: true
-                large-packages: false
-                docker-images: true
-                swap-storage: true
+                  tool-cache: false
+                  android: true
+                  dotnet: true
+                  haskell: true
+                  large-packages: false
+                  docker-images: true
+                  swap-storage: true
             - uses: actions/checkout@v4
             - name: Set up JDK 11
               uses: actions/setup-java@v4
@@ -433,7 +433,7 @@ jobs:
               uses: actions/upload-artifact@v4
               with:
                   name: maven-test-report-artifact-flink-1
-                  path: lakesoul-flink/target/site
+                  path: lakesoul-flink/target/reports
                   retention-days: 5
                   if-no-files-found: error
 

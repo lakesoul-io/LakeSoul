@@ -9,8 +9,6 @@ import org.apache.hadoop.mapred.FileSplit
 import org.apache.hadoop.mapreduce._
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
 import org.apache.parquet.filter2.predicate.{FilterApi, FilterPredicate}
-import org.apache.parquet.format.converter.ParquetMetadataConverter.SKIP_ROW_GROUPS
-import org.apache.parquet.hadoop.{ParquetFileReader, ParquetInputFormat}
 import org.apache.spark.TaskContext
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
@@ -47,15 +45,15 @@ import scala.collection.mutable.ArrayBuffer
  * @param partitionSchema Schema of partitions.
  *                        //  * @param filterMap Filters to be pushed down in the batch scan.
  */
-case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
-                                                    broadcastedConf: Broadcast[SerializableConfiguration],
-                                                    dataSchema: StructType,
-                                                    readDataSchema: StructType,
-                                                    partitionSchema: StructType,
-                                                    filters: Array[Filter],
-                                                    mergeOperatorInfo: Map[String, MergeOperator[Any]],
-                                                    defaultMergeOp: MergeOperator[Any],
-                                                    options: Map[String, String] = Map.empty)
+case class NativeMergePartitionReaderFactory(sqlConf: SQLConf,
+                                             broadcastedConf: Broadcast[SerializableConfiguration],
+                                             dataSchema: StructType,
+                                             readDataSchema: StructType,
+                                             partitionSchema: StructType,
+                                             filters: Array[Filter],
+                                             mergeOperatorInfo: Map[String, MergeOperator[Any]],
+                                             defaultMergeOp: MergeOperator[Any],
+                                             options: Map[String, String] = Map.empty)
   extends NativeMergeFilePartitionReaderFactory(mergeOperatorInfo, defaultMergeOp) with Logging {
 
   private val isCaseSensitive = sqlConf.caseSensitiveAnalysis
@@ -69,6 +67,9 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
   private val pushDownDecimal = sqlConf.parquetFilterPushDownDecimal
   private val pushDownStringStartWith = sqlConf.parquetFilterPushDownStringStartWith
   private val pushDownInFilterThreshold = sqlConf.parquetFilterPushDownInFilterThreshold
+  private val writeLegacyParquetFormat = sqlConf.writeLegacyParquetFormat
+  private val parquetOutputTimestampType = sqlConf.parquetOutputTimestampType
+  private val parquetFieldIdWriteEnabled = sqlConf.parquetFieldIdWriteEnabled
   private val nativeIOEnable = sqlConf.getConf(NATIVE_IO_ENABLE)
   private val nativeIOPrefecherBufferSize = sqlConf.getConf(NATIVE_IO_PREFETCHER_BUFFER_SIZE)
   private val nativeIOThreadNum = sqlConf.getConf(NATIVE_IO_THREAD_NUM)
@@ -171,6 +172,7 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
     vectorizedReader.setPrefetchBufferSize(nativeIOPrefecherBufferSize)
     vectorizedReader.setThreadNum(nativeIOThreadNum)
     vectorizedReader.setAwaitTimeout(nativeIOAwaitTimeout)
+    vectorizedReader.deferNativeReaderCloseUntilTaskCompletion()
 
 
     val iter = new RecordReaderIterator(vectorizedReader)
@@ -272,17 +274,22 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
       filters
     }
 
-    lazy val footerFileMetaData =
-      ParquetFileReader.readFooter(conf, filePath, SKIP_ROW_GROUPS).getFileMetaData
+    // Use empty parquet key-value metadata to get default (no-rebase) behavior.
+    // The native reader handles format-specific details internally.
+    val emptyMetadata: String => String = _ => null
     val datetimeRebaseSpec = DataSourceUtils.datetimeRebaseSpec(
-      footerFileMetaData.getKeyValueMetaData.get,
+      emptyMetadata,
       SQLConf.get.getConf(SQLConf.PARQUET_REBASE_MODE_IN_READ))
     val int96RebaseSpec = DataSourceUtils.int96RebaseSpec(
-      footerFileMetaData.getKeyValueMetaData.get,
+      emptyMetadata,
       SQLConf.get.getConf(SQLConf.PARQUET_INT96_REBASE_MODE_IN_READ))
     // Try to push down filters when filter push-down is enabled.
     val pushed = if (enableParquetFilterPushDown) {
-      val converter = new SparkToParquetSchemaConverter()
+      val converter = new SparkToParquetSchemaConverter(
+        writeLegacyParquetFormat,
+        parquetOutputTimestampType,
+        parquetFieldIdWriteEnabled
+      )
       val parquetSchema = converter.convert(dataSchema)
       val parquetFilters = new ParquetFilters(parquetSchema, pushDownDate, pushDownTimestamp,
         pushDownDecimal, pushDownStringStartWith, pushDownInFilterThreshold, isCaseSensitive,
@@ -290,16 +297,10 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
       )
       if (nativeIOSkipMOR.equals("true")) {
         processedFilters
-          // Collects all converted Parquet filter predicates. Notice that not all predicates can be
-          // converted (`ParquetFilters.createFilter` returns an `Option`). That's why a `flatMap`
-          // is used here.
           .flatMap(parquetFilters.createFilter)
           .reduceOption(FilterApi.or)
       } else {
         filters
-          // Collects all converted Parquet filter predicates. Notice that not all predicates can be
-          // converted (`ParquetFilters.createFilter` returns an `Option`). That's why a `flatMap`
-          // is used here.
           .flatMap(parquetFilters.createFilter)
           .reduceOption(FilterApi.and)
       }
@@ -307,16 +308,8 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
       None
     }
 
-    // PARQUET_INT96_TIMESTAMP_CONVERSION says to apply timezone conversions to int96 timestamps'
-    // *only* if the file was created by something other than "parquet-mr", so check the actual
-    // writer here for this file.  We have to do this per-file, as each file in the table may
-    // have different writers.
-    // Define isCreatedByParquetMr as function to avoid unnecessary parquet footer reads.
-    def isCreatedByParquetMr: Boolean =
-      footerFileMetaData.getCreatedBy.startsWith("parquet-mr")
-
     val convertTz =
-      if (timestampConversion && !isCreatedByParquetMr) {
+      if (timestampConversion) {
         Some(DateTimeUtils.getZoneId(conf.get(SQLConf.SESSION_LOCAL_TIMEZONE.key)))
       } else {
         None
@@ -327,11 +320,6 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
     conf.set(ParquetWriteSupport.SPARK_ROW_SCHEMA, requestSchemaMap(file.rangeVersion))
     val hadoopAttemptContext = new TaskAttemptContextImpl(conf, attemptId)
 
-    // Try to push down filters when filter push-down is enabled.
-    // Notice: This push-down is RowGroups level, not individual records.
-    if (pushed.isDefined) {
-      ParquetInputFormat.setFilterPredicate(hadoopAttemptContext.getConfiguration, pushed.get)
-    }
     val reader = buildReaderFunc(
       splits, files, file.partitionValues, hadoopAttemptContext, pushed, convertTz, datetimeRebaseSpec, int96RebaseSpec)
     reader

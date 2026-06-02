@@ -4,6 +4,8 @@
 
 package org.apache.spark.sql.execution.datasources.v2.parquet
 
+import java.util.Locale
+
 import org.apache.hadoop.fs.FileStatus
 import org.apache.hadoop.mapreduce.{Job, TaskAttemptContext}
 import org.apache.parquet.hadoop.codec.CodecConfig
@@ -12,6 +14,8 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetFileFormat, ParquetUtils}
 import org.apache.spark.sql.execution.datasources.{FileFormat, OutputWriter, OutputWriterFactory}
+import org.apache.spark.sql.lakesoul.LakeSoulOptions
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.sources.DataSourceRegister
 import org.apache.spark.sql.types._
 
@@ -28,6 +32,12 @@ class NativeParquetFileFormat extends FileFormat
 
     val timeZoneId = options
       .getOrElse(DateTimeUtils.TIMEZONE_OPTION, sparkSession.sessionState.conf.sessionLocalTimeZone)
+    val physicalFormat = options
+      .get(LakeSoulOptions.FILE_FORMAT)
+      .orElse(Option(job.getConfiguration.get(LakeSoulOptions.FILE_FORMAT)))
+      .getOrElse(sparkSession.sessionState.conf.getConf(LakeSoulSQLConf.NATIVE_IO_PHYSICAL_FORMAT))
+      .toLowerCase(Locale.ROOT)
+    val extension = if (physicalFormat == "vortex") ".vortex" else ".parquet" // vortex is only supported when native io is enabled
 
     if (options.getOrElse("isNative", "true").toBoolean) {
       new OutputWriterFactory {
@@ -35,12 +45,12 @@ class NativeParquetFileFormat extends FileFormat
                                   path: String,
                                   dataSchema: StructType,
                                   context: TaskAttemptContext): OutputWriter = {
-          logInfo(s"Use native columnar parquet writer for $path")
-          new NativeParquetColumnarOutputWriter(path, dataSchema, timeZoneId, context)
+          logInfo(s"Use native columnar $physicalFormat writer for $path")
+          new NativeParquetColumnarOutputWriter(path, dataSchema, timeZoneId, context, physicalFormat)
         }
 
         override def getFileExtension(context: TaskAttemptContext): String = {
-          CodecConfig.from(context).getCodec.getExtension + ".parquet"
+          CodecConfig.from(context).getCodec.getExtension + extension
         }
       }
     } else {
@@ -49,12 +59,12 @@ class NativeParquetFileFormat extends FileFormat
                                   path: String,
                                   dataSchema: StructType,
                                   context: TaskAttemptContext): OutputWriter = {
-          logInfo(s"Use native parquet writer for $path")
-          new NativeParquetOutputWriter(path, dataSchema, timeZoneId, context)
+          logInfo(s"Use native $physicalFormat writer for $path")
+          new NativeParquetOutputWriter(path, dataSchema, timeZoneId, context, physicalFormat)
         }
 
         override def getFileExtension(context: TaskAttemptContext): String = {
-          CodecConfig.from(context).getCodec.getExtension + ".parquet"
+          CodecConfig.from(context).getCodec.getExtension + extension
         }
       }
     }

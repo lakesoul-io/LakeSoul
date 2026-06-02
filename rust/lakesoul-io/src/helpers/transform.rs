@@ -200,7 +200,6 @@ pub fn transform_record_batch(
 /// Specifically handles:
 /// - Timestamp coercion from Int64, Utf8, or different precision Timestamps.
 /// - Recursive transformation for nested `StructArray` fields.
-/// - Fast-path cloning for compatible View types (e.g., Utf8View to Utf8).
 pub fn transform_array(
     name: String,
     target_datatype: DataType,
@@ -318,33 +317,19 @@ pub fn transform_array(
         }
         // 3. General Transformation Path
         target_datatype => {
-            let array_type = array.data_type();
             if target_datatype != *array.data_type() {
-                match (target_datatype.clone(), array_type) {
-                    // Fast-path: Skip explicit casting for compatible View types if possible
-                    // (e.g., from Utf8View to Utf8/LargeUtf8)
-                    (DataType::Utf8 | DataType::LargeUtf8, DataType::Utf8View) => {
-                        array.clone()
-                    }
-                    (DataType::Binary | DataType::LargeBinary, DataType::BinaryView) => {
-                        array.clone()
-                    }
-                    (DataType::List(_), DataType::ListView(_)) => array.clone(),
-                    (DataType::LargeList(_), DataType::LargeListView(_)) => array.clone(),
-                    (_, _) => {
-                        cast_with_options(&array, &target_datatype, &ARROW_CAST_OPTIONS)
-                            .map_err(|e| {
-                            DataFusionError::ArrowError(
-                                Box::new(e),
-                                Some(format!(
-                                    "Failed to cast type from {} to {}",
-                                    array.data_type(),
-                                    target_datatype
-                                )),
-                            )
-                        })?
-                    }
-                }
+                cast_with_options(&array, &target_datatype, &ARROW_CAST_OPTIONS).map_err(
+                    |e| {
+                        DataFusionError::ArrowError(
+                            Box::new(e),
+                            Some(format!(
+                                "Failed to cast type from {} to {}",
+                                array.data_type(),
+                                target_datatype
+                            )),
+                        )
+                    },
+                )?
             } else {
                 // Types match exactly, return a shallow clone (increment RefCount)
                 array.clone()
@@ -510,4 +495,48 @@ pub fn make_default_array(
             }
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_array::StringViewArray;
+
+    #[test]
+    fn transform_record_batch_materializes_utf8_view_as_utf8() {
+        let target_schema =
+            Arc::new(Schema::new(vec![Field::new("value", DataType::Utf8, true)]));
+        let input_schema = Arc::new(Schema::new(vec![Field::new(
+            "value",
+            DataType::Utf8View,
+            true,
+        )]));
+        let input_array: ArrayRef = Arc::new(StringViewArray::from(vec![
+            Some("aa"),
+            Some("bbb"),
+            None,
+            Some("long string over twelve bytes"),
+        ]));
+        let input_batch = RecordBatch::try_new(input_schema, vec![input_array]).unwrap();
+
+        let transformed = transform_record_batch(
+            target_schema,
+            input_batch,
+            false,
+            Arc::new(HashMap::new()),
+        )
+        .unwrap();
+
+        assert_eq!(transformed.schema().field(0).data_type(), &DataType::Utf8);
+        assert_eq!(transformed.column(0).data_type(), &DataType::Utf8);
+        let values = transformed
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(values.value(0), "aa");
+        assert_eq!(values.value(1), "bbb");
+        assert!(values.is_null(2));
+        assert_eq!(values.value(3), "long string over twelve bytes");
+    }
 }

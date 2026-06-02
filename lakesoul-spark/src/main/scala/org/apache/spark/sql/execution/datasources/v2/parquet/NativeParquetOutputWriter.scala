@@ -25,7 +25,11 @@ import java.util
 import scala.collection.JavaConverters.mapAsScalaMapConverter
 import scala.collection.mutable
 
-class NativeParquetOutputWriter(val path: String, dataSchema: StructType, timeZoneId: String, context: TaskAttemptContext) extends OutputWriter {
+class NativeParquetOutputWriter(val path: String,
+                                dataSchema: StructType,
+                                timeZoneId: String,
+                                context: TaskAttemptContext,
+                                physicalFormat: String = "parquet") extends OutputWriter {
 
   val NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE: Int = SQLConf.get.getConf(LakeSoulSQLConf.NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE)
 
@@ -41,13 +45,14 @@ class NativeParquetOutputWriter(val path: String, dataSchema: StructType, timeZo
 
   GlutenUtils.setArrowAllocator(nativeIOWriter)
   nativeIOWriter.setRowGroupRowNumber(NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE)
-  if (path.endsWith(".parquet")) {
+  if (path.endsWith(".parquet") || path.endsWith(".vortex")) {
     nativeIOWriter.addFile(path)
   } else {
     nativeIOWriter.withPrefix(path)
   }
 
   NativeIOUtils.setNativeIOOptions(nativeIOWriter, NativeIOUtils.getNativeIOOptions(context, new Path(path)))
+  nativeIOWriter.setOption("physical_format", physicalFormat)
 
   nativeIOWriter.initializeWriter()
 
@@ -65,6 +70,8 @@ class NativeParquetOutputWriter(val path: String, dataSchema: StructType, timeZo
     if (recordCount >= NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE) {
       recordWriter.finish()
       nativeIOWriter.write(root)
+      root.clear()
+      root.allocateNew()
       recordWriter.reset()
       recordCount = 0
     }

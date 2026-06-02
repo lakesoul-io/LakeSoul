@@ -8,7 +8,6 @@ import org.apache.arrow.memory.ArrowBuf
 import org.apache.arrow.vector.ipc.message.{ArrowFieldNode, ArrowRecordBatch}
 import org.apache.arrow.vector.{BaseFixedWidthVector, BaseVariableWidthVector, FieldVector, TypeLayout, ValueVector, VectorLoader}
 import org.apache.hadoop.mapreduce.TaskAttemptContext
-import org.apache.spark.sql.arrow.ArrowColumnVector
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.{ArrowFakeRow, ColumnarBatch, NativeIOUtils}
@@ -18,8 +17,10 @@ import scala.collection.JavaConverters.{asScalaBufferConverter, seqAsJavaListCon
 // for compaction write, we directly get ColumnarBatch of ArrowVectors
 // from RDD[ArrowFakeRow]
 class NativeParquetColumnarOutputWriter(path: String, dataSchema: StructType, timeZoneId: String,
-                                        context: TaskAttemptContext)
-  extends NativeParquetOutputWriter(path, dataSchema, timeZoneId, context) {
+                                        context: TaskAttemptContext, physicalFormat: String = "parquet")
+  extends NativeParquetOutputWriter(path, dataSchema, timeZoneId, context, physicalFormat) {
+  private var closed = false
+
   override def write(row: InternalRow): Unit = {
     if (!row.isInstanceOf[ArrowFakeRow]) {
       throw new IllegalStateException(
@@ -32,14 +33,20 @@ class NativeParquetColumnarOutputWriter(path: String, dataSchema: StructType, ti
       if (root.getRowCount > 0)
         nativeIOWriter.write(root)
     } finally {
+      root.clear()
       input.close()
-      root.close()
     }
   }
 
-  override def close() = {
-    nativeIOWriter.flush()
-    nativeIOWriter.close()
+  override def close(): Unit = {
+    this.synchronized {
+      if (!closed) {
+        nativeIOWriter.flush()
+        root.close()
+        nativeIOWriter.close()
+        closed = true
+      }
+    }
   }
 
   private def extractVectorSchemaRoot(columnarBatch: ColumnarBatch): Unit = {
@@ -76,7 +83,7 @@ class NativeParquetColumnarOutputWriter(path: String, dataSchema: StructType, ti
 
   private def populateVectorSchemaRoot(arrowBatch: ArrowRecordBatch): Unit = {
     if (arrowBatch.getNodes.size() == 0) {
-      root.close()
+      root.setRowCount(0)
       return
     }
     val loader: VectorLoader = new VectorLoader(root)

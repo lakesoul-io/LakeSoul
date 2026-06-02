@@ -23,9 +23,12 @@ use rootcause::{Report, bail, report};
 use tokio::sync::mpsc::Sender;
 use tokio_stream::StreamExt;
 
-use crate::{Result, helpers::get_batch_memory_size, session::LakeSoulIOSession};
+use crate::{
+    Result, helpers::get_batch_memory_size, session::LakeSoulIOSession,
+    writer::SendableWriter,
+};
 
-use super::{AsyncBatchWriter, FlushOutput, MultiPartAsyncWriter, ReceiverStreamExec};
+use super::{AsyncBatchWriter, FlushOutput, ReceiverStreamExec};
 
 /// Wrap the above async writer with a SortExec to
 /// sort the batches before write to async writer
@@ -46,7 +49,7 @@ pub struct SortAsyncWriter {
 
 impl SortAsyncWriter {
     pub fn try_new(
-        async_writer: MultiPartAsyncWriter,
+        async_writer: SendableWriter,
         io_session: Arc<LakeSoulIOSession>,
     ) -> Result<Self> {
         let io_config = io_session.io_config();
@@ -102,7 +105,7 @@ impl SortAsyncWriter {
         };
 
         let mut sorted_stream = exec_plan.execute(0, io_session.task_ctx())?;
-        let mut async_writer = Box::new(async_writer);
+        let mut async_writer = async_writer;
         let task = SpawnedTask::spawn(async move {
             let mut err = None;
             while let Some(batch) = sorted_stream.next().await {

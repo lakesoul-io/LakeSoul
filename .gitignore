@@ -69,3 +69,6 @@ lakesoul-spark-gluten/bin
 
 **/.mcp.json
 **/internal*
+
+
+**/.bloop

@@ -21,7 +21,6 @@ use datafusion::{
 };
 use helpers::case_fold_table_name;
 use lakesoul_io::config::OPTION_KEY_MEM_LIMIT;
-use lakesoul_io::helpers::get_file_exist_col;
 use lakesoul_io::session::create_session_context_with_planner;
 use lakesoul_io::writer::async_writer::{
     AsyncBatchWriter, AsyncSendableMutableLakeSoulWriter, FlushOutput,
@@ -420,12 +419,10 @@ fn partitioned_files_from_writer_flush_result(
     let mut partition_desc_and_files_map = HashMap::new();
 
     for output in flush_result {
-        let file_exist_cols = get_file_exist_col(&output.file_meta);
-
         let flush_result = FlushResult {
             file_path: output.file_path.clone(),
             file_size: output.object_meta.size as i64,
-            file_exist_cols,
+            file_exist_cols: output.file_exist_cols.join(","),
         };
 
         partition_desc_and_files_map

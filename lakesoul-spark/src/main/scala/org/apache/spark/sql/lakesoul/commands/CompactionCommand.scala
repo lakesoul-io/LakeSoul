@@ -16,7 +16,7 @@ import org.apache.spark.sql.connector.catalog.CatalogManager.SESSION_CATALOG_NAM
 import org.apache.spark.sql.execution.command.LeafRunnableCommand
 import org.apache.spark.sql.execution.datasources.LakeSoulFileWriter.{MAX_FILE_SIZE_KEY, SNAPPY_COMPRESS_RATIO}
 import org.apache.spark.sql.execution.datasources.v2.merge.MergeDeltaParquetScan
-import org.apache.spark.sql.execution.datasources.v2.parquet.{NativeParquetScan, ParquetScan}
+import org.apache.spark.sql.execution.datasources.v2.parquet.{NativeScan, ParquetScan}
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceV2Relation, DataSourceV2ScanRelation}
 import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
@@ -96,7 +96,7 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
     })
 
     val scan = table.newScanBuilder(option).build()
-    val newReadFiles = if (scan.isInstanceOf[ParquetScan] || scan.isInstanceOf[NativeParquetScan]) {
+    val newReadFiles = if (scan.isInstanceOf[ParquetScan] || scan.isInstanceOf[NativeScan]) {
       fileIndex.getFileInfo(Nil)
     } else {
       scan.asInstanceOf[MergeDeltaParquetScan].newFileIndex.getFileInfo(Nil)

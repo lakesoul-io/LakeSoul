@@ -520,4 +520,21 @@ class ReadSuite extends QueryTest
   test("test stream read without Partition") {
     new Thread(new CreateStreamReadTableWithoutPartition).run()
   }
+
+  test("vortex write and snapshot read") {
+    withTempDir(dir => {
+      val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toUri.toString
+      Seq((1, "Alice", 90), (2, "Bob", 80), (3, "Charlie", 75))
+        .toDF("id", "name", "score")
+        .write
+        .mode("append")
+        .format("lakesoul")
+        .option(LakeSoulOptions.HASH_PARTITIONS, "id")
+        .option(LakeSoulOptions.HASH_BUCKET_NUM, "2")
+        .option(LakeSoulOptions.FILE_FORMAT, "vortex")
+        .save(tablePath)
+      val df = spark.read.format("lakesoul").load(tablePath)
+      checkAnswer(df, Seq((1, "Alice", 90), (2, "Bob", 80), (3, "Charlie", 75)).toDF("id", "name", "score"))
+    })
+  }
 }

@@ -141,6 +141,16 @@ object LakeSoulSQLConf {
       .intConf
       .createWithDefault(100000)
 
+  val NATIVE_IO_PHYSICAL_FORMAT: ConfigEntry[String] =
+    buildConf("native.io.physical_format")
+      .doc(
+        """
+          |Physical file format for NativeIO writer.
+          |Supported values: "parquet" (default), "vortex".
+        """.stripMargin)
+      .stringConf
+      .createWithDefault("parquet")
+
   val NATIVE_IO_THREAD_NUM: ConfigEntry[Int] =
     buildConf("native.io.thread.num")
       .doc(

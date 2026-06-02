@@ -17,6 +17,11 @@
 
 // Adpated from DataFusion 47.0.0
 
+use std::marker::PhantomData;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll, ready};
+
 use arrow::array::Array;
 use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatch;
@@ -28,10 +33,6 @@ use datafusion_common::{DataFusionError, Result as DFResult};
 use futures::Stream;
 use futures::stream::{Fuse, StreamExt};
 use rootcause::report;
-use std::marker::PhantomData;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::task::{Context, Poll, ready};
 
 use crate::Result;
 use crate::physical_plan::merge::sorted::cursor::{ArrayValues, CursorArray, RowValues};
@@ -176,10 +177,44 @@ impl<T: CursorArray> FieldCursorStream<T> {
     fn convert_batch(&mut self, batch: &RecordBatch) -> Result<ArrayValues<T::Values>> {
         let value = self.sort.expr.evaluate(batch)?;
         let array = value.into_array(batch.num_rows())?;
+
+        if let Some(array) = array.as_any().downcast_ref::<T>() {
+            let size_in_mem = array.get_buffer_memory_size();
+            let array_reservation = self.reservation.new_empty();
+            array_reservation.try_grow(size_in_mem)?;
+            return Ok(ArrayValues::new(
+                self.sort.options,
+                array,
+                array_reservation,
+            ));
+        }
+
+        let expected_type = <T as CursorArray>::data_type();
+        let actual_type = array.data_type().clone();
+
+        tracing::debug!(
+            ?expected_type,
+            ?actual_type,
+            expected_array_type = std::any::type_name::<T>(),
+            num_rows = batch.num_rows(),
+            "sort field array type mismatch; casting sort key array"
+        );
+
+        let array = arrow::compute::cast(array.as_ref(), &expected_type)?;
         let size_in_mem = array.get_buffer_memory_size();
-        let array = array.as_any().downcast_ref::<T>().expect("field values");
+
+        let Some(array) = array.as_any().downcast_ref::<T>() else {
+            return Err(
+                report!("sort field array type still mismatchecd after cast")
+                    .attach(array.data_type().to_string())
+                    .attach(std::any::type_name::<T>())
+                    .attach(batch.num_rows()),
+            );
+        };
+
         let array_reservation = self.reservation.new_empty();
         array_reservation.try_grow(size_in_mem)?;
+
         Ok(ArrayValues::new(
             self.sort.options,
             array,

@@ -54,13 +54,13 @@ LakeSoul/
 | Component | Technology |
 |---|---|
 | Metadata store | PostgreSQL 14+ (ACID, MVCC, RBAC row-level security) |
-| Native IO/merge | Rust — DataFusion 51, Arrow 57, Parquet, object_store 0.12 |
+| Native IO/merge | Rust — DataFusion, Arrow, Parquet, object_store|
 | Async runtime | Tokio (full features) |
-| gRPC | Tonic 0.14 |
+| gRPC | Tonic |
 | Java bridge | JNI via `lakesoul-io-c` / `lakesoul-metadata-c` (C FFI) |
 | Spark | Apache Spark 3.3.1, Scala 2.12 |
 | Flink | Apache Flink (Java + Scala) |
-| Python | PyO3 + maturin, pyarrow ≥ 16 |
+| Python | PyO3 + maturin, pyarrow |
 | Build (Rust) | Cargo stable toolchain + rustfmt + clippy |
 | Build (JVM) | Maven, Java 8 target |
 
@@ -295,3 +295,16 @@ Output (focus on building a data-flow mental model, not file-by-file summaries):
 Finally:
 - Provide an ASCII data flow diagram
 - Explicitly point out areas of uncertainty or assumptions
+
+
+## Code review instructions
+
+When reviewing pull requests, ignore changes to `Cargo.lock`.
+
+Do not leave review comments on `Cargo.lock` unless:
+- the lockfile change introduces an obvious supply-chain/security risk;
+- the PR is specifically about dependency updates;
+- the user explicitly asks to review lockfile changes.
+
+For normal code reviews, treat `Cargo.lock` changes as generated dependency-resolution output.
+Focus review comments on source code, build configuration, tests, and public API behavior.

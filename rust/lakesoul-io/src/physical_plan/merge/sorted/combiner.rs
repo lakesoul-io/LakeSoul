@@ -23,6 +23,7 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use arrow_array::types::*;
+use arrow_cast;
 use dary_heap::QuaternaryHeap;
 use nohash::BuildNoHashHasher;
 use rootcause::{Report, report};
@@ -35,6 +36,38 @@ use super::sort_key_range::{
 };
 use crate::Result;
 use crate::constant::{ConstEmptyArray, ConstNullArray};
+
+/// Wraps [`interleave`] with type normalization.
+///
+/// When mixing file formats (e.g. Parquet produces `Utf8` while Vortex produces
+/// `Utf8View` for string columns), arrays for the same column within a batch may
+/// have different Arrow data types, which causes `interleave` to fail. This
+/// function detects mismatched types and casts all arrays to the type of the
+/// first array (which is a null array with the schema type) before interleaving.
+fn interleave_normalized(
+    arrays: &[&dyn Array],
+    indices: &[(usize, usize)],
+) -> ArrowResult<ArrayRef> {
+    if arrays.len() <= 1 {
+        return interleave(arrays, indices);
+    }
+    let target_type = arrays[0].data_type();
+    if arrays.iter().skip(1).all(|a| a.data_type() == target_type) {
+        return interleave(arrays, indices);
+    }
+    let owned: Vec<ArrayRef> = arrays
+        .iter()
+        .map(|a| {
+            if a.data_type() == target_type {
+                Ok(make_arrow_array(a.to_data()))
+            } else {
+                arrow_cast::cast(*a, target_type)
+            }
+        })
+        .collect::<ArrowResult<Vec<_>>>()?;
+    let refs: Vec<&dyn Array> = owned.iter().map(|a| a.as_ref()).collect();
+    interleave(refs.as_slice(), indices)
+}
 
 pub(crate) trait RangeCombinerTrait<C: CursorValues>: Unpin {
     fn push_range(&mut self, range: SortKeyBatchRange<C>);
@@ -325,12 +358,11 @@ fn merge_sort_key_array_ranges(
     };
 
     flatten_dedup_arrays.push(append_array);
-    Ok(interleave(
-        flatten_dedup_arrays
+    Ok(interleave_normalized(
+        &flatten_dedup_arrays
             .iter()
             .map(|array_ref| array_ref.as_ref())
-            .collect::<Vec<_>>()
-            .as_slice(),
+            .collect::<Vec<_>>(),
         extend_list.as_slice(),
     )?)
 }
@@ -588,14 +620,8 @@ impl<C: CursorValues, const IS_PARTIAL_MERGE: bool>
         let columns = flatten_arrays
             .iter()
             .map(|array| {
-                interleave(
-                    array
-                        .iter()
-                        .map(|a| a.as_ref())
-                        .collect::<Vec<&dyn Array>>()
-                        .as_slice(),
-                    interleave_idx.as_slice(),
-                )
+                let refs: Vec<&dyn Array> = array.iter().map(|a| a.as_ref()).collect();
+                interleave_normalized(&refs, interleave_idx.as_slice())
             })
             .collect::<ArrowResult<Vec<ArrayRef>>>()?;
 
@@ -657,7 +683,10 @@ impl<C: CursorValues, const IS_PARTIAL_MERGE: bool>
                     }
                 }
 
-                interleave(flatten_arrays.as_slice(), interleave_idx.as_slice())
+                interleave_normalized(
+                    flatten_arrays.as_slice(),
+                    interleave_idx.as_slice(),
+                )
             })
             .collect::<ArrowResult<Vec<ArrayRef>>>()?;
 

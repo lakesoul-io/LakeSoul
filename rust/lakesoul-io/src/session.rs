@@ -19,14 +19,12 @@ use datafusion::physical_optimizer::projection_pushdown::ProjectionPushdown;
 use datafusion::prelude::SessionContext;
 use datafusion_common::{
     DFSchema, DataFusionError, Result, Statistics, ToDFSchema, config::TableOptions,
+    project_schema,
 };
-use datafusion_datasource::file_compression_type::FileCompressionType;
-use datafusion_datasource::file_format::FileFormat;
 use datafusion_datasource::file_groups::FileGroup;
 use datafusion_datasource::file_scan_config::{FileScanConfig, FileScanConfigBuilder};
 use datafusion_datasource::source::DataSource;
 use datafusion_datasource::{ListingTableUrl, PartitionedFile, TableSchema};
-use datafusion_datasource_parquet::ParquetFormat;
 use datafusion_execution::cache::DefaultListFilesCache;
 use datafusion_execution::cache::cache_manager::CacheManagerConfig;
 use datafusion_execution::cache::cache_unit::{
@@ -34,6 +32,7 @@ use datafusion_execution::cache::cache_unit::{
 };
 use datafusion_execution::config::SessionConfig;
 use datafusion_execution::memory_pool::{FairSpillPool, GreedyMemoryPool};
+use datafusion_execution::object_store::ObjectStoreUrl;
 use datafusion_execution::runtime_env::RuntimeEnvBuilder;
 use datafusion_execution::{TaskContext, runtime_env::RuntimeEnv};
 use datafusion_expr::execution_props::ExecutionProps;
@@ -45,6 +44,7 @@ use datafusion_physical_expr::PhysicalExpr;
 use datafusion_physical_plan::ExecutionPlan;
 use datafusion_physical_plan::empty::EmptyExec;
 use datafusion_physical_plan::filter::{FilterExec, FilterExecBuilder};
+use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_session::Session;
 use object_store::ObjectMeta;
 use rootcause::prelude::ResultExt;
@@ -54,10 +54,14 @@ use tokio::sync::OnceCell;
 
 use crate::byte_size;
 use crate::config::LakeSoulIOConfig;
-use crate::file_format::LakeSoulParquetFormat;
+use crate::file_format::{
+    LakeSoulFormatRegistry, PhysicalFormat, compute_project_column_indices,
+    flatten_file_scan_config_for_format, merge_schema_refs,
+};
+use crate::helpers::get_file_object_meta;
 use crate::helpers::transform::uniform_schema;
-use crate::helpers::{get_file_object_meta, infer_schema};
 use crate::physical_plan::empty_schema::EmptyScanCountExec;
+use crate::physical_plan::merge::MergeParquetExec;
 use crate::utils::random_str;
 
 // Define the global static runtime
@@ -140,8 +144,8 @@ pub fn create_session_context_with_planner(
         .optimizer
         .enable_round_robin_repartition = false; // if true, the record_batches poll from stream become unordered
     sess_conf.options_mut().optimizer.prefer_hash_join = false; //if true, panicked at 'range end out of bounds'
-    // sess_conf.options_mut().execution.parquet.pushdown_filters =
-    //     config.parquet_filter_pushdown;
+    sess_conf.options_mut().execution.parquet.pushdown_filters =
+        config.file_filter_pushdown();
     sess_conf.options_mut().execution.target_partitions = 1;
     sess_conf.options_mut().execution.parquet.dictionary_enabled = Some(false);
     sess_conf
@@ -234,13 +238,20 @@ struct ListingMetas {
     pub table_paths: Vec<ListingTableUrl>,
 }
 
+struct FormatScanGroup {
+    object_store_url: ObjectStoreUrl,
+    physical_format: PhysicalFormat,
+    object_metas: Vec<ObjectMeta>,
+    partition_files: Vec<PartitionedFile>,
+}
+
 /// Immutable part of `LakeSoulIOSession`
 struct IOSessionInner {
     pub session_id: String,
     pub session_config: SessionConfig,
     pub runtime_env: Arc<RuntimeEnv>,
     pub listing_metas: OnceCell<ListingMetas>,
-    pub file_format: OnceCell<Arc<LakeSoulParquetFormat>>,
+    pub file_format: OnceCell<Arc<LakeSoulFormatRegistry>>,
     pub file_schema: OnceCell<Arc<Schema>>,
     pub partition_schema: OnceCell<Arc<Schema>>,
     pub table_schema: OnceCell<Arc<TableSchema>>,
@@ -261,6 +272,8 @@ impl LakeSoulIOSession {
             .enable_round_robin_repartition = false; // if true, the record_batches poll from stream become unordered
         sess_conf.options_mut().optimizer.prefer_hash_join = false; //if true, panicked at 'range end out of bounds'
         // execution
+        sess_conf.options_mut().execution.parquet.pushdown_filters =
+            io_config.file_filter_pushdown();
         sess_conf.options_mut().execution.target_partitions = 1;
         sess_conf.options_mut().execution.parquet.dictionary_enabled = Some(false);
         sess_conf
@@ -441,24 +454,57 @@ impl LakeSoulIOSession {
             .await
     }
 
-    async fn io_file_format(&self) -> Result<&Arc<LakeSoulParquetFormat>, Report> {
+    async fn io_file_format(&self) -> Result<&Arc<LakeSoulFormatRegistry>, Report> {
         self.inner
             .file_format
             .get_or_try_init(|| async {
-                let file_format = Arc::new(LakeSoulParquetFormat::new(
-                    Arc::new(
-                        ParquetFormat::new().with_force_view_types(
-                            self.config_options()
-                                .execution
-                                .parquet
-                                .schema_force_view_types,
-                        ),
-                    ),
+                let file_format = Arc::new(LakeSoulFormatRegistry::new(
                     self.io_config().clone(),
-                ));
-                Ok::<Arc<LakeSoulParquetFormat>, Report>(file_format)
+                    self.config_options()
+                        .execution
+                        .parquet
+                        .schema_force_view_types,
+                )?);
+                Ok::<Arc<LakeSoulFormatRegistry>, Report>(file_format)
             })
             .await
+    }
+
+    fn format_scan_groups(
+        &self,
+        listing_metas: &ListingMetas,
+        registry: &LakeSoulFormatRegistry,
+    ) -> Result<Vec<FormatScanGroup>, Report> {
+        let mut groups: Vec<FormatScanGroup> = vec![];
+
+        for (table_path, object_meta) in listing_metas
+            .table_paths
+            .iter()
+            .zip(listing_metas.object_metas.iter())
+        {
+            let object_store_url = table_path.object_store();
+            let physical_format =
+                registry.physical_format_for_path(object_meta.location.as_ref())?;
+
+            if let Some(group) = groups.iter_mut().find(|group| {
+                group.object_store_url == object_store_url
+                    && group.physical_format == physical_format
+            }) {
+                group.object_metas.push(object_meta.clone());
+                group
+                    .partition_files
+                    .push(PartitionedFile::from(object_meta.clone()));
+            } else {
+                groups.push(FormatScanGroup {
+                    object_store_url,
+                    physical_format,
+                    object_metas: vec![object_meta.clone()],
+                    partition_files: vec![PartitionedFile::from(object_meta.clone())],
+                });
+            }
+        }
+
+        Ok(groups)
     }
 
     async fn io_file_schema(&self) -> Result<&Arc<Schema>, Report> {
@@ -466,13 +512,23 @@ impl LakeSoulIOSession {
             .file_schema
             .get_or_try_init(|| async {
                 let listing_metas = self.io_listing_metas().await?;
-                let schema = infer_schema(
-                    self,
-                    &listing_metas.table_paths,
-                    &listing_metas.object_metas,
-                    self.io_file_format().await?.clone(),
-                )
-                .await?;
+                if listing_metas.table_paths.is_empty() {
+                    return Ok::<Arc<Schema>, Report>(Arc::new(Schema::empty()));
+                }
+
+                let registry = self.io_file_format().await?;
+                let mut schemas = vec![];
+                for group in self.format_scan_groups(listing_metas, registry)? {
+                    let store = self
+                        .runtime_env()
+                        .object_store(group.object_store_url.clone())?;
+                    let schema = registry
+                        .file_format(group.physical_format)
+                        .infer_schema(self, &store, &group.object_metas)
+                        .await?;
+                    schemas.push(schema);
+                }
+                let schema = merge_schema_refs(schemas)?;
 
                 Ok::<Arc<Schema>, Report>(schema)
             })
@@ -545,52 +601,12 @@ impl LakeSoulIOSession {
 
     /// origin logic
     pub async fn get_table_schema(&self) -> Result<TableSchema, Report> {
-        let table_paths = self
-            .io_config
-            .files
-            .iter()
-            .map(ListingTableUrl::parse)
-            .collect::<Result<Vec<_>>>()?;
-        let object_metas = get_file_object_meta(self.task_ctx(), &table_paths).await?;
-        let (listing_table_paths, object_metas): (Vec<_>, Vec<_>) =
-            zip(table_paths, object_metas)
-                .filter(|(_, obj_meta)| {
-                    let valid = obj_meta.size >= 8;
-                    if !valid {
-                        error!(
-                            "File {}, size {}, is invalid",
-                            obj_meta.location, obj_meta.size
-                        );
-                    }
-                    valid
-                })
-                .unzip();
-
-        if listing_table_paths.is_empty() {
+        let listing_metas = self.io_listing_metas().await?;
+        if listing_metas.table_paths.is_empty() {
             warn!("No valid files found");
             return Ok(TableSchema::from_file_schema(Arc::new(Schema::empty())));
         }
-        let file_format = Arc::new(LakeSoulParquetFormat::new(
-            Arc::new(
-                ParquetFormat::new().with_force_view_types(
-                    self.config_options()
-                        .execution
-                        .parquet
-                        .schema_force_view_types,
-                ),
-            ),
-            self.io_config().clone(),
-        ));
-        // Resolve the schema (all files schema)
-        let file_schema = infer_schema(
-            self,
-            &listing_table_paths,
-            &object_metas,
-            file_format.clone(),
-        )
-        .await?;
-
-        self.compute_table_schema(file_schema)
+        Ok(self.io_table_schema().await?.as_ref().clone())
     }
 
     /// Return projected table schema
@@ -683,13 +699,69 @@ impl LakeSoulIOSession {
         }
     }
 
+    fn compute_output_projection_indices(
+        &self,
+        input_schema: &Schema,
+    ) -> Result<Option<Vec<usize>>, Report> {
+        let output_schema = self.io_config().target_schema();
+        let mut indices = Vec::with_capacity(output_schema.fields().len());
+
+        for field in output_schema.fields() {
+            indices.push(input_schema.index_of(field.name())?);
+        }
+
+        if indices.is_empty() {
+            return if input_schema.fields().is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(vec![]))
+            };
+        }
+
+        if indices.len() == input_schema.fields().len()
+            && indices.iter().enumerate().all(|(i, &idx)| i == idx)
+        {
+            Ok(None)
+        } else {
+            Ok(Some(indices))
+        }
+    }
+
+    /// Classifies each filter by whether it can be pushed down to the file source.
+    ///
+    /// We intentionally **never** return [`TableProviderFilterPushDown::Exact`].
+    /// Our file-level pushdown (Parquet row filter, Vortex row filter) uses
+    /// statistics-based pruning (min/max, bloom filters, page skipping) that is
+    /// best-effort: it can skip entire files or row groups, but does **not**
+    /// guarantee that every returned row satisfies the predicate. Returning
+    /// `Exact` would instruct DataFusion to omit its own `FilterExec`, which
+    /// would silently produce incorrect results when the file-level filter
+    /// misses rows.
+    ///
+    /// ## Filter classification rules
+    ///
+    /// **Without primary keys** (append-only / no merge-on-read):
+    /// - If `file_filter_pushdown` is enabled → all filters return `Inexact`.
+    ///   The predicate is pushed to the file reader as an optimization, and
+    ///   DataFusion still applies a `FilterExec` on top for correctness.
+    /// - If disabled → all filters return `Unsupported`. DataFusion handles
+    ///   filtering entirely on its own.
+    ///
+    /// **With primary keys** (merge-on-read / CDC tables):
+    /// - Filters whose columns are all primary key columns → `Inexact` (if
+    ///   `file_filter_pushdown` is enabled). Primary key filters benefit from
+    ///   file-level pruning because our file naming scheme encodes key ranges.
+    /// - All other filters → `Unsupported`. Non-key column filters are
+    ///   unreliable for file-level pruning in merge-on-read scenarios because
+    ///   a single file may contain both base and incremental data with
+    ///   different column statistics.
     fn supports_filters_pushdown(
         &self,
         filters: &[&Expr],
     ) -> Result<Vec<TableProviderFilterPushDown>> {
         if self.io_config().primary_keys.is_empty() {
-            if self.io_config().parquet_filter_pushdown {
-                Ok(vec![TableProviderFilterPushDown::Exact; filters.len()])
+            if self.io_config().file_filter_pushdown() {
+                Ok(vec![TableProviderFilterPushDown::Inexact; filters.len()])
             } else {
                 Ok(vec![
                     TableProviderFilterPushDown::Unsupported;
@@ -697,17 +769,16 @@ impl LakeSoulIOSession {
                 ])
             }
         } else {
-            // O(nml), n = number of filters, m = number of primary keys, l = number of columns
+            // O(n*m), n = number of filters, m = number of primary keys
             filters
                 .iter()
                 .map(|f| {
                     let cols = f.column_refs();
-                    if self.io_config().parquet_filter_pushdown
+                    if self.io_config().file_filter_pushdown()
                         && cols
                             .iter()
                             .all(|col| self.io_config().primary_keys.contains(&col.name))
                     {
-                        // use primary key
                         Ok(TableProviderFilterPushDown::Inexact)
                     } else {
                         Ok(TableProviderFilterPushDown::Unsupported)
@@ -724,79 +795,84 @@ impl LakeSoulIOSession {
     ) -> Result<Arc<dyn ExecutionPlan>, Report> {
         let listing_metas = self.io_listing_metas().await?;
 
-        let object_store_url = if let Some(url) = listing_metas.table_paths.first() {
-            url.object_store()
-        } else {
+        if listing_metas.table_paths.is_empty() {
             debug!("empty exec");
             return Ok(Arc::new(EmptyExec::new(Arc::new(Schema::empty()))));
-        };
-        let file_format = self.io_file_format().await?;
+        }
+
+        let format_registry = self.io_file_format().await?;
+        let format_groups = self.format_scan_groups(listing_metas, format_registry)?;
         let table_schema = self.io_table_schema().await?;
         let statistics = Statistics::new_unknown(table_schema.table_schema());
-        let partition_files: Vec<PartitionedFile> = listing_metas
-            .object_metas
-            .iter()
-            .map(|meta_ref| PartitionedFile::from(meta_ref.clone()))
-            .collect();
 
-        // 1. Classify filters
+        // 1. Classify filters into Inexact (pushdown-capable) and Unsupported.
+        // We never return Exact because our file-level pushdown (Parquet row filter,
+        // Vortex filter) is best-effort: it may skip files/pages but does not
+        // guarantee complete row-level filtering. DataFusion must always apply a
+        // FilterExec on top for correctness.
         let filter_refs = filters.iter().collect::<Vec<&Expr>>();
         let pushdown_res = self.supports_filters_pushdown(&filter_refs)?;
 
-        let mut exact_filters = vec![];
         let mut inexact_filters = vec![];
         let mut unsupported_filters = vec![];
 
         for (expr, res) in filters.into_iter().zip(pushdown_res) {
             match res {
-                TableProviderFilterPushDown::Exact => exact_filters.push(expr),
                 TableProviderFilterPushDown::Inexact => {
                     inexact_filters.push(expr);
                 }
                 TableProviderFilterPushDown::Unsupported => {
                     unsupported_filters.push(expr)
                 }
+                TableProviderFilterPushDown::Exact => {
+                    // supports_filters_pushdown never returns Exact; if it did,
+                    // we'd still treat it as Inexact for safety.
+                    inexact_filters.push(expr);
+                }
             }
         }
 
-        // 2. Prepare remaining filters (Inexact + Unsupported)
-        // These filters are needed for the FilterExec on top of the scan,
-        // and also determine the projection (columns used by these filters must be projected).
-        let remaining_filters: Vec<Expr> = inexact_filters
-            .iter()
-            .cloned()
-            .chain(unsupported_filters)
-            .collect();
+        // 2. All filters contribute to scan projection (columns needed for
+        // filtering must be present in the scan output), and all filters must be
+        // re-applied by DataFusion as FilterExec since our pushdown is Inexact.
+        let scan_projection_predicate = conjunction(
+            inexact_filters
+                .iter()
+                .chain(unsupported_filters.iter())
+                .cloned(),
+        );
+        let remaining_predicate = conjunction(
+            inexact_filters
+                .iter()
+                .chain(unsupported_filters.iter())
+                .cloned(),
+        );
 
-        let remaining_predicate = conjunction(remaining_filters);
-
-        // 3. Compute projection indices (Target + Remaining Filters)
-        // Note: We do NOT strictly need to project columns used ONLY by Exact filters,
-        // as they are handled by the scan.
+        // 3. Compute projection indices (target columns + all filter columns).
+        // File sources need pushed filter columns in their scan projection, while
+        // the final output projection is applied after filtering.
         let indices = self
             .compute_projection_indices(
                 self.io_table_schema().await?.table_schema(),
-                remaining_predicate.as_ref(),
+                scan_projection_predicate.as_ref(),
             )
             .await?;
 
-        // 4. Build initial Scan Config
-        let source = file_format.file_source(table_schema.as_ref().clone());
-        let mut scan_config = FileScanConfigBuilder::new(object_store_url, source)
-            .with_file_groups(vec![
-                FileGroup::new(partition_files)
-                    .with_statistics(Arc::new(statistics.clone())),
-            ])
-            .with_file_compression_type(FileCompressionType::ZSTD)
-            .with_statistics(statistics)
-            .with_projection_indices(indices)?
-            .build();
+        let scan_schema = project_schema(table_schema.table_schema(), indices.as_ref())?;
+        let merged_projection = compute_project_column_indices(
+            table_schema.table_schema().clone(),
+            scan_schema.clone(),
+            self.io_config.primary_keys_slice(),
+            &self.io_config.cdc_column(),
+        );
+        let merged_schema =
+            project_schema(table_schema.table_schema(), merged_projection.as_ref())?;
 
-        // 5. Pushdown Filters (Exact + Inexact)
-        let pushdown_filters: Vec<Expr> =
-            exact_filters.into_iter().chain(inexact_filters).collect();
+        // 4. Prepare pushdown filters (Inexact only — pushed as optimization,
+        //    DataFusion still re-applies them via FilterExec for correctness).
+        let pushdown_filters: Vec<Expr> = inexact_filters;
 
-        if let Some(expr) = conjunction(pushdown_filters) {
+        let pushdown_filter_expr = if let Some(expr) = conjunction(pushdown_filters) {
             let table_df_schema = table_schema.table_schema().clone().to_dfschema()?;
             let filter_expr = datafusion_physical_expr::create_physical_expr(
                 &expr,
@@ -805,26 +881,85 @@ impl LakeSoulIOSession {
             )?;
             debug!("physical filter expr: {}", filter_expr);
             debug!("configs: {:?}", self.config_options());
-            let res = scan_config
-                .try_pushdown_filters(vec![filter_expr], self.config_options())?;
-            match res.updated_node {
-                Some(sc) => {
-                    debug!("apply new scan config");
-                    debug!("pushdown:: {:?}", res.filters);
-                    scan_config = sc
-                        .as_any()
-                        .downcast_ref::<FileScanConfig>()
-                        .ok_or(report!("Failed to downcast FileScanConfig"))?
-                        .clone();
-                }
-                None => {
-                    debug!("no updated node")
+            Some(filter_expr)
+        } else {
+            None
+        };
+
+        // 5. Build scan configs for every physical format group.
+        let mut flatten_configs = vec![];
+        for group in format_groups {
+            let file_format = format_registry.file_format(group.physical_format);
+            let source = file_format.file_source(table_schema.as_ref().clone());
+            let mut scan_config =
+                FileScanConfigBuilder::new(group.object_store_url, source)
+                    .with_file_groups(vec![
+                        FileGroup::new(group.partition_files)
+                            .with_statistics(Arc::new(statistics.clone())),
+                    ])
+                    .with_file_compression_type(
+                        format_registry.file_compression_type(group.physical_format),
+                    )
+                    .with_statistics(statistics.clone())
+                    .with_projection_indices(indices.clone())?
+                    .build();
+
+            if let Some(filter_expr) = &pushdown_filter_expr {
+                let res = scan_config.try_pushdown_filters(
+                    vec![filter_expr.clone()],
+                    self.config_options(),
+                )?;
+                match res.updated_node {
+                    Some(sc) => {
+                        debug!("apply new scan config");
+                        debug!("pushdown:: {:?}", res.filters);
+                        scan_config = sc
+                            .as_any()
+                            .downcast_ref::<FileScanConfig>()
+                            .ok_or(report!("Failed to downcast FileScanConfig"))?
+                            .clone();
+                    }
+                    None => {
+                        debug!("no updated node")
+                    }
                 }
             }
+
+            let group_flatten_configs = flatten_file_scan_config_for_format(
+                self,
+                file_format,
+                scan_config,
+                self.io_config.primary_keys_slice(),
+                &self.io_config.cdc_column(),
+                self.io_partition_schema().await?.clone(),
+                scan_schema.clone(),
+            )
+            .await?;
+            flatten_configs.extend(group_flatten_configs);
         }
 
-        // 6. Create Execution Plan
-        let exec = file_format.create_physical_plan(self, scan_config).await?;
+        // 6. Merge all format-specific scan inputs with one LakeSoul merge path.
+        let merge_exec = Arc::new(MergeParquetExec::new(
+            merged_schema.clone(),
+            flatten_configs,
+            self.io_config.clone(),
+        )?);
+        let exec: Arc<dyn ExecutionPlan> =
+            if scan_schema.fields().len() < merged_schema.fields().len() {
+                let mut projection_expr = vec![];
+                for field in scan_schema.fields() {
+                    projection_expr.push((
+                        datafusion::physical_expr::expressions::col(
+                            field.name(),
+                            &merged_schema,
+                        )?,
+                        field.name().clone(),
+                    ));
+                }
+                Arc::new(ProjectionExec::try_new(projection_expr, merge_exec)?)
+            } else {
+                merge_exec
+            };
 
         // 7. Apply remaining filters
         if let Some(expr) = remaining_predicate {
@@ -835,12 +970,8 @@ impl LakeSoulIOSession {
                 self.execution_props(),
             )?;
 
-            let indices = self
-                .compute_projection_indices(
-                    self.io_table_schema().await?.table_schema(),
-                    None,
-                )
-                .await?;
+            let indices =
+                self.compute_output_projection_indices(exec.schema().as_ref())?;
 
             match indices {
                 Some(proj_indices) => {
@@ -868,8 +999,40 @@ impl LakeSoulIOSession {
                 }
             }
         } else {
-            debug!("merge scan");
-            Ok(exec)
+            let indices =
+                self.compute_output_projection_indices(exec.schema().as_ref())?;
+
+            match indices {
+                Some(proj_indices) => {
+                    if proj_indices.is_empty() {
+                        debug!("use empty scan (count only)");
+                        let empty = EmptyScanCountExec::new(
+                            Arc::new(Schema::empty()),
+                            self.io_config().batch_size,
+                            exec,
+                        );
+                        Ok(Arc::new(empty))
+                    } else {
+                        debug!("project scan with indices: {:?}", proj_indices);
+                        let exec_schema = exec.schema();
+                        let mut projection_expr = vec![];
+                        for field in self.io_config().target_schema().fields() {
+                            projection_expr.push((
+                                datafusion::physical_expr::expressions::col(
+                                    field.name(),
+                                    &exec_schema,
+                                )?,
+                                field.name().clone(),
+                            ));
+                        }
+                        Ok(Arc::new(ProjectionExec::try_new(projection_expr, exec)?))
+                    }
+                }
+                None => {
+                    debug!("merge scan");
+                    Ok(exec)
+                }
+            }
         }
     }
 
@@ -1005,6 +1168,6 @@ mod tests {
         assert_eq!(io_config.max_row_group_size, 250000);
         assert_eq!(io_config.max_row_group_num_values, 2147483647);
         assert_eq!(io_config.prefetch_size, 1);
-        assert!(!io_config.parquet_filter_pushdown);
+        assert!(!io_config.file_filter_pushdown());
     }
 }

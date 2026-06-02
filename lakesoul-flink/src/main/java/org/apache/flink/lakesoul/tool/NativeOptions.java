@@ -49,10 +49,24 @@ public class NativeOptions {
                     .defaultValue("false")
                     .withDescription("Option to set if use stable sort for native writer");
 
+    public static final ConfigOption<String> PHYSICAL_FORMAT =
+            key("file_format")
+                    .stringType()
+                    .defaultValue("parquet")
+                    .withDescription("Option to set the physical file format for native writer");
+
+    public static final ConfigOption<String> FILE_FILTER_PUSHDOWN =
+            key("lakesoul.native_writer.file_filter_pushdown")
+                    .stringType()
+                    .defaultValue("false")
+                    .withDescription("Option to set pushdown filters to physical format");
+
     public static final List<ConfigOption<String>> OPTION_LIST = Arrays.asList(
             MEM_LIMIT,
             KEEP_ORDERS,
             STABLE_SORT,
-            SPILL_MEM_POOL_SIZE
+            SPILL_MEM_POOL_SIZE,
+            PHYSICAL_FORMAT,
+            FILE_FILTER_PUSHDOWN
     );
 }

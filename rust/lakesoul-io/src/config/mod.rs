@@ -13,6 +13,7 @@ use itertools::Itertools;
 
 use crate::{
     Result,
+    file_format::PhysicalFormat,
     filter::parser::{FilterContainer, Parser},
     helpers::coerce_filter_type,
     utils::ByteSize,
@@ -74,9 +75,6 @@ pub struct LakeSoulIOConfig {
     /// Number of batches to prefetch
     #[educe(Default = 1)]
     pub(crate) prefetch_size: usize,
-    /// Whether to enable Parquet filter pushdown
-    #[educe(Default = false)]
-    pub(crate) parquet_filter_pushdown: bool,
     /// Target Arrow schema for the reader and writer
     pub(crate) target_schema: IOSchema,
     /// Arrow schema for partition columns
@@ -167,8 +165,9 @@ impl LakeSoulIOConfig {
     }
 
     /// Returns whether to support parquet pushdown filters
-    pub fn parquet_pushdown_filters(&self) -> bool {
-        self.parquet_filter_pushdown
+    pub fn file_filter_pushdown(&self) -> bool {
+        self.option(OPTION_KEY_FILE_FILTER_PUSHDOWN)
+            .is_some_and(|x| x.eq("true"))
     }
 
     /// Returns whether to keep row order in output
@@ -209,11 +208,10 @@ impl LakeSoulIOConfig {
 
     /// Returns the number of hash buckets for partitioning (defaults to 1, equvalent to not partitioning)
     pub fn hash_bucket_num(&self) -> usize {
-        self.option(OPTION_KEY_HASH_BUCKET_NUM)
-            .map_or(1, |x| x.parse().unwrap())
+        self.get_hash_bucket_num().expect("invalid hash_bucket_num")
     }
 
-    // Get hash_bucket_num field directly, not from option
+    /// Returns the number of hash buckets for partitioning.
     pub fn get_hash_bucket_num(&self) -> Result<usize> {
         let mut tmp = self.hash_bucket_num.parse::<isize>()?;
         tmp = tmp.max(1);
@@ -248,6 +246,20 @@ impl LakeSoulIOConfig {
     pub fn stable_sort(&self) -> bool {
         self.option(OPTION_KEY_STABLE_SORT)
             .is_some_and(|x| x.eq("true"))
+    }
+
+    /// Returns the physical file format selected for writes.
+    pub fn physical_format(&self) -> Result<PhysicalFormat> {
+        if let Some(format) = self.option(OPTION_KEY_PHYSICAL_FORMAT) {
+            return format.parse();
+        }
+
+        Ok(self
+            .files
+            .iter()
+            .rev()
+            .find_map(|path| PhysicalFormat::from_extension(path).ok())
+            .unwrap_or_default()) // no files
     }
 
     pub fn set_files(&mut self, files: Vec<String>) {
@@ -467,16 +479,6 @@ impl LakeSoulIOConfigBuilder {
         self
     }
 
-    /// Sets whether to enable Parquet filter pushdown
-    ///
-    /// # Arguments
-    ///
-    /// * `enable` - Whether to enable Parquet filter pushdown
-    pub fn with_parquet_filter_pushdown(mut self, enable: bool) -> Self {
-        self.config.parquet_filter_pushdown = enable;
-        self
-    }
-
     #[deprecated(
         since = "2.5.0",
         note = "This method is deprecated. Use target_schema instead."
@@ -605,6 +607,14 @@ impl LakeSoulIOConfigBuilder {
         self
     }
 
+    /// Sets the physical file format for writers.
+    pub fn with_physical_format(mut self, format: PhysicalFormat) -> Self {
+        self.config
+            .options
+            .insert(OPTION_KEY_PHYSICAL_FORMAT.to_string(), format.to_string());
+        self
+    }
+
     /// Sets the number of threads for parallel processing
     ///
     /// # Arguments
@@ -701,6 +711,7 @@ impl LakeSoulIOConfig {
     /// This will consume all filters
     pub async fn get_filter_exprs(&mut self, table_schema: &Schema) -> Result<Vec<Expr>> {
         let filter_strs = std::mem::take(&mut self.filter_strs);
+        let filters = std::mem::take(&mut self.filters);
         let filter_protos = std::mem::take(&mut self.filter_protos);
         let filter_bufs = std::mem::take(&mut self.filter_buf);
         let iter = filter_strs
@@ -711,7 +722,7 @@ impl LakeSoulIOConfig {
 
         let df_schema = DFSchema::try_from(table_schema.clone())?;
 
-        let mut exprs: Vec<Expr> = Vec::new();
+        let mut exprs: Vec<Expr> = filters;
 
         let dummy_ctx = datafusion::prelude::SessionContext::new();
 
@@ -734,5 +745,31 @@ impl LakeSoulIOConfig {
 impl From<LakeSoulIOConfig> for LakeSoulIOConfigBuilder {
     fn from(val: LakeSoulIOConfig) -> Self {
         LakeSoulIOConfigBuilder { config: val }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn with_hash_bucket_num_sets_config_field() {
+        let config = LakeSoulIOConfigBuilder::new()
+            .with_hash_bucket_num("4")
+            .build();
+
+        assert_eq!(config.hash_bucket_num, "4");
+        assert_eq!(config.hash_bucket_num(), 4);
+        assert_eq!(config.get_hash_bucket_num().unwrap(), 4);
+    }
+
+    #[test]
+    fn hash_bucket_num_clamps_non_positive_values() {
+        let config = LakeSoulIOConfigBuilder::new()
+            .with_hash_bucket_num("-1")
+            .build();
+
+        assert_eq!(config.hash_bucket_num(), 1);
+        assert_eq!(config.get_hash_bucket_num().unwrap(), 1);
     }
 }

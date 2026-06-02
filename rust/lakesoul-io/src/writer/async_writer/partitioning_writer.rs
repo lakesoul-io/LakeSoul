@@ -29,6 +29,7 @@ use tokio::{sync::mpsc::Sender, time::Instant};
 use crate::{
     Result,
     config::{IOSchema, LakeSoulIOConfig, LakeSoulIOConfigBuilder},
+    file_format::PhysicalFormat,
     helpers::{
         columnar_values_to_partition_desc, columnar_values_to_sub_path,
         get_batch_memory_size, get_columnar_values, transform::uniform_schema,
@@ -39,9 +40,10 @@ use crate::{
     },
     session::LakeSoulIOSession,
     utils::random_str,
+    writer::{SendableWriter, create_leaf_writer},
 };
 
-use super::{AsyncBatchWriter, FlushOutput, MultiPartAsyncWriter, ReceiverStreamExec};
+use super::{AsyncBatchWriter, FlushOutput, ReceiverStreamExec};
 
 /// Wrap the async writer with a RepartitionExec to
 /// dynamic repartitioning the batches before write to async writer
@@ -103,6 +105,7 @@ impl PartitioningAsyncWriter {
         }
 
         let range_partitions = io_config.range_partitions.clone();
+        let physical_format = io_config.physical_format()?;
 
         let mut spawned_tasks = vec![];
 
@@ -115,6 +118,7 @@ impl PartitioningAsyncWriter {
                 LakeSoulIOConfigBuilder::from(writer_io_config.clone()),
                 Arc::new(range_partitions.clone()), // TODO clone and arc
                 write_id.clone(),
+                physical_format,
                 io_session.clone(),
             ));
 
@@ -247,6 +251,7 @@ impl PartitioningAsyncWriter {
         io_config_builder: LakeSoulIOConfigBuilder,
         range_partitions: Arc<Vec<String>>,
         write_id: String,
+        physical_format: PhysicalFormat,
         io_session: Arc<LakeSoulIOSession>,
     ) -> Result<JoinSet<Result<Vec<FlushOutput>>>> {
         let mut data = input.execute(partition, io_session.task_ctx())?;
@@ -266,7 +271,7 @@ impl PartitioningAsyncWriter {
 
         let mut err = None;
 
-        let mut partitioned_writer = HashMap::<String, Box<MultiPartAsyncWriter>>::new();
+        let mut partitioned_writer = HashMap::<String, SendableWriter>::new();
         let mut flush_join_set = JoinSet::new();
         while let Some(batch_result) = data.next().await {
             match batch_result {
@@ -282,11 +287,12 @@ impl PartitioningAsyncWriter {
                         batch.project(&schema_projection_excluding_range)?;
 
                     let file_absolute_path = format!(
-                        "{}{}part-{}_{:0>4}.parquet",
+                        "{}{}part-{}_{:0>4}.{}",
                         io_config_builder.prefix(),
                         partition_sub_path,
                         write_id,
-                        partition
+                        partition,
+                        physical_format.extension()
                     );
 
                     if !partitioned_writer.contains_key(&partition_desc) {
@@ -299,9 +305,8 @@ impl PartitioningAsyncWriter {
 
                         let new_session = Arc::new(io_session.with_io_config(config));
 
-                        let writer = MultiPartAsyncWriter::try_new(new_session).await?;
-                        partitioned_writer
-                            .insert(partition_desc.clone(), Box::new(writer));
+                        let writer = create_leaf_writer(new_session)?;
+                        partitioned_writer.insert(partition_desc.clone(), writer);
                     }
 
                     if let Some(async_writer) =
@@ -348,8 +353,8 @@ impl PartitioningAsyncWriter {
                                 (
                                     o.file_path.clone(),
                                     o.object_meta.size,
-                                    o.file_meta.file_metadata().num_rows(),
-                                    o.file_meta.num_row_groups(),
+                                    o.row_count,
+                                    &o.other_info,
                                 )
                             })
                             .collect::<Vec<_>>()

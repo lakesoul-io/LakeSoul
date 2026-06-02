@@ -15,8 +15,6 @@ pub static OPTION_KEY_POOL_SIZE: &str = "pool_size";
 pub static OPTION_KEY_POOL_DIR: &str = "pool_dir";
 /// Key for hash bucket ID for partitioning
 pub static OPTION_KEY_HASH_BUCKET_ID: &str = "hash_bucket_id";
-/// Key for number of hash buckets for partitioning
-pub static OPTION_KEY_HASH_BUCKET_NUM: &str = "hash_bucket_num";
 /// Key for CDC (Change Data Capture) column name
 pub static OPTION_KEY_CDC_COLUMN: &str = "cdc_column";
 /// Key for indicating if data is compacted
@@ -25,6 +23,8 @@ pub static OPTION_KEY_IS_COMPACTED: &str = "is_compacted";
 pub static OPTION_KEY_SKIP_MERGE_ON_READ: &str = "skip_merge_on_read";
 /// Key for maximum file size in bytes
 pub static OPTION_KEY_MAX_FILE_SIZE: &str = "max_file_size";
+/// Key for pushdown filters in file format
+pub static OPTION_KEY_FILE_FILTER_PUSHDOWN: &str = "file_filter_pushdown";
 /// Key for spill dir
 pub static OPTION_KEY_SPILL_DIR: &str = "spill_dir";
 /// Key for computing Local Sensitive Hash
@@ -33,3 +33,5 @@ pub static OPTION_KEY_COMPUTE_LSH: &str = "compute_lsh";
 pub static OPTION_KEY_STABLE_SORT: &str = "stable_sort";
 /// Key for repartition memory
 pub static OPTION_KEY_REPARTITION_MEM_RATIO: &str = "repartition_mem_ratio";
+/// Key for selecting the physical file format used by writers
+pub static OPTION_KEY_PHYSICAL_FORMAT: &str = "physical_format";

@@ -4,8 +4,14 @@
 
 package org.apache.spark.sql.execution.datasources.parquet;
 
-import com.dmetasoul.lakesoul.lakesoul.io.NativeIOReader;
 import com.dmetasoul.lakesoul.LakeSoulArrowReader;
+import com.dmetasoul.lakesoul.lakesoul.io.NativeIOReader;
+import java.io.IOException;
+import java.time.ZoneId;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.hadoop.mapred.FileSplit;
@@ -21,14 +27,6 @@ import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.vectorized.*;
 
-import java.io.IOException;
-import java.time.ZoneId;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Map;
-
-
 /**
  * A specialized RecordReader that reads into InternalRows or ColumnarBatches directly using the
  * Parquet column APIs. This is somewhat based on parquet-mr's ColumnReader.
@@ -40,7 +38,10 @@ import java.util.Map;
  * enabled, this class returns ColumnarBatches which offers significant performance gains.
  * TODO: make this always return ColumnarBatches.
  */
-public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Object> {
+public class NativeVectorizedReader
+    extends SpecificParquetRecordReaderBase<Object>
+{
+
     // The capacity of vectorized batch.
     private final int capacity;
 
@@ -92,6 +93,10 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
 
     private ColumnVector[] nativeColumnVector = null;
 
+    private boolean deferNativeReaderCloseUntilTaskCompletion = false;
+
+    private boolean baseReaderClosed = false;
+
     /**
      * If true, this class returns batches instead of rows.
      */
@@ -103,21 +108,30 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     private final MemoryMode MEMORY_MODE;
 
     public NativeVectorizedReader(
-            ZoneId convertTz,
-            String datetimeRebaseMode,
-            String int96RebaseMode,
-            boolean useOffHeap,
-            int capacity) {
-        this(convertTz, datetimeRebaseMode, int96RebaseMode, useOffHeap, capacity, null);
+        ZoneId convertTz,
+        String datetimeRebaseMode,
+        String int96RebaseMode,
+        boolean useOffHeap,
+        int capacity
+    ) {
+        this(
+            convertTz,
+            datetimeRebaseMode,
+            int96RebaseMode,
+            useOffHeap,
+            capacity,
+            null
+        );
     }
 
     public NativeVectorizedReader(
-            ZoneId convertTz,
-            String datetimeRebaseMode,
-            String int96RebaseMode,
-            boolean useOffHeap,
-            int capacity,
-            FilterPredicate filter) {
+        ZoneId convertTz,
+        String datetimeRebaseMode,
+        String int96RebaseMode,
+        boolean useOffHeap,
+        int capacity,
+        FilterPredicate filter
+    ) {
         this.convertTz = convertTz;
         this.datetimeRebaseMode = datetimeRebaseMode;
         this.int96RebaseMode = int96RebaseMode;
@@ -126,22 +140,34 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
         this.filter = filter;
     }
 
-    public void initialize(InputSplit[] inputSplits, TaskAttemptContext taskAttemptContext, StructType requestSchema)
-            throws IOException, InterruptedException, UnsupportedOperationException {
+    public void initialize(
+        InputSplit[] inputSplits,
+        TaskAttemptContext taskAttemptContext,
+        StructType requestSchema
+    ) throws IOException, InterruptedException, UnsupportedOperationException {
         assert (inputSplits.length == 1);
         initialize(inputSplits, taskAttemptContext, null, requestSchema, null);
     }
 
-    public void initialize(InputSplit[] inputSplits,
-                           TaskAttemptContext taskAttemptContext,
-                           String[] primaryKeys,
-                           StructType requestSchema,
-                           Map<String, String> mergeOperatorInfo)
-            throws IOException, InterruptedException, UnsupportedOperationException {
-        super.initialize(inputSplits[0], taskAttemptContext);
+    public void initialize(
+        InputSplit[] inputSplits,
+        TaskAttemptContext taskAttemptContext,
+        String[] primaryKeys,
+        StructType requestSchema,
+        Map<String, String> mergeOperatorInfo
+    ) throws IOException, InterruptedException, UnsupportedOperationException {
         FileSplit split = (FileSplit) inputSplits[0];
         this.file = split.getPath();
-        this.nativeIOOptions = NativeIOUtils.getNativeIOOptions(taskAttemptContext, this.file);
+        boolean isVortex = this.file.getName().endsWith(".vortex");
+        if (isVortex) {
+            this.sparkSchema = requestSchema;
+        } else {
+            super.initialize(split, taskAttemptContext);
+        }
+        this.nativeIOOptions = NativeIOUtils.getNativeIOOptions(
+            taskAttemptContext,
+            this.file
+        );
         this.filePathList = new ArrayList<>();
 
         for (int i = 0; i < inputSplits.length; i++) {
@@ -153,28 +179,42 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
             this.primaryKeys = Arrays.asList(primaryKeys);
         }
         this.mergeOps = mergeOperatorInfo;
-        this.requestSchema = requestSchema == null ? sparkSchema : requestSchema;
+        this.requestSchema =
+            requestSchema == null ? sparkSchema : requestSchema;
         TaskContext.get().addTaskCompletionListener(context -> {
             try {
-                close();
+                close(true);
             } catch (IOException e) {
                 throw new RuntimeException(e);
             }
         });
     }
 
+    public void deferNativeReaderCloseUntilTaskCompletion() {
+        deferNativeReaderCloseUntilTaskCompletion = true;
+    }
+
     @Override
     public void close() throws IOException {
+        close(false);
+    }
+
+    private void close(boolean forceNativeReaderClose) throws IOException {
         closeCurrentBatch();
         if (columnarBatch != null) {
             columnarBatch.close();
             columnarBatch = null;
         }
         if (nativeReader != null) {
-            nativeReader.close();
-            nativeReader = null;
+            if (!deferNativeReaderCloseUntilTaskCompletion || forceNativeReaderClose) {
+                nativeReader.close();
+                nativeReader = null;
+            }
         }
-        super.close();
+        if (!baseReaderClosed) {
+            super.close();
+            baseReaderClosed = true;
+        }
     }
 
     public void closeCurrentBatch() {
@@ -222,7 +262,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     }
 
     private void recreateNativeReader() throws IOException {
-        close();
+        close(true);
         NativeIOReader reader = new NativeIOReader();
         GlutenUtils.setArrowAllocator(reader);
         for (String path : filePathList) {
@@ -232,14 +272,23 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
             reader.setPrimaryKeys(primaryKeys);
         }
 
-        String timeZoneId = convertTz == null ? SQLConf.get().sessionLocalTimeZone() : convertTz.toString();
-        Schema arrowSchema = ArrowUtils.toArrowSchema(requestSchema, timeZoneId);
+        String timeZoneId =
+            convertTz == null
+                ? SQLConf.get().sessionLocalTimeZone()
+                : convertTz.toString();
+        Schema arrowSchema = ArrowUtils.toArrowSchema(
+            requestSchema,
+            timeZoneId
+        );
         reader.setSchema(arrowSchema);
 
         if (partitionColumns != null) {
             for (int i = 0; i < partitionColumns.fields().length; i++) {
                 StructField field = partitionColumns.fields()[i];
-                reader.setDefaultColumnValue(field.name(), partitionValues.get(i, field.dataType()).toString());
+                reader.setDefaultColumnValue(
+                    field.name(),
+                    partitionValues.get(i, field.dataType()).toString()
+                );
             }
         }
         reader.setBatchSize(capacity);
@@ -274,9 +323,10 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
 
     // Create partitions' column vector
     private void initBatch(
-            MemoryMode memMode,
-            StructType partitionColumns,
-            InternalRow partitionValues) throws IOException {
+        MemoryMode memMode,
+        StructType partitionColumns,
+        InternalRow partitionValues
+    ) throws IOException {
         this.partitionColumns = partitionColumns;
         this.partitionValues = partitionValues;
         if (partitionColumns != null && !partitionColumns.isEmpty()) {
@@ -284,7 +334,8 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
             for (StructField f : requestSchema.fields()) {
                 boolean is_partition = false;
                 for (StructField partitionField : partitionColumns.fields()) {
-                    if (partitionField.name().equals(f.name())) is_partition = true;
+                    if (partitionField.name().equals(f.name())) is_partition =
+                        true;
                 }
                 if (!is_partition) newSchema = newSchema.add(f);
             }
@@ -296,7 +347,10 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
         recreateNativeReader();
     }
 
-    public void initBatch(StructType partitionColumns, InternalRow partitionValues) throws IOException {
+    public void initBatch(
+        StructType partitionColumns,
+        InternalRow partitionValues
+    ) throws IOException {
         initBatch(MEMORY_MODE, partitionColumns, partitionValues);
     }
 
@@ -313,12 +367,18 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     public boolean nextBatch() throws IOException {
         closeCurrentBatch();
         if (nativeReader.hasNext()) {
-            VectorSchemaRoot nextVectorSchemaRoot = nativeReader.nextResultVectorSchemaRoot();
+            VectorSchemaRoot nextVectorSchemaRoot =
+                nativeReader.nextResultVectorSchemaRoot();
             int rowCount = nextVectorSchemaRoot.getRowCount();
             if (nextVectorSchemaRoot.getSchema().getFields().isEmpty()) {
-                columnarBatch = new ColumnarBatch(new ColumnVector[]{}, rowCount);
+                columnarBatch = new ColumnarBatch(
+                    new ColumnVector[] {},
+                    rowCount
+                );
             } else {
-                nativeColumnVector = NativeIOUtils.asArrayColumnVector(nextVectorSchemaRoot);
+                nativeColumnVector = NativeIOUtils.asArrayColumnVector(
+                    nextVectorSchemaRoot
+                );
                 columnarBatch = new ColumnarBatch(nativeColumnVector, rowCount);
             }
             return true;
