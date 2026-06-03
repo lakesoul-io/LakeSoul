@@ -38,16 +38,22 @@
   services.postgres = {
     enable = true;
     package = pkgs.postgresql_14;
-    initialDatabases = [{ name = "lakesoul-test"; user = "lakesoul-test"; pass="lakesoul-test";
-      schema = toString ./script/meta_init.sql;
-    }];
-    extensions = extensions: [
-          # extensions .postgis
-          # extensions .timescaledb
+    initialDatabases = [
+      {
+        name = "lakesoul_test";
+        user = "lakesoul_test";
+        pass = "lakesoul_test";
+        schema = toString ./script/meta_init.sql;
+      }
     ];
+    extensions = extensions: [
+      # extensions .postgis
+      # extensions .timescaledb
+    ];
+    listen_addresses = "127.0.0.1";
     # initialScript = "";
     # settings .shared_preload_libraries = "timescaledb";
- };
+  };
 
   # https://devenv.sh/scripts/
   # scripts.hello.exec = ''
