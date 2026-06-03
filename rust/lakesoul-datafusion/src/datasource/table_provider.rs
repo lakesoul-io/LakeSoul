@@ -79,14 +79,76 @@ pub struct LakeSoulTableProvider {
     pub(crate) listing_table_paths: Vec<ListingTableUrl>,
     pub(crate) client: MetaDataClientRef,
     pub(crate) table_info: Arc<TableInfo>,
-    // table schema is the normalized schema of TableProvider
-    pub(crate) table_schema: SchemaRef,
+    // logical schema keeps metadata / SQL column order
+    pub(crate) logical_schema: SchemaRef,
+    // scan schema keeps file columns followed by partition columns
+    pub(crate) scan_schema: SchemaRef,
     pub(crate) file_schema: SchemaRef,
     pub(crate) primary_keys: Vec<String>,
     pub(crate) range_partitions: Vec<String>,
     pub(crate) pushdown_filters: bool,
 }
 impl LakeSoulTableProvider {
+    fn split_schemas(
+        logical_schema: SchemaRef,
+        range_partitions: &[String],
+    ) -> Result<(SchemaRef, SchemaRef)> {
+        let mut range_partition_projection = Vec::with_capacity(range_partitions.len());
+        let mut file_schema_projection =
+            Vec::with_capacity(logical_schema.fields().len() - range_partitions.len());
+        // O(nm), n = number of table fields, m = number of range partitions
+        for (idx, field) in logical_schema.fields().iter().enumerate() {
+            match range_partitions.contains(field.name()) {
+                true => range_partition_projection.push(idx),
+                false => file_schema_projection.push(idx),
+            };
+        }
+
+        let file_schema = Arc::new(logical_schema.project(&file_schema_projection)?);
+        let scan_schema =
+            Arc::new(logical_schema.project(
+                &[file_schema_projection, range_partition_projection].concat(),
+            )?);
+        Ok((file_schema, scan_schema))
+    }
+
+    fn logical_projection_to_scan_indices(
+        projection: Option<&Vec<usize>>,
+        logical_schema: &SchemaRef,
+        scan_schema: &SchemaRef,
+        project_full_schema: bool,
+    ) -> DFResult<Option<Vec<usize>>> {
+        if projection.is_none() && !project_full_schema {
+            return Ok(None);
+        }
+
+        let requested_projection = projection
+            .cloned()
+            .unwrap_or_else(|| (0..logical_schema.fields().len()).collect());
+        let projection_indices = requested_projection
+            .into_iter()
+            .map(|logical_idx| {
+                let field = logical_schema.field(logical_idx);
+                scan_schema
+                    .index_of(field.name())
+                    .map_err(|err| DataFusionError::ArrowError(Box::new(err), None))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Some(projection_indices))
+    }
+
+    fn scan_projection(
+        &self,
+        projection: Option<&Vec<usize>>,
+    ) -> DFResult<Option<Vec<usize>>> {
+        Self::logical_projection_to_scan_indices(
+            projection,
+            &self.logical_schema,
+            &self.scan_schema,
+            !self.range_partitions.is_empty(),
+        )
+    }
+
     pub async fn try_new(
         session_state: &SessionState,
         client: MetaDataClientRef,
@@ -94,25 +156,11 @@ impl LakeSoulTableProvider {
         table_info: Arc<TableInfo>,
         as_sink: bool,
     ) -> Result<Self> {
-        let table_schema = schema_from_metadata_str(&table_info.table_schema);
+        let logical_schema = schema_from_metadata_str(&table_info.table_schema);
         let (range_partitions, hash_partitions) =
             parse_table_info_partitions(&table_info.partitions)?;
-        let mut range_partition_projection = Vec::with_capacity(range_partitions.len());
-        let mut file_schema_projection =
-            Vec::with_capacity(table_schema.fields().len() - range_partitions.len());
-        // O(nm), n = number of table fields, m = number of range partitions
-        for (idx, field) in table_schema.fields().iter().enumerate() {
-            match range_partitions.contains(field.name()) {
-                true => range_partition_projection.push(idx),
-                false => file_schema_projection.push(idx),
-            };
-        }
-
-        let file_schema = Arc::new(table_schema.project(&file_schema_projection)?);
-        let table_schema =
-            Arc::new(table_schema.project(
-                &[file_schema_projection, range_partition_projection].concat(),
-            )?);
+        let (file_schema, scan_schema) =
+            Self::split_schemas(logical_schema.clone(), &range_partitions)?;
 
         let file_format: Arc<dyn FileFormat> = Arc::new(
             LakeSoulMetaDataParquetFormat::new(
@@ -147,7 +195,8 @@ impl LakeSoulTableProvider {
             listing_table_paths,
             client,
             table_info,
-            table_schema,
+            logical_schema,
+            scan_schema,
             file_schema,
             primary_keys: hash_partitions,
             range_partitions,
@@ -207,16 +256,16 @@ impl LakeSoulTableProvider {
             (None, None)
         };
 
-        let table_schema = Arc::new(schema_builder.finish());
-
-        let file_schema: SchemaRef = table_schema.clone();
+        let logical_schema = Arc::new(schema_builder.finish());
+        let (file_schema, scan_schema) =
+            Self::split_schemas(logical_schema.clone(), &range_partitions)?;
 
         let table_info = Arc::new(TableInfo {
             table_id: format!("table_{}", uuid::Uuid::new_v4()),
             table_namespace: cmd.name.schema().unwrap_or("default").to_string(),
             table_name: case_fold_table_name(cmd.name.table()),
             table_schema: serde_json::to_string::<ArrowJavaSchema>(
-                &table_schema.clone().into(),
+                &logical_schema.clone().into(),
             )?,
             properties: serde_json::to_string(&LakeSoulTableProperty {
                 hash_bucket_num: if primary_keys.is_empty() {
@@ -255,7 +304,8 @@ impl LakeSoulTableProvider {
             listing_table_paths: vec![],
             client,
             table_info,
-            table_schema,
+            logical_schema,
+            scan_schema,
             file_schema,
             primary_keys,
             range_partitions,
@@ -309,6 +359,10 @@ impl LakeSoulTableProvider {
 
     pub fn file_schema(&self) -> SchemaRef {
         self.file_schema.clone()
+    }
+
+    pub fn scan_schema(&self) -> SchemaRef {
+        self.scan_schema.clone()
     }
 
     pub fn table_partition_cols(&self) -> &[(String, DataType)] {
@@ -436,7 +490,7 @@ impl TableProvider for LakeSoulTableProvider {
     }
 
     fn schema(&self) -> SchemaRef {
-        self.table_schema.clone()
+        self.logical_schema.clone()
     }
 
     fn table_type(&self) -> TableType {
@@ -472,7 +526,11 @@ impl TableProvider for LakeSoulTableProvider {
             .options()
             .table_partition_cols
             .iter()
-            .map(|col| Ok(Arc::new(self.schema().field_with_name(&col.0)?.clone())))
+            .map(|col| {
+                Ok(Arc::new(
+                    self.scan_schema().field_with_name(&col.0)?.clone(),
+                ))
+            })
             .collect::<Result<Vec<_>, ArrowError>>()?;
         // TODO change logic when datafusion 52
         let table_schema =
@@ -497,7 +555,7 @@ impl TableProvider for LakeSoulTableProvider {
                         .collect(),
                 )
                 .with_statistics((*statistics).clone())
-                .with_projection_indices(projection.cloned())?
+                .with_projection_indices(self.scan_projection(projection)?)?
                 .with_limit(limit)
                 .with_output_ordering(self.try_create_output_ordering().map_err(
                     |report| DataFusionError::External(report.into_boxed_error()),
@@ -534,10 +592,12 @@ impl TableProvider for LakeSoulTableProvider {
             }
         }
         // create the execution plan
-        self.options()
+        let plan = self
+            .options()
             .format
             .create_physical_plan(session_state, scan_config)
-            .await
+            .await?;
+        Ok(plan)
     }
 
     fn supports_filters_pushdown(
@@ -603,5 +663,35 @@ impl TableProvider for LakeSoulTableProvider {
             .format
             .create_writer_physical_plan(input, state, config, order_requirements)
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn logical_projection_maps_to_scan_schema_order() {
+        let logical_schema = Arc::new(Schema::new(vec![
+            Field::new("c1", DataType::Int32, true),
+            Field::new("c2", DataType::Int32, true),
+            Field::new("c3", DataType::Int32, true),
+        ]));
+        let scan_schema = Arc::new(Schema::new(vec![
+            Field::new("c1", DataType::Int32, true),
+            Field::new("c3", DataType::Int32, true),
+            Field::new("c2", DataType::Int32, true),
+        ]));
+
+        let projection = vec![0, 1, 2];
+        let mapped = LakeSoulTableProvider::logical_projection_to_scan_indices(
+            Some(&projection),
+            &logical_schema,
+            &scan_schema,
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(mapped, Some(vec![0, 2, 1]));
     }
 }

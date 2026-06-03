@@ -131,6 +131,21 @@ impl LakeSoulMetaDataParquetFormat {
             .await?,
         )))
     }
+
+    fn needs_output_projection(
+        target_schema: &SchemaRef,
+        merged_schema: &SchemaRef,
+    ) -> bool {
+        if target_schema.fields().len() < merged_schema.fields().len() {
+            return true;
+        }
+
+        target_schema
+            .fields()
+            .iter()
+            .zip(merged_schema.fields().iter())
+            .any(|(target, merged)| target.name() != merged.name())
+    }
 }
 
 #[async_trait]
@@ -322,13 +337,13 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
             exec
         };
 
-        if target_schema.fields().len() < merged_schema.fields().len() {
+        if Self::needs_output_projection(&target_schema, &merged_schema) {
             let mut projection_expr = vec![];
             for field in target_schema.fields() {
                 projection_expr.push((
                     datafusion::physical_expr::expressions::col(
                         field.name(),
-                        &merged_schema,
+                        exec.schema().as_ref(),
                     )?,
                     field.name().clone(),
                 ));
@@ -371,6 +386,28 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
 
     fn file_source(&self, table_schema: TableSchema) -> Arc<dyn FileSource> {
         self.parquet_format.file_source(table_schema)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn same_width_different_order_still_needs_projection() {
+        let target_schema = Arc::new(Schema::new(vec![
+            Field::new("c1", DataType::Int32, true),
+            Field::new("c2", DataType::Int32, true),
+        ]));
+        let merged_schema = Arc::new(Schema::new(vec![
+            Field::new("c2", DataType::Int32, true),
+            Field::new("c1", DataType::Int32, true),
+        ]));
+
+        assert!(LakeSoulMetaDataParquetFormat::needs_output_projection(
+            &target_schema,
+            &merged_schema,
+        ));
     }
 }
 
