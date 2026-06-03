@@ -11,6 +11,7 @@
   # https://devenv.sh/packages/
   packages = with pkgs; [
     clang
+    lld
     llvmPackages.libclang
   ];
   env = {
