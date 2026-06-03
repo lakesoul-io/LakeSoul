@@ -277,6 +277,9 @@ pub async fn exec_from_repl(ctx: &SessionContext, printer: &Printer) -> Result<(
         }
     }
 
-    rl.save_history("console.history")?;
+    let histry_path = std::env::var("LAKESOUL_CONSOLE_HISTORY_PATH")
+        .unwrap_or(String::from("/tmp/console.history"));
+
+    rl.save_history(&histry_path)?;
     Ok(())
 }
