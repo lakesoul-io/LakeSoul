@@ -5,7 +5,7 @@
 use std::env;
 use std::sync::Arc;
 
-use arrow::array::{ArrayRef, Int32Array, RecordBatch};
+use arrow::array::{Array, ArrayRef, Int32Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::assert_batches_eq;
 use datafusion::catalog::{CatalogProvider, SchemaProvider};
@@ -19,6 +19,8 @@ use rand::distr::Alphanumeric;
 use tokio::runtime::Runtime;
 
 use crate::catalog::{LakeSoulCatalog, LakeSoulNamespace, LakeSoulTableProperty};
+use crate::cli::CoreArgs;
+use crate::create_lakesoul_session_ctx;
 use crate::lakesoul_table::LakeSoulTable;
 use crate::serialize::arrow_java::ArrowJavaSchema;
 
@@ -296,8 +298,212 @@ fn test_catalog_sql() {
     });
 }
 
+fn test_catalog_sql_partitioned_insert_column_order() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+        let sc = create_lakesoul_session_ctx(client, &CoreArgs::default()).unwrap();
+
+        let rng = &mut rand::rng();
+        let namespace = format!("issue_758_{}", rng.random::<u32>());
+        let table_name = format!("test_{}", rng.random::<u32>());
+        let table_path = format!(
+            "file://{}/test_data/{}/{}",
+            env::current_dir()
+                .unwrap_or(env::temp_dir())
+                .to_str()
+                .unwrap(),
+            namespace,
+            table_name
+        );
+
+        let create_schema = format!("create schema \"LAKESOUL\".{namespace}");
+        sc.sql(&create_schema)
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+
+        let create_table = format!(
+            "CREATE EXTERNAL TABLE \"LAKESOUL\".{namespace}.{table_name} (
+                c1 VARCHAR NOT NULL,
+                c2 INT NOT NULL,
+                c3 DOUBLE
+            )
+            STORED AS LAKESOUL
+            PARTITIONED BY (c2)
+            LOCATION '{table_path}'"
+        );
+        sc.sql(&create_table)
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+
+        let insert_sql = format!(
+            "INSERT INTO \"LAKESOUL\".{namespace}.{table_name} VALUES
+                ('test', 1, 1.0),
+                ('hello', 2, 2.5)"
+        );
+        sc.sql(&insert_sql).await.unwrap().collect().await.unwrap();
+
+        let select_all_sql =
+            format!("SELECT * FROM \"LAKESOUL\".{namespace}.{table_name} ORDER BY c1");
+        let select_all = sc
+            .sql(&select_all_sql)
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        assert_batches_eq!(
+            &[
+                "+-------+----+-----+",
+                "| c1    | c2 | c3  |",
+                "+-------+----+-----+",
+                "| hello | 2  | 2.5 |",
+                "| test  | 1  | 1.0 |",
+                "+-------+----+-----+",
+            ],
+            &select_all
+        );
+
+        let projected_sql = format!(
+            "SELECT c1, c3 FROM \"LAKESOUL\".{namespace}.{table_name} ORDER BY c1"
+        );
+        let projected = sc
+            .sql(&projected_sql)
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        assert_batches_eq!(
+            &[
+                "+-------+-----+",
+                "| c1    | c3  |",
+                "+-------+-----+",
+                "| hello | 2.5 |",
+                "| test  | 1.0 |",
+                "+-------+-----+",
+            ],
+            &projected
+        );
+
+        let partition_only_sql =
+            format!("SELECT c2 FROM \"LAKESOUL\".{namespace}.{table_name} ORDER BY c2");
+        let partition_only = sc
+            .sql(&partition_only_sql)
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        #[rustfmt::skip]
+        let expected = [
+            "+----+",
+            "| c2 |",
+            "+----+",
+            "| 1  |",
+            "| 2  |",
+            "+----+",
+        ];
+        assert_batches_eq!(&expected, &partition_only);
+
+        let reordered_sql = format!(
+            "SELECT c3, c2 FROM \"LAKESOUL\".{namespace}.{table_name} ORDER BY c3"
+        );
+        let reordered = sc
+            .sql(&reordered_sql)
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        assert_batches_eq!(
+            &[
+                "+-----+----+",
+                "| c3  | c2 |",
+                "+-----+----+",
+                "| 1.0 | 1  |",
+                "| 2.5 | 2  |",
+                "+-----+----+",
+            ],
+            &reordered
+        );
+
+        let filter_sql = format!(
+            "SELECT c1, c2, c3 FROM \"LAKESOUL\".{namespace}.{table_name} WHERE c2 = 1"
+        );
+        let filtered = sc.sql(&filter_sql).await.unwrap().collect().await.unwrap();
+        assert_batches_eq!(
+            &[
+                "+------+----+-----+",
+                "| c1   | c2 | c3  |",
+                "+------+----+-----+",
+                "| test | 1  | 1.0 |",
+                "+------+----+-----+",
+            ],
+            &filtered
+        );
+
+        let select_star_filter_sql =
+            format!("SELECT * FROM \"LAKESOUL\".{namespace}.{table_name} WHERE c2 = 2");
+        let select_star_filtered = sc
+            .sql(&select_star_filter_sql)
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        assert_batches_eq!(
+            &[
+                "+-------+----+-----+",
+                "| c1    | c2 | c3  |",
+                "+-------+----+-----+",
+                "| hello | 2  | 2.5 |",
+                "+-------+----+-----+",
+            ],
+            &select_star_filtered
+        );
+
+        let show_columns_sql =
+            format!("show columns from \"LAKESOUL\".{namespace}.{table_name}");
+        let show_columns = sc
+            .sql(&show_columns_sql)
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let column_names = show_columns
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column_by_name("column_name")
+                    .into_iter()
+                    .flat_map(|column| {
+                        let array =
+                            column.as_any().downcast_ref::<StringArray>().unwrap();
+                        (0..array.len())
+                            .map(|idx| array.value(idx).to_string())
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            column_names,
+            vec!["c1".to_string(), "c2".to_string(), "c3".to_string()]
+        );
+    });
+}
+
 #[test]
 fn test_all_cases() {
     test_catalog_api();
     test_catalog_sql();
+    test_catalog_sql_partitioned_insert_column_order();
 }

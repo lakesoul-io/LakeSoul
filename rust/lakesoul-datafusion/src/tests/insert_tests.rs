@@ -160,7 +160,8 @@ async fn test_insert_into_append_by_position() -> Result<()> {
 async fn test_insert_into_append_partitioned_table() -> Result<()> {
     let table_name = "test_insert_into_append_partitioned_table";
     let client = Arc::new(MetaDataClient::from_env().await?);
-    let record_batch = create_batch_i32(vec!["id", "data"], vec![&[1, 2, 3], &[1, 2, 3]]);
+    let record_batch =
+        create_batch_i32(vec!["id", "data"], vec![&[1, 2, 3], &[10, 20, 30]]);
     init_partitioned_table(
         client.clone(),
         record_batch.schema(),
@@ -178,10 +179,69 @@ async fn test_insert_into_append_partitioned_table() -> Result<()> {
             "+------+----+",
             "| data | id |",
             "+------+----+",
-            "| 1    | 1  |",
-            "| 2    | 2  |",
-            "| 3    | 3  |",
+            "| 10   | 1  |",
+            "| 20   | 2  |",
+            "| 30   | 3  |",
             "+------+----+",
+        ],
+    )
+    .await
+}
+
+async fn test_insert_into_append_partitioned_table_with_reordered_subsets() -> Result<()>
+{
+    let table_name = "test_insert_into_append_partitioned_table_with_reordered_subsets";
+    let client = Arc::new(MetaDataClient::from_env().await?);
+    let record_batch = create_batch_i32(
+        vec!["id", "part", "data"],
+        vec![&[1, 2, 3], &[10, 20, 30], &[100, 200, 300]],
+    );
+    init_partitioned_table(
+        client.clone(),
+        record_batch.schema(),
+        table_name,
+        vec!["part"],
+    )
+    .await?;
+    do_insert(record_batch, table_name).await?;
+
+    check_insert(
+        client.clone(),
+        table_name,
+        vec!["data", "part"],
+        None,
+        &[
+            "+------+------+",
+            "| data | part |",
+            "+------+------+",
+            "| 100  | 10   |",
+            "| 200  | 20   |",
+            "| 300  | 30   |",
+            "+------+------+",
+        ],
+    )
+    .await?;
+
+    check_insert(
+        client.clone(),
+        table_name,
+        vec!["part"],
+        None,
+        &[
+            "+------+", "| part |", "+------+", "| 10   |", "| 20   |", "| 30   |",
+            "+------+",
+        ],
+    )
+    .await?;
+
+    check_insert(
+        client.clone(),
+        table_name,
+        vec!["data"],
+        None,
+        &[
+            "+------+", "| data |", "+------+", "| 100  |", "| 200  |", "| 300  |",
+            "+------+",
         ],
     )
     .await
@@ -219,7 +279,8 @@ async fn test_insert_into_append_partitioned_table_and_read_with_partition_filte
     let table_name =
         "test_insert_into_append_partitioned_table_and_read_with_partition_filter";
     let client = Arc::new(MetaDataClient::from_env().await?);
-    let record_batch = create_batch_i32(vec!["id", "data"], vec![&[1, 2, 3], &[1, 2, 3]]);
+    let record_batch =
+        create_batch_i32(vec!["id", "data"], vec![&[1, 2, 3], &[10, 20, 30]]);
     init_partitioned_table(
         client.clone(),
         record_batch.schema(),
@@ -240,8 +301,8 @@ async fn test_insert_into_append_partitioned_table_and_read_with_partition_filte
             "+------+----+",
             "| data | id |",
             "+------+----+",
-            "| 1    | 1  |",
-            "| 2    | 2  |",
+            "| 10   | 1  |",
+            "| 20   | 2  |",
             "+------+----+",
         ],
     )
@@ -593,6 +654,7 @@ async fn test_all_cases() -> Result<()> {
     test_insert_into_append().await?;
     test_insert_into_append_by_position().await?;
     test_insert_into_append_partitioned_table().await?;
+    test_insert_into_append_partitioned_table_with_reordered_subsets().await?;
     test_insert_into_append_non_partitioned_table_and_read_with_filter().await?;
     test_insert_into_append_partitioned_table_and_read_with_partition_filter().await?;
 
