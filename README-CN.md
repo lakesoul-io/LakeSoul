@@ -8,8 +8,25 @@ SPDX-License-Identifier: Apache-2.0
 
 <img src='https://github.com/lfai/artwork/blob/main/lfaidata-assets/lfaidata-project-badge/sandbox/color/lfaidata-project-badge-sandbox-color.svg' alt="LF AI & Data Sandbox Project" height='180'>
 
-**2025.09: LakeSoul 发布最新 3.0.0 版本，详情请参考 [发布日志](https://lakesoul-io.github.io/blog/2025/09/05/lakesoul-3.0.0-release)**
+# 超越表格式 —— 完整的湖仓解决方案
+Apache Iceberg 提供了事实上的开放表格式标准，而 LakeSoul 的目标是交付一个开箱即用、生产就绪的湖仓平台。在表格式之上，LakeSoul 内置了自动化存算分离多级 Compaction、细粒度 RBAC 权限管控（含 S3 Proxy 访问鉴权）、高性能 OLAP 查询、向量检索，以及基于 Ray 和 Daft 的原生多模态数据处理能力。不必再自行组装和维护独立的 Catalog、Compaction 服务和鉴权层 —— LakeSoul 提供了一个生产可用的湖仓解决方案。
 
+# Rust 原生内核，跨语言一致体验
+LakeSoul 的元数据管理和文件格式 IO 全部采用 Rust 实现——以单一高性能内核驱动，并封装为 Java、Python、C++ 的 idiomatic 接口。无论你用 Spark 查数据、用 Flink 跑流、还是用 PyTorch / Ray / Daft 训模型，每种引擎、每种语言共享同一套 ACID 保障、同一种 Upsert 语义、同一份读取性能。不存在按语言/引擎各自重新实现的表格式，不存在不同 Binding 之间细微的行为差异，也不存在需要费心追踪的碎片化兼容性矩阵。
+
+计算引擎支持矩阵：
+| 引擎    | 版本         | 读取     | 写入     | 接口                        |
+| ------- | ------------ | -------- | -------- | --------------------------- |
+| Spark   | 3.5          | ✓ 批量   | ✓ 批量   | Java / Python / Scala / SQL |
+| Flink   | 1.20         | ✓ 流式   | ✓ 流式   | Java / SQL                  |
+| Presto  | 0.296(velox) | ✓ 批式   | -        | SQL                         |
+| Ray     | 2.7+         | ✓ 分布式 | ✓ 分布式 | Python                      |
+| Daft    | 0.7+         | ✓ 分布式 | ✓ 分布式 | Python                      |
+| DuckDB  | 最新         | ✓ 单机   | —        | Python                      |
+| PyArrow | 16+          | ✓ 单机   | ✓ 单机   | Python                      |
+| Pandas  | 2.0+         | ✓ 单机   | ✓ 单机   | Python                      |
+
+# 特性介绍
 LakeSoul 是一款开源云原生湖仓一体框架，具备高可扩展的元数据管理、ACID 事务、高效灵活的 upsert 操作、Schema 演进和批流一体化处理等特性。LakeSoul 支持多种计算引擎读写湖仓表数据，包括 Spark、Flink、Presto、PyTorch，支持批、流、MPP、AI 多种计算模式。LakeSoul 支持 HDFS、S3 等存储系统。
 ![LakeSoul 架构](website/static/img/lakeSoulModel.png)
 
