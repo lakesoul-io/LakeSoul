@@ -123,7 +123,7 @@ class TestExceptions:
             read_lakesoul("no_such_table_xyz_123")
 
     def test_do_write_not_implemented(self):
-        ds = LakeSoulDatasource()
+        ds = LakeSoulDatasource(TABLE_NAME_PART)
         with pytest.raises(NotImplementedError, match="not implemented"):
             ds.do_write()
 

@@ -21,7 +21,6 @@ def test_use_partition(ray_session):
 
 def test_get_read_tasks_count(ray_session):
     """get_read_tasks should return one ReadTask per data file."""
-    source = LakeSoulDatasource()
-    reader = source.create_reader(TABLE_NAME_TEST_LFS, partitions={"c2": "1"})
-    tasks = reader.get_read_tasks(parallelism=1)
+    source = LakeSoulDatasource(TABLE_NAME_TEST_LFS, partitions={"c2": "1"})
+    tasks = source.get_read_tasks(parallelism=1)
     assert len(tasks) > 1
