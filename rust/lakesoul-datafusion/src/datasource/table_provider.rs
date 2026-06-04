@@ -5,6 +5,7 @@
 //! The [`datafusion::datasource::TableProvider`] implementation for LakeSoul table.
 
 use std::any::Any;
+use std::collections::HashMap;
 use std::env;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -17,7 +18,6 @@ use datafusion::catalog::Session;
 use datafusion::common::{Constraint, Statistics, ToDFSchema, project_schema};
 use datafusion::datasource::TableProvider;
 use datafusion::datasource::file_format::FileFormat;
-use datafusion::datasource::file_format::file_compression_type::FileCompressionType;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{ListingOptions, ListingTableUrl, PartitionedFile};
 use datafusion::datasource::physical_plan::{
@@ -35,13 +35,21 @@ use datafusion::logical_expr::{
 use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr, create_physical_expr};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::empty::EmptyExec;
+use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::scalar::ScalarValue;
-use datafusion::{execution::context::SessionState, logical_expr::Expr};
+use datafusion::{
+    execution::{context::SessionState, object_store::ObjectStoreUrl},
+    logical_expr::Expr,
+};
 use datafusion_datasource::file_sink_config::FileOutputMode;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 
 use lakesoul_io::config::LakeSoulIOConfig;
+use lakesoul_io::file_format::{
+    LakeSoulFormatRegistry, PhysicalFormat, compute_project_column_indices,
+    flatten_file_scan_config_for_format,
+};
 use lakesoul_io::helpers::listing_table_from_lakesoul_io_config;
 use lakesoul_metadata::MetaDataClientRef;
 use lakesoul_metadata::utils::qualify_path;
@@ -55,12 +63,19 @@ use crate::catalog::{
     LakeSoulTableProperty, format_table_info_partitions, parse_table_info_partitions,
 };
 use crate::lakesoul_table::helpers::{
-    case_fold_column_name, case_fold_table_name, listing_partition_info,
+    case_fold_column_name, case_fold_table_name,
+    create_io_config_builder_from_table_info, listing_partition_info,
     parse_partitions_for_partition_desc, prune_partitions,
 };
 use crate::serialize::arrow_java::{ArrowJavaSchema, schema_from_metadata_str};
 
 use super::file_format::LakeSoulMetaDataParquetFormat;
+
+struct FormatScanGroup {
+    object_store_url: ObjectStoreUrl,
+    physical_format: PhysicalFormat,
+    partitioned_file_lists: Vec<Vec<PartitionedFile>>,
+}
 
 /// Reads data from LakeSoul
 ///
@@ -87,8 +102,25 @@ pub struct LakeSoulTableProvider {
     pub(crate) primary_keys: Vec<String>,
     pub(crate) range_partitions: Vec<String>,
     pub(crate) pushdown_filters: bool,
+    pub(crate) io_config: LakeSoulIOConfig,
+    pub(crate) format_registry: Arc<LakeSoulFormatRegistry>,
 }
 impl LakeSoulTableProvider {
+    fn needs_output_projection(
+        target_schema: &SchemaRef,
+        merged_schema: &SchemaRef,
+    ) -> bool {
+        if target_schema.fields().len() != merged_schema.fields().len() {
+            return true;
+        }
+
+        target_schema
+            .fields()
+            .iter()
+            .zip(merged_schema.fields().iter())
+            .any(|(target, merged)| target.name() != merged.name())
+    }
+
     fn split_schemas(
         logical_schema: SchemaRef,
         range_partitions: &[String],
@@ -162,17 +194,20 @@ impl LakeSoulTableProvider {
         let (file_schema, scan_schema) =
             Self::split_schemas(logical_schema.clone(), &range_partitions)?;
 
+        let parquet_force_view_types = session_state
+            .config_options()
+            .execution
+            .parquet
+            .schema_force_view_types;
+        let format_registry = Arc::new(LakeSoulFormatRegistry::new(
+            lakesoul_io_config.clone(),
+            parquet_force_view_types,
+        )?);
         let file_format: Arc<dyn FileFormat> = Arc::new(
             LakeSoulMetaDataParquetFormat::new(
                 client.clone(),
                 Arc::new(
-                    ParquetFormat::new().with_force_view_types(
-                        session_state
-                            .config_options()
-                            .execution
-                            .parquet
-                            .schema_force_view_types,
-                    ),
+                    ParquetFormat::new().with_force_view_types(parquet_force_view_types),
                 ),
                 table_info.clone(),
                 lakesoul_io_config.clone(),
@@ -201,6 +236,8 @@ impl LakeSoulTableProvider {
             primary_keys: hash_partitions,
             range_partitions,
             pushdown_filters: lakesoul_io_config.file_filter_pushdown(),
+            io_config: lakesoul_io_config,
+            format_registry,
         })
     }
 
@@ -298,6 +335,20 @@ impl LakeSoulTableProvider {
             },
             domain: "public".to_string(),
         });
+        let io_config = create_io_config_builder_from_table_info(
+            table_info.clone(),
+            cmd.options.clone(),
+            HashMap::new(),
+        )?
+        .build();
+        let format_registry = Arc::new(LakeSoulFormatRegistry::new(
+            io_config.clone(),
+            session_state
+                .config_options()
+                .execution
+                .parquet
+                .schema_force_view_types,
+        )?);
         Ok(Self {
             listing_options: LakeSoulMetaDataParquetFormat::default_listing_options()
                 .await?,
@@ -314,6 +365,8 @@ impl LakeSoulTableProvider {
                 .execution
                 .parquet
                 .pushdown_filters, // TODO after more format
+            io_config,
+            format_registry,
         })
     }
 
@@ -481,6 +534,49 @@ impl LakeSoulTableProvider {
 
         Ok((file_groups, Statistics::new_unknown(self.schema().deref())))
     }
+
+    fn format_scan_groups(
+        format_registry: &LakeSoulFormatRegistry,
+        object_store_url: ObjectStoreUrl,
+        partitioned_file_lists: Vec<Vec<PartitionedFile>>,
+    ) -> Result<Vec<FormatScanGroup>> {
+        let mut groups: Vec<FormatScanGroup> = vec![];
+
+        for partitioned_files in partitioned_file_lists {
+            let mut files_by_format: Vec<(PhysicalFormat, Vec<PartitionedFile>)> = vec![];
+
+            for file in partitioned_files {
+                let physical_format = format_registry
+                    .physical_format_for_path(file.object_meta.location.as_ref())?;
+
+                if let Some((_, files)) = files_by_format
+                    .iter_mut()
+                    .find(|(format, _)| *format == physical_format)
+                {
+                    files.push(file);
+                } else {
+                    files_by_format.push((physical_format, vec![file]));
+                }
+            }
+
+            for (physical_format, files) in files_by_format {
+                if let Some(group) = groups.iter_mut().find(|group| {
+                    group.object_store_url == object_store_url
+                        && group.physical_format == physical_format
+                }) {
+                    group.partitioned_file_lists.push(files);
+                } else {
+                    groups.push(FormatScanGroup {
+                        object_store_url: object_store_url.clone(),
+                        physical_format,
+                        partitioned_file_lists: vec![files],
+                    });
+                }
+            }
+        }
+
+        Ok(groups)
+    }
 }
 
 #[async_trait]
@@ -536,7 +632,6 @@ impl TableProvider for LakeSoulTableProvider {
         let table_schema =
             TableSchema::new(self.file_schema.clone(), table_partition_cols.clone());
         let statistics = Arc::new(statistics);
-        let file_source = self.options().format.file_source(table_schema);
 
         let object_store_url = if let Some(url) = self.table_paths().first() {
             url.object_store()
@@ -544,60 +639,130 @@ impl TableProvider for LakeSoulTableProvider {
             return Ok(Arc::new(EmptyExec::new(Arc::new(Schema::empty()))));
         };
 
-        let mut scan_config =
-            FileScanConfigBuilder::new(object_store_url, file_source)
-                .with_file_groups(
-                    partitioned_file_lists
-                        .into_iter()
-                        .map(|files| {
-                            FileGroup::new(files).with_statistics(statistics.clone())
-                        })
-                        .collect(),
-                )
-                .with_statistics((*statistics).clone())
-                .with_projection_indices(self.scan_projection(projection)?)?
-                .with_limit(limit)
-                .with_output_ordering(self.try_create_output_ordering().map_err(
-                    |report| DataFusionError::External(report.into_boxed_error()),
-                )?)
-                .with_file_compression_type(FileCompressionType::ZSTD) // TODO CONF;
-                .build();
+        let projection_indices = self.scan_projection(projection)?;
+        let scan_schema =
+            project_schema(table_schema.table_schema(), projection_indices.as_ref())?;
+        let merged_projection = compute_project_column_indices(
+            table_schema.table_schema().clone(),
+            scan_schema.clone(),
+            self.primary_keys.as_slice(),
+            &self.io_config.cdc_column(),
+        );
+        let merged_schema =
+            project_schema(table_schema.table_schema(), merged_projection.as_ref())?;
 
-        if let Some(expr) = conjunction(filters.to_vec()) {
+        let filter = if let Some(expr) = conjunction(filters.to_vec()) {
             // NOTE: Use the table schema (NOT file schema) here because `expr` may contain references to partition columns.
             let table_df_schema = self.schema().as_ref().clone().to_dfschema()?;
-            let filter = create_physical_expr(
+            Some(create_physical_expr(
                 &expr,
                 &table_df_schema,
                 session_state.execution_props(),
-            )?;
+            )?)
+        } else {
+            None
+        };
 
-            let res = scan_config
-                .try_pushdown_filters(vec![filter], session_state.config_options())?;
-            match res.updated_node {
-                Some(sc) => {
-                    debug!("apply new scan config");
-                    debug!("filters: {:?}", res.filters);
-                    scan_config = sc
-                        .as_any()
-                        .downcast_ref::<FileScanConfig>()
-                        .ok_or(DataFusionError::Internal(
-                            "Failed to downcast FileScanConfig".into(),
-                        ))?
-                        .clone();
-                }
-                None => {
-                    debug!("no updated node")
+        let partition_schema = Arc::new(Schema::new(table_partition_cols));
+        let output_ordering = self
+            .try_create_output_ordering()
+            .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
+        let format_groups = Self::format_scan_groups(
+            self.format_registry.as_ref(),
+            object_store_url,
+            partitioned_file_lists,
+        )
+        .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
+
+        let mut flatten_configs = vec![];
+        for group in format_groups {
+            let file_format = self.format_registry.file_format(group.physical_format);
+            let file_source = file_format.file_source(table_schema.clone());
+            let mut scan_config =
+                FileScanConfigBuilder::new(group.object_store_url, file_source)
+                    .with_file_groups(
+                        group
+                            .partitioned_file_lists
+                            .into_iter()
+                            .map(|files| {
+                                FileGroup::new(files).with_statistics(statistics.clone())
+                            })
+                            .collect(),
+                    )
+                    .with_statistics((*statistics).clone())
+                    .with_projection_indices(projection_indices.clone())?
+                    .with_limit(limit)
+                    .with_output_ordering(output_ordering.clone())
+                    .with_file_compression_type(
+                        self.format_registry
+                            .file_compression_type(group.physical_format),
+                    )
+                    .build();
+
+            if let Some(filter) = &filter {
+                let res = scan_config.try_pushdown_filters(
+                    vec![filter.clone()],
+                    session_state.config_options(),
+                )?;
+                match res.updated_node {
+                    Some(sc) => {
+                        debug!("apply new scan config");
+                        debug!("filters: {:?}", res.filters);
+                        scan_config = sc
+                            .as_any()
+                            .downcast_ref::<FileScanConfig>()
+                            .ok_or(DataFusionError::Internal(
+                                "Failed to downcast FileScanConfig".into(),
+                            ))?
+                            .clone();
+                    }
+                    None => {
+                        debug!("no updated node")
+                    }
                 }
             }
+
+            let group_flatten_configs = flatten_file_scan_config_for_format(
+                session_state,
+                file_format,
+                scan_config,
+                self.primary_keys.as_slice(),
+                &self.io_config.cdc_column(),
+                partition_schema.clone(),
+                scan_schema.clone(),
+            )
+            .await
+            .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
+            flatten_configs.extend(group_flatten_configs);
         }
-        // create the execution plan
-        let plan = self
-            .options()
-            .format
-            .create_physical_plan(session_state, scan_config)
-            .await?;
-        Ok(plan)
+
+        let merge_exec = Arc::new(
+            lakesoul_io::physical_plan::MergeParquetExec::new(
+                merged_schema.clone(),
+                flatten_configs,
+                self.io_config.clone(),
+            )
+            .map_err(|report| DataFusionError::External(report.into_boxed_error()))?,
+        );
+
+        if Self::needs_output_projection(&scan_schema, &merged_schema) {
+            let mut projection_expr = vec![];
+            for field in scan_schema.fields() {
+                projection_expr.push((
+                    datafusion::physical_expr::expressions::col(
+                        field.name(),
+                        &merged_schema,
+                    )?,
+                    field.name().clone(),
+                ));
+            }
+            Ok(Arc::new(ProjectionExec::try_new(
+                projection_expr,
+                merge_exec,
+            )?))
+        } else {
+            Ok(merge_exec)
+        }
     }
 
     fn supports_filters_pushdown(
@@ -669,6 +834,18 @@ impl TableProvider for LakeSoulTableProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
+    use object_store::{ObjectMeta, path::Path};
+
+    fn object_meta(location: &str) -> ObjectMeta {
+        ObjectMeta {
+            location: Path::from(location),
+            last_modified: chrono::Utc.timestamp_nanos(0),
+            size: 100,
+            e_tag: None,
+            version: None,
+        }
+    }
 
     #[test]
     fn logical_projection_maps_to_scan_schema_order() {
@@ -693,5 +870,58 @@ mod tests {
         .unwrap();
 
         assert_eq!(mapped, Some(vec![0, 2, 1]));
+    }
+
+    #[test]
+    fn output_projection_is_needed_when_schema_order_differs() {
+        let target_schema = Arc::new(Schema::new(vec![
+            Field::new("c1", DataType::Int32, true),
+            Field::new("c2", DataType::Int32, true),
+        ]));
+        let merged_schema = Arc::new(Schema::new(vec![
+            Field::new("c2", DataType::Int32, true),
+            Field::new("c1", DataType::Int32, true),
+        ]));
+
+        assert!(LakeSoulTableProvider::needs_output_projection(
+            &target_schema,
+            &merged_schema
+        ));
+    }
+
+    #[test]
+    fn format_scan_groups_split_mixed_physical_formats() {
+        let registry =
+            LakeSoulFormatRegistry::new(LakeSoulIOConfig::default(), false).unwrap();
+        let object_store_url = ObjectStoreUrl::parse("file://").unwrap();
+        let groups = LakeSoulTableProvider::format_scan_groups(
+            &registry,
+            object_store_url,
+            vec![vec![
+                PartitionedFile::from(object_meta("part-000.parquet")),
+                PartitionedFile::from(object_meta("part-001.vortex")),
+            ]],
+        )
+        .unwrap();
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(
+            groups
+                .iter()
+                .find(|group| group.physical_format == PhysicalFormat::Parquet)
+                .unwrap()
+                .partitioned_file_lists[0]
+                .len(),
+            1
+        );
+        assert_eq!(
+            groups
+                .iter()
+                .find(|group| group.physical_format == PhysicalFormat::Vortex)
+                .unwrap()
+                .partitioned_file_lists[0]
+                .len(),
+            1
+        );
     }
 }

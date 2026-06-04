@@ -164,6 +164,7 @@ pub(crate) fn create_leaf_writer(
         file_output_mode: FileOutputMode::SingleFile,
     };
 
+    // TODO(jiax): expose vortex write options
     let sink: Arc<dyn FileSink> = match physical_format {
         PhysicalFormat::Parquet => {
             Arc::new(ParquetSink::new(sink_config, parquet_options(io_config)))
