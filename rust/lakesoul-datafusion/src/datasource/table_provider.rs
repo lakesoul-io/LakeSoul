@@ -5,7 +5,7 @@
 //! The [`datafusion::datasource::TableProvider`] implementation for LakeSoul table.
 
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -15,6 +15,7 @@ use arrow::datatypes::{DataType, Field, Schema, SchemaBuilder, SchemaRef};
 use arrow::error::ArrowError;
 use async_trait::async_trait;
 use datafusion::catalog::Session;
+use datafusion::catalog::memory::DataSourceExec;
 use datafusion::common::{Constraint, Statistics, ToDFSchema, project_schema};
 use datafusion::datasource::TableProvider;
 use datafusion::datasource::file_format::FileFormat;
@@ -36,6 +37,7 @@ use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr, create_physical_e
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::projection::ProjectionExec;
+use datafusion::physical_plan::union::UnionExec;
 use datafusion::scalar::ScalarValue;
 use datafusion::{
     execution::{context::SessionState, object_store::ObjectStoreUrl},
@@ -50,7 +52,9 @@ use lakesoul_io::file_format::{
     LakeSoulFormatRegistry, PhysicalFormat, compute_project_column_indices,
     flatten_file_scan_config_for_format,
 };
-use lakesoul_io::helpers::listing_table_from_lakesoul_io_config;
+use lakesoul_io::helpers::{
+    listing_table_from_lakesoul_io_config, partition_desc_from_file_scan_config,
+};
 use lakesoul_metadata::MetaDataClientRef;
 use lakesoul_metadata::utils::qualify_path;
 use proto::proto::entity::TableInfo;
@@ -736,14 +740,75 @@ impl TableProvider for LakeSoulTableProvider {
             flatten_configs.extend(group_flatten_configs);
         }
 
-        let merge_exec = Arc::new(
-            lakesoul_io::physical_plan::MergeParquetExec::new(
-                merged_schema.clone(),
-                flatten_configs,
-                self.io_config.clone(),
-            )
-            .map_err(|report| DataFusionError::External(report.into_boxed_error()))?,
-        );
+        let mut inputs_map: HashMap<
+            String,
+            (
+                Arc<HashMap<String, String>>,
+                (Vec<Arc<dyn ExecutionPlan>>, Vec<String>),
+            ),
+        > = HashMap::new();
+        let mut column_nullable = HashSet::<String>::new();
+
+        for config in flatten_configs {
+            let (partition_desc, partition_values) =
+                partition_desc_from_file_scan_config(&config).map_err(|report| {
+                    DataFusionError::External(report.into_boxed_error())
+                })?;
+            let partition_values = Arc::new(partition_values);
+            let file_path = config.file_groups[0].files()[0].path().to_string();
+            let input = DataSourceExec::from_data_source(config);
+            for field in input.schema().fields() {
+                if field.is_nullable() {
+                    column_nullable.insert(field.name().clone());
+                }
+            }
+
+            if let Some((_, inputs)) = inputs_map.get_mut(&partition_desc) {
+                inputs.0.push(input);
+                inputs.1.push(file_path);
+            } else {
+                inputs_map.insert(
+                    partition_desc,
+                    (partition_values, (vec![input], vec![file_path])),
+                );
+            }
+        }
+
+        let merged_schema = Arc::new(Schema::new(
+            merged_schema
+                .fields()
+                .iter()
+                .map(|field| {
+                    Field::new(
+                        field.name(),
+                        field.data_type().clone(),
+                        field.is_nullable() | column_nullable.contains(field.name()),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        ));
+
+        let mut partitioned_execs = Vec::new();
+        for (_, (partition_values, (inputs, file_paths))) in inputs_map {
+            let mut io_config = self.io_config.clone();
+            io_config.set_files(file_paths);
+            let merge_exec = Arc::new(
+                lakesoul_io::physical_plan::MergeParquetExec::new_with_inputs(
+                    merged_schema.clone(),
+                    inputs,
+                    io_config,
+                    partition_values,
+                )
+                .map_err(|report| DataFusionError::External(report.into_boxed_error()))?,
+            ) as Arc<dyn ExecutionPlan>;
+            partitioned_execs.push(merge_exec);
+        }
+
+        let merge_exec = if partitioned_execs.len() > 1 {
+            UnionExec::try_new(partitioned_execs)?
+        } else {
+            partitioned_execs.first().unwrap().clone()
+        };
 
         if Self::needs_output_projection(&scan_schema, &merged_schema) {
             let mut projection_expr = vec![];
