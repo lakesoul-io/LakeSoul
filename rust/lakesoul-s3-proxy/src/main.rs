@@ -893,6 +893,25 @@ mod tests {
         Ok(())
     }
 
+    async fn cleanup_table_for_suffix(
+        suffix: &str,
+        meta_data_client: MetaDataClientRef,
+    ) -> Result<(), anyhow::Error> {
+        let table_path = table_path_for_suffix(suffix);
+        if let Some(table_path_id) = meta_data_client
+            .get_table_path_id_by_table_path(table_path.as_str())
+            .await?
+        {
+            drop_table(
+                table_path_id.table_id.as_str(),
+                table_path.as_str(),
+                meta_data_client,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     fn create_batch_i32(names: Vec<&str>, values: Vec<&[i32]>) -> RecordBatch {
         let values: Vec<Arc<dyn Array>> = values
             .into_iter()
@@ -942,19 +961,31 @@ mod tests {
         }
     }
 
+    fn table_name_for_suffix(suffix: &str) -> String {
+        format!("test_rbac_table_{}", suffix)
+    }
+
+    fn table_path_for_suffix(suffix: &str) -> String {
+        format!("s3://lakesoul-test-bucket/tmp/table_{}", suffix)
+    }
+
+    fn domain_for_suffix(suffix: &str) -> String {
+        format!("lake-cz{}", suffix)
+    }
+
     async fn create_table_and_write_suffix(
         suffix: &str,
         metadata_client: MetaDataClientRef,
     ) -> Result<(String, String), anyhow::Error> {
-        let table_name = format!("test_rbac_table_{}", suffix);
-        let table_path = format!("s3://lakesoul-test-bucket/tmp/table_{}", suffix);
-        let domain = format!("lake-cz{}", suffix);
+        let table_name = table_name_for_suffix(suffix);
+        let table_path = table_path_for_suffix(suffix);
+        let domain = domain_for_suffix(suffix);
         let record_batch =
             create_batch_i32(vec!["id", "data"], vec![&[1, 2, 3], &[1, 2, 3]]);
         create_and_write_table(
-            &table_name,
-            &table_path,
-            &domain,
+            table_name.as_str(),
+            table_path.as_str(),
+            domain.as_str(),
             record_batch.clone(),
             metadata_client.clone(),
         )
@@ -965,7 +996,7 @@ mod tests {
         suffix: &str,
         metadata_client: MetaDataClientRef,
     ) -> Result<(), anyhow::Error> {
-        let table_name = format!("test_rbac_table_{}", suffix);
+        let table_name = table_name_for_suffix(suffix);
         let record_batch =
             create_batch_i32(vec!["id", "data"], vec![&[1, 2, 3], &[1, 2, 3]]);
         let table = LakeSoulTable::for_namespace_and_name(
@@ -983,7 +1014,7 @@ mod tests {
         suffix: &str,
         metadata_client: MetaDataClientRef,
     ) -> Result<(), anyhow::Error> {
-        let table_name = format!("test_rbac_table_{}", suffix);
+        let table_name = table_name_for_suffix(suffix);
         let builder = create_io_config_builder(
             metadata_client.clone(),
             Some(table_name.as_str()),
@@ -1021,24 +1052,45 @@ mod tests {
         init_s3();
         let metadata_client = Arc::new(MetaDataClient::from_env().await?);
 
-        let (uuid_ads, table_path_ads) =
+        cleanup_table_for_suffix("ads", metadata_client.clone()).await?;
+        cleanup_table_for_suffix("dwd", metadata_client.clone()).await?;
+
+        let test_result = async {
             create_table_and_write_suffix("ads", metadata_client.clone()).await?;
-        let (uuid_dwd, table_path_dwd) =
             create_table_and_write_suffix("dwd", metadata_client.clone()).await?;
 
-        let _thread_handle = run_server();
-        tokio::time::sleep(Duration::from_secs(5)).await;
-        change_s3_to_proxy();
+            let _thread_handle = run_server();
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            change_s3_to_proxy();
 
-        // verify read/write table in ads domain success
-        insert_table("ads", metadata_client.clone()).await?;
-        read_table("ads", metadata_client.clone()).await?;
+            // verify read/write table in ads domain success
+            insert_table("ads", metadata_client.clone()).await?;
+            read_table("ads", metadata_client.clone()).await?;
 
-        insert_table("dwd", metadata_client.clone()).await?;
-        read_table("dwd", metadata_client.clone()).await?;
+            insert_table("dwd", metadata_client.clone()).await?;
+            read_table("dwd", metadata_client.clone()).await?;
 
-        drop_table(&uuid_ads, &table_path_ads, metadata_client.clone()).await?;
-        drop_table(&uuid_dwd, &table_path_dwd, metadata_client.clone()).await?;
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+
+        let mut cleanup_error = None;
+        for suffix in ["ads", "dwd"] {
+            if let Err(err) =
+                cleanup_table_for_suffix(suffix, metadata_client.clone()).await
+            {
+                if test_result.is_err() {
+                    eprintln!("Failed to cleanup table for suffix {suffix}: {err:?}");
+                } else if cleanup_error.is_none() {
+                    cleanup_error = Some(err);
+                }
+            }
+        }
+
+        test_result?;
+        if let Some(err) = cleanup_error {
+            return Err(err);
+        }
 
         // exit self by signal 15
         tokio::time::sleep(Duration::from_secs(1)).await;
