@@ -92,11 +92,9 @@ jobs:
                   spark-url: "https://mirrors.huaweicloud.com/apache/spark/spark-3.3.1/spark-3.3.1-bin-hadoop3.tgz"
             - run: spark-submit --version
 
-            - uses: actions-rs/toolchain@v1
+            - uses: dtolnay/rust-toolchain@master
               with:
-                  profile: minimal
                   toolchain: stable
-                  default: true
             - uses: Swatinem/rust-cache@v2
               with:
                   workspaces: ". -> rust/target"
