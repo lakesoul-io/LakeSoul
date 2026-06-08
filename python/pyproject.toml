@@ -46,7 +46,7 @@ all = [
   "datasets>=2.20",
   "ray>=2.55,<2.56",
   "daft>=0.7.15",
-  "pyspark==3.3.1",
+  "pyspark==3.5.8",
   "duckdb>=1.4.0",
 ]
 
