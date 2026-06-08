@@ -76,10 +76,4 @@ public class JnrLoader {
 
         INSTANCE.hasLoaded = true;
     }
-
-    public synchronized static void unload() {
-        INSTANCE.hasLoaded = false;
-        INSTANCE.libLakeSoulMetaData = null;
-        INSTANCE = null;
-    }
 }

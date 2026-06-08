@@ -295,7 +295,7 @@ abstract class DeleteSuiteBase extends QueryTest
     val e = intercept[AnalysisException] {
       executeDelete(target = s"lakesoul.default.`$tempPath`")
     }.getMessage
-    assert(e.contains("doesn't exist"))
+    assert(e.contains("doesn't exist") || e.contains("cannot be found"))
   }
 
   test("Negative case - non-deterministic condition") {

@@ -84,7 +84,6 @@ public class LakeSoulCatalog implements Catalog {
     @Override
     public void close() throws CatalogException {
         dbManager = null;
-        FlinkUtil.Unload().run();
     }
 
     @Override

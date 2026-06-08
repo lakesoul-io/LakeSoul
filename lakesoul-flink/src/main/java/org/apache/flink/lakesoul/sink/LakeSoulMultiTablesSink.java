@@ -72,8 +72,6 @@ public class LakeSoulMultiTablesSink<IN, OUT> implements
 
     @Override
     public StatefulSinkWriter<IN, LakeSoulWriterBucketState> restoreWriter(InitContext context, Collection<LakeSoulWriterBucketState> recoveredState) throws IOException {
-        context.getUserCodeClassLoader().registerReleaseHookIfAbsent("lakesoul_unload",
-                FlinkUtil.Unload());
         int subTaskId = context.getSubtaskId();
         AbstractLakeSoulMultiTableSinkWriter<IN, OUT> writer = bucketsBuilder.createWriter(context, subTaskId);
         writer.initializeState(new ArrayList<>(recoveredState));

@@ -7,7 +7,6 @@ package org.apache.flink.lakesoul.tool;
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOBase;
-import com.dmetasoul.lakesoul.lakesoul.io.jnr.JnrLoader;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.DataFileInfo;
 import com.dmetasoul.lakesoul.meta.DataOperation;
@@ -16,7 +15,6 @@ import com.dmetasoul.lakesoul.meta.MetaVersion;
 import com.dmetasoul.lakesoul.meta.PartitionInfoScala;
 import com.dmetasoul.lakesoul.meta.dao.TableInfoDao;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
-import com.dmetasoul.lakesoul.meta.jnr.NativeMetadataJavaClient;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
 import org.apache.flink.configuration.*;
@@ -50,7 +48,6 @@ import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.VarCharType;
 import org.apache.flink.table.types.logical.utils.LogicalTypeChecks;
 import org.apache.flink.types.RowKind;
-import org.apache.hadoop.fs.permission.*;
 import org.apache.spark.sql.types.StructType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -686,13 +683,5 @@ public class FlinkUtil {
             map.put(watermarkSpec.getRowtimeAttribute(), watermarkSpec.getWatermarkExpr());
         }
         return JSON.toJSONString(map);
-    }
-
-    public static Runnable Unload() {
-        return () -> {
-//            NativeMetadataJavaClient.shutDownInstance();
-//            JnrLoader.unload();
-//            com.dmetasoul.lakesoul.meta.jnr.JnrLoader.unload();
-        };
     }
 }

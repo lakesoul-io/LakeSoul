@@ -22,8 +22,6 @@ public class LakeSoulSourceReader<T>
                                 Configuration config,
                                 SourceReaderContext context) {
         super(splitReaderSupplier, recordEmitter, config, context);
-        context.getUserCodeClassLoader().registerReleaseHookIfAbsent("lakesoul_unload",
-                FlinkUtil.Unload());
     }
 
     @Override
