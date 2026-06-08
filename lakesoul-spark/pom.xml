@@ -143,6 +143,10 @@ SPDX-License-Identifier: Apache-2.0
             <scope>${local.scope}</scope>
             <exclusions>
                 <exclusion>
+                    <groupId>com.fasterxml.jackson.core</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <exclusion>
                     <groupId>com.google.protobuf</groupId>
                     <artifactId>protobuf-java</artifactId>
                 </exclusion>
@@ -223,6 +227,12 @@ SPDX-License-Identifier: Apache-2.0
             <artifactId>kafka-avro-serializer</artifactId>
             <version>${schema.registry.version}</version>
             <scope>${local.scope}</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.apache.avro</groupId>
+                    <artifactId>avro</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>io.confluent</groupId>
@@ -235,6 +245,16 @@ SPDX-License-Identifier: Apache-2.0
             <artifactId>kafka-schema-registry-client</artifactId>
             <version>${schema.registry.version}</version>
             <scope>${local.scope}</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>com.fasterxml.jackson.core</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.apache.avro</groupId>
+                    <artifactId>avro</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>io.confluent</groupId>
@@ -273,6 +293,10 @@ SPDX-License-Identifier: Apache-2.0
             <version>${spark.version}</version>
             <scope>${local.scope}</scope>
             <exclusions>
+                <exclusion>
+                    <groupId>org.apache.commons</groupId>
+                    <artifactId>commons-lang3</artifactId>
+                </exclusion>
                 <exclusion>
                     <groupId>com.google.protobuf</groupId>
                     <artifactId>protobuf-java</artifactId>
@@ -331,6 +355,10 @@ SPDX-License-Identifier: Apache-2.0
             <classifier>tests</classifier>
             <exclusions>
                 <exclusion>
+                    <groupId>com.fasterxml.jackson.core</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <exclusion>
                     <groupId>com.google.protobuf</groupId>
                     <artifactId>protobuf-java</artifactId>
                 </exclusion>
@@ -352,6 +380,11 @@ SPDX-License-Identifier: Apache-2.0
                     <artifactId>*</artifactId>
                 </exclusion>
             </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-core</artifactId>
+            <version>2.15.2</version>
         </dependency>
 
         <dependency>
@@ -531,17 +564,9 @@ SPDX-License-Identifier: Apache-2.0
                             <include>mysql:mysql-connector-java</include>
                             <include>io.jhdf:jhdf</include>
 
-                            <!-- casbin & aspectj -->
-                            <include>org.casbin:jdbc-adapter</include>
-                            <include>org.aspectj:aspectjrt</include>
-                            <include>org.aspectj:aspectjweaver</include>
-                            <include>org.apache.commons:commons-collections4</include>
-                            <include>org.casbin:jcasbin</include>
                             <include>com.googlecode.aviator:aviator</include>
                             <include>com.github.seancfoley:ipaddress</include>
-                            <include>commons-io:commons-io</include>
                             <include>org.apache.commons:commons-csv</include>
-                            <include>com.google.code.gson:gson</include>
                             <include>dev.failsafe:failsafe</include>
                             <include>com.google.protobuf:protobuf-java</include>
                             <include>io.openlineage:openlineage-spark_2.12</include>
