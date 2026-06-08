@@ -690,7 +690,7 @@ public class FlinkUtil {
 
     public static Runnable Unload() {
         return () -> {
-            NativeMetadataJavaClient.shutDownInstance();
+//            NativeMetadataJavaClient.shutDownInstance();
 //            JnrLoader.unload();
 //            com.dmetasoul.lakesoul.meta.jnr.JnrLoader.unload();
         };
