@@ -86,25 +86,25 @@ LakeSoul/
 
 ```sh
 # Build all active workspace members
-cargo build
+cargo -q build
 
 # Build release
-cargo build --release
+cargo -q build --release
 
 # Run all tests (requires PostgreSQL)
 RUST_BACKTRACE=full cargo test
 
 # Run tests for a specific package
-cargo test --package lakesoul-io
-cargo test --package lakesoul-metadata
+cargo -q test --package lakesoul-io
+cargo -q test --package lakesoul-metadata
 
 # Lint
 cargo clippy
 cargo fmt --check
 
 # Build the C FFI libraries (used by Java JNI)
-cargo build --release -p lakesoul-io-c
-cargo build --release -p lakesoul-metadata-c
+cargo -q build --release -p lakesoul-io-c
+cargo -q build --release -p lakesoul-metadata-c
 # Output: rust/target/release/liblakesoul_io_c.so (Linux) or .dylib (macOS)
 ```
 
@@ -119,17 +119,17 @@ and placed at `rust/target/release/`.
 
 ```sh
 # Build everything (skip tests)
-mvn -B clean package -DskipTests --file pom.xml
+mvn -q -B clean package -DskipTests --file pom.xml
 
 # Run Spark tests (subset 1)
-mvn -B clean test -pl lakesoul-spark -am -Pcross-build -Pparallel-test \
+mvn -q -B clean test -pl lakesoul-spark -am -Pcross-build -Pparallel-test \
     -Dtest='UpdateScalaSuite,ReadSuite,...' -Dsurefire.failIfNoSpecifiedTests=false
 
 # Run Flink tests
-mvn -B clean test -pl lakesoul-flink -am -Pcross-build
+mvn -q -B clean test -pl lakesoul-flink -am -Pcross-build
 
 # Enable Gluten/Velox profile
-mvn -B clean package -Pgluten -DskipTests
+mvn -q -B clean package -Pgluten -DskipTests
 
 # Generate test report
 mvn surefire-report:report-only -pl lakesoul-spark -am
@@ -208,6 +208,12 @@ Local config files:
 
 ---
 
+## Command preferences
+
+- Use `cargo -q` instead of `cargo`. 
+- Use `mvn -q` instead of `mvn`.
+- Prefer quiet command output unless debugging failures.
+
 ## Context budget
 
 This repo has large generated/lock files. Do not open them unless the user asks
@@ -215,10 +221,13 @@ or the task requires them.
 
 Avoid:
 - Cargo.lock
-- target/
-- result
+- **/target/
+- **/build/
 - .direnv/
-- node_modules/
+- .devenv/
+- **/node_modules/
+- **/uv.lcok
+- flake.lock
 
 For dependency questions, read Cargo.toml first. Only inspect Cargo.lock for
 lockfile conflicts, exact resolved versions, supply-chain audit, or reproducible
@@ -236,7 +245,7 @@ When searching the repository, exclude generated or lock files where possible: `
 | Workflow | Trigger | What it does |
 |---|---|---|
 | `rust-ci.yml` | Push/PR to `rust/**` | Cargo test with PostgreSQL + RustFS services |
-| `rust-clippy.yml` | Push/PR to `rust/**` | `cargo clippy` lint check |
+| `rust-clippy.yml` | Push/PR to `rust/**` | `cargo -q clippy` lint check |
 | `maven-test.yml` | Push/PR (non-rust paths) | Builds Rust `.so`, then runs Spark + Flink Maven tests |
 | `flink-cdc-test.yml` | Scheduled/PR | End-to-end Flink CDC tests |
 | `python-ci.yml` | Push/PR to `python/**` | Python build + pytest |
@@ -257,7 +266,7 @@ When searching the repository, exclude generated or lock files where possible: `
 
 ## Common Pitfalls
 
-1. **Protoc not installed** — `cargo build` will fail with a codegen error. Install `protoc` first.
+1. **Protoc not installed** — `cargo -q build` will fail with a codegen error. Install `protoc` first.
 2. **Native libraries missing for Maven tests** — `lakesoul-io-java` needs the `.so`/`.dylib` on the classpath or at `rust/target/release/`. Build Rust first.
 3. **PostgreSQL not running** — both Rust and JVM tests need a live PostgreSQL instance. Run `meta_init_for_local_test.sh` to initialize the schema.
 4. **Workspace-disabled crates** — `lakesoul-datafusion`, `lakesoul-flight`, etc. are commented out in `Cargo.toml`. Add them back to the `members` list to build them.
