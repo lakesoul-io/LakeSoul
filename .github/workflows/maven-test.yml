@@ -50,11 +50,9 @@ jobs:
                   java-version: "11"
                   distribution: "temurin"
                   cache: maven
-            - uses: actions-rs/toolchain@v1
+            - uses: dtolnay/rust-toolchain@master
               with:
-                  profile: minimal
                   toolchain: stable
-                  default: true
             - uses: Swatinem/rust-cache@v2
               with:
                   workspaces: ". -> rust/target"
