@@ -83,7 +83,6 @@ public class LakeSoulCatalog implements Catalog {
 
     @Override
     public void close() throws CatalogException {
-        dbManager = null;
     }
 
     @Override
