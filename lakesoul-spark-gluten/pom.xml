@@ -39,7 +39,7 @@
             <exclusions>
                 <exclusion>
                     <groupId>org.apache.gluten</groupId>
-                    <artifactId>spark-sql-columnar-shims-spark35</artifactId>
+                    <artifactId>spark-sql-columnar-shims-spark33</artifactId>
                 </exclusion>
             </exclusions>
         </dependency>
@@ -50,18 +50,7 @@
             <exclusions>
                 <exclusion>
                     <groupId>org.apache.gluten</groupId>
-                    <artifactId>spark-sql-columnar-shims-spark35</artifactId>
-                </exclusion>
-            </exclusions>
-        </dependency>
-        <dependency>
-            <groupId>org.apache.gluten</groupId>
-            <artifactId>spark-sql-columnar-shims-spark33</artifactId>
-            <version>${gluten.version}</version>
-            <exclusions>
-                <exclusion>
-                    <groupId>org.apache.gluten</groupId>
-                    <artifactId>spark-sql-columnar-shims-spark35</artifactId>
+                    <artifactId>spark-sql-columnar-shims-spark33</artifactId>
                 </exclusion>
             </exclusions>
         </dependency>
@@ -72,7 +61,7 @@
             <exclusions>
                 <exclusion>
                     <groupId>org.apache.gluten</groupId>
-                    <artifactId>spark-sql-columnar-shims-spark35</artifactId>
+                    <artifactId>spark-sql-columnar-shims-spark33</artifactId>
                 </exclusion>
             </exclusions>
         </dependency>
