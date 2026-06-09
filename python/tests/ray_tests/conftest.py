@@ -11,9 +11,15 @@ TABLE_NAME_TEST_LFS = "test_lfs"
 
 @pytest.fixture(scope="session")
 def ray_session():
+    import os
     import ray
 
-    ray.init("local")
+    os.environ.pop("RAY_RUNTIME_ENV_HOOK", None)
+
+    ray.init(
+        runtime_env={},
+        include_dashboard=False,
+    )
     yield
     ray.shutdown()
 

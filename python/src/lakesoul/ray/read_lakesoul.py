@@ -132,7 +132,7 @@ class LakeSoulDatasource(Datasource):
             empty_metadata = BlockMetadata(
                 num_rows=0,
                 size_bytes=0,
-                input_files=[],
+                input_files=None,
                 exec_stats=None,
             )
             return [
@@ -178,7 +178,6 @@ class LakeSoulDatasource(Datasource):
         message = "write to LakeSoul is not implemented yet"
         raise NotImplementedError(message)
 
-
 def read_lakesoul(
     table_name: str,
     batch_size: int = 16,
@@ -214,4 +213,4 @@ def read_lakesoul(
     return ds
 
 
-ray.data.read_lakesoul = read_lakesoul
+ray.data.read_lakesoul = read_lakesoul  # type: ignore[attr-defined]
