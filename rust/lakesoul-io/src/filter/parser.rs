@@ -27,7 +27,8 @@ use datafusion_substrait::substrait::proto::plan_rel::RelType::Root;
 use datafusion_substrait::substrait::proto::rel::RelType::Read;
 use datafusion_substrait::substrait::proto::r#type::Nullability;
 use datafusion_substrait::substrait::proto::{
-    Expression, ExtendedExpression, FunctionArgument, Plan, PlanRel, Rel, RelRoot,
+    Expression, ExtendedExpression, FunctionArgument, NamedStruct, Plan, PlanRel, Rel,
+    RelRoot,
 };
 #[allow(deprecated)]
 use datafusion_substrait::variation_const::TIMESTAMP_MICRO_TYPE_VARIATION_REF;
@@ -321,7 +322,12 @@ impl Parser {
     }
 
     /// Parse the [`datafusion_substrait::substrait::proto::Plan`] to the [`datafusion::logical_expr::Expr`].
-    pub(crate) fn parse_substrait_plan(plan: Plan, df_schema: &DFSchema) -> Result<Expr> {
+    pub(crate) fn parse_substrait_plan(
+        mut plan: Plan,
+        df_schema: &DFSchema,
+    ) -> Result<Expr> {
+        Self::normalize_substrait_plan_schema_names(&mut plan, df_schema);
+
         let handle = Handle::try_current();
         let closure = async {
             let ctx = SessionContext::default();
@@ -361,6 +367,108 @@ impl Parser {
         }
     }
 
+    fn normalize_substrait_plan_schema_names(plan: &mut Plan, df_schema: &DFSchema) {
+        let names = Self::flatten_schema_names(df_schema);
+        for relation in &mut plan.relations {
+            if let Some(Root(RelRoot {
+                input:
+                    Some(Rel {
+                        rel_type: Some(Read(read_rel)),
+                        ..
+                    }),
+                ..
+            })) = &mut relation.rel_type
+                && let Some(base_schema) = &mut read_rel.base_schema
+            {
+                Self::normalize_named_struct_schema_names(base_schema, &names);
+            }
+        }
+    }
+
+    fn normalize_substrait_extended_expr_schema_names(
+        extended_expression: &mut ExtendedExpression,
+        df_schema: &DFSchema,
+    ) {
+        let names = Self::flatten_schema_names(df_schema);
+        if let Some(base_schema) = &mut extended_expression.base_schema {
+            Self::normalize_named_struct_schema_names(base_schema, &names);
+        }
+    }
+
+    fn normalize_named_struct_schema_names(
+        base_schema: &mut NamedStruct,
+        names: &[String],
+    ) {
+        if !names.is_empty() && base_schema.names.len() < names.len() {
+            // PyArrow/DuckDB may serialize only top-level names; DataFusion
+            // expects the nested, depth-first list produced by its own producer.
+            base_schema.names = names.to_vec();
+        }
+    }
+
+    fn is_valid_substrait_plan(plan: &Plan) -> bool {
+        !plan.relations.is_empty()
+    }
+
+    fn is_valid_substrait_extended_expr(
+        extended_expression: &ExtendedExpression,
+    ) -> bool {
+        extended_expression.base_schema.is_some()
+            && !extended_expression.referred_expr.is_empty()
+    }
+
+    fn flatten_schema_names(df_schema: &DFSchema) -> Vec<String> {
+        let mut names = vec![];
+        for (idx, field) in df_schema.as_arrow().fields().iter().enumerate() {
+            Self::flatten_field_names(field.as_ref(), false, idx, &mut names);
+        }
+        names
+    }
+
+    fn flatten_field_names(
+        field: &Field,
+        skip_self: bool,
+        fallback_idx: usize,
+        names: &mut Vec<String>,
+    ) {
+        if !skip_self {
+            names.push(Self::field_name_or_fallback(field, fallback_idx));
+        }
+
+        match field.data_type() {
+            DataType::Struct(fields) => {
+                for (idx, field) in fields.iter().enumerate() {
+                    Self::flatten_field_names(field.as_ref(), false, idx, names);
+                }
+            }
+            DataType::List(field)
+            | DataType::LargeList(field)
+            | DataType::ListView(field)
+            | DataType::LargeListView(field) => {
+                Self::flatten_field_names(field.as_ref(), true, fallback_idx, names);
+            }
+            DataType::FixedSizeList(field, _) => {
+                Self::flatten_field_names(field.as_ref(), true, fallback_idx, names);
+            }
+            DataType::Map(field, _) => {
+                if let DataType::Struct(fields) = field.data_type() {
+                    for (idx, field) in fields.iter().enumerate() {
+                        Self::flatten_field_names(field.as_ref(), true, idx, names);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn field_name_or_fallback(field: &Field, fallback_idx: usize) -> String {
+        if field.name().is_empty() {
+            format!("field_{fallback_idx}")
+        } else {
+            field.name().to_string()
+        }
+    }
+
     pub async fn parse_filter_container(
         context: &SessionContext,
         schema: &DFSchema,
@@ -378,7 +486,11 @@ impl Parser {
             FilterContainer::Plan(plan) => {
                 Ok(vec![Parser::parse_substrait_plan(plan, schema)?])
             }
-            FilterContainer::ExtenedExpr(extended_expression) => {
+            FilterContainer::ExtenedExpr(mut extended_expression) => {
+                Parser::normalize_substrait_extended_expr_schema_names(
+                    &mut extended_expression,
+                    schema,
+                );
                 let expr_container =
                     from_substrait_extended_expr(&context.state(), &extended_expression)
                         .await?;
@@ -428,16 +540,18 @@ fn qualified_expr(expr_str: &str, schema: SchemaRef) -> Option<(Expr, Arc<Field>
 
 // never buf -> FilterContainer::RawBuf
 fn parse_buf(buf: &[u8]) -> Result<FilterContainer, DataFusionError> {
-    if let Ok(p) =
-        Plan::decode(buf).map_err(|e| DataFusionError::Substrait(e.to_string()))
-    {
-        return Ok(FilterContainer::Plan(p));
-    }
     if let Ok(expr) = ExtendedExpression::decode(buf)
-        .map_err(|e| DataFusionError::Substrait(e.to_string()))
+        && Parser::is_valid_substrait_extended_expr(&expr)
     {
         return Ok(FilterContainer::ExtenedExpr(expr));
     }
+
+    if let Ok(p) = Plan::decode(buf)
+        && Parser::is_valid_substrait_plan(&p)
+    {
+        return Ok(FilterContainer::Plan(p));
+    }
+
     Err(DataFusionError::Substrait(
         "Parse substrait failed. Unsupported filter type".to_string(),
     ))
@@ -448,5 +562,131 @@ fn _from_nullability(nullability: Nullability) -> bool {
         Nullability::Unspecified => true,
         Nullability::Nullable => true,
         Nullability::Required => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_schema::{DataType, Field, Fields, Schema};
+    use datafusion_substrait::substrait::proto::ExpressionReference;
+    use prost::Message;
+
+    fn flickr_schema() -> Schema {
+        Schema::new(vec![
+            Field::new("filename", DataType::Utf8, true),
+            Field::new("image_blob", DataType::Binary, true),
+            Field::new("width", DataType::Int32, true),
+            Field::new("height", DataType::Int32, true),
+            Field::new(
+                "captions",
+                DataType::List(Arc::new(Field::new_list_field(DataType::Utf8, true))),
+                true,
+            ),
+            Field::new(
+                "bboxes",
+                DataType::List(Arc::new(Field::new(
+                    "item",
+                    DataType::Struct(Fields::from(vec![
+                        Arc::new(Field::new(
+                            "chain_ids",
+                            DataType::List(Arc::new(Field::new_list_field(
+                                DataType::Utf8,
+                                true,
+                            ))),
+                            true,
+                        )),
+                        Arc::new(Field::new("xmin", DataType::Int32, true)),
+                        Arc::new(Field::new("ymin", DataType::Int32, true)),
+                        Arc::new(Field::new("xmax", DataType::Int32, true)),
+                        Arc::new(Field::new("ymax", DataType::Int32, true)),
+                    ])),
+                    true,
+                ))),
+                true,
+            ),
+        ])
+    }
+
+    #[test]
+    fn flatten_schema_names_includes_nested_struct_fields_under_lists() -> Result<()> {
+        let schema = flickr_schema();
+        let df_schema = DFSchema::try_from(schema)?;
+
+        assert_eq!(
+            Parser::flatten_schema_names(&df_schema),
+            vec![
+                "filename",
+                "image_blob",
+                "width",
+                "height",
+                "captions",
+                "bboxes",
+                "chain_ids",
+                "xmin",
+                "ymin",
+                "xmax",
+                "ymax",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>()
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn normalize_extended_expression_schema_names_fills_nested_names() -> Result<()> {
+        let schema = flickr_schema();
+        let df_schema = DFSchema::try_from(schema)?;
+        let mut extended_expression = ExtendedExpression {
+            base_schema: Some(NamedStruct {
+                names: vec![
+                    "filename".to_string(),
+                    "image_blob".to_string(),
+                    "width".to_string(),
+                    "height".to_string(),
+                    "captions".to_string(),
+                    "bboxes".to_string(),
+                ],
+                r#struct: None,
+            }),
+            ..Default::default()
+        };
+
+        Parser::normalize_substrait_extended_expr_schema_names(
+            &mut extended_expression,
+            &df_schema,
+        );
+
+        assert_eq!(
+            extended_expression.base_schema.unwrap().names,
+            Parser::flatten_schema_names(&df_schema)
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn parse_buf_prefers_valid_extended_expression_over_plan_decode() -> Result<()> {
+        let extended_expression = ExtendedExpression {
+            base_schema: Some(NamedStruct {
+                names: vec!["filename".to_string()],
+                r#struct: None,
+            }),
+            referred_expr: vec![ExpressionReference::default()],
+            ..Default::default()
+        };
+
+        match parse_buf(&extended_expression.encode_to_vec())? {
+            FilterContainer::ExtenedExpr(_) => Ok(()),
+            FilterContainer::Plan(_) => Err(DataFusionError::Substrait(
+                "expected ExtendedExpression".to_string(),
+            )),
+            FilterContainer::RawBuf(_) | FilterContainer::String(_) => Err(
+                DataFusionError::Substrait("unexpected filter container".to_string()),
+            ),
+        }
     }
 }
