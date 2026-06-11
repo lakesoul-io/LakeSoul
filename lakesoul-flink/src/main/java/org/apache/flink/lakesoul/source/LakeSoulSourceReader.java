@@ -9,7 +9,6 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.connector.base.source.reader.RecordEmitter;
 import org.apache.flink.connector.base.source.reader.SingleThreadMultiplexSourceReaderBase;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
-import org.apache.flink.lakesoul.tool.FlinkUtil;
 
 import java.util.Map;
 import java.util.function.Supplier;

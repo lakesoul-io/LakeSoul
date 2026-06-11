@@ -128,21 +128,6 @@ public class JobOptions {
                     .defaultValue("file:///")
                     .withDescription("Option to set fs default scheme");
 
-    public static final ConfigOption transportTypeOption =
-            ConfigOptions.key("openlineage.transport.type").stringType().defaultValue("http");
-    public static final ConfigOption urlOption =
-            ConfigOptions.key("openlineage.transport.url").stringType().noDefaultValue();
-    public static final ConfigOption execAttach =
-            ConfigOptions.key("execution.attached").booleanType().defaultValue(false);
-    public static final ConfigOption lineageOption =
-            ConfigOptions.key("openlineage.executed").booleanType().defaultValue(false);
-    public static final ConfigOption<String> lineageJobUUID =
-            ConfigOptions.key("openlineage.uuid").stringType().noDefaultValue();
-    public static final ConfigOption<String> linageJobName =
-            ConfigOptions.key("openlineage.jobname").stringType().noDefaultValue();
-    public static final ConfigOption<String> linageJobNamespace =
-            ConfigOptions.key("openlineage.jobnamespace").stringType().noDefaultValue();
-
     public static final ConfigOption<String> KUBE_CLUSTER_ID =
             key("kubernetes.cluster-id")
                     .stringType()

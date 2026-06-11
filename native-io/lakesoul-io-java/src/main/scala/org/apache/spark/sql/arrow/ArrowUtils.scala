@@ -64,16 +64,18 @@ object ArrowUtils {
     case int: ArrowType.Int if int.getIsSigned && int.getBitWidth == 8 * 4 => IntegerType
     case int: ArrowType.Int if int.getIsSigned && int.getBitWidth == 8 * 8 => LongType
     case float: ArrowType.FloatingPoint
-      if float.getPrecision() == FloatingPointPrecision.SINGLE => FloatType
+      if float.getPrecision == FloatingPointPrecision.SINGLE => FloatType
     case float: ArrowType.FloatingPoint
-      if float.getPrecision() == FloatingPointPrecision.DOUBLE => DoubleType
+      if float.getPrecision == FloatingPointPrecision.DOUBLE => DoubleType
     case ArrowType.Utf8.INSTANCE => StringType
     case ArrowType.LargeUtf8.INSTANCE => StringType
     case ArrowType.Binary.INSTANCE => BinaryType
     case ArrowType.LargeBinary.INSTANCE => BinaryType
     case d: ArrowType.Decimal => DecimalType(d.getPrecision, d.getScale)
     case date: ArrowType.Date if date.getUnit == DateUnit.DAY => DateType
-    case ts: ArrowType.Timestamp => TimestampType
+    case ts: ArrowType.Timestamp
+      if ts.getTimezone == null => TimestampNTZType
+    case _: ArrowType.Timestamp => TimestampType
     case ArrowType.Null.INSTANCE => NullType
     case yi: ArrowType.Interval if yi.getUnit == IntervalUnit.YEAR_MONTH => YearMonthIntervalType()
     case di: ArrowType.Duration if di.getUnit == TimeUnit.MICROSECOND => DayTimeIntervalType()
