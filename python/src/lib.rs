@@ -12,6 +12,7 @@ mod metadata;
 mod reader;
 mod utils;
 mod writer;
+mod vector;
 
 type Result<T, E = Report> = std::result::Result<T, E>;
 
@@ -28,6 +29,7 @@ fn _lib(py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     reader::init(py, m)?;
     writer::init(py, m)?;
     utils::init(py, m)?;
+    vector::init(py, m)?;
     Ok(())
 }
 

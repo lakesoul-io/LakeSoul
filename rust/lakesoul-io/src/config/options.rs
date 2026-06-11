@@ -33,3 +33,11 @@ pub static OPTION_KEY_STABLE_SORT: &str = "stable_sort";
 pub static OPTION_KEY_REPARTITION_MEM_RATIO: &str = "repartition_mem_ratio";
 /// Key for selecting the physical file format used by writers
 pub static OPTION_KEY_PHYSICAL_FORMAT: &str = "physical_format";
+/// Vector search: column name of the vector index to query
+pub static OPTION_KEY_VECTOR_SEARCH_COLUMN: &str = "vector_search_column";
+/// Vector search: comma-separated f32 values of the query vector
+pub static OPTION_KEY_VECTOR_SEARCH_QUERY: &str = "vector_search_query";
+/// Vector search: top-K results to return
+pub static OPTION_KEY_VECTOR_SEARCH_TOP_K: &str = "vector_search_top_k";
+/// Vector search: number of IVF clusters to probe (default 64)
+pub static OPTION_KEY_VECTOR_SEARCH_NPROBE: &str = "vector_search_nprobe";
