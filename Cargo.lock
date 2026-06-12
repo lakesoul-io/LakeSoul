@@ -4713,6 +4713,7 @@ dependencies = [
  "hex",
  "itertools 0.14.0",
  "jemalloc_pprof",
+ "lakesoul-vector",
  "lazy_static",
  "linked-hash-map",
  "moka",
@@ -4890,15 +4891,11 @@ dependencies = [
 name = "lakesoul-vector"
 version = "0.1.0"
 dependencies = [
- "arrow",
- "arrow-array",
- "arrow-schema",
  "bincode",
  "crc32fast",
  "faer",
  "futures",
  "half",
- "lakesoul-io",
  "libc",
  "memmap2",
  "object_store",
@@ -4913,7 +4910,6 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
- "tokio-stream",
  "tracing",
 ]
 

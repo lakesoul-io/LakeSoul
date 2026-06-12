@@ -7,8 +7,9 @@
 use std::collections::HashMap;
 
 use crate::rabitq::{Metric, RotatorType};
-use lakesoul_io::Result;
 use rootcause::{bail, report};
+
+type Result<T> = std::result::Result<T, rootcause::Report>;
 
 /// 向量索引配置。
 ///

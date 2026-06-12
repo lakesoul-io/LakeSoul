@@ -6,31 +6,37 @@
 
 ## 模块架构
 
+本项目的代码分布在两个 crate 中：
+
+- **`lakesoul-vector`** — rabitq-rs IVF+RaBitQ 核心 + 配置类型（纯计算，无 LakeSoul IO 依赖）
+- **`lakesoul-io`** — 构建器、向量提取、向量检索（依赖 `lakesoul-vector`，可调用 `LakeSoulReader`）
+
 ```
-lakesoul-vector/
-├── src/
-│   ├── lib.rs              # 公开导出
-│   ├── config.rs           # VectorIndexConfig — 索引参数配置
-│   ├── reader.rs           # extract_vector_batch — 从 RecordBatch 提取向量
-│   ├── builder.rs          # VectorShardIndexBuilder — 按分片构建索引
-│   ├── vector_search.rs   # 向量检索：加载索引 → 搜索 → 返回相似 ID
-│   └── rabitq/             # vendored rabitq-rs IVF+RaBitQ 核心
-│       ├── mod.rs           # Metric, RabitqError, 公开类型导出
-│       ├── ivf/
-│       │   ├── mod.rs       # IvfRabitqIndex — 搜索、插入、持久化
-│       │   ├── builder.rs   # IvfRabitqBuilder — 双遍流式构建
-│       │   ├── cluster.rs   # ClusterData — 统一内存布局
-│       │   └── lut.rs       # FastScan LUT
-│       ├── manifest.rs      # ManifestStore — 对象存储持久化 (manifest + segment)
-│       ├── quantizer.rs     # RaBitQ 量化算法
-│       ├── rotation.rs      # FHT 随机旋转
-│       ├── simd.rs          # AVX2 FastScan 批量距离计算
-│       ├── kmeans.rs        # K-Means 聚类 (faer GEMM)
-│       ├── math.rs          # L2 距离、内积
-│       ├── memory.rs        # 对齐内存分配
-│       ├── fastscan.rs      # FastScan 批量处理
-│       └── fastscan_kernel.rs # FastScan + 扩展码精度优化核
-└── Cargo.toml
+lakesoul-vector/src/
+└── rabitq/                  # vendored rabitq-rs IVF+RaBitQ 核心
+    ├── mod.rs               # Metric, RabitqError, 公开类型导出
+    ├── ivf/
+    │   ├── mod.rs           # IvfRabitqIndex — 搜索、插入、持久化
+    │   ├── builder.rs       # IvfRabitqBuilder — 双遍流式构建
+    │   ├── cluster.rs       # ClusterData — 统一内存布局
+    │   └── lut.rs           # FastScan LUT
+    ├── manifest.rs          # ManifestStore — 对象存储持久化 (manifest + segment)
+    ├── quantizer.rs         # RaBitQ 量化算法
+    ├── rotation.rs          # FHT 随机旋转
+    ├── simd.rs              # AVX2 FastScan 批量距离计算
+    ├── kmeans.rs            # K-Means 聚类 (faer GEMM)
+    ├── math.rs              # L2 距离、内积
+    ├── memory.rs            # 对齐内存分配
+    ├── fastscan.rs          # FastScan 批量处理
+    └── fastscan_kernel.rs   # FastScan + 扩展码精度优化核
+└── config.rs                # VectorIndexConfig — 索引参数配置
+
+lakesoul-io/src/
+├── vector/
+│   ├── builder.rs           # VectorShardIndexBuilder — 按分片构建索引
+│   └── reader.rs            # extract_vector_batch — 从 RecordBatch 提取向量
+├── vector_search.rs         # 向量检索: 加载索引 → 搜索 → 返回相似 ID
+└── reader.rs                # LakeSoulReader::start() 中调用向量检索注入 filter
 ```
 
 ## IVF+RaBitQ 原理
@@ -155,12 +161,19 @@ Python build_partition_vector_index()
        └─ VectorShardIndexBuilder::build()
 ```
 
-### 检索流程（后续实现）
+### 检索流程
+
+检索已集成到 `LakeSoulReader::start()` 中。当 `LakeSoulIOConfig` 的 options 中包含 `vector_search_*` 参数时，reader 自动触发：
 
 ```
-1. 向量检索: search_index_shard() → IvfRabitqIndex::search() → top-K IDs
-2. ID 注入: IDs 构造为 pk IN (id1, id2, ...) filter
-3. 数据读取: LakeSoulReader 带着 filter 走原有物理计划
+LakeSoulReader::start()
+  ├─ get_filter_exprs() → 用户已有 filter
+  ├─ inject_vector_search_filter()
+  │   ├─ 从 session RuntimeEnv 获取 ObjectStore
+  │   ├─ search_matching_shards() → 逐 shard 检索索引
+  │   │   └─ ManifestStore(store, index_prefix) → IvfRabitqIndex::load_from_v4() → search()
+  │   └─ IDs → pk IN (id1, id2, ...) DataFusion Expr filter
+  └─ build_physical_plan(filters) → 原有读路径 + 向量检索 filter
 ```
 
 ### 对象存储持久化 (V4)

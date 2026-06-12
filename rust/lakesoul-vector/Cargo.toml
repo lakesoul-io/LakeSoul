@@ -11,21 +11,12 @@ homepage.workspace = true
 license.workspace = true
 
 [dependencies]
-# LakeSoul internal
-lakesoul-io = { path = "../lakesoul-io" }
-
-# arrow
-arrow = { workspace = true }
-arrow-schema = { workspace = true }
-arrow-array = { workspace = true }
-
 # object store
 object_store = { workspace = true }
 
 # async
 futures = { workspace = true }
 tokio = { workspace = true }
-tokio-stream = { workspace = true }
 
 # error
 rootcause = { workspace = true }

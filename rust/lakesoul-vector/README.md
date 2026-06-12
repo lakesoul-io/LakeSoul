@@ -8,31 +8,37 @@ into `src/rabitq/`.
 
 ## Module Structure
 
+The code is split across two crates:
+
+- **`lakesoul-vector`** — vendored rabitq-rs IVF+RaBitQ core + config types (pure computation, no LakeSoul IO dependency)
+- **`lakesoul-io`** — builder, vector extraction, vector search (depends on `lakesoul-vector`, can call `LakeSoulReader`)
+
 ```
-lakesoul-vector/
-├── src/
-│   ├── lib.rs              # Public exports
-│   ├── config.rs           # VectorIndexConfig — index parameters
-│   ├── reader.rs           # extract_vector_batch — extract vectors from RecordBatch
-│   ├── builder.rs          # VectorShardIndexBuilder — per-shard index building
-│   ├── vector_search.rs   # Vector search: load index → search → return similar IDs
-│   └── rabitq/             # Vendored rabitq-rs IVF+RaBitQ core
-│       ├── mod.rs           # Metric, RabitqError, type exports
-│       ├── ivf/
-│       │   ├── mod.rs       # IvfRabitqIndex — search, insert, persistence
-│       │   ├── builder.rs   # IvfRabitqBuilder — two-pass streaming build
-│       │   ├── cluster.rs   # ClusterData — unified memory layout
-│       │   └── lut.rs       # FastScan LUT
-│       ├── manifest.rs      # ManifestStore — object store persistence (manifest + segment)
-│       ├── quantizer.rs     # RaBitQ quantization algorithm
-│       ├── rotation.rs      # FHT random rotation
-│       ├── simd.rs          # AVX2 FastScan batch distance computation
-│       ├── kmeans.rs        # K-Means clustering (faer GEMM)
-│       ├── math.rs          # L2 distance, inner product
-│       ├── memory.rs        # Aligned memory allocation
-│       ├── fastscan.rs      # FastScan batch processing
-│       └── fastscan_kernel.rs # FastScan + ex-code refinement kernel
-└── Cargo.toml
+lakesoul-vector/src/
+└── rabitq/                  # Vendored rabitq-rs IVF+RaBitQ core
+    ├── mod.rs               # Metric, RabitqError, type exports
+    ├── ivf/
+    │   ├── mod.rs           # IvfRabitqIndex — search, insert, persistence
+    │   ├── builder.rs       # IvfRabitqBuilder — two-pass streaming build
+    │   ├── cluster.rs       # ClusterData — unified memory layout
+    │   └── lut.rs           # FastScan LUT
+    ├── manifest.rs          # ManifestStore — object store persistence (manifest + segment)
+    ├── quantizer.rs         # RaBitQ quantization algorithm
+    ├── rotation.rs          # FHT random rotation
+    ├── simd.rs              # AVX2 FastScan batch distance computation
+    ├── kmeans.rs            # K-Means clustering (faer GEMM)
+    ├── math.rs              # L2 distance, inner product
+    ├── memory.rs            # Aligned memory allocation
+    ├── fastscan.rs          # FastScan batch processing
+    └── fastscan_kernel.rs   # FastScan + ex-code refinement kernel
+└── config.rs                # VectorIndexConfig — index parameters
+
+lakesoul-io/src/
+├── vector/
+│   ├── builder.rs           # VectorShardIndexBuilder — per-shard index building
+│   └── reader.rs            # extract_vector_batch — extract vectors from RecordBatch
+├── vector_search.rs         # Vector search: load index → search → return similar IDs
+└── reader.rs                # LakeSoulReader::start() calls vector search, injects filter
 ```
 
 ## IVF+RaBitQ Design
@@ -167,12 +173,20 @@ Python build_partition_vector_index()
        └─ VectorShardIndexBuilder::build()
 ```
 
-### Search Flow (to be implemented)
+### Search Flow
+
+Vector search is integrated into `LakeSoulReader::start()`. When `LakeSoulIOConfig`
+options contain `vector_search_*` parameters, the reader automatically:
 
 ```
-1. Vector search: search_index_shard() → IvfRabitqIndex::search() → top-K IDs
-2. ID injection: IDs → pk IN (id1, id2, ...) filter
-3. Data read: LakeSoulReader with injected filter via existing physical plan
+LakeSoulReader::start()
+  ├─ get_filter_exprs() → user-provided filters
+  ├─ inject_vector_search_filter()
+  │   ├─ Get ObjectStore from session RuntimeEnv
+  │   ├─ search_matching_shards() → per-shard index lookup
+  │   │   └─ ManifestStore(store, index_prefix) → IvfRabitqIndex::load_from_v4() → search()
+  │   └─ IDs → pk IN (id1, id2, ...) DataFusion Expr filter
+  └─ build_physical_plan(filters) → standard read path + vector search filter
 ```
 
 ### Object Storage Persistence (V4)

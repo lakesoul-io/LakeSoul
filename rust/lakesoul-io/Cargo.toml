@@ -26,6 +26,7 @@ harness = false
 [dependencies]
 # lakesoul
 proto = { path = "../proto" }
+lakesoul-vector = { path = "../lakesoul-vector" }
 # datafusion
 datafusion = { workspace = true }
 datafusion-common = { workspace = true }

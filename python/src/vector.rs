@@ -11,8 +11,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use lakesoul_vector::Metric;
-use lakesoul_vector::{VectorIndexConfig, VectorShardIndexBuilder};
+use lakesoul_io::vector::builder::VectorShardIndexBuilder;
+use lakesoul_vector::{Metric, VectorIndexConfig};
 use object_store::ObjectStore;
 use object_store::aws::AmazonS3Builder;
 use pyo3::prelude::*;
