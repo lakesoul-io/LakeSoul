@@ -490,9 +490,13 @@ pub async fn flatten_file_scan_config(
                                 .await?;
                             let statistics =
                                 table_statistics(file_statistics, &table_schema);
-                            let projection_indices = compute_project_column_indices(
-                                table_schema.table_schema().clone(),
+                            let physical_target_schema = strip_partition_columns(
                                 target_schema.clone(),
+                                partition_schema.clone(),
+                            );
+                            let projection_indices = compute_project_column_indices(
+                                table_schema.file_schema().clone(),
+                                physical_target_schema,
                                 primary_keys,
                                 cdc_column,
                             );
@@ -599,9 +603,13 @@ pub async fn flatten_file_scan_config_for_format(
                                 .await?;
                             let statistics =
                                 table_statistics(file_statistics, &table_schema);
-                            let projection_indices = compute_project_column_indices(
-                                table_schema.table_schema().clone(),
+                            let physical_target_schema = strip_partition_columns(
                                 target_schema.clone(),
+                                partition_schema.clone(),
+                            );
+                            let projection_indices = compute_project_column_indices(
+                                table_schema.file_schema().clone(),
+                                physical_target_schema,
                                 primary_keys,
                                 cdc_column,
                             );

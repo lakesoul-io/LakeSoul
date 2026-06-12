@@ -10,16 +10,30 @@
 //!
 //! # Examples
 //!
-//! ```rust
-//! use lakesoul_io::lakesoul_writer::SyncSendableMutableLakeSoulWriter;
-//! use lakesoul_io::lakesoul_io_config::LakeSoulIOConfigBuilder;
+//! ```no_run
+//! use std::sync::Arc;
 //!
-//! let config = LakeSoulIOConfigBuilder::new()
-//!     .with_files(vec!["path/to/file.parquet"])
+//! use arrow_array::{Int64Array, RecordBatch};
+//! use arrow_schema::{DataType, Field, Schema};
+//! use lakesoul_io::config::LakeSoulIOConfig;
+//! use lakesoul_io::writer::SyncSendableMutableLakeSoulWriter;
+//!
+//! let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+//! let record_batch = RecordBatch::try_new(
+//!     schema.clone(),
+//!     vec![Arc::new(Int64Array::from_iter_values([1_i64, 2, 3]))],
+//! )
+//! .unwrap();
+//!
+//! let config = LakeSoulIOConfig::builder()
+//!     .with_file("path/to/file.parquet")
+//!     .with_schema(schema)
+//!     .with_hash_bucket_num("1")
 //!     .build();
 //!
 //! let runtime = tokio::runtime::Runtime::new().unwrap();
-//! let mut writer = SyncSendableMutableLakeSoulWriter::try_new(config, runtime).unwrap();
+//! let mut writer =
+//!     SyncSendableMutableLakeSoulWriter::from_io_config(config, runtime).unwrap();
 //! writer.write_batch(record_batch).unwrap();
 //! writer.flush_and_close().unwrap();
 //! ```
