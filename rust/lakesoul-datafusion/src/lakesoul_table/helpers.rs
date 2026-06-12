@@ -28,7 +28,7 @@ use proto::proto::entity::{PartitionInfo, TableInfo};
 use url::Url;
 
 use crate::Result;
-use crate::serialize::arrow_java::schema_from_metadata_str;
+use lakesoul_common::ser::arrow_java::schema_from_metadata_str;
 
 use crate::catalog::{LakeSoulTableProperty, parse_table_info_partitions};
 

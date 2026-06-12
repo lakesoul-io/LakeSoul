@@ -71,7 +71,7 @@ use crate::lakesoul_table::helpers::{
     create_io_config_builder_from_table_info, listing_partition_info,
     parse_partitions_for_partition_desc, prune_partitions,
 };
-use crate::serialize::arrow_java::{ArrowJavaSchema, schema_from_metadata_str};
+use lakesoul_common::ser::arrow_java::{ArrowJavaSchema, schema_from_metadata_str};
 
 use super::file_format::LakeSoulMetaDataParquetFormat;
 

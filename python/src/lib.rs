@@ -2,11 +2,14 @@
 // SPDX-FileCopyrightText: Copyright 2025 LakeSoul contributors
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright the Vortex contributors
+
 use pyo3::prelude::*;
 use rootcause::Report;
 
 mod dataset;
 mod metadata;
+mod utils;
+mod writer;
 
 type Result<T, E = Report> = std::result::Result<T, E>;
 
@@ -18,6 +21,8 @@ fn _lib(py: Python, m: &Bound<PyModule>) -> PyResult<()> {
         .unwrap();
     metadata::init(py, m)?;
     dataset::init(py, m)?;
+    writer::init(py, m)?;
+    utils::init(py, m)?;
     Ok(())
 }
 

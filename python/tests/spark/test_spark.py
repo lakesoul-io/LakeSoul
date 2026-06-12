@@ -246,6 +246,11 @@ def test_drop_table(spark_and_file):
     assert not LakeSoulTable.isLakeSoulTable(spark, temp_file)
 
 
+def test_sql(spark_and_file):
+    spark, temp_file = spark_and_file
+    spark.sql("show tables").show()
+
+
 # TODO: update to new version
 def test_compaction(spark_and_file):
     # spark, temp_file = spark_and_file

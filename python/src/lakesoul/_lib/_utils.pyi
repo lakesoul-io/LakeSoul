@@ -1,0 +1,3 @@
+import pyarrow
+
+def to_arrow_schema(schema_json_str, exclude_columns=None) -> pyarrow.Schema: ...
