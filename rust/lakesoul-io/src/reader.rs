@@ -252,8 +252,9 @@ impl LakeSoulReader {
         filters: Vec<datafusion_expr::Expr>,
     ) -> Result<Vec<datafusion_expr::Expr>> {
         use crate::config::{
-            OPTION_KEY_VECTOR_SEARCH_COLUMN, OPTION_KEY_VECTOR_SEARCH_NPROBE,
-            OPTION_KEY_VECTOR_SEARCH_QUERY, OPTION_KEY_VECTOR_SEARCH_TOP_K,
+            OPTION_KEY_VECTOR_SEARCH_COLUMN, OPTION_KEY_VECTOR_SEARCH_INDEX_PREFIX,
+            OPTION_KEY_VECTOR_SEARCH_NPROBE, OPTION_KEY_VECTOR_SEARCH_QUERY,
+            OPTION_KEY_VECTOR_SEARCH_TOP_K,
         };
         use datafusion_common::ScalarValue;
         use datafusion_expr::Expr;
@@ -295,18 +296,17 @@ impl LakeSoulReader {
             .runtime_env()
             .object_store(table_url.object_store())
             .map_err(|e| rootcause::report!("failed to get object store: {}", e))?;
-        let ids = crate::vector_search::search_matching_shards(
-            &store,
-            io_config.files_slice(),
-            &column,
-            table_path,
-            io_config.range_partitions_slice(),
-            &query,
-            top_k,
-            nprobe,
-            lakesoul_vector::Metric::L2,
-        )
-        .await?;
+        let ids = if let Some(idx_prefix) = io_config.option(OPTION_KEY_VECTOR_SEARCH_INDEX_PREFIX) {
+            crate::vector_search::search_index_shard(
+                &store, &idx_prefix, &query, top_k, nprobe, lakesoul_vector::Metric::L2,
+            ).await?.unwrap_or_default()
+        } else {
+            crate::vector_search::search_matching_shards(
+                &store, io_config.files_slice(), &column, table_path,
+                io_config.range_partitions_slice(), &query,
+                top_k, nprobe, lakesoul_vector::Metric::L2,
+            ).await?
+        };
         if ids.is_empty() {
             tracing::info!("Vector search returned no results");
             return Ok(filters);

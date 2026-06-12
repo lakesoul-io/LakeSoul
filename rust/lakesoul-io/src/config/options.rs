@@ -41,3 +41,5 @@ pub static OPTION_KEY_VECTOR_SEARCH_QUERY: &str = "vector_search_query";
 pub static OPTION_KEY_VECTOR_SEARCH_TOP_K: &str = "vector_search_top_k";
 /// Vector search: number of IVF clusters to probe (default 64)
 pub static OPTION_KEY_VECTOR_SEARCH_NPROBE: &str = "vector_search_nprobe";
+/// Vector search: direct index prefix path (alternative to auto-detection from files)
+pub static OPTION_KEY_VECTOR_SEARCH_INDEX_PREFIX: &str = "vector_search_index_prefix";

@@ -795,14 +795,11 @@ pub async fn write_latest(
     let key = mstore.full_path(LATEST_FILENAME);
     let content = format!("{generation}:{version}");
     let payload = PutPayload::from_bytes(content.into_bytes().into());
-    let update_ver = object_store::UpdateVersion {
-        e_tag: expected_etag.clone(),
-        version: None,
+    let mode = match expected_etag.clone() {
+        Some(tag) => PutMode::Update(object_store::UpdateVersion { e_tag: Some(tag), version: None }),
+        None => PutMode::Overwrite,
     };
-    let opts = object_store::PutOptions {
-        mode: PutMode::Update(update_ver),
-        ..Default::default()
-    };
+    let opts = object_store::PutOptions { mode, ..Default::default() };
     match mstore.store.put_opts(&key, payload, opts).await {
         Ok(result) => Ok(result.e_tag),
         Err(object_store::Error::Precondition { .. }) => {

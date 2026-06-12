@@ -1792,6 +1792,7 @@ impl IvfRabitqIndex {
             );
         }
         manifest::save_manifest(mstore, &header, &cluster_map, 0).await?;
+        manifest::write_latest(mstore, 1, 0, None).await?;
         println!(
             "Saved V4 index: {} clusters, {} base segments",
             self.clusters.len(),

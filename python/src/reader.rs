@@ -30,7 +30,7 @@ pub(crate) fn init(py: Python, parent: &Bound<PyModule>) -> PyResult<()> {
 }
 
 #[pyfunction]
-#[pyo3(signature = (batch_size,thread_num,schema,file_urls,primary_keys,partition_info,oss_conf,partition_schema=None,filter = None))]
+#[pyo3(signature = (batch_size,thread_num,schema,file_urls,primary_keys,partition_info,oss_conf,partition_schema=None,filter=None,options=None))]
 fn _sync_reader(
     batch_size: usize,
     thread_num: usize,
@@ -41,6 +41,7 @@ fn _sync_reader(
     oss_conf: Vec<(String, String)>,
     partition_schema: Option<PyArrowType<Schema>>,
     filter: Option<Vec<u8>>,
+    options: Option<Vec<(String, String)>>,
 ) -> PyResult<PyArrowType<Box<dyn RecordBatchReader + Send>>> {
     let schema = Arc::new(schema.0);
     let partition_schema = partition_schema.map(|s| Arc::new(s.0));
@@ -54,6 +55,7 @@ fn _sync_reader(
         &partition_info,
         &oss_conf,
         filter,
+        options,
     );
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -70,7 +72,7 @@ fn _sync_reader(
 }
 
 #[pyfunction]
-#[pyo3(signature = (batch_size,thread_num,schema,file_urls,primary_keys,partition_info,oss_conf,partition_schema=None,filter=None))]
+#[pyo3(signature = (batch_size,thread_num,schema,file_urls,primary_keys,partition_info,oss_conf,partition_schema=None,filter=None,options=None))]
 fn _one_reader(
     batch_size: usize,
     thread_num: usize,
@@ -81,6 +83,7 @@ fn _one_reader(
     oss_conf: Vec<(String, String)>,
     partition_schema: Option<PyArrowType<Schema>>,
     filter: Option<Vec<u8>>,
+    options: Option<Vec<(String, String)>>,
 ) -> PyResult<PyArrowType<Box<dyn RecordBatchReader + Send>>> {
     let schema = Arc::new(schema.0);
     log::debug!("schema: {:?}", schema);
@@ -108,6 +111,7 @@ fn _one_reader(
                 &part_info,
                 &oss_conf,
                 filter.clone(),
+                options.clone(),
             ))
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
         })
@@ -133,13 +137,21 @@ fn build_io_config(
     partition_info: &[(String, String)],
     oss_conf: &[(String, String)],
     filter: Option<Vec<u8>>,
+    options: Option<Vec<(String, String)>>,
 ) -> LakeSoulIOConfig {
+    // Derive prefix from the first file's parent directory
+    let prefix = file_urls.first().and_then(|u| {
+        let u = u.trim_end_matches('/');
+        std::path::Path::new(u).parent().and_then(|p| p.to_str()).map(|s| s.to_string())
+    }).unwrap_or_default();
+
     let mut builder = LakeSoulIOConfigBuilder::default()
         .with_batch_size(batch_size)
         .with_thread_num(thread_num)
         .with_files(file_urls)
         .with_primary_keys(primary_keys)
-        .with_schema(Arc::clone(&schema));
+        .with_schema(Arc::clone(&schema))
+        .with_prefix(prefix);
 
     for (k, v) in partition_info {
         builder = builder.with_default_column_value(k.clone(), v.clone());
@@ -164,6 +176,12 @@ fn build_io_config(
 
     if let Some(buf) = filter {
         builder = builder.with_filter_buf(buf);
+    }
+
+    if let Some(opts) = options {
+        for (k, v) in opts {
+            builder = builder.with_option(k, v);
+        }
     }
 
     builder.build()
