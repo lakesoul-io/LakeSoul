@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright 2025 LakeSoul contributors
-use std::sync::LazyLock;
+
+use std::{env, sync::LazyLock};
 
 use crate::install_module;
-use lakesoul_metadata::{
-    PRIMARY_URL_ENV_KEY, PRIMARY_URL_PROP_KEY, PooledClient, SECONDARY_URL_ENV_KEY,
-    SECONDARY_URL_PROP_KEY, execute_query, pg_config_from_env,
-};
+use arrow_pyarrow::PyArrowType;
+use arrow_schema::Schema;
+use lakesoul_metadata::{MetaDataClient, transfusion::DataFileInfo, utils::qualify_path};
 use proto::proto::entity::TableInfo;
 use pyo3::{exceptions::PyRuntimeError, exceptions::PyValueError, prelude::*};
 
@@ -17,6 +17,7 @@ pub(crate) fn init(py: Python, parent: &Bound<PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(exec_query, &m)?)?;
     m.add_function(wrap_pyfunction!(commit_data_files, &m)?)?;
     m.add_function(wrap_pyfunction!(create_table, &m)?)?;
+    m.add_function(wrap_pyfunction!(drop_table, &m)?)?;
     Ok(())
 }
 
@@ -29,22 +30,22 @@ static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
         .unwrap()
 });
 
-static CLIENT: LazyLock<PooledClient> = LazyLock::new(|| {
-    let config = pg_config_from_env(PRIMARY_URL_PROP_KEY, PRIMARY_URL_ENV_KEY).unwrap();
-    let secondary_config = pg_config_from_env(SECONDARY_URL_PROP_KEY, SECONDARY_URL_ENV_KEY).ok();
+static META_CLIENT: LazyLock<Result<MetaDataClient, String>> = LazyLock::new(|| {
     RUNTIME
-        .block_on(PooledClient::try_new(config, secondary_config))
-        .unwrap()
+        .block_on(MetaDataClient::from_env())
+        .map_err(|error| error.to_string())
 });
 
 #[pyfunction]
 // multiply copy data
-fn exec_query(query_type: i32, joined_string: String) -> PyResult<Vec<u8>> {
-    let client = &*CLIENT;
-    RUNTIME.block_on(async {
-        execute_query(client, query_type, joined_string)
-            .await
-            .map_err(|e| PyValueError::new_err(e.to_string()))
+fn exec_query(py: Python, query_type: i32, joined_string: String) -> PyResult<Vec<u8>> {
+    py.detach(move || {
+        let client = META_CLIENT
+            .as_ref()
+            .map_err(|error| PyRuntimeError::new_err(error.clone()))?;
+        RUNTIME
+            .block_on(client.execute_query_raw(query_type, joined_string))
+            .map_err(|error| PyRuntimeError::new_err(error.to_string()))
     })
 }
 
@@ -79,7 +80,7 @@ fn commit_data_files(
     })
 }
 
-#[pyfunction]
+#[pyfunction(name = "_create_table")]
 #[pyo3(signature = (
     table_name,
     namespace,
@@ -94,17 +95,32 @@ fn create_table(
     table_name: String,
     namespace: String,
     table_path: String,
-    table_schema: String,
-    properties: String,
-    partitions: String,
+    table_schema: PyArrowType<Schema>,
+    properties: String, // json
+    partitions: String, //  hash;range
     domain: String,
 ) -> PyResult<()> {
+    // stupid design
+    // let schema_json = lakesoul_common::ser::arrow_java::schema_to_metadata_str(&table_schema.0);
+    let schema_json = serde_json::to_string(&table_schema.0).unwrap();
+    let table_path = if table_path.is_empty() {
+        format!(
+            "file://{}/{}/{}",
+            env::current_dir().unwrap().to_str().unwrap(),
+            namespace,
+            table_name,
+        )
+    } else {
+        // hdfs is not checked
+        qualify_path(&table_path)
+            .map_err(|_| PyRuntimeError::new_err(String::from("unable to qualify path")))?
+    };
     let table_info = TableInfo {
         table_id: uuid::Uuid::new_v4().to_string(),
         table_namespace: namespace,
         table_name,
         table_path,
-        table_schema,
+        table_schema: schema_json,
         properties,
         partitions,
         domain,
@@ -115,6 +131,22 @@ fn create_table(
             .map_err(|error| PyRuntimeError::new_err(error.clone()))?;
         RUNTIME
             .block_on(client.create_table(table_info))
+            .map_err(|error| PyRuntimeError::new_err(error.to_string()))
+    })
+}
+
+#[pyfunction(name = "drop_table")]
+#[pyo3(signature = (
+    table_name,
+    namespace = String::from("default"),
+))]
+fn drop_table(py: Python, table_name: String, namespace: String) -> PyResult<()> {
+    py.detach(move || {
+        let client = META_CLIENT
+            .as_ref()
+            .map_err(|error| PyRuntimeError::new_err(error.clone()))?;
+        RUNTIME
+            .block_on(client.drop_table(&table_name, &namespace))
             .map_err(|error| PyRuntimeError::new_err(error.to_string()))
     })
 }

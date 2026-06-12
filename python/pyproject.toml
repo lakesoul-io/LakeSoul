@@ -27,6 +27,7 @@ dependencies = [
   "protobuf>=5.0",
   "typing-extensions>=4.8",
   "colorlog>=6",
+  "daft>=0.7.15",
 ]
 
 [tool.uv.workspace]
@@ -51,6 +52,10 @@ all = [
 [tool.uv.sources]
 torch = [{ index = "pytorch-cpu" }]
 torchvision = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
+default = true
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
@@ -87,10 +92,6 @@ addopts = ["--import-mode=importlib"]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
 ]
-
-[[tool.uv.index]]
-url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
-default = true
 
 [tool.ruff]
 line-length = 88

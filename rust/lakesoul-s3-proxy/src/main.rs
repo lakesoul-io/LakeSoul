@@ -736,7 +736,7 @@ mod tests {
     use lakesoul_datafusion::catalog::create_io_config_builder;
     use lakesoul_datafusion::lakesoul_table::LakeSoulTable;
     use lakesoul_datafusion::planner::LakeSoulQueryPlanner;
-    use lakesoul_datafusion::serialize::arrow_java::ArrowJavaSchema;
+    use lakesoul_datafusion::ser::arrow_java::ArrowJavaSchema;
     use lakesoul_io::session::create_session_context_with_planner;
     use lakesoul_metadata::MetaDataClientRef;
     use proto::proto::entity::TableInfo;

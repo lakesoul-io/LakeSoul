@@ -21,7 +21,7 @@ use serde::Deserialize;
 
 use crate::Result;
 use crate::lakesoul_table::helpers::create_io_config_builder_from_table_info;
-use crate::serialize::arrow_java::ArrowJavaSchema;
+use lakesoul_common::ser::arrow_java::ArrowJavaSchema;
 
 pub mod lakesoul_catalog;
 //  used in catalog_test, but still say unused_imports, I think it is a bug about rust-lint.

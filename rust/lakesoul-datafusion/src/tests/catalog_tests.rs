@@ -22,7 +22,7 @@ use crate::catalog::{LakeSoulCatalog, LakeSoulNamespace, LakeSoulTableProperty};
 use crate::cli::CoreArgs;
 use crate::create_lakesoul_session_ctx;
 use crate::lakesoul_table::LakeSoulTable;
-use crate::serialize::arrow_java::ArrowJavaSchema;
+use lakesoul_common::ser::arrow_java::ArrowJavaSchema;
 
 fn create_batch_i32(names: Vec<&str>, values: Vec<&[i32]>) -> RecordBatch {
     let values = values

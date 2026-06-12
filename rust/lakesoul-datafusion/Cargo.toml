@@ -12,6 +12,7 @@ edition = { workspace = true }
 # lakesoul
 lakesoul-io = { path = "../lakesoul-io" }
 lakesoul-metadata = { path = "../lakesoul-metadata" }
+lakesoul-common = { path = "../lakesoul-common" }
 proto = { path = "../proto" }
 # datafusion
 datafusion = { workspace = true }

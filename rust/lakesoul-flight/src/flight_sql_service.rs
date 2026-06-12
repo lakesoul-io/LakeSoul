@@ -46,7 +46,7 @@ use lakesoul_datafusion::catalog::LakeSoulTableProperty;
 use lakesoul_datafusion::create_lakesoul_session_ctx;
 use lakesoul_datafusion::lakesoul_table::LakeSoulTable;
 use lakesoul_datafusion::lakesoul_table::helpers::case_fold_column_name;
-use lakesoul_datafusion::serialize::arrow_java::schema_from_metadata_str;
+use lakesoul_datafusion::ser::arrow_java::schema_from_metadata_str;
 use lakesoul_io::helpers::get_batch_memory_size;
 use lakesoul_io::writer::async_writer::FlushOutput;
 use lakesoul_metadata::MetaDataClientRef;

@@ -449,6 +449,19 @@ impl From<SchemaRef> for ArrowJavaSchema {
     }
 }
 
+impl From<Schema> for ArrowJavaSchema {
+    fn from(schema: Schema) -> Self {
+        Self {
+            fields: schema
+                .fields()
+                .iter()
+                .map(ArrowJavaField::from)
+                .collect::<Vec<_>>(),
+            metadata: None,
+        }
+    }
+}
+
 impl From<ArrowJavaSchema> for SchemaRef {
     fn from(schema: ArrowJavaSchema) -> Self {
         SchemaRef::new(Schema::new(
@@ -469,4 +482,47 @@ pub fn schema_from_metadata_str(s: &str) -> SchemaRef {
         },
         SchemaRef::new,
     )
+}
+fn normalize_field(field: &Field) -> Field {
+    let data_type = match field.data_type() {
+        DataType::LargeUtf8 => DataType::Utf8,
+        DataType::LargeBinary => DataType::Binary,
+
+        DataType::List(inner) => {
+            DataType::List(Arc::new(normalize_field(inner.as_ref())))
+        }
+
+        DataType::LargeList(inner) => {
+            DataType::List(Arc::new(normalize_field(inner.as_ref())))
+        }
+
+        DataType::Struct(fields) => DataType::Struct(
+            fields
+                .iter()
+                .map(|f| Arc::new(normalize_field(f.as_ref())))
+                .collect(),
+        ),
+
+        other => other.clone(),
+    };
+
+    Field::new(field.name(), data_type, field.is_nullable())
+        .with_metadata(field.metadata().clone())
+}
+
+fn normalize_schema_for_spark(schema: &Schema) -> Schema {
+    Schema::new_with_metadata(
+        schema
+            .fields()
+            .iter()
+            .map(|f| normalize_field(f.as_ref()))
+            .collect::<Vec<_>>(),
+        schema.metadata().clone(),
+    )
+}
+
+// workaround
+pub fn schema_to_metadata_str(schema: &Schema) -> String {
+    let normalized = Arc::new(normalize_schema_for_spark(schema.as_ref()));
+    serde_json::to_string(&ArrowJavaSchema::from(normalized)).unwrap()
 }

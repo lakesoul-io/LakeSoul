@@ -18,7 +18,7 @@ from .dao import (
     select_table_info_by_table_name,
 )
 from .generated.entity_pb2 import DataCommitInfo, PartitionInfo, TableInfo
-from .utils import to_arrow_schema, to_arrow_schemas
+from .utils import to_arrow_schemas
 
 __all__ = [
     "get_table_info_by_name",
@@ -58,6 +58,8 @@ def get_arrow_schema_by_table_name(
     exclude_partitions = None
     if not retain_partition_columns and len(table_info.partitions) > 0:
         exclude_partitions = frozenset(table_info.partitions.split(";")[0].split(","))
+
+    from lakesoul._lib._utils import to_arrow_schema
 
     return to_arrow_schema(schema, exclude_partitions)
 

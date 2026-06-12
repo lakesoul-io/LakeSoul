@@ -34,7 +34,6 @@ use uuid::Uuid;
 
 use crate::datasource::file_format::LakeSoulMetaDataParquetFormat;
 use crate::datasource::table_provider::LakeSoulTableProvider;
-use crate::serialize::arrow_java::schema_from_metadata_str;
 use crate::{
     Result,
     catalog::{
@@ -42,6 +41,7 @@ use crate::{
     },
     planner::query_planner::LakeSoulQueryPlanner,
 };
+use lakesoul_common::ser::arrow_java::schema_from_metadata_str;
 
 pub mod helpers;
 

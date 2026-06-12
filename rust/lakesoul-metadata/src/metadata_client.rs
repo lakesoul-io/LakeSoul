@@ -213,6 +213,20 @@ impl MetaDataClient {
         .await
     }
 
+    pub async fn drop_table(&self, table_name: &str, namespace: &str) -> Result<()> {
+        let table_info = self
+            .get_table_info_by_table_name(table_name, namespace)
+            .await?
+            .ok_or_else(|| {
+                LakeSoulMetaDataError::NotFound(format!(
+                    "not found {} in namespace {}",
+                    table_name, namespace
+                ))
+            })?;
+        self.delete_table_by_table_info_cascade(&table_info).await?;
+        Ok(())
+    }
+
     pub async fn delete_table_by_table_id_cascade(
         &self,
         table_id: &str,
@@ -311,11 +325,11 @@ impl MetaDataClient {
         Err(LakeSoulMetaDataError::Internal("unreachable".to_string()))
     }
 
-    async fn execute_query(
+    pub async fn execute_query_raw(
         &self,
         query_type: i32,
         joined_string: String,
-    ) -> Result<JniWrapper> {
+    ) -> Result<Vec<u8>> {
         for times in 0..self.max_retry as i64 {
             match execute_query(
                 self.client.lock().await.deref_mut(),
@@ -325,13 +339,22 @@ impl MetaDataClient {
             .await
             {
                 Ok(encoded) => {
-                    return Ok(JniWrapper::decode(prost::bytes::Bytes::from(encoded))?);
+                    return Ok(encoded);
                 }
                 Err(_) if times < self.max_retry as i64 - 1 => continue,
                 Err(e) => return Err(e),
             };
         }
         Err(LakeSoulMetaDataError::Internal("unreachable".to_string()))
+    }
+
+    pub async fn execute_query(
+        &self,
+        query_type: i32,
+        joined_string: String,
+    ) -> Result<JniWrapper> {
+        let bytes = self.execute_query_raw(query_type, joined_string).await?;
+        return Ok(JniWrapper::decode(prost::bytes::Bytes::from(bytes))?);
     }
 
     async fn insert_namespace(&self, namespace: &Namespace) -> Result<i32> {
@@ -655,6 +678,68 @@ impl MetaDataClient {
             CommitOp::try_from(commit_op).map_err(|_| {
                 LakeSoulMetaDataError::Internal("unknown commit_op".to_string())
             })?,
+        )
+        .await
+    }
+
+    /// Commit data files for one table and publish all affected partitions together.
+    pub async fn commit_data_files(
+        &self,
+        table_name: &str,
+        namespace: &str,
+        files: Vec<DataFileInfo>,
+    ) -> Result<()> {
+        if files.is_empty() {
+            return Ok(());
+        }
+
+        let table_info = self
+            .get_table_info_by_table_name(table_name, namespace)
+            .await?
+            .ok_or_else(|| {
+                LakeSoulMetaDataError::NotFound(format!(
+                    "table {table_name} is not found in namespace {namespace}"
+                ))
+            })?;
+        let (_, primary_keys) = parse_table_info_partitions(&table_info.partitions);
+        let commit_op = if primary_keys.is_empty() {
+            CommitOp::AppendCommit
+        } else {
+            CommitOp::MergeCommit
+        };
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| LakeSoulMetaDataError::Internal(error.to_string()))?
+            .as_millis() as i64;
+        let domain = self.get_table_domain(&table_info.table_id).await?.domain;
+
+        let data_commit_info_list = data_commit_info_list_from_files(
+            &table_info,
+            files,
+            commit_op,
+            timestamp,
+            &domain,
+        );
+
+        self.transaction_insert_data_commit_info(data_commit_info_list.clone())
+            .await?;
+        self.commit_data(
+            MetaInfo {
+                table_info: Some(table_info.clone()),
+                list_partition: data_commit_info_list
+                    .iter()
+                    .map(|data_commit_info| PartitionInfo {
+                        table_id: table_info.table_id.clone(),
+                        partition_desc: data_commit_info.partition_desc.clone(),
+                        commit_op: commit_op.into(),
+                        domain: domain.clone(),
+                        snapshot: data_commit_info.commit_id.into_iter().collect(),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            },
+            commit_op,
         )
         .await
     }

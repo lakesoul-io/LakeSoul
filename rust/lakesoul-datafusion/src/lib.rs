@@ -29,6 +29,7 @@ use url::Url;
 use crate::planner::LakeSoulQueryPlanner;
 
 // re export
+pub use lakesoul_common::ser;
 pub use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 
 pub mod catalog;
@@ -36,7 +37,6 @@ pub mod cli;
 pub mod datasource;
 pub mod lakesoul_table;
 pub mod planner;
-pub mod serialize;
 pub mod tpch;
 
 #[cfg(feature = "adbc")]
