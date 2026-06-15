@@ -2,7 +2,7 @@
 
 本 crate 为 LakeSoul 提供 IVF+RaBitQ 向量相似度检索能力，包括在对象存储上实现索引构建、增量插入和 ANN 检索。
 
-原始实现来自 [rabitq-rs](https://github.com/lqhl/rabitq-rs)，已将其 IVF+RaBitQ 核心代码 vendoring 至 `src/rabitq/` 目录下。
+原始的 IVF 索引 + 量化实现来自 [rabitq-rs](https://github.com/lqhl/rabitq-rs)。本实现主要大幅优化建索引内存和性能，增加增量索引功能，并支持对象存储。
 
 ## 模块架构
 
@@ -207,7 +207,7 @@ rabitq-rs 使用 immutable 文件设计，适合对象存储 (S3/GCS/Azure):
 
 ## 性能参考
 
-基于 rabitq-rs 在 GIST-1M (960维, 1M 向量, 4096 聚类) 上的测试结果：
+基于 rabitq-rs 在 GIST-1M (960维, 1M 向量, 4096 聚类，8 线程) 上的测试结果：
 
 | 指标 | 数值 |
 |------|------|

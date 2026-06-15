@@ -3,8 +3,9 @@
 This crate provides IVF+RaBitQ approximate nearest neighbor search for LakeSoul,
 including index building, incremental insertion, and ANN retrieval on object store.
 
-The IVF+RaBitQ core is vendored from [rabitq-rs](https://github.com/lqhl/rabitq-rs)
-into `src/rabitq/`.
+The original IVF+RaBitQ core is vendored from [rabitq-rs](https://github.com/lqhl/rabitq-rs)
+into `src/rabitq/`. This implementation significantly improves the index building performance
+and memory usage, adds incremental index and object storage support.
 
 ## Module Structure
 
@@ -222,7 +223,7 @@ CAS (Compare-And-Swap) for concurrency safety.
 
 ## Performance Reference
 
-Based on rabitq-rs benchmark results on GIST-1M (960D, 1M vectors, 4096 clusters):
+Based on rabitq-rs benchmark results on GIST-1M (960D, 1M vectors, 4096 clusters, 8 threads):
 
 | Metric | Value |
 |--------|-------|
