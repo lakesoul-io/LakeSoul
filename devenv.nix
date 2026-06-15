@@ -13,6 +13,8 @@
     clang
     lld
     llvmPackages.libclang
+    # scala
+    metals
   ];
   env = {
     CC = "${pkgs.clang}/bin/clang";
