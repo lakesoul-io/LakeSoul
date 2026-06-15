@@ -442,56 +442,65 @@ impl SyncSendableMutableLakeSoulWriter {
         }
     }
 
+    /// Flush all pending data and return the files produced by this writer.
     #[instrument(skip(self), err)]
-    pub fn flush_and_close(self) -> Result<Vec<u8>> {
-        if let Some(inner_writer) = self.in_progress {
+    pub fn finish(self) -> Result<Vec<FlushOutput>> {
+        let Self {
+            runtime,
+            in_progress,
+            mut flush_results,
+            ..
+        } = self;
+
+        if let Some(inner_writer) = in_progress {
             let inner_writer = match Arc::try_unwrap(inner_writer) {
                 Ok(inner) => inner,
                 Err(_) => {
                     bail!("Cannot get ownership of the inner writer");
                 }
             };
-            let runtime = self.runtime;
             runtime.block_on(async move {
                 let writer = inner_writer.into_inner();
-
-                let mut grouped_results: HashMap<String, Vec<String>> = HashMap::new();
                 let results = writer.flush_and_close().await?;
-                for FlushOutput {
-                    partition_desc,
-                    file_path,
-                    object_meta,
-                    file_exist_cols,
-                    ..
-                } in self.flush_results.into_iter().chain(results)
-                {
-                    let encoded = format!(
-                        "{}\x03{}\x03{}",
-                        file_path,
-                        object_meta.size,
-                        file_exist_cols.join(",")
-                    );
-                    match grouped_results.get_mut(&partition_desc) {
-                        Some(files) => {
-                            files.push(encoded);
-                        }
-                        None => {
-                            grouped_results.insert(partition_desc, vec![encoded]);
-                        }
-                    }
-                }
-                let mut summary = format!("{}", grouped_results.len());
-                for (partition_desc, files) in grouped_results.iter() {
-                    summary += "\x01";
-                    summary += partition_desc.as_str();
-                    summary += "\x02";
-                    summary += files.join("\x02").as_str();
-                }
-                Ok(summary.into_bytes())
+                flush_results.extend(results);
+                Ok(flush_results)
             })
         } else {
-            Ok(vec![])
+            Ok(flush_results)
         }
+    }
+
+    #[instrument(skip(self), err)]
+    pub fn flush_and_close(self) -> Result<Vec<u8>> {
+        let mut grouped_results: HashMap<String, Vec<String>> = HashMap::new();
+        for FlushOutput {
+            partition_desc,
+            file_path,
+            object_meta,
+            file_exist_cols,
+            ..
+        } in self.finish()?
+        {
+            let encoded = format!(
+                "{}\x03{}\x03{}",
+                file_path,
+                object_meta.size,
+                file_exist_cols.join(",")
+            );
+            grouped_results
+                .entry(partition_desc)
+                .or_default()
+                .push(encoded);
+        }
+
+        let mut summary = format!("{}", grouped_results.len());
+        for (partition_desc, files) in grouped_results {
+            summary += "\x01";
+            summary += partition_desc.as_str();
+            summary += "\x02";
+            summary += files.join("\x02").as_str();
+        }
+        Ok(summary.into_bytes())
     }
 
     #[instrument(skip(self), err)]
