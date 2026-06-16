@@ -156,16 +156,18 @@ class LakeSoulDatasource(Datasource):
                 retain_partition_columns=self._retain_partition_columns,
                 # entry
                 namespace=self._namespace,
-                object_store_configs=self._object_store_configs: _read_lakesoul_data_file(
-                    table_name=table_name,
-                    batch_size=batch_size,
-                    thread_count=thread_count,
-                    rank=rank,
-                    world_size=world_size,
-                    partitions=partitions,
-                    retain_partition_columns=retain_partition_columns,
-                    namespace=namespace,
-                    object_store_configs=object_store_configs,
+                object_store_configs=self._object_store_configs: (
+                    _read_lakesoul_data_file(
+                        table_name=table_name,
+                        batch_size=batch_size,
+                        thread_count=thread_count,
+                        rank=rank,
+                        world_size=world_size,
+                        partitions=partitions,
+                        retain_partition_columns=retain_partition_columns,
+                        namespace=namespace,
+                        object_store_configs=object_store_configs,
+                    )
                 ),
                 metadata,
                 schema=arrow_schema,
@@ -174,9 +176,6 @@ class LakeSoulDatasource(Datasource):
             read_tasks.append(read_task)
         return read_tasks
 
-    def do_write(self, *args: Any, **kwargs: Any) -> None:
-        message = "write to LakeSoul is not implemented yet"
-        raise NotImplementedError(message)
 
 def read_lakesoul(
     table_name: str,
@@ -213,4 +212,4 @@ def read_lakesoul(
     return ds
 
 
-ray.data.read_lakesoul = read_lakesoul  # type: ignore[attr-defined]
+ray.data.read_lakesoul = read_lakesoul  # type: ignore
