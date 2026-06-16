@@ -167,7 +167,7 @@ def test_real_write(
 ) -> None:
     from lakesoul.metadata import create_table, drop_table
 
-    table = pa.table({"id": [1, 2], "value": ["a", "b"]})
+    expected = pa.table({"id": [1, 2], "value": ["a", "b"]})
 
     table_name = tmp_path.name
 
@@ -176,18 +176,14 @@ def test_real_write(
     except Exception:
         pass
 
-    create_table(table_name, table_path=tmp_path, table_schema=table.schema)
+    create_table(table_name, table_path=tmp_path, table_schema=expected.schema)
 
-    dataset = ray.data.from_arrow(table)
-    write_lakesoul(dataset, "target", concurrency=1)
+    dataset = ray.data.from_arrow(expected)
+    write_lakesoul(dataset, table_name, concurrency=1)
 
     from lakesoul.ray import read_lakesoul
 
     ds = read_lakesoul(table_name)
 
-    batches = list(ds.iter_batches(batch_format="pyarrow"))
-    print(len(batches))
-    print(ds.count())
-
-    # actual = pa.Table.from_batches(list(ds.iter_batches(batch_format="pyarrow")))
-    # print(actual)
+    actual = ds.take_batch(batch_format="pyarrow")
+    assert actual.equals(expected)  # type: ignore

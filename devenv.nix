@@ -15,17 +15,24 @@
     llvmPackages.libclang
     # scala
     metals
+    stdenv.cc.cc.lib
   ];
   env = {
     CC = "${pkgs.clang}/bin/clang";
     CXX = "${pkgs.clang}/bin/clang++";
     LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+    LD_LIBRARY_PATH = "${pkgs.stdenv.cc.cc.lib}/lib";
   };
   # https://devenv.sh/languages/
   # languages.rust.enable = true;
   languages.rust = {
     enable = true;
     toolchainFile = ./rust-toolchain.toml;
+  };
+
+  languages.java = {
+    enable = true;
+    jdk.package = pkgs.temurin-bin-11;
   };
 
   # https://devenv.sh/processes/

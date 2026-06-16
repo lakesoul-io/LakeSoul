@@ -261,3 +261,6 @@ def _validate_dataset_schema(dataset: Dataset, expected: pa.Schema) -> None:
             "Ray Dataset schema does not match LakeSoul table schema:\n"
             f"expected: {expected}\nactual: {arrow_schema}"
         )
+
+
+Dataset.write_lakesoul = write_lakesoul  # type: ignore

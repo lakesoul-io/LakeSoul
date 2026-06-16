@@ -4248,7 +4248,7 @@ dependencies = [
 name = "lakesoul-common"
 version = "0.1.0"
 dependencies = [
- "arrow",
+ "arrow-schema",
  "serde",
  "serde_json",
 ]

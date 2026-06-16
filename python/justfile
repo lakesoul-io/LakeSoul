@@ -10,7 +10,7 @@ gen-data:
     cargo run --release -p lakesoul-console -- -f test.sql
 
 pytest:
-     {{env}} .venv/bin/python -m pytest -s tests
+     {{env}} .venv/bin/python -m pytest -s tests/spark
 
 sync:
     uv sync --reinstall-package lakesoul

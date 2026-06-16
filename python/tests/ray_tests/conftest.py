@@ -19,7 +19,7 @@ def ray_session():
 
     ray.init(
         address=None,
-        runtime_env={},
+        runtime_env=None,
         include_dashboard=False,
     )
     yield
