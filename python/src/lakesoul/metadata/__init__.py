@@ -3,10 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 import json
 from collections.abc import Mapping
+from pathlib import Path
 
 import pyarrow
 
-from lakesoul._lib._metadata import _create_table
+from lakesoul._lib._metadata import _create_table, drop_table
 
 
 def _partitions_to_metadata_str(
@@ -28,7 +29,7 @@ def create_table(
     table_name: str,
     *,
     namespace: str = "default",
-    table_path: str,
+    table_path: str | Path,
     table_schema: pyarrow.Schema,
     properties: Mapping[str, str] | None = None,
     partitions: Mapping[str, list[str]] | None = None,
@@ -37,7 +38,7 @@ def create_table(
     _create_table(
         table_name,
         namespace,
-        table_path,
+        str(table_path),
         table_schema,
         json.dumps(dict(properties or {}), separators=(",", ":")),
         _partitions_to_metadata_str(table_schema, partitions),
@@ -45,4 +46,4 @@ def create_table(
     )
 
 
-__all__ = ["create_table"]
+__all__ = ["create_table", "drop_table"]

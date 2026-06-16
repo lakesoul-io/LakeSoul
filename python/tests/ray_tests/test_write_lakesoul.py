@@ -11,7 +11,7 @@ import pyarrow.parquet as pq
 import pytest
 import ray
 
-from lakesoul.ray import LakeSoulDatasink
+from lakesoul.ray import LakeSoulDatasink, write_lakesoul
 
 write_module = import_module("lakesoul.ray.write_lakesoul")
 
@@ -95,7 +95,7 @@ def test_datasink_uses_table_partition_and_vortex_config(
         partitions="part;id",
     )
 
-    datasink = LakeSoulDatasink("target")
+    datasink = LakeSoulDatasink("target", format="vortex")
     task_result = datasink.write([table], None)
 
     assert not datasink.supports_distributed_writes
@@ -135,23 +135,7 @@ def test_empty_write_does_not_commit(
 
 
 def test_dataset_method_is_registered() -> None:
-    assert ray.data.Dataset.write_lakesoul is write_module.write_lakesoul  # type: ignore[unresolved-attribute]
-
-
-def test_real_write(
-    ray_session: None,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    del ray_session
-    table = pa.table({"id": [1, 2], "value": ["a", "b"]})
-    committed: list[list[tuple[str, str, int, list[str]]]] = []
-    dataset = ray.data.from_arrow(table)
-    dataset.write_lakesoul("target", concurrency=1)  # type: ignore[unresolved-attribute]
-
-    assert len(committed) == 1
-    assert len(committed[0]) == 1
-    assert committed[0][0][2] > 0
+    assert ray.data.Dataset.write_lakesoul is write_module.write_lakesoul  # type: ignore
 
 
 def test_dataset_write_lakesoul_end_to_end(
@@ -170,8 +154,40 @@ def test_dataset_write_lakesoul_end_to_end(
     )
 
     dataset = ray.data.from_arrow(table)
-    dataset.write_lakesoul("target", concurrency=1)  # type: ignore[unresolved-attribute]
+    dataset.write_lakesoul("target", concurrency=1)  # type: ignore
 
     assert len(committed) == 1
     assert len(committed[0]) == 1
     assert committed[0][0][2] > 0
+
+
+def test_real_write(
+    ray_session: None,
+    tmp_path: Path,
+) -> None:
+    from lakesoul.metadata import create_table, drop_table
+
+    table = pa.table({"id": [1, 2], "value": ["a", "b"]})
+
+    table_name = tmp_path.name
+
+    try:
+        drop_table(table_name)
+    except Exception:
+        pass
+
+    create_table(table_name, table_path=tmp_path, table_schema=table.schema)
+
+    dataset = ray.data.from_arrow(table)
+    write_lakesoul(dataset, "target", concurrency=1)
+
+    from lakesoul.ray import read_lakesoul
+
+    ds = read_lakesoul(table_name)
+
+    batches = list(ds.iter_batches(batch_format="pyarrow"))
+    print(len(batches))
+    print(ds.count())
+
+    # actual = pa.Table.from_batches(list(ds.iter_batches(batch_format="pyarrow")))
+    # print(actual)

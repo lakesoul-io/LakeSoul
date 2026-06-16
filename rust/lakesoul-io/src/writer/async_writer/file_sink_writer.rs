@@ -21,7 +21,7 @@ use tokio::sync::mpsc::Sender;
 
 use crate::{
     Result,
-    constant::TBD_PARTITION_DESC,
+    constant::DEFAULT_PARTITION_DESC,
     file_format::{PhysicalFormat, vortex::VortexSink},
     helpers::{
         FileExistCols, get_batch_memory_size,
@@ -170,7 +170,7 @@ impl FileSinkWriter {
                     metadata.num_row_groups().to_string(),
                 )]);
                 Ok(FlushOutput {
-                    partition_desc: TBD_PARTITION_DESC.to_string(),
+                    partition_desc: DEFAULT_PARTITION_DESC.to_string(),
                     file_path,
                     object_meta,
                     file_exist_cols,
@@ -209,7 +209,7 @@ impl FileSinkWriter {
                     String::from("vortex"),
                 )]);
                 Ok(FlushOutput {
-                    partition_desc: TBD_PARTITION_DESC.to_string(),
+                    partition_desc: DEFAULT_PARTITION_DESC.to_string(),
                     file_path,
                     object_meta,
                     file_exist_cols,

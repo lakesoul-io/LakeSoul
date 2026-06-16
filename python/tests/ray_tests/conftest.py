@@ -12,11 +12,13 @@ TABLE_NAME_TEST_LFS = "test_lfs"
 @pytest.fixture(scope="session")
 def ray_session():
     import os
+
     import ray
 
     os.environ.pop("RAY_RUNTIME_ENV_HOOK", None)
 
     ray.init(
+        address=None,
         runtime_env={},
         include_dashboard=False,
     )

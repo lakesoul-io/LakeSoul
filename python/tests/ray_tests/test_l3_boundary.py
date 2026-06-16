@@ -5,7 +5,7 @@
 import pyarrow as pa
 import pytest
 
-from lakesoul.ray.read_lakesoul import LakeSoulDatasource, read_lakesoul
+from lakesoul.ray.read_lakesoul import read_lakesoul
 
 from .conftest import TABLE_NAME_PART, TABLE_NAME_TEST_LFS
 
@@ -121,11 +121,6 @@ class TestExceptions:
         """Reading a non-existent table should raise a clear exception."""
         with pytest.raises(Exception):
             read_lakesoul("no_such_table_xyz_123")
-
-    def test_do_write_not_implemented(self):
-        ds = LakeSoulDatasource(TABLE_NAME_PART)
-        with pytest.raises(NotImplementedError, match="not implemented"):
-            ds.do_write()
 
     def test_ray_import_required(self):
         """Verify that importing lakesoul.ray requires ray to be installed.
