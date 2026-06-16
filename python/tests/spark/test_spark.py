@@ -83,9 +83,17 @@ def spark_and_file(tmp_path):
         lakesoul_source_dir,
         "lakesoul-spark",
         "target",
-        "lakesoul-spark*.jar",
+        "lakesoul-spark-3.3-*-SNAPSHOT.jar",
     )
-    jar_files = glob.glob(jar_pattern)
+
+    jar_files = [
+        p
+        for p in glob.glob(jar_pattern)
+        if not p.endswith("-sources.jar")
+        and not p.endswith("-javadoc.jar")
+        and not p.endswith("-tests.jar")
+    ]
+    assert jar_files, len(jar_files) == 1
     spark = (
         SparkSession.builder.appName("PySparkLakeSoulTest")
         .master("local[4]")
@@ -375,3 +383,16 @@ def test_streaming_incremental_query(spark_and_file):
     # df = spark.createDataFrame([("f", 66), ("g", 77)], ["key", "value"])
     # table.upsert(df)
     pass
+
+
+def test_jvm():
+    from pyspark.sql import SparkSession
+    
+    spark = (
+        SparkSession.builder
+        .master("local[4]")
+        .appName("test")
+        .getOrCreate()
+    )
+    
+    spark.range(10).count()

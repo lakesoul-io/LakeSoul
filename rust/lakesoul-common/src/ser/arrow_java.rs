@@ -4,7 +4,9 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use arrow::datatypes::{DataType, Field, FieldRef, Fields, Schema, SchemaRef, TimeUnit};
+use arrow_schema::{
+    DataType, Field, FieldRef, Fields, IntervalUnit, Schema, SchemaRef, TimeUnit,
+};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "name")]
@@ -48,8 +50,8 @@ enum ArrowJavaType {
     LargeBinary,
     #[serde(rename = "fixedsizebinary")]
     FixedSizeBinary {
-        #[serde(rename = "bitWidth")]
-        bit_width: i32,
+        #[serde(rename = "byteWidth", alias = "bitWidth")]
+        byte_width: i32,
     },
     #[serde(rename = "bool")]
     Bool,
@@ -57,7 +59,7 @@ enum ArrowJavaType {
     Decimal {
         precision: u8,
         scale: i8,
-        #[serde(rename = "bitWidth")]
+        #[serde(rename = "bitWidth", default = "default_decimal_bit_width")]
         bit_width: i32,
     },
     #[serde(rename = "date")]
@@ -74,9 +76,15 @@ enum ArrowJavaType {
         timezone: Option<String>,
     },
     #[serde(rename = "interval")]
-    Interval,
+    Interval {
+        #[serde(default = "default_interval_unit")]
+        unit: String,
+    },
     #[serde(rename = "duration")]
-    Duration,
+    Duration {
+        #[serde(default = "default_duration_unit")]
+        unit: String,
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -85,7 +93,11 @@ struct ArrowJavaField {
     #[serde(rename = "type")]
     data_type: ArrowJavaType,
     nullable: bool,
+    #[serde(default)]
     children: Vec<ArrowJavaField>,
+    /// A map of key-value pairs containing additional field meta data.
+    #[serde(default)]
+    metadata: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -93,6 +105,56 @@ pub struct ArrowJavaSchema {
     fields: Vec<ArrowJavaField>,
     /// A map of key-value pairs containing additional meta data.
     metadata: Option<HashMap<String, String>>,
+}
+
+fn default_decimal_bit_width() -> i32 {
+    128
+}
+
+fn default_interval_unit() -> String {
+    "YEAR_MONTH".to_string()
+}
+
+fn default_duration_unit() -> String {
+    "MICROSECOND".to_string()
+}
+
+fn time_unit_to_java(unit: &TimeUnit) -> String {
+    match unit {
+        TimeUnit::Second => "SECOND",
+        TimeUnit::Microsecond => "MICROSECOND",
+        TimeUnit::Millisecond => "MILLISECOND",
+        TimeUnit::Nanosecond => "NANOSECOND",
+    }
+    .to_string()
+}
+
+fn time_unit_from_java(unit: &str) -> TimeUnit {
+    match unit.to_ascii_uppercase().as_str() {
+        "SECOND" => TimeUnit::Second,
+        "MILLISECOND" => TimeUnit::Millisecond,
+        "MICROSECOND" => TimeUnit::Microsecond,
+        "NANOSECOND" => TimeUnit::Nanosecond,
+        other => panic!("TimeUnit has an invalid value = {}", other),
+    }
+}
+
+fn interval_unit_to_java(unit: &IntervalUnit) -> String {
+    match unit {
+        IntervalUnit::YearMonth => "YEAR_MONTH",
+        IntervalUnit::DayTime => "DAY_TIME",
+        IntervalUnit::MonthDayNano => "MONTH_DAY_NANO",
+    }
+    .to_string()
+}
+
+fn interval_unit_from_java(unit: &str) -> IntervalUnit {
+    match unit.to_ascii_uppercase().as_str() {
+        "YEAR_MONTH" => IntervalUnit::YearMonth,
+        "DAY_TIME" => IntervalUnit::DayTime,
+        "MONTH_DAY_NANO" => IntervalUnit::MonthDayNano,
+        other => panic!("IntervalUnit has an invalid value = {}", other),
+    }
 }
 
 impl From<&FieldRef> for ArrowJavaField {
@@ -209,7 +271,7 @@ impl From<&FieldRef> for ArrowJavaField {
             DataType::LargeBinary => (ArrowJavaType::LargeBinary, vec![]),
             DataType::FixedSizeBinary(bit_width) => (
                 ArrowJavaType::FixedSizeBinary {
-                    bit_width: *bit_width,
+                    byte_width: *bit_width,
                 },
                 vec![],
             ),
@@ -266,44 +328,39 @@ impl From<&FieldRef> for ArrowJavaField {
             DataType::Time32(unit) => (
                 ArrowJavaType::Time {
                     bit_width: 32,
-                    unit: match unit {
-                        TimeUnit::Second => "SECOND".to_string(),
-                        TimeUnit::Microsecond => "MICROSECOND".to_string(),
-                        TimeUnit::Millisecond => "MILLISECOND".to_string(),
-                        TimeUnit::Nanosecond => "NANOSECOND".to_string(),
-                    },
+                    unit: time_unit_to_java(unit),
                 },
                 vec![],
             ),
             DataType::Time64(unit) => (
                 ArrowJavaType::Time {
                     bit_width: 64,
-                    unit: match unit {
-                        TimeUnit::Second => "SECOND".to_string(),
-                        TimeUnit::Microsecond => "MICROSECOND".to_string(),
-                        TimeUnit::Millisecond => "MILLISECOND".to_string(),
-                        TimeUnit::Nanosecond => "NANOSECOND".to_string(),
-                    },
+                    unit: time_unit_to_java(unit),
                 },
                 vec![],
             ),
             DataType::Timestamp(unit, timezone) => (
                 ArrowJavaType::Timestamp {
-                    unit: match unit {
-                        TimeUnit::Second => "SECOND".to_string(),
-                        TimeUnit::Microsecond => "MICROSECOND".to_string(),
-                        TimeUnit::Millisecond => "MILLISECOND".to_string(),
-                        TimeUnit::Nanosecond => "NANOSECOND".to_string(),
-                    },
+                    unit: time_unit_to_java(unit),
                     timezone: timezone.as_ref().map(|s| s.to_string()),
+                },
+                vec![],
+            ),
+            DataType::Duration(unit) => (
+                ArrowJavaType::Duration {
+                    unit: time_unit_to_java(unit),
+                },
+                vec![],
+            ),
+            DataType::Interval(unit) => (
+                ArrowJavaType::Interval {
+                    unit: interval_unit_to_java(unit),
                 },
                 vec![],
             ),
 
             DataType::Union(_, _) => todo!("Union type not supported"),
             DataType::Dictionary(_, _) => todo!("Dictionary type not supported"),
-            DataType::Duration(_) => todo!("Duration type not supported"),
-            DataType::Interval(_) => todo!("Interval type not supported"),
             DataType::RunEndEncoded(_, _) => todo!("RunEndEncoded type not supported"),
             DataType::BinaryView => todo!("BinaryView type not supported"),
             DataType::Utf8View => todo!("Utf8View type not supported"),
@@ -316,6 +373,7 @@ impl From<&FieldRef> for ArrowJavaField {
             data_type,
             nullable,
             children,
+            metadata: Some(field.metadata().clone()),
         }
     }
 }
@@ -377,40 +435,48 @@ impl From<&ArrowJavaField> for Field {
                     }
                 }
             }
-            ArrowJavaType::FloatingPoint { precision } => match precision.as_str() {
-                "HALF" => DataType::Float16,
-                "SINGLE" => DataType::Float32,
-                "DOUBLE" => DataType::Float64,
-                other => panic!("FloatingPoint has an invalid precision = {}", other),
-            },
+            ArrowJavaType::FloatingPoint { precision } => {
+                match precision.to_ascii_uppercase().as_str() {
+                    "HALF" => DataType::Float16,
+                    "SINGLE" => DataType::Float32,
+                    "DOUBLE" => DataType::Float64,
+                    other => panic!("FloatingPoint has an invalid precision = {}", other),
+                }
+            }
             ArrowJavaType::Utf8 => DataType::Utf8,
             ArrowJavaType::LargeUtf8 => DataType::LargeUtf8,
             ArrowJavaType::Binary => DataType::Binary,
             ArrowJavaType::LargeBinary => DataType::LargeBinary,
-            ArrowJavaType::FixedSizeBinary { bit_width } => {
-                DataType::FixedSizeBinary(*bit_width)
+            ArrowJavaType::FixedSizeBinary { byte_width } => {
+                DataType::FixedSizeBinary(*byte_width)
             }
             ArrowJavaType::Bool => DataType::Boolean,
             ArrowJavaType::Decimal {
                 precision,
                 scale,
                 bit_width,
-            } if *bit_width > 128 => DataType::Decimal256(*precision, *scale),
+            } if *bit_width <= 32 => DataType::Decimal32(*precision, *scale),
+            ArrowJavaType::Decimal {
+                precision,
+                scale,
+                bit_width,
+            } if *bit_width <= 64 => DataType::Decimal64(*precision, *scale),
+            ArrowJavaType::Decimal {
+                precision,
+                scale,
+                bit_width,
+            } if *bit_width <= 128 => DataType::Decimal128(*precision, *scale),
             ArrowJavaType::Decimal {
                 precision,
                 scale,
                 bit_width: _,
-            } => DataType::Decimal128(*precision, *scale),
-            ArrowJavaType::Date { unit } if unit == "DAY" => DataType::Date32,
+            } => DataType::Decimal256(*precision, *scale),
+            ArrowJavaType::Date { unit } if unit.eq_ignore_ascii_case("DAY") => {
+                DataType::Date32
+            }
             ArrowJavaType::Date { unit: _ } => DataType::Date64,
             ArrowJavaType::Time { bit_width, unit } => {
-                let time_unit = match unit.as_str() {
-                    "SECOND" => TimeUnit::Second,
-                    "MILLISECOND" => TimeUnit::Millisecond,
-                    "MICROSECOND" => TimeUnit::Microsecond,
-                    "NANOSECOND" => TimeUnit::Nanosecond,
-                    other => panic!("TimeUnit has an invalid value = {}", other),
-                };
+                let time_unit = time_unit_from_java(unit);
                 match bit_width {
                     32 => DataType::Time32(time_unit),
                     64 => DataType::Time64(time_unit),
@@ -418,21 +484,20 @@ impl From<&ArrowJavaField> for Field {
                 }
             }
             ArrowJavaType::Timestamp { unit, timezone } => {
-                let time_unit = match unit.as_str() {
-                    "SECOND" => TimeUnit::Second,
-                    "MILLISECOND" => TimeUnit::Millisecond,
-                    "MICROSECOND" => TimeUnit::Microsecond,
-                    "NANOSECOND" => TimeUnit::Nanosecond,
-                    other => panic!("TimeUnit has an invalid value = {}", other),
-                };
+                let time_unit = time_unit_from_java(unit);
                 let timezone: Option<Arc<str>> =
                     timezone.as_ref().map(|t| Arc::from(t.as_str()));
                 DataType::Timestamp(time_unit, timezone)
             }
-            ArrowJavaType::Interval => todo!("Interval type not supported"),
-            ArrowJavaType::Duration => todo!("Duration type not supported"),
+            ArrowJavaType::Interval { unit } => {
+                DataType::Interval(interval_unit_from_java(unit))
+            }
+            ArrowJavaType::Duration { unit } => {
+                DataType::Duration(time_unit_from_java(unit))
+            }
         };
         Field::new(field.name.clone(), data_type, field.nullable)
+            .with_metadata(field.metadata.clone().unwrap_or_default())
     }
 }
 
@@ -444,7 +509,7 @@ impl From<SchemaRef> for ArrowJavaSchema {
                 .iter()
                 .map(ArrowJavaField::from)
                 .collect::<Vec<_>>(),
-            metadata: None,
+            metadata: Some(schema.metadata().clone()),
         }
     }
 }
@@ -457,19 +522,20 @@ impl From<Schema> for ArrowJavaSchema {
                 .iter()
                 .map(ArrowJavaField::from)
                 .collect::<Vec<_>>(),
-            metadata: None,
+            metadata: Some(schema.metadata().clone()),
         }
     }
 }
 
 impl From<ArrowJavaSchema> for SchemaRef {
     fn from(schema: ArrowJavaSchema) -> Self {
-        SchemaRef::new(Schema::new(
+        SchemaRef::new(Schema::new_with_metadata(
             schema
                 .fields
                 .iter()
                 .map(|f| f.into())
                 .collect::<Vec<Field>>(),
+            schema.metadata.unwrap_or_default(),
         ))
     }
 }
@@ -525,4 +591,163 @@ fn normalize_schema_for_spark(schema: &Schema) -> Schema {
 pub fn schema_to_metadata_str(schema: &Schema) -> String {
     let normalized = Arc::new(normalize_schema_for_spark(schema.as_ref()));
     serde_json::to_string(&ArrowJavaSchema::from(normalized)).unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_arrow_java_schema_preserves_metadata_and_java_types() {
+        let schema_json = r#"
+        {
+          "fields": [
+            {
+              "name": "id",
+              "nullable": false,
+              "type": {"name": "int", "isSigned": true, "bitWidth": 32},
+              "children": [],
+              "metadata": {"spark_comment": "primary key"}
+            },
+            {
+              "name": "values",
+              "nullable": true,
+              "type": {"name": "list"},
+              "children": [
+                {
+                  "name": "element",
+                  "nullable": true,
+                  "type": {"name": "utf8"},
+                  "children": [],
+                  "metadata": {"child": "meta"}
+                }
+              ],
+              "metadata": {}
+            },
+            {
+              "name": "attrs",
+              "nullable": true,
+              "type": {"name": "map", "keysSorted": false},
+              "children": [
+                {
+                  "name": "entries",
+                  "nullable": false,
+                  "type": {"name": "struct"},
+                  "children": [
+                    {
+                      "name": "key",
+                      "nullable": false,
+                      "type": {"name": "utf8"},
+                      "children": []
+                    },
+                    {
+                      "name": "value",
+                      "nullable": true,
+                      "type": {"name": "int", "isSigned": true, "bitWidth": 64},
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "name": "duration_col",
+              "nullable": true,
+              "type": {"name": "duration", "unit": "MICROSECOND"},
+              "children": []
+            },
+            {
+              "name": "interval_col",
+              "nullable": true,
+              "type": {"name": "interval", "unit": "YEAR_MONTH"},
+              "children": []
+            },
+            {
+              "name": "timestamp_ntz",
+              "nullable": true,
+              "type": {"name": "timestamp", "unit": "MICROSECOND", "timezone": null},
+              "children": []
+            },
+            {
+              "name": "fixed",
+              "nullable": true,
+              "type": {"name": "fixedsizebinary", "byteWidth": 16},
+              "children": []
+            }
+          ],
+          "metadata": {"schema_key": "schema_value"}
+        }
+        "#;
+
+        let schema = schema_from_metadata_str(schema_json);
+
+        assert_eq!(schema.metadata().get("schema_key").unwrap(), "schema_value");
+        assert_eq!(
+            schema.field_with_name("id").unwrap().data_type(),
+            &DataType::Int32
+        );
+        assert_eq!(
+            schema
+                .field_with_name("id")
+                .unwrap()
+                .metadata()
+                .get("spark_comment")
+                .unwrap(),
+            "primary key"
+        );
+        assert!(matches!(
+            schema.field_with_name("values").unwrap().data_type(),
+            DataType::List(_)
+        ));
+        assert!(matches!(
+            schema.field_with_name("attrs").unwrap().data_type(),
+            DataType::Map(_, false)
+        ));
+        assert_eq!(
+            schema.field_with_name("duration_col").unwrap().data_type(),
+            &DataType::Duration(TimeUnit::Microsecond)
+        );
+        assert_eq!(
+            schema.field_with_name("interval_col").unwrap().data_type(),
+            &DataType::Interval(IntervalUnit::YearMonth)
+        );
+        assert_eq!(
+            schema.field_with_name("timestamp_ntz").unwrap().data_type(),
+            &DataType::Timestamp(TimeUnit::Microsecond, None)
+        );
+        assert_eq!(
+            schema.field_with_name("fixed").unwrap().data_type(),
+            &DataType::FixedSizeBinary(16)
+        );
+    }
+
+    #[test]
+    fn rust_schema_round_trips_through_arrow_java_json() {
+        let schema = Schema::new_with_metadata(
+            vec![
+                Field::new(
+                    "duration_col",
+                    DataType::Duration(TimeUnit::Microsecond),
+                    true,
+                )
+                .with_metadata(HashMap::from([(
+                    "spark_comment".to_string(),
+                    "duration field".to_string(),
+                )])),
+                Field::new(
+                    "interval_col",
+                    DataType::Interval(IntervalUnit::YearMonth),
+                    true,
+                ),
+                Field::new("decimal_col", DataType::Decimal64(12, 3), true),
+                Field::new("fixed", DataType::FixedSizeBinary(8), true),
+            ],
+            HashMap::from([("schema_key".to_string(), "schema_value".to_string())]),
+        );
+
+        let json = schema_to_metadata_str(&schema);
+        let parsed = schema_from_metadata_str(&json);
+
+        assert_eq!(parsed.as_ref(), &schema);
+    }
 }
