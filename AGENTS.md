@@ -99,8 +99,8 @@ cargo -q test --package lakesoul-io
 cargo -q test --package lakesoul-metadata
 
 # Lint
+cargo fmt --all --check
 cargo clippy
-cargo fmt --check
 
 # Build the C FFI libraries (used by Java JNI)
 cargo -q build --release -p lakesoul-io-c
