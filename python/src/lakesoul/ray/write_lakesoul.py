@@ -47,7 +47,7 @@ class LakeSoulDatasink(Datasink):
         table_name: str,
         *,
         namespace: str = "default",
-        format: str = "parquet",
+        format: Literal["parquet", "vortex"] = "parquet",
         batch_size: int = 8192,
         thread_num: int | None = 1,
         max_file_size: int | None = None,
@@ -60,7 +60,7 @@ class LakeSoulDatasink(Datasink):
         self._table = _load_table_write_config(
             table_name=table_name,
             namespace=namespace,
-            format=format,  # type: ignore
+            format=format,
         )
         self._batch_size = batch_size
         self._thread_num = thread_num
@@ -162,7 +162,7 @@ def write_lakesoul(
     table_name: str,
     *,
     namespace: str = "default",
-    format: str = "parquet",
+    format: Literal["parquet", "vortex"] = "parquet",
     batch_size: int = 8192,
     thread_num: int | None = 1,
     max_file_size: int | None = None,
@@ -202,18 +202,13 @@ def _load_table_write_config(
     *,
     table_name: str,
     namespace: str,
-    format: Literal["parquet", "vortex"] | None,
+    format: Literal["parquet", "vortex"],
 ) -> _TableWriteConfig:
     table_info = get_table_info_by_name(table_name, namespace)
     partition_by, primary_keys = get_partition_and_pk_cols(table_info)
     properties = _parse_table_properties(table_info.properties)
 
-    raw_format = (
-        format
-        or properties.get("file_format")
-        or properties.get("physical_format")
-        or "parquet"
-    )
+    raw_format = format
     if not isinstance(raw_format, str):
         raise ValueError(f"invalid LakeSoul table file format: {raw_format!r}")
     configured_format = raw_format.lower()
@@ -240,7 +235,7 @@ def _load_table_write_config(
         primary_keys=tuple(primary_keys),
         partition_by=tuple(partition_by),
         hash_bucket_num=hash_bucket_num,
-        format=configured_format,  # type: ignore[arg-type]
+        format=configured_format,  # type: ignore
     )
 
 
@@ -266,6 +261,3 @@ def _validate_dataset_schema(dataset: Dataset, expected: pa.Schema) -> None:
             "Ray Dataset schema does not match LakeSoul table schema:\n"
             f"expected: {expected}\nactual: {arrow_schema}"
         )
-
-
-Dataset.write_lakesoul = write_lakesoul  # type: ignore[attr-defined]
