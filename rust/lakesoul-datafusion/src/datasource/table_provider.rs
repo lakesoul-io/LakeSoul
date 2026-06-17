@@ -642,6 +642,17 @@ impl LakeSoulTableProvider {
             })
             .collect()
     }
+
+    fn build_partitioned_exec(
+        partitioned_execs: Vec<Arc<dyn ExecutionPlan>>,
+        empty_schema: SchemaRef,
+    ) -> DFResult<Arc<dyn ExecutionPlan>> {
+        match partitioned_execs.len() {
+            0 => Ok(Arc::new(EmptyExec::new(empty_schema))),
+            1 => Ok(partitioned_execs[0].clone()),
+            _ => UnionExec::try_new(partitioned_execs),
+        }
+    }
 }
 
 #[async_trait]
@@ -865,11 +876,7 @@ impl TableProvider for LakeSoulTableProvider {
             partitioned_execs.push(merge_exec);
         }
 
-        let exec = if partitioned_execs.len() > 1 {
-            UnionExec::try_new(partitioned_execs)?
-        } else {
-            partitioned_execs.first().unwrap().clone()
-        };
+        let exec = Self::build_partitioned_exec(partitioned_execs, scan_schema.clone())?;
 
         let cdc_column = self.io_config.cdc_column();
         let exec = if !cdc_column.is_empty() {
@@ -1108,5 +1115,16 @@ mod tests {
                 .as_ref(),
             "part-002.parquet"
         );
+    }
+
+    #[test]
+    fn build_partitioned_exec_returns_empty_exec_for_empty_partitions() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]));
+
+        let exec = LakeSoulTableProvider::build_partitioned_exec(vec![], schema.clone())
+            .unwrap();
+
+        assert!(exec.as_any().is::<EmptyExec>());
+        assert_eq!(exec.schema(), schema);
     }
 }
