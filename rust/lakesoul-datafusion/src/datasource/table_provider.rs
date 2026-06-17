@@ -653,6 +653,13 @@ impl LakeSoulTableProvider {
             _ => UnionExec::try_new(partitioned_execs),
         }
     }
+
+    fn empty_partitioned_exec_schema(
+        _scan_schema: SchemaRef,
+        merged_schema: SchemaRef,
+    ) -> SchemaRef {
+        merged_schema
+    }
 }
 
 #[async_trait]
@@ -876,7 +883,11 @@ impl TableProvider for LakeSoulTableProvider {
             partitioned_execs.push(merge_exec);
         }
 
-        let exec = Self::build_partitioned_exec(partitioned_execs, scan_schema.clone())?;
+        let empty_exec_schema = Self::empty_partitioned_exec_schema(
+            scan_schema.clone(),
+            merged_schema.clone(),
+        );
+        let exec = Self::build_partitioned_exec(partitioned_execs, empty_exec_schema)?;
 
         let cdc_column = self.io_config.cdc_column();
         let exec = if !cdc_column.is_empty() {
@@ -1126,5 +1137,25 @@ mod tests {
 
         assert!(exec.as_any().is::<EmptyExec>());
         assert_eq!(exec.schema(), schema);
+    }
+
+    #[test]
+    fn build_empty_partitioned_exec_preserves_cdc_column_for_filtering() {
+        let scan_schema =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]));
+        let merged_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, true),
+            Field::new("op", DataType::Utf8, true),
+        ]));
+
+        let empty_schema = LakeSoulTableProvider::empty_partitioned_exec_schema(
+            scan_schema,
+            merged_schema.clone(),
+        );
+        let exec =
+            LakeSoulTableProvider::build_partitioned_exec(vec![], empty_schema).unwrap();
+
+        assert!(exec.schema().field_with_name("op").is_ok());
+        assert_eq!(exec.schema(), merged_schema);
     }
 }
