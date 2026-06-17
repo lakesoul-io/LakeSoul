@@ -5,7 +5,7 @@
 //! The [`datafusion::datasource::TableProvider`] implementation for LakeSoul table.
 
 use std::any::Any;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::env;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -660,6 +660,30 @@ impl LakeSoulTableProvider {
     ) -> SchemaRef {
         merged_schema
     }
+
+    fn merged_schema_with_input_nullability(
+        merged_schema: SchemaRef,
+        inputs: &[Arc<dyn ExecutionPlan>],
+    ) -> SchemaRef {
+        Arc::new(Schema::new(
+            merged_schema
+                .fields()
+                .iter()
+                .map(|field| {
+                    Field::new(
+                        field.name(),
+                        field.data_type().clone(),
+                        field.is_nullable()
+                            | inputs.iter().any(|input| {
+                                input.schema().column_with_name(field.name()).is_none_or(
+                                    |(_, input_field)| input_field.is_nullable(),
+                                )
+                            }),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        ))
+    }
 }
 
 #[async_trait]
@@ -826,7 +850,7 @@ impl TableProvider for LakeSoulTableProvider {
                 (Vec<Arc<dyn ExecutionPlan>>, Vec<String>),
             ),
         > = HashMap::new();
-        let mut column_nullable = HashSet::<String>::new();
+        let mut all_inputs = Vec::<Arc<dyn ExecutionPlan>>::new();
 
         for config in flatten_configs {
             let (partition_desc, partition_values) =
@@ -836,11 +860,7 @@ impl TableProvider for LakeSoulTableProvider {
             let partition_values = Arc::new(partition_values);
             let file_path = config.file_groups[0].files()[0].path().to_string();
             let input = DataSourceExec::from_data_source(config);
-            for field in input.schema().fields() {
-                if field.is_nullable() {
-                    column_nullable.insert(field.name().clone());
-                }
-            }
+            all_inputs.push(input.clone());
 
             if let Some((_, inputs)) = inputs_map.get_mut(&partition_desc) {
                 inputs.0.push(input);
@@ -853,19 +873,8 @@ impl TableProvider for LakeSoulTableProvider {
             }
         }
 
-        let merged_schema = Arc::new(Schema::new(
-            merged_schema
-                .fields()
-                .iter()
-                .map(|field| {
-                    Field::new(
-                        field.name(),
-                        field.data_type().clone(),
-                        field.is_nullable() | column_nullable.contains(field.name()),
-                    )
-                })
-                .collect::<Vec<_>>(),
-        ));
+        let merged_schema =
+            Self::merged_schema_with_input_nullability(merged_schema, &all_inputs);
 
         let mut partitioned_execs = Vec::new();
         for (_, (partition_values, (inputs, file_paths))) in inputs_map {
@@ -1157,5 +1166,63 @@ mod tests {
 
         assert!(exec.schema().field_with_name("op").is_ok());
         assert_eq!(exec.schema(), merged_schema);
+    }
+
+    #[test]
+    fn partitioned_merge_execs_share_nullable_schema_after_evolution() {
+        let merged_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("evolved", DataType::Utf8, false),
+        ]));
+        let old_file_schema =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let new_file_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("evolved", DataType::Utf8, false),
+        ]));
+        let old_input =
+            Arc::new(EmptyExec::new(old_file_schema)) as Arc<dyn ExecutionPlan>;
+        let new_input =
+            Arc::new(EmptyExec::new(new_file_schema)) as Arc<dyn ExecutionPlan>;
+        let merged_schema = LakeSoulTableProvider::merged_schema_with_input_nullability(
+            merged_schema,
+            &[old_input.clone(), new_input.clone()],
+        );
+
+        let old_partition = Arc::new(
+            lakesoul_io::physical_plan::MergeParquetExec::new_with_inputs(
+                merged_schema.clone(),
+                vec![old_input],
+                LakeSoulIOConfig::default(),
+                Arc::new(HashMap::new()),
+            )
+            .unwrap(),
+        ) as Arc<dyn ExecutionPlan>;
+        let new_partition = Arc::new(
+            lakesoul_io::physical_plan::MergeParquetExec::new_with_inputs(
+                merged_schema,
+                vec![new_input],
+                LakeSoulIOConfig::default(),
+                Arc::new(HashMap::new()),
+            )
+            .unwrap(),
+        ) as Arc<dyn ExecutionPlan>;
+
+        assert!(
+            old_partition
+                .schema()
+                .field_with_name("evolved")
+                .unwrap()
+                .is_nullable()
+        );
+        assert!(
+            new_partition
+                .schema()
+                .field_with_name("evolved")
+                .unwrap()
+                .is_nullable(),
+            "all partition execs must advertise the globally nullable schema"
+        );
+        assert_eq!(old_partition.schema(), new_partition.schema());
     }
 }
