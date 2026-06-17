@@ -24,6 +24,8 @@ mod benchmarks;
 
 #[cfg(test)]
 mod catalog_tests;
+#[cfg(test)]
+mod vortex_catalog_tests;
 
 // in cargo test, this executed only once
 #[ctor::ctor]

@@ -19,8 +19,9 @@ use datafusion::{
     execution::context::{SessionContext, SessionState},
     logical_expr::LogicalPlanBuilder,
 };
-use helpers::case_fold_table_name;
+use helpers::{case_fold_table_name, create_io_config_builder_from_table_info};
 use lakesoul_io::config::OPTION_KEY_MEM_LIMIT;
+use lakesoul_io::file_format::LakeSoulFormatRegistry;
 use lakesoul_io::session::create_session_context_with_planner;
 use lakesoul_io::writer::async_writer::{
     AsyncBatchWriter, AsyncSendableMutableLakeSoulWriter, FlushOutput,
@@ -298,6 +299,15 @@ impl LakeSoulTable {
         &self,
         pushdown_filters: bool,
     ) -> Result<Arc<dyn TableProvider>> {
+        let io_config = create_io_config_builder_from_table_info(
+            self.table_info(),
+            HashMap::new(),
+            HashMap::new(),
+        )?
+        .build();
+        let format_registry =
+            Arc::new(LakeSoulFormatRegistry::new(io_config.clone(), false)?);
+
         Ok(Arc::new(LakeSoulTableProvider {
             listing_options: LakeSoulMetaDataParquetFormat::default_listing_options()
                 .await?,
@@ -310,6 +320,8 @@ impl LakeSoulTable {
             primary_keys: self.primary_keys().to_vec(),
             range_partitions: self.range_partitions().to_vec(),
             pushdown_filters,
+            io_config,
+            format_registry,
         }))
     }
 

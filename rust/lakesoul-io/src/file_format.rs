@@ -474,7 +474,13 @@ pub async fn flatten_file_scan_config(
                                 SchemaRef::new(builder.finish())
                             };
                             debug!("file schema:{}", file_schema);
-                            let statistics = format
+                            let cols = conf.table_partition_cols().clone();
+                            debug!("partition cols: {:?}", cols);
+                            debug!("flatten: file_schema: {}", file_schema);
+                            // only file schema
+                            let table_schema =
+                                TableSchema::new(file_schema.clone(), cols);
+                            let file_statistics = format
                                 .infer_stats(
                                     state,
                                     &store,
@@ -482,17 +488,18 @@ pub async fn flatten_file_scan_config(
                                     &file.object_meta,
                                 )
                                 .await?;
-                            let projection_indices = compute_project_column_indices(
-                                file_schema.clone(),
+                            let statistics =
+                                table_statistics(file_statistics, &table_schema);
+                            let physical_target_schema = strip_partition_columns(
                                 target_schema.clone(),
+                                partition_schema.clone(),
+                            );
+                            let projection_indices = compute_project_column_indices(
+                                table_schema.file_schema().clone(),
+                                physical_target_schema,
                                 primary_keys,
                                 cdc_column,
                             );
-                            let cols = conf.table_partition_cols().clone();
-                            debug!("partition cols: {:?}", cols);
-                            debug!("flatten: file_schema: {}", file_schema);
-                            // only file schema
-                            let table_schema = TableSchema::new(file_schema, cols);
                             let mut parquet_source = format
                                 .file_source(table_schema)
                                 .as_any()
@@ -582,24 +589,30 @@ pub async fn flatten_file_scan_config_for_format(
                                 partition_schema.clone(),
                             );
                             debug!("file schema:{}", file_schema);
-                            let statistics = format
-                                .infer_stats(
-                                    state,
-                                    &store,
-                                    file_schema.clone(),
-                                    &file.object_meta,
-                                )
-                                .await?;
-                            let projection_indices = compute_project_column_indices(
-                                file_schema.clone(),
-                                target_schema.clone(),
-                                primary_keys,
-                                cdc_column,
-                            );
                             let cols = conf.table_partition_cols().clone();
                             debug!("partition cols: {:?}", cols);
                             debug!("flatten: file_schema: {}", file_schema);
                             let table_schema = TableSchema::new(file_schema, cols);
+                            let file_statistics = format
+                                .infer_stats(
+                                    state,
+                                    &store,
+                                    table_schema.file_schema().clone(),
+                                    &file.object_meta,
+                                )
+                                .await?;
+                            let statistics =
+                                table_statistics(file_statistics, &table_schema);
+                            let physical_target_schema = strip_partition_columns(
+                                target_schema.clone(),
+                                partition_schema.clone(),
+                            );
+                            let projection_indices = compute_project_column_indices(
+                                table_schema.file_schema().clone(),
+                                physical_target_schema,
+                                primary_keys,
+                                cdc_column,
+                            );
                             let mut source = format.file_source(table_schema);
                             source = adapt_file_source_for_single_file(
                                 source, &format, &conf,
@@ -663,6 +676,23 @@ fn strip_partition_columns(
         }
     }
     SchemaRef::new(builder.finish())
+}
+
+fn table_statistics(
+    file_statistics: Statistics,
+    table_schema: &TableSchema,
+) -> Statistics {
+    let mut statistics = Statistics::new_unknown(table_schema.table_schema());
+    statistics.num_rows = file_statistics.num_rows;
+    statistics.total_byte_size = file_statistics.total_byte_size;
+    for (idx, column_statistics) in
+        file_statistics.column_statistics.into_iter().enumerate()
+    {
+        if idx < statistics.column_statistics.len() {
+            statistics.column_statistics[idx] = column_statistics;
+        }
+    }
+    statistics
 }
 
 fn adapt_file_source_for_single_file(

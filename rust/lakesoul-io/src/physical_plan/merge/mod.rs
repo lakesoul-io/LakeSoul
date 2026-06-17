@@ -57,6 +57,37 @@ pub struct MergeParquetExec {
 }
 
 impl MergeParquetExec {
+    /// Align the advertised merged schema with the values this plan can emit.
+    ///
+    /// Schema evolution can leave older files without a newly requested column.
+    /// Default-column projection fills those missing fields with defaults or nulls,
+    /// so any field missing from any input must be reported as nullable.
+    fn merged_schema_with_input_nullability(
+        merged_schema: SchemaRef,
+        inputs: &[Arc<dyn ExecutionPlan>],
+    ) -> SchemaRef {
+        SchemaRef::new(Schema::new(
+            merged_schema
+                .fields()
+                .iter()
+                .map(|field| {
+                    Field::new(
+                        field.name(),
+                        field.data_type().clone(),
+                        field.is_nullable()
+                            | inputs.iter().any(|plan| {
+                                // If an input is missing a requested field, the default-column
+                                // projection will synthesize nulls for that input.
+                                plan.schema().column_with_name(field.name()).is_none_or(
+                                    |(_, plan_field)| plan_field.is_nullable(),
+                                )
+                            }),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        ))
+    }
+
     /// Create a new Parquet reader execution plan provided file list and schema.
     pub fn new(
         merged_schema: SchemaRef,
@@ -72,29 +103,8 @@ impl MergeParquetExec {
         }
         // Compute Nullability
         // O(nml), n = number of schema fields, m = number of file schema fields, l = number of files
-        let merged_schema = SchemaRef::new(Schema::new(
-            merged_schema
-                .fields()
-                .iter()
-                .map(|field| {
-                    Field::new(
-                        field.name(),
-                        field.data_type().clone(),
-                        field.is_nullable()
-                            | inputs.iter().any(|plan| {
-                                // see all inputs
-                                if let Some((_, plan_field)) =
-                                    plan.schema().column_with_name(field.name())
-                                {
-                                    plan_field.is_nullable()
-                                } else {
-                                    true
-                                }
-                            }),
-                    )
-                })
-                .collect::<Vec<_>>(),
-        ));
+        let merged_schema =
+            Self::merged_schema_with_input_nullability(merged_schema, &inputs);
 
         let config = io_config.clone();
         let primary_keys = Arc::new(io_config.primary_keys);
@@ -129,6 +139,7 @@ impl MergeParquetExec {
             "MergeParquetExec::new_with_inputs: {:?}, {:?}, {:?}",
             schema, io_config, default_column_value
         );
+        let schema = Self::merged_schema_with_input_nullability(schema, &inputs);
         let config = io_config.clone();
         let primary_keys = Arc::new(io_config.primary_keys);
         let merge_operators = Arc::new(io_config.merge_operators);
@@ -430,4 +441,54 @@ pub async fn prune_filter_and_execute(
     let df = df.select(cols)?;
     // return a stream
     Ok(df.execute_stream().await?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use arrow_schema::{DataType, Field, Schema};
+    use datafusion::physical_plan::empty::EmptyExec;
+
+    use crate::config::LakeSoulIOConfigBuilder;
+
+    #[test]
+    fn new_with_inputs_marks_missing_requested_fields_nullable() {
+        // Simulate schema evolution: the old file was written before `evolved`
+        // existed, while the table/requested schema now includes it.
+        let merged_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("evolved", DataType::Utf8, false),
+        ]));
+        let old_file_schema =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let new_file_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("evolved", DataType::Utf8, false),
+        ]));
+        let inputs = vec![
+            Arc::new(EmptyExec::new(old_file_schema)) as Arc<dyn ExecutionPlan>,
+            Arc::new(EmptyExec::new(new_file_schema)) as Arc<dyn ExecutionPlan>,
+        ];
+
+        let exec = MergeParquetExec::new_with_inputs(
+            merged_schema,
+            inputs,
+            LakeSoulIOConfigBuilder::new().build(),
+            Arc::new(HashMap::new()),
+        )
+        .unwrap();
+
+        assert!(
+            exec.schema()
+                .field_with_name("evolved")
+                .unwrap()
+                .is_nullable(),
+            "fields missing from any input schema must be nullable because default-column projection synthesizes nulls"
+        );
+        assert!(
+            !exec.schema().field_with_name("id").unwrap().is_nullable(),
+            "fields present and non-nullable in every input should keep their nullability"
+        );
+    }
 }

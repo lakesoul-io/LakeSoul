@@ -765,6 +765,74 @@ async fn test_read_multiple_range_partitions() {
     assert_eq!(ids, vec![1, 2, 101, 102]);
 }
 
+#[test_log::test(tokio::test)]
+async fn test_read_multiple_range_partitions_vortex() {
+    let dir = tempdir().unwrap();
+
+    let schema = SchemaRef::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("value", DataType::Utf8, true),
+    ]));
+    // Write two partitions
+    for (range_val, id_offset) in [("range1", 0_i64), ("range2", 100_i64)] {
+        let file_path = dir
+            .path()
+            .join(format!("range={}", range_val))
+            .join(format!("part-{}.vortex", range_val));
+        std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from_iter_values([1 + id_offset, 2 + id_offset])),
+                Arc::new(StringArray::from_iter_values(["x", "y"])),
+            ],
+        )
+        .unwrap();
+
+        write_batch(file_path.into_os_string().into_string().unwrap(), batch).await;
+    }
+
+    // Read both partitions
+    let mut read_schema_builder = SchemaBuilder::from(schema.as_ref());
+    read_schema_builder.push(Field::new("range", DataType::Utf8, true));
+
+    let files = vec![
+        dir.path()
+            .join("range=range1")
+            .join("part-range1.vortex")
+            .into_os_string()
+            .into_string()
+            .unwrap(),
+        dir.path()
+            .join("range=range2")
+            .join("part-range2.vortex")
+            .into_os_string()
+            .into_string()
+            .unwrap(),
+    ];
+
+    let reader_conf = LakeSoulIOConfig::builder()
+        .with_files(files)
+        .with_schema(Arc::new(read_schema_builder.finish()))
+        .with_range_partitions(vec!["range".to_string()])
+        .with_default_column_value("range", "range1")
+        .with_hash_bucket_num("1")
+        .with_option(OPTION_KEY_IS_COMPACTED, "false")
+        .with_option(OPTION_KEY_SKIP_MERGE_ON_READ, "false")
+        .build();
+
+    let mut reader = LakeSoulReader::new(reader_conf).unwrap();
+    reader.start().await.unwrap();
+
+    let mut ids = vec![];
+    while let Some(Ok(batch)) = reader.next_rb().await {
+        ids.extend(int64_values(&[batch], "id"));
+    }
+    ids.sort_unstable();
+    assert_eq!(ids, vec![1, 2, 101, 102]);
+}
+
 // --- Vortex-only tests for feature parity with Parquet ---
 
 #[test_log::test(tokio::test)]

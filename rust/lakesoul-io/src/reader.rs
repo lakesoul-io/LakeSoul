@@ -9,12 +9,14 @@
 //! features like filtering, partitioning, and optimized reading with primary keys.
 //!
 //! # Examples
-//! ```rust
-//! use lakesoul_io::lakesoul_reader::LakeSoulReader;
-//! use lakesoul_io::lakesoul_io_config::LakeSoulIOConfigBuilder;
+//! ```no_run
+//! # fn main() -> lakesoul_io::Result<()> {
+//! # tokio_test::block_on(async {
+//! use lakesoul_io::config::LakeSoulIOConfig;
+//! use lakesoul_io::reader::LakeSoulReader;
 //!
-//! let config = LakeSoulIOConfigBuilder::new()
-//!     .with_files(vec!["path/to/file.parquet"])
+//! let config = LakeSoulIOConfig::builder()
+//!     .with_file("path/to/file.parquet")
 //!     .with_thread_num(1)
 //!     .with_batch_size(256)
 //!     .build();
@@ -24,8 +26,12 @@
 //!
 //! while let Some(batch) = reader.next_rb().await {
 //!     let record_batch = batch?;
-//!     // Process the record batch
+//!     let _row_count = record_batch.num_rows();
 //! }
+//! # Ok::<(), rootcause::Report>(())
+//! # })?;
+//! # Ok(())
+//! # }
 //! ```
 
 use std::sync::Arc;
@@ -66,13 +72,14 @@ use crate::{
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```no_run
+/// # fn main() -> lakesoul_io::Result<()> {
 /// # tokio_test::block_on(async {
-/// use lakesoul_io::lakesoul_reader::LakeSoulReader;
-/// use lakesoul_io::lakesoul_io_config::LakeSoulIOConfigBuilder;
+/// use lakesoul_io::config::LakeSoulIOConfig;
+/// use lakesoul_io::reader::LakeSoulReader;
 ///
-/// let config = LakeSoulIOConfigBuilder::new()
-///     .with_files(vec!["path/to/file.parquet"])
+/// let config = LakeSoulIOConfig::builder()
+///     .with_file("path/to/file.parquet")
 ///     .with_thread_num(1)
 ///     .with_batch_size(256)
 ///     .build();
@@ -82,9 +89,12 @@ use crate::{
 ///
 /// while let Some(batch) = reader.next_rb().await {
 ///     let record_batch = batch?;
-///     // Process the record batch
+///     let _row_count = record_batch.num_rows();
 /// }
-/// })
+/// # Ok::<(), rootcause::Report>(())
+/// # })?;
+/// # Ok(())
+/// # }
 /// ```
 pub struct LakeSoulReader {
     // not use `Arc` here
@@ -262,15 +272,21 @@ impl LakeSoulReader {
 ///
 /// # Examples
 ///
-/// ```rust
-/// use lakesoul_io::lakesoul_reader::SyncSendableMutableLakeSoulReader;
+/// ```ignore
+/// use lakesoul_io::config::LakeSoulIOConfig;
+/// use lakesoul_io::reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
 /// use tokio::runtime::Runtime;
 ///
-/// let runtime = Runtime::new()?;
-/// let mut reader = SyncSendableMutableLakeSoulReader::new(lake_soul_reader, runtime);
-/// reader.start_blocked()?;
+/// let runtime = Runtime::new().unwrap();
+/// let config = LakeSoulIOConfig::builder()
+///     .with_file("path/to/file.parquet")
+///     .build();
+/// let lake_soul_reader = LakeSoulReader::new(config).unwrap();
+/// let mut reader =
+///     SyncSendableMutableLakeSoulReader::new(lake_soul_reader, runtime);
+/// reader.start_blocked().unwrap();
 ///
-/// let (tx, rx) = std::sync::mpsc::channel(1);
+/// let (tx, rx) = std::sync::mpsc::channel();
 /// reader.next_rb_callback(Box::new(move |batch| {
 ///     tx.send(batch).unwrap();
 /// }));
