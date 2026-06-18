@@ -5,15 +5,18 @@
 from typing import Sequence
 from .const import DaoType
 from .native_client import query
+from lakesoul._lib._metadata import _NativeMetadataClient
 
 from .generated import entity_pb2
 
 
 def select_table_info_by_table_name(
-    table_name: str, namespace: str
+    table_name: str,
+    namespace: str,
+    client: _NativeMetadataClient | None = None,
 ) -> entity_pb2.TableInfo:
     wrapper = query(
-        DaoType.SelectTableInfoByTableNameAndNameSpace, [table_name, namespace]
+        DaoType.SelectTableInfoByTableNameAndNameSpace, [table_name, namespace], client
     )
     if wrapper:
         return wrapper.table_info[0]
@@ -22,24 +25,30 @@ def select_table_info_by_table_name(
 
 def get_partition_info_by_table_id(
     table_id: str,
+    client: _NativeMetadataClient | None = None,
 ) -> Sequence[entity_pb2.PartitionInfo]:
-    wrapper = query(DaoType.ListPartitionByTableId, [table_id])
+    wrapper = query(DaoType.ListPartitionByTableId, [table_id], client)
     if wrapper:
         return wrapper.partition_info
     return []
 
 
 def get_partition_info_by_table_id_and_desc(
-    table_id: str, desc: str
+    table_id: str,
+    desc: str,
+    client: _NativeMetadataClient | None = None,
 ) -> Sequence[entity_pb2.PartitionInfo]:
-    wrapper = query(DaoType.ListPartitionByTableIdAndDesc, [table_id, desc])
+    wrapper = query(DaoType.ListPartitionByTableIdAndDesc, [table_id, desc], client)
     if wrapper:
         return wrapper.partition_info
     return []
 
 
 def list_data_commit_info(
-    table_id: str, partition_desc: str, commit_id_list: Sequence[entity_pb2.Uuid]
+    table_id: str,
+    partition_desc: str,
+    commit_id_list: Sequence[entity_pb2.Uuid],
+    client: _NativeMetadataClient | None = None,
 ) -> Sequence[entity_pb2.DataCommitInfo]:
     joined_commit_id = ""
     for commit_id in commit_id_list:
@@ -47,7 +56,27 @@ def list_data_commit_info(
     wrapper = query(
         DaoType.ListDataCommitInfoByTableIdAndPartitionDescAndCommitList,
         [table_id, partition_desc, joined_commit_id],
+        client,
     )
     if wrapper:
         return wrapper.data_commit_info
+    return []
+
+
+def list_namespaces(
+    client: _NativeMetadataClient | None = None,
+) -> Sequence[entity_pb2.Namespace]:
+    wrapper = query(DaoType.ListNamespaces, [], client)
+    if wrapper:
+        return wrapper.namespace
+    return []
+
+
+def list_table_name_ids_by_namespace(
+    namespace: str,
+    client: _NativeMetadataClient | None = None,
+) -> Sequence[entity_pb2.TableNameId]:
+    wrapper = query(DaoType.ListTableNameByNamespace, [namespace], client)
+    if wrapper:
+        return wrapper.table_name_id
     return []

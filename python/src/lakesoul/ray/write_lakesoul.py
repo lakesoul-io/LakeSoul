@@ -54,13 +54,19 @@ class LakeSoulDatasink(Datasink):
         max_row_group_size: int = 250_000,
         object_store_configs: Mapping[str, str] | None = None,
         options: Mapping[str, str] | None = None,
+        table: Any | None = None,
     ) -> None:
         if format not in ["parquet", "vortex"]:
             raise ValueError(f"Unsupported format: {format}")
-        self._table = _load_table_write_config(
-            table_name=table_name,
-            namespace=namespace,
-            format=format,
+        self._table_handle = table
+        self._table = (
+            _load_table_write_config(
+                table_name=table_name,
+                namespace=namespace,
+                format=format,
+            )
+            if table is None
+            else table.write_config(format=format)
         )
         self._batch_size = batch_size
         self._thread_num = thread_num
@@ -126,11 +132,18 @@ class LakeSoulDatasink(Datasink):
             for file_info in task_result.files
         ]
         if files:
-            commit_data_files(
-                self._table.table_name,
-                self._table.namespace,
-                files,
-            )
+            if self._table_handle is None:
+                commit_data_files(
+                    self._table.table_name,
+                    self._table.namespace,
+                    files,
+                )
+            else:
+                self._table_handle.catalog._client.commit_data_files(
+                    self._table.table_name,
+                    self._table.namespace,
+                    files,
+                )
 
     def _writer_config(self) -> IOConfig:
         return IOConfig(
@@ -186,6 +199,49 @@ def write_lakesoul(
         max_row_group_size=max_row_group_size,
         object_store_configs=object_store_configs,
         options=options,
+    )
+    _validate_dataset_schema(dataset, datasink._table.schema)
+
+    remote_args = dict(ray_remote_args or {})
+    remote_args.setdefault("max_retries", 0)
+    dataset.write_datasink(
+        datasink,
+        ray_remote_args=remote_args,
+        concurrency=concurrency,
+    )
+
+
+def write_lakesoul_table(
+    dataset: Dataset,
+    table: Any,
+    *,
+    format: Literal["parquet", "vortex"] = "parquet",
+    batch_size: int = 8192,
+    thread_num: int | None = 1,
+    max_file_size: int | None = None,
+    max_row_group_size: int = 250_000,
+    object_store_options: Mapping[str, str] | None = None,
+    options: Mapping[str, str] | None = None,
+    ray_remote_args: Mapping[str, Any] | None = None,
+    concurrency: int | None = None,
+) -> None:
+    """Write a Ray Dataset through a LakeSoulTable handle."""
+    if not isinstance(dataset, Dataset):
+        raise TypeError("dataset must be a ray.data.Dataset")
+
+    datasink = LakeSoulDatasink(
+        table.name,
+        namespace=table.namespace,
+        format=format,
+        batch_size=batch_size,
+        thread_num=thread_num,
+        max_file_size=max_file_size,
+        max_row_group_size=max_row_group_size,
+        object_store_configs=table.catalog._merge_object_store_options(
+            object_store_options
+        ),
+        options=options,
+        table=table,
     )
     _validate_dataset_schema(dataset, datasink._table.schema)
 

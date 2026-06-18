@@ -7,7 +7,9 @@ from pathlib import Path
 
 import pyarrow
 
-from lakesoul._lib._metadata import _create_table, drop_table
+from lakesoul._lib._metadata import _NativeMetadataClient, _create_table
+from lakesoul._lib._metadata import drop_table as _drop_table
+from lakesoul.metadata.meta_ops import list_namespaces, list_tables
 
 
 def _partitions_to_metadata_str(
@@ -34,8 +36,9 @@ def create_table(
     properties: Mapping[str, str] | None = None,
     partitions: Mapping[str, list[str]] | None = None,
     domain: str = "public",
+    _client: _NativeMetadataClient | None = None,
 ) -> None:
-    _create_table(
+    args = (
         table_name,
         namespace,
         str(table_path),
@@ -44,6 +47,22 @@ def create_table(
         _partitions_to_metadata_str(table_schema, partitions),
         domain,
     )
+    if _client is None:
+        _create_table(*args)
+    else:
+        _client.create_table(*args)
 
 
-__all__ = ["create_table", "drop_table"]
+def drop_table(
+    table_name: str,
+    namespace: str = "default",
+    *,
+    _client: _NativeMetadataClient | None = None,
+) -> None:
+    if _client is None:
+        _drop_table(table_name, namespace)
+    else:
+        _client.drop_table(table_name, namespace)
+
+
+__all__ = ["create_table", "drop_table", "list_namespaces", "list_tables"]
