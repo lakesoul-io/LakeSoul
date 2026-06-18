@@ -134,6 +134,42 @@ def test_empty_write_does_not_commit(
     assert not committed
 
 
+def test_datasink_with_table_handle_commits_with_catalog_client(tmp_path: Path) -> None:
+    table = pa.table({"id": [1], "value": ["a"]})
+    committed: list[tuple[str, str, list[tuple[str, str, int, list[str]]]]] = []
+    table_config = write_module._TableWriteConfig(
+        table_name="target",
+        namespace="analytics",
+        path=(tmp_path / "table").as_uri(),
+        schema=table.schema,
+        primary_keys=(),
+        partition_by=(),
+        hash_bucket_num=1,
+        format="parquet",
+    )
+    table_handle = SimpleNamespace(
+        name="target",
+        namespace="analytics",
+        catalog=SimpleNamespace(
+            _client=SimpleNamespace(
+                commit_data_files=lambda table_name, namespace, files: committed.append(
+                    (table_name, namespace, files)
+                )
+            )
+        ),
+        write_config=lambda format: table_config,
+    )
+
+    datasink = LakeSoulDatasink("target", table=table_handle)
+    task_result = datasink.write([table], None)
+    datasink.on_write_complete(SimpleNamespace(write_returns=[task_result]))
+
+    assert len(committed) == 1
+    assert committed[0][0] == "target"
+    assert committed[0][1] == "analytics"
+    assert committed[0][2][0][2] > 0
+
+
 def test_dataset_method_is_registered() -> None:
     assert ray.data.Dataset.write_lakesoul is write_module.write_lakesoul  # type: ignore
 

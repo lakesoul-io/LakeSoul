@@ -13,6 +13,7 @@ import pyarrow.dataset as ds
 from typing_extensions import override
 
 from lakesoul._lib._dataset import one_reader
+from lakesoul._lib._metadata import _NativeMetadataClient
 
 from ..metadata.meta_ops import (
     LakeSoulScanPlanPartition,
@@ -36,6 +37,7 @@ class Dataset(ds.Dataset):
         retain_partition_columns: bool = False,
         namespace: str = "default",
         object_store_configs: dict[str, str] | None = None,
+        metadata_client: _NativeMetadataClient | None = None,
     ) -> None:
         """
         lakeSoul dataset backed by Arrow reader
@@ -45,6 +47,7 @@ class Dataset(ds.Dataset):
         self._thread_count = thread_count
         self._namespace = namespace
         self._retain_partition_columns = retain_partition_columns
+        self._metadata_client = metadata_client
 
         rank, world_size = self._check_rank_and_world_size(rank, world_size)
         self._rank = rank
@@ -75,11 +78,13 @@ class Dataset(ds.Dataset):
             table_name=self._lakesoul_table_name,
             partitions=self._partitions,
             namespace=self._namespace,
+            client=self._metadata_client,
         )
         target_schema, partition_schema = get_schemas_by_table_name(
             table_name=self._lakesoul_table_name,
             namespace=self._namespace,
             retain_partition_columns=self._retain_partition_columns,
+            client=self._metadata_client,
         )
         self._schema = target_schema
         self._partition_schema = partition_schema
@@ -838,6 +843,7 @@ def lakesoul_dataset(
     retain_partition_columns: bool = False,
     namespace: str = "default",
     object_store_configs: dict[str, str] | None = None,
+    metadata_client: _NativeMetadataClient | None = None,
 ) -> Dataset:
     dataset = Dataset(
         table_name,
@@ -849,5 +855,6 @@ def lakesoul_dataset(
         retain_partition_columns=retain_partition_columns,
         namespace=namespace,
         object_store_configs=object_store_configs,
+        metadata_client=metadata_client,
     )
     return dataset

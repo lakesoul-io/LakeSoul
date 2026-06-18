@@ -14,14 +14,19 @@ import pyarrow
 from .dao import (
     get_partition_info_by_table_id,
     get_partition_info_by_table_id_and_desc,
+    list_namespaces as dao_list_namespaces,
     list_data_commit_info,
+    list_table_name_ids_by_namespace,
     select_table_info_by_table_name,
 )
 from .generated.entity_pb2 import DataCommitInfo, PartitionInfo, TableInfo
 from .utils import to_arrow_schemas
+from lakesoul._lib._metadata import _NativeMetadataClient
 
 __all__ = [
     "get_table_info_by_name",
+    "list_namespaces",
+    "list_tables",
     "get_all_partition_info",
     "get_table_single_partition_data_info",
     "get_arrow_schema_by_table_name",
@@ -34,26 +39,54 @@ __all__ = [
 ]
 
 
-def get_table_info_by_name(table_name: str, namespace: str) -> TableInfo:
-    return select_table_info_by_table_name(table_name, namespace)
+def get_table_info_by_name(
+    table_name: str,
+    namespace: str,
+    client: _NativeMetadataClient | None = None,
+) -> TableInfo:
+    return select_table_info_by_table_name(table_name, namespace, client)
 
 
-def get_all_partition_info(table_id: str) -> Sequence[PartitionInfo]:
-    return get_partition_info_by_table_id(table_id)
+def list_namespaces(client: _NativeMetadataClient | None = None) -> tuple[str, ...]:
+    return tuple(namespace.namespace for namespace in dao_list_namespaces(client))
+
+
+def list_tables(
+    namespace: str = "default",
+    client: _NativeMetadataClient | None = None,
+) -> tuple[str, ...]:
+    return tuple(
+        table_name_id.table_name
+        for table_name_id in list_table_name_ids_by_namespace(namespace, client)
+    )
+
+
+def get_all_partition_info(
+    table_id: str,
+    client: _NativeMetadataClient | None = None,
+) -> Sequence[PartitionInfo]:
+    return get_partition_info_by_table_id(table_id, client)
 
 
 def get_table_single_partition_data_info(
     partition_info: PartitionInfo,
+    client: _NativeMetadataClient | None = None,
 ) -> Sequence[DataCommitInfo]:
     return list_data_commit_info(
-        partition_info.table_id, partition_info.partition_desc, partition_info.snapshot
+        partition_info.table_id,
+        partition_info.partition_desc,
+        partition_info.snapshot,
+        client,
     )
 
 
 def get_arrow_schema_by_table_name(
-    table_name: str, namespace: str = "default", retain_partition_columns: bool = True
+    table_name: str,
+    namespace: str = "default",
+    retain_partition_columns: bool = True,
+    client: _NativeMetadataClient | None = None,
 ) -> pyarrow.Schema:
-    table_info = get_table_info_by_name(table_name, namespace)
+    table_info = get_table_info_by_name(table_name, namespace, client)
     schema = table_info.table_schema
     exclude_partitions = None
     if not retain_partition_columns and len(table_info.partitions) > 0:
@@ -65,9 +98,12 @@ def get_arrow_schema_by_table_name(
 
 
 def get_schemas_by_table_name(
-    table_name: str, namespace: str = "default", retain_partition_columns: bool = True
+    table_name: str,
+    namespace: str = "default",
+    retain_partition_columns: bool = True,
+    client: _NativeMetadataClient | None = None,
 ) -> tuple[pyarrow.Schema, pyarrow.Schema | None]:
-    table_info = get_table_info_by_name(table_name, namespace)
+    table_info = get_table_info_by_name(table_name, namespace, client)
     schema = table_info.table_schema
     exclude_partitions = None
     if not retain_partition_columns and len(table_info.partitions) > 0:
@@ -100,9 +136,11 @@ def should_filter_partitions_by_all(
 
 
 def filter_partitions_from_all(
-    partitions: dict[str, str], table_info: TableInfo
+    partitions: dict[str, str],
+    table_info: TableInfo,
+    client: _NativeMetadataClient | None = None,
 ) -> list[PartitionInfo]:
-    partition_list = get_all_partition_info(table_info.table_id)
+    partition_list = get_all_partition_info(table_info.table_id, client)
     if not partition_list:
         raise ValueError(f"Table `{table_info.table_name}` is empty")
     part_filter = []
@@ -133,23 +171,24 @@ def get_scan_plan_partitions(
     table_name: str,
     partitions: dict[str, str] | None = None,
     namespace: str = "default",
+    client: _NativeMetadataClient | None = None,
 ) -> list[LakeSoulScanPlanPartition]:
     partitions = partitions or {}
-    table_info = get_table_info_by_name(table_name, namespace)
+    table_info = get_table_info_by_name(table_name, namespace, client)
 
     part_cols, pk_cols = get_partition_and_pk_cols(table_info)
     if should_filter_partitions_by_all(partitions.keys(), part_cols):
-        partition_infos = filter_partitions_from_all(partitions, table_info)
+        partition_infos = filter_partitions_from_all(partitions, table_info, client)
     elif partitions and len(partitions) == len(part_cols):
         part_desc = []
         for part_col in part_cols:
             part_desc.append(f"{part_col}={partitions[part_col]}")
         part_desc = ",".join(part_desc)
         partition_infos = get_partition_info_by_table_id_and_desc(
-            table_info.table_id, part_desc
+            table_info.table_id, part_desc, client
         )
     else:
-        partition_infos = get_all_partition_info(table_info.table_id)
+        partition_infos = get_all_partition_info(table_info.table_id, client)
 
     plan_partitions = []
     if not partition_infos:
@@ -160,7 +199,9 @@ def get_scan_plan_partitions(
     if not pk_cols:
         for partition in partition_infos:
             data_files = []
-            data_commit_info_list = get_table_single_partition_data_info(partition)
+            data_commit_info_list = get_table_single_partition_data_info(
+                partition, client
+            )
             for data_commit_info in data_commit_info_list:
                 for file_op in data_commit_info.file_ops:
                     data_files.append(file_op.path)
@@ -170,7 +211,9 @@ def get_scan_plan_partitions(
         bucket_id_pattern = r".*_(\d+)(?:\..*)?$"
         for partition in partition_infos:
             files = collections.defaultdict(list)
-            data_commit_info_list = get_table_single_partition_data_info(partition)
+            data_commit_info_list = get_table_single_partition_data_info(
+                partition, client
+            )
             for data_commit_info in data_commit_info_list:
                 for file_op in data_commit_info.file_ops:
                     match = re.search(bucket_id_pattern, file_op.path)
@@ -194,13 +237,14 @@ def get_data_files_and_pks_by_table_name(
     table_name: str,
     partitions: dict[str, str] | None = None,
     namespace: str = "default",
+    client: _NativeMetadataClient | None = None,
 ) -> tuple[list[str], list[str]]:
     part_filter = []
     partitions = partitions or {}
     for part_key, part_value in partitions.items():
         part_filter.append("{}={}".format(part_key, part_value))
-    table_info = get_table_info_by_name(table_name, namespace)
-    partition_list = get_all_partition_info(table_info.table_id)
+    table_info = get_table_info_by_name(table_name, namespace, client)
+    partition_list = get_all_partition_info(table_info.table_id, client)
     data_files = []
     for partition in partition_list:
         partition_desc = partition.partition_desc
@@ -211,7 +255,7 @@ def get_data_files_and_pks_by_table_name(
                 break
         if filtered:
             continue
-        data_commit_info_list = get_table_single_partition_data_info(partition)
+        data_commit_info_list = get_table_single_partition_data_info(partition, client)
         for data_commit_info in data_commit_info_list:
             for file_op in data_commit_info.file_ops:
                 data_files.append(file_op.path)
