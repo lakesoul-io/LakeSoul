@@ -32,7 +32,7 @@ Compute framework support matrix:
 | Spark   | 3.5          | ✓ Batch       | ✓ Batch       | Java / Python / Scala / SQL |
 | Flink   | 1.20         | ✓ Streaming   | ✓ Streaming   | Java / SQL                  |
 | Presto  | 0.296(velox) | ✓ Batch       | -             | SQL                         |
-| Ray     | 2.7+         | ✓ Distributed | ✓ Distributed | Python                      |
+| Ray     | 2.55         | ✓ Distributed | ✓ Distributed | Python                      |
 | Daft    | 0.7+         | ✓ Distributed | ✓ Distributed | Python                      |
 | DuckDB  | latest       | ✓ Standalone  | —             | Python                      |
 | PyArrow | 16+          | ✓ Standalone  | ✓ Standalone  | Python                      |
