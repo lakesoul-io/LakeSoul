@@ -13,14 +13,38 @@ SPDX-License-Identifier: Apache-2.0
 ![Maven Test](https://github.com/lakesoul-io/LakeSoul/actions/workflows/maven-test.yml/badge.svg)
 ![Flink CDC Test](https://github.com/lakesoul-io/LakeSoul/actions/workflows/flink-cdc-test.yml/badge.svg)
 ![Build](https://github.com/lakesoul-io/LakeSoul/actions/workflows/native-build.yml/badge.svg)
+![Python CI](https://github.com/lakesoul-io/LakeSoul/actions/workflows/python-ci.yml/badge.svg)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/lakesoul-io/LakeSoul)
 
 [中文介绍](README-CN.md)
 
-**2025.09: LakeSoul has released newest version 3.0.0, check out our [release note](https://lakesoul-io.github.io/blog/2025/09/05/lakesoul-3.0.0-release)**
+# Beyond Table Formats — A Complete Lakehouse Solution
 
+While Apache Iceberg provides a de-factor open table format, LakeSoul aims to deliver a batteries-included, production-ready lakehouse platform. Beyond the table format itself, LakeSoul comes with built-in automated disaggregated multi-level compaction, fine-grained RBAC (including S3 proxy-based access control), high-performance OLAP queries, vector retrieval, and native multimodal data processing powered by Ray and Daft. Instead of assembling and maintaining separate catalogs, compaction services, and auth layers, you get a production-ready lakehouse out of the box.
+
+# Rust-Native Core, Consistent Everywhere
+LakeSoul's metadata management and file format IO are implemented entirely in Rust — a single, high-performance core — with idiomatic bindings for Java, Python, and C++. Whether you're querying via Spark, streaming via Flink, or training models via PyTorch, Ray, or Daft, every engine and every language shares the same ACID guarantees, the same upsert semantics, and the same read performance. There are no per-language/per-engine re-implementations of the table format, no subtle behavioral divergences between bindings, and no fragmented compatibility matrix to navigate.
+
+Compute framework support matrix:
+
+| Engine  | Version      | Read          | Write         | Interface                   |
+| ------- | ------------ | ------------- | ------------- | --------------------------- |
+| Spark   | 3.5          | ✓ Batch       | ✓ Batch       | Java / Python / Scala / SQL |
+| Flink   | 1.20         | ✓ Streaming   | ✓ Streaming   | Java / SQL                  |
+| Presto  | 0.296(velox) | ✓ Batch       | -             | SQL                         |
+| Ray     | 2.55         | ✓ Distributed | ✓ Distributed | Python                      |
+| Daft    | 0.7+         | ✓ Distributed | ✓ Distributed | Python                      |
+| DuckDB  | latest       | ✓ Standalone  | —             | Python                      |
+| PyArrow | 16+          | ✓ Standalone  | ✓ Standalone  | Python                      |
+| Pandas  | 2.0+         | ✓ Standalone  | ✓ Standalone  | Python                      |
+
+
+# Core Features
 LakeSoul is a cloud-native Lakehouse framework that supports scalable metadata management, ACID transactions, efficient and flexible upsert operation, schema evolution, and unified streaming & batch processing.
 
-LakeSoul supports multiple computing engines to read and write lake warehouse table data, including Spark, Flink, Presto, and PyTorch, and supports multiple computing modes such as batch, stream, MPP, and AI. LakeSoul supports storage systems such as HDFS and S3.
+LakeSoul supports multiple computing engines to read and write lake warehouse table data, including Spark, Flink, Presto, PyTorch, Ray and Daft. LakeSoul supports storage systems such as HDFS and S3.
+
+LakeSoul supports two file formats: parquet(default) and [vortex](https://vortex.dev/). Vortex file format can be used to store multimodal data and vector embeddings.
 
 ![LakeSoul Arch](website/static/img/lakeSoulModel.png)
 
@@ -34,7 +58,7 @@ LakeSoul uses Rust to implement the native metadata layer and IO layer, and prov
 
 LakeSoul supports concurrent batch or streaming read and write. Both read and write supports CDC semantics, and together with auto schema evolution and exacly-once guarantee, constructing realtime data warehouses is made easy.
 
-LakeSoul supports multi-workspace and RBAC. LakeSoul uses Postgres's RBAC and row-level security policies to implement permission isolation for metadata. Together with Hadoop users and groups, physical data isolation can be achieved. LakeSoul's permission isolation is effective for SQL/Java/Python jobs.
+LakeSoul supports multi-workspace and RBAC. LakeSoul uses Postgres's RBAC and row-level security policies to implement permission isolation for metadata. Together with the S3 proxy authorization layer, physical data isolation can be achieved. LakeSoul's permission isolation is effective for SQL/Java/Python jobs.
 
 LakeSoul supports automatic disaggregated size-tiered multi-level compaction, automatic table life cycle maintenance, automatic data asset statistics, and automatic redundant data cleaning, reducing operation costs and improving usability.
 
@@ -65,9 +89,35 @@ Please find usage documentations in doc site:
 [使用文档](https://lakesoul-io.github.io/zh-Hans/docs/Usage%20Docs/setup-meta-env)
 
 # Feature Roadmap
+## Roadmap 2026
+* Compute Engine Version
+  - [ ] Spark 4.0+
+  - [ ] Flink 2.0+
+* Multimodality
+  - [x] [Vortex](https://github.com/vortex-data/vortex) file format
+  - [x] [Daft](https://github.com/Eventual-Inc/Daft) integration
+  - [ ] Vector ANN search on lakehouse (on object store), with upserts
+* Performance
+  - [x] 2x faster merge-on-read with window-sliding merge (for both full and paritial merge).
+  - [x] 50% memory usage reduction with spill-sort in primary key table writer
+  - [x] Disk LRU cache for object store
+  - [x] [Apache Gluten](https://github.com/apache/gluten) integration
+  - [x] [Velox](https://github.com/facebookincubator/velox) integration
+  - [x] Up to 100x faster partition pruning and partition snapshot query with meta data index and query optimizations
+  - [x] Optionally route read-only meta data queries to PG standby instances
+  - [ ] Secondary index
+  - [ ] Metadata cache
+* Maintenance
+  - [x] (auto) Leveled compaction strategy
+  - [x] (auto) Async cleanup(vacuum) via Flink CDC on PG replication slot
+* Security
+  - [x] S3 proxy with table rbac verification
+
+## Roadmap history
 * Data Science and AI
   - [x] Native Python Reader (without PySpark)
   - [x] PyTorch Dataset and distributed training
+  - [x] Ray/Daft support
 * Meta Management ([#23](https://github.com/lakesoul-io/LakeSoul/issues/23))
   - [x] Multiple Level Partitioning: Multiple range partition and at most one hash partition
   - [x] Concurrent write with auto conflict resolution
