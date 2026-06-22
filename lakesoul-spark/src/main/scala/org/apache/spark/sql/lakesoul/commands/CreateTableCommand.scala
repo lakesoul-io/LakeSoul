@@ -157,7 +157,8 @@ case class CreateTableCommand(var table: CatalogTable,
           assertHashPartitionNonNullable(table)
           // This is a user provided schema.
           // Doesn't come from a query, Follow nullability invariants.
-          val newTableInfo = getProvidedTableInfo(tc, table, ArrowUtils.toArrowSchema(table.schema).toJson)
+          val newTableInfo = getProvidedTableInfo(
+            tc, table, ArrowUtils.toMetadataArrowSchema(table.schema).toJson)
 
           tc.commit(Seq.empty[DataFileInfo], Seq.empty[DataFileInfo], newTableInfo)
         } else {
