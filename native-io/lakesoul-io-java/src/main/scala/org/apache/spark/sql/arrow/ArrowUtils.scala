@@ -16,8 +16,16 @@ import org.json4s.jackson.JsonMethods.mapper
 
 import java.util
 import scala.collection.JavaConverters._
+import scala.util.control.NonFatal
 
 object ArrowUtils {
+
+  private val LAKESOUL_ARROW_FIELD = "__lakesoul_arrow_field__"
+  private val MANAGED_ARROW_METADATA_KEYS = Set(
+    "spark_comment",
+    LSH_EMBEDDING_DIMENSION,
+    LSH_BIT_WIDTH,
+    LSH_RNG_SEED)
 
   val rootAllocator = new RootAllocator(Long.MaxValue)
   private val writer = mapper.writerWithDefaultPrettyPrinter
@@ -61,7 +69,9 @@ object ArrowUtils {
     case float: ArrowType.FloatingPoint
       if float.getPrecision() == FloatingPointPrecision.DOUBLE => DoubleType
     case ArrowType.Utf8.INSTANCE => StringType
+    case ArrowType.LargeUtf8.INSTANCE => StringType
     case ArrowType.Binary.INSTANCE => BinaryType
+    case ArrowType.LargeBinary.INSTANCE => BinaryType
     case d: ArrowType.Decimal => DecimalType(d.getPrecision, d.getScale)
     case date: ArrowType.Date if date.getUnit == DateUnit.DAY => DateType
     case ts: ArrowType.Timestamp => TimestampType
@@ -75,44 +85,188 @@ object ArrowUtils {
 
   /** Maps field from Spark to Arrow. NOTE: timeZoneId required for TimestampType */
   def toArrowField(name: String, dt: DataType, nullable: Boolean, timeZoneId: String, sparkFieldMetadata: Metadata, metadata: util.Map[String, String] = null): Field = {
+    toArrowFieldInternal(
+      name, dt, nullable, timeZoneId, sparkFieldMetadata, metadata, preserveLargeTypes = false)
+  }
 
-    if (sparkFieldMetadata.contains("__lakesoul_arrow_field__")) {
-      return reader.readValue(sparkFieldMetadata.getString("__lakesoul_arrow_field__"))
-    }
-
-    dt match {
+  private def toArrowFieldInternal(
+                                    name: String,
+                                    dt: DataType,
+                                    nullable: Boolean,
+                                    timeZoneId: String,
+                                    sparkFieldMetadata: Metadata,
+                                    metadata: util.Map[String, String],
+                                    preserveLargeTypes: Boolean): Field = {
+    val generated = dt match {
       case ArrayType(elementType, containsNull) =>
         val fieldType = new FieldType(nullable, ArrowType.List.INSTANCE, null, metadata)
         new Field(name, fieldType,
-          Seq(toArrowField("element", elementType, containsNull, timeZoneId, sparkFieldMetadata, metadata)).asJava)
+          Seq(toArrowFieldInternal(
+            "element",
+            elementType,
+            containsNull,
+            timeZoneId,
+            Metadata.empty,
+            null,
+            preserveLargeTypes)).asJava)
       case StructType(fields) =>
         val fieldType = new FieldType(nullable, ArrowType.Struct.INSTANCE, null, metadata)
         new Field(name, fieldType,
           fields.map { field =>
             val comment = field.getComment
-            val child_metadata = if (comment.isDefined) {
+            val childMetadata = if (comment.isDefined) {
               val map = new util.HashMap[String, String]
               map.put("spark_comment", comment.get)
               map
             } else null
-            toArrowField(field.name, field.dataType, field.nullable, timeZoneId, sparkFieldMetadata, child_metadata)
+            toArrowFieldInternal(
+              field.name,
+              field.dataType,
+              field.nullable,
+              timeZoneId,
+              field.metadata,
+              childMetadata,
+              preserveLargeTypes)
           }.toSeq.asJava)
       case MapType(keyType, valueType, valueContainsNull) =>
         val mapType = new FieldType(nullable, new ArrowType.Map(false), null, metadata)
         // Note: Map Type struct can not be null, Struct Type key field can not be null
         new Field(name, mapType,
-          Seq(toArrowField(MapVector.DATA_VECTOR_NAME,
+          Seq(toArrowFieldInternal(MapVector.DATA_VECTOR_NAME,
             new StructType()
               .add(MapVector.KEY_NAME, keyType, nullable = false)
               .add(MapVector.VALUE_NAME, valueType, nullable = valueContainsNull),
             nullable = false,
             timeZoneId,
-            sparkFieldMetadata
+            Metadata.empty,
+            null,
+            preserveLargeTypes
           )).asJava)
       case dataType =>
         val fieldType = new FieldType(nullable, toArrowType(dataType, timeZoneId), null, metadata)
         new Field(name, fieldType, Seq.empty[Field].asJava)
     }
+
+    if (!sparkFieldMetadata.contains(LAKESOUL_ARROW_FIELD)) {
+      generated
+    } else {
+      val original = try {
+        reader.readValue[Field](sparkFieldMetadata.getString(LAKESOUL_ARROW_FIELD))
+      } catch {
+        case NonFatal(error) =>
+          throw new IllegalArgumentException(
+            s"Invalid $LAKESOUL_ARROW_FIELD metadata for field '$name'", error)
+      }
+      mergeArrowField(generated, original, preserveLargeTypes, preserveOriginalName = false)
+    }
+  }
+
+  private def mergeArrowField(
+                               generated: Field,
+                               original: Field,
+                               preserveLargeTypes: Boolean,
+                               preserveOriginalName: Boolean): Field = {
+    if (!arrowTypesAreSparkEquivalent(generated.getType, original.getType)) {
+      return generated
+    }
+
+    val restoredType = if (!preserveLargeTypes && isLargeOffsetType(original.getType)) {
+      generated.getType
+    } else if (requiresDirectTypeRestore(original.getType)) {
+      original.getType
+    } else {
+      generated.getType
+    }
+
+    val children = mergeArrowChildren(generated, original, preserveLargeTypes)
+    val fieldType = new FieldType(
+      generated.isNullable,
+      restoredType,
+      generated.getDictionary,
+      mergeArrowMetadata(generated.getMetadata, original.getMetadata))
+    new Field(
+      if (preserveOriginalName) original.getName else generated.getName,
+      fieldType,
+      children)
+  }
+
+  private def mergeArrowChildren(
+                                  generated: Field,
+                                  original: Field,
+                                  preserveLargeTypes: Boolean): util.List[Field] = {
+    val generatedChildren = generated.getChildren.asScala
+    val originalChildren = original.getChildren.asScala
+
+    (generated.getType, original.getType) match {
+      case (_: ArrowType.Struct, _: ArrowType.Struct) =>
+        generatedChildren.map { child =>
+          originalChildren.find(_.getName.equalsIgnoreCase(child.getName))
+            .map(mergeArrowField(child, _, preserveLargeTypes, preserveOriginalName = false))
+            .getOrElse(child)
+        }.asJava
+      case (generatedType, originalType)
+        if isListType(generatedType) && isListType(originalType) &&
+          generatedChildren.nonEmpty && originalChildren.nonEmpty =>
+        Seq(mergeArrowField(
+          generatedChildren.head,
+          originalChildren.head,
+          preserveLargeTypes,
+          preserveOriginalName = true)).asJava
+      case (_: ArrowType.Map, _: ArrowType.Map)
+        if generatedChildren.nonEmpty && originalChildren.nonEmpty =>
+        Seq(mergeArrowField(
+          generatedChildren.head,
+          originalChildren.head,
+          preserveLargeTypes,
+          preserveOriginalName = true)).asJava
+      case _ => generated.getChildren
+    }
+  }
+
+  private def arrowTypesAreSparkEquivalent(generated: ArrowType, original: ArrowType): Boolean = {
+    if (generated == original) {
+      true
+    } else if (isListType(generated) && isListType(original)) {
+      true
+    } else if (generated.isInstanceOf[ArrowType.Struct] && original.isInstanceOf[ArrowType.Struct]) {
+      true
+    } else if (generated.isInstanceOf[ArrowType.Map] && original.isInstanceOf[ArrowType.Map]) {
+      true
+    } else {
+      try {
+        fromArrowType(generated) == fromArrowType(original)
+      } catch {
+        case NonFatal(_) => false
+      }
+    }
+  }
+
+  private def isListType(dataType: ArrowType): Boolean =
+    dataType.isInstanceOf[ArrowType.List] || dataType.isInstanceOf[ArrowType.LargeList]
+
+  private def isLargeOffsetType(dataType: ArrowType): Boolean =
+    dataType.isInstanceOf[ArrowType.LargeUtf8] ||
+      dataType.isInstanceOf[ArrowType.LargeBinary] ||
+      dataType.isInstanceOf[ArrowType.LargeList]
+
+  private def requiresDirectTypeRestore(dataType: ArrowType): Boolean =
+    isLargeOffsetType(dataType) ||
+      dataType.isInstanceOf[ArrowType.Time] ||
+      (dataType.isInstanceOf[ArrowType.Timestamp] &&
+        dataType.asInstanceOf[ArrowType.Timestamp].getTimezone == null)
+
+  private def mergeArrowMetadata(
+                                  generated: util.Map[String, String],
+                                  original: util.Map[String, String]): util.Map[String, String] = {
+    val merged = new util.HashMap[String, String]
+    if (original != null) {
+      merged.putAll(original)
+    }
+    MANAGED_ARROW_METADATA_KEYS.foreach(merged.remove)
+    if (generated != null) {
+      merged.putAll(generated)
+    }
+    merged
   }
 
   def sparkTypeFromArrowField(field: Field): DataType = {
@@ -122,7 +276,7 @@ object ArrowUtils {
         val keyType = sparkTypeFromArrowField(elementField.getChildren.get(0))
         val valueType = sparkTypeFromArrowField(elementField.getChildren.get(1))
         MapType(keyType, valueType, elementField.getChildren.get(1).isNullable)
-      case ArrowType.List.INSTANCE =>
+      case ArrowType.List.INSTANCE | ArrowType.LargeList.INSTANCE =>
         val elementField = field.getChildren().get(0)
         val elementType = sparkTypeFromArrowField(elementField)
         ArrayType(elementType, containsNull = elementField.isNullable)
@@ -142,7 +296,7 @@ object ArrowUtils {
 
   def fromArrowField(field: Field): StructField = {
     val dt = sparkTypeFromArrowField(field)
-    val metadata = field.getMetadata
+    val metadata = Option(field.getMetadata).getOrElse(new util.HashMap[String, String])
     val comment = metadata.get("spark_comment")
     val sparkField =
       if (comment == null)
@@ -154,18 +308,36 @@ object ArrowUtils {
     metadata.forEach((key, value) => if (key != "spark_comment") {
       newMetadata.putString(key, value)
     })
-    field.getType match {
-      case ti: ArrowType.Time if ti.getBitWidth == 32 =>
-        newMetadata.putString("__lakesoul_arrow_field__", writer.writeValueAsString(field))
-      case ts: ArrowType.Timestamp if ts.getTimezone == null =>
-        newMetadata.putString("__lakesoul_arrow_field__", writer.writeValueAsString(field))
-      case _ =>
+    if (requiresArrowFieldRoundTrip(field)) {
+      newMetadata.putString(LAKESOUL_ARROW_FIELD, writer.writeValueAsString(field))
     }
     sparkField.copy(metadata = newMetadata.build())
   }
 
+  private def requiresArrowFieldRoundTrip(field: Field): Boolean = {
+    val requiresCurrentType = field.getType match {
+      case _: ArrowType.LargeUtf8 | _: ArrowType.LargeBinary | _: ArrowType.LargeList => true
+      case time: ArrowType.Time if time.getBitWidth == 32 => true
+      case timestamp: ArrowType.Timestamp if timestamp.getTimezone == null => true
+      case _ => false
+    }
+    requiresCurrentType || field.getChildren.asScala.exists(requiresArrowFieldRoundTrip)
+  }
+
   /** Maps schema from Spark to Arrow. NOTE: timeZoneId required for TimestampType in StructType */
   def toArrowSchema(schema: StructType, timeZoneId: String = "UTC"): Schema = {
+    toArrowSchemaInternal(schema, timeZoneId, preserveLargeTypes = false)
+  }
+
+  /** Maps a Spark schema to the lossless Arrow schema persisted in LakeSoul metadata. */
+  def toMetadataArrowSchema(schema: StructType, timeZoneId: String = "UTC"): Schema = {
+    toArrowSchemaInternal(schema, timeZoneId, preserveLargeTypes = true)
+  }
+
+  private def toArrowSchemaInternal(
+                                     schema: StructType,
+                                     timeZoneId: String,
+                                     preserveLargeTypes: Boolean): Schema = {
     new Schema(schema.map { field =>
       val comment = field.getComment
       val metadata = new util.HashMap[String, String]
@@ -182,7 +354,14 @@ object ArrowUtils {
       if (comment.isDefined) {
         metadata.put("spark_comment", comment.get)
       }
-      toArrowField(field.name, field.dataType, field.nullable, timeZoneId, field.metadata, metadata)
+      toArrowFieldInternal(
+        field.name,
+        field.dataType,
+        field.nullable,
+        timeZoneId,
+        field.metadata,
+        metadata,
+        preserveLargeTypes)
     }.asJava)
   }
 
