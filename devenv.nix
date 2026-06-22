@@ -32,7 +32,7 @@
 
   languages.java = {
     enable = true;
-    jdk.package = pkgs.temurin-bin-11;
+    jdk.package = pkgs.temurin-bin-17;
   };
 
   # https://devenv.sh/processes/
