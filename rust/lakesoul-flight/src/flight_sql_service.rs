@@ -528,7 +528,11 @@ impl FlightSqlService for FlightSqlServiceImpl {
             .map_err(lakesoul_metadata_error_to_status)?;
         if let Some(table_info) = table_info {
             info!("get_flight_info_primary_keys table_info: {:?}", table_info);
-            let schema = schema_from_metadata_str(&table_info.table_schema);
+            let schema = Arc::new(
+                schema_from_metadata_str(&table_info.table_schema).map_err(|e| {
+                    Status::internal(format!("arrow java schema json parse error: {}", e))
+                })?,
+            );
             info!("get_flight_info_primary_keys schema: {:?}", schema);
             let ticket = Ticket {
                 ticket: Command::CommandGetPrimaryKeys(query)

@@ -2,12 +2,29 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! Conversion between Rust Arrow schemas and the Arrow Java JSON format stored
+//! in LakeSoul metadata.
+//!
+//! `table_info.table_schema` is a cross-engine persistence format. Spark and
+//! Flink write it with Arrow Java's `Schema::toJson`, whose JSON representation
+//! differs from the serde representation of [`arrow_schema::Schema`]. Rust and
+//! Python therefore must not serialize an Arrow schema directly when reading or
+//! writing this metadata field. This module is the compatibility boundary used
+//! to keep schemas interoperable across the JVM, Rust, and Python engines.
+//!
+//! Changes to the types below are metadata-format changes. They must remain
+//! compatible with existing tables and with the Arrow Java JSON reader.
+
 use std::{collections::HashMap, sync::Arc};
 
 use arrow_schema::{
     DataType, Field, FieldRef, Fields, IntervalUnit, Schema, SchemaRef, TimeUnit,
 };
 
+/// JSON representation of Arrow Java's `ArrowType` hierarchy.
+///
+/// Variant and field names intentionally follow Arrow Java's JSON contract,
+/// including its camel-case properties such as `bitWidth` and `isSigned`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "name")]
 enum ArrowJavaType {
@@ -87,6 +104,10 @@ enum ArrowJavaType {
     },
 }
 
+/// JSON representation of an Arrow Java field.
+///
+/// Nested types are represented through `children`, rather than being embedded
+/// in the type object as they are in Rust Arrow's serde representation.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct ArrowJavaField {
     name: String,
@@ -100,6 +121,11 @@ struct ArrowJavaField {
     metadata: Option<HashMap<String, String>>,
 }
 
+/// Schema DTO matching the output of Arrow Java's `Schema::toJson`.
+///
+/// This type is public because other Rust LakeSoul components construct
+/// metadata records directly. It should only be used at the metadata boundary;
+/// execution code should use [`Schema`] or [`SchemaRef`].
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ArrowJavaSchema {
     fields: Vec<ArrowJavaField>,
@@ -527,70 +553,42 @@ impl From<Schema> for ArrowJavaSchema {
     }
 }
 
-impl From<ArrowJavaSchema> for SchemaRef {
+impl From<ArrowJavaSchema> for Schema {
     fn from(schema: ArrowJavaSchema) -> Self {
-        SchemaRef::new(Schema::new_with_metadata(
+        Schema::new_with_metadata(
             schema
                 .fields
                 .iter()
                 .map(|f| f.into())
                 .collect::<Vec<Field>>(),
             schema.metadata.unwrap_or_default(),
-        ))
+        )
     }
 }
 
-pub fn schema_from_metadata_str(s: &str) -> SchemaRef {
-    serde_json::from_str::<Schema>(s).map_or_else(
-        |_| {
-            let java_schema = serde_json::from_str::<ArrowJavaSchema>(s).unwrap();
-            java_schema.into()
-        },
-        SchemaRef::new,
-    )
-}
-fn normalize_field(field: &Field) -> Field {
-    let data_type = match field.data_type() {
-        DataType::LargeUtf8 => DataType::Utf8,
-        DataType::LargeBinary => DataType::Binary,
-
-        DataType::List(inner) => {
-            DataType::List(Arc::new(normalize_field(inner.as_ref())))
-        }
-
-        DataType::LargeList(inner) => {
-            DataType::List(Arc::new(normalize_field(inner.as_ref())))
-        }
-
-        DataType::Struct(fields) => DataType::Struct(
-            fields
-                .iter()
-                .map(|f| Arc::new(normalize_field(f.as_ref())))
-                .collect(),
-        ),
-
-        other => other.clone(),
-    };
-
-    Field::new(field.name(), data_type, field.is_nullable())
-        .with_metadata(field.metadata().clone())
+impl From<ArrowJavaSchema> for SchemaRef {
+    fn from(java_schema: ArrowJavaSchema) -> Self {
+        SchemaRef::new(java_schema.into())
+    }
 }
 
-fn normalize_schema_for_spark(schema: &Schema) -> Schema {
-    Schema::new_with_metadata(
-        schema
-            .fields()
-            .iter()
-            .map(|f| normalize_field(f.as_ref()))
-            .collect::<Vec<_>>(),
-        schema.metadata().clone(),
-    )
-}
-
-// workaround
+/// Encode a Rust Arrow schema for `table_info.table_schema`.
+///
+/// The returned JSON follows Arrow Java's schema format so it can be consumed
+/// by Spark and Flink. It must not use the serde representation of [`Schema`],
+/// because Arrow Java's `Schema::fromJSON` cannot parse that representation.
 pub fn schema_to_metadata_str(schema: &Schema) -> String {
-    let normalized = Arc::new(normalize_schema_for_spark(schema.as_ref()));
-    serde_json::to_string(&ArrowJavaSchema::from(normalized)).unwrap()
+    serde_json::to_string(&ArrowJavaSchema::from(schema.clone())).unwrap()
+}
+
+/// Decode schema JSON from `table_info.table_schema`.
+pub fn schema_from_metadata_str(s: &str) -> Result<Schema, serde_json::Error> {
+    match serde_json::from_str::<ArrowJavaSchema>(s) {
+        Ok(java_schema) => Ok(java_schema.into()),
+        // Python temporarily persisted Rust Arrow's serde JSON. Keep this
+        // fallback for existing tables, but never produce that format again.
+        Err(_) => serde_json::from_str::<Schema>(s),
+    }
 }
 
 #[cfg(test)]
@@ -679,7 +677,7 @@ mod tests {
         }
         "#;
 
-        let schema = schema_from_metadata_str(schema_json);
+        let schema = schema_from_metadata_str(schema_json).unwrap();
 
         assert_eq!(schema.metadata().get("schema_key").unwrap(), "schema_value");
         assert_eq!(
@@ -746,8 +744,44 @@ mod tests {
         );
 
         let json = schema_to_metadata_str(&schema);
-        let parsed = schema_from_metadata_str(&json);
+        let parsed = schema_from_metadata_str(&json).unwrap();
 
         assert_eq!(parsed.as_ref(), &schema);
+    }
+
+    #[test]
+    fn large_offset_types_are_preserved_in_metadata_json() {
+        let schema = Schema::new(vec![
+            Field::new("text", DataType::LargeUtf8, true),
+            Field::new("bytes", DataType::LargeBinary, true),
+            Field::new(
+                "items",
+                DataType::LargeList(Arc::new(
+                    Field::new("item", DataType::LargeUtf8, false).with_metadata(
+                        HashMap::from([(
+                            "child_key".to_string(),
+                            "child_value".to_string(),
+                        )]),
+                    ),
+                )),
+                true,
+            ),
+        ]);
+
+        let json = schema_to_metadata_str(&schema);
+        let parsed = schema_from_metadata_str(&json).unwrap();
+
+        assert!(json.contains(r#""name":"largeutf8""#));
+        assert!(json.contains(r#""name":"largebinary""#));
+        assert!(json.contains(r#""name":"largelist""#));
+        assert_eq!(parsed, schema);
+    }
+
+    #[test]
+    fn legacy_rust_serde_schema_is_still_readable() {
+        let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+        let legacy_json = serde_json::to_string(&schema).unwrap();
+
+        assert_eq!(schema_from_metadata_str(&legacy_json).unwrap(), schema);
     }
 }
