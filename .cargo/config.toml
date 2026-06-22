@@ -4,5 +4,4 @@ target-dir = "rust/target"
 [target."x86_64-unknown-linux-gnu"]
 rustflags = [
   "-Ctarget-feature=+avx2",
-  "-Clink-arg=-Wl,--no-rosegment"
 ]
