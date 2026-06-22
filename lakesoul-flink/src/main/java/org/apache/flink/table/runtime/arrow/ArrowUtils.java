@@ -151,7 +151,8 @@ public final class ArrowUtils {
         if (field.getType() instanceof ArrowType.Struct) {
             return new RowType(field.getChildren().stream().map(f ->
                     new RowType.RowField(f.getName(), ArrowUtils.fromArrowField(f))).collect(Collectors.toList()));
-        } else if (field.getType() instanceof ArrowType.List) {
+        } else if (field.getType() instanceof ArrowType.List
+                || field.getType() instanceof ArrowType.LargeList) {
             return new ArrayType(fromArrowField(field.getChildren().get(0)));
         }
         LogicalType logicalType = field.getType().accept(ArrowTypeToLogicalTypeConverter.INSTANCE);
