@@ -28,6 +28,7 @@ import org.apache.arrow.vector.dictionary.Dictionary;
 import org.apache.arrow.vector.dictionary.DictionaryProvider;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
+import org.apache.arrow.vector.types.pojo.FieldType;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -100,7 +101,8 @@ public class ArrowBlockBuilder
                 return BooleanType.BOOLEAN;
             case Time:
                 return TimeType.TIME;
-            case List: {
+            case List:
+            case LargeList: {
                 List<Field> children = field.getChildren();
                 checkArgument(children.size() == 1, "Arrow List expected to have 1 child Field, got: " + children.size());
                 return new ArrayType(getPrestoTypeFromArrowField(field.getChildren().get(0)));
@@ -121,6 +123,27 @@ public class ArrowBlockBuilder
             default:
                 throw new UnsupportedOperationException("The data type " + field.getType().getTypeID() + " is not supported.");
         }
+    }
+
+    public static Field toExecutionField(Field field)
+    {
+        ArrowType type = field.getType();
+        if (type instanceof ArrowType.LargeUtf8) {
+            type = ArrowType.Utf8.INSTANCE;
+        }
+        else if (type instanceof ArrowType.LargeBinary) {
+            type = ArrowType.Binary.INSTANCE;
+        }
+        else if (type instanceof ArrowType.LargeList) {
+            type = ArrowType.List.INSTANCE;
+        }
+
+        List<Field> children = field.getChildren().stream()
+                .map(ArrowBlockBuilder::toExecutionField)
+                .collect(toImmutableList());
+        FieldType fieldType = new FieldType(
+                field.isNullable(), type, field.getDictionary(), field.getMetadata());
+        return new Field(field.getName(), fieldType, children);
     }
 
     private Type getPrestoTypeForArrowFloatingPointType(ArrowType.FloatingPoint floatingPoint)

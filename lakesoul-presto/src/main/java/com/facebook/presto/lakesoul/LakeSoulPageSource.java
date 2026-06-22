@@ -54,7 +54,10 @@ public class LakeSoulPageSource implements ConnectorPageSource {
         }
         this.partitions = PrestoUtil.extractPartitionSpecFromPath(split.getPaths().get(0));
 
-        List<Field> fields = columns.stream().map(LakeSoulTableColumnHandle::getArrowField).collect(Collectors.toList());
+        List<Field> fields = columns.stream()
+                .map(LakeSoulTableColumnHandle::getArrowField)
+                .map(ArrowBlockBuilder::toExecutionField)
+                .collect(Collectors.toList());
         HashMap<String, ColumnHandle> allcolumns = split.getLayout().getAllColumns();
         List<String> dataCols = columns.stream().map(LakeSoulTableColumnHandle::getColumnName).collect(Collectors.toList());
         // add extra pks
@@ -62,7 +65,7 @@ public class LakeSoulPageSource implements ConnectorPageSource {
         for (String item : prikeys) {
             if (!dataCols.contains(item)) {
                 LakeSoulTableColumnHandle columnHandle = (LakeSoulTableColumnHandle) allcolumns.get(item);
-                fields.add(columnHandle.getArrowField());
+                fields.add(ArrowBlockBuilder.toExecutionField(columnHandle.getArrowField()));
             }
         }
         // add extra cdc column
