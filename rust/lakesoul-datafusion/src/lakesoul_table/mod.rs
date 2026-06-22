@@ -114,7 +114,7 @@ impl LakeSoulTable {
         client: MetaDataClientRef,
         table_info: TableInfo,
     ) -> Result<Self> {
-        let table_schema = schema_from_metadata_str(&table_info.table_schema);
+        let table_schema = Arc::new(schema_from_metadata_str(&table_info.table_schema)?);
 
         let table_name = table_info.table_name.clone();
         let properties =
