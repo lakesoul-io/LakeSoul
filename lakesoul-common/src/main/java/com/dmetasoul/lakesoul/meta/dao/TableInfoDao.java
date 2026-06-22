@@ -287,6 +287,7 @@ public class TableInfoDao {
                 .build();
     }
 
+    //  {"fields": [...]}
     public static boolean isArrowKindSchema(String schema) {
         return schema.charAt(schema.indexOf('"') + 1) == 'f';
     }
