@@ -4,21 +4,28 @@
 
 use std::sync::Arc;
 
-use arrow::array::{ArrayRef, Int32Array, RecordBatch};
+use arrow::array::{ArrayRef, Int32Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::assert_batches_eq;
-use lakesoul_io::config::LakeSoulIOConfigBuilder;
+use lakesoul_io::config::{
+    LakeSoulIOConfigBuilder, OPTION_KEY_CDC_COLUMN, OPTION_KEY_STABLE_SORT,
+};
 use lakesoul_io::file_format::PhysicalFormat;
 use lakesoul_io::writer::async_writer::{
     AsyncBatchWriter, AsyncSendableMutableLakeSoulWriter,
 };
 use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
+use proto::proto::entity::TableInfo;
 
 use crate::Result;
-use crate::catalog::{create_io_config_builder, create_table};
+use crate::catalog::{
+    LakeSoulTableProperty, create_io_config_builder, create_table,
+    format_table_info_partitions,
+};
 use crate::cli::CoreArgs;
 use crate::create_lakesoul_session_ctx;
 use crate::lakesoul_table::LakeSoulTable;
+use crate::serialize::arrow_java::ArrowJavaSchema;
 
 fn test_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
@@ -33,6 +40,26 @@ fn batch(ids: &[i32], scores: &[i32]) -> RecordBatch {
         vec![
             Arc::new(Int32Array::from(ids.to_vec())) as ArrayRef,
             Arc::new(Int32Array::from(scores.to_vec())) as ArrayRef,
+        ],
+    )
+    .unwrap()
+}
+
+fn cdc_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("score", DataType::Int32, false),
+        Field::new("op", DataType::Utf8, true),
+    ]))
+}
+
+fn cdc_batch(ids: &[i32], scores: &[i32], ops: &[&str]) -> RecordBatch {
+    RecordBatch::try_new(
+        cdc_schema(),
+        vec![
+            Arc::new(Int32Array::from(ids.to_vec())) as ArrayRef,
+            Arc::new(Int32Array::from(scores.to_vec())) as ArrayRef,
+            Arc::new(StringArray::from(ops.to_vec())) as ArrayRef,
         ],
     )
     .unwrap()
@@ -81,6 +108,61 @@ async fn create_table_with_batches(
     for (physical_format, batch) in batches {
         write_batch_to_table(client.clone(), &table, physical_format, batch).await?;
     }
+
+    Ok(())
+}
+
+async fn create_primary_key_table_with_batches(
+    client: MetaDataClientRef,
+    table_name: &str,
+    batches: Vec<(PhysicalFormat, RecordBatch)>,
+) -> Result<()> {
+    let io_config = LakeSoulIOConfigBuilder::new()
+        .with_schema(test_schema())
+        .with_primary_keys(vec![String::from("id")])
+        .build();
+    create_table(client.clone(), table_name, io_config).await?;
+
+    let table = LakeSoulTable::for_name(table_name).await?;
+    for (physical_format, batch) in batches {
+        write_batch_to_table(client.clone(), &table, physical_format, batch).await?;
+    }
+
+    Ok(())
+}
+
+async fn create_cdc_table(client: MetaDataClientRef, table_name: &str) -> Result<()> {
+    let primary_keys = vec!["id".to_string()];
+    let io_config = LakeSoulIOConfigBuilder::new()
+        .with_schema(cdc_schema())
+        .with_primary_keys(primary_keys.clone())
+        .with_option(OPTION_KEY_CDC_COLUMN, "op")
+        .with_option(OPTION_KEY_STABLE_SORT, "true")
+        .build();
+
+    client
+        .create_table(TableInfo {
+            table_id: format!("table_{}", uuid::Uuid::new_v4()),
+            table_name: table_name.to_string(),
+            table_path: format!(
+                "file://{}/default/{}",
+                std::env::current_dir()?.to_string_lossy(),
+                table_name
+            ),
+            table_schema: serde_json::to_string::<ArrowJavaSchema>(
+                &io_config.target_schema().into(),
+            )?,
+            table_namespace: "default".to_string(),
+            properties: serde_json::to_string(&LakeSoulTableProperty {
+                hash_bucket_num: Some(String::from("4")),
+                cdc_change_column: Some(String::from("op")),
+                use_cdc: Some(String::from("true")),
+                ..Default::default()
+            })?,
+            partitions: format_table_info_partitions(&[], &primary_keys),
+            domain: "public".to_string(),
+        })
+        .await?;
 
     Ok(())
 }
@@ -158,6 +240,37 @@ async fn catalog_select_reads_mixed_parquet_and_vortex_table() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn catalog_mixed_format_scan_preserves_commit_order_for_use_last() -> Result<()> {
+    let client = Arc::new(MetaDataClient::from_env().await?);
+    let table_name = unique_table_name("catalog_mixed_order");
+    create_primary_key_table_with_batches(
+        client,
+        &table_name,
+        vec![
+            (PhysicalFormat::Parquet, batch(&[1], &[10])),
+            (PhysicalFormat::Vortex, batch(&[1], &[20])),
+            (PhysicalFormat::Parquet, batch(&[1], &[30])),
+        ],
+    )
+    .await?;
+
+    let results =
+        collect_sql(&table_name, "SELECT id, score FROM {table} ORDER BY id").await?;
+
+    assert_batches_eq!(
+        &[
+            "+----+-------+",
+            "| id | score |",
+            "+----+-------+",
+            "| 1  | 30    |",
+            "+----+-------+",
+        ],
+        &results
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn catalog_vortex_filter_can_reference_non_projected_column() -> Result<()> {
     let client = Arc::new(MetaDataClient::from_env().await?);
     let table_name = unique_table_name("catalog_vortex_filter_projection");
@@ -182,6 +295,44 @@ async fn catalog_vortex_filter_can_reference_non_projected_column() -> Result<()
         "| 2  |",
         "| 3  |",
         "+----+",],
+        &results
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn catalog_cdc_scan_filters_delete_tombstones_before_projection() -> Result<()> {
+    let client = Arc::new(MetaDataClient::from_env().await?);
+    let table_name = unique_table_name("catalog_cdc_delete_filter");
+    create_cdc_table(client.clone(), &table_name).await?;
+
+    let table = LakeSoulTable::for_name(&table_name).await?;
+    write_batch_to_table(
+        client.clone(),
+        &table,
+        PhysicalFormat::Parquet,
+        cdc_batch(&[1, 2], &[10, 30], &["insert", "insert"]),
+    )
+    .await?;
+    write_batch_to_table(
+        client,
+        &table,
+        PhysicalFormat::Parquet,
+        cdc_batch(&[1], &[20], &["delete"]),
+    )
+    .await?;
+
+    let results =
+        collect_sql(&table_name, "SELECT id, score FROM {table} ORDER BY id").await?;
+
+    assert_batches_eq!(
+        &[
+            "+----+-------+",
+            "| id | score |",
+            "+----+-------+",
+            "| 2  | 30    |",
+            "+----+-------+",
+        ],
         &results
     );
     Ok(())

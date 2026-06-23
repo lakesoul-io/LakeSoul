@@ -5,7 +5,7 @@
 //! The [`datafusion::datasource::TableProvider`] implementation for LakeSoul table.
 
 use std::any::Any;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::env;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -16,7 +16,7 @@ use arrow::error::ArrowError;
 use async_trait::async_trait;
 use datafusion::catalog::Session;
 use datafusion::catalog::memory::DataSourceExec;
-use datafusion::common::{Constraint, Statistics, ToDFSchema, project_schema};
+use datafusion::common::{Constraint, DFSchema, Statistics, ToDFSchema, project_schema};
 use datafusion::datasource::TableProvider;
 use datafusion::datasource::file_format::FileFormat;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
@@ -36,8 +36,10 @@ use datafusion::logical_expr::{
 use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr, create_physical_expr};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::empty::EmptyExec;
+use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::union::UnionExec;
+use datafusion::prelude::{ident, lit};
 use datafusion::scalar::ScalarValue;
 use datafusion::{
     execution::{context::SessionState, object_store::ObjectStoreUrl},
@@ -548,39 +550,140 @@ impl LakeSoulTableProvider {
         let mut groups: Vec<FormatScanGroup> = vec![];
 
         for partitioned_files in partitioned_file_lists {
-            let mut files_by_format: Vec<(PhysicalFormat, Vec<PartitionedFile>)> = vec![];
+            let mut current_format = None;
+            let mut current_files = vec![];
 
             for file in partitioned_files {
                 let physical_format = format_registry
                     .physical_format_for_path(file.object_meta.location.as_ref())?;
 
-                if let Some((_, files)) = files_by_format
-                    .iter_mut()
-                    .find(|(format, _)| *format == physical_format)
-                {
-                    files.push(file);
-                } else {
-                    files_by_format.push((physical_format, vec![file]));
+                match current_format {
+                    Some(format) if format == physical_format => {
+                        current_files.push(file);
+                    }
+                    Some(format) => {
+                        Self::push_format_scan_group(
+                            &mut groups,
+                            object_store_url.clone(),
+                            format,
+                            std::mem::take(&mut current_files),
+                        );
+                        current_format = Some(physical_format);
+                        current_files.push(file);
+                    }
+                    None => {
+                        current_format = Some(physical_format);
+                        current_files.push(file);
+                    }
                 }
             }
 
-            for (physical_format, files) in files_by_format {
-                if let Some(group) = groups.iter_mut().find(|group| {
-                    group.object_store_url == object_store_url
-                        && group.physical_format == physical_format
-                }) {
-                    group.partitioned_file_lists.push(files);
-                } else {
-                    groups.push(FormatScanGroup {
-                        object_store_url: object_store_url.clone(),
-                        physical_format,
-                        partitioned_file_lists: vec![files],
-                    });
-                }
+            if let Some(physical_format) = current_format {
+                Self::push_format_scan_group(
+                    &mut groups,
+                    object_store_url.clone(),
+                    physical_format,
+                    current_files,
+                );
             }
         }
 
         Ok(groups)
+    }
+
+    fn push_format_scan_group(
+        groups: &mut Vec<FormatScanGroup>,
+        object_store_url: ObjectStoreUrl,
+        physical_format: PhysicalFormat,
+        files: Vec<PartitionedFile>,
+    ) {
+        if files.is_empty() {
+            return;
+        }
+
+        if let Some(group) = groups.last_mut().filter(|group| {
+            group.object_store_url == object_store_url
+                && group.physical_format == physical_format
+        }) {
+            group.partitioned_file_lists.push(files);
+        } else {
+            groups.push(FormatScanGroup {
+                object_store_url,
+                physical_format,
+                partitioned_file_lists: vec![files],
+            });
+        }
+    }
+
+    fn classify_filter_pushdown(
+        pushdown_filters: bool,
+        primary_keys: &[String],
+        filters: &[&Expr],
+    ) -> DFResult<Vec<TableProviderFilterPushDown>> {
+        if !pushdown_filters {
+            return Ok(vec![
+                TableProviderFilterPushDown::Unsupported;
+                filters.len()
+            ]);
+        }
+
+        if primary_keys.is_empty() {
+            return Ok(vec![TableProviderFilterPushDown::Inexact; filters.len()]);
+        }
+
+        filters
+            .iter()
+            .map(|f| {
+                let cols = f.column_refs();
+                if cols.iter().all(|col| primary_keys.contains(&col.name)) {
+                    Ok(TableProviderFilterPushDown::Inexact)
+                } else {
+                    Ok(TableProviderFilterPushDown::Unsupported)
+                }
+            })
+            .collect()
+    }
+
+    fn build_partitioned_exec(
+        partitioned_execs: Vec<Arc<dyn ExecutionPlan>>,
+        empty_schema: SchemaRef,
+    ) -> DFResult<Arc<dyn ExecutionPlan>> {
+        match partitioned_execs.len() {
+            0 => Ok(Arc::new(EmptyExec::new(empty_schema))),
+            1 => Ok(partitioned_execs[0].clone()),
+            _ => UnionExec::try_new(partitioned_execs),
+        }
+    }
+
+    fn empty_partitioned_exec_schema(
+        _scan_schema: SchemaRef,
+        merged_schema: SchemaRef,
+    ) -> SchemaRef {
+        merged_schema
+    }
+
+    fn merged_schema_with_input_nullability(
+        merged_schema: SchemaRef,
+        inputs: &[Arc<dyn ExecutionPlan>],
+    ) -> SchemaRef {
+        Arc::new(Schema::new(
+            merged_schema
+                .fields()
+                .iter()
+                .map(|field| {
+                    Field::new(
+                        field.name(),
+                        field.data_type().clone(),
+                        field.is_nullable()
+                            | inputs.iter().any(|input| {
+                                input.schema().column_with_name(field.name()).is_none_or(
+                                    |(_, input_field)| input_field.is_nullable(),
+                                )
+                            }),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        ))
     }
 }
 
@@ -748,7 +851,7 @@ impl TableProvider for LakeSoulTableProvider {
                 (Vec<Arc<dyn ExecutionPlan>>, Vec<String>),
             ),
         > = HashMap::new();
-        let mut column_nullable = HashSet::<String>::new();
+        let mut all_inputs = Vec::<Arc<dyn ExecutionPlan>>::new();
 
         for config in flatten_configs {
             let (partition_desc, partition_values) =
@@ -758,11 +861,7 @@ impl TableProvider for LakeSoulTableProvider {
             let partition_values = Arc::new(partition_values);
             let file_path = config.file_groups[0].files()[0].path().to_string();
             let input = DataSourceExec::from_data_source(config);
-            for field in input.schema().fields() {
-                if field.is_nullable() {
-                    column_nullable.insert(field.name().clone());
-                }
-            }
+            all_inputs.push(input.clone());
 
             if let Some((_, inputs)) = inputs_map.get_mut(&partition_desc) {
                 inputs.0.push(input);
@@ -775,19 +874,8 @@ impl TableProvider for LakeSoulTableProvider {
             }
         }
 
-        let merged_schema = Arc::new(Schema::new(
-            merged_schema
-                .fields()
-                .iter()
-                .map(|field| {
-                    Field::new(
-                        field.name(),
-                        field.data_type().clone(),
-                        field.is_nullable() | column_nullable.contains(field.name()),
-                    )
-                })
-                .collect::<Vec<_>>(),
-        ));
+        let merged_schema =
+            Self::merged_schema_with_input_nullability(merged_schema, &all_inputs);
 
         let mut partitioned_execs = Vec::new();
         for (_, (partition_values, (inputs, file_paths))) in inputs_map {
@@ -805,10 +893,25 @@ impl TableProvider for LakeSoulTableProvider {
             partitioned_execs.push(merge_exec);
         }
 
-        let merge_exec = if partitioned_execs.len() > 1 {
-            UnionExec::try_new(partitioned_execs)?
+        let empty_exec_schema = Self::empty_partitioned_exec_schema(
+            scan_schema.clone(),
+            merged_schema.clone(),
+        );
+        let exec = Self::build_partitioned_exec(partitioned_execs, empty_exec_schema)?;
+
+        let cdc_column = self.io_config.cdc_column();
+        let exec = if !cdc_column.is_empty() {
+            let dfschema = DFSchema::try_from(exec.schema().as_ref().clone())?;
+            let cdc_filter = ident(cdc_column).not_eq(lit("delete"));
+            let expr = create_physical_expr(
+                &cdc_filter,
+                &dfschema,
+                session_state.execution_props(),
+            )?;
+
+            Arc::new(FilterExec::try_new(expr, exec)?) as Arc<dyn ExecutionPlan>
         } else {
-            partitioned_execs.first().unwrap().clone()
+            exec
         };
 
         if Self::needs_output_projection(&scan_schema, &merged_schema) {
@@ -817,17 +920,14 @@ impl TableProvider for LakeSoulTableProvider {
                 projection_expr.push((
                     datafusion::physical_expr::expressions::col(
                         field.name(),
-                        &merged_schema,
+                        exec.schema().as_ref(),
                     )?,
                     field.name().clone(),
                 ));
             }
-            Ok(Arc::new(ProjectionExec::try_new(
-                projection_expr,
-                merge_exec,
-            )?))
+            Ok(Arc::new(ProjectionExec::try_new(projection_expr, exec)?))
         } else {
-            Ok(merge_exec)
+            Ok(exec)
         }
     }
 
@@ -836,32 +936,7 @@ impl TableProvider for LakeSoulTableProvider {
         filters: &[&Expr],
     ) -> DFResult<Vec<TableProviderFilterPushDown>> {
         info!("supports_filters_pushdown: {:?}", filters);
-
-        if !self.pushdown_filters {
-            return Ok(vec![
-                TableProviderFilterPushDown::Unsupported;
-                filters.len()
-            ]);
-        }
-
-        if self.primary_keys.is_empty() {
-            // TODO session config -> io_config / config.parquet support filter pushdown
-            Ok(vec![TableProviderFilterPushDown::Exact; filters.len()])
-        } else {
-            // O(nml), n = number of filters, m = number of primary keys, l = number of columns
-            filters
-                .iter()
-                .map(|f| {
-                    let cols = f.column_refs();
-                    if cols.iter().all(|col| self.primary_keys.contains(&col.name)) {
-                        // use primary key
-                        Ok(TableProviderFilterPushDown::Inexact)
-                    } else {
-                        Ok(TableProviderFilterPushDown::Unsupported)
-                    }
-                })
-                .collect()
-        }
+        Self::classify_filter_pushdown(self.pushdown_filters, &self.primary_keys, filters)
     }
 
     #[instrument(skip(self, state))]
@@ -956,6 +1031,49 @@ mod tests {
     }
 
     #[test]
+    fn filter_pushdown_classification_never_returns_exact() {
+        let id_filter = Expr::Column(datafusion::common::Column::from_name("id"));
+        let score_filter = Expr::Column(datafusion::common::Column::from_name("score"));
+        let filters = vec![&id_filter, &score_filter];
+
+        let disabled =
+            LakeSoulTableProvider::classify_filter_pushdown(false, &[], &filters)
+                .unwrap();
+        assert_eq!(
+            disabled,
+            vec![
+                TableProviderFilterPushDown::Unsupported,
+                TableProviderFilterPushDown::Unsupported,
+            ]
+        );
+
+        let without_primary_keys =
+            LakeSoulTableProvider::classify_filter_pushdown(true, &[], &filters).unwrap();
+        assert_eq!(
+            without_primary_keys,
+            vec![
+                TableProviderFilterPushDown::Inexact,
+                TableProviderFilterPushDown::Inexact,
+            ]
+        );
+
+        let primary_keys = vec![String::from("id")];
+        let with_primary_keys = LakeSoulTableProvider::classify_filter_pushdown(
+            true,
+            &primary_keys,
+            &filters,
+        )
+        .unwrap();
+        assert_eq!(
+            with_primary_keys,
+            vec![
+                TableProviderFilterPushDown::Inexact,
+                TableProviderFilterPushDown::Unsupported,
+            ]
+        );
+    }
+
+    #[test]
     fn format_scan_groups_split_mixed_physical_formats() {
         let registry =
             LakeSoulFormatRegistry::new(LakeSoulIOConfig::default(), false).unwrap();
@@ -989,5 +1107,123 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn format_scan_groups_preserve_non_adjacent_format_order() {
+        let registry =
+            LakeSoulFormatRegistry::new(LakeSoulIOConfig::default(), false).unwrap();
+        let object_store_url = ObjectStoreUrl::parse("file://").unwrap();
+        let groups = LakeSoulTableProvider::format_scan_groups(
+            &registry,
+            object_store_url,
+            vec![vec![
+                PartitionedFile::from(object_meta("part-000.parquet")),
+                PartitionedFile::from(object_meta("part-001.vortex")),
+                PartitionedFile::from(object_meta("part-002.parquet")),
+            ]],
+        )
+        .unwrap();
+
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0].physical_format, PhysicalFormat::Parquet);
+        assert_eq!(groups[1].physical_format, PhysicalFormat::Vortex);
+        assert_eq!(groups[2].physical_format, PhysicalFormat::Parquet);
+        assert_eq!(
+            groups[2].partitioned_file_lists[0][0]
+                .object_meta
+                .location
+                .as_ref(),
+            "part-002.parquet"
+        );
+    }
+
+    #[test]
+    fn build_partitioned_exec_returns_empty_exec_for_empty_partitions() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]));
+
+        let exec = LakeSoulTableProvider::build_partitioned_exec(vec![], schema.clone())
+            .unwrap();
+
+        assert!(exec.as_any().is::<EmptyExec>());
+        assert_eq!(exec.schema(), schema);
+    }
+
+    #[test]
+    fn build_empty_partitioned_exec_preserves_cdc_column_for_filtering() {
+        let scan_schema =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]));
+        let merged_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, true),
+            Field::new("op", DataType::Utf8, true),
+        ]));
+
+        let empty_schema = LakeSoulTableProvider::empty_partitioned_exec_schema(
+            scan_schema,
+            merged_schema.clone(),
+        );
+        let exec =
+            LakeSoulTableProvider::build_partitioned_exec(vec![], empty_schema).unwrap();
+
+        assert!(exec.schema().field_with_name("op").is_ok());
+        assert_eq!(exec.schema(), merged_schema);
+    }
+
+    #[test]
+    fn partitioned_merge_execs_share_nullable_schema_after_evolution() {
+        let merged_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("evolved", DataType::Utf8, false),
+        ]));
+        let old_file_schema =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let new_file_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("evolved", DataType::Utf8, false),
+        ]));
+        let old_input =
+            Arc::new(EmptyExec::new(old_file_schema)) as Arc<dyn ExecutionPlan>;
+        let new_input =
+            Arc::new(EmptyExec::new(new_file_schema)) as Arc<dyn ExecutionPlan>;
+        let merged_schema = LakeSoulTableProvider::merged_schema_with_input_nullability(
+            merged_schema,
+            &[old_input.clone(), new_input.clone()],
+        );
+
+        let old_partition = Arc::new(
+            lakesoul_io::physical_plan::MergeParquetExec::new_with_inputs(
+                merged_schema.clone(),
+                vec![old_input],
+                LakeSoulIOConfig::default(),
+                Arc::new(HashMap::new()),
+            )
+            .unwrap(),
+        ) as Arc<dyn ExecutionPlan>;
+        let new_partition = Arc::new(
+            lakesoul_io::physical_plan::MergeParquetExec::new_with_inputs(
+                merged_schema,
+                vec![new_input],
+                LakeSoulIOConfig::default(),
+                Arc::new(HashMap::new()),
+            )
+            .unwrap(),
+        ) as Arc<dyn ExecutionPlan>;
+
+        assert!(
+            old_partition
+                .schema()
+                .field_with_name("evolved")
+                .unwrap()
+                .is_nullable()
+        );
+        assert!(
+            new_partition
+                .schema()
+                .field_with_name("evolved")
+                .unwrap()
+                .is_nullable(),
+            "all partition execs must advertise the globally nullable schema"
+        );
+        assert_eq!(old_partition.schema(), new_partition.schema());
     }
 }
