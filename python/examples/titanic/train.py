@@ -3,17 +3,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import argparse
-import pandas as pd
+
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.init as init
-
-import datasets
-import lakesoul.huggingface
-
 from torch.autograd import Variable
+
+from lakesoul import LakeSoulCatalog
+from lakesoul.huggingface import from_lakesoul
 
 # hyper parameters
 SEED = 0
@@ -25,8 +24,11 @@ learning_rate = 0.01
 weight_decay = 0.005
 
 # label and feature columns
-label_column = 'label'
-feature_columns = 'f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13,f14,f15,f16,f17,f18,f19,f20,f21,f22,f23,f24,f25,f26'.split(',')
+label_column = "label"
+feature_columns = "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13,f14,f15,f16,f17,f18,f19,f20,f21,f22,f23,f24,f25,f26".split(
+    ","
+)
+
 
 class Net(nn.Module):
     def __init__(self):
@@ -35,7 +37,7 @@ class Net(nn.Module):
         self.fc1 = nn.Linear(26, 256, bias=True)
         self.fc2 = nn.Linear(256, 2, bias=True)
         self._initialize_weights()
-        
+
     def forward(self, x):
         x = self.bn(x)
         x = self.fc1(x)
@@ -43,7 +45,7 @@ class Net(nn.Module):
         x = self.fc2(x)
         x = torch.sigmoid(x)
         return x
-    
+
     def _initialize_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Linear):
@@ -67,15 +69,20 @@ def batchify(dataset, batch_size):
     if len(y_train) > 0:
         yield X_train, y_train
 
-def train_model(net, datasource, num_epochs, batch_size, learning_rate):    
-    dataset = datasets.IterableDataset.from_lakesoul(datasource, partitions={'split': 'train'})
+
+def train_model(net, table_name, num_epochs, batch_size, learning_rate):
+    catalog = LakeSoulCatalog.from_env()
+    scan = catalog.scan(table_name, partitions={"split": "train"})
+    dataset = from_lakesoul(scan)
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.AdamW(net.parameters(), lr=learning_rate, weight_decay=weight_decay)
-    
+    optimizer = torch.optim.AdamW(
+        net.parameters(), lr=learning_rate, weight_decay=weight_decay
+    )
+
     for epoch in range(num_epochs):
         if epoch % 5 == 0:
-            print('Epoch {}'.format(epoch+1))
+            print("Epoch {}".format(epoch + 1))
         for X_train, y_train in batchify(dataset, batch_size):
             x_var = Variable(torch.FloatTensor(X_train))
             y_var = Variable(torch.LongTensor(y_train))
@@ -85,8 +92,11 @@ def train_model(net, datasource, num_epochs, batch_size, learning_rate):
             loss.backward()
             optimizer.step()
 
-def evaluate_model(net, datasource, batch_size):
-    dataset = datasets.IterableDataset.from_lakesoul(datasource, partitions={'split': 'val'})
+
+def evaluate_model(net, table_name, batch_size):
+    catalog = LakeSoulCatalog.from_env()
+    scan = catalog.scan(table_name, partitions={"split": "val"})
+    dataset = from_lakesoul(scan)
     num_samples = 0
     num_correct = 0
 
@@ -101,16 +111,19 @@ def evaluate_model(net, datasource, batch_size):
         num_correct += num_right
 
     accuracy = num_correct / num_samples
-    print('Accuracy {:.2f}'.format(accuracy))
+    print("Accuracy {:.2f}".format(accuracy))
 
-def main(table):
+
+def main(table_name):
     net = Net()
-    train_model(net, table, batch_size, num_epochs, learning_rate)
-    evaluate_model(net, table, batch_size)
+    train_model(net, table_name, num_epochs, batch_size, learning_rate)
+    evaluate_model(net, table_name, batch_size)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--table', type=str, default='titanic_trans', help='lakesoul table name')
-    args = parser.parse_args()
-    
+    parser.add_argument(
+        "--table", type=str, default="titanic_trans", help="lakesoul table name"
+    )
+
     main(args.table)

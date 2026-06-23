@@ -16,38 +16,56 @@ Usage:
 Prerequisites:
     - titanic_raw LakeSoul table created by examples/import_titanic.py
     - pip install lakesoul[ray,torch]
+    - Export LAKESOUL_PG_URL, LAKESOUL_PG_USERNAME, LAKESOUL_PG_PASSWORD env vars
+      (or source lakesoul_env.sh)
 """
 
 import ray
 from ray.data import Dataset
 from ray.train.torch import TorchTrainer
 
-from lakesoul.ray import read_lakesoul
-
+from lakesoul import LakeSoulCatalog
 
 # ── Step 1: Load data from LakeSoul ──────────────────────────
 
+
 def load_data() -> Dataset:
-    ds = read_lakesoul(
+    catalog = LakeSoulCatalog.from_env()
+    scan = catalog.scan(
         "titanic_raw",
-        batch_size=4096,
         partitions={"split": "train"},
+        batch_size=4096,
     )
-    return ds
+    return scan.to_ray()
 
 
 # ── Step 2: Feature engineering (Ray Data) ───────────────────
 
+
 def extract_title(batch: dict) -> dict:
     """Extract Title from Name column (Mr/Mrs/Miss/Master/Rare)."""
     import re
+
     titles = []
     for name in batch["Name"]:
         match = re.search(r",\s*(\w+)\.", str(name))
         title = match.group(1) if match else "Unknown"
-        if title in ["Lady", "Countess", "Capt", "Col", "Don",
-                      "Dr", "Major", "Rev", "Sir", "Jonkheer",
-                      "Dona", "Ms", "Mme", "Mlle"]:
+        if title in [
+            "Lady",
+            "Countess",
+            "Capt",
+            "Col",
+            "Don",
+            "Dr",
+            "Major",
+            "Rev",
+            "Sir",
+            "Jonkheer",
+            "Dona",
+            "Ms",
+            "Mme",
+            "Mlle",
+        ]:
             title = "Rare"
         titles.append(title)
     batch["Title"] = titles
@@ -56,6 +74,7 @@ def extract_title(batch: dict) -> dict:
 
 def categorize_family(batch: dict) -> dict:
     """Generate FamilySize category from SibSp + Parch."""
+
     def _family(sibsp, parch):
         size = int(sibsp) + int(parch) + 1
         if size < 2:
@@ -68,16 +87,16 @@ def categorize_family(batch: dict) -> dict:
             return "Large"
 
     batch["FamilySize"] = [
-        _family(s, p)
-        for s, p in zip(batch["SibSp"], batch["Parch"])
+        _family(s, p) for s, p in zip(batch["SibSp"], batch["Parch"])
     ]
     return batch
 
 
 def impute_missing(batch: dict) -> dict:
     """Fill Age median, Embarked mode, Fare → float."""
-    import numpy as np
     from collections import Counter
+
+    import numpy as np
 
     ages = np.array([a for a in batch["Age"] if a is not None], dtype=float)
     median_age = np.median(ages) if len(ages) > 0 else 28.0
@@ -121,6 +140,7 @@ def one_hot_and_assemble(batch: dict) -> dict:
 
 
 # ── Step 3: Build pipeline ───────────────────────────────────
+
 
 def build_pipeline() -> Dataset:
     ds = load_data()
@@ -192,6 +212,7 @@ def train_func(config: dict):
 
 
 # ── Step 5: Main ─────────────────────────────────────────────
+
 
 def main():
     ray.init("local")

@@ -4,12 +4,17 @@ This example demonstrates an end-to-end ML pipeline using LakeSoul + Ray, withou
 
 ## Prerequisites
 
-1. Create the `titanic_raw` LakeSoul table:
+1. Set up environment variables:
+   ```bash
+   source lakesoul_env.sh
+   ```
+
+2. Create the `titanic_raw` LakeSoul table:
    ```bash
    python examples/import_titanic.py
    ```
 
-2. Install dependencies:
+3. Install dependencies:
    ```bash
    pip install lakesoul[ray,torch]
    ```
@@ -23,7 +28,7 @@ python examples/titanic_ray/train_ray.py
 ## Pipeline
 
 ```
-read_lakesoul("titanic_raw")
+catalog.scan("titanic_raw").to_ray()
   → map_batches(extract_title)
   → map_batches(categorize_family)
   → map_batches(impute_missing)
