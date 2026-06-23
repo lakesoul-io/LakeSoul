@@ -172,7 +172,6 @@ public class LakeSoulSinkGlobalCommitter
             tableNamespace = identity.tableId.catalog();
         }
         boolean isCdc = identity.useCDC;
-        String localTimeZoneId = FlinkUtil.getLocalTimeZone(conf).getId();
         Schema msgSchema = FlinkUtil.toArrowSchema(identity.rowType, isCdc ? Optional.of(
                 identity.cdcColumn) :
                 Optional.empty());
@@ -265,7 +264,7 @@ public class LakeSoulSinkGlobalCommitter
                             }
                             dbManager.updateTableSchema(
                                     tableInfo.getTableId(),
-                                    ArrowUtils.toMetadataArrowSchema(mergeStructType, localTimeZoneId).toJson());
+                                    ArrowUtils.toMetadataArrowSchema(mergeStructType).toJson());
                         }
                     } else {
                         if (logicallyDropColumn) {
@@ -288,7 +287,7 @@ public class LakeSoulSinkGlobalCommitter
                                     }
                                     dbManager.updateTableSchema(
                                             tableInfo.getTableId(),
-                                            ArrowUtils.toMetadataArrowSchema(mergeStructType, localTimeZoneId).toJson());
+                                            ArrowUtils.toMetadataArrowSchema(mergeStructType).toJson());
                                 }
                             } else {
                                 if (this.conf.getBoolean(JobOptions.lineageOption)) {
@@ -307,7 +306,7 @@ public class LakeSoulSinkGlobalCommitter
                                 }
                                 dbManager.updateTableSchema(
                                         tableInfo.getTableId(),
-                                        ArrowUtils.toMetadataArrowSchema(mergeStructType, localTimeZoneId).toJson());
+                                        ArrowUtils.toMetadataArrowSchema(mergeStructType).toJson());
                             }
                         } else {
                             LOG.info("Changing table schema: {}, {}, {}, {}, {}, {}",
@@ -319,7 +318,7 @@ public class LakeSoulSinkGlobalCommitter
                                     identity.cdcColumn);
                             dbManager.updateTableSchema(
                                     tableInfo.getTableId(),
-                                    ArrowUtils.toMetadataArrowSchema(mergeStructType, localTimeZoneId).toJson());
+                                    ArrowUtils.toMetadataArrowSchema(mergeStructType).toJson());
                             if (JSONObject.parseObject(tableInfo.getProperties())
                                     .containsKey(DBConfig.TableInfoProperty.DROPPED_COLUMN)) {
                                 dbManager.removeLogicallyDropColumn(tableInfo.getTableId());
