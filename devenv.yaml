@@ -1,10 +1,12 @@
 inputs:
-  nixpkgs:
-    url: github:cachix/devenv-nixpkgs/rolling
-  rust-overlay:
-    url: github:oxalica/rust-overlay
-    inputs:
-      nixpkgs:
-        follows: nixpkgs
-  rustfs:
-    url: github:rustfs/rustfs/5d737eaeb7fcab5d40c655ba60a494e93dd98922
+    nixpkgs:
+        url: github:cachix/devenv-nixpkgs/rolling
+    nixpkgs-unstable:
+        url: github:NixOS/nixpkgs/nixpkgs-unstable
+    rust-overlay:
+        url: github:oxalica/rust-overlay
+        inputs:
+            nixpkgs:
+                follows: nixpkgs
+    rustfs:
+        url: github:rustfs/rustfs/5d737eaeb7fcab5d40c655ba60a494e93dd98922

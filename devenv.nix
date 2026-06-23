@@ -2,9 +2,13 @@
   pkgs,
   # lib,
   # config,
-  # inputs,
+  inputs,
   ...
-}: {
+}:
+let
+  pkgs-unstable = import inputs.nixpkgs-unstable { system = pkgs.stdenv.system; };
+in
+{
   # https://devenv.sh/basics/
   # env.GREET = "devenv";
 
@@ -16,6 +20,8 @@
     # scala
     metals
     stdenv.cc.cc.lib
+  ] ++ [
+    pkgs-unstable.ty
   ];
   env = {
     CC = "${pkgs.clang}/bin/clang";
