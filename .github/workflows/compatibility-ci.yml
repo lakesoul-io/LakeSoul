@@ -19,9 +19,6 @@ on:
     branches:
       - "main"
       - "release/**"
-  schedule:
-    # 02:00 Asia/Shanghai, daily.
-    - cron: "0 18 * * *"
   workflow_dispatch:
     inputs:
       storage:
@@ -134,7 +131,6 @@ jobs:
         working-directory: python
         run: |
           uv sync --python 3.10 --extra pandas --extra ray --extra daft --extra pyspark
-          uv run maturin develop
       - name: Run compatibility matrix
         env:
           LAKESOUL_SOURCE_DIR: ${{ github.workspace }}
