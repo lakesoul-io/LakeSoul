@@ -202,6 +202,16 @@ def _plan_tasks(
             for reader in core_readers:
                 read_tasks.add((writer, reader, "basic_append"))
 
+    if "daft" in writable:
+        if "basic_append" in cases:
+            write_tasks.add(("daft", "basic_append"))
+            for reader in readable:
+                read_tasks.add(("daft", reader, "basic_append"))
+        if "pk_upsert" in cases:
+            write_tasks.add(("daft", "pk_upsert"))
+            for reader in core_readers:
+                read_tasks.add(("daft", reader, "pk_upsert"))
+
     for writer in ("spark", "pyarrow"):
         if writer in writable:
             for case in ("basic_append", "partitioned_append"):
@@ -258,8 +268,8 @@ def _resolve_engines(
 
 def _default_writers(group: str) -> list[str]:
     groups = {
-        "all": ["spark", "flink", "pyarrow", "datafusion"],
-        "python": ["pyarrow", "ray"],
+        "all": ["spark", "flink", "pyarrow", "datafusion", "daft"],
+        "python": ["pyarrow", "ray", "daft"],
         "jvm": ["spark", "flink"],
         "rust": ["datafusion"],
     }

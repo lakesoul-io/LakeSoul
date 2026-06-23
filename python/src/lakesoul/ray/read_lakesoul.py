@@ -117,17 +117,17 @@ class LakeSoulDatasource(Datasource):
             metadata = BlockMetadata(
                 num_rows=None,
                 size_bytes=None,
-                input_files=list(scan_partition.files),
+                input_files=tuple(scan_partition.files),
                 exec_stats=None,
             )
             read_tasks.append(
                 ReadTask(
-                    lambda config=task_config,
-                    columns=self._columns,
-                    filter=self._filter: _read_lakesoul_scan(
-                        config,
-                        columns,
-                        filter,
+                    lambda config=task_config, columns=self._columns, filter=self._filter: (
+                        _read_lakesoul_scan(
+                            config,
+                            columns,
+                            filter,
+                        )
                     ),
                     metadata,
                     schema=self._schema,
@@ -149,4 +149,4 @@ def read_lakesoul(scan: LakeSoulScan) -> Dataset:
     return dataset
 
 
-ray.data.read_lakesoul = read_lakesoul  # type: ignore[attr-defined]
+setattr(ray.data, "read_lakesoul", read_lakesoul)

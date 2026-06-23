@@ -731,6 +731,30 @@ impl MetaDataClient {
         } else {
             CommitOp::MergeCommit
         };
+        self.commit_data_files_with_commit_op(table_name, namespace, files, commit_op)
+            .await
+    }
+
+    /// Commit data files for one table using an explicit commit operation.
+    pub async fn commit_data_files_with_commit_op(
+        &self,
+        table_name: &str,
+        namespace: &str,
+        files: Vec<DataFileInfo>,
+        commit_op: CommitOp,
+    ) -> Result<()> {
+        if files.is_empty() {
+            return Ok(());
+        }
+
+        let table_info = self
+            .get_table_info_by_table_name(table_name, namespace)
+            .await?
+            .ok_or_else(|| {
+                LakeSoulMetaDataError::NotFound(format!(
+                    "table {table_name} is not found in namespace {namespace}"
+                ))
+            })?;
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|error| LakeSoulMetaDataError::Internal(error.to_string()))?

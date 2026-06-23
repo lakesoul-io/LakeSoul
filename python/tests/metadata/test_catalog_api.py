@@ -170,14 +170,14 @@ def test_catalog_merges_object_store_options(monkeypatch) -> None:
 def test_create_table_forwards_catalog_client() -> None:
     client = DummyNativeClient("host=localhost port=5432 dbname=db user=u password=p")
     catalog = LakeSoulCatalog(namespace="analytics", _client=client)
-    schema = pa.schema([pa.field("id", pa.int64()), pa.field("dt", pa.string())])
+    schema = pa.schema([pa.field("ID", pa.int64()), pa.field("Dt", pa.string())])
 
     result = catalog.create_table(
-        "events",
+        "Events",
         path="/tmp/events",
         schema=schema,
-        partition_by=["dt"],
-        primary_keys=["id"],
+        partition_by=["Dt"],
+        primary_keys=["ID"],
         hash_bucket_num=8,
     )
 
@@ -186,6 +186,47 @@ def test_create_table_forwards_catalog_client() -> None:
     assert client.created[0]["namespace"] == "analytics"
     assert client.created[0]["properties"] == {"hashBucketNum": "8"}
     assert client.created[0]["partitions"] == {"range": ["dt"], "hash": ["id"]}
+    assert client.created[0]["table_schema"] == pa.schema(
+        [pa.field("id", pa.int64(), nullable=False), pa.field("dt", pa.string())]
+    )
+
+
+def test_create_table_defaults_pk_hash_bucket_to_datafusion_default() -> None:
+    client = DummyNativeClient("host=localhost port=5432 dbname=db user=u password=p")
+    catalog = LakeSoulCatalog(namespace="analytics", _client=client)
+    schema = pa.schema([pa.field("id", pa.int64())])
+
+    catalog.create_table(
+        "events",
+        path="/tmp/events",
+        schema=schema,
+        primary_keys=["id"],
+    )
+
+    assert client.created[0]["properties"] == {"hashBucketNum": "4"}
+
+
+def test_create_table_omits_default_hash_bucket_for_non_pk_table() -> None:
+    client = DummyNativeClient("host=localhost port=5432 dbname=db user=u password=p")
+    catalog = LakeSoulCatalog(namespace="analytics", _client=client)
+    schema = pa.schema([pa.field("id", pa.int64())])
+
+    catalog.create_table("events", path="/tmp/events", schema=schema)
+
+    assert client.created[0]["properties"] == {}
+
+
+def test_create_table_rejects_duplicate_columns_after_case_folding() -> None:
+    client = DummyNativeClient("host=localhost port=5432 dbname=db user=u password=p")
+    catalog = LakeSoulCatalog(namespace="analytics", _client=client)
+    schema = pa.schema([pa.field("ID", pa.int64()), pa.field("id", pa.int64())])
+
+    try:
+        catalog.create_table("events", path="/tmp/events", schema=schema)
+    except ValueError as error:
+        assert "duplicate columns" in str(error)
+    else:
+        raise AssertionError("expected duplicate case-folded columns to fail")
 
 
 def test_table_properties_and_write_config(monkeypatch) -> None:
