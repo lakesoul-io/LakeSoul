@@ -8,8 +8,6 @@ from .catalog import (
     LakeSoulTable,
     PostgresMetadataConfig,
     TableWriteConfig,
-    connect,
-    connect_from_env,
 )
 
 __all__ = [
@@ -18,6 +16,4 @@ __all__ = [
     "LakeSoulTable",
     "PostgresMetadataConfig",
     "TableWriteConfig",
-    "connect",
-    "connect_from_env",
 ]

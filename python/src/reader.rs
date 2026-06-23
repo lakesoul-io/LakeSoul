@@ -21,17 +21,17 @@ use crate::Result;
 use crate::install_module;
 
 pub(crate) fn init(py: Python, parent: &Bound<PyModule>) -> PyResult<()> {
-    let m = PyModule::new(py, "_dataset")?;
+    let m = PyModule::new(py, "_reader")?;
     parent.add_submodule(&m)?;
-    install_module("lakesoul._lib._dataset", &m)?;
-    m.add_function(wrap_pyfunction!(sync_reader, &m)?)?;
-    m.add_function(wrap_pyfunction!(one_reader, &m)?)?;
+    install_module("lakesoul._lib._reader", &m)?;
+    m.add_function(wrap_pyfunction!(_sync_reader, &m)?)?;
+    m.add_function(wrap_pyfunction!(_one_reader, &m)?)?;
     Ok(())
 }
 
 #[pyfunction]
 #[pyo3(signature = (batch_size,thread_num,schema,file_urls,primary_keys,partition_info,oss_conf,partition_schema=None,filter = None))]
-fn sync_reader(
+fn _sync_reader(
     batch_size: usize,
     thread_num: usize,
     schema: PyArrowType<Schema>,
@@ -71,7 +71,7 @@ fn sync_reader(
 
 #[pyfunction]
 #[pyo3(signature = (batch_size,thread_num,schema,file_urls,primary_keys,partition_info,oss_conf,partition_schema=None,filter=None))]
-fn one_reader(
+fn _one_reader(
     batch_size: usize,
     thread_num: usize,
     schema: PyArrowType<Schema>,

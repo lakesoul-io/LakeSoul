@@ -4,19 +4,20 @@
 import pyarrow as pa
 import pytest
 
-from lakesoul import metadata
+from lakesoul.metadata import NativeMetadataClient
 
 
-def test_create_table_forwards_metadata_arguments(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[tuple[object, ...]] = []
+class FakeInner:
+    def __init__(self) -> None:
+        self.calls: list[tuple[object, ...]] = []
 
-    def fake_create_table(*args: object) -> None:
-        calls.append(args)
+    def create_table(self, *args: object) -> None:
+        self.calls.append(args)
 
-    monkeypatch.setattr(metadata, "_create_table", fake_create_table)
 
+def test_create_table_forwards_metadata_arguments() -> None:
+    inner = FakeInner()
+    client = NativeMetadataClient._from_inner(inner)  # type: ignore[arg-type]
     schema = pa.schema(
         [
             pa.field("id", pa.int64(), nullable=False),
@@ -25,7 +26,7 @@ def test_create_table_forwards_metadata_arguments(
         ]
     )
 
-    metadata.create_table(
+    client.create_table(
         "events",
         namespace="analytics",
         table_path="file:///tmp/events",
@@ -35,31 +36,33 @@ def test_create_table_forwards_metadata_arguments(
         domain="public",
     )
 
-    assert len(calls) == 1
+    assert len(inner.calls) == 1
     (
         table_name,
         namespace,
         table_path,
-        table_schema_json,
+        table_schema,
         properties_json,
         partitions,
         domain,
-    ) = calls[0]
+    ) = inner.calls[0]
 
     assert table_name == "events"
     assert namespace == "analytics"
     assert table_path == "file:///tmp/events"
     assert domain == "public"
-    assert table_schema_json is schema
+    assert table_schema is schema
     assert properties_json == '{"hashBucketNum":"4"}'
     assert partitions == "part;id"
 
 
 def test_create_table_rejects_unknown_partition_columns() -> None:
+    inner = FakeInner()
+    client = NativeMetadataClient._from_inner(inner)  # type: ignore[arg-type]
     schema = pa.schema([pa.field("id", pa.int64())])
 
     with pytest.raises(ValueError, match="partition column not in schema"):
-        metadata.create_table(
+        client.create_table(
             "events",
             table_path="file:///tmp/events",
             table_schema=schema,
@@ -68,23 +71,16 @@ def test_create_table_rejects_unknown_partition_columns() -> None:
 
 
 def test_create_table_ignores_unknown_partition_groups() -> None:
+    inner = FakeInner()
+    client = NativeMetadataClient._from_inner(inner)  # type: ignore[arg-type]
     schema = pa.schema([pa.field("id", pa.int64())])
-    calls: list[tuple[object, ...]] = []
 
-    def fake_create_table(*args: object) -> None:
-        calls.append(args)
+    client.create_table(
+        "events",
+        table_path="file:///tmp/events",
+        table_schema=schema,
+        partitions={"bucket": ["id"]},
+    )
 
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(metadata, "_create_table", fake_create_table)
-    try:
-        metadata.create_table(
-            "events",
-            table_path="file:///tmp/events",
-            table_schema=schema,
-            partitions={"bucket": ["id"]},
-        )
-    finally:
-        monkeypatch.undo()
-
-    assert len(calls) == 1
-    assert calls[0][5] == ";"
+    assert len(inner.calls) == 1
+    assert inner.calls[0][5] == ";"

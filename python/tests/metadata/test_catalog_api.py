@@ -7,6 +7,7 @@ import pyarrow as pa
 
 import lakesoul.catalog as catalog_module
 from lakesoul.catalog import LakeSoulCatalog, LakeSoulTable, PostgresMetadataConfig
+from lakesoul.metadata import LakeSoulScanPlanPartition
 
 
 class DummyNativeClient:
@@ -21,8 +22,39 @@ class DummyNativeClient:
         self.config = config
         self.secondary_config = secondary_config
         self.max_retry = max_retry
+        self.created: list[dict[str, object]] = []
+        self.dropped: list[tuple[str, str]] = []
         self.commits: list[tuple[str, str, list[tuple[str, str, int, list[str]]]]] = []
+        self.scan_partitions = (
+            LakeSoulScanPlanPartition(["file:///tmp/events/part-0.parquet"], ["id"]),
+        )
+        self.schema = pa.schema(
+            [pa.field("id", pa.int64()), pa.field("dt", pa.string())]
+        )
         DummyNativeClient.instances.append(self)
+
+    @classmethod
+    def from_env(cls) -> "DummyNativeClient":
+        return cls("from-env")
+
+    def list_namespaces(self) -> tuple[str, ...]:
+        return ("default", "analytics")
+
+    def list_tables(self, namespace: str) -> tuple[str, ...]:
+        return ("events",) if namespace == "analytics" else ()
+
+    def get_table_info_by_name(
+        self,
+        table_name: str,
+        namespace: str,
+    ) -> SimpleNamespace:
+        return _table_info(table_name=table_name, table_namespace=namespace)
+
+    def create_table(self, table_name: str, **kwargs: object) -> None:
+        self.created.append({"table_name": table_name, **kwargs})
+
+    def drop_table(self, table_name: str, namespace: str) -> None:
+        self.dropped.append((table_name, namespace))
 
     def commit_data_files(
         self,
@@ -31,6 +63,37 @@ class DummyNativeClient:
         files: list[tuple[str, str, int, list[str]]],
     ) -> None:
         self.commits.append((table_name, namespace, files))
+
+    def get_partition_and_pk_cols(
+        self, table_info: SimpleNamespace
+    ) -> tuple[list[str], list[str]]:
+        parts = table_info.partitions.split(";")
+        return (
+            parts[0].split(",") if parts[0] else [],
+            parts[1].split(",") if parts[1] else [],
+        )
+
+    def get_scan_plan_partitions(
+        self,
+        table_name: str,
+        partitions: dict[str, str] | None = None,
+        namespace: str = "default",
+    ) -> tuple[LakeSoulScanPlanPartition, ...]:
+        self.last_scan_request = (table_name, partitions or {}, namespace)
+        return self.scan_partitions
+
+    def get_schemas_by_table_name(
+        self,
+        table_name: str,
+        namespace: str = "default",
+        retain_partition_columns: bool = True,
+    ) -> tuple[pa.Schema, None]:
+        self.last_schema_request = (
+            table_name,
+            namespace,
+            retain_partition_columns,
+        )
+        return self.schema, None
 
 
 def _table_info(**kwargs: object) -> SimpleNamespace:
@@ -47,11 +110,9 @@ def _table_info(**kwargs: object) -> SimpleNamespace:
     return SimpleNamespace(**values)
 
 
-def test_catalog_builds_native_client_from_explicit_pg_config(
-    monkeypatch,
-) -> None:
+def test_catalog_builds_native_client_from_explicit_pg_config(monkeypatch) -> None:
     DummyNativeClient.instances.clear()
-    monkeypatch.setattr(catalog_module, "_NativeMetadataClient", DummyNativeClient)
+    monkeypatch.setattr(catalog_module, "NativeMetadataClient", DummyNativeClient)
 
     catalog = LakeSoulCatalog(
         pg_url="jdbc:postgresql://localhost:5432/lakesoul_test?stringtype=unspecified",
@@ -71,7 +132,7 @@ def test_catalog_builds_native_client_from_explicit_pg_config(
 
 def test_catalog_accepts_metadata_config_and_secondary_url(monkeypatch) -> None:
     DummyNativeClient.instances.clear()
-    monkeypatch.setattr(catalog_module, "_NativeMetadataClient", DummyNativeClient)
+    monkeypatch.setattr(catalog_module, "NativeMetadataClient", DummyNativeClient)
 
     LakeSoulCatalog(
         PostgresMetadataConfig(
@@ -92,7 +153,7 @@ def test_catalog_accepts_metadata_config_and_secondary_url(monkeypatch) -> None:
 
 
 def test_catalog_merges_object_store_options(monkeypatch) -> None:
-    monkeypatch.setattr(catalog_module, "_NativeMetadataClient", DummyNativeClient)
+    monkeypatch.setattr(catalog_module, "NativeMetadataClient", DummyNativeClient)
     catalog = LakeSoulCatalog(
         pg_url="postgresql://localhost/db",
         pg_username="user",
@@ -106,21 +167,10 @@ def test_catalog_merges_object_store_options(monkeypatch) -> None:
     }
 
 
-def test_create_table_forwards_catalog_client(monkeypatch) -> None:
+def test_create_table_forwards_catalog_client() -> None:
     client = DummyNativeClient("host=localhost port=5432 dbname=db user=u password=p")
     catalog = LakeSoulCatalog(namespace="analytics", _client=client)
     schema = pa.schema([pa.field("id", pa.int64()), pa.field("dt", pa.string())])
-    calls: list[dict[str, object]] = []
-
-    def fake_create_table(*args: object, **kwargs: object) -> None:
-        calls.append({"args": args, "kwargs": kwargs})
-
-    monkeypatch.setattr(catalog_module, "_create_table", fake_create_table)
-    monkeypatch.setattr(
-        LakeSoulCatalog,
-        "table",
-        lambda self, name, namespace=None: ("table", name, namespace),
-    )
 
     result = catalog.create_table(
         "events",
@@ -131,12 +181,11 @@ def test_create_table_forwards_catalog_client(monkeypatch) -> None:
         hash_bucket_num=8,
     )
 
-    assert result == ("table", "events", "analytics")
-    assert calls[0]["args"] == ("events",)
-    assert calls[0]["kwargs"]["namespace"] == "analytics"
-    assert calls[0]["kwargs"]["properties"] == {"hashBucketNum": "8"}
-    assert calls[0]["kwargs"]["partitions"] == {"range": ["dt"], "hash": ["id"]}
-    assert calls[0]["kwargs"]["_client"] is client
+    assert isinstance(result, LakeSoulTable)
+    assert client.created[0]["table_name"] == "events"
+    assert client.created[0]["namespace"] == "analytics"
+    assert client.created[0]["properties"] == {"hashBucketNum": "8"}
+    assert client.created[0]["partitions"] == {"range": ["dt"], "hash": ["id"]}
 
 
 def test_table_properties_and_write_config(monkeypatch) -> None:
@@ -219,40 +268,45 @@ def test_write_arrow_rejects_non_append_mode() -> None:
     )
 
     try:
-        table.write_arrow(pa.table({"id": [1]}), mode="overwrite")  # type: ignore[arg-type]
+        table.write_arrow(
+            pa.table({"id": [1]}),
+            mode="overwrite",  # type: ignore[arg-type]
+        )
     except NotImplementedError as error:
         assert "append" in str(error)
     else:
         raise AssertionError("expected NotImplementedError")
 
 
-def test_scan_passes_catalog_context_to_arrow_dataset(monkeypatch) -> None:
+def test_scan_resolves_catalog_context_to_scan_config() -> None:
     client = DummyNativeClient("host=localhost dbname=db")
     catalog = LakeSoulCatalog(
         _client=client,
         object_store_options={"endpoint": "default", "region": "us"},
     )
     table = LakeSoulTable(catalog, _table_info())
-    calls: list[dict[str, object]] = []
 
-    def fake_lakesoul_dataset(*args: object, **kwargs: object) -> object:
-        calls.append({"args": args, "kwargs": kwargs})
-        return object()
+    scan_config = (
+        table.scan(
+            partitions={"dt": "2026-06-18"},
+            object_store_options={"endpoint": "override"},
+            retain_partition_columns=True,
+        )
+        .select("id")
+        .to_scan_config()
+    )
 
-    import lakesoul.arrow
-
-    monkeypatch.setattr(lakesoul.arrow, "lakesoul_dataset", fake_lakesoul_dataset)
-
-    table.scan(
-        partitions={"dt": "2026-06-18"},
-        object_store_options={"endpoint": "override"},
-    ).to_arrow_dataset()
-
-    assert calls[0]["args"] == ("events",)
-    assert calls[0]["kwargs"]["namespace"] == "analytics"
-    assert calls[0]["kwargs"]["partitions"] == {"dt": "2026-06-18"}
-    assert calls[0]["kwargs"]["object_store_configs"] == {
+    assert scan_config.table_name == "events"
+    assert scan_config.namespace == "analytics"
+    assert scan_config.partitions == {"dt": "2026-06-18"}
+    assert scan_config.object_store_options == {
         "endpoint": "override",
         "region": "us",
     }
-    assert calls[0]["kwargs"]["metadata_client"] is client
+    assert scan_config.scan_partitions == client.scan_partitions
+    assert client.last_scan_request == (
+        "events",
+        {"dt": "2026-06-18"},
+        "analytics",
+    )
+    assert client.last_schema_request == ("events", "analytics", True)

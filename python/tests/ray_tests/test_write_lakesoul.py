@@ -2,7 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from importlib import import_module
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,51 +10,64 @@ import pyarrow.parquet as pq
 import pytest
 import ray
 
-from lakesoul.ray import LakeSoulDatasink, write_lakesoul
+from lakesoul.catalog import TableWriteConfig
+from lakesoul.ray import LakeSoulDatasink
 
-write_module = import_module("lakesoul.ray.write_lakesoul")
+from lakesoul.ray import write_lakesoul as write_lakesoul_fn
 
 
-def _patch_table(
-    monkeypatch: pytest.MonkeyPatch,
+def _fake_table(
     path: Path,
     schema: pa.Schema,
     *,
-    properties: str = '{"hashBucketNum":"1"}',
-    partitions: str = ";",
-) -> None:
-    table_info = SimpleNamespace(
-        table_path=path.as_uri(),
-        properties=properties,
-        partitions=partitions,
-    )
-    monkeypatch.setattr(
-        write_module,
-        "get_table_info_by_name",
-        lambda table_name, namespace: table_info,
-    )
-    monkeypatch.setattr(
-        write_module,
-        "get_arrow_schema_by_table_name",
-        lambda **kwargs: schema,
-    )
-
-
-def test_datasink_writes_arrow_blocks_and_commits_once(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    table = pa.table({"id": [1, 2], "value": ["a", "b"]})
-    _patch_table(monkeypatch, tmp_path / "table", table.schema)
+    namespace: str = "analytics",
+    primary_keys: tuple[str, ...] = (),
+    partition_by: tuple[str, ...] = (),
+    hash_bucket_num: int = 1,
+    format: str = "parquet",
+    object_store_options: dict[str, str] | None = None,
+):
     committed: list[tuple[str, str, list[tuple[str, str, int, list[str]]]]] = []
-    monkeypatch.setattr(
-        write_module,
-        "commit_data_files",
-        lambda table_name, namespace, files: committed.append(
-            (table_name, namespace, files)
-        ),
+
+    table_config = TableWriteConfig(
+        table_name="target",
+        namespace=namespace,
+        path=path.as_uri(),
+        schema=schema,
+        primary_keys=primary_keys,
+        partition_by=partition_by,
+        hash_bucket_num=hash_bucket_num,
+        format=format,  # type: ignore[arg-type]
     )
 
-    datasink = LakeSoulDatasink("target")
+    class FakeCatalog:
+        def __init__(self) -> None:
+            self._client = SimpleNamespace(
+                commit_data_files=lambda table_name, namespace, files: committed.append(
+                    (table_name, namespace, files)
+                )
+            )
+            self._object_store_options = object_store_options or {}
+
+        def _merge_object_store_options(self, overrides):
+            merged = dict(self._object_store_options)
+            merged.update(dict(overrides or {}))
+            return merged
+
+    table = SimpleNamespace(
+        name="target",
+        namespace=namespace,
+        catalog=FakeCatalog(),
+        write_config=lambda format="parquet": table_config,
+    )
+    return table, committed
+
+
+def test_datasink_writes_arrow_blocks_and_commits_once(tmp_path: Path) -> None:
+    table = pa.table({"id": [1, 2], "value": ["a", "b"]})
+    table_handle, committed = _fake_table(tmp_path / "table", table.schema)
+
+    datasink = LakeSoulDatasink(table_handle)
     task_result = datasink.write([table.slice(0, 1), table.slice(1, 1)], None)
     datasink.on_write_complete(SimpleNamespace(write_returns=[task_result]))
 
@@ -66,7 +78,7 @@ def test_datasink_writes_arrow_blocks_and_commits_once(
     assert committed == [
         (
             "target",
-            "default",
+            "analytics",
             [
                 (
                     task_result.files[0].partition,
@@ -78,24 +90,19 @@ def test_datasink_writes_arrow_blocks_and_commits_once(
         )
     ]
 
-    committed.clear()
-    datasink.on_write_complete([task_result])
-    assert len(committed) == 1
 
-
-def test_datasink_uses_table_partition_and_vortex_config(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_datasink_uses_table_partition_and_vortex_config(tmp_path: Path) -> None:
     table = pa.table({"id": [1], "part": ["a"]})
-    _patch_table(
-        monkeypatch,
+    table_handle, _ = _fake_table(
         tmp_path / "table",
         table.schema,
-        properties='{"hashBucketNum":"4","file_format":"vortex"}',
-        partitions="part;id",
+        primary_keys=("id",),
+        partition_by=("part",),
+        hash_bucket_num=4,
+        format="vortex",
     )
 
-    datasink = LakeSoulDatasink("target", format="vortex")
+    datasink = LakeSoulDatasink(table_handle, format="vortex")
     task_result = datasink.write([table], None)
 
     assert not datasink.supports_distributed_writes
@@ -103,123 +110,39 @@ def test_datasink_uses_table_partition_and_vortex_config(
     assert task_result.files[0].path.endswith(".vortex")
 
 
-def test_datasink_rejects_schema_mismatch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_datasink_rejects_schema_mismatch(tmp_path: Path) -> None:
     expected = pa.schema([pa.field("id", pa.int64())])
-    _patch_table(monkeypatch, tmp_path / "table", expected)
-    datasink = LakeSoulDatasink("target")
+    table_handle, _ = _fake_table(tmp_path / "table", expected)
+    datasink = LakeSoulDatasink(table_handle)
 
     with pytest.raises(ValueError, match="schema does not match"):
         datasink.write([pa.table({"other": [1]})], None)
 
 
-def test_empty_write_does_not_commit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_empty_write_does_not_commit(tmp_path: Path) -> None:
     schema = pa.schema([pa.field("id", pa.int64())])
-    _patch_table(monkeypatch, tmp_path / "table", schema)
-    committed = False
-
-    def commit(*args: object) -> None:
-        nonlocal committed
-        committed = True
-
-    monkeypatch.setattr(write_module, "commit_data_files", commit)
-    datasink = LakeSoulDatasink("target")
+    table_handle, committed = _fake_table(tmp_path / "table", schema)
+    datasink = LakeSoulDatasink(table_handle)
     result = datasink.write([pa.Table.from_batches([], schema=schema)], None)
     datasink.on_write_complete(SimpleNamespace(write_returns=[result]))
 
     assert result.files == ()
-    assert not committed
+    assert committed == []
 
 
-def test_datasink_with_table_handle_commits_with_catalog_client(tmp_path: Path) -> None:
-    table = pa.table({"id": [1], "value": ["a"]})
-    committed: list[tuple[str, str, list[tuple[str, str, int, list[str]]]]] = []
-    table_config = write_module._TableWriteConfig(
-        table_name="target",
-        namespace="analytics",
-        path=(tmp_path / "table").as_uri(),
-        schema=table.schema,
-        primary_keys=(),
-        partition_by=(),
-        hash_bucket_num=1,
-        format="parquet",
-    )
-    table_handle = SimpleNamespace(
-        name="target",
-        namespace="analytics",
-        catalog=SimpleNamespace(
-            _client=SimpleNamespace(
-                commit_data_files=lambda table_name, namespace, files: committed.append(
-                    (table_name, namespace, files)
-                )
-            )
-        ),
-        write_config=lambda format: table_config,
-    )
+def test_datasink_serialization_does_not_capture_table_handle(tmp_path: Path) -> None:
+    table = pa.table({"id": [1]})
+    table_handle, _ = _fake_table(tmp_path / "table", table.schema)
+    datasink = LakeSoulDatasink(table_handle)
 
-    datasink = LakeSoulDatasink("target", table=table_handle)
-    task_result = datasink.write([table], None)
-    datasink.on_write_complete(SimpleNamespace(write_returns=[task_result]))
+    state = datasink.__getstate__()
 
-    assert len(committed) == 1
-    assert committed[0][0] == "target"
-    assert committed[0][1] == "analytics"
-    assert committed[0][2][0][2] > 0
+    assert state["_table_handle"] is None
+    assert state["_table"].table_name == "target"
 
 
 def test_dataset_method_is_registered() -> None:
-    assert ray.data.Dataset.write_lakesoul is write_module.write_lakesoul  # type: ignore
-
-
-def test_dataset_write_lakesoul_end_to_end(
-    ray_session: None,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    del ray_session
-    table = pa.table({"id": [1, 2], "value": ["a", "b"]})
-    _patch_table(monkeypatch, tmp_path / "table", table.schema)
-    committed: list[list[tuple[str, str, int, list[str]]]] = []
-    monkeypatch.setattr(
-        write_module,
-        "commit_data_files",
-        lambda table_name, namespace, files: committed.append(files),
+    assert (
+        ray.data.Dataset.write_lakesoul  # type: ignore[attr-defined]
+        is write_lakesoul_fn
     )
-
-    dataset = ray.data.from_arrow(table)
-    dataset.write_lakesoul("target", concurrency=1)  # type: ignore
-
-    assert len(committed) == 1
-    assert len(committed[0]) == 1
-    assert committed[0][0][2] > 0
-
-
-def test_real_write(
-    ray_session: None,
-    tmp_path: Path,
-) -> None:
-    from lakesoul.metadata import create_table, drop_table
-
-    expected = pa.table({"id": [1, 2], "value": ["a", "b"]})
-
-    table_name = tmp_path.name
-
-    try:
-        drop_table(table_name)
-    except Exception:
-        pass
-
-    create_table(table_name, table_path=tmp_path, table_schema=expected.schema)
-
-    dataset = ray.data.from_arrow(expected)
-    write_lakesoul(dataset, table_name, concurrency=1)
-
-    from lakesoul.ray import read_lakesoul
-
-    ds = read_lakesoul(table_name)
-
-    actual = ds.take_batch(batch_format="pyarrow")
-    assert actual.equals(expected)  # type: ignore

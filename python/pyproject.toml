@@ -95,7 +95,13 @@ markers = [
 
 [tool.ruff]
 line-length = 88
-
+exclude = [
+    "src/lakesoul/metadata/generated/*.py",
+    "src/lakesoul/metadata/generated/*.pyi"
+]
 
 [tool.basedpyright]
 typeCheckingMode = "standard"
+
+[tool.ty.src]
+exclude = ["src/lakesoul/metadata/generated"]
