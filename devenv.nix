@@ -19,6 +19,8 @@ in
     llvmPackages.libclang
     # scala
     metals
+    # java
+    jdt-language-server
     stdenv.cc.cc.lib
   ] ++ [
     pkgs-unstable.ty

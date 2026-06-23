@@ -582,6 +582,35 @@ impl LakeSoulTableProvider {
 
         Ok(groups)
     }
+
+    fn classify_filter_pushdown(
+        pushdown_filters: bool,
+        primary_keys: &[String],
+        filters: &[&Expr],
+    ) -> DFResult<Vec<TableProviderFilterPushDown>> {
+        if !pushdown_filters {
+            return Ok(vec![
+                TableProviderFilterPushDown::Unsupported;
+                filters.len()
+            ]);
+        }
+
+        if primary_keys.is_empty() {
+            return Ok(vec![TableProviderFilterPushDown::Inexact; filters.len()]);
+        }
+
+        filters
+            .iter()
+            .map(|f| {
+                let cols = f.column_refs();
+                if cols.iter().all(|col| primary_keys.contains(&col.name)) {
+                    Ok(TableProviderFilterPushDown::Inexact)
+                } else {
+                    Ok(TableProviderFilterPushDown::Unsupported)
+                }
+            })
+            .collect()
+    }
 }
 
 #[async_trait]
@@ -928,6 +957,49 @@ mod tests {
             &target_schema,
             &merged_schema
         ));
+    }
+
+    #[test]
+    fn filter_pushdown_classification_never_returns_exact() {
+        let id_filter = Expr::Column(datafusion::common::Column::from_name("id"));
+        let score_filter = Expr::Column(datafusion::common::Column::from_name("score"));
+        let filters = vec![&id_filter, &score_filter];
+
+        let disabled =
+            LakeSoulTableProvider::classify_filter_pushdown(false, &[], &filters)
+                .unwrap();
+        assert_eq!(
+            disabled,
+            vec![
+                TableProviderFilterPushDown::Unsupported,
+                TableProviderFilterPushDown::Unsupported,
+            ]
+        );
+
+        let without_primary_keys =
+            LakeSoulTableProvider::classify_filter_pushdown(true, &[], &filters).unwrap();
+        assert_eq!(
+            without_primary_keys,
+            vec![
+                TableProviderFilterPushDown::Inexact,
+                TableProviderFilterPushDown::Inexact,
+            ]
+        );
+
+        let primary_keys = vec![String::from("id")];
+        let with_primary_keys = LakeSoulTableProvider::classify_filter_pushdown(
+            true,
+            &primary_keys,
+            &filters,
+        )
+        .unwrap();
+        assert_eq!(
+            with_primary_keys,
+            vec![
+                TableProviderFilterPushDown::Inexact,
+                TableProviderFilterPushDown::Unsupported,
+            ]
+        );
     }
 
     #[test]
