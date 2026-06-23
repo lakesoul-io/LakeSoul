@@ -147,7 +147,6 @@ def write_lakesoul(
     dataset: Dataset,
     table: LakeSoulTable,
     *,
-    mode: Literal["append"] = "append",
     format: Literal["parquet", "vortex"] = "parquet",
     batch_size: int = 8192,
     thread_num: int | None = 1,
@@ -159,8 +158,6 @@ def write_lakesoul(
     concurrency: int | None = None,
 ) -> None:
     """Write a Ray Dataset to an existing LakeSoulTable."""
-    if mode != "append":
-        raise NotImplementedError("only append mode is supported")
     if not isinstance(dataset, Dataset):
         raise TypeError("dataset must be a ray.data.Dataset")
 

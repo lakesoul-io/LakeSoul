@@ -4,16 +4,14 @@
 
 import pytest
 
-from lakesoul.ray.read_lakesoul import read_lakesoul
-
+from .conftest import lakesoul_ray_dataset, lakesoul_scan
 
 TITANIC_TABLE = "titanic_raw"
 
 
 def _table_exists(table_name):
     try:
-        from lakesoul.metadata.meta_ops import get_arrow_schema_by_table_name
-        get_arrow_schema_by_table_name(table_name, namespace="default")
+        lakesoul_scan(table_name).schema
         return True
     except Exception:
         return False
@@ -28,7 +26,7 @@ requires_titanic = pytest.mark.skipif(
 @requires_titanic
 def test_titanic_table_readable(ray_session):
     """Verify titanic_raw can be read."""
-    ds = read_lakesoul(TITANIC_TABLE)
+    ds = lakesoul_ray_dataset(TITANIC_TABLE)
     assert ds.count() > 0
     assert "Survived" in ds.schema().names
 
@@ -36,11 +34,11 @@ def test_titanic_table_readable(ray_session):
 @requires_titanic
 def test_titanic_partition_filter(ray_session):
     """Verify partition filter works on split column."""
-    ds = read_lakesoul(TITANIC_TABLE, partitions={"split": "train"})
+    ds = lakesoul_ray_dataset(TITANIC_TABLE, partitions={"split": "train"})
     count = ds.count()
     assert count > 0
     # Check that all rows have split="train" (if retain_partition_columns=True)
-    ds2 = read_lakesoul(
+    ds2 = lakesoul_ray_dataset(
         TITANIC_TABLE,
         partitions={"split": "train"},
         retain_partition_columns=True,
@@ -52,7 +50,11 @@ def test_titanic_partition_filter(ray_session):
 @requires_titanic
 def test_basic_feature_engineering(ray_session):
     """Run a subset of the feature engineering pipeline."""
-    ds = read_lakesoul(TITANIC_TABLE, partitions={"split": "train"}, batch_size=4096)
+    ds = lakesoul_ray_dataset(
+        TITANIC_TABLE,
+        partitions={"split": "train"},
+        batch_size=4096,
+    )
 
     # Test extract_title
     def extract_title(batch):
@@ -81,8 +83,8 @@ def test_basic_feature_engineering(ray_session):
 @requires_titanic
 def test_pipeline_consistency(ray_session):
     """Running pipeline twice with same parameters should produce same output."""
-    ds1 = read_lakesoul(TITANIC_TABLE, partitions={"split": "train"})
-    ds2 = read_lakesoul(TITANIC_TABLE, partitions={"split": "train"})
+    ds1 = lakesoul_ray_dataset(TITANIC_TABLE, partitions={"split": "train"})
+    ds2 = lakesoul_ray_dataset(TITANIC_TABLE, partitions={"split": "train"})
 
     assert ds1.count() == ds2.count()
     assert ds1.schema() == ds2.schema()
@@ -97,7 +99,11 @@ def test_full_pipeline_runs(ray_session):
 
     from ray.data import DataContext
 
-    ds = read_lakesoul(TITANIC_TABLE, partitions={"split": "train"}, batch_size=4096)
+    ds = lakesoul_ray_dataset(
+        TITANIC_TABLE,
+        partitions={"split": "train"},
+        batch_size=4096,
+    )
 
     def extract_title(batch):
         titles = []
@@ -134,7 +140,9 @@ def test_full_pipeline_runs(ray_session):
         batch["Age"] = [float(a) if a is not None else median_age for a in batch["Age"]]
         embarked_vals = [e for e in batch["Embarked"] if e is not None]
         mode_emb = Counter(embarked_vals).most_common(1)[0][0] if embarked_vals else "S"
-        batch["Embarked"] = [e if e is not None else mode_emb for e in batch["Embarked"]]
+        batch["Embarked"] = [
+            e if e is not None else mode_emb for e in batch["Embarked"]
+        ]
         batch["Fare"] = [float(f) if f is not None else 0.0 for f in batch["Fare"]]
         return batch
 

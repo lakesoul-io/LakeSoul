@@ -4,24 +4,22 @@
 
 import pyarrow as pa
 
-from lakesoul.ray.read_lakesoul import read_lakesoul
-
-from .conftest import TABLE_NAME_PART, TABLE_NAME_TEST_LFS
+from .conftest import TABLE_NAME_PART, TABLE_NAME_TEST_LFS, lakesoul_ray_dataset
 
 
 def test_row_count_part(ray_session):
-    ds = read_lakesoul(TABLE_NAME_PART)
+    ds = lakesoul_ray_dataset(TABLE_NAME_PART)
     assert ds.count() == 20000
 
 
 def test_row_count_test_lfs(ray_session):
-    ds = read_lakesoul(TABLE_NAME_TEST_LFS)
+    ds = lakesoul_ray_dataset(TABLE_NAME_TEST_LFS)
     assert ds.count() == 7
 
 
 def test_schema_vs_arrow(ray_session, part_schema: pa.Schema):
     """ray 2.10: ray's schema is not a subclass of pyarrow's"""
-    ray_schema = read_lakesoul(TABLE_NAME_PART).schema().base_schema
+    ray_schema = lakesoul_ray_dataset(TABLE_NAME_PART).schema().base_schema
     arrow_schema = part_schema
 
     assert len(ray_schema) == len(arrow_schema), (
@@ -46,7 +44,7 @@ def test_schema_vs_arrow(ray_session, part_schema: pa.Schema):
 
 
 def test_data_values_vs_arrow(ray_session, part_arrow_table):
-    ray_ds = read_lakesoul(TABLE_NAME_PART)
+    ray_ds = lakesoul_ray_dataset(TABLE_NAME_PART)
     # batch in ray is a pyarrow Table not RecordBatch
     batches = list(ray_ds.iter_batches(batch_format="pyarrow"))
 
@@ -71,14 +69,16 @@ def test_data_values_vs_arrow(ray_session, part_arrow_table):
 
 
 def test_output_format_iter_rows(ray_session):
-    ds = read_lakesoul(TABLE_NAME_PART)
+    ds = lakesoul_ray_dataset(TABLE_NAME_PART)
     rows = list(ds.iter_rows())
     assert len(rows) == 20000
-    assert set(rows[0].keys()) == set(read_lakesoul(TABLE_NAME_PART).schema().names)
+    assert set(rows[0].keys()) == set(
+        lakesoul_ray_dataset(TABLE_NAME_PART).schema().names
+    )
 
 
 def test_output_format_iter_batches(ray_session, part_schema):
-    ds = read_lakesoul(TABLE_NAME_PART)
+    ds = lakesoul_ray_dataset(TABLE_NAME_PART)
     total_rows = 0
     expected_columns = part_schema.names
     for batch in ds.iter_batches(batch_format="pyarrow"):
@@ -89,7 +89,7 @@ def test_output_format_iter_batches(ray_session, part_schema):
 
 
 def test_output_full_arrow_table(ray_session, part_arrow_table):
-    ray_ds = read_lakesoul(TABLE_NAME_PART)
+    ray_ds = lakesoul_ray_dataset(TABLE_NAME_PART)
     batches = list(ray_ds.iter_batches(batch_format="pyarrow"))
     ray_table = pa.concat_tables(batches)
 

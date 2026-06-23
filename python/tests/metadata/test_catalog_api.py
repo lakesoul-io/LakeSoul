@@ -7,7 +7,7 @@ import pyarrow as pa
 
 import lakesoul.catalog as catalog_module
 from lakesoul.catalog import LakeSoulCatalog, LakeSoulTable, PostgresMetadataConfig
-from lakesoul.metadata import LakeSoulScanPlanPartition
+from lakesoul.metadata import LakeSoulScanPlanPartition, TableInfo
 
 
 class DummyNativeClient:
@@ -47,7 +47,7 @@ class DummyNativeClient:
         self,
         table_name: str,
         namespace: str,
-    ) -> SimpleNamespace:
+    ) -> TableInfo:
         return _table_info(table_name=table_name, table_namespace=namespace)
 
     def create_table(self, table_name: str, **kwargs: object) -> None:
@@ -65,7 +65,7 @@ class DummyNativeClient:
         self.commits.append((table_name, namespace, files))
 
     def get_partition_and_pk_cols(
-        self, table_info: SimpleNamespace
+        self, table_info: TableInfo
     ) -> tuple[list[str], list[str]]:
         parts = table_info.partitions.split(";")
         return (
@@ -96,7 +96,7 @@ class DummyNativeClient:
         return self.schema, None
 
 
-def _table_info(**kwargs: object) -> SimpleNamespace:
+def _table_info(**kwargs: object) -> TableInfo:
     values = {
         "table_id": "table-id",
         "table_name": "events",
@@ -106,8 +106,8 @@ def _table_info(**kwargs: object) -> SimpleNamespace:
         "properties": '{"hashBucketNum":"4","owner":"data"}',
         "partitions": "dt;id",
     }
-    values.update(kwargs)
-    return SimpleNamespace(**values)
+    values.update(kwargs)  # type: ignore
+    return TableInfo(**values)
 
 
 def test_catalog_builds_native_client_from_explicit_pg_config(monkeypatch) -> None:
@@ -259,23 +259,6 @@ def test_write_arrow_commits_written_files(monkeypatch) -> None:
             [("-5", "file:///tmp/events/part-0.parquet", 10, ["id"])],
         )
     ]
-
-
-def test_write_arrow_rejects_non_append_mode() -> None:
-    table = LakeSoulTable(
-        LakeSoulCatalog(_client=DummyNativeClient("host=localhost dbname=db")),
-        _table_info(),
-    )
-
-    try:
-        table.write_arrow(
-            pa.table({"id": [1]}),
-            mode="overwrite",  # type: ignore[arg-type]
-        )
-    except NotImplementedError as error:
-        assert "append" in str(error)
-    else:
-        raise AssertionError("expected NotImplementedError")
 
 
 def test_scan_resolves_catalog_context_to_scan_config() -> None:
