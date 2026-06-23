@@ -1,0 +1,326 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Compatibility CI
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/compatibility-ci.yml"
+      - "Cargo.toml"
+      - "rust/**"
+      - "python/**"
+      - "pom.xml"
+      - "lakesoul-common/**"
+      - "lakesoul-spark/**"
+      - "lakesoul-flink/**"
+      - "native-io/**"
+    branches:
+      - "main"
+      - "release/**"
+  schedule:
+    # 02:00 Asia/Shanghai, daily.
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+    inputs:
+      storage:
+        description: "Storage backend to validate"
+        required: true
+        default: "file"
+        type: choice
+        options:
+          - "file"
+          - "rustfs"
+          - "all"
+      engines:
+        description: "Engine group to validate"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - "all"
+          - "python"
+          - "jvm"
+          - "rust"
+      cases:
+        description: "Case breadth"
+        required: true
+        default: "smoke"
+        type: choice
+        options:
+          - "smoke"
+          - "full"
+
+env:
+  RUSTFLAGS: "-Awarnings"
+  LAKESOUL_PG_URL: "jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified"
+  LAKESOUL_PG_USERNAME: "lakesoul_test"
+  LAKESOUL_PG_PASSWORD: "lakesoul_test"
+  LAKESOUL_IO_USE_V2_MERGE: "true"
+
+jobs:
+  compatibility-file:
+    name: File Storage Compatibility
+    runs-on: ubuntu-24.04
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.storage == 'file' || inputs.storage == 'all' }}
+    services:
+      postgres:
+        image: postgres:14.5
+        env:
+          POSTGRES_PASSWORD: lakesoul_test
+          POSTGRES_USER: lakesoul_test
+          POSTGRES_DB: lakesoul_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+          --name lakesoul-compat-pg
+        ports:
+          - 5432:5432
+    steps:
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: true
+      - uses: actions/checkout@v4
+      - name: Set up JDK 11
+        uses: actions/setup-java@v4
+        with:
+          java-version: "11"
+          distribution: "temurin"
+          cache: maven
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          version: "23.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-suffix: "lakesoul-compat-ci"
+          cache-dependency-glob: |
+            python/pyproject.toml
+            python/uv.lock
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> rust/target"
+          env-vars: "JAVA_HOME"
+      - name: Install psql
+        run: sudo apt-get install -y postgresql-client-16
+      - name: Init PostgreSQL metadata
+        run: ./script/meta_init_for_local_test.sh -j 1
+      - name: Build native libraries
+        run: cargo -q build --release -p lakesoul-io-c -p lakesoul-metadata-c
+      - name: Build Spark and Flink test artifacts
+        run: mvn -q -B package -pl lakesoul-spark,lakesoul-flink -am -Pcross-build -DskipTests --file pom.xml
+      - name: Build Python package
+        working-directory: python
+        run: |
+          uv sync --python 3.10 --extra pandas --extra ray --extra pyspark
+          uv run maturin develop
+      - name: Run compatibility matrix
+        env:
+          LAKESOUL_SOURCE_DIR: ${{ github.workspace }}
+          PYTHONPATH: tests:src
+        working-directory: python
+        run: |
+          EVENT_NAME="${{ github.event_name }}"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            MODE="${{ inputs.cases }}"
+            ENGINES="${{ inputs.engines }}"
+          elif [ "$EVENT_NAME" = "schedule" ]; then
+            MODE="full"
+            ENGINES="all"
+          else
+            MODE="smoke"
+            ENGINES="all"
+          fi
+          uv run python -m compat.run_matrix \
+            --mode "$MODE" \
+            --cases "$MODE" \
+            --engines "$ENGINES" \
+            --storage "file:///tmp/lakesoul-compat" \
+            --output-dir "${{ github.workspace }}/compatibility-artifacts/file"
+      - name: Dump PostgreSQL metadata
+        if: always()
+        run: |
+          mkdir -p compatibility-artifacts/file/postgres
+          PGPASSWORD=lakesoul_test psql -h 127.0.0.1 -p 5432 -U lakesoul_test -d lakesoul_test -c "select * from table_info;" > compatibility-artifacts/file/postgres/table_info.txt
+          PGPASSWORD=lakesoul_test psql -h 127.0.0.1 -p 5432 -U lakesoul_test -d lakesoul_test -c "select * from data_commit_info;" > compatibility-artifacts/file/postgres/data_commit_info.txt
+      - name: Upload compatibility artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compatibility-file-artifacts
+          path: compatibility-artifacts/file
+          retention-days: 7
+          if-no-files-found: warn
+
+  compatibility-rustfs:
+    name: RustFS Compatibility
+    runs-on: ubuntu-24.04
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.storage == 'rustfs' || inputs.storage == 'all')) }}
+    services:
+      postgres:
+        image: postgres:14.5
+        env:
+          POSTGRES_PASSWORD: lakesoul_test
+          POSTGRES_USER: lakesoul_test
+          POSTGRES_DB: lakesoul_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+          --name lakesoul-compat-rustfs-pg
+        ports:
+          - 5432:5432
+      rustfs:
+        image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/rustfs/rustfs:1.0.0-beta.3
+        ports:
+          - "9000:9000"
+          - "9001:9001"
+        env:
+          RUSTFS_ACCESS_KEY: rustfsadmin
+          RUSTFS_SECRET_KEY: rustfsadmin
+          RUSTFS_CONSOLE_ENABLE: true
+    steps:
+      - name: Wait for RustFS
+        run: |
+          for i in {1..60}; do
+            if curl -fsS http://127.0.0.1:9000/health \
+              && curl -fsS http://127.0.0.1:9001/rustfs/console/health; then
+              echo "RustFS is ready"
+              exit 0
+            fi
+            echo "Waiting for RustFS..."
+            sleep 2
+          done
+          echo "RustFS failed to become ready"
+          exit 1
+      - name: Setup RustFS bucket
+        run: |
+          docker run --rm --network host \
+            --entrypoint /bin/sh \
+            swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/rustfs/rc:v0.1.16 \
+            -c '
+              set -e
+              until rc alias set rustfs http://127.0.0.1:9000 rustfsadmin rustfsadmin; do
+                echo "RustFS is not ready yet, retrying in 2 seconds..."
+                sleep 2
+              done
+              until rc mb rustfs/lakesoul-test-bucket --ignore-existing; do
+                echo "Bucket creation failed, retrying in 2 seconds..."
+                sleep 2
+              done
+            '
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: true
+      - uses: actions/checkout@v4
+      - name: Set up JDK 11
+        uses: actions/setup-java@v4
+        with:
+          java-version: "11"
+          distribution: "temurin"
+          cache: maven
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          version: "23.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-suffix: "lakesoul-compat-ci"
+          cache-dependency-glob: |
+            python/pyproject.toml
+            python/uv.lock
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> rust/target"
+          env-vars: "JAVA_HOME"
+      - name: Install psql
+        run: sudo apt-get install -y postgresql-client-16
+      - name: Init PostgreSQL metadata
+        run: ./script/meta_init_for_local_test.sh -j 1
+      - name: Build native libraries
+        run: cargo -q build --release -p lakesoul-io-c -p lakesoul-metadata-c
+      - name: Build Spark and Flink test artifacts
+        run: mvn -q -B package -pl lakesoul-spark,lakesoul-flink -am -Pcross-build -DskipTests --file pom.xml
+      - name: Build Python package
+        working-directory: python
+        run: |
+          uv sync --python 3.10 --extra pandas --extra ray --extra pyspark
+          uv run maturin develop
+      - name: Run RustFS compatibility matrix
+        env:
+          LAKESOUL_SOURCE_DIR: ${{ github.workspace }}
+          LAKESOUL_COMPAT_S3_BUCKET: lakesoul-test-bucket
+          LAKESOUL_COMPAT_S3_ENDPOINT: http://127.0.0.1:9000
+          LAKESOUL_COMPAT_S3_ACCESS_KEY: rustfsadmin
+          LAKESOUL_COMPAT_S3_SECRET_KEY: rustfsadmin
+          PYTHONPATH: tests:src
+        working-directory: python
+        run: |
+          EVENT_NAME="${{ github.event_name }}"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            MODE="${{ inputs.cases }}"
+            ENGINES="${{ inputs.engines }}"
+          else
+            MODE="full"
+            ENGINES="all"
+          fi
+          uv run python -m compat.run_matrix \
+            --mode "$MODE" \
+            --cases "$MODE" \
+            --engines "$ENGINES" \
+            --storage "s3://lakesoul-test-bucket/compat" \
+            --output-dir "${{ github.workspace }}/compatibility-artifacts/rustfs"
+      - name: Dump PostgreSQL metadata
+        if: always()
+        run: |
+          mkdir -p compatibility-artifacts/rustfs/postgres
+          PGPASSWORD=lakesoul_test psql -h 127.0.0.1 -p 5432 -U lakesoul_test -d lakesoul_test -c "select * from table_info;" > compatibility-artifacts/rustfs/postgres/table_info.txt
+          PGPASSWORD=lakesoul_test psql -h 127.0.0.1 -p 5432 -U lakesoul_test -d lakesoul_test -c "select * from data_commit_info;" > compatibility-artifacts/rustfs/postgres/data_commit_info.txt
+      - name: Upload compatibility artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compatibility-rustfs-artifacts
+          path: compatibility-artifacts/rustfs
+          retention-days: 7
+          if-no-files-found: warn
