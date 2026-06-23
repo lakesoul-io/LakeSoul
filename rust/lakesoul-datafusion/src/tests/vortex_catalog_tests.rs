@@ -25,7 +25,7 @@ use crate::catalog::{
 use crate::cli::CoreArgs;
 use crate::create_lakesoul_session_ctx;
 use crate::lakesoul_table::LakeSoulTable;
-use crate::serialize::arrow_java::ArrowJavaSchema;
+use crate::ser::arrow_java::ArrowJavaSchema;
 
 fn test_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
