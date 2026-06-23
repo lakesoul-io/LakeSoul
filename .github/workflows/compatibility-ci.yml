@@ -133,7 +133,7 @@ jobs:
       - name: Build Python package
         working-directory: python
         run: |
-          uv sync --python 3.10 --extra pandas --extra ray --extra pyspark
+          uv sync --python 3.10 --extra pandas --extra ray --extra daft --extra pyspark
           uv run maturin develop
       - name: Run compatibility matrix
         env:
@@ -284,7 +284,7 @@ jobs:
       - name: Build Python package
         working-directory: python
         run: |
-          uv sync --python 3.10 --extra pandas --extra ray --extra pyspark
+          uv sync --python 3.10 --extra pandas --extra ray --extra daft --extra pyspark
           uv run maturin develop
       - name: Run RustFS compatibility matrix
         env:

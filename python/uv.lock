@@ -847,7 +847,6 @@ version = "1.2.0.dev0"
 source = { editable = "." }
 dependencies = [
     { name = "colorlog" },
-    { name = "daft" },
     { name = "numpy" },
     { name = "protobuf" },
     { name = "pyarrow" },
@@ -856,6 +855,7 @@ dependencies = [
 
 [package.optional-dependencies]
 all = [
+    { name = "daft" },
     { name = "datasets" },
     { name = "duckdb" },
     { name = "pandas" },
@@ -863,6 +863,9 @@ all = [
     { name = "ray" },
     { name = "torch", version = "2.4.1", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(python_full_version < '3.13' and platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (python_full_version < '3.14' and sys_platform == 'darwin')" },
     { name = "torch", version = "2.4.1+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(python_full_version >= '3.14' and sys_platform == 'darwin') or (python_full_version >= '3.13' and sys_platform == 'linux') or (platform_machine != 'aarch64' and sys_platform == 'linux') or (platform_python_implementation != 'CPython' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+]
+daft = [
+    { name = "daft" },
 ]
 datasets = [
     { name = "datasets" },
@@ -886,6 +889,7 @@ torch = [
 
 [package.dev-dependencies]
 all = [
+    { name = "daft" },
     { name = "datasets" },
     { name = "duckdb" },
     { name = "grpcio-tools" },
@@ -896,6 +900,7 @@ all = [
     { name = "torch", version = "2.4.1+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(python_full_version >= '3.14' and sys_platform == 'darwin') or (python_full_version >= '3.13' and sys_platform == 'linux') or (platform_machine != 'aarch64' and sys_platform == 'linux') or (platform_python_implementation != 'CPython' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
 ]
 dev = [
+    { name = "daft" },
     { name = "datasets" },
     { name = "duckdb" },
     { name = "grpcio-tools" },
@@ -910,7 +915,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "colorlog", specifier = ">=6" },
-    { name = "daft", specifier = ">=0.7.15" },
+    { name = "daft", marker = "extra == 'all'", specifier = ">=0.7.15" },
+    { name = "daft", marker = "extra == 'daft'", specifier = ">=0.7.15" },
     { name = "datasets", marker = "extra == 'all'", specifier = ">=2.20" },
     { name = "datasets", marker = "extra == 'datasets'", specifier = ">=2.20" },
     { name = "duckdb", marker = "extra == 'all'", specifier = ">=1.4.0" },
@@ -928,10 +934,11 @@ requires-dist = [
     { name = "torch", marker = "extra == 'torch'", specifier = ">=1.11.0,<2.5", index = "https://download.pytorch.org/whl/cpu" },
     { name = "typing-extensions", specifier = ">=4.8" },
 ]
-provides-extras = ["torch", "pandas", "datasets", "ray", "pyspark", "duckdb", "all"]
+provides-extras = ["torch", "pandas", "datasets", "ray", "daft", "pyspark", "duckdb", "all"]
 
 [package.metadata.requires-dev]
 all = [
+    { name = "daft", specifier = ">=0.7.15" },
     { name = "datasets", specifier = ">=2.14" },
     { name = "duckdb" },
     { name = "grpcio-tools", specifier = "==1.70" },
@@ -941,6 +948,7 @@ all = [
     { name = "torch", specifier = ">=1.11,<2.5", index = "https://download.pytorch.org/whl/cpu" },
 ]
 dev = [
+    { name = "daft", specifier = ">=0.7.15" },
     { name = "datasets", specifier = ">=2.14" },
     { name = "duckdb" },
     { name = "grpcio-tools", specifier = "==1.70" },

@@ -2,7 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import decimal
+
 import pyarrow as pa
+import pyarrow.compute as pc
 import pytest
 
 from .conftest import (
@@ -93,6 +96,42 @@ class TestParameterBoundaries:
             lakesoul_scan(TABLE_NAME_PART, thread_count=-1)
 
 
+class TestFilterExpressions:
+    def test_simple_filter_matches_arrow_reader(self, ray_session):
+        filter = pc.field("p_size") == 50
+        ds = lakesoul_ray_dataset(
+            TABLE_NAME_PART,
+            columns=("p_name", "p_size"),
+            filter=filter,
+        )
+
+        table = _ray_to_table(ds)
+
+        assert table.num_rows == 392
+        assert table.schema.names == ["p_name", "p_size"]
+        assert table.column("p_size").combine_chunks().to_pylist() == [50] * 392
+
+    def test_compound_decimal_filter_matches_arrow_reader(self, ray_session):
+        threshold = pa.array(
+            [decimal.Decimal("1500.00")],
+            type=pa.decimal128(15, 2),
+        )[0]
+        filter = (pc.field("p_retailprice") >= threshold) & (
+            pc.field("p_size") == 50
+        )
+        ds = lakesoul_ray_dataset(
+            TABLE_NAME_PART,
+            columns=("p_size", "p_retailprice"),
+            filter=filter,
+        )
+
+        table = _ray_to_table(ds)
+
+        assert table.num_rows == 176
+        assert table.schema.names == ["p_size", "p_retailprice"]
+        assert table.column("p_size").combine_chunks().to_pylist() == [50] * 176
+
+
 class TestRetainPartitionColumns:
     def test_retain_false(self, ray_session):
         ds = lakesoul_ray_dataset(TABLE_NAME_PART, retain_partition_columns=False)
@@ -164,3 +203,11 @@ class TestTypeCoverage:
             assert rf.type == af.type, (
                 f"Type mismatch: {rf.name}: {rf.type} vs {af.type}"
             )
+
+
+def _ray_to_table(ds) -> pa.Table:
+    batches = list(ds.iter_batches(batch_format="pyarrow"))
+    if not batches:
+        schema = getattr(ds.schema(), "base_schema", ds.schema())
+        return pa.Table.from_batches([], schema=schema)
+    return pa.concat_tables(batches, promote_options="default")

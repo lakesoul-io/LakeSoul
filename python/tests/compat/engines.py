@@ -95,7 +95,7 @@ class PyArrowEngine(Engine):
             schema=case.schema,
             partition_by=case.partition_by,
             primary_keys=case.primary_keys,
-            hash_bucket_num=case.hash_bucket_num,
+            hash_bucket_num=_python_hash_bucket_num(case),
         )
         for batch in case.batches:
             table.write_arrow(batch)
@@ -220,7 +220,7 @@ class RayEngine(Engine):
             schema=case.schema,
             partition_by=case.partition_by,
             primary_keys=case.primary_keys,
-            hash_bucket_num=case.hash_bucket_num,
+            hash_bucket_num=_python_hash_bucket_num(case),
         )
         for batch in case.batches:
             table.write_ray(ray.data.from_arrow(batch))
@@ -265,19 +265,45 @@ class RayEngine(Engine):
 
 class DaftEngine(Engine):
     name = "daft"
-    can_write = False
+
+    def write_case(self, case: CaseSpec, ref: TableRef, ctx: CompatContext) -> None:
+        import daft
+        from lakesoul import LakeSoulCatalog
+
+        _remove_local_table_path(ref.path)
+        catalog = LakeSoulCatalog.from_env(object_store_options=ctx.object_store_options)
+        catalog.drop_table(ref.table_name, if_exists=True)
+        table = catalog.create_table(
+            ref.table_name,
+            path=ref.path,
+            schema=case.schema,
+            partition_by=case.partition_by,
+            primary_keys=case.primary_keys,
+            hash_bucket_num=_python_hash_bucket_num(case),
+        )
+        for batch in case.batches:
+            table.write_daft(daft.from_arrow(batch))
 
     def read_case(self, case: CaseSpec, ref: TableRef, ctx: CompatContext) -> pa.Table:
-        import daft
+        from lakesoul import LakeSoulCatalog
 
-        arrow_table = PyArrowEngine().read_case(case, ref, ctx)
-        daft_df = daft.from_arrow(arrow_table)
+        scan = LakeSoulCatalog.from_env(
+            object_store_options=ctx.object_store_options
+        ).scan(
+            ref.table_name,
+            columns=case.read_columns,
+            filter=_arrow_filter(case),
+            retain_partition_columns=True,
+        )
+        daft_df = scan.to_daft()
         if hasattr(daft_df, "collect"):
             daft_df = daft_df.collect()
         if hasattr(daft_df, "to_arrow"):
             return normalize_table(daft_df.to_arrow(), case.read_schema)
         if hasattr(daft_df, "to_arrow_iter"):
             tables = list(daft_df.to_arrow_iter())
+            if not tables:
+                return pa.Table.from_batches([], schema=case.read_schema)
             return normalize_table(pa.concat_tables(tables), case.read_schema)
         raise RuntimeError("Daft DataFrame does not expose a supported Arrow export API")
 
@@ -480,6 +506,12 @@ def _sql_type(field: pa.Field, engine: str) -> str:
 
 def _quote_ident(name: str, engine: str) -> str:
     return f"`{name}`" if engine == "flink" else name
+
+
+def _python_hash_bucket_num(case: CaseSpec) -> int | None:
+    if case.primary_keys or case.hash_bucket_num != 1:
+        return case.hash_bucket_num
+    return None
 
 
 def _datafusion_create_table_sql(case: CaseSpec, ref: TableRef) -> str:

@@ -45,13 +45,17 @@ def test_smoke_plan_keeps_matrix_bounded() -> None:
     write_tasks, read_tasks = _plan_tasks(
         "smoke",
         ["basic_append", "partitioned_append", "pk_upsert", "schema_types"],
-        ["spark", "flink", "pyarrow", "datafusion"],
+        ["spark", "flink", "pyarrow", "datafusion", "daft"],
         ["spark", "flink", "pyspark", "pyarrow", "datafusion", "ray", "daft"],
         engines,
     )
 
     assert ("flink", "basic_append") in write_tasks
     assert ("datafusion", "pk_upsert") in write_tasks
+    assert ("daft", "basic_append") in write_tasks
+    assert ("daft", "pk_upsert") in write_tasks
     assert ("spark", "daft", "basic_append") in read_tasks
+    assert ("daft", "pyarrow", "pk_upsert") in read_tasks
+    assert ("daft", "daft", "basic_append") in read_tasks
     assert ("pyarrow", "ray", "partitioned_append") in read_tasks
     assert ("flink", "daft", "schema_types") not in read_tasks

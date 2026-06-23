@@ -19,6 +19,9 @@ from lakesoul.metadata import NativeMetadataClient, PostgresMetadataConfig, Tabl
 
 DEFAULT_SCAN_BATCH_SIZE: int = 2**10
 PhysicalFormat = Literal["parquet", "vortex"]
+_ASCII_LOWER_TRANS = str.maketrans(
+    {chr(code): chr(code + 32) for code in range(ord("A"), ord("Z") + 1)}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,7 +115,10 @@ class LakeSoulCatalog:
 
     def table(self, name: str, namespace: str | None = None) -> LakeSoulTable:
         namespace = self._resolve_namespace(namespace)
-        table_info = self._client.get_table_info_by_name(name, namespace)
+        table_info = self._client.get_table_info_by_name(
+            _case_fold_identifier(name),
+            namespace,
+        )
         return LakeSoulTable(self, table_info)
 
     def scan(
@@ -182,32 +188,45 @@ class LakeSoulCatalog:
         namespace: str | None = None,
         partition_by: Sequence[str] = (),
         primary_keys: Sequence[str] = (),
-        hash_bucket_num: int = 1,
+        hash_bucket_num: int | None = None,
         properties: Mapping[str, str] | None = None,
         domain: str = "public",
     ) -> LakeSoulTable:
         if not isinstance(schema, pa.Schema):
             raise TypeError("schema must be a pyarrow.Schema")
-        _validate_columns("partition_by", partition_by, schema)
-        _validate_columns("primary_keys", primary_keys, schema)
-        if isinstance(hash_bucket_num, bool) or hash_bucket_num <= 0:
-            raise ValueError("hash_bucket_num must be greater than zero")
+        table_name = _case_fold_identifier(name)
+        normalized_schema = _case_fold_schema(schema)
+        normalized_partition_by = _case_fold_columns("partition_by", partition_by)
+        normalized_primary_keys = _case_fold_columns("primary_keys", primary_keys)
+        _validate_columns("partition_by", normalized_partition_by, normalized_schema)
+        _validate_columns("primary_keys", normalized_primary_keys, normalized_schema)
+        normalized_schema = _make_primary_keys_non_nullable(
+            normalized_schema,
+            normalized_primary_keys,
+        )
+        if hash_bucket_num is not None:
+            _validate_hash_bucket_num(hash_bucket_num)
 
         props = dict(properties or {})
-        if hash_bucket_num != 1 or "hashBucketNum" not in props:
+        if hash_bucket_num is not None:
             props["hashBucketNum"] = str(hash_bucket_num)
+        elif normalized_primary_keys and "hashBucketNum" not in props:
+            props["hashBucketNum"] = "4"
 
         namespace = self._resolve_namespace(namespace)
         self._client.create_table(
-            name,
+            table_name,
             namespace=namespace,
             table_path=path,
-            table_schema=schema,
+            table_schema=normalized_schema,
             properties=props,
-            partitions={"range": list(partition_by), "hash": list(primary_keys)},
+            partitions={
+                "range": list(normalized_partition_by),
+                "hash": list(normalized_primary_keys),
+            },
             domain=domain,
         )
-        return self.table(name, namespace)
+        return self.table(table_name, namespace)
 
     def drop_table(
         self,
@@ -217,6 +236,7 @@ class LakeSoulCatalog:
         if_exists: bool = False,
     ) -> None:
         namespace = self._resolve_namespace(namespace)
+        name = _case_fold_identifier(name)
         try:
             self._client.drop_table(name, namespace)
         except RuntimeError as error:
@@ -441,6 +461,34 @@ class LakeSoulTable:
             concurrency=concurrency,
         )
 
+    def write_daft(
+        self,
+        dataframe: Any,
+        *,
+        format: PhysicalFormat = "parquet",
+        batch_size: int = 8192,
+        thread_num: int | None = 1,
+        max_file_size: int | None = None,
+        max_row_group_size: int = 250_000,
+        object_store_options: Mapping[str, str] | None = None,
+        options: Mapping[str, str] | None = None,
+        results_buffer_size: int | Literal["num_cpus"] = "num_cpus",
+    ) -> WriteResult:
+        from lakesoul.daft import write_lakesoul
+
+        return write_lakesoul(
+            dataframe,
+            self,
+            format=format,
+            batch_size=batch_size,
+            thread_num=thread_num,
+            max_file_size=max_file_size,
+            max_row_group_size=max_row_group_size,
+            object_store_options=object_store_options,
+            options=options,
+            results_buffer_size=results_buffer_size,
+        )
+
     def drop(self, *, if_exists: bool = False) -> None:
         self._catalog.drop_table(self.name, self.namespace, if_exists=if_exists)
 
@@ -588,6 +636,11 @@ class LakeSoulScan:
 
         return read_lakesoul(self)
 
+    def to_daft(self) -> Any:
+        from lakesoul.daft import read_lakesoul
+
+        return read_lakesoul(self)
+
     def to_torch(self) -> Any:
         from lakesoul.torch import Dataset
 
@@ -716,6 +769,68 @@ def _validate_scan_runtime_options(
         )
     if rank >= world_size:
         raise ValueError(f"rank {rank} is out of range; world_size = {world_size}")
+
+
+def _case_fold_identifier(value: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise TypeError("identifier must be a non-empty string")
+    return value.translate(_ASCII_LOWER_TRANS)
+
+
+def _case_fold_columns(name: str, columns: Sequence[str]) -> tuple[str, ...]:
+    if isinstance(columns, (str, bytes)) or not isinstance(columns, Sequence):
+        raise TypeError(f"{name} must be a sequence of strings")
+    values = tuple(_case_fold_identifier(column) for column in columns)
+    if len(values) != len(set(values)):
+        raise ValueError(f"{name} must not contain duplicate columns")
+    return values
+
+
+def _case_fold_schema(schema: pa.Schema) -> pa.Schema:
+    fields = []
+    names = []
+    for field in schema:
+        name = _case_fold_identifier(field.name)
+        fields.append(
+            pa.field(
+                name,
+                field.type,
+                nullable=field.nullable,
+                metadata=field.metadata,
+            )
+        )
+        names.append(name)
+    if len(names) != len(set(names)):
+        raise ValueError("schema must not contain duplicate columns after case folding")
+    return pa.schema(fields, metadata=schema.metadata)
+
+
+def _make_primary_keys_non_nullable(
+    schema: pa.Schema,
+    primary_keys: Sequence[str],
+) -> pa.Schema:
+    primary_key_set = set(primary_keys)
+    if not primary_key_set:
+        return schema
+    fields = [
+        pa.field(
+            field.name,
+            field.type,
+            nullable=False if field.name in primary_key_set else field.nullable,
+            metadata=field.metadata,
+        )
+        for field in schema
+    ]
+    return pa.schema(fields, metadata=schema.metadata)
+
+
+def _validate_hash_bucket_num(hash_bucket_num: int) -> None:
+    if (
+        isinstance(hash_bucket_num, bool)
+        or not isinstance(hash_bucket_num, int)
+        or hash_bucket_num <= 0
+    ):
+        raise ValueError("hash_bucket_num must be greater than zero")
 
 
 def _validate_columns(name: str, columns: Sequence[str], schema: pa.Schema) -> None:

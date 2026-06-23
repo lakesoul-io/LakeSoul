@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 use arrow_pyarrow::PyArrowType;
 use arrow_schema::Schema;
 use lakesoul_metadata::{MetaDataClient, transfusion::DataFileInfo, utils::qualify_path};
-use proto::proto::entity::TableInfo;
+use proto::proto::entity::{CommitOp, TableInfo};
 use pyo3::{exceptions::PyRuntimeError, exceptions::PyValueError, prelude::*};
 
 use crate::install_module;
@@ -83,10 +83,12 @@ impl NativeMetadataClient {
         let files = py_files_to_data_file_info(files)?;
         py.detach(|| {
             RUNTIME
-                .block_on(
-                    self.client
-                        .commit_data_files(&table_name, &namespace, files),
-                )
+                .block_on(self.client.commit_data_files_with_commit_op(
+                    &table_name,
+                    &namespace,
+                    files,
+                    CommitOp::AppendCommit,
+                ))
                 .map_err(|error| PyRuntimeError::new_err(error.to_string()))
         })
     }
