@@ -7,12 +7,26 @@ import pyarrow as pa
 import pytest
 from duckdb import BinderException
 
-from lakesoul.arrow import lakesoul_dataset
+from lakesoul import LakeSoulCatalog
+
+
+_CATALOG: LakeSoulCatalog | None = None
+
+
+def _catalog() -> LakeSoulCatalog:
+    global _CATALOG
+    if _CATALOG is None:
+        _CATALOG = LakeSoulCatalog.from_env()
+    return _CATALOG
+
+
+def _dataset(table_name: str, **kwargs):
+    return _catalog().scan(table_name, **kwargs).to_arrow_dataset()
 
 
 def test_lakesoul_dataset():
     # before this make share tpch data(0.1) is ready
-    lds = lakesoul_dataset("part", batch_size=1024)
+    lds = _dataset("part", batch_size=1024)
 
     total_rows = 0
     total_cols = 0
@@ -25,7 +39,7 @@ def test_lakesoul_dataset():
 
 
 def test_dataset_parameters():
-    lds = lakesoul_dataset("part")
+    lds = _dataset("part")
     with pytest.raises(NotImplementedError) as _:
         _ = lds.scanner(columns=1)
     with pytest.raises(NotImplementedError) as _:
@@ -45,7 +59,7 @@ def test_dataset_parameters():
 
 
 def test_dataset_to_table():
-    lds = lakesoul_dataset("part")
+    lds = _dataset("part")
     table = lds.to_table()
     assert table.num_rows == 20000
 
@@ -55,7 +69,7 @@ def test_invalid_filter():
 
     with pytest.raises(pa.ArrowInvalid) as _:
         filter = pc.field("no_in_schema") == 50
-        scanner = lakesoul_dataset("part").scanner(filter=filter)
+        scanner = _dataset("part").scanner(filter=filter)
         _ = scanner.to_table()
 
 
@@ -65,24 +79,24 @@ def test_dataset_with_filter():
     import pyarrow.compute as pc
 
     filter = pc.field("p_size") == 50
-    scanner = lakesoul_dataset("part").scanner(filter=filter)
+    scanner = _dataset("part").scanner(filter=filter)
     table = scanner.to_table()
     assert len(table) == 392
 
     val = pa.array([decimal.Decimal("1500.00")], type=pa.decimal128(15, 2))
     filter = pc.field("p_retailprice") >= val[0]
-    scanner = lakesoul_dataset("part").scanner(filter=filter)
+    scanner = _dataset("part").scanner(filter=filter)
     table = scanner.to_table()
     assert len(table) == 8190
 
-    lds = lakesoul_dataset("part")
+    lds = _dataset("part")
     lds.filter(filter)
     scanner = lds.scanner()
     table = scanner.to_table()
     assert len(table) == 8190
 
     filter = (pc.field("p_retailprice") >= val[0]) & (pc.field("p_size") == 50)
-    scanner = lakesoul_dataset("part").scanner(filter=filter)
+    scanner = _dataset("part").scanner(filter=filter)
     table = scanner.to_table()
     assert len(table) == 176
 
@@ -94,7 +108,7 @@ def test_fragment_with_filter():
 
     val = pa.array([decimal.Decimal("1500.00")], type=pa.decimal128(15, 2))
     filter = (pc.field("p_retailprice") >= val[0]) & (pc.field("p_size") == 50)
-    fragment = list(lakesoul_dataset("part").get_fragments(filter=filter))[0]
+    fragment = list(_dataset("part").get_fragments(filter=filter))[0]
     scanner = fragment.scanner()
     table = scanner.to_table()
     assert len(table) == 176
@@ -109,13 +123,13 @@ def test_filter_override():
     decimal_filter = pc.field("p_retailprice") >= val[0]
     int_filter = pc.field("p_size") == 50
     # dataset
-    lds = lakesoul_dataset("part")
+    lds = _dataset("part")
     lds.filter(decimal_filter)
     scanner = lds.scanner(filter=int_filter)
     table = scanner.to_table()
     assert len(table) == 392
     # fragments
-    fragment = list(lakesoul_dataset("part").get_fragments(filter=decimal_filter))[0]
+    fragment = list(_dataset("part").get_fragments(filter=decimal_filter))[0]
     scanner = fragment.scanner(filter=int_filter)
     table = scanner.to_table()
     assert len(table) == 392
@@ -124,41 +138,41 @@ def test_filter_override():
 def test_prune_columns():
     # dataset
     cols = ["p_name"]
-    scanner = lakesoul_dataset("part").scanner(columns=cols)
+    scanner = _dataset("part").scanner(columns=cols)
     table = scanner.to_table()
     assert len(table.columns) == 1
 
     # fragment
-    fragment = list(lakesoul_dataset("part").get_fragments())[0]
+    fragment = list(_dataset("part").get_fragments())[0]
     scanner = fragment.scanner(columns=cols)
     table = scanner.to_table()
     assert len(table.columns) == 1
 
     cols = ["p_name", "p_size"]
-    scanner = lakesoul_dataset("part").scanner(columns=cols)
+    scanner = _dataset("part").scanner(columns=cols)
     table = scanner.to_table()
     assert len(table.columns) == 2
 
-    fragment = list(lakesoul_dataset("part").get_fragments())[0]
+    fragment = list(_dataset("part").get_fragments())[0]
     scanner = fragment.scanner(columns=cols)
     table = scanner.to_table()
     assert len(table.columns) == 2
 
     with pytest.raises(ValueError) as _:
         # no such field
-        scanner = lakesoul_dataset("part").scanner(columns=["not existed"])
+        scanner = _dataset("part").scanner(columns=["not existed"])
         table = scanner.to_table()
         _ = scanner.to_table()
 
     with pytest.raises(ValueError) as _:
         # no such field
-        fragment = list(lakesoul_dataset("part").get_fragments())[0]
+        fragment = list(_dataset("part").get_fragments())[0]
         scanner = fragment.scanner(columns=["not existed"])
         _ = scanner.to_table()
 
     with pytest.raises(ValueError) as _:
         # no such field
-        fragment = list(lakesoul_dataset("part").get_fragments())[0]
+        fragment = list(_dataset("part").get_fragments())[0]
         scanner = fragment.scanner(columns=["p_name", "not existed"])
         _ = scanner.to_table()
 
@@ -167,7 +181,7 @@ def test_duckdb_compatibility():
     import duckdb
 
     conn = duckdb.connect()
-    _lds = lakesoul_dataset("part")
+    _lds = _dataset("part")
     results = conn.sql("select * from _lds").arrow().read_all()
     assert len(results) == 20000
 
@@ -176,7 +190,7 @@ def test_duckdb_compatibility_with_filter_and_projections():
     import duckdb
 
     conn = duckdb.connect()
-    _lds = lakesoul_dataset("part")
+    _lds = _dataset("part")
     results = conn.execute("select * from _lds where p_size = 50").arrow().read_all()
     assert len(results) == 392
 
@@ -229,7 +243,7 @@ def test_duckdb_compatibility_with_filter_and_projections():
 
 
 def test_normal_lakesoul_table():
-    lds = lakesoul_dataset("test_lfs", batch_size=1024)
+    lds = _dataset("test_lfs", batch_size=1024)
 
     total_rows = 0
     for batch in lds.to_batches():
@@ -239,5 +253,5 @@ def test_normal_lakesoul_table():
 
 
 def test_debug():
-    lds = lakesoul_dataset("test_lfs", batch_size=1024, retain_partition_columns=True)
+    lds = _dataset("test_lfs", batch_size=1024, retain_partition_columns=True)
     print(lds.schema)

@@ -18,7 +18,6 @@ from lakesoul.io import IOConfig, Writer, WriteResult
 from lakesoul.metadata import NativeMetadataClient, PostgresMetadataConfig, TableInfo
 
 DEFAULT_SCAN_BATCH_SIZE: int = 2**10
-WriteMode = Literal["append"]
 PhysicalFormat = Literal["parquet", "vortex"]
 
 
@@ -131,6 +130,12 @@ class LakeSoulCatalog:
         retain_partition_columns: bool = False,
         object_store_options: Mapping[str, str] | None = None,
     ) -> LakeSoulScan:
+        _validate_scan_runtime_options(
+            batch_size=batch_size,
+            thread_count=thread_count,
+            rank=rank,
+            world_size=world_size,
+        )
         return self.table(name, namespace).scan(
             partitions=partitions,
             columns=columns,
@@ -373,7 +378,6 @@ class LakeSoulTable:
         self,
         data: pa.RecordBatch | pa.Table | pa.RecordBatchReader,
         *,
-        mode: WriteMode = "append",
         format: PhysicalFormat = "parquet",
         batch_size: int = 8192,
         thread_num: int | None = 1,
@@ -382,7 +386,6 @@ class LakeSoulTable:
         object_store_options: Mapping[str, str] | None = None,
         options: Mapping[str, str] | None = None,
     ) -> WriteResult:
-        _validate_write_mode(mode)
         write_config = self.write_config(format=format)
         writer_config = IOConfig(
             path=write_config.path,
@@ -412,7 +415,6 @@ class LakeSoulTable:
         self,
         dataset: Any,
         *,
-        mode: WriteMode = "append",
         format: PhysicalFormat = "parquet",
         batch_size: int = 8192,
         thread_num: int | None = 1,
@@ -423,7 +425,6 @@ class LakeSoulTable:
         ray_remote_args: Mapping[str, Any] | None = None,
         concurrency: int | None = None,
     ) -> None:
-        _validate_write_mode(mode)
         from lakesoul.ray.write_lakesoul import write_lakesoul
 
         write_lakesoul(
@@ -461,6 +462,12 @@ class LakeSoulScan:
         retain_partition_columns: bool,
         object_store_options: Mapping[str, str],
     ) -> None:
+        _validate_scan_runtime_options(
+            batch_size=batch_size,
+            thread_count=thread_count,
+            rank=rank,
+            world_size=world_size,
+        )
         self._table = table
         self._partitions = dict(partitions)
         self._columns = columns
@@ -670,6 +677,47 @@ def _validate_filter(expression: ds.Expression | None) -> ds.Expression | None:
     return expression
 
 
+def _validate_scan_runtime_options(
+    *,
+    batch_size: int,
+    thread_count: int,
+    rank: int | None,
+    world_size: int | None,
+) -> None:
+    if (
+        isinstance(batch_size, bool)
+        or not isinstance(batch_size, int)
+        or batch_size <= 0
+    ):
+        raise ValueError(
+            f"batch_size must be a positive integer; {batch_size} is invalid"
+        )
+    if (
+        isinstance(thread_count, bool)
+        or not isinstance(thread_count, int)
+        or thread_count < 0
+    ):
+        raise ValueError(
+            f"thread_count must be a non-negative integer; {thread_count} is invalid"
+        )
+    if rank is None and world_size is None:
+        return
+    if rank is None or world_size is None:
+        raise ValueError("rank and world_size must be both set or both unset")
+    if isinstance(rank, bool) or not isinstance(rank, int) or rank < 0:
+        raise ValueError(f"rank must be a non-negative integer; {rank} is invalid")
+    if (
+        isinstance(world_size, bool)
+        or not isinstance(world_size, int)
+        or world_size <= 0
+    ):
+        raise ValueError(
+            f"world_size must be a positive integer; {world_size} is invalid"
+        )
+    if rank >= world_size:
+        raise ValueError(f"rank {rank} is out of range; world_size = {world_size}")
+
+
 def _validate_columns(name: str, columns: Sequence[str], schema: pa.Schema) -> None:
     if isinstance(columns, (str, bytes)) or not isinstance(columns, Sequence):
         raise TypeError(f"{name} must be a sequence of strings")
@@ -694,11 +742,6 @@ def _parse_table_properties(properties: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("LakeSoul table properties must be a JSON object")
     return value
-
-
-def _validate_write_mode(mode: str) -> None:
-    if mode != "append":
-        raise NotImplementedError("only append mode is supported")
 
 
 __all__ = [
