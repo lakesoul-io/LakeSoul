@@ -6,90 +6,88 @@ from __future__ import annotations
 import copy
 import functools
 import logging
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Callable, Iterator, final
 
 import pyarrow as pa
 import pyarrow.dataset as ds
 from typing_extensions import override
 
-from lakesoul._lib._dataset import one_reader
-from lakesoul._lib._metadata import _NativeMetadataClient
-
-from ..metadata.meta_ops import (
-    LakeSoulScanPlanPartition,
-    get_scan_plan_partitions,
-    get_schemas_by_table_name,
-)
+from lakesoul._lib._reader import _one_reader
+from lakesoul.metadata import LakeSoulScanPlanPartition
 
 DEFAULT_BATCH_SIZE: int = 2**10
+
+
+@dataclass(frozen=True, slots=True)
+class LakeSoulScanConfig:
+    """Resolved metadata and IO options for one Arrow dataset scan."""
+
+    table_name: str
+    namespace: str
+    schema: pa.Schema
+    partition_schema: pa.Schema | None
+    scan_partitions: tuple[LakeSoulScanPlanPartition, ...]
+    partitions: Mapping[str, str]
+    object_store_options: Mapping[str, str]
+    batch_size: int = DEFAULT_BATCH_SIZE
+    thread_count: int = 1
+    rank: int | None = None
+    world_size: int | None = None
 
 
 @final
 class Dataset(ds.Dataset):
     def __init__(  # pyright: ignore[reportMissingSuperCall]
         self,
-        lakesoul_table_name: str,
-        batch_size: int = 1024,
-        thread_count: int = 1,
-        rank: int | None = None,
-        world_size: int | None = None,
-        partitions: dict[str, str] | None = None,
-        retain_partition_columns: bool = False,
-        namespace: str = "default",
-        object_store_configs: dict[str, str] | None = None,
-        metadata_client: _NativeMetadataClient | None = None,
+        scan_config: LakeSoulScanConfig,
     ) -> None:
         """
         lakeSoul dataset backed by Arrow reader
         thread_count: 0 means use cpu count
         """
-        self._lakesoul_table_name = lakesoul_table_name
-        self._thread_count = thread_count
-        self._namespace = namespace
-        self._retain_partition_columns = retain_partition_columns
-        self._metadata_client = metadata_client
+        if not isinstance(scan_config, LakeSoulScanConfig):
+            raise TypeError("scan_config must be a LakeSoulScanConfig")
 
-        rank, world_size = self._check_rank_and_world_size(rank, world_size)
+        self._scan_config = scan_config
+        self._lakesoul_table_name = scan_config.table_name
+        self._thread_count = scan_config.thread_count
+        self._namespace = scan_config.namespace
+
+        rank, world_size = self._check_rank_and_world_size(
+            scan_config.rank, scan_config.world_size
+        )
         self._rank = rank
         self._world_size = world_size
 
-        partitions = partitions or {}
-        self._partitions = partitions
+        self._partitions = dict(scan_config.partitions)
 
-        object_store_configs = object_store_configs or {}
-        self._oss_conf = object_store_configs
+        self._oss_conf = dict(scan_config.object_store_options)
 
-        if batch_size <= 0:
+        if scan_config.batch_size <= 0:
             raise ValueError(
-                f"batch_size must be non-negative int; {batch_size} is invalid"
+                f"batch_size must be non-negative int; "
+                f"{scan_config.batch_size} is invalid"
             )
-        self._batch_size = batch_size
+        self._batch_size = scan_config.batch_size
 
-        if thread_count < 0:
+        if scan_config.thread_count < 0:
             raise ValueError(
-                f"thread_count must be non-negative int; {thread_count} is invalid"
+                f"thread_count must be non-negative int; "
+                f"{scan_config.thread_count} is invalid"
             )
-        if thread_count == 0:
+        if scan_config.thread_count == 0:
             import multiprocessing
 
             thread_count = multiprocessing.cpu_count()
+        else:
+            thread_count = scan_config.thread_count
         self._thread_count = thread_count
-        scan_partitions = get_scan_plan_partitions(
-            table_name=self._lakesoul_table_name,
-            partitions=self._partitions,
-            namespace=self._namespace,
-            client=self._metadata_client,
-        )
-        target_schema, partition_schema = get_schemas_by_table_name(
-            table_name=self._lakesoul_table_name,
-            namespace=self._namespace,
-            retain_partition_columns=self._retain_partition_columns,
-            client=self._metadata_client,
-        )
-        self._schema = target_schema
-        self._partition_schema = partition_schema
+        self._schema = scan_config.schema
+        self._partition_schema = scan_config.partition_schema
         filtered_scan_partitions = self._filter_scan_partitions(
-            scan_partitions, self._rank, self._world_size
+            list(scan_config.scan_partitions), self._rank, self._world_size
         )
         file_urls = []
         pks = []
@@ -296,18 +294,13 @@ class Dataset(ds.Dataset):
         ).to_table()
 
     @override
-    def __reduce__(self) -> tuple[type[Dataset], tuple[Any, ...]]:
+    def __reduce__(self) -> tuple[type[Dataset], tuple[LakeSoulScanConfig]]:
         """custom serialize"""
-        return self.__class__, (
-            self._lakesoul_table_name,
-            self._batch_size,
-            self._thread_count,
-            self._rank,
-            self._world_size,
-            self._partitions,
-            self._retain_partition_columns,
-            self._namespace,
-        )
+        return self.__class__, (self._scan_config,)
+
+    @property
+    def scan_config(self) -> LakeSoulScanConfig:
+        return self._scan_config
 
     def thread_count(self) -> int:
         return self._thread_count
@@ -627,7 +620,7 @@ class Fragment(ds.Fragment):
             use_threads=use_threads,
             cache_metadata=cache_metadata,
             memory_pool=memory_pool,
-        ).to_batches()
+        ).to_table()
 
     def batch_size(self) -> int:
         return self._batch_size
@@ -817,7 +810,7 @@ class Scanner(ds.Scanner):
             yield rb
 
     def to_reader(self) -> pa.RecordBatchReader:
-        return one_reader(
+        return _one_reader(
             self._batch_size,
             self._thread_count,
             self._target_schema,
@@ -833,28 +826,5 @@ class Scanner(ds.Scanner):
         return self.to_reader().read_all()
 
 
-def lakesoul_dataset(
-    table_name: str,
-    batch_size: int = DEFAULT_BATCH_SIZE,
-    thread_count: int = 1,
-    rank: int | None = None,
-    world_size: int | None = None,
-    partitions: dict[str, str] | None = None,
-    retain_partition_columns: bool = False,
-    namespace: str = "default",
-    object_store_configs: dict[str, str] | None = None,
-    metadata_client: _NativeMetadataClient | None = None,
-) -> Dataset:
-    dataset = Dataset(
-        table_name,
-        batch_size=batch_size,
-        thread_count=thread_count,
-        rank=rank,
-        world_size=world_size,
-        partitions=partitions,
-        retain_partition_columns=retain_partition_columns,
-        namespace=namespace,
-        object_store_configs=object_store_configs,
-        metadata_client=metadata_client,
-    )
-    return dataset
+def lakesoul_dataset(scan_config: LakeSoulScanConfig) -> Dataset:
+    return Dataset(scan_config)
