@@ -2,6 +2,8 @@
 # SPDX-FileCopyrightText: Copyright 2026 LakeSoul contributors
 
 from pathlib import Path
+import pickle
+from types import MappingProxyType
 from urllib.parse import unquote, urlparse
 
 import pyarrow as pa
@@ -78,6 +80,50 @@ def test_writer_dynamic_partitions(tmp_path: Path) -> None:
         assert output_path.exists()
         assert output_path.parent.name in {"part=a", "part=b"}
         assert pq.read_schema(output_path).names == ["id"]
+
+
+def test_write_result_pickle_roundtrip_preserves_read_only_mappings(
+    tmp_path: Path,
+) -> None:
+    table = pa.table(
+        {
+            "id": pa.array([1, 2, 3], type=pa.int64()),
+            "part": pa.array(["a", "b", "a"]),
+        }
+    )
+    writer = Writer(
+        IOConfig(
+            path=tmp_path / "partitioned",
+            schema=table.schema,
+            partition_by=["part"],
+        )
+    )
+
+    writer.write(table)
+    result = writer.finish()
+    restored = pickle.loads(pickle.dumps(result))
+
+    assert restored == result
+    assert restored.row_count == 3
+    assert isinstance(restored.partitions, type(MappingProxyType({})))
+    assert isinstance(restored.files[0].other_info, type(MappingProxyType({})))
+    with pytest.raises(TypeError):
+        restored.partitions["part=c"] = ()
+    with pytest.raises(TypeError):
+        restored.files[0].other_info["format"] = "parquet"
+
+
+def test_empty_write_result_pickle_roundtrip() -> None:
+    from lakesoul.io import WriteResult
+
+    result = WriteResult(files=(), partitions={}, row_count=0)
+    restored = pickle.loads(pickle.dumps(result))
+
+    assert restored == result
+    assert restored.files == ()
+    assert restored.partitions == {}
+    with pytest.raises(TypeError):
+        restored.partitions["part=a"] = ()
 
 
 def test_writer_aborts_on_context_error(tmp_path: Path) -> None:

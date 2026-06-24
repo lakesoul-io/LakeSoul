@@ -648,7 +648,10 @@ pub fn schema_from_metadata_str(s: &str) -> Result<Schema, serde_json::Error> {
         Ok(java_schema) => Ok(java_schema.into()),
         // Python temporarily persisted Rust Arrow's serde JSON. Keep this
         // fallback for existing tables, but never produce that format again.
-        Err(_) => serde_json::from_str::<Schema>(s),
+        Err(e) => {
+            tracing::warn!("deserialize ArrowJavaSchema failed, fallback to Schema: {e}");
+            serde_json::from_str::<Schema>(s)
+        }
     }
 }
 

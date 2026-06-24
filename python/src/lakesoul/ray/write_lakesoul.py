@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlparse
 
@@ -88,7 +87,7 @@ class LakeSoulDatasink(Datasink):
             if writer is None:
                 return LakeSoulWriteResult(
                     files=(),
-                    partitions=MappingProxyType({}),
+                    partitions={},
                     row_count=0,
                 )
             return writer.finish()

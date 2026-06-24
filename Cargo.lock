@@ -4251,6 +4251,7 @@ dependencies = [
  "arrow-schema",
  "serde",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]

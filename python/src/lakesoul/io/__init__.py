@@ -9,7 +9,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Literal
+from typing import Literal,Any
 
 import pyarrow as pa
 
@@ -50,6 +50,23 @@ class FileInfo:
     row_count: int
     other_info: Mapping[str, str]
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "existing_columns", tuple(self.existing_columns))
+        object.__setattr__(self, "other_info", MappingProxyType(dict(self.other_info)))
+
+    def __reduce__(self) -> str | tuple[Any, ...]:
+        return (
+            type(self),
+            (
+                self.partition,
+                self.path,
+                self.size,
+                self.existing_columns,
+                self.row_count,
+                dict(self.other_info),
+            ),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class WriteResult:
@@ -59,28 +76,55 @@ class WriteResult:
     partitions: Mapping[str, tuple[FileInfo, ...]]
     row_count: int
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "files", tuple(self.files))
+        object.__setattr__(
+            self,
+            "partitions",
+            MappingProxyType(
+                {
+                    partition: tuple(partition_files)
+                    for partition, partition_files in self.partitions.items()
+                }
+            ),
+        )
+
+    def __reduce__(self) -> str | tuple[Any, ...]:
+        return (
+            type(self),
+            (
+                self.files,
+                {
+                    partition: tuple(partition_files)
+                    for partition, partition_files in self.partitions.items()
+                },
+                self.row_count,
+            ),
+        )
+
     @classmethod
     def _from_native(cls, outputs: list[_NativeFileInfo]) -> WriteResult:
-        files = tuple(
+        files: tuple[FileInfo, ...] = tuple(
             FileInfo(
                 partition=output.partition,
                 path=output.path,
                 size=output.size,
                 existing_columns=tuple(output.existing_columns),
                 row_count=output.row_count,
-                other_info=MappingProxyType(dict(output.other_info)),
+                other_info=output.other_info,
             )
             for output in outputs
         )
+    
         grouped: dict[str, list[FileInfo]] = {}
         for file_info in files:
             grouped.setdefault(file_info.partition, []).append(file_info)
-        partitions = MappingProxyType(
-            {
-                partition: tuple(partition_files)
-                for partition, partition_files in grouped.items()
-            }
-        )
+    
+        partitions: dict[str, tuple[FileInfo, ...]] = {
+            partition: tuple(file_infos)
+            for partition, file_infos in grouped.items()
+        }
+    
         return cls(
             files=files,
             partitions=partitions,

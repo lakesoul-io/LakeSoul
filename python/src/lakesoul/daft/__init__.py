@@ -7,7 +7,6 @@ import importlib
 import inspect
 from collections.abc import Iterator, Mapping
 from dataclasses import replace
-from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal
 
 import pyarrow as pa
@@ -92,7 +91,7 @@ def write_lakesoul(
                 writer = Writer(writer_config)
             writer.write(normalized)
         if writer is None:
-            return WriteResult(files=(), partitions=MappingProxyType({}), row_count=0)
+            return WriteResult(files=(), partitions={}, row_count=0)
         result = writer.finish()
     except BaseException:
         if writer is not None:

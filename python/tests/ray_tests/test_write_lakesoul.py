@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from pathlib import Path
+import pickle
 from types import SimpleNamespace
 
 import pyarrow as pa
@@ -91,6 +92,32 @@ def test_datasink_writes_arrow_blocks_and_commits_once(tmp_path: Path) -> None:
     ]
 
 
+def test_datasink_write_result_is_pickleable_before_commit(tmp_path: Path) -> None:
+    table = pa.table({"id": [1, 2], "value": ["a", "b"]})
+    table_handle, committed = _fake_table(tmp_path / "table", table.schema)
+
+    datasink = LakeSoulDatasink(table_handle)
+    task_result = datasink.write([table], None)
+    restored = pickle.loads(pickle.dumps(task_result))
+    datasink.on_write_complete(SimpleNamespace(write_returns=[restored]))
+
+    assert restored == task_result
+    assert committed == [
+        (
+            "target",
+            "analytics",
+            [
+                (
+                    restored.files[0].partition,
+                    restored.files[0].path,
+                    restored.files[0].size,
+                    list(restored.files[0].existing_columns),
+                )
+            ],
+        )
+    ]
+
+
 def test_datasink_uses_table_partition_and_vortex_config(tmp_path: Path) -> None:
     table = pa.table({"id": [1], "part": ["a"]})
     table_handle, _ = _fake_table(
@@ -127,6 +154,20 @@ def test_empty_write_does_not_commit(tmp_path: Path) -> None:
     datasink.on_write_complete(SimpleNamespace(write_returns=[result]))
 
     assert result.files == ()
+    assert committed == []
+
+
+def test_empty_write_result_is_pickleable(tmp_path: Path) -> None:
+    schema = pa.schema([pa.field("id", pa.int64())])
+    table_handle, committed = _fake_table(tmp_path / "table", schema)
+    datasink = LakeSoulDatasink(table_handle)
+
+    result = datasink.write([pa.Table.from_batches([], schema=schema)], None)
+    restored = pickle.loads(pickle.dumps(result))
+    datasink.on_write_complete(SimpleNamespace(write_returns=[restored]))
+
+    assert restored == result
+    assert restored.files == ()
     assert committed == []
 
 
