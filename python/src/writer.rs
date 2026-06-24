@@ -110,7 +110,15 @@ impl NativeWriter {
 
         let physical_format = PhysicalFormat::from_str(format)
             .map_err(|err| PyValueError::new_err(err.to_string()))?;
-        let mut builder = LakeSoulIOConfigBuilder::new()
+
+        let mut builder = LakeSoulIOConfigBuilder::new();
+
+        // requires_partitioning_writer
+        if !partition_by.is_empty() || !primary_keys.is_empty() {
+            builder = builder.set_dynamic_partition(true);
+        }
+
+        builder = builder
             .with_prefix(path)
             .with_schema(Arc::new(schema.0))
             .with_primary_keys(primary_keys)
@@ -120,9 +128,6 @@ impl NativeWriter {
             .with_thread_num(thread_num)
             .with_max_row_group_size(max_row_group_size);
 
-        if !partition_by.is_empty() {
-            builder = builder.set_dynamic_partition(true);
-        }
         if let Some(max_file_size) = max_file_size {
             builder = builder.with_max_file_size(max_file_size);
         }

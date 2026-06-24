@@ -123,9 +123,7 @@ class Writer:
     def closed(self) -> bool:
         return self._native.closed
 
-    def write(
-        self, data: pa.RecordBatch | pa.Table | pa.RecordBatchReader
-    ) -> int:
+    def write(self, data: pa.RecordBatch | pa.Table | pa.RecordBatchReader) -> int:
         """Write Arrow data and return the number of accepted rows."""
         if self.closed:
             raise RuntimeError("writer is closed")
@@ -199,7 +197,7 @@ class Writer:
         return self._native.write(batch)
 
     def _validate_schema(self, schema: pa.Schema) -> None:
-        if not schema.equals(self._schema, check_metadata=True):
+        if not schema.equals(self._schema):
             raise ValueError(
                 f"input schema does not match writer schema:\n"
                 f"expected: {self._schema}\nactual: {schema}"
