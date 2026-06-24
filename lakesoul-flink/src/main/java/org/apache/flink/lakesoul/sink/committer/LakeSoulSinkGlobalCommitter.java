@@ -39,6 +39,7 @@ import org.apache.flink.table.catalog.ObjectPath;
 import org.apache.flink.table.catalog.exceptions.TableNotExistException;
 import org.apache.spark.sql.arrow.ArrowUtils;
 import org.apache.spark.sql.arrow.DataTypeCastUtils;
+import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -511,28 +512,31 @@ public class LakeSoulSinkGlobalCommitter
                                 identity.useCDC,
                                 identity.cdcColumn
                             );
-                            dbManager.updateTableSchema(
-                              
-                                
-                                    
-                                    
-                                    tableInfo.getTableId(),
-                                                             LOG.info(
-                                    "Physically dropping columns {} from table {}.{}",
-                                    droppedColumns,
-                                    tableNamespace,
-                                    tableName
+                            // For physical column drop, remove dropped columns from the merged schema
+                            List<String> droppedColumns =
+                                    DataTypeCastUtils.getDroppedColumn(
+                                            origSchema,
+                                            sparkSchema
+                                    );
+                            StructType schemaToUpdate = mergeStructType;
+                            if (!droppedColumns.isEmpty()) {
+                                LOG.info(
+                                        "Physically dropping columns {} from table {}.{}",
+                                        droppedColumns,
+                                        tableNamespace,
+                                        tableName
                                 );
                                 StructField[] filteredFields = Arrays.stream(
-                                    mergeStructType.fields()
-                                )
-                                    .filter(
-                                        f -> !droppedColumns.contains(f.name())
-                                    )
-                                    .toArray(StructField[]::new);
-    owUtils.toMetadataArrowSchema(mergeStructType,"UTC").toJson());
-                            if (JSONObject.parseObject(tableInfo.getProperties())
-KeyDBConigTblInfoProperty.DROPPED_COLUMN {d                                tableInfo.getTableId(),
+                                                mergeStructType.fields()
+                                        )
+                                        .filter(
+                                                f -> !droppedColumns.contains(f.name())
+                                        )
+                                        .toArray(StructField[]::new);
+                                schemaToUpdate = new StructType(filteredFields);
+                            }
+                            dbManager.updateTableSchema(
+                                tableInfo.getTableId(),
                                 ArrowUtils.toMetadataArrowSchema(
                                     schemaToUpdate,
                                     "UTC"
