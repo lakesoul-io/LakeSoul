@@ -4,6 +4,11 @@
 
 package org.apache.flink.lakesoul.sink.committer;
 
+import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_HASH_PARTITION_SPLITTER;
+import static org.apache.flink.lakesoul.metadata.LakeSoulCatalog.TABLE_ID_PREFIX;
+import static org.apache.flink.lakesoul.tool.LakeSoulDDLSinkOptions.SOURCE_DB_TYPE;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
+
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DBConfig;
@@ -11,6 +16,9 @@ import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.dao.TableInfoDao;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
+import java.io.IOException;
+import java.util.*;
+import java.util.concurrent.ForkJoinPool;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.api.connector.sink.GlobalCommitter;
@@ -35,16 +43,6 @@ import org.apache.spark.sql.types.StructType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
-import java.util.*;
-import java.util.concurrent.ForkJoinPool;
-
-import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_HASH_PARTITION_SPLITTER;
-import static org.apache.flink.lakesoul.metadata.LakeSoulCatalog.TABLE_ID_PREFIX;
-import static org.apache.flink.lakesoul.tool.LakeSoulDDLSinkOptions.SOURCE_DB_TYPE;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
-
-
 /**
  * Global Committer implementation for {@link LakeSoulMultiTablesSink}.
  *
@@ -54,9 +52,16 @@ import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
  * applications or systems.
  */
 public class LakeSoulSinkGlobalCommitter
-        implements GlobalCommitter<LakeSoulMultiTableSinkCommittable, LakeSoulMultiTableSinkGlobalCommittable> {
+    implements
+        GlobalCommitter<
+            LakeSoulMultiTableSinkCommittable,
+            LakeSoulMultiTableSinkGlobalCommittable
+        >
+{
 
-    private static final Logger LOG = LoggerFactory.getLogger(LakeSoulSinkGlobalCommitter.class);
+    private static final Logger LOG = LoggerFactory.getLogger(
+        LakeSoulSinkGlobalCommitter.class
+    );
     private final LakeSoulSinkCommitter committer;
     private final DBManager dbManager;
     private final Configuration conf;
@@ -65,6 +70,7 @@ public class LakeSoulSinkGlobalCommitter
 
     private final boolean logicallyDropColumn;
     private LakeSoulInAndOutputJobListener listener;
+
     public LakeSoulSinkGlobalCommitter(Configuration conf) {
         committer = LakeSoulSinkCommitter.INSTANCE;
         dbManager = new DBManager();
@@ -72,13 +78,17 @@ public class LakeSoulSinkGlobalCommitter
         isBounded = conf.get(IS_BOUNDED).equals("true");
         logicallyDropColumn = conf.getBoolean(LOGICALLY_DROP_COLUM);
 
-        if(this.conf.getBoolean(JobOptions.lineageOption)){
+        if (this.conf.getBoolean(JobOptions.lineageOption)) {
             String uuid = this.conf.getString(JobOptions.lineageJobUUID);
             String jobName = this.conf.getString(JobOptions.linageJobName);
-            String namespace = this.conf.getString(JobOptions.linageJobNamespace);
+            String namespace = this.conf.getString(
+                JobOptions.linageJobNamespace
+            );
             //listener = new LakeSoulInAndOutputJobListener("http://localhost:5000");
-            listener = new LakeSoulInAndOutputJobListener(this.conf.getString(JobOptions.urlOption));
-            listener.jobName(jobName,namespace,uuid);
+            listener = new LakeSoulInAndOutputJobListener(
+                this.conf.getString(JobOptions.urlOption)
+            );
+            listener.jobName(jobName, namespace, uuid);
         }
     }
 
@@ -98,7 +108,8 @@ public class LakeSoulSinkGlobalCommitter
      */
     @Override
     public List<LakeSoulMultiTableSinkGlobalCommittable> filterRecoveredCommittables(
-            List<LakeSoulMultiTableSinkGlobalCommittable> globalCommittables) {
+        List<LakeSoulMultiTableSinkGlobalCommittable> globalCommittables
+    ) {
         return globalCommittables;
     }
 
@@ -111,9 +122,13 @@ public class LakeSoulSinkGlobalCommitter
      * @throws IOException if fail to combine the given committables.
      */
     @Override
-    public LakeSoulMultiTableSinkGlobalCommittable combine(List<LakeSoulMultiTableSinkCommittable> committables)
-            throws IOException {
-        return LakeSoulMultiTableSinkGlobalCommittable.fromLakeSoulMultiTableSinkCommittable(committables, isBounded);
+    public LakeSoulMultiTableSinkGlobalCommittable combine(
+        List<LakeSoulMultiTableSinkCommittable> committables
+    ) throws IOException {
+        return LakeSoulMultiTableSinkGlobalCommittable.fromLakeSoulMultiTableSinkCommittable(
+            committables,
+            isBounded
+        );
     }
 
     /**
@@ -126,19 +141,28 @@ public class LakeSoulSinkGlobalCommitter
      */
     @Override
     public List<LakeSoulMultiTableSinkGlobalCommittable> commit(
-            List<LakeSoulMultiTableSinkGlobalCommittable> globalCommittables) throws IOException, InterruptedException {
+        List<LakeSoulMultiTableSinkGlobalCommittable> globalCommittables
+    ) throws IOException, InterruptedException {
         long startTime = System.currentTimeMillis();
         LakeSoulMultiTableSinkGlobalCommittable globalCommittable =
-                LakeSoulMultiTableSinkGlobalCommittable.fromLakeSoulMultiTableSinkGlobalCommittable(globalCommittables,
-                        isBounded);
-        LOG.info("Global Committing #{}, object {}, {}",
-                globalCommittable.getGroupedCommittable().size(),
-                globalCommittable.hashCode(),
-                globalCommittable);
+            LakeSoulMultiTableSinkGlobalCommittable.fromLakeSoulMultiTableSinkGlobalCommittable(
+                globalCommittables,
+                isBounded
+            );
+        LOG.info(
+            "Global Committing #{}, object {}, {}",
+            globalCommittable.getGroupedCommittable().size(),
+            globalCommittable.hashCode(),
+            globalCommittable
+        );
         ForkJoinPool commitPool = new ForkJoinPool(4);
         try {
-            commitPool.submit(() -> {
-                globalCommittable.getGroupedCommittable().entrySet().parallelStream()
+            commitPool
+                .submit(() -> {
+                    globalCommittable
+                        .getGroupedCommittable()
+                        .entrySet()
+                        .parallelStream()
                         .forEach(entry -> {
                             try {
                                 commitEntry(entry);
@@ -146,67 +170,118 @@ public class LakeSoulSinkGlobalCommitter
                                 throw new RuntimeException(e);
                             }
                         });
-            }).join();
+                })
+                .join();
         } catch (Exception e) {
             throw e;
         } finally {
             commitPool.shutdown();
         }
         long endTime = System.currentTimeMillis();
-        LOG.info("Global Committing done, #{}, object {}, time {}ms",
-                globalCommittable.getGroupedCommittable().size(),
-                globalCommittable.hashCode(),
-                endTime - startTime);
+        LOG.info(
+            "Global Committing done, #{}, object {}, time {}ms",
+            globalCommittable.getGroupedCommittable().size(),
+            globalCommittable.hashCode(),
+            endTime - startTime
+        );
 
         return Collections.emptyList();
     }
 
-    private void commitEntry(Map.Entry<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> entry)
-            throws IOException, InterruptedException {
+    private void commitEntry(
+        Map.Entry<
+            Tuple2<TableSchemaIdentity, String>,
+            List<LakeSoulMultiTableSinkCommittable>
+        > entry
+    ) throws IOException, InterruptedException {
         String dbType = this.conf.getString(SOURCE_DB_TYPE, "");
         TableSchemaIdentity identity = entry.getKey().f0;
-        List<LakeSoulMultiTableSinkCommittable> lakeSoulMultiTableSinkCommittable = entry.getValue();
+        List<LakeSoulMultiTableSinkCommittable> lakeSoulMultiTableSinkCommittable =
+            entry.getValue();
         String tableName = identity.tableId.table();
         String tableNamespace = identity.tableId.schema();
         if (tableNamespace == null) {
             tableNamespace = identity.tableId.catalog();
         }
         boolean isCdc = identity.useCDC;
-        Schema msgSchema = FlinkUtil.toArrowSchema(identity.rowType, isCdc ? Optional.of(
-                identity.cdcColumn) :
-                Optional.empty());
+        Schema msgSchema = FlinkUtil.toArrowSchema(
+            identity.rowType,
+            isCdc ? Optional.of(identity.cdcColumn) : Optional.empty()
+        );
         StructType sparkSchema = ArrowUtils.fromArrowSchema(msgSchema);
 
-        TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(tableName, tableNamespace);
+        TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(
+            tableName,
+            tableNamespace
+        );
         if (tableInfo == null) {
             if (!conf.getBoolean(AUTO_SCHEMA_CHANGE)) {
                 throw new SuppressRestartsException(
-                        new TableNotExistException("lakesoul", new ObjectPath(tableNamespace, tableName)));
+                    new TableNotExistException(
+                        "lakesoul",
+                        new ObjectPath(tableNamespace, tableName)
+                    )
+                );
             }
             String tableId = TABLE_ID_PREFIX + UUID.randomUUID();
-            String partition = DBUtil.formatTableInfoPartitionsField(identity.primaryKeys,
-                    identity.partitionKeyList);
+            String partition = DBUtil.formatTableInfoPartitionsField(
+                identity.primaryKeys,
+                identity.partitionKeyList
+            );
 
-            LOG.info("Creating table: {}, {}, {}, {}, {}, {}, {}, {}", tableId, tableNamespace, tableName,
-                    identity.tableLocation, msgSchema, identity.useCDC, identity.cdcColumn, partition);
+            LOG.info(
+                "Creating table: {}, {}, {}, {}, {}, {}, {}, {}",
+                tableId,
+                tableNamespace,
+                tableName,
+                identity.tableLocation,
+                msgSchema,
+                identity.useCDC,
+                identity.cdcColumn,
+                partition
+            );
             JSONObject properties = new JSONObject();
             if (!identity.primaryKeys.isEmpty()) {
-                properties.put(HASH_BUCKET_NUM.key(), Integer.toString(conf.getInteger(HASH_BUCKET_NUM)));
-                properties.put(HASH_PARTITIONS,
-                        String.join(LAKESOUL_HASH_PARTITION_SPLITTER, identity.primaryKeys));
+                properties.put(
+                    HASH_BUCKET_NUM.key(),
+                    Integer.toString(conf.getInteger(HASH_BUCKET_NUM))
+                );
+                properties.put(
+                    HASH_PARTITIONS,
+                    String.join(
+                        LAKESOUL_HASH_PARTITION_SPLITTER,
+                        identity.primaryKeys
+                    )
+                );
                 if (isCdc) {
                     properties.put(USE_CDC.key(), "true");
-                    properties.put(CDC_CHANGE_COLUMN, CDC_CHANGE_COLUMN_DEFAULT);
+                    properties.put(
+                        CDC_CHANGE_COLUMN,
+                        CDC_CHANGE_COLUMN_DEFAULT
+                    );
                 }
             }
-            FileSystem fileSystem = new Path(identity.tableLocation).getFileSystem();
-            Path qp = new Path(identity.tableLocation).makeQualified(fileSystem);
+            FileSystem fileSystem = new Path(
+                identity.tableLocation
+            ).getFileSystem();
+            Path qp = new Path(identity.tableLocation).makeQualified(
+                fileSystem
+            );
             FlinkUtil.createAndSetTableDirPermission(qp, true);
-            dbManager.createNewTable(tableId, tableNamespace, tableName, identity.tableLocation, msgSchema.toJson(),
-                    properties, partition);
+            dbManager.createNewTable(
+                tableId,
+                tableNamespace,
+                tableName,
+                identity.tableLocation,
+                msgSchema.toJson(),
+                properties,
+                partition
+            );
             if (this.conf.getBoolean(JobOptions.lineageOption)) {
                 LOG.info("---star record the ouputLineag----");
-                String domain = dbManager.getNamespaceByNamespace(tableNamespace).getDomain();
+                String domain = dbManager
+                    .getNamespaceByNamespace(tableNamespace)
+                    .getDomain();
                 int size = msgSchema.getFields().size();
                 String[] colNames = new String[size];
                 String[] colTypes = new String[size];
@@ -215,121 +290,275 @@ public class LakeSoulSinkGlobalCommitter
                     colNames[i] = field.getName();
                     colTypes[i] = field.getType().toString();
                 }
-                listener.addOutputTable("lakesoul." + tableNamespace + "." + tableName, domain, colNames,colTypes);
+                listener.addOutputTable(
+                    "lakesoul." + tableNamespace + "." + tableName,
+                    domain,
+                    colNames,
+                    colTypes
+                );
                 listener.emit();
             }
         } else {
             if (conf.getBoolean(AUTO_SCHEMA_CHANGE)) {
-                DBUtil.TablePartitionKeys partitionKeys = DBUtil.parseTableInfoPartitions(tableInfo.getPartitions());
-                if (partitionKeys.primaryKeys.size() != identity.primaryKeys.size() ||
-                        !new HashSet<>(partitionKeys.primaryKeys).containsAll(identity.primaryKeys)) {
-                    throw new IOException("Change of primary key column of table " + tableName + " is forbidden");
+                DBUtil.TablePartitionKeys partitionKeys =
+                    DBUtil.parseTableInfoPartitions(tableInfo.getPartitions());
+                if (
+                    partitionKeys.primaryKeys.size() !=
+                        identity.primaryKeys.size() ||
+                    !new HashSet<>(partitionKeys.primaryKeys).containsAll(
+                        identity.primaryKeys
+                    )
+                ) {
+                    throw new IOException(
+                        "Change of primary key column of table " +
+                            tableName +
+                            " is forbidden"
+                    );
                 }
-                if (partitionKeys.rangeKeys.size() != identity.partitionKeyList.size() ||
-                        !new HashSet<>(partitionKeys.rangeKeys).containsAll(identity.partitionKeyList)) {
-                    LOG.error("rangeKeys: {}, partitionKeyList: {}",partitionKeys.rangeKeys,identity.partitionKeyList);
-                    throw new IOException("Change of partition key column of table " + tableName + " is forbidden");
+                if (
+                    partitionKeys.rangeKeys.size() !=
+                        identity.partitionKeyList.size() ||
+                    !new HashSet<>(partitionKeys.rangeKeys).containsAll(
+                        identity.partitionKeyList
+                    )
+                ) {
+                    LOG.error(
+                        "rangeKeys: {}, partitionKeyList: {}",
+                        partitionKeys.rangeKeys,
+                        identity.partitionKeyList
+                    );
+                    throw new IOException(
+                        "Change of partition key column of table " +
+                            tableName +
+                            " is forbidden"
+                    );
                 }
                 StructType origSchema;
-                if (TableInfoDao.isArrowKindSchema(tableInfo.getTableSchema())) {
-                    Schema arrowSchema = Schema.fromJSON(tableInfo.getTableSchema());
+                if (
+                    TableInfoDao.isArrowKindSchema(tableInfo.getTableSchema())
+                ) {
+                    Schema arrowSchema = Schema.fromJSON(
+                        tableInfo.getTableSchema()
+                    );
                     origSchema = ArrowUtils.fromArrowSchema(arrowSchema);
                 } else {
-                    origSchema = (StructType) StructType.fromJson(tableInfo.getTableSchema());
+                    origSchema = (StructType) StructType.fromJson(
+                        tableInfo.getTableSchema()
+                    );
                 }
-                scala.Tuple3<String, Object, StructType>
-                        equalOrCanCastTuple3 =
-                        DataTypeCastUtils.checkSchemaEqualOrCanCast(origSchema,
-                                ArrowUtils.fromArrowSchema(msgSchema),
-                                identity.partitionKeyList,
-                                identity.primaryKeys);
+                scala.Tuple3<String, Object, StructType> equalOrCanCastTuple3 =
+                    DataTypeCastUtils.checkSchemaEqualOrCanCast(
+                        origSchema,
+                        ArrowUtils.fromArrowSchema(msgSchema),
+                        identity.partitionKeyList,
+                        identity.primaryKeys
+                    );
                 String equalOrCanCast = equalOrCanCastTuple3._1();
                 boolean schemaChanged = (boolean) equalOrCanCastTuple3._2();
                 StructType mergeStructType = equalOrCanCastTuple3._3();
                 if (equalOrCanCast.equals(DataTypeCastUtils.CAN_CAST())) {
-                    LOG.warn("Schema change found, origin schema = {}, changed schema = {}",
-                            origSchema.json(),
-                            msgSchema.toJson());
+                    LOG.warn(
+                        "Schema change found, origin schema = {}, changed schema = {}",
+                        origSchema.json(),
+                        msgSchema.toJson()
+                    );
                     if (dbType.equals("mongodb")) {
                         if (schemaChanged) {
-                            if (this.conf.getBoolean(JobOptions.lineageOption)) {
-                                String[] colNames = mergeStructType.fieldNames();
+                            if (
+                                this.conf.getBoolean(JobOptions.lineageOption)
+                            ) {
+                                String[] colNames =
+                                    mergeStructType.fieldNames();
                                 String[] colTypes = new String[colNames.length];
                                 for (int i = 0; i < colNames.length; i++) {
-                                    colTypes[i] = mergeStructType.fields()[i].dataType().toString();
+                                    colTypes[i] = mergeStructType
+                                        .fields()[i]
+                                        .dataType()
+                                        .toString();
                                 }
-                                String domain = dbManager.getNamespaceByNamespace(tableNamespace).getDomain();
-                                listener.addOutputTable("lakesoul." + tableNamespace + "." + tableName, domain, colNames,colTypes);
+                                String domain = dbManager
+                                    .getNamespaceByNamespace(tableNamespace)
+                                    .getDomain();
+                                listener.addOutputTable(
+                                    "lakesoul." +
+                                        tableNamespace +
+                                        "." +
+                                        tableName,
+                                    domain,
+                                    colNames,
+                                    colTypes
+                                );
                                 listener.emit();
                             }
                             dbManager.updateTableSchema(
-                                    tableInfo.getTableId(),
-                                    ArrowUtils.toMetadataArrowSchema(mergeStructType).toJson());
+                                tableInfo.getTableId(),
+                                ArrowUtils.toMetadataArrowSchema(
+                                    mergeStructType,
+                                    "UTC"
+                                ).toJson()
+                            );
                         }
                     } else {
                         if (logicallyDropColumn) {
-                            List<String>
-                                    droppedColumn =
-                                    DataTypeCastUtils.getDroppedColumn(origSchema, sparkSchema);
+                            List<String> droppedColumn =
+                                DataTypeCastUtils.getDroppedColumn(
+                                    origSchema,
+                                    sparkSchema
+                                );
                             if (droppedColumn.size() > 0) {
-                                LOG.warn("Dropping Column {} Logically", droppedColumn);
-                                dbManager.logicallyDropColumn(tableInfo.getTableId(), droppedColumn);
+                                LOG.warn(
+                                    "Dropping Column {} Logically",
+                                    droppedColumn
+                                );
+                                dbManager.logicallyDropColumn(
+                                    tableInfo.getTableId(),
+                                    droppedColumn
+                                );
                                 if (schemaChanged) {
-                                    if (this.conf.getBoolean(JobOptions.lineageOption)) {
-                                        String[] colNames = mergeStructType.fieldNames();
-                                        String[] colTypes = new String[colNames.length];
-                                        for (int i = 0; i < colNames.length; i++) {
-                                            colTypes[i] = mergeStructType.fields()[i].dataType().toString();
+                                    if (
+                                        this.conf.getBoolean(
+                                            JobOptions.lineageOption
+                                        )
+                                    ) {
+                                        String[] colNames =
+                                            mergeStructType.fieldNames();
+                                        String[] colTypes =
+                                            new String[colNames.length];
+                                        for (
+                                            int i = 0;
+                                            i < colNames.length;
+                                            i++
+                                        ) {
+                                            colTypes[i] = mergeStructType
+                                                .fields()[i]
+                                                .dataType()
+                                                .toString();
                                         }
-                                        String domain = dbManager.getNamespaceByNamespace(tableNamespace).getDomain();
-                                        listener.addOutputTable("lakesoul." + tableNamespace + "." + tableName, domain, colNames,colTypes);
+                                        String domain = dbManager
+                                            .getNamespaceByNamespace(
+                                                tableNamespace
+                                            )
+                                            .getDomain();
+                                        listener.addOutputTable(
+                                            "lakesoul." +
+                                                tableNamespace +
+                                                "." +
+                                                tableName,
+                                            domain,
+                                            colNames,
+                                            colTypes
+                                        );
                                         listener.emit();
                                     }
                                     dbManager.updateTableSchema(
-                                            tableInfo.getTableId(),
-                                            ArrowUtils.toMetadataArrowSchema(mergeStructType).toJson());
+                                        tableInfo.getTableId(),
+                                        ArrowUtils.toMetadataArrowSchema(
+                                            mergeStructType,
+                                            "UTC"
+                                        ).toJson()
+                                    );
                                 }
                             } else {
-                                if (this.conf.getBoolean(JobOptions.lineageOption)) {
-                                    LOG.info("---star record the ouputLineag----");
-                                    String domain = dbManager.getNamespaceByNamespace(tableNamespace).getDomain();
+                                if (
+                                    this.conf.getBoolean(
+                                        JobOptions.lineageOption
+                                    )
+                                ) {
+                                    LOG.info(
+                                        "---star record the ouputLineag----"
+                                    );
+                                    String domain = dbManager
+                                        .getNamespaceByNamespace(tableNamespace)
+                                        .getDomain();
                                     int size = msgSchema.getFields().size();
                                     String[] colNames = new String[size];
                                     String[] colTypes = new String[size];
                                     for (int i = 0; i < size; i++) {
-                                        Field field = msgSchema.getFields().get(i);
+                                        Field field = msgSchema
+                                            .getFields()
+                                            .get(i);
                                         colNames[i] = field.getName();
-                                        colTypes[i] = field.getType().toString();
+                                        colTypes[i] = field
+                                            .getType()
+                                            .toString();
                                     }
-                                    listener.addOutputTable("lakesoul." + tableNamespace + "." + tableName, domain, colNames,colTypes);
+                                    listener.addOutputTable(
+                                        "lakesoul." +
+                                            tableNamespace +
+                                            "." +
+                                            tableName,
+                                        domain,
+                                        colNames,
+                                        colTypes
+                                    );
                                     listener.emit();
                                 }
                                 dbManager.updateTableSchema(
-                                        tableInfo.getTableId(),
-                                        ArrowUtils.toMetadataArrowSchema(mergeStructType).toJson());
+                                    tableInfo.getTableId(),
+                                    ArrowUtils.toMetadataArrowSchema(
+                                        mergeStructType,
+                                        "UTC"
+                                    ).toJson()
+                                );
                             }
                         } else {
-                            LOG.info("Changing table schema: {}, {}, {}, {}, {}, {}",
-                                    tableNamespace,
-                                    tableName,
-                                    identity.tableLocation,
-                                    msgSchema,
-                                    identity.useCDC,
-                                    identity.cdcColumn);
+                            LOG.info(
+                                "Changing table schema: {}, {}, {}, {}, {}, {}",
+                                tableNamespace,
+                                tableName,
+                                identity.tableLocation,
+                                msgSchema,
+                                identity.useCDC,
+                                identity.cdcColumn
+                            );
                             dbManager.updateTableSchema(
+                              
+                                
+                                    
+                                    
                                     tableInfo.getTableId(),
-                                    ArrowUtils.toMetadataArrowSchema(mergeStructType).toJson());
+                                                             LOG.info(
+                                    "Physically dropping columns {} from table {}.{}",
+                                    droppedColumns,
+                                    tableNamespace,
+                                    tableName
+                                );
+                                StructField[] filteredFields = Arrays.stream(
+                                    mergeStructType.fields()
+                                )
+                                    .filter(
+                                        f -> !droppedColumns.contains(f.name())
+                                    )
+                                    .toArray(StructField[]::new);
+    owUtils.toMetadataArrowSchema(mergeStructType,"UTC").toJson());
                             if (JSONObject.parseObject(tableInfo.getProperties())
-                                    .containsKey(DBConfig.TableInfoProperty.DROPPED_COLUMN)) {
-                                dbManager.removeLogicallyDropColumn(tableInfo.getTableId());
+KeyDBConigTblInfoProperty.DROPPED_COLUMN {d                                tableInfo.getTableId(),
+                                ArrowUtils.toMetadataArrowSchema(
+                                    schemaToUpdate,
+                                    "UTC"
+                                ).toJson()
+                            );
+                            if (
+                                JSONObject.parseObject(
+                                    tableInfo.getProperties()
+                                ).containsKey(
+                                    DBConfig.TableInfoProperty.DROPPED_COLUMN
+                                )
+                            ) {
+                                dbManager.removeLogicallyDropColumn(
+                                    tableInfo.getTableId()
+                                );
                             }
                         }
                     }
-                } else if (!equalOrCanCast.equals(DataTypeCastUtils.IS_EQUAL())) {
-                    long
-                            schemaLastChangeTime =
-                            JSON.parseObject(tableInfo.getProperties())
-                                    .getLongValue(DBConfig.TableInfoProperty.LAST_TABLE_SCHEMA_CHANGE_TIME);
+                } else if (
+                    !equalOrCanCast.equals(DataTypeCastUtils.IS_EQUAL())
+                ) {
+                    long schemaLastChangeTime = JSON.parseObject(
+                        tableInfo.getProperties()
+                    ).getLongValue(
+                        DBConfig.TableInfoProperty.LAST_TABLE_SCHEMA_CHANGE_TIME
+                    );
                     StringBuilder sb = new StringBuilder();
                     sb.append(equalOrCanCast);
                     sb.append(", for table ");
@@ -337,22 +566,33 @@ public class LakeSoulSinkGlobalCommitter
                     sb.append(".");
                     sb.append(tableInfo.getTableName());
                     String msg = sb.toString();
-                    if (equalOrCanCast.contains("Change of Partition Column") ||
-                            equalOrCanCast.contains("Change of Primary Key Column")) {
-                        throw new SuppressRestartsException(new IllegalStateException(msg));
+                    if (
+                        equalOrCanCast.contains("Change of Partition Column") ||
+                        equalOrCanCast.contains("Change of Primary Key Column")
+                    ) {
+                        throw new SuppressRestartsException(
+                            new IllegalStateException(msg)
+                        );
                     }
                     for (LakeSoulMultiTableSinkCommittable committable : lakeSoulMultiTableSinkCommittable) {
-                        if (committable.getCreationTime() > schemaLastChangeTime) {
-                            LOG.error("Incompatible cast data {} created and delayThreshold time: {}, dml create time: {}",
-                                    msg,
-                                    schemaLastChangeTime, committable.getCreationTime());
+                        if (
+                            committable.getCreationTime() > schemaLastChangeTime
+                        ) {
+                            LOG.error(
+                                "Incompatible cast data {} created and delayThreshold time: {}, dml create time: {}",
+                                msg,
+                                schemaLastChangeTime,
+                                committable.getCreationTime()
+                            );
                             throw new IOException(msg);
                         }
                     }
                 } else {
                     if (this.conf.getBoolean(JobOptions.lineageOption)) {
                         LOG.info("---star record the ouputLineag----");
-                        String domain = dbManager.getNamespaceByNamespace(tableNamespace).getDomain();
+                        String domain = dbManager
+                            .getNamespaceByNamespace(tableNamespace)
+                            .getDomain();
                         int size = msgSchema.getFields().size();
                         String[] colNames = new String[size];
                         String[] colTypes = new String[size];
@@ -361,7 +601,12 @@ public class LakeSoulSinkGlobalCommitter
                             colNames[i] = field.getName();
                             colTypes[i] = field.getType().toString();
                         }
-                        listener.addOutputTable("lakesoul." + tableNamespace + "." + tableName, domain, colNames,colTypes);
+                        listener.addOutputTable(
+                            "lakesoul." + tableNamespace + "." + tableName,
+                            domain,
+                            colNames,
+                            colTypes
+                        );
                         listener.emit();
                     }
                 }
