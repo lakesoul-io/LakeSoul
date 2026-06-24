@@ -148,7 +148,7 @@ jobs:
             MODE="smoke"
             ENGINES="all"
           fi
-          uv run python -m compat.run_matrix \
+          .venv/bin/python -m compat.run_matrix \
             --mode "$MODE" \
             --cases "$MODE" \
             --engines "$ENGINES" \
@@ -281,7 +281,6 @@ jobs:
         working-directory: python
         run: |
           uv sync --python 3.10 --extra pandas --extra ray --extra daft --extra pyspark
-          uv run maturin develop
       - name: Run RustFS compatibility matrix
         env:
           LAKESOUL_SOURCE_DIR: ${{ github.workspace }}
@@ -300,7 +299,7 @@ jobs:
             MODE="full"
             ENGINES="all"
           fi
-          uv run python -m compat.run_matrix \
+          .venv/bin/python -m compat.run_matrix \
             --mode "$MODE" \
             --cases "$MODE" \
             --engines "$ENGINES" \
