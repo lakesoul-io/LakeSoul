@@ -20,6 +20,58 @@ use std::{collections::HashMap, sync::Arc};
 use arrow_schema::{
     DataType, Field, FieldRef, Fields, IntervalUnit, Schema, SchemaRef, TimeUnit,
 };
+use serde::Deserialize;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+struct ArrowJavaMetadataEntry {
+    key: String,
+    value: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(untagged)]
+enum ArrowJavaMetadataRepr {
+    Entries(Vec<ArrowJavaMetadataEntry>),
+    Map(HashMap<String, String>),
+}
+
+fn serialize_arrow_java_metadata<S>(
+    metadata: &Option<HashMap<String, String>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match metadata {
+        Some(metadata) => {
+            let entries = metadata
+                .iter()
+                .map(|(key, value)| ArrowJavaMetadataEntry {
+                    key: key.clone(),
+                    value: value.clone(),
+                })
+                .collect::<Vec<_>>();
+            serde::Serialize::serialize(&entries, serializer)
+        }
+        None => serializer.serialize_none(),
+    }
+}
+
+fn deserialize_arrow_java_metadata<'de, D>(
+    deserializer: D,
+) -> Result<Option<HashMap<String, String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let repr = Option::<ArrowJavaMetadataRepr>::deserialize(deserializer)?;
+    Ok(repr.map(|repr| match repr {
+        ArrowJavaMetadataRepr::Entries(entries) => entries
+            .into_iter()
+            .map(|entry| (entry.key, entry.value))
+            .collect(),
+        ArrowJavaMetadataRepr::Map(metadata) => metadata,
+    }))
+}
 
 /// JSON representation of Arrow Java's `ArrowType` hierarchy.
 ///
@@ -117,7 +169,11 @@ struct ArrowJavaField {
     #[serde(default)]
     children: Vec<ArrowJavaField>,
     /// A map of key-value pairs containing additional field meta data.
-    #[serde(default)]
+    #[serde(
+        default,
+        serialize_with = "serialize_arrow_java_metadata",
+        deserialize_with = "deserialize_arrow_java_metadata"
+    )]
     metadata: Option<HashMap<String, String>>,
 }
 
@@ -130,6 +186,11 @@ struct ArrowJavaField {
 pub struct ArrowJavaSchema {
     fields: Vec<ArrowJavaField>,
     /// A map of key-value pairs containing additional meta data.
+    #[serde(
+        default,
+        serialize_with = "serialize_arrow_java_metadata",
+        deserialize_with = "deserialize_arrow_java_metadata"
+    )]
     metadata: Option<HashMap<String, String>>,
 }
 
@@ -605,7 +666,7 @@ mod tests {
               "nullable": false,
               "type": {"name": "int", "isSigned": true, "bitWidth": 32},
               "children": [],
-              "metadata": {"spark_comment": "primary key"}
+              "metadata": [{"key": "spark_comment", "value": "primary key"}]
             },
             {
               "name": "values",
@@ -617,10 +678,10 @@ mod tests {
                   "nullable": true,
                   "type": {"name": "utf8"},
                   "children": [],
-                  "metadata": {"child": "meta"}
+                  "metadata": [{"key": "child", "value": "meta"}]
                 }
               ],
-              "metadata": {}
+              "metadata": []
             },
             {
               "name": "attrs",
@@ -673,7 +734,7 @@ mod tests {
               "children": []
             }
           ],
-          "metadata": {"schema_key": "schema_value"}
+          "metadata": [{"key": "schema_key", "value": "schema_value"}]
         }
         "#;
 
@@ -746,6 +807,8 @@ mod tests {
         let json = schema_to_metadata_str(&schema);
         let parsed = schema_from_metadata_str(&json).unwrap();
 
+        assert!(json.contains(r#""metadata":[{"key":"schema_key","value":"schema_value"}]"#));
+        assert!(json.contains(r#""metadata":[{"key":"spark_comment","value":"duration field"}]"#));
         assert_eq!(parsed.as_ref(), &schema);
     }
 
@@ -783,5 +846,31 @@ mod tests {
         let legacy_json = serde_json::to_string(&schema).unwrap();
 
         assert_eq!(schema_from_metadata_str(&legacy_json).unwrap(), schema);
+    }
+
+    #[test]
+    fn object_style_arrow_java_metadata_remains_readable() {
+        let schema_json = r#"
+        {
+          "fields": [
+            {
+              "name": "id",
+              "nullable": false,
+              "type": {"name": "int", "isSigned": true, "bitWidth": 64},
+              "children": [],
+              "metadata": {"spark_comment": "primary key"}
+            }
+          ],
+          "metadata": {"schema_key": "schema_value"}
+        }
+        "#;
+
+        let schema = schema_from_metadata_str(schema_json).unwrap();
+
+        assert_eq!(schema.metadata().get("schema_key").unwrap(), "schema_value");
+        assert_eq!(
+            schema.field_with_name("id").unwrap().metadata().get("spark_comment"),
+            Some(&"primary key".to_string())
+        );
     }
 }
