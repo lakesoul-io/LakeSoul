@@ -225,6 +225,8 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
       val compactDataCommitInfoId = UUID.randomUUID
       val compactDataCommitInfo =
         DataCommitInfo.newBuilder(allDataCommitInfo.head)
+          .setTableId(tc.tableInfo.table_id)
+          .setPartitionDesc(sourcePartition.range_value)
           .setCommitId(DBUtil.toProtoUuid(compactDataCommitInfoId))
           .clearFileOps
           .addAllFileOps(allDataCommitInfo.flatMap(_.getFileOpsList.asScala).asJava)
