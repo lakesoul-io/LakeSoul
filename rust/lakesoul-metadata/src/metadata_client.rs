@@ -356,7 +356,7 @@ impl MetaDataClient {
         joined_string: String,
     ) -> Result<JniWrapper> {
         let bytes = self.execute_query_raw(query_type, joined_string).await?;
-        return Ok(JniWrapper::decode(prost::bytes::Bytes::from(bytes))?);
+        Ok(JniWrapper::decode(prost::bytes::Bytes::from(bytes))?)
     }
 
     async fn insert_namespace(&self, namespace: &Namespace) -> Result<i32> {

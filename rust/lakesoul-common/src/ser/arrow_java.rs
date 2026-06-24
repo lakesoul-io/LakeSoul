@@ -807,8 +807,12 @@ mod tests {
         let json = schema_to_metadata_str(&schema);
         let parsed = schema_from_metadata_str(&json).unwrap();
 
-        assert!(json.contains(r#""metadata":[{"key":"schema_key","value":"schema_value"}]"#));
-        assert!(json.contains(r#""metadata":[{"key":"spark_comment","value":"duration field"}]"#));
+        assert!(
+            json.contains(r#""metadata":[{"key":"schema_key","value":"schema_value"}]"#)
+        );
+        assert!(json.contains(
+            r#""metadata":[{"key":"spark_comment","value":"duration field"}]"#
+        ));
         assert_eq!(parsed.as_ref(), &schema);
     }
 
@@ -869,7 +873,11 @@ mod tests {
 
         assert_eq!(schema.metadata().get("schema_key").unwrap(), "schema_value");
         assert_eq!(
-            schema.field_with_name("id").unwrap().metadata().get("spark_comment"),
+            schema
+                .field_with_name("id")
+                .unwrap()
+                .metadata()
+                .get("spark_comment"),
             Some(&"primary key".to_string())
         );
     }
