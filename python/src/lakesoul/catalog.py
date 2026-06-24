@@ -718,10 +718,12 @@ def _normalize_optional_columns(
     return values
 
 
-def _normalize_variadic_columns(columns: tuple[str | Sequence[str], ...]):
+def _normalize_variadic_columns(
+    columns: tuple[str | Sequence[str], ...],
+) -> tuple[str, ...] | None:
     if len(columns) == 1 and not isinstance(columns[0], str):
         return _normalize_optional_columns(columns[0])
-    return _normalize_optional_columns(*columns)
+    return _normalize_optional_columns(columns)  # ty: ignore
 
 
 def _validate_filter(expression: ds.Expression | None) -> ds.Expression | None:
