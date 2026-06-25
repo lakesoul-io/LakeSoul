@@ -401,7 +401,12 @@ class FlinkEngine(Engine):
             ctx.log_file(self.name, "read", ref.table_name, case.name),
         )
         payload = json.loads(output_file.read_text(encoding="utf-8"))
-        rows = [dict(zip(payload["columns"], values)) for values in payload["rows"]]
+        rows: list[dict[str, Any]] = []
+        for values in payload["rows"]:
+            row: dict[str, Any] = {}
+            for col_name, raw in zip(payload["columns"], values):
+                row[col_name] = _coerce_value(raw, case.read_schema.field(col_name).type)
+            rows.append(row)
         return _table_from_rows(rows, case.read_schema)
 
 
@@ -586,6 +591,11 @@ def _sql_type(field: pa.Field, engine: str) -> str:
     if pa.types.is_date32(data_type) or pa.types.is_date64(data_type):
         return "DATE"
     if pa.types.is_timestamp(data_type):
+        if engine == "datafusion":
+            unit_to_precision = {"s": 0, "ms": 3, "us": 6, "ns": 9}
+            unit_str = getattr(data_type, "unit", "us")
+            prec = unit_to_precision.get(str(unit_str), 6)
+            return f"TIMESTAMP({prec})"
         return "TIMESTAMP"
     if pa.types.is_string(data_type) or pa.types.is_large_string(data_type):
         return "STRING" if engine == "flink" else "VARCHAR"
