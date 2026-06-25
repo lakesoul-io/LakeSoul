@@ -142,8 +142,11 @@ class SparkEngine(Engine):
                     df.write.format("lakesoul")
                     .mode("overwrite")
                     .option("shortTableName", ref.table_name)
-                    .option("hashBucketNum", str(case.hash_bucket_num))
                 )
+                if case.primary_keys:
+                    writer = writer.option(
+                        "hashBucketNum", str(case.hash_bucket_num)
+                    )
                 if case.partition_by:
                     writer = writer.option(
                         "rangePartitions", ",".join(case.partition_by)
@@ -165,8 +168,7 @@ class SparkEngine(Engine):
             df = df.filter(df[column] == value)
         if case.read_columns is not None:
             df = df.select(*case.read_columns)
-        rows = [row.asDict(recursive=True) for row in df.collect()]
-        return _table_from_rows(rows, case.read_schema)
+        return _pyspark_to_arrow(spark, df, case.read_schema)
 
     def close(self) -> None:
         if self._spark is not None:
@@ -205,6 +207,10 @@ class SparkEngine(Engine):
     def _dataframe(self, case: CaseSpec, table: pa.Table, ctx: CompatContext):
         spark = self._session(ctx)
         rows = table.to_pylist()
+        for row in rows:
+            for key, value in row.items():
+                if isinstance(value, dt.datetime) and value.tzinfo is None:
+                    row[key] = value.replace(tzinfo=dt.timezone.utc)
         return spark.createDataFrame(rows, schema=_spark_schema(case.schema))
 
 
@@ -423,6 +429,57 @@ def _arrow_filter(case: CaseSpec) -> Any | None:
     return expression
 
 
+def _pyspark_to_arrow(
+    spark: Any, df: Any, expected_schema: pa.Schema
+) -> pa.Table:
+    """Collect a PySpark DataFrame as a PyArrow Table, avoiding timestamp tz shift.
+
+    PySpark converts java.sql.Timestamp to Python datetime via
+    fromtimestamp(), which uses the OS local timezone.  We work around this
+    by casting timestamp columns to string on the Spark side (Spark's
+    Timestamp.toString() renders in session timezone, which is UTC for our
+    harness) and parsing back to UTC datetimes in Python.
+    """
+    from pyspark.sql import functions as F
+
+    timestamp_columns = [
+        field.name
+        for field in expected_schema
+        if pa.types.is_timestamp(field.type)
+    ]
+
+    select_exprs = []
+    for field in expected_schema:
+        name = field.name
+        if name in timestamp_columns:
+            select_exprs.append(F.col(name).cast("string").alias(name))
+        else:
+            select_exprs.append(F.col(name))
+
+    rows = df.select(*select_exprs).collect()
+    parsed: list[dict[str, Any]] = []
+    for row in rows:
+        d = row.asDict(recursive=True)
+        for col in timestamp_columns:
+            raw = d[col]
+            if raw is not None:
+                d[col] = _parse_spark_timestamp_string(raw)
+        parsed.append(d)
+    return _table_from_rows(parsed, expected_schema)
+
+
+def _parse_spark_timestamp_string(raw: str) -> dt.datetime:
+    """Parse a Spark Timestamp string rendered in session timezone (UTC).
+
+    Spark 3.3+ renders TimestampType.cast(string) as
+    ``yyyy-MM-dd HH:mm:ss.SSSSSS``, omitting trailing zero fractional
+    digits when they are all zero.
+    """
+    if "." in raw:
+        return dt.datetime.strptime(raw, "%Y-%m-%d %H:%M:%S.%f")
+    return dt.datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
+
+
 def _table_from_rows(rows: list[dict[str, Any]], schema: pa.Schema) -> pa.Table:
     if not rows:
         return pa.Table.from_batches([], schema=schema)
@@ -579,14 +636,19 @@ def _flink_create_table_sql(case: CaseSpec, ref: TableRef) -> str:
         if case.partition_by
         else ""
     )
+    hash_bucket = (
+        f",'hashBucketNum'='{case.hash_bucket_num}'"
+        if case.primary_keys
+        else ""
+    )
     return (
         f"CREATE TABLE {ref.table_name} (\n  "
         + ",\n  ".join(columns)
         + f"\n){partition_clause} WITH ("
         + "'connector'='lakesoul',"
         + "'format'='parquet',"
-        + f"'path'='{ref.path}',"
-        + f"'hashBucketNum'='{case.hash_bucket_num}'"
+        + f"'path'='{ref.path}'"
+        + hash_bucket
         + ");"
     )
 
@@ -629,8 +691,9 @@ def _select_sql(table_name: str, case: CaseSpec, engine: str) -> str:
 
 
 def _sql_literal(value: Any, data_type: pa.DataType, engine: str) -> str:
-    del engine
     if value is None:
+        if engine == "flink":
+            return f"CAST(NULL AS {_sql_type(pa.field('', data_type), engine)})"
         return "NULL"
     if pa.types.is_string(data_type) or pa.types.is_large_string(data_type):
         return "'" + str(value).replace("'", "''") + "'"

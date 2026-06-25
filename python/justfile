@@ -18,10 +18,13 @@ sync:
 dist:
     uvx --from 'maturin[zig]' maturin build --release --zig --target x86_64-unknown-linux-gnu --auditwheel repair --compatibility manylinux2014 --out ../dist
 
-compact mode="smoke" engines="jvm":
-    {{env}} .venv/bin/python -m compat.run_matrix \
+# must use venv python
+# must in python dir
+compact engines="jvm" mode="smoke":
+    rm -rf ../compatibility-artifacts
+    {{env}} python -m compat.run_matrix \
+        --engines {{engines}} \
         --mode {{mode}} \
         --cases {{mode}} \
-        --engines {{engines}} \
         --storage "file:///tmp/lakesoul-compat" \
         --output-dir /home/maji/Projects/LakeSoul/compatibility-artifacts/file-python
