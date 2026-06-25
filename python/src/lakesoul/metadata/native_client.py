@@ -7,7 +7,7 @@ from __future__ import annotations
 import collections
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 from urllib.parse import urlparse
@@ -79,6 +79,19 @@ class LakeSoulScanPlanPartition:
     files: list[str]
     primary_keys: list[str]
     bucket_id: int = 0
+    partition_info: list[tuple[str, str]] = field(default_factory=list)
+
+
+def _partition_desc_to_info(partition_desc: str) -> list[tuple[str, str]]:
+    if not partition_desc or partition_desc == "-5":
+        return []
+    partition_info: list[tuple[str, str]] = []
+    for part in partition_desc.split(","):
+        key, sep, value = part.partition("=")
+        if not sep:
+            raise ValueError(f"invalid partition desc: {partition_desc!r}")
+        partition_info.append((key, value))
+    return partition_info
 
 
 def _partitions_to_metadata_str(
@@ -376,7 +389,15 @@ class NativeMetadataClient:
                 for data_commit_info in data_commit_info_list:
                     for file_op in data_commit_info.file_ops:
                         data_files.append(file_op.path)
-                plan_partitions.append(LakeSoulScanPlanPartition(data_files, []))
+                plan_partitions.append(
+                    LakeSoulScanPlanPartition(
+                        data_files,
+                        [],
+                        partition_info=_partition_desc_to_info(
+                            partition.partition_desc
+                        ),
+                    )
+                )
         else:
             # group files by each bucket id and partition
             bucket_id_pattern = r".*_(\d+)(?:\..*)?$"
@@ -401,6 +422,9 @@ class NativeMetadataClient:
                             if partition.commit_op != "CompactionCommit"
                             else [],
                             bucket_id,
+                            partition_info=_partition_desc_to_info(
+                                partition.partition_desc
+                            ),
                         )
                     )
         return plan_partitions

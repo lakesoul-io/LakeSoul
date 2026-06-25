@@ -17,7 +17,7 @@ def _one_reader(
     schema: pyarrow.Schema,
     file_urls: list[list[str]],
     primary_keys: list[list[str]],
-    partition_info: list[tuple[str, str]],
+    partition_info: list[list[tuple[str, str]]],
     oss_conf: list[tuple[str, str]],
     partition_schema: pyarrow.Schema | None = None,
     filter: bytes | None = None,

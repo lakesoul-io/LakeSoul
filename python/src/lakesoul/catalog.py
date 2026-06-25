@@ -346,12 +346,16 @@ class LakeSoulTable:
         thread_count: int = 1,
         rank: int | None = None,
         world_size: int | None = None,
-        retain_partition_columns: bool = False,
+        retain_partition_columns: bool = True,
         object_store_options: Mapping[str, str] | None = None,
     ) -> LakeSoulScan:
+        """
+        when `filter` is not None and references the range column,
+        retain_partition_columns` must be True.
+        """
         return LakeSoulScan(
             table=self,
-            partitions=_validate_string_mapping("partitions", partitions or {}),
+            partitions=_normalize_string_mapping("partitions", partitions or {}),
             columns=_normalize_optional_columns(columns),
             filter=_validate_filter(filter),
             batch_size=batch_size,
@@ -564,8 +568,8 @@ class LakeSoulScan:
         **overrides: str,
     ) -> LakeSoulScan:
         merged = dict(self._partitions)
-        merged.update(_validate_string_mapping("partitions", partitions or {}))
-        merged.update(_validate_string_mapping("partitions", overrides))
+        merged.update(_normalize_string_mapping("partitions", partitions or {}))
+        merged.update(_normalize_string_mapping("partitions", overrides))
         return self._replace(partitions=merged)
 
     def shard(self, rank: int, world_size: int) -> LakeSoulScan:
@@ -625,7 +629,7 @@ class LakeSoulScan:
             filter=self._filter,
         )
 
-    def to_table(self) -> pa.Table:
+    def to_arrow_table(self) -> pa.Table:
         return self.to_arrow_dataset().to_table(
             columns=list(self._columns) if self._columns is not None else None,
             filter=self._filter,
@@ -667,6 +671,7 @@ class LakeSoulScan:
             partition_schema=partition_schema,
             scan_partitions=self.scan_plan(),
             partitions=dict(self._partitions),
+            filter=self._filter,
             object_store_options=dict(self._object_store_options),
             batch_size=self._batch_size,
             thread_count=self._thread_count,
@@ -697,6 +702,17 @@ def _validate_string_mapping(name: str, value: Mapping[str, str]) -> dict[str, s
     result = dict(value)
     if any(not isinstance(k, str) or not isinstance(v, str) for k, v in result.items()):
         raise TypeError(f"{name} must contain only string keys and values")
+    return result
+
+
+def _normalize_string_mapping(name: str, value: Mapping[str, Any]) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{name} must be a mapping")
+    result = {}
+    for k, v in value.items():
+        if not isinstance(k, str):
+            raise TypeError(f"{name} keys must be strings")
+        result[k] = str(v)
     return result
 
 

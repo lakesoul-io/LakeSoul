@@ -77,7 +77,7 @@ fn _one_reader(
     schema: PyArrowType<Schema>,
     file_urls: Vec<Vec<String>>,
     primary_keys: Vec<Vec<String>>,
-    partition_info: Vec<(String, String)>,
+    partition_info: Vec<Vec<(String, String)>>,
     oss_conf: Vec<(String, String)>,
     partition_schema: Option<PyArrowType<Schema>>,
     filter: Option<Vec<u8>>,
@@ -85,10 +85,19 @@ fn _one_reader(
     let schema = Arc::new(schema.0);
     log::debug!("schema: {:?}", schema);
     let partition_schema = partition_schema.map(|s| Arc::new(s.0));
+    if file_urls.len() != primary_keys.len() || file_urls.len() != partition_info.len() {
+        return Err(PyRuntimeError::new_err(format!(
+            "file_urls, primary_keys and partition_info must have the same length, got {}, {} and {}",
+            file_urls.len(),
+            primary_keys.len(),
+            partition_info.len()
+        )));
+    }
     let readers = file_urls
         .into_iter()
         .zip(primary_keys)
-        .map(|(files, pks)| {
+        .zip(partition_info)
+        .map(|((files, pks), part_info)| {
             LakeSoulReader::new(build_io_config(
                 batch_size,
                 thread_num,
@@ -96,7 +105,7 @@ fn _one_reader(
                 partition_schema.clone(),
                 files,
                 pks,
-                &partition_info,
+                &part_info,
                 &oss_conf,
                 filter.clone(),
             ))

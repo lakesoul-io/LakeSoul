@@ -48,7 +48,7 @@ def test_arrow_write_basic_append_reads_back_with_arrow(tmp_path: Path) -> None:
 
         first_result = table.write_arrow(first)
         second_result = table.write_arrow(second)
-        actual = catalog.scan(table_name).to_table()
+        actual = catalog.scan(table_name).to_arrow_table()
 
         assert first_result.row_count == 2
         assert second_result.row_count == 1
@@ -92,7 +92,7 @@ def test_arrow_write_partitioned_append_reads_partition_with_arrow(
             partitions={"part": "north"},
             columns=("id", "part", "value"),
             retain_partition_columns=True,
-        ).to_table()
+        ).to_arrow_table()
 
         assert result.row_count == 4
         assert _rows(actual) == [
@@ -137,7 +137,7 @@ def test_arrow_write_mixed_case_create_uses_datafusion_case_folding(
         )
 
         table.write_arrow(data)
-        actual = catalog.scan(table_name).to_table()
+        actual = catalog.scan(table_name).to_arrow_table()
 
         assert table.name == table_name.lower()
         assert table.schema == write_schema
@@ -186,7 +186,7 @@ def test_arrow_write_pk_upsert_reads_latest_rows_with_arrow(tmp_path: Path) -> N
 
         table.write_arrow(first)
         table.write_arrow(second)
-        actual = catalog.scan(table_name).to_table()
+        actual = catalog.scan(table_name).to_arrow_table()
 
         assert _rows(actual) == [
             {"id": 1, "name": "alice", "value": 10},

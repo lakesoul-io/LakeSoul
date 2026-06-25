@@ -87,7 +87,9 @@ class PyArrowEngine(Engine):
         from lakesoul import LakeSoulCatalog
 
         _remove_local_table_path(ref.path)
-        catalog = LakeSoulCatalog.from_env(object_store_options=ctx.object_store_options)
+        catalog = LakeSoulCatalog.from_env(
+            object_store_options=ctx.object_store_options
+        )
         catalog.drop_table(ref.table_name, if_exists=True)
         table = catalog.create_table(
             ref.table_name,
@@ -103,14 +105,16 @@ class PyArrowEngine(Engine):
     def read_case(self, case: CaseSpec, ref: TableRef, ctx: CompatContext) -> pa.Table:
         from lakesoul import LakeSoulCatalog
 
-        catalog = LakeSoulCatalog.from_env(object_store_options=ctx.object_store_options)
+        catalog = LakeSoulCatalog.from_env(
+            object_store_options=ctx.object_store_options
+        )
         scan = catalog.scan(
             ref.table_name,
             columns=case.read_columns,
             filter=_arrow_filter(case),
             retain_partition_columns=True,
         )
-        return normalize_table(scan.to_table(), case.read_schema)
+        return normalize_table(scan.to_arrow_table(), case.read_schema)
 
 
 class SparkEngine(Engine):
@@ -141,9 +145,13 @@ class SparkEngine(Engine):
                     .option("hashBucketNum", str(case.hash_bucket_num))
                 )
                 if case.partition_by:
-                    writer = writer.option("rangePartitions", ",".join(case.partition_by))
+                    writer = writer.option(
+                        "rangePartitions", ",".join(case.partition_by)
+                    )
                 if case.primary_keys:
-                    writer = writer.option("hashPartitions", ",".join(case.primary_keys))
+                    writer = writer.option(
+                        "hashPartitions", ",".join(case.primary_keys)
+                    )
                 writer.save(spark_path)
             elif case.primary_keys:
                 LakeSoulTable.forPath(spark, spark_path).upsert(df)
@@ -208,11 +216,14 @@ class RayEngine(Engine):
 
     def write_case(self, case: CaseSpec, ref: TableRef, ctx: CompatContext) -> None:
         import ray
+
         from lakesoul import LakeSoulCatalog
 
         self._ensure_ray(ray)
         _remove_local_table_path(ref.path)
-        catalog = LakeSoulCatalog.from_env(object_store_options=ctx.object_store_options)
+        catalog = LakeSoulCatalog.from_env(
+            object_store_options=ctx.object_store_options
+        )
         catalog.drop_table(ref.table_name, if_exists=True)
         table = catalog.create_table(
             ref.table_name,
@@ -227,6 +238,7 @@ class RayEngine(Engine):
 
     def read_case(self, case: CaseSpec, ref: TableRef, ctx: CompatContext) -> pa.Table:
         import ray
+
         from lakesoul import LakeSoulCatalog
 
         self._ensure_ray(ray)
@@ -246,7 +258,9 @@ class RayEngine(Engine):
             batch if isinstance(batch, pa.Table) else pa.Table.from_batches([batch])
             for batch in batches
         ]
-        return normalize_table(pa.concat_tables(tables, promote_options="default"), case.read_schema)
+        return normalize_table(
+            pa.concat_tables(tables, promote_options="default"), case.read_schema
+        )
 
     def close(self) -> None:
         if self._started:
@@ -268,10 +282,13 @@ class DaftEngine(Engine):
 
     def write_case(self, case: CaseSpec, ref: TableRef, ctx: CompatContext) -> None:
         import daft
+
         from lakesoul import LakeSoulCatalog
 
         _remove_local_table_path(ref.path)
-        catalog = LakeSoulCatalog.from_env(object_store_options=ctx.object_store_options)
+        catalog = LakeSoulCatalog.from_env(
+            object_store_options=ctx.object_store_options
+        )
         catalog.drop_table(ref.table_name, if_exists=True)
         table = catalog.create_table(
             ref.table_name,
@@ -305,7 +322,9 @@ class DaftEngine(Engine):
             if not tables:
                 return pa.Table.from_batches([], schema=case.read_schema)
             return normalize_table(pa.concat_tables(tables), case.read_schema)
-        raise RuntimeError("Daft DataFrame does not expose a supported Arrow export API")
+        raise RuntimeError(
+            "Daft DataFrame does not expose a supported Arrow export API"
+        )
 
 
 class DataFusionEngine(Engine):
@@ -319,7 +338,9 @@ class DataFusionEngine(Engine):
             _datafusion_create_table_sql(case, ref),
         ]
         for batch in case.batches:
-            statements.append(_insert_sql(ref.table_name, case.schema, batch, "datafusion"))
+            statements.append(
+                _insert_sql(ref.table_name, case.schema, batch, "datafusion")
+            )
         sql_file.write_text("\n".join(statements) + "\n", encoding="utf-8")
         _run_command(
             _datafusion_command(ctx, sql_file),
@@ -329,7 +350,9 @@ class DataFusionEngine(Engine):
 
     def read_case(self, case: CaseSpec, ref: TableRef, ctx: CompatContext) -> pa.Table:
         sql_file = ctx.sql_file(self.name, "read", ref.table_name, case.name)
-        sql_file.write_text(_select_sql(ref.table_name, case, "datafusion") + "\n", encoding="utf-8")
+        sql_file.write_text(
+            _select_sql(ref.table_name, case, "datafusion") + "\n", encoding="utf-8"
+        )
         output = _run_command(
             _datafusion_command(ctx, sql_file),
             ctx.repo_root,
@@ -352,13 +375,19 @@ class FlinkEngine(Engine):
         for batch in case.batches:
             statements.append(_insert_sql(ref.table_name, case.schema, batch, "flink"))
         sql_file.write_text("\n".join(statements) + "\n", encoding="utf-8")
-        _run_flink_sql(ctx, sql_file, None, ctx.log_file(self.name, "write", ref.table_name))
+        _run_flink_sql(
+            ctx, sql_file, None, ctx.log_file(self.name, "write", ref.table_name)
+        )
 
     def read_case(self, case: CaseSpec, ref: TableRef, ctx: CompatContext) -> pa.Table:
         sql_file = ctx.sql_file(self.name, "read", ref.table_name, case.name)
-        output_file = ctx.output_dir / "flink-output" / f"{ref.table_name}_{case.name}.json"
+        output_file = (
+            ctx.output_dir / "flink-output" / f"{ref.table_name}_{case.name}.json"
+        )
         output_file.parent.mkdir(parents=True, exist_ok=True)
-        sql_file.write_text(_select_sql(ref.table_name, case, "flink") + "\n", encoding="utf-8")
+        sql_file.write_text(
+            _select_sql(ref.table_name, case, "flink") + "\n", encoding="utf-8"
+        )
         _run_flink_sql(
             ctx,
             sql_file,
@@ -430,7 +459,9 @@ def _safe_name(value: str) -> str:
 
 def _spark_jars(repo_root: Path) -> list[str]:
     source_dir = Path(os.environ.get("LAKESOUL_SOURCE_DIR", repo_root))
-    pattern = source_dir / "lakesoul-spark" / "target" / "lakesoul-spark-3.3-*-SNAPSHOT.jar"
+    pattern = (
+        source_dir / "lakesoul-spark" / "target" / "lakesoul-spark-3.3-*-SNAPSHOT.jar"
+    )
     jars = [
         path
         for path in glob.glob(str(pattern))
@@ -560,19 +591,32 @@ def _flink_create_table_sql(case: CaseSpec, ref: TableRef) -> str:
     )
 
 
-def _insert_sql(table_name: str, schema: pa.Schema, table: pa.Table, engine: str) -> str:
+def _insert_sql(
+    table_name: str, schema: pa.Schema, table: pa.Table, engine: str
+) -> str:
     columns = ",".join(_quote_ident(name, engine) for name in schema.names)
     values = []
     for row in table.to_pylist():
         values.append(
-            "(" + ",".join(_sql_literal(row[name], schema.field(name).type, engine) for name in schema.names) + ")"
+            "("
+            + ",".join(
+                _sql_literal(row[name], schema.field(name).type, engine)
+                for name in schema.names
+            )
+            + ")"
         )
-    return f"INSERT INTO {table_name} ({columns}) VALUES\n  " + ",\n  ".join(values) + ";"
+    return (
+        f"INSERT INTO {table_name} ({columns}) VALUES\n  " + ",\n  ".join(values) + ";"
+    )
 
 
 def _select_sql(table_name: str, case: CaseSpec, engine: str) -> str:
     columns = case.read_columns or tuple(case.schema.names)
-    sql = "SELECT " + ",".join(_quote_ident(col, engine) for col in columns) + f" FROM {table_name}"
+    sql = (
+        "SELECT "
+        + ",".join(_quote_ident(col, engine) for col in columns)
+        + f" FROM {table_name}"
+    )
     if case.read_partition_filter:
         predicates = []
         for col, value in case.read_partition_filter.items():
@@ -595,7 +639,9 @@ def _sql_literal(value: Any, data_type: pa.DataType, engine: str) -> str:
     if pa.types.is_date32(data_type) or pa.types.is_date64(data_type):
         return f"DATE '{value.isoformat()}'"
     if pa.types.is_timestamp(data_type):
-        text = value.isoformat(sep=" ") if isinstance(value, dt.datetime) else str(value)
+        text = (
+            value.isoformat(sep=" ") if isinstance(value, dt.datetime) else str(value)
+        )
         return f"TIMESTAMP '{text}'"
     return str(value)
 
@@ -614,7 +660,9 @@ def _coerce_value(value: Any, data_type: pa.DataType) -> Any:
     if pa.types.is_boolean(data_type):
         return value if isinstance(value, bool) else str(value).lower() == "true"
     if pa.types.is_date32(data_type) or pa.types.is_date64(data_type):
-        return value if isinstance(value, dt.date) else dt.date.fromisoformat(str(value))
+        return (
+            value if isinstance(value, dt.date) else dt.date.fromisoformat(str(value))
+        )
     if pa.types.is_timestamp(data_type):
         if isinstance(value, dt.datetime):
             return value
@@ -672,6 +720,7 @@ def _run_flink_sql(
         "-Dtest=CompatibilitySqlRunnerTest",
         f"-Dlakesoul.compat.sqlFile={sql_file}",
         "-Dsurefire.failIfNoSpecifiedTests=false",
+        "-DargLine=--add-opens=java.base/java.nio=ALL-UNNAMED",
     ]
     if output_file is not None:
         cmd.append(f"-Dlakesoul.compat.output={output_file}")

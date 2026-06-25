@@ -122,7 +122,7 @@ def main() -> None:
     # Verify
     print("Verifying table...")
     scan = catalog.scan(args.table_name)
-    read_back = scan.to_table()
+    read_back = scan.to_arrow_table()
     print(f"Read back {read_back.num_rows} rows")
 
     print(f"\nTable '{args.table_name}' created successfully!")

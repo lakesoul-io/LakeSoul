@@ -51,7 +51,7 @@ def test_daft_write_basic_append_reads_back_with_arrow(tmp_path: Path) -> None:
 
         first_result = table.write_daft(daft.from_arrow(first))
         second_result = table.write_daft(daft.from_arrow(second))
-        actual = catalog.scan(table_name).to_table()
+        actual = catalog.scan(table_name).to_arrow_table()
 
         assert first_result.row_count == 2
         assert second_result.row_count == 1
@@ -95,7 +95,7 @@ def test_daft_write_partitioned_append_reads_filtered_partition_with_arrow(
             partitions={"part": "north"},
             columns=("id", "part", "value"),
             retain_partition_columns=True,
-        ).to_table()
+        ).to_arrow_table()
 
         assert result.row_count == 4
         assert _rows(actual) == [
@@ -140,7 +140,7 @@ def test_daft_write_mixed_case_create_uses_datafusion_case_folding(
         )
 
         table.write_daft(daft.from_arrow(data))
-        actual = catalog.scan(table_name).to_table()
+        actual = catalog.scan(table_name).to_arrow_table()
 
         assert table.name == table_name.lower()
         assert table.schema == write_schema
@@ -189,7 +189,7 @@ def test_daft_write_pk_upsert_reads_latest_rows_with_arrow(tmp_path: Path) -> No
 
         table.write_daft(daft.from_arrow(first))
         table.write_daft(daft.from_arrow(second))
-        actual = catalog.scan(table_name).to_table()
+        actual = catalog.scan(table_name).to_arrow_table()
 
         assert _rows(actual) == [
             {"id": 1, "name": "alice", "value": 10},

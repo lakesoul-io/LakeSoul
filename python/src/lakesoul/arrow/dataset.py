@@ -35,6 +35,7 @@ class LakeSoulScanConfig:
     thread_count: int = 1
     rank: int | None = None
     world_size: int | None = None
+    filter: ds.Expression | None = None
 
 
 @final
@@ -91,12 +92,15 @@ class Dataset(ds.Dataset):
         )
         file_urls = []
         pks = []
+        partition_infos = []
         for scan_part in filtered_scan_partitions:
             file_urls.append(scan_part.files)
             pks.append(scan_part.primary_keys)
+            partition_infos.append(scan_part.partition_info)
         self._file_urls = file_urls
         self._pks = pks
-        self._filter = None
+        self._partition_infos = partition_infos
+        self._filter = scan_config.filter
 
     def count_rows(
         self,
@@ -125,16 +129,17 @@ class Dataset(ds.Dataset):
         self._filter = expression
 
     def get_fragments(self, filter: ds.Expression | None = None) -> Iterator[Fragment]:
-        partitions = list(self._partitions.items())
         oss_conf = list(self._oss_conf.items())
-        for urls, keys in zip(self._file_urls, self._pks):
+        for urls, keys, partition_info in zip(
+            self._file_urls, self._pks, self._partition_infos
+        ):
             yield Fragment(
                 self._batch_size,
                 self._thread_count,
                 self._schema,
                 urls,
                 keys,
-                partitions,
+                partition_info,
                 oss_conf,
                 self._partition_schema,
                 filter if filter is not None else self._filter,
@@ -311,6 +316,9 @@ class Dataset(ds.Dataset):
     def primary_keys(self) -> list[list[str]]:
         return self._pks
 
+    def partition_infos(self) -> list[list[tuple[str, str]]]:
+        return self._partition_infos
+
     def partitions(self) -> dict[str, str]:
         return self._partitions
 
@@ -350,10 +358,7 @@ class Dataset(ds.Dataset):
             world_size = dist.get_world_size()
             return rank, world_size
         except Exception as e:
-            print("An exception occurred to obtain PyTorch distributed rank: ", e)
-            print(
-                "If you are not using PyTorch's distributed runtime, just ignore this error"
-            )
+            logging.debug("Unable to obtain PyTorch distributed rank: %s", e)
             return None, None
 
     def _filter_scan_partitions(
@@ -666,7 +671,7 @@ class Scanner(ds.Scanner):
         target_schema: pa.Schema,
         file_urls: list[list[str]],
         pks: list[list[str]],
-        partitions: list[tuple[str, str]],
+        partition_infos: list[list[tuple[str, str]]],
         oss_conf: list[tuple[str, str]],
         partiion_schema: pa.Schema | None,
         filter: bytes | None,
@@ -677,7 +682,7 @@ class Scanner(ds.Scanner):
         self._partition_schema = pa.schema(partiion_schema) if partiion_schema else None
         self._file_urls = copy.deepcopy(file_urls)
         self._pks = copy.deepcopy(pks)
-        self._partition = partitions
+        self._partition_infos = copy.deepcopy(partition_infos)
         self._oss_conf = oss_conf
         self._filter = filter
 
@@ -735,7 +740,7 @@ class Scanner(ds.Scanner):
             target_schema,
             dataset.file_urls(),
             dataset.primary_keys(),
-            list(dataset.partitions().items()),
+            dataset.partition_infos(),
             list(dataset.oss_conf().items()),
             dataset.partition_schema(),
             filter,
@@ -777,7 +782,7 @@ class Scanner(ds.Scanner):
             schema,
             [fragment.file_urls()],
             [fragment.primary_keys()],
-            fragment.partitions(),
+            [fragment.partitions()],
             fragment.oss_conf(),
             fragment.partition_schema(),
             filter,
@@ -816,7 +821,7 @@ class Scanner(ds.Scanner):
             self._target_schema,
             self._file_urls,
             self._pks,
-            self._partition,
+            self._partition_infos,
             self._oss_conf,
             self._partition_schema,
             self._filter,
