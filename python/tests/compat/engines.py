@@ -729,7 +729,9 @@ def _coerce_value(value: Any, data_type: pa.DataType) -> Any:
     if pa.types.is_timestamp(data_type):
         if isinstance(value, dt.datetime):
             return value
-        return dt.datetime.fromisoformat(str(value).replace("T", " "))
+        raw = str(value).replace("T", " ")
+        raw = raw.removesuffix("Z")
+        return dt.datetime.fromisoformat(raw)
     return value
 
 
