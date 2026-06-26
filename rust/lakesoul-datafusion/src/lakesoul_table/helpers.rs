@@ -28,7 +28,7 @@ use proto::proto::entity::{PartitionInfo, TableInfo};
 use url::Url;
 
 use crate::Result;
-use crate::serialize::arrow_java::schema_from_metadata_str;
+use lakesoul_common::ser::arrow_java::schema_from_metadata_str;
 
 use crate::catalog::{LakeSoulTableProperty, parse_table_info_partitions};
 
@@ -51,7 +51,9 @@ pub(crate) fn create_io_config_builder_from_table_info(
     let dynamic_partition = hash_partitions.len() + range_partitions.len() > 0;
 
     let mut builder = LakeSoulIOConfigBuilder::new()
-        .with_schema(schema_from_metadata_str(&table_info.table_schema))
+        .with_schema(Arc::new(schema_from_metadata_str(
+            &table_info.table_schema,
+        )?))
         .with_prefix(table_info.table_path.clone())
         .with_primary_keys(hash_partitions)
         .with_range_partitions(range_partitions)

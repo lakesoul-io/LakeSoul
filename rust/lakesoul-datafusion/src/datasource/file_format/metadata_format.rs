@@ -389,28 +389,6 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn same_width_different_order_still_needs_projection() {
-        let target_schema = Arc::new(Schema::new(vec![
-            Field::new("c1", DataType::Int32, true),
-            Field::new("c2", DataType::Int32, true),
-        ]));
-        let merged_schema = Arc::new(Schema::new(vec![
-            Field::new("c2", DataType::Int32, true),
-            Field::new("c1", DataType::Int32, true),
-        ]));
-
-        assert!(LakeSoulMetaDataParquetFormat::needs_output_projection(
-            &target_schema,
-            &merged_schema,
-        ));
-    }
-}
-
 /// Execution plan for writing record batches to a [`LakeSoulParquetSink`]
 pub struct LakeSoulHashSinkExec {
     /// Input plan that produces the record batches to be written.
@@ -799,4 +777,26 @@ fn make_sink_schema() -> SchemaRef {
         Field::new("count", DataType::UInt64, false),
         Field::new("msg", DataType::Utf8, false),
     ]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn same_width_different_order_still_needs_projection() {
+        let target_schema = Arc::new(Schema::new(vec![
+            Field::new("c1", DataType::Int32, true),
+            Field::new("c2", DataType::Int32, true),
+        ]));
+        let merged_schema = Arc::new(Schema::new(vec![
+            Field::new("c2", DataType::Int32, true),
+            Field::new("c1", DataType::Int32, true),
+        ]));
+
+        assert!(LakeSoulMetaDataParquetFormat::needs_output_projection(
+            &target_schema,
+            &merged_schema,
+        ));
+    }
 }

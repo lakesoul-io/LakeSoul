@@ -4,29 +4,40 @@
 
 import evaluate
 import numpy as np
-import torch
-import datasets
-import lakesoul.huggingface
+from datasets import IterableDataset
+from transformers import (
+    AutoModelForSequenceClassification,
+    AutoTokenizer,
+    DataCollatorWithPadding,
+    Trainer,
+    TrainingArguments,
+)
 
-from datasets import load_dataset, IterableDataset
-from transformers import AutoTokenizer, DataCollatorWithPadding, AutoModelForSequenceClassification, TrainingArguments, Trainer
+from lakesoul import LakeSoulCatalog
+from lakesoul.huggingface import from_lakesoul
 
 dataset_table = "imdb"
 
-def read_text_table(datasource, split):
-    dataset = datasets.IterableDataset.from_lakesoul(datasource, partitions={"split": split})
+
+def read_text_table(table_name, split):
+    catalog = LakeSoulCatalog.from_env()
+    scan = catalog.scan(table_name, partitions={"split": split})
+    dataset = from_lakesoul(scan)
     for i, sample in enumerate(dataset):
-        yield {"text": sample["text"], "label":sample["label"]}
+        yield {"text": sample["text"], "label": sample["label"]}
+
 
 # Preprocess function for tokenization
 def preprocess_function(examples):
     return tokenizer(examples["text"], truncation=True)
+
 
 # Compute evaluation metrics
 def compute_metrics(eval_pred):
     predictions, labels = eval_pred
     predictions = np.argmax(predictions, axis=1)
     return accuracy.compute(predictions=predictions, references=labels)
+
 
 # Define ID-to-label and label-to-ID mappings
 id2label = {0: "NEGATIVE", 1: "POSITIVE"}
@@ -36,13 +47,16 @@ label2id = {"NEGATIVE": 0, "POSITIVE": 1}
 tokenizer = AutoTokenizer.from_pretrained("distilbert-base-uncased")
 
 # Tokenize the IMDb dataset
-train_tokenized_imdb = IterableDataset\
-    .from_generator(read_text_table, gen_kwargs={"datasource":dataset_table, "split":"train"})\
-    .map(preprocess_function, batched=True)\
-    .shuffle(seed=1337, buffer_size=25000)
-test_tokenized_imdb = IterableDataset\
-    .from_generator(read_text_table, gen_kwargs={"datasource":dataset_table, "split":"test"})\
+train_tokenized_imdb = (
+    IterableDataset.from_generator(
+        read_text_table, gen_kwargs={"table_name": dataset_table, "split": "train"}
+    )
     .map(preprocess_function, batched=True)
+    .shuffle(seed=1337, buffer_size=25000)
+)
+test_tokenized_imdb = IterableDataset.from_generator(
+    read_text_table, gen_kwargs={"table_name": dataset_table, "split": "test"}
+).map(preprocess_function, batched=True)
 
 # Initialize data collator for padding
 data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
@@ -68,7 +82,7 @@ training_args = TrainingArguments(
     save_strategy="steps",
     save_steps=1560,
     load_best_model_at_end=True,
-    push_to_hub=False
+    push_to_hub=False,
 )
 
 # Initialize the trainer

@@ -3,5 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from .read_lakesoul import read_lakesoul
+from .write_lakesoul import LakeSoulDatasink, write_lakesoul
 
-__all__ = ["read_lakesoul"]
+__all__ = [
+    "LakeSoulDatasink",
+    "read_lakesoul",
+    "write_lakesoul",
+]

@@ -636,10 +636,11 @@ object LakeSoulCatalog {
   }
 
   def listTables(namespaces: Array[String]): Array[Identifier] = {
-    SparkMetaVersion.listTables(namespaces).asScala.map(tablePath => {
-      val tableInfo = SparkMetaVersion.getTableInfoByPath(tablePath)
-      Identifier.of(namespaces, tableInfo.short_table_name.getOrElse(tableInfo.table_path.toUri.toString))
-    }).toArray
+    SparkMetaVersion.listTables(namespaces).asScala.flatMap { tablePath =>
+      Option(SparkMetaVersion.getTableInfoByPath(tablePath)).map { tableInfo =>
+        Identifier.of(namespaces, tableInfo.short_table_name.getOrElse(tableInfo.table_path.toUri.toString))
+      }
+    }.toArray
   }
 
   def createNamespace(namespace: Array[String]): Unit = {

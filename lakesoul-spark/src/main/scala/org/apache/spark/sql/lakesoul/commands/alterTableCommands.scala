@@ -155,7 +155,8 @@ case class AlterTableAddColumnsCommand(
     SchemaUtils.checkColumnNameDuplication(newSchema, "in adding columns")
     DataSourceUtils.checkFieldNames(new ParquetFileFormat, newSchema)
 
-    val newTableInfo = tableInfo.copy(table_schema = ArrowUtils.toArrowSchema(newSchema).toJson)
+    val newTableInfo = tableInfo.copy(
+      table_schema = ArrowUtils.toMetadataArrowSchema(newSchema).toJson)
     tc.commit(Seq.empty[DataFileInfo], Seq.empty[DataFileInfo], newTableInfo)
 
     Seq.empty[Row]
@@ -229,7 +230,8 @@ case class AlterTableChangeColumnCommand(
       case (_, _@StructType(fields), _) => fields
     }
 
-    val newTableInfo = tableInfo.copy(table_schema = ArrowUtils.toArrowSchema(newSchema).toJson)
+    val newTableInfo = tableInfo.copy(
+      table_schema = ArrowUtils.toMetadataArrowSchema(newSchema).toJson)
     tc.commit(Seq.empty[DataFileInfo], Seq.empty[DataFileInfo], newTableInfo)
 
     Seq.empty[Row]
@@ -357,7 +359,8 @@ case class AlterTableReplaceColumnsCommand(
     SchemaUtils.checkColumnNameDuplication(newSchema, "in replacing columns")
     DataSourceUtils.checkFieldNames(new ParquetFileFormat(), newSchema)
 
-    val newTableInfo = tableInfo.copy(table_schema = ArrowUtils.toArrowSchema(newSchema).toJson)
+    val newTableInfo = tableInfo.copy(
+      table_schema = ArrowUtils.toMetadataArrowSchema(newSchema).toJson)
     tc.commit(Seq.empty[DataFileInfo], Seq.empty[DataFileInfo], newTableInfo)
 
     Seq.empty[Row]

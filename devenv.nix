@@ -2,9 +2,13 @@
   pkgs,
   # lib,
   # config,
-  # inputs,
+  inputs,
   ...
-}: {
+}:
+let
+  pkgs-unstable = import inputs.nixpkgs-unstable { system = pkgs.stdenv.system; };
+in
+{
   # https://devenv.sh/basics/
   # env.GREET = "devenv";
 
@@ -13,17 +17,30 @@
     clang
     lld
     llvmPackages.libclang
+    # scala
+    metals
+    # java
+    jdt-language-server
+    stdenv.cc.cc.lib
+  ] ++ [
+    pkgs-unstable.ty
   ];
   env = {
     CC = "${pkgs.clang}/bin/clang";
     CXX = "${pkgs.clang}/bin/clang++";
     LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+    LD_LIBRARY_PATH = "${pkgs.stdenv.cc.cc.lib}/lib";
   };
   # https://devenv.sh/languages/
   # languages.rust.enable = true;
   languages.rust = {
     enable = true;
     toolchainFile = ./rust-toolchain.toml;
+  };
+
+  languages.java = {
+    enable = true;
+    jdk.package = pkgs.temurin-bin-17;
   };
 
   # https://devenv.sh/processes/

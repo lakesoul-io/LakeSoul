@@ -47,7 +47,7 @@ case class TableInfo(namespace: String,
   lazy val hash_partition_columns: Seq[String] = hash_partition_schema.fieldNames
 
   /** Returns the schema as a [[StructType]] */
-  //full table schema which contains partition columns
+  // full table schema which contains partition columns
   @JsonIgnore
   lazy val schema: StructType =
   Option(table_schema).map { s => {

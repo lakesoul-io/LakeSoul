@@ -160,9 +160,9 @@ impl SchemaProvider for LakeSoulNamespace {
                 )
             })?;
 
-        // 调用 create_table 创建表
         let client = self.metadata_client.clone();
         tokio::task::block_in_place(|| {
+            // TODO(jiax): change this
             match futures::executor::block_on(async move {
                 client
                     .create_table(lakesoul_table.table_info().as_ref().clone())

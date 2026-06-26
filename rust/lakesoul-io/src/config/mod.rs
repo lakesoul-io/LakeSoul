@@ -136,7 +136,12 @@ impl LakeSoulIOConfig {
         &self.primary_keys
     }
 
-    /// Returns a slice of range partition column names
+    /// Returns the range partition column names.
+    ///
+    /// Writers use these columns to derive partition directories and exclude them
+    /// from the physical file schema. Readers use the same list to identify
+    /// logical partition columns that are absent from files; their values are
+    /// supplied through default-column projection.
     pub fn range_partitions_slice(&self) -> &[String] {
         &self.range_partitions
     }

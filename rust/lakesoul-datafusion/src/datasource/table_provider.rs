@@ -73,7 +73,7 @@ use crate::lakesoul_table::helpers::{
     create_io_config_builder_from_table_info, listing_partition_info,
     parse_partitions_for_partition_desc, prune_partitions,
 };
-use crate::serialize::arrow_java::{ArrowJavaSchema, schema_from_metadata_str};
+use lakesoul_common::ser::arrow_java::{ArrowJavaSchema, schema_from_metadata_str};
 
 use super::file_format::LakeSoulMetaDataParquetFormat;
 
@@ -194,7 +194,8 @@ impl LakeSoulTableProvider {
         table_info: Arc<TableInfo>,
         as_sink: bool,
     ) -> Result<Self> {
-        let logical_schema = schema_from_metadata_str(&table_info.table_schema);
+        let logical_schema =
+            Arc::new(schema_from_metadata_str(&table_info.table_schema)?);
         let (range_partitions, hash_partitions) =
             parse_table_info_partitions(&table_info.partitions)?;
         let (file_schema, scan_schema) =

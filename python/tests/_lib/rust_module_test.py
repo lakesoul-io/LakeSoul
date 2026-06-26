@@ -4,5 +4,6 @@
 
 
 def test_import():
-    from lakesoul._lib._metadata import exec_query
-    from lakesoul._lib._dataset import sync_reader, one_reader
+    from lakesoul._lib._metadata import _NativeMetadataClient  # noqa: F401
+    from lakesoul._lib._reader import _one_reader, _sync_reader  # noqa: F401
+    from lakesoul._lib._writer import _NativeFileInfo, _NativeWriter  # noqa: F401

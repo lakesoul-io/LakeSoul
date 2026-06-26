@@ -7,6 +7,7 @@
 use std::fmt::{Debug, Formatter};
 use std::ops::DerefMut;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::{collections::HashMap, env, fs, vec};
 
 use postgres::Config;
@@ -21,6 +22,7 @@ use proto::proto::entity::{
 
 use crate::error::{LakeSoulMetaDataError, Result};
 use crate::pooled_client::PooledClient;
+use crate::transfusion::{DataFileInfo, parse_table_info_partitions};
 use crate::{
     DaoType, PARAM_DELIM, PARTITION_DESC_DELIM, clean_meta_for_test, create_connection,
     execute_insert, execute_query, execute_update,
@@ -213,6 +215,20 @@ impl MetaDataClient {
         .await
     }
 
+    pub async fn drop_table(&self, table_name: &str, namespace: &str) -> Result<()> {
+        let table_info = self
+            .get_table_info_by_table_name(table_name, namespace)
+            .await?
+            .ok_or_else(|| {
+                LakeSoulMetaDataError::NotFound(format!(
+                    "not found {} in namespace {}",
+                    table_name, namespace
+                ))
+            })?;
+        self.delete_table_by_table_info_cascade(&table_info).await?;
+        Ok(())
+    }
+
     pub async fn delete_table_by_table_id_cascade(
         &self,
         table_id: &str,
@@ -311,11 +327,11 @@ impl MetaDataClient {
         Err(LakeSoulMetaDataError::Internal("unreachable".to_string()))
     }
 
-    async fn execute_query(
+    pub async fn execute_query_raw(
         &self,
         query_type: i32,
         joined_string: String,
-    ) -> Result<JniWrapper> {
+    ) -> Result<Vec<u8>> {
         for times in 0..self.max_retry as i64 {
             match execute_query(
                 self.client.lock().await.deref_mut(),
@@ -325,13 +341,22 @@ impl MetaDataClient {
             .await
             {
                 Ok(encoded) => {
-                    return Ok(JniWrapper::decode(prost::bytes::Bytes::from(encoded))?);
+                    return Ok(encoded);
                 }
                 Err(_) if times < self.max_retry as i64 - 1 => continue,
                 Err(e) => return Err(e),
             };
         }
         Err(LakeSoulMetaDataError::Internal("unreachable".to_string()))
+    }
+
+    pub async fn execute_query(
+        &self,
+        query_type: i32,
+        joined_string: String,
+    ) -> Result<JniWrapper> {
+        let bytes = self.execute_query_raw(query_type, joined_string).await?;
+        Ok(JniWrapper::decode(prost::bytes::Bytes::from(bytes))?)
     }
 
     async fn insert_namespace(&self, namespace: &Namespace) -> Result<i32> {
@@ -405,6 +430,28 @@ impl MetaDataClient {
             },
         )
         .await
+    }
+
+    async fn transaction_insert_data_commit_info(
+        &self,
+        data_commit_info_list: Vec<DataCommitInfo>,
+    ) -> Result<i32> {
+        let expected_count = data_commit_info_list.len();
+        let inserted_count = self
+            .execute_insert(
+                DaoType::TransactionInsertDataCommitInfo as i32,
+                JniWrapper {
+                    data_commit_info: data_commit_info_list,
+                    ..Default::default()
+                },
+            )
+            .await?;
+        if inserted_count as usize != expected_count {
+            return Err(LakeSoulMetaDataError::Internal(format!(
+                "expected to insert {expected_count} data commits, inserted {inserted_count}"
+            )));
+        }
+        Ok(inserted_count)
     }
 
     pub async fn meta_cleanup(&self) -> Result<i32> {
@@ -655,6 +702,92 @@ impl MetaDataClient {
             CommitOp::try_from(commit_op).map_err(|_| {
                 LakeSoulMetaDataError::Internal("unknown commit_op".to_string())
             })?,
+        )
+        .await
+    }
+
+    /// Commit data files for one table and publish all affected partitions together.
+    pub async fn commit_data_files(
+        &self,
+        table_name: &str,
+        namespace: &str,
+        files: Vec<DataFileInfo>,
+    ) -> Result<()> {
+        if files.is_empty() {
+            return Ok(());
+        }
+
+        let table_info = self
+            .get_table_info_by_table_name(table_name, namespace)
+            .await?
+            .ok_or_else(|| {
+                LakeSoulMetaDataError::NotFound(format!(
+                    "table {table_name} is not found in namespace {namespace}"
+                ))
+            })?;
+        let (_, primary_keys) = parse_table_info_partitions(&table_info.partitions);
+        let commit_op = if primary_keys.is_empty() {
+            CommitOp::AppendCommit
+        } else {
+            CommitOp::MergeCommit
+        };
+        self.commit_data_files_with_commit_op(table_name, namespace, files, commit_op)
+            .await
+    }
+
+    /// Commit data files for one table using an explicit commit operation.
+    pub async fn commit_data_files_with_commit_op(
+        &self,
+        table_name: &str,
+        namespace: &str,
+        files: Vec<DataFileInfo>,
+        commit_op: CommitOp,
+    ) -> Result<()> {
+        if files.is_empty() {
+            return Ok(());
+        }
+
+        let table_info = self
+            .get_table_info_by_table_name(table_name, namespace)
+            .await?
+            .ok_or_else(|| {
+                LakeSoulMetaDataError::NotFound(format!(
+                    "table {table_name} is not found in namespace {namespace}"
+                ))
+            })?;
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| LakeSoulMetaDataError::Internal(error.to_string()))?
+            .as_millis() as i64;
+        let domain = self.get_table_domain(&table_info.table_id).await?.domain;
+
+        let data_commit_info_list = data_commit_info_list_from_files(
+            &table_info,
+            files,
+            commit_op,
+            timestamp,
+            &domain,
+        );
+
+        self.transaction_insert_data_commit_info(data_commit_info_list.clone())
+            .await?;
+        self.commit_data(
+            MetaInfo {
+                table_info: Some(table_info.clone()),
+                list_partition: data_commit_info_list
+                    .iter()
+                    .map(|data_commit_info| PartitionInfo {
+                        table_id: table_info.table_id.clone(),
+                        partition_desc: data_commit_info.partition_desc.clone(),
+                        commit_op: commit_op.into(),
+                        domain: domain.clone(),
+                        snapshot: data_commit_info.commit_id.into_iter().collect(),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            },
+            commit_op,
         )
         .await
     }
@@ -1072,11 +1205,107 @@ pub fn table_path_id_from_table_info(table_info: &TableInfo) -> TablePathId {
     }
 }
 
+fn data_commit_info_list_from_files(
+    table_info: &TableInfo,
+    files: Vec<DataFileInfo>,
+    commit_op: CommitOp,
+    timestamp: i64,
+    domain: &str,
+) -> Vec<DataCommitInfo> {
+    let mut partition_files: HashMap<String, Vec<DataFileInfo>> = HashMap::new();
+    for file in files {
+        partition_files
+            .entry(file.partition_desc.clone())
+            .or_default()
+            .push(file);
+    }
+
+    partition_files
+        .into_iter()
+        .map(|(partition_desc, files)| {
+            let (high, low) = uuid::Uuid::new_v4().as_u64_pair();
+            DataCommitInfo {
+                table_id: table_info.table_id.clone(),
+                partition_desc,
+                commit_id: Some(entity::Uuid { high, low }),
+                file_ops: files
+                    .into_iter()
+                    .map(|file| entity::DataFileOp {
+                        path: file.path,
+                        file_op: entity::FileOp::Add.into(),
+                        size: file.size,
+                        file_exist_cols: file.file_exist_cols,
+                    })
+                    .collect(),
+                commit_op: commit_op.into(),
+                timestamp,
+                committed: false,
+                domain: domain.to_string(),
+            }
+        })
+        .collect()
+}
+
 pub fn table_name_id_from_table_info(table_info: &TableInfo) -> TableNameId {
     TableNameId {
         table_name: table_info.table_name.clone(),
         table_id: table_info.table_id.clone(),
         table_namespace: table_info.table_namespace.clone(),
         domain: table_info.domain.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn data_files_are_grouped_into_partition_commits() {
+        let table_info = TableInfo {
+            table_id: "table-id".to_string(),
+            ..Default::default()
+        };
+        let files = vec![
+            DataFileInfo {
+                partition_desc: "part=a".to_string(),
+                path: "file-a-1.parquet".to_string(),
+                size: 10,
+                file_exist_cols: "id,value".to_string(),
+                ..Default::default()
+            },
+            DataFileInfo {
+                partition_desc: "part=a".to_string(),
+                path: "file-a-2.parquet".to_string(),
+                size: 20,
+                file_exist_cols: "id,value".to_string(),
+                ..Default::default()
+            },
+            DataFileInfo {
+                partition_desc: "part=b".to_string(),
+                path: "file-b.parquet".to_string(),
+                size: 30,
+                file_exist_cols: "id,value".to_string(),
+                ..Default::default()
+            },
+        ];
+
+        let mut commits = data_commit_info_list_from_files(
+            &table_info,
+            files,
+            CommitOp::MergeCommit,
+            123,
+            "public",
+        );
+        commits.sort_by(|left, right| left.partition_desc.cmp(&right.partition_desc));
+
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].partition_desc, "part=a");
+        assert_eq!(commits[0].file_ops.len(), 2);
+        assert_eq!(commits[1].partition_desc, "part=b");
+        assert_eq!(commits[1].file_ops[0].size, 30);
+        assert_eq!(commits[0].commit_op(), CommitOp::MergeCommit);
+        assert_eq!(commits[0].timestamp, 123);
+        assert_eq!(commits[0].domain, "public");
+        assert!(commits.iter().all(|commit| commit.commit_id.is_some()));
     }
 }

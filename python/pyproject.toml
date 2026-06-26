@@ -37,6 +37,7 @@ torch = ["torch>=1.11.0,<2.5"]
 pandas = ["pandas>=1.4"]
 datasets = ["datasets>=2.20"]
 ray = ["ray>=2.55,<2.56"]
+daft = ["daft>=0.7.15"]
 pyspark = ["pyspark==3.3.1"]
 duckdb = ["duckdb>=1.4.0"]
 all = [
@@ -44,6 +45,7 @@ all = [
   "pandas>=1.4",
   "datasets>=2.20",
   "ray>=2.55,<2.56",
+  "daft>=0.7.15",
   "pyspark==3.3.1",
   "duckdb>=1.4.0",
 ]
@@ -51,6 +53,10 @@ all = [
 [tool.uv.sources]
 torch = [{ index = "pytorch-cpu" }]
 torchvision = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
+default = true
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
@@ -63,6 +69,7 @@ all = [
   "pandas>=1.4",
   "datasets>=2.14",
   "ray>=2.55,<2.56",
+  "daft>=0.7.15",
   "pyspark==3.3.1",
   "grpcio-tools == 1.70",
   "duckdb",
@@ -88,13 +95,15 @@ markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
 ]
 
-[[tool.uv.index]]
-url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
-default = true
-
 [tool.ruff]
 line-length = 88
-
+exclude = [
+    "src/lakesoul/metadata/generated/*.py",
+    "src/lakesoul/metadata/generated/*.pyi"
+]
 
 [tool.basedpyright]
 typeCheckingMode = "standard"
+
+[tool.ty.src]
+exclude = ["src/lakesoul/metadata/generated"]

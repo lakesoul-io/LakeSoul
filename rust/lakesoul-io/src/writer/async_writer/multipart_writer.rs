@@ -26,7 +26,7 @@ use crate::helpers::FileExistCols;
 use crate::session::LakeSoulIOSession;
 use crate::{
     Result,
-    constant::TBD_PARTITION_DESC,
+    constant::DEFAULT_PARTITION_DESC,
     helpers::get_batch_memory_size,
     helpers::transform::{uniform_record_batch, uniform_schema},
 };
@@ -227,7 +227,7 @@ impl AsyncBatchWriter for MultiPartAsyncWriter {
         )]);
 
         Ok(vec![FlushOutput {
-            partition_desc: TBD_PARTITION_DESC.to_string(),
+            partition_desc: DEFAULT_PARTITION_DESC.to_string(),
             file_path,
             object_meta,
             row_count: metadata.file_metadata().num_rows() as usize,

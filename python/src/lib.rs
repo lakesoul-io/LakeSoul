@@ -2,22 +2,32 @@
 // SPDX-FileCopyrightText: Copyright 2025 LakeSoul contributors
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright the Vortex contributors
+
+use std::str::FromStr;
+
 use pyo3::prelude::*;
 use rootcause::Report;
 
-mod dataset;
 mod metadata;
+mod reader;
+mod utils;
+mod writer;
 
 type Result<T, E = Report> = std::result::Result<T, E>;
 
 #[pymodule]
 fn _lib(py: Python, m: &Bound<PyModule>) -> PyResult<()> {
+    let level_str = std::env::var("RUST_LOG").unwrap_or_else(|_| "off".to_string());
+    let level = log::LevelFilter::from_str(&level_str).unwrap_or(log::LevelFilter::Off);
+
     pyo3_log::Logger::default()
-        .filter(log::LevelFilter::Debug) // trace may cause deadlocks
+        .filter(level) // trace may cause deadlocks
         .install()
         .unwrap();
     metadata::init(py, m)?;
-    dataset::init(py, m)?;
+    reader::init(py, m)?;
+    writer::init(py, m)?;
+    utils::init(py, m)?;
     Ok(())
 }
 

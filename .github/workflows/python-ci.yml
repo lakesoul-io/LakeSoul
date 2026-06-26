@@ -97,7 +97,7 @@ jobs:
         run: |
           mvn package -pl lakesoul-spark -am -DskipTests
           cd python
-          uv sync --python 3.10
+          uv sync --python 3.10 --group dev
           export LAKESOUL_IO_USE_V2_MERGE=true
           cargo run --release -p lakesoul-console -- tpch-gen -p "file:///tmp/lakesoul/tpch_data" --scale-factor 0.1 -n 8
           cargo run --release -p lakesoul-console -- -f test.sql

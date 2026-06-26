@@ -366,6 +366,21 @@ fn int64_values(batches: &[RecordBatch], column: &str) -> Vec<i64> {
         .collect()
 }
 
+fn string_values(batches: &[RecordBatch], column: &str) -> Vec<String> {
+    batches
+        .iter()
+        .flat_map(|batch| {
+            let index = batch.schema().index_of(column).unwrap();
+            let array = batch
+                .column(index)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            (0..array.len()).map(|row| array.value(row).to_string())
+        })
+        .collect()
+}
+
 // --- Error path tests ---
 
 #[test_log::test(tokio::test)]
@@ -757,10 +772,12 @@ async fn test_read_multiple_range_partitions() {
     let mut reader = LakeSoulReader::new(reader_conf).unwrap();
     reader.start().await.unwrap();
 
-    let mut ids = vec![];
+    let mut batches = vec![];
     while let Some(Ok(batch)) = reader.next_rb().await {
-        ids.extend(int64_values(&[batch], "id"));
+        batches.push(batch);
     }
+
+    let mut ids = int64_values(&batches, "id");
     ids.sort_unstable();
     assert_eq!(ids, vec![1, 2, 101, 102]);
 }
@@ -825,12 +842,75 @@ async fn test_read_multiple_range_partitions_vortex() {
     let mut reader = LakeSoulReader::new(reader_conf).unwrap();
     reader.start().await.unwrap();
 
-    let mut ids = vec![];
+    let mut batches = vec![];
     while let Some(Ok(batch)) = reader.next_rb().await {
-        ids.extend(int64_values(&[batch], "id"));
+        batches.push(batch);
     }
+
+    let mut ids = int64_values(&batches, "id");
     ids.sort_unstable();
     assert_eq!(ids, vec![1, 2, 101, 102]);
+}
+
+#[test_log::test(tokio::test)]
+async fn test_read_range_partition_from_default_column_value() {
+    let dir = tempdir().unwrap();
+    let writer_id = random_str(8);
+    let file_name = lakesoul_file_name(&writer_id, 0);
+    let file_path = dir
+        .path()
+        .join("range=range1")
+        .join(file_name)
+        .into_os_string()
+        .into_string()
+        .unwrap();
+
+    let file_schema = SchemaRef::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("value", DataType::Utf8, true),
+    ]));
+    let write_batch = RecordBatch::try_new(
+        file_schema.clone(),
+        vec![
+            Arc::new(Int64Array::from_iter_values([1, 2])),
+            Arc::new(StringArray::from_iter_values(["x", "y"])),
+        ],
+    )
+    .unwrap();
+
+    let writer_conf = LakeSoulIOConfig::builder()
+        .with_file(file_path.clone())
+        .with_schema(file_schema.clone())
+        .with_hash_bucket_num("1")
+        .with_object_store_option("fs.defaultFS", "file:///")
+        .build();
+    let mut writer = create_writer_with_io_config(writer_conf).await.unwrap();
+    writer.write_record_batch(write_batch).await.unwrap();
+    writer.flush_and_close().await.unwrap();
+
+    let mut read_schema_builder = SchemaBuilder::from(file_schema.as_ref());
+    read_schema_builder.push(Field::new("range", DataType::Utf8, true));
+    let reader_conf = LakeSoulIOConfig::builder()
+        .with_file(file_path)
+        .with_schema(Arc::new(read_schema_builder.finish()))
+        .with_range_partitions(vec!["range".to_string()])
+        .with_default_column_value("range", "range1")
+        .with_hash_bucket_num("1")
+        .with_object_store_option("fs.defaultFS", "file:///")
+        .with_option(OPTION_KEY_IS_COMPACTED, "false")
+        .with_option(OPTION_KEY_SKIP_MERGE_ON_READ, "false")
+        .build();
+
+    let mut reader = LakeSoulReader::new(reader_conf).unwrap();
+    reader.start().await.unwrap();
+
+    let mut batches = vec![];
+    while let Some(Ok(batch)) = reader.next_rb().await {
+        batches.push(batch);
+    }
+
+    assert_eq!(int64_values(&batches, "id"), vec![1, 2]);
+    assert_eq!(string_values(&batches, "range"), vec!["range1", "range1"]);
 }
 
 // --- Vortex-only tests for feature parity with Parquet ---

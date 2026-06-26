@@ -21,7 +21,6 @@ pub static LAKESOUL_EQ: &str = "__L@KE$OUL_EQ__";
 pub static LAKESOUL_COMMA: &str = "__L@KE$OUL_COMMA__";
 
 pub static DEFAULT_PARTITION_DESC: &str = "-5";
-pub static TBD_PARTITION_DESC: &str = "-4";
 
 pub static DATE32_FORMAT: &str = "%Y-%m-%d";
 pub static FLINK_TIMESTAMP_FORMAT: &str = "%Y-%m-%d %H:%M:%S%.9f";

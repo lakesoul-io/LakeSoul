@@ -4245,6 +4245,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lakesoul-common"
+version = "0.1.0"
+dependencies = [
+ "arrow-schema",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "lakesoul-console"
 version = "0.1.0"
 dependencies = [
@@ -4283,6 +4293,7 @@ dependencies = [
  "datafusion-expr",
  "futures",
  "json",
+ "lakesoul-common",
  "lakesoul-io",
  "lakesoul-metadata",
  "log",
@@ -4504,14 +4515,18 @@ dependencies = [
  "datafusion-execution",
  "datafusion-substrait",
  "futures",
+ "lakesoul-common",
  "lakesoul-io",
  "lakesoul-metadata",
  "log",
  "prost",
+ "proto",
  "pyo3",
  "pyo3-log",
  "rootcause",
+ "serde_json",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

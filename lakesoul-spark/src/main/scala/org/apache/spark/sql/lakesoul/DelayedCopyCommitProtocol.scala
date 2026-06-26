@@ -4,6 +4,7 @@
 
 package org.apache.spark.sql.lakesoul
 
+import com.dmetasoul.lakesoul.meta.DBConfig.{LAKESOUL_NON_PARTITION_TABLE_PART_DESC, LAKESOUL_RANGE_PARTITION_SPLITTER}
 import com.dmetasoul.lakesoul.meta.{DataFileInfo, MetaUtils}
 import com.dmetasoul.lakesoul.spark.clean.CleanOldCompaction.splitCompactFilePath
 import org.apache.hadoop.fs.{FileSystem, FileUtil, Path}
@@ -40,14 +41,28 @@ class DelayedCopyCommitProtocol(srcFiles: Seq[DataFileInfo],
       s"$this does not support adding files with an absolute path")
   }
 
+  private[lakesoul] def destinationRelativePath(srcFile: DataFileInfo): String = {
+    val (_, srcBasePath) = splitCompactFilePath(srcFile.path)
+    if (srcBasePath.nonEmpty) {
+      srcBasePath
+    } else {
+      val fileName = new Path(srcFile.path).getName
+      Option(srcFile.range_partitions)
+        .filter(partition => partition.nonEmpty && partition != LAKESOUL_NON_PARTITION_TABLE_PART_DESC)
+        .map(_.replace(LAKESOUL_RANGE_PARTITION_SPLITTER, "/"))
+        .map(partitionPath => new Path(partitionPath, fileName).toString)
+        .getOrElse(fileName)
+    }
+  }
+
   override def commitTask(taskContext: TaskAttemptContext): TaskCommitMessage = {
 
     if (srcFiles.nonEmpty) {
       val fs = new Path(srcFiles.head.path).getFileSystem(taskContext.getConfiguration)
       val statuses = srcFiles.map { srcFile =>
-        val (srcCompactDir, srcBasePath) = splitCompactFilePath(srcFile.path)
-        val dstFile = new Path(dstPath, srcBasePath)
-        FileUtil.copy(fs, new Path(srcFile.path), fs, new Path(dstPath, srcBasePath), false, taskContext.getConfiguration)
+        val relativePath = destinationRelativePath(srcFile)
+        val dstFile = new Path(dstPath, relativePath)
+        FileUtil.copy(fs, new Path(srcFile.path), fs, dstFile, false, taskContext.getConfiguration)
         val status = fs.getFileStatus(dstFile)
         DataFileInfo(srcFile.range_partitions, fs.makeQualified(dstFile).toString, "add", status.getLen, status.getModificationTime)
       }
