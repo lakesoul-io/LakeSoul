@@ -135,7 +135,13 @@ public class JdbcSourceBuilderTool {
             sourceBuilder.debeziumProperties(debeziumProperties);
         }
         if (cdcParams.containsKey(SERVER_ID.key())) {
-            sourceBuilder.serverId(cdcParams.get(SERVER_ID.key()).toString());
+            Object sid = cdcParams.get(SERVER_ID.key());
+            if (sid != null) {
+                String serverId = sid.toString();
+                if  (!serverId.isEmpty()) {
+                    sourceBuilder.serverId(serverId);
+                }
+            }
         }
         if (cdcParams.containsKey(SCAN_SNAPSHOT_FETCH_SIZE.key())) {
             sourceBuilder.fetchSize(Integer.parseInt(cdcParams.get(SCAN_SNAPSHOT_FETCH_SIZE.key()).toString()));
