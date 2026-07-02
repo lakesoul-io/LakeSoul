@@ -20,11 +20,7 @@ import scala.util.control.NonFatal
 object ArrowUtils {
 
   private val LAKESOUL_ARROW_FIELD = "__lakesoul_arrow_field__"
-  private val MANAGED_ARROW_METADATA_KEYS = Set(
-    "spark_comment",
-    LSH_EMBEDDING_DIMENSION,
-    LSH_BIT_WIDTH,
-    LSH_RNG_SEED)
+  private val MANAGED_ARROW_METADATA_KEYS = Set("spark_comment")
 
   val rootAllocator = new RootAllocator(Long.MaxValue)
   private val writer = mapper.writerWithDefaultPrettyPrinter
