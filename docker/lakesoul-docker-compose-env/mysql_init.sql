@@ -8,7 +8,7 @@ use test_cdc;
 
 create table `default_init`
 (
-    `id`     int            NOT NULL,
+    `id`     bigint(20)     AUTO_INCREMENT NOT NULL,
     `col_1`  bigint         NOT NULL,
     `col_2`  binary(1)      NOT NULL,
     `col_3`  blob           NOT NULL,

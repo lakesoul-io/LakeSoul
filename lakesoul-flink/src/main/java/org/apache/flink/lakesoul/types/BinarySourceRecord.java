@@ -4,7 +4,6 @@
 
 package org.apache.flink.lakesoul.types;
 
-import org.apache.doris.flink.exception.IllegalArgumentException;
 import org.apache.flink.cdc.connectors.shaded.org.apache.kafka.connect.data.*;
 import org.apache.flink.cdc.connectors.shaded.org.apache.kafka.connect.source.SourceRecord;
 import org.apache.flink.core.fs.Path;
@@ -102,10 +101,19 @@ public class BinarySourceRecord {
         } else {
             List<String> primaryKeys = new ArrayList<>();
             keySchema.fields().forEach(f -> primaryKeys.add(f.name()));
+            LOG.info("Table {}, pks {}", tableId, primaryKeys);
             Schema valueSchema = sourceRecord.valueSchema();
             Struct value = (Struct) sourceRecord.value();
             // retrieve source event time if exist and non-zero
-            LakeSoulRowDataWrapper data = convert.toLakeSoulDataType(valueSchema, value, tableId);
+            LakeSoulRowDataWrapper data = null;
+            try {
+                data = convert.toLakeSoulDataType(valueSchema, value, tableId, primaryKeys);
+            } catch (IllegalArgumentException e) {
+                if (e.getMessage().contains("Encounter null value for primary key field")) {
+                    LOG.error("Encounter null value for primary key field, record {}", sourceRecord);
+                    return null;
+                }
+            }
             String tablePath;
             try {
                 if (tableId.schema() == null) {
