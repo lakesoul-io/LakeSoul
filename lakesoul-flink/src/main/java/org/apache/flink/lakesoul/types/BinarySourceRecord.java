@@ -4,12 +4,12 @@
 
 package org.apache.flink.lakesoul.types;
 
-import io.debezium.data.Envelope;
-import org.apache.commons.lang3.StringUtils;
 import org.apache.flink.cdc.connectors.shaded.org.apache.kafka.connect.data.*;
 import org.apache.flink.cdc.connectors.shaded.org.apache.kafka.connect.source.SourceRecord;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.*;
 
@@ -30,6 +30,8 @@ public class BinarySourceRecord {
     private final LakeSoulRowDataWrapper data;
 
     private final String sourceRecordValue;
+
+    private static final Logger LOG = LoggerFactory.getLogger(BinarySourceRecord.class);
 
     public BinarySourceRecord(String topic, List<String> primaryKeys, TableId tableId, String tableLocation,
                               List<String> partitionKeys, boolean isDDLRecord, LakeSoulRowDataWrapper data,
@@ -99,15 +101,30 @@ public class BinarySourceRecord {
         } else {
             List<String> primaryKeys = new ArrayList<>();
             keySchema.fields().forEach(f -> primaryKeys.add(f.name()));
+            LOG.info("Table {}, pks {}", tableId, primaryKeys);
             Schema valueSchema = sourceRecord.valueSchema();
             Struct value = (Struct) sourceRecord.value();
             // retrieve source event time if exist and non-zero
-            LakeSoulRowDataWrapper data = convert.toLakeSoulDataType(valueSchema, value, tableId);
+            LakeSoulRowDataWrapper data = null;
+            try {
+                data = convert.toLakeSoulDataType(valueSchema, value, tableId, primaryKeys);
+            } catch (IllegalArgumentException e) {
+                if (e.getMessage().contains("Encounter null value for primary key field")) {
+                    LOG.error("Encounter null value for primary key field, record {}", sourceRecord);
+                    return null;
+                }
+            }
             String tablePath;
-            if (tableId.schema() == null) {
-                tablePath = new Path(new Path(basePath, tableId.catalog()), tableId.table()).toString();
-            } else {
-                tablePath = new Path(new Path(basePath, tableId.schema()), tableId.table()).toString();
+            try {
+                if (tableId.schema() == null) {
+                    tablePath = new Path(new Path(basePath, tableId.catalog()), tableId.table()).toString();
+                } else {
+                    tablePath = new Path(new Path(basePath, tableId.schema()), tableId.table()).toString();
+                }
+            } catch (Exception e) {
+                LOG.error("TableId {}, basePath {}", tableId, basePath, e);
+                throw new IllegalArgumentException("Cannot get table path from tableId " +  tableId +
+                        ", basePath " + basePath, e);
             }
             List<String> newPartitionFields = convert.topicsPartitionFields.get(tableId.table());
             return new BinarySourceRecord(sourceRecord.topic(), primaryKeys, tableId,
