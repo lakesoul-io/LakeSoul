@@ -1,0 +1,71 @@
+# treefmt — unified formatting entry point
+# https://treefmt.com
+#
+# Usage:
+#   treefmt              # format all files
+#   treefmt --fail-on-change  # check-only (CI / pre-push)
+
+[global]
+excludes = [
+  # Build artifacts
+  "target/**",
+  "**/target/**",
+  "build/**",
+  "**/build/**",
+  "node_modules/**",
+  "**/node_modules/**",
+  ".direnv/**",
+  ".devenv*/**",
+  # Lock files
+  "Cargo.lock",
+  "**/uv.lock",
+  "website/package-lock.json",
+  # Generated code
+  "python/src/lakesoul/metadata/generated/**",
+]
+
+# Rust ─────────────────────────────────────────────────
+# Config: rust/rustfmt.toml (picked up automatically)
+[formatter.rust]
+command = "rustfmt"
+includes = ["*.rs"]
+
+# Java ─────────────────────────────────────────────────
+# google-java-format with AOSP style (4-space indent)
+[formatter.java]
+command = "google-java-format"
+options = ["--replace", "--aosp"]
+includes = ["*.java"]
+
+# Scala ────────────────────────────────────────────────
+# Config: .scalafmt.conf (picked up automatically)
+[formatter.scala]
+command = "scalafmt"
+includes = ["*.scala", "*.sbt"]
+
+# Python ───────────────────────────────────────────────
+# Config: [tool.ruff] in python/pyproject.toml (picked up automatically)
+[formatter.python]
+command = "ruff"
+options = ["format"]
+includes = ["*.py"]
+
+# TOML ─────────────────────────────────────────────────
+# Config: .taplo.toml (picked up automatically)
+[formatter.toml]
+command = "taplo"
+options = ["fmt"]
+includes = ["*.toml"]
+
+# YAML ─────────────────────────────────────────────────
+[formatter.yaml]
+command = "prettier"
+options = ["--write"]
+includes = ["*.yml", "*.yaml"]
+
+# JSON ─────────────────────────────────────────────────
+[formatter.json]
+command = "prettier"
+options = ["--write"]
+includes = ["*.json"]
+excludes = ["**/package-lock.json"]
