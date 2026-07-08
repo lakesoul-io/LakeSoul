@@ -54,6 +54,7 @@ use datafusion_expr::dml::InsertOp;
 use rootcause::{bail, report};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
+use vortex::io::session::RuntimeSessionExt;
 use vortex::{VortexSessionDefault, session::VortexSession};
 
 use crate::Result;
@@ -183,7 +184,7 @@ pub(crate) fn create_leaf_writer(
         PhysicalFormat::Vortex => Arc::new(VortexSink::new(
             sink_config,
             file_schema,
-            VortexSession::default(),
+            VortexSession::default().with_tokio(),
         )),
     };
 
