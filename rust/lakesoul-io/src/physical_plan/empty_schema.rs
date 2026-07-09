@@ -67,10 +67,6 @@ impl ExecutionPlan for EmptySchemaExec {
         "EmptySchemaExec"
     }
 
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
     fn properties(&self) -> &Arc<datafusion_physical_plan::PlanProperties> {
         &self.plan_props
     }
@@ -149,10 +145,6 @@ impl DisplayAs for EmptyScanCountExec {
 impl ExecutionPlan for EmptyScanCountExec {
     fn name(&self) -> &str {
         "EmptyScanCountExec"
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 
     fn properties(&self) -> &Arc<datafusion_physical_plan::PlanProperties> {

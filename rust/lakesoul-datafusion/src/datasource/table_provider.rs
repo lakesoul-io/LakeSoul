@@ -4,7 +4,6 @@
 
 //! The [`datafusion::datasource::TableProvider`] implementation for LakeSoul table.
 
-use std::any::Any;
 use std::collections::HashMap;
 use std::env;
 use std::ops::Deref;
@@ -525,14 +524,9 @@ impl LakeSoulTableProvider {
 
             let files = object_metas
                 .into_iter()
-                .map(|object_meta| PartitionedFile {
-                    object_meta,
-                    partition_values: partition_values.clone(),
-                    range: None,
-                    statistics: None,
-                    ordering: None,
-                    extensions: None,
-                    metadata_size_hint: None,
+                .map(|object_meta| {
+                    PartitionedFile::new_from_meta(object_meta)
+                        .with_partition_values(partition_values.clone())
                 })
                 .collect::<Vec<_>>();
             file_groups.push(files)
@@ -689,10 +683,6 @@ impl LakeSoulTableProvider {
 
 #[async_trait]
 impl TableProvider for LakeSoulTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.logical_schema.clone()
     }
@@ -817,7 +807,6 @@ impl TableProvider for LakeSoulTableProvider {
                         debug!("apply new scan config");
                         debug!("filters: {:?}", res.filters);
                         scan_config = sc
-                            .as_any()
                             .downcast_ref::<FileScanConfig>()
                             .ok_or(DataFusionError::Internal(
                                 "Failed to downcast FileScanConfig".into(),
@@ -1145,7 +1134,7 @@ mod tests {
         let exec = LakeSoulTableProvider::build_partitioned_exec(vec![], schema.clone())
             .unwrap();
 
-        assert!(exec.as_any().is::<EmptyExec>());
+        assert!(exec.is::<EmptyExec>());
         assert_eq!(exec.schema(), schema);
     }
 

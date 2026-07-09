@@ -20,7 +20,6 @@ use datafusion::physical_plan::{
 use datafusion_common::{DataFusionError, Result};
 use futures::Stream;
 use futures::StreamExt;
-use std::any::Any;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -95,10 +94,6 @@ impl ExecutionPlanProperties for SelfIncrementalIndexColumnExec {
 impl ExecutionPlan for SelfIncrementalIndexColumnExec {
     fn name(&self) -> &str {
         "SelfIncrementalIndexColumnExec"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     fn schema(&self) -> SchemaRef {

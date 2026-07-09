@@ -27,7 +27,7 @@ use datafusion_datasource::source::DataSource;
 use datafusion_datasource::{ListingTableUrl, PartitionedFile, TableSchema};
 use datafusion_execution::cache::DefaultListFilesCache;
 use datafusion_execution::cache::cache_manager::CacheManagerConfig;
-use datafusion_execution::cache::cache_unit::{
+use datafusion_execution::cache::file_statistics_cache::{
     DefaultFileStatisticsCache, DefaultFilesMetadataCache,
 };
 use datafusion_execution::config::SessionConfig;
@@ -36,9 +36,11 @@ use datafusion_execution::object_store::ObjectStoreUrl;
 use datafusion_execution::runtime_env::RuntimeEnvBuilder;
 use datafusion_execution::{TaskContext, runtime_env::RuntimeEnv};
 use datafusion_expr::execution_props::ExecutionProps;
+use datafusion_expr::registry::ExtensionTypeRegistryRef;
 use datafusion_expr::utils::conjunction;
 use datafusion_expr::{
-    AggregateUDF, Expr, LogicalPlan, ScalarUDF, TableProviderFilterPushDown, WindowUDF,
+    AggregateUDF, Expr, HigherOrderUDF, LogicalPlan, ScalarUDF,
+    TableProviderFilterPushDown, WindowUDF,
 };
 use datafusion_physical_expr::PhysicalExpr;
 use datafusion_physical_plan::ExecutionPlan;
@@ -92,7 +94,7 @@ static GLOBAL_META_CACHE: LazyLock<CacheManagerConfig> = LazyLock::new(|| {
     } else {
         CacheManagerConfig::default()
             .with_list_files_cache(Some(Arc::new(DefaultListFilesCache::default())))
-            .with_files_statistics_cache(Some(Arc::new(
+            .with_file_statistics_cache(Some(Arc::new(
                 DefaultFileStatisticsCache::default(),
             )))
             .with_file_metadata_cache(Some(Arc::new(DefaultFilesMetadataCache::new(
@@ -914,7 +916,6 @@ impl LakeSoulIOSession {
                         debug!("apply new scan config");
                         debug!("pushdown:: {:?}", res.filters);
                         scan_config = sc
-                            .as_any()
                             .downcast_ref::<FileScanConfig>()
                             .ok_or(report!("Failed to downcast FileScanConfig"))?
                             .clone();
@@ -1102,6 +1103,14 @@ impl Session for LakeSoulIOSession {
         unimplemented!("lakesoul session unsupported")
     }
 
+    fn higher_order_functions(&self) -> &HashMap<String, Arc<HigherOrderUDF>> {
+        unimplemented!("lakesoul session unsupported")
+    }
+
+    fn extension_type_registry(&self) -> &ExtensionTypeRegistryRef {
+        unimplemented!("lakesoul session unsupported")
+    }
+
     fn runtime_env(&self) -> &Arc<RuntimeEnv> {
         &self.inner.runtime_env
     }
@@ -1133,6 +1142,7 @@ impl From<&LakeSoulIOSession> for TaskContext {
             None,
             value.session_id().to_string(),
             value.config().clone(),
+            HashMap::new(),
             HashMap::new(),
             HashMap::new(),
             HashMap::new(),

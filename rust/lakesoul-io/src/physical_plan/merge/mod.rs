@@ -4,8 +4,8 @@
 
 //! Implementation of the merge on read execution plan.
 
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::{any::Any, collections::HashMap};
 
 use arrow_schema::{Field, Schema, SchemaRef};
 use datafusion::catalog::memory::DataSourceExec;
@@ -208,10 +208,6 @@ impl ExecutionPlanProperties for MergeParquetExec {
 impl ExecutionPlan for MergeParquetExec {
     fn name(&self) -> &str {
         "MergeParquetExec"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     fn schema(&self) -> SchemaRef {
@@ -430,10 +426,9 @@ pub async fn prune_filter_and_execute(
     let cols = schema_intersection(Arc::new(df_schema.clone()), request_schema.clone());
     debug!("cols: {:?}", cols);
     if cols.is_empty() {
-        return Ok(Box::pin(EmptySchemaStream::new(
-            batch_size,
-            df.count().await?,
-        )));
+        let stream: SendableRecordBatchStream =
+            Box::pin(EmptySchemaStream::new(batch_size, df.count().await?));
+        return Ok(stream);
     }
     // row filtering should go first since filter column may not in the selected cols
     let df = filters.into_iter().try_fold(df, |df, f| df.filter(f))?;

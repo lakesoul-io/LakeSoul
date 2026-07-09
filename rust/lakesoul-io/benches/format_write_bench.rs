@@ -31,6 +31,12 @@ const LAKESOUL_DEFAULT_MAX_ROW_GROUP_NUM_VALUES: usize = 2_147_483_647;
 
 fn lakesoul_parquet_writer_properties(schema: &SchemaRef) -> WriterProperties {
     let field_count = schema.fields().len().max(1);
+    // Target row group size: 250,000 rows.
+    // However, if the schema is wide such that:
+    //     250,000 * num_columns > max_allowed_values
+    // then reduce the row group size to:
+    //     max_allowed_values / num_columns
+    // while ensuring it is never smaller than batch_size.
     let max_row_group_size = if LAKESOUL_DEFAULT_MAX_ROW_GROUP_SIZE * field_count
         > LAKESOUL_DEFAULT_MAX_ROW_GROUP_NUM_VALUES
     {

@@ -4,7 +4,6 @@
 
 //! Module for the [datafusion::datasource::file_format] implementation of LakeSoul.
 
-use std::any::Any;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::str::FromStr;
@@ -252,10 +251,6 @@ impl CanCastSchemaBuilder {
 
 #[async_trait]
 impl FileFormat for LakeSoulParquetFormat {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn get_ext(&self) -> String {
         self.parquet_format.get_ext()
     }
@@ -340,7 +335,6 @@ impl FileFormat for LakeSoulParquetFormat {
         // adapted file source with metadata size hint
         let mut parquet_source = conf
             .file_source
-            .as_any()
             .downcast_ref::<ParquetSource>()
             .ok_or(DataFusionError::Internal("file source".into()))?
             .clone();
@@ -502,7 +496,6 @@ pub async fn flatten_file_scan_config(
                             );
                             let mut parquet_source = format
                                 .file_source(table_schema)
-                                .as_any()
                                 .downcast_ref::<ParquetSource>()
                                 .ok_or(DataFusionError::Internal("file source".into()))?
                                 .clone();
@@ -516,7 +509,6 @@ pub async fn flatten_file_scan_config(
                             }
                             if let Some(reader_factory) = conf
                                 .file_source
-                                .as_any()
                                 .downcast_ref::<ParquetSource>()
                                 .and_then(|source| {
                                     source.parquet_file_reader_factory().cloned()
@@ -700,12 +692,11 @@ fn adapt_file_source_for_single_file(
     format: &Arc<dyn FileFormat>,
     conf: &FileScanConfig,
 ) -> DFResult<Arc<dyn FileSource>> {
-    let Some(format) = format.as_any().downcast_ref::<LakeSoulParquetFormat>() else {
+    let Some(format) = format.downcast_ref::<LakeSoulParquetFormat>() else {
         return Ok(source);
     };
 
     let mut parquet_source = source
-        .as_any()
         .downcast_ref::<ParquetSource>()
         .ok_or(DataFusionError::Internal("file source".into()))?
         .clone();
@@ -716,7 +707,6 @@ fn adapt_file_source_for_single_file(
 
     if let Some(reader_factory) = conf
         .file_source
-        .as_any()
         .downcast_ref::<ParquetSource>()
         .and_then(|source| source.parquet_file_reader_factory().cloned())
     {

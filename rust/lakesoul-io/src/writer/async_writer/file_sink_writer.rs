@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{collections::HashMap, sync::Arc};
+use std::{any::Any, collections::HashMap, sync::Arc};
 
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
@@ -94,6 +94,7 @@ impl FileSinkWriter {
             task_ctx.session_id(),
             task_ctx.session_config().clone(),
             task_ctx.scalar_functions().clone(),
+            task_ctx.higher_order_functions().clone(),
             task_ctx.aggregate_functions().clone(),
             task_ctx.window_functions().clone(),
             sink_runtime_env,
@@ -122,21 +123,22 @@ impl FileSinkWriter {
         Ok(batch.project(&projection)?)
     }
 
+    fn downcast_sink<T: FileSink + 'static>(&self) -> Option<&T> {
+        let sink = self.sink.as_ref() as &dyn Any;
+        sink.downcast_ref::<T>()
+    }
+
     async fn collect_flush_outputs(&self) -> Result<Vec<FlushOutput>> {
         match self.physical_format {
             PhysicalFormat::Parquet => {
                 let sink = self
-                    .sink
-                    .as_any()
-                    .downcast_ref::<ParquetSink>()
+                    .downcast_sink::<ParquetSink>()
                     .ok_or(report!("downcast ParquetSink failed"))?;
                 self.collect_parquet_outputs(sink).await
             }
             PhysicalFormat::Vortex => {
                 let sink = self
-                    .sink
-                    .as_any()
-                    .downcast_ref::<VortexSink>()
+                    .downcast_sink::<VortexSink>()
                     .ok_or(report!("downcast VortexSink failed"))?;
                 self.collect_vortex_outputs(sink).await
             }
