@@ -29,6 +29,7 @@ use url::Url;
 use crate::planner::LakeSoulQueryPlanner;
 
 // re export
+pub use datafusion::*;
 pub use lakesoul_common::ser;
 pub use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 
