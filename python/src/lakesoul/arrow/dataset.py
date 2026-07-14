@@ -7,7 +7,7 @@ import copy
 import functools
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, final
 
 import pyarrow as pa
@@ -36,6 +36,7 @@ class LakeSoulScanConfig:
     rank: int | None = None
     world_size: int | None = None
     filter: ds.Expression | None = None
+    reader_options: Mapping[str, str] = field(default_factory=dict)
 
 
 @final
@@ -65,6 +66,7 @@ class Dataset(ds.Dataset):
         self._partitions = dict(scan_config.partitions)
 
         self._oss_conf = dict(scan_config.object_store_options)
+        self._reader_options = dict(scan_config.reader_options)
 
         if scan_config.batch_size <= 0:
             raise ValueError(
@@ -734,7 +736,7 @@ class Scanner(ds.Scanner):
         if filter is not None:
             filter = bytes(filter.to_substrait(dataset.schema))  # copy
 
-        return Scanner(
+        scanner = Scanner(
             batch_size,
             thread_count,
             target_schema,
@@ -745,6 +747,8 @@ class Scanner(ds.Scanner):
             dataset.partition_schema(),
             filter,
         )
+        scanner._reader_options = getattr(dataset, '_reader_options', {})
+        return scanner
 
     @staticmethod
     @check_parameters
@@ -825,6 +829,7 @@ class Scanner(ds.Scanner):
             self._oss_conf,
             self._partition_schema,
             self._filter,
+            list(opts.items()) if (opts := getattr(self, '_reader_options', {})) else None,
         )
 
     def to_table(self) -> pa.Table:

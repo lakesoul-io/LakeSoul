@@ -794,19 +794,34 @@ pub async fn write_latest(
     use object_store::PutMode;
     let key = mstore.full_path(LATEST_FILENAME);
     let content = format!("{generation}:{version}");
-    let payload = PutPayload::from_bytes(content.into_bytes().into());
-    let mode = match expected_etag.clone() {
-        Some(tag) => PutMode::Update(object_store::UpdateVersion { e_tag: Some(tag), version: None }),
-        None => PutMode::Overwrite,
-    };
-    let opts = object_store::PutOptions { mode, ..Default::default() };
-    match mstore.store.put_opts(&key, payload, opts).await {
-        Ok(result) => Ok(result.e_tag),
-        Err(object_store::Error::Precondition { .. }) => {
-            Err(RabitqError::VersionConflict)
+    // Try CAS (Update) first if etag is provided and store type supports it.
+    // On LocalFileSystem and other stores without CAS support, fall back to
+    // Overwrite.  We detect this by a generic error catch rather than pattern
+    // matching, because object_store::Error variants differ across versions.
+    let content_bytes = content.into_bytes();
+    let make_payload = || PutPayload::from_bytes(content_bytes.clone().into());
+    let result = if let Some(ref tag) = expected_etag {
+        let update_opts = object_store::PutOptions {
+            mode: PutMode::Update(object_store::UpdateVersion { e_tag: Some(tag.clone()), version: None }),
+            ..Default::default()
+        };
+        match mstore.store.put_opts(&key, make_payload(), update_opts).await {
+            Ok(r) => Ok(r),
+            Err(object_store::Error::Precondition { .. }) => Err(RabitqError::VersionConflict),
+            Err(_) => {
+                // Fallback: store might not support CAS (e.g. LocalFileSystem)
+                let overwrite_opts = object_store::PutOptions {
+                    mode: PutMode::Overwrite, ..Default::default()
+                };
+                mstore.store.put_opts(&key, make_payload(), overwrite_opts)
+                    .await.map_err(os_err)
+            }
         }
-        Err(e) => Err(os_err(e)),
-    }
+    } else {
+        let opts = object_store::PutOptions { mode: PutMode::Overwrite, ..Default::default() };
+        mstore.store.put_opts(&key, make_payload(), opts).await.map_err(os_err)
+    };
+    result.map(|r| r.e_tag)
 }
 
 // ---- backward-compat (existing V1/V2 manifest read) ----

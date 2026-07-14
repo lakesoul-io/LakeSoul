@@ -53,7 +53,6 @@ fn build_shard_vector_index(
     nlist: usize,
     total_bits: usize,
     metric: String,
-    index_prefix: String,
 ) -> PyResult<String> {
     let store = create_object_store(&store_config)?;
 
@@ -91,7 +90,6 @@ fn build_shard_vector_index(
         config,
         file_paths,
         pk_column,
-        index_prefix,
         object_store_options,
         default_fs,
     );

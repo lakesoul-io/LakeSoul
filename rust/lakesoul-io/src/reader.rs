@@ -288,25 +288,23 @@ impl LakeSoulReader {
             .first()
             .cloned()
             .unwrap_or_else(|| "id".to_string());
-        let table_path = io_config.prefix().trim_end_matches('/');
-        let table_url = datafusion_datasource::ListingTableUrl::parse(table_path)
+        let raw_prefix = io_config.prefix().trim_end_matches('/');
+        let table_path = raw_prefix
+            .trim_start_matches("file://")
+            .trim_start_matches("s3://")
+            .trim_start_matches("s3a://");
+        let table_url = datafusion_datasource::ListingTableUrl::parse(raw_prefix)
             .map_err(|e| rootcause::report!("invalid table path: {}", e))?;
         let store = self
             .io_session
             .runtime_env()
             .object_store(table_url.object_store())
             .map_err(|e| rootcause::report!("failed to get object store: {}", e))?;
-        let ids = if let Some(idx_prefix) = io_config.option(OPTION_KEY_VECTOR_SEARCH_INDEX_PREFIX) {
-            crate::vector_search::search_index_shard(
-                &store, &idx_prefix, &query, top_k, nprobe, lakesoul_vector::Metric::L2,
-            ).await?.unwrap_or_default()
-        } else {
-            crate::vector_search::search_matching_shards(
-                &store, io_config.files_slice(), &column, table_path,
-                io_config.range_partitions_slice(), &query,
-                top_k, nprobe, lakesoul_vector::Metric::L2,
-            ).await?
-        };
+        let ids = crate::vector_search::search_matching_shards(
+            &store, io_config.files_slice(), &column, table_path,
+            io_config.range_partitions_slice(), &query,
+            top_k, nprobe, lakesoul_vector::Metric::L2,
+        ).await?;
         if ids.is_empty() {
             tracing::info!("Vector search returned no results");
             return Ok(filters);

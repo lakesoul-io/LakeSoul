@@ -22,7 +22,6 @@ pub struct VectorShardIndexBuilder {
     config: VectorIndexConfig,
     file_paths: Vec<String>,
     pk_column: String,
-    index_prefix: String,
     object_store_options: std::collections::HashMap<String, String>,
     default_fs: Option<String>,
 }
@@ -33,15 +32,28 @@ impl VectorShardIndexBuilder {
         config: VectorIndexConfig,
         file_paths: Vec<String>,
         pk_column: String,
-        index_prefix: String,
         object_store_options: std::collections::HashMap<String, String>,
         default_fs: Option<String>,
     ) -> Self {
-        Self { store, config, file_paths, pk_column, index_prefix, object_store_options, default_fs }
+        Self { store, config, file_paths, pk_column, object_store_options, default_fs }
+    }
+
+    fn index_prefix(&self) -> String {
+        // Derive table prefix from the first file's parent directory
+        let prefix = self.file_paths.first().and_then(|u| {
+            let u = u.trim_start_matches("file://").trim_start_matches("s3://").trim_start_matches("s3a://");
+            std::path::Path::new(u.trim_end_matches('/')).parent()?.to_str().map(|s| s.to_string())
+        }).unwrap_or_default();
+        let prefixes = crate::vector_search::derive_index_prefixes(
+            &self.file_paths, &prefix, &self.config.column_name,
+        );
+        prefixes.first().map(|(p, _)| p.clone()).unwrap_or_else(|| {
+            format!("_vector_index/{}/-5/0/", self.config.column_name)
+        })
     }
 
     pub async fn build(self) -> Result<(), RabitqError> {
-        let mstore = ManifestStore::new(self.store.clone(), self.index_prefix.clone());
+        let mstore = ManifestStore::new(self.store.clone(), self.index_prefix());
         let need_fresh = !lakesoul_vector::rabitq::manifest::manifest_exists(&mstore).await;
         if need_fresh {
             self.build_fresh(mstore).await

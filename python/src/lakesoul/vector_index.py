@@ -32,22 +32,8 @@ import collections
 from dataclasses import dataclass
 from typing import Sequence
 
-from .metadata.dao import (
-    select_table_info_by_table_name,
-    get_partition_info_by_table_id_and_desc,
-    list_data_commit_info,
-)
-
-from .metadata.meta_ops import (
-    get_table_info_by_name,
-    get_partition_and_pk_cols,
-    get_table_single_partition_data_info,
-    get_all_partition_info,
-)
-
-from .metadata.const import DaoType
-from .metadata.native_client import query
 from ._lib.vector import build_shard_vector_index
+from .metadata.native_client import NativeMetadataClient
 
 
 @dataclass
@@ -73,29 +59,26 @@ def _extract_bucket_id(file_path: str) -> int:
 
 
 def _group_files_by_shard(
+    client: NativeMetadataClient,
     table_id: str,
     partition_desc: str,
     pk_cols: list[str],
 ) -> list[ShardInfo]:
     """Query PG for a partition's current data files and group by bucket."""
-    # Get the latest partition info
-    partition_infos = get_partition_info_by_table_id_and_desc(
+    partition_infos = client.get_partition_info_by_table_id_and_desc(
         table_id, partition_desc
     )
     if not partition_infos:
         return []
 
-    # Find latest version
     latest = max(partition_infos, key=lambda p: p.version)
-
-    # Collect all files, grouped by bucket
     bucket_files: dict[int, list[str]] = collections.defaultdict(list)
-    data_commits = list_data_commit_info(
+    data_commits = client.list_data_commit_info(
         latest.table_id, latest.partition_desc, latest.snapshot
     )
     for commit in data_commits:
         for file_op in commit.file_ops:
-            if file_op.file_op == "add":
+            if file_op.file_op == 0:  # FileOp.add
                 bid = _extract_bucket_id(file_op.path)
                 bucket_files[bid].append(file_op.path)
 
@@ -160,22 +143,24 @@ def build_partition_vector_index(
         RuntimeError: If any shard's index build fails.
     """
     store_config = store_config or _default_store_config()
+    client = NativeMetadataClient.from_env()
 
     # 1. Get table metadata from PG
-    table_info = get_table_info_by_name(table_name, namespace)
-    _, pk_cols = get_partition_and_pk_cols(table_info)
+    table_info = client.get_table_info_by_name(table_name, namespace)
+    _, pk_cols = client.get_partition_and_pk_cols(table_info)
     if not pk_cols:
         raise ValueError(
             f"Table '{table_name}' has no primary key columns defined. "
             f"Vector index requires a u64 primary key."
         )
-    pk_column = pk_cols[0]  # Use first PK column as vector ID
+    pk_column = pk_cols[0]
 
     table_path = table_info.table_path
+    table_path = table_path.replace("file://", "").replace("s3://", "").replace("s3a://", "")
 
     # 2. Group files by (partition, bucket)
     shards = _group_files_by_shard(
-        table_info.table_id, partition_desc, pk_cols
+        client, table_info.table_id, partition_desc, pk_cols
     )
     if not shards:
         return {
@@ -192,10 +177,6 @@ def build_partition_vector_index(
     succeeded = 0
     failed = 0
     for shard in shards:
-        index_prefix = (
-            f"{table_path}/_vector_index/{vector_column}/"
-            f"{shard.partition_desc}/{shard.bucket_id}/"
-        )
         try:
             result = build_shard_vector_index(
                 store_config=store_config,
@@ -206,14 +187,13 @@ def build_partition_vector_index(
                 nlist=nlist,
                 total_bits=total_bits,
                 metric=metric,
-                index_prefix=index_prefix,
             )
             if result == "ok":
                 succeeded += 1
             else:
                 failed += 1
         except Exception as e:
-            print(f"ERROR building index for {index_prefix}: {e}")
+            print(f"ERROR building index for partition {partition_desc}: {e}")
             failed += 1
 
     if failed > 0:
@@ -251,8 +231,9 @@ def build_table_vector_index(
         Dict with per-partition results.
     """
     store_config = store_config or _default_store_config()
-    table_info = get_table_info_by_name(table_name, namespace)
-    partition_infos = get_all_partition_info(table_info.table_id)
+    client = NativeMetadataClient.from_env()
+    table_info = client.get_table_info_by_name(table_name, namespace)
+    partition_infos = client.get_all_partition_info(table_info.table_id)
 
     results = []
     for pinfo in partition_infos:
@@ -279,10 +260,66 @@ def build_table_vector_index(
     }
 
 
+def rerank_by_distance(
+    table: "pa.Table",
+    query: "np.ndarray",
+    vector_column: str,
+    top_k: int,
+    metric: str = "L2",
+) -> "pa.Table":
+    """Re-rank candidate rows by exact vector distance to the query.
+
+    After per-bucket ANN search returns candidate rows, use this to
+    compute exact distances and pick the true top-K.
+
+    Args:
+        table: Candidate table (must contain *vector_column*).
+        query: Query vector, shape ``[D]``.
+        vector_column: Name of the vector column in *table*.
+        top_k: Number of rows to return.
+        metric: ``"L2"`` (Euclidean) or ``"IP"`` (Inner Product).
+
+    Returns:
+        A ``pyarrow.Table`` with exactly ``min(top_k, len(table))`` rows,
+        sorted by distance (ascending for L2, descending for IP).
+    """
+    import numpy as np
+    import pyarrow as pa
+
+    if top_k <= 0:
+        return table.slice(0, 0)
+
+    # Extract vectors as [N, D] numpy array
+    vec_col = table.column(vector_column)
+    n = len(vec_col)
+    if n == 0:
+        return table
+
+    dim = len(vec_col[0].values)
+    vectors = np.empty((n, dim), dtype=np.float32)
+    for i in range(n):
+        vectors[i] = vec_col[i].values.to_numpy()
+
+    # Compute distances
+    metric_lower = metric.upper()
+    if metric_lower == "L2":
+        diff = vectors - query.astype(np.float32)
+        dists = np.sum(diff * diff, axis=1)
+        top_indices = np.argsort(dists)[:top_k]
+    elif metric_lower in ("IP", "INNER_PRODUCT", "COSINE"):
+        # Inner product: larger = more similar
+        dists = np.dot(vectors, query.astype(np.float32))
+        top_indices = np.argsort(dists)[::-1][:top_k]
+    else:
+        raise ValueError(f"Unknown metric: {metric}")
+
+    return table.take(pa.array(top_indices.tolist(), type=pa.int64()))
+
+
 def _default_store_config() -> dict:
     """Build store config from environment variables."""
     import os
-    config: dict = {"type": "s3"}
+    config: dict = {"type": "local"}
     mapping = {
         "AWS_ACCESS_KEY_ID": "access_key_id",
         "AWS_SECRET_ACCESS_KEY": "secret_access_key",

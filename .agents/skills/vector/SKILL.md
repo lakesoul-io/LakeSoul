@@ -87,11 +87,15 @@ LakeSoulReader::start()
   ├─ inject_vector_search_filter()
   │   ├─ 检查 options: vector_search_column, vector_search_query, ...
   │   ├─ 从 session RuntimeEnv 获取 ObjectStore
-  │   ├─ vector_search_index_prefix 已指定?
-  │   │   Yes → search_index_shard(store, index_prefix, query)
-  │   │   No  → search_matching_shards(store, files, column, prefix, query)
+  │   ├─ search_matching_shards(store, files, column, prefix, query)
+  │   │   └─ derive_index_prefixes() 从文件路径自动推导索引位置
   │   └─ IDs → pk IN (id1, id2, ...) DataFusion Expr
   └─ build_physical_plan(filters + id_filter) → 读数据
+
+索引路径推导（统一公共函数 derive_index_prefixes）：
+  从 file_paths 提取 partition_desc + bucket_id
+  → 构造 _vector_index/{column}/{partition_desc}/{bucket_id}/
+  → 通过 ManifestStore 加载索引
 ```
 
 ## 对象存储持久化 (V4)
@@ -148,11 +152,35 @@ VectorIndexConfig(
 | `vector_search_query` | 查询向量 (逗号分隔 f32) | 必填 |
 | `vector_search_top_k` | 返回 Top-K | 10 |
 | `vector_search_nprobe` | IVF 探测聚类数 | 64 |
-| `vector_search_index_prefix` | 直接指定索引路径 (可选) | 从 file_paths 自动推导 |
 
 ## 测试
 
-### Rust 单元/集成测试
+### 日常开发流程
+
+| 变更类型 | 操作 | 说明 |
+|----------|------|------|
+| Rust 代码 | `cargo check` 验证编译 → `uv run --directory python tests/...` | `uv run` 自动检测 Rust 源码变更并触发 maturin 重编译 |
+| Python 代码 | 直接 `uv run --directory python python tests/...` | Python 源码即时生效，无需 build |
+| 项目依赖变更 | `uv sync --directory python --python 3.10` | 仅当 `pyproject.toml` 或 `uv.lock` 变化时需要 |
+
+**关键**：不需要创建或重建 venv，不需要手动安装 wheel。`uv run` 自动管理编译缓存和虚拟环境。
+
+### 本地测试
+
+```bash
+# 准备测试数据（仅首次）
+uv run --directory python python tests/vector/prepare_data.py
+
+# 本地模式（无需 PG）
+uv run --directory python python tests/vector/test_e2e_glove.py
+
+# Catalog 模式（需要 PG）
+# 前置: docker run -d --name lakesoul-pg -e POSTGRES_PASSWORD=lakesoul_test ... 
+#       ./script/meta_init_for_local_test.sh -j 2
+uv run --directory python python tests/vector/test_e2e_glove.py --use-catalog
+```
+
+### Rust 测试
 
 ```bash
 # lakesoul-vector 单元测试
@@ -160,29 +188,6 @@ cargo test -p lakesoul-vector
 
 # lakesoul-io 集成测试
 cargo test -p lakesoul-io --test vector_e2e_test -- --nocapture
-
-# 关键测试:
-# - test_build_and_list_files: 验证索引构建+文件写入
-# - test_reader_with_vector_search: 验证 LakeSoulReader + vector search
-# - test_glove_e2e_build_and_search: 完整 E2E (build + search)
-```
-
-### Python 测试
-
-```bash
-# 准备测试数据
-python3 python/tests/vector/prepare_data.py
-
-# 构建 + 安装 native 模块
-cd python && uv sync --python 3.10
-
-# 或手动构建:
-cd /path/to/LakeSoul
-VIRTUAL_ENV=python/.venv uvx --from 'maturin[zig]' maturin build --release --manifest-path python/Cargo.toml
-VIRTUAL_ENV=python/.venv uv pip install --force-reinstall rust/target/wheels/lakesoul-*.whl
-
-# 运行 E2E 测试
-cd python && .venv/bin/python -m pytest tests/vector/test_e2e_glove.py -s
 ```
 
 ### CI (GitHub Actions)

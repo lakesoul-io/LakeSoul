@@ -48,6 +48,11 @@ pub async fn search_index_shard(
     Ok(Some(ids))
 }
 
+/// Search the vector index matching a single bucket's files.
+///
+/// One LakeSoulReader processes files from exactly one hash bucket.
+/// We derive the index prefix from those files and search that one index.
+/// Merging results across multiple buckets is the caller's responsibility.
 pub async fn search_matching_shards(
     store: &Arc<dyn ObjectStore>,
     file_paths: &[String],
@@ -59,45 +64,51 @@ pub async fn search_matching_shards(
     nprobe: usize,
     metric: Metric,
 ) -> IoResult<Vec<u64>> {
-    let mut shard_keys: HashSet<(String, u32)> = HashSet::new();
-    for file_path in file_paths {
-        let Some(bucket_id) = crate::helpers::extract_hash_bucket_id(file_path) else {
-            continue;
-        };
-        let relative = file_path
-            .strip_prefix(prefix)
-            .unwrap_or(file_path)
-            .trim_start_matches('/');
-        let parent_dir = std::path::Path::new(relative)
-            .parent()
-            .and_then(|p| p.to_str())
-            .unwrap_or("");
-        let partition_desc = if parent_dir.is_empty() {
-            "-5".to_string()
-        } else {
-            parent_dir.to_string()
-        };
-        shard_keys.insert((partition_desc, bucket_id));
-    }
-    let mut all_ids: Vec<u64> = Vec::new();
-    for (partition_desc, bucket_id) in &shard_keys {
-        let index_prefix = format!(
-            "{}/_vector_index/{}/{}/{}",
-            prefix.trim_end_matches('/'),
-            vector_column,
-            partition_desc,
-            bucket_id
-        );
+    let prefixes = derive_index_prefixes(file_paths, prefix, vector_column);
+    // One reader = one bucket, use the first (only) matching index
+    if let Some((index_prefix, _bucket_id)) = prefixes.first() {
         if let Some(ids) =
-            search_index_shard(store, &index_prefix, query, top_k, nprobe, metric).await?
+            search_index_shard(store, index_prefix, query, top_k, nprobe, metric).await?
         {
-            all_ids.extend(ids);
+            return Ok(ids);
         }
     }
-    all_ids.sort();
-    all_ids.dedup();
-    all_ids.truncate(top_k);
-    Ok(all_ids)
+    Ok(Vec::new())
+}
+
+/// Derive the vector index prefix from file paths and table prefix.
+///
+/// Extracts partition_desc and bucket_id from each file path, then
+/// constructs `{table_prefix}/_vector_index/{column}/{partition_desc}/{bucket_id}/`.
+///
+/// Returns a list of (index_prefix, bucket_id) pairs.
+pub fn derive_index_prefixes(
+    file_paths: &[String],
+    table_prefix: &str,
+    vector_column: &str,
+) -> Vec<(String, u32)> {
+    use std::collections::HashSet;
+
+    let prefix = table_prefix
+        .trim_start_matches("file://").trim_start_matches("s3://").trim_start_matches("s3a://");
+    let mut seen: HashSet<(String, u32)> = HashSet::new();
+    let mut result = Vec::new();
+    for file_path in file_paths {
+        let Some(bucket_id) = crate::helpers::extract_hash_bucket_id(file_path) else { continue };
+        let clean_path = file_path
+            .trim_start_matches("file://").trim_start_matches("s3://").trim_start_matches("s3a://");
+        let relative = clean_path.strip_prefix(prefix).unwrap_or(clean_path).trim_start_matches('/');
+        let parent_dir = std::path::Path::new(relative).parent().and_then(|p| p.to_str()).unwrap_or("");
+        let partition_desc = if parent_dir.is_empty() { "-5".to_string() } else { parent_dir.to_string() };
+        let key = (partition_desc, bucket_id);
+        if seen.insert(key.clone()) {
+            result.push((
+                format!("{}/_vector_index/{}/{}/{}", prefix.trim_end_matches('/'), vector_column, key.0, key.1),
+                bucket_id,
+            ));
+        }
+    }
+    result
 }
 
 pub fn parse_query_vector(s: &str, expected_dim: Option<usize>) -> IoResult<Vec<f32>> {
