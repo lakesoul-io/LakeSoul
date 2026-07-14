@@ -144,7 +144,7 @@ impl<C: CursorValues> Debug for SortKeyBatchRange<C> {
         write!(
             f,
             "batch: \n{}",
-            &pretty_format_batches(&[self
+            pretty_format_batches(&[self
                 .batch
                 .slice(self.begin_row, self.end_row - self.begin_row)])
             .unwrap()
