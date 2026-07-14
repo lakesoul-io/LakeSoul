@@ -522,7 +522,7 @@ def _safe_name(value: str) -> str:
 def _spark_jars(repo_root: Path) -> list[str]:
     source_dir = Path(os.environ.get("LAKESOUL_SOURCE_DIR", repo_root))
     pattern = (
-        source_dir / "lakesoul-spark" / "target" / "lakesoul-spark-3.3-*-SNAPSHOT.jar"
+        source_dir / "lakesoul-spark" / "target" / "lakesoul-spark-3.5-*-SNAPSHOT.jar"
     )
     jars = [
         path

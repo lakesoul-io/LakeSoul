@@ -25,13 +25,19 @@ docker exec -i lakesoul-test-pg sh -c "PGPASSWORD=lakesoul_test psql -h localhos
 ```
 
 ### 1.3 安装 Spark 环境
-由于 Apache Spark 官方的下载安装包不包含 hadoop-cloud 以及 AWS S3 等依赖，我们提供了一个 Spark 安装包，其中包含了 hadoop cloud 、s3 等必要的依赖：https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/spark/spark-3.3.2-bin-hadoop3.tgz
-
 ```bash
 wget https://dlcdn.apache.org/spark/spark-3.5.8/spark-3.5.8-bin-hadoop3.tgz
 tar xf spark-3.5.8-bin-hadoop3.tgz
 export SPARK_HOME=${PWD}/spark-3.5.8-bin-hadoop3
 ```
+
+:::tip
+Spark 的官方包里没有打包 AWS S3 的依赖，需要额外下载：
+```bash
+RUN curl -L -o $SPARK_HOME/jars/hadoop-aws-3.3.4.jar https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/hadoop-aws-3.3.4.jar || exit 1
+RUN curl -L -o $SPARK_HOME/jars/aws-java-sdk-bundle-1.12.776.jar https://repo.huaweicloud.com/repository/maven/com/amazonaws/aws-java-sdk-bundle/1.12.776/aws-java-sdk-bundle-1.12.776.jar || exit 1
+```
+:::
 
 :::tip
 如果是生产部署，推荐下载不打包 Hadoop 的 Spark 安装包：
