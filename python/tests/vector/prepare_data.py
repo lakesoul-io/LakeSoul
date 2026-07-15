@@ -100,26 +100,21 @@ def fvecs_to_parquet(
 
 
 if __name__ == "__main__":
-    DATA_DIR = "/home/chenxu/program/opensource/rabitq-rs/data/glove-200d/processed"
+    DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
     OUT_DIR = "/tmp/lakesoul_test/glove200d"
 
     os.makedirs(f"{OUT_DIR}/data", exist_ok=True)
 
-    # Convert training data (10K vectors for quick test)
+    # Convert training data (700 vectors)
     fvecs_to_parquet(
-        f"{DATA_DIR}/train.fvecs",
-        f"{OUT_DIR}/data/train_10k.parquet",
-        n=10000,
+        f"{DATA_DIR}/train_700.fvecs",
+        f"{OUT_DIR}/data/train_700.parquet",
+        n=700,
     )
 
-    # Convert test queries (100 queries for recall test)
+    # Convert test queries (5 queries)
     fvecs_to_parquet(
-        f"{DATA_DIR}/test.fvecs",
-        f"{OUT_DIR}/data/test_100.parquet",
-        n=100,
+        f"{DATA_DIR}/test_5.fvecs",
+        f"{OUT_DIR}/data/test_5.parquet",
+        n=5,
     )
-
-    # Also save ground truth for verification
-    gt = read_ivecs(f"{DATA_DIR}/groundtruth.ivecs", n=100)
-    np.save(f"{OUT_DIR}/groundtruth_100.npy", gt)
-    print(f"Saved ground truth: {gt.shape}")

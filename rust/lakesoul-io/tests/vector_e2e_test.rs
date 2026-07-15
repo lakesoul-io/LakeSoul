@@ -20,6 +20,7 @@ use object_store::local::LocalFileSystem;
 use tempfile::TempDir;
 
 const TEST_DATA_DIR: &str = "/tmp/lakesoul_test/glove200d";
+const DATA_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../python/tests/vector/data");
 const DIM: usize = 200;
 
 /// Helper: read .fvecs file into Vec<Vec<f32>>
@@ -31,7 +32,9 @@ fn read_fvecs(path: &str, n: Option<usize>) -> Vec<Vec<f32>> {
         let mut dim_buf = [0u8; 4];
         f.read_exact(&mut dim_buf).ok()?;
         let dim = i32::from_le_bytes(dim_buf) as usize;
-        if dim == 0 || dim > 10000 { return None; }
+        if dim == 0 || dim > 10000 {
+            return None;
+        }
         let mut vec = vec![0.0f32; dim];
         let mut buf = vec![0u8; dim * 4];
         f.read_exact(&mut buf).ok()?;
@@ -56,9 +59,13 @@ fn read_ivecs(path: &str, n: Option<usize>) -> Vec<Vec<i32>> {
     let mut results = Vec::new();
     loop {
         let mut k_buf = [0u8; 4];
-        if f.read_exact(&mut k_buf).is_err() { break; }
+        if f.read_exact(&mut k_buf).is_err() {
+            break;
+        }
         let k = i32::from_le_bytes(k_buf) as usize;
-        if k == 0 || k > 10000 { break; }
+        if k == 0 || k > 10000 {
+            break;
+        }
         let mut ids = vec![0i32; k];
         let mut buf = vec![0u8; k * 4];
         f.read_exact(&mut buf).unwrap();
@@ -66,7 +73,9 @@ fn read_ivecs(path: &str, n: Option<usize>) -> Vec<Vec<i32>> {
             ids[j] = i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
         }
         results.push(ids);
-        if results.len() >= n.unwrap_or(usize::MAX) { break; }
+        if results.len() >= n.unwrap_or(usize::MAX) {
+            break;
+        }
     }
     results
 }
@@ -106,7 +115,6 @@ async fn test_glove_e2e_build_and_search() {
         config.clone(),
         vec![format!("file://{}", parquet_path)],
         "id".to_string(),
-        index_prefix.to_string(),
         HashMap::new(),
         None,
     );
@@ -114,19 +122,18 @@ async fn test_glove_e2e_build_and_search() {
     println!("Index built successfully at {}", index_prefix);
 
     // Search: load index, query, check recall
-    let queries = read_fvecs(
-        &format!("/home/chenxu/program/opensource/rabitq-rs/data/glove-200d/processed/test.fvecs"),
-        Some(5),
-    );
+    let queries = read_fvecs(&format!("{}/test_5.fvecs", DATA_DIR), Some(5));
     let ground_truth = read_ivecs(
-        &format!("/home/chenxu/program/opensource/rabitq-rs/data/glove-200d/processed/groundtruth.ivecs"),
+        // groundtruth.ivecs not bundled; this test is #[ignore]
+        "/home/chenxu/program/opensource/rabitq-rs/data/glove-200d/processed/groundtruth.ivecs",
         Some(5),
     );
 
     let mstore = ManifestStore::new(store, index_prefix.to_string());
-    let index = lakesoul_vector::IvfRabitqIndex::load_from_v4(&mstore).await
+    let index = lakesoul_vector::IvfRabitqIndex::load_from_v4(&mstore)
+        .await
         // print the error
-    .unwrap_or_else(|e| panic!("load_from_v4 failed: {:?}", e));
+        .unwrap_or_else(|e| panic!("load_from_v4 failed: {:?}", e));
     let params = lakesoul_vector::SearchParams::new(10, 8);
 
     for (i, query) in queries.iter().enumerate() {
@@ -135,7 +142,9 @@ async fn test_glove_e2e_build_and_search() {
         let recall10 = compute_recall(&pred_ids, &ground_truth[i], 10);
         println!(
             "Query {}: recall@10={:.2}, top-5 IDs={:?}",
-            i, recall10, pred_ids.iter().take(5).collect::<Vec<_>>()
+            i,
+            recall10,
+            pred_ids.iter().take(5).collect::<Vec<_>>()
         );
         assert!(recall10 > 0.0, "Recall@10 should be > 0 for query {}", i);
     }
@@ -145,9 +154,9 @@ async fn test_glove_e2e_build_and_search() {
 /// Quick test: verify LakeSoulReader can read our parquet schema
 #[tokio::test]
 async fn test_read_parquet_schema() {
+    use futures::StreamExt;
     use lakesoul_io::config::LakeSoulIOConfigBuilder;
     use lakesoul_io::reader::LakeSoulReader;
-    use futures::StreamExt;
 
     let parquet_path = format!("{}/data/train_10k.parquet", TEST_DATA_DIR);
     let config = LakeSoulIOConfigBuilder::new()
@@ -158,12 +167,39 @@ async fn test_read_parquet_schema() {
     reader.start().await.unwrap();
     let batch = reader.next_rb().await.unwrap().unwrap();
     println!("Batch schema: {:?}", batch.schema());
-    println!("Columns: {:?}", batch.schema().fields().iter().map(|f| f.name()).collect::<Vec<_>>());
-    assert!(batch.schema().column_with_name("id").is_some(), "id column should exist");
-    assert!(batch.schema().column_with_name("vec").is_some(), "vec column should exist");
-    println!("First row: id={}, vec_len={}",
-        batch.column_by_name("id").unwrap().as_any().downcast_ref::<arrow_array::UInt64Array>().unwrap().value(0),
-        batch.column_by_name("vec").unwrap().as_any().downcast_ref::<arrow_array::FixedSizeListArray>().unwrap().value_length(),
+    println!(
+        "Columns: {:?}",
+        batch
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        batch.schema().column_with_name("id").is_some(),
+        "id column should exist"
+    );
+    assert!(
+        batch.schema().column_with_name("vec").is_some(),
+        "vec column should exist"
+    );
+    println!(
+        "First row: id={}, vec_len={}",
+        batch
+            .column_by_name("id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<arrow_array::UInt64Array>()
+            .unwrap()
+            .value(0),
+        batch
+            .column_by_name("vec")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<arrow_array::FixedSizeListArray>()
+            .unwrap()
+            .value_length(),
     );
 }
 
@@ -175,24 +211,38 @@ async fn test_build_and_list_files() {
     let index_prefix = "_vector_index/vec/-5/0/";
 
     let config = VectorIndexConfig {
-        column_name: "vec".to_string(), dim: DIM, nlist: 4,
-        total_bits: 7, metric: Metric::L2,
+        column_name: "vec".to_string(),
+        dim: DIM,
+        nlist: 4,
+        total_bits: 7,
+        metric: Metric::L2,
         rotator_type: lakesoul_vector::RotatorType::FhtKacRotator,
-        seed: 42, use_faster_config: true,
+        seed: 42,
+        use_faster_config: true,
     };
     let parquet_path = format!("{}/data/train_10k.parquet", TEST_DATA_DIR);
     let builder = VectorShardIndexBuilder::new(
-        store.clone(), config,
+        store.clone(),
+        config,
         vec![format!("file://{}", parquet_path)],
-        "id".to_string(), index_prefix.to_string(),
-        HashMap::new(), None,
+        "id".to_string(),
+        HashMap::new(),
+        None,
     );
     builder.build().await.unwrap();
 
     // List files
     use std::process::Command;
-    let output = Command::new("find").arg(tmp.path()).arg("-type").arg("f").output().unwrap();
-    println!("Files under temp dir:\n{}", String::from_utf8_lossy(&output.stdout));
+    let output = Command::new("find")
+        .arg(tmp.path())
+        .arg("-type")
+        .arg("f")
+        .output()
+        .unwrap();
+    println!(
+        "Files under temp dir:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
 
     // Try load
     let mstore = ManifestStore::new(store, index_prefix.to_string());
@@ -224,12 +274,8 @@ async fn test_reader_with_vector_search() {
     let vec_col = "vec";
 
     // 1. Read a subset of vectors and write parquet
-    let train_vecs = read_fvecs(
-        &format!("{}/train.fvecs", DATA_DIR), Some(300),
-    );
-    let test_vecs = read_fvecs(
-        &format!("{}/test.fvecs", DATA_DIR), Some(5),
-    );
+    let train_vecs = read_fvecs(&format!("{}/train_700.fvecs", DATA_DIR), Some(300));
+    let test_vecs = read_fvecs(&format!("{}/test_5.fvecs", DATA_DIR), Some(5));
     let n_train = train_vecs.len();
     let dim = train_vecs[0].len();
 
@@ -241,7 +287,11 @@ async fn test_reader_with_vector_search() {
             arrow_schema::Field::new(
                 vec_col,
                 arrow_schema::DataType::FixedSizeList(
-                    std::sync::Arc::new(arrow_schema::Field::new("item", arrow_schema::DataType::Float32, true)),
+                    std::sync::Arc::new(arrow_schema::Field::new(
+                        "item",
+                        arrow_schema::DataType::Float32,
+                        true,
+                    )),
                     dim as i32,
                 ),
                 false,
@@ -250,16 +300,23 @@ async fn test_reader_with_vector_search() {
         let ids = UInt64Array::from((0..n_train as u64).collect::<Vec<_>>());
         let flat: Vec<f32> = train_vecs.iter().flatten().copied().collect();
         let vec_arr = FixedSizeListArray::new(
-            std::sync::Arc::new(arrow_schema::Field::new("item", arrow_schema::DataType::Float32, true)),
+            std::sync::Arc::new(arrow_schema::Field::new(
+                "item",
+                arrow_schema::DataType::Float32,
+                true,
+            )),
             dim as i32,
             std::sync::Arc::new(Float32Array::from(flat)),
             None,
         );
-        let batch = RecordBatch::try_new(schema.clone(), vec![
-            std::sync::Arc::new(ids), std::sync::Arc::new(vec_arr),
-        ]).unwrap();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![std::sync::Arc::new(ids), std::sync::Arc::new(vec_arr)],
+        )
+        .unwrap();
         let file = std::fs::File::create(&parquet_path).unwrap();
-        let mut writer = parquet::arrow::ArrowWriter::try_new(file, schema, None).unwrap();
+        let mut writer =
+            parquet::arrow::ArrowWriter::try_new(file, schema, None).unwrap();
         writer.write(&batch).unwrap();
         writer.close().unwrap();
     }
@@ -267,30 +324,44 @@ async fn test_reader_with_vector_search() {
     // 2. Build vector index
     let store = Arc::new(LocalFileSystem::new_with_prefix(tmp.path()).unwrap());
     let config = VectorIndexConfig {
-        column_name: vec_col.to_string(), dim, nlist: 8, total_bits: 7,
+        column_name: vec_col.to_string(),
+        dim,
+        nlist: 8,
+        total_bits: 7,
         metric: Metric::L2,
         rotator_type: lakesoul_vector::RotatorType::FhtKacRotator,
-        seed: 42, use_faster_config: true,
+        seed: 42,
+        use_faster_config: true,
     };
     let builder = VectorShardIndexBuilder::new(
-        store.clone(), config,
+        store.clone(),
+        config,
         vec![format!("file://{}", parquet_path)],
-        pk_col.to_string(), index_prefix.to_string(),
-        HashMap::new(), Some(format!("file://{}", tmp_path)),
+        pk_col.to_string(),
+        HashMap::new(),
+        Some(format!("file://{}", tmp_path)),
     );
     builder.build().await.unwrap();
     println!("Index built");
 
     // 3. Read via LakeSoulReader with vector search
     let query_vec = &test_vecs[0];
-    let query_str: String = query_vec.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",");
+    let query_str: String = query_vec
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
 
     let read_schema = std::sync::Arc::new(arrow_schema::Schema::new(vec![
         arrow_schema::Field::new(pk_col, arrow_schema::DataType::UInt64, false),
         arrow_schema::Field::new(
             vec_col,
             arrow_schema::DataType::FixedSizeList(
-                std::sync::Arc::new(arrow_schema::Field::new("item", arrow_schema::DataType::Float32, true)),
+                std::sync::Arc::new(arrow_schema::Field::new(
+                    "item",
+                    arrow_schema::DataType::Float32,
+                    true,
+                )),
                 dim as i32,
             ),
             false,
@@ -316,12 +387,15 @@ async fn test_reader_with_vector_search() {
     reader.start().await.unwrap();
 
     let mut total_rows = 0usize;
-    let mut all_ids = Vec::new();
+    let mut all_ids: Vec<u64> = Vec::new();
     while let Some(batch_result) = reader.next_rb().await {
         let batch = batch_result.unwrap();
         total_rows += batch.num_rows();
         let ids = batch.column_by_name(pk_col).unwrap();
-        let ids_arr = ids.as_any().downcast_ref::<arrow_array::UInt64Array>().unwrap();
+        let ids_arr = ids
+            .as_any()
+            .downcast_ref::<arrow_array::UInt64Array>()
+            .unwrap();
         all_ids.extend(ids_arr.values());
     }
 

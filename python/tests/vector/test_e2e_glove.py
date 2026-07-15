@@ -29,8 +29,10 @@ from pathlib import Path
 import numpy as np
 import pyarrow as pa
 
-DATA_DIR = "/home/chenxu/program/opensource/rabitq-rs/data/glove-200d/processed"
+DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 DIM = 200
+TRAIN_PATH = os.path.join(DATA_DIR, "train_700.fvecs")
+TEST_PATH = os.path.join(DATA_DIR, "test_5.fvecs")
 
 
 def read_fvecs(path, n=None):
@@ -79,8 +81,8 @@ def test_e2e_glove_local_writer():
 
     from lakesoul.vector_index import _extract_bucket_id
 
-    train = read_fvecs(f"{DATA_DIR}/train.fvecs", 500)
-    test_vecs = read_fvecs(f"{DATA_DIR}/test.fvecs", 5)
+    train = read_fvecs(TRAIN_PATH, 500)
+    test_vecs = read_fvecs(TEST_PATH, 5)
     n_train, dim = train.shape
     schema = _make_record_batch(train, dim).schema
 
@@ -202,8 +204,8 @@ def test_e2e_glove_catalog():
         "LAKESOUL_PG_URL",
         "postgresql://lakesoul_test:lakesoul_test@localhost:5432/lakesoul_test",
     ), pg_username="lakesoul_test", pg_password="lakesoul_test")
-    train = read_fvecs(f"{DATA_DIR}/train.fvecs", 500)
-    test_vecs = read_fvecs(f"{DATA_DIR}/test.fvecs", 5)
+    train = read_fvecs(TRAIN_PATH, 500)
+    test_vecs = read_fvecs(TEST_PATH, 5)
     n_train, dim = train.shape
     schema = _make_record_batch(train, dim).schema
     table_name = "glove200d_e2e_test"
@@ -271,7 +273,7 @@ def test_e2e_glove_catalog():
     assert recall >= 0.5, f"Recall@{top_k} should be ≥ 0.5, got {recall:.2f}"
 
     # 5. Incremental write + index update (should update all bucket indexes)
-    more_train = read_fvecs(f"{DATA_DIR}/train.fvecs", 700)[500:]  # IDs 500-699
+    more_train = read_fvecs(TRAIN_PATH, 700)[500:]  # IDs 500-699
     batch2 = _make_record_batch(more_train, dim, id_start=500)
     table.write_arrow(batch2, batch_size=8192, thread_num=2)
     print(f"[5/7] Incremental write: {len(more_train)} vectors "
