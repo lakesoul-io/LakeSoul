@@ -163,18 +163,34 @@ Python build_partition_vector_index()
 
 ### 检索流程
 
-检索已集成到 `LakeSoulReader::start()` 中。当 `LakeSoulIOConfig` 的 options 中包含 `vector_search_*` 参数时，reader 自动触发：
+向量检索已集成到 `LakeSoulReader::start()` 中。当 `LakeSoulIOConfig` 的 options 中包含 `vector_search_*` 参数时，reader 自动触发：
 
 ```
 LakeSoulReader::start()
   ├─ get_filter_exprs() → 用户已有 filter
   ├─ inject_vector_search_filter()
   │   ├─ 从 session RuntimeEnv 获取 ObjectStore
-  │   ├─ search_matching_shards() → 逐 shard 检索索引
+  │   ├─ search_matching_shards() → 仅检索当前 reader 对应 bucket 的索引
   │   │   └─ ManifestStore(store, index_prefix) → IvfRabitqIndex::load_from_v4() → search()
   │   └─ IDs → pk IN (id1, id2, ...) DataFusion Expr filter
   └─ build_physical_plan(filters) → 原有读路径 + 向量检索 filter
 ```
+
+**每个 LakeSoulReader 只读取一个 hash bucket 下的文件。** Rust 层只搜索该 bucket
+对应的索引，返回 top-K 候选 ID。跨 bucket 的结果合并和精确距离重排在上层完成：
+
+```
+各 bucket reader（并行）
+  ├─ Reader[0]: 搜索索引 → top-K 候选（含向量列）
+  ├─ Reader[1]: 搜索索引 → top-K 候选（含向量列）
+  └─ ...
+
+Python 层: 合并候选 → rerank_by_distance() → 最终 top-K
+```
+
+`lakesoul/vector_index.py` 中的 `rerank_by_distance()` 辅助函数对候选集计算精确
+L2/内积距离并返回真正的前 top-K。这种设计使 Rust reader 层保持简洁，单机、分布式
+（Spark/Presto）或流式部署可各自采用不同的合并策略。
 
 ### 对象存储持久化 (V4)
 

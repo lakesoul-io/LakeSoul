@@ -184,11 +184,31 @@ LakeSoulReader::start()
   ├─ get_filter_exprs() → user-provided filters
   ├─ inject_vector_search_filter()
   │   ├─ Get ObjectStore from session RuntimeEnv
-  │   ├─ search_matching_shards() → per-shard index lookup
+  │   ├─ search_matching_shards() → search THIS reader's bucket index only
   │   │   └─ ManifestStore(store, index_prefix) → IvfRabitqIndex::load_from_v4() → search()
   │   └─ IDs → pk IN (id1, id2, ...) DataFusion Expr filter
   └─ build_physical_plan(filters) → standard read path + vector search filter
 ```
+
+**Each LakeSoulReader reads files from exactly one bucket.** The Rust layer
+searches only that bucket's index and returns the top-K candidates. Merging
+results across multiple buckets and re-ranking by exact vector distance is
+done at the Python (or caller) layer:
+
+```
+Per-bucket readers (parallel)
+  ├─ Reader[0]: search index → top-K candidates (incl. vector column)
+  ├─ Reader[1]: search index → top-K candidates (incl. vector column)
+  └─ ...
+
+Python layer: combine candidates → rerank_by_distance() → final top-K
+```
+
+The `rerank_by_distance()` helper in `lakesoul/vector_index.py` computes
+exact L2 or inner-product distances on the candidate set, ensuring correct
+distance-based ranking across all shards. This design keeps the Rust reader
+layer simple and allows different merge strategies for single-machine,
+distributed (Spark/Presto), or streaming deployments.
 
 ### Object Storage Persistence (V4)
 
