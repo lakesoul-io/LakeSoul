@@ -11,7 +11,7 @@
 
     <name>LakeSoul Spark Gluten</name>
     <artifactId>lakesoul-spark-gluten</artifactId>
-    <version>3.3-${revision}</version>
+    <version>3.5-${revision}</version>
 
     <properties>
         <maven.compiler.source>8</maven.compiler.source>
@@ -26,23 +26,11 @@
             <groupId>org.apache.gluten</groupId>
             <artifactId>gluten-core</artifactId>
             <version>${gluten.version}</version>
-            <exclusions>
-                <exclusion>
-                    <groupId>org.apache.gluten</groupId>
-                    <artifactId>spark-sql-columnar-shims-spark34</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.apache.gluten</groupId>
             <artifactId>gluten-arrow</artifactId>
             <version>${gluten.version}</version>
-            <exclusions>
-                <exclusion>
-                    <groupId>org.apache.gluten</groupId>
-                    <artifactId>spark-sql-columnar-shims-spark35</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.apache.gluten</groupId>
@@ -51,7 +39,7 @@
             <exclusions>
                 <exclusion>
                     <groupId>org.apache.gluten</groupId>
-                    <artifactId>spark-sql-columnar-shims-spark35</artifactId>
+                    <artifactId>spark-sql-columnar-shims-spark33</artifactId>
                 </exclusion>
             </exclusions>
         </dependency>
@@ -62,18 +50,7 @@
             <exclusions>
                 <exclusion>
                     <groupId>org.apache.gluten</groupId>
-                    <artifactId>spark-sql-columnar-shims-spark35</artifactId>
-                </exclusion>
-            </exclusions>
-        </dependency>
-        <dependency>
-            <groupId>org.apache.gluten</groupId>
-            <artifactId>spark-sql-columnar-shims-spark33</artifactId>
-            <version>${gluten.version}</version>
-            <exclusions>
-                <exclusion>
-                    <groupId>org.apache.gluten</groupId>
-                    <artifactId>spark-sql-columnar-shims-spark35</artifactId>
+                    <artifactId>spark-sql-columnar-shims-spark33</artifactId>
                 </exclusion>
             </exclusions>
         </dependency>
@@ -84,14 +61,14 @@
             <exclusions>
                 <exclusion>
                     <groupId>org.apache.gluten</groupId>
-                    <artifactId>spark-sql-columnar-shims-spark35</artifactId>
+                    <artifactId>spark-sql-columnar-shims-spark33</artifactId>
                 </exclusion>
             </exclusions>
         </dependency>
         <dependency>
             <groupId>com.dmetasoul</groupId>
             <artifactId>lakesoul-spark</artifactId>
-            <version>3.3-${revision}</version>
+            <version>3.5-${revision}</version>
             <exclusions>
                 <exclusion>
                     <groupId>org.apache.arrow</groupId>
@@ -102,7 +79,7 @@
         <dependency>
             <groupId>com.dmetasoul</groupId>
             <artifactId>lakesoul-spark</artifactId>
-            <version>3.3-${revision}</version>
+            <version>3.5-${revision}</version>
             <type>test-jar</type>
             <scope>test</scope>
         </dependency>

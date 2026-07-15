@@ -16,14 +16,14 @@ To use `spark-shell`, `pyspark` or `spark-sql` shells, you should include LakeSo
 
 #### Use Maven Coordinates via --packages
 ```bash
-spark-shell --packages com.dmetasoul:lakesoul-spark:3.3-VAR::VERSION
+spark-shell --packages com.dmetasoul:lakesoul-spark:3.5-VAR::VERSION
 ```
 
 #### Use Local Packages
 You can find the LakeSoul packages from our release page: [Releases](https://github.com/lakesoul-io/LakeSoul/releases).
 Download the jar file and pass it to `spark-submit`.
 ```bash
-spark-submit --jars "lakesoul-spark-3.3-VAR::VERSION.jar"
+spark-submit --jars "lakesoul-spark-3.5-VAR::VERSION.jar"
 ```
 
 Or you could directly put the jar into `$SPARK_HOME/jars`
@@ -34,7 +34,7 @@ Include maven dependencies in your project:
 <dependency>
     <groupId>com.dmetasoul</groupId>
     <artifactId>lakesoul-spark</artifactId>
-    <version>3.3-VAR::VERSION</version>
+    <version>3.5-VAR::VERSION</version>
 </dependency>
 ```
 

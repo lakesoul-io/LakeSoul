@@ -83,7 +83,7 @@ def spark_and_file(tmp_path):
         lakesoul_source_dir,
         "lakesoul-spark",
         "target",
-        "lakesoul-spark-3.3-*-SNAPSHOT.jar",
+        "lakesoul-spark-3.5-*-SNAPSHOT.jar",
     )
 
     jar_files = [

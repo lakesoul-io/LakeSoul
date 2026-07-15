@@ -31,8 +31,6 @@ import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
 import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkGlobalCommittable;
 import org.apache.flink.lakesoul.sink.writer.AbstractLakeSoulMultiTableSinkWriter;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
-import org.apache.flink.lakesoul.tool.JobOptions;
-import org.apache.flink.lakesoul.tool.LakeSoulInAndOutputJobListener;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.runtime.execution.SuppressRestartsException;
 import org.apache.flink.table.catalog.ObjectPath;
@@ -70,7 +68,6 @@ public class LakeSoulSinkGlobalCommitter
     private final boolean isBounded;
 
     private final boolean logicallyDropColumn;
-    private LakeSoulInAndOutputJobListener listener;
 
     public LakeSoulSinkGlobalCommitter(Configuration conf) {
         committer = LakeSoulSinkCommitter.INSTANCE;
@@ -78,19 +75,6 @@ public class LakeSoulSinkGlobalCommitter
         this.conf = conf;
         isBounded = conf.get(IS_BOUNDED).equals("true");
         logicallyDropColumn = conf.getBoolean(LOGICALLY_DROP_COLUM);
-
-        if (this.conf.getBoolean(JobOptions.lineageOption)) {
-            String uuid = this.conf.getString(JobOptions.lineageJobUUID);
-            String jobName = this.conf.getString(JobOptions.linageJobName);
-            String namespace = this.conf.getString(
-                JobOptions.linageJobNamespace
-            );
-            //listener = new LakeSoulInAndOutputJobListener("http://localhost:5000");
-            listener = new LakeSoulInAndOutputJobListener(
-                this.conf.getString(JobOptions.urlOption)
-            );
-            listener.jobName(jobName, namespace, uuid);
-        }
     }
 
     @Override
@@ -269,36 +253,8 @@ public class LakeSoulSinkGlobalCommitter
                 fileSystem
             );
             FlinkUtil.createAndSetTableDirPermission(qp, true);
-            dbManager.createNewTable(
-                tableId,
-                tableNamespace,
-                tableName,
-                identity.tableLocation,
-                msgSchema.toJson(),
-                properties,
-                partition
-            );
-            if (this.conf.getBoolean(JobOptions.lineageOption)) {
-                LOG.info("---star record the ouputLineag----");
-                String domain = dbManager
-                    .getNamespaceByNamespace(tableNamespace)
-                    .getDomain();
-                int size = msgSchema.getFields().size();
-                String[] colNames = new String[size];
-                String[] colTypes = new String[size];
-                for (int i = 0; i < size; i++) {
-                    Field field = msgSchema.getFields().get(i);
-                    colNames[i] = field.getName();
-                    colTypes[i] = field.getType().toString();
-                }
-                listener.addOutputTable(
-                    "lakesoul." + tableNamespace + "." + tableName,
-                    domain,
-                    colNames,
-                    colTypes
-                );
-                listener.emit();
-            }
+            dbManager.createNewTable(tableId, tableNamespace, tableName, identity.tableLocation, msgSchema.toJson(),
+                    properties, partition);
         } else {
             if (conf.getBoolean(AUTO_SCHEMA_CHANGE)) {
                 DBUtil.TablePartitionKeys partitionKeys =
@@ -365,39 +321,7 @@ public class LakeSoulSinkGlobalCommitter
                     );
                     if (dbType.equals("mongodb")) {
                         if (schemaChanged) {
-                            if (
-                                this.conf.getBoolean(JobOptions.lineageOption)
-                            ) {
-                                String[] colNames =
-                                    mergeStructType.fieldNames();
-                                String[] colTypes = new String[colNames.length];
-                                for (int i = 0; i < colNames.length; i++) {
-                                    colTypes[i] = mergeStructType
-                                        .fields()[i]
-                                        .dataType()
-                                        .toString();
-                                }
-                                String domain = dbManager
-                                    .getNamespaceByNamespace(tableNamespace)
-                                    .getDomain();
-                                listener.addOutputTable(
-                                    "lakesoul." +
-                                        tableNamespace +
-                                        "." +
-                                        tableName,
-                                    domain,
-                                    colNames,
-                                    colTypes
-                                );
-                                listener.emit();
-                            }
-                            dbManager.updateTableSchema(
-                                tableInfo.getTableId(),
-                                ArrowUtils.toMetadataArrowSchema(
-                                    mergeStructType,
-                                    "UTC"
-                                ).toJson()
-                            );
+                            dbManager.updateTableSchema(tableInfo.getTableId(), mergeStructType.json());
                         }
                     } else {
                         if (logicallyDropColumn) {
@@ -416,91 +340,10 @@ public class LakeSoulSinkGlobalCommitter
                                     droppedColumn
                                 );
                                 if (schemaChanged) {
-                                    if (
-                                        this.conf.getBoolean(
-                                            JobOptions.lineageOption
-                                        )
-                                    ) {
-                                        String[] colNames =
-                                            mergeStructType.fieldNames();
-                                        String[] colTypes =
-                                            new String[colNames.length];
-                                        for (
-                                            int i = 0;
-                                            i < colNames.length;
-                                            i++
-                                        ) {
-                                            colTypes[i] = mergeStructType
-                                                .fields()[i]
-                                                .dataType()
-                                                .toString();
-                                        }
-                                        String domain = dbManager
-                                            .getNamespaceByNamespace(
-                                                tableNamespace
-                                            )
-                                            .getDomain();
-                                        listener.addOutputTable(
-                                            "lakesoul." +
-                                                tableNamespace +
-                                                "." +
-                                                tableName,
-                                            domain,
-                                            colNames,
-                                            colTypes
-                                        );
-                                        listener.emit();
-                                    }
-                                    dbManager.updateTableSchema(
-                                        tableInfo.getTableId(),
-                                        ArrowUtils.toMetadataArrowSchema(
-                                            mergeStructType,
-                                            "UTC"
-                                        ).toJson()
-                                    );
+                                    dbManager.updateTableSchema(tableInfo.getTableId(), mergeStructType.json());
                                 }
                             } else {
-                                if (
-                                    this.conf.getBoolean(
-                                        JobOptions.lineageOption
-                                    )
-                                ) {
-                                    LOG.info(
-                                        "---star record the ouputLineag----"
-                                    );
-                                    String domain = dbManager
-                                        .getNamespaceByNamespace(tableNamespace)
-                                        .getDomain();
-                                    int size = msgSchema.getFields().size();
-                                    String[] colNames = new String[size];
-                                    String[] colTypes = new String[size];
-                                    for (int i = 0; i < size; i++) {
-                                        Field field = msgSchema
-                                            .getFields()
-                                            .get(i);
-                                        colNames[i] = field.getName();
-                                        colTypes[i] = field
-                                            .getType()
-                                            .toString();
-                                    }
-                                    listener.addOutputTable(
-                                        "lakesoul." +
-                                            tableNamespace +
-                                            "." +
-                                            tableName,
-                                        domain,
-                                        colNames,
-                                        colTypes
-                                    );
-                                    listener.emit();
-                                }
-                                dbManager.updateTableSchema(
-                                    tableInfo.getTableId(),
-                                    ArrowUtils.toMetadataArrowSchema(
-                                        mergeStructType,
-                                        "UTC"
-                                    ).toJson()
-                                );
+                                dbManager.updateTableSchema(tableInfo.getTableId(), msgSchema.toJson());
                             }
                         } else {
                             LOG.info(
@@ -590,28 +433,6 @@ public class LakeSoulSinkGlobalCommitter
                             );
                             throw new IOException(msg);
                         }
-                    }
-                } else {
-                    if (this.conf.getBoolean(JobOptions.lineageOption)) {
-                        LOG.info("---star record the ouputLineag----");
-                        String domain = dbManager
-                            .getNamespaceByNamespace(tableNamespace)
-                            .getDomain();
-                        int size = msgSchema.getFields().size();
-                        String[] colNames = new String[size];
-                        String[] colTypes = new String[size];
-                        for (int i = 0; i < size; i++) {
-                            Field field = msgSchema.getFields().get(i);
-                            colNames[i] = field.getName();
-                            colTypes[i] = field.getType().toString();
-                        }
-                        listener.addOutputTable(
-                            "lakesoul." + tableNamespace + "." + tableName,
-                            domain,
-                            colNames,
-                            colTypes
-                        );
-                        listener.emit();
                     }
                 }
             }

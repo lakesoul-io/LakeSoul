@@ -81,7 +81,7 @@ trait DataFrameWriterV2Tests
       spark.table("source").withColumnRenamed("data", "d").writeTo("table_name").append()
     }
 
-    assert(exc.getMessage.contains("Cannot write incompatible data to table"))
+    assert(exc.getMessage.contains("Cannot write incompatible data for the table"))
 
     checkAnswer(
       spark.table("table_name"),
@@ -147,7 +147,7 @@ trait DataFrameWriterV2Tests
         .writeTo("table_name").overwrite(lit(true))
     }
 
-    assert(exc.getMessage.contains("Cannot write incompatible data to table"))
+    assert(exc.getMessage.contains("Cannot write incompatible data for the table"))
 
     checkAnswer(
       spark.table("table_name"),
@@ -212,7 +212,7 @@ trait DataFrameWriterV2Tests
         .writeTo("table_name").overwritePartitions()
     }
 
-    assert(e.getMessage.contains("Cannot write incompatible data to table"))
+    assert(e.getMessage.contains("Cannot write incompatible data for the table"))
 
     checkAnswer(
       spark.table("table_name"),

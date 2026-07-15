@@ -41,10 +41,8 @@ use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use arrow::array::{Array as OtherArray, ListArray};
-use arrow::datatypes::{DataType, Field};
 use arrow_array::RecordBatch;
-use arrow_schema::{SchemaBuilder, SchemaRef};
+use arrow_schema::SchemaRef;
 use datafusion_common::config::TableParquetOptions;
 use datafusion_datasource::{
     ListingTableUrl,
@@ -63,7 +61,6 @@ use crate::config::{IOSchema, LakeSoulIOConfig};
 use crate::file_format::{PhysicalFormat, vortex::VortexSink};
 use crate::helpers::get_batch_memory_size;
 use crate::helpers::transform::uniform_schema;
-use crate::local_sensitive_hash::LSH;
 use crate::session::LakeSoulIOSession;
 use crate::utils::random_str;
 use crate::writer::async_writer::FlushOutput;
@@ -250,7 +247,6 @@ pub struct SyncSendableMutableLakeSoulWriter {
     /// The in-progress file writer if any
     in_progress: Option<Arc<Mutex<SendableWriter>>>,
     flush_results: Vec<FlushOutput>,
-    lsh_computers: HashMap<String, LSH>,
 }
 
 impl SyncSendableMutableLakeSoulWriter {
@@ -264,44 +260,6 @@ impl SyncSendableMutableLakeSoulWriter {
         let runtime = Arc::new(runtime);
         runtime.clone().block_on(async move {
             let mut new_io_config = io_session.io_config().clone();
-
-            // Initialize HashMap instead of Vec
-            let mut lsh_computers = HashMap::new();
-
-            if new_io_config.compute_lsh() {
-                let mut target_schema_builder =
-                    SchemaBuilder::from(&new_io_config.target_schema().fields);
-
-                for field in new_io_config.target_schema().fields.iter() {
-                    if let Some(lsh_bit_width) = field.metadata().get("lsh_bit_width") {
-                        let lsh_column_name = format!("{}_LSH", field.name());
-                        let lsh_column = Arc::new(Field::new(
-                            lsh_column_name.clone(),
-                            DataType::List(Arc::new(Field::new(
-                                "element",
-                                DataType::Int64,
-                                true,
-                            ))),
-                            true,
-                        ));
-                        target_schema_builder.try_merge(&lsh_column)?;
-
-                        // Store LSH computer with column name as key
-                        let lsh = LSH::new(
-                            lsh_bit_width.parse().unwrap(),
-                            field
-                                .metadata()
-                                .get("lsh_embedding_dimension")
-                                .map(|d| d.parse().unwrap())
-                                .unwrap_or(0),
-                            new_io_config.seed,
-                        );
-                        lsh_computers.insert(field.name().to_string(), lsh);
-                    }
-                }
-                new_io_config.target_schema =
-                    IOSchema(Arc::new(target_schema_builder.finish()));
-            }
 
             let writer = create_writer(io_session.clone()).await?;
             let schema = writer.schema();
@@ -319,7 +277,6 @@ impl SyncSendableMutableLakeSoulWriter {
                 schema,
                 io_session: Arc::new(io_session.with_io_config(new_io_config)),
                 flush_results: vec![],
-                lsh_computers,
             })
         })
     }
@@ -343,39 +300,6 @@ impl SyncSendableMutableLakeSoulWriter {
             runtime.block_on(
                 async move { self.write_batch_async(record_batch, false).await },
             )
-        } else if self.io_config().compute_lsh() {
-            debug!("batch schema: {}", record_batch.schema());
-
-            let mut new_columns = record_batch.columns().to_vec();
-
-            for (field_name, lsh_computer) in self.lsh_computers.iter() {
-                let lsh_column_name = format!("{}_LSH", field_name);
-
-                if let Some(array) = record_batch.column_by_name(field_name) {
-                    let embedding =
-                        array.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
-                            report!("Column {} is not a ListArray", field_name)
-                        })?;
-
-                    let lsh_array = lsh_computer.compute_lsh(&Some(embedding.clone()))?;
-
-                    if let Ok(index) =
-                        record_batch.schema().index_of(lsh_column_name.as_str())
-                    {
-                        new_columns[index] = Arc::new(lsh_array);
-                    }
-                }
-            }
-
-            debug!("target schema: {}", self.io_config().target_schema());
-            debug!("new cols len: {}", new_columns.len());
-
-            let new_record_batch =
-                RecordBatch::try_new(self.io_config().target_schema(), new_columns)?;
-
-            runtime.block_on(async move {
-                self.write_batch_async(new_record_batch, false).await
-            })
         } else {
             runtime.block_on(
                 async move { self.write_batch_async(record_batch, false).await },

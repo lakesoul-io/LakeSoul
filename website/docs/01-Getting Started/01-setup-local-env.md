@@ -44,21 +44,21 @@ export lakesoul_home=/opt/soft/pg.property
 You can put customized database configuration information in this file.
 
 ### 1.4 Install an Apache Spark environment
-You could download spark distribution from https://spark.apache.org/downloads.html, and please choose spark version 3.3.0 or above. Note that the official package from Apache Spark does not include hadoop-cloud component. We provide a Spark package with Hadoop cloud dependencies, download it from https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/spark/spark-3.3.2-bin-hadoop3.tgz.
+You could download spark distribution from https://spark.apache.org/downloads.html, and please choose spark version 3.3.0 or above. Note that the official package from Apache Spark does not include hadoop-cloud component. We provide a Spark package with Hadoop cloud dependencies, download it from https://dlcdn.apache.org/spark/spark-3.5.8/spark-3.5.8-bin-hadoop3.tgz.
 
 After unpacking spark package, you could find LakeSoul distribution jar from https://github.com/lakesoul-io/LakeSoul/releases. Download the jar file put it into `jars` directory of your spark environment.
 
 ```bash
-wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/spark/spark-3.3.2-bin-hadoop3.tgz
-tar xf spark-3.3.2-bin-hadoop3.tgz
-export SPARK_HOME=${PWD}/spark-3.3.2-bin-hadoop3
-wget https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-spark-3.3-VAR::VERSION.jar -P $SPARK_HOME/jars
+wget https://dlcdn.apache.org/spark/spark-3.5.8/spark-3.5.8-bin-hadoop3.tgz
+tar xf spark-3.5.8-bin-hadoop3.tgz
+export SPARK_HOME=${PWD}/spark-3.5.8-bin-hadoop3
+wget https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-spark-VAR::VERSION-spark-3.5.jar -P $SPARK_HOME/jars
 ```
 
 :::tip
 For production deployment on Hadoop, it's recommended to use spark release without bundled hadoop:
 
-https://dlcdn.apache.org/spark/spark-3.3.2/spark-3.3.2-bin-without-hadoop.tgz
+https://dlcdn.apache.org/spark/spark-3.5.8/spark-3.5.8-bin-without-hadoop.tgz
 
 Refer to https://spark.apache.org/docs/latest/hadoop-provided.html on how to setup hadoop classpath.
 :::
@@ -155,7 +155,7 @@ In the above configurations, LakeSoul's PG URL connection address, user name, an
 
 ### 2.3 Configuration Hadoop Environment
 Configure global environment variable information on the client machine. Here you need to write the variable information into an env.sh file. 
-Here the Hadoop version is 3.1.4.0-315, the Spark version is spark-3.3.2, and the Flink version is flink-1.20.1. Change Hadoop environment variables according to your Hadoop deployment. If your environment has been pre-configured with Hadoop, you can omit those Hadoop related envs.
+Here the Hadoop version is 3.1.4.0-315, the Spark version is spark-3.5.8, and the Flink version is flink-1.20.1. Change Hadoop environment variables according to your Hadoop deployment. If your environment has been pre-configured with Hadoop, you can omit those Hadoop related envs.
 
 ```shell
 export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64
@@ -166,7 +166,7 @@ export HADOOP_YARN_HOME="/usr/hdp/3.1.4.0-315/hadoop-yarn"
 export HADOOP_LIBEXEC_DIR="/usr/hdp/3.1.4.0-315/hadoop/libexec"
 export HADOOP_CONF_DIR="/usr/hdp/3.1.4.0-315/hadoop/conf"
 
-export SPARK_HOME=/usr/hdp/spark-3.3.2-bin-without-hadoop-ddf
+export SPARK_HOME=/usr/hdp/spark-3.5.8-bin-without-hadoop
 export SPARK_CONF_DIR=/home/lakesoul/lakesoul_hadoop_ci/LakeSoul-main/LakeSoul/script/benchmark/hadoop/spark-conf
 
 export FLINK_HOME=/opt/flink-1.20.1
@@ -208,18 +208,18 @@ lakesoul.pg.username=lakesoul_test
 lakesoul.pg.password=lakesoul_test
 ```
 ####  3.4.2 Prepare Spark Image
-You could use bitnami's Spark 3.3 docker image with packaged hadoop denendencies:
+You could use Spark 3.5 docker image with packaged hadoop denendencies:
 ```bash
-docker pull swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/bitnami/spark:3.3.1
+docker pull swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/spark:3.5.8-py310-hadoop334
 ```
 
 ####  3.4.3 Start Spark Shell
 ```bash
 docker run --net lakesoul-docker-compose-env_default --rm -ti \
     -v $(pwd)/lakesoul.properties:/opt/spark/work-dir/lakesoul.properties \
-    --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/bitnami/spark:3.3.1 \
+    --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/spark:3.5.8-py310-hadoop334 \
     spark-shell \
-    --packages com.dmetasoul:lakesoul-spark:spark-3.3-VAR::VERSION \
+    --packages com.dmetasoul:lakesoul-spark:spark-3.5-VAR::VERSION \
     --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension \
     --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog \
     --conf spark.sql.defaultCatalog=lakesoul \
@@ -256,7 +256,7 @@ docker exec -ti lakesoul-docker-compose-env-lakesoul-meta-db-1 psql -h localhost
 ```
 To cleanup all contents in RustFS bucket, execute:
 ```bash
-docker run --net lakesoul-docker-compose-env_default --rm -t -e AWS_ACCESS_KEY_ID=rustfsadmin -e AWS_SECRET_ACCESS_KEY=rustfsadmin -e AWS_DEFAULT_REGION=us-east-1 swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/bitnami/spark:3.3.1 aws --endpoint-url http://rustfs:9000 s3 rm --recursive s3://lakesoul-test-bucket/
+docker run --net lakesoul-docker-compose-env_default --rm -t -e AWS_ACCESS_KEY_ID=rustfsadmin -e AWS_SECRET_ACCESS_KEY=rustfsadmin -e AWS_DEFAULT_REGION=us-east-1 spark:3.5.8 aws --endpoint-url http://rustfs:9000 s3 rm --recursive s3://lakesoul-test-bucket/
 ```
 
 ### 3.6 Shutdown Docker Compose Env

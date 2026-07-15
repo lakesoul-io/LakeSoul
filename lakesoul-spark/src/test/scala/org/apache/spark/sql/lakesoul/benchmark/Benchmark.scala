@@ -5,10 +5,11 @@
 package org.apache.spark.sql.lakesoul.benchmark
 
 import com.dmetasoul.lakesoul.spark.ParametersTool
-import org.apache.spark.sql.{DataFrame, SparkSession}
+import org.apache.spark.sql.{DataFrame, SparkSession, functions}
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
+import org.apache.spark.sql.types.{DataType, StringType}
 
 object Benchmark {
 
@@ -155,10 +156,10 @@ object Benchmark {
       .option("password", mysqlPassword).load()
     var lakesoulDF = spark.sql("select * from " + table).drop("rowKinds")
 
-    if (table.equals(DEFAULT_INIT_TABLE) || table.equals(DEFAULT_INIT_TABLE_1)) {
-      jdbcDF = changeDF(jdbcDF)
-      lakesoulDF = changeDF(lakesoulDF)
-    }
+    jdbcDF = changeDF(jdbcDF, table)
+    jdbcDF.printSchema()
+    lakesoulDF = changeDF(lakesoulDF, table)
+    lakesoulDF.printSchema()
 
     val diff1 = jdbcDF.rdd.subtract(lakesoulDF.rdd)
     val diff2 = lakesoulDF.rdd.subtract(jdbcDF.rdd)
@@ -167,21 +168,40 @@ object Benchmark {
     if (!result) {
       println(printLine + table + " result: " + result + printLine)
       println("*************diff1**************")
-      spark.createDataFrame(diff1, lakesoulDF.schema).sort(lakesoulDF.schema.fields(0).name).show()
+      spark.createDataFrame(diff1, jdbcDF.schema).sort(jdbcDF.schema.fields(0).name).show(false)
       println("*************diff2**************")
-      spark.createDataFrame(diff2, lakesoulDF.schema).sort(lakesoulDF.schema.fields(0).name).show()
+      spark.createDataFrame(diff2, lakesoulDF.schema).sort(lakesoulDF.schema.fields(0).name).show(false)
       println(table + " data verification ERROR!!!")
+
+      val jdbcRow = jdbcDF.sort(jdbcDF.schema.fields(0).name).limit(1).collect()(0)
+      val lakesoulRow = lakesoulDF.sort(lakesoulDF.schema.fields(0).name).limit(1).collect()(0)
+      jdbcRow.toSeq.zip(lakesoulRow.toSeq).foreach(pair => {
+        if (!pair._1.equals(pair._2)) {
+          println(s"${pair._1}, ${pair._2}")
+          println(s"${pair._1.getClass.getSimpleName}, ${pair._2.getClass.getSimpleName}")
+        }
+      })
       System.exit(1)
     }
     println(printLine + table + " result: " + result + printLine)
   }
 
-  def changeDF(df: DataFrame): DataFrame = {
-    df.withColumn("col_2", col("col_2").cast("string"))
-      .withColumn("col_3", col("col_3").cast("string"))
-      .withColumn("col_11", col("col_11").cast("string"))
-      .withColumn("col_13", col("col_13").cast("string"))
-      .withColumn("col_20", col("col_20").cast("string"))
-      .withColumn("col_23", col("col_23").cast("string"))
+  def changeDF(df: DataFrame, tbName: String): DataFrame = {
+    if (tbName == DEFAULT_INIT_TABLE || tbName == DEFAULT_INIT_TABLE_1) {
+      df.withColumn("col_2", col("col_2").cast("string"))
+        .withColumn("col_3", col("col_3").cast("string"))
+        .withColumn("col_11", col("col_11").cast("string"))
+        .withColumn("col_13", col("col_13").cast("string"))
+        .withColumn("col_16", functions.trim(col("col_16")))
+        .withColumn("col_20", col("col_20").cast("string"))
+        .withColumn("col_21", col("col_21").cast("integer"))
+        .withColumn("col_23", col("col_23").cast("string"))
+    } else {
+      if (df.columns.contains("col_14") && df.schema("col_14").dataType.equals(StringType)) {
+        df.withColumn("col_14", functions.trim(col("col_14")))
+      } else {
+        df
+      }
+    }
   }
 }

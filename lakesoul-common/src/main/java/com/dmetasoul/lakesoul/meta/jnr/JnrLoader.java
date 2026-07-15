@@ -22,7 +22,7 @@ public class JnrLoader {
 
     private boolean hasLoaded = false;
 
-    public static final JnrLoader INSTANCE = new JnrLoader();
+    public static JnrLoader INSTANCE = new JnrLoader();
 
     public static LibLakeSoulMetaData get() {
         JnrLoader.tryLoad();

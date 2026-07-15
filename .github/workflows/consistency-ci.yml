@@ -87,9 +87,9 @@ jobs:
                   repo-token: ${{ secrets.GITHUB_TOKEN }}
             - uses: vemonet/setup-spark@v1
               with:
-                  spark-version: "3.3.1"
+                  spark-version: "3.5.8"
                   hadoop-version: "3"
-                  spark-url: "https://mirrors.huaweicloud.com/apache/spark/spark-3.3.1/spark-3.3.1-bin-hadoop3.tgz"
+                  spark-url: "https://mirrors.huaweicloud.com/apache/spark/spark-3.5.8/spark-3.5.8-bin-hadoop3.tgz"
             - run: spark-submit --version
 
             - uses: dtolnay/rust-toolchain@master

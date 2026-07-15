@@ -379,7 +379,7 @@ abstract class UpdateSuiteBase
     val e = intercept[AnalysisException] {
       executeUpdate(lakeSoulTable = s"lakesoul.default.`$tempPath`", set = "key1 = 3")
     }.getMessage
-    assert(e.contains("doesn't exist") || e.contains("Table or view not found"))
+    assert(e.contains("doesn't exist") || e.contains("cannot be found"))
   }
 
   test("Negative case - check lakeSoulTable columns during analysis") {
@@ -389,7 +389,7 @@ abstract class UpdateSuiteBase
       var ae = intercept[AnalysisException] {
         executeUpdate("table", set = "column_doesnt_exist = 'San Francisco'", where = "t = 'a'")
       }
-      assert(ae.message.contains("does not exist"))
+      assert(ae.message.contains("cannot be resolved"))
 
       withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
         executeUpdate(lakeSoulTable = "table", set = "S = 1, T = 'b'", where = "T = 'a'")
@@ -403,18 +403,18 @@ abstract class UpdateSuiteBase
         ae = intercept[AnalysisException] {
           executeUpdate(lakeSoulTable = "table", set = "S = 1", where = "t = 'a'")
         }
-        assert(ae.message.contains("does not exist"))
+        assert(ae.message.contains("cannot be resolved"))
 
         ae = intercept[AnalysisException] {
           executeUpdate(lakeSoulTable = "table", set = "S = 1, s = 'b'", where = "s = 1")
         }
-        assert(ae.message.contains("does not exist"))
+        assert(ae.message.contains("cannot be resolved"))
 
         // unresolved column in condition
         ae = intercept[AnalysisException] {
           executeUpdate(lakeSoulTable = "table", set = "s = 1", where = "T = 'a'")
         }
-        assert(ae.message.contains("does not exist"))
+        assert(ae.message.contains("cannot be resolved"))
       }
     }
   }

@@ -47,7 +47,6 @@
 //! - `file_format` - datafusion file format impl
 //! - `filter` - Filter pushdown support
 //! - `helpers` - Helper functions for physical plan construction and execution
-//! - `local_sensitive_hash` - Local sensitive hashing support
 //! - `object_store` - obejct store configuration
 //! - `physical_plan` - Physical Plan implementations
 //! - `reader` - Core reading functionality
@@ -69,7 +68,6 @@ pub mod constant;
 pub mod file_format;
 pub mod filter;
 pub mod helpers;
-pub mod local_sensitive_hash;
 pub mod object_store;
 pub mod physical_plan;
 pub mod reader;

@@ -45,7 +45,7 @@ This article uses Docker Compose for deployment, with the following components a
 | Apache Doris | Default 3.0.5                |
 | LakeSoul | 2.6.1                        |
 | Postgres | 14.5                         |
-| Apache Spark | 3.3.1                        |
+| Apache Spark | 3.5.8                        |
 | Apache Flink | 1.20                         |
 | MinIO | RELEASE.2024-04-29T09-56-05Z |
 

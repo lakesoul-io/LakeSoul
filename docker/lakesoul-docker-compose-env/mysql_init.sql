@@ -56,6 +56,7 @@ create table `default_init_1`
     `col_16` set('first','second','third','fourth','fifth') NOT NULL,
     `col_18` text           NOT NULL,
     `col_20` tinyblob       NOT NULL,
+    `col_21` tinyint        NOT NULL,
     `col_22` tinytext       NOT NULL,
     `col_23` varbinary(50) NOT NULL,
     `col_24` varchar(50)    NOT NULL,

@@ -23,7 +23,7 @@ public class JnrLoader {
 
     private boolean hasLoaded = false;
 
-    public static final JnrLoader INSTANCE = new JnrLoader();
+    public static JnrLoader INSTANCE = new JnrLoader();
 
     public static LibLakeSoulIO get() {
         JnrLoader.tryLoad();
@@ -82,5 +82,11 @@ public class JnrLoader {
         }
 
         INSTANCE.hasLoaded = true;
+    }
+
+    public synchronized static void unload() {
+        INSTANCE.hasLoaded = false;
+        INSTANCE.libLakeSoulIO = null;
+        INSTANCE = null;
     }
 }

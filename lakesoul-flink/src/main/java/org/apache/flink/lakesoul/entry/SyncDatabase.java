@@ -14,16 +14,12 @@ import org.apache.flink.connector.base.DeliveryGuarantee;
 import org.apache.flink.connector.mongodb.sink.MongoSink;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.RestOptions;
-import org.apache.flink.lakesoul.tool.LakeSoulInAndOutputJobListener;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
-import org.apache.flink.lakesoul.tool.JobOptions;
 import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.table.api.bridge.java.StreamStatementSet;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.catalog.Catalog;
 import org.apache.flink.table.types.DataType;
@@ -34,7 +30,6 @@ import org.slf4j.LoggerFactory;
 
 import java.sql.*;
 import java.util.*;
-import java.util.stream.Collectors;
 
 import static org.apache.flink.lakesoul.tool.JobOptions.JOB_CHECKPOINT_INTERVAL;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkDatabasesOptions.*;
@@ -54,8 +49,6 @@ public class SyncDatabase {
     static int sinkParallelism;
     static String jdbcOrDorisOptions;
     static int checkpointInterval;
-    static LakeSoulInAndOutputJobListener listener;
-    static String lineageUrl = null;
     static Boolean isTableExist;
 
     private static final Logger log = LoggerFactory.getLogger(SyncDatabase.class);
@@ -97,29 +90,7 @@ public class SyncDatabase {
         isTableExist = parameter.getBoolean(IS_TABLE_EXISTS.key(), IS_TABLE_EXISTS.defaultValue());
         Configuration conf = new Configuration();
         conf.setString(RestOptions.BIND_PORT, "8081-8089");
-        StreamExecutionEnvironment env = null;
-        lineageUrl = System.getenv("LINEAGE_URL");
-        if (lineageUrl != null) {
-            conf.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
-            conf.set(JobOptions.transportTypeOption, "http");
-            conf.set(JobOptions.urlOption, lineageUrl);
-            conf.set(JobOptions.execAttach, true);
-            env = StreamExecutionEnvironment.getExecutionEnvironment(conf);
-            String appName = env.getConfiguration().get(JobOptions.KUBE_CLUSTER_ID);
-            String namespace = System.getenv("LAKESOUL_CURRENT_DOMAIN");
-            if (namespace == null) {
-                namespace = "public";
-            }
-            if (useBatch) {
-                listener = new LakeSoulInAndOutputJobListener(lineageUrl, "BATCH");
-            } else {
-                listener = new LakeSoulInAndOutputJobListener(lineageUrl);
-            }
-            listener.jobName(appName, namespace);
-            env.registerJobListener(listener);
-        } else {
-            env = StreamExecutionEnvironment.getExecutionEnvironment(conf);
-        }
+        StreamExecutionEnvironment env  = StreamExecutionEnvironment.getExecutionEnvironment(conf);
         env.setParallelism(sinkParallelism);
         switch (dbType) {
             case "mysql":
@@ -405,19 +376,6 @@ public class SyncDatabase {
 
         Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
         Statement statement = conn.createStatement();
-        if (lineageUrl != null){
-            String inputName = "lakesoul." + sourceDatabase + "." + sourceTableName;
-            String inputNamespace = getTableDomain(sourceDatabase, sourceTableName);
-            String[] inputTypes = Arrays.stream(fieldDataTypes).map(type -> type.toString()).collect(Collectors.toList()).toArray(new String[0]);
-            listener.inputFacets(inputName, inputNamespace, fieldNames, inputTypes);
-            String targetName = "mysql." + targetDatabase + "." + targetTableName;
-            if (isTableExist){
-                String[][] tableSchema = getTableSchema(conn, targetTableName, inputTypes.length);
-                listener.outputFacets(targetName, "lake-public", tableSchema[0], tableSchema[1]);
-            } else {
-                listener.outputFacets(targetName,"lake-public",fieldNames,stringFieldsTypes);
-            }
-        }
         // Create the target table in MySQL
         if (!isTableExist){
             statement.executeUpdate(createTableSql);
@@ -481,14 +439,6 @@ public class SyncDatabase {
         DataType[] fieldDataTypes = lakesoulTable.getSchema().getFieldDataTypes();
         String[] fieldNames = lakesoulTable.getSchema().getFieldNames();
         String[] dorisFieldTypes = getDorisFieldTypes(fieldDataTypes);
-        if (lineageUrl != null) {
-            String inputName = "lakeSoul." + sourceDatabase + "." + sourceTableName;
-            String inputnNamespace = getTableDomain(sourceDatabase,sourceTableName);
-            String[] inputTypes = Arrays.stream(fieldDataTypes).map(type -> type.toString()).collect(Collectors.toList()).toArray(new String[0]);
-            listener.inputFacets(inputName,inputnNamespace,fieldNames,inputTypes);
-            String targetName = "doris." + targetDatabase + "." + targetTableName;
-            listener.outputFacets(targetName,"lake-public",fieldNames,dorisFieldTypes);
-        }
         StringBuilder coulmns = new StringBuilder();
         for (int i = 0; i < fieldDataTypes.length; i++) {
             coulmns.append("`").append(fieldNames[i]).append("` ").append(dorisFieldTypes[i]);
@@ -523,16 +473,7 @@ public class SyncDatabase {
         }
 
         tEnvs.executeSql(sql);
-        if (lineageUrl != null){
-            String insertsql = "insert into " + targetTableName + " select * from lakeSoul.`" + sourceDatabase + "`." + sourceTableName;
-            StreamStatementSet statements =  tEnvs.createStatementSet();
-            statements.addInsertSql(insertsql);
-            statements.attachAsDataStream();
-            env.execute();
-        }else{
-            tEnvs.executeSql("insert into " + targetTableName + " select * from lakeSoul.`" + sourceDatabase + "`." + sourceTableName);
-
-        }
+        tEnvs.executeSql("insert into " + targetTableName + " select * from lakeSoul.`" + sourceDatabase + "`." + sourceTableName);
     }
 
     public static void xsyncToMongodb(StreamExecutionEnvironment env,

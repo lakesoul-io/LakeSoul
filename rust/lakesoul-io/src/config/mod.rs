@@ -241,12 +241,6 @@ impl LakeSoulIOConfig {
             .is_some_and(|x| x.eq("true"))
     }
 
-    /// Returns whether to compute Local Sensitive Hash (defaults to true)
-    pub fn compute_lsh(&self) -> bool {
-        self.option(OPTION_KEY_COMPUTE_LSH)
-            .is_none_or(|x| x.eq("true"))
-    }
-
     /// Returns whether to use stable sort algorithm
     pub fn stable_sort(&self) -> bool {
         self.option(OPTION_KEY_STABLE_SORT)

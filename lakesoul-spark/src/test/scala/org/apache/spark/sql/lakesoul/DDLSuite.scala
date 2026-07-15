@@ -21,6 +21,7 @@ import org.apache.spark.sql.{AnalysisException, QueryTest, Row, SparkSession}
 import org.junit.runner.RunWith
 import org.scalatestplus.junit.JUnitRunner
 
+import java.io.{PrintWriter, StringWriter}
 import scala.collection.JavaConverters._
 
 @RunWith(classOf[JUnitRunner])
@@ -40,8 +41,8 @@ class DDLSuite extends DDLTestBase with SharedSparkSession
 
   override protected def verifyDescribeTable(tblName: String): Unit = {
     val res = sql(s"DESCRIBE TABLE $tblName").collect()
-    logInfo(res.map(_.toString).mkString(","))
-    assert(res.takeRight(2).map(_.getString(1)) === Seq("name", "dept"))
+    println(res.map(_.toString).mkString(","))
+    assert(res.takeRight(2).map(_.getString(0)) === Seq("name", "dept"))
   }
 
   override protected def verifyNullabilityFailure(exception: AnalysisException): Unit = {
@@ -200,9 +201,12 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
         val e = intercept[Exception] {
           sql("INSERT INTO lakesoul_test VALUES (2, null)")
         }
-        if (!e.getMessage.contains("nullable values to non-null column")) {
-          verifyInvariantViolationException(e)
-        }
+        val sw = new StringWriter()
+        val pw = new PrintWriter(sw)
+        e.printStackTrace(pw)
+        val sStackTrace = sw.toString // stack trace as a string
+
+        assert(sStackTrace.contains("Null value appeared in non-nullable field"))
       }
     }
   }
@@ -393,7 +397,7 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
       violationException = violationException.getCause
     }
     if (violationException == null) {
-      fail("Didn't receive a InvariantViolationException.")
+      fail("Didn't receive a InvariantViolationException, got ", e)
     }
     assert(violationException.getMessage.contains("Invariant NOT NULL violated for column"))
   }

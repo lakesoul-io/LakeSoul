@@ -102,7 +102,7 @@ trait DDLUsingPathTests extends QueryTest
     val ex = intercept[AnalysisException] {
       spark.table(s"lakesoul.`$ns`.`/path/to/lakesoul`")
     }
-    assert(ex.getMessage.contains(s"Table or view not found: lakesoul.$ns.`/path/to/lakesoul`"))
+    assert(ex.getMessage.contains(s"The table or view `lakesoul`.`$ns`.`/path/to/lakesoul` cannot be found"))
     if (ns == "default") {
       val ex2 = intercept[AnalysisException] {
         spark.read.format("lakesoul").load("/path/to/lakesoul")
@@ -114,7 +114,7 @@ trait DDLUsingPathTests extends QueryTest
       val ex = intercept[AnalysisException] {
         spark.table(s"lakesoul.`$ns`.`/path/to/lakesoul`")
       }
-      assert(ex.getMessage.contains(s"Table or view not found: lakesoul.$ns.`/path/to/lakesoul`"))
+      assert(ex.getMessage.contains(s"The table or view `lakesoul`.`$ns`.`/path/to/lakesoul` cannot be found"))
     }
   }
 

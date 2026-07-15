@@ -268,7 +268,6 @@ public class LakeSoulRecordConvert implements Serializable {
         return timeStampPartitionCol;
     }
 
-
     public RowType toFlinkRowTypeCDC(RowType rowType) {
         if (!useCDC || rowType.getFieldNames().contains(cdcColumn)) {
             return rowType;
@@ -306,11 +305,14 @@ public class LakeSoulRecordConvert implements Serializable {
     }
 
     private LogicalType primitiveLogicalType(Schema fieldSchema, Object fieldValue, boolean nullable) {
+        LOG.info("Field: {}, type {}", fieldSchema.name(), fieldSchema.type());
         switch (fieldSchema.type()) {
             case BOOLEAN:
                 return new BooleanType(nullable);
             case INT8:
+                return new TinyIntType(nullable);
             case INT16:
+                return new SmallIntType(nullable);
             case INT32:
                 return new IntType(nullable);
             case INT64:

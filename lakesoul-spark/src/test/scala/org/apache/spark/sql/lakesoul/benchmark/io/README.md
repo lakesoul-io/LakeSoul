@@ -26,7 +26,7 @@ serialized_size: 7688
 File is read with only one parallelism in Spark.
 
 ### Results
-1. MinIO
+1. Local S3
 
 |          | Parquet-mr | Native-IO | Improvement |
 |----------|------------|-----------|-------------|
@@ -49,7 +49,7 @@ Original parquet file size: 894.3MB, cached in memory in advance before write.
 
 ### Results
 
-1. MinIO
+1. Local S3
 
 |          | Parquet-mr | Native-IO | Improvement |
 |----------|------------|-----------|-------------|
@@ -66,13 +66,13 @@ Original parquet file size: 894.3MB, cached in memory in advance before write.
 ### Settings
 Writing a base file of 20 million lines, and upsert 10 times with 5 million lines each.
 
-Data is read from local file system and written to MinIO
+Data is read from local file system and written to Local S3
 
 Tested on Spark 3.3.1 with 4 local executor threads and 16G memory.
 
 ### Results
 
-1. MinIO
+1. Local S3
 
 |          | Parquet-mr | Native-IO | Improvement |
 |----------|------------|-----------|-------------|

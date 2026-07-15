@@ -67,7 +67,7 @@ public class LakeSoulCatalog implements Catalog {
     public static final String CATALOG_NAME = "lakesoul";
     public static final String TABLE_ID_PREFIX = "table_";
     private static final String TABLE_PATH = "path";
-    private final DBManager dbManager;
+    private DBManager dbManager;
 
     private static final Logger LOG = LoggerFactory.getLogger(LakeSoulCatalog.class);
 
@@ -83,7 +83,6 @@ public class LakeSoulCatalog implements Catalog {
 
     @Override
     public void close() throws CatalogException {
-
     }
 
     @Override

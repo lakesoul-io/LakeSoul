@@ -27,8 +27,6 @@ pub static OPTION_KEY_MAX_FILE_SIZE: &str = "max_file_size";
 pub static OPTION_KEY_FILE_FILTER_PUSHDOWN: &str = "file_filter_pushdown";
 /// Key for spill dir
 pub static OPTION_KEY_SPILL_DIR: &str = "spill_dir";
-/// Key for computing Local Sensitive Hash
-pub static OPTION_KEY_COMPUTE_LSH: &str = "compute_lsh";
 /// Key for using stable sort algorithm
 pub static OPTION_KEY_STABLE_SORT: &str = "stable_sort";
 /// Key for repartition memory

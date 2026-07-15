@@ -89,7 +89,7 @@ export PYTHONPATH=$SPARK_HOME/python:$PYTHONPATH
 ```
 
 ```python
-# Run pyspark tests using spark 3.3.x version
+# Run pyspark tests using spark 3.5.x version
 from pyspark.lakesoul.tables import LakeSoulTable
 from pyspark.sql import SparkSession
 

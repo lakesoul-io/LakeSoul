@@ -58,7 +58,7 @@ LakeSoul/
 | Async runtime | Tokio (full features) |
 | gRPC | Tonic |
 | Java bridge | JNI via `lakesoul-io-c` / `lakesoul-metadata-c` (C FFI) |
-| Spark | Apache Spark 3.3.1, Scala 2.12 |
+| Spark | Apache Spark 3.5.8, Scala 2.12 |
 | Flink | Apache Flink (Java + Scala) |
 | Python | PyO3 + maturin, pyarrow |
 | Build (Rust) | Cargo stable toolchain + rustfmt + clippy |

@@ -4,12 +4,11 @@
 
 package org.apache.spark.sql.arrow
 
-import com.dmetasoul.lakesoul.meta.LakeSoulOptions.SchemaFieldMetadata.{LSH_BIT_WIDTH, LSH_EMBEDDING_DIMENSION, LSH_RNG_SEED}
 import org.apache.arrow.memory.RootAllocator
 import org.apache.arrow.vector.complex.MapVector
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
 import org.apache.arrow.vector.types.{DateUnit, FloatingPointPrecision, IntervalUnit, TimeUnit}
-import org.apache.spark.sql.errors.QueryExecutionErrors
+import org.apache.spark.sql.errors.ExecutionErrors
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.json4s.jackson.JsonMethods.mapper
@@ -21,11 +20,7 @@ import scala.util.control.NonFatal
 object ArrowUtils {
 
   private val LAKESOUL_ARROW_FIELD = "__lakesoul_arrow_field__"
-  private val MANAGED_ARROW_METADATA_KEYS = Set(
-    "spark_comment",
-    LSH_EMBEDDING_DIMENSION,
-    LSH_BIT_WIDTH,
-    LSH_RNG_SEED)
+  private val MANAGED_ARROW_METADATA_KEYS = Set("spark_comment")
 
   val rootAllocator = new RootAllocator(Long.MaxValue)
   private val writer = mapper.writerWithDefaultPrettyPrinter
@@ -55,7 +50,7 @@ object ArrowUtils {
     case _: YearMonthIntervalType => new ArrowType.Interval(IntervalUnit.YEAR_MONTH)
     case _: DayTimeIntervalType => new ArrowType.Duration(TimeUnit.MICROSECOND)
     case _ =>
-      throw QueryExecutionErrors.unsupportedDataTypeError(dt.catalogString)
+      throw ExecutionErrors.unsupportedDataTypeError(dt)
   }
 
   def fromArrowType(dt: ArrowType): DataType = dt match {
@@ -65,22 +60,24 @@ object ArrowUtils {
     case int: ArrowType.Int if int.getIsSigned && int.getBitWidth == 8 * 4 => IntegerType
     case int: ArrowType.Int if int.getIsSigned && int.getBitWidth == 8 * 8 => LongType
     case float: ArrowType.FloatingPoint
-      if float.getPrecision() == FloatingPointPrecision.SINGLE => FloatType
+      if float.getPrecision == FloatingPointPrecision.SINGLE => FloatType
     case float: ArrowType.FloatingPoint
-      if float.getPrecision() == FloatingPointPrecision.DOUBLE => DoubleType
+      if float.getPrecision == FloatingPointPrecision.DOUBLE => DoubleType
     case ArrowType.Utf8.INSTANCE => StringType
     case ArrowType.LargeUtf8.INSTANCE => StringType
     case ArrowType.Binary.INSTANCE => BinaryType
     case ArrowType.LargeBinary.INSTANCE => BinaryType
     case d: ArrowType.Decimal => DecimalType(d.getPrecision, d.getScale)
     case date: ArrowType.Date if date.getUnit == DateUnit.DAY => DateType
-    case ts: ArrowType.Timestamp => TimestampType
+    case ts: ArrowType.Timestamp
+      if ts.getTimezone == null => TimestampNTZType
+    case _: ArrowType.Timestamp => TimestampType
     case ArrowType.Null.INSTANCE => NullType
     case yi: ArrowType.Interval if yi.getUnit == IntervalUnit.YEAR_MONTH => YearMonthIntervalType()
     case di: ArrowType.Duration if di.getUnit == TimeUnit.MICROSECOND => DayTimeIntervalType()
     case ti: ArrowType.Time if ti.getBitWidth == 32 => IntegerType
     case ti: ArrowType.Time if ti.getBitWidth == 64 => LongType
-    case _ => throw QueryExecutionErrors.unsupportedDataTypeError(dt.toString)
+    case _ => throw ExecutionErrors.unsupportedArrowTypeError(dt)
   }
 
   /** Maps field from Spark to Arrow. NOTE: timeZoneId required for TimestampType */
@@ -341,15 +338,6 @@ object ArrowUtils {
     new Schema(schema.map { field =>
       val comment = field.getComment
       val metadata = new util.HashMap[String, String]
-      if (field.metadata.contains(LSH_EMBEDDING_DIMENSION)) {
-        metadata.put(LSH_EMBEDDING_DIMENSION, field.metadata.getString(LSH_EMBEDDING_DIMENSION))
-      }
-      if (field.metadata.contains(LSH_BIT_WIDTH)) {
-        metadata.put(LSH_BIT_WIDTH, field.metadata.getString(LSH_BIT_WIDTH))
-      }
-      if (field.metadata.contains(LSH_RNG_SEED)) {
-        metadata.put(LSH_RNG_SEED, field.metadata.getString(LSH_RNG_SEED))
-      }
 
       if (comment.isDefined) {
         metadata.put("spark_comment", comment.get)
