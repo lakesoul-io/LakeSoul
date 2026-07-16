@@ -555,7 +555,7 @@ impl IvfRabitqIndex {
                 }
 
                 (
-                    indices.iter().map(|&i| i as u64).collect(),
+                    indices.to_vec(),
                     quantized_vectors,
                 )
             })
@@ -822,6 +822,7 @@ impl IvfRabitqIndex {
 
             // Save vector IDs
             for &id in &cluster.ids {
+                #[allow(clippy::useless_conversion)]
                 let encoded = u64::try_from(id).map_err(|_| {
                     RabitqError::InvalidPersistence(
                         "vector id exceeds persistence limits",
@@ -1429,11 +1430,10 @@ impl IvfRabitqIndex {
                 let vector_id = cluster.ids[global_idx];
 
                 // Apply filter if provided
-                if let Some(filter_bitmap) = filter {
-                    if !filter_bitmap.contains(vector_id as u32) {
+                if let Some(filter_bitmap) = filter
+                    && !filter_bitmap.contains(vector_id as u32) {
                         continue;
                     }
-                }
 
                 // Use pre-computed values (vectorized above)
                 let ip_x0_qr = ip_x0_qr_values[i];
@@ -1518,7 +1518,7 @@ impl IvfRabitqIndex {
         // Scan pending vectors (≤31, not yet in batch_data)
         self.search_pending_vectors(
             cluster,
-            &query_precomp,
+            query_precomp,
             g_add,
             dot_query_centroid,
             filter,
@@ -1550,11 +1550,10 @@ impl IvfRabitqIndex {
             .iter()
             .zip(cluster.pending_vectors.iter())
         {
-            if let Some(bitmap) = filter {
-                if !bitmap.contains(vec_id as u32) {
+            if let Some(bitmap) = filter
+                && !bitmap.contains(vec_id as u32) {
                     continue;
                 }
-            }
 
             // Unpack binary code
             let binary_code = qvec.unpack_binary_code();
@@ -1821,7 +1820,7 @@ impl IvfRabitqIndex {
                 _ => crate::rabitq::manifest::load_manifest(mstore).await?,
             };
         let mut clusters = Vec::with_capacity(cluster_map.len());
-        for (_cid, entry) in cluster_map.iter() {
+        for entry in cluster_map.values() {
             // Merge all segments (base + deltas) for this cluster.
             let mut merged: Option<ClusterData> = None;
             for seg_entry in &entry.segments {
@@ -2463,6 +2462,7 @@ fn assign_batch_to_centroids(
 // ----------------------------------------------------------------------------
 
 impl crate::rabitq::manifest::ClusterSegmentData {
+    #[allow(clippy::too_many_arguments)]
     pub fn from_cluster_data(
         cluster_id: u32,
         centroid: Vec<f32>,

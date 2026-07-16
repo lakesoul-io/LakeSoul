@@ -294,7 +294,7 @@ async fn read_manifest_bytes(
         return Err(RabitqError::InvalidPersistence("not a V4 manifest"));
     }
     let file_version = rle!(r, u32);
-    if file_version < 1 || file_version > V4_MANIFEST_VERSION {
+    if !(1..=V4_MANIFEST_VERSION).contains(&file_version) {
         return Err(RabitqError::InvalidPersistence(
             "unsupported manifest version",
         ));
@@ -637,9 +637,9 @@ pub async fn read_segment_centroid(
     }
     let cluster_id = u32::from_le_bytes([b[4], b[5], b[6], b[7]]);
     let mut centroid = vec![0.0f32; padded_dim];
-    for i in 0..padded_dim {
+    for (i, c) in centroid.iter_mut().enumerate() {
         let off = 21 + i * 4;
-        centroid[i] = f32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]]);
+        *c = f32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]]);
     }
     Ok((cluster_id, centroid))
 }

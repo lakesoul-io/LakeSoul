@@ -343,7 +343,7 @@ impl ClusterData {
         let nv = seg.ids.len();
         Self {
             centroid: seg.centroid,
-            ids: seg.ids.into_iter().map(|v| v as u64).collect(),
+            ids: seg.ids,
             batch_data: seg.batch_data,
             ex_codes_packed: seg.ex_codes_packed,
             f_add_ex: seg.f_add_ex,
