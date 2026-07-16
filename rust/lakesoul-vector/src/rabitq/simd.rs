@@ -708,92 +708,96 @@ fn dot_u16_f32_scalar(a: &[u16], b: &[f32]) -> f32 {
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 #[target_feature(enable = "avx2")]
 unsafe fn dot_u8_f32_avx2(a: &[u8], b: &[f32]) -> f32 {
-    #[cfg(target_arch = "x86_64")]
-    use std::arch::x86_64::*;
+    unsafe {
+        #[cfg(target_arch = "x86_64")]
+        use std::arch::x86_64::*;
 
-    let len = a.len();
-    let chunks = len / 8;
-    let remainder = len % 8;
+        let len = a.len();
+        let chunks = len / 8;
+        let remainder = len % 8;
 
-    let mut sum = _mm256_setzero_ps();
+        let mut sum = _mm256_setzero_ps();
 
-    for i in 0..chunks {
-        let offset = i * 8;
+        for i in 0..chunks {
+            let offset = i * 8;
 
-        // Load 8 u8 values
-        let a_u8 = _mm_loadl_epi64(a.as_ptr().add(offset) as *const __m128i);
-        // Convert u8 to u32
-        let a_u32 = _mm256_cvtepu8_epi32(a_u8);
-        // Convert u32 to f32
-        let a_f32 = _mm256_cvtepi32_ps(a_u32);
+            // Load 8 u8 values
+            let a_u8 = _mm_loadl_epi64(a.as_ptr().add(offset) as *const __m128i);
+            // Convert u8 to u32
+            let a_u32 = _mm256_cvtepu8_epi32(a_u8);
+            // Convert u32 to f32
+            let a_f32 = _mm256_cvtepi32_ps(a_u32);
 
-        // Load 8 f32 values
-        let b_f32 = _mm256_loadu_ps(b.as_ptr().add(offset));
+            // Load 8 f32 values
+            let b_f32 = _mm256_loadu_ps(b.as_ptr().add(offset));
 
-        // Multiply and accumulate
-        sum = _mm256_fmadd_ps(a_f32, b_f32, sum);
+            // Multiply and accumulate
+            sum = _mm256_fmadd_ps(a_f32, b_f32, sum);
+        }
+
+        // Horizontal sum
+        let mut result = 0.0f32;
+        let sum_arr: [f32; 8] = std::mem::transmute(sum);
+        for &val in &sum_arr {
+            result += val;
+        }
+
+        // Handle remainder
+        let offset = chunks * 8;
+        for i in 0..remainder {
+            result += (a[offset + i] as f32) * b[offset + i];
+        }
+
+        result
     }
-
-    // Horizontal sum
-    let mut result = 0.0f32;
-    let sum_arr: [f32; 8] = std::mem::transmute(sum);
-    for &val in &sum_arr {
-        result += val;
-    }
-
-    // Handle remainder
-    let offset = chunks * 8;
-    for i in 0..remainder {
-        result += (a[offset + i] as f32) * b[offset + i];
-    }
-
-    result
 }
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 #[target_feature(enable = "avx2")]
 #[allow(dead_code)]
 unsafe fn dot_u16_f32_avx2(a: &[u16], b: &[f32]) -> f32 {
-    #[cfg(target_arch = "x86_64")]
-    use std::arch::x86_64::*;
+    unsafe {
+        #[cfg(target_arch = "x86_64")]
+        use std::arch::x86_64::*;
 
-    let len = a.len();
-    let chunks = len / 8;
-    let remainder = len % 8;
+        let len = a.len();
+        let chunks = len / 8;
+        let remainder = len % 8;
 
-    let mut sum = _mm256_setzero_ps();
+        let mut sum = _mm256_setzero_ps();
 
-    for i in 0..chunks {
-        let offset = i * 8;
+        for i in 0..chunks {
+            let offset = i * 8;
 
-        // Load 8 u16 values
-        let a_u16 = _mm_loadu_si128(a.as_ptr().add(offset) as *const __m128i);
-        // Convert u16 to u32
-        let a_u32 = _mm256_cvtepu16_epi32(a_u16);
-        // Convert u32 to f32
-        let a_f32 = _mm256_cvtepi32_ps(a_u32);
+            // Load 8 u16 values
+            let a_u16 = _mm_loadu_si128(a.as_ptr().add(offset) as *const __m128i);
+            // Convert u16 to u32
+            let a_u32 = _mm256_cvtepu16_epi32(a_u16);
+            // Convert u32 to f32
+            let a_f32 = _mm256_cvtepi32_ps(a_u32);
 
-        // Load 8 f32 values
-        let b_f32 = _mm256_loadu_ps(b.as_ptr().add(offset));
+            // Load 8 f32 values
+            let b_f32 = _mm256_loadu_ps(b.as_ptr().add(offset));
 
-        // Multiply and accumulate
-        sum = _mm256_fmadd_ps(a_f32, b_f32, sum);
+            // Multiply and accumulate
+            sum = _mm256_fmadd_ps(a_f32, b_f32, sum);
+        }
+
+        // Horizontal sum
+        let mut result = 0.0f32;
+        let sum_arr: [f32; 8] = std::mem::transmute(sum);
+        for &val in &sum_arr {
+            result += val;
+        }
+
+        // Handle remainder
+        let offset = chunks * 8;
+        for i in 0..remainder {
+            result += (a[offset + i] as f32) * b[offset + i];
+        }
+
+        result
     }
-
-    // Horizontal sum
-    let mut result = 0.0f32;
-    let sum_arr: [f32; 8] = std::mem::transmute(sum);
-    for &val in &sum_arr {
-        result += val;
-    }
-
-    // Handle remainder
-    let offset = chunks * 8;
-    for i in 0..remainder {
-        result += (a[offset + i] as f32) * b[offset + i];
-    }
-
-    result
 }
 
 // ============================================================================
@@ -1058,92 +1062,95 @@ unsafe fn accumulate_batch_avx2_impl(
     dim: usize,
     results: &mut [u16; FASTSCAN_BATCH_SIZE],
 ) {
-    use std::arch::x86_64::*;
+    unsafe {
+        use std::arch::x86_64::*;
 
-    let code_length = dim << 2; // dim * 4
-    let low_mask = _mm256_set1_epi8(0x0f);
+        let code_length = dim << 2; // dim * 4
+        let low_mask = _mm256_set1_epi8(0x0f);
 
-    // 4 independent accumulators following C++ logic:
-    // accu0: accumulates res_lo (vectors 8-15)
-    // accu1: accumulates res_lo >> 8 (vectors 0-7)
-    // accu2: accumulates res_hi (vectors 24-31)
-    // accu3: accumulates res_hi >> 8 (vectors 16-23)
-    let mut accu0 = _mm256_setzero_si256();
-    let mut accu1 = _mm256_setzero_si256();
-    let mut accu2 = _mm256_setzero_si256();
-    let mut accu3 = _mm256_setzero_si256();
+        // 4 independent accumulators following C++ logic:
+        // accu0: accumulates res_lo (vectors 8-15)
+        // accu1: accumulates res_lo >> 8 (vectors 0-7)
+        // accu2: accumulates res_hi (vectors 24-31)
+        // accu3: accumulates res_hi >> 8 (vectors 16-23)
+        let mut accu0 = _mm256_setzero_si256();
+        let mut accu1 = _mm256_setzero_si256();
+        let mut accu2 = _mm256_setzero_si256();
+        let mut accu3 = _mm256_setzero_si256();
 
-    // Process 64 bytes at a time (2 * 32) to match C++ implementation
-    // Let CPU hardware prefetcher handle memory prefetching automatically
-    let mut i = 0;
-    while i + 63 < code_length {
-        // First 32 bytes
-        let c = _mm256_loadu_si256(packed_codes.as_ptr().add(i) as *const __m256i);
-        let lut_val = _mm256_loadu_si256(lut.as_ptr().add(i) as *const __m256i);
-        let lo = _mm256_and_si256(c, low_mask);
-        let hi = _mm256_and_si256(_mm256_srli_epi16(c, 4), low_mask);
+        // Process 64 bytes at a time (2 * 32) to match C++ implementation
+        // Let CPU hardware prefetcher handle memory prefetching automatically
+        let mut i = 0;
+        while i + 63 < code_length {
+            // First 32 bytes
+            let c = _mm256_loadu_si256(packed_codes.as_ptr().add(i) as *const __m256i);
+            let lut_val = _mm256_loadu_si256(lut.as_ptr().add(i) as *const __m256i);
+            let lo = _mm256_and_si256(c, low_mask);
+            let hi = _mm256_and_si256(_mm256_srli_epi16(c, 4), low_mask);
 
-        let res_lo = _mm256_shuffle_epi8(lut_val, lo);
-        let res_hi = _mm256_shuffle_epi8(lut_val, hi);
+            let res_lo = _mm256_shuffle_epi8(lut_val, lo);
+            let res_hi = _mm256_shuffle_epi8(lut_val, hi);
 
-        // Accumulate following C++ pattern
-        accu0 = _mm256_add_epi16(accu0, res_lo);
-        accu1 = _mm256_add_epi16(accu1, _mm256_srli_epi16(res_lo, 8));
-        accu2 = _mm256_add_epi16(accu2, res_hi);
-        accu3 = _mm256_add_epi16(accu3, _mm256_srli_epi16(res_hi, 8));
+            // Accumulate following C++ pattern
+            accu0 = _mm256_add_epi16(accu0, res_lo);
+            accu1 = _mm256_add_epi16(accu1, _mm256_srli_epi16(res_lo, 8));
+            accu2 = _mm256_add_epi16(accu2, res_hi);
+            accu3 = _mm256_add_epi16(accu3, _mm256_srli_epi16(res_hi, 8));
 
-        // Second 32 bytes
-        let c = _mm256_loadu_si256(packed_codes.as_ptr().add(i + 32) as *const __m256i);
-        let lut_val = _mm256_loadu_si256(lut.as_ptr().add(i + 32) as *const __m256i);
-        let lo = _mm256_and_si256(c, low_mask);
-        let hi = _mm256_and_si256(_mm256_srli_epi16(c, 4), low_mask);
+            // Second 32 bytes
+            let c =
+                _mm256_loadu_si256(packed_codes.as_ptr().add(i + 32) as *const __m256i);
+            let lut_val = _mm256_loadu_si256(lut.as_ptr().add(i + 32) as *const __m256i);
+            let lo = _mm256_and_si256(c, low_mask);
+            let hi = _mm256_and_si256(_mm256_srli_epi16(c, 4), low_mask);
 
-        let res_lo = _mm256_shuffle_epi8(lut_val, lo);
-        let res_hi = _mm256_shuffle_epi8(lut_val, hi);
+            let res_lo = _mm256_shuffle_epi8(lut_val, lo);
+            let res_hi = _mm256_shuffle_epi8(lut_val, hi);
 
-        accu0 = _mm256_add_epi16(accu0, res_lo);
-        accu1 = _mm256_add_epi16(accu1, _mm256_srli_epi16(res_lo, 8));
-        accu2 = _mm256_add_epi16(accu2, res_hi);
-        accu3 = _mm256_add_epi16(accu3, _mm256_srli_epi16(res_hi, 8));
+            accu0 = _mm256_add_epi16(accu0, res_lo);
+            accu1 = _mm256_add_epi16(accu1, _mm256_srli_epi16(res_lo, 8));
+            accu2 = _mm256_add_epi16(accu2, res_hi);
+            accu3 = _mm256_add_epi16(accu3, _mm256_srli_epi16(res_hi, 8));
 
-        i += 64;
+            i += 64;
+        }
+
+        // Handle remaining bytes
+        while i < code_length {
+            let c = _mm256_loadu_si256(packed_codes.as_ptr().add(i) as *const __m256i);
+            let lut_val = _mm256_loadu_si256(lut.as_ptr().add(i) as *const __m256i);
+            let lo = _mm256_and_si256(c, low_mask);
+            let hi = _mm256_and_si256(_mm256_srli_epi16(c, 4), low_mask);
+
+            let res_lo = _mm256_shuffle_epi8(lut_val, lo);
+            let res_hi = _mm256_shuffle_epi8(lut_val, hi);
+
+            accu0 = _mm256_add_epi16(accu0, res_lo);
+            accu1 = _mm256_add_epi16(accu1, _mm256_srli_epi16(res_lo, 8));
+            accu2 = _mm256_add_epi16(accu2, res_hi);
+            accu3 = _mm256_add_epi16(accu3, _mm256_srli_epi16(res_hi, 8));
+
+            i += 32;
+        }
+
+        // Remove the influence of upper 8 bits for accu0 and accu2
+        accu0 = _mm256_sub_epi16(accu0, _mm256_slli_epi16(accu1, 8));
+        accu2 = _mm256_sub_epi16(accu2, _mm256_slli_epi16(accu3, 8));
+
+        // Final assembly for vectors 0-15
+        let dis0 = _mm256_add_epi16(
+            _mm256_permute2f128_si256(accu0, accu1, 0x21),
+            _mm256_blend_epi32(accu0, accu1, 0xF0),
+        );
+        _mm256_storeu_si256(results.as_mut_ptr() as *mut __m256i, dis0);
+
+        // Final assembly for vectors 16-31
+        let dis1 = _mm256_add_epi16(
+            _mm256_permute2f128_si256(accu2, accu3, 0x21),
+            _mm256_blend_epi32(accu2, accu3, 0xF0),
+        );
+        _mm256_storeu_si256(results.as_mut_ptr().add(16) as *mut __m256i, dis1);
     }
-
-    // Handle remaining bytes
-    while i < code_length {
-        let c = _mm256_loadu_si256(packed_codes.as_ptr().add(i) as *const __m256i);
-        let lut_val = _mm256_loadu_si256(lut.as_ptr().add(i) as *const __m256i);
-        let lo = _mm256_and_si256(c, low_mask);
-        let hi = _mm256_and_si256(_mm256_srli_epi16(c, 4), low_mask);
-
-        let res_lo = _mm256_shuffle_epi8(lut_val, lo);
-        let res_hi = _mm256_shuffle_epi8(lut_val, hi);
-
-        accu0 = _mm256_add_epi16(accu0, res_lo);
-        accu1 = _mm256_add_epi16(accu1, _mm256_srli_epi16(res_lo, 8));
-        accu2 = _mm256_add_epi16(accu2, res_hi);
-        accu3 = _mm256_add_epi16(accu3, _mm256_srli_epi16(res_hi, 8));
-
-        i += 32;
-    }
-
-    // Remove the influence of upper 8 bits for accu0 and accu2
-    accu0 = _mm256_sub_epi16(accu0, _mm256_slli_epi16(accu1, 8));
-    accu2 = _mm256_sub_epi16(accu2, _mm256_slli_epi16(accu3, 8));
-
-    // Final assembly for vectors 0-15
-    let dis0 = _mm256_add_epi16(
-        _mm256_permute2f128_si256(accu0, accu1, 0x21),
-        _mm256_blend_epi32(accu0, accu1, 0xF0),
-    );
-    _mm256_storeu_si256(results.as_mut_ptr() as *mut __m256i, dis0);
-
-    // Final assembly for vectors 16-31
-    let dis1 = _mm256_add_epi16(
-        _mm256_permute2f128_si256(accu2, accu3, 0x21),
-        _mm256_blend_epi32(accu2, accu3, 0xF0),
-    );
-    _mm256_storeu_si256(results.as_mut_ptr().add(16) as *mut __m256i, dis1);
 }
 
 /// AVX-512 implementation for accumulate_batch
@@ -1157,67 +1164,69 @@ unsafe fn accumulate_batch_avx512_impl(
     dim: usize,
     results: &mut [u16; FASTSCAN_BATCH_SIZE],
 ) {
-    use std::arch::x86_64::*;
+    unsafe {
+        use std::arch::x86_64::*;
 
-    let code_length = dim << 2; // dim * 4
-    let low_mask = _mm512_set1_epi8(0x0f);
+        let code_length = dim << 2; // dim * 4
+        let low_mask = _mm512_set1_epi8(0x0f);
 
-    let mut accu0 = _mm512_setzero_si512();
-    let mut accu1 = _mm512_setzero_si512();
-    let mut accu2 = _mm512_setzero_si512();
-    let mut accu3 = _mm512_setzero_si512();
+        let mut accu0 = _mm512_setzero_si512();
+        let mut accu1 = _mm512_setzero_si512();
+        let mut accu2 = _mm512_setzero_si512();
+        let mut accu3 = _mm512_setzero_si512();
 
-    // Process 64 bytes per iteration (single AVX-512 load vs. two AVX2 loads)
-    // This is the key performance advantage: half the loop iterations
-    for i in (0..code_length).step_by(64) {
-        // Load 64 bytes of codes and LUT in one operation
-        let c = _mm512_loadu_si512(packed_codes.as_ptr().add(i) as *const __m512i);
-        let lut_val = _mm512_loadu_si512(lut.as_ptr().add(i) as *const __m512i);
+        // Process 64 bytes per iteration (single AVX-512 load vs. two AVX2 loads)
+        // This is the key performance advantage: half the loop iterations
+        for i in (0..code_length).step_by(64) {
+            // Load 64 bytes of codes and LUT in one operation
+            let c = _mm512_loadu_si512(packed_codes.as_ptr().add(i) as *const __m512i);
+            let lut_val = _mm512_loadu_si512(lut.as_ptr().add(i) as *const __m512i);
 
-        // Extract low and high nibbles
-        // lo contains codes for vectors 0-15, hi contains codes for vectors 16-31
-        let lo = _mm512_and_si512(c, low_mask);
-        let hi = _mm512_and_si512(_mm512_srli_epi16(c, 4), low_mask);
+            // Extract low and high nibbles
+            // lo contains codes for vectors 0-15, hi contains codes for vectors 16-31
+            let lo = _mm512_and_si512(c, low_mask);
+            let hi = _mm512_and_si512(_mm512_srli_epi16(c, 4), low_mask);
 
-        // Look up distance values using shuffle
-        let res_lo = _mm512_shuffle_epi8(lut_val, lo);
-        let res_hi = _mm512_shuffle_epi8(lut_val, hi);
+            // Look up distance values using shuffle
+            let res_lo = _mm512_shuffle_epi8(lut_val, lo);
+            let res_hi = _mm512_shuffle_epi8(lut_val, hi);
 
-        // Accumulate in i16 to avoid overflow
-        // Due to data layout (0,8,1,9,2,10,3,11,4,12,5,13,6,14,7,15):
-        // - accu0: vectors 8-15 (lower 8 bits in each u16)
-        // - accu1: vectors 0-7 (upper 8 bits need extraction)
-        // - accu2: vectors 24-31 (lower 8 bits)
-        // - accu3: vectors 16-23 (upper 8 bits need extraction)
-        accu0 = _mm512_add_epi16(accu0, res_lo);
-        accu1 = _mm512_add_epi16(accu1, _mm512_srli_epi16(res_lo, 8));
-        accu2 = _mm512_add_epi16(accu2, res_hi);
-        accu3 = _mm512_add_epi16(accu3, _mm512_srli_epi16(res_hi, 8));
+            // Accumulate in i16 to avoid overflow
+            // Due to data layout (0,8,1,9,2,10,3,11,4,12,5,13,6,14,7,15):
+            // - accu0: vectors 8-15 (lower 8 bits in each u16)
+            // - accu1: vectors 0-7 (upper 8 bits need extraction)
+            // - accu2: vectors 24-31 (lower 8 bits)
+            // - accu3: vectors 16-23 (upper 8 bits need extraction)
+            accu0 = _mm512_add_epi16(accu0, res_lo);
+            accu1 = _mm512_add_epi16(accu1, _mm512_srli_epi16(res_lo, 8));
+            accu2 = _mm512_add_epi16(accu2, res_hi);
+            accu3 = _mm512_add_epi16(accu3, _mm512_srli_epi16(res_hi, 8));
+        }
+
+        // Remove influence of upper 8 bits from accu0 and accu2
+        accu0 = _mm512_sub_epi16(accu0, _mm512_slli_epi16(accu1, 8));
+        accu2 = _mm512_sub_epi16(accu2, _mm512_slli_epi16(accu3, 8));
+
+        // Combine results from 4 lanes into final output
+        // Each accumulator contains 4 x __m128i worth of data that needs to be summed
+        // The result is 32 x u16 values that fit in a single __m512i
+        let ret1 = _mm512_add_epi16(
+            _mm512_mask_blend_epi64(0b11110000, accu0, accu1),
+            _mm512_shuffle_i64x2::<0b01001110>(accu0, accu1),
+        );
+        let ret2 = _mm512_add_epi16(
+            _mm512_mask_blend_epi64(0b11110000, accu2, accu3),
+            _mm512_shuffle_i64x2::<0b01001110>(accu2, accu3),
+        );
+
+        // Final merge: combine ret1 (vecs 0-15) and ret2 (vecs 16-31)
+        let mut ret = _mm512_setzero_si512();
+        ret = _mm512_add_epi16(ret, _mm512_shuffle_i64x2::<0b10001000>(ret1, ret2));
+        ret = _mm512_add_epi16(ret, _mm512_shuffle_i64x2::<0b11011101>(ret1, ret2));
+
+        // Write back the 32 x u16 results
+        _mm512_storeu_si512(results.as_mut_ptr() as *mut __m512i, ret);
     }
-
-    // Remove influence of upper 8 bits from accu0 and accu2
-    accu0 = _mm512_sub_epi16(accu0, _mm512_slli_epi16(accu1, 8));
-    accu2 = _mm512_sub_epi16(accu2, _mm512_slli_epi16(accu3, 8));
-
-    // Combine results from 4 lanes into final output
-    // Each accumulator contains 4 x __m128i worth of data that needs to be summed
-    // The result is 32 x u16 values that fit in a single __m512i
-    let ret1 = _mm512_add_epi16(
-        _mm512_mask_blend_epi64(0b11110000, accu0, accu1),
-        _mm512_shuffle_i64x2::<0b01001110>(accu0, accu1),
-    );
-    let ret2 = _mm512_add_epi16(
-        _mm512_mask_blend_epi64(0b11110000, accu2, accu3),
-        _mm512_shuffle_i64x2::<0b01001110>(accu2, accu3),
-    );
-
-    // Final merge: combine ret1 (vecs 0-15) and ret2 (vecs 16-31)
-    let mut ret = _mm512_setzero_si512();
-    ret = _mm512_add_epi16(ret, _mm512_shuffle_i64x2::<0b10001000>(ret1, ret2));
-    ret = _mm512_add_epi16(ret, _mm512_shuffle_i64x2::<0b11011101>(ret1, ret2));
-
-    // Write back the 32 x u16 results
-    _mm512_storeu_si512(results.as_mut_ptr() as *mut __m512i, ret);
 }
 
 /// High-accuracy version of accumulate_batch using int32 accumulators
@@ -1278,83 +1287,87 @@ unsafe fn accumulate_batch_highacc_avx2_impl(
     dim: usize,
     results: &mut [i32; FASTSCAN_BATCH_SIZE],
 ) {
-    use std::arch::x86_64::*;
+    unsafe {
+        use std::arch::x86_64::*;
 
-    let code_length = dim << 2; // dim * 4
-    let low_mask = _mm256_set1_epi8(0x0f);
+        let code_length = dim << 2; // dim * 4
+        let low_mask = _mm256_set1_epi8(0x0f);
 
-    // Use 32-bit accumulators to prevent overflow
-    let mut accu0_low = [_mm256_setzero_si256(); 2];
-    let mut accu0_high = [_mm256_setzero_si256(); 2];
-    let mut accu1_low = [_mm256_setzero_si256(); 2];
-    let mut accu1_high = [_mm256_setzero_si256(); 2];
+        // Use 32-bit accumulators to prevent overflow
+        let mut accu0_low = [_mm256_setzero_si256(); 2];
+        let mut accu0_high = [_mm256_setzero_si256(); 2];
+        let mut accu1_low = [_mm256_setzero_si256(); 2];
+        let mut accu1_high = [_mm256_setzero_si256(); 2];
 
-    // Process 64 bytes per iteration (matching AVX2 implementation)
-    for i in (0..code_length).step_by(64) {
-        // Process first 32 bytes
-        let c0 = _mm256_loadu_si256(packed_codes.as_ptr().add(i) as *const __m256i);
-        let lut_low0 = _mm256_loadu_si256(lut_low8.as_ptr().add(i) as *const __m256i);
-        let lut_high0 = _mm256_loadu_si256(lut_high8.as_ptr().add(i) as *const __m256i);
+        // Process 64 bytes per iteration (matching AVX2 implementation)
+        for i in (0..code_length).step_by(64) {
+            // Process first 32 bytes
+            let c0 = _mm256_loadu_si256(packed_codes.as_ptr().add(i) as *const __m256i);
+            let lut_low0 = _mm256_loadu_si256(lut_low8.as_ptr().add(i) as *const __m256i);
+            let lut_high0 =
+                _mm256_loadu_si256(lut_high8.as_ptr().add(i) as *const __m256i);
 
-        let lo0 = _mm256_and_si256(c0, low_mask);
-        let hi0 = _mm256_and_si256(_mm256_srli_epi16(c0, 4), low_mask);
+            let lo0 = _mm256_and_si256(c0, low_mask);
+            let hi0 = _mm256_and_si256(_mm256_srli_epi16(c0, 4), low_mask);
 
-        let res_lo0_low = _mm256_shuffle_epi8(lut_low0, lo0);
-        let res_lo0_high = _mm256_shuffle_epi8(lut_high0, lo0);
-        let _res_hi0_low = _mm256_shuffle_epi8(lut_low0, hi0);
-        let _res_hi0_high = _mm256_shuffle_epi8(lut_high0, hi0);
+            let res_lo0_low = _mm256_shuffle_epi8(lut_low0, lo0);
+            let res_lo0_high = _mm256_shuffle_epi8(lut_high0, lo0);
+            let _res_hi0_low = _mm256_shuffle_epi8(lut_low0, hi0);
+            let _res_hi0_high = _mm256_shuffle_epi8(lut_high0, hi0);
 
-        // Accumulate with sign extension to 32-bit
-        let res_lo0_low_32 =
-            _mm256_cvtepi8_epi32(_mm256_extracti128_si256(res_lo0_low, 0));
-        let res_lo0_high_32 =
-            _mm256_cvtepi8_epi32(_mm256_extracti128_si256(res_lo0_high, 0));
+            // Accumulate with sign extension to 32-bit
+            let res_lo0_low_32 =
+                _mm256_cvtepi8_epi32(_mm256_extracti128_si256(res_lo0_low, 0));
+            let res_lo0_high_32 =
+                _mm256_cvtepi8_epi32(_mm256_extracti128_si256(res_lo0_high, 0));
 
-        accu0_low[0] = _mm256_add_epi32(accu0_low[0], res_lo0_low_32);
-        accu0_high[0] = _mm256_add_epi32(accu0_high[0], res_lo0_high_32);
+            accu0_low[0] = _mm256_add_epi32(accu0_low[0], res_lo0_low_32);
+            accu0_high[0] = _mm256_add_epi32(accu0_high[0], res_lo0_high_32);
 
-        // Process second 32 bytes
-        if i + 32 < code_length {
-            let c1 =
-                _mm256_loadu_si256(packed_codes.as_ptr().add(i + 32) as *const __m256i);
-            let lut_low1 =
-                _mm256_loadu_si256(lut_low8.as_ptr().add(i + 32) as *const __m256i);
-            let lut_high1 =
-                _mm256_loadu_si256(lut_high8.as_ptr().add(i + 32) as *const __m256i);
+            // Process second 32 bytes
+            if i + 32 < code_length {
+                let c1 = _mm256_loadu_si256(
+                    packed_codes.as_ptr().add(i + 32) as *const __m256i
+                );
+                let lut_low1 =
+                    _mm256_loadu_si256(lut_low8.as_ptr().add(i + 32) as *const __m256i);
+                let lut_high1 =
+                    _mm256_loadu_si256(lut_high8.as_ptr().add(i + 32) as *const __m256i);
 
-            let lo1 = _mm256_and_si256(c1, low_mask);
-            let hi1 = _mm256_and_si256(_mm256_srli_epi16(c1, 4), low_mask);
+                let lo1 = _mm256_and_si256(c1, low_mask);
+                let hi1 = _mm256_and_si256(_mm256_srli_epi16(c1, 4), low_mask);
 
-            let res_lo1_low = _mm256_shuffle_epi8(lut_low1, lo1);
-            let res_lo1_high = _mm256_shuffle_epi8(lut_high1, lo1);
-            let _res_hi1_low = _mm256_shuffle_epi8(lut_low1, hi1);
-            let _res_hi1_high = _mm256_shuffle_epi8(lut_high1, hi1);
+                let res_lo1_low = _mm256_shuffle_epi8(lut_low1, lo1);
+                let res_lo1_high = _mm256_shuffle_epi8(lut_high1, lo1);
+                let _res_hi1_low = _mm256_shuffle_epi8(lut_low1, hi1);
+                let _res_hi1_high = _mm256_shuffle_epi8(lut_high1, hi1);
 
-            let res_lo1_low_32 =
-                _mm256_cvtepi8_epi32(_mm256_extracti128_si256(res_lo1_low, 0));
-            let res_lo1_high_32 =
-                _mm256_cvtepi8_epi32(_mm256_extracti128_si256(res_lo1_high, 0));
+                let res_lo1_low_32 =
+                    _mm256_cvtepi8_epi32(_mm256_extracti128_si256(res_lo1_low, 0));
+                let res_lo1_high_32 =
+                    _mm256_cvtepi8_epi32(_mm256_extracti128_si256(res_lo1_high, 0));
 
-            accu1_low[0] = _mm256_add_epi32(accu1_low[0], res_lo1_low_32);
-            accu1_high[0] = _mm256_add_epi32(accu1_high[0], res_lo1_high_32);
+                accu1_low[0] = _mm256_add_epi32(accu1_low[0], res_lo1_low_32);
+                accu1_high[0] = _mm256_add_epi32(accu1_high[0], res_lo1_high_32);
+            }
         }
-    }
 
-    // Combine high and low parts: result = low + (high << 8)
-    const SHIFT_AMOUNT: i32 = 8;
-    accu0_high[0] = _mm256_slli_epi32(accu0_high[0], SHIFT_AMOUNT);
-    accu1_high[0] = _mm256_slli_epi32(accu1_high[0], SHIFT_AMOUNT);
+        // Combine high and low parts: result = low + (high << 8)
+        const SHIFT_AMOUNT: i32 = 8;
+        accu0_high[0] = _mm256_slli_epi32(accu0_high[0], SHIFT_AMOUNT);
+        accu1_high[0] = _mm256_slli_epi32(accu1_high[0], SHIFT_AMOUNT);
 
-    let final0 = _mm256_add_epi32(accu0_low[0], accu0_high[0]);
-    let final1 = _mm256_add_epi32(accu1_low[0], accu1_high[0]);
+        let final0 = _mm256_add_epi32(accu0_low[0], accu0_high[0]);
+        let final1 = _mm256_add_epi32(accu1_low[0], accu1_high[0]);
 
-    // Store results
-    _mm256_storeu_si256(results.as_mut_ptr() as *mut __m256i, final0);
-    _mm256_storeu_si256(results.as_mut_ptr().add(8) as *mut __m256i, final1);
+        // Store results
+        _mm256_storeu_si256(results.as_mut_ptr() as *mut __m256i, final0);
+        _mm256_storeu_si256(results.as_mut_ptr().add(8) as *mut __m256i, final1);
 
-    // Zero out remaining entries
-    for result in results.iter_mut().skip(16).take(FASTSCAN_BATCH_SIZE - 16) {
-        *result = 0;
+        // Zero out remaining entries
+        for result in results.iter_mut().skip(16).take(FASTSCAN_BATCH_SIZE - 16) {
+            *result = 0;
+        }
     }
 }
 
@@ -1367,50 +1380,53 @@ unsafe fn accumulate_batch_highacc_avx512_impl(
     dim: usize,
     results: &mut [i32; FASTSCAN_BATCH_SIZE],
 ) {
-    use std::arch::x86_64::*;
+    unsafe {
+        use std::arch::x86_64::*;
 
-    let code_length = dim << 2;
-    let low_mask = _mm512_set1_epi8(0x0f);
+        let code_length = dim << 2;
+        let low_mask = _mm512_set1_epi8(0x0f);
 
-    // 512-bit accumulators for 32-bit values
-    let mut accu_low = [_mm512_setzero_si512(); 2];
-    let mut accu_high = [_mm512_setzero_si512(); 2];
+        // 512-bit accumulators for 32-bit values
+        let mut accu_low = [_mm512_setzero_si512(); 2];
+        let mut accu_high = [_mm512_setzero_si512(); 2];
 
-    // Process 64 bytes per iteration with AVX-512
-    for i in (0..code_length).step_by(64) {
-        let c = _mm512_loadu_si512(packed_codes.as_ptr().add(i) as *const __m512i);
-        let lut_low = _mm512_loadu_si512(lut_low8.as_ptr().add(i) as *const __m512i);
-        let lut_high = _mm512_loadu_si512(lut_high8.as_ptr().add(i) as *const __m512i);
+        // Process 64 bytes per iteration with AVX-512
+        for i in (0..code_length).step_by(64) {
+            let c = _mm512_loadu_si512(packed_codes.as_ptr().add(i) as *const __m512i);
+            let lut_low = _mm512_loadu_si512(lut_low8.as_ptr().add(i) as *const __m512i);
+            let lut_high =
+                _mm512_loadu_si512(lut_high8.as_ptr().add(i) as *const __m512i);
 
-        let lo = _mm512_and_si512(c, low_mask);
-        let hi = _mm512_and_si512(_mm512_srli_epi16(c, 4), low_mask);
+            let lo = _mm512_and_si512(c, low_mask);
+            let hi = _mm512_and_si512(_mm512_srli_epi16(c, 4), low_mask);
 
-        let res_lo_low = _mm512_shuffle_epi8(lut_low, lo);
-        let res_lo_high = _mm512_shuffle_epi8(lut_high, lo);
-        let _res_hi_low = _mm512_shuffle_epi8(lut_low, hi);
-        let _res_hi_high = _mm512_shuffle_epi8(lut_high, hi);
+            let res_lo_low = _mm512_shuffle_epi8(lut_low, lo);
+            let res_lo_high = _mm512_shuffle_epi8(lut_high, lo);
+            let _res_hi_low = _mm512_shuffle_epi8(lut_low, hi);
+            let _res_hi_high = _mm512_shuffle_epi8(lut_high, hi);
 
-        // Convert to 32-bit and accumulate
-        // Use _mm512_extracti32x4_epi32 to extract 128-bit chunks
-        let res_lo_low_128 = _mm512_extracti32x4_epi32::<0>(res_lo_low);
-        let res_lo_high_128 = _mm512_extracti32x4_epi32::<0>(res_lo_high);
-        let res_lo_low_32 = _mm512_cvtepi8_epi32(res_lo_low_128);
-        let res_lo_high_32 = _mm512_cvtepi8_epi32(res_lo_high_128);
+            // Convert to 32-bit and accumulate
+            // Use _mm512_extracti32x4_epi32 to extract 128-bit chunks
+            let res_lo_low_128 = _mm512_extracti32x4_epi32::<0>(res_lo_low);
+            let res_lo_high_128 = _mm512_extracti32x4_epi32::<0>(res_lo_high);
+            let res_lo_low_32 = _mm512_cvtepi8_epi32(res_lo_low_128);
+            let res_lo_high_32 = _mm512_cvtepi8_epi32(res_lo_high_128);
 
-        accu_low[0] = _mm512_add_epi32(accu_low[0], res_lo_low_32);
-        accu_high[0] = _mm512_add_epi32(accu_high[0], res_lo_high_32);
-    }
+            accu_low[0] = _mm512_add_epi32(accu_low[0], res_lo_low_32);
+            accu_high[0] = _mm512_add_epi32(accu_high[0], res_lo_high_32);
+        }
 
-    // Combine high and low: result = low + (high << 8)
-    accu_high[0] = _mm512_slli_epi32(accu_high[0], 8);
-    let final_result = _mm512_add_epi32(accu_low[0], accu_high[0]);
+        // Combine high and low: result = low + (high << 8)
+        accu_high[0] = _mm512_slli_epi32(accu_high[0], 8);
+        let final_result = _mm512_add_epi32(accu_low[0], accu_high[0]);
 
-    // Store all 32 results
-    _mm512_storeu_si512(results.as_mut_ptr() as *mut _, final_result);
+        // Store all 32 results
+        _mm512_storeu_si512(results.as_mut_ptr() as *mut _, final_result);
 
-    // Store second half if needed
-    if FASTSCAN_BATCH_SIZE > 16 {
-        _mm512_storeu_si512(results.as_mut_ptr().add(16) as *mut _, accu_low[1]);
+        // Store second half if needed
+        if FASTSCAN_BATCH_SIZE > 16 {
+            _mm512_storeu_si512(results.as_mut_ptr().add(16) as *mut _, accu_low[1]);
+        }
     }
 }
 
@@ -1777,53 +1793,56 @@ unsafe fn ip_packed_ex2_f32_avx2(
     packed_ex_code: &[u8],
     padded_dim: usize,
 ) -> f32 {
-    use std::arch::x86_64::*;
+    unsafe {
+        use std::arch::x86_64::*;
 
-    let mut sum = _mm256_setzero_ps();
-    let mask = _mm_set1_epi8(0b00000011); // Mask for extracting 2 bits
+        let mut sum = _mm256_setzero_ps();
+        let mask = _mm_set1_epi8(0b00000011); // Mask for extracting 2 bits
 
-    // Process 16 elements at a time (16 * 2 bits = 32 bits = 4 bytes)
-    let mut query_ptr = query.as_ptr();
-    let mut code_ptr = packed_ex_code.as_ptr();
+        // Process 16 elements at a time (16 * 2 bits = 32 bits = 4 bytes)
+        let mut query_ptr = query.as_ptr();
+        let mut code_ptr = packed_ex_code.as_ptr();
 
-    for _ in 0..(padded_dim / 16) {
-        // Load 4 bytes of packed 2-bit codes (16 elements in C++ compatible format)
-        let compact = std::ptr::read_unaligned(code_ptr as *const i32);
+        for _ in 0..(padded_dim / 16) {
+            // Load 4 bytes of packed 2-bit codes (16 elements in C++ compatible format)
+            let compact = std::ptr::read_unaligned(code_ptr as *const i32);
 
-        // C++ format: Extract using shifts and masks
-        // _mm_set_epi32 creates [d, c, b, a] where a is at lowest address
-        // compact >> 0: bits 0-31, compact >> 2: bits 2-33, etc.
-        let code_i32 = _mm_set_epi32(compact >> 6, compact >> 4, compact >> 2, compact);
-        let code_masked = _mm_and_si128(code_i32, mask);
+            // C++ format: Extract using shifts and masks
+            // _mm_set_epi32 creates [d, c, b, a] where a is at lowest address
+            // compact >> 0: bits 0-31, compact >> 2: bits 2-33, etc.
+            let code_i32 =
+                _mm_set_epi32(compact >> 6, compact >> 4, compact >> 2, compact);
+            let code_masked = _mm_and_si128(code_i32, mask);
 
-        // code_masked now contains 16 bytes, each with 2-bit value
-        // Bytes 0-3: codes 0,1,2,3 (from compact >> 0)
-        // Bytes 4-7: codes 4,5,6,7 (from compact >> 2)
-        // Bytes 8-11: codes 8,9,10,11 (from compact >> 4)
-        // Bytes 12-15: codes 12,13,14,15 (from compact >> 6)
+            // code_masked now contains 16 bytes, each with 2-bit value
+            // Bytes 0-3: codes 0,1,2,3 (from compact >> 0)
+            // Bytes 4-7: codes 4,5,6,7 (from compact >> 2)
+            // Bytes 8-11: codes 8,9,10,11 (from compact >> 4)
+            // Bytes 12-15: codes 12,13,14,15 (from compact >> 6)
 
-        // Extract lower 8 bytes (codes 0-7) and convert to f32
-        let code_f32_lo = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(code_masked));
-        let query_lo = _mm256_loadu_ps(query_ptr);
-        sum = _mm256_fmadd_ps(code_f32_lo, query_lo, sum);
+            // Extract lower 8 bytes (codes 0-7) and convert to f32
+            let code_f32_lo = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(code_masked));
+            let query_lo = _mm256_loadu_ps(query_ptr);
+            sum = _mm256_fmadd_ps(code_f32_lo, query_lo, sum);
 
-        // Extract upper 8 bytes (codes 8-15) and convert to f32
-        let code_masked_hi = _mm_unpackhi_epi64(code_masked, code_masked); // Get high 8 bytes
-        let code_f32_hi = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(code_masked_hi));
-        let query_hi = _mm256_loadu_ps(query_ptr.add(8));
-        sum = _mm256_fmadd_ps(code_f32_hi, query_hi, sum);
+            // Extract upper 8 bytes (codes 8-15) and convert to f32
+            let code_masked_hi = _mm_unpackhi_epi64(code_masked, code_masked); // Get high 8 bytes
+            let code_f32_hi = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(code_masked_hi));
+            let query_hi = _mm256_loadu_ps(query_ptr.add(8));
+            sum = _mm256_fmadd_ps(code_f32_hi, query_hi, sum);
 
-        query_ptr = query_ptr.add(16);
-        code_ptr = code_ptr.add(4);
+            query_ptr = query_ptr.add(16);
+            code_ptr = code_ptr.add(4);
+        }
+
+        // Horizontal sum
+        let sum_hi = _mm256_extractf128_ps(sum, 1);
+        let sum_lo = _mm256_castps256_ps128(sum);
+        let sum_128 = _mm_add_ps(sum_lo, sum_hi);
+        let sum_64 = _mm_add_ps(sum_128, _mm_movehl_ps(sum_128, sum_128));
+        let sum_32 = _mm_add_ss(sum_64, _mm_shuffle_ps(sum_64, sum_64, 0x55));
+        _mm_cvtss_f32(sum_32)
     }
-
-    // Horizontal sum
-    let sum_hi = _mm256_extractf128_ps(sum, 1);
-    let sum_lo = _mm256_castps256_ps128(sum);
-    let sum_128 = _mm_add_ps(sum_lo, sum_hi);
-    let sum_64 = _mm_add_ps(sum_128, _mm_movehl_ps(sum_128, sum_128));
-    let sum_32 = _mm_add_ss(sum_64, _mm_shuffle_ps(sum_64, sum_64, 0x55));
-    _mm_cvtss_f32(sum_32)
 }
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
@@ -1834,55 +1853,57 @@ unsafe fn ip_packed_ex6_f32_avx2(
     packed_ex_code: &[u8],
     padded_dim: usize,
 ) -> f32 {
-    use std::arch::x86_64::*;
+    unsafe {
+        use std::arch::x86_64::*;
 
-    let mut sum = _mm256_setzero_ps();
-    const MASK_4: i64 = 0x0f0f0f0f0f0f0f0f;
-    let mask_2 = _mm_set1_epi8(0b00110000);
+        let mut sum = _mm256_setzero_ps();
+        const MASK_4: i64 = 0x0f0f0f0f0f0f0f0f;
+        let mask_2 = _mm_set1_epi8(0b00110000);
 
-    // Process 16 elements at a time (16 * 6 bits = 96 bits = 12 bytes)
-    let mut query_ptr = query.as_ptr();
-    let mut code_ptr = packed_ex_code.as_ptr();
+        // Process 16 elements at a time (16 * 6 bits = 96 bits = 12 bytes)
+        let mut query_ptr = query.as_ptr();
+        let mut code_ptr = packed_ex_code.as_ptr();
 
-    for _ in 0..(padded_dim / 16) {
-        // Load 8 bytes containing lower 4 bits of each code
-        let compact4 = std::ptr::read_unaligned(code_ptr as *const i64);
-        let code4_0 = compact4 & MASK_4;
-        let code4_1 = (compact4 >> 4) & MASK_4;
-        let c4 = _mm_set_epi64x(code4_1, code4_0); // lower 4 bits
+        for _ in 0..(padded_dim / 16) {
+            // Load 8 bytes containing lower 4 bits of each code
+            let compact4 = std::ptr::read_unaligned(code_ptr as *const i64);
+            let code4_0 = compact4 & MASK_4;
+            let code4_1 = (compact4 >> 4) & MASK_4;
+            let c4 = _mm_set_epi64x(code4_1, code4_0); // lower 4 bits
 
-        code_ptr = code_ptr.add(8);
+            code_ptr = code_ptr.add(8);
 
-        // Load 4 bytes containing upper 2 bits of each code
-        let compact2 = std::ptr::read_unaligned(code_ptr as *const i32);
-        let c2 = _mm_set_epi32(compact2 >> 2, compact2, compact2 << 2, compact2 << 4);
-        let c2_masked = _mm_and_si128(c2, mask_2);
+            // Load 4 bytes containing upper 2 bits of each code
+            let compact2 = std::ptr::read_unaligned(code_ptr as *const i32);
+            let c2 = _mm_set_epi32(compact2 >> 2, compact2, compact2 << 2, compact2 << 4);
+            let c2_masked = _mm_and_si128(c2, mask_2);
 
-        // Combine: 6-bit code = (upper 2 bits) | (lower 4 bits)
-        let c6 = _mm_or_si128(c2_masked, c4);
+            // Combine: 6-bit code = (upper 2 bits) | (lower 4 bits)
+            let c6 = _mm_or_si128(c2_masked, c4);
 
-        // Convert first 8 codes to f32
-        let code_f32_lo = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(c6));
-        let query_lo = _mm256_loadu_ps(query_ptr);
-        sum = _mm256_fmadd_ps(code_f32_lo, query_lo, sum);
+            // Convert first 8 codes to f32
+            let code_f32_lo = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(c6));
+            let query_lo = _mm256_loadu_ps(query_ptr);
+            sum = _mm256_fmadd_ps(code_f32_lo, query_lo, sum);
 
-        // Convert next 8 codes to f32
-        let c6_hi = _mm_unpackhi_epi64(c6, c6); // Shift to get high 8 bytes
-        let code_f32_hi = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(c6_hi));
-        let query_hi = _mm256_loadu_ps(query_ptr.add(8));
-        sum = _mm256_fmadd_ps(code_f32_hi, query_hi, sum);
+            // Convert next 8 codes to f32
+            let c6_hi = _mm_unpackhi_epi64(c6, c6); // Shift to get high 8 bytes
+            let code_f32_hi = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(c6_hi));
+            let query_hi = _mm256_loadu_ps(query_ptr.add(8));
+            sum = _mm256_fmadd_ps(code_f32_hi, query_hi, sum);
 
-        query_ptr = query_ptr.add(16);
-        code_ptr = code_ptr.add(4); // Total 12 bytes per 16 elements
+            query_ptr = query_ptr.add(16);
+            code_ptr = code_ptr.add(4); // Total 12 bytes per 16 elements
+        }
+
+        // Horizontal sum
+        let sum_hi = _mm256_extractf128_ps(sum, 1);
+        let sum_lo = _mm256_castps256_ps128(sum);
+        let sum_128 = _mm_add_ps(sum_lo, sum_hi);
+        let sum_64 = _mm_add_ps(sum_128, _mm_movehl_ps(sum_128, sum_128));
+        let sum_32 = _mm_add_ss(sum_64, _mm_shuffle_ps(sum_64, sum_64, 0x55));
+        _mm_cvtss_f32(sum_32)
     }
-
-    // Horizontal sum
-    let sum_hi = _mm256_extractf128_ps(sum, 1);
-    let sum_lo = _mm256_castps256_ps128(sum);
-    let sum_128 = _mm_add_ps(sum_lo, sum_hi);
-    let sum_64 = _mm_add_ps(sum_128, _mm_movehl_ps(sum_128, sum_128));
-    let sum_32 = _mm_add_ss(sum_64, _mm_shuffle_ps(sum_64, sum_64, 0x55));
-    _mm_cvtss_f32(sum_32)
 }
 
 // ----------------------------------------------------------------------------
@@ -2172,41 +2193,43 @@ unsafe fn compute_batch_distances_u16_avx2(
     est_distance: &mut [f32; FASTSCAN_BATCH_SIZE],
     lower_bound: &mut [f32; FASTSCAN_BATCH_SIZE],
 ) {
-    use std::arch::x86_64::*;
+    unsafe {
+        use std::arch::x86_64::*;
 
-    let delta_vec = _mm256_set1_ps(lut_delta);
-    let sum_vl_vec = _mm256_set1_ps(lut_sum_vl);
-    let g_add_vec = _mm256_set1_ps(g_add);
-    let g_error_vec = _mm256_set1_ps(g_error);
-    let k1x_sum_q_vec = _mm256_set1_ps(k1x_sum_q);
+        let delta_vec = _mm256_set1_ps(lut_delta);
+        let sum_vl_vec = _mm256_set1_ps(lut_sum_vl);
+        let g_add_vec = _mm256_set1_ps(g_add);
+        let g_error_vec = _mm256_set1_ps(g_error);
+        let k1x_sum_q_vec = _mm256_set1_ps(k1x_sum_q);
 
-    // Process 32 elements in 4 iterations (8 f32 per iteration)
-    for i in (0..FASTSCAN_BATCH_SIZE).step_by(8) {
-        // Load u16 accumulators and convert to f32
-        let accu_u16 = _mm_loadu_si128(accu_res[i..].as_ptr() as *const __m128i);
-        let accu_i32 = _mm256_cvtepu16_epi32(accu_u16);
-        let accu_f32 = _mm256_cvtepi32_ps(accu_i32);
+        // Process 32 elements in 4 iterations (8 f32 per iteration)
+        for i in (0..FASTSCAN_BATCH_SIZE).step_by(8) {
+            // Load u16 accumulators and convert to f32
+            let accu_u16 = _mm_loadu_si128(accu_res[i..].as_ptr() as *const __m128i);
+            let accu_i32 = _mm256_cvtepu16_epi32(accu_u16);
+            let accu_f32 = _mm256_cvtepi32_ps(accu_i32);
 
-        // ip_x0_qr = delta * accu + sum_vl
-        let ip_vec = _mm256_fmadd_ps(delta_vec, accu_f32, sum_vl_vec);
-        _mm256_storeu_ps(&mut ip_x0_qr[i], ip_vec);
+            // ip_x0_qr = delta * accu + sum_vl
+            let ip_vec = _mm256_fmadd_ps(delta_vec, accu_f32, sum_vl_vec);
+            _mm256_storeu_ps(&mut ip_x0_qr[i], ip_vec);
 
-        // Load batch parameters
-        let f_add_vec = _mm256_loadu_ps(&batch_f_add[i]);
-        let f_rescale_vec = _mm256_loadu_ps(&batch_f_rescale[i]);
-        let f_error_vec = _mm256_loadu_ps(&batch_f_error[i]);
+            // Load batch parameters
+            let f_add_vec = _mm256_loadu_ps(&batch_f_add[i]);
+            let f_rescale_vec = _mm256_loadu_ps(&batch_f_rescale[i]);
+            let f_error_vec = _mm256_loadu_ps(&batch_f_error[i]);
 
-        // est_distance = f_add + g_add + f_rescale * (ip_x0_qr + k1x_sum_q)
-        let ip_plus_k1x = _mm256_add_ps(ip_vec, k1x_sum_q_vec);
-        let rescale_term = _mm256_mul_ps(f_rescale_vec, ip_plus_k1x);
-        let est_vec = _mm256_add_ps(f_add_vec, g_add_vec);
-        let est_vec = _mm256_add_ps(est_vec, rescale_term);
-        _mm256_storeu_ps(&mut est_distance[i], est_vec);
+            // est_distance = f_add + g_add + f_rescale * (ip_x0_qr + k1x_sum_q)
+            let ip_plus_k1x = _mm256_add_ps(ip_vec, k1x_sum_q_vec);
+            let rescale_term = _mm256_mul_ps(f_rescale_vec, ip_plus_k1x);
+            let est_vec = _mm256_add_ps(f_add_vec, g_add_vec);
+            let est_vec = _mm256_add_ps(est_vec, rescale_term);
+            _mm256_storeu_ps(&mut est_distance[i], est_vec);
 
-        // lower_bound = est_distance - f_error * g_error
-        let error_term = _mm256_mul_ps(f_error_vec, g_error_vec);
-        let lower_vec = _mm256_sub_ps(est_vec, error_term);
-        _mm256_storeu_ps(&mut lower_bound[i], lower_vec);
+            // lower_bound = est_distance - f_error * g_error
+            let error_term = _mm256_mul_ps(f_error_vec, g_error_vec);
+            let lower_vec = _mm256_sub_ps(est_vec, error_term);
+            _mm256_storeu_ps(&mut lower_bound[i], lower_vec);
+        }
     }
 }
 
@@ -2227,40 +2250,42 @@ unsafe fn compute_batch_distances_i32_avx2(
     est_distance: &mut [f32; FASTSCAN_BATCH_SIZE],
     lower_bound: &mut [f32; FASTSCAN_BATCH_SIZE],
 ) {
-    use std::arch::x86_64::*;
+    unsafe {
+        use std::arch::x86_64::*;
 
-    let delta_vec = _mm256_set1_ps(lut_delta);
-    let sum_vl_vec = _mm256_set1_ps(lut_sum_vl);
-    let g_add_vec = _mm256_set1_ps(g_add);
-    let g_error_vec = _mm256_set1_ps(g_error);
-    let k1x_sum_q_vec = _mm256_set1_ps(k1x_sum_q);
+        let delta_vec = _mm256_set1_ps(lut_delta);
+        let sum_vl_vec = _mm256_set1_ps(lut_sum_vl);
+        let g_add_vec = _mm256_set1_ps(g_add);
+        let g_error_vec = _mm256_set1_ps(g_error);
+        let k1x_sum_q_vec = _mm256_set1_ps(k1x_sum_q);
 
-    // Process 32 elements in 4 iterations (8 f32 per iteration)
-    for i in (0..FASTSCAN_BATCH_SIZE).step_by(8) {
-        // Load i32 accumulators and convert to f32
-        let accu_i32 = _mm256_loadu_si256(accu_res[i..].as_ptr() as *const __m256i);
-        let accu_f32 = _mm256_cvtepi32_ps(accu_i32);
+        // Process 32 elements in 4 iterations (8 f32 per iteration)
+        for i in (0..FASTSCAN_BATCH_SIZE).step_by(8) {
+            // Load i32 accumulators and convert to f32
+            let accu_i32 = _mm256_loadu_si256(accu_res[i..].as_ptr() as *const __m256i);
+            let accu_f32 = _mm256_cvtepi32_ps(accu_i32);
 
-        // ip_x0_qr = delta * accu + sum_vl
-        let ip_vec = _mm256_fmadd_ps(delta_vec, accu_f32, sum_vl_vec);
-        _mm256_storeu_ps(&mut ip_x0_qr[i], ip_vec);
+            // ip_x0_qr = delta * accu + sum_vl
+            let ip_vec = _mm256_fmadd_ps(delta_vec, accu_f32, sum_vl_vec);
+            _mm256_storeu_ps(&mut ip_x0_qr[i], ip_vec);
 
-        // Load batch parameters
-        let f_add_vec = _mm256_loadu_ps(&batch_f_add[i]);
-        let f_rescale_vec = _mm256_loadu_ps(&batch_f_rescale[i]);
-        let f_error_vec = _mm256_loadu_ps(&batch_f_error[i]);
+            // Load batch parameters
+            let f_add_vec = _mm256_loadu_ps(&batch_f_add[i]);
+            let f_rescale_vec = _mm256_loadu_ps(&batch_f_rescale[i]);
+            let f_error_vec = _mm256_loadu_ps(&batch_f_error[i]);
 
-        // est_distance = f_add + g_add + f_rescale * (ip_x0_qr + k1x_sum_q)
-        let ip_plus_k1x = _mm256_add_ps(ip_vec, k1x_sum_q_vec);
-        let rescale_term = _mm256_mul_ps(f_rescale_vec, ip_plus_k1x);
-        let est_vec = _mm256_add_ps(f_add_vec, g_add_vec);
-        let est_vec = _mm256_add_ps(est_vec, rescale_term);
-        _mm256_storeu_ps(&mut est_distance[i], est_vec);
+            // est_distance = f_add + g_add + f_rescale * (ip_x0_qr + k1x_sum_q)
+            let ip_plus_k1x = _mm256_add_ps(ip_vec, k1x_sum_q_vec);
+            let rescale_term = _mm256_mul_ps(f_rescale_vec, ip_plus_k1x);
+            let est_vec = _mm256_add_ps(f_add_vec, g_add_vec);
+            let est_vec = _mm256_add_ps(est_vec, rescale_term);
+            _mm256_storeu_ps(&mut est_distance[i], est_vec);
 
-        // lower_bound = est_distance - f_error * g_error
-        let error_term = _mm256_mul_ps(f_error_vec, g_error_vec);
-        let lower_vec = _mm256_sub_ps(est_vec, error_term);
-        _mm256_storeu_ps(&mut lower_bound[i], lower_vec);
+            // lower_bound = est_distance - f_error * g_error
+            let error_term = _mm256_mul_ps(f_error_vec, g_error_vec);
+            let lower_vec = _mm256_sub_ps(est_vec, error_term);
+            _mm256_storeu_ps(&mut lower_bound[i], lower_vec);
+        }
     }
 }
 

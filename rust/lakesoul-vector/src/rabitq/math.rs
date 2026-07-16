@@ -152,176 +152,188 @@ mod x86 {
     #[inline]
     #[target_feature(enable = "avx2")]
     pub unsafe fn dot_avx2(a: &[f32], b: &[f32]) -> f32 {
-        let len = a.len();
-        let mut acc = _mm256_setzero_ps();
-        let mut i = 0usize;
-        let chunks = len / 8;
-        let a_ptr = a.as_ptr();
-        let b_ptr = b.as_ptr();
+        unsafe {
+            let len = a.len();
+            let mut acc = _mm256_setzero_ps();
+            let mut i = 0usize;
+            let chunks = len / 8;
+            let a_ptr = a.as_ptr();
+            let b_ptr = b.as_ptr();
 
-        while i < chunks * 8 {
-            let va = _mm256_loadu_ps(a_ptr.add(i));
-            let vb = _mm256_loadu_ps(b_ptr.add(i));
-            acc = _mm256_add_ps(acc, _mm256_mul_ps(va, vb));
-            i += 8;
-        }
+            while i < chunks * 8 {
+                let va = _mm256_loadu_ps(a_ptr.add(i));
+                let vb = _mm256_loadu_ps(b_ptr.add(i));
+                acc = _mm256_add_ps(acc, _mm256_mul_ps(va, vb));
+                i += 8;
+            }
 
-        let mut sum = 0.0f32;
-        if chunks > 0 {
-            let mut buf = [0f32; 8];
-            _mm256_storeu_ps(buf.as_mut_ptr(), acc);
-            sum = buf.iter().copied().sum();
-        }
+            let mut sum = 0.0f32;
+            if chunks > 0 {
+                let mut buf = [0f32; 8];
+                _mm256_storeu_ps(buf.as_mut_ptr(), acc);
+                sum = buf.iter().copied().sum();
+            }
 
-        while i < len {
-            sum += *a_ptr.add(i) * *b_ptr.add(i);
-            i += 1;
+            while i < len {
+                sum += *a_ptr.add(i) * *b_ptr.add(i);
+                i += 1;
+            }
+            sum
         }
-        sum
     }
 
     #[inline]
     #[target_feature(enable = "sse2")]
     pub unsafe fn dot_sse2(a: &[f32], b: &[f32]) -> f32 {
-        let len = a.len();
-        let mut acc = _mm_setzero_ps();
-        let mut i = 0usize;
-        let chunks = len / 4;
-        let a_ptr = a.as_ptr();
-        let b_ptr = b.as_ptr();
+        unsafe {
+            let len = a.len();
+            let mut acc = _mm_setzero_ps();
+            let mut i = 0usize;
+            let chunks = len / 4;
+            let a_ptr = a.as_ptr();
+            let b_ptr = b.as_ptr();
 
-        while i < chunks * 4 {
-            let va = _mm_loadu_ps(a_ptr.add(i));
-            let vb = _mm_loadu_ps(b_ptr.add(i));
-            acc = _mm_add_ps(acc, _mm_mul_ps(va, vb));
-            i += 4;
-        }
+            while i < chunks * 4 {
+                let va = _mm_loadu_ps(a_ptr.add(i));
+                let vb = _mm_loadu_ps(b_ptr.add(i));
+                acc = _mm_add_ps(acc, _mm_mul_ps(va, vb));
+                i += 4;
+            }
 
-        let mut sum = 0.0f32;
-        if chunks > 0 {
-            let mut buf = [0f32; 4];
-            _mm_storeu_ps(buf.as_mut_ptr(), acc);
-            sum = buf.iter().copied().sum();
-        }
+            let mut sum = 0.0f32;
+            if chunks > 0 {
+                let mut buf = [0f32; 4];
+                _mm_storeu_ps(buf.as_mut_ptr(), acc);
+                sum = buf.iter().copied().sum();
+            }
 
-        while i < len {
-            sum += *a_ptr.add(i) * *b_ptr.add(i);
-            i += 1;
+            while i < len {
+                sum += *a_ptr.add(i) * *b_ptr.add(i);
+                i += 1;
+            }
+            sum
         }
-        sum
     }
 
     #[inline]
     #[target_feature(enable = "avx2")]
     pub unsafe fn l2_distance_sqr_avx2(a: &[f32], b: &[f32]) -> f32 {
-        let len = a.len();
-        let mut acc = _mm256_setzero_ps();
-        let mut i = 0usize;
-        let chunks = len / 8;
-        let a_ptr = a.as_ptr();
-        let b_ptr = b.as_ptr();
+        unsafe {
+            let len = a.len();
+            let mut acc = _mm256_setzero_ps();
+            let mut i = 0usize;
+            let chunks = len / 8;
+            let a_ptr = a.as_ptr();
+            let b_ptr = b.as_ptr();
 
-        while i < chunks * 8 {
-            let va = _mm256_loadu_ps(a_ptr.add(i));
-            let vb = _mm256_loadu_ps(b_ptr.add(i));
-            let diff = _mm256_sub_ps(va, vb);
-            acc = _mm256_add_ps(acc, _mm256_mul_ps(diff, diff));
-            i += 8;
-        }
+            while i < chunks * 8 {
+                let va = _mm256_loadu_ps(a_ptr.add(i));
+                let vb = _mm256_loadu_ps(b_ptr.add(i));
+                let diff = _mm256_sub_ps(va, vb);
+                acc = _mm256_add_ps(acc, _mm256_mul_ps(diff, diff));
+                i += 8;
+            }
 
-        let mut sum = 0.0f32;
-        if chunks > 0 {
-            let mut buf = [0f32; 8];
-            _mm256_storeu_ps(buf.as_mut_ptr(), acc);
-            sum = buf.iter().copied().sum();
-        }
+            let mut sum = 0.0f32;
+            if chunks > 0 {
+                let mut buf = [0f32; 8];
+                _mm256_storeu_ps(buf.as_mut_ptr(), acc);
+                sum = buf.iter().copied().sum();
+            }
 
-        while i < len {
-            let diff = *a_ptr.add(i) - *b_ptr.add(i);
-            sum += diff * diff;
-            i += 1;
+            while i < len {
+                let diff = *a_ptr.add(i) - *b_ptr.add(i);
+                sum += diff * diff;
+                i += 1;
+            }
+            sum
         }
-        sum
     }
 
     #[inline]
     #[target_feature(enable = "sse2")]
     pub unsafe fn l2_distance_sqr_sse2(a: &[f32], b: &[f32]) -> f32 {
-        let len = a.len();
-        let mut acc = _mm_setzero_ps();
-        let mut i = 0usize;
-        let chunks = len / 4;
-        let a_ptr = a.as_ptr();
-        let b_ptr = b.as_ptr();
+        unsafe {
+            let len = a.len();
+            let mut acc = _mm_setzero_ps();
+            let mut i = 0usize;
+            let chunks = len / 4;
+            let a_ptr = a.as_ptr();
+            let b_ptr = b.as_ptr();
 
-        while i < chunks * 4 {
-            let va = _mm_loadu_ps(a_ptr.add(i));
-            let vb = _mm_loadu_ps(b_ptr.add(i));
-            let diff = _mm_sub_ps(va, vb);
-            acc = _mm_add_ps(acc, _mm_mul_ps(diff, diff));
-            i += 4;
-        }
+            while i < chunks * 4 {
+                let va = _mm_loadu_ps(a_ptr.add(i));
+                let vb = _mm_loadu_ps(b_ptr.add(i));
+                let diff = _mm_sub_ps(va, vb);
+                acc = _mm_add_ps(acc, _mm_mul_ps(diff, diff));
+                i += 4;
+            }
 
-        let mut sum = 0.0f32;
-        if chunks > 0 {
-            let mut buf = [0f32; 4];
-            _mm_storeu_ps(buf.as_mut_ptr(), acc);
-            sum = buf.iter().copied().sum();
-        }
+            let mut sum = 0.0f32;
+            if chunks > 0 {
+                let mut buf = [0f32; 4];
+                _mm_storeu_ps(buf.as_mut_ptr(), acc);
+                sum = buf.iter().copied().sum();
+            }
 
-        while i < len {
-            let diff = *a_ptr.add(i) - *b_ptr.add(i);
-            sum += diff * diff;
-            i += 1;
+            while i < len {
+                let diff = *a_ptr.add(i) - *b_ptr.add(i);
+                sum += diff * diff;
+                i += 1;
+            }
+            sum
         }
-        sum
     }
 
     #[inline]
     #[target_feature(enable = "avx2")]
     pub unsafe fn subtract_avx2(a: &[f32], b: &[f32], out: &mut [f32]) {
-        let len = out.len();
-        let mut i = 0usize;
-        let chunks = len / 8;
-        let a_ptr = a.as_ptr();
-        let b_ptr = b.as_ptr();
-        let out_ptr = out.as_mut_ptr();
+        unsafe {
+            let len = out.len();
+            let mut i = 0usize;
+            let chunks = len / 8;
+            let a_ptr = a.as_ptr();
+            let b_ptr = b.as_ptr();
+            let out_ptr = out.as_mut_ptr();
 
-        while i < chunks * 8 {
-            let va = _mm256_loadu_ps(a_ptr.add(i));
-            let vb = _mm256_loadu_ps(b_ptr.add(i));
-            let diff = _mm256_sub_ps(va, vb);
-            _mm256_storeu_ps(out_ptr.add(i), diff);
-            i += 8;
-        }
+            while i < chunks * 8 {
+                let va = _mm256_loadu_ps(a_ptr.add(i));
+                let vb = _mm256_loadu_ps(b_ptr.add(i));
+                let diff = _mm256_sub_ps(va, vb);
+                _mm256_storeu_ps(out_ptr.add(i), diff);
+                i += 8;
+            }
 
-        while i < len {
-            *out_ptr.add(i) = *a_ptr.add(i) - *b_ptr.add(i);
-            i += 1;
+            while i < len {
+                *out_ptr.add(i) = *a_ptr.add(i) - *b_ptr.add(i);
+                i += 1;
+            }
         }
     }
 
     #[inline]
     #[target_feature(enable = "sse2")]
     pub unsafe fn subtract_sse2(a: &[f32], b: &[f32], out: &mut [f32]) {
-        let len = out.len();
-        let mut i = 0usize;
-        let chunks = len / 4;
-        let a_ptr = a.as_ptr();
-        let b_ptr = b.as_ptr();
-        let out_ptr = out.as_mut_ptr();
+        unsafe {
+            let len = out.len();
+            let mut i = 0usize;
+            let chunks = len / 4;
+            let a_ptr = a.as_ptr();
+            let b_ptr = b.as_ptr();
+            let out_ptr = out.as_mut_ptr();
 
-        while i < chunks * 4 {
-            let va = _mm_loadu_ps(a_ptr.add(i));
-            let vb = _mm_loadu_ps(b_ptr.add(i));
-            let diff = _mm_sub_ps(va, vb);
-            _mm_storeu_ps(out_ptr.add(i), diff);
-            i += 4;
-        }
+            while i < chunks * 4 {
+                let va = _mm_loadu_ps(a_ptr.add(i));
+                let vb = _mm_loadu_ps(b_ptr.add(i));
+                let diff = _mm_sub_ps(va, vb);
+                _mm_storeu_ps(out_ptr.add(i), diff);
+                i += 4;
+            }
 
-        while i < len {
-            *out_ptr.add(i) = *a_ptr.add(i) - *b_ptr.add(i);
-            i += 1;
+            while i < len {
+                *out_ptr.add(i) = *a_ptr.add(i) - *b_ptr.add(i);
+                i += 1;
+            }
         }
     }
 }

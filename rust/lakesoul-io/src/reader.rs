@@ -252,9 +252,8 @@ impl LakeSoulReader {
         filters: Vec<datafusion_expr::Expr>,
     ) -> Result<Vec<datafusion_expr::Expr>> {
         use crate::config::{
-            OPTION_KEY_VECTOR_SEARCH_COLUMN,
-            OPTION_KEY_VECTOR_SEARCH_NPROBE, OPTION_KEY_VECTOR_SEARCH_QUERY,
-            OPTION_KEY_VECTOR_SEARCH_TOP_K,
+            OPTION_KEY_VECTOR_SEARCH_COLUMN, OPTION_KEY_VECTOR_SEARCH_NPROBE,
+            OPTION_KEY_VECTOR_SEARCH_QUERY, OPTION_KEY_VECTOR_SEARCH_TOP_K,
         };
         use datafusion_common::ScalarValue;
         use datafusion_expr::Expr;

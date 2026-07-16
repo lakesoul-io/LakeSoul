@@ -68,9 +68,9 @@ pub async fn search_matching_shards(
     if let Some((index_prefix, _bucket_id)) = prefixes.first()
         && let Some(ids) =
             search_index_shard(store, index_prefix, query, top_k, nprobe, metric).await?
-        {
-            return Ok(ids);
-        }
+    {
+        return Ok(ids);
+    }
     Ok(Vec::new())
 }
 
@@ -138,12 +138,13 @@ pub fn parse_query_vector(s: &str, expected_dim: Option<usize>) -> IoResult<Vec<
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| rootcause::report!("invalid vector search query: {}", e))?;
     if let Some(dim) = expected_dim
-        && vec.len() != dim {
-            return Err(rootcause::report!(
-                "query vector dimension mismatch: expected {}, got {}",
-                dim,
-                vec.len()
-            ));
-        }
+        && vec.len() != dim
+    {
+        return Err(rootcause::report!(
+            "query vector dimension mismatch: expected {}, got {}",
+            dim,
+            vec.len()
+        ));
+    }
     Ok(vec)
 }
