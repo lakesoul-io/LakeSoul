@@ -802,24 +802,44 @@ pub async fn write_latest(
     let make_payload = || PutPayload::from_bytes(content_bytes.clone().into());
     let result = if let Some(ref tag) = expected_etag {
         let update_opts = object_store::PutOptions {
-            mode: PutMode::Update(object_store::UpdateVersion { e_tag: Some(tag.clone()), version: None }),
+            mode: PutMode::Update(object_store::UpdateVersion {
+                e_tag: Some(tag.clone()),
+                version: None,
+            }),
             ..Default::default()
         };
-        match mstore.store.put_opts(&key, make_payload(), update_opts).await {
+        match mstore
+            .store
+            .put_opts(&key, make_payload(), update_opts)
+            .await
+        {
             Ok(r) => Ok(r),
-            Err(object_store::Error::Precondition { .. }) => Err(RabitqError::VersionConflict),
+            Err(object_store::Error::Precondition { .. }) => {
+                Err(RabitqError::VersionConflict)
+            }
             Err(_) => {
                 // Fallback: store might not support CAS (e.g. LocalFileSystem)
                 let overwrite_opts = object_store::PutOptions {
-                    mode: PutMode::Overwrite, ..Default::default()
+                    mode: PutMode::Overwrite,
+                    ..Default::default()
                 };
-                mstore.store.put_opts(&key, make_payload(), overwrite_opts)
-                    .await.map_err(os_err)
+                mstore
+                    .store
+                    .put_opts(&key, make_payload(), overwrite_opts)
+                    .await
+                    .map_err(os_err)
             }
         }
     } else {
-        let opts = object_store::PutOptions { mode: PutMode::Overwrite, ..Default::default() };
-        mstore.store.put_opts(&key, make_payload(), opts).await.map_err(os_err)
+        let opts = object_store::PutOptions {
+            mode: PutMode::Overwrite,
+            ..Default::default()
+        };
+        mstore
+            .store
+            .put_opts(&key, make_payload(), opts)
+            .await
+            .map_err(os_err)
     };
     result.map(|r| r.e_tag)
 }

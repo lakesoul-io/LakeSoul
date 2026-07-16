@@ -11,8 +11,8 @@ use rootcause::Report;
 mod metadata;
 mod reader;
 mod utils;
-mod writer;
 mod vector;
+mod writer;
 
 type Result<T, E = Report> = std::result::Result<T, E>;
 

@@ -545,8 +545,14 @@ class LakeSoulTable:
             )
 
         if partitions is not None:
+            # Construct partition_desc in the table's partition_by order
             part_cols = self.partition_by
-            desc = ",".join(f"{k}={v}" for k, v in sorted(partitions.items()))
+            missing = [c for c in part_cols if c not in partitions]
+            if missing:
+                raise ValueError(
+                    f"missing partition columns: {missing}"
+                )
+            desc = ",".join(f"{c}={partitions[c]}" for c in part_cols)
             return _build_vector_index_for_one(
                 table=self, column=vec_col, dim=vec_dim,
                 nlist=nlist, total_bits=total_bits, metric=metric,

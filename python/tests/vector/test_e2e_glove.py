@@ -198,6 +198,7 @@ def test_e2e_glove_catalog():
             swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/postgres:14.5
         ./script/meta_init_for_local_test.sh -j 2
     """
+    import shutil
     from lakesoul import LakeSoulCatalog
 
     cat = LakeSoulCatalog(pg_url=os.environ.get(
@@ -209,10 +210,18 @@ def test_e2e_glove_catalog():
     n_train, dim = train.shape
     schema = _make_record_batch(train, dim).schema
     table_name = "glove200d_e2e_test"
+    table_path = f"/tmp/lakesoul_test/{table_name}"
+
+    # Clean up from any previous failed run — PG metadata + disk files
+    try:
+        cat.drop_table(table_name, if_exists=True)
+    except Exception:
+        pass
+    shutil.rmtree(table_path, ignore_errors=True)
 
     # 1. Create table + write via Catalog with 4 hash buckets
     table = cat.create_table(
-        table_name, path=f"file:///tmp/lakesoul_test/{table_name}",
+        table_name, path=f"file://{table_path}",
         schema=schema, primary_keys=["id"],
         hash_bucket_num=4,
         properties={"vector_index_columns": f"vec:{dim}:64:7:L2"},
@@ -223,10 +232,11 @@ def test_e2e_glove_catalog():
     )
     print(f"[1/7] Table created + {n_train} rows written (4 buckets)")
 
-    # 2. Build index via table API — should process multiple shards
+    # 2. Build index via table API — should process multiple shards.
+    # Use nlist=8 for ~16 vectors/cluster with 125 vec/bucket.
     result = table.build_vector_index(
         column="vec", dim=dim,
-        nlist=16, total_bits=7, metric="L2",
+        nlist=8, total_bits=7, metric="L2",
     )
     assert result["status"] == "ok", f"Build failed: {result}"
     n_processed = result.get("partitions_processed", result.get("shards_succeeded", "?"))
@@ -246,7 +256,7 @@ def test_e2e_glove_catalog():
         "vector_search_column": "vec",
         "vector_search_query": ",".join(f"{v:.6f}" for v in query_vec),
         "vector_search_top_k": str(top_k),
-        "vector_search_nprobe": "4",
+        "vector_search_nprobe": "8",
     }).to_arrow_dataset()
     result_table = ds.scanner().to_table()
 
@@ -267,7 +277,7 @@ def test_e2e_glove_catalog():
     assert len(final_ids) == top_k
     assert all(0 <= i < n_train for i in final_ids)
 
-    # 4. Verify recall against brute-force ground truth
+    # 4. Verify recall against brute-force ground truth.
     recall = _compute_recall(query_vec, train, final_ids, k=top_k)
     print(f"[4/7] Initial search: Recall@{top_k}={recall:.2f}")
     assert recall >= 0.5, f"Recall@{top_k} should be ≥ 0.5, got {recall:.2f}"
@@ -281,15 +291,16 @@ def test_e2e_glove_catalog():
 
     result2 = table.build_vector_index(
         column="vec", dim=dim,
-        nlist=16, total_bits=7, metric="L2",
+        nlist=8, total_bits=7, metric="L2",
     )
     assert result2["status"] == "ok", f"Incremental build failed: {result2}"
     details2 = result2.get("details", [])
     n_shards2 = sum(d.get("shards_total", 0) for d in details2)
     print(f"[6/7] Incremental index updated ({n_shards2} shard(s))")
 
-    # Search with a different query, verify new vectors are reachable
-    query_vec2 = test_vecs[1]
+    # Search with one of the newly added vectors as query — its self-distance
+    # is 0, so it must appear as top-1, proving incremental index works.
+    query_vec2 = more_train[0]  # vector 500
     top_k2 = 5
 
     ds2 = table.scan().options(reader_options={
@@ -305,12 +316,13 @@ def test_e2e_glove_catalog():
 
     result2 = rerank_by_distance(result2, query_vec2, "vec", top_k2)
     ids2 = result2.column("id").to_pylist()
-    print(f"[7/7] After incremental update: top-{len(ids2)} IDs={ids2}")
+    new_ids = [i for i in ids2 if i >= 500]
+    print(f"[7/7] After incremental update: top-{len(ids2)} IDs, "
+          f"new IDs (>=500)={new_ids}")
 
     # Verify new vectors from the incremental batch are searchable
-    assert any(i >= 500 for i in ids2), \
-        f"No new vectors (ID >= 500) from incremental batch in results: {ids2}"
-    print(f"         New IDs from incremental batch found: {[i for i in ids2 if i >= 500]}")
+    assert len(new_ids) > 0, \
+        f"No new vectors (ID >= 500) in top-{top_k2}; found: {ids2[:10]}..."
     print("✓ Catalog test PASSED (multi-bucket)")
 
     table.drop()

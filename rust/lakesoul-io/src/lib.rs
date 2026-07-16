@@ -74,7 +74,6 @@ pub mod reader;
 pub mod session;
 pub mod utils;
 pub mod vector;
-pub mod vector_search;
 pub mod writer;
 
 pub mod mem;

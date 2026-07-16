@@ -124,10 +124,12 @@ fn create_object_store(config: &HashMap<String, String>) -> PyResult<Arc<dyn Obj
         "local" | "file" => {
             let prefix = config.get("prefix").map(|s| s.as_str()).unwrap_or("/");
             let store: object_store::local::LocalFileSystem =
-                object_store::local::LocalFileSystem::new_with_prefix(prefix)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                    "failed to create local file store: {}", e
-                )))?;
+                object_store::local::LocalFileSystem::new_with_prefix(prefix).map_err(|e| {
+                    PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+                        "failed to create local file store: {}",
+                        e
+                    ))
+                })?;
             Ok(Arc::new(store))
         }
         other => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(

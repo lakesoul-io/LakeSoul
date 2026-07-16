@@ -252,7 +252,7 @@ impl LakeSoulReader {
         filters: Vec<datafusion_expr::Expr>,
     ) -> Result<Vec<datafusion_expr::Expr>> {
         use crate::config::{
-            OPTION_KEY_VECTOR_SEARCH_COLUMN, OPTION_KEY_VECTOR_SEARCH_INDEX_PREFIX,
+            OPTION_KEY_VECTOR_SEARCH_COLUMN,
             OPTION_KEY_VECTOR_SEARCH_NPROBE, OPTION_KEY_VECTOR_SEARCH_QUERY,
             OPTION_KEY_VECTOR_SEARCH_TOP_K,
         };
@@ -276,7 +276,7 @@ impl LakeSoulReader {
             .option(OPTION_KEY_VECTOR_SEARCH_NPROBE)
             .and_then(|s| s.parse().ok())
             .unwrap_or(64);
-        let query = match crate::vector_search::parse_query_vector(&query_str, None) {
+        let query = match crate::vector::search::parse_query_vector(&query_str, None) {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!("Invalid vector search query: {}", e);
@@ -300,14 +300,26 @@ impl LakeSoulReader {
             .runtime_env()
             .object_store(table_url.object_store())
             .map_err(|e| rootcause::report!("failed to get object store: {}", e))?;
-        let ids = crate::vector_search::search_matching_shards(
-            &store, io_config.files_slice(), &column, table_path,
-            io_config.range_partitions_slice(), &query,
-            top_k, nprobe, lakesoul_vector::Metric::L2,
-        ).await?;
+        let ids = crate::vector::search::search_matching_shards(
+            &store,
+            io_config.files_slice(),
+            &column,
+            table_path,
+            io_config.range_partitions_slice(),
+            &query,
+            top_k,
+            nprobe,
+            lakesoul_vector::Metric::L2,
+        )
+        .await?;
         if ids.is_empty() {
-            tracing::info!("Vector search returned no results");
-            return Ok(filters);
+            tracing::info!("Vector search returned no results — producing empty result");
+            // Inject a filter that matches nothing, so the scan returns zero rows
+            let no_match = Expr::Literal(ScalarValue::Boolean(Some(false)), None);
+            return Ok(filters
+                .into_iter()
+                .chain(std::iter::once(no_match))
+                .collect());
         }
         tracing::info!("Vector search found {} matching IDs", ids.len());
         let pk_expr =

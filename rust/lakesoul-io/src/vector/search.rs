@@ -4,7 +4,6 @@
 
 //! Vector similarity search via rabitq-rs IVF+RaBitQ index.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use lakesoul_vector::{IvfRabitqIndex, ManifestStore, Metric, SearchParams};
@@ -19,7 +18,7 @@ pub async fn search_index_shard(
     query: &[f32],
     top_k: usize,
     nprobe: usize,
-    metric: Metric,
+    _metric: Metric,
 ) -> IoResult<Option<Vec<u64>>> {
     let prefix = index_prefix.trim_end_matches('/');
     let mstore = ManifestStore::new(store.clone(), prefix.to_string());
@@ -66,13 +65,12 @@ pub async fn search_matching_shards(
 ) -> IoResult<Vec<u64>> {
     let prefixes = derive_index_prefixes(file_paths, prefix, vector_column);
     // One reader = one bucket, use the first (only) matching index
-    if let Some((index_prefix, _bucket_id)) = prefixes.first() {
-        if let Some(ids) =
+    if let Some((index_prefix, _bucket_id)) = prefixes.first()
+        && let Some(ids) =
             search_index_shard(store, index_prefix, query, top_k, nprobe, metric).await?
         {
             return Ok(ids);
         }
-    }
     Ok(Vec::new())
 }
 
@@ -90,20 +88,42 @@ pub fn derive_index_prefixes(
     use std::collections::HashSet;
 
     let prefix = table_prefix
-        .trim_start_matches("file://").trim_start_matches("s3://").trim_start_matches("s3a://");
+        .trim_start_matches("file://")
+        .trim_start_matches("s3://")
+        .trim_start_matches("s3a://");
     let mut seen: HashSet<(String, u32)> = HashSet::new();
     let mut result = Vec::new();
     for file_path in file_paths {
-        let Some(bucket_id) = crate::helpers::extract_hash_bucket_id(file_path) else { continue };
+        let Some(bucket_id) = crate::helpers::extract_hash_bucket_id(file_path) else {
+            continue;
+        };
         let clean_path = file_path
-            .trim_start_matches("file://").trim_start_matches("s3://").trim_start_matches("s3a://");
-        let relative = clean_path.strip_prefix(prefix).unwrap_or(clean_path).trim_start_matches('/');
-        let parent_dir = std::path::Path::new(relative).parent().and_then(|p| p.to_str()).unwrap_or("");
-        let partition_desc = if parent_dir.is_empty() { "-5".to_string() } else { parent_dir.to_string() };
+            .trim_start_matches("file://")
+            .trim_start_matches("s3://")
+            .trim_start_matches("s3a://");
+        let relative = clean_path
+            .strip_prefix(prefix)
+            .unwrap_or(clean_path)
+            .trim_start_matches('/');
+        let parent_dir = std::path::Path::new(relative)
+            .parent()
+            .and_then(|p| p.to_str())
+            .unwrap_or("");
+        let partition_desc = if parent_dir.is_empty() {
+            "-5".to_string()
+        } else {
+            parent_dir.to_string()
+        };
         let key = (partition_desc, bucket_id);
         if seen.insert(key.clone()) {
             result.push((
-                format!("{}/_vector_index/{}/{}/{}", prefix.trim_end_matches('/'), vector_column, key.0, key.1),
+                format!(
+                    "{}/_vector_index/{}/{}/{}",
+                    prefix.trim_end_matches('/'),
+                    vector_column,
+                    key.0,
+                    key.1
+                ),
                 bucket_id,
             ));
         }
@@ -117,14 +137,13 @@ pub fn parse_query_vector(s: &str, expected_dim: Option<usize>) -> IoResult<Vec<
         .map(|p| p.trim().parse::<f32>())
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| rootcause::report!("invalid vector search query: {}", e))?;
-    if let Some(dim) = expected_dim {
-        if vec.len() != dim {
+    if let Some(dim) = expected_dim
+        && vec.len() != dim {
             return Err(rootcause::report!(
                 "query vector dimension mismatch: expected {}, got {}",
                 dim,
                 vec.len()
             ));
         }
-    }
     Ok(vec)
 }

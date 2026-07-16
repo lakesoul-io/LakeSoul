@@ -140,10 +140,16 @@ fn build_io_config(
     options: Option<Vec<(String, String)>>,
 ) -> LakeSoulIOConfig {
     // Derive prefix from the first file's parent directory
-    let prefix = file_urls.first().and_then(|u| {
-        let u = u.trim_end_matches('/');
-        std::path::Path::new(u).parent().and_then(|p| p.to_str()).map(|s| s.to_string())
-    }).unwrap_or_default();
+    let prefix = file_urls
+        .first()
+        .and_then(|u| {
+            let u = u.trim_end_matches('/');
+            std::path::Path::new(u)
+                .parent()
+                .and_then(|p| p.to_str())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_default();
 
     let mut builder = LakeSoulIOConfigBuilder::default()
         .with_batch_size(batch_size)

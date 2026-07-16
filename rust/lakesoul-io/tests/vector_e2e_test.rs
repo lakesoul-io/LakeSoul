@@ -20,7 +20,10 @@ use object_store::local::LocalFileSystem;
 use tempfile::TempDir;
 
 const TEST_DATA_DIR: &str = "/tmp/lakesoul_test/glove200d";
-const DATA_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../python/tests/vector/data");
+const DATA_DIR: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../python/tests/vector/data"
+);
 const DIM: usize = 200;
 
 /// Helper: read .fvecs file into Vec<Vec<f32>>
