@@ -21,11 +21,15 @@ create table if not exists table_info
     table_name      text,
     table_path      text,
     table_schema    text,
+    table_schema_arrow_ipc bytea,
+    table_schema_arrow_ipc_json_hash text,
     properties      json,
     partitions      text,
     domain          text default 'public',
     primary key (table_id)
 );
+ALTER TABLE table_info ADD COLUMN IF NOT EXISTS table_schema_arrow_ipc bytea;
+ALTER TABLE table_info ADD COLUMN IF NOT EXISTS table_schema_arrow_ipc_json_hash text;
 CREATE INDEX CONCURRENTLY IF NOT EXISTS table_info_name_index ON table_info (table_namespace, table_name);
 CREATE INDEX CONCURRENTLY IF NOT EXISTS table_info_path_index ON table_info (table_path);
 

@@ -22,6 +22,9 @@ use arrow_schema::{Schema, SchemaRef};
 use datafusion_substrait::substrait::proto::Plan;
 use lakesoul_io::config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_io::helpers;
+use lakesoul_io::helpers::transform::{
+    normalize_record_batch_for_java, normalize_schema_for_java,
+};
 use lakesoul_io::reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
 use lakesoul_io::writer::SyncSendableMutableLakeSoulWriter;
 use prost::Message;
@@ -811,6 +814,37 @@ pub unsafe extern "C" fn start_reader_with_data(
     }
 }
 
+fn export_record_batch_for_java(
+    batch: RecordBatch,
+    array_addr: c_ptrdiff_t,
+    schema_addr: Option<c_ptrdiff_t>,
+) -> std::result::Result<i32, String> {
+    let batch = normalize_record_batch_for_java(batch).map_err(|e| e.to_string())?;
+    let rows = batch.num_rows() as i32;
+    let batch: Arc<StructArray> = Arc::new(batch.into());
+    let schema = schema_addr
+        .map(|_| FFI_ArrowSchema::try_from(batch.data_type()))
+        .transpose()
+        .map_err(|e| e.to_string())?;
+
+    let ffi_array = FFI_ArrowArray::new(&batch.to_data());
+    unsafe {
+        (&ffi_array as *const FFI_ArrowArray)
+            .copy_to(array_addr as *mut FFI_ArrowArray, 1);
+    }
+    std::mem::forget(ffi_array);
+
+    if let (Some(schema_addr), Some(schema)) = (schema_addr, schema) {
+        unsafe {
+            (&schema as *const FFI_ArrowSchema)
+                .copy_to(schema_addr as *mut FFI_ArrowSchema, 1);
+        }
+        std::mem::forget(schema);
+    }
+
+    Ok(rows)
+}
+
 /// Call [`SyncSendableMutableLakeSoulReader::next_rb_callback`] of the [`Reader`]
 ///
 /// # Safety
@@ -843,25 +877,16 @@ pub unsafe extern "C" fn next_record_batch(
                     );
                 }
                 Ok(rb) => {
-                    let rows = rb.num_rows() as i32;
-                    let batch: Arc<StructArray> = Arc::new(rb.into());
-                    let ffi_array = FFI_ArrowArray::new(&batch.to_data());
-                    (&ffi_array as *const FFI_ArrowArray)
-                        .copy_to(array_addr as *mut FFI_ArrowArray, 1);
-                    std::mem::forget(ffi_array);
-                    let schema_result = FFI_ArrowSchema::try_from(batch.data_type());
-                    match schema_result {
-                        Ok(schema) => {
-                            (&schema as *const FFI_ArrowSchema)
-                                .copy_to(schema_addr as *mut FFI_ArrowSchema, 1);
-                            std::mem::forget(schema);
+                    match export_record_batch_for_java(rb, array_addr, Some(schema_addr))
+                    {
+                        Ok(rows) => {
                             call_i32_result_callback(callback, rows, std::ptr::null());
                         }
                         Err(e) => {
                             call_i32_result_callback(
                                 callback,
                                 -1,
-                                CString::new(e.to_string()).unwrap().into_raw(),
+                                CString::new(e).unwrap().into_raw(),
                             );
                         }
                     }
@@ -893,15 +918,10 @@ pub unsafe extern "C" fn next_record_batch_blocked(
             None => (0, std::ptr::null()),
             Some(rb_result) => match rb_result {
                 Err(e) => (-1, CString::new(e.to_string()).unwrap().into_raw()),
-                Ok(rb) => {
-                    let rows = rb.num_rows() as i32;
-                    let batch: Arc<StructArray> = Arc::new(rb.into());
-                    let ffi_array = FFI_ArrowArray::new(&batch.to_data());
-                    (&ffi_array as *const FFI_ArrowArray)
-                        .copy_to(array_addr as *mut FFI_ArrowArray, 1);
-                    std::mem::forget(ffi_array);
-                    (rows, std::ptr::null())
-                }
+                Ok(rb) => match export_record_batch_for_java(rb, array_addr, None) {
+                    Ok(rows) => (rows, std::ptr::null()),
+                    Err(e) => (-1, CString::new(e).unwrap().into_raw()),
+                },
             },
         };
         convert_to_nonnull(CStatus { status, err })
@@ -954,18 +974,9 @@ pub unsafe extern "C" fn next_record_batch_with_data(
                     );
                 }
                 Ok(rb) => {
-                    let rows = rb.num_rows() as i32;
-                    let batch: Arc<StructArray> = Arc::new(rb.into());
-                    let ffi_array = FFI_ArrowArray::new(&batch.to_data());
-                    (&ffi_array as *const FFI_ArrowArray)
-                        .copy_to(array_addr as *mut FFI_ArrowArray, 1);
-                    std::mem::forget(ffi_array);
-                    let schema_result = FFI_ArrowSchema::try_from(batch.data_type());
-                    match schema_result {
-                        Ok(schema) => {
-                            (&schema as *const FFI_ArrowSchema)
-                                .copy_to(schema_addr as *mut FFI_ArrowSchema, 1);
-                            std::mem::forget(schema);
+                    match export_record_batch_for_java(rb, array_addr, Some(schema_addr))
+                    {
+                        Ok(rows) => {
                             call_i32_data_result_callback(
                                 callback,
                                 rows,
@@ -977,7 +988,7 @@ pub unsafe extern "C" fn next_record_batch_with_data(
                             call_i32_data_result_callback(
                                 callback,
                                 -1,
-                                CString::new(e.to_string()).unwrap().into_raw(),
+                                CString::new(e).unwrap().into_raw(),
                                 data,
                             );
                         }
@@ -1008,6 +1019,7 @@ pub unsafe extern "C" fn lakesoul_reader_get_schema(
             .as_ref()
             .get_schema()
             .unwrap_or_else(|| Arc::new(Schema::empty()));
+        let schema = normalize_schema_for_java(schema.as_ref());
         let schema_addr = schema_addr as *mut FFI_ArrowSchema;
         let _ = FFI_ArrowSchema::try_from(schema.as_ref()).map(|s| {
             std::ptr::write_unaligned(schema_addr, s);

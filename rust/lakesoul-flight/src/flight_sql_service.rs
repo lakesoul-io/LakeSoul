@@ -46,7 +46,7 @@ use lakesoul_datafusion::catalog::LakeSoulTableProperty;
 use lakesoul_datafusion::create_lakesoul_session_ctx;
 use lakesoul_datafusion::lakesoul_table::LakeSoulTable;
 use lakesoul_datafusion::lakesoul_table::helpers::case_fold_column_name;
-use lakesoul_datafusion::ser::arrow_java::schema_from_metadata_str;
+use lakesoul_datafusion::ser::arrow_java::schema_from_table_info_metadata;
 use lakesoul_io::helpers::get_batch_memory_size;
 use lakesoul_io::writer::async_writer::FlushOutput;
 use lakesoul_metadata::MetaDataClientRef;
@@ -529,8 +529,13 @@ impl FlightSqlService for FlightSqlServiceImpl {
         if let Some(table_info) = table_info {
             info!("get_flight_info_primary_keys table_info: {:?}", table_info);
             let schema = Arc::new(
-                schema_from_metadata_str(&table_info.table_schema).map_err(|e| {
-                    Status::internal(format!("arrow java schema json parse error: {}", e))
+                schema_from_table_info_metadata(
+                    &table_info.table_schema,
+                    &table_info.table_schema_arrow_ipc,
+                    &table_info.table_schema_arrow_ipc_json_hash,
+                )
+                .map_err(|e| {
+                    Status::internal(format!("arrow schema parse error: {}", e))
                 })?,
             );
             info!("get_flight_info_primary_keys schema: {:?}", schema);

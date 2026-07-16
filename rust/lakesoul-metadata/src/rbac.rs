@@ -87,6 +87,8 @@ mod tests {
             table_name: table_name.to_string(),
             table_path: path.to_string(),
             table_schema: String::new(),
+            table_schema_arrow_ipc: vec![],
+            table_schema_arrow_ipc_json_hash: String::new(),
             table_namespace: "default".to_string(),
             properties: "{}".to_string(),
             partitions: "id;range".to_string(),

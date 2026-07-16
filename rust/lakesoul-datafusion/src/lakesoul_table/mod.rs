@@ -41,7 +41,7 @@ use crate::{
     },
     planner::query_planner::LakeSoulQueryPlanner,
 };
-use lakesoul_common::ser::arrow_java::schema_from_metadata_str;
+use lakesoul_common::ser::arrow_java::schema_from_table_info_metadata;
 
 pub mod helpers;
 
@@ -114,7 +114,11 @@ impl LakeSoulTable {
         client: MetaDataClientRef,
         table_info: TableInfo,
     ) -> Result<Self> {
-        let table_schema = Arc::new(schema_from_metadata_str(&table_info.table_schema)?);
+        let table_schema = Arc::new(schema_from_table_info_metadata(
+            &table_info.table_schema,
+            &table_info.table_schema_arrow_ipc,
+            &table_info.table_schema_arrow_ipc_json_hash,
+        )?);
 
         let table_name = table_info.table_name.clone();
         let properties =

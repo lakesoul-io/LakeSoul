@@ -25,7 +25,7 @@ use crate::catalog::{
 use crate::cli::CoreArgs;
 use crate::create_lakesoul_session_ctx;
 use crate::lakesoul_table::LakeSoulTable;
-use crate::ser::arrow_java::ArrowJavaSchema;
+use crate::ser::arrow_java::schema_to_metadata_parts;
 
 fn test_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
@@ -140,6 +140,10 @@ async fn create_cdc_table(client: MetaDataClientRef, table_name: &str) -> Result
         .with_option(OPTION_KEY_STABLE_SORT, "true")
         .build();
 
+    let target_schema = io_config.target_schema();
+    let (table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash) =
+        schema_to_metadata_parts(target_schema.as_ref());
+
     client
         .create_table(TableInfo {
             table_id: format!("table_{}", uuid::Uuid::new_v4()),
@@ -149,9 +153,9 @@ async fn create_cdc_table(client: MetaDataClientRef, table_name: &str) -> Result
                 std::env::current_dir()?.to_string_lossy(),
                 table_name
             ),
-            table_schema: serde_json::to_string::<ArrowJavaSchema>(
-                &io_config.target_schema().into(),
-            )?,
+            table_schema,
+            table_schema_arrow_ipc,
+            table_schema_arrow_ipc_json_hash,
             table_namespace: "default".to_string(),
             properties: serde_json::to_string(&LakeSoulTableProperty {
                 hash_bucket_num: Some(String::from("4")),

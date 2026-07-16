@@ -11,7 +11,9 @@ version.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 arrow-schema = { workspace = true }
+arrow-ipc = { workspace = true }
 tracing.workspace = true
+md5 = "0.7.0"
 
 [lints]
 workspace = true

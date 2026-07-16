@@ -72,7 +72,9 @@ use crate::lakesoul_table::helpers::{
     create_io_config_builder_from_table_info, listing_partition_info,
     parse_partitions_for_partition_desc, prune_partitions,
 };
-use lakesoul_common::ser::arrow_java::{ArrowJavaSchema, schema_from_metadata_str};
+use lakesoul_common::ser::arrow_java::{
+    schema_from_table_info_metadata, schema_to_metadata_parts,
+};
 
 use super::file_format::LakeSoulMetaDataParquetFormat;
 
@@ -193,8 +195,11 @@ impl LakeSoulTableProvider {
         table_info: Arc<TableInfo>,
         as_sink: bool,
     ) -> Result<Self> {
-        let logical_schema =
-            Arc::new(schema_from_metadata_str(&table_info.table_schema)?);
+        let logical_schema = Arc::new(schema_from_table_info_metadata(
+            &table_info.table_schema,
+            &table_info.table_schema_arrow_ipc,
+            &table_info.table_schema_arrow_ipc_json_hash,
+        )?);
         let (range_partitions, hash_partitions) =
             parse_table_info_partitions(&table_info.partitions)?;
         let (file_schema, scan_schema) =
@@ -303,13 +308,16 @@ impl LakeSoulTableProvider {
         let (file_schema, scan_schema) =
             Self::split_schemas(logical_schema.clone(), &range_partitions)?;
 
+        let (table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash) =
+            schema_to_metadata_parts(logical_schema.as_ref());
+
         let table_info = Arc::new(TableInfo {
             table_id: format!("table_{}", uuid::Uuid::new_v4()),
             table_namespace: cmd.name.schema().unwrap_or("default").to_string(),
             table_name: case_fold_table_name(cmd.name.table()),
-            table_schema: serde_json::to_string::<ArrowJavaSchema>(
-                &logical_schema.clone().into(),
-            )?,
+            table_schema,
+            table_schema_arrow_ipc,
+            table_schema_arrow_ipc_json_hash,
             properties: serde_json::to_string(&LakeSoulTableProperty {
                 hash_bucket_num: if primary_keys.is_empty() {
                     None

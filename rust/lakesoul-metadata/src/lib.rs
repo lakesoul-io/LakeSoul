@@ -341,21 +341,21 @@ async fn get_prepared_statement<'a>(
 
         // Select TableInfo
         DaoType::SelectTableInfoByTableId =>
-            "select table_id, table_name, table_path, table_schema, properties, partitions, table_namespace, domain
-            from table_info
-            where table_id = $1::TEXT",
-        DaoType::SelectTableInfoByTableNameAndNameSpace =>
-            "select table_id, table_name, table_path, table_schema, properties, partitions, table_namespace, domain
-            from table_info
-            where table_name = $1::TEXT and table_namespace=$2::TEXT",
-        DaoType::SelectTableInfoByTablePath =>
-            "select table_id, table_name, table_path, table_schema, properties, partitions, table_namespace, domain
-            from table_info
-            where table_path = $1::TEXT",
-        DaoType::SelectTableInfoByIdAndTablePath =>
-            "select table_id, table_name, table_path, table_schema, properties, partitions, table_namespace, domain
-            from table_info
-            where table_id = $1::TEXT and table_path=$2::TEXT",
+                    "select table_id, table_name, table_path, table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash, properties, partitions, table_namespace, domain
+                    from table_info
+                    where table_id = $1::TEXT",
+                DaoType::SelectTableInfoByTableNameAndNameSpace =>
+                    "select table_id, table_name, table_path, table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash, properties, partitions, table_namespace, domain
+                    from table_info
+                    where table_name = $1::TEXT and table_namespace=$2::TEXT",
+                DaoType::SelectTableInfoByTablePath =>
+                    "select table_id, table_name, table_path, table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash, properties, partitions, table_namespace, domain
+                    from table_info
+                    where table_path = $1::TEXT",
+                DaoType::SelectTableInfoByIdAndTablePath =>
+                    "select table_id, table_name, table_path, table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash, properties, partitions, table_namespace, domain
+                    from table_info
+                    where table_id = $1::TEXT and table_path=$2::TEXT",
 
         // Select PartitionInfo
         DaoType::SelectPartitionVersionByTableIdAndDescAndVersion =>
@@ -442,11 +442,13 @@ async fn get_prepared_statement<'a>(
                 table_name,
                 table_path,
                 table_schema,
+                table_schema_arrow_ipc,
+                table_schema_arrow_ipc_json_hash,
                 properties,
                 partitions,
                 table_namespace,
                 domain)
-            values($1::TEXT, $2::TEXT, $3::TEXT, $4::TEXT, $5::JSON, $6::TEXT, $7::TEXT, $8::TEXT)",
+            values($1::TEXT, $2::TEXT, $3::TEXT, $4::TEXT, $5::BYTEA, $6::TEXT, $7::JSON, $8::TEXT, $9::TEXT, $10::TEXT)",
         DaoType::InsertTableNameId =>
             "insert into table_name_id(
                 table_id,
@@ -994,10 +996,16 @@ pub async fn execute_query(
                     table_name: row.get(1),
                     table_path: row.get(2),
                     table_schema: row.get(3),
-                    properties: row.get::<_, serde_json::Value>(4).to_string(),
-                    partitions: row.get(5),
-                    table_namespace: row.get(6),
-                    domain: row.get(7),
+                    table_schema_arrow_ipc: row
+                        .get::<_, Option<Vec<u8>>>(4)
+                        .unwrap_or_default(),
+                    table_schema_arrow_ipc_json_hash: row
+                        .get::<_, Option<String>>(5)
+                        .unwrap_or_default(),
+                    properties: row.get::<_, serde_json::Value>(6).to_string(),
+                    partitions: row.get(7),
+                    table_namespace: row.get(8),
+                    domain: row.get(9),
                 })
                 .collect();
             entity::JniWrapper {
@@ -1134,6 +1142,12 @@ pub async fn execute_insert(
             let table_info = wrapper.table_info.first().unwrap();
             let properties: serde_json::Value =
                 serde_json::from_str(&table_info.properties)?;
+            let table_schema_arrow_ipc: Option<&[u8]> =
+                (!table_info.table_schema_arrow_ipc.is_empty())
+                    .then_some(table_info.table_schema_arrow_ipc.as_slice());
+            let table_schema_arrow_ipc_json_hash: Option<&str> =
+                (!table_info.table_schema_arrow_ipc_json_hash.is_empty())
+                    .then_some(table_info.table_schema_arrow_ipc_json_hash.as_str());
             client
                 .execute(
                     &statement,
@@ -1142,6 +1156,8 @@ pub async fn execute_insert(
                         &table_info.table_name,
                         &table_info.table_path,
                         &table_info.table_schema,
+                        &table_schema_arrow_ipc,
+                        &table_schema_arrow_ipc_json_hash,
                         &properties,
                         &table_info.partitions,
                         &table_info.table_namespace,
@@ -1561,7 +1577,11 @@ pub async fn execute_update(
                 if idx > 2 {
                     statement += ",";
                 }
-                statement += format!("table_schema = ${}::TEXT ", idx).as_str();
+                statement += format!(
+                    "table_schema = ${}::TEXT, table_schema_arrow_ipc = NULL, table_schema_arrow_ipc_json_hash = NULL ",
+                    idx
+                )
+                .as_str();
                 idx += 1;
                 filter_params.push(params[3].clone());
             }
@@ -1780,6 +1800,8 @@ mod tests {
             table_name: "test_table_name".to_owned(),
             table_path: "test_table_path".to_owned(),
             table_schema: "StructType {}".to_owned(),
+            table_schema_arrow_ipc: vec![],
+            table_schema_arrow_ipc_json_hash: String::new(),
             properties: "{}".to_owned(),
             partitions: "".to_owned(),
             domain: "public".to_owned(),

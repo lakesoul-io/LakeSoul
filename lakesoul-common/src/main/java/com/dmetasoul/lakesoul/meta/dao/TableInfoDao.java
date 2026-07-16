@@ -5,6 +5,7 @@
 package com.dmetasoul.lakesoul.meta.dao;
 
 import com.dmetasoul.lakesoul.meta.DBConnector;
+import com.google.protobuf.ByteString;
 import com.dmetasoul.lakesoul.meta.entity.JniWrapper;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import com.dmetasoul.lakesoul.meta.jnr.NativeMetadataJavaClient;
@@ -14,7 +15,9 @@ import org.apache.commons.lang3.StringUtils;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
+import java.sql.Types;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -141,16 +144,26 @@ public class TableInfoDao {
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(
-                    "insert into table_info(table_id, table_name, table_path, table_schema, properties, partitions, table_namespace, domain) " +
-                            "values (?, ?, ?, ?, ?, ?, ?, ?)");
+                    "insert into table_info(table_id, table_name, table_path, table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash, properties, partitions, table_namespace, domain) " +
+                            "values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
             pstmt.setString(1, tableInfo.getTableId());
             pstmt.setString(2, tableInfo.getTableName());
             pstmt.setString(3, tableInfo.getTablePath());
             pstmt.setString(4, tableInfo.getTableSchema());
-            pstmt.setString(5, tableInfo.getProperties());
-            pstmt.setString(6, tableInfo.getPartitions());
-            pstmt.setString(7, tableInfo.getTableNamespace());
-            pstmt.setString(8, tableInfo.getDomain());
+            if (tableInfo.getTableSchemaArrowIpc().isEmpty()) {
+                pstmt.setNull(5, Types.BINARY);
+            } else {
+                pstmt.setBytes(5, tableInfo.getTableSchemaArrowIpc().toByteArray());
+            }
+            if (tableInfo.getTableSchemaArrowIpcJsonHash().isEmpty()) {
+                pstmt.setNull(6, Types.VARCHAR);
+            } else {
+                pstmt.setString(6, tableInfo.getTableSchemaArrowIpcJsonHash());
+            }
+            pstmt.setString(7, tableInfo.getProperties());
+            pstmt.setString(8, tableInfo.getPartitions());
+            pstmt.setString(9, tableInfo.getTableNamespace());
+            pstmt.setString(10, tableInfo.getDomain());
             pstmt.execute();
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -243,7 +256,7 @@ public class TableInfoDao {
             sb.append(String.format("table_path = '%s', ", tablePath));
         }
         if (StringUtils.isNotBlank(tableSchema)) {
-            sb.append(String.format("table_schema = '%s', ", tableSchema));
+            sb.append(String.format("table_schema = '%s', table_schema_arrow_ipc = NULL, table_schema_arrow_ipc_json_hash = NULL, ", tableSchema));
         }
         sb = new StringBuilder(sb.substring(0, sb.length() - 2));
         sb.append(String.format(" where table_id = '%s'", tableId));
@@ -275,7 +288,7 @@ public class TableInfoDao {
     }
 
     public static TableInfo tableInfoFromResultSet(ResultSet rs) throws SQLException {
-        return TableInfo.newBuilder()
+        TableInfo.Builder builder = TableInfo.newBuilder()
                 .setTableId(rs.getString("table_id"))
                 .setTableName(rs.getString("table_name"))
                 .setTablePath(rs.getString("table_path"))
@@ -283,8 +296,32 @@ public class TableInfoDao {
                 .setProperties(rs.getString("properties"))
                 .setPartitions(rs.getString("partitions"))
                 .setTableNamespace(rs.getString("table_namespace"))
-                .setDomain(rs.getString("domain"))
-                .build();
+                .setDomain(rs.getString("domain"));
+
+        if (hasColumn(rs, "table_schema_arrow_ipc")) {
+            byte[] schemaArrowIpc = rs.getBytes("table_schema_arrow_ipc");
+            if (schemaArrowIpc != null && schemaArrowIpc.length > 0) {
+                builder.setTableSchemaArrowIpc(ByteString.copyFrom(schemaArrowIpc));
+            }
+        }
+        if (hasColumn(rs, "table_schema_arrow_ipc_json_hash")) {
+            String schemaArrowIpcJsonHash = rs.getString("table_schema_arrow_ipc_json_hash");
+            if (schemaArrowIpcJsonHash != null) {
+                builder.setTableSchemaArrowIpcJsonHash(schemaArrowIpcJsonHash);
+            }
+        }
+
+        return builder.build();
+    }
+
+    private static boolean hasColumn(ResultSet rs, String columnName) throws SQLException {
+        ResultSetMetaData metadata = rs.getMetaData();
+        for (int i = 1; i <= metadata.getColumnCount(); i++) {
+            if (columnName.equalsIgnoreCase(metadata.getColumnName(i))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     //  {"fields": [...]}

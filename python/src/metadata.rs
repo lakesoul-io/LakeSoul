@@ -167,7 +167,8 @@ fn build_table_info(
     partitions: String,
     domain: String,
 ) -> PyResult<TableInfo> {
-    let schema_json = lakesoul_common::ser::arrow_java::schema_to_metadata_str(&table_schema.0);
+    let (schema_json, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash) =
+        lakesoul_common::ser::arrow_java::schema_to_metadata_parts(&table_schema.0);
     let table_path = if table_path.is_empty() {
         format!(
             "file://{}/{}/{}",
@@ -186,6 +187,8 @@ fn build_table_info(
         table_name,
         table_path,
         table_schema: schema_json,
+        table_schema_arrow_ipc,
+        table_schema_arrow_ipc_json_hash,
         properties,
         partitions,
         domain,
