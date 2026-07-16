@@ -195,12 +195,34 @@ impl VectorShardIndexBuilder {
 
         let prefix = self.table_prefix();
 
+        // Read the schema from the first parquet file so the reader knows
+        // which columns to project.
+        let schema = self
+            .file_paths
+            .first()
+            .and_then(|p| {
+                let path = p
+                    .trim_start_matches("file://")
+                    .trim_start_matches("s3://")
+                    .trim_start_matches("s3a://");
+                std::fs::File::open(path).ok()
+            })
+            .and_then(|f| {
+                parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(f)
+                    .ok()
+            })
+            .map(|b| b.schema().clone());
+
         let mut config_builder = LakeSoulIOConfigBuilder::new()
             .with_files(self.file_paths.clone())
             .with_prefix(prefix)
             .with_primary_keys(vec![pk_col.clone()])
             .with_batch_size(8192)
             .with_thread_num(1);
+
+        if let Some(s) = schema {
+            config_builder = config_builder.with_schema(s);
+        }
 
         // Apply object store options
         for (k, v) in &self.object_store_options {

@@ -128,7 +128,7 @@ impl IvfRabitqBuilder {
                     _ => crate::rabitq::manifest::load_manifest(mstore).await?,
                 };
             let mut clusters = Vec::with_capacity(cluster_map.len());
-            for (_cid, entry) in cluster_map.iter() {
+            for entry in cluster_map.values() {
                 // Read centroid from the base segment (version 0).
                 let base = entry.base_segment().ok_or_else(|| {
                     RabitqError::InvalidPersistence("cluster has no base segment")

@@ -28,9 +28,7 @@ const DIM: usize = 200;
 
 /// Helper: read .fvecs file into Vec<Vec<f32>>
 fn read_fvecs(path: &str, n: Option<usize>) -> Vec<Vec<f32>> {
-    use std::io::Seek;
     let mut f = std::fs::File::open(path).unwrap();
-    let f_len = f.metadata().unwrap().len() as usize;
     let mut read_one = || -> Option<Vec<f32>> {
         let mut dim_buf = [0u8; 4];
         f.read_exact(&mut dim_buf).ok()?;
@@ -97,7 +95,7 @@ fn compute_recall(predicted: &[u64], ground_truth: &[i32], k: usize) -> f64 {
 #[ignore = "requires prepare_data.py to be run first"]
 async fn test_glove_e2e_build_and_search() {
     let tmp = TempDir::new().unwrap();
-    let store = Arc::new(LocalFileSystem::new_with_prefix(tmp.path()).unwrap());
+    let store = Arc::new(LocalFileSystem::new());
     let index_prefix = "_vector_index/vec/-5/0/";
 
     let config = VectorIndexConfig {
@@ -156,8 +154,8 @@ async fn test_glove_e2e_build_and_search() {
 
 /// Quick test: verify LakeSoulReader can read our parquet schema
 #[tokio::test]
+#[ignore = "requires prepare_data.py to be run first"]
 async fn test_read_parquet_schema() {
-    use futures::StreamExt;
     use lakesoul_io::config::LakeSoulIOConfigBuilder;
     use lakesoul_io::reader::LakeSoulReader;
 
@@ -208,9 +206,10 @@ async fn test_read_parquet_schema() {
 
 /// Quick test: build and verify files on disk
 #[tokio::test]
+#[ignore = "requires prepare_data.py to be run first"]
 async fn test_build_and_list_files() {
     let tmp = TempDir::new().unwrap();
-    let store = Arc::new(LocalFileSystem::new_with_prefix(tmp.path()).unwrap());
+    let store = Arc::new(LocalFileSystem::new());
     let index_prefix = "_vector_index/vec/-5/0/";
 
     let config = VectorIndexConfig {
@@ -267,12 +266,10 @@ async fn test_reader_with_vector_search() {
         OPTION_KEY_VECTOR_SEARCH_TOP_K,
     };
     use lakesoul_io::reader::LakeSoulReader;
-    use std::io::Read;
 
     let tmp = TempDir::new().unwrap();
     let tmp_path = tmp.path().to_str().unwrap().to_string();
     let parquet_path = format!("{}/part-abc_0000.parquet", tmp_path);
-    let index_prefix = "_vector_index/vec/-5/0/";
     let pk_col = "id";
     let vec_col = "vec";
 
@@ -325,7 +322,7 @@ async fn test_reader_with_vector_search() {
     }
 
     // 2. Build vector index
-    let store = Arc::new(LocalFileSystem::new_with_prefix(tmp.path()).unwrap());
+    let store = Arc::new(LocalFileSystem::new());
     let config = VectorIndexConfig {
         column_name: vec_col.to_string(),
         dim,

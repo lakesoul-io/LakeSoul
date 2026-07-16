@@ -196,7 +196,6 @@ pub fn extract_vector_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow_array::types::Float32Type;
     use std::sync::Arc;
 
     fn make_fixed_size_list_batch(
@@ -205,7 +204,6 @@ mod tests {
         dim: usize,
     ) -> RecordBatch {
         let id_array = Arc::new(UInt64Array::from(ids)) as arrow_array::ArrayRef;
-        let n = vectors.len();
 
         // Build FixedSizeList: flatten all values
         let flat: Vec<f32> = vectors.iter().flatten().copied().collect();

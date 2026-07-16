@@ -554,10 +554,7 @@ impl IvfRabitqIndex {
                     );
                 }
 
-                (
-                    indices.to_vec(),
-                    quantized_vectors,
-                )
+                (indices.to_vec(), quantized_vectors)
             })
             .collect();
         println!("Quantization complete");
@@ -1431,9 +1428,10 @@ impl IvfRabitqIndex {
 
                 // Apply filter if provided
                 if let Some(filter_bitmap) = filter
-                    && !filter_bitmap.contains(vector_id as u32) {
-                        continue;
-                    }
+                    && !filter_bitmap.contains(vector_id as u32)
+                {
+                    continue;
+                }
 
                 // Use pre-computed values (vectorized above)
                 let ip_x0_qr = ip_x0_qr_values[i];
@@ -1551,9 +1549,10 @@ impl IvfRabitqIndex {
             .zip(cluster.pending_vectors.iter())
         {
             if let Some(bitmap) = filter
-                && !bitmap.contains(vec_id as u32) {
-                    continue;
-                }
+                && !bitmap.contains(vec_id as u32)
+            {
+                continue;
+            }
 
             // Unpack binary code
             let binary_code = qvec.unpack_binary_code();
@@ -1606,7 +1605,7 @@ impl IvfRabitqIndex {
     }
 
     #[cfg(test)]
-    pub(crate) fn search_with_diagnostics(
+    pub(crate) fn _search_with_diagnostics(
         &self,
         query: &[f32],
         params: SearchParams,
@@ -1618,7 +1617,7 @@ impl IvfRabitqIndex {
     }
 
     #[cfg(test)]
-    pub(crate) fn search_naive(
+    pub(crate) fn _search_naive(
         &self,
         query: &[f32],
         params: SearchParams,
@@ -2712,7 +2711,7 @@ impl ClusterData {
     }
 
     /// Reconstruct all `QuantizedVector` values (batched + pending).
-    fn collect_quantized_vectors(&self, padded_dim: usize) -> Vec<QuantizedVector> {
+    fn _collect_quantized_vectors(&self, padded_dim: usize) -> Vec<QuantizedVector> {
         let ex_bits = self.ex_bits;
         let dim_bytes = padded_dim / 8;
         let mut result = Vec::with_capacity(self.total_vectors());
@@ -3023,7 +3022,7 @@ mod batch_search_tests {
         query_precomp.build_lut(padded_dim);
 
         // Debug LUT parameters
-        if let Some(lut) = query_precomp.lut {
+        if let Some(ref lut) = query_precomp.lut {
             println!("\n=== L2 Test LUT params ===");
             println!(
                 "delta={:.6}, sum_vl_lut={:.6}, k1x_sum_q={:.6}",

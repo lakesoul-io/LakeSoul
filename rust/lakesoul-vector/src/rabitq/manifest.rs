@@ -141,7 +141,7 @@ fn hup_ref(h: &mut Option<&mut Hasher>, data: &[u8]) {
 
 // ---- conversions ----
 
-fn u2u64(v: usize) -> Result<u64, RabitqError> {
+fn _u2u64(v: usize) -> Result<u64, RabitqError> {
     u64::try_from(v).map_err(|_| RabitqError::InvalidPersistence("usize exceeds u64"))
 }
 fn uf64(v: u64) -> Result<usize, RabitqError> {

@@ -524,7 +524,10 @@ fn assign_points_for_update(
             state.counts[cluster] += 1;
             let vector = &data_chunk[row * dim..(row + 1) * dim];
             let sum_offset = cluster * dim;
-            for (sum, &v) in state.sums[sum_offset..sum_offset + dim].iter_mut().zip(vector.iter()) {
+            for (sum, &v) in state.sums[sum_offset..sum_offset + dim]
+                .iter_mut()
+                .zip(vector.iter())
+            {
                 *sum += v;
             }
             insert_candidate(&mut chunk_candidates, (dist, row));
@@ -553,13 +556,13 @@ fn insert_candidate(candidates: &mut Vec<(f32, usize)>, candidate: (f32, usize))
         return;
     }
     if let Some((last_dist, _)) = candidates.last()
-        && candidate.0 > *last_dist {
-            candidates.pop();
-            candidates.push(candidate);
-            candidates.sort_unstable_by(|a, b| {
-                b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal)
-            });
-        }
+        && candidate.0 > *last_dist
+    {
+        candidates.pop();
+        candidates.push(candidate);
+        candidates
+            .sort_unstable_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal));
+    }
 }
 
 fn update_centroids(
