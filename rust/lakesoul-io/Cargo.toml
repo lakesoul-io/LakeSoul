@@ -12,15 +12,15 @@ name = "buf_bench"
 harness = false
 
 [[bench]]
-name = "spill_bench"
-harness = false
-
-[[bench]]
 name = "cache_bench"
 harness = false
 
 [[bench]]
 name = "partial_merge"
+harness = false
+
+[[bench]]
+name = "mor_bench"
 harness = false
 
 [dependencies]

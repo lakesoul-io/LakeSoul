@@ -338,7 +338,6 @@ impl ClusterData {
 
     /// Reconstruct a ClusterData from deserialised segment data (used during
     /// incremental flush to merge old on-disk data with new pending vectors).
-
     pub(crate) fn from_segment(seg: crate::rabitq::manifest::ClusterSegmentData) -> Self {
         let nv = seg.ids.len();
         Self {
@@ -379,7 +378,6 @@ impl ClusterData {
     }
 
     /// Calculate memory usage in bytes
-
     pub(crate) fn memory_usage(&self) -> usize {
         let ex_codes_heap: usize =
             self.ex_codes_packed.iter().map(|v| v.capacity()).sum();
@@ -399,7 +397,6 @@ impl ClusterData {
     /// Implements unified memory layout with:
     /// 1. Contiguous batch storage (eliminates scattered Vec allocations)
     /// 2. Pre-unpacked ex_codes (avoids repeated unpacking)
-
     pub(crate) fn from_quantized_vectors(
         centroid: Vec<f32>,
         ids: Vec<u64>,

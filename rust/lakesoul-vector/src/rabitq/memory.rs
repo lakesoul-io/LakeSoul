@@ -54,7 +54,7 @@ pub unsafe fn enable_huge_pages(ptr: *mut u8, size: usize) -> std::io::Result<()
     // Round size to page boundary
     let aligned_size = round_up_to_multiple_of(size, page_size);
 
-    let result = madvise(ptr as *mut libc::c_void, aligned_size, MADV_HUGEPAGE);
+    let result = unsafe { madvise(ptr as *mut libc::c_void, aligned_size, MADV_HUGEPAGE) };
 
     if result == 0 {
         Ok(())

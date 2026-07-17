@@ -59,7 +59,6 @@ pub(crate) struct SearchDiagnostics {
 /// Ensures data is aligned to cache line boundaries for optimal performance
 /// Lookup table for batch FastScan search
 /// Mimics C++ Lut class from lut.hpp
-
 /// IVF + RaBitQ index implemented in Rust.
 #[derive(Debug, Clone)]
 pub struct IvfRabitqIndex {

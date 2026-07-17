@@ -1,4 +1,5 @@
 //! Shared FastScan + refinement kernel used by IVF and MSTG.
+#![allow(dead_code)]
 
 use crate::rabitq::{Metric, simd};
 

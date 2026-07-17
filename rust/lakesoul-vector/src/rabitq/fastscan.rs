@@ -2,6 +2,7 @@
 //!
 //! This module extracts the core FastScan logic that can be reused across
 //! different index types (IVF, MSTG, etc.).
+#![allow(dead_code)]
 
 use crate::rabitq::QuantizedVector;
 use crate::rabitq::simd;
