@@ -21,7 +21,7 @@ use serde::Deserialize;
 
 use crate::Result;
 use crate::lakesoul_table::helpers::create_io_config_builder_from_table_info;
-use lakesoul_common::ser::arrow_java::ArrowJavaSchema;
+use lakesoul_common::ser::arrow_java::schema_to_metadata_parts;
 
 pub mod lakesoul_catalog;
 //  used in catalog_test, but still say unused_imports, I think it is a bug about rust-lint.
@@ -94,6 +94,10 @@ pub(crate) async fn create_table(
     config: LakeSoulIOConfig,
 ) -> Result<()> {
     debug!("create_table: {:?}", &table_name);
+    let target_schema = config.target_schema();
+    let (table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash) =
+        schema_to_metadata_parts(target_schema.as_ref());
+
     client
         .create_table(TableInfo {
             table_id: format!("table_{}", uuid::Uuid::new_v4()),
@@ -106,9 +110,9 @@ pub(crate) async fn create_table(
                     .ok_or(report!("can not get $TMPDIR"))?,
                 table_name
             ),
-            table_schema: serde_json::to_string::<ArrowJavaSchema>(
-                &config.target_schema().into(),
-            )?,
+            table_schema,
+            table_schema_arrow_ipc,
+            table_schema_arrow_ipc_json_hash,
             table_namespace: "default".to_string(),
             properties: serde_json::to_string(&LakeSoulTableProperty {
                 hash_bucket_num: Some(String::from("4")),

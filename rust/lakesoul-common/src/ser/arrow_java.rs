@@ -17,8 +17,13 @@
 
 use std::{collections::HashMap, sync::Arc};
 
+use arrow_ipc::{
+    convert::try_schema_from_flatbuffer_bytes,
+    writer::{DictionaryTracker, IpcDataGenerator, IpcWriteOptions},
+};
 use arrow_schema::{
-    DataType, Field, FieldRef, Fields, IntervalUnit, Schema, SchemaRef, TimeUnit,
+    ArrowError, DataType, Field, FieldRef, Fields, IntervalUnit, Schema, SchemaRef,
+    TimeUnit,
 };
 use serde::Deserialize;
 
@@ -449,10 +454,19 @@ impl From<&FieldRef> for ArrowJavaField {
             DataType::Union(_, _) => todo!("Union type not supported"),
             DataType::Dictionary(_, _) => todo!("Dictionary type not supported"),
             DataType::RunEndEncoded(_, _) => todo!("RunEndEncoded type not supported"),
-            DataType::BinaryView => todo!("BinaryView type not supported"),
-            DataType::Utf8View => todo!("Utf8View type not supported"),
-            DataType::ListView(_) => todo!("ListView type not supported"),
-            DataType::LargeListView(_) => todo!("LargeListView type not supported"),
+
+            // View types are an Arrow in-memory layout optimization that Spark
+            // and Arrow Java 15 cannot consume as metadata. Keep table_schema
+            // Java-compatible and preserve exact view types in
+            // table_schema_arrow_ipc instead.
+            DataType::BinaryView => (ArrowJavaType::Binary, vec![]),
+            DataType::Utf8View => (ArrowJavaType::Utf8, vec![]),
+            DataType::ListView(field) => {
+                (ArrowJavaType::List, vec![ArrowJavaField::from(field)])
+            }
+            DataType::LargeListView(field) => {
+                (ArrowJavaType::LargeList, vec![ArrowJavaField::from(field)])
+            }
         };
         let nullable = field.is_nullable();
         ArrowJavaField {
@@ -640,6 +654,64 @@ impl From<ArrowJavaSchema> for SchemaRef {
 /// because Arrow Java's `Schema::fromJSON` cannot parse that representation.
 pub fn schema_to_metadata_str(schema: &Schema) -> String {
     serde_json::to_string(&ArrowJavaSchema::from(schema.clone())).unwrap()
+}
+
+/// Stable hash of the Java-compatible schema JSON stored in
+/// `table_info.table_schema`.
+pub fn schema_metadata_json_hash(schema_json: &str) -> String {
+    format!("{:x}", md5::compute(schema_json.as_bytes()))
+}
+
+/// Encode a full-fidelity Rust Arrow schema for
+/// `table_info.table_schema_arrow_ipc`.
+pub fn schema_to_metadata_ipc(schema: &Schema) -> Vec<u8> {
+    let mut dictionary_tracker = DictionaryTracker::new(false);
+    IpcDataGenerator::default()
+        .schema_to_bytes_with_dictionary_tracker(
+            schema,
+            &mut dictionary_tracker,
+            &IpcWriteOptions::default(),
+        )
+        .ipc_message
+}
+
+/// Decode full-fidelity schema IPC from `table_info.table_schema_arrow_ipc`.
+pub fn schema_from_metadata_ipc(bytes: &[u8]) -> Result<Schema, ArrowError> {
+    try_schema_from_flatbuffer_bytes(bytes)
+}
+
+/// Produce all schema metadata fields for a table_info write.
+pub fn schema_to_metadata_parts(schema: &Schema) -> (String, Vec<u8>, String) {
+    let schema_json = schema_to_metadata_str(schema);
+    let schema_ipc = schema_to_metadata_ipc(schema);
+    let schema_ipc_json_hash = schema_metadata_json_hash(&schema_json);
+    (schema_json, schema_ipc, schema_ipc_json_hash)
+}
+
+/// Decode schema from table_info, preferring full-fidelity IPC when it is
+/// present and still matches `table_schema`.
+pub fn schema_from_table_info_metadata(
+    schema_json: &str,
+    schema_ipc: &[u8],
+    schema_ipc_json_hash: &str,
+) -> Result<Schema, serde_json::Error> {
+    if !schema_ipc.is_empty() {
+        let expected_hash = schema_metadata_json_hash(schema_json);
+        if schema_ipc_json_hash == expected_hash {
+            match schema_from_metadata_ipc(schema_ipc) {
+                Ok(schema) => return Ok(schema),
+                Err(e) => tracing::warn!(
+                    "deserialize Arrow IPC schema failed, fallback to table_schema JSON: {e}"
+                ),
+            }
+        } else {
+            tracing::warn!(
+                "table_schema_arrow_ipc hash mismatch, fallback to table_schema JSON"
+            );
+        }
+    }
+
+    schema_from_metadata_str(schema_json)
 }
 
 /// Decode schema JSON from `table_info.table_schema`.
@@ -845,6 +917,49 @@ mod tests {
         assert!(json.contains(r#""name":"largebinary""#));
         assert!(json.contains(r#""name":"largelist""#));
         assert_eq!(parsed, schema);
+    }
+
+    #[test]
+    fn view_types_are_compatible_in_json_and_lossless_in_ipc() {
+        let schema = Schema::new(vec![
+            Field::new("text", DataType::Utf8View, true),
+            Field::new("bytes", DataType::BinaryView, true),
+            Field::new(
+                "items",
+                DataType::ListView(Arc::new(Field::new(
+                    "item",
+                    DataType::Utf8View,
+                    true,
+                ))),
+                true,
+            ),
+        ]);
+
+        let (schema_json, schema_ipc, schema_hash) = schema_to_metadata_parts(&schema);
+        let parsed_json = schema_from_metadata_str(&schema_json).unwrap();
+        let parsed_ipc =
+            schema_from_table_info_metadata(&schema_json, &schema_ipc, &schema_hash)
+                .unwrap();
+        let parsed_stale_ipc =
+            schema_from_table_info_metadata(&schema_json, &schema_ipc, "stale-hash")
+                .unwrap();
+
+        assert!(schema_json.contains(r#""name":"utf8""#));
+        assert!(schema_json.contains(r#""name":"binary""#));
+        assert!(schema_json.contains(r#""name":"list""#));
+        assert!(!schema_json.contains("utf8view"));
+        assert_eq!(
+            parsed_json.field_with_name("text").unwrap().data_type(),
+            &DataType::Utf8
+        );
+        assert_eq!(
+            parsed_stale_ipc
+                .field_with_name("text")
+                .unwrap()
+                .data_type(),
+            &DataType::Utf8
+        );
+        assert_eq!(parsed_ipc, schema);
     }
 
     #[test]

@@ -34,7 +34,7 @@ use object_store::{ObjectMeta, ObjectStore};
 use parquet::arrow::parquet_to_arrow_schema;
 use rootcause::compat::boxed_error::IntoBoxedError;
 use rootcause::{Report, bail, report};
-use vortex_datafusion::VortexFormat;
+use vortex_datafusion::{VortexFormat, VortexTableOptions};
 
 use crate::Result;
 use crate::config::LakeSoulIOConfig;
@@ -103,7 +103,16 @@ impl LakeSoulFormatRegistry {
             ),
             io_config,
         ));
-        let vortex = Arc::new(VortexFormat::new(VortexSession::default()));
+        let opts = {
+            let mut opts = VortexTableOptions::default();
+            opts.projection_pushdown = true;
+            opts.predicate_pushdown = true;
+            opts
+        };
+        let vortex = Arc::new(VortexFormat::new_with_options(
+            VortexSession::default(),
+            opts,
+        ));
 
         Ok(Self { parquet, vortex })
     }

@@ -22,7 +22,7 @@ use crate::catalog::{LakeSoulCatalog, LakeSoulNamespace, LakeSoulTableProperty};
 use crate::cli::CoreArgs;
 use crate::create_lakesoul_session_ctx;
 use crate::lakesoul_table::LakeSoulTable;
-use lakesoul_common::ser::arrow_java::ArrowJavaSchema;
+use lakesoul_common::ser::arrow_java::schema_to_metadata_parts;
 
 fn create_batch_i32(names: Vec<&str>, values: Vec<&[i32]>) -> RecordBatch {
     let values = values
@@ -65,7 +65,7 @@ fn random_tables(
 ) -> Vec<(Namespace, Vec<TableInfo>)> {
     let mut ret = Vec::with_capacity(nps.len());
     let rng = &mut rand::rng();
-    let schema = serde_json::to_string::<ArrowJavaSchema>(&schema.into()).unwrap();
+    let (schema, schema_ipc, schema_hash) = schema_to_metadata_parts(schema.as_ref());
     for np in nps {
         let n = rng.random_range(1usize..10);
         let mut v = Vec::with_capacity(n);
@@ -99,6 +99,8 @@ fn random_tables(
                 table_name,
                 table_path: format!("file://{}", path.clone()),
                 table_schema: schema.clone(),
+                table_schema_arrow_ipc: schema_ipc.clone(),
+                table_schema_arrow_ipc_json_hash: schema_hash.clone(),
                 properties: np.properties.clone(),
                 partitions: ";range,hash".to_string(),
                 domain: np.domain.clone(),

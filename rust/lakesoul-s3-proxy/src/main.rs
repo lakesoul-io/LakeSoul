@@ -736,7 +736,7 @@ mod tests {
     use lakesoul_datafusion::catalog::create_io_config_builder;
     use lakesoul_datafusion::lakesoul_table::LakeSoulTable;
     use lakesoul_datafusion::planner::LakeSoulQueryPlanner;
-    use lakesoul_datafusion::ser::arrow_java::ArrowJavaSchema;
+    use lakesoul_datafusion::ser::arrow_java::schema_to_metadata_parts;
     use lakesoul_io::session::create_session_context_with_planner;
     use lakesoul_metadata::MetaDataClientRef;
     use proto::proto::entity::TableInfo;
@@ -859,12 +859,16 @@ mod tests {
         meta_data_client: MetaDataClientRef,
     ) -> Result<(String, String), anyhow::Error> {
         let schema = record_batch.schema();
+        let (table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash) =
+            schema_to_metadata_parts(schema.as_ref());
         let table_id = format!("table_{}", uuid::Uuid::new_v4());
         let ti = TableInfo {
             table_id: table_id.clone(),
             table_name: table_name.to_string(),
             table_path: path.to_string(),
-            table_schema: serde_json::to_string::<ArrowJavaSchema>(&schema.into())?,
+            table_schema,
+            table_schema_arrow_ipc,
+            table_schema_arrow_ipc_json_hash,
             table_namespace: "default".to_string(),
             properties: "{}".to_string(),
             partitions: ";".to_string(),

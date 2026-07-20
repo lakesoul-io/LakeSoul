@@ -27,8 +27,12 @@ message TableInfo {
   string table_name = 3;
   //  Physical qualified path of table
   string table_path = 4;
-  //  Spark-formatted schema of table
+  //  Spark/Java-compatible schema of table.
   string table_schema = 5;
+  //  Full-fidelity Arrow IPC schema for Rust/Vortex clients.
+  bytes table_schema_arrow_ipc = 10;
+  //  Hash of table_schema used to detect stale table_schema_arrow_ipc values.
+  string table_schema_arrow_ipc_json_hash = 11;
   //  Properties of table, used to tag table with information not tracked by SQL
   string properties = 7;
   //  Partition columns of table. Format of partitions is 'comma_separated_range_column;hash_column'
@@ -96,7 +100,7 @@ enum FileOp {
 
 //  Singleton Data File information
 message DataFileOp {
-  //  Physical qualified non-percent-encoded path of a parquet file, 
+  //  Physical qualified non-percent-encoded path of a parquet file,
   string path = 1;
   //  Specific operation of this file
   FileOp file_op = 2;

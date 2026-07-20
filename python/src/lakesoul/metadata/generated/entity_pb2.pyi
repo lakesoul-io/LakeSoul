@@ -37,12 +37,14 @@ class MetaInfo(_message.Message):
     def __init__(self, list_partition: _Optional[_Iterable[_Union[PartitionInfo, _Mapping]]] = ..., table_info: _Optional[_Union[TableInfo, _Mapping]] = ..., read_partition_info: _Optional[_Iterable[_Union[PartitionInfo, _Mapping]]] = ...) -> None: ...
 
 class TableInfo(_message.Message):
-    __slots__ = ("table_id", "table_namespace", "table_name", "table_path", "table_schema", "properties", "partitions", "domain")
+    __slots__ = ("table_id", "table_namespace", "table_name", "table_path", "table_schema", "table_schema_arrow_ipc", "table_schema_arrow_ipc_json_hash", "properties", "partitions", "domain")
     TABLE_ID_FIELD_NUMBER: _ClassVar[int]
     TABLE_NAMESPACE_FIELD_NUMBER: _ClassVar[int]
     TABLE_NAME_FIELD_NUMBER: _ClassVar[int]
     TABLE_PATH_FIELD_NUMBER: _ClassVar[int]
     TABLE_SCHEMA_FIELD_NUMBER: _ClassVar[int]
+    TABLE_SCHEMA_ARROW_IPC_FIELD_NUMBER: _ClassVar[int]
+    TABLE_SCHEMA_ARROW_IPC_JSON_HASH_FIELD_NUMBER: _ClassVar[int]
     PROPERTIES_FIELD_NUMBER: _ClassVar[int]
     PARTITIONS_FIELD_NUMBER: _ClassVar[int]
     DOMAIN_FIELD_NUMBER: _ClassVar[int]
@@ -51,10 +53,12 @@ class TableInfo(_message.Message):
     table_name: str
     table_path: str
     table_schema: str
+    table_schema_arrow_ipc: bytes
+    table_schema_arrow_ipc_json_hash: str
     properties: str
     partitions: str
     domain: str
-    def __init__(self, table_id: _Optional[str] = ..., table_namespace: _Optional[str] = ..., table_name: _Optional[str] = ..., table_path: _Optional[str] = ..., table_schema: _Optional[str] = ..., properties: _Optional[str] = ..., partitions: _Optional[str] = ..., domain: _Optional[str] = ...) -> None: ...
+    def __init__(self, table_id: _Optional[str] = ..., table_namespace: _Optional[str] = ..., table_name: _Optional[str] = ..., table_path: _Optional[str] = ..., table_schema: _Optional[str] = ..., table_schema_arrow_ipc: _Optional[bytes] = ..., table_schema_arrow_ipc_json_hash: _Optional[str] = ..., properties: _Optional[str] = ..., partitions: _Optional[str] = ..., domain: _Optional[str] = ...) -> None: ...
 
 class PartitionInfo(_message.Message):
     __slots__ = ("table_id", "partition_desc", "version", "commit_op", "timestamp", "snapshot", "expression", "domain")

@@ -27,6 +27,7 @@ use arrow_array::{
 };
 use arrow_schema::{
     DataType, Field, FieldRef, Fields, Schema, SchemaBuilder, SchemaRef, TimeUnit,
+    UnionFields,
 };
 use datafusion_common::DataFusionError;
 use rootcause::{bail, report};
@@ -72,6 +73,138 @@ pub fn uniform_record_batch(batch: RecordBatch) -> Result<RecordBatch> {
         false,
         Arc::new(Default::default()),
     )
+}
+
+pub fn normalize_data_type_for_java(data_type: &DataType) -> DataType {
+    match data_type {
+        DataType::Utf8View => DataType::Utf8,
+        DataType::BinaryView => DataType::Binary,
+        DataType::ListView(field) => DataType::List(normalize_field_for_java(field)),
+        DataType::LargeListView(field) => {
+            DataType::LargeList(normalize_field_for_java(field))
+        }
+        DataType::List(field) => DataType::List(normalize_field_for_java(field)),
+        DataType::LargeList(field) => {
+            DataType::LargeList(normalize_field_for_java(field))
+        }
+        DataType::FixedSizeList(field, size) => {
+            DataType::FixedSizeList(normalize_field_for_java(field), *size)
+        }
+        DataType::Struct(fields) => DataType::Struct(Fields::from(
+            fields
+                .iter()
+                .map(normalize_field_for_java)
+                .collect::<Vec<_>>(),
+        )),
+        DataType::Map(field, sorted) => {
+            DataType::Map(normalize_field_for_java(field), *sorted)
+        }
+        DataType::Dictionary(key, value) => DataType::Dictionary(
+            Box::new(normalize_data_type_for_java(key)),
+            Box::new(normalize_data_type_for_java(value)),
+        ),
+        DataType::Union(fields, mode) => DataType::Union(
+            fields
+                .iter()
+                .map(|(type_id, field)| (type_id, normalize_field_for_java(field)))
+                .collect::<UnionFields>(),
+            *mode,
+        ),
+        DataType::RunEndEncoded(run_ends, values) => DataType::RunEndEncoded(
+            normalize_field_for_java(run_ends),
+            normalize_field_for_java(values),
+        ),
+        _ => data_type.clone(),
+    }
+}
+
+pub fn normalize_field_for_java(field: &FieldRef) -> FieldRef {
+    Arc::new(
+        Field::new(
+            field.name(),
+            normalize_data_type_for_java(field.data_type()),
+            field.is_nullable(),
+        )
+        .with_metadata(field.metadata().clone()),
+    )
+}
+
+pub fn normalize_schema_for_java(schema: &Schema) -> SchemaRef {
+    Arc::new(Schema::new_with_metadata(
+        schema
+            .fields()
+            .iter()
+            .map(normalize_field_for_java)
+            .collect::<Vec<_>>(),
+        schema.metadata().clone(),
+    ))
+}
+
+fn data_type_needs_java_normalization(data_type: &DataType) -> bool {
+    match data_type {
+        DataType::Utf8View
+        | DataType::BinaryView
+        | DataType::ListView(_)
+        | DataType::LargeListView(_) => true,
+        DataType::List(field)
+        | DataType::LargeList(field)
+        | DataType::FixedSizeList(field, _)
+        | DataType::Map(field, _) => {
+            data_type_needs_java_normalization(field.data_type())
+        }
+        DataType::Struct(fields) => fields
+            .iter()
+            .any(|field| data_type_needs_java_normalization(field.data_type())),
+        DataType::Dictionary(key, value) => {
+            data_type_needs_java_normalization(key)
+                || data_type_needs_java_normalization(value)
+        }
+        DataType::Union(fields, _) => fields
+            .iter()
+            .any(|(_, field)| data_type_needs_java_normalization(field.data_type())),
+        DataType::RunEndEncoded(run_ends, values) => {
+            data_type_needs_java_normalization(run_ends.data_type())
+                || data_type_needs_java_normalization(values.data_type())
+        }
+        _ => false,
+    }
+}
+
+pub fn schema_needs_java_normalization(schema: &Schema) -> bool {
+    schema
+        .fields()
+        .iter()
+        .any(|field| data_type_needs_java_normalization(field.data_type()))
+}
+
+pub fn normalize_record_batch_for_java(batch: RecordBatch) -> Result<RecordBatch> {
+    if !schema_needs_java_normalization(batch.schema().as_ref()) {
+        return Ok(batch);
+    }
+
+    let num_rows = batch.num_rows();
+    let normalized_schema = normalize_schema_for_java(batch.schema().as_ref());
+    let columns = batch
+        .columns()
+        .iter()
+        .zip(normalized_schema.fields().iter())
+        .map(|(array, field)| {
+            transform_array(
+                field.name().to_string(),
+                field.data_type().clone(),
+                array.clone(),
+                num_rows,
+                false,
+                Arc::new(HashMap::new()),
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(RecordBatch::try_new_with_options(
+        normalized_schema,
+        columns,
+        &RecordBatchOptions::new().with_row_count(Some(num_rows)),
+    )?)
 }
 
 pub fn transform_schema(
@@ -500,7 +633,8 @@ pub fn make_default_array(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow_array::StringViewArray;
+    use arrow_array::builder::{ListViewBuilder, StringViewBuilder};
+    use arrow_array::{ListArray, StringViewArray};
 
     #[test]
     fn transform_record_batch_materializes_utf8_view_as_utf8() {
@@ -538,5 +672,84 @@ mod tests {
         assert_eq!(values.value(1), "bbb");
         assert!(values.is_null(2));
         assert_eq!(values.value(3), "long string over twelve bytes");
+    }
+
+    #[test]
+    fn normalize_record_batch_for_java_materializes_nested_view_types() {
+        let top_text: ArrayRef = Arc::new(StringViewArray::from(vec![
+            Some("abc"),
+            Some("database-system"),
+        ]));
+
+        let nested_text: ArrayRef = Arc::new(StringViewArray::from(vec![
+            Some("nested"),
+            Some("long nested string"),
+        ]));
+        let nested_fields =
+            Fields::from(vec![Arc::new(Field::new("name", DataType::Utf8View, true))]);
+        let nested_struct: ArrayRef = Arc::new(StructArray::new(
+            nested_fields.clone(),
+            vec![nested_text],
+            None,
+        ));
+
+        let item_field = Arc::new(Field::new("item", DataType::Utf8View, true));
+        let mut list_builder =
+            ListViewBuilder::new(StringViewBuilder::new()).with_field(item_field.clone());
+        list_builder.append_value([Some("x"), Some("long list value")]);
+        list_builder.append_null();
+        let list_view: ArrayRef = Arc::new(list_builder.finish());
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("top_text", DataType::Utf8View, true),
+            Field::new("nested", DataType::Struct(nested_fields), true),
+            Field::new("items", DataType::ListView(item_field), true),
+        ]));
+        let batch =
+            RecordBatch::try_new(schema, vec![top_text, nested_struct, list_view])
+                .unwrap();
+
+        let normalized = normalize_record_batch_for_java(batch).unwrap();
+
+        assert_eq!(normalized.schema().field(0).data_type(), &DataType::Utf8);
+        assert_eq!(normalized.column(0).data_type(), &DataType::Utf8);
+        let top_values = normalized
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(top_values.value_offsets(), &[0, 3, 18]);
+        assert_eq!(top_values.value_data(), b"abcdatabase-system");
+
+        match normalized.schema().field(1).data_type() {
+            DataType::Struct(fields) => {
+                assert_eq!(fields[0].data_type(), &DataType::Utf8);
+            }
+            other => panic!("expected struct, got {other:?}"),
+        }
+        let struct_values = normalized
+            .column(1)
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .unwrap();
+        assert_eq!(struct_values.column(0).data_type(), &DataType::Utf8);
+
+        match normalized.schema().field(2).data_type() {
+            DataType::List(field) => {
+                assert_eq!(field.data_type(), &DataType::Utf8);
+            }
+            other => panic!("expected list, got {other:?}"),
+        }
+        let list_values = normalized
+            .column(2)
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .unwrap();
+        assert_eq!(
+            list_values.data_type(),
+            normalized.schema().field(2).data_type()
+        );
+        assert!(list_values.is_null(1));
+        assert_eq!(list_values.value(0).data_type(), &DataType::Utf8);
     }
 }
