@@ -12,7 +12,8 @@ use parquet::{
 use vortex::{
     VortexSessionDefault,
     array::{arrow::ArrowSessionExt, stream::ArrayStreamAdapter},
-    file::WriteOptionsSessionExt,
+    compressor::BtrBlocksCompressorBuilder,
+    file::{WriteOptionsSessionExt, WriteStrategyBuilder},
     io::session::RuntimeSessionExt,
     session::VortexSession,
 };
@@ -94,6 +95,40 @@ fn vortex_write_tokio(schema: SchemaRef, batches: &[RecordBatch]) {
     });
 }
 
+fn vortex_compact_write_tokio(schema: SchemaRef, batches: &[RecordBatch]) {
+    let mut buf = Vec::new();
+    let batches = batches.to_vec();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(16)
+        .build()
+        .unwrap();
+    rt.block_on(async move {
+        let session = VortexSession::default().with_tokio();
+        let dtype = session.arrow().from_arrow_schema(schema.as_ref()).unwrap();
+        let import_schema = schema;
+        let arrow_session = session.clone();
+        let stream =
+            futures::stream::iter(batches.into_iter().map(move |record_batch| {
+                arrow_session
+                    .arrow()
+                    .from_arrow_record_batch(record_batch, &import_schema)
+            }));
+
+        let write_options = session.write_options().with_strategy(
+            WriteStrategyBuilder::default()
+                .with_btrblocks_builder(
+                    BtrBlocksCompressorBuilder::default().with_compact(),
+                )
+                .build(),
+        );
+        write_options
+            .write(&mut buf, ArrayStreamAdapter::new(dtype, stream))
+            .await
+            .unwrap();
+    });
+}
+
 fn bench_format(c: &mut Criterion) {
     let (schema, batches) = common::create_q20_like_batches(1000, 10_000);
     let mut group = c.benchmark_group("Format_Write_Comparison");
@@ -106,6 +141,10 @@ fn bench_format(c: &mut Criterion) {
     // vortex
     group.bench_function("vortex-write-tokio", |b| {
         b.iter(|| vortex_write_tokio(schema.clone(), &batches))
+    });
+    // vortex-compact
+    group.bench_function("vortex-compact-write-tokio", |b| {
+        b.iter(|| vortex_compact_write_tokio(schema.clone(), &batches))
     });
 
     group.finish();
