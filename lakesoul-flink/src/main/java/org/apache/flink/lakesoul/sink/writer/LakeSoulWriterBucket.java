@@ -149,7 +149,7 @@ public class LakeSoulWriterBucket {
     List<LakeSoulMultiTableSinkCommittable> prepareCommit(String dmlType, String sourcePartitionInfo)
             throws IOException {
         // we always close part file and do not keep in-progress file
-        // since the native parquet writer doesn't support resume
+        // since the native LakeSoul writer doesn't support resume
         if (inProgressPartWriter != null) {
             LOG.info(
                     "Closing in-progress part file for bucket id={} on checkpoint.", getBucketId());
@@ -158,7 +158,7 @@ public class LakeSoulWriterBucket {
 
         List<LakeSoulMultiTableSinkCommittable> committables = new ArrayList<>();
         long time = pendingFilesMap.isEmpty() ? Long.MIN_VALUE :
-                ((NativeParquetWriter.NativeWriterPendingFileRecoverable) pendingFilesMap.values().stream().findFirst()
+                ((NativeLakeSoulWriter.NativeWriterPendingFileRecoverable) pendingFilesMap.values().stream().findFirst()
                         .get().get(0)).creationTime;
 
         if (dmlType.equals(LakeSoulSinkOptions.DELETE)) {
@@ -239,7 +239,7 @@ public class LakeSoulWriterBucket {
     private void closePartFile() throws IOException {
         if (inProgressPartWriter != null) {
             Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFileRecoverableMap =
-                    ((NativeParquetWriter) inProgressPartWriter).closeForCommitWithRecoverableMap();
+                    ((NativeLakeSoulWriter) inProgressPartWriter).closeForCommitWithRecoverableMap();
             for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry : pendingFileRecoverableMap.entrySet()) {
                 pendingFilesMap.computeIfAbsent(entry.getKey(), bucketId -> new ArrayList())
                         .addAll(entry.getValue());

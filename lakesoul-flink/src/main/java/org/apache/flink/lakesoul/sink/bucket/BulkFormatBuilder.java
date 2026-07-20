@@ -100,14 +100,14 @@ public abstract class BulkFormatBuilder<IN, OUT, T extends BulkFormatBuilder<IN,
     public SimpleVersionedSerializer<LakeSoulWriterBucketState> getWriterStateSerializer()
             throws IOException {
         return new LakeSoulWriterBucketStateSerializer(
-                NativeParquetWriter.NativePendingFileRecoverableSerializer.INSTANCE);
+                NativeLakeSoulWriter.NativePendingFileRecoverableSerializer.INSTANCE);
     }
 
     @Override
     public SimpleVersionedSerializer<LakeSoulMultiTableSinkCommittable> getCommittableSerializer()
             throws IOException {
         return new LakeSoulSinkCommittableSerializer(
-                NativeParquetWriter.NativePendingFileRecoverableSerializer.INSTANCE);
+                NativeLakeSoulWriter.NativePendingFileRecoverableSerializer.INSTANCE);
     }
 
     @Override

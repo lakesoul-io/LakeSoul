@@ -52,7 +52,7 @@ public class NativeOptions {
     public static final ConfigOption<String> PHYSICAL_FORMAT =
             key("file_format")
                     .stringType()
-                    .defaultValue("parquet")
+                    .defaultValue("vortex-compact")
                     .withDescription("Option to set the physical file format for native writer");
 
     public static final ConfigOption<String> FILE_FILTER_PUSHDOWN =

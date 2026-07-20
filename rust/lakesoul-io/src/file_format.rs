@@ -44,16 +44,26 @@ pub(crate) mod vortex;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum PhysicalFormat {
-    #[default]
     Parquet,
     Vortex,
+    /// A variant of `Vortex` (use zstd/pcodec)
+    #[default]
+    VortexCompact,
 }
 
 impl PhysicalFormat {
-    pub fn extension(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Self::Parquet => "parquet",
             Self::Vortex => "vortex",
+            Self::VortexCompact => "vortex-compact",
+        }
+    }
+
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Parquet => "parquet",
+            Self::Vortex | Self::VortexCompact => "vortex",
         }
     }
 
@@ -70,7 +80,7 @@ impl PhysicalFormat {
 
 impl Display for PhysicalFormat {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.extension())
+        f.write_str(self.name())
     }
 }
 
@@ -81,6 +91,7 @@ impl FromStr for PhysicalFormat {
         match s.to_ascii_lowercase().as_str() {
             "parquet" => Ok(Self::Parquet),
             "vortex" => Ok(Self::Vortex),
+            "vortex-compact" => Ok(Self::VortexCompact),
             other => bail!("Unsupported physical format: {other}"),
         }
     }
@@ -109,6 +120,7 @@ impl LakeSoulFormatRegistry {
             opts.predicate_pushdown = true;
             opts
         };
+
         let vortex = Arc::new(VortexFormat::new_with_options(
             VortexSession::default(),
             opts,
@@ -124,7 +136,7 @@ impl LakeSoulFormatRegistry {
     pub fn file_format(&self, physical_format: PhysicalFormat) -> Arc<dyn FileFormat> {
         match physical_format {
             PhysicalFormat::Parquet => self.parquet.clone(),
-            PhysicalFormat::Vortex => self.vortex.clone(),
+            PhysicalFormat::Vortex | PhysicalFormat::VortexCompact => self.vortex.clone(),
         }
     }
 
@@ -135,6 +147,7 @@ impl LakeSoulFormatRegistry {
         match physical_format {
             PhysicalFormat::Parquet => FileCompressionType::ZSTD,
             PhysicalFormat::Vortex => FileCompressionType::UNCOMPRESSED,
+            PhysicalFormat::VortexCompact => FileCompressionType::ZSTD,
         }
     }
 }

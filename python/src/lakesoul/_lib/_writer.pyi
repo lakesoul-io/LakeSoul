@@ -22,7 +22,7 @@ class _NativeWriter:
         *,
         path: str,
         schema: pyarrow.Schema,
-        format: str = "parquet",
+        format: str = "vortex-compact",
         primary_keys: list[str] = ...,
         partition_by: list[str] = ...,
         hash_bucket_num: int = 1,

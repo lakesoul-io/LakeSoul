@@ -24,7 +24,7 @@ class IOConfig:
 
     path: str | os.PathLike[str]
     schema: pa.Schema
-    format: Literal["parquet", "vortex"] = "parquet"
+    format: Literal["parquet", "vortex", "vortex-compact"] = "vortex-compact"
     primary_keys: Sequence[str] = ()
     partition_by: Sequence[str] = ()
     hash_bucket_num: int = 1
@@ -261,8 +261,8 @@ def _validate_config(config: IOConfig) -> None:
     if not isinstance(config.format, str):
         raise TypeError("format must be a string")
     format_name = config.format.lower()
-    if format_name not in {"parquet", "vortex"}:
-        raise ValueError("format must be 'parquet' or 'vortex'")
+    if format_name not in {"parquet", "vortex", "vortex-compact"}:
+        raise ValueError("format must be 'parquet', 'vortex', or 'vortex-compact'")
 
     primary_keys = _validate_columns("primary_keys", config.primary_keys)
     partition_by = _validate_columns("partition_by", config.partition_by)

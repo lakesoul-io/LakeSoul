@@ -69,7 +69,7 @@ impl NativeWriter {
         *,
         path,
         schema,
-        format = "parquet",
+        format = "vortex-compact",
         primary_keys = Vec::new(),
         partition_by = Vec::new(),
         hash_bucket_num = 1,
