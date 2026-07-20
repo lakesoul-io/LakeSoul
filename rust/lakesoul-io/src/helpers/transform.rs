@@ -719,7 +719,7 @@ mod tests {
             .downcast_ref::<StringArray>()
             .unwrap();
         assert_eq!(top_values.value_offsets(), &[0, 3, 18]);
-        assert_eq!(top_values.value_data().as_ref(), b"abcdatabase-system");
+        assert_eq!(top_values.value_data(), b"abcdatabase-system");
 
         match normalized.schema().field(1).data_type() {
             DataType::Struct(fields) => {
