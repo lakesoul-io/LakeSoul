@@ -52,29 +52,56 @@ pub(crate) fn get_lakesoul_cache() -> Arc<DiskCache> {
 
 #[cfg(test)]
 pub mod test {
-    use datafusion::error::DataFusionError;
-    // use datafusion::execution::context::SessionState;
-    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-
+    use crate::cache::ReadThroughCache;
+    use crate::cache::disk_cache::DiskCache;
+    use crate::cache::paging::PageCache;
+    use crate::cache::stats::{AtomicIntCacheStats, CacheReadStats};
+    use arrow_array::{Int32Array, RecordBatch, StringArray};
+    use arrow_schema::{DataType, Field, Schema};
     use datafusion::execution::SessionStateBuilder;
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
     use datafusion::prelude::*;
     use futures::StreamExt;
-    use object_store::aws;
+    use object_store::{ObjectStoreExt, memory::InMemory, path::Path};
+    use parquet::arrow::ArrowWriter;
     use std::sync::Arc;
-    use std::time::Instant;
     use url::Url;
 
-    // "--warehouse-prefix",
-    // "s3://lakesoul-bucket/flight-test",
-    // "--endpoint",
-    // "http://localhost:9000",
-    // "--s3-bucket",
-    // "lakesoul-test-bucket",
-    // "--s3-access-key",
-    // "rustfsadmin",
-    // "--s3-secret-key",
-    // "rustfsadmin",
-    // (flavor = "multi_thread", worker_threads = 10)
+    fn test_parquet_bytes() -> Vec<u8> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            ],
+        )
+        .unwrap();
+
+        let mut bytes = Vec::new();
+        let mut writer = ArrowWriter::try_new(&mut bytes, schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        bytes
+    }
+
+    async fn count_rows(ctx: &SessionContext, path: &str) -> usize {
+        let df = ctx
+            .read_parquet(path, ParquetReadOptions::default())
+            .await
+            .unwrap();
+
+        let mut stream = df.execute_stream().await.unwrap();
+        let mut total_rows = 0usize;
+        while let Some(batch) = stream.next().await {
+            total_rows += batch.unwrap().num_rows();
+        }
+        total_rows
+    }
+
     #[tokio::test]
     async fn test_local_s3_cache() {
         let config = SessionConfig::new()
@@ -90,77 +117,35 @@ pub mod test {
             .build();
         let ctx = SessionContext::new_with_state(state);
 
-        let s3 = aws::AmazonS3Builder::new()
-            .with_bucket_name("lakesoul-test-bucket")
-            .with_access_key_id("rustfsadmin")
-            .with_secret_access_key("rustfsadmin")
-            .with_allow_http(true)
-            .with_endpoint("http://localhost:9000")
-            .with_region("cn-southwest-2")
-            .build()
-            .unwrap();
-        let url = Url::parse("s3://lakesoul-test-bucket/")
-            .map_err(|e| DataFusionError::External(Box::new(e)))
+        let store = Arc::new(InMemory::new());
+        store
+            .put(&Path::from("base-0.parquet"), test_parquet_bytes().into())
+            .await
             .unwrap();
 
-        // 注册 S3 缓存存储
-        // let cache = Arc::new(DiskCache::new( 1 * 1024 * 1024 * 1024,4 * 1024 * 1024));
-        // let cache_s3_store = Arc::new(ReadThroughCache::new(Arc::new(s3), cache));
-        // ctx.runtime_env().register_object_store(&url, cache_s3_store);
+        let cache_dir = tempfile::tempdir().unwrap();
+        let disk_cache = Arc::new(DiskCache::with_path(
+            64 * 1024 * 1024,
+            1024,
+            cache_dir.path().join("cache"),
+        ));
+        let stats = Arc::new(AtomicIntCacheStats::new());
+        let cache_s3_store = Arc::new(ReadThroughCache::new_with_stats(
+            store,
+            disk_cache.clone(),
+            stats.clone(),
+        ));
 
-        ctx.runtime_env().register_object_store(&url, Arc::new(s3));
+        let url = Url::parse("s3://lakesoul-test-bucket/").unwrap();
+        ctx.runtime_env()
+            .register_object_store(&url, cache_s3_store);
 
-        {
-            let df = ctx
-                .read_parquet(
-                    "s3://lakesoul-test-bucket/base-0.parquet",
-                    ParquetReadOptions::default(),
-                )
-                .await
-                .unwrap();
+        let path = "s3://lakesoul-test-bucket/base-0.parquet";
+        assert_eq!(count_rows(&ctx, path).await, 3);
+        assert!(disk_cache.size() > 0);
+        let misses_after_first_read = stats.total_misses();
 
-            let start = Instant::now();
-            // let df = df.select_columns(&["uuid", "hostname", "requests"])?;
-
-            let mut stream = df.execute_stream().await.unwrap();
-            let mut total_rows = 0usize;
-            while let Some(batch) = stream.next().await {
-                let batch = batch.unwrap();
-                total_rows += batch.num_rows();
-            }
-
-            let duration = start.elapsed();
-            println!(
-                "Total rows {}, Time elapsed in expensive_function() is: {:?}",
-                total_rows, duration
-            );
-        }
-
-        {
-            let df = ctx
-                .read_parquet(
-                    "s3://lakesoul-test-bucket/base-0.parquet",
-                    ParquetReadOptions::default(),
-                )
-                .await
-                .unwrap();
-
-            let start = Instant::now();
-            // let df = df.select_columns(&["uuid", "hostname", "requests"])?;
-
-            let mut stream = df.execute_stream().await.unwrap();
-            let mut total_rows = 0usize;
-            while let Some(batch) = stream.next().await {
-                let batch = batch.unwrap();
-                total_rows += batch.num_rows();
-            }
-
-            let duration = start.elapsed();
-
-            println!(
-                "Total rows {}, Time elapsed in expensive_function() is: {:?}",
-                total_rows, duration
-            );
-        }
+        assert_eq!(count_rows(&ctx, path).await, 3);
+        assert_eq!(stats.total_misses(), misses_after_first_read);
     }
 }
