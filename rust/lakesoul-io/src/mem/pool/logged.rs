@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    fmt,
     fs::OpenOptions,
     io::Write,
     num::NonZeroUsize,
@@ -140,7 +141,17 @@ impl Drop for LoggedMemoryPool {
     }
 }
 
+impl fmt::Display for LoggedMemoryPool {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.inner.fmt(f)
+    }
+}
+
 impl MemoryPool for LoggedMemoryPool {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
     fn register(&self, consumer: &datafusion_execution::memory_pool::MemoryConsumer) {
         self.inner.register(consumer);
 
