@@ -14,7 +14,9 @@ members = [
   "rust/lakesoul-flight",
   "rust/lakesoul-s3-proxy",
   "rust/lakesoul-console",
-  "python", "rust/lakesoul-common",
+  "rust/lakesoul-common",
+  "rust/lakesoul-vector",
+  "python",
 ]
 resolver = "3"
 

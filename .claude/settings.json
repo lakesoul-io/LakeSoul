@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python*)",
+      "Bash(uv*)",
+      "Bash(cargo*)",
+      "Bash(rm:*)",
+      "Bash(find:*)",
+      "Bash(grep:*)",
+      "Bash(ls:*)",
+      "Bash(echo:*)",
+      "Bash(mkdir:*)",
+      "Bash(cat:*)",
+      "Bash(sed:*)",
+      "Bash(touch:*)",
+      "Bash(wc:*)",
+      "Bash(which:*)",
+      "Bash(cp:*)",
+      "Bash(maturin:*)",
+      "Bash(pip:*)",
+      "Bash(VIRTUAL_ENV:*)",
+      "Bash(curl:*)",
+      "Bash(chmod:*)",
+      "Bash(source:*)",
+      "WebFetch",
+      "WebSearch"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

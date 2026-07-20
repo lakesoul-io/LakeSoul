@@ -493,6 +493,102 @@ class LakeSoulTable:
             results_buffer_size=results_buffer_size,
         )
 
+    def build_vector_index(
+        self,
+        *,
+        column: str | None = None,
+        dim: int | None = None,
+        nlist: int = 256,
+        total_bits: int = 7,
+        metric: str = "L2",
+        partition_desc: str | None = None,
+        partitions: Mapping[str, str] | None = None,
+    ) -> dict:
+        """Build or update the IVF+RaBitQ vector index for this table.
+
+        The vector column is auto-detected from table properties
+        (``vector_index_columns``), or can be overridden via *column*/*dim*.
+
+        Args:
+            column: Vector column name (auto-detected if omitted).
+            dim: Vector dimension (auto-detected if omitted).
+            nlist: Number of IVF clusters (default 256).
+            total_bits: RaBitQ total bits (default 7).
+            metric: Distance metric, ``"L2"`` or ``"IP"``.
+            partition_desc: Build index for a single partition, e.g.
+                ``"range=2024-01-01"``.  When omitted, builds for all
+                partitions.
+            partitions: Shorthand for partition_desc — a mapping of
+                partition column names to values.  Only one of
+                *partition_desc* or *partitions* may be specified.
+
+        Returns:
+            Dict with summary: ``{"status": "ok", "partitions": 2, ...}``.
+        """
+        if partition_desc is not None and partitions is not None:
+            raise ValueError(
+                "partition_desc and partitions are mutually exclusive"
+            )
+
+        # Auto-detect vector column from table properties
+        vec_col, vec_dim = self._vector_column_info(column, dim)
+
+        store_config = _default_object_store_config(
+            catalog=self._catalog, table=self
+        )
+
+        if partition_desc is not None:
+            return _build_vector_index_for_one(
+                table=self, column=vec_col, dim=vec_dim,
+                nlist=nlist, total_bits=total_bits, metric=metric,
+                partition_desc=partition_desc, store_config=store_config,
+            )
+
+        if partitions is not None:
+            # Construct partition_desc in the table's partition_by order
+            part_cols = self.partition_by
+            missing = [c for c in part_cols if c not in partitions]
+            if missing:
+                raise ValueError(
+                    f"missing partition columns: {missing}"
+                )
+            desc = ",".join(f"{c}={partitions[c]}" for c in part_cols)
+            return _build_vector_index_for_one(
+                table=self, column=vec_col, dim=vec_dim,
+                nlist=nlist, total_bits=total_bits, metric=metric,
+                partition_desc=desc, store_config=store_config,
+            )
+
+        # Build for all partitions
+        from lakesoul.vector_index import build_table_vector_index
+        return build_table_vector_index(
+            table_name=self.name, namespace=self.namespace,
+            vector_column=vec_col, dim=vec_dim,
+            nlist=nlist, total_bits=total_bits, metric=metric,
+            store_config=store_config,
+        )
+
+    def _vector_column_info(
+        self, column: str | None, dim: int | None,
+    ) -> tuple[str, int]:
+        props = dict(self.properties)
+        raw = props.get("vector_index_columns", "")
+        if raw:
+            # Parse "col:dim:nlist:bits:metric" format
+            parts = raw.split(":") if ":" in raw else [raw]
+            col = column or parts[0]
+            d = dim or (int(parts[1]) if len(parts) > 1 else 0)
+        else:
+            col = column
+            d = dim or 0
+        if col is None:
+            raise ValueError(
+                "vector column not specified and not found in table properties"
+            )
+        if d <= 0:
+            raise ValueError(f"invalid vector dimension: {d}")
+        return col, d
+
     def drop(self, *, if_exists: bool = False) -> None:
         self._catalog.drop_table(self.name, self.namespace, if_exists=if_exists)
 
@@ -513,6 +609,7 @@ class LakeSoulScan:
         world_size: int | None,
         retain_partition_columns: bool,
         object_store_options: Mapping[str, str],
+        _reader_options: Mapping[str, str] | None = None,
     ) -> None:
         _validate_scan_runtime_options(
             batch_size=batch_size,
@@ -530,6 +627,7 @@ class LakeSoulScan:
         self._world_size = world_size
         self._retain_partition_columns = retain_partition_columns
         self._object_store_options = dict(object_store_options)
+        self._reader_options = dict(_reader_options or {})
 
     @property
     def table(self) -> LakeSoulTable:
@@ -582,6 +680,7 @@ class LakeSoulScan:
         thread_count: int | None = None,
         retain_partition_columns: bool | None = None,
         object_store_options: Mapping[str, str] | None = None,
+        reader_options: Mapping[str, str] | None = None,
     ) -> LakeSoulScan:
         updates: dict[str, Any] = {}
         if batch_size is not None:
@@ -594,6 +693,8 @@ class LakeSoulScan:
             updates["object_store_options"] = (
                 self._table.catalog._merge_object_store_options(object_store_options)
             )
+        if reader_options is not None:
+            updates["_reader_options"] = dict(reader_options)
         return self._replace(**updates)
 
     def scan_plan(self) -> tuple[Any, ...]:
@@ -677,6 +778,7 @@ class LakeSoulScan:
             thread_count=self._thread_count,
             rank=self._rank,
             world_size=self._world_size,
+            reader_options=dict(self._reader_options),
         )
 
     def _replace(self, **updates: Any) -> LakeSoulScan:
@@ -691,6 +793,7 @@ class LakeSoulScan:
             "world_size": self._world_size,
             "retain_partition_columns": self._retain_partition_columns,
             "object_store_options": self._object_store_options,
+            "_reader_options": self._reader_options,
         }
         values.update(updates)
         return LakeSoulScan(**values)
@@ -875,6 +978,59 @@ def _parse_table_properties(properties: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("LakeSoul table properties must be a JSON object")
     return value
+
+
+def _default_object_store_config(
+    catalog: LakeSoulCatalog,
+    table: LakeSoulTable,
+) -> dict:
+    """Build store_config dict for vector index from table/catalog info."""
+    # Detect local vs S3 from table path
+    path = table.path
+    if path.startswith("file://"):
+        return {"type": "local"}
+    opts = dict(catalog.object_store_options)
+    # Extract S3 config from standard keys
+    config: dict = {"type": "s3"}
+    for src, dst in [
+        ("fs.s3a.access.key", "access_key_id"),
+        ("fs.s3a.secret.key", "secret_access_key"),
+        ("fs.s3a.endpoint", "endpoint"),
+        ("fs.s3a.endpoint.region", "region"),
+    ]:
+        if src in opts:
+            config[dst] = opts[src]
+    # Bucket from path
+    if path.startswith("s3://") or path.startswith("s3a://"):
+        rest = path.split("://", 1)[1]
+        config["bucket"] = rest.split("/", 1)[0]
+    return config
+
+
+def _build_vector_index_for_one(
+    *,
+    table: LakeSoulTable,
+    column: str,
+    dim: int,
+    nlist: int,
+    total_bits: int,
+    metric: str,
+    partition_desc: str,
+    store_config: dict,
+) -> dict:
+    from lakesoul.vector_index import build_partition_vector_index
+
+    return build_partition_vector_index(
+        table_name=table.name,
+        namespace=table.namespace,
+        partition_desc=partition_desc,
+        vector_column=column,
+        dim=dim,
+        nlist=nlist,
+        total_bits=total_bits,
+        metric=metric,
+        store_config=store_config,
+    )
 
 
 __all__ = [

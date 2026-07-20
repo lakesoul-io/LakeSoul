@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: 2025 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "lakesoul-vector"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+homepage.workspace = true
+license.workspace = true
+
+[dependencies]
+# object store
+object_store = { workspace = true }
+
+# async
+futures = { workspace = true }
+tokio = { workspace = true }
+
+# error
+rootcause = { workspace = true }
+thiserror = { workspace = true }
+
+# logging
+tracing = { workspace = true }
+
+# serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# --- Vendored rabitq-rs dependencies ---
+rayon = "1.8"
+rand = "0.8"
+rand_distr = "0.4"
+half = { version = "^2.1", features = ["serde"] }
+crc32fast = "1.3"
+roaring = "0.10"
+faer = { version = "0.24", features = ["linalg", "rayon"] }
+bincode = "1.3"
+memmap2 = "0.9"
+parking_lot = "0.12"
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
+
+[features]
+huge_pages = []

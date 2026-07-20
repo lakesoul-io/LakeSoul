@@ -151,10 +151,15 @@ impl LakeSoulReader {
             .execution_props_mut()
             .mark_start_execution(options);
         let table_schema = self.io_session.get_table_schema().await?;
+        let filters = {
+            let io_config = self.io_session.io_config_mut();
+            io_config
+                .get_filter_exprs(table_schema.table_schema().as_ref())
+                .await?
+        };
+        let filters = self.inject_vector_search_filter(filters).await?;
+
         let io_config = self.io_session.io_config_mut();
-        let filters = io_config
-            .get_filter_exprs(table_schema.table_schema().as_ref())
-            .await?;
         // Check if filters are or-conjunction of primary column
         let skip_reader = if io_config.skip_merge_on_read()
             && !io_config.primary_keys.is_empty()
@@ -239,6 +244,96 @@ impl LakeSoulReader {
         self.stream = Some(stream);
 
         Ok(())
+    }
+
+    /// Run vector similarity search and inject result IDs as a filter on the PK column.
+    async fn inject_vector_search_filter(
+        &self,
+        filters: Vec<datafusion_expr::Expr>,
+    ) -> Result<Vec<datafusion_expr::Expr>> {
+        use crate::config::{
+            OPTION_KEY_VECTOR_SEARCH_COLUMN, OPTION_KEY_VECTOR_SEARCH_NPROBE,
+            OPTION_KEY_VECTOR_SEARCH_QUERY, OPTION_KEY_VECTOR_SEARCH_TOP_K,
+        };
+        use datafusion_common::ScalarValue;
+        use datafusion_expr::Expr;
+
+        let io_config = self.io_session.io_config();
+        let column = match io_config.option(OPTION_KEY_VECTOR_SEARCH_COLUMN) {
+            Some(c) => c,
+            None => return Ok(filters),
+        };
+        let query_str = match io_config.option(OPTION_KEY_VECTOR_SEARCH_QUERY) {
+            Some(q) => q,
+            None => return Ok(filters),
+        };
+        let top_k: usize = io_config
+            .option(OPTION_KEY_VECTOR_SEARCH_TOP_K)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(10);
+        let nprobe: usize = io_config
+            .option(OPTION_KEY_VECTOR_SEARCH_NPROBE)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(64);
+        let query = match crate::vector::search::parse_query_vector(&query_str, None) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("Invalid vector search query: {}", e);
+                return Ok(filters);
+            }
+        };
+        let pk_column = io_config
+            .primary_keys
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "id".to_string());
+        let raw_prefix = io_config.prefix().trim_end_matches('/');
+        let table_path = raw_prefix
+            .trim_start_matches("file://")
+            .trim_start_matches("s3://")
+            .trim_start_matches("s3a://");
+        let table_url = datafusion_datasource::ListingTableUrl::parse(raw_prefix)
+            .map_err(|e| rootcause::report!("invalid table path: {}", e))?;
+        let store = self
+            .io_session
+            .runtime_env()
+            .object_store(table_url.object_store())
+            .map_err(|e| rootcause::report!("failed to get object store: {}", e))?;
+        let ids = crate::vector::search::search_matching_shards(
+            &store,
+            io_config.files_slice(),
+            &column,
+            table_path,
+            io_config.range_partitions_slice(),
+            &query,
+            top_k,
+            nprobe,
+            lakesoul_vector::Metric::L2,
+        )
+        .await?;
+        if ids.is_empty() {
+            tracing::info!("Vector search returned no results — producing empty result");
+            // Inject a filter that matches nothing, so the scan returns zero rows
+            let no_match = Expr::Literal(ScalarValue::Boolean(Some(false)), None);
+            return Ok(filters
+                .into_iter()
+                .chain(std::iter::once(no_match))
+                .collect());
+        }
+        tracing::info!("Vector search found {} matching IDs", ids.len());
+        let pk_expr =
+            Expr::Column(datafusion_common::Column::new_unqualified(&pk_column));
+        let mut id_filter: Option<Expr> = None;
+        for id in &ids {
+            let eq = pk_expr
+                .clone()
+                .eq(Expr::Literal(ScalarValue::UInt64(Some(*id)), None));
+            id_filter = Some(id_filter.map_or(eq.clone(), |prev| prev.or(eq)));
+        }
+        if let Some(f) = id_filter {
+            return Ok(filters.into_iter().chain(std::iter::once(f)).collect());
+        }
+        Ok(filters)
     }
 
     /// Retrieves the next record batch from the reader.

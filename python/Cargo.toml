@@ -22,6 +22,8 @@ lakesoul-common = { path = "../rust/lakesoul-common" }
 lakesoul-metadata = { path = "../rust/lakesoul-metadata" }
 proto = { path = "../rust/proto" }
 uuid = { workspace = true }
+lakesoul-vector = { path = "../rust/lakesoul-vector" }
+object_store = { workspace = true }
 tokio.workspace = true
 arrow-pyarrow.workspace = true
 arrow-schema.workspace = true

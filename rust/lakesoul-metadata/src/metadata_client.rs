@@ -61,9 +61,8 @@ pub fn pg_config_from_env(
 ) -> Result<String, LakeSoulMetaDataError> {
     if let Ok(config_path) = std::env::var("lakesoul_home") {
         trace!("get config from lakesoul_home: {}", config_path);
-        let config = fs::read_to_string(&config_path).unwrap_or_else(|_| {
-            panic!("Fails at reading a config file {}", &config_path)
-        });
+        let config = fs::read_to_string(&config_path)
+            .unwrap_or_else(|_| panic!("Fails at reading a config file {}", config_path));
         let config_map = config
             .split('\n')
             .filter_map(|property| {
