@@ -23,7 +23,6 @@ mod sendable_writer;
 pub use sendable_writer::AsyncSendableMutableLakeSoulWriter;
 
 use std::{
-    any::Any,
     collections::HashMap,
     fmt::{Debug, Formatter},
     io::Write,
@@ -195,10 +194,6 @@ impl ExecutionPlanProperties for ReceiverStreamExec {
 impl ExecutionPlan for ReceiverStreamExec {
     fn name(&self) -> &str {
         "ReceiverStreamExec"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     fn schema(&self) -> SchemaRef {

@@ -5,7 +5,6 @@
 //! This module provides the implementation of the repartition operator.
 
 use std::{
-    any::Any,
     collections::HashMap,
     pin::Pin,
     sync::Arc,
@@ -668,11 +667,6 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
         Some(self.metrics.clone_inner())
     }
 
-    /// Return a reference to Any that can be used for downcasting
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     /// Get the schema for this execution plan
     fn schema(&self) -> SchemaRef {
         self.input.schema()
@@ -807,7 +801,10 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
         Ok(Box::pin(stream))
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> DFResult<Statistics> {
+    fn partition_statistics(
+        &self,
+        partition: Option<usize>,
+    ) -> DFResult<Arc<Statistics>> {
         self.input.partition_statistics(partition)
     }
 }

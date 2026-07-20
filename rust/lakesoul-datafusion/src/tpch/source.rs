@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{any::Any, sync::Arc};
+use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
 use datafusion::{
@@ -38,10 +38,6 @@ impl DataSource for TpchSource {
         let stream = futures::stream::iter(g).map(Ok);
         let schema = self.kind.schema();
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 
     fn fmt_as(
@@ -94,17 +90,13 @@ impl DataSource for TpchSource {
     fn partition_statistics(
         &self,
         _partition: Option<usize>,
-    ) -> datafusion_common::Result<Statistics> {
-        Ok(Statistics::new_unknown(&self.kind.schema()))
+    ) -> datafusion_common::Result<Arc<Statistics>> {
+        Ok(Arc::new(Statistics::new_unknown(&self.kind.schema())))
     }
 }
 
 #[async_trait::async_trait]
 impl TableProvider for TpchSource {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.kind.schema()
     }

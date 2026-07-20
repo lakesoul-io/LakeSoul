@@ -22,6 +22,11 @@ in
     # java
     jdt-language-server
     stdenv.cc.cc.lib
+    # fmt
+    google-java-format
+    prettier
+    treefmt
+    scalafmt
   ] ++ [
     pkgs-unstable.ty
   ];

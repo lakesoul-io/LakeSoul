@@ -12,6 +12,14 @@ name = "buf_bench"
 harness = false
 
 [[bench]]
+name = "format_write_bench"
+harness = false
+
+[[bench]]
+name = "spill_bench"
+harness = false
+
+[[bench]]
 name = "cache_bench"
 harness = false
 
@@ -134,6 +142,7 @@ tempfile = { workspace = true }
 whoami = "1.5"
 tracing-subscriber = { workspace = true }
 criterion = { version = "0.7", features = ["html_reports"] }
+mimalloc = "0.1.52"
 gungraun = "0.17.0"
 num-format = "0.4.4"
 

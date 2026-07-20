@@ -4,7 +4,6 @@
 
 //! The [`datafusion::catalog::SchemaProvider`] implementation for the LakeSoul.
 
-use std::any::Any;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
@@ -74,11 +73,6 @@ impl Debug for LakeSoulNamespace {
 
 #[async_trait]
 impl SchemaProvider for LakeSoulNamespace {
-    fn as_any(&self) -> &dyn Any {
-        debug!("LakeSoulNamespace::as_any called");
-        self
-    }
-
     /// query table_name_id by namespace
     fn table_names(&self) -> Vec<String> {
         debug!(
@@ -151,14 +145,14 @@ impl SchemaProvider for LakeSoulNamespace {
         // 获取表的 schema
         let _schema = table.schema();
 
-        let lakesoul_table = table
-            .as_any()
-            .downcast_ref::<LakeSoulTableProvider>()
-            .ok_or_else(|| {
-                DataFusionError::Internal(
-                    "Table is not a LakeSoulTableProvider".to_string(),
-                )
-            })?;
+        let lakesoul_table =
+            table
+                .downcast_ref::<LakeSoulTableProvider>()
+                .ok_or_else(|| {
+                    DataFusionError::Internal(
+                        "Table is not a LakeSoulTableProvider".to_string(),
+                    )
+                })?;
 
         let client = self.metadata_client.clone();
         tokio::task::block_in_place(|| {

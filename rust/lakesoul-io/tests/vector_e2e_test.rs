@@ -94,7 +94,6 @@ fn compute_recall(predicted: &[u64], ground_truth: &[i32], k: usize) -> f64 {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires prepare_data.py to be run first"]
 async fn test_glove_e2e_build_and_search() {
-    let tmp = TempDir::new().unwrap();
     let store = Arc::new(LocalFileSystem::new());
     let index_prefix = "_vector_index/vec/-5/0/";
 

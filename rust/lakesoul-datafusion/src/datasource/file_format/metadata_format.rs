@@ -4,7 +4,6 @@
 
 //! The [`datafusion::datasource::file_format::FileFormat`] implementation for the LakeSoul Parquet format with metadata.
 
-use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Debug};
 use std::sync::Arc;
@@ -150,10 +149,6 @@ impl LakeSoulMetaDataParquetFormat {
 
 #[async_trait]
 impl FileFormat for LakeSoulMetaDataParquetFormat {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn get_ext(&self) -> String {
         ParquetFormatFactory::new().get_ext()
     }
@@ -621,11 +616,6 @@ impl ExecutionPlanProperties for LakeSoulHashSinkExec {
 impl ExecutionPlan for LakeSoulHashSinkExec {
     fn name(&self) -> &str {
         "LakeSoulHashSinkExec"
-    }
-
-    /// Return a reference to Any that can be used for downcasting
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     /// Get the schema for this execution plan

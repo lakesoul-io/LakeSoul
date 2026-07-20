@@ -12,7 +12,6 @@ use datafusion::prelude::SessionContext;
 use lakesoul_metadata::MetaDataClientRef;
 use lakesoul_metadata::error::LakeSoulMetaDataError;
 use proto::proto::entity::Namespace;
-use std::any::Any;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use tokio::runtime::Handle;
@@ -53,10 +52,6 @@ impl LakeSoulCatalog {
 }
 
 impl CatalogProvider for LakeSoulCatalog {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema_names(&self) -> Vec<String> {
         tokio::task::block_in_place(|| {
             match futures::executor::block_on(async {

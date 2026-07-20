@@ -4,8 +4,8 @@
 
 //! Implementation of the default column operation.
 
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::{any::Any, collections::HashMap};
 
 use arrow_schema::SchemaRef;
 use datafusion::physical_expr::{EquivalenceProperties, LexOrdering};
@@ -85,10 +85,6 @@ impl ExecutionPlanProperties for DefaultColumnExec {
 impl ExecutionPlan for DefaultColumnExec {
     fn name(&self) -> &str {
         "DefaultColumnExec"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     fn schema(&self) -> SchemaRef {
