@@ -39,6 +39,16 @@ public class LakeSoulMetadata implements ConnectorMetadata {
         this.typeConverter = new ArrowBlockBuilder(typeManager);
     }
 
+    private static boolean isCaseSensitiveNameMatching() {
+        LakeSoulConfig config = LakeSoulConfig.getInstance();
+        return config != null && config.isCaseSensitiveNameMatching();
+    }
+
+    @Override
+    public String normalizeIdentifier(ConnectorSession session, String identifier) {
+        return isCaseSensitiveNameMatching() ? identifier : identifier.toLowerCase(Locale.ENGLISH);
+    }
+
     @Override
     public List<String> listSchemaNames(ConnectorSession session) {
         return dbManager.listNamespaces();
@@ -159,7 +169,7 @@ public class LakeSoulMetadata implements ConnectorMetadata {
             }
 
             ColumnMetadata columnMetadata = ColumnMetadata.builder()
-                    .setName(field.getName())
+                    .setName(normalizeIdentifier(session, field.getName()))
                     .setType(typeConverter.getPrestoTypeFromArrowField(field))
                     .setNullable(field.isNullable())
                     .setComment(field.getMetadata().getOrDefault("spark_comment", ""))
@@ -206,12 +216,13 @@ public class LakeSoulMetadata implements ConnectorMetadata {
             if (field.getName().equals(cdcChangeColumn)) {
                 continue;
             }
+            String logicalName = normalizeIdentifier(session, field.getName());
             LakeSoulTableColumnHandle columnHandle =
                     new LakeSoulTableColumnHandle(table,
                             field.getName(),
                             typeConverter.getPrestoTypeFromArrowField(field),
                             field);
-            map.put(field.getName(), columnHandle);
+            map.put(logicalName, columnHandle);
         }
         return map;
     }
@@ -224,7 +235,7 @@ public class LakeSoulMetadata implements ConnectorMetadata {
         Field field = handle.getArrowField();
         Map<String, Object> properties = new HashMap<>(field.getMetadata());
         return ColumnMetadata.builder()
-                .setName(field.getName())
+                .setName(normalizeIdentifier(session, handle.getColumnName()))
                 .setType(typeConverter.getPrestoTypeFromArrowField(field))
                 .setNullable(field.isNullable())
                 .setComment(field.getMetadata().getOrDefault("spark_comment", ""))
