@@ -100,7 +100,7 @@ impl FromStr for PhysicalFormat {
 #[derive(Debug)]
 pub struct LakeSoulFormatRegistry {
     parquet: Arc<LakeSoulParquetFormat>,
-    vortex: Arc<VortexFormat>,
+    vortex: Arc<LakeSoulVortexFormat>,
 }
 
 impl LakeSoulFormatRegistry {
@@ -112,7 +112,7 @@ impl LakeSoulFormatRegistry {
             Arc::new(
                 ParquetFormat::new().with_force_view_types(parquet_force_view_types),
             ),
-            io_config,
+            io_config.clone(),
         ));
         let opts = {
             let mut opts = VortexTableOptions::default();
@@ -121,9 +121,12 @@ impl LakeSoulFormatRegistry {
             opts
         };
 
-        let vortex = Arc::new(VortexFormat::new_with_options(
-            VortexSession::default(),
-            opts,
+        let vortex = Arc::new(LakeSoulVortexFormat::new(
+            Arc::new(VortexFormat::new_with_options(
+                VortexSession::default(),
+                opts,
+            )),
+            io_config,
         ));
 
         Ok(Self { parquet, vortex })
@@ -186,91 +189,6 @@ impl LakeSoulParquetFormat {
     }
 }
 
-async fn fetch_schema(
-    store: &dyn ObjectStore,
-    obj_meta: &ObjectMeta,
-    metadata_size_hint: Option<usize>,
-) -> DFResult<Schema> {
-    // TODO add cryption
-    let metadata = DFParquetMetadata::new(store, obj_meta)
-        .with_metadata_size_hint(metadata_size_hint)
-        .fetch_metadata()
-        .await?;
-
-    let file_metadata = metadata.file_metadata();
-    let schema = parquet_to_arrow_schema(
-        file_metadata.schema_descr(),
-        file_metadata.key_value_metadata(),
-    )?;
-    Ok(schema)
-}
-
-fn clear_metadata(
-    schemas: impl IntoIterator<Item = Schema>,
-) -> impl Iterator<Item = Schema> {
-    schemas.into_iter().map(|schema| {
-        let fields = schema
-            .fields()
-            .iter()
-            .map(|field| {
-                field.as_ref().clone().with_metadata(Default::default()) // clear meta
-            })
-            .collect::<Fields>();
-        Schema::new(fields)
-    })
-}
-
-#[derive(Debug, Default)]
-pub struct CanCastSchemaBuilder {
-    fields: Vec<FieldRef>,
-}
-
-impl CanCastSchemaBuilder {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self {
-            fields: Vec::with_capacity(capacity),
-        }
-    }
-
-    pub fn push(&mut self, field: impl Into<FieldRef>) {
-        self.fields.push(field.into())
-    }
-
-    fn merge(e: &mut FieldRef, field: &FieldRef) -> Result<(), ArrowError> {
-        if can_cast_types(e.data_type(), field.data_type()) {
-            *e = field.clone();
-            Ok(())
-        } else {
-            Err(ArrowError::SchemaError(format!(
-                "Fail to merge schema field '{}' because the from data_type = {} does not equal {}",
-                field.name(),
-                e.data_type(),
-                field.data_type()
-            )))
-        }
-    }
-
-    pub fn try_merge(&mut self, field: &FieldRef) -> Result<(), ArrowError> {
-        // This could potentially be sped up with a HashMap or similar
-        let existing = self.fields.iter_mut().find(|f| f.name() == field.name());
-        match existing {
-            Some(e) => {
-                Self::merge(e, field)?;
-            }
-            None => self.fields.push(field.clone()),
-        }
-        Ok(())
-    }
-
-    pub fn finish(self) -> Schema {
-        Schema::new(self.fields)
-    }
-}
-
 #[async_trait]
 impl FileFormat for LakeSoulParquetFormat {
     fn get_ext(&self) -> String {
@@ -308,31 +226,7 @@ impl FileFormat for LakeSoulParquetFormat {
             .try_collect()
             .await?;
 
-        let mut out_meta = HashMap::new();
-        let mut out_fields = CanCastSchemaBuilder::new();
-        for schema in clear_metadata(schemas) {
-            let Schema { metadata, fields } = schema;
-
-            // merge metadata
-            for (key, value) in metadata.into_iter() {
-                if let Some(old_val) = out_meta.get(&key)
-                    && old_val != &value
-                {
-                    return Err(DataFusionError::ArrowError(
-                        Box::new(ArrowError::SchemaError(format!(
-                            "Fail to merge schema due to conflicting metadata. \
-                                         Key '{key}' has different values '{old_val}' and '{value}'"
-                        ))),
-                        None,
-                    ));
-                }
-                out_meta.insert(key, value);
-            }
-
-            // merge fields
-            fields.iter().try_for_each(|x| out_fields.try_merge(x))?
-        }
-        Ok(Arc::new(out_fields.finish().with_metadata(out_meta)))
+        merge_schemas_with_cast(schemas)
     }
 
     async fn infer_stats(
@@ -438,6 +332,288 @@ impl FileFormat for LakeSoulParquetFormat {
 
     fn file_source(&self, table_schema: TableSchema) -> Arc<dyn FileSource> {
         self.parquet_format.file_source(table_schema)
+    }
+}
+
+/// LakeSoul `FileFormat` implementation for Vortex.
+///
+/// The upstream Vortex `infer_schema` uses Arrow's strict `Schema::try_merge`.
+/// LakeSoul's Parquet path has historically allowed schemas whose fields can be
+/// cast to each other (for example `Int32` and `Int64`). Keep the Vortex path
+/// aligned with that behavior by inferring every file schema independently and
+/// merging with `CanCastSchemaBuilder`.
+#[derive(Debug, Clone)]
+pub struct LakeSoulVortexFormat {
+    vortex_format: Arc<VortexFormat>,
+    io_config: LakeSoulIOConfig,
+}
+
+impl LakeSoulVortexFormat {
+    pub fn new(vortex_format: Arc<VortexFormat>, io_config: LakeSoulIOConfig) -> Self {
+        Self {
+            vortex_format,
+            io_config,
+        }
+    }
+}
+
+#[async_trait]
+impl FileFormat for LakeSoulVortexFormat {
+    fn get_ext(&self) -> String {
+        self.vortex_format.get_ext()
+    }
+
+    fn get_ext_with_compression(
+        &self,
+        file_compression_type: &FileCompressionType,
+    ) -> DFResult<String> {
+        self.vortex_format
+            .get_ext_with_compression(file_compression_type)
+    }
+
+    fn compression_type(&self) -> Option<FileCompressionType> {
+        self.vortex_format.compression_type()
+    }
+
+    async fn infer_schema(
+        &self,
+        state: &dyn Session,
+        store: &Arc<dyn ObjectStore>,
+        objects: &[ObjectMeta],
+    ) -> DFResult<SchemaRef> {
+        let schemas: Vec<_> = futures::stream::iter(objects)
+            .map(|object| {
+                let vortex_format = self.vortex_format.clone();
+                let store = store.clone();
+                let object = object.clone();
+                async move {
+                    vortex_format
+                        .infer_schema(state, &store, std::slice::from_ref(&object))
+                        .await
+                }
+            })
+            .boxed()
+            .buffered(state.config_options().execution.meta_fetch_concurrency)
+            .try_collect()
+            .await?;
+
+        merge_schemas_with_cast(schemas.into_iter().map(|schema| schema.as_ref().clone()))
+    }
+
+    async fn infer_stats(
+        &self,
+        state: &dyn Session,
+        store: &Arc<dyn ObjectStore>,
+        table_schema: SchemaRef,
+        object: &ObjectMeta,
+    ) -> DFResult<Statistics> {
+        self.vortex_format
+            .infer_stats(state, store, table_schema, object)
+            .await
+    }
+
+    async fn create_physical_plan(
+        &self,
+        state: &dyn Session,
+        conf: FileScanConfig,
+    ) -> DFResult<Arc<dyn ExecutionPlan>> {
+        let table_schema = Arc::clone(conf.file_source.table_schema().table_schema());
+        let projection = conf.file_column_projection_indices();
+        let target_schema = project_schema(&table_schema, projection.as_ref())?;
+
+        let merged_projection = compute_project_column_indices(
+            table_schema.clone(),
+            target_schema.clone(),
+            self.io_config.primary_keys_slice(),
+            &self.io_config.cdc_column(),
+        );
+        let merged_schema = project_schema(&table_schema, merged_projection.as_ref())?;
+
+        let format: Arc<dyn FileFormat> = Arc::new(self.clone());
+        let flatten_conf = flatten_file_scan_config_for_format(
+            state,
+            format,
+            conf,
+            self.io_config.primary_keys_slice(),
+            &self.io_config.cdc_column(),
+            self.io_config.partition_schema(),
+            target_schema.clone(),
+        )
+        .await
+        .map_err(|e| DataFusionError::External(e.into_boxed_error()))?;
+
+        let merge_exec = Arc::new(
+            MergeParquetExec::new(
+                merged_schema.clone(),
+                flatten_conf,
+                self.io_config.clone(),
+            )
+            .map_err(|e| {
+                error!("{e}");
+                e.into_boxed_error()
+            })?,
+        );
+
+        if target_schema.fields().len() < merged_schema.fields().len() {
+            let mut projection_expr = vec![];
+            for field in target_schema.fields() {
+                projection_expr.push((
+                    datafusion::physical_expr::expressions::col(
+                        field.name(),
+                        &merged_schema,
+                    )?,
+                    field.name().clone(),
+                ));
+            }
+            Ok(Arc::new(ProjectionExec::try_new(
+                projection_expr,
+                merge_exec,
+            )?))
+        } else {
+            Ok(merge_exec)
+        }
+    }
+
+    async fn create_writer_physical_plan(
+        &self,
+        input: Arc<dyn ExecutionPlan>,
+        state: &dyn Session,
+        conf: FileSinkConfig,
+        order_requirements: Option<LexRequirement>,
+    ) -> DFResult<Arc<dyn ExecutionPlan>> {
+        self.vortex_format
+            .create_writer_physical_plan(input, state, conf, order_requirements)
+            .await
+    }
+
+    fn file_source(&self, table_schema: TableSchema) -> Arc<dyn FileSource> {
+        self.vortex_format.file_source(table_schema)
+    }
+}
+
+async fn fetch_schema(
+    store: &dyn ObjectStore,
+    obj_meta: &ObjectMeta,
+    metadata_size_hint: Option<usize>,
+) -> DFResult<Schema> {
+    // TODO add cryption
+    let metadata = DFParquetMetadata::new(store, obj_meta)
+        .with_metadata_size_hint(metadata_size_hint)
+        .fetch_metadata()
+        .await?;
+
+    let file_metadata = metadata.file_metadata();
+    let schema = parquet_to_arrow_schema(
+        file_metadata.schema_descr(),
+        file_metadata.key_value_metadata(),
+    )?;
+    Ok(schema)
+}
+
+fn clear_metadata(
+    schemas: impl IntoIterator<Item = Schema>,
+) -> impl Iterator<Item = Schema> {
+    schemas.into_iter().map(|schema| {
+        let fields = schema
+            .fields()
+            .iter()
+            .map(|field| {
+                field.as_ref().clone().with_metadata(Default::default()) // clear meta
+            })
+            .collect::<Fields>();
+        Schema::new(fields)
+    })
+}
+
+/// Merge file schemas using LakeSoul's schema evolution semantics.
+///
+/// Arrow's default `Schema::try_merge` requires the same field to have exactly
+/// the same data type in every file. LakeSoul's Parquet path has historically
+/// been more permissive and accepts fields whose types are castable by Arrow
+/// (for example `Int32` and `Int64`). Reuse the same merge rule for all native
+/// formats so Vortex and Parquet behave consistently during schema inference.
+///
+/// Field-level metadata is cleared before merging to avoid metadata-only
+/// differences between files from causing schema conflicts. Schema metadata is
+/// merged conservatively: the same key must have the same value in every file.
+fn merge_schemas_with_cast(
+    schemas: impl IntoIterator<Item = Schema>,
+) -> DFResult<SchemaRef> {
+    let mut out_meta = HashMap::new();
+    let mut out_fields = CanCastSchemaBuilder::new();
+    for schema in clear_metadata(schemas) {
+        let Schema { metadata, fields } = schema;
+
+        // merge metadata
+        for (key, value) in metadata.into_iter() {
+            if let Some(old_val) = out_meta.get(&key)
+                && old_val != &value
+            {
+                return Err(DataFusionError::ArrowError(
+                    Box::new(ArrowError::SchemaError(format!(
+                        "Fail to merge schema due to conflicting metadata. \
+                                     Key '{key}' has different values '{old_val}' and '{value}'"
+                    ))),
+                    None,
+                ));
+            }
+            out_meta.insert(key, value);
+        }
+
+        // merge fields
+        fields.iter().try_for_each(|x| out_fields.try_merge(x))?
+    }
+    Ok(Arc::new(out_fields.finish().with_metadata(out_meta)))
+}
+
+#[derive(Debug, Default)]
+pub struct CanCastSchemaBuilder {
+    fields: Vec<FieldRef>,
+}
+
+impl CanCastSchemaBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            fields: Vec::with_capacity(capacity),
+        }
+    }
+
+    pub fn push(&mut self, field: impl Into<FieldRef>) {
+        self.fields.push(field.into())
+    }
+
+    fn merge(e: &mut FieldRef, field: &FieldRef) -> Result<(), ArrowError> {
+        if can_cast_types(e.data_type(), field.data_type()) {
+            *e = field.clone();
+            Ok(())
+        } else {
+            Err(ArrowError::SchemaError(format!(
+                "Fail to merge schema field '{}' because the from data_type = {} does not equal {}",
+                field.name(),
+                e.data_type(),
+                field.data_type()
+            )))
+        }
+    }
+
+    pub fn try_merge(&mut self, field: &FieldRef) -> Result<(), ArrowError> {
+        // This could potentially be sped up with a HashMap or similar
+        let existing = self.fields.iter_mut().find(|f| f.name() == field.name());
+        match existing {
+            Some(e) => {
+                Self::merge(e, field)?;
+            }
+            None => self.fields.push(field.clone()),
+        }
+        Ok(())
+    }
+
+    pub fn finish(self) -> Schema {
+        Schema::new(self.fields)
     }
 }
 
@@ -762,4 +938,25 @@ pub fn compute_project_column_indices(
             })
             .collect::<Vec<_>>(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_schema::{DataType, Field};
+
+    #[test]
+    fn merge_schema_refs_allows_castable_field_types() {
+        let int32_schema =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]));
+        let int64_schema =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+
+        let merged = merge_schema_refs([int32_schema, int64_schema]).unwrap();
+
+        assert_eq!(
+            merged.field_with_name("id").unwrap().data_type(),
+            &DataType::Int64
+        );
+    }
 }
