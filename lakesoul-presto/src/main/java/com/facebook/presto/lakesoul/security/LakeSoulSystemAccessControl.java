@@ -50,6 +50,12 @@ public class LakeSoulSystemAccessControl implements SystemAccessControl {
                 normalizeIdentifier(tableName.getTableName()));
     }
 
+    private static Set<String> normalizeNamespaces(Collection<String> namespaces) {
+        return namespaces.stream()
+                .map(LakeSoulSystemAccessControl::normalizeIdentifier)
+                .collect(Collectors.toSet());
+    }
+
     public LakeSoulSystemAccessControl(
             Set<String> sensitiveSystemSessionProperties,
             boolean principalNeedMatchUsername,
@@ -179,13 +185,13 @@ public class LakeSoulSystemAccessControl implements SystemAccessControl {
                 if (!domain.equals(publicDomain)) {
                     namespaces.addAll(dbManager.listNamespacesByDomain(domain));
                 }
-                filteredSchemas.retainAll(namespaces);
+                filteredSchemas.retainAll(normalizeNamespaces(namespaces));
                 log.info("Filter schemas by domain <%s + public>, original schemas: %s, filtered schemas: %s",
                         domain, schemaNames, filteredSchemas);
                 return filteredSchemas;
             }
         }
-        filteredSchemas.retainAll(publicAndSystemNamespaces);
+        filteredSchemas.retainAll(normalizeNamespaces(publicAndSystemNamespaces));
         log.info("Filter schemas by domain <public>, original schemas: %s, filtered schemas: %s",
                 schemaNames, filteredSchemas);
         return filteredSchemas;
@@ -251,7 +257,7 @@ public class LakeSoulSystemAccessControl implements SystemAccessControl {
                 if (!domain.equals(publicDomain)) {
                     namespaces.addAll(dbManager.listNamespacesByDomain(domain));
                 }
-                if (!namespaces.contains(schema.getSchemaName())) {
+                if (!normalizeNamespaces(namespaces).contains(schema.getSchemaName())) {
                     throw new AccessDeniedException(
                             String.format(
                                     "Access denied: user '%s' and domain '%s' is not allowed to show tables metadata in schema '%s'.",
@@ -260,7 +266,7 @@ public class LakeSoulSystemAccessControl implements SystemAccessControl {
                 return;
             }
         }
-        if (!publicAndSystemNamespaces.contains(schema.getSchemaName())) {
+        if (!normalizeNamespaces(publicAndSystemNamespaces).contains(schema.getSchemaName())) {
             throw new AccessDeniedException(
                     String.format("Access denied: user '%s' is not allowed to show tables metadata in schema '%s'.",
                             identity.getUser(), schema.getSchemaName()));
