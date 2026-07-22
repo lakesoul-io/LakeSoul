@@ -28,6 +28,7 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 import static com.facebook.presto.lakesoul.util.PrestoUtil.CDC_CHANGE_COLUMN;
+import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
 
 public class LakeSoulMetadata implements ConnectorMetadata {
 
@@ -68,9 +69,32 @@ public class LakeSoulMetadata implements ConnectorMetadata {
         if (!listSchemaNames(session).contains(tableName.getSchemaName())) {
             return null;
         }
+
+        String physicalTableName = tableName.getTableName();
+        if (!isCaseSensitiveNameMatching()) {
+            String logicalTableName = normalizeIdentifier(session, tableName.getTableName());
+            List<String> matchedTableNames = dbManager.listTableNamesByNamespace(tableName.getSchemaName())
+                    .stream()
+                    .filter(name -> normalizeIdentifier(session, name).equals(logicalTableName))
+                    .collect(Collectors.toList());
+
+            if (matchedTableNames.size() > 1) {
+                throw new PrestoException(
+                        NOT_SUPPORTED,
+                        String.format(
+                                "Multiple LakeSoul tables match case-insensitive name '%s': %s. " +
+                                        "Set case-sensitive-name-matching=true to distinguish them.",
+                                tableName,
+                                matchedTableNames));
+            }
+            if (!matchedTableNames.isEmpty()) {
+                physicalTableName = matchedTableNames.get(0);
+            }
+        }
+
         TableInfo
                 tableInfo =
-                dbManager.getTableInfoByNameAndNamespace(tableName.getTableName(), tableName.getSchemaName());
+                dbManager.getTableInfoByNameAndNamespace(physicalTableName, tableName.getSchemaName());
 
         if (tableInfo == null) {
             throw new RuntimeException("no such table: " + tableName);
@@ -253,13 +277,17 @@ public class LakeSoulMetadata implements ConnectorMetadata {
         String tableNamePrefix = prefix.getTableName();
         List<String> tableNames = dbManager.listTableNamesByNamespace(schema);
         Map<SchemaTableName, List<ColumnMetadata>> results = new HashMap<>();
-        for (String tableName : tableNames) {
-            if (tableName.startsWith(tableNamePrefix)) {
-                SchemaTableName schemaTableName = new SchemaTableName(schema, tableName);
-                ConnectorTableHandle tableHandle = getTableHandle(session, schemaTableName);
-                ConnectorTableMetadata tableMetadata = getTableMetadata(session, tableHandle);
-                results.put(schemaTableName, tableMetadata.getColumns());
+        for (String physicalTableName : tableNames) {
+            String logicalTableName = normalizeIdentifier(session, physicalTableName);
+            if (tableNamePrefix != null &&
+                    !logicalTableName.startsWith(normalizeIdentifier(session, tableNamePrefix))) {
+                continue;
             }
+
+            SchemaTableName schemaTableName = new SchemaTableName(schema, logicalTableName);
+            ConnectorTableHandle tableHandle = getTableHandle(session, schemaTableName);
+            ConnectorTableMetadata tableMetadata = getTableMetadata(session, tableHandle);
+            results.put(schemaTableName, tableMetadata.getColumns());
         }
         return results;
     }

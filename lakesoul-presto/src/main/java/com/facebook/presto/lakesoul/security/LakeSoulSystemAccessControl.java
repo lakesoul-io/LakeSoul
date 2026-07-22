@@ -9,6 +9,7 @@ import com.dmetasoul.lakesoul.meta.NamespaceTableName;
 import com.facebook.airlift.log.Logger;
 import com.facebook.presto.common.CatalogSchemaName;
 import com.facebook.presto.common.QualifiedObjectName;
+import com.facebook.presto.lakesoul.LakeSoulConfig;
 import com.facebook.presto.spi.CatalogSchemaTableName;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.security.*;
@@ -35,6 +36,19 @@ public class LakeSoulSystemAccessControl implements SystemAccessControl {
 
     private final Set<String> sensitiveSystemSessionPropertiesAllowDomains;
     private final Set<String> systemSchemas;
+
+    private static String normalizeIdentifier(String identifier) {
+        LakeSoulConfig config = LakeSoulConfig.getInstance();
+        return config != null && config.isCaseSensitiveNameMatching()
+                ? identifier
+                : identifier.toLowerCase(Locale.ENGLISH);
+    }
+
+    private static SchemaTableName normalizeSchemaTableName(NamespaceTableName tableName) {
+        return new SchemaTableName(
+                normalizeIdentifier(tableName.getNamespace()),
+                normalizeIdentifier(tableName.getTableName()));
+    }
 
     public LakeSoulSystemAccessControl(
             Set<String> sensitiveSystemSessionProperties,
@@ -198,9 +212,9 @@ public class LakeSoulSystemAccessControl implements SystemAccessControl {
                 if (!domain.equals(publicDomain)) {
                     tables.addAll(dbManager.listTableNamesByDomain(domain));
                 }
-                List<SchemaTableName> schemaTableNames = tables.stream().map(e -> {
-                    return new SchemaTableName(e.getNamespace(), e.getTableName());
-                }).collect(Collectors.toList());
+                List<SchemaTableName> schemaTableNames = tables.stream()
+                        .map(LakeSoulSystemAccessControl::normalizeSchemaTableName)
+                        .collect(Collectors.toList());
                 filteredTableNames.retainAll(schemaTableNames);
                 filteredTableNames.addAll(
                         tableNames.stream().filter(e -> {
@@ -212,9 +226,9 @@ public class LakeSoulSystemAccessControl implements SystemAccessControl {
                 return filteredTableNames;
             }
         }
-        List<SchemaTableName> schemaTableNames = publicTables.stream().map(e -> {
-            return new SchemaTableName(e.getNamespace(), e.getTableName());
-        }).collect(Collectors.toList());
+        List<SchemaTableName> schemaTableNames = publicTables.stream()
+                .map(LakeSoulSystemAccessControl::normalizeSchemaTableName)
+                .collect(Collectors.toList());
         filteredTableNames.retainAll(schemaTableNames);
         filteredTableNames.addAll(
                 tableNames.stream().filter(e -> {
