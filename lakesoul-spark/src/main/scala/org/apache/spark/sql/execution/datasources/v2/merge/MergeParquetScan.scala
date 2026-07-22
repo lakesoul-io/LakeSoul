@@ -155,7 +155,7 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
         (realColName, mergeClass)
       }).toMap
 
-    //remove cdc filter from pushedFilters;cdc filter Not(EqualTo("cdccolumn","detete"))
+    // remove cdc filter from pushedFilters;cdc filter Not(EqualTo("cdccolumn","detete"))
     var newFilters = pushedFilters
     if (LakeSoulTableForCdc.isLakeSoulCdcTable(tableInfo)) {
       newFilters = pushedFilters.filter(_ match {
@@ -169,7 +169,7 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
       .newInstance()
       .asInstanceOf[MergeOperator[Any]]
     NativeMergePartitionReaderFactory(sparkSession.sessionState.conf, broadcastedConf,
-      dataSchema, readDataSchema, readPartitionSchema, pushedFilters, mergeOperatorInfo, defaultMergeOp, options.asScala.toMap)
+      dataSchema, readDataSchema, readPartitionSchema, newFilters, mergeOperatorInfo, defaultMergeOp, options.asScala.toMap)
   }
 
   protected def seqToString(seq: Seq[Any]): String = seq.mkString("[", ", ", "]")
