@@ -7,7 +7,7 @@ package org.apache.flink.lakesoul.sink.writer.arrow;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
-import org.apache.flink.lakesoul.sink.writer.NativeParquetWriter;
+import org.apache.flink.lakesoul.sink.writer.NativeLakeSoulWriter;
 import org.apache.flink.lakesoul.types.arrow.LakeSoulArrowWrapper;
 import org.apache.flink.streaming.api.functions.sink.filesystem.BucketWriter;
 import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter;
@@ -55,7 +55,7 @@ public class NativeArrowBucketWriter implements BucketWriter<LakeSoulArrowWrappe
     public WriterProperties getProperties() {
         return new WriterProperties(
                 UnsupportedInProgressFileRecoverableSerializable.INSTANCE,
-                NativeParquetWriter.NativePendingFileRecoverableSerializer.INSTANCE,
+                NativeLakeSoulWriter.NativePendingFileRecoverableSerializer.INSTANCE,
                 false
         );
     }

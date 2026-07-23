@@ -136,7 +136,7 @@ impl FileSinkWriter {
                     .ok_or(report!("downcast ParquetSink failed"))?;
                 self.collect_parquet_outputs(sink).await
             }
-            PhysicalFormat::Vortex => {
+            PhysicalFormat::Vortex | PhysicalFormat::VortexCompact => {
                 let sink = self
                     .downcast_sink::<VortexSink>()
                     .ok_or(report!("downcast VortexSink failed"))?;
@@ -197,19 +197,19 @@ impl FileSinkWriter {
             .runtime_env()
             .object_store(&self.sink.config().object_store_url)?;
         let single_file_path = self.single_file_path();
+        let physical_format = self.physical_format.to_string();
 
         futures::future::try_join_all(written.into_iter().map(|(path, footer)| {
             let object_store = Arc::clone(&object_store);
             let file_path = single_file_path
                 .clone()
                 .unwrap_or_else(|| self.path_to_url_string(&path));
+            let physical_format = physical_format.clone();
             async move {
                 let object_meta = object_store.head(&path).await?;
                 let file_exist_cols = footer.get_file_exists_cols();
-                let other_info = HashMap::from([(
-                    String::from("physical_format"),
-                    String::from("vortex"),
-                )]);
+                let other_info =
+                    HashMap::from([(String::from("physical_format"), physical_format)]);
                 Ok(FlushOutput {
                     partition_desc: DEFAULT_PARTITION_DESC.to_string(),
                     file_path,

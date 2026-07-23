@@ -10,6 +10,8 @@ import com.dmetasoul.lakesoul.spark.clean.CleanOldCompaction.splitCompactFilePat
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkConf
+import org.apache.spark.sql.catalyst.TableIdentifier
+import org.apache.spark.sql.catalyst.catalog.{CatalogStorageFormat, CatalogTable, CatalogTableType}
 import org.apache.spark.sql.functions.lit
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.SnapshotManagement
@@ -18,12 +20,14 @@ import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestSparkSession, MergeOpInt}
 import org.apache.spark.sql.lakesoul.utils.{SparkUtil, TableInfo}
 import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
+import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.{AnalysisException, QueryTest, Row, SparkSession}
 import org.junit.runner.RunWith
 import org.scalatest.BeforeAndAfterEach
 import org.scalatestplus.junit.JUnitRunner
 
 import java.math.MathContext
+import java.net.URI
 
 @RunWith(classOf[JUnitRunner])
 class CompactionSuite extends QueryTest
@@ -505,6 +509,36 @@ class CompactionSuite extends QueryTest
       checkAnswer(spark.sql("select * from spark_catalog.default.external_table order by id"),
         Seq(Row(1, "rice", "2021-01-01"), Row(2, "bread", "2021-01-01")))
     }
+  }
+
+  test("recognize Hive SerDe parquet external table") {
+    val parquetStorage = CatalogStorageFormat(
+      locationUri = Some(new URI("file:///tmp/hive-parquet-table")),
+      inputFormat = Some("org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat"),
+      outputFormat = Some("org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat"),
+      serde = Some("org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"),
+      compressed = false,
+      properties = Map.empty)
+
+    def catalogTable(provider: Option[String], storage: CatalogStorageFormat): CatalogTable =
+      CatalogTable(
+        identifier = TableIdentifier("hive_external_table", Some("default")),
+        tableType = CatalogTableType.EXTERNAL,
+        storage = storage,
+        schema = new StructType(),
+        provider = provider)
+
+    assert(CompactionCommand.isParquetExternalCatalogTable(
+      catalogTable(Some("hive"), parquetStorage)))
+    assert(CompactionCommand.isParquetExternalCatalogTable(
+      catalogTable(None, parquetStorage)))
+
+    val orcStorage = parquetStorage.copy(
+      inputFormat = Some("org.apache.hadoop.hive.ql.io.orc.OrcInputFormat"),
+      outputFormat = Some("org.apache.hadoop.hive.ql.io.orc.OrcOutputFormat"),
+      serde = Some("org.apache.hadoop.hive.ql.io.orc.OrcSerde"))
+    assert(!CompactionCommand.isParquetExternalCatalogTable(
+      catalogTable(Some("hive"), orcStorage)))
   }
 
   test("compaction with limited file number") {

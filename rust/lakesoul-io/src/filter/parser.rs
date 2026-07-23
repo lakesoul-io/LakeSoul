@@ -177,6 +177,21 @@ impl Parser {
                 ScalarValue::Binary(Parser::parse_binary_array(value.as_str())?),
                 None,
             ),
+            DataType::LargeBinary => Expr::Literal(
+                ScalarValue::LargeBinary(Parser::parse_binary_array(value.as_str())?),
+                None,
+            ),
+            DataType::BinaryView => Expr::Literal(
+                ScalarValue::BinaryView(Parser::parse_binary_array(value.as_str())?),
+                None,
+            ),
+            DataType::FixedSizeBinary(size) => Expr::Literal(
+                ScalarValue::FixedSizeBinary(
+                    size,
+                    Parser::parse_binary_array(value.as_str())?,
+                ),
+                None,
+            ),
             DataType::Float32 => Expr::Literal(
                 ScalarValue::Float32(Some(
                     value.parse::<f32>().map_err(|e| External(Box::new(e)))?,
@@ -227,12 +242,32 @@ impl Parser {
                 None,
             ),
             DataType::Utf8 => {
-                let value = value.as_str()[8..value.len() - 2].to_string();
+                let value = Parser::parse_binary_string(value.as_str())?;
                 Expr::Literal(ScalarValue::Utf8(Some(value)), None)
+            }
+            DataType::LargeUtf8 => {
+                let value = Parser::parse_binary_string(value.as_str())?;
+                Expr::Literal(ScalarValue::LargeUtf8(Some(value)), None)
+            }
+            DataType::Utf8View => {
+                let value = Parser::parse_binary_string(value.as_str())?;
+                Expr::Literal(ScalarValue::Utf8View(Some(value)), None)
             }
             _ => Expr::Literal(ScalarValue::Utf8(Some(value)), None),
         };
         Ok(expr)
+    }
+
+    fn parse_binary_string(value: &str) -> Result<String> {
+        let Some(value) = value
+            .strip_prefix("Binary{\"")
+            .and_then(|value| value.strip_suffix("\"}"))
+        else {
+            return Err(External(
+                report!("parse binary string failed").into_boxed_error(),
+            ));
+        };
+        Ok(value.to_string())
     }
 
     fn parse_binary_array(value: &str) -> Result<Option<Vec<u8>>> {
@@ -664,6 +699,73 @@ mod tests {
             extended_expression.base_schema.unwrap().names,
             Parser::flatten_schema_names(&df_schema)
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn parse_parquet_filter_string_preserves_utf8_container_type() -> Result<()> {
+        let cases = [
+            (DataType::Utf8, ScalarValue::Utf8(Some("a".to_string()))),
+            (
+                DataType::LargeUtf8,
+                ScalarValue::LargeUtf8(Some("a".to_string())),
+            ),
+            (
+                DataType::Utf8View,
+                ScalarValue::Utf8View(Some("a".to_string())),
+            ),
+        ];
+
+        for (data_type, expected) in cases {
+            let schema =
+                Arc::new(Schema::new(vec![Field::new("value", data_type, true)]));
+            let expr = Parser::parse("eq(value, Binary{\"a\"})".to_string(), schema)?;
+            let Expr::BinaryExpr(binary) = expr else {
+                panic!("expected binary expr")
+            };
+            let Expr::Literal(actual, _) = binary.right.as_ref() else {
+                panic!("expected literal")
+            };
+            assert_eq!(actual, &expected);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn parse_parquet_filter_string_preserves_binary_container_type() -> Result<()> {
+        let cases = [
+            (
+                DataType::Binary,
+                ScalarValue::Binary(Some(vec![1_u8, 255_u8])),
+            ),
+            (
+                DataType::LargeBinary,
+                ScalarValue::LargeBinary(Some(vec![1_u8, 255_u8])),
+            ),
+            (
+                DataType::BinaryView,
+                ScalarValue::BinaryView(Some(vec![1_u8, 255_u8])),
+            ),
+            (
+                DataType::FixedSizeBinary(2),
+                ScalarValue::FixedSizeBinary(2, Some(vec![1_u8, 255_u8])),
+            ),
+        ];
+
+        for (data_type, expected) in cases {
+            let schema =
+                Arc::new(Schema::new(vec![Field::new("value", data_type, true)]));
+            let expr = Parser::parse("eq(value, Binary{[1, -1]})".to_string(), schema)?;
+            let Expr::BinaryExpr(binary) = expr else {
+                panic!("expected binary expr")
+            };
+            let Expr::Literal(actual, _) = binary.right.as_ref() else {
+                panic!("expected literal")
+            };
+            assert_eq!(actual, &expected);
+        }
 
         Ok(())
     }

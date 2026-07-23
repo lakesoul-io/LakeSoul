@@ -18,7 +18,7 @@ from lakesoul.io import IOConfig, Writer, WriteResult
 from lakesoul.metadata import NativeMetadataClient, PostgresMetadataConfig, TableInfo
 
 DEFAULT_SCAN_BATCH_SIZE: int = 2**10
-PhysicalFormat = Literal["parquet", "vortex"]
+PhysicalFormat = Literal["parquet", "vortex", "vortex-compact"]
 _ASCII_LOWER_TRANS = str.maketrans(
     {chr(code): chr(code + 32) for code in range(ord("A"), ord("Z") + 1)}
 )
@@ -383,10 +383,10 @@ class LakeSoulTable:
     def write_config(
         self,
         *,
-        format: PhysicalFormat = "parquet",
+        format: PhysicalFormat = "vortex-compact",
     ) -> TableWriteConfig:
-        if format not in {"parquet", "vortex"}:
-            raise ValueError("format must be 'parquet' or 'vortex'")
+        if format not in {"parquet", "vortex", "vortex-compact"}:
+            raise ValueError("format must be 'parquet', 'vortex', or 'vortex-compact'")
         return TableWriteConfig(
             table_name=self.name,
             namespace=self.namespace,
@@ -402,7 +402,7 @@ class LakeSoulTable:
         self,
         data: pa.RecordBatch | pa.Table | pa.RecordBatchReader,
         *,
-        format: PhysicalFormat = "parquet",
+        format: PhysicalFormat = "vortex-compact",
         batch_size: int = 8192,
         thread_num: int | None = 1,
         max_file_size: int | None = None,
@@ -439,7 +439,7 @@ class LakeSoulTable:
         self,
         dataset: Any,
         *,
-        format: PhysicalFormat = "parquet",
+        format: PhysicalFormat = "vortex-compact",
         batch_size: int = 8192,
         thread_num: int | None = 1,
         max_file_size: int | None = None,
@@ -469,7 +469,7 @@ class LakeSoulTable:
         self,
         dataframe: Any,
         *,
-        format: PhysicalFormat = "parquet",
+        format: PhysicalFormat = "vortex-compact",
         batch_size: int = 8192,
         thread_num: int | None = 1,
         max_file_size: int | None = None,

@@ -176,15 +176,21 @@ pub(crate) fn create_leaf_writer(
         file_output_mode: FileOutputMode::SingleFile,
     };
 
-    // TODO(jiax): expose vortex write options
     let sink: Arc<dyn FileSink> = match physical_format {
         PhysicalFormat::Parquet => {
             Arc::new(ParquetSink::new(sink_config, parquet_options(io_config)))
         }
         PhysicalFormat::Vortex => Arc::new(VortexSink::new(
+            VortexSession::default().with_tokio(),
             sink_config,
             file_schema,
+            false,
+        )),
+        PhysicalFormat::VortexCompact => Arc::new(VortexSink::new(
             VortexSession::default().with_tokio(),
+            sink_config,
+            file_schema,
+            true,
         )),
     };
 
@@ -595,6 +601,42 @@ mod tests {
                 Some(&"vortex".to_string())
             );
             assert!(std::fs::metadata(path)?.len() > 0);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_vortex_compact_file_sink_write() -> Result<()> {
+        let runtime = Arc::new(Builder::new_multi_thread().enable_all().build().unwrap());
+        runtime.clone().block_on(async move {
+            let col = Arc::new(Int64Array::from_iter_values([3, 2, 1])) as ArrayRef;
+            let to_write = RecordBatch::try_from_iter([("col", col)])?;
+            let temp_dir = tempfile::tempdir()?;
+            let prefix = temp_dir
+                .path()
+                .join("compact")
+                .into_os_string()
+                .into_string()
+                .unwrap();
+            let writer_io_config = LakeSoulIOConfigBuilder::new()
+                .with_prefix(prefix)
+                .with_thread_num(2)
+                .with_batch_size(256)
+                .with_schema(to_write.schema())
+                .with_physical_format(PhysicalFormat::VortexCompact)
+                .build();
+
+            let mut async_writer = create_writer_with_io_config(writer_io_config).await?;
+            async_writer.write_record_batch(to_write.clone()).await?;
+            let outputs = async_writer.flush_and_close().await?;
+
+            assert_eq!(outputs.len(), 1);
+            assert!(outputs[0].file_path.ends_with(".vortex"));
+            assert_eq!(outputs[0].row_count, to_write.num_rows());
+            assert_eq!(
+                outputs[0].other_info.get("physical_format"),
+                Some(&"vortex-compact".to_string())
+            );
             Ok(())
         })
     }

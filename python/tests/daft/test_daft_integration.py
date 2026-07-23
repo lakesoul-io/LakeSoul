@@ -58,16 +58,17 @@ def _write_result(row_count: int) -> WriteResult:
 
 def _fake_table(schema: pa.Schema):
     committed: list[WriteResult] = []
-    table_config = TableWriteConfig(
-        table_name="target",
-        namespace="analytics",
-        path="file:///tmp/target",
-        schema=schema,
-        primary_keys=(),
-        partition_by=(),
-        hash_bucket_num=1,
-        format="parquet",
-    )
+    def write_config(format="vortex-compact"):
+        return TableWriteConfig(
+            table_name="target",
+            namespace="analytics",
+            path="file:///tmp/target",
+            schema=schema,
+            primary_keys=(),
+            partition_by=(),
+            hash_bucket_num=1,
+            format=format,
+        )
 
     class FakeCatalog:
         def _merge_object_store_options(self, overrides):
@@ -82,7 +83,7 @@ def _fake_table(schema: pa.Schema):
         name="target",
         namespace="analytics",
         catalog=FakeCatalog(),
-        write_config=lambda format="parquet": table_config,
+        write_config=write_config,
     )
     return table, committed
 

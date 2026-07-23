@@ -11,6 +11,8 @@ import com.dmetasoul.lakesoul.meta.{DBUtil, DataFileInfo, PartitionInfoScala, Sp
 import com.dmetasoul.lakesoul.spark.clean.CleanOldCompaction.{cleanOldCommitOpDiskData, splitCompactFilePath}
 import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.spark.internal.Logging
+import org.apache.spark.sql.catalyst.TableIdentifier
+import org.apache.spark.sql.catalyst.catalog.CatalogTable
 import org.apache.spark.sql.catalyst.expressions.PredicateHelper
 import org.apache.spark.sql.catalyst.types.DataTypeUtils
 import org.apache.spark.sql.connector.catalog.CatalogManager.SESSION_CATALOG_NAME
@@ -30,11 +32,27 @@ import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.{Dataset, Row, SparkSession}
 import org.apache.spark.util.Utils
 
-import java.util.UUID
+import java.util.{Locale, UUID}
 import scala.collection.JavaConverters._
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 
+object CompactionCommand {
+
+  private[commands] def isParquetExternalCatalogTable(table: CatalogTable): Boolean = {
+    val provider = table.provider.map(_.toLowerCase(Locale.ROOT))
+    val parquetProvider =
+      provider.exists(name => name == "parquet" || name.endsWith(".parquet"))
+    val parquetStorageFormat =
+      Seq(table.storage.serde, table.storage.inputFormat, table.storage.outputFormat)
+        .flatten
+        .exists(_.toLowerCase(Locale.ROOT).contains("parquet"))
+
+    parquetProvider || ((provider.isEmpty || provider.contains("hive")) && parquetStorageFormat)
+  }
+}
+
+@deprecated("This legacy compaction command will be removed in a future release.", "3.0.0")
 case class CompactionCommand(snapshotManagement: SnapshotManagement,
                              conditionString: String,
                              force: Boolean,
@@ -50,6 +68,48 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
 
   def newCompactPath: String = tableInfo.table_path.toString + "/compact_" + System.currentTimeMillis()
 
+  private def sessionCatalogTableIdentifier(spark: SparkSession, tableName: String): TableIdentifier = {
+    spark.sessionState.sqlParser.parseMultipartIdentifier(tableName) match {
+      case Seq(table) =>
+        TableIdentifier(table)
+      case Seq(database, table) =>
+        TableIdentifier(table, Some(database))
+      case Seq(catalog, database, table) if catalog.equalsIgnoreCase(SESSION_CATALOG_NAME) =>
+        TableIdentifier(table, Some(database))
+      case parts =>
+        throw new UnsupportedOperationException(
+          s"Only session catalog external tables are supported for compaction hiveTableName, " +
+            s"but got '$tableName' parsed as ${parts.mkString(".")}")
+    }
+  }
+
+  private def externalCatalogTable(spark: SparkSession, tableName: String): CatalogTable = {
+    spark.sessionState.catalog
+      .getTableMetadata(sessionCatalogTableIdentifier(spark, tableName))
+  }
+
+  private def configureExternalCatalogOutputFormat(
+      spark: SparkSession,
+      options: mutable.HashMap[String, String]): Unit = {
+    if (hiveTableName.nonEmpty) {
+      val catalogTable = externalCatalogTable(spark, hiveTableName)
+      if (!CompactionCommand.isParquetExternalCatalogTable(catalogTable)) {
+        val provider = catalogTable.provider.getOrElse("<none>")
+        val storageFormats =
+          Seq(catalogTable.storage.serde, catalogTable.storage.inputFormat,
+            catalogTable.storage.outputFormat).flatten.mkString(", ")
+        throw new UnsupportedOperationException(
+          s"Compaction external catalog table '$hiveTableName' uses provider '$provider' " +
+            s"and storage formats [$storageFormats], but only parquet external tables are supported")
+      }
+
+      // The compacted output path will be added as a partition location of a
+      // Spark/Hive external parquet table. Reads of that table bypass LakeSoul
+      // and use Spark's parquet reader directly, so the added files must be
+      // physically parquet even when LakeSoul's native default is Vortex.
+      options.put(LakeSoulOptions.FILE_FORMAT, "parquet")
+    }
+  }
 
   def getFs(sparkSession: SparkSession, path: Path): FileSystem = {
     val sessionHadoopConf = sparkSession.sessionState.newHadoopConf()
@@ -137,6 +197,7 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
     if (readPartitionInfo.nonEmpty) {
       map.put("partValue", readPartitionInfo.head.range_value)
     }
+    configureExternalCatalogOutputFormat(spark, map)
     if (fileSizeLimit.isDefined) {
       map.put("fullCompaction", "false")
       map.put(MAX_FILE_SIZE_KEY, (fileSizeLimit.get * SNAPPY_COMPRESS_RATIO).toString)
