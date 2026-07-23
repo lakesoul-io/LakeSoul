@@ -440,16 +440,18 @@ impl<C: CursorValues, R: RangeCombinerTrait<C>> SortedStreamMerger<C, R> {
             let stream = &mut self.streams.streams[idx];
             if stream.is_terminated() {
                 debug!("stream[{idx}] terminated");
+                self.initialized[idx] = true;
+                self.range_combiner.mark_stream_exhausted(idx);
                 return Poll::Ready(Ok(()));
             }
 
             // Fetch a new input record and create a RecordBatchRanges from it
             match futures::ready!(stream.poll_next_unpin(cx)) {
                 None => {
-                    return {
-                        debug!("stream[{idx}] exhausted");
-                        Poll::Ready(Ok(()))
-                    };
+                    debug!("stream[{idx}] exhausted");
+                    self.initialized[idx] = true;
+                    self.range_combiner.mark_stream_exhausted(idx);
+                    return Poll::Ready(Ok(()));
                 }
                 Some(Err(e)) => {
                     error!("{e}");
@@ -695,6 +697,69 @@ mod tests {
             ],
             &merged
         );
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn test_use_last_merger_handles_exhausted_input_streams() -> Result<()> {
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+        let non_empty = create_batch_one_col_i32("id", &[1, 2]);
+        let empty = create_batch_one_col_i32("id", &[]);
+        let schema = non_empty.schema();
+        let primary_keys = Arc::new(vec!["id".to_string()]);
+        let pool = Arc::new(GreedyMemoryPool::new(100 * 1024 * 1024)) as _;
+
+        // Predicate pushdown can exhaust some file streams before they emit a
+        // non-empty batch. The UseLast loser tree must still initialize them.
+        let streams = vec![
+            create_stream(vec![non_empty], task_ctx.clone()).await?,
+            create_stream(vec![empty.clone()], task_ctx.clone()).await?,
+            create_stream(vec![empty.clone()], task_ctx.clone()).await?,
+            create_stream(vec![empty.clone()], task_ctx.clone()).await?,
+        ];
+        let reservation = MemoryConsumer::new("partially-exhausted").register(&pool);
+        let merge_stream = build_sorted_stream_merger(
+            streams,
+            primary_keys.clone(),
+            schema.clone(),
+            schema.clone(),
+            2,
+            Arc::new(HashMap::new()),
+            vec![],
+            reservation,
+            vec![false; 4],
+        )?;
+        let merged = common::collect(merge_stream).await?;
+        assert_batches_eq!(
+            &["+----+", "| id |", "+----+", "| 1  |", "| 2  |", "+----+"],
+            &merged
+        );
+
+        // A point-lookup miss can exhaust every stream. It should return no
+        // rows rather than fail loser-tree initialization.
+        let streams = vec![
+            create_stream(vec![empty.clone()], task_ctx.clone()).await?,
+            create_stream(vec![empty.clone()], task_ctx.clone()).await?,
+            create_stream(vec![empty.clone()], task_ctx.clone()).await?,
+            create_stream(vec![empty], task_ctx.clone()).await?,
+        ];
+        let reservation = MemoryConsumer::new("fully-exhausted").register(&pool);
+        let merge_stream = build_sorted_stream_merger(
+            streams,
+            primary_keys,
+            schema.clone(),
+            schema,
+            2,
+            Arc::new(HashMap::new()),
+            vec![],
+            reservation,
+            vec![false; 4],
+        )?;
+        let merged = common::collect(merge_stream).await?;
+        assert!(merged.is_empty());
+
+        Ok(())
     }
 
     fn create_batch_i32(names: Vec<&str>, values: Vec<&[i32]>) -> RecordBatch {
