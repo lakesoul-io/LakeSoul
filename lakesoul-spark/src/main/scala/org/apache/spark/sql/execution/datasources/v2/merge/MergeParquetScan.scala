@@ -92,13 +92,13 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
         (k, options.get(k))
       }).toMap
 
-    //whether this scan is compaction command or not
+    // whether this scan is compaction command or not
     val isCompactionCommand = options.getOrDefault("isCompaction", "false").toBoolean
 
-    //compacted files + not merged files
+    // compacted files + not merged files
     val remainFiles = new ArrayBuffer[DataFileInfo]()
 
-    //todo 需要修改
+    // todo 需要修改
     partitionGroupedFiles.foreach(partition => {
       val sortedFiles = partition
       remainFiles ++= LakeSoulPartFileMerge.partMergeCompaction(
@@ -155,21 +155,13 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
         (realColName, mergeClass)
       }).toMap
 
-    // remove cdc filter from pushedFilters;cdc filter Not(EqualTo("cdccolumn","detete"))
-    var newFilters = pushedFilters
-    if (LakeSoulTableForCdc.isLakeSoulCdcTable(tableInfo)) {
-      newFilters = pushedFilters.filter(_ match {
-        case Not(EqualTo(attribute, value)) if value == "delete" && LakeSoulTableForCdc.isLakeSoulCdcTable(tableInfo) => false
-        case _ => true
-      })
-    }
     val defaultMergeOpInfoString = sparkSession.sessionState.conf.getConfString("defaultMergeOpInfo",
       "org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.DefaultMergeOp")
     val defaultMergeOp = Class.forName(defaultMergeOpInfoString, true, Utils.getContextOrSparkClassLoader).getConstructors()(0)
       .newInstance()
       .asInstanceOf[MergeOperator[Any]]
     NativeMergePartitionReaderFactory(sparkSession.sessionState.conf, broadcastedConf,
-      dataSchema, readDataSchema, readPartitionSchema, newFilters, mergeOperatorInfo, defaultMergeOp, options.asScala.toMap)
+      dataSchema, readDataSchema, readPartitionSchema, pushedFilters, mergeOperatorInfo, defaultMergeOp, options.asScala.toMap)
   }
 
   protected def seqToString(seq: Seq[Any]): String = seq.mkString("[", ", ", "]")
