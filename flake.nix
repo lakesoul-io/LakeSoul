@@ -127,7 +127,7 @@
         #
         default =
           pkgs.mkShell {
-
+            hardeningDisable = ["fortify" "fortify3"];
             packages = commonPackages;
 
             shellHook = commonEnv;
