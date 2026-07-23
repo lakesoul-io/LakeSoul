@@ -28,6 +28,7 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 import static com.facebook.presto.lakesoul.util.PrestoUtil.CDC_CHANGE_COLUMN;
+import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
 
 public class LakeSoulMetadata implements ConnectorMetadata {
 
@@ -39,28 +40,95 @@ public class LakeSoulMetadata implements ConnectorMetadata {
         this.typeConverter = new ArrowBlockBuilder(typeManager);
     }
 
+    private static boolean isCaseSensitiveNameMatching() {
+        LakeSoulConfig config = LakeSoulConfig.getInstance();
+        return config != null && config.isCaseSensitiveNameMatching();
+    }
+
+    @Override
+    public String normalizeIdentifier(ConnectorSession session, String identifier) {
+        return isCaseSensitiveNameMatching() ? identifier : identifier.toLowerCase(Locale.ENGLISH);
+    }
+
     @Override
     public List<String> listSchemaNames(ConnectorSession session) {
-        return dbManager.listNamespaces();
+        return dbManager.listNamespaces().stream()
+                .map(namespace -> normalizeIdentifier(session, namespace))
+                .distinct()
+                .collect(Collectors.toList());
+    }
+
+    private String resolvePhysicalNamespace(ConnectorSession session, String logicalNamespace) {
+        if (isCaseSensitiveNameMatching()) {
+            return dbManager.listNamespaces().contains(logicalNamespace)
+                    ? logicalNamespace
+                    : null;
+        }
+
+        List<String> matchedNamespaces = dbManager.listNamespaces().stream()
+                .filter(namespace -> normalizeIdentifier(session, namespace).equals(logicalNamespace))
+                .collect(Collectors.toList());
+
+        if (matchedNamespaces.size() > 1) {
+            throw new PrestoException(
+                    NOT_SUPPORTED,
+                    String.format(
+                            "Multiple LakeSoul schemas match case-insensitive name '%s': %s. " +
+                                    "Set case-sensitive-name-matching=true to distinguish them.",
+                            logicalNamespace,
+                            matchedNamespaces));
+        }
+
+        return matchedNamespaces.isEmpty() ? null : matchedNamespaces.get(0);
     }
 
     @Override
     public List<SchemaTableName> listTables(ConnectorSession session, Optional<String> schemaName) {
-        String namespace = schemaName.orElse("default");
-        return dbManager.listTableNamesByNamespace(namespace)
+        String logicalNamespace = schemaName.orElse("default");
+        String physicalNamespace = resolvePhysicalNamespace(session, logicalNamespace);
+        if (physicalNamespace == null) {
+            return Collections.emptyList();
+        }
+
+        return dbManager.listTableNamesByNamespace(physicalNamespace)
                 .stream()
-                .map(name -> new SchemaTableName(namespace, name))
+                .map(name -> new SchemaTableName(
+                        logicalNamespace,
+                        normalizeIdentifier(session, name)))
                 .collect(Collectors.toList());
     }
 
     @Override
     public ConnectorTableHandle getTableHandle(ConnectorSession session, SchemaTableName tableName) {
-        if (!listSchemaNames(session).contains(tableName.getSchemaName())) {
+        String physicalNamespace = resolvePhysicalNamespace(session, tableName.getSchemaName());
+        if (physicalNamespace == null) {
             return null;
         }
+
+        String physicalTableName = tableName.getTableName();
+        if (!isCaseSensitiveNameMatching()) {
+            List<String> matchedTableNames = dbManager.listTableNamesByNamespace(physicalNamespace)
+                    .stream()
+                    .filter(name -> normalizeIdentifier(session, name).equals(tableName.getTableName()))
+                    .collect(Collectors.toList());
+
+            if (matchedTableNames.size() > 1) {
+                throw new PrestoException(
+                        NOT_SUPPORTED,
+                        String.format(
+                                "Multiple LakeSoul tables match case-insensitive name '%s': %s. " +
+                                        "Set case-sensitive-name-matching=true to distinguish them.",
+                                tableName,
+                                matchedTableNames));
+            }
+            if (!matchedTableNames.isEmpty()) {
+                physicalTableName = matchedTableNames.get(0);
+            }
+        }
+
         TableInfo
                 tableInfo =
-                dbManager.getTableInfoByNameAndNamespace(tableName.getTableName(), tableName.getSchemaName());
+                dbManager.getTableInfoByNameAndNamespace(physicalTableName, physicalNamespace);
 
         if (tableInfo == null) {
             throw new RuntimeException("no such table: " + tableName);
@@ -159,7 +227,7 @@ public class LakeSoulMetadata implements ConnectorMetadata {
             }
 
             ColumnMetadata columnMetadata = ColumnMetadata.builder()
-                    .setName(field.getName())
+                    .setName(normalizeIdentifier(session, field.getName()))
                     .setType(typeConverter.getPrestoTypeFromArrowField(field))
                     .setNullable(field.isNullable())
                     .setComment(field.getMetadata().getOrDefault("spark_comment", ""))
@@ -206,12 +274,13 @@ public class LakeSoulMetadata implements ConnectorMetadata {
             if (field.getName().equals(cdcChangeColumn)) {
                 continue;
             }
+            String logicalName = normalizeIdentifier(session, field.getName());
             LakeSoulTableColumnHandle columnHandle =
                     new LakeSoulTableColumnHandle(table,
                             field.getName(),
                             typeConverter.getPrestoTypeFromArrowField(field),
                             field);
-            map.put(field.getName(), columnHandle);
+            map.put(logicalName, columnHandle);
         }
         return map;
     }
@@ -224,7 +293,7 @@ public class LakeSoulMetadata implements ConnectorMetadata {
         Field field = handle.getArrowField();
         Map<String, Object> properties = new HashMap<>(field.getMetadata());
         return ColumnMetadata.builder()
-                .setName(field.getName())
+                .setName(normalizeIdentifier(session, handle.getColumnName()))
                 .setType(typeConverter.getPrestoTypeFromArrowField(field))
                 .setNullable(field.isNullable())
                 .setComment(field.getMetadata().getOrDefault("spark_comment", ""))
@@ -238,17 +307,26 @@ public class LakeSoulMetadata implements ConnectorMetadata {
     public Map<SchemaTableName, List<ColumnMetadata>> listTableColumns(ConnectorSession session,
                                                                        SchemaTablePrefix prefix) {
         //prefix: lakesoul.default.table1
-        String schema = prefix.getSchemaName();
+        String logicalSchema = prefix.getSchemaName();
+        String physicalSchema = resolvePhysicalNamespace(session, logicalSchema);
+        if (physicalSchema == null) {
+            return Collections.emptyMap();
+        }
+
         String tableNamePrefix = prefix.getTableName();
-        List<String> tableNames = dbManager.listTableNamesByNamespace(schema);
+        List<String> tableNames = dbManager.listTableNamesByNamespace(physicalSchema);
         Map<SchemaTableName, List<ColumnMetadata>> results = new HashMap<>();
-        for (String tableName : tableNames) {
-            if (tableName.startsWith(tableNamePrefix)) {
-                SchemaTableName schemaTableName = new SchemaTableName(schema, tableName);
-                ConnectorTableHandle tableHandle = getTableHandle(session, schemaTableName);
-                ConnectorTableMetadata tableMetadata = getTableMetadata(session, tableHandle);
-                results.put(schemaTableName, tableMetadata.getColumns());
+        for (String physicalTableName : tableNames) {
+            String logicalTableName = normalizeIdentifier(session, physicalTableName);
+            if (tableNamePrefix != null &&
+                    !logicalTableName.startsWith(normalizeIdentifier(session, tableNamePrefix))) {
+                continue;
             }
+
+            SchemaTableName schemaTableName = new SchemaTableName(logicalSchema, logicalTableName);
+            ConnectorTableHandle tableHandle = getTableHandle(session, schemaTableName);
+            ConnectorTableMetadata tableMetadata = getTableMetadata(session, tableHandle);
+            results.put(schemaTableName, tableMetadata.getColumns());
         }
         return results;
     }

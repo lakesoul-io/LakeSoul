@@ -9,6 +9,7 @@ import com.dmetasoul.lakesoul.meta.NamespaceTableName;
 import com.facebook.airlift.log.Logger;
 import com.facebook.presto.common.CatalogSchemaName;
 import com.facebook.presto.common.QualifiedObjectName;
+import com.facebook.presto.lakesoul.LakeSoulConfig;
 import com.facebook.presto.spi.CatalogSchemaTableName;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.security.*;
@@ -35,6 +36,25 @@ public class LakeSoulSystemAccessControl implements SystemAccessControl {
 
     private final Set<String> sensitiveSystemSessionPropertiesAllowDomains;
     private final Set<String> systemSchemas;
+
+    private static String normalizeIdentifier(String identifier) {
+        LakeSoulConfig config = LakeSoulConfig.getInstance();
+        return config != null && config.isCaseSensitiveNameMatching()
+                ? identifier
+                : identifier.toLowerCase(Locale.ENGLISH);
+    }
+
+    private static SchemaTableName normalizeSchemaTableName(NamespaceTableName tableName) {
+        return new SchemaTableName(
+                normalizeIdentifier(tableName.getNamespace()),
+                normalizeIdentifier(tableName.getTableName()));
+    }
+
+    private static Set<String> normalizeNamespaces(Collection<String> namespaces) {
+        return namespaces.stream()
+                .map(LakeSoulSystemAccessControl::normalizeIdentifier)
+                .collect(Collectors.toSet());
+    }
 
     public LakeSoulSystemAccessControl(
             Set<String> sensitiveSystemSessionProperties,
@@ -165,13 +185,13 @@ public class LakeSoulSystemAccessControl implements SystemAccessControl {
                 if (!domain.equals(publicDomain)) {
                     namespaces.addAll(dbManager.listNamespacesByDomain(domain));
                 }
-                filteredSchemas.retainAll(namespaces);
+                filteredSchemas.retainAll(normalizeNamespaces(namespaces));
                 log.info("Filter schemas by domain <%s + public>, original schemas: %s, filtered schemas: %s",
                         domain, schemaNames, filteredSchemas);
                 return filteredSchemas;
             }
         }
-        filteredSchemas.retainAll(publicAndSystemNamespaces);
+        filteredSchemas.retainAll(normalizeNamespaces(publicAndSystemNamespaces));
         log.info("Filter schemas by domain <public>, original schemas: %s, filtered schemas: %s",
                 schemaNames, filteredSchemas);
         return filteredSchemas;
@@ -198,9 +218,9 @@ public class LakeSoulSystemAccessControl implements SystemAccessControl {
                 if (!domain.equals(publicDomain)) {
                     tables.addAll(dbManager.listTableNamesByDomain(domain));
                 }
-                List<SchemaTableName> schemaTableNames = tables.stream().map(e -> {
-                    return new SchemaTableName(e.getNamespace(), e.getTableName());
-                }).collect(Collectors.toList());
+                List<SchemaTableName> schemaTableNames = tables.stream()
+                        .map(LakeSoulSystemAccessControl::normalizeSchemaTableName)
+                        .collect(Collectors.toList());
                 filteredTableNames.retainAll(schemaTableNames);
                 filteredTableNames.addAll(
                         tableNames.stream().filter(e -> {
@@ -212,9 +232,9 @@ public class LakeSoulSystemAccessControl implements SystemAccessControl {
                 return filteredTableNames;
             }
         }
-        List<SchemaTableName> schemaTableNames = publicTables.stream().map(e -> {
-            return new SchemaTableName(e.getNamespace(), e.getTableName());
-        }).collect(Collectors.toList());
+        List<SchemaTableName> schemaTableNames = publicTables.stream()
+                .map(LakeSoulSystemAccessControl::normalizeSchemaTableName)
+                .collect(Collectors.toList());
         filteredTableNames.retainAll(schemaTableNames);
         filteredTableNames.addAll(
                 tableNames.stream().filter(e -> {
@@ -237,7 +257,7 @@ public class LakeSoulSystemAccessControl implements SystemAccessControl {
                 if (!domain.equals(publicDomain)) {
                     namespaces.addAll(dbManager.listNamespacesByDomain(domain));
                 }
-                if (!namespaces.contains(schema.getSchemaName())) {
+                if (!normalizeNamespaces(namespaces).contains(schema.getSchemaName())) {
                     throw new AccessDeniedException(
                             String.format(
                                     "Access denied: user '%s' and domain '%s' is not allowed to show tables metadata in schema '%s'.",
@@ -246,7 +266,7 @@ public class LakeSoulSystemAccessControl implements SystemAccessControl {
                 return;
             }
         }
-        if (!publicAndSystemNamespaces.contains(schema.getSchemaName())) {
+        if (!normalizeNamespaces(publicAndSystemNamespaces).contains(schema.getSchemaName())) {
             throw new AccessDeniedException(
                     String.format("Access denied: user '%s' is not allowed to show tables metadata in schema '%s'.",
                             identity.getUser(), schema.getSchemaName()));

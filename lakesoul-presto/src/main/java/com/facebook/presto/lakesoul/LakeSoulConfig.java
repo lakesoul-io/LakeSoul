@@ -32,6 +32,7 @@ public class LakeSoulConfig {
         this.user = config.get("fs.hdfs.user");
         this.virtualPathStyle = Boolean.parseBoolean(config.getOrDefault("fs.s3a.path.style.access", "false"));
         this.timeZone = config.getOrDefault("timezone","");
+        this.caseSensitiveNameMatching = Boolean.parseBoolean(config.getOrDefault("case-sensitive-name-matching", "false"));
     }
 
     private String accessKey;
@@ -44,6 +45,7 @@ public class LakeSoulConfig {
     private String defaultFS;
     private String timeZone;
     private boolean virtualPathStyle;
+    private boolean caseSensitiveNameMatching;
 
 
     public String getAccessKey() {
@@ -124,5 +126,13 @@ public class LakeSoulConfig {
 
     public void setVirtualPathStyle(boolean virtualPathStyle) {
         this.virtualPathStyle = virtualPathStyle;
+    }
+
+    public boolean isCaseSensitiveNameMatching() {
+        return caseSensitiveNameMatching;
+    }
+
+    public void setCaseSensitiveNameMatching(boolean caseSensitiveNameMatching) {
+        this.caseSensitiveNameMatching = caseSensitiveNameMatching;
     }
 }
