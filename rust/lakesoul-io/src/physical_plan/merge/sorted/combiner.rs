@@ -71,6 +71,7 @@ fn interleave_normalized(
 
 pub(crate) trait RangeCombinerTrait<C: CursorValues>: Unpin {
     fn push_range(&mut self, range: SortKeyBatchRange<C>);
+    fn mark_stream_exhausted(&mut self, _stream_idx: usize) {}
     fn poll_result(&mut self) -> RangeCombinerResult<C>;
 }
 
@@ -828,6 +829,13 @@ impl<C: CursorValues, const IS_PARTIAL_MERGE: bool> RangeCombinerTrait<C>
 {
     fn push_range(&mut self, range: SortKeyBatchRange<C>) {
         self.push(range);
+    }
+
+    fn mark_stream_exhausted(&mut self, _stream_idx: usize) {
+        // `None` in `ranges` is the exhausted-stream sentinel used by the loser
+        // tree. Count it as initialized so pruning an entire input does not
+        // block initialization of the remaining streams.
+        self.ranges_counter += 1;
     }
 
     fn poll_result(&mut self) -> RangeCombinerResult<C> {
