@@ -32,7 +32,12 @@ def test_writer_accepts_arrow_inputs_and_finishes_once(tmp_path: Path) -> None:
     batch = _batch()
     table = pa.Table.from_batches([batch])
     reader = pa.RecordBatchReader.from_batches(batch.schema, [batch])
-    config = IOConfig(path=tmp_path / "data", schema=batch.schema, batch_size=1)
+    config = IOConfig(
+        path=tmp_path / "data",
+        schema=batch.schema,
+        format="parquet",
+        batch_size=1,
+    )
 
     with Writer(config) as writer:
         assert writer.write(batch) == 2
@@ -65,6 +70,7 @@ def test_writer_dynamic_partitions(tmp_path: Path) -> None:
     config = IOConfig(
         path=tmp_path / "partitioned",
         schema=table.schema,
+        format="parquet",
         partition_by=["part"],
     )
 
@@ -165,6 +171,21 @@ def test_writer_vortex_output(tmp_path: Path) -> None:
     output_path = _local_path(result.files[0].path)
     assert output_path.suffix == ".vortex"
     assert output_path.exists()
+
+
+def test_writer_defaults_to_vortex_compact_output(tmp_path: Path) -> None:
+    batch = _batch()
+    writer = Writer(IOConfig(path=tmp_path / "default", schema=batch.schema))
+
+    writer.write(batch)
+    result = writer.finish()
+
+    assert result.row_count == 2
+    assert len(result.files) == 1
+    output_path = _local_path(result.files[0].path)
+    assert output_path.suffix == ".vortex"
+    assert output_path.exists()
+    assert result.files[0].other_info["physical_format"] == "vortex-compact"
 
 
 @pytest.mark.parametrize(

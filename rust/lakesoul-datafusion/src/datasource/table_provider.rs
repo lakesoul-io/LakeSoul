@@ -21,9 +21,8 @@ use datafusion::datasource::file_format::FileFormat;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{ListingOptions, ListingTableUrl, PartitionedFile};
 use datafusion::datasource::physical_plan::{
-    FileGroup, FileScanConfig, FileScanConfigBuilder, FileSinkConfig,
+    FileGroup, FileScanConfigBuilder, FileSinkConfig,
 };
-use datafusion::datasource::source::DataSource;
 use datafusion::datasource::table_schema::TableSchema;
 use datafusion::error::{DataFusionError, Result as DFResult};
 use datafusion::logical_expr::dml::InsertOp;
@@ -758,8 +757,10 @@ impl TableProvider for LakeSoulTableProvider {
             project_schema(table_schema.table_schema(), merged_projection.as_ref())?;
 
         let filter = if let Some(expr) = conjunction(filters.to_vec()) {
-            // NOTE: Use the table schema (NOT file schema) here because `expr` may contain references to partition columns.
-            let table_df_schema = self.schema().as_ref().clone().to_dfschema()?;
+            // Filters are evaluated before projection and may reference partition
+            // columns or columns omitted from the output projection.
+            let table_df_schema =
+                table_schema.table_schema().as_ref().clone().to_dfschema()?;
             Some(create_physical_expr(
                 &expr,
                 &table_df_schema,
@@ -783,8 +784,18 @@ impl TableProvider for LakeSoulTableProvider {
         let mut flatten_configs = vec![];
         for group in format_groups {
             let file_format = self.format_registry.file_format(group.physical_format);
-            let file_source = file_format.file_source(table_schema.clone());
-            let mut scan_config =
+            let mut file_source = file_format.file_source(table_schema.clone());
+            if let Some(filter) = &filter {
+                let result = file_source.try_pushdown_filters(
+                    vec![filter.clone()],
+                    session_state.config_options(),
+                )?;
+                if let Some(updated_source) = result.updated_node {
+                    file_source = updated_source;
+                }
+            }
+
+            let scan_config =
                 FileScanConfigBuilder::new(group.object_store_url, file_source)
                     .with_file_groups(
                         group
@@ -804,28 +815,6 @@ impl TableProvider for LakeSoulTableProvider {
                             .file_compression_type(group.physical_format),
                     )
                     .build();
-
-            if let Some(filter) = &filter {
-                let res = scan_config.try_pushdown_filters(
-                    vec![filter.clone()],
-                    session_state.config_options(),
-                )?;
-                match res.updated_node {
-                    Some(sc) => {
-                        debug!("apply new scan config");
-                        debug!("filters: {:?}", res.filters);
-                        scan_config = sc
-                            .downcast_ref::<FileScanConfig>()
-                            .ok_or(DataFusionError::Internal(
-                                "Failed to downcast FileScanConfig".into(),
-                            ))?
-                            .clone();
-                    }
-                    None => {
-                        debug!("no updated node")
-                    }
-                }
-            }
 
             let group_flatten_configs = flatten_file_scan_config_for_format(
                 session_state,

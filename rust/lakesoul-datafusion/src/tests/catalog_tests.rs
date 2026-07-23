@@ -83,8 +83,8 @@ fn random_tables(
                     .unwrap_or(env::temp_dir())
                     .to_str()
                     .unwrap(),
-                &np.namespace,
-                &table_name
+                np.namespace,
+                table_name
             );
             let table_id = format!(
                 "table_{}",

@@ -25,21 +25,22 @@ def _fake_table(
     primary_keys: tuple[str, ...] = (),
     partition_by: tuple[str, ...] = (),
     hash_bucket_num: int = 1,
-    format: str = "parquet",
+    format: str = "vortex-compact",
     object_store_options: dict[str, str] | None = None,
 ):
     committed: list[tuple[str, str, list[tuple[str, str, int, list[str]]]]] = []
 
-    table_config = TableWriteConfig(
-        table_name="target",
-        namespace=namespace,
-        path=path.as_uri(),
-        schema=schema,
-        primary_keys=primary_keys,
-        partition_by=partition_by,
-        hash_bucket_num=hash_bucket_num,
-        format=format,  # type: ignore[arg-type]
-    )
+    def write_config(format: str = format):
+        return TableWriteConfig(
+            table_name="target",
+            namespace=namespace,
+            path=path.as_uri(),
+            schema=schema,
+            primary_keys=primary_keys,
+            partition_by=partition_by,
+            hash_bucket_num=hash_bucket_num,
+            format=format,  # type: ignore[arg-type]
+        )
 
     class FakeCatalog:
         def __init__(self) -> None:
@@ -59,16 +60,20 @@ def _fake_table(
         name="target",
         namespace=namespace,
         catalog=FakeCatalog(),
-        write_config=lambda format="parquet": table_config,
+        write_config=write_config,
     )
     return table, committed
 
 
 def test_datasink_writes_arrow_blocks_and_commits_once(tmp_path: Path) -> None:
     table = pa.table({"id": [1, 2], "value": ["a", "b"]})
-    table_handle, committed = _fake_table(tmp_path / "table", table.schema)
+    table_handle, committed = _fake_table(
+        tmp_path / "table",
+        table.schema,
+        format="parquet",
+    )
 
-    datasink = LakeSoulDatasink(table_handle)
+    datasink = LakeSoulDatasink(table_handle, format="parquet")
     task_result = datasink.write([table.slice(0, 1), table.slice(1, 1)], None)
     datasink.on_write_complete(SimpleNamespace(write_returns=[task_result]))
 
@@ -90,6 +95,18 @@ def test_datasink_writes_arrow_blocks_and_commits_once(tmp_path: Path) -> None:
             ],
         )
     ]
+
+
+def test_datasink_defaults_to_vortex_compact(tmp_path: Path) -> None:
+    table = pa.table({"id": [1], "value": ["a"]})
+    table_handle, _ = _fake_table(tmp_path / "table", table.schema)
+
+    datasink = LakeSoulDatasink(table_handle)
+    task_result = datasink.write([table], None)
+
+    assert len(task_result.files) == 1
+    assert task_result.files[0].path.endswith(".vortex")
+    assert task_result.files[0].other_info["physical_format"] == "vortex-compact"
 
 
 def test_datasink_write_result_is_pickleable_before_commit(tmp_path: Path) -> None:

@@ -45,7 +45,7 @@ def write_lakesoul(
     dataframe: Any,
     table: LakeSoulTable,
     *,
-    format: Literal["parquet", "vortex"] = "parquet",
+    format: Literal["parquet", "vortex", "vortex-compact"] = "vortex-compact",
     batch_size: int = 8192,
     thread_num: int | None = 1,
     max_file_size: int | None = None,
@@ -56,8 +56,8 @@ def write_lakesoul(
 ) -> WriteResult:
     """Write a Daft DataFrame to an existing LakeSoulTable."""
     _require_daft()
-    if format not in {"parquet", "vortex"}:
-        raise ValueError("format must be 'parquet' or 'vortex'")
+    if format not in {"parquet", "vortex", "vortex-compact"}:
+        raise ValueError("format must be 'parquet', 'vortex', or 'vortex-compact'")
 
     write_config = table.write_config(format=format)
     writer_config = IOConfig(

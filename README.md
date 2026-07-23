@@ -44,7 +44,7 @@ LakeSoul is a cloud-native Lakehouse framework that supports scalable metadata m
 
 LakeSoul supports multiple computing engines to read and write lake warehouse table data, including Spark, Flink, Presto, PyTorch, Ray and Daft. LakeSoul supports storage systems such as HDFS and S3.
 
-LakeSoul supports two file formats: parquet(default) and [vortex](https://vortex.dev/). Vortex file format can be used to store multimodal data and vector embeddings.
+LakeSoul supports three physical file format modes: vortex-compact (default), parquet, and [vortex](https://vortex.dev/). Vortex file format can be used to store multimodal data and vector embeddings.
 
 ![LakeSoul Arch](website/static/img/lakeSoulModel.png)
 

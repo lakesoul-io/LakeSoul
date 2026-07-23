@@ -14,7 +14,7 @@ import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
 import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
 import org.apache.flink.lakesoul.sink.writer.AbstractLakeSoulMultiTableSinkWriter;
-import org.apache.flink.lakesoul.sink.writer.NativeParquetWriter;
+import org.apache.flink.lakesoul.sink.writer.NativeLakeSoulWriter;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter;
@@ -91,9 +91,9 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
         List<String> files = new ArrayList<>();
         for (InProgressFileWriter.PendingFileRecoverable pendingFileRecoverable :
                 pendingFiles) {
-            if (pendingFileRecoverable instanceof NativeParquetWriter.NativeWriterPendingFileRecoverable) {
-                NativeParquetWriter.NativeWriterPendingFileRecoverable recoverable =
-                        (NativeParquetWriter.NativeWriterPendingFileRecoverable) pendingFileRecoverable;
+            if (pendingFileRecoverable instanceof NativeLakeSoulWriter.NativeWriterPendingFileRecoverable) {
+                NativeLakeSoulWriter.NativeWriterPendingFileRecoverable recoverable =
+                        (NativeLakeSoulWriter.NativeWriterPendingFileRecoverable) pendingFileRecoverable;
                 files.add(recoverable.path);
             }
         }
