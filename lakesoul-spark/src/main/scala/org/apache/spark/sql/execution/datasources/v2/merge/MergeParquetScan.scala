@@ -56,7 +56,7 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
 
   def isSplittable(path: Path): Boolean = false
 
-  //it may has to many delta files, check if we should compact part of files first to save memory
+  //it may have many delta files, check if we should compact part of files first to save memory
   lazy val newFileIndex: LakeSoulFileIndexV2 = compactAndReturnNewFileIndex(fileIndex)
 
   val snapshotManagement: SnapshotManagement = fileIndex.snapshotManagement
