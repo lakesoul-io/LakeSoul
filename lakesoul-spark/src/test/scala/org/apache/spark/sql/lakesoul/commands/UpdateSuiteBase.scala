@@ -7,7 +7,7 @@ package org.apache.spark.sql.lakesoul.commands
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf.NATIVE_IO_ENABLE
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf.{NATIVE_IO_ENABLE, NATIVE_IO_PHYSICAL_FORMAT}
 import org.apache.spark.sql.lakesoul.test.{LakeSoulTestBeforeAndAfterEach, LakeSoulTestUtils}
 import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
 import org.apache.spark.sql.types._
@@ -595,47 +595,49 @@ abstract class UpdateSuiteBase
 
 
   test("nested data - negative case") {
-    val targetDF = spark.read.json(
-      """
-        {"a": {"c": {"d": 'random', "e": 'str'}, "g": 1}, "z": 10}
-        {"a": {"c": {"d": 'random2', "e": 'str2'}, "g": 2}, "z": 20}"""
-        .split("\n").toSeq.toDS())
+    withSQLConf(NATIVE_IO_PHYSICAL_FORMAT.key -> "parquet") {
+      val targetDF = spark.read.json(
+        """
+          {"a": {"c": {"d": 'random', "e": 'str'}, "g": 1}, "z": 10}
+          {"a": {"c": {"d": 'random2', "e": 'str2'}, "g": 2}, "z": 20}"""
+          .split("\n").toSeq.toDS())
 
-    testAnalysisException(
-      targetDF,
-      set = "a.c = 'RANDOM2'" :: Nil,
-      where = "z = 10",
-      errMsgs = "data type mismatch" :: Nil)
+      testAnalysisException(
+        targetDF,
+        set = "a.c = 'RANDOM2'" :: Nil,
+        where = "z = 10",
+        errMsgs = "data type mismatch" :: Nil)
 
-    testAnalysisException(
-      targetDF,
-      set = "a.c.z = 'RANDOM2'" :: Nil,
-      errMsgs = "No such struct field" :: Nil)
+      testAnalysisException(
+        targetDF,
+        set = "a.c.z = 'RANDOM2'" :: Nil,
+        errMsgs = "No such struct field" :: Nil)
 
-    testAnalysisException(
-      targetDF,
-      set = "a.c = named_struct('d', 'rand', 'e', 'str')" :: "a.c.d = 'RANDOM2'" :: Nil,
-      errMsgs = "There is a conflict from these SET columns" :: Nil)
+      testAnalysisException(
+        targetDF,
+        set = "a.c = named_struct('d', 'rand', 'e', 'str')" :: "a.c.d = 'RANDOM2'" :: Nil,
+        errMsgs = "There is a conflict from these SET columns" :: Nil)
 
-    testAnalysisException(
-      targetDF,
-      set =
-        Seq("a = named_struct('c', named_struct('d', 'rand', 'e', 'str'))", "a.c.d = 'RANDOM2'"),
-      errMsgs = "There is a conflict from these SET columns" :: Nil)
+      testAnalysisException(
+        targetDF,
+        set =
+          Seq("a = named_struct('c', named_struct('d', 'rand', 'e', 'str'))", "a.c.d = 'RANDOM2'"),
+        errMsgs = "There is a conflict from these SET columns" :: Nil)
 
-    val schema = new StructType().add("a", MapType(StringType, IntegerType))
-    val mapData = spark.read.schema(schema).json(Seq("""{"a": {"b": 1}}""").toDS())
-    testAnalysisException(
-      mapData,
-      set = "a.b = -1" :: Nil,
-      errMsgs = "Updating nested fields is only supported for StructType" :: Nil)
+      val schema = new StructType().add("a", MapType(StringType, IntegerType))
+      val mapData = spark.read.schema(schema).json(Seq("""{"a": {"b": 1}}""").toDS())
+      testAnalysisException(
+        mapData,
+        set = "a.b = -1" :: Nil,
+        errMsgs = "Updating nested fields is only supported for StructType" :: Nil)
 
-    // Updating an ArrayStruct is not supported
-    val arrayStructData = spark.read.json(Seq("""{"a": [{"b": 1}, {"b": 2}]}""").toDS())
-    testAnalysisException(
-      arrayStructData,
-      set = "a.b = -1" :: Nil,
-      errMsgs = "data type mismatch" :: Nil)
+      // Updating an ArrayStruct is not supported
+      val arrayStructData = spark.read.json(Seq("""{"a": [{"b": 1}, {"b": 2}]}""").toDS())
+      testAnalysisException(
+        arrayStructData,
+        set = "a.b = -1" :: Nil,
+        errMsgs = "data type mismatch" :: Nil)
+    }
   }
 
 

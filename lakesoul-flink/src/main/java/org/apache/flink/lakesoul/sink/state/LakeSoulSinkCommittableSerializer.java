@@ -10,7 +10,7 @@ import org.apache.flink.core.memory.DataInputDeserializer;
 import org.apache.flink.core.memory.DataInputView;
 import org.apache.flink.core.memory.DataOutputSerializer;
 import org.apache.flink.core.memory.DataOutputView;
-import org.apache.flink.lakesoul.sink.writer.NativeParquetWriter;
+import org.apache.flink.lakesoul.sink.writer.NativeLakeSoulWriter;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter;
 
@@ -28,7 +28,7 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 public class LakeSoulSinkCommittableSerializer
         implements SimpleVersionedSerializer<LakeSoulMultiTableSinkCommittable> {
 
-    public static final LakeSoulSinkCommittableSerializer INSTANCE = new LakeSoulSinkCommittableSerializer(NativeParquetWriter.NativePendingFileRecoverableSerializer.INSTANCE);
+    public static final LakeSoulSinkCommittableSerializer INSTANCE = new LakeSoulSinkCommittableSerializer(NativeLakeSoulWriter.NativePendingFileRecoverableSerializer.INSTANCE);
     private static final int MAGIC_NUMBER = 0x1e765c80;
 
     private final SimpleVersionedSerializer<InProgressFileWriter.PendingFileRecoverable>

@@ -137,7 +137,7 @@ jobs:
               uses: actions/upload-artifact@v4
               with:
                   name: maven-test-report-artifact-spark-1
-                  path: lakesoul-spark/target/site
+                  path: lakesoul-spark/target/reports
                   retention-days: 5
                   if-no-files-found: error
 
@@ -206,7 +206,7 @@ jobs:
               uses: actions/upload-artifact@v4
               with:
                   name: maven-test-report-artifact-spark-2
-                  path: lakesoul-spark/target/site
+                  path: lakesoul-spark/target/reports
                   retention-days: 5
                   if-no-files-found: error
 
@@ -281,7 +281,7 @@ jobs:
               uses: actions/upload-artifact@v4
               with:
                   name: maven-test-report-artifact-spark-2
-                  path: lakesoul-spark-gluten/target/site
+                  path: lakesoul-spark-gluten/target/reports
                   retention-days: 5
                   if-no-files-found: error
 
@@ -361,7 +361,7 @@ jobs:
               uses: actions/upload-artifact@v4
               with:
                   name: maven-test-report-artifact-spark-3
-                  path: lakesoul-spark/target/site
+                  path: lakesoul-spark/target/reports
                   retention-days: 5
                   if-no-files-found: error
 
@@ -519,6 +519,6 @@ jobs:
               uses: actions/upload-artifact@v4
               with:
                   name: maven-test-report-artifact-flink-2
-                  path: lakesoul-flink/target/site
+                  path: lakesoul-flink/target/reports
                   retention-days: 5
                   if-no-files-found: error

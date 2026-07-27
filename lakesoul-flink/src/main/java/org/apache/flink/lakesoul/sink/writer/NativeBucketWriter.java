@@ -36,7 +36,7 @@ public class NativeBucketWriter implements BucketWriter<RowData, String> {
 
     @Override
     public InProgressFileWriter<RowData, String> openNewInProgressFile(String bucketId, Path path, long creationTime) throws IOException {
-        return new NativeParquetWriter(rowType, primaryKeys, partitionKeys, bucketId, path, creationTime, conf, subTaskId);
+        return new NativeLakeSoulWriter(rowType, primaryKeys, partitionKeys, bucketId, path, creationTime, conf, subTaskId);
     }
 
     @Override
@@ -51,7 +51,7 @@ public class NativeBucketWriter implements BucketWriter<RowData, String> {
     public WriterProperties getProperties() {
         return new WriterProperties(
                 UnsupportedInProgressFileRecoverableSerializable.INSTANCE,
-                NativeParquetWriter.NativePendingFileRecoverableSerializer.INSTANCE,
+                NativeLakeSoulWriter.NativePendingFileRecoverableSerializer.INSTANCE,
                 false
         );
     }

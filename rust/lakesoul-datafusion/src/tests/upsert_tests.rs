@@ -1374,7 +1374,7 @@ mod upsert_with_metadata_tests {
             ),
             table_name,
             vec!["range", "hash1", "hash2", "value", "name", "age"],
-            Some("and(noteq(range, null), eq(range, ________20201102__))".to_string()),
+            Some(r#"and(noteq(range, null), eq(range, Binary{"20201102"}))"#.to_string()),
             client.clone(),
             &[
                 "+----------+-------+-------+-------+------+-----+",
@@ -1447,7 +1447,7 @@ mod upsert_with_metadata_tests {
             ),
             table_name,
             vec!["range", "hash1", "hash2", "value", "name", "age"],
-            Some("and(noteq(range, null), eq(range, ________20201102__))".to_string()),
+            Some(r#"and(noteq(range, null), eq(range, Binary{"20201102"}))"#.to_string()),
             client.clone(),
             &[
                 "+----------+-------+-------+-------+------+-----+",
@@ -1537,7 +1537,10 @@ mod upsert_with_metadata_tests {
             ),
             table_name,
             vec!["range", "hash1", "hash2", "value", "name", "age"],
-            Some("and(and(noteq(range, null), eq(range, ________20201102__)), noteq(value, null))".to_string()),
+            Some(
+                r#"and(and(noteq(range, null), eq(range, Binary{"20201102"})), noteq(value, null))"#
+                    .to_string(),
+            ),
             client.clone(),
             &[
                 "+----------+-------+-------+-------+------+------+",

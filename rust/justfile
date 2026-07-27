@@ -1,4 +1,4 @@
-copy-to-java ext="dylib":
+copy-to-java ext="so":
   cargo build -p lakesoul-io-c -p lakesoul-metadata-c
   cp target/debug/liblakesoul_io_c.{{ext}} ../lakesoul-common/target/classes/
   cp target/debug/liblakesoul_metadata_c.{{ext}} ../lakesoul-common/target/classes/

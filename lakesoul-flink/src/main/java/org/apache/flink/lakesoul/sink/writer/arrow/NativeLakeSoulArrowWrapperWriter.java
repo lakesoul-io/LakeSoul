@@ -8,7 +8,7 @@ import com.dmetasoul.lakesoul.lakesoul.io.NativeIOWriter;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
-import org.apache.flink.lakesoul.sink.writer.NativeParquetWriter;
+import org.apache.flink.lakesoul.sink.writer.NativeLakeSoulWriter;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.arrow.LakeSoulArrowWrapper;
@@ -121,7 +121,7 @@ public class NativeLakeSoulArrowWrapperWriter implements InProgressFileWriter<La
                     entry.getKey(),
                     entry.getValue()
                             .stream()
-                            .map(result -> new NativeParquetWriter.NativeWriterPendingFileRecoverable(result.getFilePath(), creationTime))
+                            .map(result -> new NativeLakeSoulWriter.NativeWriterPendingFileRecoverable(result.getFilePath(), creationTime))
                             .collect(Collectors.toList())
             );
         }

@@ -31,8 +31,10 @@ use object_store::path::Path;
 use tokio_stream::wrappers::ReceiverStream;
 use vortex::array::arrow::ArrowSessionExt;
 use vortex::array::stream::ArrayStreamAdapter;
+use vortex::compressor::BtrBlocksCompressorBuilder;
 use vortex::file::Footer as FileFooter;
 use vortex::file::WriteOptionsSessionExt;
+use vortex::file::WriteStrategyBuilder;
 use vortex::file::WriteSummary;
 use vortex::io::VortexWrite;
 use vortex::io::object_store::ObjectStoreWrite;
@@ -42,6 +44,7 @@ pub struct VortexSink {
     config: FileSinkConfig,
     schema: SchemaRef,
     session: VortexSession,
+    is_compact: bool,
     /// The Mutex is only used to allow inserting to HashMap from behind borrowed reference in DataSink::write_all.
     written: Arc<parking_lot::Mutex<HashMap<Path, FileFooter>>>,
 }
@@ -49,14 +52,16 @@ pub struct VortexSink {
 impl VortexSink {
     /// schema without partition columns
     pub fn new(
+        session: VortexSession,
         config: FileSinkConfig,
         schema: SchemaRef,
-        session: VortexSession,
+        is_compact: bool,
     ) -> Self {
         Self {
             config,
             schema,
             session,
+            is_compact,
             written: Arc::new(parking_lot::Mutex::new(HashMap::new())),
         }
     }
@@ -145,6 +150,7 @@ impl FileSink for VortexSink {
             let arrow_session = session.clone();
             let import_schema = Arc::clone(&writer_schema);
             let dtype = dtype.clone();
+            let is_compact = self.is_compact;
             file_write_tasks.spawn(async move {
                 let stream = ReceiverStream::new(rx).map(move |rb| {
                     arrow_session
@@ -160,8 +166,20 @@ impl FileSink for VortexSink {
                         exec_datafusion_err!("Failed to create ObjectStoreWrite: {e}")
                     })?;
 
-                let summary = session
-                    .write_options()
+                let write_options = if is_compact {
+                    // use zstd in block level
+                    session.write_options().with_strategy(
+                        WriteStrategyBuilder::default()
+                            .with_btrblocks_builder(
+                                BtrBlocksCompressorBuilder::default().with_compact(),
+                            )
+                            .build(),
+                    )
+                } else {
+                    session.write_options()
+                };
+
+                let summary = write_options
                     .write(&mut object_writer, stream_adapter)
                     .await
                     .map_err(|e| {

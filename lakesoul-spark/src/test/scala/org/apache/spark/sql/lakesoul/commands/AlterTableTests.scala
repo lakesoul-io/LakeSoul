@@ -13,7 +13,7 @@ import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.SnapshotManagement
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
-import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
+import org.apache.spark.sql.lakesoul.sources.{LakeSoulSQLConf, LakeSoulSourceUtils}
 import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestUtils}
 import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.test.SharedSparkSession
@@ -61,11 +61,13 @@ trait AlterTableLakeSoulTestBase
   final protected def withLakeSoulTable(df: DataFrame,
                                         ns: String,
                                         partitionedBy: Seq[String])(f: String => Unit): Unit = {
-    val identifier = createTable(df, ns, partitionedBy)
-    try {
-      f(identifier)
-    } finally {
-      dropTable(identifier)
+    withSQLConf(LakeSoulSQLConf.NATIVE_IO_PHYSICAL_FORMAT.key -> "parquet") {
+      val identifier = createTable(df, ns, partitionedBy)
+      try {
+        f(identifier)
+      } finally {
+        dropTable(identifier)
+      }
     }
   }
 

@@ -29,7 +29,7 @@ import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
 import org.apache.spark.sql.execution.datasources.FileFormatWriter.ConcurrentOutputWriterSpec
-import org.apache.spark.sql.execution.datasources.v2.parquet.NativeParquetOutputWriter
+import org.apache.spark.sql.execution.datasources.v2.lakesoul.NativeLakeSoulOutputWriter
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
@@ -415,7 +415,7 @@ object LakeSoulFileWriter extends Logging {
         try {
           currentWriter.close()
           if (maxFileSize.isDefined) {
-            currentWriter.asInstanceOf[NativeParquetOutputWriter].flushResult.foreach(result => {
+            currentWriter.asInstanceOf[NativeLakeSoulOutputWriter].flushResult.foreach(result => {
               val (partitionDesc, flushResult) = result
               val partitionDescList = if (partitionDesc == "-4") {
                 DBUtil.parsePartitionDesc(options.getOrElse("partValue", LAKESOUL_NON_PARTITION_TABLE_PART_DESC)).asScala.toList

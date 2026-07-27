@@ -7,12 +7,14 @@
 
 use std::sync::Arc;
 
+use arrow_schema::Schema;
 use lakesoul_vector::{IdAndVecBatch, IvfRabitqBuilder, ManifestStore, RabitqError};
 use object_store::ObjectStore;
 use tracing::{info, warn};
 
 use crate::config::LakeSoulIOConfigBuilder;
 use crate::reader::LakeSoulReader;
+use crate::session::LakeSoulIOSession;
 
 use crate::vector::reader::extract_vector_batch;
 use lakesoul_vector::VectorIndexConfig;
@@ -86,6 +88,24 @@ impl VectorShardIndexBuilder {
                     .map(|s| format!("file://{}", s))
             })
             .unwrap_or_default()
+    }
+
+    fn reader_config_builder(&self) -> LakeSoulIOConfigBuilder {
+        let mut config_builder = LakeSoulIOConfigBuilder::new()
+            .with_files(self.file_paths.clone())
+            .with_prefix(self.table_prefix())
+            .with_primary_keys(vec![self.pk_column.clone()]);
+
+        for (key, value) in &self.object_store_options {
+            config_builder =
+                config_builder.with_object_store_option(key.clone(), value.clone());
+        }
+        if let Some(default_fs) = &self.default_fs {
+            config_builder = config_builder
+                .with_object_store_option("fs.defaultFS".to_string(), default_fs.clone());
+        }
+
+        config_builder
     }
 
     pub async fn build(self) -> Result<(), RabitqError> {
@@ -193,48 +213,37 @@ impl VectorShardIndexBuilder {
             return Ok(results);
         }
 
-        let prefix = self.table_prefix();
+        // Infer through LakeSoul's format registry so Parquet, Vortex, and remote
+        // object stores all use the same schema path as the actual reader.
+        let inference_config = self
+            .reader_config_builder()
+            .set_inferring_schema(true)
+            .build();
+        let inference_session =
+            LakeSoulIOSession::try_new(inference_config).map_err(|e| {
+                rootcause::report!("failed to create schema inference session: {}", e)
+            })?;
+        let inferred_schema = inference_session
+            .get_table_schema()
+            .await
+            .map_err(|e| rootcause::report!("failed to infer data file schema: {}", e))?;
+        let file_schema = inferred_schema.file_schema();
+        let schema = Arc::new(Schema::new(vec![
+            file_schema
+                .field_with_name(&pk_col)
+                .map_err(|e| {
+                    rootcause::report!("PK column '{}' not found: {}", pk_col, e)
+                })?
+                .clone(),
+            file_schema
+                .field_with_name(&vec_col)
+                .map_err(|e| {
+                    rootcause::report!("vector column '{}' not found: {}", vec_col, e)
+                })?
+                .clone(),
+        ]));
 
-        // Read the schema from the first parquet file so the reader knows
-        // which columns to project.
-        let schema = self
-            .file_paths
-            .first()
-            .and_then(|p| {
-                let path = p
-                    .trim_start_matches("file://")
-                    .trim_start_matches("s3://")
-                    .trim_start_matches("s3a://");
-                std::fs::File::open(path).ok()
-            })
-            .and_then(|f| {
-                parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(f)
-                    .ok()
-            })
-            .map(|b| b.schema().clone());
-
-        let mut config_builder = LakeSoulIOConfigBuilder::new()
-            .with_files(self.file_paths.clone())
-            .with_prefix(prefix)
-            .with_primary_keys(vec![pk_col.clone()])
-            .with_batch_size(8192)
-            .with_thread_num(1);
-
-        if let Some(s) = schema {
-            config_builder = config_builder.with_schema(s);
-        }
-
-        // Apply object store options
-        for (k, v) in &self.object_store_options {
-            config_builder =
-                config_builder.with_object_store_option(k.clone(), v.clone());
-        }
-        if let Some(ref default_fs) = self.default_fs {
-            config_builder = config_builder
-                .with_object_store_option("fs.defaultFS".to_string(), default_fs.clone());
-        }
-
-        let io_config = config_builder.build();
+        let io_config = self.reader_config_builder().with_schema(schema).build();
         let mut reader = LakeSoulReader::new(io_config)
             .map_err(|e| rootcause::report!("failed to create reader: {}", e))?;
         reader
@@ -252,5 +261,90 @@ impl VectorShardIndexBuilder {
         }
 
         Ok(results)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use arrow_array::{FixedSizeListArray, Float32Array, RecordBatch, UInt64Array};
+    use arrow_schema::{DataType, Field};
+    use lakesoul_vector::{Metric, RotatorType};
+    use object_store::local::LocalFileSystem;
+
+    use super::*;
+    use crate::file_format::PhysicalFormat;
+    use crate::writer::create_writer_with_io_config;
+
+    #[tokio::test]
+    async fn read_vector_batches_from_vortex_compact() -> crate::Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let prefix = temp_dir.path().to_string_lossy().into_owned();
+        let dim = 2;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::UInt64, false),
+            Field::new(
+                "vec",
+                DataType::FixedSizeList(
+                    Arc::new(Field::new("item", DataType::Float32, true)),
+                    dim,
+                ),
+                false,
+            ),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt64Array::from(vec![1, 2, 3, 4])),
+                Arc::new(FixedSizeListArray::new(
+                    Arc::new(Field::new("item", DataType::Float32, true)),
+                    dim,
+                    Arc::new(Float32Array::from(vec![
+                        1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5,
+                    ])),
+                    None,
+                )),
+            ],
+        )?;
+
+        let writer_config = LakeSoulIOConfigBuilder::new()
+            .with_prefix(prefix)
+            .with_schema(schema)
+            .with_physical_format(PhysicalFormat::VortexCompact)
+            .build();
+        let mut writer = create_writer_with_io_config(writer_config).await?;
+        writer.write_record_batch(batch).await?;
+        let outputs = writer.flush_and_close().await?;
+
+        let builder = VectorShardIndexBuilder::new(
+            Arc::new(LocalFileSystem::new()),
+            VectorIndexConfig {
+                column_name: "vec".to_string(),
+                dim: dim as usize,
+                nlist: 2,
+                total_bits: 7,
+                metric: Metric::L2,
+                rotator_type: RotatorType::FhtKacRotator,
+                seed: 42,
+                use_faster_config: true,
+            },
+            outputs.into_iter().map(|output| output.file_path).collect(),
+            "id".to_string(),
+            HashMap::new(),
+            None,
+        );
+
+        let batches = builder.read_all_batches().await?;
+        assert_eq!(
+            batches.iter().map(|batch| batch.ids.len()).sum::<usize>(),
+            4
+        );
+        assert!(
+            batches
+                .iter()
+                .all(|batch| batch.vectors.len() == batch.ids.len() * dim as usize)
+        );
+        Ok(())
     }
 }

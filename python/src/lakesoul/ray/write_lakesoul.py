@@ -27,7 +27,7 @@ class LakeSoulDatasink(Datasink):
         self,
         table: LakeSoulTable,
         *,
-        format: Literal["parquet", "vortex"] = "parquet",
+        format: Literal["parquet", "vortex", "vortex-compact"] = "vortex-compact",
         batch_size: int = 8192,
         thread_num: int | None = 1,
         max_file_size: int | None = None,
@@ -35,8 +35,8 @@ class LakeSoulDatasink(Datasink):
         object_store_options: Mapping[str, str] | None = None,
         options: Mapping[str, str] | None = None,
     ) -> None:
-        if format not in {"parquet", "vortex"}:
-            raise ValueError("format must be 'parquet' or 'vortex'")
+        if format not in {"parquet", "vortex", "vortex-compact"}:
+            raise ValueError("format must be 'parquet', 'vortex', or 'vortex-compact'")
         self._table_handle = table
         self._table = table.write_config(format=format)
         self._batch_size = batch_size
@@ -146,7 +146,7 @@ def write_lakesoul(
     dataset: Dataset,
     table: LakeSoulTable,
     *,
-    format: Literal["parquet", "vortex"] = "parquet",
+    format: Literal["parquet", "vortex", "vortex-compact"] = "vortex-compact",
     batch_size: int = 8192,
     thread_num: int | None = 1,
     max_file_size: int | None = None,

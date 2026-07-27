@@ -87,9 +87,7 @@ public class LakeSoulMultiTableSinkStreamBuilder {
         }
         LakeSoulRollingPolicyImpl<RowData> rollingPolicy = new LakeSoulRollingPolicyImpl<>(
                 context.conf.getLong(FILE_ROLLING_SIZE), context.conf.getLong(FILE_ROLLING_TIME));
-        OutputFileConfig fileNameConfig = OutputFileConfig.builder()
-                .withPartSuffix(".parquet")
-                .build();
+        OutputFileConfig fileNameConfig = OutputFileConfig.builder().build();
         LakeSoulMultiTablesSink<BinarySourceRecord, RowData>
                 sink =
                 LakeSoulMultiTablesSink.forMultiTablesBulkFormat(context.conf)
@@ -117,9 +115,7 @@ public class LakeSoulMultiTableSinkStreamBuilder {
         context.conf.set(DYNAMIC_BUCKETING, true);
         LakeSoulRollingPolicyImpl<LakeSoulArrowWrapper> rollingPolicy = new LakeSoulRollingPolicyImpl<>(
                 context.conf.getLong(FILE_ROLLING_SIZE), context.conf.getLong(FILE_ROLLING_TIME));
-        OutputFileConfig fileNameConfig = OutputFileConfig.builder()
-                .withPartSuffix(".parquet")
-                .build();
+        OutputFileConfig fileNameConfig = OutputFileConfig.builder().build();
         LakeSoulMultiTablesSink<LakeSoulArrowWrapper, LakeSoulArrowWrapper>
                 sink =
                 LakeSoulMultiTablesSink.forMultiTablesArrowFormat(context.conf)

@@ -8,7 +8,7 @@ import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
 import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
 import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketState;
-import org.apache.flink.lakesoul.sink.writer.NativeParquetWriter;
+import org.apache.flink.lakesoul.sink.writer.NativeLakeSoulWriter;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.lakesoul.types.arrow.LakeSoulArrowWrapper;
 import org.apache.flink.streaming.api.functions.sink.filesystem.*;
@@ -154,7 +154,7 @@ public class LakeSoulArrowWriterBucket {
     List<LakeSoulMultiTableSinkCommittable> prepareCommit(String dmlType, String sourcePartitionInfo)
             throws IOException {
         // we always close part file and do not keep in-progress file
-        // since the native parquet writer doesn't support resume
+        // since the native LakeSoul writer doesn't support resume
         if (inProgressPartWriter != null) {
             closePartFile();
             LOG.info(
@@ -168,7 +168,7 @@ public class LakeSoulArrowWriterBucket {
 
         List<LakeSoulMultiTableSinkCommittable> committables = new ArrayList<>();
         if (!pendingFilesMap.isEmpty()) {
-            long time = ((NativeParquetWriter.NativeWriterPendingFileRecoverable) pendingFilesMap.values().stream().findFirst()
+            long time = ((NativeLakeSoulWriter.NativeWriterPendingFileRecoverable) pendingFilesMap.values().stream().findFirst()
                     .get().get(0)).creationTime;
 
             committables.add(new LakeSoulMultiTableSinkCommittable(

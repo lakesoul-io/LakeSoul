@@ -135,7 +135,7 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
         //rowData key tools
         RowType rowType = (RowType) schema.toPhysicalRowDataType().notNull().getLogicalType();
         //bucket file name config
-        OutputFileConfig fileNameConfig = OutputFileConfig.builder().withPartSuffix(".parquet").build();
+        OutputFileConfig fileNameConfig = OutputFileConfig.builder().build();
         //file rolling rule
         LakeSoulRollingPolicyImpl rollingPolicy = new LakeSoulRollingPolicyImpl(flinkConf.getLong(FILE_ROLLING_SIZE),
                 flinkConf.getLong(FILE_ROLLING_TIME));

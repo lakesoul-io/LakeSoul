@@ -7,6 +7,8 @@ use std::sync::Arc;
 use arrow::array::{ArrayRef, Int32Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::assert_batches_eq;
+use datafusion::logical_expr::{col, lit};
+use datafusion::physical_plan::collect;
 use lakesoul_io::config::{
     LakeSoulIOConfigBuilder, OPTION_KEY_CDC_COLUMN, OPTION_KEY_STABLE_SORT,
 };
@@ -299,6 +301,43 @@ async fn catalog_vortex_filter_can_reference_non_projected_column() -> Result<()
         "| 2  |",
         "| 3  |",
         "+----+",],
+        &results
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn catalog_scan_accepts_filter_column_outside_projection() -> Result<()> {
+    let client = Arc::new(MetaDataClient::from_env().await?);
+    let table_name = unique_table_name("catalog_filter_only_column");
+    create_table_with_batches(
+        client.clone(),
+        &table_name,
+        vec![
+            (PhysicalFormat::Parquet, batch(&[1, 2], &[5, 15])),
+            (PhysicalFormat::Vortex, batch(&[3, 4], &[25, 35])),
+        ],
+    )
+    .await?;
+
+    let ctx = create_lakesoul_session_ctx(client, &CoreArgs::default())?;
+    let provider = ctx.table_provider(table_name).await?;
+    let projection = vec![0];
+    let filters = vec![col("score").gt(lit(10_i32))];
+    let plan = provider
+        .scan(&ctx.state(), Some(&projection), &filters, None)
+        .await?;
+    let results = collect(plan, ctx.task_ctx()).await?;
+
+    #[rustfmt::skip]
+    assert_batches_eq!(
+      &[ "+----+",
+         "| id |",
+         "+----+",
+         "| 2  |",
+         "| 3  |",
+         "| 4  |",
+         "+----+",],
         &results
     );
     Ok(())

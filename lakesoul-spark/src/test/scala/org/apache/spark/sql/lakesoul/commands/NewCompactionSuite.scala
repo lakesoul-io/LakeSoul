@@ -568,7 +568,7 @@ class NewCompactionSuite extends QueryTest
   }
 
   test("new compaction with limited file size") {
-    val maxFileSize = "30KB"
+    val maxFileSize = "60KB"
     val maxFileSizeValue = DBUtil.parseMemoryExpression(maxFileSize)
     withSQLConf(LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE.key -> maxFileSize,
       LakeSoulSQLConf.MAX_NUM_LEVELS_LIMIT.key -> "1",
@@ -729,7 +729,7 @@ class NewCompactionSuite extends QueryTest
   }
 
   test("new compaction cdc table with limited file size") {
-    val maxFileSize = "30KB"
+    val maxFileSize = "60KB"
     val maxFileSizeValue = DBUtil.parseMemoryExpression(maxFileSize)
     withSQLConf(LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE.key -> maxFileSize,
       LakeSoulSQLConf.MAX_NUM_LEVELS_LIMIT.key -> "1",

@@ -341,6 +341,7 @@ async fn test_flight_sql_obj_store() {
         s3_access_key: Some("rustfsadmin".to_string()),
         s3_secret_key: Some("rustfsadmin".to_string()),
         worker_threads: 2,
+        s3_virtual_host_style: false,
     };
     let ctx = create_lakesoul_session_ctx(meta_client.clone(), &core_args).unwrap();
 
