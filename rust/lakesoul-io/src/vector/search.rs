@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use lakesoul_vector::{IvfRabitqIndex, ManifestStore, Metric, SearchParams};
 use object_store::ObjectStore;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::Result as IoResult;
 
@@ -25,12 +25,18 @@ pub async fn search_index_shard(
     let index = match IvfRabitqIndex::load_from_v4(&mstore).await {
         Ok(idx) => idx,
         Err(lakesoul_vector::RabitqError::InvalidPersistence(_)) => {
+            // Genuinely missing index — not an error, just no candidates
             debug!("No vector index found at '{}'", prefix);
             return Ok(None);
         }
         Err(e) => {
-            warn!("Failed to load vector index at '{}': {:?}", prefix, e);
-            return Ok(None);
+            // Operational failure (object-store outage, corrupt segment,
+            // incompatible manifest, permission denied, …) — must propagate
+            return Err(rootcause::report!(
+                "failed to load vector index at '{}': {}",
+                prefix,
+                e
+            ));
         }
     };
     let params = SearchParams::new(top_k, nprobe);
