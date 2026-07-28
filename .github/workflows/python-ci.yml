@@ -44,7 +44,7 @@ jobs:
           # Maps tcp port 5432 on service container to the host
           - 5432:5432
       rustfs:
-        image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/rustfs/rustfs:1.0.0-beta.3
+        image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/rustfs/rustfs:latest
         ports:
           - "9000:9000"
           - "9001:9001"
