@@ -139,33 +139,56 @@ fn create_object_store(config: &HashMap<String, String>) -> PyResult<Arc<dyn Obj
     }
 }
 
-/// Create an S3 ObjectStore from config dict.
+/// Create an S3 ObjectStore from config dict and environment variables.
+/// Env vars (AWS_ACCESS_KEY_ID, …) take priority over config keys.
+/// Config keys use the Hadoop fs.s3a.* naming convention.
 fn create_s3_store(config: &HashMap<String, String>) -> PyResult<Arc<dyn ObjectStore>> {
-    let region = config
-        .get("region")
-        .map(|s| s.as_str())
-        .unwrap_or("us-east-1");
-    let bucket = config.get("bucket").ok_or_else(|| {
-        PyErr::new::<pyo3::exceptions::PyValueError, _>("missing 'bucket' in store_config")
+    // Env vars first, config keys second (matches object_store.rs).
+    let key = std::env::var("AWS_ACCESS_KEY_ID")
+        .ok()
+        .or_else(|| config.get("fs.s3a.access.key").cloned());
+    let secret = std::env::var("AWS_SECRET_ACCESS_KEY")
+        .ok()
+        .or_else(|| config.get("fs.s3a.secret.key").cloned());
+    let region = std::env::var("AWS_REGION").ok().or_else(|| {
+        std::env::var("AWS_DEFAULT_REGION").ok().or_else(|| {
+            config.get("fs.s3a.endpoint.region").cloned()
+        })
+    });
+    let endpoint = std::env::var("AWS_ENDPOINT")
+        .ok()
+        .or_else(|| config.get("fs.s3a.endpoint").cloned());
+    let bucket = config.get("fs.s3a.bucket").cloned().or_else(|| {
+        std::env::var("LAKESOUL_S3_BUCKET").ok()
+    }).ok_or_else(|| {
+        PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "missing 'fs.s3a.bucket' in store_config",
+        )
     })?;
+    let virtual_hosted = config
+        .get("fs.s3a.path.style.access")
+        .map(|s| s != "true")
+        .unwrap_or(true);
 
     let mut builder = AmazonS3Builder::new()
-        .with_region(region)
+        .with_region(region.unwrap_or_else(|| "us-east-1".to_owned()))
         .with_bucket_name(bucket)
-        .with_allow_http(true);
+        .with_allow_http(true)
+        .with_virtual_hosted_style_request(virtual_hosted);
 
-    if let (Some(k), Some(s)) = (config.get("access_key_id"), config.get("secret_access_key")) {
-        builder = builder.with_access_key_id(k).with_secret_access_key(s);
+    if let Some(k) = key {
+        builder = builder.with_access_key_id(k);
     }
-
-    if let Some(ep) = config.get("endpoint") {
+    if let Some(s) = secret {
+        builder = builder.with_secret_access_key(s);
+    }
+    if let Some(ep) = endpoint {
         builder = builder.with_endpoint(ep);
     }
 
     let store = builder.build().map_err(|e| {
         PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-            "failed to create S3 object store: {}",
-            e
+            "failed to create S3 object store: {}", e,
         ))
     })?;
 
