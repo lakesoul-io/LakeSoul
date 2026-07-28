@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""E2E: glove-200d → LakeSoul catalog write → build_partition_vector_index → reader.
+"""E2E: glove-200d -> LakeSoul catalog write -> build_partition_vector_index -> reader.
 
 Validates the full LakeSoul vector index workflow:
 1. Write vectors via LakeSoul Catalog (commits to PG)
@@ -331,13 +331,15 @@ def test_e2e_glove_catalog():
 def test_e2e_s3_incremental():
     """Test S3 (MinIO) storage + write_arrow_and_build_vector_index.
 
-    Verifies:
-    1. S3 object store credentials correctly translate for index builder
-       and reader (access_key_id → fs.s3a.access.key etc.)
-    2. write_arrow_and_build_vector_index builds index on new files only
-    3. Incremental write + index build works end-to-end
-    4. Vector search works on S3-backed tables
+    Only runs when LAKESOUL_S3_TEST=1 is set or --use-s3 is passed.
     """
+    if os.environ.get("LAKESOUL_S3_TEST") != "1":
+        try:
+            import pytest
+            pytest.skip("set LAKESOUL_S3_TEST=1 to enable S3 tests")
+        except ImportError:
+            pass  # running as script, caller checked already
+
     from lakesoul import LakeSoulCatalog
 
     S3_BUCKET = "lakesoul-test-bucket"
@@ -469,7 +471,8 @@ if __name__ == "__main__":
     parser.add_argument("--use-s3", action="store_true", help="Use S3/MinIO + incremental API")
     args = parser.parse_args()
 
-    if args.use_s3:
+    # S3 test requires MinIO/rustfs service — skip by default in pytest
+    if args.use_s3 or os.environ.get("LAKESOUL_S3_TEST") == "1":
         test_e2e_s3_incremental()
     elif args.use_catalog:
         test_e2e_glove_catalog()
