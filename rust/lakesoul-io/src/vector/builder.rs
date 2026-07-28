@@ -97,8 +97,21 @@ impl VectorShardIndexBuilder {
             .with_primary_keys(vec![self.pk_column.clone()]);
 
         for (key, value) in &self.object_store_options {
-            config_builder =
-                config_builder.with_object_store_option(key.clone(), value.clone());
+            // Translate simplified store_config keys (used by create_object_store)
+            // to the fs.s3a.* keys that LakeSoulReader's S3 implementation expects.
+            let reader_key = match key.as_str() {
+                "access_key_id" => "fs.s3a.access.key",
+                "secret_access_key" => "fs.s3a.secret.key",
+                "endpoint" => "fs.s3a.endpoint",
+                "region" => "fs.s3a.endpoint.region",
+                "bucket" => "fs.s3a.bucket",
+                // Already in fs.s3a format or other reader keys — pass through
+                _ => key.as_str(),
+            };
+            if reader_key != "type" {
+                config_builder = config_builder
+                    .with_object_store_option(reader_key.to_string(), value.clone());
+            }
         }
         if let Some(default_fs) = &self.default_fs {
             config_builder = config_builder
