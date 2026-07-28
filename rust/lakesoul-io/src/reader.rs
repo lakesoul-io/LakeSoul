@@ -275,13 +275,7 @@ impl LakeSoulReader {
             .option(OPTION_KEY_VECTOR_SEARCH_NPROBE)
             .and_then(|s| s.parse().ok())
             .unwrap_or(64);
-        let query = match crate::vector::search::parse_query_vector(&query_str, None) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("Invalid vector search query: {}", e);
-                return Ok(filters);
-            }
-        };
+        let query = crate::vector::search::parse_query_vector(&query_str, None)?;
         let pk_column = io_config
             .primary_keys
             .first()
