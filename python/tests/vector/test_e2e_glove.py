@@ -331,14 +331,11 @@ def test_e2e_glove_catalog():
 def test_e2e_s3_incremental():
     """Test S3 (MinIO) storage + write_arrow_and_build_vector_index.
 
-    Only runs when LAKESOUL_S3_TEST=1 is set or --use-s3 is passed.
+    Skipped unless LAKESOUL_S3_TEST=1 (set in CI).
     """
     if os.environ.get("LAKESOUL_S3_TEST") != "1":
-        try:
-            import pytest
-            pytest.skip("set LAKESOUL_S3_TEST=1 to enable S3 tests")
-        except ImportError:
-            pass  # running as script, caller checked already
+        import pytest
+        pytest.skip("set LAKESOUL_S3_TEST=1 to enable S3 tests")
 
     from lakesoul import LakeSoulCatalog
 
@@ -471,8 +468,8 @@ if __name__ == "__main__":
     parser.add_argument("--use-s3", action="store_true", help="Use S3/MinIO + incremental API")
     args = parser.parse_args()
 
-    # S3 test requires MinIO/rustfs service — skip by default in pytest
-    if args.use_s3 or os.environ.get("LAKESOUL_S3_TEST") == "1":
+    if args.use_s3:
+        os.environ["LAKESOUL_S3_TEST"] = "1"
         test_e2e_s3_incremental()
     elif args.use_catalog:
         test_e2e_glove_catalog()

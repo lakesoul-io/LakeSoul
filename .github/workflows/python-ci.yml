@@ -106,6 +106,7 @@ jobs:
       - name: pytest
         env:
           LAKESOUL_SOURCE_DIR: ${{ github.workspace }}
+          LAKESOUL_S3_TEST: "1"
         run: |
           mvn package -pl lakesoul-spark -am -DskipTests
           cd python
