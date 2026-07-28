@@ -328,12 +328,150 @@ def test_e2e_glove_catalog():
     table.drop()
 
 
+def test_e2e_s3_incremental():
+    """Test S3 (MinIO) storage + write_arrow_and_build_vector_index.
+
+    Verifies:
+    1. S3 object store credentials correctly translate for index builder
+       and reader (access_key_id → fs.s3a.access.key etc.)
+    2. write_arrow_and_build_vector_index builds index on new files only
+    3. Incremental write + index build works end-to-end
+    4. Vector search works on S3-backed tables
+    """
+    from lakesoul import LakeSoulCatalog
+
+    S3_BUCKET = "lakesoul-test-bucket"
+    S3_ENDPOINT = "http://localhost:9000"
+    S3_ACCESS_KEY = "rustfsadmin"
+    S3_SECRET_KEY = "rustfsadmin"
+
+    s3_path = f"s3://{S3_BUCKET}/test_vector_e2e_s3_{os.getpid()}/"
+
+    s3_options = {
+        "fs.s3a.access.key": S3_ACCESS_KEY,
+        "fs.s3a.secret.key": S3_SECRET_KEY,
+        "fs.s3a.endpoint": S3_ENDPOINT,
+        "fs.s3a.path.style.access": "true",
+    }
+
+    cat = LakeSoulCatalog(
+        pg_url=os.environ.get(
+            "LAKESOUL_PG_URL",
+            "postgresql://lakesoul_test:lakesoul_test@localhost:5432/lakesoul_test",
+        ),
+        pg_username="lakesoul_test",
+        pg_password="lakesoul_test",
+        object_store_options=s3_options,
+    )
+
+    train = read_fvecs(TRAIN_PATH, 500)
+    test_vecs = read_fvecs(TEST_PATH, 5)
+    n_train, dim = train.shape
+    schema = _make_record_batch(train, dim).schema
+    table_name = "glove200d_s3_e2e"
+
+    # Clean up from any previous failed run
+    try:
+        cat.drop_table(table_name, if_exists=True)
+    except Exception:
+        pass
+
+    # 1. Create table on S3
+    table = cat.create_table(
+        table_name,
+        path=s3_path,
+        schema=schema,
+        primary_keys=["id"],
+        hash_bucket_num=4,
+        properties={"vector_index_columns": f"vec:{dim}:64:7:L2"},
+    )
+
+    # 2. Write + build index in one call (initial batch)
+    batch1 = _make_record_batch(train, dim)
+    result = table.write_arrow_and_build_vector_index(
+        batch1,
+        column="vec", dim=dim,
+        nlist=8, total_bits=7, metric="L2",
+    )
+    assert result["status"] == "ok", f"Build failed: {result}"
+    assert result["shards_built"] >= 2, f"Expected >=2 shards: {result}"
+    print(f"[1/6] Initial write+build: {result['row_count']} rows, "
+          f"{result['shards_built']}/{result['shards_total']} shards built")
+
+    # 3. Read via table.scan() with vector search on S3
+    query_vec = test_vecs[0]
+    top_k = 3
+
+    ds = table.scan().options(reader_options={
+        "vector_search_column": "vec",
+        "vector_search_query": ",".join(f"{v:.6f}" for v in query_vec),
+        "vector_search_top_k": str(top_k),
+        "vector_search_nprobe": "8",
+    }).to_arrow_dataset()
+    result_table = ds.scanner().to_table()
+
+    n_candidates = result_table.num_rows
+    print(f"[2/6] Vector search candidates: {n_candidates} rows")
+
+    from lakesoul.vector_index import rerank_by_distance
+    result_table = rerank_by_distance(result_table, query_vec, "vec", top_k)
+    final_ids = result_table.column("id").to_pylist()
+    print(f"      After re-rank: top-{len(final_ids)} IDs={final_ids}")
+
+    recall = _compute_recall(query_vec, train, final_ids, k=top_k)
+    print(f"[3/6] Recall@{top_k}={recall:.2f}")
+    assert recall >= 0.5, f"Recall@{top_k} too low: {recall:.2f}"
+
+    # 4. Incremental write + build using the combined API.
+    # Delta segments cover only new vectors; search with a larger top_k
+    # to verify new vectors appear in the candidate set.
+    more_train = read_fvecs(TRAIN_PATH, 700)[500:]  # IDs 500-699
+    batch2 = _make_record_batch(more_train, dim, id_start=500)
+    result2 = table.write_arrow_and_build_vector_index(
+        batch2,
+        column="vec", dim=dim,
+        nlist=8, total_bits=7, metric="L2",
+    )
+    assert result2["status"] == "ok"
+    print(f"[4/6] Incremental write+build: {result2['row_count']} rows, "
+          f"{result2['shards_built']}/{result2['shards_total']} shards built")
+
+    # 5. Search with a broader top_k to capture new vectors from delta
+    # segments spread across only a subset of clusters.
+    query_vec2 = more_train[0]  # vector 500
+    top_k2 = 100
+
+    ds2 = table.scan().options(reader_options={
+        "vector_search_column": "vec",
+        "vector_search_query": ",".join(f"{v:.6f}" for v in query_vec2),
+        "vector_search_top_k": str(top_k2),
+        "vector_search_nprobe": "8",
+    }).to_arrow_dataset()
+    result2_table = ds2.scanner().to_table()
+
+    # Check raw candidates (before re-rank) for new vectors
+    all_candidate_ids = result2_table.column("id").to_pylist()
+    new_candidates = [i for i in all_candidate_ids if i >= 500]
+    print(f"[5/6] After incremental: {len(all_candidate_ids)} candidates, "
+          f"new IDs (>=500)={sorted(new_candidates)[:20]}...")
+    assert len(new_candidates) > 0, (
+        f"No new vectors in {len(all_candidate_ids)} candidates"
+    )
+
+    print(f"[6/6] S3 + incremental test PASSED")
+
+    table.drop()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--use-catalog", action="store_true", help="Use Catalog + PG")
+    parser.add_argument("--use-s3", action="store_true", help="Use S3/MinIO + incremental API")
     args = parser.parse_args()
 
-    if args.use_catalog:
+    if args.use_s3:
+        test_e2e_s3_incremental()
+    elif args.use_catalog:
         test_e2e_glove_catalog()
     else:
         test_e2e_glove_local_writer()

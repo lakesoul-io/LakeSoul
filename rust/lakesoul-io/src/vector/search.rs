@@ -93,10 +93,19 @@ pub fn derive_index_prefixes(
 ) -> Vec<(String, u32)> {
     use std::collections::HashSet;
 
+    let is_s3 = !file_paths.is_empty()
+        && (file_paths[0].starts_with("s3://") || file_paths[0].starts_with("s3a://"));
     let prefix = table_prefix
         .trim_start_matches("file://")
         .trim_start_matches("s3://")
         .trim_start_matches("s3a://");
+    // For S3 paths the first component is the bucket name.  Strip it
+    // because the ObjectStore already knows the bucket.
+    let store_prefix: &str = if is_s3 {
+        prefix.split_once('/').map(|(_, rest)| rest).unwrap_or(prefix)
+    } else {
+        prefix
+    };
     let mut seen: HashSet<(String, u32)> = HashSet::new();
     let mut result = Vec::new();
     for file_path in file_paths {
@@ -107,9 +116,16 @@ pub fn derive_index_prefixes(
             .trim_start_matches("file://")
             .trim_start_matches("s3://")
             .trim_start_matches("s3a://");
-        let relative = clean_path
-            .strip_prefix(prefix)
-            .unwrap_or(clean_path)
+        // Strip the bucket from S3 clean paths too, for consistent
+        // relative-path computation.
+        let store_clean_path: &str = if is_s3 {
+            clean_path.split_once('/').map(|(_, rest)| rest).unwrap_or(clean_path)
+        } else {
+            clean_path
+        };
+        let relative = store_clean_path
+            .strip_prefix(store_prefix)
+            .unwrap_or(store_clean_path)
             .trim_start_matches('/');
         let parent_dir = std::path::Path::new(relative)
             .parent()
@@ -125,7 +141,7 @@ pub fn derive_index_prefixes(
             result.push((
                 format!(
                     "{}/_vector_index/{}/{}/{}",
-                    prefix.trim_end_matches('/'),
+                    store_prefix.trim_end_matches('/'),
                     vector_column,
                     key.0,
                     key.1

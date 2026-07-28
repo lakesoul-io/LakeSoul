@@ -78,14 +78,19 @@ impl VectorShardIndexBuilder {
         self.file_paths
             .first()
             .and_then(|u| {
-                let u = u
-                    .trim_start_matches("file://")
-                    .trim_start_matches("s3://")
-                    .trim_start_matches("s3a://");
-                std::path::Path::new(u.trim_end_matches('/'))
+                let (scheme, rest) = if let Some(r) = u.strip_prefix("file://") {
+                    ("file://", r)
+                } else if let Some(r) = u.strip_prefix("s3://") {
+                    ("s3://", r)
+                } else if let Some(r) = u.strip_prefix("s3a://") {
+                    ("s3a://", r)
+                } else {
+                    ("", u.as_str())
+                };
+                std::path::Path::new(rest.trim_end_matches('/'))
                     .parent()?
                     .to_str()
-                    .map(|s| format!("file://{}", s))
+                    .map(|s| format!("{}{}", scheme, s))
             })
             .unwrap_or_default()
     }

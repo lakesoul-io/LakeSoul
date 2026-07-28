@@ -1099,16 +1099,24 @@ def _default_object_store_config(
     if path.startswith("file://"):
         return {"type": "local"}
     opts = dict(catalog.object_store_options)
-    # Extract S3 config from standard keys
     config: dict = {"type": "s3"}
-    for src, dst in [
+    # Extract S3 config: translate known keys and pass through all
+    # fs.s3a.* keys so both the index store and the reader can
+    # authenticate (reader_config_builder re-translates them back).
+    key_map = [
         ("fs.s3a.access.key", "access_key_id"),
         ("fs.s3a.secret.key", "secret_access_key"),
         ("fs.s3a.endpoint", "endpoint"),
         ("fs.s3a.endpoint.region", "region"),
-    ]:
+    ]
+    for src, dst in key_map:
         if src in opts:
             config[dst] = opts[src]
+    # Also pass through all fs.s3a.* keys for the reader (path.style.access
+    # and other non-standard options)
+    for k, v in opts.items():
+        if k.startswith("fs.s3a."):
+            config[k] = v
     # Bucket from path
     if path.startswith("s3://") or path.startswith("s3a://"):
         rest = path.split("://", 1)[1]
