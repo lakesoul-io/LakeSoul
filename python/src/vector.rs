@@ -151,20 +151,22 @@ fn create_s3_store(config: &HashMap<String, String>) -> PyResult<Arc<dyn ObjectS
         .ok()
         .or_else(|| config.get("fs.s3a.secret.key").cloned());
     let region = std::env::var("AWS_REGION").ok().or_else(|| {
-        std::env::var("AWS_DEFAULT_REGION").ok().or_else(|| {
-            config.get("fs.s3a.endpoint.region").cloned()
-        })
+        std::env::var("AWS_DEFAULT_REGION")
+            .ok()
+            .or_else(|| config.get("fs.s3a.endpoint.region").cloned())
     });
     let endpoint = std::env::var("AWS_ENDPOINT")
         .ok()
         .or_else(|| config.get("fs.s3a.endpoint").cloned());
-    let bucket = config.get("fs.s3a.bucket").cloned().or_else(|| {
-        std::env::var("LAKESOUL_S3_BUCKET").ok()
-    }).ok_or_else(|| {
-        PyErr::new::<pyo3::exceptions::PyValueError, _>(
-            "missing 'fs.s3a.bucket' in store_config",
-        )
-    })?;
+    let bucket = config
+        .get("fs.s3a.bucket")
+        .cloned()
+        .or_else(|| std::env::var("LAKESOUL_S3_BUCKET").ok())
+        .ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "missing 'fs.s3a.bucket' in store_config",
+            )
+        })?;
     let virtual_hosted = config
         .get("fs.s3a.path.style.access")
         .map(|s| s != "true")
@@ -188,7 +190,8 @@ fn create_s3_store(config: &HashMap<String, String>) -> PyResult<Arc<dyn ObjectS
 
     let store = builder.build().map_err(|e| {
         PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-            "failed to create S3 object store: {}", e,
+            "failed to create S3 object store: {}",
+            e,
         ))
     })?;
 

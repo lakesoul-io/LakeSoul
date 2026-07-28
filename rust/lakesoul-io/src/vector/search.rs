@@ -102,7 +102,10 @@ pub fn derive_index_prefixes(
     // For S3 paths the first component is the bucket name.  Strip it
     // because the ObjectStore already knows the bucket.
     let store_prefix: &str = if is_s3 {
-        prefix.split_once('/').map(|(_, rest)| rest).unwrap_or(prefix)
+        prefix
+            .split_once('/')
+            .map(|(_, rest)| rest)
+            .unwrap_or(prefix)
     } else {
         prefix
     };
@@ -119,7 +122,10 @@ pub fn derive_index_prefixes(
         // Strip the bucket from S3 clean paths too, for consistent
         // relative-path computation.
         let store_clean_path: &str = if is_s3 {
-            clean_path.split_once('/').map(|(_, rest)| rest).unwrap_or(clean_path)
+            clean_path
+                .split_once('/')
+                .map(|(_, rest)| rest)
+                .unwrap_or(clean_path)
         } else {
             clean_path
         };

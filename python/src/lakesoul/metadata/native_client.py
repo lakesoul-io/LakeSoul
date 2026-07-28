@@ -418,9 +418,7 @@ class NativeMetadataClient:
                     plan_partitions.append(
                         LakeSoulScanPlanPartition(
                             bucket_files,
-                            pk_cols
-                            if partition.commit_op != "CompactionCommit"
-                            else [],
+                            pk_cols,
                             bucket_id,
                             partition_info=_partition_desc_to_info(
                                 partition.partition_desc

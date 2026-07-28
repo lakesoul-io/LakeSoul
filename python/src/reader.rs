@@ -148,8 +148,8 @@ fn derive_prefix_from_url(url: &str) -> String {
                 // Just bucket, no path — return scheme + bucket
                 return format!("{}{}", scheme, rest);
             }
-            let bucket = parts[0];       // "bucket"
-            let path = parts[1];         // "prefix/file.parquet" or "file.parquet"
+            let bucket = parts[0]; // "bucket"
+            let path = parts[1]; // "prefix/file.parquet" or "file.parquet"
             let parent = std::path::Path::new(path).parent().and_then(|p| p.to_str());
             return match parent {
                 Some("") | None => format!("{}{}", scheme, bucket),
