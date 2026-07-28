@@ -568,6 +568,115 @@ class LakeSoulTable:
             store_config=store_config,
         )
 
+    def write_arrow_and_build_vector_index(
+        self,
+        data: "pa.RecordBatch | pa.Table | pa.RecordBatchReader",
+        *,
+        column: str | None = None,
+        dim: int | None = None,
+        nlist: int = 256,
+        total_bits: int = 7,
+        metric: str = "L2",
+        format: "PhysicalFormat" = "vortex-compact",
+        batch_size: int = 8192,
+        thread_num: int | None = 1,
+        max_file_size: int | None = None,
+        max_row_group_size: int = 250_000,
+        object_store_options: "Mapping[str, str] | None" = None,
+        options: "Mapping[str, str] | None" = None,
+    ) -> dict:
+        """Write data and incrementally build vector index on the new files only.
+
+        Combines :meth:`write_arrow` and :meth:`build_vector_index` into a
+        single call that builds the vector index using only the files
+        produced by this write — avoiding re-reading all existing files.
+
+        Args:
+            data: RecordBatch / Table / RecordBatchReader to write.
+            column: Vector column name (auto-detected if omitted).
+            dim: Vector dimension (auto-detected if omitted).
+            nlist: Number of IVF clusters (default 256).
+            total_bits: RaBitQ total bits (default 7).
+            metric: Distance metric, ``"L2"`` or ``"IP"``.
+            format: Physical file format (``"parquet"`` or
+                ``"vortex-compact"``).
+            batch_size: Rows per batch sent to the writer.
+            thread_num: Number of writer threads.
+            max_file_size: Soft limit for output file size.
+            max_row_group_size: Row-group size for Parquet files.
+            object_store_options: Extra object-store configuration.
+            options: Extra IO options forwarded to the writer.
+
+        Returns:
+            Dict with ``"status"``, ``"shards_built"``,
+            ``"new_files"``, and ``"row_count"``.
+        """
+        from collections import defaultdict
+
+        from lakesoul._lib.vector import build_shard_vector_index
+        from lakesoul.vector_index import _extract_bucket_id
+
+        # 1. Write data
+        write_result = self.write_arrow(
+            data,
+            format=format,
+            batch_size=batch_size,
+            thread_num=thread_num,
+            max_file_size=max_file_size,
+            max_row_group_size=max_row_group_size,
+            object_store_options=object_store_options,
+            options=options,
+        )
+
+        if not write_result.files:
+            return {
+                "status": "ok",
+                "shards_built": 0,
+                "new_files": 0,
+                "row_count": write_result.row_count,
+                "message": "no files produced",
+            }
+
+        # 2. Auto-detect vector column info
+        vec_col, vec_dim = self._vector_column_info(column, dim)
+
+        store_config = _default_object_store_config(
+            catalog=self._catalog, table=self
+        )
+
+        # 3. Group new files by hash bucket
+        file_paths = [f.path for f in write_result.files]
+        bucket_files: dict[int, list[str]] = defaultdict(list)
+        for fp in file_paths:
+            bid = _extract_bucket_id(fp)
+            bucket_files[bid].append(fp)
+
+        # 4. Build/update index for each bucket using only the new files.
+        #    The Rust layer detects existing manifests and does incremental
+        #    inserts (delta segments) instead of full rebuilds.
+        succeeded = 0
+        for bid, bfiles in sorted(bucket_files.items()):
+            result = build_shard_vector_index(
+                store_config=store_config,
+                file_paths=bfiles,
+                pk_column=self.primary_keys[0],
+                vector_column=vec_col,
+                dim=vec_dim,
+                nlist=nlist,
+                total_bits=total_bits,
+                metric=metric,
+            )
+            if result == "ok":
+                succeeded += 1
+
+        return {
+            "status": "ok",
+            "shards_built": succeeded,
+            "shards_total": len(bucket_files),
+            "new_files": len(file_paths),
+            "row_count": write_result.row_count,
+        }
+
     def _vector_column_info(
         self, column: str | None, dim: int | None,
     ) -> tuple[str, int]:
