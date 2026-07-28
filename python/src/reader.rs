@@ -127,6 +127,40 @@ fn _one_reader(
     Ok(PyArrowType(Box::new(one)))
 }
 
+/// Derive table prefix from a file URL, preserving the scheme and authority
+/// for non-local paths so that S3 URLs remain well-formed.
+fn derive_prefix_from_url(url: &str) -> String {
+    let url = url.trim_end_matches('/');
+    // file:// URL: use path-based parent
+    if let Some(rest) = url.strip_prefix("file://") {
+        return std::path::Path::new(rest)
+            .parent()
+            .and_then(|p| p.to_str())
+            .map(|s| format!("file://{}", s))
+            .unwrap_or_else(|| url.to_string());
+    }
+    // s3:// or s3a:// URL: find parent directory after the bucket
+    for scheme in &["s3://", "s3a://"] {
+        if let Some(rest) = url.strip_prefix(scheme) {
+            // rest = "bucket/prefix/file.parquet" or just "bucket/file.parquet"
+            let parts: Vec<&str> = rest.splitn(2, '/').collect();
+            if parts.len() < 2 {
+                // Just bucket, no path — return scheme + bucket
+                return format!("{}{}", scheme, rest);
+            }
+            let bucket = parts[0];       // "bucket"
+            let path = parts[1];         // "prefix/file.parquet" or "file.parquet"
+            let parent = std::path::Path::new(path).parent().and_then(|p| p.to_str());
+            return match parent {
+                Some("") | None => format!("{}{}", scheme, bucket),
+                Some(parent) => format!("{}{}/{}", scheme, bucket, parent),
+            };
+        }
+    }
+    // Fallback for unknown schemes
+    url.to_string()
+}
+
 fn build_io_config(
     batch_size: usize,
     thread_num: usize,
@@ -139,16 +173,12 @@ fn build_io_config(
     filter: Option<Vec<u8>>,
     options: Option<Vec<(String, String)>>,
 ) -> LakeSoulIOConfig {
-    // Derive prefix from the first file's parent directory
+    // Derive prefix from the first file's parent directory.
+    // Preserve URL scheme + authority for S3 paths; std::path::Path
+    // would strip the authority (e.g. s3://bucket → s3:/bucket).
     let prefix = file_urls
         .first()
-        .and_then(|u| {
-            let u = u.trim_end_matches('/');
-            std::path::Path::new(u)
-                .parent()
-                .and_then(|p| p.to_str())
-                .map(|s| s.to_string())
-        })
+        .map(|u| derive_prefix_from_url(u))
         .unwrap_or_default();
 
     let mut builder = LakeSoulIOConfigBuilder::default()
