@@ -29,7 +29,7 @@ use futures::StreamExt;
 use object_store::ObjectStore;
 use object_store::path::Path;
 use tokio_stream::wrappers::ReceiverStream;
-use vortex::array::arrow::ArrowSessionExt;
+use vortex::arrow::ArrowSessionExt;
 use vortex::array::stream::ArrayStreamAdapter;
 use vortex::compressor::BtrBlocksCompressorBuilder;
 use vortex::file::Footer as FileFooter;
