@@ -31,7 +31,7 @@ echo "============================================"
 echo
 
 # -------- Run build --------
-docker run --rm --net host \
+docker run --rm -ti --net host \
   --user "${USER_ID}:${GROUP_ID}" \
   --env USER="${USER}" \
   --env HOME="${HOME}" \

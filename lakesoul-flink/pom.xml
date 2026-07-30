@@ -407,6 +407,9 @@ SPDX-License-Identifier: Apache-2.0
                 <groupId>net.alchim31.maven</groupId>
                 <artifactId>scala-maven-plugin</artifactId>
                 <version>4.9.0</version>
+                <configuration>
+                    <recompileMode>incremental</recompileMode>
+                </configuration>
                 <executions>
                     <execution>
                         <id>scala-compile-first</id>
