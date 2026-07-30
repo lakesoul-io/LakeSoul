@@ -39,7 +39,7 @@ serde_json.workspace = true
 datafusion-substrait = { workspace = true }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
-datafusion-substrait = { workspace = true }
+datafusion-substrait = { workspace = true, features = ["protoc"] }
 
 [lints]
 workspace = true
