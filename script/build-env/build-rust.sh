@@ -18,6 +18,11 @@ GROUP_ID="$(id -g)"
 # -------- Ensure host cache dirs --------
 mkdir -p "${HOME}/.cargo/registry"
 mkdir -p "${HOME}/.cargo/git"
+mkdir -p "${HOME}/.cache/uv"
+mkdir -p "${HOME}/.config/uv"
+mkdir -p "${HOME}/.local/share/uv"
+mkdir -p "${HOME}/.cache/cargo-zigbuild"
+mkdir -p "${HOME}/.cache/zig"
 
 # -------- Info --------
 echo "============================================"
@@ -36,10 +41,18 @@ echo
 docker run --rm -ti --net host \
   --user "${USER_ID}:${GROUP_ID}" \
   --env USER="${USER}" \
+  --env UV_DEFAULT_INDEX="https://mirrors.huaweicloud.com/repository/pypi/simple" \
+  --env PIP_INDEX_URL="https://mirrors.huaweicloud.com/repository/pypi/simple" \
+  --env HOME=$HOME \
   --volume "${PROJECT_DIR}:${PROJECT_DIR}:rw" \
   --volume "${HOME}/.cargo/registry:/opt/cargo/registry:rw" \
   --volume "${HOME}/.cargo/git:/opt/cargo/git:rw" \
   --volume "${HOME}/.cargo/config.toml:/opt/cargo/config.toml" \
+  --volume "${HOME}/.cache/uv:/opt/uv-cache:rw" \
+  --volume "${HOME}/.cache/zig:${HOME}/.cache/zig:rw" \
+  --volume "${HOME}/.cache/cargo-zigbuild:${HOME}/.cache/cargo-zigbuild:rw" \
+  --volume "${HOME}/.config/uv:${HOME}/.config/uv:rw" \
+  --volume "${HOME}/.local/share/uv:${HOME}/.local/share/uv:rw" \
   --workdir "${PROJECT_DIR}" \
   "${IMAGE}" \
   bash -c '
@@ -52,7 +65,10 @@ docker run --rm -ti --net host \
     echo
 
     echo "=== Building Rust workspace ==="
-    cargo build --package lakesoul-io-c --package lakesoul-metadata-c --release --all-features
+    cd python
+    uvx --from maturin[zig,patchelf] maturin build --release --zig --target x86_64-unknown-linux-gnu --auditwheel repair --compatibility manylinux2014 --features 'pyo3/extension-module,dist-ffi,hdfs' --out ../dist
+    cd ..
+    cp rust/target/x86_64-unknown-linux-gnu/release/deps/liblakesoul_*.so rust/target/release
     echo
     echo "=== Build complete ==="
   '

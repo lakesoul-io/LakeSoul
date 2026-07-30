@@ -41,7 +41,7 @@
         <global>
             <!-- If not defined, default glob is "*" -->
             <glob>
-                {*.java,*.groovy,*.yaml,*.svcd,*.proto,*assembly.xml,assembly*.xml,*logback.xml,*.vm,*.ini,*.jks,*.properties,*.sh,*.bat}
+                {*.java,*.scala,*.groovy,*.proto,*.g4,liblakesoul_io_c.so,liblakesoul_metadata_c.so}
             </glob>
             <includes>
                 <!-- By default, project sources and resources directories are included (src/main/java and src/main/resources) -->
@@ -92,7 +92,7 @@
     <executionControl>
         <runAlways>
             <plugins>
-                <plugin artifactId="maven-failsafe-plugin"/>
+                <plugin artifactId="maven-surefire-plugin"/>
             </plugins>
             <executions>
                 <execution artifactId="maven-deploy-plugin">

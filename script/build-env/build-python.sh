@@ -67,7 +67,7 @@ docker run --rm -ti --net host \
 
     echo "=== Building python workspace ==="
     cd python
-    uvx --from maturin[zig] maturin build --release --zig --target x86_64-unknown-linux-gnu --auditwheel repair --compatibility manylinux2014 --out ../dist
+    uvx --from maturin[zig,patchelf] maturin build --release --zig --target x86_64-unknown-linux-gnu --auditwheel repair --compatibility manylinux2014 --out ../dist
     echo
     echo "=== Build complete ==="
   '

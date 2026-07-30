@@ -138,6 +138,7 @@ jobs:
         env:
           LAKESOUL_SOURCE_DIR: ${{ github.workspace }}
           PYTHONPATH: tests:src
+          MAVEN_OPTS: -Xmx4g
         working-directory: python
         run: |
           EVENT_NAME="${{ github.event_name }}"
