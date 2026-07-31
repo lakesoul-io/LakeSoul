@@ -20,6 +20,14 @@ jobs:
                   java-version: "11"
                   distribution: "temurin"
                   cache: maven
+                  cache-path: |
+                    /home/runner/.m2/repository
+                    /home/runner/.m2/build-cache
+            - name: Install Protoc
+              uses: arduino/setup-protoc@v2
+              with:
+                  version: "23.x"
+                  repo-token: ${{ secrets.GITHUB_TOKEN }}
             - uses: dtolnay/rust-toolchain@master
               with:
                   toolchain: stable
@@ -51,6 +59,9 @@ jobs:
                   java-version: "11"
                   distribution: "temurin"
                   cache: maven
+                  cache-path: |
+                    C:\Users\runneradmin\.m2\repository
+                    C:\Users\runneradmin\.m2\build-cache
             - name: Install Protoc
               uses: arduino/setup-protoc@v2
               with:
@@ -88,6 +99,9 @@ jobs:
                   java-version: "11"
                   distribution: "temurin"
                   cache: maven
+                  cache-path: |
+                    /Users/runner/.m2/repository
+                    /Users/runner/.m2/build-cache
             - name: Install Protoc
               uses: arduino/setup-protoc@v2
               with:
