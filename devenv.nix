@@ -2,7 +2,6 @@
   pkgs,
   # lib,
   # config,
-  inputs,
   ...
 }:
 {
@@ -10,8 +9,8 @@
   # env.GREET = "devenv";
 
   # https://devenv.sh/packages/
-  packages = with pkgs; [
-  ];
+  # packages = with pkgs; [
+  # ];
   env = {
   };
   # https://devenv.sh/languages/

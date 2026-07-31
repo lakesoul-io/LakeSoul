@@ -28,6 +28,32 @@
         inherit system;
       };
 
+      hadoopVersion = "3.3.6";
+      hadoop = pkgs.stdenvNoCC.mkDerivation {
+        pname = "hadoop";
+        version = hadoopVersion;
+
+        src = pkgs.fetchurl {
+          urls = [
+            "https://mirrors.nju.edu.cn/apache/hadoop/common/hadoop-${hadoopVersion}/hadoop-${hadoopVersion}.tar.gz"
+            "https://mirrors.huaweicloud.com/apache/hadoop/common/hadoop-${hadoopVersion}/hadoop-${hadoopVersion}.tar.gz"
+            "https://archive.apache.org/dist/hadoop/common/hadoop-${hadoopVersion}/hadoop-${hadoopVersion}.tar.gz"
+          ];
+          hash = "sha512-3j6souBRfktWmoi2PIn64Zy4rGwB/5kPH/jwzA8xKMjooj2wFXfKVioOC7G0o4ifjHQ4TmCc1V5Teq2j3Kqfig==";
+        };
+
+        dontStrip = true;
+
+        installPhase = ''
+          runHook preInstall
+          mkdir -p $out
+          cp -R . $out/
+          chmod -R u+w $out/bin $out/sbin $out/libexec
+          patchShebangs $out/bin $out/sbin $out/libexec
+          runHook postInstall
+        '';
+      };
+
       commonPackages = with pkgs; [
 
         clang
@@ -35,6 +61,7 @@
         llvmPackages.libclang
 
         temurin-bin-17
+        hadoop
 
         metals
         jdt-language-server
@@ -63,6 +90,7 @@
         llvmPackages.libclang
 
         temurin-bin-11
+        hadoop
 
         metals
 
@@ -88,7 +116,10 @@
         export CXX=${pkgs.clang}/bin/clang++
 
         export JAVA_HOME=${javaPkg}
-        export PATH=$JAVA_HOME/bin:$PATH
+        export HADOOP_HOME=${hadoop}
+        export HADOOP_CONF_DIR=$HADOOP_HOME/etc/hadoop
+        export PATH=$JAVA_HOME/bin:$HADOOP_HOME/bin:$PATH
+        export CLASSPATH="$HADOOP_CONF_DIR:$HADOOP_HOME/share/hadoop/common/*:$HADOOP_HOME/share/hadoop/common/lib/*:$HADOOP_HOME/share/hadoop/hdfs/*:$HADOOP_HOME/share/hadoop/hdfs/lib/*"
 
         export TZ=UTC
         export TZDIR=${pkgs.tzdata}/share/zoneinfo
@@ -97,7 +128,7 @@
 
         export LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath [
           pkgs.stdenv.cc.cc.lib
-        ]}
+        ]}:$HADOOP_HOME/lib/native:$JAVA_HOME/lib/server
 
         export MAVEN_OPTS="
           -Xmx4g
