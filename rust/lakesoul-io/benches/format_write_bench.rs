@@ -11,7 +11,8 @@ use parquet::{
 };
 use vortex::{
     VortexSessionDefault,
-    array::{arrow::ArrowSessionExt, stream::ArrayStreamAdapter},
+    array::stream::ArrayStreamAdapter,
+    arrow::ArrowSessionExt,
     compressor::BtrBlocksCompressorBuilder,
     file::{WriteOptionsSessionExt, WriteStrategyBuilder},
     io::session::RuntimeSessionExt,

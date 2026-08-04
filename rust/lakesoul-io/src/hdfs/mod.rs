@@ -323,8 +323,13 @@ impl ObjectStore for Hdfs {
             })?;
         let read = async_read.take((range.end - range.start) as u64);
         let stream = ReaderStream::new(read);
+        // hdrs::File retains only a raw hdfsFS pointer. Keep the owning Client alive
+        // until the returned stream is consumed or dropped, even if the ObjectStore
+        // and its DataFusion RuntimeEnv have already been released.
+        let client_guard = self.client.clone();
         Ok(GetResult {
-            payload: GetResultPayload::Stream(Box::pin(stream.map(|item| {
+            payload: GetResultPayload::Stream(Box::pin(stream.map(move |item| {
+                let _keep_alive = &client_guard;
                 item.map_err(|e| Generic {
                     store: "hdfs",
                     source: Box::new(e),
@@ -553,19 +558,21 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires Hadoop JNI libraries and an external HDFS cluster"]
     async fn test_hdfs() {
         // multipart upload and multi range get
+        let hdfs_url = std::env::var("LAKESOUL_TEST_HDFS_URL")
+            .unwrap_or_else(|_| "hdfs://localhost:9000".to_string())
+            .trim_end_matches('/')
+            .to_string();
         let write_path = format!("/user/{}/output.test.txt", whoami::username());
-        let complete_path = format!("hdfs://chenxu-dev:9000{}", write_path);
+        let complete_path = format!("{hdfs_url}{write_path}");
         let url = Url::parse(complete_path.as_str()).unwrap();
         let mut conf = LakeSoulIOConfigBuilder::new()
             .with_thread_num(2)
             .with_batch_size(8192)
             .with_max_row_group_size(250000)
-            .with_object_store_option(
-                "fs.defaultFS".to_string(),
-                "hdfs://chenxu-dev:9000".to_string(),
-            )
+            .with_object_store_option("fs.defaultFS".to_string(), hdfs_url.clone())
             .with_object_store_option("fs.hdfs.user".to_string(), whoami::username())
             .with_files(vec![write_path.clone()])
             .build();
@@ -607,6 +614,26 @@ mod tests {
         // test get
         let s = read_file_from_hdfs(write_path.clone(), object_store.clone()).await;
         assert_eq!(s, string);
+
+        // The payload must remain readable after its object store is dropped. DataFusion can
+        // retain a GetResult while releasing the RuntimeEnv that owned the object store.
+        let transient_store = super::Hdfs::try_new(&hdfs_url, conf.clone()).unwrap();
+        let payload = transient_store
+            .get(&Path::from(write_path.as_str()))
+            .await
+            .unwrap()
+            .payload;
+        drop(transient_store);
+        let Stream(payload) = payload else {
+            panic!("expect getting a stream");
+        };
+        let read_result = payload
+            .collect::<Vec<object_store::Result<Bytes>>>()
+            .await
+            .into_iter()
+            .collect::<object_store::Result<Vec<Bytes>>>()
+            .unwrap();
+        assert_eq!(bytes_to_string(read_result), string);
 
         // test get_range
         let read_concurrency = 16;
