@@ -29,6 +29,9 @@ use lakesoul_io::reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
 use lakesoul_io::writer::SyncSendableMutableLakeSoulWriter;
 use prost::Message;
 use proto::proto::entity;
+use std::any::Any;
+use std::panic::{self, AssertUnwindSafe};
+
 use rootcause::Report;
 use tokio::runtime::{Builder, Runtime};
 use tracing_subscriber::EnvFilter;
@@ -105,6 +108,25 @@ impl CStatus {
             }
         }
     }
+}
+
+/// Extract a human-readable message from a panic payload.
+/// Outputs to both tracing (structured) and stderr (direct fallback)
+/// to maximize visibility in Presto worker logs.
+fn log_panic_and_extract_message(panic_payload: Box<dyn Any + Send>) -> String {
+    let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic payload".to_string()
+    };
+    error!(
+        "LakeSoul native FFI caught a panic: {}. \
+         This is a bug in the Rust reader code, please report.",
+        msg
+    );
+    msg
 }
 
 /// Convert the object to a raw opaque pointer
@@ -771,14 +793,18 @@ fn call_i32_data_result_callback(
 pub unsafe extern "C" fn start_reader(
     reader: NonNull<CResult<Reader>>,
 ) -> NonNull<CStatus> {
-    unsafe {
+    let result = panic::catch_unwind(AssertUnwindSafe(|| unsafe {
         let mut reader = NonNull::new_unchecked(
             reader.as_ref().ptr as *mut SyncSendableMutableLakeSoulReader,
         );
-        let result = reader.as_mut().start_blocked();
-        match result {
-            Ok(_) => convert_to_nonnull(CStatus::new(0)),
-            Err(e) => convert_to_nonnull(CStatus::error(e.to_string(), -1)),
+        reader.as_mut().start_blocked()
+    }));
+    match result {
+        Ok(Ok(_)) => convert_to_nonnull(CStatus::new(0)),
+        Ok(Err(e)) => convert_to_nonnull(CStatus::error(e.to_string(), -1)),
+        Err(panic_payload) => {
+            let msg = log_panic_and_extract_message(panic_payload);
+            convert_to_nonnull(CStatus::error(msg, -1))
         }
     }
 }
@@ -909,23 +935,33 @@ pub unsafe extern "C" fn next_record_batch_blocked(
     reader: NonNull<CResult<Reader>>,
     array_addr: c_ptrdiff_t,
 ) -> NonNull<CStatus> {
-    unsafe {
+    let result = panic::catch_unwind(AssertUnwindSafe(|| unsafe {
         let reader = NonNull::new_unchecked(
             reader.as_ref().ptr as *mut SyncSendableMutableLakeSoulReader,
         );
         let result = reader.as_ref().next_rb_blocked();
-        let (status, err): (c_int, *const c_char) = match result {
+        match result {
             None => (0, std::ptr::null()),
             Some(rb_result) => match rb_result {
-                Err(e) => (-1, CString::new(e.to_string()).unwrap().into_raw()),
+                Err(e) => (
+                    -1,
+                    CString::new(e.to_string()).unwrap().into_raw() as *const c_char,
+                ),
                 Ok(rb) => match export_record_batch_for_java(rb, array_addr, None) {
                     Ok(rows) => (rows, std::ptr::null()),
-                    Err(e) => (-1, CString::new(e).unwrap().into_raw()),
+                    Err(e) => (-1, CString::new(e).unwrap().into_raw() as *const c_char),
                 },
             },
-        };
-        convert_to_nonnull(CStatus { status, err })
-    }
+        }
+    }));
+    let (status, err): (c_int, *const c_char) = match result {
+        Ok(inner) => inner,
+        Err(panic_payload) => {
+            let msg = log_panic_and_extract_message(panic_payload);
+            (-1, CString::new(msg).unwrap().into_raw())
+        }
+    };
+    convert_to_nonnull(CStatus { status, err })
 }
 
 // accept a callback with arbitrary user data pointer
