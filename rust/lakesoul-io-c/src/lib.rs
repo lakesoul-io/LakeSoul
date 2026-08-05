@@ -949,10 +949,7 @@ pub unsafe extern "C" fn next_record_batch_blocked(
                 ),
                 Ok(rb) => match export_record_batch_for_java(rb, array_addr, None) {
                     Ok(rows) => (rows, std::ptr::null()),
-                    Err(e) => (
-                        -1,
-                        CString::new(e).unwrap().into_raw() as *const c_char,
-                    ),
+                    Err(e) => (-1, CString::new(e).unwrap().into_raw() as *const c_char),
                 },
             },
         }
