@@ -142,7 +142,7 @@ def build_partition_vector_index(
     Raises:
         RuntimeError: If any shard's index build fails.
     """
-    store_config = store_config or _default_store_config()
+    store_config = store_config or {"type": "local"}
     client = NativeMetadataClient.from_env()
 
     # 1. Get table metadata from PG
@@ -230,7 +230,7 @@ def build_table_vector_index(
     Returns:
         Dict with per-partition results.
     """
-    store_config = store_config or _default_store_config()
+    store_config = store_config or {"type": "local"}
     client = NativeMetadataClient.from_env()
     table_info = client.get_table_info_by_name(table_name, namespace)
     partition_infos = client.get_all_partition_info(table_info.table_id)
@@ -314,22 +314,3 @@ def rerank_by_distance(
         raise ValueError(f"Unknown metric: {metric}")
 
     return table.take(pa.array(top_indices.tolist(), type=pa.int64()))
-
-
-def _default_store_config() -> dict:
-    """Build store config from environment variables."""
-    import os
-    config: dict = {"type": "local"}
-    mapping = {
-        "AWS_ACCESS_KEY_ID": "access_key_id",
-        "AWS_SECRET_ACCESS_KEY": "secret_access_key",
-        "AWS_REGION": "region",
-        "AWS_ENDPOINT": "endpoint",
-        "LAKESOUL_S3_BUCKET": "bucket",
-        "LAKESOUL_S3_REGION": "region",
-    }
-    for env_key, config_key in mapping.items():
-        val = os.environ.get(env_key)
-        if val:
-            config[config_key] = val
-    return config
