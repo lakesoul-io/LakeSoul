@@ -4,9 +4,10 @@
 #   https://lefthook.dev/configuration/
 #
 pre-push:
-    parallel: true
-    jobs:
-        - name: Rust Format
-          run: cargo fmt --all -- --check
-        - name: Rust Clippy
-          run: cargo clippy --no-deps --all-features --all-targets --workspace -- -D warnings
+  parallel: false
+  jobs:
+    - name: Format
+      glob: "*.{rs,java,scala,sbt,py,toml,yml,yaml,json}"
+      run: treefmt --ci -- {push_files}
+    - name: Rust Clippy
+      run: cargo clippy --no-deps --all-features --all-targets --workspace -- -D warnings

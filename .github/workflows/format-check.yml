@@ -1,0 +1,111 @@
+# SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Format Check
+
+on:
+  push:
+    branches:
+      - main
+      - "release/**"
+  pull_request:
+    branches:
+      - main
+      - "release/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: format-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31.11.0
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Check formatting
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          ensure_commit() {
+            local commit="$1"
+
+            if git cat-file -e "${commit}^{commit}" 2>/dev/null; then
+              return
+            fi
+
+            git fetch --no-tags origin "$commit"
+            if ! git cat-file -e "${commit}^{commit}" 2>/dev/null; then
+              echo "Unable to resolve commit: $commit" >&2
+              exit 1
+            fi
+          }
+
+          ensure_commit "$HEAD_SHA"
+
+          case "$EVENT_NAME" in
+            pull_request)
+              ensure_commit "$BASE_SHA"
+              diff_range="${BASE_SHA}...${HEAD_SHA}"
+              ;;
+            push)
+              if [[ "$BASE_SHA" =~ ^0+$ ]]; then
+                if [[ "$REF_NAME" == "$DEFAULT_BRANCH" ]]; then
+                  BASE_SHA="$(git hash-object -t tree /dev/null)"
+                  diff_range="${BASE_SHA}..${HEAD_SHA}"
+                else
+                  git fetch --no-tags origin \
+                    "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}"
+                  BASE_SHA="$(git merge-base "origin/${DEFAULT_BRANCH}" "$HEAD_SHA")"
+                  diff_range="${BASE_SHA}...${HEAD_SHA}"
+                fi
+              else
+                ensure_commit "$BASE_SHA"
+                diff_range="${BASE_SHA}..${HEAD_SHA}"
+              fi
+              ;;
+            workflow_dispatch)
+              if BASE_SHA="$(git rev-parse "${HEAD_SHA}^" 2>/dev/null)"; then
+                diff_range="${BASE_SHA}..${HEAD_SHA}"
+              else
+                BASE_SHA="$(git hash-object -t tree /dev/null)"
+                diff_range="${BASE_SHA}..${HEAD_SHA}"
+              fi
+              ;;
+            *)
+              echo "Unsupported event: $EVENT_NAME" >&2
+              exit 1
+              ;;
+          esac
+
+          files_path="${RUNNER_TEMP}/treefmt-files"
+          git diff --name-only --diff-filter=ACMR -z "$diff_range" > "$files_path"
+          mapfile -d '' files < "$files_path"
+
+          if (( ${#files[@]} == 0 )); then
+            echo "No changed files to format"
+            exit 0
+          fi
+
+          if ! nix develop .#formatter --command treefmt --ci -- "${files[@]}"; then
+            git --no-pager diff
+            exit 1
+          fi
