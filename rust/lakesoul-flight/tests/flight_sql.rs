@@ -445,7 +445,7 @@ async fn test_flight_sql_server() {
     }
 
     // wait server shutdown
-    sleep(Duration::from_secs(1)).await;
+    sleep(Duration::from_secs(5)).await;
     // S3
     {
         let _server = TestServer::new(
