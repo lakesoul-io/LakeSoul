@@ -135,7 +135,7 @@ fn log_panic_and_extract_message(panic_payload: Box<dyn Any + Send>) -> String {
     } else if let Some(s) = panic_payload.downcast_ref::<String>() {
         s.clone()
     } else {
-        format!("unknown panic payload")
+        "unknown panic payload".to_string()
     };
     error!(
         "LakeSoul native FFI caught a panic: {}. \
