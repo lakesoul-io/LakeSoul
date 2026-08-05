@@ -78,14 +78,19 @@ impl VectorShardIndexBuilder {
         self.file_paths
             .first()
             .and_then(|u| {
-                let u = u
-                    .trim_start_matches("file://")
-                    .trim_start_matches("s3://")
-                    .trim_start_matches("s3a://");
-                std::path::Path::new(u.trim_end_matches('/'))
+                let (scheme, rest) = if let Some(r) = u.strip_prefix("file://") {
+                    ("file://", r)
+                } else if let Some(r) = u.strip_prefix("s3://") {
+                    ("s3://", r)
+                } else if let Some(r) = u.strip_prefix("s3a://") {
+                    ("s3a://", r)
+                } else {
+                    ("", u.as_str())
+                };
+                std::path::Path::new(rest.trim_end_matches('/'))
                     .parent()?
                     .to_str()
-                    .map(|s| format!("file://{}", s))
+                    .map(|s| format!("{}{}", scheme, s))
             })
             .unwrap_or_default()
     }
@@ -96,9 +101,14 @@ impl VectorShardIndexBuilder {
             .with_prefix(self.table_prefix())
             .with_primary_keys(vec![self.pk_column.clone()]);
 
+        // Pass through object-store configuration.  The simplified keys used
+        // by create_object_store (access_key_id, endpoint, …) are harmless
+        // here — the reader only acts on the fs.s3a.* keys it recognises.
         for (key, value) in &self.object_store_options {
-            config_builder =
-                config_builder.with_object_store_option(key.clone(), value.clone());
+            if key != "type" {
+                config_builder =
+                    config_builder.with_object_store_option(key.clone(), value.clone());
+            }
         }
         if let Some(default_fs) = &self.default_fs {
             config_builder = config_builder
