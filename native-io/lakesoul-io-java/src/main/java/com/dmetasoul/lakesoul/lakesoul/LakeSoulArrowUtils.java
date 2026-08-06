@@ -22,8 +22,12 @@ public class LakeSoulArrowUtils {
             if (cdcField != null) {
                 fields.add(cdcField);
             } else {
-                throw new RuntimeException(String.format("Invalid Schema of %s, CDC Column [%s] not found", schema, cdcColumn));
-//                fields.add(new Field(cdcColumn, FieldType.notNullable(new ArrowType.Utf8()), null));
+                throw new RuntimeException(
+                        String.format(
+                                "Invalid Schema of %s, CDC Column [%s] not found",
+                                schema, cdcColumn));
+                //                fields.add(new Field(cdcColumn, FieldType.notNullable(new
+                // ArrowType.Utf8()), null));
             }
             return new Schema(fields);
         }

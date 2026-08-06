@@ -747,7 +747,7 @@ class Scanner(ds.Scanner):
             dataset.partition_schema(),
             filter,
         )
-        scanner._reader_options = getattr(dataset, '_reader_options', {})
+        scanner._reader_options = getattr(dataset, "_reader_options", {})
         return scanner
 
     @staticmethod
@@ -829,7 +829,9 @@ class Scanner(ds.Scanner):
             self._oss_conf,
             self._partition_schema,
             self._filter,
-            list(opts.items()) if (opts := getattr(self, '_reader_options', {})) else None,
+            list(opts.items())
+            if (opts := getattr(self, "_reader_options", {}))
+            else None,
         )
 
     def to_table(self) -> pa.Table:

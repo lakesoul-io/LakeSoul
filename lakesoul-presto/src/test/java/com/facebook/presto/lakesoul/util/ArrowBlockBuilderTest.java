@@ -4,9 +4,13 @@
 
 package com.facebook.presto.lakesoul.util;
 
+import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertTrue;
+
 import com.facebook.presto.common.type.ArrayType;
 import com.facebook.presto.common.type.VarcharType;
 import com.facebook.presto.metadata.FunctionAndTypeManager;
+
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
@@ -14,23 +18,22 @@ import org.testng.annotations.Test;
 
 import java.util.Collections;
 
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertTrue;
-
 public class ArrowBlockBuilderTest {
 
     @Test
     public void testLargeListTypeAndExecutionField() {
-        Field element = new Field(
-                "item",
-                FieldType.nullable(ArrowType.LargeUtf8.INSTANCE),
-                Collections.emptyList());
-        Field list = new Field(
-                "items",
-                FieldType.nullable(ArrowType.LargeList.INSTANCE),
-                Collections.singletonList(element));
-        ArrowBlockBuilder builder = new ArrowBlockBuilder(
-                FunctionAndTypeManager.createTestFunctionAndTypeManager());
+        Field element =
+                new Field(
+                        "item",
+                        FieldType.nullable(ArrowType.LargeUtf8.INSTANCE),
+                        Collections.emptyList());
+        Field list =
+                new Field(
+                        "items",
+                        FieldType.nullable(ArrowType.LargeList.INSTANCE),
+                        Collections.singletonList(element));
+        ArrowBlockBuilder builder =
+                new ArrowBlockBuilder(FunctionAndTypeManager.createTestFunctionAndTypeManager());
 
         assertTrue(builder.getPrestoTypeFromArrowField(list) instanceof ArrayType);
         assertEquals(

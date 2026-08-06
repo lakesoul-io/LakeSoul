@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 package org.apache.flink.lakesoul.test.fail;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import org.apache.flink.api.common.functions.util.PrintSinkOutputWriter;
 import org.apache.flink.api.common.state.CheckpointListener;
 import org.apache.flink.api.common.state.ListState;
@@ -13,8 +15,8 @@ import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.test.AbstractTestBase;
-import org.apache.flink.lakesoul.test.MockLakeSoulCatalog;
 import org.apache.flink.lakesoul.test.LakeSoulTestUtils;
+import org.apache.flink.lakesoul.test.MockLakeSoulCatalog;
 import org.apache.flink.runtime.state.FunctionInitializationContext;
 import org.apache.flink.runtime.state.FunctionSnapshotContext;
 import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
@@ -39,7 +41,6 @@ import org.apache.flink.table.types.DataType;
 import org.junit.*;
 import org.junit.rules.TemporaryFolder;
 
-import javax.annotation.Nullable;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -53,7 +54,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import javax.annotation.Nullable;
 
 public class LakeSoulSourceFailTest extends AbstractTestBase {
 
@@ -61,24 +62,26 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
     static String dropNonLakeSoulSourceSqlFormat =
             "drop table if exists `default_catalog`.`default_database`" + ".`test_source`";
     static String createNonLakeSoulSourceSqlFormat =
-            "create table if not exists `default_catalog`.`default_database`" + ".`test_source` %s" +
-                    " with ('connector'='filesystem', 'format'='json', " +
-                    "'source.monitor-interval'='5s', " +
-                    "'path'='"
-                    + AbstractTestBase.getTempDirUri("/failtest") +
-                    "')";
-    static String createSourceSqlFormat = "create table if not exists test_source %s %s" +
-            "with ('connector'='lakesoul', 'path'='%s', 'hashBucketNum'='%d', " +
-            "'discoveryinterval'='1000'" +
-            ")";
-    static String createSinkSqlFormat = "create table if not exists test_sink %s" +
-            "with ('connector'='lakesoul', 'path'='/', 'hashBucketNum'='2')";
+            "create table if not exists `default_catalog`.`default_database`"
+                    + ".`test_source` %s"
+                    + " with ('connector'='filesystem', 'format'='json', "
+                    + "'source.monitor-interval'='5s', "
+                    + "'path'='"
+                    + AbstractTestBase.getTempDirUri("/failtest")
+                    + "')";
+    static String createSourceSqlFormat =
+            "create table if not exists test_source %s %s"
+                    + "with ('connector'='lakesoul', 'path'='%s', 'hashBucketNum'='%d', "
+                    + "'discoveryinterval'='1000'"
+                    + ")";
+    static String createSinkSqlFormat =
+            "create table if not exists test_sink %s"
+                    + "with ('connector'='lakesoul', 'path'='/', 'hashBucketNum'='2')";
     private static ArrayList<Integer> indexArr;
     private static StreamExecutionEnvironment streamExecEnv;
     private static StreamTableEnvironment streamTableEnv;
     private static MockLakeSoulCatalog.TestLakeSoulCatalog testLakeSoulCatalog;
-    @Rule
-    public TemporaryFolder tempFolder = new TemporaryFolder();
+    @Rule public TemporaryFolder tempFolder = new TemporaryFolder();
 
     @Before
     public void createDir() throws URISyntaxException, IOException {
@@ -104,39 +107,65 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
             indexArr.add(i);
         }
         parameters = new HashMap<>();
-        parameters.put("testLakeSoulSourceFailOnSinkInvokeFinished", Tuple3.of(new ResolvedSchema(
-                        Arrays.asList(Column.physical("hash", DataTypes.INT()), Column.physical("range",
-                                        DataTypes.STRING()),
-                                Column.physical("value", DataTypes.DOUBLE())), Collections.emptyList(),
-                        UniqueConstraint.primaryKey("primary key", Collections.singletonList("hash"))),
-                "PARTITIONED BY (`range`)", StopBehavior.FAIL_ON_INVOKE_FINISHED));
+        parameters.put(
+                "testLakeSoulSourceFailOnSinkInvokeFinished",
+                Tuple3.of(
+                        new ResolvedSchema(
+                                Arrays.asList(
+                                        Column.physical("hash", DataTypes.INT()),
+                                        Column.physical("range", DataTypes.STRING()),
+                                        Column.physical("value", DataTypes.DOUBLE())),
+                                Collections.emptyList(),
+                                UniqueConstraint.primaryKey(
+                                        "primary key", Collections.singletonList("hash"))),
+                        "PARTITIONED BY (`range`)",
+                        StopBehavior.FAIL_ON_INVOKE_FINISHED));
 
-        parameters.put("testLakeSoulSourceFailOnSinkCheckPointing", Tuple3.of(new ResolvedSchema(
-                        Arrays.asList(Column.physical("hash", DataTypes.INT()), Column.physical("range1",
-                                        DataTypes.DATE()),
-                                Column.physical("range2", DataTypes.STRING()),
-                                Column.physical("value", DataTypes.TIMESTAMP_LTZ())), Collections.emptyList(),
-                        UniqueConstraint.primaryKey("primary key", Collections.singletonList("hash"))),
-                "PARTITIONED BY (`range1`, `range2`)", StopBehavior.FAIL_ON_CHECKPOINTING));
+        parameters.put(
+                "testLakeSoulSourceFailOnSinkCheckPointing",
+                Tuple3.of(
+                        new ResolvedSchema(
+                                Arrays.asList(
+                                        Column.physical("hash", DataTypes.INT()),
+                                        Column.physical("range1", DataTypes.DATE()),
+                                        Column.physical("range2", DataTypes.STRING()),
+                                        Column.physical("value", DataTypes.TIMESTAMP_LTZ())),
+                                Collections.emptyList(),
+                                UniqueConstraint.primaryKey(
+                                        "primary key", Collections.singletonList("hash"))),
+                        "PARTITIONED BY (`range1`, `range2`)",
+                        StopBehavior.FAIL_ON_CHECKPOINTING));
 
-        parameters.put("testLakeSoulSourceFailOnSinkCheckPointStarting", Tuple3.of(new ResolvedSchema(
-                        Arrays.asList(Column.physical("hash1", DataTypes.INT()), Column.physical("hash2",
-                                        DataTypes.STRING()),
-                                Column.physical("range", DataTypes.DATE()), Column.physical("value",
-                                        DataTypes.BYTES())),
-                        Collections.emptyList(), UniqueConstraint.primaryKey("primary key", Arrays.asList("hash1",
-                        "hash2"))),
-                "PARTITIONED BY (`range`)", StopBehavior.FAIL_ON_CHECKPOINT_STARTING));
+        parameters.put(
+                "testLakeSoulSourceFailOnSinkCheckPointStarting",
+                Tuple3.of(
+                        new ResolvedSchema(
+                                Arrays.asList(
+                                        Column.physical("hash1", DataTypes.INT()),
+                                        Column.physical("hash2", DataTypes.STRING()),
+                                        Column.physical("range", DataTypes.DATE()),
+                                        Column.physical("value", DataTypes.BYTES())),
+                                Collections.emptyList(),
+                                UniqueConstraint.primaryKey(
+                                        "primary key", Arrays.asList("hash1", "hash2"))),
+                        "PARTITIONED BY (`range`)",
+                        StopBehavior.FAIL_ON_CHECKPOINT_STARTING));
 
-        parameters.put("testLakeSoulSourceFailOnSinkInvokeStarting", Tuple3.of(new ResolvedSchema(
-                        Arrays.asList(Column.physical("hash1", DataTypes.INT()), Column.physical("hash2",
-                                        DataTypes.INT()),
-                                Column.physical("range1", DataTypes.STRING()), Column.physical("range2",
-                                        DataTypes.BOOLEAN()),
-                                Column.physical("value", DataTypes.DOUBLE())), Collections.emptyList(),
-                        UniqueConstraint.primaryKey("primary key", Arrays.asList("hash1", "hash2"))),
-                "PARTITIONED BY (`range1`, `range2`)", StopBehavior.FAIL_ON_INVOKE_STARTING));
-
+        parameters.put(
+                "testLakeSoulSourceFailOnSinkInvokeStarting",
+                Tuple3.of(
+                        new ResolvedSchema(
+                                Arrays.asList(
+                                        Column.physical("hash1", DataTypes.INT()),
+                                        Column.physical("hash2", DataTypes.INT()),
+                                        Column.physical("range1", DataTypes.STRING()),
+                                        Column.physical("range2", DataTypes.BOOLEAN()),
+                                        Column.physical("value", DataTypes.DOUBLE())),
+                                Collections.emptyList(),
+                                UniqueConstraint.primaryKey(
+                                        "primary key", Arrays.asList("hash1", "hash2"))),
+                        "PARTITIONED BY (`range1`, `range2`)",
+                        StopBehavior.FAIL_ON_INVOKE_STARTING));
     }
 
     public static String generateDataWithIndexByDatatype(Integer index, Column column) {
@@ -157,8 +186,13 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
             case "varbinary":
                 return String.format("X'0%hAF'", value);
             default:
-                throw new IllegalStateException("Unexpected value: " +
-                        column.getDataType().getLogicalType().getTypeRoot().name().toLowerCase());
+                throw new IllegalStateException(
+                        "Unexpected value: "
+                                + column.getDataType()
+                                        .getLogicalType()
+                                        .getTypeRoot()
+                                        .name()
+                                        .toLowerCase());
         }
     }
 
@@ -180,8 +214,13 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
             case "varbinary":
                 return String.format("[%d, -81]", value);
             default:
-                throw new IllegalStateException("Unexpected value: " +
-                        column.getDataType().getLogicalType().getTypeRoot().name().toLowerCase());
+                throw new IllegalStateException(
+                        "Unexpected value: "
+                                + column.getDataType()
+                                        .getLogicalType()
+                                        .getTypeRoot()
+                                        .name()
+                                        .toLowerCase());
         }
     }
 
@@ -191,15 +230,33 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
         Tuple3<ResolvedSchema, String, StopBehavior> tuple3 = parameters.get(testName);
         ResolvedSchema resolvedSchema = tuple3.f0;
 
-        List<String> testData = indexArr.stream()
-                .map(i -> resolvedSchema.getColumns().stream().map(col -> generateDataWithIndexByDatatype(i, col))
-                        .collect(Collectors.joining(",", "(", ")"))).collect(Collectors.toList());
-        List<String> expectedData = indexArr.stream().map(i -> resolvedSchema.getColumns().stream()
-                .map(col -> generateExpectedDataWithIndexByDatatype(i, col))
-                .collect(Collectors.joining(", ", "+I[", "]"))).collect(Collectors.toList());
+        List<String> testData =
+                indexArr.stream()
+                        .map(
+                                i ->
+                                        resolvedSchema.getColumns().stream()
+                                                .map(col -> generateDataWithIndexByDatatype(i, col))
+                                                .collect(Collectors.joining(",", "(", ")")))
+                        .collect(Collectors.toList());
+        List<String> expectedData =
+                indexArr.stream()
+                        .map(
+                                i ->
+                                        resolvedSchema.getColumns().stream()
+                                                .map(
+                                                        col ->
+                                                                generateExpectedDataWithIndexByDatatype(
+                                                                        i, col))
+                                                .collect(Collectors.joining(", ", "+I[", "]")))
+                        .collect(Collectors.toList());
 
-        testLakeSoulSource(resolvedSchema, tuple3.f2, tuple3.f1, tempFolder.newFolder(testName).getAbsolutePath(),
-                testData, 60);
+        testLakeSoulSource(
+                resolvedSchema,
+                tuple3.f2,
+                tuple3.f1,
+                tempFolder.newFolder(testName).getAbsolutePath(),
+                testData,
+                60);
 
         List<String> actualData = new ArrayList<>(ExactlyOnceRowDataPrintFunction.finalizeList);
         actualData.sort(Comparator.comparing(Function.identity()));
@@ -214,15 +271,33 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
         Tuple3<ResolvedSchema, String, StopBehavior> tuple3 = parameters.get(testName);
         ResolvedSchema resolvedSchema = tuple3.f0;
 
-        List<String> testData = indexArr.stream()
-                .map(i -> resolvedSchema.getColumns().stream().map(col -> generateDataWithIndexByDatatype(i, col))
-                        .collect(Collectors.joining(",", "(", ")"))).collect(Collectors.toList());
-        List<String> expectedData = indexArr.stream().map(i -> resolvedSchema.getColumns().stream()
-                .map(col -> generateExpectedDataWithIndexByDatatype(i, col))
-                .collect(Collectors.joining(", ", "+I[", "]"))).collect(Collectors.toList());
+        List<String> testData =
+                indexArr.stream()
+                        .map(
+                                i ->
+                                        resolvedSchema.getColumns().stream()
+                                                .map(col -> generateDataWithIndexByDatatype(i, col))
+                                                .collect(Collectors.joining(",", "(", ")")))
+                        .collect(Collectors.toList());
+        List<String> expectedData =
+                indexArr.stream()
+                        .map(
+                                i ->
+                                        resolvedSchema.getColumns().stream()
+                                                .map(
+                                                        col ->
+                                                                generateExpectedDataWithIndexByDatatype(
+                                                                        i, col))
+                                                .collect(Collectors.joining(", ", "+I[", "]")))
+                        .collect(Collectors.toList());
 
-        testLakeSoulSource(resolvedSchema, tuple3.f2, tuple3.f1, tempFolder.newFolder(testName).getAbsolutePath(),
-                testData, 60);
+        testLakeSoulSource(
+                resolvedSchema,
+                tuple3.f2,
+                tuple3.f1,
+                tempFolder.newFolder(testName).getAbsolutePath(),
+                testData,
+                60);
 
         List<String> actualData = new ArrayList<>(ExactlyOnceRowDataPrintFunction.finalizeList);
         actualData.sort(Comparator.comparing(Function.identity()));
@@ -237,15 +312,33 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
         Tuple3<ResolvedSchema, String, StopBehavior> tuple3 = parameters.get(testName);
         ResolvedSchema resolvedSchema = tuple3.f0;
 
-        List<String> testData = indexArr.stream()
-                .map(i -> resolvedSchema.getColumns().stream().map(col -> generateDataWithIndexByDatatype(i, col))
-                        .collect(Collectors.joining(",", "(", ")"))).collect(Collectors.toList());
-        List<String> expectedData = indexArr.stream().map(i -> resolvedSchema.getColumns().stream()
-                .map(col -> generateExpectedDataWithIndexByDatatype(i, col))
-                .collect(Collectors.joining(", ", "+I[", "]"))).collect(Collectors.toList());
+        List<String> testData =
+                indexArr.stream()
+                        .map(
+                                i ->
+                                        resolvedSchema.getColumns().stream()
+                                                .map(col -> generateDataWithIndexByDatatype(i, col))
+                                                .collect(Collectors.joining(",", "(", ")")))
+                        .collect(Collectors.toList());
+        List<String> expectedData =
+                indexArr.stream()
+                        .map(
+                                i ->
+                                        resolvedSchema.getColumns().stream()
+                                                .map(
+                                                        col ->
+                                                                generateExpectedDataWithIndexByDatatype(
+                                                                        i, col))
+                                                .collect(Collectors.joining(", ", "+I[", "]")))
+                        .collect(Collectors.toList());
 
-        testLakeSoulSource(resolvedSchema, tuple3.f2, tuple3.f1, tempFolder.newFolder(testName).getAbsolutePath(),
-                testData, 60);
+        testLakeSoulSource(
+                resolvedSchema,
+                tuple3.f2,
+                tuple3.f1,
+                tempFolder.newFolder(testName).getAbsolutePath(),
+                testData,
+                60);
 
         List<String> actualData = new ArrayList<>(ExactlyOnceRowDataPrintFunction.finalizeList);
         actualData.sort(Comparator.comparing(Function.identity()));
@@ -260,15 +353,33 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
         Tuple3<ResolvedSchema, String, StopBehavior> tuple3 = parameters.get(testName);
         ResolvedSchema resolvedSchema = tuple3.f0;
 
-        List<String> testData = indexArr.stream()
-                .map(i -> resolvedSchema.getColumns().stream().map(col -> generateDataWithIndexByDatatype(i, col))
-                        .collect(Collectors.joining(",", "(", ")"))).collect(Collectors.toList());
-        List<String> expectedData = indexArr.stream().map(i -> resolvedSchema.getColumns().stream()
-                .map(col -> generateExpectedDataWithIndexByDatatype(i, col))
-                .collect(Collectors.joining(", ", "+I[", "]"))).collect(Collectors.toList());
+        List<String> testData =
+                indexArr.stream()
+                        .map(
+                                i ->
+                                        resolvedSchema.getColumns().stream()
+                                                .map(col -> generateDataWithIndexByDatatype(i, col))
+                                                .collect(Collectors.joining(",", "(", ")")))
+                        .collect(Collectors.toList());
+        List<String> expectedData =
+                indexArr.stream()
+                        .map(
+                                i ->
+                                        resolvedSchema.getColumns().stream()
+                                                .map(
+                                                        col ->
+                                                                generateExpectedDataWithIndexByDatatype(
+                                                                        i, col))
+                                                .collect(Collectors.joining(", ", "+I[", "]")))
+                        .collect(Collectors.toList());
 
-        testLakeSoulSource(resolvedSchema, tuple3.f2, tuple3.f1, tempFolder.newFolder(testName).getAbsolutePath(),
-                testData, 60);
+        testLakeSoulSource(
+                resolvedSchema,
+                tuple3.f2,
+                tuple3.f1,
+                tempFolder.newFolder(testName).getAbsolutePath(),
+                testData,
+                60);
 
         List<String> actualData = new ArrayList<>(ExactlyOnceRowDataPrintFunction.finalizeList);
         actualData.sort(Comparator.comparing(Function.identity()));
@@ -277,23 +388,29 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
         assertThat(actualData.toString()).isEqualTo(expectedData.toString());
     }
 
-    public void testLakeSoulSource(ResolvedSchema resolvedSchema, StopBehavior behavior, String partitionBy,
-                                   String path, List<String> testData, int timeout) throws IOException {
+    public void testLakeSoulSource(
+            ResolvedSchema resolvedSchema,
+            StopBehavior behavior,
+            String partitionBy,
+            String path,
+            List<String> testData,
+            int timeout)
+            throws IOException {
 
         testLakeSoulCatalog.cleanForTest();
         MockLakeSoulCatalog.TestLakeSoulDynamicTableFactory testFactory =
                 new MockLakeSoulCatalog.TestLakeSoulDynamicTableFactory();
         TestTableSink testTableSink =
-                new TestTableSink(resolvedSchema.toPhysicalRowDataType(), "test", false, 2, behavior);
+                new TestTableSink(
+                        resolvedSchema.toPhysicalRowDataType(), "test", false, 2, behavior);
         testFactory.setTestSink(testTableSink);
 
         testLakeSoulCatalog.setTestFactory(testFactory);
 
-
         streamTableEnv.executeSql(String.format(dropNonLakeSoulSourceSqlFormat));
         streamTableEnv.executeSql(String.format(createNonLakeSoulSourceSqlFormat, resolvedSchema));
-        streamTableEnv.executeSql(String.format(createSourceSqlFormat, resolvedSchema, partitionBy, path, 2));
-
+        streamTableEnv.executeSql(
+                String.format(createSourceSqlFormat, resolvedSchema, partitionBy, path, 2));
 
         streamTableEnv.executeSql(String.format(createSinkSqlFormat, resolvedSchema));
 
@@ -302,29 +419,36 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
 
         ExactlyOnceRowDataPrintFunction.cleanStatus();
         streamTableEnv.executeSql(
-                "insert into test_source select * from `default_catalog`.`default_database`.`test_source`");
+                "insert into test_source select * from"
+                        + " `default_catalog`.`default_database`.`test_source`");
         testFactory.setTestSink(testTableSink);
-        final TableResult execute = streamTableEnv.executeSql("insert into test_sink select * from test_source");
-        Thread thread = new Thread(() -> {
-            try {
+        final TableResult execute =
+                streamTableEnv.executeSql("insert into test_sink select * from test_source");
+        Thread thread =
+                new Thread(
+                        () -> {
+                            try {
 
-                execute.await(timeout, TimeUnit.SECONDS);
-            } catch (InterruptedException | ExecutionException e) {
-                throw new RuntimeException(e);
-            } catch (TimeoutException e) {
-                System.out.println("stream read end");
-            } finally {
-                execute.getJobClient().get().cancel();
-            }
-        });
+                                execute.await(timeout, TimeUnit.SECONDS);
+                            } catch (InterruptedException | ExecutionException e) {
+                                throw new RuntimeException(e);
+                            } catch (TimeoutException e) {
+                                System.out.println("stream read end");
+                            } finally {
+                                execute.getJobClient().get().cancel();
+                            }
+                        });
         thread.start();
-//        TableEnvironment batchTableEnv = LakeSoulTestUtils.createTableEnvInBatchMode();
-//        LakeSoulTestUtils.registerLakeSoulCatalog(batchTableEnv, lakeSoulCatalog);
-//        streamExecEnv.setRuntimeMode(RuntimeExecutionMode.BATCH);
+        //        TableEnvironment batchTableEnv = LakeSoulTestUtils.createTableEnvInBatchMode();
+        //        LakeSoulTestUtils.registerLakeSoulCatalog(batchTableEnv, lakeSoulCatalog);
+        //        streamExecEnv.setRuntimeMode(RuntimeExecutionMode.BATCH);
         testFactory.setTestSink(null);
         for (String value : testData) {
             streamTableEnv.executeSql(
-                    String.format("insert into `default_catalog`.`default_database`.`test_source` VALUES %s", value));
+                    String.format(
+                            "insert into `default_catalog`.`default_database`.`test_source` VALUES"
+                                    + " %s",
+                            value));
         }
 
         try {
@@ -334,10 +458,13 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
         }
     }
 
-
     private enum StopBehavior {
-        NO_FAILURE, FAIL_ON_CHECKPOINT_STARTING, FAIL_ON_CHECKPOINTING, FAIL_ON_SNAPSHOTSTATE_FINISHED,
-        FAIL_ON_INVOKE_FINISHED, FAIL_ON_INVOKE_STARTING,
+        NO_FAILURE,
+        FAIL_ON_CHECKPOINT_STARTING,
+        FAIL_ON_CHECKPOINTING,
+        FAIL_ON_SNAPSHOTSTATE_FINISHED,
+        FAIL_ON_INVOKE_FINISHED,
+        FAIL_ON_INVOKE_STARTING,
     }
 
     public static class TestTableSink implements DynamicTableSink, SupportsPartitioning {
@@ -347,8 +474,12 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
         private final @Nullable Integer parallelism;
         private final StopBehavior stopBehavior;
 
-        private TestTableSink(DataType type, String printIdentifier, boolean stdErr, Integer parallelism,
-                              StopBehavior stopBehavior) {
+        private TestTableSink(
+                DataType type,
+                String printIdentifier,
+                boolean stdErr,
+                Integer parallelism,
+                StopBehavior stopBehavior) {
             this.type = type;
             this.printIdentifier = printIdentifier;
             this.stdErr = stdErr;
@@ -365,7 +496,9 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
         public SinkRuntimeProvider getSinkRuntimeProvider(DynamicTableSink.Context context) {
             DataStructureConverter converter = context.createDataStructureConverter(type);
             return SinkFunctionProvider.of(
-                    new ExactlyOnceRowDataPrintFunction(converter, printIdentifier, stdErr, stopBehavior), parallelism);
+                    new ExactlyOnceRowDataPrintFunction(
+                            converter, printIdentifier, stdErr, stopBehavior),
+                    parallelism);
         }
 
         @Override
@@ -379,9 +512,7 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
         }
 
         @Override
-        public void applyStaticPartition(Map<String, String> partition) {
-
-        }
+        public void applyStaticPartition(Map<String, String> partition) {}
     }
 
     /**
@@ -391,8 +522,9 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
     private static class ExactlyOnceRowDataPrintFunction extends RichSinkFunction<RowData>
             implements CheckpointedFunction, CheckpointListener {
 
-        //must be static?
-        public static final List<String> finalizeList = Collections.synchronizedList(new ArrayList<>());
+        // must be static?
+        public static final List<String> finalizeList =
+                Collections.synchronizedList(new ArrayList<>());
         private static final long serialVersionUID = 1L;
         private static Long failTiming = 20 * 1000L;
         private static Long failTimeInterval = 11 * 1000L;
@@ -403,16 +535,23 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
         private final StopBehavior stopBehavior;
         private transient ListState<String> checkpointedState;
 
-        private ExactlyOnceRowDataPrintFunction(DynamicTableSink.DataStructureConverter converter,
-                                                String printIdentifier, boolean stdErr, StopBehavior stopBehavior) {
+        private ExactlyOnceRowDataPrintFunction(
+                DynamicTableSink.DataStructureConverter converter,
+                String printIdentifier,
+                boolean stdErr,
+                StopBehavior stopBehavior) {
             this.converter = converter;
             this.writer = new PrintSinkOutputWriter<>(printIdentifier, stdErr);
             this.stopBehavior = stopBehavior;
             failStartTime = System.currentTimeMillis() + failTiming;
             failEndTime = failStartTime + failTimeInterval;
-            System.out.println("Sink will fail from " +
-                    LocalDateTime.ofInstant(Instant.ofEpochMilli(failStartTime), ZoneId.systemDefault()) + " to " +
-                    LocalDateTime.ofInstant(Instant.ofEpochMilli(failEndTime), ZoneId.systemDefault()));
+            System.out.println(
+                    "Sink will fail from "
+                            + LocalDateTime.ofInstant(
+                                    Instant.ofEpochMilli(failStartTime), ZoneId.systemDefault())
+                            + " to "
+                            + LocalDateTime.ofInstant(
+                                    Instant.ofEpochMilli(failEndTime), ZoneId.systemDefault()));
         }
 
         public static void cleanStatus() {
@@ -463,38 +602,38 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
         }
 
         /**
-         * Notifies the listener that the checkpoint with the given {@code checkpointId} completed and
-         * was committed.
+         * Notifies the listener that the checkpoint with the given {@code checkpointId} completed
+         * and was committed.
          *
-         * <p>These notifications are "best effort", meaning they can sometimes be skipped. To behave
-         * properly, implementers need to follow the "Checkpoint Subsuming Contract". Please see the
-         * {@link CheckpointListener class-level JavaDocs} for details.
+         * <p>These notifications are "best effort", meaning they can sometimes be skipped. To
+         * behave properly, implementers need to follow the "Checkpoint Subsuming Contract". Please
+         * see the {@link CheckpointListener class-level JavaDocs} for details.
          *
-         * <p>Please note that checkpoints may generally overlap, so you cannot assume that the {@code
-         * notifyCheckpointComplete()} call is always for the latest prior checkpoint (or snapshot) that
-         * was taken on the function/operator implementing this interface. It might be for a checkpoint
-         * that was triggered earlier. Implementing the "Checkpoint Subsuming Contract" (see above)
-         * properly handles this situation correctly as well.
+         * <p>Please note that checkpoints may generally overlap, so you cannot assume that the
+         * {@code notifyCheckpointComplete()} call is always for the latest prior checkpoint (or
+         * snapshot) that was taken on the function/operator implementing this interface. It might
+         * be for a checkpoint that was triggered earlier. Implementing the "Checkpoint Subsuming
+         * Contract" (see above) properly handles this situation correctly as well.
          *
          * <p>Please note that throwing exceptions from this method will not cause the completed
          * checkpoint to be revoked. Throwing exceptions will typically cause task/job failure and
          * trigger recovery.
          *
          * @param checkpointId The ID of the checkpoint that has been completed.
-         * @throws Exception This method can propagate exceptions, which leads to a failure/recovery for
-         *                   the task. Not that this will NOT lead to the checkpoint being revoked.
+         * @throws Exception This method can propagate exceptions, which leads to a failure/recovery
+         *     for the task. Not that this will NOT lead to the checkpoint being revoked.
          */
         @Override
         public void notifyCheckpointComplete(long checkpointId) throws Exception {
             System.out.println("notifyCheckpointComplete:" + checkpointId);
-//                checkpointComplete=true;
+            //                checkpointComplete=true;
         }
 
         /**
-         * This method is called when a snapshot for a checkpoint is requested. This acts as a hook to
-         * the function to ensure that all state is exposed by means previously offered through {@link
-         * FunctionInitializationContext} when the Function was initialized, or offered now by {@link
-         * FunctionSnapshotContext} itself.
+         * This method is called when a snapshot for a checkpoint is requested. This acts as a hook
+         * to the function to ensure that all state is exposed by means previously offered through
+         * {@link FunctionInitializationContext} when the Function was initialized, or offered now
+         * by {@link FunctionSnapshotContext} itself.
          *
          * @param context the context for drawing a snapshot of the operator
          * @throws Exception Thrown, if state could not be created ot restored.
@@ -514,7 +653,6 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
             checkpointedState.clear();
 
             tryStop(StopBehavior.FAIL_ON_SNAPSHOTSTATE_FINISHED);
-
         }
 
         /**
@@ -527,15 +665,12 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
         @Override
         public void initializeState(FunctionInitializationContext context) throws Exception {
             ListStateDescriptor<String> descriptor =
-                    new ListStateDescriptor<>("checkpointedState", TypeInformation.of(new TypeHint<String>() {
-                    }));
+                    new ListStateDescriptor<>(
+                            "checkpointedState", TypeInformation.of(new TypeHint<String>() {}));
 
             checkpointedState = context.getOperatorStateStore().getListState(descriptor);
-
         }
     }
 
-    public static class TestSource extends TableFactoryHarness.ScanSourceBase {
-
-    }
+    public static class TestSource extends TableFactoryHarness.ScanSourceBase {}
 }

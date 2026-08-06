@@ -4,6 +4,9 @@
 
 package org.apache.flink.lakesoul.test;
 
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SERVER_TIME_ZONE;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.WAREHOUSE_PATH;
+
 import org.apache.flink.cdc.connectors.mysql.source.MySqlSource;
 import org.apache.flink.cdc.connectors.mysql.source.MySqlSourceBuilder;
 import org.apache.flink.configuration.Configuration;
@@ -22,12 +25,8 @@ import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.junit.After;
 import org.junit.Before;
-import org.junit.Test;
 
 import java.util.Properties;
-
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SERVER_TIME_ZONE;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.WAREHOUSE_PATH;
 
 public class FlinkCDCMultiTableTest {
 
@@ -38,12 +37,12 @@ public class FlinkCDCMultiTableTest {
     @Before
     public void before() throws Exception {
         conf.set(LakeSoulSinkOptions.USE_CDC, true)
-            .set(LakeSoulSinkOptions.SOURCE_PARALLELISM, 4)
-            .set(LakeSoulSinkOptions.BUCKET_PARALLELISM, 2)
-            .set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true)
-            .set(RestOptions.ADDRESS, "localhost")
-            .set(WebOptions.SUBMIT_ENABLE, true)
-            .set(RestOptions.PORT, 8081);
+                .set(LakeSoulSinkOptions.SOURCE_PARALLELISM, 4)
+                .set(LakeSoulSinkOptions.BUCKET_PARALLELISM, 2)
+                .set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true)
+                .set(RestOptions.ADDRESS, "localhost")
+                .set(WebOptions.SUBMIT_ENABLE, true)
+                .set(RestOptions.PORT, 8081);
         env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(conf);
         env.enableCheckpointing(10 * 1000);
         env.getCheckpointConfig().setMinPauseBetweenCheckpoints(4023);
@@ -52,35 +51,41 @@ public class FlinkCDCMultiTableTest {
     }
 
     @After
-    public void after() {
-    }
+    public void after() {}
 
-//    @Test
+    //    @Test
     public void test() throws Exception {
 
-        MySqlSourceBuilder<BinarySourceRecord> sourceBuilder = MySqlSource.<BinarySourceRecord>builder()
-            .hostname("localhost")
-            .port(3306)
-            .databaseList("test_cdc") // set captured // database
-            .tableList("test_cdc.*") // set captured table
-            .username("root")
-            .serverTimeZone("UTC")
-            .password("root");
+        MySqlSourceBuilder<BinarySourceRecord> sourceBuilder =
+                MySqlSource.<BinarySourceRecord>builder()
+                        .hostname("localhost")
+                        .port(3306)
+                        .databaseList("test_cdc") // set captured // database
+                        .tableList("test_cdc.*") // set captured table
+                        .username("root")
+                        .serverTimeZone("UTC")
+                        .password("root");
         sourceBuilder.includeSchemaChanges(true);
         sourceBuilder.scanNewlyAddedTableEnabled(true);
-        LakeSoulRecordConvert lakeSoulRecordConvert = new LakeSoulRecordConvert(conf, conf.getString(SERVER_TIME_ZONE));
-        sourceBuilder.deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert, conf.getString(WAREHOUSE_PATH), "default"));
+        LakeSoulRecordConvert lakeSoulRecordConvert =
+                new LakeSoulRecordConvert(conf, conf.getString(SERVER_TIME_ZONE));
+        sourceBuilder.deserializer(
+                new BinaryDebeziumDeserializationSchema(
+                        lakeSoulRecordConvert, conf.getString(WAREHOUSE_PATH), "default"));
         Properties jdbcProperties = new Properties();
         jdbcProperties.put("allowPublicKeyRetrieval", "true");
         jdbcProperties.put("useSSL", "false");
         sourceBuilder.jdbcProperties(jdbcProperties);
         MySqlSource<BinarySourceRecord> mySqlSource = sourceBuilder.build();
 
-        LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
+        LakeSoulMultiTableSinkStreamBuilder.Context context =
+                new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;
         context.conf = (Configuration) env.getConfiguration();
 
-        LakeSoulMultiTableSinkStreamBuilder builder = new LakeSoulMultiTableSinkStreamBuilder(mySqlSource, context, lakeSoulRecordConvert);
+        LakeSoulMultiTableSinkStreamBuilder builder =
+                new LakeSoulMultiTableSinkStreamBuilder(
+                        mySqlSource, context, lakeSoulRecordConvert);
 
         DataStreamSource<BinarySourceRecord> source = builder.buildMultiTableSource("MySQL Source");
 

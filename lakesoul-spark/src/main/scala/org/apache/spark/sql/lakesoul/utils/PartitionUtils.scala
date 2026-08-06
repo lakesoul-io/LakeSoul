@@ -21,10 +21,9 @@ import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.util.Try
 
-/**
-  * This file is forked from [[org.apache.spark.sql.execution.datasources.PartitioningUtils]].
+/** This file is forked from
+  * [[org.apache.spark.sql.execution.datasources.PartitioningUtils]].
   */
-
 
 // In open-source Apache Spark, PartitionPath is defined as
 //
@@ -45,11 +44,11 @@ object PartitionPath {
   }
 }
 
-/**
-  * Holds a directory in a partitioned collection of files as well as the partition values
-  * in the form of a Row.  Before scanning, the files at `path` need to be enumerated.
+/** Holds a directory in a partitioned collection of files as well as the
+  * partition values in the form of a Row. Before scanning, the files at `path`
+  * need to be enumerated.
   */
-class PartitionPath private(val values: InternalRow, val pathStr: String) {
+class PartitionPath private (val values: InternalRow, val pathStr: String) {
   // Note: this isn't a case class because we don't want to have a public apply() method which
   // accepts a string. The goal is to force every value stored in `pathStr` to have gone through
   // a `new Path(...).toString` to ensure that canonicalization / normalization has taken place.
@@ -61,7 +60,7 @@ class PartitionPath private(val values: InternalRow, val pathStr: String) {
 
   override def equals(other: Any): Boolean = other match {
     case that: PartitionPath => values == that.values && pathStr == that.pathStr
-    case _ => false
+    case _                   => false
   }
 
   override def hashCode(): Int = {
@@ -74,11 +73,13 @@ class PartitionPath private(val values: InternalRow, val pathStr: String) {
 }
 
 case class PartitionSpec(
-                          partitionColumns: StructType,
-                          partitions: Seq[PartitionPath])
+    partitionColumns: StructType,
+    partitions: Seq[PartitionPath]
+)
 
 object PartitionSpec {
-  val emptySpec = PartitionSpec(StructType(Seq.empty[StructField]), Seq.empty[PartitionPath])
+  val emptySpec =
+    PartitionSpec(StructType(Seq.empty[StructField]), Seq.empty[PartitionPath])
 }
 
 private[lakesoul] object PartitionUtils {
@@ -89,11 +90,14 @@ private[lakesoul] object PartitionUtils {
     require(columnNames.size == literals.size)
   }
 
-  import org.apache.spark.sql.catalyst.catalog.ExternalCatalogUtils.{DEFAULT_PARTITION_NAME, escapePathName, unescapePathName}
+  import org.apache.spark.sql.catalyst.catalog.ExternalCatalogUtils.{
+    DEFAULT_PARTITION_NAME,
+    escapePathName,
+    unescapePathName
+  }
 
-  /**
-    * Given a group of qualified paths, tries to parse them and returns a partition specification.
-    * For example, given:
+  /** Given a group of qualified paths, tries to parse them and returns a
+    * partition specification. For example, given:
     * {{{
     *   hdfs://<host>:<port>/path/to/partition/a=1/b=hello/c=3.14
     *   hdfs://<host>:<port>/path/to/partition/a=2/b=world/c=6.28
@@ -114,26 +118,38 @@ private[lakesoul] object PartitionUtils {
     *         path = "hdfs://<host>:<port>/path/to/partition/a=2/b=world/c=6.28")))
     * }}}
     */
-  def parsePartitions(paths: Seq[Path],
-                      typeInference: Boolean,
-                      basePaths: Set[Path],
-                      userSpecifiedSchema: Option[StructType],
-                      caseSensitive: Boolean,
-                      validatePartitionColumns: Boolean,
-                      timeZoneId: String): PartitionSpec = {
-    parsePartitions(paths, typeInference, basePaths, userSpecifiedSchema, caseSensitive,
-      validatePartitionColumns, DateTimeUtils.getTimeZone(timeZoneId))
+  def parsePartitions(
+      paths: Seq[Path],
+      typeInference: Boolean,
+      basePaths: Set[Path],
+      userSpecifiedSchema: Option[StructType],
+      caseSensitive: Boolean,
+      validatePartitionColumns: Boolean,
+      timeZoneId: String
+  ): PartitionSpec = {
+    parsePartitions(
+      paths,
+      typeInference,
+      basePaths,
+      userSpecifiedSchema,
+      caseSensitive,
+      validatePartitionColumns,
+      DateTimeUtils.getTimeZone(timeZoneId)
+    )
   }
 
-  def parsePartitions(paths: Seq[Path],
-                      typeInference: Boolean,
-                      basePaths: Set[Path],
-                      userSpecifiedSchema: Option[StructType],
-                      caseSensitive: Boolean,
-                      validatePartitionColumns: Boolean,
-                      timeZone: TimeZone): PartitionSpec = {
+  def parsePartitions(
+      paths: Seq[Path],
+      typeInference: Boolean,
+      basePaths: Set[Path],
+      userSpecifiedSchema: Option[StructType],
+      caseSensitive: Boolean,
+      validatePartitionColumns: Boolean,
+      timeZone: TimeZone
+  ): PartitionSpec = {
     val userSpecifiedDataTypes = if (userSpecifiedSchema.isDefined) {
-      val nameToDataType = userSpecifiedSchema.get.fields.map(f => f.name -> f.dataType).toMap
+      val nameToDataType =
+        userSpecifiedSchema.get.fields.map(f => f.name -> f.dataType).toMap
       if (!caseSensitive) {
         CaseInsensitiveMap(nameToDataType)
       } else {
@@ -144,23 +160,36 @@ private[lakesoul] object PartitionUtils {
     }
 
     // SPARK-26990: use user specified field names if case insensitive.
-    val userSpecifiedNames = if (userSpecifiedSchema.isDefined && !caseSensitive) {
-      CaseInsensitiveMap(userSpecifiedSchema.get.fields.map(f => f.name -> f.name).toMap)
-    } else {
-      Map.empty[String, String]
-    }
+    val userSpecifiedNames =
+      if (userSpecifiedSchema.isDefined && !caseSensitive) {
+        CaseInsensitiveMap(
+          userSpecifiedSchema.get.fields.map(f => f.name -> f.name).toMap
+        )
+      } else {
+        Map.empty[String, String]
+      }
 
     val dateFormatter = DateFormatter()
-    val timestampFormatter = TimestampFormatter(timestampPartitionPattern, timeZone)
+    val timestampFormatter =
+      TimestampFormatter(timestampPartitionPattern, timeZone)
     // First, we need to parse every partition's path and see if we can find partition values.
     val (partitionValues, optDiscoveredBasePaths) = paths.map { path =>
-      parsePartition(path, typeInference, basePaths, userSpecifiedDataTypes,
-        validatePartitionColumns, timeZone, dateFormatter, timestampFormatter)
+      parsePartition(
+        path,
+        typeInference,
+        basePaths,
+        userSpecifiedDataTypes,
+        validatePartitionColumns,
+        timeZone,
+        dateFormatter,
+        timestampFormatter
+      )
     }.unzip
 
     // We create pairs of (path -> path's partition value) here
     // If the corresponding partition value is None, the pair will be skipped
-    val pathsWithPartitionValues = paths.zip(partitionValues).flatMap(x => x._2.map(x._1 -> _))
+    val pathsWithPartitionValues =
+      paths.zip(partitionValues).flatMap(x => x._2.map(x._1 -> _))
 
     if (pathsWithPartitionValues.isEmpty) {
       // This dataset is not partitioned.
@@ -179,7 +208,8 @@ private[lakesoul] object PartitionUtils {
       //   "hdfs://host:9000/invalidPath"
       //   "hdfs://host:9000/path"
       // TODO: Selective case sensitivity.
-      val discoveredBasePaths = optDiscoveredBasePaths.flatten.map(_.toString.toLowerCase())
+      val discoveredBasePaths =
+        optDiscoveredBasePaths.flatten.map(_.toString.toLowerCase())
       assert(
         discoveredBasePaths.distinct.size == 1,
         "Conflicting directory structures detected. Suspicious paths:\b" +
@@ -187,14 +217,16 @@ private[lakesoul] object PartitionUtils {
           "If provided paths are partition directories, please set " +
           "\"basePath\" in the options of the data source to specify the " +
           "root directory of the table. If there are multiple root directories, " +
-          "please load them separately and then union them.")
+          "please load them separately and then union them."
+      )
 
       val resolvedPartitionValues =
         resolvePartitions(pathsWithPartitionValues, caseSensitive, timeZone)
 
       // Creates the StructType which represents the partition columns.
       val fields = {
-        val PartitionValues(columnNames, literals) = resolvedPartitionValues.head
+        val PartitionValues(columnNames, literals) =
+          resolvedPartitionValues.head
         columnNames.zip(literals).map { case (name, Literal(_, dataType)) =>
           // We always assume partition columns are nullable since we've no idea whether null values
           // will be appended in the future.
@@ -205,18 +237,19 @@ private[lakesoul] object PartitionUtils {
       }
 
       // Finally, we create `Partition`s based on paths and resolved partition values.
-      val partitions = resolvedPartitionValues.zip(pathsWithPartitionValues).map {
-        case (PartitionValues(_, literals), (path, _)) =>
-          PartitionPath(InternalRow.fromSeq(literals.map(_.value)), path)
-      }
+      val partitions =
+        resolvedPartitionValues.zip(pathsWithPartitionValues).map {
+          case (PartitionValues(_, literals), (path, _)) =>
+            PartitionPath(InternalRow.fromSeq(literals.map(_.value)), path)
+        }
 
       PartitionSpec(StructType(fields), partitions)
     }
   }
 
-  /**
-    * Parses a single partition, returns column names and values of each partition column, also
-    * the path when we stop partition discovery.  For example, given:
+  /** Parses a single partition, returns column names and values of each
+    * partition column, also the path when we stop partition discovery. For
+    * example, given:
     * {{{
     *   path = hdfs://<host>:<port>/path/to/partition/a=42/b=hello/c=3.14
     * }}}
@@ -234,14 +267,16 @@ private[lakesoul] object PartitionUtils {
     *   hdfs://<host>:<port>/path/to/partition
     * }}}
     */
-  def parsePartition(path: Path,
-                     typeInference: Boolean,
-                     basePaths: Set[Path],
-                     userSpecifiedDataTypes: Map[String, DataType],
-                     validatePartitionColumns: Boolean,
-                     timeZone: TimeZone,
-                     dateFormatter: DateFormatter,
-                     timestampFormatter: TimestampFormatter): (Option[PartitionValues], Option[Path]) = {
+  def parsePartition(
+      path: Path,
+      typeInference: Boolean,
+      basePaths: Set[Path],
+      userSpecifiedDataTypes: Map[String, DataType],
+      validatePartitionColumns: Boolean,
+      timeZone: TimeZone,
+      dateFormatter: DateFormatter,
+      timestampFormatter: TimestampFormatter
+  ): (Option[PartitionValues], Option[Path]) = {
     val columns = ArrayBuffer.empty[(String, Literal)]
     // Old Hadoop versions don't have `Path.isRoot`
     var finished = path.getParent == null
@@ -262,8 +297,15 @@ private[lakesoul] object PartitionUtils {
         // Let's say currentPath is a path of "/table/a=1/", currentPath.getName will give us a=1.
         // Once we get the string, we try to parse it and find the partition column and value.
         val maybeColumn =
-        parsePartitionColumn(currentPath.getName, typeInference, userSpecifiedDataTypes,
-          validatePartitionColumns, timeZone, dateFormatter, timestampFormatter)
+          parsePartitionColumn(
+            currentPath.getName,
+            typeInference,
+            userSpecifiedDataTypes,
+            validatePartitionColumns,
+            timeZone,
+            dateFormatter,
+            timestampFormatter
+          )
         maybeColumn.foreach(columns += _)
 
         // Now, we determine if we should stop.
@@ -293,22 +335,30 @@ private[lakesoul] object PartitionUtils {
     }
   }
 
-  private def parsePartitionColumn(columnSpec: String,
-                                   typeInference: Boolean,
-                                   userSpecifiedDataTypes: Map[String, DataType],
-                                   validatePartitionColumns: Boolean,
-                                   timeZone: TimeZone,
-                                   dateFormatter: DateFormatter,
-                                   timestampFormatter: TimestampFormatter): Option[(String, Literal)] = {
+  private def parsePartitionColumn(
+      columnSpec: String,
+      typeInference: Boolean,
+      userSpecifiedDataTypes: Map[String, DataType],
+      validatePartitionColumns: Boolean,
+      timeZone: TimeZone,
+      dateFormatter: DateFormatter,
+      timestampFormatter: TimestampFormatter
+  ): Option[(String, Literal)] = {
     val equalSignIndex = columnSpec.indexOf('=')
     if (equalSignIndex == -1) {
       None
     } else {
       val columnName = unescapePathName(columnSpec.take(equalSignIndex))
-      assert(columnName.nonEmpty, s"Empty partition column name in '$columnSpec'")
+      assert(
+        columnName.nonEmpty,
+        s"Empty partition column name in '$columnSpec'"
+      )
 
       val rawColumnValue = columnSpec.drop(equalSignIndex + 1)
-      assert(rawColumnValue.nonEmpty, s"Empty partition column value in '$columnSpec'")
+      assert(
+        rawColumnValue.nonEmpty,
+        s"Empty partition column value in '$columnSpec'"
+      )
 
       val literal = if (userSpecifiedDataTypes.contains(columnName)) {
         // SPARK-26188: if user provides corresponding column schema, get the column value without
@@ -319,12 +369,18 @@ private[lakesoul] object PartitionUtils {
           false,
           timeZone,
           dateFormatter,
-          timestampFormatter)
+          timestampFormatter
+        )
         val columnValue = columnValueLiteral.eval()
-        val castedValue = Cast(columnValueLiteral, dataType, Option(timeZone.getID)).eval()
-        if (validatePartitionColumns && columnValue != null && castedValue == null) {
-          throw new RuntimeException(s"Failed to cast value `$columnValue` to `$dataType` " +
-            s"for partition column `$columnName`")
+        val castedValue =
+          Cast(columnValueLiteral, dataType, Option(timeZone.getID)).eval()
+        if (
+          validatePartitionColumns && columnValue != null && castedValue == null
+        ) {
+          throw new RuntimeException(
+            s"Failed to cast value `$columnValue` to `$dataType` " +
+              s"for partition column `$columnName`"
+          )
         }
         Literal.create(castedValue, dataType)
       } else {
@@ -333,23 +389,23 @@ private[lakesoul] object PartitionUtils {
           typeInference,
           timeZone,
           dateFormatter,
-          timestampFormatter)
+          timestampFormatter
+        )
       }
       Some(columnName -> literal)
     }
   }
 
-  /**
-    * Given a partition path fragment, e.g. `fieldOne=1/fieldTwo=2`, returns a parsed spec
-    * for that fragment as a `TablePartitionSpec`, e.g. `Map(("fieldOne", "1"), ("fieldTwo", "2"))`.
+  /** Given a partition path fragment, e.g. `fieldOne=1/fieldTwo=2`, returns a
+    * parsed spec for that fragment as a `TablePartitionSpec`, e.g.
+    * `Map(("fieldOne", "1"), ("fieldTwo", "2"))`.
     */
   def parsePathFragment(pathFragment: String): TablePartitionSpec = {
     parsePathFragmentAsSeq(pathFragment).toMap
   }
 
-  /**
-    * Given a partition path fragment, e.g. `fieldOne=1/fieldTwo=2`, returns a parsed spec
-    * for that fragment as a `Seq[(String, String)]`, e.g.
+  /** Given a partition path fragment, e.g. `fieldOne=1/fieldTwo=2`, returns a
+    * parsed spec for that fragment as a `Seq[(String, String)]`, e.g.
     * `Seq(("fieldOne", "1"), ("fieldTwo", "2"))`.
     */
   def parsePathFragmentAsSeq(pathFragment: String): Seq[(String, String)] = {
@@ -359,49 +415,63 @@ private[lakesoul] object PartitionUtils {
     }
   }
 
-  /**
-    * This is the inverse of parsePathFragment().
+  /** This is the inverse of parsePathFragment().
     */
-  def getPathFragment(spec: TablePartitionSpec, partitionSchema: StructType): String = {
-    partitionSchema.map { field =>
-      escapePathName(field.name) + "=" + escapePathName(spec(field.name))
-    }.mkString("/")
+  def getPathFragment(
+      spec: TablePartitionSpec,
+      partitionSchema: StructType
+  ): String = {
+    partitionSchema
+      .map { field =>
+        escapePathName(field.name) + "=" + escapePathName(spec(field.name))
+      }
+      .mkString("/")
   }
 
-  def getPathFragment(spec: TablePartitionSpec, partitionColumns: Seq[Attribute]): String = {
+  def getPathFragment(
+      spec: TablePartitionSpec,
+      partitionColumns: Seq[Attribute]
+  ): String = {
     getPathFragment(spec, DataTypeUtils.fromAttributes(partitionColumns))
   }
 
-  /**
-    * Normalize the column names in partition specification, w.r.t. the real partition column names
-    * and case sensitivity. e.g., if the partition spec has a column named `monTh`, and there is a
-    * partition column named `month`, and it's case insensitive, we will normalize `monTh` to
-    * `month`.
+  /** Normalize the column names in partition specification, w.r.t. the real
+    * partition column names and case sensitivity. e.g., if the partition spec
+    * has a column named `monTh`, and there is a partition column named `month`,
+    * and it's case insensitive, we will normalize `monTh` to `month`.
     */
-  def normalizePartitionSpec[T](partitionSpec: Map[String, T],
-                                partColNames: Seq[String],
-                                tblName: String,
-                                resolver: Resolver): Map[String, T] = {
+  def normalizePartitionSpec[T](
+      partitionSpec: Map[String, T],
+      partColNames: Seq[String],
+      tblName: String,
+      resolver: Resolver
+  ): Map[String, T] = {
     val normalizedPartSpec = partitionSpec.toSeq.map { case (key, value) =>
       val normalizedKey = partColNames.find(resolver(_, key)).getOrElse {
-        throw new AnalysisException(s"$key is not a valid partition column in table $tblName.")
+        throw new AnalysisException(
+          s"$key is not a valid partition column in table $tblName."
+        )
       }
       normalizedKey -> value
     }
 
     checkColumnNameDuplication(
-      normalizedPartSpec.map(_._1), "in the partition schema", resolver)
+      normalizedPartSpec.map(_._1),
+      "in the partition schema",
+      resolver
+    )
 
     normalizedPartSpec.toMap
   }
 
-  /**
-    * Resolves possible type conflicts between partitions by up-casting "lower" types using
-    * [[findWiderTypeForPartitionColumn]].
+  /** Resolves possible type conflicts between partitions by up-casting "lower"
+    * types using [[findWiderTypeForPartitionColumn]].
     */
-  def resolvePartitions(pathsWithPartitionValues: Seq[(Path, PartitionValues)],
-                        caseSensitive: Boolean,
-                        timeZone: TimeZone): Seq[PartitionValues] = {
+  def resolvePartitions(
+      pathsWithPartitionValues: Seq[(Path, PartitionValues)],
+      caseSensitive: Boolean,
+      timeZone: TimeZone
+  ): Seq[PartitionValues] = {
     if (pathsWithPartitionValues.isEmpty) {
       Seq.empty
     } else {
@@ -412,7 +482,8 @@ private[lakesoul] object PartitionUtils {
       }
       assert(
         partColNames.distinct.size == 1,
-        listConflictingPartitionColumns(pathsWithPartitionValues))
+        listConflictingPartitionColumns(pathsWithPartitionValues)
+      )
 
       // Resolves possible type conflicts for each column
       val values = pathsWithPartitionValues.map(_._2)
@@ -423,28 +494,35 @@ private[lakesoul] object PartitionUtils {
 
       // Fills resolved literals back to each partition
       values.zipWithIndex.map { case (d, index) =>
-        d.copy(literals = resolvedValues.map(_ (index)))
+        d.copy(literals = resolvedValues.map(_(index)))
       }
     }
   }
 
-  def listConflictingPartitionColumns(pathWithPartitionValues: Seq[(Path, PartitionValues)]): String = {
-    val distinctPartColNames = pathWithPartitionValues.map(_._2.columnNames).distinct
+  def listConflictingPartitionColumns(
+      pathWithPartitionValues: Seq[(Path, PartitionValues)]
+  ): String = {
+    val distinctPartColNames =
+      pathWithPartitionValues.map(_._2.columnNames).distinct
 
     def groupByKey[K, V](seq: Seq[(K, V)]): Map[K, Iterable[V]] =
-      seq.groupBy { case (key, _) => key }.mapValues(_.map { case (_, value) => value })
+      seq
+        .groupBy { case (key, _) => key }
+        .mapValues(_.map { case (_, value) => value })
 
     val partColNamesToPaths = groupByKey(pathWithPartitionValues.map {
       case (path, partValues) => partValues.columnNames -> path
     })
 
-    val distinctPartColLists = distinctPartColNames.map(_.mkString(", ")).zipWithIndex.map {
-      case (names, index) =>
-        s"Partition column name list #$index: $names"
-    }
+    val distinctPartColLists =
+      distinctPartColNames.map(_.mkString(", ")).zipWithIndex.map {
+        case (names, index) =>
+          s"Partition column name list #$index: $names"
+      }
 
     // Lists out those non-leaf partition directories that also contain files
-    val suspiciousPaths = distinctPartColNames.sortBy(_.length).flatMap(partColNamesToPaths)
+    val suspiciousPaths =
+      distinctPartColNames.sortBy(_.length).flatMap(partColNamesToPaths)
 
     s"Conflicting partition column names detected:\n" +
       distinctPartColLists.mkString("\n\t", "\n\t", "\n\n") +
@@ -456,16 +534,15 @@ private[lakesoul] object PartitionUtils {
   }
 
   // scalastyle:off line.size.limit
-  /**
-    * Converts a string to a [[Literal]] with automatic type inference. Currently only supports
-    * [[NullType]], [[IntegerType]], [[LongType]], [[DoubleType]], [[DecimalType]], [[DateType]]
-    * [[TimestampType]], and [[StringType]].
+  /** Converts a string to a [[Literal]] with automatic type inference.
+    * Currently only supports [[NullType]], [[IntegerType]], [[LongType]],
+    * [[DoubleType]], [[DecimalType]], [[DateType]] [[TimestampType]], and
+    * [[StringType]].
     *
     * When resolving conflicts, it follows the table below:
     *
-    * +--------------------+-------------------+-------------------+-------------------+--------------------+------------+---------------+---------------+------------+
     * | InputA \ InputB    | NullType          | IntegerType       | LongType          | DecimalType(38,0)* | DoubleType | DateType      | TimestampType | StringType |
-    * +--------------------+-------------------+-------------------+-------------------+--------------------+------------+---------------+---------------+------------+
+    * |:-------------------|:------------------|:------------------|:------------------|:-------------------|:-----------|:--------------|:--------------|:-----------|
     * | NullType           | NullType          | IntegerType       | LongType          | DecimalType(38,0)  | DoubleType | DateType      | TimestampType | StringType |
     * | IntegerType        | IntegerType       | IntegerType       | LongType          | DecimalType(38,0)  | DoubleType | StringType    | StringType    | StringType |
     * | LongType           | LongType          | LongType          | LongType          | DecimalType(38,0)  | StringType | StringType    | StringType    | StringType |
@@ -474,17 +551,19 @@ private[lakesoul] object PartitionUtils {
     * | DateType           | DateType          | StringType        | StringType        | StringType         | StringType | DateType      | TimestampType | StringType |
     * | TimestampType      | TimestampType     | StringType        | StringType        | StringType         | StringType | TimestampType | TimestampType | StringType |
     * | StringType         | StringType        | StringType        | StringType        | StringType         | StringType | StringType    | StringType    | StringType |
-    * +--------------------+-------------------+-------------------+-------------------+--------------------+------------+---------------+---------------+------------+
-    * Note that, for DecimalType(38,0)*, the table above intentionally does not cover all other
-    * combinations of scales and precisions because currently we only infer decimal type like
-    * `BigInteger`/`BigInt`. For example, 1.1 is inferred as double type.
+    * Note that, for DecimalType(38,0)*, the table above intentionally does not
+    * cover all other combinations of scales and precisions because currently we
+    * only infer decimal type like `BigInteger`/`BigInt`. For example, 1.1 is
+    * inferred as double type.
     */
   // scalastyle:on line.size.limit
-  def inferPartitionColumnValue(raw: String,
-                                typeInference: Boolean,
-                                timeZone: TimeZone,
-                                dateFormatter: DateFormatter,
-                                timestampFormatter: TimestampFormatter): Literal = {
+  def inferPartitionColumnValue(
+      raw: String,
+      typeInference: Boolean,
+      timeZone: TimeZone,
+      dateFormatter: DateFormatter,
+      timestampFormatter: TimestampFormatter
+  ): Literal = {
     val decimalTry = Try {
       // `BigDecimal` conversion can fail when the `field` is not a form of number.
       val bigDecimal = new JBigDecimal(raw)
@@ -518,7 +597,8 @@ private[lakesoul] object PartitionUtils {
       // TimestampType
       timestampFormatter.parse(unescapedRaw)
       // SPARK-23436: see comment for date
-      val timestampValue = Cast(Literal(unescapedRaw), TimestampType, Some(timeZone.getID)).eval()
+      val timestampValue =
+        Cast(Literal(unescapedRaw), TimestampType, Some(timeZone.getID)).eval()
       // Disallow TimestampType if the cast returned null
       require(timestampValue != null)
       Literal.create(timestampValue, TimestampType)
@@ -536,12 +616,12 @@ private[lakesoul] object PartitionUtils {
         .orElse(dateTry)
         // Then falls back to string
         .getOrElse {
-        if (raw == DEFAULT_PARTITION_NAME) {
-          Literal.create(null, NullType)
-        } else {
-          Literal.create(unescapePathName(raw), StringType)
+          if (raw == DEFAULT_PARTITION_NAME) {
+            Literal.create(null, NullType)
+          } else {
+            Literal.create(unescapePathName(raw), StringType)
+          }
         }
-      }
     } else {
       if (raw == DEFAULT_PARTITION_NAME) {
         Literal.create(null, NullType)
@@ -551,47 +631,65 @@ private[lakesoul] object PartitionUtils {
     }
   }
 
-  def validatePartitionColumn(schema: StructType,
-                              partitionColumns: Seq[String],
-                              rangePartitionColumns: Seq[String],
-                              caseSensitive: Boolean): Unit = {
+  def validatePartitionColumn(
+      schema: StructType,
+      partitionColumns: Seq[String],
+      rangePartitionColumns: Seq[String],
+      caseSensitive: Boolean
+  ): Unit = {
     checkColumnNameDuplication(
       partitionColumns,
       "in the partition columns",
-      caseSensitive)
+      caseSensitive
+    )
 
     partitionColumnsSchema(schema, partitionColumns, caseSensitive).foreach {
       field =>
         field.dataType match {
           case _: AtomicType => // OK
-          case _ => throw new AnalysisException(s"Cannot use ${field.dataType} for partition column")
+          case _             =>
+            throw new AnalysisException(
+              s"Cannot use ${field.dataType} for partition column"
+            )
         }
     }
 
-    if (rangePartitionColumns.nonEmpty && rangePartitionColumns.size == schema.fields.length) {
-      throw new AnalysisException(s"Cannot use all columns for partition columns")
+    if (
+      rangePartitionColumns.nonEmpty && rangePartitionColumns.size == schema.fields.length
+    ) {
+      throw new AnalysisException(
+        s"Cannot use all columns for partition columns"
+      )
     }
   }
 
-  def partitionColumnsSchema(schema: StructType,
-                             partitionColumns: Seq[String],
-                             caseSensitive: Boolean): StructType = {
+  def partitionColumnsSchema(
+      schema: StructType,
+      partitionColumns: Seq[String],
+      caseSensitive: Boolean
+  ): StructType = {
     val equality = columnNameEquality(caseSensitive)
     StructType(partitionColumns.map { col =>
       schema.find(f => equality(f.name, col)).getOrElse {
         val schemaCatalog = schema.catalogString
-        throw new AnalysisException(s"Partition column `$col` not found in schema $schemaCatalog")
+        throw new AnalysisException(
+          s"Partition column `$col` not found in schema $schemaCatalog"
+        )
       }
     }).asNullable
   }
 
-  def mergeDataAndPartitionSchema(dataSchema: StructType,
-                                  partitionSchema: StructType,
-                                  caseSensitive: Boolean): (StructType, Map[String, StructField]) = {
+  def mergeDataAndPartitionSchema(
+      dataSchema: StructType,
+      partitionSchema: StructType,
+      caseSensitive: Boolean
+  ): (StructType, Map[String, StructField]) = {
     val overlappedPartCols = mutable.Map.empty[String, StructField]
     partitionSchema.foreach { partitionField =>
       val partitionFieldName = getColName(partitionField, caseSensitive)
-      if (dataSchema.exists(getColName(_, caseSensitive) == partitionFieldName)) {
+      if (
+        dataSchema.exists(getColName(_, caseSensitive) == partitionFieldName)
+      ) {
         overlappedPartCols += partitionFieldName -> partitionField
       }
     }
@@ -603,8 +701,14 @@ private[lakesoul] object PartitionUtils {
     // all the partition columns physically. Here we need to make sure the final schema
     // contains all the partition columns.
     val fullSchema =
-    StructType(dataSchema.map(f => overlappedPartCols.getOrElse(getColName(f, caseSensitive), f)) ++
-      partitionSchema.filterNot(f => overlappedPartCols.contains(getColName(f, caseSensitive))))
+      StructType(
+        dataSchema.map(f =>
+          overlappedPartCols.getOrElse(getColName(f, caseSensitive), f)
+        ) ++
+          partitionSchema.filterNot(f =>
+            overlappedPartCols.contains(getColName(f, caseSensitive))
+          )
+      )
     (fullSchema, overlappedPartCols.toMap)
   }
 
@@ -616,7 +720,9 @@ private[lakesoul] object PartitionUtils {
     }
   }
 
-  private def columnNameEquality(caseSensitive: Boolean): (String, String) => Boolean = {
+  private def columnNameEquality(
+      caseSensitive: Boolean
+  ): (String, String) => Boolean = {
     if (caseSensitive) {
       org.apache.spark.sql.catalyst.analysis.caseSensitiveResolution
     } else {
@@ -624,62 +730,90 @@ private[lakesoul] object PartitionUtils {
     }
   }
 
-  /**
-    * Given a collection of [[Literal]]s, resolves possible type conflicts by
+  /** Given a collection of [[Literal]]s, resolves possible type conflicts by
     * [[findWiderTypeForPartitionColumn]].
     */
-  private def resolveTypeConflicts(literals: Seq[Literal], timeZone: TimeZone): Seq[Literal] = {
+  private def resolveTypeConflicts(
+      literals: Seq[Literal],
+      timeZone: TimeZone
+  ): Seq[Literal] = {
     val litTypes = literals.map(_.dataType)
     val desiredType = litTypes.reduce(findWiderTypeForPartitionColumn)
 
-    literals.map { case l@Literal(_, dataType) =>
-      Literal.create(Cast(l, desiredType, Some(timeZone.getID)).eval(), desiredType)
+    literals.map { case l @ Literal(_, dataType) =>
+      Literal.create(
+        Cast(l, desiredType, Some(timeZone.getID)).eval(),
+        desiredType
+      )
     }
   }
 
-  /**
-    * Type widening rule for partition column types. It is similar to
-    * [[TypeCoercion.findWiderTypeForTwo]] but the main difference is that here we disallow
-    * precision loss when widening double/long and decimal, and fall back to string.
+  /** Type widening rule for partition column types. It is similar to
+    * [[TypeCoercion.findWiderTypeForTwo]] but the main difference is that here
+    * we disallow precision loss when widening double/long and decimal, and fall
+    * back to string.
     */
-  private val findWiderTypeForPartitionColumn: (DataType, DataType) => DataType = {
-    case (DoubleType, _: DecimalType) | (_: DecimalType, DoubleType) => StringType
+  private val findWiderTypeForPartitionColumn
+      : (DataType, DataType) => DataType = {
+    case (DoubleType, _: DecimalType) | (_: DecimalType, DoubleType) =>
+      StringType
     case (DoubleType, LongType) | (LongType, DoubleType) => StringType
-    case (t1, t2) => TypeCoercion.findWiderTypeForTwo(t1, t2).getOrElse(StringType)
+    case (t1, t2)                                        =>
+      TypeCoercion.findWiderTypeForTwo(t1, t2).getOrElse(StringType)
   }
 
-  /** The methods below are forked from [[org.apache.spark.sql.util.SchemaUtils]] */
-
-  /**
-    * Checks if input column names have duplicate identifiers. This throws an exception if
-    * the duplication exists.
-    *
-    * @param columnNames column names to check
-    * @param colType     column type name, used in an exception message
-    * @param resolver    resolver used to determine if two identifiers are equal
+  /** The methods below are forked from
+    * [[org.apache.spark.sql.util.SchemaUtils]]
     */
-  def checkColumnNameDuplication(columnNames: Seq[String], colType: String, resolver: Resolver): Unit = {
-    checkColumnNameDuplication(columnNames, colType, isCaseSensitiveAnalysis(resolver))
+
+  /** Checks if input column names have duplicate identifiers. This throws an
+    * exception if the duplication exists.
+    *
+    * @param columnNames
+    *   column names to check
+    * @param colType
+    *   column type name, used in an exception message
+    * @param resolver
+    *   resolver used to determine if two identifiers are equal
+    */
+  def checkColumnNameDuplication(
+      columnNames: Seq[String],
+      colType: String,
+      resolver: Resolver
+  ): Unit = {
+    checkColumnNameDuplication(
+      columnNames,
+      colType,
+      isCaseSensitiveAnalysis(resolver)
+    )
   }
 
-  /**
-    * Checks if input column names have duplicate identifiers. This throws an exception if
-    * the duplication exists.
+  /** Checks if input column names have duplicate identifiers. This throws an
+    * exception if the duplication exists.
     *
-    * @param columnNames           column names to check
-    * @param colType               column type name, used in an exception message
-    * @param caseSensitiveAnalysis whether duplication checks should be case sensitive or not
+    * @param columnNames
+    *   column names to check
+    * @param colType
+    *   column type name, used in an exception message
+    * @param caseSensitiveAnalysis
+    *   whether duplication checks should be case sensitive or not
     */
-  def checkColumnNameDuplication(columnNames: Seq[String], colType: String, caseSensitiveAnalysis: Boolean): Unit = {
+  def checkColumnNameDuplication(
+      columnNames: Seq[String],
+      colType: String,
+      caseSensitiveAnalysis: Boolean
+  ): Unit = {
     // scalastyle:off caselocale
-    val names = if (caseSensitiveAnalysis) columnNames else columnNames.map(_.toLowerCase)
+    val names =
+      if (caseSensitiveAnalysis) columnNames else columnNames.map(_.toLowerCase)
     // scalastyle:on caselocale
     if (names.distinct.length != names.length) {
       val duplicateColumns = names.groupBy(identity).collect {
         case (x, ys) if ys.length > 1 => s"`$x`"
       }
       throw new AnalysisException(
-        s"Found duplicate column(s) $colType: ${duplicateColumns.mkString(", ")}")
+        s"Found duplicate column(s) $colType: ${duplicateColumns.mkString(", ")}"
+      )
     }
   }
 
@@ -690,8 +824,10 @@ private[lakesoul] object PartitionUtils {
     } else if (resolver == caseInsensitiveResolution) {
       false
     } else {
-      sys.error("A resolver to check if two identifiers are equal must be " +
-        "`caseSensitiveResolution` or `caseInsensitiveResolution` in o.a.s.sql.catalyst.")
+      sys.error(
+        "A resolver to check if two identifiers are equal must be " +
+          "`caseSensitiveResolution` or `caseInsensitiveResolution` in o.a.s.sql.catalyst."
+      )
     }
   }
 }

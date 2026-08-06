@@ -13,13 +13,22 @@
  */
 package com.facebook.presto.lakesoul.util;
 
+import static com.facebook.presto.common.Utils.checkArgument;
+import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
+import static com.google.common.collect.ImmutableList.toImmutableList;
+
+import static java.lang.String.format;
+import static java.util.Objects.requireNonNull;
+
 import com.facebook.presto.common.block.Block;
 import com.facebook.presto.common.block.BlockBuilder;
 import com.facebook.presto.common.block.DictionaryBlock;
 import com.facebook.presto.common.type.*;
 import com.google.common.base.CharMatcher;
+
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
+
 import org.apache.arrow.vector.*;
 import org.apache.arrow.vector.complex.ListVector;
 import org.apache.arrow.vector.complex.MapVector;
@@ -38,33 +47,33 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
-import static com.facebook.presto.common.Utils.checkArgument;
-import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
-import static com.google.common.collect.ImmutableList.toImmutableList;
-import static java.lang.String.format;
-import static java.util.Objects.requireNonNull;
-
 /**
- * Modified from presto' code presto-base-arrow-flight/src/main/java/com/facebook/plugin/arrow/ArrowBlockBuilder.java
+ * Modified from presto' code
+ * presto-base-arrow-flight/src/main/java/com/facebook/plugin/arrow/ArrowBlockBuilder.java
  */
-public class ArrowBlockBuilder
-{
+public class ArrowBlockBuilder {
     private final TypeManager typeManager;
 
-    public ArrowBlockBuilder(TypeManager typeManager)
-    {
+    public ArrowBlockBuilder(TypeManager typeManager) {
         this.typeManager = requireNonNull(typeManager, "typeManager is null");
     }
 
-    public Block buildBlockFromFieldVector(FieldVector vector, Type type, DictionaryProvider dictionaryProvider)
-    {
+    public Block buildBlockFromFieldVector(
+            FieldVector vector, Type type, DictionaryProvider dictionaryProvider) {
         // Use Arrow dictionary to create a DictionaryBlock
         if (dictionaryProvider != null && vector.getField().getDictionary() != null) {
-            Dictionary dictionary = dictionaryProvider.lookup(vector.getField().getDictionary().getId());
+            Dictionary dictionary =
+                    dictionaryProvider.lookup(vector.getField().getDictionary().getId());
             if (dictionary != null) {
                 Type prestoType = getPrestoTypeFromArrowField(dictionary.getVector().getField());
-                BlockBuilder dictionaryBuilder = prestoType.createBlockBuilder(null, vector.getValueCount());
-                assignBlockFromValueVector(dictionary.getVector(), prestoType, dictionaryBuilder, 0, dictionary.getVector().getValueCount());
+                BlockBuilder dictionaryBuilder =
+                        prestoType.createBlockBuilder(null, vector.getValueCount());
+                assignBlockFromValueVector(
+                        dictionary.getVector(),
+                        prestoType,
+                        dictionaryBuilder,
+                        0,
+                        dictionary.getVector().getValueCount());
                 return buildDictionaryBlock(vector, dictionaryBuilder.build());
             }
         }
@@ -74,8 +83,7 @@ public class ArrowBlockBuilder
         return builder.build();
     }
 
-    public Type getPrestoTypeFromArrowField(Field field)
-    {
+    public Type getPrestoTypeFromArrowField(Field field) {
         switch (field.getType().getTypeID()) {
             case Int:
                 ArrowType.Int intType = (ArrowType.Int) field.getType();
@@ -96,70 +104,92 @@ public class ArrowBlockBuilder
                 return getPrestoTypeForArrowFloatingPointType(floatingPoint);
             case Decimal:
                 ArrowType.Decimal decimalType = (ArrowType.Decimal) field.getType();
-                return DecimalType.createDecimalType(decimalType.getPrecision(), decimalType.getScale());
+                return DecimalType.createDecimalType(
+                        decimalType.getPrecision(), decimalType.getScale());
             case Bool:
                 return BooleanType.BOOLEAN;
             case Time:
                 return TimeType.TIME;
             case List:
-            case LargeList: {
-                List<Field> children = field.getChildren();
-                checkArgument(children.size() == 1, "Arrow List expected to have 1 child Field, got: " + children.size());
-                return new ArrayType(getPrestoTypeFromArrowField(field.getChildren().get(0)));
-            }
-            case Map: {
-                List<Field> children = field.getChildren();
-                checkArgument(children.size() == 1, "Arrow Map expected to have 1 child Field for entries, got: " + children.size());
-                Field entryField = children.get(0);
-                checkArgument(entryField.getChildren().size() == 2, "Arrow Map entries expected to have 2 child Fields, got: " + children.size());
-                Type keyType = getPrestoTypeFromArrowField(entryField.getChildren().get(0));
-                Type valueType = getPrestoTypeFromArrowField(entryField.getChildren().get(1));
-                return typeManager.getType(parseTypeSignature(format("map(%s,%s)", keyType.getTypeSignature(), valueType.getTypeSignature())));
-            }
-            case Struct: {
-                List<RowType.Field> children = field.getChildren().stream().map(child -> new RowType.Field(Optional.of(child.getName()), getPrestoTypeFromArrowField(child))).collect(toImmutableList());
-                return RowType.from(children);
-            }
+            case LargeList:
+                {
+                    List<Field> children = field.getChildren();
+                    checkArgument(
+                            children.size() == 1,
+                            "Arrow List expected to have 1 child Field, got: " + children.size());
+                    return new ArrayType(getPrestoTypeFromArrowField(field.getChildren().get(0)));
+                }
+            case Map:
+                {
+                    List<Field> children = field.getChildren();
+                    checkArgument(
+                            children.size() == 1,
+                            "Arrow Map expected to have 1 child Field for entries, got: "
+                                    + children.size());
+                    Field entryField = children.get(0);
+                    checkArgument(
+                            entryField.getChildren().size() == 2,
+                            "Arrow Map entries expected to have 2 child Fields, got: "
+                                    + children.size());
+                    Type keyType = getPrestoTypeFromArrowField(entryField.getChildren().get(0));
+                    Type valueType = getPrestoTypeFromArrowField(entryField.getChildren().get(1));
+                    return typeManager.getType(
+                            parseTypeSignature(
+                                    format(
+                                            "map(%s,%s)",
+                                            keyType.getTypeSignature(),
+                                            valueType.getTypeSignature())));
+                }
+            case Struct:
+                {
+                    List<RowType.Field> children =
+                            field.getChildren().stream()
+                                    .map(
+                                            child ->
+                                                    new RowType.Field(
+                                                            Optional.of(child.getName()),
+                                                            getPrestoTypeFromArrowField(child)))
+                                    .collect(toImmutableList());
+                    return RowType.from(children);
+                }
             default:
-                throw new UnsupportedOperationException("The data type " + field.getType().getTypeID() + " is not supported.");
+                throw new UnsupportedOperationException(
+                        "The data type " + field.getType().getTypeID() + " is not supported.");
         }
     }
 
-    public static Field toExecutionField(Field field)
-    {
+    public static Field toExecutionField(Field field) {
         ArrowType type = field.getType();
         if (type instanceof ArrowType.LargeUtf8) {
             type = ArrowType.Utf8.INSTANCE;
-        }
-        else if (type instanceof ArrowType.LargeBinary) {
+        } else if (type instanceof ArrowType.LargeBinary) {
             type = ArrowType.Binary.INSTANCE;
-        }
-        else if (type instanceof ArrowType.LargeList) {
+        } else if (type instanceof ArrowType.LargeList) {
             type = ArrowType.List.INSTANCE;
         }
 
-        List<Field> children = field.getChildren().stream()
-                .map(ArrowBlockBuilder::toExecutionField)
-                .collect(toImmutableList());
-        FieldType fieldType = new FieldType(
-                field.isNullable(), type, field.getDictionary(), field.getMetadata());
+        List<Field> children =
+                field.getChildren().stream()
+                        .map(ArrowBlockBuilder::toExecutionField)
+                        .collect(toImmutableList());
+        FieldType fieldType =
+                new FieldType(field.isNullable(), type, field.getDictionary(), field.getMetadata());
         return new Field(field.getName(), fieldType, children);
     }
 
-    private Type getPrestoTypeForArrowFloatingPointType(ArrowType.FloatingPoint floatingPoint)
-    {
+    private Type getPrestoTypeForArrowFloatingPointType(ArrowType.FloatingPoint floatingPoint) {
         switch (floatingPoint.getPrecision()) {
             case SINGLE:
                 return RealType.REAL;
             case DOUBLE:
                 return DoubleType.DOUBLE;
             default:
-                throw new IllegalArgumentException("Unexpected floating point precision: " + floatingPoint.getPrecision());
+                throw new IllegalArgumentException(
+                        "Unexpected floating point precision: " + floatingPoint.getPrecision());
         }
     }
 
-    private Type getPrestoTypeForArrowIntType(ArrowType.Int intType)
-    {
+    private Type getPrestoTypeForArrowIntType(ArrowType.Int intType) {
         switch (intType.getBitWidth()) {
             case 64:
                 return BigintType.BIGINT;
@@ -170,12 +200,12 @@ public class ArrowBlockBuilder
             case 8:
                 return TinyintType.TINYINT;
             default:
-                throw new IllegalArgumentException("Unexpected bit width: " + intType.getBitWidth());
+                throw new IllegalArgumentException(
+                        "Unexpected bit width: " + intType.getBitWidth());
         }
     }
 
-    private DictionaryBlock buildDictionaryBlock(FieldVector fieldVector, Block dictionaryblock)
-    {
+    private DictionaryBlock buildDictionaryBlock(FieldVector fieldVector, Block dictionaryblock) {
         if (fieldVector instanceof IntVector) {
             // Get the Arrow indices vector
             IntVector indicesVector = (IntVector) fieldVector;
@@ -184,8 +214,7 @@ public class ArrowBlockBuilder
                 ids[i] = indicesVector.get(i);
             }
             return new DictionaryBlock(ids.length, dictionaryblock, ids);
-        }
-        else if (fieldVector instanceof SmallIntVector) {
+        } else if (fieldVector instanceof SmallIntVector) {
             // Get the SmallInt indices vector
             SmallIntVector smallIntIndicesVector = (SmallIntVector) fieldVector;
             int[] ids = new int[smallIntIndicesVector.getValueCount()];
@@ -193,8 +222,7 @@ public class ArrowBlockBuilder
                 ids[i] = smallIntIndicesVector.get(i);
             }
             return new DictionaryBlock(ids.length, dictionaryblock, ids);
-        }
-        else if (fieldVector instanceof TinyIntVector) {
+        } else if (fieldVector instanceof TinyIntVector) {
             // Get the TinyInt indices vector
             TinyIntVector tinyIntIndicesVector = (TinyIntVector) fieldVector;
             int[] ids = new int[tinyIntIndicesVector.getValueCount()];
@@ -202,162 +230,153 @@ public class ArrowBlockBuilder
                 ids[i] = tinyIntIndicesVector.get(i);
             }
             return new DictionaryBlock(ids.length, dictionaryblock, ids);
-        }
-        else {
+        } else {
             // Handle the case where the FieldVector is of an unsupported type
-            throw new IllegalArgumentException("Unsupported FieldVector type: " + fieldVector.getClass());
+            throw new IllegalArgumentException(
+                    "Unsupported FieldVector type: " + fieldVector.getClass());
         }
     }
 
-    private void assignBlockFromValueVector(ValueVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
-    {
+    private void assignBlockFromValueVector(
+            ValueVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex) {
         if (vector instanceof BitVector) {
             assignBlockFromBitVector((BitVector) vector, type, builder, startIndex, endIndex);
-        }
-        else if (vector instanceof TinyIntVector) {
-            assignBlockFromTinyIntVector((TinyIntVector) vector, type, builder, startIndex, endIndex);
-        }
-        else if (vector instanceof IntVector) {
+        } else if (vector instanceof TinyIntVector) {
+            assignBlockFromTinyIntVector(
+                    (TinyIntVector) vector, type, builder, startIndex, endIndex);
+        } else if (vector instanceof IntVector) {
             assignBlockFromIntVector((IntVector) vector, type, builder, startIndex, endIndex);
-        }
-        else if (vector instanceof SmallIntVector) {
-            assignBlockFromSmallIntVector((SmallIntVector) vector, type, builder, startIndex, endIndex);
-        }
-        else if (vector instanceof BigIntVector) {
+        } else if (vector instanceof SmallIntVector) {
+            assignBlockFromSmallIntVector(
+                    (SmallIntVector) vector, type, builder, startIndex, endIndex);
+        } else if (vector instanceof BigIntVector) {
             assignBlockFromBigIntVector((BigIntVector) vector, type, builder, startIndex, endIndex);
-        }
-        else if (vector instanceof DecimalVector) {
-            assignBlockFromDecimalVector((DecimalVector) vector, type, builder, startIndex, endIndex);
-        }
-        else if (vector instanceof NullVector) {
+        } else if (vector instanceof DecimalVector) {
+            assignBlockFromDecimalVector(
+                    (DecimalVector) vector, type, builder, startIndex, endIndex);
+        } else if (vector instanceof NullVector) {
             assignBlockFromNullVector((NullVector) vector, type, builder, startIndex, endIndex);
-        }
-        else if (vector instanceof TimeStampMicroVector) {
-            assignBlockFromTimeStampMicroVector((TimeStampMicroVector) vector, type, builder, startIndex, endIndex);
-        }
-        else if (vector instanceof TimeStampMilliVector) {
-            assignBlockFromTimeStampMilliVector((TimeStampMilliVector) vector, type, builder, startIndex, endIndex);
-        }
-        else if (vector instanceof Float4Vector) {
+        } else if (vector instanceof TimeStampMicroVector) {
+            assignBlockFromTimeStampMicroVector(
+                    (TimeStampMicroVector) vector, type, builder, startIndex, endIndex);
+        } else if (vector instanceof TimeStampMilliVector) {
+            assignBlockFromTimeStampMilliVector(
+                    (TimeStampMilliVector) vector, type, builder, startIndex, endIndex);
+        } else if (vector instanceof Float4Vector) {
             assignBlockFromFloat4Vector((Float4Vector) vector, type, builder, startIndex, endIndex);
-        }
-        else if (vector instanceof Float8Vector) {
+        } else if (vector instanceof Float8Vector) {
             assignBlockFromFloat8Vector((Float8Vector) vector, type, builder, startIndex, endIndex);
-        }
-        else if (vector instanceof VarCharVector) {
+        } else if (vector instanceof VarCharVector) {
             if (type instanceof CharType) {
-                assignCharTypeBlockFromVarcharVector((VarCharVector) vector, type, builder, startIndex, endIndex);
+                assignCharTypeBlockFromVarcharVector(
+                        (VarCharVector) vector, type, builder, startIndex, endIndex);
+            } else if (type instanceof TimeType) {
+                assignTimeTypeBlockFromVarcharVector(
+                        (VarCharVector) vector, type, builder, startIndex, endIndex);
+            } else {
+                assignBlockFromVarCharVector(
+                        (VarCharVector) vector, type, builder, startIndex, endIndex);
             }
-            else if (type instanceof TimeType) {
-                assignTimeTypeBlockFromVarcharVector((VarCharVector) vector, type, builder, startIndex, endIndex);
-            }
-            else {
-                assignBlockFromVarCharVector((VarCharVector) vector, type, builder, startIndex, endIndex);
-            }
-        }
-        else if (vector instanceof VarBinaryVector) {
-            assignBlockFromVarBinaryVector((VarBinaryVector) vector, type, builder, startIndex, endIndex);
-        }
-        else if (vector instanceof DateDayVector) {
-            assignBlockFromDateDayVector((DateDayVector) vector, type, builder, startIndex, endIndex);
-        }
-        else if (vector instanceof DateMilliVector) {
-            assignBlockFromDateMilliVector((DateMilliVector) vector, type, builder, startIndex, endIndex);
-        }
-        else if (vector instanceof TimeMilliVector) {
-            assignBlockFromTimeMilliVector((TimeMilliVector) vector, type, builder, startIndex, endIndex);
-        }
-        else if (vector instanceof TimeSecVector) {
-            assignBlockFromTimeSecVector((TimeSecVector) vector, type, builder, startIndex, endIndex);
-        }
-        else if (vector instanceof TimeStampSecVector) {
-            assignBlockFromTimeStampSecVector((TimeStampSecVector) vector, type, builder, startIndex, endIndex);
-        }
-        else if (vector instanceof TimeMicroVector) {
-            assignBlockFromTimeMicroVector((TimeMicroVector) vector, type, builder, startIndex, endIndex);
+        } else if (vector instanceof VarBinaryVector) {
+            assignBlockFromVarBinaryVector(
+                    (VarBinaryVector) vector, type, builder, startIndex, endIndex);
+        } else if (vector instanceof DateDayVector) {
+            assignBlockFromDateDayVector(
+                    (DateDayVector) vector, type, builder, startIndex, endIndex);
+        } else if (vector instanceof DateMilliVector) {
+            assignBlockFromDateMilliVector(
+                    (DateMilliVector) vector, type, builder, startIndex, endIndex);
+        } else if (vector instanceof TimeMilliVector) {
+            assignBlockFromTimeMilliVector(
+                    (TimeMilliVector) vector, type, builder, startIndex, endIndex);
+        } else if (vector instanceof TimeSecVector) {
+            assignBlockFromTimeSecVector(
+                    (TimeSecVector) vector, type, builder, startIndex, endIndex);
+        } else if (vector instanceof TimeStampSecVector) {
+            assignBlockFromTimeStampSecVector(
+                    (TimeStampSecVector) vector, type, builder, startIndex, endIndex);
+        } else if (vector instanceof TimeMicroVector) {
+            assignBlockFromTimeMicroVector(
+                    (TimeMicroVector) vector, type, builder, startIndex, endIndex);
         } else if (vector instanceof TimeStampMicroTZVector) {
-            assignBlockFromTimeStampMicroTZVector((TimeStampMicroTZVector) vector, type, builder, startIndex, endIndex);
+            assignBlockFromTimeStampMicroTZVector(
+                    (TimeStampMicroTZVector) vector, type, builder, startIndex, endIndex);
         } else if (vector instanceof TimeStampMilliTZVector) {
-            assignBlockFromTimeStampMilliTZVector((TimeStampMilliTZVector) vector, type, builder, startIndex, endIndex);
+            assignBlockFromTimeStampMilliTZVector(
+                    (TimeStampMilliTZVector) vector, type, builder, startIndex, endIndex);
         } else if (vector instanceof TimeStampSecTZVector) {
-            assignBlockFromTimeStampSecTZVector((TimeStampSecTZVector) vector, type, builder, startIndex, endIndex);
+            assignBlockFromTimeStampSecTZVector(
+                    (TimeStampSecTZVector) vector, type, builder, startIndex, endIndex);
         } else if (vector instanceof MapVector) {
             // NOTE: MapVector is also instanceof ListVector, so check for Map first
             assignBlockFromMapVector((MapVector) vector, type, builder, startIndex, endIndex);
-        }
-        else if (vector instanceof ListVector) {
+        } else if (vector instanceof ListVector) {
             assignBlockFromListVector((ListVector) vector, type, builder, startIndex, endIndex);
-        }
-        else if (vector instanceof StructVector) {
+        } else if (vector instanceof StructVector) {
             assignBlockFromStructVector((StructVector) vector, type, builder, startIndex, endIndex);
-        }
-        else {
-            throw new UnsupportedOperationException("Unsupported vector type: " + vector.getClass());
+        } else {
+            throw new UnsupportedOperationException(
+                    "Unsupported vector type: " + vector.getClass());
         }
     }
 
-    public void assignBlockFromBitVector(BitVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
-    {
+    public void assignBlockFromBitVector(
+            BitVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex) {
         for (int i = startIndex; i < endIndex; i++) {
             if (vector.isNull(i)) {
                 builder.appendNull();
-            }
-            else {
+            } else {
                 type.writeBoolean(builder, vector.get(i) == 1);
             }
         }
     }
 
-    public void assignBlockFromIntVector(IntVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
-    {
+    public void assignBlockFromIntVector(
+            IntVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex) {
         for (int i = startIndex; i < endIndex; i++) {
             if (vector.isNull(i)) {
                 builder.appendNull();
-            }
-            else {
+            } else {
                 type.writeLong(builder, vector.get(i));
             }
         }
     }
 
-    public void assignBlockFromSmallIntVector(SmallIntVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
-    {
+    public void assignBlockFromSmallIntVector(
+            SmallIntVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex) {
         for (int i = startIndex; i < endIndex; i++) {
             if (vector.isNull(i)) {
                 builder.appendNull();
-            }
-            else {
+            } else {
                 type.writeLong(builder, vector.get(i));
             }
         }
     }
 
-    public void assignBlockFromTinyIntVector(TinyIntVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
-    {
+    public void assignBlockFromTinyIntVector(
+            TinyIntVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex) {
         for (int i = startIndex; i < endIndex; i++) {
             if (vector.isNull(i)) {
                 builder.appendNull();
-            }
-            else {
+            } else {
                 type.writeLong(builder, vector.get(i));
             }
         }
     }
 
-    public void assignBlockFromBigIntVector(BigIntVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
-    {
+    public void assignBlockFromBigIntVector(
+            BigIntVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex) {
         for (int i = startIndex; i < endIndex; i++) {
             if (vector.isNull(i)) {
                 builder.appendNull();
-            }
-            else {
+            } else {
                 type.writeLong(builder, vector.get(i));
             }
         }
     }
 
-    public void assignBlockFromDecimalVector(DecimalVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
-    {
+    public void assignBlockFromDecimalVector(
+            DecimalVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex) {
         if (!(type instanceof DecimalType)) {
             throw new IllegalArgumentException("Type must be a DecimalType for DecimalVector");
         }
@@ -367,13 +386,11 @@ public class ArrowBlockBuilder
         for (int i = startIndex; i < endIndex; i++) {
             if (vector.isNull(i)) {
                 builder.appendNull();
-            }
-            else {
+            } else {
                 BigDecimal decimal = vector.getObject(i); // Get the BigDecimal value
                 if (decimalType.isShort()) {
                     builder.writeLong(decimal.unscaledValue().longValue());
-                }
-                else {
+                } else {
                     Slice slice = Decimals.encodeScaledValue(decimal);
                     decimalType.writeSlice(builder, slice, 0, slice.length());
                 }
@@ -381,24 +398,28 @@ public class ArrowBlockBuilder
         }
     }
 
-    public void assignBlockFromNullVector(NullVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
-    {
+    public void assignBlockFromNullVector(
+            NullVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex) {
         for (int i = startIndex; i < endIndex; i++) {
             builder.appendNull();
         }
     }
 
-    public void assignBlockFromTimeStampMicroVector(TimeStampMicroVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
-    {
+    public void assignBlockFromTimeStampMicroVector(
+            TimeStampMicroVector vector,
+            Type type,
+            BlockBuilder builder,
+            int startIndex,
+            int endIndex) {
         if (!(type instanceof TimestampType)) {
-            throw new IllegalArgumentException("Expected TimestampType but got " + type.getClass().getName());
+            throw new IllegalArgumentException(
+                    "Expected TimestampType but got " + type.getClass().getName());
         }
 
         for (int i = startIndex; i < endIndex; i++) {
             if (vector.isNull(i)) {
                 builder.appendNull();
-            }
-            else {
+            } else {
                 long micros = vector.get(i);
                 long millis = TimeUnit.MICROSECONDS.toMillis(micros);
                 type.writeLong(builder, millis);
@@ -406,17 +427,21 @@ public class ArrowBlockBuilder
         }
     }
 
-    public void assignBlockFromTimeStampMicroTZVector(TimeStampMicroTZVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
-    {
+    public void assignBlockFromTimeStampMicroTZVector(
+            TimeStampMicroTZVector vector,
+            Type type,
+            BlockBuilder builder,
+            int startIndex,
+            int endIndex) {
         if (!(type instanceof TimestampType)) {
-            throw new IllegalArgumentException("Expected TimestampType but got " + type.getClass().getName());
+            throw new IllegalArgumentException(
+                    "Expected TimestampType but got " + type.getClass().getName());
         }
 
         for (int i = startIndex; i < endIndex; i++) {
             if (vector.isNull(i)) {
                 builder.appendNull();
-            }
-            else {
+            } else {
                 long micros = vector.get(i);
                 long millis = TimeUnit.MICROSECONDS.toMillis(micros);
                 type.writeLong(builder, millis);
@@ -424,72 +449,73 @@ public class ArrowBlockBuilder
         }
     }
 
-    public void assignBlockFromTimeStampMilliVector(TimeStampMilliVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
-    {
+    public void assignBlockFromTimeStampMilliVector(
+            TimeStampMilliVector vector,
+            Type type,
+            BlockBuilder builder,
+            int startIndex,
+            int endIndex) {
         if (!(type instanceof TimestampType)) {
-            throw new IllegalArgumentException("Expected TimestampType but got " + type.getClass().getName());
+            throw new IllegalArgumentException(
+                    "Expected TimestampType but got " + type.getClass().getName());
         }
 
         for (int i = startIndex; i < endIndex; i++) {
             if (vector.isNull(i)) {
                 builder.appendNull();
-            }
-            else {
+            } else {
                 long millis = vector.get(i);
                 type.writeLong(builder, millis);
             }
         }
     }
 
-    public void assignBlockFromFloat8Vector(Float8Vector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
-    {
+    public void assignBlockFromFloat8Vector(
+            Float8Vector vector, Type type, BlockBuilder builder, int startIndex, int endIndex) {
         for (int i = startIndex; i < endIndex; i++) {
             if (vector.isNull(i)) {
                 builder.appendNull();
-            }
-            else {
+            } else {
                 type.writeDouble(builder, vector.get(i));
             }
         }
     }
 
-    public void assignBlockFromFloat4Vector(Float4Vector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
-    {
+    public void assignBlockFromFloat4Vector(
+            Float4Vector vector, Type type, BlockBuilder builder, int startIndex, int endIndex) {
         for (int i = startIndex; i < endIndex; i++) {
             if (vector.isNull(i)) {
                 builder.appendNull();
-            }
-            else {
+            } else {
                 int intBits = Float.floatToIntBits(vector.get(i));
                 type.writeLong(builder, intBits);
             }
         }
     }
 
-    public void assignBlockFromVarBinaryVector(VarBinaryVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
-    {
+    public void assignBlockFromVarBinaryVector(
+            VarBinaryVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex) {
         for (int i = startIndex; i < endIndex; i++) {
             if (vector.isNull(i)) {
                 builder.appendNull();
-            }
-            else {
+            } else {
                 byte[] value = vector.get(i);
                 type.writeSlice(builder, Slices.wrappedBuffer(value));
             }
         }
     }
 
-    public void assignBlockFromVarCharVector(VarCharVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
-    {
+    public void assignBlockFromVarCharVector(
+            VarCharVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex) {
         if (!(type instanceof VarcharType)) {
-            throw new IllegalArgumentException("Expected VarcharType but got " + type.getClass().getName());
+            throw new IllegalArgumentException(
+                    "Expected VarcharType but got " + type.getClass().getName());
         }
 
         for (int i = startIndex; i < endIndex; i++) {
             if (vector.isNull(i)) {
                 builder.appendNull();
-            }
-            else {
+            } else {
                 // Directly create a Slice from the raw byte array
                 byte[] rawBytes = vector.get(i);
                 Slice slice = Slices.wrappedBuffer(rawBytes);
@@ -499,33 +525,33 @@ public class ArrowBlockBuilder
         }
     }
 
-    public void assignBlockFromDateDayVector(DateDayVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
-    {
+    public void assignBlockFromDateDayVector(
+            DateDayVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex) {
         if (!(type instanceof DateType)) {
-            throw new IllegalArgumentException("Expected DateType but got " + type.getClass().getName());
+            throw new IllegalArgumentException(
+                    "Expected DateType but got " + type.getClass().getName());
         }
 
         for (int i = startIndex; i < endIndex; i++) {
             if (vector.isNull(i)) {
                 builder.appendNull();
-            }
-            else {
+            } else {
                 type.writeLong(builder, vector.get(i));
             }
         }
     }
 
-    public void assignBlockFromDateMilliVector(DateMilliVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
-    {
+    public void assignBlockFromDateMilliVector(
+            DateMilliVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex) {
         if (!(type instanceof DateType)) {
-            throw new IllegalArgumentException("Expected DateType but got " + type.getClass().getName());
+            throw new IllegalArgumentException(
+                    "Expected DateType but got " + type.getClass().getName());
         }
 
         for (int i = startIndex; i < endIndex; i++) {
             if (vector.isNull(i)) {
                 builder.appendNull();
-            }
-            else {
+            } else {
                 DateType dateType = (DateType) type;
                 long days = TimeUnit.MILLISECONDS.toDays(vector.get(i));
                 dateType.writeLong(builder, days);
@@ -533,8 +559,8 @@ public class ArrowBlockBuilder
         }
     }
 
-    public void assignBlockFromTimeSecVector(TimeSecVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
-    {
+    public void assignBlockFromTimeSecVector(
+            TimeSecVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex) {
         if (!(type instanceof TimeType)) {
             throw new IllegalArgumentException("Type must be a TimeType for TimeSecVector");
         }
@@ -542,8 +568,7 @@ public class ArrowBlockBuilder
         for (int i = startIndex; i < endIndex; i++) {
             if (vector.isNull(i)) {
                 builder.appendNull();
-            }
-            else {
+            } else {
                 int value = vector.get(i);
                 long millis = TimeUnit.SECONDS.toMillis(value);
                 type.writeLong(builder, millis);
@@ -551,8 +576,8 @@ public class ArrowBlockBuilder
         }
     }
 
-    public void assignBlockFromTimeMilliVector(TimeMilliVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
-    {
+    public void assignBlockFromTimeMilliVector(
+            TimeMilliVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex) {
         if (!(type instanceof TimeType)) {
             throw new IllegalArgumentException("Type must be a TimeType for TimeSecVector");
         }
@@ -560,24 +585,22 @@ public class ArrowBlockBuilder
         for (int i = startIndex; i < endIndex; i++) {
             if (vector.isNull(i)) {
                 builder.appendNull();
-            }
-            else {
+            } else {
                 long millis = vector.get(i);
                 type.writeLong(builder, millis);
             }
         }
     }
 
-    public void assignBlockFromTimeMicroVector(TimeMicroVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
-    {
+    public void assignBlockFromTimeMicroVector(
+            TimeMicroVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex) {
         if (!(type instanceof TimeType)) {
             throw new IllegalArgumentException("Type must be a TimeType for TimemicroVector");
         }
         for (int i = startIndex; i < endIndex; i++) {
             if (vector.isNull(i)) {
                 builder.appendNull();
-            }
-            else {
+            } else {
                 long value = vector.get(i);
                 long micro = TimeUnit.MICROSECONDS.toMillis(value);
                 type.writeLong(builder, micro);
@@ -585,17 +608,21 @@ public class ArrowBlockBuilder
         }
     }
 
-    public void assignBlockFromTimeStampSecVector(TimeStampSecVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
-    {
+    public void assignBlockFromTimeStampSecVector(
+            TimeStampSecVector vector,
+            Type type,
+            BlockBuilder builder,
+            int startIndex,
+            int endIndex) {
         if (!(type instanceof TimestampType)) {
-            throw new IllegalArgumentException("Type must be a TimestampType for TimeStampSecVector");
+            throw new IllegalArgumentException(
+                    "Type must be a TimestampType for TimeStampSecVector");
         }
 
         for (int i = startIndex; i < endIndex; i++) {
             if (vector.isNull(i)) {
                 builder.appendNull();
-            }
-            else {
+            } else {
                 long value = vector.get(i);
                 long millis = TimeUnit.SECONDS.toMillis(value);
                 type.writeLong(builder, millis);
@@ -603,17 +630,21 @@ public class ArrowBlockBuilder
         }
     }
 
-    public void assignBlockFromTimeStampSecTZVector(TimeStampSecTZVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
-    {
+    public void assignBlockFromTimeStampSecTZVector(
+            TimeStampSecTZVector vector,
+            Type type,
+            BlockBuilder builder,
+            int startIndex,
+            int endIndex) {
         if (!(type instanceof TimestampType)) {
-            throw new IllegalArgumentException("Type must be a TimestampType for TimeStampSecVector");
+            throw new IllegalArgumentException(
+                    "Type must be a TimestampType for TimeStampSecVector");
         }
 
         for (int i = startIndex; i < endIndex; i++) {
             if (vector.isNull(i)) {
                 builder.appendNull();
-            }
-            else {
+            } else {
                 long value = vector.get(i);
                 long millis = TimeUnit.SECONDS.toMillis(value);
                 type.writeLong(builder, millis);
@@ -621,26 +652,25 @@ public class ArrowBlockBuilder
         }
     }
 
-    public void assignCharTypeBlockFromVarcharVector(VarCharVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
-    {
+    public void assignCharTypeBlockFromVarcharVector(
+            VarCharVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex) {
         for (int i = startIndex; i < endIndex; i++) {
             if (vector.isNull(i)) {
                 builder.appendNull();
-            }
-            else {
+            } else {
                 String value = new String(vector.get(i), StandardCharsets.UTF_8);
-                type.writeSlice(builder, Slices.utf8Slice(CharMatcher.is(' ').trimTrailingFrom(value)));
+                type.writeSlice(
+                        builder, Slices.utf8Slice(CharMatcher.is(' ').trimTrailingFrom(value)));
             }
         }
     }
 
-    public void assignTimeTypeBlockFromVarcharVector(VarCharVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
-    {
+    public void assignTimeTypeBlockFromVarcharVector(
+            VarCharVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex) {
         for (int i = startIndex; i < endIndex; i++) {
             if (vector.isNull(i)) {
                 builder.appendNull();
-            }
-            else {
+            } else {
                 String timeString = new String(vector.get(i), StandardCharsets.UTF_8);
                 LocalTime time = LocalTime.parse(timeString);
                 long millis = Duration.between(LocalTime.MIN, time).toMillis();
@@ -649,25 +679,29 @@ public class ArrowBlockBuilder
         }
     }
 
-    public void assignBlockFromTimeStampMilliTZVector(TimeStampMilliTZVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
-    {
+    public void assignBlockFromTimeStampMilliTZVector(
+            TimeStampMilliTZVector vector,
+            Type type,
+            BlockBuilder builder,
+            int startIndex,
+            int endIndex) {
         if (!(type instanceof TimestampType)) {
-            throw new IllegalArgumentException("Type must be a TimestampType for TimeStampMilliTZVector");
+            throw new IllegalArgumentException(
+                    "Type must be a TimestampType for TimeStampMilliTZVector");
         }
 
         for (int i = startIndex; i < endIndex; i++) {
             if (vector.isNull(i)) {
                 builder.appendNull();
-            }
-            else {
+            } else {
                 long millis = vector.get(i);
                 type.writeLong(builder, millis);
             }
         }
     }
 
-    public void assignBlockFromListVector(ListVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
-    {
+    public void assignBlockFromListVector(
+            ListVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex) {
         if (!(type instanceof ArrayType)) {
             throw new IllegalArgumentException("Type must be an ArrayType for ListVector");
         }
@@ -678,18 +712,21 @@ public class ArrowBlockBuilder
         for (int i = startIndex; i < endIndex; i++) {
             if (vector.isNull(i)) {
                 builder.appendNull();
-            }
-            else {
+            } else {
                 BlockBuilder elementBuilder = builder.beginBlockEntry();
                 assignBlockFromValueVector(
-                        vector.getDataVector(), elementType, elementBuilder, vector.getElementStartIndex(i), vector.getElementEndIndex(i));
+                        vector.getDataVector(),
+                        elementType,
+                        elementBuilder,
+                        vector.getElementStartIndex(i),
+                        vector.getElementEndIndex(i));
                 builder.closeEntry();
             }
         }
     }
 
-    public void assignBlockFromMapVector(MapVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
-    {
+    public void assignBlockFromMapVector(
+            MapVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex) {
         if (!(type instanceof MapType)) {
             throw new IllegalArgumentException("Type must be a MapType for MapVector");
         }
@@ -702,22 +739,31 @@ public class ArrowBlockBuilder
         for (int i = startIndex; i < endIndex; i++) {
             if (vector.isNull(i)) {
                 builder.appendNull();
-            }
-            else {
+            } else {
                 BlockBuilder entryBuilder = builder.beginBlockEntry();
                 int entryStart = vector.getElementStartIndex(i);
                 int entryEnd = vector.getElementEndIndex(i);
                 for (int entryIndex = entryStart; entryIndex < entryEnd; entryIndex++) {
-                    assignBlockFromValueVector(keyVector, mapType.getKeyType(), entryBuilder, entryIndex, entryIndex + 1);
-                    assignBlockFromValueVector(valueVector, mapType.getValueType(), entryBuilder, entryIndex, entryIndex + 1);
+                    assignBlockFromValueVector(
+                            keyVector,
+                            mapType.getKeyType(),
+                            entryBuilder,
+                            entryIndex,
+                            entryIndex + 1);
+                    assignBlockFromValueVector(
+                            valueVector,
+                            mapType.getValueType(),
+                            entryBuilder,
+                            entryIndex,
+                            entryIndex + 1);
                 }
                 builder.closeEntry();
             }
         }
     }
 
-    public void assignBlockFromStructVector(StructVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex)
-    {
+    public void assignBlockFromStructVector(
+            StructVector vector, Type type, BlockBuilder builder, int startIndex, int endIndex) {
         if (!(type instanceof RowType)) {
             throw new IllegalArgumentException("Type must be a RowType for StructVector");
         }
@@ -727,8 +773,7 @@ public class ArrowBlockBuilder
         for (int i = startIndex; i < endIndex; i++) {
             if (vector.isNull(i)) {
                 builder.appendNull();
-            }
-            else {
+            } else {
                 BlockBuilder childBuilder = builder.beginBlockEntry();
                 List<Type> childTypes = rowType.getTypeParameters();
                 for (int childIndex = 0; childIndex < childTypes.size(); childIndex++) {

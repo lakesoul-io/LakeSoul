@@ -16,10 +16,8 @@ public class Path extends org.apache.hadoop.fs.Path {
         this.filename = filename;
     }
 
-
     @JsonProperty
-    public String getFilename(){
+    public String getFilename() {
         return this.filename;
     }
-
 }

@@ -6,7 +6,15 @@ package org.apache.spark.sql.execution.datasource.parquet
 
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOBase
 import org.apache.parquet.filter2.predicate.FilterApi._
-import org.apache.parquet.filter2.predicate.Operators.{Eq, Gt, GtEq, Lt, LtEq, NotEq, Column => _}
+import org.apache.parquet.filter2.predicate.Operators.{
+  Eq,
+  Gt,
+  GtEq,
+  Lt,
+  LtEq,
+  NotEq,
+  Column => _
+}
 import org.apache.parquet.filter2.predicate.{FilterPredicate, Operators}
 import org.apache.parquet.schema.MessageType
 import org.apache.spark.SparkConf
@@ -17,9 +25,17 @@ import org.apache.spark.sql.catalyst.optimizer.InferFiltersFromConstraints
 import org.apache.spark.sql.catalyst.planning.PhysicalOperation
 import org.apache.spark.sql.catalyst.util.RebaseDateTime.RebaseSpec
 import org.apache.spark.sql.execution.datasources.DataSourceStrategy
-import org.apache.spark.sql.execution.datasources.parquet.{NumRowGroupsAcc, ParquetFilters, ParquetTest, SparkToParquetSchemaConverter}
+import org.apache.spark.sql.execution.datasources.parquet.{
+  NumRowGroupsAcc,
+  ParquetFilters,
+  ParquetTest,
+  SparkToParquetSchemaConverter
+}
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2ScanRelation
-import org.apache.spark.sql.execution.datasources.v2.parquet.{NativeScan, ParquetScan}
+import org.apache.spark.sql.execution.datasources.v2.parquet.{
+  NativeScan,
+  ParquetScan
+}
 import org.apache.spark.sql.functions.struct
 import org.apache.spark.sql.internal.{LegacyBehaviorPolicy, SQLConf}
 import org.apache.spark.sql.internal.SQLConf.ParquetOutputTimestampType

@@ -20,15 +20,12 @@ package com.dmetasoul.lakesoul.lakesoul.local.arrow.writers;
 
 import org.apache.arrow.vector.Float4Vector;
 
-/**
- * {@link ArrowFieldWriter} for Float.
- */
+/** {@link ArrowFieldWriter} for Float. */
 public abstract class FloatWriter<T> extends ArrowFieldWriter<T> {
 
     public static FloatWriter<Object[]> forObject(Float4Vector floatVector) {
         return new FloatWriterForObject(floatVector);
     }
-
 
     // ------------------------------------------------------------------------------------------
 
@@ -51,9 +48,7 @@ public abstract class FloatWriter<T> extends ArrowFieldWriter<T> {
 
     // ------------------------------------------------------------------------------------------
 
-    /**
-     * {@link FloatWriter} for {@link Object[]} input.
-     */
+    /** {@link FloatWriter} for {@link Object[]} input. */
     public static final class FloatWriterForObject extends FloatWriter<Object[]> {
 
         private FloatWriterForObject(Float4Vector floatVector) {
@@ -70,5 +65,4 @@ public abstract class FloatWriter<T> extends ArrowFieldWriter<T> {
             return (float) in[ordinal];
         }
     }
-
 }

@@ -4,6 +4,7 @@
 package org.apache.flink.lakesoul.entry.clean;
 
 import com.alibaba.fastjson.JSONObject;
+
 import org.apache.flink.api.common.functions.MapFunction;
 
 public class TableInfoRecordGets {
@@ -14,20 +15,20 @@ public class TableInfoRecordGets {
             JSONObject tableInfoParse = (JSONObject) JSONObject.parse(value);
             JSONObject properties = (JSONObject) tableInfoParse.get("after");
             String tableId = properties.getString("tableId");
-            if (properties.containsKey("partition.ttl")){
+            if (properties.containsKey("partition.ttl")) {
                 int partitionTtl = properties.getInteger("partition.ttl");
                 return new TableInfo(partitionTtl, tableId);
-            } else if (properties.containsKey("operation")){
-                //which means table has been dropped;
-               return new TableInfo(-5, tableId);
+            } else if (properties.containsKey("operation")) {
+                // which means table has been dropped;
+                return new TableInfo(-5, tableId);
             } else {
-                //which means user canceled the partition.ttl
+                // which means user canceled the partition.ttl
                 return new TableInfo(-1, tableId);
             }
         }
     }
 
-    public static class TableInfo{
+    public static class TableInfo {
         String tableId;
         int partitionTtl;
 
@@ -38,11 +39,13 @@ public class TableInfoRecordGets {
 
         @Override
         public String toString() {
-            return "TableInfo{" +
-                    "tableId='" + tableId + '\'' +
-                    ", partitionTtl=" + partitionTtl +
-                    '}';
+            return "TableInfo{"
+                    + "tableId='"
+                    + tableId
+                    + '\''
+                    + ", partitionTtl="
+                    + partitionTtl
+                    + '}';
         }
     }
-
 }

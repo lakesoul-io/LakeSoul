@@ -9,7 +9,8 @@ public class GlobalResourceManager {
     private static final AtomicBoolean SHUTDOWN_STARTED = new AtomicBoolean(false);
 
     static {
-        Runtime.getRuntime().addShutdownHook(new Thread(GlobalResourceManager::shutdown, "GlobalShutdownHook"));
+        Runtime.getRuntime()
+                .addShutdownHook(new Thread(GlobalResourceManager::shutdown, "GlobalShutdownHook"));
     }
 
     public static void register(AutoCloseable resource) {

@@ -6,7 +6,7 @@ package com.dmetasoul.lakesoul.meta.external;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DBManager;
 
-public class NameSpaceManager implements ExternalDBManager{
+public class NameSpaceManager implements ExternalDBManager {
     private final DBManager lakesoulDBManager = new DBManager();
 
     @Override

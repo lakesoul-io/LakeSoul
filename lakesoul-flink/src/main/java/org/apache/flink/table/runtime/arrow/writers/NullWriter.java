@@ -18,9 +18,8 @@
 
 package org.apache.flink.table.runtime.arrow.writers;
 
-import org.apache.flink.annotation.Internal;
-
 import org.apache.arrow.vector.NullVector;
+import org.apache.flink.annotation.Internal;
 
 /** {@link ArrowFieldWriter} for Null. */
 @Internal

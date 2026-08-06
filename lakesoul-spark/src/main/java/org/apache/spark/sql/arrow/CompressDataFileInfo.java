@@ -10,7 +10,8 @@ public class CompressDataFileInfo {
     private String fileExistsCols;
     private long timestamp;
 
-    public CompressDataFileInfo(String filePath, long fileSize, String fileExistCols, long timestamp) {
+    public CompressDataFileInfo(
+            String filePath, long fileSize, String fileExistCols, long timestamp) {
         this.filePath = filePath;
         this.fileSize = fileSize;
         this.fileExistsCols = fileExistCols;
@@ -49,12 +50,19 @@ public class CompressDataFileInfo {
         this.timestamp = timestamp;
     }
 
-    @Override public String toString() {
-        return "CompressDataFileInfo{" +
-                "filePath='" + filePath + '\'' +
-                ", fileSize=" + fileSize +
-                ", fileExistsCols='" + fileExistsCols + '\'' +
-                ", timestamp=" + timestamp +
-                '}';
+    @Override
+    public String toString() {
+        return "CompressDataFileInfo{"
+                + "filePath='"
+                + filePath
+                + '\''
+                + ", fileSize="
+                + fileSize
+                + ", fileExistsCols='"
+                + fileExistsCols
+                + '\''
+                + ", timestamp="
+                + timestamp
+                + '}';
     }
 }

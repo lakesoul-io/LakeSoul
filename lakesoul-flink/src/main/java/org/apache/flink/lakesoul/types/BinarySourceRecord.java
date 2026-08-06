@@ -23,7 +23,7 @@ public class BinarySourceRecord {
 
     private String tableLocation;
 
-    public  List<String> partitionKeys ;
+    public List<String> partitionKeys;
 
     private final boolean isDDLRecord;
 
@@ -33,9 +33,15 @@ public class BinarySourceRecord {
 
     private static final Logger LOG = LoggerFactory.getLogger(BinarySourceRecord.class);
 
-    public BinarySourceRecord(String topic, List<String> primaryKeys, TableId tableId, String tableLocation,
-                              List<String> partitionKeys, boolean isDDLRecord, LakeSoulRowDataWrapper data,
-                              String sourceRecordValue) {
+    public BinarySourceRecord(
+            String topic,
+            List<String> primaryKeys,
+            TableId tableId,
+            String tableLocation,
+            List<String> partitionKeys,
+            boolean isDDLRecord,
+            LakeSoulRowDataWrapper data,
+            String sourceRecordValue) {
         this.topic = topic;
         this.primaryKeys = primaryKeys;
         this.tableId = tableId;
@@ -46,13 +52,14 @@ public class BinarySourceRecord {
         this.sourceRecordValue = sourceRecordValue;
     }
 
-    public BinarySourceRecord(String topic, List<String> primaryKeys,
-                              List<String> partitionKeys,
-                              LakeSoulRowDataWrapper data,
-                              String sourceRecordValue,
-                              TableId tableId,
-                              boolean isDDL)
-    {
+    public BinarySourceRecord(
+            String topic,
+            List<String> primaryKeys,
+            List<String> partitionKeys,
+            LakeSoulRowDataWrapper data,
+            String sourceRecordValue,
+            TableId tableId,
+            boolean isDDL) {
 
         this.topic = topic;
         this.primaryKeys = primaryKeys;
@@ -63,31 +70,37 @@ public class BinarySourceRecord {
         this.isDDLRecord = isDDL;
     }
 
-    public static BinarySourceRecord fromMysqlSourceRecord(SourceRecord sourceRecord,
-                                                           LakeSoulRecordConvert convert,
-                                                           String basePath,
-                                                           String sinkDBName) throws Exception {
+    public static BinarySourceRecord fromMysqlSourceRecord(
+            SourceRecord sourceRecord,
+            LakeSoulRecordConvert convert,
+            String basePath,
+            String sinkDBName)
+            throws Exception {
         Schema keySchema = sourceRecord.keySchema();
-        TableId tableId = new TableId(io.debezium.relational.TableId.parse(sourceRecord.topic()).toLowercase());
+        TableId tableId =
+                new TableId(
+                        io.debezium.relational.TableId.parse(sourceRecord.topic()).toLowercase());
         String sourceSchemaName = tableId.schema() == null ? tableId.catalog() : tableId.schema();
         String tableName;
         String originTableName;
         if (sinkDBName.equals(sourceSchemaName)
-                || sourceRecord.topic().split("\\.")[0].equals("mysql_binlog_source")){
+                || sourceRecord.topic().split("\\.")[0].equals("mysql_binlog_source")) {
             tableName = String.format("s_%s_%s", sourceSchemaName, tableId.table()).toLowerCase();
             originTableName = tableId.table();
             tableId = new TableId(sourceSchemaName, sinkDBName, tableName);
         } else {
-            tableName = String.format("s_%s_%s_%s", sinkDBName, sourceSchemaName, tableId.table()).toLowerCase();
+            tableName =
+                    String.format("s_%s_%s_%s", sinkDBName, sourceSchemaName, tableId.table())
+                            .toLowerCase();
             originTableName = tableId.table();
-            tableId = new TableId( sourceSchemaName, sinkDBName , tableName);
+            tableId = new TableId(sourceSchemaName, sinkDBName, tableName);
         }
         HashMap<String, List<String>> topicsPartitionFields = convert.topicsPartitionFields;
         if (topicsPartitionFields.containsKey(originTableName)) {
             List<String> partitionColls = topicsPartitionFields.get(originTableName);
             topicsPartitionFields.remove(originTableName);
             topicsPartitionFields.put(tableName, partitionColls);
-            if (convert.formatRuleList.containsKey(originTableName)){
+            if (convert.formatRuleList.containsKey(originTableName)) {
                 HashMap<String, String> formatRuleList = convert.formatRuleList;
                 String fomatRule = formatRuleList.get(originTableName);
                 formatRuleList.remove(originTableName);
@@ -95,7 +108,8 @@ public class BinarySourceRecord {
             }
         }
 
-        boolean isDDL = "io.debezium.connector.mysql.SchemaChangeKey".equalsIgnoreCase(keySchema.name());
+        boolean isDDL =
+                "io.debezium.connector.mysql.SchemaChangeKey".equalsIgnoreCase(keySchema.name());
         if (isDDL) {
             return null;
         } else {
@@ -110,26 +124,38 @@ public class BinarySourceRecord {
                 data = convert.toLakeSoulDataType(valueSchema, value, tableId, primaryKeys);
             } catch (IllegalArgumentException e) {
                 if (e.getMessage().contains("Encounter null value for primary key field")) {
-                    LOG.error("Encounter null value for primary key field, record {}", sourceRecord);
+                    LOG.error(
+                            "Encounter null value for primary key field, record {}", sourceRecord);
                     return null;
                 }
             }
             String tablePath;
             try {
                 if (tableId.schema() == null) {
-                    tablePath = new Path(new Path(basePath, tableId.catalog()), tableId.table()).toString();
+                    tablePath =
+                            new Path(new Path(basePath, tableId.catalog()), tableId.table())
+                                    .toString();
                 } else {
-                    tablePath = new Path(new Path(basePath, tableId.schema()), tableId.table()).toString();
+                    tablePath =
+                            new Path(new Path(basePath, tableId.schema()), tableId.table())
+                                    .toString();
                 }
             } catch (Exception e) {
                 LOG.error("TableId {}, basePath {}", tableId, basePath, e);
-                throw new IllegalArgumentException("Cannot get table path from tableId " +  tableId +
-                        ", basePath " + basePath, e);
+                throw new IllegalArgumentException(
+                        "Cannot get table path from tableId " + tableId + ", basePath " + basePath,
+                        e);
             }
             List<String> newPartitionFields = convert.topicsPartitionFields.get(tableId.table());
-            return new BinarySourceRecord(sourceRecord.topic(), primaryKeys, tableId,
+            return new BinarySourceRecord(
+                    sourceRecord.topic(),
+                    primaryKeys,
+                    tableId,
                     FlinkUtil.makeQualifiedPath(tablePath).toString(),
-                    newPartitionFields == null ? Collections.emptyList(): newPartitionFields, false, data, null);
+                    newPartitionFields == null ? Collections.emptyList() : newPartitionFields,
+                    false,
+                    data,
+                    null);
         }
     }
 
@@ -169,23 +195,18 @@ public class BinarySourceRecord {
         SourceRecordJsonSerde serde = SourceRecordJsonSerde.getInstance();
         return serde.deserializeValue(topic, sourceRecordValue);
     }
+
     public static SourceRecord addEventDate(SourceRecord record, String eventDate) {
 
         Schema oldSchema = record.valueSchema();
         Struct oldValue = (Struct) record.value();
-        SchemaBuilder newSchemaBuilder = SchemaBuilder.struct()
-                .name(oldSchema.name())
-                .optional();
+        SchemaBuilder newSchemaBuilder = SchemaBuilder.struct().name(oldSchema.name()).optional();
 
-        oldSchema.fields().forEach(field ->
-                newSchemaBuilder.field(field.name(), field.schema())
-        );
+        oldSchema.fields().forEach(field -> newSchemaBuilder.field(field.name(), field.schema()));
         newSchemaBuilder.field("eventDate", Schema.STRING_SCHEMA);
         Schema newSchema = newSchemaBuilder.build();
         Struct newValue = new Struct(newSchema);
-        oldSchema.fields().forEach(field ->
-                newValue.put(field.name(), oldValue.get(field))
-        );
+        oldSchema.fields().forEach(field -> newValue.put(field.name(), oldValue.get(field)));
 
         newValue.put("eventDate", eventDate);
         return new SourceRecord(
@@ -197,21 +218,31 @@ public class BinarySourceRecord {
                 record.key(),
                 newSchema,
                 newValue,
-                record.timestamp()
-        );
+                record.timestamp());
     }
 
     @Override
     public String toString() {
-        return "BinarySourceRecord{" +
-                "topic='" + topic + '\'' +
-                ", primaryKeys=" + primaryKeys +
-                ", tableId=" + tableId +
-                ", tableLocation='" + tableLocation + '\'' +
-                ", partitionKeys=" + partitionKeys +
-                ", isDDLRecord=" + isDDLRecord +
-                ", data=" + data +
-                ", sourceRecordValue='" + sourceRecordValue + '\'' +
-                '}';
+        return "BinarySourceRecord{"
+                + "topic='"
+                + topic
+                + '\''
+                + ", primaryKeys="
+                + primaryKeys
+                + ", tableId="
+                + tableId
+                + ", tableLocation='"
+                + tableLocation
+                + '\''
+                + ", partitionKeys="
+                + partitionKeys
+                + ", isDDLRecord="
+                + isDDLRecord
+                + ", data="
+                + data
+                + ", sourceRecordValue='"
+                + sourceRecordValue
+                + '\''
+                + '}';
     }
 }

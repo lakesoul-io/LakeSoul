@@ -83,10 +83,12 @@ def fvecs_to_parquet(
     # Build Arrow schema
     item_field = pa.field("item", pa.float32())
     list_type = pa.list_(item_field, dim)
-    schema = pa.schema([
-        pa.field("id", pa.uint64(), nullable=False),
-        pa.field("vec", list_type, nullable=False),
-    ])
+    schema = pa.schema(
+        [
+            pa.field("id", pa.uint64(), nullable=False),
+            pa.field("vec", list_type, nullable=False),
+        ]
+    )
 
     # Build columns
     ids = pa.array(range(id_offset, id_offset + n_vec), type=pa.uint64())

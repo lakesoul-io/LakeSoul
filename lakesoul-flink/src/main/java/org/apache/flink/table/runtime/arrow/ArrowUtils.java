@@ -18,32 +18,7 @@
 
 package org.apache.flink.table.runtime.arrow;
 
-import org.apache.flink.annotation.Internal;
-import org.apache.flink.api.common.RuntimeExecutionMode;
-import org.apache.flink.api.java.typeutils.TypeExtractor;
-import org.apache.flink.configuration.ExecutionOptions;
-import org.apache.flink.core.memory.ByteArrayOutputStreamWithPos;
-import org.apache.flink.table.api.Table;
-import org.apache.flink.table.api.TableEnvironment;
-import org.apache.flink.table.api.internal.TableEnvironmentImpl;
-import org.apache.flink.table.api.internal.TableImpl;
-import org.apache.flink.table.data.ArrayData;
-import org.apache.flink.table.data.RowData;
-import org.apache.flink.table.data.columnar.vector.ColumnVector;
-import org.apache.flink.table.data.util.DataFormatConverters;
-import org.apache.flink.table.operations.OutputConversionModifyOperation;
-import org.apache.flink.table.runtime.arrow.sources.ArrowTableSource;
-import org.apache.flink.table.runtime.arrow.vectors.*;
-import org.apache.flink.table.runtime.arrow.writers.*;
-import org.apache.flink.table.types.DataType;
-import org.apache.flink.table.types.logical.*;
-import org.apache.flink.table.types.logical.utils.LogicalTypeDefaultVisitor;
-import org.apache.flink.table.types.utils.TypeConversions;
-import org.apache.flink.types.Row;
-import org.apache.flink.types.RowKind;
-import org.apache.flink.util.Preconditions;
-
-import org.apache.flink.shaded.guava31.com.google.common.collect.LinkedHashMultiset;
+import static org.apache.arrow.vector.types.TimeUnit.*;
 
 import org.apache.arrow.flatbuf.MessageHeader;
 import org.apache.arrow.memory.BufferAllocator;
@@ -79,11 +54,35 @@ import org.apache.arrow.vector.ipc.message.MessageMetadataResult;
 import org.apache.arrow.vector.ipc.message.MessageSerializer;
 import org.apache.arrow.vector.types.DateUnit;
 import org.apache.arrow.vector.types.FloatingPointPrecision;
-import org.apache.arrow.vector.types.TimeUnit;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
 import org.apache.arrow.vector.types.pojo.Schema;
+import org.apache.flink.annotation.Internal;
+import org.apache.flink.api.common.RuntimeExecutionMode;
+import org.apache.flink.api.java.typeutils.TypeExtractor;
+import org.apache.flink.configuration.ExecutionOptions;
+import org.apache.flink.core.memory.ByteArrayOutputStreamWithPos;
+import org.apache.flink.shaded.guava31.com.google.common.collect.LinkedHashMultiset;
+import org.apache.flink.table.api.Table;
+import org.apache.flink.table.api.TableEnvironment;
+import org.apache.flink.table.api.internal.TableEnvironmentImpl;
+import org.apache.flink.table.api.internal.TableImpl;
+import org.apache.flink.table.data.ArrayData;
+import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.data.columnar.vector.ColumnVector;
+import org.apache.flink.table.data.util.DataFormatConverters;
+import org.apache.flink.table.operations.OutputConversionModifyOperation;
+import org.apache.flink.table.runtime.arrow.sources.ArrowTableSource;
+import org.apache.flink.table.runtime.arrow.vectors.*;
+import org.apache.flink.table.runtime.arrow.writers.*;
+import org.apache.flink.table.types.DataType;
+import org.apache.flink.table.types.logical.*;
+import org.apache.flink.table.types.logical.utils.LogicalTypeDefaultVisitor;
+import org.apache.flink.table.types.utils.TypeConversions;
+import org.apache.flink.types.Row;
+import org.apache.flink.types.RowKind;
+import org.apache.flink.util.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -98,8 +97,6 @@ import java.nio.channels.ReadableByteChannel;
 import java.time.ZoneId;
 import java.util.*;
 import java.util.stream.Collectors;
-
-import static org.apache.arrow.vector.types.TimeUnit.*;
 
 /** Utilities for Arrow. */
 @Internal
@@ -127,9 +124,9 @@ public final class ArrowUtils {
         } else if (!io.netty.util.internal.PlatformDependent
                 .hasDirectBufferNoCleanerConstructor()) {
             throw new RuntimeException(
-                    "Arrow depends on "
-                            + "DirectByteBuffer.<init>(long, int) which is not available. Please set the "
-                            + "system property 'io.netty.tryReflectionSetAccessible' to 'true'.");
+                    "Arrow depends on DirectByteBuffer.<init>(long, int) which is not available."
+                        + " Please set the system property 'io.netty.tryReflectionSetAccessible' to"
+                        + " 'true'.");
         }
     }
 
@@ -140,17 +137,20 @@ public final class ArrowUtils {
     public static RowType fromArrowSchema(Schema schema) {
         List<RowType.RowField> fields =
                 schema.getFields().stream()
-                        .map(f ->
-                                new RowType.RowField(f.getName(), ArrowUtils.fromArrowField(f))
-                        )
+                        .map(f -> new RowType.RowField(f.getName(), ArrowUtils.fromArrowField(f)))
                         .collect(Collectors.toCollection(ArrayList::new));
         return new RowType(fields);
     }
 
     private static LogicalType fromArrowField(Field field) {
         if (field.getType() instanceof ArrowType.Struct) {
-            return new RowType(field.getChildren().stream().map(f ->
-                    new RowType.RowField(f.getName(), ArrowUtils.fromArrowField(f))).collect(Collectors.toList()));
+            return new RowType(
+                    field.getChildren().stream()
+                            .map(
+                                    f ->
+                                            new RowType.RowField(
+                                                    f.getName(), ArrowUtils.fromArrowField(f)))
+                            .collect(Collectors.toList()));
         } else if (field.getType() instanceof ArrowType.List
                 || field.getType() instanceof ArrowType.LargeList) {
             return new ArrayType(fromArrowField(field.getChildren().get(0)));
@@ -162,9 +162,7 @@ public final class ArrowUtils {
         return logicalType.copy(field.isNullable());
     }
 
-    /**
-     * Returns the Arrow schema of the specified type.
-     */
+    /** Returns the Arrow schema of the specified type. */
     public static Schema toArrowSchema(RowType rowType) {
         Collection<Field> fields =
                 rowType.getFields().stream()
@@ -331,7 +329,9 @@ public final class ArrowUtils {
                 || vector instanceof TimeNanoVector) {
             return TimeWriter.forArray(vector);
         } else if (vector instanceof TimeStampVector
-                && ((ArrowType.Timestamp) vector.getField().getType()).getTimezone().equals("UTC")) {
+                && ((ArrowType.Timestamp) vector.getField().getType())
+                        .getTimezone()
+                        .equals("UTC")) {
             int precision;
             if (fieldType instanceof LocalZonedTimestampType) {
                 precision = ((LocalZonedTimestampType) fieldType).getPrecision();
@@ -961,7 +961,9 @@ public final class ArrowUtils {
                 case NANOSECOND:
                     precision = 9;
             }
-            return type.getTimezone() == null ? new TimestampType(precision) : new LocalZonedTimestampType(precision);
+            return type.getTimezone() == null
+                    ? new TimestampType(precision)
+                    : new LocalZonedTimestampType(precision);
         }
 
         @Override

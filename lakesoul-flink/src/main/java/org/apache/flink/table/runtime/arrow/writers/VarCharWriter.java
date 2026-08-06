@@ -18,12 +18,11 @@
 
 package org.apache.flink.table.runtime.arrow.writers;
 
+import org.apache.arrow.vector.VarCharVector;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.data.ArrayData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
-
-import org.apache.arrow.vector.VarCharVector;
 
 /** {@link ArrowFieldWriter} for VarChar. */
 @Internal

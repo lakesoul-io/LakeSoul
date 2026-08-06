@@ -13,16 +13,19 @@ import org.apache.spark.sql.lakesoul.LakeSoulUtils
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
 
-/**
-  * A rule to check whether the functions are supported only when Hive support is enabled
+/** A rule to check whether the functions are supported only when Hive support
+  * is enabled
   */
 case class LakeSoulUnsupportedOperationsCheck(spark: SparkSession)
-  extends (LogicalPlan => Unit)
+    extends (LogicalPlan => Unit)
     with Logging {
 
   private def fail(operation: String, tableIdent: TableIdentifier): Unit = {
     if (LakeSoulUtils.isLakeSoulTable(spark, tableIdent)) {
-      throw LakeSoulErrors.operationNotSupportedException(operation, Some(tableIdent))
+      throw LakeSoulErrors.operationNotSupportedException(
+        operation,
+        Some(tableIdent)
+      )
     }
   }
 

@@ -16,10 +16,6 @@ import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import static com.facebook.presto.common.Utils.checkArgument;
-import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
-import static java.lang.String.format;
-
 public class PrestoUtil {
 
     public static final String CDC_CHANGE_COLUMN = "lakesoul_cdc_change_column";
@@ -37,7 +33,7 @@ public class PrestoUtil {
             if (m.matches()) {
                 String k = unescapePathName(m.group(1));
                 String v = unescapePathName(m.group(2));
-                String[] kv = new String[]{k, v};
+                String[] kv = new String[] {k, v};
                 kvs.add(kv);
             }
 
@@ -79,25 +75,27 @@ public class PrestoUtil {
 
     public static boolean isExistHashPartition(TableInfo tif) {
         JSONObject tableProperties = JSON.parseObject(tif.getProperties());
-        if (tableProperties.containsKey(LakeSoulOptions.HASH_BUCKET_NUM()) &&
-                tableProperties.getString(LakeSoulOptions.HASH_BUCKET_NUM()).equals("-1")) {
+        if (tableProperties.containsKey(LakeSoulOptions.HASH_BUCKET_NUM())
+                && tableProperties.getString(LakeSoulOptions.HASH_BUCKET_NUM()).equals("-1")) {
             return false;
         } else {
             return tableProperties.containsKey(LakeSoulOptions.HASH_BUCKET_NUM());
         }
     }
 
-    public static Map<String, Map<Integer, List<Path>>> splitDataInfosToRangeAndHashPartition(String tid,
-                                                                                              DataFileInfo[] dfinfos) {
+    public static Map<String, Map<Integer, List<Path>>> splitDataInfosToRangeAndHashPartition(
+            String tid, DataFileInfo[] dfinfos) {
         Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition = new LinkedHashMap<>();
         TableInfo tif = DataOperation.dbManager().getTableInfoByTableId(tid);
         for (DataFileInfo pif : dfinfos) {
             if (isExistHashPartition(tif) && pif.file_bucket_id() != -1) {
-                splitByRangeAndHashPartition.computeIfAbsent(pif.range_partitions(), k -> new LinkedHashMap<>())
+                splitByRangeAndHashPartition
+                        .computeIfAbsent(pif.range_partitions(), k -> new LinkedHashMap<>())
                         .computeIfAbsent(pif.file_bucket_id(), v -> new ArrayList<>())
                         .add(new Path(pif.path()));
             } else {
-                splitByRangeAndHashPartition.computeIfAbsent(pif.range_partitions(), k -> new LinkedHashMap<>())
+                splitByRangeAndHashPartition
+                        .computeIfAbsent(pif.range_partitions(), k -> new LinkedHashMap<>())
                         .computeIfAbsent(-1, v -> new ArrayList<>())
                         .add(new Path(pif.path()));
             }

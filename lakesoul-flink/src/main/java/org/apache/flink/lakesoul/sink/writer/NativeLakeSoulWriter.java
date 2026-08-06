@@ -4,7 +4,13 @@
 
 package org.apache.flink.lakesoul.sink.writer;
 
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BATCH_SIZE;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKET;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.MAX_ROW_GROUP_SIZE;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.STABLE_SORT;
+
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOWriter;
+
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.configuration.Configuration;
@@ -23,7 +29,6 @@ import org.apache.flink.table.types.logical.RowType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.annotation.Nullable;
 import java.io.IOException;
 import java.io.Serializable;
 import java.util.HashMap;
@@ -32,10 +37,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BATCH_SIZE;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKET;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.MAX_ROW_GROUP_SIZE;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.STABLE_SORT;
+import javax.annotation.Nullable;
 
 public class NativeLakeSoulWriter implements InProgressFileWriter<RowData, String> {
 
@@ -66,14 +68,16 @@ public class NativeLakeSoulWriter implements InProgressFileWriter<RowData, Strin
     private long totalRows = 0;
     private final boolean isDynamicBucket;
 
-    public NativeLakeSoulWriter(RowType rowType,
-                                List<String> primaryKeys,
-                                List<String> rangeColumns,
-                                String bucketID,
-                                Path path,
-                                long creationTime,
-                                Configuration conf,
-                                int subTaskId) throws IOException {
+    public NativeLakeSoulWriter(
+            RowType rowType,
+            List<String> primaryKeys,
+            List<String> rangeColumns,
+            String bucketID,
+            Path path,
+            long creationTime,
+            Configuration conf,
+            int subTaskId)
+            throws IOException {
         this.maxRowGroupRows = conf.getInteger(MAX_ROW_GROUP_SIZE);
         this.creationTime = creationTime;
         this.bucketID = bucketID;
@@ -91,9 +95,7 @@ public class NativeLakeSoulWriter implements InProgressFileWriter<RowData, Strin
             this.prefix = new Path(this.prefix, bucketID);
         }
         initNativeWriter();
-
     }
-
 
     private void initNativeWriter() throws IOException {
         ArrowUtils.setLocalTimeZone(FlinkUtil.getLocalTimeZone(conf));
@@ -157,10 +159,12 @@ public class NativeLakeSoulWriter implements InProgressFileWriter<RowData, Strin
         }
 
         @Override
-        public byte[] serialize(InProgressFileWriter.PendingFileRecoverable obj) throws IOException {
+        public byte[] serialize(InProgressFileWriter.PendingFileRecoverable obj)
+                throws IOException {
             if (!(obj instanceof NativeLakeSoulWriter.NativeWriterPendingFileRecoverable)) {
                 throw new UnsupportedOperationException(
-                        "Only NativeLakeSoulWriter.NativeWriterPendingFileRecoverable is supported.");
+                        "Only NativeLakeSoulWriter.NativeWriterPendingFileRecoverable is"
+                                + " supported.");
             }
             DataOutputSerializer out = new DataOutputSerializer(256);
             NativeLakeSoulWriter.NativeWriterPendingFileRecoverable recoverable =
@@ -171,8 +175,8 @@ public class NativeLakeSoulWriter implements InProgressFileWriter<RowData, Strin
         }
 
         @Override
-        public InProgressFileWriter.PendingFileRecoverable deserialize(int version, byte[] serialized)
-                throws IOException {
+        public InProgressFileWriter.PendingFileRecoverable deserialize(
+                int version, byte[] serialized) throws IOException {
             DataInputDeserializer in = new DataInputDeserializer(serialized);
             String path = in.readUTF();
             long time = in.readLong();
@@ -180,7 +184,8 @@ public class NativeLakeSoulWriter implements InProgressFileWriter<RowData, Strin
         }
     }
 
-    static public class NativeWriterPendingFileRecoverable implements PendingFileRecoverable, Serializable {
+    public static class NativeWriterPendingFileRecoverable
+            implements PendingFileRecoverable, Serializable {
         public String path;
 
         public long creationTime;
@@ -192,8 +197,7 @@ public class NativeLakeSoulWriter implements InProgressFileWriter<RowData, Strin
 
         @Override
         public String toString() {
-            return "PendingFile(" +
-                    path + ", " + creationTime + ")";
+            return "PendingFile(" + path + ", " + creationTime + ")";
         }
 
         @Nullable
@@ -231,24 +235,28 @@ public class NativeLakeSoulWriter implements InProgressFileWriter<RowData, Strin
         return new NativeWriterPendingFileRecoverable(this.prefix.toString(), this.creationTime);
     }
 
-    public Map<String, List<PendingFileRecoverable>> closeForCommitWithRecoverableMap() throws IOException {
+    public Map<String, List<PendingFileRecoverable>> closeForCommitWithRecoverableMap()
+            throws IOException {
         long timer = System.currentTimeMillis();
         this.arrowWriter.finish();
         Map<String, List<PendingFileRecoverable>> recoverableMap = new HashMap<>();
         if (this.batch.getRowCount() > 0) {
             this.nativeWriter.write(this.batch);
         }
-        HashMap<String, List<NativeIOWriter.FlushResult>> partitionDescAndFilesMap = this.nativeWriter.flush();
-        for (Map.Entry<String, List<NativeIOWriter.FlushResult>> entry : partitionDescAndFilesMap.entrySet()) {
+        HashMap<String, List<NativeIOWriter.FlushResult>> partitionDescAndFilesMap =
+                this.nativeWriter.flush();
+        for (Map.Entry<String, List<NativeIOWriter.FlushResult>> entry :
+                partitionDescAndFilesMap.entrySet()) {
             String key = isDynamicBucket ? entry.getKey() : bucketID;
             recoverableMap.put(
                     key,
-                    entry.getValue()
-                            .stream()
-                            .map(result -> new NativeLakeSoulWriter.NativeWriterPendingFileRecoverable(result.getFilePath(),
-                                    creationTime))
-                            .collect(Collectors.toList())
-            );
+                    entry.getValue().stream()
+                            .map(
+                                    result ->
+                                            new NativeLakeSoulWriter
+                                                    .NativeWriterPendingFileRecoverable(
+                                                    result.getFilePath(), creationTime))
+                            .collect(Collectors.toList()));
         }
         this.arrowWriter.reset();
         this.rowsInBatch = 0;
@@ -259,7 +267,10 @@ public class NativeLakeSoulWriter implements InProgressFileWriter<RowData, Strin
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
-        LOG.info("CloseForCommitWithRecoverableMap done, costTime={}ms, recoverableMap={}", System.currentTimeMillis() - timer, recoverableMap);
+        LOG.info(
+                "CloseForCommitWithRecoverableMap done, costTime={}ms, recoverableMap={}",
+                System.currentTimeMillis() - timer,
+                recoverableMap);
         return recoverableMap;
     }
 
@@ -290,7 +301,8 @@ public class NativeLakeSoulWriter implements InProgressFileWriter<RowData, Strin
             try {
                 this.nativeWriter.close();
             } catch (Throwable t) {
-                LOG.error("CRITICAL: Error closing native writer, native memory leak potential!", t);
+                LOG.error(
+                        "CRITICAL: Error closing native writer, native memory leak potential!", t);
                 if (firstException == null) firstException = t;
             } finally {
                 this.nativeWriter = null;
@@ -304,7 +316,6 @@ public class NativeLakeSoulWriter implements InProgressFileWriter<RowData, Strin
             throw new RuntimeException("Error during writer disposal", firstException);
         }
     }
-
 
     @Override
     public String getBucketId() {
@@ -328,14 +339,22 @@ public class NativeLakeSoulWriter implements InProgressFileWriter<RowData, Strin
 
     @Override
     public String toString() {
-        return "NativeLakeSoulWriter{" +
-                "maxRowGroupRows=" + maxRowGroupRows +
-                ", creationTime=" + creationTime +
-                ", bucketID='" + bucketID + '\'' +
-                ", rowsInBatch=" + rowsInBatch +
-                ", lastUpdateTime=" + lastUpdateTime +
-                ", path=" + prefix +
-                ", totalRows=" + totalRows +
-                '}';
+        return "NativeLakeSoulWriter{"
+                + "maxRowGroupRows="
+                + maxRowGroupRows
+                + ", creationTime="
+                + creationTime
+                + ", bucketID='"
+                + bucketID
+                + '\''
+                + ", rowsInBatch="
+                + rowsInBatch
+                + ", lastUpdateTime="
+                + lastUpdateTime
+                + ", path="
+                + prefix
+                + ", totalRows="
+                + totalRows
+                + '}';
     }
 }

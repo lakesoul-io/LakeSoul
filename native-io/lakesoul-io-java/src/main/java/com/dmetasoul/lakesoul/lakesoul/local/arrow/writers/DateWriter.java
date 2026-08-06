@@ -20,15 +20,12 @@ package com.dmetasoul.lakesoul.lakesoul.local.arrow.writers;
 
 import org.apache.arrow.vector.DateDayVector;
 
-/**
- * {@link ArrowFieldWriter} for Date.
- */
+/** {@link ArrowFieldWriter} for Date. */
 public abstract class DateWriter<T> extends ArrowFieldWriter<T> {
 
     public static DateWriter<Object[]> forObject(DateDayVector dateDayVector) {
         return new DateWriterForObject(dateDayVector);
     }
-
 
     // ------------------------------------------------------------------------------------------
 
@@ -51,9 +48,7 @@ public abstract class DateWriter<T> extends ArrowFieldWriter<T> {
 
     // ------------------------------------------------------------------------------------------
 
-    /**
-     * {@link DateWriter} for {@link Object[]} input.
-     */
+    /** {@link DateWriter} for {@link Object[]} input. */
     public static final class DateWriterForObject extends DateWriter<Object[]> {
 
         private DateWriterForObject(DateDayVector dateDayVector) {
@@ -70,5 +65,4 @@ public abstract class DateWriter<T> extends ArrowFieldWriter<T> {
             return (int) in[ordinal];
         }
     }
-
 }

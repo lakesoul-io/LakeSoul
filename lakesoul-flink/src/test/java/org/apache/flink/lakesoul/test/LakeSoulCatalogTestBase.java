@@ -4,11 +4,9 @@
 
 package org.apache.flink.lakesoul.test;
 
-import com.dmetasoul.lakesoul.meta.DBConfig;
 import com.dmetasoul.lakesoul.meta.dao.NamespaceDao;
 import com.dmetasoul.lakesoul.meta.entity.Namespace;
-import com.google.common.base.Joiner;
-import com.google.common.collect.Lists;
+
 import org.apache.flink.table.catalog.Catalog;
 import org.junit.After;
 import org.junit.Before;
@@ -17,7 +15,6 @@ import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 
 import java.util.Collections;
-import java.util.List;
 import java.util.Map;
 
 @RunWith(Parameterized.class)
@@ -36,13 +33,11 @@ public class LakeSoulCatalogTestBase extends LakeSoulFlinkTestBase {
     }
 
     @Test
-    public void emptyTest() {
-    }
+    public void emptyTest() {}
 
     @Parameterized.Parameters(name = "catalogName = {0} baseNamespace = {1}")
     public static Iterable<Object[]> parameters() {
-        return Collections.singletonList(
-                new Object[]{"lakesoul", NamespaceDao.DEFAULT_NAMESPACE});
+        return Collections.singletonList(new Object[] {"lakesoul", NamespaceDao.DEFAULT_NAMESPACE});
     }
 
     protected final String catalogName;
@@ -66,7 +61,6 @@ public class LakeSoulCatalogTestBase extends LakeSoulFlinkTestBase {
         this.lakesoulNamespace = baseNamespace;
     }
 
-
     static String toWithClause(Map<String, String> props) {
         StringBuilder builder = new StringBuilder();
         builder.append("(");
@@ -75,8 +69,7 @@ public class LakeSoulCatalogTestBase extends LakeSoulFlinkTestBase {
             if (propCount > 0) {
                 builder.append(",");
             }
-            builder
-                    .append("'")
+            builder.append("'")
                     .append(entry.getKey())
                     .append("'")
                     .append("=")

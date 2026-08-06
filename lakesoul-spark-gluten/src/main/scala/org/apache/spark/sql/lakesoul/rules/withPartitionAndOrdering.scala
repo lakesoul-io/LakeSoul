@@ -5,7 +5,10 @@
 package org.apache.spark.sql.lakesoul.rules
 
 import org.apache.gluten.extension.columnar.transition.Convention
-import org.apache.gluten.extension.columnar.transition.Convention.{KnownBatchType, KnownRowType}
+import org.apache.gluten.extension.columnar.transition.Convention.{
+  KnownBatchType,
+  KnownRowType
+}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, SortOrder}
@@ -13,14 +16,14 @@ import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-/**
- *  Re-implement to support KnownBatchType/KnownRowType traits to avoid
- *  LoadArrowDataExec and vanilla ColumnarToRow transitions
- */
-case class withPartitionAndOrdering(partition: Partitioning,
-                                    ordering: Seq[SortOrder],
-                                    child: SparkPlan)
-  extends UnaryExecNode
+/** Re-implement to support KnownBatchType/KnownRowType traits to avoid
+  * LoadArrowDataExec and vanilla ColumnarToRow transitions
+  */
+case class withPartitionAndOrdering(
+    partition: Partitioning,
+    ordering: Seq[SortOrder],
+    child: SparkPlan
+) extends UnaryExecNode
     with Convention.KnownBatchType
     with Convention.KnownRowTypeForSpark33OrLater {
   override def output: Seq[Attribute] = child.output
@@ -31,7 +34,9 @@ case class withPartitionAndOrdering(partition: Partitioning,
 
   override def outputOrdering: Seq[SortOrder] = ordering
 
-  override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan = {
+  override protected def withNewChildInternal(
+      newChild: SparkPlan
+  ): SparkPlan = {
     copy(child = newChild)
   }
 
@@ -49,7 +54,7 @@ case class withPartitionAndOrdering(partition: Partitioning,
     if (supportsColumnar) {
       child match {
         case k: KnownBatchType => k.batchType()
-        case _ => Convention.BatchType.VanillaBatchType
+        case _                 => Convention.BatchType.VanillaBatchType
       }
     } else {
       Convention.BatchType.None
@@ -62,7 +67,7 @@ case class withPartitionAndOrdering(partition: Partitioning,
     } else {
       child match {
         case k: KnownRowType => k.rowType()
-        case _ => Convention.RowType.VanillaRowType
+        case _               => Convention.RowType.VanillaRowType
       }
     }
   }

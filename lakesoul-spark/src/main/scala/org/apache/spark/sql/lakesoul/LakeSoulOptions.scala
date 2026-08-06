@@ -9,10 +9,12 @@ import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.LakeSoulOptions._
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
-import org.apache.spark.sql.lakesoul.sources.{LakeSoulDataSource, LakeSoulSQLConf}
+import org.apache.spark.sql.lakesoul.sources.{
+  LakeSoulDataSource,
+  LakeSoulSQLConf
+}
 
 import scala.util.Try
-
 
 trait LakeSoulOptionParser {
   protected def sqlConf: SQLConf
@@ -21,14 +23,17 @@ trait LakeSoulOptionParser {
 
   def toBoolean(input: String, name: String): Boolean = {
     Try(input.toBoolean).toOption.getOrElse {
-      throw LakeSoulErrors.illegalLakeSoulOptionException(name, input, "must be 'true' or 'false'")
+      throw LakeSoulErrors.illegalLakeSoulOptionException(
+        name,
+        input,
+        "must be 'true' or 'false'"
+      )
     }
   }
 }
 
-
 trait LakeSoulWriteOptions
-  extends LakeSoulWriteOptionsImpl
+    extends LakeSoulWriteOptionsImpl
     with LakeSoulOptionParser {
 
   import LakeSoulOptions._
@@ -37,33 +42,41 @@ trait LakeSoulWriteOptions
 }
 
 trait LakeSoulWriteOptionsImpl extends LakeSoulOptionParser {
-  /**
-    * Whether the user has enabled auto schema merging in writes using either a DataFrame option
-    * or SQL Session configuration. Automerging is off when table ACLs are enabled.
-    * We always respect the DataFrame writer configuration over the session config.
+
+  /** Whether the user has enabled auto schema merging in writes using either a
+    * DataFrame option or SQL Session configuration. Automerging is off when
+    * table ACLs are enabled. We always respect the DataFrame writer
+    * configuration over the session config.
     */
   def canMergeSchema: Boolean = {
-    options.get(MERGE_SCHEMA_OPTION)
+    options
+      .get(MERGE_SCHEMA_OPTION)
       .map(toBoolean(_, MERGE_SCHEMA_OPTION))
       .getOrElse(sqlConf.getConf(LakeSoulSQLConf.SCHEMA_AUTO_MIGRATE))
   }
 
-  /**
-    * Whether to allow overwriting the schema of a LakeSoul table in an overwrite mode operation. If
-    * ACLs are enabled, we can't change the schema of an operation through a write, which requires
-    * MODIFY permissions, when schema changes require OWN permissions.
+  /** Whether to allow overwriting the schema of a LakeSoul table in an
+    * overwrite mode operation. If ACLs are enabled, we can't change the schema
+    * of an operation through a write, which requires MODIFY permissions, when
+    * schema changes require OWN permissions.
     */
   def canOverwriteSchema: Boolean = {
-    options.get(OVERWRITE_SCHEMA_OPTION).exists(toBoolean(_, OVERWRITE_SCHEMA_OPTION))
+    options
+      .get(OVERWRITE_SCHEMA_OPTION)
+      .exists(toBoolean(_, OVERWRITE_SCHEMA_OPTION))
   }
 
-  //Compatible with df.write.partitionBy , option with "rangePartitions" has higher priority
+  // Compatible with df.write.partitionBy , option with "rangePartitions" has higher priority
   def rangePartitions: String = {
-    options.get(RANGE_PARTITIONS)
+    options
+      .get(RANGE_PARTITIONS)
       .getOrElse(
-        options.get(PARTITION_BY)
+        options
+          .get(PARTITION_BY)
           .map(LakeSoulDataSource.decodePartitioningColumns)
-          .getOrElse(Nil).mkString(LAKESOUL_RANGE_PARTITION_SPLITTER))
+          .getOrElse(Nil)
+          .mkString(LAKESOUL_RANGE_PARTITION_SPLITTER)
+      )
   }
 
   def hashPartitions: String = {
@@ -75,7 +88,8 @@ trait LakeSoulWriteOptionsImpl extends LakeSoulOptionParser {
   }
 
   def allowDeltaFile: Boolean = {
-    options.get(AllowDeltaFile)
+    options
+      .get(AllowDeltaFile)
       .map(toBoolean(_, AllowDeltaFile))
       .getOrElse(sqlConf.getConf(LakeSoulSQLConf.USE_DELTA_FILE))
   }
@@ -90,24 +104,32 @@ trait LakeSoulWriteOptionsImpl extends LakeSoulOptionParser {
   }
 }
 
-/**
-  * Options for the lakesoul lake source.
+/** Options for the lakesoul lake source.
   */
-class LakeSoulOptions(@transient protected[lakesoul] val options: CaseInsensitiveMap[String],
-                      @transient protected val sqlConf: SQLConf)
-  extends LakeSoulWriteOptions with LakeSoulOptionParser with Serializable {
+class LakeSoulOptions(
+    @transient protected[lakesoul] val options: CaseInsensitiveMap[String],
+    @transient protected val sqlConf: SQLConf
+) extends LakeSoulWriteOptions
+    with LakeSoulOptionParser
+    with Serializable {
 
-  def this(options: Map[String, String], conf: SQLConf) = this(CaseInsensitiveMap(options), conf)
+  def this(options: Map[String, String], conf: SQLConf) =
+    this(CaseInsensitiveMap(options), conf)
 }
-
 
 object LakeSoulOptions {
 
-  /** An option to overwrite only the data that matches predicates over partition columns. */
+  /** An option to overwrite only the data that matches predicates over
+    * partition columns.
+    */
   val REPLACE_WHERE_OPTION = "replaceWhere"
+
   /** An option to allow automatic schema merging during a write operation. */
   val MERGE_SCHEMA_OPTION = "mergeSchema"
-  /** An option to allow overwriting schema and partitioning during an overwrite write operation. */
+
+  /** An option to allow overwriting schema and partitioning during an overwrite
+    * write operation.
+    */
   val OVERWRITE_SCHEMA_OPTION = "overwriteSchema"
 
   val PARTITION_BY = "__partition_columns"
@@ -124,6 +146,7 @@ object LakeSoulOptions {
   val PARTITION_DESC = "partitiondesc"
   val READ_START_TIME = "readstarttime"
   val READ_END_TIME = "readendtime"
+
   /** An option to allow read type whether snapshot or increamental. */
   val READ_TYPE = "readtype"
   val TIME_ZONE = "timezone"

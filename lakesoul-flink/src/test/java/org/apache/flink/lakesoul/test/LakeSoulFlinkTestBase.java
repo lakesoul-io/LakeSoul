@@ -6,6 +6,7 @@ package org.apache.flink.lakesoul.test;
 
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.google.common.collect.Lists;
+
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.TableEnvironment;
@@ -22,8 +23,7 @@ import java.util.List;
 
 public class LakeSoulFlinkTestBase extends AbstractTestBase {
 
-    @ClassRule
-    public static final TemporaryFolder TEMPORARY_FOLDER = new TemporaryFolder();
+    @ClassRule public static final TemporaryFolder TEMPORARY_FOLDER = new TemporaryFolder();
 
     protected static DBManager dbManager = null;
     protected static LakeSoulCatalog catalog = null;
@@ -47,12 +47,11 @@ public class LakeSoulFlinkTestBase extends AbstractTestBase {
         if (tEnv == null) {
             synchronized (this) {
                 if (tEnv == null) {
-                    EnvironmentSettings settings = EnvironmentSettings.newInstance().inBatchMode().build();
+                    EnvironmentSettings settings =
+                            EnvironmentSettings.newInstance().inBatchMode().build();
 
                     TableEnvironment env = TableEnvironment.create(settings);
-                    env.getConfig()
-                            .getConfiguration()
-                    ;
+                    env.getConfig().getConfiguration();
                     env.registerCatalog("lakesoul", catalog);
 
                     tEnv = env;
@@ -84,11 +83,11 @@ public class LakeSoulFlinkTestBase extends AbstractTestBase {
         Assertions.assertThat(actual).isNotNull().containsExactlyInAnyOrderElementsOf(expected);
     }
 
-    protected void assertSameElements(String message, Iterable<Row> expected, Iterable<Row> actual) {
+    protected void assertSameElements(
+            String message, Iterable<Row> expected, Iterable<Row> actual) {
         Assertions.assertThat(actual)
                 .isNotNull()
                 .as(message)
                 .containsExactlyInAnyOrderElementsOf(expected);
     }
-
 }

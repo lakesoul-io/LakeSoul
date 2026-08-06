@@ -9,7 +9,8 @@ import org.apache.spark.sql.internal.SQLConf
 
 object LakeSoulSQLConf {
 
-  def buildConf(key: String): ConfigBuilder = SQLConf.buildConf(s"spark.dmetasoul.lakesoul.$key")
+  def buildConf(key: String): ConfigBuilder =
+    SQLConf.buildConf(s"spark.dmetasoul.lakesoul.$key")
 
   val SCHEMA_AUTO_MIGRATE: ConfigEntry[Boolean] =
     buildConf("schema.autoMerge.enabled")
@@ -26,8 +27,7 @@ object LakeSoulSQLConf {
   // drop table await time
   val DROP_TABLE_WAIT_SECONDS: ConfigEntry[Int] =
     buildConf("drop.table.wait.seconds")
-      .doc(
-        """
+      .doc("""
           |When dropping table or partition, we need wait a few seconds for the other commits to be completed.
         """.stripMargin)
       .intConf
@@ -41,8 +41,7 @@ object LakeSoulSQLConf {
 
   val PARQUET_COMPRESSION: ConfigEntry[String] =
     buildConf("parquet.compression")
-      .doc(
-        """
+      .doc("""
           |Parquet compression type.
         """.stripMargin)
       .stringConf
@@ -50,8 +49,7 @@ object LakeSoulSQLConf {
 
   val PARQUET_COMPRESSION_ENABLE: ConfigEntry[Boolean] =
     buildConf("parquet.compression.enable")
-      .doc(
-        """
+      .doc("""
           |Whether to use parquet compression.
         """.stripMargin)
       .booleanConf
@@ -59,8 +57,7 @@ object LakeSoulSQLConf {
 
   val BUCKET_SCAN_MULTI_PARTITION_ENABLE: ConfigEntry[Boolean] =
     buildConf("bucket.scan.multi.partition.enable")
-      .doc(
-        """
+      .doc("""
           |Hash partitioned table can read multi-partition data partitioned by hash keys without shuffle,
           |this parameter controls whether this feature is enabled or not.
           |Using this feature, the parallelism will equal to hash bucket num.
@@ -70,8 +67,7 @@ object LakeSoulSQLConf {
 
   val PART_MERGE_ENABLE: ConfigEntry[Boolean] =
     buildConf("part.merge.enable")
-      .doc(
-        """
+      .doc("""
           |If true, part files merging will be used to avoid OOM when it has too many delta files.
         """.stripMargin)
       .booleanConf
@@ -79,8 +75,7 @@ object LakeSoulSQLConf {
 
   val PART_MERGE_FILE_MINIMUM_NUM: ConfigEntry[Int] =
     buildConf("part.merge.file.minimum.num")
-      .doc(
-        """
+      .doc("""
           |If delta file num more than this count, we will check for part merge.
         """.stripMargin)
       .intConf
@@ -88,8 +83,7 @@ object LakeSoulSQLConf {
 
   val SNAPSHOT_CACHE_EXPIRE: ConfigEntry[Int] =
     buildConf("snapshot.cache.expire.seconds")
-      .doc(
-        """
+      .doc("""
           |Expire snapshot cache in seconds
         """.stripMargin)
       .intConf
@@ -97,8 +91,7 @@ object LakeSoulSQLConf {
 
   val NATIVE_IO_ENABLE: ConfigEntry[Boolean] =
     buildConf("native.io.enable")
-      .doc(
-        """
+      .doc("""
           |If ture, NativeIO would be enabled for both read and write
         """.stripMargin)
       .booleanConf
@@ -106,8 +99,7 @@ object LakeSoulSQLConf {
 
   val NATIVE_IO_CDC_COLUMN: ConfigEntry[String] =
     buildConf("native.io.cdc_column")
-      .doc(
-        """
+      .doc("""
           |If empty, table have no cdc column
         """.stripMargin)
       .stringConf
@@ -115,18 +107,15 @@ object LakeSoulSQLConf {
 
   val NATIVE_IO_IS_COMPACTED: ConfigEntry[String] =
     buildConf("native.io.is_compacted")
-      .doc(
-        """
+      .doc("""
           |If ture, Native Reader would read data as compacted data
         """.stripMargin)
       .stringConf
       .createWithDefault("false")
 
-
   val NATIVE_IO_PREFETCHER_BUFFER_SIZE: ConfigEntry[Int] =
     buildConf("native.io.prefetch.buffer.size")
-      .doc(
-        """
+      .doc("""
           |If NATIVE_IO_ENABLE=true, NATIVE_IO_PREFETCHER_BUFFER_SIZE of batches will be buffered while native-io prefetching
         """.stripMargin)
       .intConf
@@ -134,8 +123,7 @@ object LakeSoulSQLConf {
 
   val NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE: ConfigEntry[Int] =
     buildConf("native.io.write.max.rowgroup.size")
-      .doc(
-        """
+      .doc("""
           |If NATIVE_IO_ENABLE=true, NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE of rows will be used to write a new row group
       """.stripMargin)
       .intConf
@@ -143,8 +131,7 @@ object LakeSoulSQLConf {
 
   val NATIVE_IO_PHYSICAL_FORMAT: ConfigEntry[String] =
     buildConf("native.io.physical_format")
-      .doc(
-        """
+      .doc("""
           |Physical file format for NativeIO writer.
           |Supported values: "parquet", "vortex", "vortex-compact" (default).
         """.stripMargin)
@@ -153,8 +140,7 @@ object LakeSoulSQLConf {
 
   val NATIVE_IO_THREAD_NUM: ConfigEntry[Int] =
     buildConf("native.io.thread.num")
-      .doc(
-        """
+      .doc("""
           |If NATIVE_IO_ENABLE=true, tokio::runtime::Runtime will be build with NATIVE_IO_THREAD_NUM thread_num
         """.stripMargin)
       .intConf
@@ -162,8 +148,7 @@ object LakeSoulSQLConf {
 
   val NATIVE_IO_READER_AWAIT_TIMEOUT: ConfigEntry[Int] =
     buildConf("native.io.await.timeout")
-      .doc(
-        """
+      .doc("""
           |If NATIVE_IO_ENABLE=true, timeout for each iterate will be set to NATIVE_IO_READER_AWAIT_TIMEOUT mills
         """.stripMargin)
       .intConf
@@ -171,8 +156,7 @@ object LakeSoulSQLConf {
 
   val RENAME_COMPACTED_FILE: ConfigEntry[Boolean] =
     buildConf("lakesoul.compact.rename")
-      .doc(
-        """
+      .doc("""
           |If NATIVE_IO_ENABLE=true, timeout for each iterate will be set to NATIVE_IO_READER_AWAIT_TIMEOUT mills
         """.stripMargin)
       .booleanConf
@@ -180,38 +164,31 @@ object LakeSoulSQLConf {
 
   val SCAN_FILE_NUMBER_LIMIT: ConfigEntry[Int] =
     buildConf("scan.file.number.limit")
-      .doc(
-        """
+      .doc("""
           |If SCAN_FILE_NUMBER_LIMIT < Int.MaxValue, Scan will scan file with number less than SCAN_FILE_NUMBER_LIMIT per file group
         """.stripMargin)
       .intConf
       .createWithDefault(Int.MaxValue)
 
-
   val COMPACTION_TASK: ConfigEntry[Boolean] =
     buildConf("scan.file.size.limit")
-      .doc(
-        """
+      .doc("""
           |If SCAN_FILE_NUMBER_LIMIT < Int.MaxValue, Scan will scan file with number less than SCAN_FILE_NUMBER_LIMIT per file group
         """.stripMargin)
       .booleanConf
       .createWithDefault(false)
 
-
   val COMPACTION_MAX_BYTES_FOR_LEVEL_BASE: ConfigEntry[String] =
     buildConf("compaction.max.bytes.for.level.base")
-      .doc(
-        """
+      .doc("""
           |COMPACTION MAX BYTES FOR LEVEL BASE LIMIT. Default is 1GB.
         """.stripMargin)
       .stringConf
       .createWithDefault("1GB")
 
-   
   val COMPACTION_MAX_BYTES_FOR_LOW_LEVEL_MULTIPLIER: ConfigEntry[Int] =
     buildConf("compaction.max.bytes.for.low.level.multiplier")
-      .doc(
-        """
+      .doc("""
           |COMPACTION MAX BYTES FOR LOW LEVEL(1,2) MULTIPLIER. Default is 5.
         """.stripMargin)
       .intConf
@@ -219,8 +196,7 @@ object LakeSoulSQLConf {
 
   val COMPACTION_MAX_BYTES_FOR_LEVEL_MULTIPLIER: ConfigEntry[Int] =
     buildConf("compaction.max.bytes.for.level.multiplier")
-      .doc(
-        """
+      .doc("""
           |COMPACTION MAX BYTES FOR LEVEL MULTIPLIER. Default is 10.
         """.stripMargin)
       .intConf
@@ -228,8 +204,7 @@ object LakeSoulSQLConf {
 
   val COMPACTION_MAX_LEVEL_FILE_NUM_LIMIT: ConfigEntry[Int] =
     buildConf("compaction.level.file.number.limit")
-      .doc(
-        """
+      .doc("""
           |COMPACTION LEVEL SINGLE TASK FILE NUMBER. Default is 10.
         """.stripMargin)
       .intConf
@@ -237,8 +212,7 @@ object LakeSoulSQLConf {
 
   val COMPACTION_MAX_LEVEL0_FILE_NUM_LIMIT: ConfigEntry[Int] =
     buildConf("compaction.level0.file.number.limit")
-      .doc(
-        """
+      .doc("""
           |COMPACTION LEVEL0 SINGLE TASK FILE NUMBER. Default is 10.
         """.stripMargin)
       .intConf
@@ -246,8 +220,7 @@ object LakeSoulSQLConf {
 
   val COMPACTION_IGNORE_NOT_EXIST_FILE: ConfigEntry[Boolean] =
     buildConf("compaction.ignore.not.exist.file")
-      .doc(
-        """
+      .doc("""
           |COMPACTION IGNORE NOT EXIST FILE
         """.stripMargin)
       .booleanConf
@@ -255,8 +228,7 @@ object LakeSoulSQLConf {
 
   val MAX_NUM_LEVELS_LIMIT: ConfigEntry[Int] =
     buildConf("max.num.levels.limit")
-      .doc(
-        """
+      .doc("""
           | MAX NUM LEVELS LIMIT. Default is 5.
         """.stripMargin)
       .intConf
@@ -264,8 +236,7 @@ object LakeSoulSQLConf {
 
   val COMPACTION_LEVEL_FILE_MERGE_SIZE_LIMIT: ConfigEntry[String] =
     buildConf("compaction.level.file.merge.size.limit")
-      .doc(
-        """
+      .doc("""
           |COMPACTION LEVEL SINGLE TASK MERGE SIZE. Default is 600MB.
         """.stripMargin)
       .stringConf
@@ -273,8 +244,7 @@ object LakeSoulSQLConf {
 
   val COMPACTION_LEVEL_FILE_MERGE_NUM_LIMIT: ConfigEntry[Int] =
     buildConf("compaction.level.file.merge.num.limit")
-      .doc(
-        """
+      .doc("""
           |COMPACTION LEVEL SINGLE TASK MERGE NUM. Default is 5.
         """.stripMargin)
       .intConf
@@ -282,29 +252,26 @@ object LakeSoulSQLConf {
 
   val COMPACTION_LEVEL_MAX_FILE_SIZE: ConfigEntry[String] =
     buildConf("compaction.level.max.file.size")
-      .doc(
-        """
+      .doc("""
           |COMPACTION LEVEL FILE SIZE, DEFAULT IS 5G.
         """.stripMargin)
       .stringConf
       .createWithDefault("5GB")
-  
+
   val COMPACTION_PICK_NEXT_LEVEL_MIN_FILE_SIZE: ConfigEntry[String] =
     buildConf("compaction.pick.next.level.min.file.size")
-      .doc(
-        """
+      .doc("""
           |COMPACTION PICK NEXT LEVEL MIN FILE SIZE. Default is 100MB.
         """.stripMargin)
       .stringConf
-      .createWithDefault("100MB") 
+      .createWithDefault("100MB")
 
   val COMPACTION_PICK_NEXT_LEVEL_MIN_FILE_SIZE_MULTIPLIER: ConfigEntry[Int] =
     buildConf("compaction.pick.next.level.min.file.size.multiplier")
-      .doc(
-        """
+      .doc("""
           |COMPACTION PICK NEXT LEVEL MIN FILE SIZE. Default is 5.
         """.stripMargin)
       .intConf
-      .createWithDefault(5) 
- 
+      .createWithDefault(5)
+
 }

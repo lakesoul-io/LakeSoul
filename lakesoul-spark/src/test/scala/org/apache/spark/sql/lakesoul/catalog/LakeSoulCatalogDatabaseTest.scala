@@ -6,24 +6,33 @@ package org.apache.spark.sql.lakesoul.catalog
 
 import org.apache.spark.sql.{AnalysisException, QueryTest, SparkSession}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestSparkSession}
-import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession, TestSparkSession}
+import org.apache.spark.sql.lakesoul.test.{
+  LakeSoulSQLCommandTest,
+  LakeSoulTestSparkSession
+}
+import org.apache.spark.sql.test.{
+  SQLTestUtils,
+  SharedSparkSession,
+  TestSparkSession
+}
 import org.junit.runner.RunWith
 import org.scalatest.BeforeAndAfter
 import org.scalatestplus.junit.JUnitRunner
 
-
-
 @RunWith(classOf[JUnitRunner])
-class LakeSoulCatalogDatabaseTest extends LakeSoulCatalogTestBase
-  with SharedSparkSession
-  with LakeSoulSQLCommandTest
-  with BeforeAndAfter {
+class LakeSoulCatalogDatabaseTest
+    extends LakeSoulCatalogTestBase
+    with SharedSparkSession
+    with LakeSoulSQLCommandTest
+    with BeforeAndAfter {
 
   override protected def createSparkSession: TestSparkSession = {
     SparkSession.cleanupAnyExistingSession()
     val session = new LakeSoulTestSparkSession(sparkConf)
-    session.conf.set("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
+    session.conf.set(
+      "spark.sql.catalog.lakesoul",
+      classOf[LakeSoulCatalog].getName
+    )
     session.conf.set(SQLConf.DEFAULT_CATALOG.key, "lakesoul")
     session.sparkContext.setLogLevel("ERROR")
 
@@ -41,12 +50,14 @@ class LakeSoulCatalogDatabaseTest extends LakeSoulCatalogTestBase
   test("SHOW NAMESPACES/DATABASES") {
     assert(sql(s"SHOW NAMESPACES").count() == 1)
     assert(sql(s"SHOW DATABASES").count() == 1)
-    assert(sql(s"SHOW NAMESPACES").first().equals(sql(s"SHOW DATABASES").first()))
+    assert(
+      sql(s"SHOW NAMESPACES").first().equals(sql(s"SHOW DATABASES").first())
+    )
   }
 
   test("CREATE DATABASE") {
     val testDatabase = "test_database"
-    withDatabase(testDatabase){
+    withDatabase(testDatabase) {
       assert(sql(s"SHOW NAMESPACES").count() == 1)
       sql(s"CREATE DATABASE IF NOT EXISTS $testDatabase")
       sql(s"SHOW NAMESPACES").show()
@@ -74,10 +85,14 @@ class LakeSoulCatalogDatabaseTest extends LakeSoulCatalogTestBase
     val testTable = "test_table"
     withDatabase(testDatabase) {
       withTable(testTable) {
-        sql(s"CREATE TABLE IF NOT EXISTS $testTable (id bigint, data string) USING lakesoul")
+        sql(
+          s"CREATE TABLE IF NOT EXISTS $testTable (id bigint, data string) USING lakesoul"
+        )
         sql(s"CREATE DATABASE IF NOT EXISTS $testDatabase")
         sql(s"SHOW TABLES FROM $testDatabase").show()
-        sql(s"CREATE TABLE IF NOT EXISTS $testDatabase.$testTable  (id bigint, data string) USING lakesoul")
+        sql(
+          s"CREATE TABLE IF NOT EXISTS $testDatabase.$testTable  (id bigint, data string) USING lakesoul"
+        )
         sql(s"SHOW TABLES FROM $testDatabase").show()
       }
     }
@@ -89,8 +104,8 @@ class LakeSoulCatalogDatabaseTest extends LakeSoulCatalogTestBase
   }
 
   test("catalog udfs") {
-      sql("select lakesoul_hamming_distance(array(1L,2L,3L), array(4L,5L,6L))").show()
+    sql("select lakesoul_hamming_distance(array(1L,2L,3L), array(4L,5L,6L))")
+      .show()
   }
 
 }
-

@@ -4,6 +4,12 @@
 
 package org.apache.flink.lakesoul.test.connector.sink;
 
+import static org.apache.flink.streaming.runtime.operators.sink.TestSink.END_OF_INPUT_STR;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.containsInAnyOrder;
+
+import static java.util.stream.Collectors.joining;
+
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.api.common.typeinfo.IntegerTypeInfo;
 import org.apache.flink.api.java.tuple.Tuple3;
@@ -24,11 +30,6 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
-import static java.util.stream.Collectors.joining;
-import static org.apache.flink.streaming.runtime.operators.sink.TestSink.END_OF_INPUT_STR;
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.containsInAnyOrder;
-
 public class FlinkCommitterTest {
     static final List<Integer> SOURCE_DATA =
             Arrays.asList(
@@ -44,7 +45,7 @@ public class FlinkCommitterTest {
                     .flatMap(
                             x ->
                                     Collections.nCopies(
-                                                    2, Tuple3.of(x, null, Long.MIN_VALUE).toString())
+                                            2, Tuple3.of(x, null, Long.MIN_VALUE).toString())
                                             .stream())
                     .collect(Collectors.toList());
 
@@ -59,7 +60,7 @@ public class FlinkCommitterTest {
                     .flatMap(
                             x ->
                                     Collections.nCopies(
-                                                    2, Tuple3.of(x, null, Long.MIN_VALUE).toString())
+                                            2, Tuple3.of(x, null, Long.MIN_VALUE).toString())
                                             .stream())
                     .collect(Collectors.toList());
 
@@ -91,10 +92,7 @@ public class FlinkCommitterTest {
                                     && GLOBAL_COMMIT_QUEUE_RECEIVE_ALL_DATA.getAsBoolean();
 
     @BeforeClass
-    public static void setup() {
-
-
-    }
+    public static void setup() {}
 
     @Before
     public void init() {
@@ -127,12 +125,16 @@ public class FlinkCommitterTest {
         // the verification of "end of input" would be restored.
         GLOBAL_COMMIT_QUEUE.remove(END_OF_INPUT_STR);
 
-        System.out.println("EXPECTED_COMMITTED_DATA_IN_STREAMING_MODE: " + EXPECTED_COMMITTED_DATA_IN_STREAMING_MODE);
+        System.out.println(
+                "EXPECTED_COMMITTED_DATA_IN_STREAMING_MODE: "
+                        + EXPECTED_COMMITTED_DATA_IN_STREAMING_MODE);
         assertThat(
                 COMMIT_QUEUE,
                 containsInAnyOrder(EXPECTED_COMMITTED_DATA_IN_STREAMING_MODE.toArray()));
 
-        System.out.println("EXPECTED_GLOBAL_COMMITTED_DATA_IN_STREAMING_MODE: " + EXPECTED_GLOBAL_COMMITTED_DATA_IN_STREAMING_MODE);
+        System.out.println(
+                "EXPECTED_GLOBAL_COMMITTED_DATA_IN_STREAMING_MODE: "
+                        + EXPECTED_GLOBAL_COMMITTED_DATA_IN_STREAMING_MODE);
         assertThat(
                 getSplittedGlobalCommittedData(),
                 containsInAnyOrder(EXPECTED_GLOBAL_COMMITTED_DATA_IN_STREAMING_MODE.toArray()));
@@ -154,11 +156,14 @@ public class FlinkCommitterTest {
 
         env.execute();
 
-        System.out.println("EXPECTED_COMMITTED_DATA_IN_BATCH_MODE: " + EXPECTED_COMMITTED_DATA_IN_BATCH_MODE);
+        System.out.println(
+                "EXPECTED_COMMITTED_DATA_IN_BATCH_MODE: " + EXPECTED_COMMITTED_DATA_IN_BATCH_MODE);
         assertThat(
                 COMMIT_QUEUE, containsInAnyOrder(EXPECTED_COMMITTED_DATA_IN_BATCH_MODE.toArray()));
 
-        System.out.println("EXPECTED_GLOBAL_COMMITTED_DATA_IN_BATCH_MODE: " + EXPECTED_GLOBAL_COMMITTED_DATA_IN_BATCH_MODE);
+        System.out.println(
+                "EXPECTED_GLOBAL_COMMITTED_DATA_IN_BATCH_MODE: "
+                        + EXPECTED_GLOBAL_COMMITTED_DATA_IN_BATCH_MODE);
         assertThat(
                 GLOBAL_COMMIT_QUEUE,
                 containsInAnyOrder(EXPECTED_GLOBAL_COMMITTED_DATA_IN_BATCH_MODE.toArray()));
@@ -178,7 +183,9 @@ public class FlinkCommitterTest {
                                 .build());
         env.execute();
 
-        System.out.println("EXPECTED_COMMITTED_DATA_IN_STREAMING_MODE: " + EXPECTED_COMMITTED_DATA_IN_STREAMING_MODE);
+        System.out.println(
+                "EXPECTED_COMMITTED_DATA_IN_STREAMING_MODE: "
+                        + EXPECTED_COMMITTED_DATA_IN_STREAMING_MODE);
         assertThat(
                 COMMIT_QUEUE,
                 containsInAnyOrder(EXPECTED_COMMITTED_DATA_IN_STREAMING_MODE.toArray()));
@@ -195,7 +202,8 @@ public class FlinkCommitterTest {
                                         (Supplier<Queue<String>> & Serializable) () -> COMMIT_QUEUE)
                                 .build());
         env.execute();
-        System.out.println("EXPECTED_COMMITTED_DATA_IN_BATCH_MODE: " + EXPECTED_COMMITTED_DATA_IN_BATCH_MODE);
+        System.out.println(
+                "EXPECTED_COMMITTED_DATA_IN_BATCH_MODE: " + EXPECTED_COMMITTED_DATA_IN_BATCH_MODE);
         assertThat(
                 COMMIT_QUEUE, containsInAnyOrder(EXPECTED_COMMITTED_DATA_IN_BATCH_MODE.toArray()));
     }
@@ -225,7 +233,9 @@ public class FlinkCommitterTest {
         // the verification of "end of input" would be restored.
         GLOBAL_COMMIT_QUEUE.remove(END_OF_INPUT_STR);
 
-        System.out.println("EXPECTED_GLOBAL_COMMITTED_DATA_IN_STREAMING_MODE: " + EXPECTED_GLOBAL_COMMITTED_DATA_IN_STREAMING_MODE);
+        System.out.println(
+                "EXPECTED_GLOBAL_COMMITTED_DATA_IN_STREAMING_MODE: "
+                        + EXPECTED_GLOBAL_COMMITTED_DATA_IN_STREAMING_MODE);
         assertThat(
                 getSplittedGlobalCommittedData(),
                 containsInAnyOrder(EXPECTED_GLOBAL_COMMITTED_DATA_IN_STREAMING_MODE.toArray()));
@@ -246,7 +256,9 @@ public class FlinkCommitterTest {
                                 .build());
         env.execute();
 
-        System.out.println("EXPECTED_GLOBAL_COMMITTED_DATA_IN_BATCH_MODE: " + EXPECTED_GLOBAL_COMMITTED_DATA_IN_BATCH_MODE);
+        System.out.println(
+                "EXPECTED_GLOBAL_COMMITTED_DATA_IN_BATCH_MODE: "
+                        + EXPECTED_GLOBAL_COMMITTED_DATA_IN_BATCH_MODE);
         assertThat(
                 GLOBAL_COMMIT_QUEUE,
                 containsInAnyOrder(EXPECTED_GLOBAL_COMMITTED_DATA_IN_BATCH_MODE.toArray()));

@@ -12,14 +12,20 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.SortOrder
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
-import org.apache.spark.sql.execution.{ColumnarToRowExec, ProjectExec, SortExec, SparkPlan, UnaryExecNode, WholeStageCodegenExec}
+import org.apache.spark.sql.execution.{
+  ColumnarToRowExec,
+  ProjectExec,
+  SortExec,
+  SparkPlan,
+  UnaryExecNode,
+  WholeStageCodegenExec
+}
 import org.apache.spark.sql.lakesoul.rules.withPartitionAndOrdering
 
 import java.lang.reflect.{Constructor, Method}
 
-/**
- * Use reflection to get Gluten's objects to avoid import gluten class
- */
+/** Use reflection to get Gluten's objects to avoid import gluten class
+  */
 object GlutenUtils {
   lazy val isGlutenEnabled: Boolean = false
 
@@ -30,35 +36,51 @@ object GlutenUtils {
   }
 
   def getValueVectorFromArrowVector(vector: ColumnVector): ValueVector = {
-      vector.asInstanceOf[org.apache.spark.sql.arrow.ArrowColumnVector].getValueVector
+    vector
+      .asInstanceOf[org.apache.spark.sql.arrow.ArrowColumnVector]
+      .getValueVector
   }
 
-  def nativeWrap(plan: SparkPlan, isArrowColumnarInput: Boolean, tryEnableColumnarWriter: Boolean): (RDD[InternalRow], Boolean) = {
+  def nativeWrap(
+      plan: SparkPlan,
+      isArrowColumnarInput: Boolean,
+      tryEnableColumnarWriter: Boolean
+  ): (RDD[InternalRow], Boolean) = {
     if (isArrowColumnarInput && tryEnableColumnarWriter) {
       plan match {
         case withPartitionAndOrdering(_, _, child) =>
-          return nativeWrap(child, isArrowColumnarInput, tryEnableColumnarWriter)
+          return nativeWrap(
+            child,
+            isArrowColumnarInput,
+            tryEnableColumnarWriter
+          )
         case _ =>
       }
       // in this case, we drop columnar to row
       // and use columnar batch directly as input
       // this takes effect no matter gluten enabled or not
-      (ArrowFakeRowAdaptor(plan match {
-        case ColumnarToRowExec(child) => child
-        case WholeStageCodegenExec(ColumnarToRowExec(child)) => child
-        case WholeStageCodegenExec(ProjectExec(_, child)) => child
-        case _ => plan
-      }).execute(), true)
+      (
+        ArrowFakeRowAdaptor(plan match {
+          case ColumnarToRowExec(child)                        => child
+          case WholeStageCodegenExec(ColumnarToRowExec(child)) => child
+          case WholeStageCodegenExec(ProjectExec(_, child))    => child
+          case _                                               => plan
+        }).execute(),
+        true
+      )
     } else {
       (plan.execute(), false)
     }
   }
 
   def getChildForSort(child: SparkPlan): SparkPlan = {
-      child
+    child
   }
 
-  def addLocalSortPlan(plan: SparkPlan, orderingExpr: Seq[SortOrder]): SparkPlan = {
+  def addLocalSortPlan(
+      plan: SparkPlan,
+      orderingExpr: Seq[SortOrder]
+  ): SparkPlan = {
     plan match {
       case aqe: AdaptiveSparkPlanExec =>
         SortExec(
@@ -66,11 +88,12 @@ object GlutenUtils {
           global = false,
           child = aqe.copy(supportsColumnar = true)
         )
-      case _ => SortExec(
-        orderingExpr,
-        global = false,
-        child = getChildForSort(plan)
-      )
+      case _ =>
+        SortExec(
+          orderingExpr,
+          global = false,
+          child = getChildForSort(plan)
+        )
     }
   }
 

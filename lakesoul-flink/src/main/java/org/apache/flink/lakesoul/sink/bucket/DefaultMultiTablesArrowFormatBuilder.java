@@ -9,14 +9,15 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.sink.writer.AbstractLakeSoulMultiTableSinkWriter;
 import org.apache.flink.lakesoul.sink.writer.DefaultLakeSoulWriterBucketFactory;
-import org.apache.flink.lakesoul.sink.writer.arrow.LakeSoulArrowWriterBucketFactory;
 import org.apache.flink.lakesoul.sink.writer.arrow.LakeSoulArrowMultiTableSinkWriter;
+import org.apache.flink.lakesoul.sink.writer.arrow.LakeSoulArrowWriterBucketFactory;
 import org.apache.flink.lakesoul.types.arrow.LakeSoulArrowWrapper;
 
 import java.io.IOException;
 
 public class DefaultMultiTablesArrowFormatBuilder
-        extends BulkFormatBuilder<LakeSoulArrowWrapper, LakeSoulArrowWrapper, DefaultMultiTablesArrowFormatBuilder> {
+        extends BulkFormatBuilder<
+                LakeSoulArrowWrapper, LakeSoulArrowWrapper, DefaultMultiTablesArrowFormatBuilder> {
 
     private static final long serialVersionUID = 6191959274299641070L;
     protected final LakeSoulArrowWriterBucketFactory arrowBucketFactory;
@@ -27,7 +28,8 @@ public class DefaultMultiTablesArrowFormatBuilder
     }
 
     @Override
-    public AbstractLakeSoulMultiTableSinkWriter<LakeSoulArrowWrapper, LakeSoulArrowWrapper> createWriter(Sink.InitContext context, int subTaskId) throws IOException {
+    public AbstractLakeSoulMultiTableSinkWriter<LakeSoulArrowWrapper, LakeSoulArrowWrapper>
+            createWriter(Sink.InitContext context, int subTaskId) throws IOException {
         return new LakeSoulArrowMultiTableSinkWriter(
                 subTaskId,
                 context.metricGroup(),

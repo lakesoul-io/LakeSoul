@@ -6,7 +6,10 @@
 
 package org.apache.spark.sql.execution.datasources
 
-import com.dmetasoul.lakesoul.meta.DBConfig.{LAKESOUL_NON_PARTITION_TABLE_PART_DESC, LAKESOUL_RANGE_PARTITION_SPLITTER}
+import com.dmetasoul.lakesoul.meta.DBConfig.{
+  LAKESOUL_NON_PARTITION_TABLE_PART_DESC,
+  LAKESOUL_RANGE_PARTITION_SPLITTER
+}
 import com.dmetasoul.lakesoul.meta.DBUtil
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileAlreadyExistsException, Path}
@@ -33,9 +36,16 @@ import org.apache.spark.sql.execution.datasources.v2.lakesoul.NativeLakeSoulOutp
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
-import org.apache.spark.sql.lakesoul.{DelayedCommitProtocol, DelayedCopyCommitProtocol}
+import org.apache.spark.sql.lakesoul.{
+  DelayedCommitProtocol,
+  DelayedCopyCommitProtocol
+}
 import org.apache.spark.sql.vectorized.GlutenUtils
-import org.apache.spark.sql.vectorized.GlutenUtils.{addLocalSortPlan, getChildForSort, nativeWrap}
+import org.apache.spark.sql.vectorized.GlutenUtils.{
+  addLocalSortPlan,
+  getChildForSort,
+  nativeWrap
+}
 import org.apache.spark.util.{SerializableConfiguration, Utils}
 
 import java.util.{Date, UUID}
@@ -49,33 +59,35 @@ object LakeSoulFileWriter extends Logging {
   val SNAPPY_COMPRESS_RATIO = 3
   val COPY_FILE_WRITER_KEY = "copy_file_writer"
 
-  /**
-    * Basic work flow of this command is:
-    * 1. Driver side setup, including output committer initialization and data source specific
-    * preparation work for the write job to be issued.
-    * 2. Issues a write job consists of one or more executor side tasks, each of which writes all
-    * rows within an RDD partition.
-    * 3. If no exception is thrown in a task, commits that task, otherwise aborts that task;  If any
-    * exception is thrown during task commitment, also aborts that task.
-    * 4. If all tasks are committed, commit the job, otherwise aborts the job;  If any exception is
-    * thrown during job commitment, also aborts the job.
-    * 5. If the job is successfully committed, perform post-commit operations such as
-    * processing statistics.
+  /** Basic work flow of this command is:
+    *   1. Driver side setup, including output committer initialization and data
+    *      source specific preparation work for the write job to be issued.
+    *   2. Issues a write job consists of one or more executor side tasks, each
+    *      of which writes all rows within an RDD partition.
+    *   3. If no exception is thrown in a task, commits that task, otherwise
+    *      aborts that task; If any exception is thrown during task commitment,
+    *      also aborts that task.
+    *   4. If all tasks are committed, commit the job, otherwise aborts the job;
+    *      If any exception is thrown during job commitment, also aborts the
+    *      job.
+    *   5. If the job is successfully committed, perform post-commit operations
+    *      such as processing statistics.
     *
-    * @return The set of all partition paths that were updated during this write job.
+    * @return
+    *   The set of all partition paths that were updated during this write job.
     */
   def write(
-             sparkSession: SparkSession,
-             plan: SparkPlan,
-             fileFormat: FileFormat,
-             committer: FileCommitProtocol,
-             outputSpec: OutputSpec,
-             hadoopConf: Configuration,
-             partitionColumns: Seq[Attribute],
-             bucketSpec: Option[BucketSpec],
-             statsTrackers: Seq[WriteJobStatsTracker],
-             options: Map[String, String])
-  : Set[String] = {
+      sparkSession: SparkSession,
+      plan: SparkPlan,
+      fileFormat: FileFormat,
+      committer: FileCommitProtocol,
+      outputSpec: OutputSpec,
+      hadoopConf: Configuration,
+      partitionColumns: Seq[Attribute],
+      bucketSpec: Option[BucketSpec],
+      statsTrackers: Seq[WriteJobStatsTracker],
+      options: Map[String, String]
+  ): Set[String] = {
 
     val job = Job.getInstance(hadoopConf)
     job.setOutputKeyClass(classOf[Void])
@@ -85,19 +97,28 @@ object LakeSoulFileWriter extends Logging {
     val partitionSet = AttributeSet(partitionColumns)
     // cleanup the internal metadata information of
     // the file source metadata attribute if any before write out
-    val finalOutputSpec = outputSpec.copy(outputColumns = outputSpec.outputColumns
-      .map(FileSourceMetadataAttribute.cleanupFileSourceMetadataInformation))
-    val dataColumns = finalOutputSpec.outputColumns.filterNot(partitionSet.contains)
+    val finalOutputSpec = outputSpec.copy(outputColumns =
+      outputSpec.outputColumns
+        .map(FileSourceMetadataAttribute.cleanupFileSourceMetadataInformation)
+    )
+    val dataColumns =
+      finalOutputSpec.outputColumns.filterNot(partitionSet.contains)
 
     // empty/null strings has already been handled in
     // org.apache.spark.sql.lakesoul.TransactionalWrite.writeFiles
     val empty2NullPlan = plan
 
     val writerBucketSpec = bucketSpec.map { spec =>
-      val bucketColumns = spec.bucketColumnNames.map(c => dataColumns.find(_.name == c).get)
+      val bucketColumns =
+        spec.bucketColumnNames.map(c => dataColumns.find(_.name == c).get)
 
-      if (options.getOrElse(BucketingUtils.optionForHiveCompatibleBucketWrite, "false") ==
-        "true") {
+      if (
+        options.getOrElse(
+          BucketingUtils.optionForHiveCompatibleBucketWrite,
+          "false"
+        ) ==
+          "true"
+      ) {
         // Hive bucketed table: use `HiveHash` and bitwise-and as bucket id expression.
         // Without the extra bitwise-and operation, we can get wrong bucket id when hash value of
         // columns is negative. See Hive implementation in
@@ -117,13 +138,13 @@ object LakeSoulFileWriter extends Logging {
         // expression, so that we can guarantee the data distribution is same between shuffle and
         // bucketed data source, which enables us to only shuffle one side when join a bucketed
         // table and a normal one.
-        val bucketIdExpression = HashPartitioning(bucketColumns, spec.numBuckets)
-          .partitionIdExpression
+        val bucketIdExpression =
+          HashPartitioning(bucketColumns, spec.numBuckets).partitionIdExpression
         WriterBucketSpec(bucketIdExpression, (_: Int) => "")
       }
     }
-    val sortColumns = bucketSpec.toSeq.flatMap {
-      spec => spec.sortColumnNames.map(c => dataColumns.find(_.name == c).get)
+    val sortColumns = bucketSpec.toSeq.flatMap { spec =>
+      spec.sortColumnNames.map(c => dataColumns.find(_.name == c).get)
     }
 
     val caseInsensitiveOptions = CaseInsensitiveMap(options)
@@ -132,13 +153,18 @@ object LakeSoulFileWriter extends Logging {
     DataSourceUtils.verifySchema(fileFormat, dataSchema)
 
     val isCDC = caseInsensitiveOptions.getOrElse("isCDC", "false").toBoolean
-    val isCompaction = caseInsensitiveOptions.getOrElse("isCompaction", "false").toBoolean
-    val staticBucketId = caseInsensitiveOptions.getOrElse("staticBucketId", "-1").toInt
+    val isCompaction =
+      caseInsensitiveOptions.getOrElse("isCompaction", "false").toBoolean
+    val staticBucketId =
+      caseInsensitiveOptions.getOrElse("staticBucketId", "-1").toInt
 
-    val isBucketNumChanged = caseInsensitiveOptions.getOrElse("isBucketNumChanged", "false").toBoolean
+    val isBucketNumChanged =
+      caseInsensitiveOptions.getOrElse("isBucketNumChanged", "false").toBoolean
     // We should first sort by partition columns, then bucket id, and finally sorting columns.
     val requiredOrdering =
-      partitionColumns ++ writerBucketSpec.map(_.bucketIdExpression) ++ sortColumns
+      partitionColumns ++ writerBucketSpec.map(
+        _.bucketIdExpression
+      ) ++ sortColumns
     // the sort order doesn't matter
     val actualOrdering = empty2NullPlan.outputOrdering.map(_.child)
     val orderingMatched = if (isCompaction) {
@@ -158,7 +184,8 @@ object LakeSoulFileWriter extends Logging {
     // prepares the job, any exception thrown from here shouldn't cause abortJob() to be called.
     committer.setupJob(job)
 
-    val nativeIOEnable = sparkSession.sessionState.conf.getConf(LakeSoulSQLConf.NATIVE_IO_ENABLE)
+    val nativeIOEnable =
+      sparkSession.sessionState.conf.getConf(LakeSoulSQLConf.NATIVE_IO_ENABLE)
 
     val isArrowColumnarInput = nativeIOEnable &&
       ((isCompaction && !isCDC) // none cdc compaction is an arrow columnar scan
@@ -166,29 +193,50 @@ object LakeSoulFileWriter extends Logging {
     // for compaction, only when static bucket!=-1
     // for all other cases, only when no partition && no bucket spec
     // otherwise, we need row writer
-    val tryEnableColumnarWriter = partitionSet.isEmpty && (writerBucketSpec.isEmpty || staticBucketId != -1)
-    logInfo(s"partitionSet: $partitionSet, writerBucketSpec: $writerBucketSpec, " +
-      s"isArrowColumnarInput: $isArrowColumnarInput, isCdc: $isCDC, isCompaction: $isCompaction, " +
-        s"orderingMatched: $orderingMatched, tryEnableColumnarWriter: $tryEnableColumnarWriter")
+    val tryEnableColumnarWriter =
+      partitionSet.isEmpty && (writerBucketSpec.isEmpty || staticBucketId != -1)
+    logInfo(
+      s"partitionSet: $partitionSet, writerBucketSpec: $writerBucketSpec, " +
+        s"isArrowColumnarInput: $isArrowColumnarInput, isCdc: $isCDC, isCompaction: $isCompaction, " +
+        s"orderingMatched: $orderingMatched, tryEnableColumnarWriter: $tryEnableColumnarWriter"
+    )
 
     try {
       // for compaction, we won't break ordering from batch scan
       val ((rdd, isNative), concurrentOutputWriterSpec) =
-        if (isCompaction && options.getOrElse("copyCompactedFile", "").nonEmpty) {
+        if (
+          isCompaction && options.getOrElse("copyCompactedFile", "").nonEmpty
+        ) {
           val data = Seq(InternalRow(options("copyCompactedFile")))
           ((sparkSession.sparkContext.parallelize(data), false), None)
         } else if (!isBucketNumChanged && orderingMatched) {
-          (nativeWrap(empty2NullPlan, isArrowColumnarInput, tryEnableColumnarWriter), None)
+          (
+            nativeWrap(
+              empty2NullPlan,
+              isArrowColumnarInput,
+              tryEnableColumnarWriter
+            ),
+            None
+          )
         } else {
           // SPARK-21165: the `requiredOrdering` is based on the attributes from analyzed plan, and
           // the physical plan may have different attribute ids due to optimizer removing some
           // aliases. Here we bind the expression ahead to avoid potential attribute ids mismatch.
           val orderingExpr = bindReferences(
-            requiredOrdering.map(SortOrder(_, Ascending)), finalOutputSpec.outputColumns)
+            requiredOrdering.map(SortOrder(_, Ascending)),
+            finalOutputSpec.outputColumns
+          )
           val sortPlan = addLocalSortPlan(empty2NullPlan, orderingExpr)
 
           if (isArrowColumnarInput) {
-            (nativeWrap(sortPlan, isArrowColumnarInput, tryEnableColumnarWriter), None)
+            (
+              nativeWrap(
+                sortPlan,
+                isArrowColumnarInput,
+                tryEnableColumnarWriter
+              ),
+              None
+            )
           } else {
             ((sortPlan.execute(), false), None)
           }
@@ -196,11 +244,17 @@ object LakeSoulFileWriter extends Logging {
 
       // Note: prepareWrite has side effect. It sets "job".
       val outputWriterFactory =
-        fileFormat.prepareWrite(sparkSession, job, caseInsensitiveOptions + (("isNative", isNative.toString)), dataSchema)
+        fileFormat.prepareWrite(
+          sparkSession,
+          job,
+          caseInsensitiveOptions + (("isNative", isNative.toString)),
+          dataSchema
+        )
 
       val description = new WriteJobDescription(
         uuid = UUID.randomUUID.toString,
-        serializableHadoopConf = new SerializableConfiguration(job.getConfiguration),
+        serializableHadoopConf =
+          new SerializableConfiguration(job.getConfiguration),
         outputWriterFactory = outputWriterFactory,
         allColumns = finalOutputSpec.outputColumns,
         dataColumns = dataColumns,
@@ -208,16 +262,22 @@ object LakeSoulFileWriter extends Logging {
         bucketSpec = writerBucketSpec,
         path = finalOutputSpec.outputPath,
         customPartitionLocations = finalOutputSpec.customPartitionLocations,
-        maxRecordsPerFile = caseInsensitiveOptions.get("maxRecordsPerFile").map(_.toLong)
+        maxRecordsPerFile = caseInsensitiveOptions
+          .get("maxRecordsPerFile")
+          .map(_.toLong)
           .getOrElse(sparkSession.sessionState.conf.maxRecordsPerFile),
-        timeZoneId = caseInsensitiveOptions.get(DateTimeUtils.TIMEZONE_OPTION)
+        timeZoneId = caseInsensitiveOptions
+          .get(DateTimeUtils.TIMEZONE_OPTION)
           .getOrElse(sparkSession.sessionState.conf.sessionLocalTimeZone),
         statsTrackers = statsTrackers
       )
 
       // propagate the description UUID into the jobs, so that committers
       // get an ID guaranteed to be unique.
-      job.getConfiguration.set("spark.sql.sources.writeJobUUID", description.uuid)
+      job.getConfiguration.set(
+        "spark.sql.sources.writeJobUUID",
+        description.uuid
+      )
 
       // SPARK-23271 If we are attempting to write a zero partition rdd, create a dummy single
       // partition rdd to make sure we at least set up one write task to write the metadata.
@@ -228,7 +288,8 @@ object LakeSoulFileWriter extends Logging {
       }
 
       val jobIdInstant = new Date().getTime
-      val ret = new Array[WriteTaskResult](rddWithNonEmptyPartitions.partitions.length)
+      val ret =
+        new Array[WriteTaskResult](rddWithNonEmptyPartitions.partitions.length)
       sparkSession.sparkContext.runJob(
         rddWithNonEmptyPartitions,
         (taskContext: TaskContext, iter: Iterator[InternalRow]) => {
@@ -236,8 +297,10 @@ object LakeSoulFileWriter extends Logging {
             description = description,
             jobIdInstant = jobIdInstant,
             sparkStageId = taskContext.stageId(),
-            sparkPartitionId = if (isCompaction && staticBucketId != -1) staticBucketId else -1,
-            sparkAttemptNumber = taskContext.taskAttemptId().toInt & Integer.MAX_VALUE,
+            sparkPartitionId =
+              if (isCompaction && staticBucketId != -1) staticBucketId else -1,
+            sparkAttemptNumber =
+              taskContext.taskAttemptId().toInt & Integer.MAX_VALUE,
             committer,
             iterator = iter,
             concurrentOutputWriterSpec = concurrentOutputWriterSpec,
@@ -249,7 +312,8 @@ object LakeSoulFileWriter extends Logging {
         (index, res: WriteTaskResult) => {
           committer.onTaskCommit(res.commitMsg)
           ret(index) = res
-        })
+        }
+      )
 
       val commitMsgs = ret.map(_.commitMsg)
 
@@ -257,13 +321,22 @@ object LakeSoulFileWriter extends Logging {
       val (_, duration) = Utils.timeTakenMs {
         committer.commitJob(job, commitMsgs)
       }
-      logInfo(s"Write Job ${description.uuid} committed. Elapsed time: $duration ms.")
+      logInfo(
+        s"Write Job ${description.uuid} committed. Elapsed time: $duration ms."
+      )
 
-      processStats(description.statsTrackers, ret.map(_.summary.stats), duration)
+      processStats(
+        description.statsTrackers,
+        ret.map(_.summary.stats),
+        duration
+      )
       logInfo(s"Finished processing stats for write job ${description.uuid}.")
 
       // return a set of all the partition paths that were updated during this job
-      ret.map(_.summary.updatedPartitions).reduceOption(_ ++ _).getOrElse(Set.empty)
+      ret
+        .map(_.summary.updatedPartitions)
+        .reduceOption(_ ++ _)
+        .getOrElse(Set.empty)
     } catch {
       case cause: Throwable =>
         logError(s"Aborting job", cause)
@@ -274,19 +347,20 @@ object LakeSoulFileWriter extends Logging {
 
   /** Writes data out in a single Spark task. */
   private def executeTask(
-                           description: WriteJobDescription,
-                           jobIdInstant: Long,
-                           sparkStageId: Int,
-                           sparkPartitionId: Int,
-                           sparkAttemptNumber: Int,
-                           committer: FileCommitProtocol,
-                           iterator: Iterator[InternalRow],
-                           concurrentOutputWriterSpec: Option[ConcurrentOutputWriterSpec],
-                           bucketSpec: Option[BucketSpec],
-                           options: Map[String, String]
-                         ): WriteTaskResult = {
+      description: WriteJobDescription,
+      jobIdInstant: Long,
+      sparkStageId: Int,
+      sparkPartitionId: Int,
+      sparkAttemptNumber: Int,
+      committer: FileCommitProtocol,
+      iterator: Iterator[InternalRow],
+      concurrentOutputWriterSpec: Option[ConcurrentOutputWriterSpec],
+      bucketSpec: Option[BucketSpec],
+      options: Map[String, String]
+  ): WriteTaskResult = {
 
-    val jobId = SparkHadoopWriterUtils.createJobID(new Date(jobIdInstant), sparkStageId)
+    val jobId =
+      SparkHadoopWriterUtils.createJobID(new Date(jobIdInstant), sparkStageId)
     val taskId = new TaskID(jobId, TaskType.MAP, sparkPartitionId)
     val taskAttemptId = new TaskAttemptID(taskId, sparkAttemptNumber)
 
@@ -310,21 +384,47 @@ object LakeSoulFileWriter extends Logging {
     val dataWriter =
       if (!iterator.hasNext) {
         new EmptyDirectoryDataWriter(description, taskAttemptContext, committer)
-      } else if (description.partitionColumns.isEmpty && description.bucketSpec.isEmpty && !isCompaction) {
-        new SingleDirectoryDataWriter(description, taskAttemptContext, committer)
+      } else if (
+        description.partitionColumns.isEmpty && description.bucketSpec.isEmpty && !isCompaction
+      ) {
+        new SingleDirectoryDataWriter(
+          description,
+          taskAttemptContext,
+          committer
+        )
       } else if (isCompaction) {
         if (committer.isInstanceOf[DelayedCopyCommitProtocol]) {
-          new CopyFileWriter(description, taskAttemptContext, committer, options)
+          new CopyFileWriter(
+            description,
+            taskAttemptContext,
+            committer,
+            options
+          )
         } else {
-          new StaticPartitionedDataWriter(description, taskAttemptContext, committer, options, sparkPartitionId, bucketSpec)
+          new StaticPartitionedDataWriter(
+            description,
+            taskAttemptContext,
+            committer,
+            options,
+            sparkPartitionId,
+            bucketSpec
+          )
         }
       } else {
         concurrentOutputWriterSpec match {
           case Some(spec) =>
             new DynamicPartitionDataConcurrentWriter(
-              description, taskAttemptContext, committer, spec)
+              description,
+              taskAttemptContext,
+              committer,
+              spec
+            )
           case _ =>
-            new DynamicPartitionDataSingleWriter(description, taskAttemptContext, committer)
+            new DynamicPartitionDataSingleWriter(
+              description,
+              taskAttemptContext,
+              committer
+            )
         }
       }
 
@@ -333,41 +433,52 @@ object LakeSoulFileWriter extends Logging {
         // Execute the task to write rows out and commit the task.
         dataWriter.writeWithIterator(iterator)
         dataWriter.commit()
-      })(catchBlock = {
-        // If there is an error, abort the task
-        dataWriter.abort()
-        logError(s"Job $jobId aborted.")
-      }, finallyBlock = {
-        dataWriter.close()
-      })
+      })(
+        catchBlock = {
+          // If there is an error, abort the task
+          dataWriter.abort()
+          logError(s"Job $jobId aborted.")
+        },
+        finallyBlock = {
+          dataWriter.close()
+        }
+      )
     } catch {
       case e: FetchFailedException =>
         throw e
-      case f: FileAlreadyExistsException if SQLConf.get.fastFailFileFormatOutput =>
+      case f: FileAlreadyExistsException
+          if SQLConf.get.fastFailFileFormatOutput =>
         // If any output file to write already exists, it does not make sense to re-run this task.
         // We throw the exception and let Executor throw ExceptionFailure to abort the job.
         throw new TaskOutputFileAlreadyExistException(f)
       case t: Throwable =>
-        throw QueryExecutionErrors.taskFailedWhileWritingRowsError(description.path, t)
+        throw QueryExecutionErrors.taskFailedWhileWritingRowsError(
+          description.path,
+          t
+        )
     }
   }
 
-  /**
-    * For every registered [[WriteJobStatsTracker]], call `processStats()` on it, passing it
-    * the corresponding [[WriteTaskStats]] from all executors.
+  /** For every registered [[WriteJobStatsTracker]], call `processStats()` on
+    * it, passing it the corresponding [[WriteTaskStats]] from all executors.
     */
   private[datasources] def processStats(
-                                         statsTrackers: Seq[WriteJobStatsTracker],
-                                         statsPerTask: Seq[Seq[WriteTaskStats]],
-                                         jobCommitDuration: Long)
-  : Unit = {
+      statsTrackers: Seq[WriteJobStatsTracker],
+      statsPerTask: Seq[Seq[WriteTaskStats]],
+      jobCommitDuration: Long
+  ): Unit = {
 
     val numStatsTrackers = statsTrackers.length
-    assert(statsPerTask.forall(_.length == numStatsTrackers),
+    assert(
+      statsPerTask.forall(_.length == numStatsTrackers),
       s"""Every WriteTask should have produced one `WriteTaskStats` object for every tracker.
          |There are $numStatsTrackers statsTrackers, but some task returned
-         |${statsPerTask.find(_.length != numStatsTrackers).get.length} results instead.
-       """.stripMargin)
+         |${statsPerTask
+          .find(_.length != numStatsTrackers)
+          .get
+          .length} results instead.
+       """.stripMargin
+    )
 
     val statsPerTracker = if (statsPerTask.nonEmpty) {
       statsPerTask.transpose
@@ -375,39 +486,49 @@ object LakeSoulFileWriter extends Logging {
       statsTrackers.map(_ => Seq.empty)
     }
 
-    statsTrackers.zip(statsPerTracker).foreach {
-      case (statsTracker, stats) => statsTracker.processStats(stats, jobCommitDuration)
+    statsTrackers.zip(statsPerTracker).foreach { case (statsTracker, stats) =>
+      statsTracker.processStats(stats, jobCommitDuration)
     }
   }
 
   /** Describes how output files should be placed in the filesystem. */
   case class OutputSpec(
-                         outputPath: String,
-                         customPartitionLocations: Map[TablePartitionSpec, String],
-                         outputColumns: Seq[Attribute])
+      outputPath: String,
+      customPartitionLocations: Map[TablePartitionSpec, String],
+      outputColumns: Seq[Attribute]
+  )
 
   private class StaticPartitionedDataWriter(
-                                             description: WriteJobDescription,
-                                             taskAttemptContext: TaskAttemptContext,
-                                             committer: FileCommitProtocol,
-                                             options: Map[String, String],
-                                             partitionId: Int,
-                                             bucketSpec: Option[BucketSpec],
-                                             customMetrics: Map[String, SQLMetric] = Map.empty)
-    extends FileFormatDataWriter(description, taskAttemptContext, committer, customMetrics) {
+      description: WriteJobDescription,
+      taskAttemptContext: TaskAttemptContext,
+      committer: FileCommitProtocol,
+      options: Map[String, String],
+      partitionId: Int,
+      bucketSpec: Option[BucketSpec],
+      customMetrics: Map[String, SQLMetric] = Map.empty
+  ) extends FileFormatDataWriter(
+        description,
+        taskAttemptContext,
+        committer,
+        customMetrics
+      ) {
     private var fileCounter: Int = _
     private var recordsInFile: Long = _
-    private val partValue: Option[String] = options.get("partValue").filter(_ != LAKESOUL_NON_PARTITION_TABLE_PART_DESC)
+    private val partValue: Option[String] = options
+      .get("partValue")
+      .filter(_ != LAKESOUL_NON_PARTITION_TABLE_PART_DESC)
       .map(_.replace(LAKESOUL_RANGE_PARTITION_SPLITTER, "/"))
     private val maxFileSize = options.get(MAX_FILE_SIZE_KEY)
 
     private lazy val proj =
-      UnsafeProjection.create(Seq(description.bucketSpec.get.bucketIdExpression),
-        description.allColumns)
+      UnsafeProjection.create(
+        Seq(description.bucketSpec.get.bucketIdExpression),
+        description.allColumns
+      )
 
     /** Given an input row, returns the corresponding `bucketId` */
-    private lazy val getBucketId: InternalRow => Int = {
-      row => proj(row).getInt(0)
+    private lazy val getBucketId: InternalRow => Int = { row =>
+      proj(row).getInt(0)
     }
 
     override protected def releaseCurrentWriter(): Unit = {
@@ -415,15 +536,31 @@ object LakeSoulFileWriter extends Logging {
         try {
           currentWriter.close()
           if (maxFileSize.isDefined) {
-            currentWriter.asInstanceOf[NativeLakeSoulOutputWriter].flushResult.foreach(result => {
-              val (partitionDesc, flushResult) = result
-              val partitionDescList = if (partitionDesc == "-4") {
-                DBUtil.parsePartitionDesc(options.getOrElse("partValue", LAKESOUL_NON_PARTITION_TABLE_PART_DESC)).asScala.toList
-              } else {
-                DBUtil.parsePartitionDesc(partitionDesc).asScala.toList
-              }
-              committer.asInstanceOf[DelayedCommitProtocol].addOutputFile(partitionDescList, flushResult.map(_.getFilePath).toList)
-            })
+            currentWriter
+              .asInstanceOf[NativeLakeSoulOutputWriter]
+              .flushResult
+              .foreach(result => {
+                val (partitionDesc, flushResult) = result
+                val partitionDescList = if (partitionDesc == "-4") {
+                  DBUtil
+                    .parsePartitionDesc(
+                      options.getOrElse(
+                        "partValue",
+                        LAKESOUL_NON_PARTITION_TABLE_PART_DESC
+                      )
+                    )
+                    .asScala
+                    .toList
+                } else {
+                  DBUtil.parsePartitionDesc(partitionDesc).asScala.toList
+                }
+                committer
+                  .asInstanceOf[DelayedCommitProtocol]
+                  .addOutputFile(
+                    partitionDescList,
+                    flushResult.map(_.getFilePath).toList
+                  )
+              })
           }
           statsTrackers.foreach(_.closeFile(currentWriter.path()))
         } finally {
@@ -436,14 +573,18 @@ object LakeSoulFileWriter extends Logging {
       recordsInFile = 0
       releaseResources()
 
-      val ext = description.outputWriterFactory.getFileExtension(taskAttemptContext)
+      val ext =
+        description.outputWriterFactory.getFileExtension(taskAttemptContext)
       val suffix = if (bucketSpec.isDefined) {
         val bucketId = if (partitionId == -1) {
           getBucketId(record)
         } else {
           partitionId
         }
-        taskAttemptContext.getConfiguration.set(HASH_BUCKET_ID_KEY, bucketId.toString)
+        taskAttemptContext.getConfiguration.set(
+          HASH_BUCKET_ID_KEY,
+          bucketId.toString
+        )
 
         val bucketIdStr = BucketingUtils.bucketIdToString(bucketId)
         f"$bucketIdStr.c$fileCounter%03d" + ext
@@ -452,7 +593,10 @@ object LakeSoulFileWriter extends Logging {
       }
 
       if (maxFileSize.isDefined) {
-        taskAttemptContext.getConfiguration.set(MAX_FILE_SIZE_KEY, maxFileSize.get)
+        taskAttemptContext.getConfiguration.set(
+          MAX_FILE_SIZE_KEY,
+          maxFileSize.get
+        )
       }
 
       val currentPath = committer.newTaskTempFile(
@@ -464,7 +608,8 @@ object LakeSoulFileWriter extends Logging {
       currentWriter = description.outputWriterFactory.newInstance(
         path = currentPath,
         dataSchema = description.dataColumns.toStructType,
-        context = taskAttemptContext)
+        context = taskAttemptContext
+      )
 
       statsTrackers.foreach(_.newFile(currentPath))
     }
@@ -472,10 +617,14 @@ object LakeSoulFileWriter extends Logging {
     override def write(record: InternalRow): Unit = {
       if (currentWriter == null) {
         newOutputWriter(record)
-      } else if (description.maxRecordsPerFile > 0 && recordsInFile >= description.maxRecordsPerFile) {
+      } else if (
+        description.maxRecordsPerFile > 0 && recordsInFile >= description.maxRecordsPerFile
+      ) {
         fileCounter += 1
-        assert(fileCounter < MAX_FILE_COUNTER,
-          s"File counter $fileCounter is beyond max value $MAX_FILE_COUNTER")
+        assert(
+          fileCounter < MAX_FILE_COUNTER,
+          s"File counter $fileCounter is beyond max value $MAX_FILE_COUNTER"
+        )
 
         newOutputWriter(record)
       }
@@ -487,12 +636,17 @@ object LakeSoulFileWriter extends Logging {
   }
 
   private class CopyFileWriter(
-                                description: WriteJobDescription,
-                                taskAttemptContext: TaskAttemptContext,
-                                committer: FileCommitProtocol,
-                                options: Map[String, String],
-                                customMetrics: Map[String, SQLMetric] = Map.empty)
-    extends FileFormatDataWriter(description, taskAttemptContext, committer, customMetrics) {
+      description: WriteJobDescription,
+      taskAttemptContext: TaskAttemptContext,
+      committer: FileCommitProtocol,
+      options: Map[String, String],
+      customMetrics: Map[String, SQLMetric] = Map.empty
+  ) extends FileFormatDataWriter(
+        description,
+        taskAttemptContext,
+        committer,
+        customMetrics
+      ) {
 
     override def write(record: InternalRow): Unit = {
       logInfo("copy file")

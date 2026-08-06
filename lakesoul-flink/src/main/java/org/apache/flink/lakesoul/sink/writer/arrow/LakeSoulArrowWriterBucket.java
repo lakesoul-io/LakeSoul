@@ -4,6 +4,9 @@
 
 package org.apache.flink.lakesoul.sink.writer.arrow;
 
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKET;
+import static org.apache.flink.util.Preconditions.checkNotNull;
+
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
 import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
@@ -15,20 +18,19 @@ import org.apache.flink.streaming.api.functions.sink.filesystem.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.*;
 
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKET;
-import static org.apache.flink.util.Preconditions.checkNotNull;
+import javax.annotation.Nullable;
 
 /**
  * A bucket is the directory organization of the output of the {@link LakeSoulMultiTablesSink}.
  *
- * <p>For each incoming element in the {@code LakeSoulMultiTablesSink}, the user-specified {@link BucketAssigner}
- * is queried to see in which bucket this element should be written to.
+ * <p>For each incoming element in the {@code LakeSoulMultiTablesSink}, the user-specified {@link
+ * BucketAssigner} is queried to see in which bucket this element should be written to.
  *
- * <p>This writer is responsible for writing the input data and creating pending (uncommitted) files.
+ * <p>This writer is responsible for writing the input data and creating pending (uncommitted)
+ * files.
  */
 public class LakeSoulArrowWriterBucket {
 
@@ -55,16 +57,14 @@ public class LakeSoulArrowWriterBucket {
 
     private int restartTimes;
 
-    @Nullable
-    private InProgressFileWriter<LakeSoulArrowWrapper, String> inProgressPartWriter;
+    @Nullable private InProgressFileWriter<LakeSoulArrowWrapper, String> inProgressPartWriter;
 
     private final TableSchemaIdentity tableId;
 
-    /**
-     * Constructor to create a new empty bucket.
-     */
+    /** Constructor to create a new empty bucket. */
     public LakeSoulArrowWriterBucket(
-            int subTaskId, TableSchemaIdentity tableId,
+            int subTaskId,
+            TableSchemaIdentity tableId,
             String bucketId,
             Path bucketPath,
             BucketWriter<LakeSoulArrowWrapper, String> bucketWriter,
@@ -83,19 +83,19 @@ public class LakeSoulArrowWriterBucket {
         this.restartTimes = 0;
     }
 
-    /**
-     * Constructor to restore a bucket from checkpointed state.
-     */
+    /** Constructor to restore a bucket from checkpointed state. */
     public LakeSoulArrowWriterBucket(
             int subTaskId,
             TableSchemaIdentity tableId,
             BucketWriter<LakeSoulArrowWrapper, String> partFileFactory,
             RollingPolicy<LakeSoulArrowWrapper, String> rollingPolicy,
             LakeSoulWriterBucketState bucketState,
-            OutputFileConfig outputFileConfig) throws IOException {
+            OutputFileConfig outputFileConfig)
+            throws IOException {
 
         this(
-                subTaskId, tableId,
+                subTaskId,
+                tableId,
                 bucketState.getBucketId(),
                 bucketState.getBucketPath(),
                 partFileFactory,
@@ -106,9 +106,11 @@ public class LakeSoulArrowWriterBucket {
     }
 
     private void restoreState(LakeSoulWriterBucketState state) throws IOException {
-        for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry : state.getPendingFileRecoverableMap()
-                .entrySet()) {
-            pendingFilesMap.computeIfAbsent(entry.getKey(), key -> new ArrayList<>()).addAll(entry.getValue());
+        for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry :
+                state.getPendingFileRecoverableMap().entrySet()) {
+            pendingFilesMap
+                    .computeIfAbsent(entry.getKey(), key -> new ArrayList<>())
+                    .addAll(entry.getValue());
         }
         restartTimes = state.getRestartTimes();
     }
@@ -133,52 +135,56 @@ public class LakeSoulArrowWriterBucket {
         checkNotNull(bucket);
 
         bucket.closePartFile();
-        for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry : bucket.pendingFilesMap.entrySet()) {
-            pendingFilesMap.computeIfAbsent(entry.getKey(), key -> new ArrayList<>()).addAll(entry.getValue());
+        for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry :
+                bucket.pendingFilesMap.entrySet()) {
+            pendingFilesMap
+                    .computeIfAbsent(entry.getKey(), key -> new ArrayList<>())
+                    .addAll(entry.getValue());
         }
 
         LOG.info("Merging buckets for bucket id={}", getBucketId());
     }
 
     void write(LakeSoulArrowWrapper element, long currentTime) throws IOException {
-        if (inProgressPartWriter == null || rollingPolicy.shouldRollOnEvent(inProgressPartWriter, element)) {
-            LOG.info(
-                    "Opening new part file for bucket id={}.",
-                    getBucketId());
+        if (inProgressPartWriter == null
+                || rollingPolicy.shouldRollOnEvent(inProgressPartWriter, element)) {
+            LOG.info("Opening new part file for bucket id={}.", getBucketId());
             inProgressPartWriter = rollPartFile(currentTime);
         }
 
         inProgressPartWriter.write(element, currentTime);
     }
 
-    List<LakeSoulMultiTableSinkCommittable> prepareCommit(String dmlType, String sourcePartitionInfo)
-            throws IOException {
+    List<LakeSoulMultiTableSinkCommittable> prepareCommit(
+            String dmlType, String sourcePartitionInfo) throws IOException {
         // we always close part file and do not keep in-progress file
         // since the native LakeSoul writer doesn't support resume
         if (inProgressPartWriter != null) {
             closePartFile();
             LOG.info(
-                    "Closing in-progress part file for bucket id={} subTaskId={} tableId={} pendingFilesMap={} on checkpoint.",
+                    "Closing in-progress part file for bucket id={} subTaskId={} tableId={}"
+                            + " pendingFilesMap={} on checkpoint.",
                     getBucketId(),
                     subTaskId,
                     tableId,
                     pendingFilesMap);
-
         }
 
         List<LakeSoulMultiTableSinkCommittable> committables = new ArrayList<>();
         if (!pendingFilesMap.isEmpty()) {
-            long time = ((NativeLakeSoulWriter.NativeWriterPendingFileRecoverable) pendingFilesMap.values().stream().findFirst()
-                    .get().get(0)).creationTime;
+            long time =
+                    ((NativeLakeSoulWriter.NativeWriterPendingFileRecoverable)
+                                    pendingFilesMap.values().stream().findFirst().get().get(0))
+                            .creationTime;
 
-            committables.add(new LakeSoulMultiTableSinkCommittable(
-                    tableId,
-                    new HashMap<>(pendingFilesMap),
-                    time,
-                    UUID.randomUUID().toString(),
-                    dmlType,
-                    sourcePartitionInfo
-            ));
+            committables.add(
+                    new LakeSoulMultiTableSinkCommittable(
+                            tableId,
+                            new HashMap<>(pendingFilesMap),
+                            time,
+                            UUID.randomUUID().toString(),
+                            dmlType,
+                            sourcePartitionInfo));
             LOG.info("prepareCommit {}", committables);
             pendingFilesMap.clear();
         }
@@ -191,7 +197,8 @@ public class LakeSoulArrowWriterBucket {
             closePartFile();
         }
 
-        HashMap<String, List<InProgressFileWriter.PendingFileRecoverable>> tmpPending = new HashMap<>(pendingFilesMap);
+        HashMap<String, List<InProgressFileWriter.PendingFileRecoverable>> tmpPending =
+                new HashMap<>(pendingFilesMap);
         return new LakeSoulWriterBucketState(tableId, bucketPath, tmpPending);
     }
 
@@ -199,9 +206,9 @@ public class LakeSoulArrowWriterBucket {
         if (inProgressPartWriter != null
                 && rollingPolicy.shouldRollOnProcessingTime(inProgressPartWriter, timestamp)) {
             LOG.info(
-                    "Bucket {} closing in-progress part file for part file id={} due to processing time rolling " +
-                            "policy "
-                            + "(in-progress file created @ {}, last updated @ {} and current time is {}).",
+                    "Bucket {} closing in-progress part file for part file id={} due to processing"
+                        + " time rolling policy (in-progress file created @ {}, last updated @ {}"
+                        + " and current time is {}).",
                     getBucketId(),
                     uniqueId,
                     inProgressPartWriter.getCreationTime(),
@@ -212,7 +219,8 @@ public class LakeSoulArrowWriterBucket {
         }
     }
 
-    private InProgressFileWriter<LakeSoulArrowWrapper, String> rollPartFile(long currentTime) throws IOException {
+    private InProgressFileWriter<LakeSoulArrowWrapper, String> rollPartFile(long currentTime)
+            throws IOException {
         closePartFile();
 
         final Path partFilePath = assembleNewPartPath();
@@ -232,9 +240,7 @@ public class LakeSoulArrowWriterBucket {
         return new Path(basePath, bucketId);
     }
 
-    /**
-     * Constructor a new PartPath and increment the partCounter.
-     */
+    /** Constructor a new PartPath and increment the partCounter. */
     private Path assembleNewPartPath() {
         if (DYNAMIC_BUCKET.equals(bucketId)) {
             return bucketPath;
@@ -257,19 +263,24 @@ public class LakeSoulArrowWriterBucket {
     }
 
     private void closePartFile() throws IOException {
-//        LOG.info("ClosePartFile {}", inProgressPartWriter);
+        //        LOG.info("ClosePartFile {}", inProgressPartWriter);
         if (inProgressPartWriter != null) {
             if (inProgressPartWriter instanceof NativeLakeSoulArrowWrapperWriter) {
-                Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFileRecoverableMap =
-                        ((NativeLakeSoulArrowWrapperWriter) inProgressPartWriter).closeForCommitWithRecoverableMap();
-                for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry : pendingFileRecoverableMap.entrySet()) {
-                    pendingFilesMap.computeIfAbsent(entry.getKey(), bucketId -> new ArrayList())
+                Map<String, List<InProgressFileWriter.PendingFileRecoverable>>
+                        pendingFileRecoverableMap =
+                                ((NativeLakeSoulArrowWrapperWriter) inProgressPartWriter)
+                                        .closeForCommitWithRecoverableMap();
+                for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry :
+                        pendingFileRecoverableMap.entrySet()) {
+                    pendingFilesMap
+                            .computeIfAbsent(entry.getKey(), bucketId -> new ArrayList())
                             .addAll(entry.getValue());
                 }
                 inProgressPartWriter = null;
             } else {
                 throw new RuntimeException(
-                        "inProgressPartWriter only support instanceof NativeLakeSoulArrowWrapperWriter");
+                        "inProgressPartWriter only support instanceof"
+                                + " NativeLakeSoulArrowWrapperWriter");
             }
         }
     }
@@ -286,9 +297,9 @@ public class LakeSoulArrowWriterBucket {
     /**
      * Creates a new empty {@code Bucket}.
      *
-     * @param bucketId         the identifier of the bucket, as returned by the {@link BucketAssigner}.
-     * @param bucketPath       the path to where the part files for the bucket will be written to.
-     * @param bucketWriter     the {@link BucketWriter} used to write part files in the bucket.
+     * @param bucketId the identifier of the bucket, as returned by the {@link BucketAssigner}.
+     * @param bucketPath the path to where the part files for the bucket will be written to.
+     * @param bucketWriter the {@link BucketWriter} used to write part files in the bucket.
      * @param outputFileConfig the part file configuration.
      * @return The new Bucket.
      */
@@ -301,16 +312,21 @@ public class LakeSoulArrowWriterBucket {
             final RollingPolicy<LakeSoulArrowWrapper, String> rollingPolicy,
             final OutputFileConfig outputFileConfig) {
         return new LakeSoulArrowWriterBucket(
-                subTaskId, tableId,
-                bucketId, bucketPath, bucketWriter, rollingPolicy, outputFileConfig);
+                subTaskId,
+                tableId,
+                bucketId,
+                bucketPath,
+                bucketWriter,
+                rollingPolicy,
+                outputFileConfig);
     }
 
     /**
      * Restores a {@code Bucket} from the state included in the provided {@link
      * LakeSoulWriterBucketState}.
      *
-     * @param bucketWriter     the {@link BucketWriter} used to write part files in the bucket.
-     * @param bucketState      the initial state of the restored bucket.
+     * @param bucketWriter the {@link BucketWriter} used to write part files in the bucket.
+     * @param bucketState the initial state of the restored bucket.
      * @param outputFileConfig the part file configuration.
      * @return The restored Bucket.
      */
@@ -320,8 +336,9 @@ public class LakeSoulArrowWriterBucket {
             final BucketWriter<LakeSoulArrowWrapper, String> bucketWriter,
             final RollingPolicy<LakeSoulArrowWrapper, String> rollingPolicy,
             final LakeSoulWriterBucketState bucketState,
-            final OutputFileConfig outputFileConfig) throws IOException {
-        return new LakeSoulArrowWriterBucket(subTaskId, tableId, bucketWriter, rollingPolicy, bucketState,
-                outputFileConfig);
+            final OutputFileConfig outputFileConfig)
+            throws IOException {
+        return new LakeSoulArrowWriterBucket(
+                subTaskId, tableId, bucketWriter, rollingPolicy, bucketState, outputFileConfig);
     }
 }

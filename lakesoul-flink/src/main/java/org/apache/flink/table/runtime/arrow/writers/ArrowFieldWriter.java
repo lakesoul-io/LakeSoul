@@ -18,10 +18,9 @@
 
 package org.apache.flink.table.runtime.arrow.writers;
 
+import org.apache.arrow.vector.ValueVector;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.Preconditions;
-
-import org.apache.arrow.vector.ValueVector;
 
 /**
  * Base class for arrow field writer which is used to convert a field to an Arrow format.

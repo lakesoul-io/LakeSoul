@@ -24,17 +24,20 @@ import java.util.stream.Collectors;
 public class NamespaceDao {
     public void insert(Namespace namespace) {
         if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
-            Integer count = NativeMetadataJavaClient.insert(
-                    NativeUtils.CodedDaoType.InsertNamespace,
-                    JniWrapper.newBuilder().addNamespace(namespace).build());
+            Integer count =
+                    NativeMetadataJavaClient.insert(
+                            NativeUtils.CodedDaoType.InsertNamespace,
+                            JniWrapper.newBuilder().addNamespace(namespace).build());
             return;
         }
         Connection conn = null;
         PreparedStatement pstmt = null;
         try {
             conn = DBConnector.getConn();
-            pstmt = conn.prepareStatement("insert into namespace(namespace, properties, comment, domain) " +
-                    "values (?, ?, ?, ?)");
+            pstmt =
+                    conn.prepareStatement(
+                            "insert into namespace(namespace, properties, comment, domain) "
+                                    + "values (?, ?, ?, ?)");
             pstmt.setString(1, namespace.getNamespace());
             pstmt.setString(2, namespace.getProperties());
             pstmt.setString(3, namespace.getComment());
@@ -49,9 +52,10 @@ public class NamespaceDao {
 
     public Namespace findByNamespace(String name) {
         if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
-            JniWrapper jniWrapper = NativeMetadataJavaClient.query(
-                    NativeUtils.CodedDaoType.SelectNamespaceByNamespace,
-                    Collections.singletonList(name));
+            JniWrapper jniWrapper =
+                    NativeMetadataJavaClient.query(
+                            NativeUtils.CodedDaoType.SelectNamespaceByNamespace,
+                            Collections.singletonList(name));
             if (jniWrapper == null) return null;
             List<Namespace> namespaceList = jniWrapper.getNamespaceList();
             return namespaceList.isEmpty() ? null : namespaceList.get(0);
@@ -78,9 +82,10 @@ public class NamespaceDao {
 
     public void deleteByNamespace(String namespace) {
         if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
-            Integer count = NativeMetadataJavaClient.update(
-                    NativeUtils.CodedDaoType.DeleteNamespaceByNamespace,
-                    Collections.singletonList(namespace));
+            Integer count =
+                    NativeMetadataJavaClient.update(
+                            NativeUtils.CodedDaoType.DeleteNamespaceByNamespace,
+                            Collections.singletonList(namespace));
             return;
         }
         Connection conn = null;
@@ -99,9 +104,9 @@ public class NamespaceDao {
 
     public List<String> listNamespaces() {
         if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
-            JniWrapper jniWrapper = NativeMetadataJavaClient.query(
-                    NativeUtils.CodedDaoType.ListNamespaces,
-                    Collections.emptyList());
+            JniWrapper jniWrapper =
+                    NativeMetadataJavaClient.query(
+                            NativeUtils.CodedDaoType.ListNamespaces, Collections.emptyList());
             if (jniWrapper == null) return null;
             List<Namespace> namespaceList = jniWrapper.getNamespaceList();
             return namespaceList.stream().map(Namespace::getNamespace).collect(Collectors.toList());
@@ -129,11 +134,11 @@ public class NamespaceDao {
 
     public List<String> listNamespacesByDomain(String domain) {
         if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
-            JniWrapper jniWrapper = NativeMetadataJavaClient.query(
-                    NativeUtils.CodedDaoType.ListNamespacesByDomain,
-                    Collections.singletonList(domain));
-            if (jniWrapper == null)
-                return null;
+            JniWrapper jniWrapper =
+                    NativeMetadataJavaClient.query(
+                            NativeUtils.CodedDaoType.ListNamespacesByDomain,
+                            Collections.singletonList(domain));
+            if (jniWrapper == null) return null;
             List<Namespace> namespaceList = jniWrapper.getNamespaceList();
             return namespaceList.stream().map(Namespace::getNamespace).collect(Collectors.toList());
         }
@@ -214,5 +219,4 @@ public class NamespaceDao {
                     .setComment("")
                     .setDomain("public")
                     .build();
-
 }

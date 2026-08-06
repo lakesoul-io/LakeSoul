@@ -12,12 +12,11 @@ import java.util.{Locale, TimeZone}
 
 import org.apache.spark.sql.lakesoul.utils.DateTimeUtils.instantToMicros
 
-/**
-  * Forked from [[org.apache.spark.sql.catalyst.util.TimestampFormatter]]
+/** Forked from [[org.apache.spark.sql.catalyst.util.TimestampFormatter]]
   */
 sealed trait TimestampFormatter extends Serializable {
-  /**
-    * Parses a timestamp in a string and converts it to microseconds.
+
+  /** Parses a timestamp in a string and converts it to microseconds.
     *
     * @param s - string with timestamp to parse
     * @return microseconds since epoch.
@@ -33,9 +32,12 @@ sealed trait TimestampFormatter extends Serializable {
   def format(us: Long): String
 }
 
-class Iso8601TimestampFormatter(pattern: String,
-                                timeZone: TimeZone,
-                                locale: Locale) extends TimestampFormatter with DateTimeFormatterHelper {
+class Iso8601TimestampFormatter(
+    pattern: String,
+    timeZone: TimeZone,
+    locale: Locale
+) extends TimestampFormatter
+    with DateTimeFormatterHelper {
   @transient
   protected lazy val formatter = getOrCreateFormatter(pattern, locale)
 
@@ -56,26 +58,36 @@ class Iso8601TimestampFormatter(pattern: String,
   }
 }
 
-/**
-  * The formatter parses/formats timestamps according to the pattern `yyyy-MM-dd HH:mm:ss.[..fff..]`
-  * where `[..fff..]` is a fraction of second up to microsecond resolution. The formatter does not
-  * output trailing zeros in the fraction. For example, the timestamp `2019-03-05 15:00:01.123400` is
+/** The formatter parses/formats timestamps according to the pattern
+  * `yyyy-MM-dd HH:mm:ss.[..fff..]` where `[..fff..]` is a fraction of second up
+  * to microsecond resolution. The formatter does not output trailing zeros in
+  * the fraction. For example, the timestamp `2019-03-05 15:00:01.123400` is
   * formatted as the string `2019-03-05 15:00:01.1234`.
   *
-  * @param timeZone the time zone in which the formatter parses or format timestamps
+  * @param timeZone
+  *   the time zone in which the formatter parses or format timestamps
   */
 class FractionTimestampFormatter(timeZone: TimeZone)
-  extends Iso8601TimestampFormatter("", timeZone, TimestampFormatter.defaultLocale) {
+    extends Iso8601TimestampFormatter(
+      "",
+      timeZone,
+      TimestampFormatter.defaultLocale
+    ) {
 
   @transient
-  override protected lazy val formatter = DateTimeFormatterHelper.fractionFormatter
+  override protected lazy val formatter =
+    DateTimeFormatterHelper.fractionFormatter
 }
 
 object TimestampFormatter {
   val defaultPattern: String = "yyyy-MM-dd HH:mm:ss"
   val defaultLocale: Locale = Locale.US
 
-  def apply(format: String, timeZone: TimeZone, locale: Locale): TimestampFormatter = {
+  def apply(
+      format: String,
+      timeZone: TimeZone,
+      locale: Locale
+  ): TimestampFormatter = {
     new Iso8601TimestampFormatter(format, timeZone, locale)
   }
 

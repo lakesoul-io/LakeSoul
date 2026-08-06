@@ -4,13 +4,12 @@
 
 package org.apache.flink.lakesoul.tool;
 
+import static org.apache.flink.configuration.ConfigOptions.key;
+
 import org.apache.flink.configuration.ConfigOption;
 
 import java.util.Arrays;
 import java.util.List;
-
-import static org.apache.flink.configuration.ConfigOptions.key;
-import static org.apache.flink.configuration.CoreOptions.TMP_DIRS;
 
 public class NativeOptions {
     public static final ConfigOption<String> MEM_LIMIT =
@@ -23,7 +22,8 @@ public class NativeOptions {
             key("lakesoul.native_writer.pool_size")
                     .stringType()
                     .defaultValue(String.valueOf(1024 * 1024 * 1024))
-                    .withDescription("Option to set memory pool limit before spill of native writer");
+                    .withDescription(
+                            "Option to set memory pool limit before spill of native writer");
 
     public static final ConfigOption<String> SPILL_MEM_POOL_DIR =
             key("lakesoul.native_writer.pool_dir")
@@ -61,12 +61,12 @@ public class NativeOptions {
                     .defaultValue("false")
                     .withDescription("Option to set pushdown filters to physical format");
 
-    public static final List<ConfigOption<String>> OPTION_LIST = Arrays.asList(
-            MEM_LIMIT,
-            KEEP_ORDERS,
-            STABLE_SORT,
-            SPILL_MEM_POOL_SIZE,
-            PHYSICAL_FORMAT,
-            FILE_FILTER_PUSHDOWN
-    );
+    public static final List<ConfigOption<String>> OPTION_LIST =
+            Arrays.asList(
+                    MEM_LIMIT,
+                    KEEP_ORDERS,
+                    STABLE_SORT,
+                    SPILL_MEM_POOL_SIZE,
+                    PHYSICAL_FORMAT,
+                    FILE_FILTER_PUSHDOWN);
 }

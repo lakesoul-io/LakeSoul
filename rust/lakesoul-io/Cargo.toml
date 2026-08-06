@@ -54,7 +54,7 @@ parquet = { workspace = true }
 object_store = { workspace = true }
 # vortex
 vortex = { workspace = true }
-vortex-datafusion = { workspace = true}
+vortex-datafusion = { workspace = true }
 
 # async
 futures = { workspace = true }

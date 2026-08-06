@@ -9,7 +9,10 @@ import org.apache.spark.sql.{AnalysisException, QueryTest}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
-import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestUtils}
+import org.apache.spark.sql.lakesoul.test.{
+  LakeSoulSQLCommandTest,
+  LakeSoulTestUtils
+}
 import org.apache.spark.sql.test.SharedSparkSession
 import org.junit.runner.RunWith
 import org.scalatestplus.junit.JUnitRunner
@@ -17,16 +20,15 @@ import org.scalatestplus.junit.JUnitRunner
 import java.util.Locale
 import scala.util.control.NonFatal
 
-
 @RunWith(classOf[JUnitRunner])
 class NotSupportedDDLSuite
-  extends NotSupportedDDLBase
+    extends NotSupportedDDLBase
     with LakeSoulSQLCommandTest
 
-
-abstract class NotSupportedDDLBase extends QueryTest
-  with SharedSparkSession
-  with LakeSoulTestUtils {
+abstract class NotSupportedDDLBase
+    extends QueryTest
+    with SharedSparkSession
+    with LakeSoulTestUtils {
 
   val format = "lakesoul"
 
@@ -37,15 +39,13 @@ abstract class NotSupportedDDLBase extends QueryTest
   protected override def beforeEach(): Unit = {
     super.beforeEach()
     try {
-      sql(
-        s"""
+      sql(s"""
            |CREATE TABLE $nonPartitionedTableName
            |USING $format
            |AS SELECT 1 as a, 'a' as b
          """.stripMargin)
 
-      sql(
-        s"""
+      sql(s"""
            |CREATE TABLE $partitionedTableName (a INT, b STRING, p1 INT)
            |USING $format
            |PARTITIONED BY (p1)
@@ -60,15 +60,16 @@ abstract class NotSupportedDDLBase extends QueryTest
 
   protected override def afterEach(): Unit = {
     try {
-      val location = Seq(nonPartitionedTableName, partitionedTableName).map(tbl => {
-        try {
-          LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(
-            TableIdentifier(tbl, Some("default"))
-          )
-        } catch {
-          case _: Exception => None
-        }
-      })
+      val location =
+        Seq(nonPartitionedTableName, partitionedTableName).map(tbl => {
+          try {
+            LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(
+              TableIdentifier(tbl, Some("default"))
+            )
+          } catch {
+            case _: Exception => None
+          }
+        })
 
       location.foreach(loc => {
         if (loc.isDefined) {
@@ -86,27 +87,39 @@ abstract class NotSupportedDDLBase extends QueryTest
   }
 
   private def assertUnsupported(query: String, messages: String*): Unit = {
-    val allErrMessages = "operation not allowed" +: "does not support" +: "is not supported" +: messages
+    val allErrMessages =
+      "operation not allowed" +: "does not support" +: "is not supported" +: messages
     val e = intercept[AnalysisException] {
       sql(query)
     }
     println(e.getMessage().toLowerCase(Locale.ROOT))
-    assert(allErrMessages.exists(err => e.getMessage.toLowerCase(Locale.ROOT).contains(err)))
+    assert(
+      allErrMessages.exists(err =>
+        e.getMessage.toLowerCase(Locale.ROOT).contains(err)
+      )
+    )
   }
 
-  private def assertUnsupportedOperationException(query: String, messages: String*): Unit = {
-    val allErrMessages = "operation not allowed" +: "does not support" +: "is not supported" +: messages
+  private def assertUnsupportedOperationException(
+      query: String,
+      messages: String*
+  ): Unit = {
+    val allErrMessages =
+      "operation not allowed" +: "does not support" +: "is not supported" +: messages
     val e = intercept[UnsupportedOperationException] {
       sql(query)
     }
     println(e.getMessage().toLowerCase(Locale.ROOT))
-    assert(allErrMessages.exists(err => e.getMessage.toLowerCase(Locale.ROOT).contains(err)))
+    assert(
+      allErrMessages.exists(err =>
+        e.getMessage.toLowerCase(Locale.ROOT).contains(err)
+      )
+    )
   }
 
   test("bucketing is not supported for lakesoul tables") {
     withTable("tbl") {
-      assertUnsupported(
-        s"""
+      assertUnsupported(s"""
            |CREATE TABLE tbl(a INT, b INT)
            |USING $format
            |CLUSTERED BY (a) INTO 5 BUCKETS
@@ -121,13 +134,17 @@ abstract class NotSupportedDDLBase extends QueryTest
   }
 
   test("ANALYZE TABLE PARTITION") {
-    assertUnsupported(s"ANALYZE TABLE $partitionedTableName PARTITION (p1) COMPUTE STATISTICS",
-      "analyze table is not supported for v2 tables")
+    assertUnsupported(
+      s"ANALYZE TABLE $partitionedTableName PARTITION (p1) COMPUTE STATISTICS",
+      "analyze table is not supported for v2 tables"
+    )
   }
 
   test("ALTER TABLE ADD PARTITION") {
-    assertUnsupportedOperationException(s"ALTER TABLE $partitionedTableName ADD PARTITION (p1=3)",
-      "cannot create partition")
+    assertUnsupportedOperationException(
+      s"ALTER TABLE $partitionedTableName ADD PARTITION (p1=3)",
+      "cannot create partition"
+    )
   }
 
   test("ALTER TABLE RECOVER PARTITIONS") {
@@ -136,22 +153,28 @@ abstract class NotSupportedDDLBase extends QueryTest
   }
 
   test("ALTER TABLE SET SERDEPROPERTIES") {
-    assertUnsupported(s"ALTER TABLE $nonPartitionedTableName SET SERDEPROPERTIES (s1=3)")
+    assertUnsupported(
+      s"ALTER TABLE $nonPartitionedTableName SET SERDEPROPERTIES (s1=3)"
+    )
   }
 
   test("ALTER TABLE RENAME TO") {
-    assertUnsupported(s"ALTER TABLE $nonPartitionedTableName RENAME TO newTbl",
-      "LakeSoul currently doesn't support rename table")
+    assertUnsupported(
+      s"ALTER TABLE $nonPartitionedTableName RENAME TO newTbl",
+      "LakeSoul currently doesn't support rename table"
+    )
   }
-
 
   test("LOAD DATA") {
     assertUnsupported(
       s"""LOAD DATA LOCAL INPATH '/path/to/home' INTO TABLE $nonPartitionedTableName""",
-      "load data is not supported for v2 tables")
+      "load data is not supported for v2 tables"
+    )
   }
 
   test("INSERT OVERWRITE DIRECTORY") {
-    assertUnsupported(s"INSERT OVERWRITE DIRECTORY '/path/to/home' USING $format VALUES (1, 'a')")
+    assertUnsupported(
+      s"INSERT OVERWRITE DIRECTORY '/path/to/home' USING $format VALUES (1, 'a')"
+    )
   }
 }

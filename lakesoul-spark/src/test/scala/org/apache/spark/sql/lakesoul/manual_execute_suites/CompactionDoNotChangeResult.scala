@@ -24,13 +24,18 @@ class CompactionDoNotChangeResult {
 
     import spark.implicits._
 
-    val tableName = SparkUtil.makeQualifiedTablePath(new Path(Utils.createTempDir().getCanonicalPath)).toUri.toString
+    val tableName = SparkUtil
+      .makeQualifiedTablePath(new Path(Utils.createTempDir().getCanonicalPath))
+      .toUri
+      .toString
     try {
-      val allData = TestUtils.getData2(5000, onlyOnePartition)
+      val allData = TestUtils
+        .getData2(5000, onlyOnePartition)
         .toDF("hash", "name", "age", "range")
         .persist()
 
-      allData.select("range", "hash", "name")
+      allData
+        .select("range", "hash", "name")
         .write
         .option("rangePartitions", "range")
         .option("hashPartitions", "hash")
@@ -39,31 +44,48 @@ class CompactionDoNotChangeResult {
         .save(tableName)
 
       val sm = SnapshotManagement(tableName)
-      var rangeGroup = SparkUtil.allDataInfo(sm.snapshot).groupBy(_.range_partitions)
-      assert(rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)))
+      var rangeGroup =
+        SparkUtil.allDataInfo(sm.snapshot).groupBy(_.range_partitions)
+      assert(
+        rangeGroup.forall(
+          _._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)
+        )
+      )
 
-      LakeSoulTable.forPath(tableName).upsert(allData.select("range", "hash", "age"))
+      LakeSoulTable
+        .forPath(tableName)
+        .upsert(allData.select("range", "hash", "age"))
 
-
-      rangeGroup = SparkUtil.allDataInfo(sm.snapshot).groupBy(_.range_partitions)
-      assert(!rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)))
-
+      rangeGroup =
+        SparkUtil.allDataInfo(sm.snapshot).groupBy(_.range_partitions)
+      assert(
+        !rangeGroup.forall(
+          _._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)
+        )
+      )
 
       LakeSoulTable.forPath(tableName).compaction(cleanOldCompaction = true)
-      rangeGroup = SparkUtil.allDataInfo(sm.snapshot).groupBy(_.range_partitions)
-      assert(rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)))
+      rangeGroup =
+        SparkUtil.allDataInfo(sm.snapshot).groupBy(_.range_partitions)
+      assert(
+        rangeGroup.forall(
+          _._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)
+        )
+      )
 
-      val realDF = allData.groupBy("range", "hash")
-        .agg(
-          last("name").as("n"),
-          last("age").as("a"))
+      val realDF = allData
+        .groupBy("range", "hash")
+        .agg(last("name").as("n"), last("age").as("a"))
         .select(
           col("range"),
           col("hash"),
           col("n").as("name"),
-          col("a").as("age"))
+          col("a").as("age")
+        )
 
-      val compactDF = LakeSoulTable.forPath(tableName).toDF
+      val compactDF = LakeSoulTable
+        .forPath(tableName)
+        .toDF
         .select("range", "hash", "name", "age")
 
       TestUtils.checkDFResult(compactDF, realDF)
@@ -76,6 +98,5 @@ class CompactionDoNotChangeResult {
         throw e
     }
   }
-
 
 }

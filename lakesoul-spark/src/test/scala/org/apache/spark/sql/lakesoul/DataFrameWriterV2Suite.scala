@@ -5,7 +5,12 @@
 package org.apache.spark.sql.lakesoul
 
 import org.apache.spark.sql.catalyst.analysis.TableAlreadyExistsException
-import org.apache.spark.sql.connector.catalog.{CatalogV2Util, Identifier, Table, TableCatalog}
+import org.apache.spark.sql.connector.catalog.{
+  CatalogV2Util,
+  Identifier,
+  Table,
+  TableCatalog
+}
 import org.apache.spark.sql.connector.expressions._
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.lakesoul.catalog.{LakeSoulCatalog, LakeSoulTableV2}
@@ -22,7 +27,7 @@ import scala.collection.JavaConverters._
 // These tests are copied from Apache Spark (minus partition by expressions) and should work exactly
 // the same with LakeSoul minus some writer options
 trait DataFrameWriterV2Tests
-  extends QueryTest
+    extends QueryTest
     with SharedSparkSession
     with LakeSoulSQLCommandTest
     with BeforeAndAfter {
@@ -30,28 +35,39 @@ trait DataFrameWriterV2Tests
   import testImplicits._
 
   before {
-    val df = spark.createDataFrame(Seq((1L, "a"), (2L, "b"), (3L, "c"))).toDF("id", "data")
+    val df = spark
+      .createDataFrame(Seq((1L, "a"), (2L, "b"), (3L, "c")))
+      .toDF("id", "data")
     df.createOrReplaceTempView("source")
-    val df2 = spark.createDataFrame(Seq((4L, "d"), (5L, "e"), (6L, "f"))).toDF("id", "data")
+    val df2 = spark
+      .createDataFrame(Seq((4L, "d"), (5L, "e"), (6L, "f")))
+      .toDF("id", "data")
     df2.createOrReplaceTempView("source2")
   }
 
   after {
-    val catalog = spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
+    val catalog = spark.sessionState.catalogManager.currentCatalog
+      .asInstanceOf[LakeSoulCatalog]
     catalog
       .listTables(Array("default"))
       .foreach { ti => catalog.dropTable(ti) }
   }
 
   def catalog: TableCatalog = {
-    spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
+    spark.sessionState.catalogManager.currentCatalog
+      .asInstanceOf[LakeSoulCatalog]
   }
 
   protected def getProperties(table: Table): Map[String, String] = {
-    table.properties().asScala.toMap.filterKeys(key =>
-      !CatalogV2Util.TABLE_RESERVED_PROPERTIES.contains(key) && !(key == "hashBucketNum")
-        && !(key == "domain")
-    )
+    table
+      .properties()
+      .asScala
+      .toMap
+      .filterKeys(key =>
+        !CatalogV2Util.TABLE_RESERVED_PROPERTIES
+          .contains(key) && !(key == "hashBucketNum")
+          && !(key == "domain")
+      )
   }
 
   test("Append: basic append") {
@@ -63,13 +79,22 @@ trait DataFrameWriterV2Tests
 
     checkAnswer(
       spark.table("table_name"),
-      Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c")))
+      Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c"))
+    )
 
     spark.table("source2").writeTo("table_name").append()
 
     checkAnswer(
       spark.table("table_name"),
-      Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c"), Row(4L, "d"), Row(5L, "e"), Row(6L, "f")))
+      Seq(
+        Row(1L, "a"),
+        Row(2L, "b"),
+        Row(3L, "c"),
+        Row(4L, "d"),
+        Row(5L, "e"),
+        Row(6L, "f")
+      )
+    )
   }
 
   test("Append: by name not position") {
@@ -78,14 +103,18 @@ trait DataFrameWriterV2Tests
     checkAnswer(spark.table("table_name"), Seq.empty)
 
     val exc = intercept[AnalysisException] {
-      spark.table("source").withColumnRenamed("data", "d").writeTo("table_name").append()
+      spark
+        .table("source")
+        .withColumnRenamed("data", "d")
+        .writeTo("table_name")
+        .append()
     }
 
-    assert(exc.getMessage.contains("Cannot write incompatible data for the table"))
+    assert(
+      exc.getMessage.contains("Cannot write incompatible data for the table")
+    )
 
-    checkAnswer(
-      spark.table("table_name"),
-      Seq())
+    checkAnswer(spark.table("table_name"), Seq())
   }
 
   test("Append: fail if table does not exist") {
@@ -98,7 +127,8 @@ trait DataFrameWriterV2Tests
 
   test("Overwrite: overwrite by expression: true") {
     spark.sql(
-      "CREATE TABLE table_name (id bigint, data string) USING lakesoul PARTITIONED BY (id)")
+      "CREATE TABLE table_name (id bigint, data string) USING lakesoul PARTITIONED BY (id)"
+    )
 
     checkAnswer(spark.table("table_name"), Seq.empty)
 
@@ -106,18 +136,28 @@ trait DataFrameWriterV2Tests
 
     checkAnswer(
       spark.table("table_name").select("id", "data"),
-      Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c")))
+      Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c"))
+    )
 
     spark.table("source2").writeTo("table_name").overwrite(lit(true))
 
     checkAnswer(
       spark.table("table_name").select("id", "data"),
-      Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c"), Row(4L, "d"), Row(5L, "e"), Row(6L, "f")))
+      Seq(
+        Row(1L, "a"),
+        Row(2L, "b"),
+        Row(3L, "c"),
+        Row(4L, "d"),
+        Row(5L, "e"),
+        Row(6L, "f")
+      )
+    )
   }
 
   test("Overwrite: overwrite by expression: id = 3") {
     spark.sql(
-      "CREATE TABLE table_name (id bigint, data string) USING lakesoul PARTITIONED BY (id)")
+      "CREATE TABLE table_name (id bigint, data string) USING lakesoul PARTITIONED BY (id)"
+    )
 
     checkAnswer(spark.table("table_name"), Seq.empty)
 
@@ -125,7 +165,8 @@ trait DataFrameWriterV2Tests
 
     checkAnswer(
       spark.table("table_name").select("id", "data"),
-      Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c")))
+      Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c"))
+    )
 
     val e = intercept[AnalysisException] {
       spark.table("source2").writeTo("table_name").overwrite($"id" === 3)
@@ -134,7 +175,8 @@ trait DataFrameWriterV2Tests
 
     checkAnswer(
       spark.table("table_name").select("id", "data"),
-      Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c")))
+      Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c"))
+    )
   }
 
   test("Overwrite: by name not position") {
@@ -143,15 +185,18 @@ trait DataFrameWriterV2Tests
     checkAnswer(spark.table("table_name"), Seq.empty)
 
     val exc = intercept[AnalysisException] {
-      spark.table("source").withColumnRenamed("data", "d")
-        .writeTo("table_name").overwrite(lit(true))
+      spark
+        .table("source")
+        .withColumnRenamed("data", "d")
+        .writeTo("table_name")
+        .overwrite(lit(true))
     }
 
-    assert(exc.getMessage.contains("Cannot write incompatible data for the table"))
+    assert(
+      exc.getMessage.contains("Cannot write incompatible data for the table")
+    )
 
-    checkAnswer(
-      spark.table("table_name"),
-      Seq())
+    checkAnswer(spark.table("table_name"), Seq())
   }
 
   test("Overwrite: fail if table does not exist") {
@@ -164,7 +209,8 @@ trait DataFrameWriterV2Tests
 
   test("OverwritePartitions: overwrite conflicting partitions") {
     spark.sql(
-      "CREATE TABLE table_name (id bigint, data string) USING lakesoul PARTITIONED BY (id)")
+      "CREATE TABLE table_name (id bigint, data string) USING lakesoul PARTITIONED BY (id)"
+    )
 
     checkAnswer(spark.table("table_name"), Seq.empty)
 
@@ -172,17 +218,26 @@ trait DataFrameWriterV2Tests
 
     checkAnswer(
       spark.table("table_name").select("id", "data"),
-      Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c")))
+      Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c"))
+    )
 
     val e = intercept[AnalysisException] {
-      spark.table("source2").withColumn("id", $"id" - 2)
-        .writeTo("table_name").overwritePartitions()
+      spark
+        .table("source2")
+        .withColumn("id", $"id" - 2)
+        .writeTo("table_name")
+        .overwritePartitions()
     }
-    assert(e.getMessage.contains("Table default.table_name does not support dynamic overwrite"))
+    assert(
+      e.getMessage.contains(
+        "Table default.table_name does not support dynamic overwrite"
+      )
+    )
 
     checkAnswer(
       spark.table("table_name").select("id", "data"),
-      Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c")))
+      Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c"))
+    )
   }
 
   test("OverwritePartitions: overwrite all rows if not partitioned") {
@@ -194,12 +249,17 @@ trait DataFrameWriterV2Tests
 
     checkAnswer(
       spark.table("table_name").select("id", "data"),
-      Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c")))
+      Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c"))
+    )
 
     val e = intercept[AnalysisException] {
       spark.table("source2").writeTo("table_name").overwritePartitions()
     }
-    assert(e.getMessage.contains("Table default.table_name does not support dynamic overwrite"))
+    assert(
+      e.getMessage.contains(
+        "Table default.table_name does not support dynamic overwrite"
+      )
+    )
   }
 
   test("OverwritePartitions: by name not position") {
@@ -208,15 +268,18 @@ trait DataFrameWriterV2Tests
     checkAnswer(spark.table("table_name"), Seq.empty)
 
     val e = intercept[AnalysisException] {
-      spark.table("source").withColumnRenamed("data", "d")
-        .writeTo("table_name").overwritePartitions()
+      spark
+        .table("source")
+        .withColumnRenamed("data", "d")
+        .writeTo("table_name")
+        .overwritePartitions()
     }
 
-    assert(e.getMessage.contains("Cannot write incompatible data for the table"))
+    assert(
+      e.getMessage.contains("Cannot write incompatible data for the table")
+    )
 
-    checkAnswer(
-      spark.table("table_name"),
-      Seq())
+    checkAnswer(spark.table("table_name"), Seq())
   }
 
   test("OverwritePartitions: fail if table does not exist") {
@@ -232,12 +295,17 @@ trait DataFrameWriterV2Tests
 
     checkAnswer(
       spark.table("table_name").select("id", "data"),
-      Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c")))
+      Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c"))
+    )
 
     val table = catalog.loadTable(Identifier.of(Array("default"), "table_name"))
 
     assert(table.name === "default.table_name")
-    assert(table.schema === new StructType().add("id", LongType).add("data", StringType))
+    assert(
+      table.schema === new StructType()
+        .add("id", LongType)
+        .add("data", StringType)
+    )
     assert(table.partitioning.isEmpty)
     assert(getProperties(table).isEmpty)
   }
@@ -247,35 +315,50 @@ trait DataFrameWriterV2Tests
 
     checkAnswer(
       spark.table("table_name").select("id", "data"),
-      Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c")))
+      Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c"))
+    )
 
     val table = catalog.loadTable(Identifier.of(Array("default"), "table_name"))
 
     assert(table.name === "default.table_name")
-    assert(table.schema === new StructType().add("id", LongType).add("data", StringType))
+    assert(
+      table.schema === new StructType()
+        .add("id", LongType)
+        .add("data", StringType)
+    )
     assert(table.partitioning.isEmpty)
     assert(getProperties(table).isEmpty)
   }
 
   test("Create: identity partitioned table") {
-    spark.table("source").writeTo("table_name").using("lakesoul")
-      .partitionedBy($"id").create()
+    spark
+      .table("source")
+      .writeTo("table_name")
+      .using("lakesoul")
+      .partitionedBy($"id")
+      .create()
 
     checkAnswer(
       spark.table("table_name").select("id", "data"),
-      Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c")))
+      Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c"))
+    )
 
     val table = catalog.loadTable(Identifier.of(Array("default"), "table_name"))
 
     assert(table.name === "default.table_name")
-    assert(table.schema === new StructType().add("data", StringType).add("id", LongType, nullable = true))
+    assert(
+      table.schema === new StructType()
+        .add("data", StringType)
+        .add("id", LongType, nullable = true)
+    )
     assert(table.partitioning === Seq(IdentityTransform(FieldReference("id"))))
     assert(getProperties(table).isEmpty)
   }
 
   test("Create: fail if table already exists") {
     spark.sql(
-      "CREATE TABLE table_name (id bigint, data string) USING lakesoul PARTITIONED BY (id)")
+      "CREATE TABLE table_name (id bigint, data string) USING lakesoul PARTITIONED BY (id)"
+    )
 
     val exc = intercept[TableAlreadyExistsException] {
       spark.table("source").writeTo("table_name").using("lakesoul").create()
@@ -287,52 +370,81 @@ trait DataFrameWriterV2Tests
 
     // table should not have been changed
     assert(table.name === "default.table_name")
-    assert(table.schema === new StructType().add("data", StringType).add("id", LongType, true))
+    assert(
+      table.schema === new StructType()
+        .add("data", StringType)
+        .add("id", LongType, true)
+    )
     assert(table.partitioning === Seq(IdentityTransform(FieldReference("id"))))
     assert(getProperties(table).isEmpty)
   }
 
   test("Replace: not support") {
     spark.sql(
-      "CREATE TABLE table_name (id bigint, data string) USING lakesoul PARTITIONED BY (id)")
+      "CREATE TABLE table_name (id bigint, data string) USING lakesoul PARTITIONED BY (id)"
+    )
     spark.sql("INSERT INTO TABLE table_name SELECT data,id FROM source")
 
     checkAnswer(
       spark.table("table_name").select("id", "data"),
-      Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c")))
+      Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c"))
+    )
 
     val table = catalog.loadTable(Identifier.of(Array("default"), "table_name"))
 
     // validate the initial table
     assert(table.name === "default.table_name")
-    assert(table.schema === new StructType().add("data", StringType).add("id", LongType, true))
+    assert(
+      table.schema === new StructType()
+        .add("data", StringType)
+        .add("id", LongType, true)
+    )
     assert(table.partitioning === Seq(IdentityTransform(FieldReference("id"))))
     assert(getProperties(table).isEmpty)
 
     val e = intercept[AnalysisException] {
-      spark.table("source2")
-        .withColumn("even_or_odd", when(($"id" % 2) === 0, "even").otherwise("odd"))
-        .writeTo("table_name").using("lakesoul")
+      spark
+        .table("source2")
+        .withColumn(
+          "even_or_odd",
+          when(($"id" % 2) === 0, "even").otherwise("odd")
+        )
+        .writeTo("table_name")
+        .using("lakesoul")
         .replace()
     }
-    assert(e.getMessage().contains("`replaceTable` is not supported for LakeSoul tables"))
+    assert(
+      e.getMessage()
+        .contains("`replaceTable` is not supported for LakeSoul tables")
+    )
   }
 
   test("CreateOrReplace: supported") {
-    spark.table("source").writeTo("table_name").using("lakesoul").createOrReplace()
+    spark
+      .table("source")
+      .writeTo("table_name")
+      .using("lakesoul")
+      .createOrReplace()
     checkAnswer(
       spark.table("table_name").select("id", "data"),
-      Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c")))
+      Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c"))
+    )
 
-    spark.table("source2").writeTo("table_name").using("lakesoul").createOrReplace()
+    spark
+      .table("source2")
+      .writeTo("table_name")
+      .using("lakesoul")
+      .createOrReplace()
     checkAnswer(
       spark.table("table_name").select("id", "data"),
-      Seq(Row(4L, "d"), Row(5L, "e"), Row(6L, "f")))
+      Seq(Row(4L, "d"), Row(5L, "e"), Row(6L, "f"))
+    )
   }
 
   test("Create: partitioned by years(ts) - not supported") {
     val e = intercept[AnalysisException] {
-      spark.table("source")
+      spark
+        .table("source")
         .withColumn("ts", lit("2019-06-01 10:00:00.000000").cast("timestamp"))
         .writeTo("table_name")
         .partitionedBy(years($"ts"))
@@ -344,7 +456,8 @@ trait DataFrameWriterV2Tests
 
   test("Create: partitioned by months(ts) - not supported") {
     val e = intercept[AnalysisException] {
-      spark.table("source")
+      spark
+        .table("source")
         .withColumn("ts", lit("2019-06-01 10:00:00.000000").cast("timestamp"))
         .writeTo("table_name")
         .partitionedBy(months($"ts"))
@@ -356,7 +469,8 @@ trait DataFrameWriterV2Tests
 
   test("Create: partitioned by days(ts) - not supported") {
     val e = intercept[AnalysisException] {
-      spark.table("source")
+      spark
+        .table("source")
         .withColumn("ts", lit("2019-06-01 10:00:00.000000").cast("timestamp"))
         .writeTo("table_name")
         .partitionedBy(days($"ts"))
@@ -368,7 +482,8 @@ trait DataFrameWriterV2Tests
 
   test("Create: partitioned by hours(ts) - not supported") {
     val e = intercept[AnalysisException] {
-      spark.table("source")
+      spark
+        .table("source")
         .withColumn("ts", lit("2019-06-01 10:00:00.000000").cast("timestamp"))
         .writeTo("table_name")
         .partitionedBy(hours($"ts"))
@@ -380,7 +495,8 @@ trait DataFrameWriterV2Tests
 
   test("Create: partitioned by bucket(4, id) - not supported") {
     val e = intercept[AnalysisException] {
-      spark.table("source")
+      spark
+        .table("source")
         .writeTo("table_name")
         .partitionedBy(bucket(4, $"id"))
         .using("lakesoul")
@@ -392,7 +508,7 @@ trait DataFrameWriterV2Tests
 
 @RunWith(classOf[JUnitRunner])
 class DataFrameWriterV2Suite
-  extends DataFrameWriterV2Tests
+    extends DataFrameWriterV2Tests
     with LakeSoulSQLCommandTest {
 
   import testImplicits._
@@ -401,37 +517,56 @@ class DataFrameWriterV2Suite
     spark.sql("CREATE TABLE table_name (id bigint, data string) USING lakesoul")
 
     checkAnswer(spark.table("table_name"), Seq.empty)
-    val location = catalog.loadTable(Identifier.of(Array("default"), "table_name"))
-      .asInstanceOf[LakeSoulTableV2].path
+    val location = catalog
+      .loadTable(Identifier.of(Array("default"), "table_name"))
+      .asInstanceOf[LakeSoulTableV2]
+      .path
 
     spark.table("source").writeTo(s"`$location`").append()
 
     checkAnswer(
       spark.table(s"`$location`").select("id", "data"),
-      Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c")))
+      Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c"))
+    )
   }
 
   test("Create: basic behavior by path - short table name can't be a path") {
     withTempDir { tempDir =>
       val dir = tempDir.getCanonicalPath
       val e = intercept[AssertionError] {
-        spark.table("source").writeTo(s"lakesoul.`$dir`").using("lakesoul").create()
+        spark
+          .table("source")
+          .writeTo(s"lakesoul.`$dir`")
+          .using("lakesoul")
+          .create()
       }
-      assert(e.getMessage.contains("Short Table name") && e.getMessage.contains("can't be a path"))
+      assert(
+        e.getMessage.contains("Short Table name") && e.getMessage.contains(
+          "can't be a path"
+        )
+      )
     }
   }
 
   test("Create: using empty dataframe") {
-    spark.table("source").where("false")
-      .writeTo("table_name").using("lakesoul")
-      .partitionedBy($"id").create()
+    spark
+      .table("source")
+      .where("false")
+      .writeTo("table_name")
+      .using("lakesoul")
+      .partitionedBy($"id")
+      .create()
 
     checkAnswer(spark.table("table_name"), Seq.empty[Row])
 
     val table = catalog.loadTable(Identifier.of(Array("default"), "table_name"))
 
     assert(table.name === "default.table_name")
-    assert(table.schema === new StructType().add("data", StringType).add("id", LongType, nullable = true))
+    assert(
+      table.schema === new StructType()
+        .add("data", StringType)
+        .add("id", LongType, nullable = true)
+    )
     assert(table.partitioning === Seq(IdentityTransform(FieldReference("id"))))
   }
 

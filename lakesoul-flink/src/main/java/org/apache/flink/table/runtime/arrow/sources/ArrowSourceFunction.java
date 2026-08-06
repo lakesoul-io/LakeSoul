@@ -18,6 +18,12 @@
 
 package org.apache.flink.table.runtime.arrow.sources;
 
+import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.vector.VectorLoader;
+import org.apache.arrow.vector.VectorSchemaRoot;
+import org.apache.arrow.vector.ipc.ReadChannel;
+import org.apache.arrow.vector.ipc.message.ArrowRecordBatch;
+import org.apache.arrow.vector.ipc.message.MessageSerializer;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.api.common.state.ListState;
@@ -40,13 +46,6 @@ import org.apache.flink.table.runtime.types.TypeInfoDataTypeConverter;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.util.Preconditions;
-
-import org.apache.arrow.memory.BufferAllocator;
-import org.apache.arrow.vector.VectorLoader;
-import org.apache.arrow.vector.VectorSchemaRoot;
-import org.apache.arrow.vector.ipc.ReadChannel;
-import org.apache.arrow.vector.ipc.message.ArrowRecordBatch;
-import org.apache.arrow.vector.ipc.message.MessageSerializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

@@ -59,13 +59,27 @@ def test_basic_feature_engineering(ray_session):
     # Test extract_title
     def extract_title(batch):
         import re
+
         titles = []
         for name in batch["Name"]:
             match = re.search(r",\s*(\w+)\.", str(name))
             title = match.group(1) if match else "Unknown"
-            if title in ["Lady", "Countess", "Capt", "Col", "Don",
-                         "Dr", "Major", "Rev", "Sir", "Jonkheer",
-                         "Dona", "Ms", "Mme", "Mlle"]:
+            if title in [
+                "Lady",
+                "Countess",
+                "Capt",
+                "Col",
+                "Don",
+                "Dr",
+                "Major",
+                "Rev",
+                "Sir",
+                "Jonkheer",
+                "Dona",
+                "Ms",
+                "Mme",
+                "Mlle",
+            ]:
                 title = "Rare"
             titles.append(title)
         batch["Title"] = titles
@@ -110,9 +124,22 @@ def test_full_pipeline_runs(ray_session):
         for name in batch["Name"]:
             match = re.search(r",\s*(\w+)\.", str(name))
             title = match.group(1) if match else "Unknown"
-            if title in ["Lady", "Countess", "Capt", "Col", "Don",
-                         "Dr", "Major", "Rev", "Sir", "Jonkheer",
-                         "Dona", "Ms", "Mme", "Mlle"]:
+            if title in [
+                "Lady",
+                "Countess",
+                "Capt",
+                "Col",
+                "Don",
+                "Dr",
+                "Major",
+                "Rev",
+                "Sir",
+                "Jonkheer",
+                "Dona",
+                "Ms",
+                "Mme",
+                "Mlle",
+            ]:
                 title = "Rare"
             titles.append(title)
         batch["Title"] = titles
@@ -129,6 +156,7 @@ def test_full_pipeline_runs(ray_session):
                 return "InterM"
             else:
                 return "Large"
+
         batch["FamilySize"] = [
             _family(s, p) for s, p in zip(batch["SibSp"], batch["Parch"])
         ]

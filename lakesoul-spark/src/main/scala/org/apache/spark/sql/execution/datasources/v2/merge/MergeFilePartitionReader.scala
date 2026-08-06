@@ -14,8 +14,10 @@ import org.apache.spark.sql.execution.QueryExecutionException
 import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
 import org.apache.spark.sql.internal.SQLConf
 
-class MergeFilePartitionReader[T](readers: Iterator[MergePartitionedFileReader[T]])
-  extends PartitionReader[T] with Logging {
+class MergeFilePartitionReader[T](
+    readers: Iterator[MergePartitionedFileReader[T]]
+) extends PartitionReader[T]
+    with Logging {
   private var currentReader: MergePartitionedFileReader[T] = null
 
   private val sqlConf = SQLConf.get
@@ -39,10 +41,14 @@ class MergeFilePartitionReader[T](readers: Iterator[MergePartitionedFileReader[T
               e.getMessage + "\n" +
                 "It is possible the underlying files have been updated. " +
                 "You can explicitly invalidate the cache in Spark by " +
-                "recreating the Dataset/DataFrame involved.")
-          case e@(_: RuntimeException | _: IOException) if ignoreCorruptFiles =>
+                "recreating the Dataset/DataFrame involved."
+            )
+          case e @ (_: RuntimeException | _: IOException)
+              if ignoreCorruptFiles =>
             logWarning(
-              s"Skipped the rest of the content in the corrupted file.", e)
+              s"Skipped the rest of the content in the corrupted file.",
+              e
+            )
             currentReader = null
         }
       } else {
@@ -68,9 +74,11 @@ class MergeFilePartitionReader[T](readers: Iterator[MergePartitionedFileReader[T
           throw new QueryExecutionException(message, e)
         }
         throw e
-      case e@(_: RuntimeException | _: IOException) if ignoreCorruptFiles =>
+      case e @ (_: RuntimeException | _: IOException) if ignoreCorruptFiles =>
         logWarning(
-          s"Skipped the rest of the content in the corrupted file: $currentReader", e)
+          s"Skipped the rest of the content in the corrupted file: $currentReader",
+          e
+        )
         false
     }
     if (hasNext) {
@@ -99,8 +107,8 @@ class MergeFilePartitionReader[T](readers: Iterator[MergePartitionedFileReader[T
   }
 }
 
-
-private[v2] case class MergePartitionedFileReader[T](reader: PartitionReader[T]) extends PartitionReader[T] {
+private[v2] case class MergePartitionedFileReader[T](reader: PartitionReader[T])
+    extends PartitionReader[T] {
   override def next(): Boolean = reader.next()
 
   override def get(): T = reader.get()

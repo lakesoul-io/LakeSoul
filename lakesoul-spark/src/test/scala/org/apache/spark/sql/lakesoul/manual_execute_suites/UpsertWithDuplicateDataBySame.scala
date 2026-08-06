@@ -15,7 +15,6 @@ object UpsertWithDuplicateDataBySame {
   }
 }
 
-
 class UpsertWithDuplicateDataBySame {
   def run(): Unit = {
     execute(true)
@@ -29,42 +28,52 @@ class UpsertWithDuplicateDataBySame {
     import spark.implicits._
 
     try {
-      val allData = TestUtils.getDataNew(20000, onlyOnePartition)
+      val allData = TestUtils
+        .getDataNew(20000, onlyOnePartition)
         .toDF("hash", "name", "age", "stu", "grade", "range")
         .persist()
 
-      val expectedData = allData.groupBy("range", "hash")
+      val expectedData = allData
+        .groupBy("range", "hash")
         .agg(
           last("name").as("n"),
           last("age").as("a"),
           last("stu").as("s"),
-          last("grade").as("g"))
+          last("grade").as("g")
+        )
         .select(
           col("range"),
           col("hash"),
           col("n").as("name"),
           col("a").as("age"),
           col("s").as("stu"),
-          col("g").as("grade"))
+          col("g").as("grade")
+        )
 
-
-      TestUtils.initTable(tableName,
+      TestUtils.initTable(
+        tableName,
         allData.select("range", "hash", "name", "age"),
         "range",
-        "hash")
+        "hash"
+      )
 
       TestUtils.checkDFResult(
-        LakeSoulTable.forPath(tableName).toDF.select("range", "hash", "name", "age"),
-        expectedData.select("range", "hash", "name", "age"))
-
+        LakeSoulTable
+          .forPath(tableName)
+          .toDF
+          .select("range", "hash", "name", "age"),
+        expectedData.select("range", "hash", "name", "age")
+      )
 
       val cols = Seq("range", "hash", "name", "age", "stu", "grade")
 
-      TestUtils.checkUpsertResult(tableName,
+      TestUtils.checkUpsertResult(
+        tableName,
         allData.select("range", "hash", "stu", "grade"),
         expectedData,
         cols,
-        None)
+        None
+      )
 
       LakeSoulTable.forPath(tableName).dropTable()
     } catch {
@@ -74,6 +83,5 @@ class UpsertWithDuplicateDataBySame {
     }
 
   }
-
 
 }

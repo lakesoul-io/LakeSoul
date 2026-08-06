@@ -5,9 +5,9 @@
 package org.apache.flink.lakesoul.entry.sql;
 
 import org.apache.flink.lakesoul.entry.sql.common.LanguageType;
+import org.apache.flink.lakesoul.entry.sql.common.SubmitOption;
 import org.apache.flink.lakesoul.entry.sql.common.SubmitType;
 import org.apache.flink.lakesoul.entry.sql.flink.FlinkSqlSubmitter;
-import org.apache.flink.lakesoul.entry.sql.common.SubmitOption;
 
 public class SubmitterFactory {
     public static Submitter createSubmitter(SubmitOption submitOption) {
@@ -23,6 +23,4 @@ public class SubmitterFactory {
                 throw new RuntimeException("submitType is not supported");
         }
     }
-
-
 }

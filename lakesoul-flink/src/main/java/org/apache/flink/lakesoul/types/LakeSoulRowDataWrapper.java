@@ -17,8 +17,15 @@ public class LakeSoulRowDataWrapper {
     private final boolean useCDC;
     private final String cdcColumn;
 
-    public LakeSoulRowDataWrapper(TableId tableId, String op, RowData before, RowData after, RowType beforeType,
-                                  RowType afterType, boolean useCDC, String cdcColumn) {
+    public LakeSoulRowDataWrapper(
+            TableId tableId,
+            String op,
+            RowData before,
+            RowData after,
+            RowType beforeType,
+            RowType afterType,
+            boolean useCDC,
+            String cdcColumn) {
         this.tableId = tableId;
         this.op = op;
         this.before = before;
@@ -63,16 +70,25 @@ public class LakeSoulRowDataWrapper {
 
     @Override
     public String toString() {
-        return "LakeSoulRowDataWrapper{" +
-                "tableId=" + tableId +
-                ", op='" + op + '\'' +
-                ", before=" + before +
-                ", after=" + after +
-                ", beforeType=" + beforeType +
-                ", afterType=" + afterType +
-                ", useCDC=" + useCDC +
-                ", cdcColumn=" + cdcColumn +
-                '}';
+        return "LakeSoulRowDataWrapper{"
+                + "tableId="
+                + tableId
+                + ", op='"
+                + op
+                + '\''
+                + ", before="
+                + before
+                + ", after="
+                + after
+                + ", beforeType="
+                + beforeType
+                + ", afterType="
+                + afterType
+                + ", useCDC="
+                + useCDC
+                + ", cdcColumn="
+                + cdcColumn
+                + '}';
     }
 
     public static Builder newBuilder() {
@@ -131,8 +147,15 @@ public class LakeSoulRowDataWrapper {
         }
 
         public LakeSoulRowDataWrapper build() {
-            return new LakeSoulRowDataWrapper(this.tableId, this.op, this.before, this.after, this.beforeType,
-                    this.afterType, useCDC, cdcColumn);
+            return new LakeSoulRowDataWrapper(
+                    this.tableId,
+                    this.op,
+                    this.before,
+                    this.after,
+                    this.beforeType,
+                    this.afterType,
+                    useCDC,
+                    cdcColumn);
         }
     }
 }

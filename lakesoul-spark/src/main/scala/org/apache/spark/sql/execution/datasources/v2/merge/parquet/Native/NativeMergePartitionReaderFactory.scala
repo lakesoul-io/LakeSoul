@@ -19,7 +19,10 @@ import org.apache.spark.sql.connector.read.PartitionReader
 import org.apache.spark.sql.execution.datasources.parquet._
 import org.apache.spark.sql.execution.datasources.v2.merge.MergePartitionedFile
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
-import org.apache.spark.sql.execution.datasources.{DataSourceUtils, RecordReaderIterator}
+import org.apache.spark.sql.execution.datasources.{
+  DataSourceUtils,
+  RecordReaderIterator
+}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.LakeSoulTableProperties
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf._
@@ -34,61 +37,88 @@ import scala.collection.JavaConverters._
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 
-
-/**
- * A factory used to create Parquet readers.
- *
- * @param sqlConf         SQL configuration.
- * @param broadcastedConf Broadcast serializable Hadoop Configuration.
- * @param dataSchema      Schema of Parquet files.
- * @param readDataSchema  Required schema of Parquet files.
- * @param partitionSchema Schema of partitions.
- *                        //  * @param filterMap Filters to be pushed down in the batch scan.
- */
-case class NativeMergePartitionReaderFactory(sqlConf: SQLConf,
-                                             broadcastedConf: Broadcast[SerializableConfiguration],
-                                             dataSchema: StructType,
-                                             readDataSchema: StructType,
-                                             partitionSchema: StructType,
-                                             filters: Array[Filter],
-                                             mergeOperatorInfo: Map[String, MergeOperator[Any]],
-                                             defaultMergeOp: MergeOperator[Any],
-                                             options: Map[String, String] = Map.empty)
-  extends NativeMergeFilePartitionReaderFactory(mergeOperatorInfo, defaultMergeOp) with Logging {
+/** A factory used to create Parquet readers.
+  *
+  * @param sqlConf
+  *   SQL configuration.
+  * @param broadcastedConf
+  *   Broadcast serializable Hadoop Configuration.
+  * @param dataSchema
+  *   Schema of Parquet files.
+  * @param readDataSchema
+  *   Required schema of Parquet files.
+  * @param partitionSchema
+  *   Schema of partitions. // * @param filterMap Filters to be pushed down in
+  *   the batch scan.
+  */
+case class NativeMergePartitionReaderFactory(
+    sqlConf: SQLConf,
+    broadcastedConf: Broadcast[SerializableConfiguration],
+    dataSchema: StructType,
+    readDataSchema: StructType,
+    partitionSchema: StructType,
+    filters: Array[Filter],
+    mergeOperatorInfo: Map[String, MergeOperator[Any]],
+    defaultMergeOp: MergeOperator[Any],
+    options: Map[String, String] = Map.empty
+) extends NativeMergeFilePartitionReaderFactory(
+      mergeOperatorInfo,
+      defaultMergeOp
+    )
+    with Logging {
 
   private val isCaseSensitive = sqlConf.caseSensitiveAnalysis
-  private val resultSchema = StructType(partitionSchema.fields ++ readDataSchema.fields)
+  private val resultSchema = StructType(
+    partitionSchema.fields ++ readDataSchema.fields
+  )
   private val enableOffHeapColumnVector = sqlConf.offHeapColumnVectorEnabled
-  private val timestampConversion: Boolean = sqlConf.isParquetINT96TimestampConversion
+  private val timestampConversion: Boolean =
+    sqlConf.isParquetINT96TimestampConversion
   private val capacity = sqlConf.parquetVectorizedReaderBatchSize
-  private val enableParquetFilterPushDown: Boolean = sqlConf.parquetFilterPushDown
+  private val enableParquetFilterPushDown: Boolean =
+    sqlConf.parquetFilterPushDown
   private val pushDownDate = sqlConf.parquetFilterPushDownDate
   private val pushDownTimestamp = sqlConf.parquetFilterPushDownTimestamp
   private val pushDownDecimal = sqlConf.parquetFilterPushDownDecimal
-  private val pushDownStringStartWith = sqlConf.parquetFilterPushDownStringPredicate
-  private val pushDownInFilterThreshold = sqlConf.parquetFilterPushDownInFilterThreshold
+  private val pushDownStringStartWith =
+    sqlConf.parquetFilterPushDownStringPredicate
+  private val pushDownInFilterThreshold =
+    sqlConf.parquetFilterPushDownInFilterThreshold
   private val writeLegacyParquetFormat = sqlConf.writeLegacyParquetFormat
   private val parquetOutputTimestampType = sqlConf.parquetOutputTimestampType
   private val parquetFieldIdWriteEnabled = sqlConf.parquetFieldIdWriteEnabled
   private val nativeIOEnable = sqlConf.getConf(NATIVE_IO_ENABLE)
-  private val nativeIOPrefecherBufferSize = sqlConf.getConf(NATIVE_IO_PREFETCHER_BUFFER_SIZE)
+  private val nativeIOPrefecherBufferSize =
+    sqlConf.getConf(NATIVE_IO_PREFETCHER_BUFFER_SIZE)
   private val nativeIOThreadNum = sqlConf.getConf(NATIVE_IO_THREAD_NUM)
-  private val nativeIOAwaitTimeout = sqlConf.getConf(NATIVE_IO_READER_AWAIT_TIMEOUT)
-  private val nativeIOCdcColumn = options.getOrElse(NATIVE_IO_CDC_COLUMN.key, "")
-  private val nativeIOIsCompacted = options.getOrElse(NATIVE_IO_IS_COMPACTED.key, "false")
-  private val nativeIOSkipMOR = options.getOrElse(LakeSoulTableProperties.skipMergeOnRead, "false")
+  private val nativeIOAwaitTimeout =
+    sqlConf.getConf(NATIVE_IO_READER_AWAIT_TIMEOUT)
+  private val nativeIOCdcColumn =
+    options.getOrElse(NATIVE_IO_CDC_COLUMN.key, "")
+  private val nativeIOIsCompacted =
+    options.getOrElse(NATIVE_IO_IS_COMPACTED.key, "false")
+  private val nativeIOSkipMOR =
+    options.getOrElse(LakeSoulTableProperties.skipMergeOnRead, "false")
 
   // schemea: path->schema    source: path->file|path->file|path->file
-  private val requestSchemaMap: mutable.Map[String, String] = broadcastedConf.value.value
-    .get(ParquetReadSupport.SPARK_ROW_REQUESTED_SCHEMA).split("\\|")
-    .map(str => mutable.Map(str.split("->")(0) -> str.split("->")(1)))
-    .fold(mutable.Map[String, String]())(_ ++ _)
+  private val requestSchemaMap: mutable.Map[String, String] =
+    broadcastedConf.value.value
+      .get(ParquetReadSupport.SPARK_ROW_REQUESTED_SCHEMA)
+      .split("\\|")
+      .map(str => mutable.Map(str.split("->")(0) -> str.split("->")(1)))
+      .fold(mutable.Map[String, String]())(_ ++ _)
 
-  override def buildReader(file: MergePartitionedFile): PartitionReader[InternalRow] = {
-    throw new Exception("LakeSoul Lake Merge scan shouldn't use this method, only buildColumnarReader will be used.")
+  override def buildReader(
+      file: MergePartitionedFile
+  ): PartitionReader[InternalRow] = {
+    throw new Exception(
+      "LakeSoul Lake Merge scan shouldn't use this method, only buildColumnarReader will be used."
+    )
   }
 
-  def createVectorizedReader(files: Seq[MergePartitionedFile]): RecordReader[Void, ColumnarBatch] = {
+  def createVectorizedReader(
+      files: Seq[MergePartitionedFile]
+  ): RecordReader[Void, ColumnarBatch] = {
     assert(nativeIOEnable)
     val recordReader = buildReaderBase(files, createParquetVectorizedReader)
     val vectorizedReader = recordReader.asInstanceOf[NativeVectorizedReader]
@@ -98,7 +128,9 @@ case class NativeMergePartitionReaderFactory(sqlConf: SQLConf,
 
   }
 
-  override def buildColumnarReader(files: Seq[MergePartitionedFile]): PartitionReader[ColumnarBatch] = {
+  override def buildColumnarReader(
+      files: Seq[MergePartitionedFile]
+  ): PartitionReader[ColumnarBatch] = {
     if (files.isEmpty) {
       new PartitionReader[ColumnarBatch] {
         override def next(): Boolean = {
@@ -141,14 +173,16 @@ case class NativeMergePartitionReaderFactory(sqlConf: SQLConf,
     }
   }
 
-  private def createParquetVectorizedReader(splits: Seq[InputSplit],
-                                            files: Seq[MergePartitionedFile],
-                                            partitionValues: InternalRow,
-                                            hadoopAttemptContext: TaskAttemptContextImpl,
-                                            pushed: Option[FilterPredicate],
-                                            convertTz: Option[ZoneId],
-                                            datetimeRebaseSpec: RebaseSpec,
-                                            int96RebaseSpec: RebaseSpec): RecordReader[Void, ColumnarBatch] = {
+  private def createParquetVectorizedReader(
+      splits: Seq[InputSplit],
+      files: Seq[MergePartitionedFile],
+      partitionValues: InternalRow,
+      hadoopAttemptContext: TaskAttemptContextImpl,
+      pushed: Option[FilterPredicate],
+      convertTz: Option[ZoneId],
+      datetimeRebaseSpec: RebaseSpec,
+      int96RebaseSpec: RebaseSpec
+  ): RecordReader[Void, ColumnarBatch] = {
     val taskContext = Option(TaskContext.get())
     assert(nativeIOEnable)
     val vectorizedReader = if (pushed.isDefined) {
@@ -174,7 +208,6 @@ case class NativeMergePartitionReaderFactory(sqlConf: SQLConf,
     vectorizedReader.setAwaitTimeout(nativeIOAwaitTimeout)
     vectorizedReader.deferNativeReaderCloseUntilTaskCompletion()
 
-
     val iter = new RecordReaderIterator(vectorizedReader)
     // SPARK-23457 Register a task completion listener before `initialization`.
     taskContext.foreach(_.addTaskCompletionListener[Unit](_ => iter.close()))
@@ -193,18 +226,32 @@ case class NativeMergePartitionReaderFactory(sqlConf: SQLConf,
 
     // multi files
     val file = files.head
-    val primaryKeys = file.keyInfo.map(keyIndex => file.fileInfo(keyIndex.index).fieldName)
+    val primaryKeys =
+      file.keyInfo.map(keyIndex => file.fileInfo(keyIndex.index).fieldName)
 
-    vectorizedReader.initialize(splits.toArray, hadoopAttemptContext, primaryKeys.toArray, readDataSchema, mergeOp.asJava)
+    vectorizedReader.initialize(
+      splits.toArray,
+      hadoopAttemptContext,
+      primaryKeys.toArray,
+      readDataSchema,
+      mergeOp.asJava
+    )
     vectorizedReader.asInstanceOf[RecordReader[Void, ColumnarBatch]]
   }
 
-  private def buildReaderBase[T](files: Seq[MergePartitionedFile],
-                                 buildReaderFunc: (
-                                   Seq[InputSplit], Seq[MergePartitionedFile], InternalRow, TaskAttemptContextImpl,
-                                     Option[FilterPredicate], Option[ZoneId],
-                                     RebaseSpec,
-                                     RebaseSpec) => RecordReader[Void, T]): RecordReader[Void, T] = {
+  private def buildReaderBase[T](
+      files: Seq[MergePartitionedFile],
+      buildReaderFunc: (
+          Seq[InputSplit],
+          Seq[MergePartitionedFile],
+          InternalRow,
+          TaskAttemptContextImpl,
+          Option[FilterPredicate],
+          Option[ZoneId],
+          RebaseSpec,
+          RebaseSpec
+      ) => RecordReader[Void, T]
+  ): RecordReader[Void, T] = {
     val conf = broadcastedConf.value.value
     val file = files.head
     val filePath = new Path(new URI(file.filePath))
@@ -214,75 +261,83 @@ case class NativeMergePartitionReaderFactory(sqlConf: SQLConf,
         file.start,
         file.length,
         Array.empty,
-        null)
+        null
+      )
         .asInstanceOf[InputSplit]
     )
     // Collect all components from OR-conjunctive filters
-    val processedFilters = if (nativeIOSkipMOR.equals("true") && enableParquetFilterPushDown && filters.nonEmpty) {
-      val orComponents = {
-        val components = new ArrayBuffer[Filter]()
+    val processedFilters =
+      if (
+        nativeIOSkipMOR.equals(
+          "true"
+        ) && enableParquetFilterPushDown && filters.nonEmpty
+      ) {
+        val orComponents = {
+          val components = new ArrayBuffer[Filter]()
 
+          def collectComponents(filter: Filter): Unit = filter match {
+            case org.apache.spark.sql.sources.Or(left, right) =>
+              collectComponents(left)
+              collectComponents(right)
+            case other =>
+              components += other
+          }
 
-        def collectComponents(filter: Filter): Unit = filter match {
-          case org.apache.spark.sql.sources.Or(left, right) =>
-            collectComponents(left)
-            collectComponents(right)
-          case other =>
-            components += other
+          filters.foreach(collectComponents)
+          components.distinct.toArray
         }
 
-        filters.foreach(collectComponents)
-        components.distinct.toArray
-      }
-
-
-      // Process each component from the OR-conjunctive filters
-      orComponents.filter {
-        case org.apache.spark.sql.sources.And(left, right) =>
-          def matchPartitionValue(attribute: String, value: Any): Boolean = {
-            val fieldIndex = partitionSchema.fieldIndex(attribute)
-            if (fieldIndex >= 0) {
-              val partitionValue = file.partitionValues.get(fieldIndex,
-                partitionSchema.fields(fieldIndex).dataType)
-              if (partitionValue == null && value == null) {
-                true
-              } else if (partitionValue == null || value == null) {
-                false
+        // Process each component from the OR-conjunctive filters
+        orComponents.filter {
+          case org.apache.spark.sql.sources.And(left, right) =>
+            def matchPartitionValue(attribute: String, value: Any): Boolean = {
+              val fieldIndex = partitionSchema.fieldIndex(attribute)
+              if (fieldIndex >= 0) {
+                val partitionValue = file.partitionValues.get(
+                  fieldIndex,
+                  partitionSchema.fields(fieldIndex).dataType
+                )
+                if (partitionValue == null && value == null) {
+                  true
+                } else if (partitionValue == null || value == null) {
+                  false
+                } else {
+                  partitionValue == value
+                }
               } else {
-                partitionValue == value
+                false
               }
-            } else {
-              false
             }
-          }
 
-          // Check if either left or right is a partition filter
-          def matchPartitionFilter(filter: Filter): Boolean = filter match {
-            case EqualTo(attribute, value) =>
-              if (partitionSchema.fieldNames.contains(attribute)) {
-                matchPartitionValue(attribute, value)
-              } else {
-                false
-              }
-            case _ => false
-          }
+            // Check if either left or right is a partition filter
+            def matchPartitionFilter(filter: Filter): Boolean = filter match {
+              case EqualTo(attribute, value) =>
+                if (partitionSchema.fieldNames.contains(attribute)) {
+                  matchPartitionValue(attribute, value)
+                } else {
+                  false
+                }
+              case _ => false
+            }
 
-          matchPartitionFilter(left) || matchPartitionFilter(right)
-        case _ => false
+            matchPartitionFilter(left) || matchPartitionFilter(right)
+          case _ => false
+        }
+      } else {
+        filters
       }
-    } else {
-      filters
-    }
 
     // Use empty parquet key-value metadata to get default (no-rebase) behavior.
     // The native reader handles format-specific details internally.
     val emptyMetadata: String => String = _ => null
     val datetimeRebaseSpec = DataSourceUtils.datetimeRebaseSpec(
       emptyMetadata,
-      SQLConf.get.getConf(SQLConf.PARQUET_REBASE_MODE_IN_READ))
+      SQLConf.get.getConf(SQLConf.PARQUET_REBASE_MODE_IN_READ)
+    )
     val int96RebaseSpec = DataSourceUtils.int96RebaseSpec(
       emptyMetadata,
-      SQLConf.get.getConf(SQLConf.PARQUET_INT96_REBASE_MODE_IN_READ))
+      SQLConf.get.getConf(SQLConf.PARQUET_INT96_REBASE_MODE_IN_READ)
+    )
     // Try to push down filters when filter push-down is enabled.
     val pushed = if (enableParquetFilterPushDown) {
       val converter = new SparkToParquetSchemaConverter(
@@ -291,8 +346,14 @@ case class NativeMergePartitionReaderFactory(sqlConf: SQLConf,
         parquetFieldIdWriteEnabled
       )
       val parquetSchema = converter.convert(dataSchema)
-      val parquetFilters = new ParquetFilters(parquetSchema, pushDownDate, pushDownTimestamp,
-        pushDownDecimal, pushDownStringStartWith, pushDownInFilterThreshold, isCaseSensitive,
+      val parquetFilters = new ParquetFilters(
+        parquetSchema,
+        pushDownDate,
+        pushDownTimestamp,
+        pushDownDecimal,
+        pushDownStringStartWith,
+        pushDownInFilterThreshold,
+        isCaseSensitive,
         datetimeRebaseSpec
       )
       if (nativeIOSkipMOR.equals("true")) {
@@ -310,20 +371,36 @@ case class NativeMergePartitionReaderFactory(sqlConf: SQLConf,
 
     val convertTz =
       if (timestampConversion) {
-        Some(DateTimeUtils.getZoneId(conf.get(SQLConf.SESSION_LOCAL_TIMEZONE.key)))
+        Some(
+          DateTimeUtils.getZoneId(conf.get(SQLConf.SESSION_LOCAL_TIMEZONE.key))
+        )
       } else {
         None
       }
 
-    val attemptId = new TaskAttemptID(new TaskID(new JobID(), TaskType.MAP, 0), 0)
-    conf.set(ParquetReadSupport.SPARK_ROW_REQUESTED_SCHEMA, requestSchemaMap(file.rangeVersion))
-    conf.set(ParquetWriteSupport.SPARK_ROW_SCHEMA, requestSchemaMap(file.rangeVersion))
+    val attemptId =
+      new TaskAttemptID(new TaskID(new JobID(), TaskType.MAP, 0), 0)
+    conf.set(
+      ParquetReadSupport.SPARK_ROW_REQUESTED_SCHEMA,
+      requestSchemaMap(file.rangeVersion)
+    )
+    conf.set(
+      ParquetWriteSupport.SPARK_ROW_SCHEMA,
+      requestSchemaMap(file.rangeVersion)
+    )
     val hadoopAttemptContext = new TaskAttemptContextImpl(conf, attemptId)
 
     val reader = buildReaderFunc(
-      splits, files, file.partitionValues, hadoopAttemptContext, pushed, convertTz, datetimeRebaseSpec, int96RebaseSpec)
+      splits,
+      files,
+      file.partitionValues,
+      hadoopAttemptContext,
+      pushed,
+      convertTz,
+      datetimeRebaseSpec,
+      int96RebaseSpec
+    )
     reader
   }
-
 
 }

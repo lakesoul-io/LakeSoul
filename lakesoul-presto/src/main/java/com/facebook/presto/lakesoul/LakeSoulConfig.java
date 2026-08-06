@@ -4,9 +4,9 @@
 
 package com.facebook.presto.lakesoul;
 
-import java.util.Map;
-
 import static java.util.Objects.requireNonNull;
+
+import java.util.Map;
 
 public class LakeSoulConfig {
 
@@ -16,11 +16,11 @@ public class LakeSoulConfig {
         return instance;
     }
 
-    public static synchronized void initInstance(Map<String, String> config){
+    public static synchronized void initInstance(Map<String, String> config) {
         instance = new LakeSoulConfig(config);
     }
 
-    private LakeSoulConfig(Map<String, String> config){
+    private LakeSoulConfig(Map<String, String> config) {
         requireNonNull(config, "config should not be null!");
         this.accessKey = config.get("fs.s3a.access.key");
         this.accessSecret = config.get("fs.s3a.secret.key");
@@ -30,9 +30,11 @@ public class LakeSoulConfig {
         this.signer = config.get("fs.s3a.s3.signing-algorithm");
         this.defaultFS = config.get("fs.defaultFS");
         this.user = config.get("fs.hdfs.user");
-        this.virtualPathStyle = Boolean.parseBoolean(config.getOrDefault("fs.s3a.path.style.access", "false"));
-        this.timeZone = config.getOrDefault("timezone","");
-        this.caseSensitiveNameMatching = Boolean.parseBoolean(config.getOrDefault("case-sensitive-name-matching", "false"));
+        this.virtualPathStyle =
+                Boolean.parseBoolean(config.getOrDefault("fs.s3a.path.style.access", "false"));
+        this.timeZone = config.getOrDefault("timezone", "");
+        this.caseSensitiveNameMatching =
+                Boolean.parseBoolean(config.getOrDefault("case-sensitive-name-matching", "false"));
     }
 
     private String accessKey;
@@ -46,7 +48,6 @@ public class LakeSoulConfig {
     private String timeZone;
     private boolean virtualPathStyle;
     private boolean caseSensitiveNameMatching;
-
 
     public String getAccessKey() {
         return accessKey;

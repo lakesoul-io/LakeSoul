@@ -2,8 +2,4 @@
 channel = "stable"
 profile = "minimal"
 
-components = [
-    "rustfmt",
-    "clippy",
-    "rust-analyzer",
-]
+components = ["rustfmt", "clippy", "rust-analyzer"]

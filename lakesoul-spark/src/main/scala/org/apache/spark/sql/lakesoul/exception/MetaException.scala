@@ -7,21 +7,24 @@ package org.apache.spark.sql.lakesoul.exception
 import org.apache.spark.sql.AnalysisException
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 
-
-/**
-  * Thrown when a query fails to analyze, usually because the query itself is invalid.
-  *
+/** Thrown when a query fails to analyze, usually because the query itself is
+  * invalid.
   */
-class MetaException(val message: String,
-                    val commit_id: String = "",
-                    val line: Option[Int] = None,
-                    val startPosition: Option[Int] = None,
-                    // Some plans fail to serialize due to bugs in scala collections.
-                    @transient val plan: Option[LogicalPlan] = None,
-                    val cause: Option[Throwable] = None)
-  extends Exception(message, cause.orNull) with Serializable {
+class MetaException(
+    val message: String,
+    val commit_id: String = "",
+    val line: Option[Int] = None,
+    val startPosition: Option[Int] = None,
+    // Some plans fail to serialize due to bugs in scala collections.
+    @transient val plan: Option[LogicalPlan] = None,
+    val cause: Option[Throwable] = None
+) extends Exception(message, cause.orNull)
+    with Serializable {
 
-  def withPosition(line: Option[Int], startPosition: Option[Int]): AnalysisException = {
+  def withPosition(
+      line: Option[Int],
+      startPosition: Option[Int]
+  ): AnalysisException = {
     val newException = new AnalysisException(message, line, startPosition)
     newException.setStackTrace(getStackTrace)
     newException
@@ -41,19 +44,22 @@ class MetaException(val message: String,
   }
 }
 
-/**
-  * Nonfatal exception when committing meta data
-  *
+/** Nonfatal exception when committing meta data
   */
-class MetaNonfatalException(val message: String,
-                            val line: Option[Int] = None,
-                            val startPosition: Option[Int] = None,
-                            // Some plans fail to serialize due to bugs in scala collections.
-                            @transient val plan: Option[LogicalPlan] = None,
-                            val cause: Option[Throwable] = None)
-  extends Exception(message, cause.orNull) with Serializable {
+class MetaNonfatalException(
+    val message: String,
+    val line: Option[Int] = None,
+    val startPosition: Option[Int] = None,
+    // Some plans fail to serialize due to bugs in scala collections.
+    @transient val plan: Option[LogicalPlan] = None,
+    val cause: Option[Throwable] = None
+) extends Exception(message, cause.orNull)
+    with Serializable {
 
-  def withPosition(line: Option[Int], startPosition: Option[Int]): AnalysisException = {
+  def withPosition(
+      line: Option[Int],
+      startPosition: Option[Int]
+  ): AnalysisException = {
     val newException = new AnalysisException(message, line, startPosition)
     newException.setStackTrace(getStackTrace)
     newException
@@ -73,16 +79,21 @@ class MetaNonfatalException(val message: String,
   }
 }
 
-class MetaRetryException(val message: String,
-                         val commit_id: String = "",
-                         val line: Option[Int] = None,
-                         val startPosition: Option[Int] = None,
-                         // Some plans fail to serialize due to bugs in scala collections.
-                         @transient val plan: Option[LogicalPlan] = None,
-                         val cause: Option[Throwable] = None)
-  extends Exception(message, cause.orNull) with Serializable {
+class MetaRetryException(
+    val message: String,
+    val commit_id: String = "",
+    val line: Option[Int] = None,
+    val startPosition: Option[Int] = None,
+    // Some plans fail to serialize due to bugs in scala collections.
+    @transient val plan: Option[LogicalPlan] = None,
+    val cause: Option[Throwable] = None
+) extends Exception(message, cause.orNull)
+    with Serializable {
 
-  def withPosition(line: Option[Int], startPosition: Option[Int]): AnalysisException = {
+  def withPosition(
+      line: Option[Int],
+      startPosition: Option[Int]
+  ): AnalysisException = {
     val newException = new AnalysisException(message, line, startPosition)
     newException.setStackTrace(getStackTrace)
     newException
@@ -102,17 +113,21 @@ class MetaRetryException(val message: String,
   }
 }
 
+class MetaRerunException(
+    val message: String,
+    val commit_id: String,
+    val line: Option[Int] = None,
+    val startPosition: Option[Int] = None,
+    // Some plans fail to serialize due to bugs in scala collections.
+    @transient val plan: Option[LogicalPlan] = None,
+    val cause: Option[Throwable] = None
+) extends Exception(message, cause.orNull)
+    with Serializable {
 
-class MetaRerunException(val message: String,
-                         val commit_id: String,
-                         val line: Option[Int] = None,
-                         val startPosition: Option[Int] = None,
-                         // Some plans fail to serialize due to bugs in scala collections.
-                         @transient val plan: Option[LogicalPlan] = None,
-                         val cause: Option[Throwable] = None)
-  extends Exception(message, cause.orNull) with Serializable {
-
-  def withPosition(line: Option[Int], startPosition: Option[Int]): AnalysisException = {
+  def withPosition(
+      line: Option[Int],
+      startPosition: Option[Int]
+  ): AnalysisException = {
     val newException = new AnalysisException(message, line, startPosition)
     newException.setStackTrace(getStackTrace)
     newException

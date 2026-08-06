@@ -4,6 +4,8 @@
 
 package org.apache.flink.lakesoul.test;
 
+import static org.apache.flink.lakesoul.tool.JobOptions.*;
+
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.HeartbeatManagerOptions;
 import org.apache.flink.core.fs.FileSystem;
@@ -23,11 +25,10 @@ import java.io.File;
 import java.io.IOException;
 import java.time.Duration;
 
-import static org.apache.flink.lakesoul.tool.JobOptions.*;
-
 public abstract class AbstractTestBase {
 
-    private static final Logger LOG = LoggerFactory.getLogger(org.apache.flink.test.util.AbstractTestBase.class);
+    private static final Logger LOG =
+            LoggerFactory.getLogger(org.apache.flink.test.util.AbstractTestBase.class);
 
     private static final int DEFAULT_PARALLELISM = 16;
 
@@ -52,7 +53,8 @@ public abstract class AbstractTestBase {
     }
 
     private static Configuration getConfig() {
-        org.apache.flink.configuration.Configuration config = new org.apache.flink.configuration.Configuration();
+        org.apache.flink.configuration.Configuration config =
+                new org.apache.flink.configuration.Configuration();
         config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
         config.set(ExecutionCheckpointingOptions.TOLERABLE_FAILURE_NUMBER, 5);
         config.set(ExecutionCheckpointingOptions.CHECKPOINTING_INTERVAL, Duration.ofSeconds(3));
@@ -71,8 +73,7 @@ public abstract class AbstractTestBase {
                             .setNumberSlotsPerTaskManager(DEFAULT_PARALLELISM)
                             .build());
 
-    @ClassRule
-    public static final TemporaryFolder TEMPORARY_FOLDER = new TemporaryFolder();
+    @ClassRule public static final TemporaryFolder TEMPORARY_FOLDER = new TemporaryFolder();
 
     @After
     public final void cleanupRunningJobs() throws Exception {
@@ -106,11 +107,13 @@ public abstract class AbstractTestBase {
             return tmpPath.makeQualified(LocalFileSystem.getSharedInstance()).toUri().toString();
         } else {
             try {
-                return tmpPath.makeQualified(FileSystem.get(new Path("s3://lakesoul-test-s3").toUri())).toUri().toString();
+                return tmpPath.makeQualified(
+                                FileSystem.get(new Path("s3://lakesoul-test-s3").toUri()))
+                        .toUri()
+                        .toString();
             } catch (IOException e) {
                 throw new RuntimeException(e);
             }
         }
-
     }
 }

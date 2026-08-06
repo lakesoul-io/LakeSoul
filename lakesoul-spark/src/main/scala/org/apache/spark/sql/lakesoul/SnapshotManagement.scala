@@ -4,7 +4,11 @@
 
 package org.apache.spark.sql.lakesoul
 
-import com.dmetasoul.lakesoul.meta.{MetaUtils, PartitionInfoScala, SparkMetaVersion}
+import com.dmetasoul.lakesoul.meta.{
+  MetaUtils,
+  PartitionInfoScala,
+  SparkMetaVersion
+}
 import com.google.common.cache.{CacheBuilder, RemovalNotification}
 import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
@@ -13,7 +17,10 @@ import org.apache.spark.sql.catalyst.plans.logical.AnalysisHelper
 import org.apache.spark.sql.lakesoul.LakeSoulOptions.ReadType
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
-import org.apache.spark.sql.lakesoul.sources.{LakeSoulSQLConf, LakeSoulSourceUtils}
+import org.apache.spark.sql.lakesoul.sources.{
+  LakeSoulSQLConf,
+  LakeSoulSourceUtils
+}
 import org.apache.spark.sql.lakesoul.utils.{SparkUtil, TableInfo}
 import org.apache.spark.sql.{AnalysisException, SparkSession}
 
@@ -49,14 +56,15 @@ class SnapshotManagement(path: String, namespace: String) extends Logging {
     new Snapshot(table_info, true)
   }
 
-
   private def getCurrentSnapshot: Snapshot = {
     if (LakeSoulSourceUtils.isLakeSoulTableExists(table_path)) {
       createSnapshot
     } else {
-      //table_name in SnapshotManagement must be a root path, and its parent path shouldn't be lakesoul table
+      // table_name in SnapshotManagement must be a root path, and its parent path shouldn't be lakesoul table
       if (LakeSoulUtils.isLakeSoulTable(table_path)) {
-        throw new AnalysisException("table_name is expected as root path in SnapshotManagement")
+        throw new AnalysisException(
+          "table_name is expected as root path in SnapshotManagement"
+        )
       }
       initSnapshot
     }
@@ -70,13 +78,23 @@ class SnapshotManagement(path: String, namespace: String) extends Logging {
     }
   }
 
-  def updateSnapshotForVersion(partitionDesc: String, startPartitionVersion: Long, endPartitionVersion: Long, readType: String): Unit = {
+  def updateSnapshotForVersion(
+      partitionDesc: String,
+      startPartitionVersion: Long,
+      endPartitionVersion: Long,
+      readType: String
+  ): Unit = {
     lockInterruptibly {
-      currentSnapshot.setPartitionDescAndVersion(partitionDesc, startPartitionVersion, endPartitionVersion, readType)
+      currentSnapshot.setPartitionDescAndVersion(
+        partitionDesc,
+        startPartitionVersion,
+        endPartitionVersion,
+        readType
+      )
     }
   }
 
-  //get table info only
+  // get table info only
   def getTableInfoOnly: TableInfo = {
     if (LakeSoulSourceUtils.isLakeSoulTableExists(table_path)) {
       SparkMetaVersion.getTableInfoByPath(table_path)
@@ -91,13 +109,13 @@ class SnapshotManagement(path: String, namespace: String) extends Logging {
     new TransactionCommit(this)
   }
 
-  /**
-    * Execute a piece of code within a new [[TransactionCommit]]. Reads/write sets will
-    * be recorded for this table, and all other tables will be read
-    * at a snapshot that is pinned on the first access.
+  /** Execute a piece of code within a new [[TransactionCommit]]. Reads/write
+    * sets will be recorded for this table, and all other tables will be read at
+    * a snapshot that is pinned on the first access.
     *
-    * @note This uses thread-local variable to make the active transaction visible. So do not use
-    *       multi-threaded code in the provided thunk.
+    * @note
+    *   This uses thread-local variable to make the active transaction visible.
+    *   So do not use multi-threaded code in the provided thunk.
     */
   def withNewTransaction[T](thunk: TransactionCommit => T): T = {
     try {
@@ -109,9 +127,8 @@ class SnapshotManagement(path: String, namespace: String) extends Logging {
     }
   }
 
-  /**
-    * Checks whether this table only accepts appends. If so it will throw an error in operations that
-    * can remove data such as DELETE/UPDATE/MERGE.
+  /** Checks whether this table only accepts appends. If so it will throw an
+    * error in operations that can remove data such as DELETE/UPDATE/MERGE.
     */
   def assertRemovable(): Unit = {
     if (LakeSoulConfig.IS_APPEND_ONLY.fromTableInfo(snapshot.getTableInfo)) {
@@ -132,32 +149,46 @@ class SnapshotManagement(path: String, namespace: String) extends Logging {
 
 object SnapshotManagement {
 
-  /**
-    * We create only a single [[SnapshotManagement]] for any given path to avoid wasted work
-    * in reconstructing.
+  /** We create only a single [[SnapshotManagement]] for any given path to avoid
+    * wasted work in reconstructing.
     */
   private val snapshotManagementCache = {
     val expireMin = if (SparkSession.getActiveSession.isDefined) {
-      SparkSession.getActiveSession.get.conf.get(LakeSoulSQLConf.SNAPSHOT_CACHE_EXPIRE)
+      SparkSession.getActiveSession.get.conf
+        .get(LakeSoulSQLConf.SNAPSHOT_CACHE_EXPIRE)
     } else {
       LakeSoulSQLConf.SNAPSHOT_CACHE_EXPIRE.defaultValue.get
     }
-    val builder = CacheBuilder.newBuilder()
+    val builder = CacheBuilder
+      .newBuilder()
       .expireAfterWrite(expireMin, TimeUnit.MINUTES)
-      .removalListener((removalNotification: RemovalNotification[String, SnapshotManagement]) => {
-        val snapshotManagement = removalNotification.getValue
-        try snapshotManagement.snapshot catch {
-          case _: NullPointerException =>
-          // Various layers will throw null pointer if the RDD is already gone.
+      .removalListener(
+        (removalNotification: RemovalNotification[
+          String,
+          SnapshotManagement
+        ]) => {
+          val snapshotManagement = removalNotification.getValue
+          try snapshotManagement.snapshot
+          catch {
+            case _: NullPointerException =>
+            // Various layers will throw null pointer if the RDD is already gone.
+          }
         }
-      })
+      )
 
     builder.maximumSize(64).build[String, SnapshotManagement]()
   }
 
-  def forTable(spark: SparkSession, tableName: TableIdentifier): SnapshotManagement = {
+  def forTable(
+      spark: SparkSession,
+      tableName: TableIdentifier
+  ): SnapshotManagement = {
     val path = LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(tableName)
-    apply(new Path(path.getOrElse(SparkUtil.getDefaultTablePath(tableName).toUri.toString)))
+    apply(
+      new Path(
+        path.getOrElse(SparkUtil.getDefaultTablePath(tableName).toUri.toString)
+      )
+    )
   }
 
   def forTable(dataPath: File): SnapshotManagement = {
@@ -166,41 +197,70 @@ object SnapshotManagement {
 
   def apply(path: Path): SnapshotManagement = apply(path.toString)
 
-  def apply(path: Path, namespace: String): SnapshotManagement = apply(path.toString, namespace)
+  def apply(path: Path, namespace: String): SnapshotManagement =
+    apply(path.toString, namespace)
 
-  def apply(path: String): SnapshotManagement = apply(path, LakeSoulCatalog.showCurrentNamespace().mkString("."))
+  def apply(path: String): SnapshotManagement =
+    apply(path, LakeSoulCatalog.showCurrentNamespace().mkString("."))
 
-  def apply(path: String, namespace: String): SnapshotManagement = this.synchronized {
-    try {
-      val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toUri.toString
-      snapshotManagementCache.get(qualifiedPath, () => {
-        AnalysisHelper.allowInvokingTransformsInAnalyzer {
-          new SnapshotManagement(qualifiedPath, namespace)
-        }
-      })
-    } catch {
-      case e: com.google.common.util.concurrent.UncheckedExecutionException =>
-        throw e.getCause
+  def apply(path: String, namespace: String): SnapshotManagement =
+    this.synchronized {
+      try {
+        val qualifiedPath =
+          SparkUtil.makeQualifiedTablePath(new Path(path)).toUri.toString
+        snapshotManagementCache.get(
+          qualifiedPath,
+          () => {
+            AnalysisHelper.allowInvokingTransformsInAnalyzer {
+              new SnapshotManagement(qualifiedPath, namespace)
+            }
+          }
+        )
+      } catch {
+        case e: com.google.common.util.concurrent.UncheckedExecutionException =>
+          throw e.getCause
+      }
     }
-  }
 
-  //no cache just for snapshot
-  def apply(path: String, partitionDesc: String, partitionVersion: Long): SnapshotManagement = {
-    val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toUri.toString
+  // no cache just for snapshot
+  def apply(
+      path: String,
+      partitionDesc: String,
+      partitionVersion: Long
+  ): SnapshotManagement = {
+    val qualifiedPath =
+      SparkUtil.makeQualifiedTablePath(new Path(path)).toUri.toString
     if (LakeSoulSourceUtils.isLakeSoulTableExists(qualifiedPath)) {
       val sm = apply(qualifiedPath)
-      sm.updateSnapshotForVersion(partitionDesc, 0, partitionVersion, ReadType.SNAPSHOT_READ)
+      sm.updateSnapshotForVersion(
+        partitionDesc,
+        0,
+        partitionVersion,
+        ReadType.SNAPSHOT_READ
+      )
       apply(qualifiedPath)
     } else {
       throw new AnalysisException("table not exitst in the path;")
     }
   }
 
-  def apply(path: String, partitionDesc: String, startPartitionVersion: Long, endPartitionVersion: Long, readType: String): SnapshotManagement = {
-    val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toUri.toString
+  def apply(
+      path: String,
+      partitionDesc: String,
+      startPartitionVersion: Long,
+      endPartitionVersion: Long,
+      readType: String
+  ): SnapshotManagement = {
+    val qualifiedPath =
+      SparkUtil.makeQualifiedTablePath(new Path(path)).toUri.toString
     if (LakeSoulSourceUtils.isLakeSoulTableExists(qualifiedPath)) {
       val sm = apply(qualifiedPath)
-      sm.updateSnapshotForVersion(partitionDesc, startPartitionVersion, endPartitionVersion, readType)
+      sm.updateSnapshotForVersion(
+        partitionDesc,
+        startPartitionVersion,
+        endPartitionVersion,
+        readType
+      )
       apply(qualifiedPath)
     } else {
       throw new AnalysisException("table not exitst in the path;")
@@ -208,7 +268,8 @@ object SnapshotManagement {
   }
 
   def invalidateCache(path: String): Unit = {
-    val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toUri.toString
+    val qualifiedPath =
+      SparkUtil.makeQualifiedTablePath(new Path(path)).toUri.toString
     snapshotManagementCache.invalidate(qualifiedPath)
   }
 

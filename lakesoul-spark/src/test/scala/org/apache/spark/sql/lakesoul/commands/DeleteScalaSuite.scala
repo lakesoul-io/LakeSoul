@@ -10,7 +10,10 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.SnapshotManagement
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
-import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestSparkSession}
+import org.apache.spark.sql.lakesoul.test.{
+  LakeSoulSQLCommandTest,
+  LakeSoulTestSparkSession
+}
 import org.apache.spark.sql.test.TestSparkSession
 import org.apache.spark.sql.{Row, SparkSession, functions}
 import org.junit.runner.RunWith
@@ -22,7 +25,10 @@ class DeleteScalaSuite extends DeleteSuiteBase with LakeSoulSQLCommandTest {
   override protected def createSparkSession: TestSparkSession = {
     SparkSession.cleanupAnyExistingSession()
     val session = new LakeSoulTestSparkSession(sparkConf)
-    session.conf.set("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
+    session.conf.set(
+      "spark.sql.catalog.lakesoul",
+      classOf[LakeSoulCatalog].getName
+    )
     session.conf.set(SQLConf.DEFAULT_CATALOG.key, "lakesoul")
     session.conf.set(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, true)
     session.sparkContext.setLogLevel("ERROR")
@@ -33,8 +39,12 @@ class DeleteScalaSuite extends DeleteSuiteBase with LakeSoulSQLCommandTest {
   import testImplicits._
 
   test("delete cached table by path") {
-    Seq((2, 2), (1, 4)).toDF("key", "value")
-      .write.mode("overwrite").format("lakesoul").save(tempPath)
+    Seq((2, 2), (1, 4))
+      .toDF("key", "value")
+      .write
+      .mode("overwrite")
+      .format("lakesoul")
+      .save(tempPath)
     spark.read.format("lakesoul").load(tempPath).cache()
     spark.read.format("lakesoul").load(tempPath).collect()
     executeDelete(s"lakesoul.default.`$tempPath`", where = "key = 2")
@@ -62,7 +72,10 @@ class DeleteScalaSuite extends DeleteSuiteBase with LakeSoulSQLCommandTest {
     checkAnswer(readLakeSoulTable(tempPath), Row(3, 30) :: Row(4, 40) :: Nil)
   }
 
-  override protected def executeDelete(target: String, where: String = null): Unit = {
+  override protected def executeDelete(
+      target: String,
+      where: String = null
+  ): Unit = {
 
     def parse(tableNameWithAlias: String): (String, Option[String]) = {
       tableNameWithAlias.split(" ").toList match {
@@ -75,7 +88,9 @@ class DeleteScalaSuite extends DeleteSuiteBase with LakeSoulSQLCommandTest {
             tableName -> Some(alias)
           }
         case _ =>
-          fail(s"Could not build parse '$tableNameWithAlias' for table and optional alias")
+          fail(
+            s"Could not build parse '$tableNameWithAlias' for table and optional alias"
+          )
       }
     }
 
@@ -83,11 +98,14 @@ class DeleteScalaSuite extends DeleteSuiteBase with LakeSoulSQLCommandTest {
       val (tableNameOrPath, optionalAlias) = parse(target)
       val isPath: Boolean = tableNameOrPath.startsWith("lakesoul.")
       val table = if (isPath) {
-        val path = tableNameOrPath.stripPrefix("lakesoul.default.`").stripSuffix("`")
+        val path =
+          tableNameOrPath.stripPrefix("lakesoul.default.`").stripSuffix("`")
         lakesoul.tables.LakeSoulTable.forPath(spark, path)
       } else {
-        LakeSoulTableTestUtils.createTable(spark.table(tableNameOrPath),
-          SnapshotManagement(tableNameOrPath))
+        LakeSoulTableTestUtils.createTable(
+          spark.table(tableNameOrPath),
+          SnapshotManagement(tableNameOrPath)
+        )
       }
       optionalAlias.map(table.as).getOrElse(table)
     }

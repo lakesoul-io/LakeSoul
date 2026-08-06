@@ -4,6 +4,8 @@
 
 package org.apache.spark.sql.arrow;
 
+import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_NON_PARTITION_TABLE_PART_DESC;
+
 import com.dmetasoul.lakesoul.LakeSoulArrowReader;
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOReader;
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOWriter;
@@ -11,6 +13,7 @@ import com.dmetasoul.lakesoul.lakesoul.io.NativeIOWriter.FlushResult;
 import com.dmetasoul.lakesoul.meta.BucketingUtils;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.MetaUtils;
+
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
@@ -27,6 +30,7 @@ import org.apache.spark.sql.vectorized.NativeIOOptions;
 import org.apache.spark.sql.vectorized.NativeIOUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 import scala.Option;
 import scala.collection.JavaConverters;
 
@@ -34,9 +38,6 @@ import java.io.IOException;
 import java.io.Serializable;
 import java.util.*;
 import java.util.stream.Collectors;
-
-
-import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_NON_PARTITION_TABLE_PART_DESC;
 
 public class CompactBucketIO implements AutoCloseable, Serializable {
 
@@ -78,10 +79,17 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
     private final long taskId;
     private long beginTime;
 
-    public CompactBucketIO(Configuration conf, List<CompressDataFileInfo> fileInfo, TableInfo tableInfo,
-                           String tablePath, String metaPartitionExpr,
-                           int tableHashBucketNum, int readFileNumLimit, long batchIncrementalFileSizeLimit,
-                           boolean tableHashBucketNumChanged, long taskId)
+    public CompactBucketIO(
+            Configuration conf,
+            List<CompressDataFileInfo> fileInfo,
+            TableInfo tableInfo,
+            String tablePath,
+            String metaPartitionExpr,
+            int tableHashBucketNum,
+            int readFileNumLimit,
+            long batchIncrementalFileSizeLimit,
+            boolean tableHashBucketNumChanged,
+            long taskId)
             throws IOException {
 
         this.conf = conf;
@@ -91,47 +99,97 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
         this.primaryKeys = JavaConverters.seqAsJavaList(tableInfo.hash_partition_columns().toSeq());
         this.hashBucketNum = tableHashBucketNum;
         if (StringUtils.isNotBlank(tableInfo.range_column())) {
-            this.rangeColumns = Arrays.stream(tableInfo.range_column().split(",")).collect(Collectors.toList());
+            this.rangeColumns =
+                    Arrays.stream(tableInfo.range_column().split(",")).collect(Collectors.toList());
         } else {
             this.rangeColumns = Collections.emptyList();
         }
         if (!this.rangeColumns.isEmpty()) {
-            List<Field> partitionFields = rangeColumns.stream().map(schema::findField).collect(Collectors.toList());
+            List<Field> partitionFields =
+                    rangeColumns.stream().map(schema::findField).collect(Collectors.toList());
             this.partitionSchema = new Schema(partitionFields);
         }
-        this.nativeIOOptions = NativeIOUtils.getNativeIOOptions(conf, new Path(this.fileInfo.get(0).getFilePath()));
+        this.nativeIOOptions =
+                NativeIOUtils.getNativeIOOptions(
+                        conf, new Path(this.fileInfo.get(0).getFilePath()));
 
-        this.maxRowGroupRows = conf.getInt(LakeSoulSQLConf.NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE().key(),
-                (int) LakeSoulSQLConf.NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE().defaultValue().get());
-        this.batchSize = conf.getInt(SQLConf$.MODULE$.PARQUET_VECTORIZED_READER_BATCH_SIZE().key(), 2048);
+        this.maxRowGroupRows =
+                conf.getInt(
+                        LakeSoulSQLConf.NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE().key(),
+                        (int)
+                                LakeSoulSQLConf.NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE()
+                                        .defaultValue()
+                                        .get());
+        this.batchSize =
+                conf.getInt(SQLConf$.MODULE$.PARQUET_VECTORIZED_READER_BATCH_SIZE().key(), 2048);
         this.tablePath = tablePath;
 
-        this.compactLevel0ExistedFileNumLimit = conf.getInt(LakeSoulSQLConf.COMPACTION_MAX_LEVEL0_FILE_NUM_LIMIT().key(),
-                (int) LakeSoulSQLConf.COMPACTION_MAX_LEVEL0_FILE_NUM_LIMIT().defaultValue().get());
-        this.compactLevelExistedFileNumLimit = conf.getInt(LakeSoulSQLConf.COMPACTION_MAX_LEVEL_FILE_NUM_LIMIT().key(),
-                (int) LakeSoulSQLConf.COMPACTION_MAX_LEVEL_FILE_NUM_LIMIT().defaultValue().get());
+        this.compactLevel0ExistedFileNumLimit =
+                conf.getInt(
+                        LakeSoulSQLConf.COMPACTION_MAX_LEVEL0_FILE_NUM_LIMIT().key(),
+                        (int)
+                                LakeSoulSQLConf.COMPACTION_MAX_LEVEL0_FILE_NUM_LIMIT()
+                                        .defaultValue()
+                                        .get());
+        this.compactLevelExistedFileNumLimit =
+                conf.getInt(
+                        LakeSoulSQLConf.COMPACTION_MAX_LEVEL_FILE_NUM_LIMIT().key(),
+                        (int)
+                                LakeSoulSQLConf.COMPACTION_MAX_LEVEL_FILE_NUM_LIMIT()
+                                        .defaultValue()
+                                        .get());
 
         this.compactLevelMergeFileSizeLimit =
-                DBUtil.parseMemoryExpression(conf.get(LakeSoulSQLConf.COMPACTION_LEVEL_FILE_MERGE_SIZE_LIMIT().key(),
-                        LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE().defaultValue().get()));
-        this.compactLevelMergeFileNumLimit = conf.getInt(LakeSoulSQLConf.COMPACTION_LEVEL_FILE_MERGE_NUM_LIMIT().key(),
-                (int) LakeSoulSQLConf.COMPACTION_LEVEL_FILE_MERGE_NUM_LIMIT().defaultValue().get());
+                DBUtil.parseMemoryExpression(
+                        conf.get(
+                                LakeSoulSQLConf.COMPACTION_LEVEL_FILE_MERGE_SIZE_LIMIT().key(),
+                                LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE()
+                                        .defaultValue()
+                                        .get()));
+        this.compactLevelMergeFileNumLimit =
+                conf.getInt(
+                        LakeSoulSQLConf.COMPACTION_LEVEL_FILE_MERGE_NUM_LIMIT().key(),
+                        (int)
+                                LakeSoulSQLConf.COMPACTION_LEVEL_FILE_MERGE_NUM_LIMIT()
+                                        .defaultValue()
+                                        .get());
         this.compactionReadFileMaxSize =
-                DBUtil.parseMemoryExpression(conf.get(LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE().key(),
-                        LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE().defaultValue().get()));
+                DBUtil.parseMemoryExpression(
+                        conf.get(
+                                LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE().key(),
+                                LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE()
+                                        .defaultValue()
+                                        .get()));
 
-        this.maxNumLevelLimit = conf.getInt(LakeSoulSQLConf.MAX_NUM_LEVELS_LIMIT().key(),
-                (int) LakeSoulSQLConf.MAX_NUM_LEVELS_LIMIT().defaultValue().get());
-        this.maxBytesForLevelBase = DBUtil.parseMemoryExpression(conf.get(LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LEVEL_BASE().key(),
-                LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LEVEL_BASE().defaultValue().get()));
-        this.maxBytesForLowLevelMultiplier = conf.getInt(LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LOW_LEVEL_MULTIPLIER().key(),
-                (int) LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LOW_LEVEL_MULTIPLIER().defaultValue().get());
-        this.maxBytesForLevelMultiplier = conf.getInt(LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LEVEL_MULTIPLIER().key(),
-                (int) LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LEVEL_MULTIPLIER().defaultValue().get());
-
+        this.maxNumLevelLimit =
+                conf.getInt(
+                        LakeSoulSQLConf.MAX_NUM_LEVELS_LIMIT().key(),
+                        (int) LakeSoulSQLConf.MAX_NUM_LEVELS_LIMIT().defaultValue().get());
+        this.maxBytesForLevelBase =
+                DBUtil.parseMemoryExpression(
+                        conf.get(
+                                LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LEVEL_BASE().key(),
+                                LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LEVEL_BASE()
+                                        .defaultValue()
+                                        .get()));
+        this.maxBytesForLowLevelMultiplier =
+                conf.getInt(
+                        LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LOW_LEVEL_MULTIPLIER().key(),
+                        (int)
+                                LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LOW_LEVEL_MULTIPLIER()
+                                        .defaultValue()
+                                        .get());
+        this.maxBytesForLevelMultiplier =
+                conf.getInt(
+                        LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LEVEL_MULTIPLIER().key(),
+                        (int)
+                                LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LEVEL_MULTIPLIER()
+                                        .defaultValue()
+                                        .get());
 
         this.readFileNumLimit = readFileNumLimit;
-        this.batchIncrementalFileSizeLimit = Math.min(batchIncrementalFileSizeLimit, compactionReadFileMaxSize);
+        this.batchIncrementalFileSizeLimit =
+                Math.min(batchIncrementalFileSizeLimit, compactionReadFileMaxSize);
         this.tableHashBucketNumChanged = tableHashBucketNumChanged;
         this.taskId = taskId;
 
@@ -149,10 +207,10 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
         if (this.primaryKeys != null) {
             nativeIOReader.setPrimaryKeys(this.primaryKeys);
         }
-        scala.collection.immutable.Map<String, String> partitionMapFromKey = MetaUtils.getPartitionMapFromKey(
-                metaPartitionExpr);
-        for (Map.Entry<String, String> entry : JavaConverters.mapAsJavaMapConverter(partitionMapFromKey).asJava()
-                .entrySet()) {
+        scala.collection.immutable.Map<String, String> partitionMapFromKey =
+                MetaUtils.getPartitionMapFromKey(metaPartitionExpr);
+        for (Map.Entry<String, String> entry :
+                JavaConverters.mapAsJavaMapConverter(partitionMapFromKey).asJava().entrySet()) {
             nativeIOReader.setDefaultColumnValue(entry.getKey(), entry.getValue());
         }
         if (this.partitionSchema != null) {
@@ -163,14 +221,20 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
 
         nativeIOReader.initializeReader();
         lakesoulArrowReader = new LakeSoulArrowReader(this.nativeIOReader, 10000);
-        LOG.info("Task {}, Initialized compaction reader for table {}, pk {}, files {}, partitions {}, batch {}",
-                taskId, tablePath, primaryKeys, filePath, partitionSchema, batchSize);
+        LOG.info(
+                "Task {}, Initialized compaction reader for table {}, pk {}, files {}, partitions"
+                        + " {}, batch {}",
+                taskId,
+                tablePath,
+                primaryKeys,
+                filePath,
+                partitionSchema,
+                batchSize);
     }
 
     private void initializeWriter(String outPath) throws IOException {
         nativeWriter = new NativeIOWriter(this.schema);
         nativeWriter.setRowGroupRowNumber(this.maxRowGroupRows);
-
 
         nativeWriter.setHashBucketNum(this.hashBucketNum);
         if (this.tableHashBucketNumChanged) {
@@ -180,15 +244,18 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
             nativeWriter.withPrefix(outPath);
         } else {
             if (!this.metaPartitionExpr.equals(LAKESOUL_NON_PARTITION_TABLE_PART_DESC)) {
-                nativeWriter.withPrefix(String.format("%s/%s", outPath, metaPartitionExpr.replace(",", "/")));
+                nativeWriter.withPrefix(
+                        String.format("%s/%s", outPath, metaPartitionExpr.replace(",", "/")));
             } else {
                 nativeWriter.withPrefix(outPath);
             }
-            Option<Object> hashBucketId = BucketingUtils.getBucketId(this.fileInfo.get(0).getFilePath());
+            Option<Object> hashBucketId =
+                    BucketingUtils.getBucketId(this.fileInfo.get(0).getFilePath());
             if (hashBucketId.isEmpty()) {
                 nativeWriter.setOption(LakeSoulFileWriter.HASH_BUCKET_ID_KEY(), "0");
             } else {
-                nativeWriter.setOption(LakeSoulFileWriter.HASH_BUCKET_ID_KEY(),
+                nativeWriter.setOption(
+                        LakeSoulFileWriter.HASH_BUCKET_ID_KEY(),
                         String.valueOf(hashBucketId.get()));
             }
         }
@@ -197,8 +264,13 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
 
         NativeIOUtils.setNativeIOOptions(nativeWriter, this.nativeIOOptions);
         nativeWriter.initializeWriter();
-        LOG.info("Task {}, Initialized compaction writer for table {}, outPath {}, pks {}, range {}",
-                taskId, tablePath, outPath, primaryKeys, rangeColumns);
+        LOG.info(
+                "Task {}, Initialized compaction writer for table {}, outPath {}, pks {}, range {}",
+                taskId,
+                tablePath,
+                outPath,
+                primaryKeys,
+                rangeColumns);
     }
 
     private HashMap<String, List<FlushResult>> readAndWrite() throws Exception {
@@ -224,15 +296,23 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
         for (CompressDataFileInfo fileInfo : fileList) {
             if (fileInfo.getFilePath().contains(COMPACT_DIR)) {
                 int index = fileInfo.getFilePath().indexOf(COMPACT_DIR);
-                String levelPath = fileInfo.getFilePath().substring(index, index + COMPACT_DIR.length() + 1);
-                this.levelFileMap.computeIfAbsent(levelPath, COMPACT_FILE -> new ArrayList<>()).add(fileInfo);
+                String levelPath =
+                        fileInfo.getFilePath().substring(index, index + COMPACT_DIR.length() + 1);
+                this.levelFileMap
+                        .computeIfAbsent(levelPath, COMPACT_FILE -> new ArrayList<>())
+                        .add(fileInfo);
             } else {
-                this.levelFileMap.computeIfAbsent(INCREMENTAL_FILE, INCREMENTAL_FILE -> new ArrayList<>())
+                this.levelFileMap
+                        .computeIfAbsent(INCREMENTAL_FILE, INCREMENTAL_FILE -> new ArrayList<>())
                         .add(fileInfo);
             }
         }
-        LOG.info("Task {}, Initialized level file for table {}, files {}, levelFileMap {}",
-                taskId, tablePath, fileList, levelFileMap);
+        LOG.info(
+                "Task {}, Initialized level file for table {}, files {}, levelFileMap {}",
+                taskId,
+                tablePath,
+                fileList,
+                levelFileMap);
     }
 
     private List<CompressDataFileInfo> getCompactFileListByLevel(int level) {
@@ -250,24 +330,40 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
             levelFileSize += fileInfo.getFileSize();
             count++;
         }
-	boolean res = count >= this.compactLevelExistedFileNumLimit;
-	long currentLevelMaxBytes = 0;
-	if(LOW_LEVEL_LIST.contains(level)) {
-	    currentLevelMaxBytes =  Math.round(this.maxBytesForLevelBase * Math.pow(this.maxBytesForLowLevelMultiplier, level - 1));	
-	}else {
-            int lowLevel = LOW_LEVEL_LIST.size();		
-            long lowLevelMaxBytes = Math.round(this.maxBytesForLevelBase * Math.pow(this.maxBytesForLowLevelMultiplier, lowLevel - 1));
-	    currentLevelMaxBytes = Math.round(lowLevelMaxBytes * Math.pow(this.maxBytesForLevelMultiplier, level - lowLevel ));		
-	}
-        res |= (levelFileSize >= currentLevelMaxBytes);		
+        boolean res = count >= this.compactLevelExistedFileNumLimit;
+        long currentLevelMaxBytes = 0;
+        if (LOW_LEVEL_LIST.contains(level)) {
+            currentLevelMaxBytes =
+                    Math.round(
+                            this.maxBytesForLevelBase
+                                    * Math.pow(this.maxBytesForLowLevelMultiplier, level - 1));
+        } else {
+            int lowLevel = LOW_LEVEL_LIST.size();
+            long lowLevelMaxBytes =
+                    Math.round(
+                            this.maxBytesForLevelBase
+                                    * Math.pow(this.maxBytesForLowLevelMultiplier, lowLevel - 1));
+            currentLevelMaxBytes =
+                    Math.round(
+                            lowLevelMaxBytes
+                                    * Math.pow(this.maxBytesForLevelMultiplier, level - lowLevel));
+        }
+        res |= (levelFileSize >= currentLevelMaxBytes);
         if (res) {
-            LOG.info("Task {}, Compact Level {}, Level File Size Limit {} MB, Now Total File Size {} MB, File Num {} ",
-                    taskId, level, currentLevelMaxBytes / 1024.0 / 1024, levelFileSize / 1024.0 / 1024, count);
+            LOG.info(
+                    "Task {}, Compact Level {}, Level File Size Limit {} MB, Now Total File Size {}"
+                            + " MB, File Num {} ",
+                    taskId,
+                    level,
+                    currentLevelMaxBytes / 1024.0 / 1024,
+                    levelFileSize / 1024.0 / 1024,
+                    count);
         }
         return res;
     }
 
-    private CompressDataFileInfo moveFileToLevel(CompressDataFileInfo fileInfo, int sourceLevel, int pickLevel) throws Exception {
+    private CompressDataFileInfo moveFileToLevel(
+            CompressDataFileInfo fileInfo, int sourceLevel, int pickLevel) throws Exception {
 
         long fileSize = fileInfo.getFileSize();
         String fileExistCols = fileInfo.getFileExistCols();
@@ -287,7 +383,12 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
         String fileName = sourcePath.substring(prefixPath.length());
         String targetPath = String.format("%s/%s", targetDir, fileName);
 
-        LOG.info("Task {}, MOVE Level {} fileName {} to Level {}", taskId, sourceLevel, fileName, pickLevel);
+        LOG.info(
+                "Task {}, MOVE Level {} fileName {} to Level {}",
+                taskId,
+                sourceLevel,
+                fileName,
+                pickLevel);
         Path path = new Path(targetDir);
         FileSystem fileSystem = path.getFileSystem(conf);
         if (!fileSystem.exists(path)) {
@@ -296,7 +397,8 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
         }
         fileSystem.rename(new Path(fileInfo.getFilePath()), new Path(targetPath));
         FileStatus fileStatus = fileSystem.getFileStatus(new Path(targetPath));
-        return new CompressDataFileInfo(targetPath, fileSize, fileExistCols, fileStatus.getModificationTime());
+        return new CompressDataFileInfo(
+                targetPath, fileSize, fileExistCols, fileStatus.getModificationTime());
     }
 
     public HashMap<String, List<CompressDataFileInfo>> startCompactTask() throws Exception {
@@ -326,11 +428,16 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
                 HashMap<String, List<FlushResult>> outFile = readAndWrite();
                 this.close();
                 if (outFile == null || outFile.isEmpty()) {
-                    LOG.info("change tableHashBucketNum task: compaction task read file list is {}", batchFileList);
-                    LOG.info("change tableHashBucketNum task: after compaction out file info: {}", outFile);
+                    LOG.info(
+                            "change tableHashBucketNum task: compaction task read file list is {}",
+                            batchFileList);
+                    LOG.info(
+                            "change tableHashBucketNum task: after compaction out file info: {}",
+                            outFile);
                     throw new IllegalStateException(
-                            "change tableHashBucketNum task: after compaction, without out file info, read file list is: " +
-                                    batchFileList);
+                            "change tableHashBucketNum task: after compaction, without out file"
+                                    + " info, read file list is: "
+                                    + batchFileList);
                 }
                 for (Map.Entry<String, List<FlushResult>> entry : outFile.entrySet()) {
                     resultList.addAll(changeFlushFileToCompressDataFileInfo(entry.getValue()));
@@ -347,23 +454,29 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
             boolean L0Compacted = false;
             if (levelFileMap.containsKey(INCREMENTAL_FILE)) {
                 List<CompressDataFileInfo> totalIncreFileList = levelFileMap.get(INCREMENTAL_FILE);
-                boolean ignoreNotExist = conf.getBoolean(LakeSoulSQLConf.COMPACTION_IGNORE_NOT_EXIST_FILE().key(), false);
+                boolean ignoreNotExist =
+                        conf.getBoolean(
+                                LakeSoulSQLConf.COMPACTION_IGNORE_NOT_EXIST_FILE().key(), false);
                 if (ignoreNotExist) {
                     CompressDataFileInfo path = totalIncreFileList.get(0);
                     Path p = new Path(path.getFilePath());
                     FileSystem fs = p.getFileSystem(conf);
-                    totalIncreFileList.removeIf(f -> {
-                        Path file = new Path(f.getFilePath());
-                        try {
-                            boolean exist = fs.exists(file);
-                            if (!exist) {
-                                LOG.warn("File {} does not exist during compaction for {}", file, tablePath);
-                            }
-                            return !exist;
-                        } catch (IOException e) {
-                            throw new RuntimeException(e);
-                        }
-                    });
+                    totalIncreFileList.removeIf(
+                            f -> {
+                                Path file = new Path(f.getFilePath());
+                                try {
+                                    boolean exist = fs.exists(file);
+                                    if (!exist) {
+                                        LOG.warn(
+                                                "File {} does not exist during compaction for {}",
+                                                file,
+                                                tablePath);
+                                    }
+                                    return !exist;
+                                } catch (IOException e) {
+                                    throw new RuntimeException(e);
+                                }
+                            });
                 }
                 if (totalIncreFileList.isEmpty()) {
                     LOG.warn("No file to compact {}, return empty map", tablePath);
@@ -375,7 +488,8 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
                     while (index < totalIncreFileList.size()) {
                         long batchFileSize = 0;
                         List<CompressDataFileInfo> batchFileList = new ArrayList<>();
-                        while (index < totalIncreFileList.size() && batchFileList.size() < readFileNumLimit) {
+                        while (index < totalIncreFileList.size()
+                                && batchFileList.size() < readFileNumLimit) {
                             CompressDataFileInfo curFile = totalIncreFileList.get(index);
                             batchFileList.add(curFile);
                             discardInfoList.add(curFile);
@@ -391,15 +505,25 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
                         HashMap<String, List<FlushResult>> outFile = readAndWrite();
                         this.close();
                         if (outFile == null || outFile.isEmpty()) {
-                            LOG.info("incremental level compaction task: read file list is {}", batchFileList);
-                            LOG.info("incremental level compaction task: after compaction out file info: {}", outFile);
+                            LOG.info(
+                                    "incremental level compaction task: read file list is {}",
+                                    batchFileList);
+                            LOG.info(
+                                    "incremental level compaction task: after compaction out file"
+                                            + " info: {}",
+                                    outFile);
                             throw new IllegalStateException(
-                                    "incremental level compaction task: after compaction, without out file info, read file list is: " +
-                                            batchFileList);
+                                    "incremental level compaction task: after compaction, without"
+                                            + " out file info, read file list is: "
+                                            + batchFileList);
                         }
                         for (Map.Entry<String, List<FlushResult>> entry : outFile.entrySet()) {
-                            levelFileMap.computeIfAbsent(COMPACT_DIR + 1, COMPACT_DIR -> new ArrayList<>())
-                                    .addAll(changeFlushFileToCompressDataFileInfo(entry.getValue()));
+                            levelFileMap
+                                    .computeIfAbsent(
+                                            COMPACT_DIR + 1, COMPACT_DIR -> new ArrayList<>())
+                                    .addAll(
+                                            changeFlushFileToCompressDataFileInfo(
+                                                    entry.getValue()));
                         }
                     }
                 }
@@ -415,89 +539,156 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
                     List<CompressDataFileInfo> curMergeList = new ArrayList<>();
                     while (index < oriCompactFileList.size()) {
                         CompressDataFileInfo curFile = oriCompactFileList.get(index);
-                        if (curFile.getFileSize() < compactionReadFileMaxSize ||
-                                !curMergeList.isEmpty()) {
+                        if (curFile.getFileSize() < compactionReadFileMaxSize
+                                || !curMergeList.isEmpty()) {
                             fileSize += curFile.getFileSize();
                             curMergeList.add(curFile);
                             discardFileList.add(curFile);
                         } else {
-                            mergedlevelFileMap.computeIfAbsent(level, COMPACT_DIR -> new ArrayList<>()).add(curFile);
-			}
-                        if (curMergeList.size() >= compactLevelMergeFileNumLimit || fileSize >= this.compactLevelMergeFileSizeLimit) {
-                            LOG.info("Task {}, Compacting Level {} existed compact files, curMergeList {}, size {}",
-                                    taskId, level, curMergeList, fileSize);
+                            mergedlevelFileMap
+                                    .computeIfAbsent(level, COMPACT_DIR -> new ArrayList<>())
+                                    .add(curFile);
+                        }
+                        if (curMergeList.size() >= compactLevelMergeFileNumLimit
+                                || fileSize >= this.compactLevelMergeFileSizeLimit) {
+                            LOG.info(
+                                    "Task {}, Compacting Level {} existed compact files,"
+                                            + " curMergeList {}, size {}",
+                                    taskId,
+                                    level,
+                                    curMergeList,
+                                    fileSize);
                             int pickLevel = level;
-                            if(curMergeList.size() != 1) {
+                            if (curMergeList.size() != 1) {
                                 initializeReader(curMergeList);
-                            	initializeWriter(String.format("%s/%s%d", this.tablePath, COMPACT_DIR, pickLevel));
-                            	HashMap<String, List<FlushResult>> outFile = readAndWrite();
-                            	this.close();
-                            	if (outFile == null || outFile.isEmpty()) {
-                                	LOG.info("COMPACT_DIR level compaction task: read file list is {}", curMergeList);
-                                	LOG.info("COMPACT_DIR level compaction task: after compaction out file info: {}", outFile);
-                                	throw new IllegalStateException(
-                                        	"COMPACT_DIR level compaction task: after compaction, without out file info, read file list is: " +
-                                                	curMergeList);
-                            	}
+                                initializeWriter(
+                                        String.format(
+                                                "%s/%s%d", this.tablePath, COMPACT_DIR, pickLevel));
+                                HashMap<String, List<FlushResult>> outFile = readAndWrite();
+                                this.close();
+                                if (outFile == null || outFile.isEmpty()) {
+                                    LOG.info(
+                                            "COMPACT_DIR level compaction task: read file list is"
+                                                    + " {}",
+                                            curMergeList);
+                                    LOG.info(
+                                            "COMPACT_DIR level compaction task: after compaction"
+                                                    + " out file info: {}",
+                                            outFile);
+                                    throw new IllegalStateException(
+                                            "COMPACT_DIR level compaction task: after compaction,"
+                                                    + " without out file info, read file list is: "
+                                                    + curMergeList);
+                                }
 
-                            	for (Map.Entry<String, List<FlushResult>> entry : outFile.entrySet()) {
-                                    mergedlevelFileMap.computeIfAbsent(pickLevel, COMPACT_DIR -> new ArrayList<>())
-                                            		.addAll(changeFlushFileToCompressDataFileInfo(entry.getValue()));
-                            	}
-			    }else {
-                                mergedlevelFileMap.computeIfAbsent(level, COMPACT_DIR -> new ArrayList<>()).add(curFile);
-			    }
+                                for (Map.Entry<String, List<FlushResult>> entry :
+                                        outFile.entrySet()) {
+                                    mergedlevelFileMap
+                                            .computeIfAbsent(
+                                                    pickLevel, COMPACT_DIR -> new ArrayList<>())
+                                            .addAll(
+                                                    changeFlushFileToCompressDataFileInfo(
+                                                            entry.getValue()));
+                                }
+                            } else {
+                                mergedlevelFileMap
+                                        .computeIfAbsent(level, COMPACT_DIR -> new ArrayList<>())
+                                        .add(curFile);
+                            }
                             curMergeList.clear();
                             fileSize = 0L;
                         }
                         index++;
                     }
                     if (!curMergeList.isEmpty()) {
-                        mergedlevelFileMap.computeIfAbsent(level, value -> new ArrayList<>()).addAll(curMergeList);
+                        mergedlevelFileMap
+                                .computeIfAbsent(level, value -> new ArrayList<>())
+                                .addAll(curMergeList);
                         discardFileList.removeAll(curMergeList);
                     }
-                }else {
+                } else {
                     if (oriCompactFileList != null) {
-                        mergedlevelFileMap.computeIfAbsent(level, value -> new ArrayList<>()).addAll(oriCompactFileList);
+                        mergedlevelFileMap
+                                .computeIfAbsent(level, value -> new ArrayList<>())
+                                .addAll(oriCompactFileList);
                     }
                 }
                 ArrayList<CompressDataFileInfo> mergedFileList = mergedlevelFileMap.get(level);
-                //check file size
-                if (mergedFileList != null && !mergedFileList.isEmpty() && level != this.maxNumLevelLimit) {
-                    long pickNextLevelMinFileSize = DBUtil.parseMemoryExpression(conf.get(LakeSoulSQLConf.COMPACTION_PICK_NEXT_LEVEL_MIN_FILE_SIZE().key(), LakeSoulSQLConf.COMPACTION_PICK_NEXT_LEVEL_MIN_FILE_SIZE().defaultValue().get()));
+                // check file size
+                if (mergedFileList != null
+                        && !mergedFileList.isEmpty()
+                        && level != this.maxNumLevelLimit) {
+                    long pickNextLevelMinFileSize =
+                            DBUtil.parseMemoryExpression(
+                                    conf.get(
+                                            LakeSoulSQLConf
+                                                    .COMPACTION_PICK_NEXT_LEVEL_MIN_FILE_SIZE()
+                                                    .key(),
+                                            LakeSoulSQLConf
+                                                    .COMPACTION_PICK_NEXT_LEVEL_MIN_FILE_SIZE()
+                                                    .defaultValue()
+                                                    .get()));
 
-                    int pickNextLevelMinFileSizeMultiplier = conf.getInt(LakeSoulSQLConf.COMPACTION_PICK_NEXT_LEVEL_MIN_FILE_SIZE_MULTIPLIER().key(), (int) LakeSoulSQLConf.COMPACTION_PICK_NEXT_LEVEL_MIN_FILE_SIZE_MULTIPLIER().defaultValue().get());
-                    long thisLevelPickNextlevelMinFileSize = Math.round(pickNextLevelMinFileSize * Math.pow(pickNextLevelMinFileSizeMultiplier, level - 1));
-                    LOG.info("Level {} File Num {}, FileList {} thisLevelPickNextlevelMinFileSize {}", level, mergedFileList.size(), mergedFileList, thisLevelPickNextlevelMinFileSize);
+                    int pickNextLevelMinFileSizeMultiplier =
+                            conf.getInt(
+                                    LakeSoulSQLConf
+                                            .COMPACTION_PICK_NEXT_LEVEL_MIN_FILE_SIZE_MULTIPLIER()
+                                            .key(),
+                                    (int)
+                                            LakeSoulSQLConf
+                                                    .COMPACTION_PICK_NEXT_LEVEL_MIN_FILE_SIZE_MULTIPLIER()
+                                                    .defaultValue()
+                                                    .get());
+                    long thisLevelPickNextlevelMinFileSize =
+                            Math.round(
+                                    pickNextLevelMinFileSize
+                                            * Math.pow(
+                                                    pickNextLevelMinFileSizeMultiplier, level - 1));
+                    LOG.info(
+                            "Level {} File Num {}, FileList {} thisLevelPickNextlevelMinFileSize"
+                                    + " {}",
+                            level,
+                            mergedFileList.size(),
+                            mergedFileList,
+                            thisLevelPickNextlevelMinFileSize);
                     Iterator<CompressDataFileInfo> iterator = mergedFileList.iterator();
                     while (iterator.hasNext()) {
-                        CompressDataFileInfo fileInfo = iterator.next();			    
+                        CompressDataFileInfo fileInfo = iterator.next();
                         if (fileInfo.getFileSize() < thisLevelPickNextlevelMinFileSize) {
                             break;
                         } else {
                             int pickLevel = level + 1;
-                            LOG.info("fileName {} fileSize {} MOVE to Level {}", fileInfo.getFilePath(), fileInfo.getFileSize(), pickLevel);
+                            LOG.info(
+                                    "fileName {} fileSize {} MOVE to Level {}",
+                                    fileInfo.getFilePath(),
+                                    fileInfo.getFileSize(),
+                                    pickLevel);
                             discardFileList.remove(fileInfo);
                             iterator.remove();
-                            CompressDataFileInfo newFileInfo = moveFileToLevel(fileInfo, level, pickLevel);
-                            levelFileMap.computeIfAbsent(COMPACT_DIR + pickLevel, COMPACT_DIR -> new ArrayList<>()).add(newFileInfo);
+                            CompressDataFileInfo newFileInfo =
+                                    moveFileToLevel(fileInfo, level, pickLevel);
+                            levelFileMap
+                                    .computeIfAbsent(
+                                            COMPACT_DIR + pickLevel,
+                                            COMPACT_DIR -> new ArrayList<>())
+                                    .add(newFileInfo);
                         }
-
                     }
                 }
                 discardInfoList.addAll(discardFileList);
-
             }
 
             for (int level = this.maxNumLevelLimit; level >= 1; --level) {
-            	List<CompressDataFileInfo> compactedFileList = mergedlevelFileMap.get(level);
+                List<CompressDataFileInfo> compactedFileList = mergedlevelFileMap.get(level);
                 if (compactedFileList != null) {
-            		rsMap.computeIfAbsent(this.metaPartitionExpr, value -> new ArrayList<>()).addAll(compactedFileList);
+                    rsMap.computeIfAbsent(this.metaPartitionExpr, value -> new ArrayList<>())
+                            .addAll(compactedFileList);
                 }
             }
             if (!L0Compacted && levelFileMap.containsKey(INCREMENTAL_FILE)) {
                 List<CompressDataFileInfo> totalIncreFileList = levelFileMap.get(INCREMENTAL_FILE);
-                rsMap.computeIfAbsent(this.metaPartitionExpr, value -> new ArrayList<>()).addAll(totalIncreFileList);
+                rsMap.computeIfAbsent(this.metaPartitionExpr, value -> new ArrayList<>())
+                        .addAll(totalIncreFileList);
             }
         }
         rsMap.put(DISCARD_FILE_LIST_KEY, discardInfoList);
@@ -506,24 +697,30 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
         return rsMap;
     }
 
-    private List<CompressDataFileInfo> changeFlushFileToCompressDataFileInfo(List<FlushResult> flushResultList) {
+    private List<CompressDataFileInfo> changeFlushFileToCompressDataFileInfo(
+            List<FlushResult> flushResultList) {
         List<CompressDataFileInfo> compressDataFileInfoList = new ArrayList<>();
-        flushResultList.forEach(file -> {
-            String filePath = file.getFilePath();
-            Path path = new Path(file.getFilePath());
-            String fileExistCols = file.getFileExistCols();
-            if (fileExistCols.startsWith("arrow_schema,")) {
-                fileExistCols = fileExistCols.replace("arrow_schema,", "");
-            }
-            try {
-                FileSystem fileSystem = path.getFileSystem(conf);
-                FileStatus fileStatus = fileSystem.getFileStatus(path);
-                compressDataFileInfoList.add(new CompressDataFileInfo(filePath, fileStatus.getLen(), fileExistCols,
-                        fileStatus.getModificationTime()));
-            } catch (IOException e) {
-                throw new RuntimeException(e);
-            }
-        });
+        flushResultList.forEach(
+                file -> {
+                    String filePath = file.getFilePath();
+                    Path path = new Path(file.getFilePath());
+                    String fileExistCols = file.getFileExistCols();
+                    if (fileExistCols.startsWith("arrow_schema,")) {
+                        fileExistCols = fileExistCols.replace("arrow_schema,", "");
+                    }
+                    try {
+                        FileSystem fileSystem = path.getFileSystem(conf);
+                        FileStatus fileStatus = fileSystem.getFileStatus(path);
+                        compressDataFileInfoList.add(
+                                new CompressDataFileInfo(
+                                        filePath,
+                                        fileStatus.getLen(),
+                                        fileExistCols,
+                                        fileStatus.getModificationTime()));
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
+                    }
+                });
         LOG.info("Task {}, Finished compact file list {}", taskId, compressDataFileInfoList);
         return compressDataFileInfoList;
     }

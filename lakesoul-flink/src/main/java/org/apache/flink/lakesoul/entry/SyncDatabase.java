@@ -4,22 +4,27 @@
 
 package org.apache.flink.lakesoul.entry;
 
+import static org.apache.flink.lakesoul.tool.JobOptions.JOB_CHECKPOINT_INTERVAL;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkDatabasesOptions.*;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkDatabasesOptions.IS_TABLE_EXISTS;
+
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
+
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.utils.ParameterTool;
-import org.apache.flink.connector.base.DeliveryGuarantee;
-import org.apache.flink.connector.mongodb.sink.MongoSink;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.RestOptions;
+import org.apache.flink.connector.base.DeliveryGuarantee;
+import org.apache.flink.connector.mongodb.sink.MongoSink;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
 import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.table.api.Table;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.catalog.Catalog;
 import org.apache.flink.table.types.DataType;
@@ -30,10 +35,6 @@ import org.slf4j.LoggerFactory;
 
 import java.sql.*;
 import java.util.*;
-
-import static org.apache.flink.lakesoul.tool.JobOptions.JOB_CHECKPOINT_INTERVAL;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkDatabasesOptions.*;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkDatabasesOptions.IS_TABLE_EXISTS;
 
 public class SyncDatabase {
 
@@ -52,8 +53,8 @@ public class SyncDatabase {
     static Boolean isTableExist;
 
     private static final Logger log = LoggerFactory.getLogger(SyncDatabase.class);
-    public static void main(String[] args) throws Exception {
 
+    public static void main(String[] args) throws Exception {
 
         StringBuilder connectorOptions = new StringBuilder();
         ParameterTool parameter = ParameterTool.fromArgs(args);
@@ -63,21 +64,24 @@ public class SyncDatabase {
         targetDatabase = parameter.get(TARGET_DB_DB_NAME.key());
         targetTableName = parameter.get(TARGET_DB_TABLE_NAME.key()).toLowerCase();
         url = parameter.get(TARGET_DB_URL.key());
-        checkpointInterval = parameter.getInt(JOB_CHECKPOINT_INTERVAL.key(), JOB_CHECKPOINT_INTERVAL.defaultValue());
-        if (dbType.equals("mysql") || dbType.equals("postgresql") || dbType.equals("doris")){
+        checkpointInterval =
+                parameter.getInt(
+                        JOB_CHECKPOINT_INTERVAL.key(), JOB_CHECKPOINT_INTERVAL.defaultValue());
+        if (dbType.equals("mysql") || dbType.equals("postgresql") || dbType.equals("doris")) {
             for (int i = 0; i < args.length; i++) {
-                if ( args[i].startsWith("--D")){
-                    connectorOptions.append("'")
+                if (args[i].startsWith("--D")) {
+                    connectorOptions
+                            .append("'")
                             .append(args[i].substring(3))
                             .append("'")
                             .append("=")
                             .append("'")
-                            .append(args[i+1])
+                            .append(args[i + 1])
                             .append("'")
                             .append(",");
                 }
             }
-            if (connectorOptions.length()>0){
+            if (connectorOptions.length() > 0) {
                 jdbcOrDorisOptions = connectorOptions.substring(0, connectorOptions.length() - 1);
             }
         }
@@ -90,7 +94,7 @@ public class SyncDatabase {
         isTableExist = parameter.getBoolean(IS_TABLE_EXISTS.key(), IS_TABLE_EXISTS.defaultValue());
         Configuration conf = new Configuration();
         conf.setString(RestOptions.BIND_PORT, "8081-8089");
-        StreamExecutionEnvironment env  = StreamExecutionEnvironment.getExecutionEnvironment(conf);
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(conf);
         env.setParallelism(sinkParallelism);
         switch (dbType) {
             case "mysql":
@@ -106,7 +110,8 @@ public class SyncDatabase {
             case "mongodb":
                 String uri = url;
                 int batchSize = parameter.getInt(BATCH_SIZE.key(), BATCH_SIZE.defaultValue());
-                int batchIntervalMs = parameter.getInt(BATCH_INTERVAL_MS.key(), BATCH_INTERVAL_MS.defaultValue());
+                int batchIntervalMs =
+                        parameter.getInt(BATCH_INTERVAL_MS.key(), BATCH_INTERVAL_MS.defaultValue());
                 xsyncToMongodb(env, uri, batchSize, batchIntervalMs);
                 break;
             case "sqlserver":
@@ -117,13 +122,15 @@ public class SyncDatabase {
         }
     }
 
-    public static String pgAndMsqlCreateTableSql(String[] stringFieldTypes, String[] fieldNames, String targetTableName, String pk) {
-        StringBuilder createTableQuery = new StringBuilder("CREATE TABLE IF NOT EXISTS ")
-                .append(targetTableName)
-                .append(" (");
+    public static String pgAndMsqlCreateTableSql(
+            String[] stringFieldTypes, String[] fieldNames, String targetTableName, String pk) {
+        StringBuilder createTableQuery =
+                new StringBuilder("CREATE TABLE IF NOT EXISTS ")
+                        .append(targetTableName)
+                        .append(" (");
         for (int i = 0; i < fieldNames.length; i++) {
             String dataType = stringFieldTypes[i];
-            //String nullable = stringFieldTypes[i].contains("NULL") ? "" : " NOT NULL";
+            // String nullable = stringFieldTypes[i].contains("NULL") ? "" : " NOT NULL";
             createTableQuery.append(fieldNames[i]).append(" ").append(dataType);
             if (i != fieldNames.length - 1) {
                 createTableQuery.append(", ");
@@ -137,7 +144,8 @@ public class SyncDatabase {
         return createTableQuery.toString();
     }
 
-    public static String sqlServerCreateTableSql(String[] stringFieldTypes, String[] fieldNames, String targetTableName, String pk) {
+    public static String sqlServerCreateTableSql(
+            String[] stringFieldTypes, String[] fieldNames, String targetTableName, String pk) {
         StringBuilder sb = new StringBuilder();
         sb.append("IF NOT EXISTS (SELECT * FROM sys.tables WHERE name='")
                 .append(targetTableName)
@@ -146,7 +154,7 @@ public class SyncDatabase {
         sb.append("CREATE TABLE ").append(targetTableName).append(" (");
 
         for (int i = 0; i < fieldNames.length; i++) {
-            if (stringFieldTypes[i].equals("TIMESTAMP")){
+            if (stringFieldTypes[i].equals("TIMESTAMP")) {
                 sb.append(fieldNames[i]).append(" ").append("datetime2");
             } else {
                 sb.append(fieldNames[i]).append(" ").append(stringFieldTypes[i]);
@@ -157,15 +165,18 @@ public class SyncDatabase {
         }
 
         if (pk != null && !pk.isEmpty()) {
-            sb.append("CONSTRAINT PK_").append(targetTableName)
-                    .append(" PRIMARY KEY(").append(pk).append(")");
+            sb.append("CONSTRAINT PK_")
+                    .append(targetTableName)
+                    .append(" PRIMARY KEY(")
+                    .append(pk)
+                    .append(")");
         }
         sb.append(")");
         return sb.toString();
     }
 
-
-    public static String[] getMysqlFieldsTypes(DataType[] fieldTypes, String[] fieldNames, String pk) {
+    public static String[] getMysqlFieldsTypes(
+            DataType[] fieldTypes, String[] fieldNames, String pk) {
         String[] stringFieldTypes = new String[fieldTypes.length];
         for (int i = 0; i < fieldTypes.length; i++) {
             if (fieldTypes[i].getLogicalType() instanceof VarCharType) {
@@ -180,7 +191,8 @@ public class SyncDatabase {
                 stringFieldTypes[i] = "FLOAT";
             } else if (fieldTypes[i].getLogicalType() instanceof BinaryType) {
                 stringFieldTypes[i] = "BINARY";
-            } else if (fieldTypes[i].getLogicalType() instanceof LocalZonedTimestampType | fieldTypes[i].getLogicalType() instanceof TimestampType) {
+            } else if (fieldTypes[i].getLogicalType() instanceof LocalZonedTimestampType
+                    | fieldTypes[i].getLogicalType() instanceof TimestampType) {
                 stringFieldTypes[i] = "TIMESTAMP";
             } else if (fieldTypes[i].getLogicalType() instanceof BooleanType) {
                 stringFieldTypes[i] = "BOOLEAN";
@@ -211,7 +223,8 @@ public class SyncDatabase {
                 stringFieldTypes[i] = "FLOAT4";
             } else if (fieldTypes[i].getLogicalType() instanceof BinaryType) {
                 stringFieldTypes[i] = "BYTEA";
-            } else if (fieldTypes[i].getLogicalType() instanceof LocalZonedTimestampType | fieldTypes[i].getLogicalType() instanceof TimestampType) {
+            } else if (fieldTypes[i].getLogicalType() instanceof LocalZonedTimestampType
+                    | fieldTypes[i].getLogicalType() instanceof TimestampType) {
                 stringFieldTypes[i] = "TIMESTAMP";
             } else if (fieldTypes[i].getLogicalType() instanceof VarBinaryType) {
                 stringFieldTypes[i] = "BYTEA";
@@ -229,7 +242,7 @@ public class SyncDatabase {
                 stringFieldTypes[i] = "TIMESTAMP";
             } else if (fieldTypes[i].getLogicalType() instanceof VarCharType) {
                 stringFieldTypes[i] = "VARCHAR";
-            } else if (fieldTypes[i].getLogicalType() instanceof LocalZonedTimestampType ) {
+            } else if (fieldTypes[i].getLogicalType() instanceof LocalZonedTimestampType) {
                 stringFieldTypes[i] = "TIMESTAMP";
             } else {
                 stringFieldTypes[i] = fieldTypes[i].toString();
@@ -240,7 +253,8 @@ public class SyncDatabase {
 
     public static String getTablePk(String sourceDataBae, String sourceTableName) {
         DBManager dbManager = new DBManager();
-        TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(sourceTableName, sourceDataBae);
+        TableInfo tableInfo =
+                dbManager.getTableInfoByNameAndNamespace(sourceTableName, sourceDataBae);
         String partitions = tableInfo.getPartitions();
         DBUtil.TablePartitionKeys keys = DBUtil.parseTableInfoPartitions(partitions);
 
@@ -257,13 +271,15 @@ public class SyncDatabase {
 
     public static String getTableDomain(String sourceDataBae, String sourceTableName) {
         DBManager dbManager = new DBManager();
-        TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(sourceTableName, sourceDataBae);
+        TableInfo tableInfo =
+                dbManager.getTableInfoByNameAndNamespace(sourceTableName, sourceDataBae);
         return tableInfo.getDomain();
     }
 
-    public static String[][] getTableSchema(Connection connection, String tableName, int columnCount) throws SQLException {
+    public static String[][] getTableSchema(
+            Connection connection, String tableName, int columnCount) throws SQLException {
         try {
-            String columnSql = "SHOW COLUMNS FROM "+tableName;
+            String columnSql = "SHOW COLUMNS FROM " + tableName;
             ResultSet rs = connection.prepareStatement(columnSql).executeQuery();
             int index = 0;
             String[] columnNames = new String[columnCount];
@@ -273,9 +289,9 @@ public class SyncDatabase {
                 columnNames[index] = columnName;
                 String dataType = rs.getString("Type");
                 columnTypes[index] = dataType;
-                index ++;
+                index++;
             }
-            return new String[][]{columnNames,columnTypes};
+            return new String[][] {columnNames, columnTypes};
         } catch (SQLException e) {
             e.printStackTrace();
         }
@@ -288,7 +304,9 @@ public class SyncDatabase {
         } else {
             env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
             env.enableCheckpointing(checkpointInterval, CheckpointingMode.EXACTLY_ONCE);
-            env.getCheckpointConfig().setExternalizedCheckpointCleanup(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
+            env.getCheckpointConfig()
+                    .setExternalizedCheckpointCleanup(
+                            CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
         }
         StreamTableEnvironment tEnvs = StreamTableEnvironment.create(env);
         Catalog lakesoulCatalog = new LakeSoulCatalog();
@@ -296,17 +314,19 @@ public class SyncDatabase {
         String jdbcUrl = url + targetDatabase;
         Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
 
-        Table lakesoulTable = tEnvs.from("`lakeSoul`.`" + sourceDatabase + "`.`" + sourceTableName + "`");
+        Table lakesoulTable =
+                tEnvs.from("`lakeSoul`.`" + sourceDatabase + "`.`" + sourceTableName + "`");
         DataType[] fieldDataTypes = lakesoulTable.getSchema().getFieldDataTypes();
         String[] fieldNames = lakesoulTable.getSchema().getFieldNames();
         String tablePk = getTablePk(sourceDatabase, sourceTableName);
         String[] stringFieldsTypes = getPgFieldsTypes(fieldDataTypes, fieldNames, tablePk);
 
-        String createTableSql = pgAndMsqlCreateTableSql(stringFieldsTypes, fieldNames, targetTableName, tablePk);
+        String createTableSql =
+                pgAndMsqlCreateTableSql(stringFieldsTypes, fieldNames, targetTableName, tablePk);
         Statement statement = conn.createStatement();
-        if (!isTableExist){
+        if (!isTableExist) {
             statement.executeUpdate(createTableSql);
-            log.info("create the postgres table with the sql: "+createTableSql);
+            log.info("create the postgres table with the sql: " + createTableSql);
         }
         StringBuilder coulmns = new StringBuilder();
         for (int i = 0; i < fieldDataTypes.length; i++) {
@@ -321,7 +341,10 @@ public class SyncDatabase {
                     coulmns.append("`").append(fieldNames[i]).append("` ").append("DOUBLE");
                     break;
                 default:
-                    coulmns.append("`").append(fieldNames[i]).append("` ").append(stringFieldsTypes[i]);
+                    coulmns.append("`")
+                            .append(fieldNames[i])
+                            .append("` ")
+                            .append(stringFieldsTypes[i]);
                     break;
             }
             if (i < fieldDataTypes.length - 1) {
@@ -329,31 +352,84 @@ public class SyncDatabase {
             }
         }
         String sql;
-        if (jdbcOrDorisOptions==null){
+        if (jdbcOrDorisOptions == null) {
             if (tablePk != null) {
-                sql = String.format(
-                        "create table %s(%s ,PRIMARY KEY (%s) NOT ENFORCED) with ('connector' = '%s', 'url' = '%s', 'table-name' = '%s', 'username' = '%s', 'password' = '%s', 'sink.parallelism' = '%s')",
-                        targetTableName, coulmns, tablePk, "jdbc", jdbcUrl, targetTableName, username, password, sinkParallelism);
+                sql =
+                        String.format(
+                                "create table %s(%s ,PRIMARY KEY (%s) NOT ENFORCED) with"
+                                    + " ('connector' = '%s', 'url' = '%s', 'table-name' = '%s',"
+                                    + " 'username' = '%s', 'password' = '%s', 'sink.parallelism' ="
+                                    + " '%s')",
+                                targetTableName,
+                                coulmns,
+                                tablePk,
+                                "jdbc",
+                                jdbcUrl,
+                                targetTableName,
+                                username,
+                                password,
+                                sinkParallelism);
             } else {
-                sql = String.format("create table %s(%s) with ('connector' = '%s', 'url' = '%s', 'table-name' = '%s', 'username' = '%s', 'password' = '%s', 'sink.parallelism' = '%s')",
-                        targetTableName, coulmns, "jdbc", jdbcUrl, targetTableName, username, password, sinkParallelism);
+                sql =
+                        String.format(
+                                "create table %s(%s) with ('connector' = '%s', 'url' = '%s',"
+                                    + " 'table-name' = '%s', 'username' = '%s', 'password' = '%s',"
+                                    + " 'sink.parallelism' = '%s')",
+                                targetTableName,
+                                coulmns,
+                                "jdbc",
+                                jdbcUrl,
+                                targetTableName,
+                                username,
+                                password,
+                                sinkParallelism);
             }
-        }else {
+        } else {
             if (tablePk != null) {
-                sql = String.format(
-                        "create table %s(%s ,PRIMARY KEY (%s) NOT ENFORCED) with ('connector' = '%s', 'url' = '%s', 'table-name' = '%s', 'username' = '%s', 'password' = '%s', 'sink.parallelism' = '%s', %s)",
-                        targetTableName, coulmns, tablePk, "jdbc", jdbcUrl, targetTableName, username, password, sinkParallelism, jdbcOrDorisOptions);
+                sql =
+                        String.format(
+                                "create table %s(%s ,PRIMARY KEY (%s) NOT ENFORCED) with"
+                                    + " ('connector' = '%s', 'url' = '%s', 'table-name' = '%s',"
+                                    + " 'username' = '%s', 'password' = '%s', 'sink.parallelism' ="
+                                    + " '%s', %s)",
+                                targetTableName,
+                                coulmns,
+                                tablePk,
+                                "jdbc",
+                                jdbcUrl,
+                                targetTableName,
+                                username,
+                                password,
+                                sinkParallelism,
+                                jdbcOrDorisOptions);
             } else {
-                sql = String.format("create table %s(%s) with ('connector' = '%s', 'url' = '%s', 'table-name' = '%s', 'username' = '%s', 'password' = '%s', 'sink.parallelism' = '%s', %s)",
-                        targetTableName, coulmns, "jdbc", jdbcUrl, targetTableName, username, password, sinkParallelism, jdbcOrDorisOptions);
+                sql =
+                        String.format(
+                                "create table %s(%s) with ('connector' = '%s', 'url' = '%s',"
+                                    + " 'table-name' = '%s', 'username' = '%s', 'password' = '%s',"
+                                    + " 'sink.parallelism' = '%s', %s)",
+                                targetTableName,
+                                coulmns,
+                                "jdbc",
+                                jdbcUrl,
+                                targetTableName,
+                                username,
+                                password,
+                                sinkParallelism,
+                                jdbcOrDorisOptions);
             }
         }
         tEnvs.executeSql(sql);
-        tEnvs.executeSql("insert into " + targetTableName + " select * from lakeSoul.`" + sourceDatabase + "`." + sourceTableName);
+        tEnvs.executeSql(
+                "insert into "
+                        + targetTableName
+                        + " select * from lakeSoul.`"
+                        + sourceDatabase
+                        + "`."
+                        + sourceTableName);
         statement.close();
         conn.close();
     }
-
 
     public static void xsyncToMysql(StreamExecutionEnvironment env) throws SQLException {
         if (useBatch) {
@@ -361,25 +437,29 @@ public class SyncDatabase {
         } else {
             env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
             env.enableCheckpointing(checkpointInterval, CheckpointingMode.EXACTLY_ONCE);
-            env.getCheckpointConfig().setExternalizedCheckpointCleanup(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
+            env.getCheckpointConfig()
+                    .setExternalizedCheckpointCleanup(
+                            CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
         }
         StreamTableEnvironment tEnvs = StreamTableEnvironment.create(env);
         Catalog lakesoulCatalog = new LakeSoulCatalog();
         tEnvs.registerCatalog("lakeSoul", lakesoulCatalog);
         String jdbcUrl = url + targetDatabase;
-        Table lakesoulTable = tEnvs.from("`lakeSoul`.`" + sourceDatabase + "`.`" + sourceTableName + "`");
+        Table lakesoulTable =
+                tEnvs.from("`lakeSoul`.`" + sourceDatabase + "`.`" + sourceTableName + "`");
         DataType[] fieldDataTypes = lakesoulTable.getSchema().getFieldDataTypes();
         String[] fieldNames = lakesoulTable.getSchema().getFieldNames();
         String tablePk = getTablePk(sourceDatabase, sourceTableName);
         String[] stringFieldsTypes = getMysqlFieldsTypes(fieldDataTypes, fieldNames, tablePk);
-        String createTableSql = pgAndMsqlCreateTableSql(stringFieldsTypes, fieldNames, targetTableName, tablePk);
+        String createTableSql =
+                pgAndMsqlCreateTableSql(stringFieldsTypes, fieldNames, targetTableName, tablePk);
 
         Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
         Statement statement = conn.createStatement();
         // Create the target table in MySQL
-        if (!isTableExist){
+        if (!isTableExist) {
             statement.executeUpdate(createTableSql);
-            log.info("create the mysql table with the sql: "+createTableSql);
+            log.info("create the mysql table with the sql: " + createTableSql);
         }
         StringBuilder coulmns = new StringBuilder();
         for (int i = 0; i < fieldDataTypes.length; i++) {
@@ -396,46 +476,104 @@ public class SyncDatabase {
             }
         }
         String sql;
-        if (jdbcOrDorisOptions==null){
+        if (jdbcOrDorisOptions == null) {
             if (tablePk != null) {
-                sql = String.format(
-                        "create table %s(%s ,PRIMARY KEY (%s) NOT ENFORCED) with ('connector' = '%s', 'url' = '%s', 'table-name' = '%s', 'username' = '%s', 'password' = '%s', 'sink.parallelism' = '%s')",
-                        targetTableName, coulmns, tablePk, "jdbc", jdbcUrl, targetTableName, username, password, sinkParallelism);
+                sql =
+                        String.format(
+                                "create table %s(%s ,PRIMARY KEY (%s) NOT ENFORCED) with"
+                                    + " ('connector' = '%s', 'url' = '%s', 'table-name' = '%s',"
+                                    + " 'username' = '%s', 'password' = '%s', 'sink.parallelism' ="
+                                    + " '%s')",
+                                targetTableName,
+                                coulmns,
+                                tablePk,
+                                "jdbc",
+                                jdbcUrl,
+                                targetTableName,
+                                username,
+                                password,
+                                sinkParallelism);
             } else {
-                sql = String.format("create table %s(%s) with ('connector' = '%s', 'url' = '%s', 'table-name' = '%s', 'username' = '%s', 'password' = '%s', 'sink.parallelism' = '%s')",
-                        targetTableName, coulmns, "jdbc", jdbcUrl, targetTableName, username, password, sinkParallelism);
+                sql =
+                        String.format(
+                                "create table %s(%s) with ('connector' = '%s', 'url' = '%s',"
+                                    + " 'table-name' = '%s', 'username' = '%s', 'password' = '%s',"
+                                    + " 'sink.parallelism' = '%s')",
+                                targetTableName,
+                                coulmns,
+                                "jdbc",
+                                jdbcUrl,
+                                targetTableName,
+                                username,
+                                password,
+                                sinkParallelism);
             }
-        }else {
+        } else {
             if (tablePk != null) {
-                sql = String.format(
-                        "create table %s(%s ,PRIMARY KEY (%s) NOT ENFORCED) with ('connector' = '%s', 'url' = '%s', 'table-name' = '%s', 'username' = '%s', 'password' = '%s', 'sink.parallelism' = '%s', %s)",
-                        targetTableName, coulmns, tablePk, "jdbc", jdbcUrl, targetTableName, username, password, sinkParallelism, jdbcOrDorisOptions);
+                sql =
+                        String.format(
+                                "create table %s(%s ,PRIMARY KEY (%s) NOT ENFORCED) with"
+                                    + " ('connector' = '%s', 'url' = '%s', 'table-name' = '%s',"
+                                    + " 'username' = '%s', 'password' = '%s', 'sink.parallelism' ="
+                                    + " '%s', %s)",
+                                targetTableName,
+                                coulmns,
+                                tablePk,
+                                "jdbc",
+                                jdbcUrl,
+                                targetTableName,
+                                username,
+                                password,
+                                sinkParallelism,
+                                jdbcOrDorisOptions);
             } else {
-                sql = String.format("create table %s(%s) with ('connector' = '%s', 'url' = '%s', 'table-name' = '%s', 'username' = '%s', 'password' = '%s', 'sink.parallelism' = '%s', %s)",
-                        targetTableName, coulmns, "jdbc", jdbcUrl, targetTableName, username, password, sinkParallelism, jdbcOrDorisOptions);
+                sql =
+                        String.format(
+                                "create table %s(%s) with ('connector' = '%s', 'url' = '%s',"
+                                    + " 'table-name' = '%s', 'username' = '%s', 'password' = '%s',"
+                                    + " 'sink.parallelism' = '%s', %s)",
+                                targetTableName,
+                                coulmns,
+                                "jdbc",
+                                jdbcUrl,
+                                targetTableName,
+                                username,
+                                password,
+                                sinkParallelism,
+                                jdbcOrDorisOptions);
             }
         }
 
         tEnvs.executeSql(sql);
-        tEnvs.executeSql("insert into " + targetTableName + " select * from lakeSoul.`" + sourceDatabase + "`." + sourceTableName);
+        tEnvs.executeSql(
+                "insert into "
+                        + targetTableName
+                        + " select * from lakeSoul.`"
+                        + sourceDatabase
+                        + "`."
+                        + sourceTableName);
 
         statement.close();
         conn.close();
     }
 
-    public static void xsyncToDoris(StreamExecutionEnvironment env, String fenodes) throws Exception {
+    public static void xsyncToDoris(StreamExecutionEnvironment env, String fenodes)
+            throws Exception {
         if (useBatch) {
             env.setRuntimeMode(RuntimeExecutionMode.BATCH);
         } else {
             env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
             env.enableCheckpointing(checkpointInterval, CheckpointingMode.EXACTLY_ONCE);
-            env.getCheckpointConfig().setExternalizedCheckpointCleanup(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
+            env.getCheckpointConfig()
+                    .setExternalizedCheckpointCleanup(
+                            CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
         }
         StreamTableEnvironment tEnvs = StreamTableEnvironment.create(env);
         Catalog lakesoulCatalog = new LakeSoulCatalog();
         tEnvs.registerCatalog("lakeSoul", lakesoulCatalog);
         String jdbcUrl = url + targetDatabase;
-        Table lakesoulTable = tEnvs.from("`lakeSoul`.`" + sourceDatabase + "`.`" + sourceTableName + "`");
+        Table lakesoulTable =
+                tEnvs.from("`lakeSoul`.`" + sourceDatabase + "`.`" + sourceTableName + "`");
         DataType[] fieldDataTypes = lakesoulTable.getSchema().getFieldDataTypes();
         String[] fieldNames = lakesoulTable.getSchema().getFieldNames();
         String[] dorisFieldTypes = getDorisFieldTypes(fieldDataTypes);
@@ -447,39 +585,61 @@ public class SyncDatabase {
             }
         }
         String sql;
-        if (jdbcOrDorisOptions == null){
-            sql = String.format(
-                    "create table %s(%s) with ('connector' = '%s'," +
-                            " 'jdbc-url' = '%s'," +
-                            " 'fenodes' = '%s'," +
-                            " 'table.identifier' = '%s'," +
-                            " 'username' = '%s'," +
-                            " 'password' = '%s'," +
-                            " 'sink.properties.format' = 'json'," +
-                            " 'sink.properties.read_json_by_line' = 'true')",
-                    targetTableName, coulmns, "doris", jdbcUrl, fenodes, targetDatabase + "." + targetTableName, username, password);
-        }else {
-            sql = String.format(
-                    "create table %s(%s) with ('connector' = '%s'," +
-                            " 'jdbc-url' = '%s'," +
-                            " 'fenodes' = '%s'," +
-                            " 'table.identifier' = '%s'," +
-                            " 'username' = '%s'," +
-                            " 'password' = '%s'," +
-                            " 'sink.properties.format' = 'json'," +
-                            " 'sink.properties.read_json_by_line' = 'true'," +
-                            "  %s)",
-                    targetTableName, coulmns, "doris", jdbcUrl, fenodes, targetDatabase + "." + targetTableName, username, password, jdbcOrDorisOptions);
+        if (jdbcOrDorisOptions == null) {
+            sql =
+                    String.format(
+                            "create table %s(%s) with ('connector' = '%s',"
+                                    + " 'jdbc-url' = '%s',"
+                                    + " 'fenodes' = '%s',"
+                                    + " 'table.identifier' = '%s',"
+                                    + " 'username' = '%s',"
+                                    + " 'password' = '%s',"
+                                    + " 'sink.properties.format' = 'json',"
+                                    + " 'sink.properties.read_json_by_line' = 'true')",
+                            targetTableName,
+                            coulmns,
+                            "doris",
+                            jdbcUrl,
+                            fenodes,
+                            targetDatabase + "." + targetTableName,
+                            username,
+                            password);
+        } else {
+            sql =
+                    String.format(
+                            "create table %s(%s) with ('connector' = '%s',"
+                                    + " 'jdbc-url' = '%s',"
+                                    + " 'fenodes' = '%s',"
+                                    + " 'table.identifier' = '%s',"
+                                    + " 'username' = '%s',"
+                                    + " 'password' = '%s',"
+                                    + " 'sink.properties.format' = 'json',"
+                                    + " 'sink.properties.read_json_by_line' = 'true',"
+                                    + "  %s)",
+                            targetTableName,
+                            coulmns,
+                            "doris",
+                            jdbcUrl,
+                            fenodes,
+                            targetDatabase + "." + targetTableName,
+                            username,
+                            password,
+                            jdbcOrDorisOptions);
         }
 
         tEnvs.executeSql(sql);
-        tEnvs.executeSql("insert into " + targetTableName + " select * from lakeSoul.`" + sourceDatabase + "`." + sourceTableName);
+        tEnvs.executeSql(
+                "insert into "
+                        + targetTableName
+                        + " select * from lakeSoul.`"
+                        + sourceDatabase
+                        + "`."
+                        + sourceTableName);
     }
 
-    public static void xsyncToMongodb(StreamExecutionEnvironment env,
-                                      String uri,
-                                      int batchSize,
-                                      int batchInservalMs) throws Exception {
+    public static void xsyncToMongodb(
+            StreamExecutionEnvironment env, String uri, int batchSize, int batchInservalMs)
+            throws Exception {
 
         MongoSinkUtils mongoSinkUtils = new MongoSinkUtils();
         mongoSinkUtils.createMongoColl(targetDatabase, targetTableName, uri);
@@ -488,26 +648,35 @@ public class SyncDatabase {
         } else {
             env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
             env.enableCheckpointing(checkpointInterval, CheckpointingMode.EXACTLY_ONCE);
-            env.getCheckpointConfig().setExternalizedCheckpointCleanup(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
+            env.getCheckpointConfig()
+                    .setExternalizedCheckpointCleanup(
+                            CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
         }
         StreamTableEnvironment tEnvs = StreamTableEnvironment.create(env);
         Catalog lakesoulCatalog = new LakeSoulCatalog();
         tEnvs.registerCatalog("lakeSoul", lakesoulCatalog);
-        Table coll = tEnvs.sqlQuery("select * from lakeSoul.`" + sourceDatabase + "`.`" + sourceTableName + "`");
+        Table coll =
+                tEnvs.sqlQuery(
+                        "select * from lakeSoul.`"
+                                + sourceDatabase
+                                + "`.`"
+                                + sourceTableName
+                                + "`");
         tEnvs.registerTable("mongodbTbl", coll);
         Table table = tEnvs.sqlQuery("select * from mongodbTbl");
         DataStream<Tuple2<Boolean, Row>> rowDataStream = tEnvs.toRetractStream(table, Row.class);
         MyMongoSerializationSchema mongoSerializationSchema = new MyMongoSerializationSchema(coll);
-        MongoSink<Tuple2<Boolean, Row>> sink = MongoSink.<Tuple2<Boolean, Row>>builder()
-                .setUri(uri)
-                .setDatabase(targetDatabase)
-                .setCollection(targetTableName)
-                .setBatchSize(batchSize)
-                .setBatchIntervalMs(batchInservalMs)
-                .setMaxRetries(3)
-                .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
-                .setSerializationSchema(mongoSerializationSchema)
-                .build();
+        MongoSink<Tuple2<Boolean, Row>> sink =
+                MongoSink.<Tuple2<Boolean, Row>>builder()
+                        .setUri(uri)
+                        .setDatabase(targetDatabase)
+                        .setCollection(targetTableName)
+                        .setBatchSize(batchSize)
+                        .setBatchIntervalMs(batchInservalMs)
+                        .setMaxRetries(3)
+                        .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
+                        .setSerializationSchema(mongoSerializationSchema)
+                        .build();
         rowDataStream.sinkTo(sink).setParallelism(sinkParallelism);
         env.execute();
     }
@@ -518,23 +687,27 @@ public class SyncDatabase {
         } else {
             env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
             env.enableCheckpointing(checkpointInterval, CheckpointingMode.EXACTLY_ONCE);
-            env.getCheckpointConfig().setExternalizedCheckpointCleanup(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
+            env.getCheckpointConfig()
+                    .setExternalizedCheckpointCleanup(
+                            CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
         }
         StreamTableEnvironment tEnvs = StreamTableEnvironment.create(env);
         Catalog lakesoulCatalog = new LakeSoulCatalog();
         tEnvs.registerCatalog("lakeSoul", lakesoulCatalog);
         String jdbcUrl = url + ";databaseName=" + targetDatabase;
-        Table lakesoulTable = tEnvs.from("`lakeSoul`.`" + sourceDatabase + "`.`" + sourceTableName + "`");
+        Table lakesoulTable =
+                tEnvs.from("`lakeSoul`.`" + sourceDatabase + "`.`" + sourceTableName + "`");
         DataType[] fieldDataTypes = lakesoulTable.getSchema().getFieldDataTypes();
         String[] fieldNames = lakesoulTable.getSchema().getFieldNames();
         String tablePk = getTablePk(sourceDatabase, sourceTableName);
         String[] stringFieldsTypes = getMysqlFieldsTypes(fieldDataTypes, fieldNames, tablePk);
-        String createTableSql = sqlServerCreateTableSql(stringFieldsTypes, fieldNames, targetTableName, tablePk);
+        String createTableSql =
+                sqlServerCreateTableSql(stringFieldsTypes, fieldNames, targetTableName, tablePk);
         Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
         Statement statement = conn.createStatement();
-        if (!isTableExist){
+        if (!isTableExist) {
             statement.executeUpdate(createTableSql);
-            log.info("create the sqlserver table with the sql: "+createTableSql);
+            log.info("create the sqlserver table with the sql: " + createTableSql);
         }
         StringBuilder coulmns = new StringBuilder();
         for (int i = 0; i < fieldDataTypes.length; i++) {
@@ -550,29 +723,83 @@ public class SyncDatabase {
             }
         }
         String sql;
-        if (jdbcOrDorisOptions==null){
+        if (jdbcOrDorisOptions == null) {
             if (tablePk != null) {
-                sql = String.format(
-                        "create table %s(%s ,PRIMARY KEY (%s) NOT ENFORCED) with ('connector' = '%s', 'url' = '%s', 'table-name' = '%s', 'username' = '%s', 'password' = '%s', 'sink.parallelism' = '%s')",
-                        targetTableName, coulmns, tablePk, "jdbc", jdbcUrl, targetTableName, username, password, sinkParallelism);
+                sql =
+                        String.format(
+                                "create table %s(%s ,PRIMARY KEY (%s) NOT ENFORCED) with"
+                                    + " ('connector' = '%s', 'url' = '%s', 'table-name' = '%s',"
+                                    + " 'username' = '%s', 'password' = '%s', 'sink.parallelism' ="
+                                    + " '%s')",
+                                targetTableName,
+                                coulmns,
+                                tablePk,
+                                "jdbc",
+                                jdbcUrl,
+                                targetTableName,
+                                username,
+                                password,
+                                sinkParallelism);
             } else {
-                sql = String.format("create table %s(%s) with ('connector' = '%s', 'url' = '%s', 'table-name' = '%s', 'username' = '%s', 'password' = '%s', 'sink.parallelism' = '%s')",
-                        targetTableName, coulmns, "jdbc", jdbcUrl, targetTableName, username, password, sinkParallelism);
+                sql =
+                        String.format(
+                                "create table %s(%s) with ('connector' = '%s', 'url' = '%s',"
+                                    + " 'table-name' = '%s', 'username' = '%s', 'password' = '%s',"
+                                    + " 'sink.parallelism' = '%s')",
+                                targetTableName,
+                                coulmns,
+                                "jdbc",
+                                jdbcUrl,
+                                targetTableName,
+                                username,
+                                password,
+                                sinkParallelism);
             }
-        }else {
+        } else {
             if (tablePk != null) {
-                sql = String.format(
-                        "create table %s(%s ,PRIMARY KEY (%s) NOT ENFORCED) with ('connector' = '%s', 'url' = '%s', 'table-name' = '%s', 'username' = '%s', 'password' = '%s', 'sink.parallelism' = '%s', %s)",
-                        targetTableName, coulmns, tablePk, "jdbc", jdbcUrl, targetTableName, username, password, sinkParallelism, jdbcOrDorisOptions);
+                sql =
+                        String.format(
+                                "create table %s(%s ,PRIMARY KEY (%s) NOT ENFORCED) with"
+                                    + " ('connector' = '%s', 'url' = '%s', 'table-name' = '%s',"
+                                    + " 'username' = '%s', 'password' = '%s', 'sink.parallelism' ="
+                                    + " '%s', %s)",
+                                targetTableName,
+                                coulmns,
+                                tablePk,
+                                "jdbc",
+                                jdbcUrl,
+                                targetTableName,
+                                username,
+                                password,
+                                sinkParallelism,
+                                jdbcOrDorisOptions);
             } else {
-                sql = String.format("create table %s(%s) with ('connector' = '%s', 'url' = '%s', 'table-name' = '%s', 'username' = '%s', 'password' = '%s', 'sink.parallelism' = '%s', %s)",
-                        targetTableName, coulmns, "jdbc", jdbcUrl, targetTableName, username, password, sinkParallelism, jdbcOrDorisOptions);
+                sql =
+                        String.format(
+                                "create table %s(%s) with ('connector' = '%s', 'url' = '%s',"
+                                    + " 'table-name' = '%s', 'username' = '%s', 'password' = '%s',"
+                                    + " 'sink.parallelism' = '%s', %s)",
+                                targetTableName,
+                                coulmns,
+                                "jdbc",
+                                jdbcUrl,
+                                targetTableName,
+                                username,
+                                password,
+                                sinkParallelism,
+                                jdbcOrDorisOptions);
             }
         }
 
         tEnvs.executeSql(sql);
         System.out.println(sql);
-        tEnvs.executeSql("insert into " + targetTableName + " select * from lakeSoul.`" + sourceDatabase + "`." + sourceTableName);
+        tEnvs.executeSql(
+                "insert into "
+                        + targetTableName
+                        + " select * from lakeSoul.`"
+                        + sourceDatabase
+                        + "`."
+                        + sourceTableName);
 
         statement.close();
         conn.close();

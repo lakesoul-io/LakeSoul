@@ -5,6 +5,7 @@
 package org.apache.flink.lakesoul.sink.committer;
 
 import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_HASH_PARTITION_SPLITTER;
+
 import static org.apache.flink.lakesoul.metadata.LakeSoulCatalog.TABLE_ID_PREFIX;
 import static org.apache.flink.lakesoul.tool.LakeSoulDDLSinkOptions.SOURCE_DB_TYPE;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
@@ -16,10 +17,7 @@ import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.dao.TableInfoDao;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
-import java.io.IOException;
-import java.util.*;
-import java.util.concurrent.ForkJoinPool;
-import org.apache.arrow.vector.types.pojo.Field;
+
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.api.connector.sink.GlobalCommitter;
 import org.apache.flink.api.java.tuple.Tuple2;
@@ -42,25 +40,23 @@ import org.apache.spark.sql.types.StructType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
+import java.util.*;
+import java.util.concurrent.ForkJoinPool;
+
 /**
  * Global Committer implementation for {@link LakeSoulMultiTablesSink}.
  *
- * <p>This global committer is responsible for taking staged part-files, i.e. part-files in "pending"
- * state, created by the {@link AbstractLakeSoulMultiTableSinkWriter}
- * and commit them globally, or put them in "finished" state and ready to be consumed by downstream
- * applications or systems.
+ * <p>This global committer is responsible for taking staged part-files, i.e. part-files in
+ * "pending" state, created by the {@link AbstractLakeSoulMultiTableSinkWriter} and commit them
+ * globally, or put them in "finished" state and ready to be consumed by downstream applications or
+ * systems.
  */
 public class LakeSoulSinkGlobalCommitter
-    implements
-        GlobalCommitter<
-            LakeSoulMultiTableSinkCommittable,
-            LakeSoulMultiTableSinkGlobalCommittable
-        >
-{
+        implements GlobalCommitter<
+                LakeSoulMultiTableSinkCommittable, LakeSoulMultiTableSinkGlobalCommittable> {
 
-    private static final Logger LOG = LoggerFactory.getLogger(
-        LakeSoulSinkGlobalCommitter.class
-    );
+    private static final Logger LOG = LoggerFactory.getLogger(LakeSoulSinkGlobalCommitter.class);
     private final LakeSoulSinkCommitter committer;
     private final DBManager dbManager;
     private final Configuration conf;
@@ -85,16 +81,15 @@ public class LakeSoulSinkGlobalCommitter
     /**
      * Find out which global committables need to be retried when recovering from the failure.
      *
-     * @param globalCommittables A list of {@link LakeSoulMultiTableSinkGlobalCommittable} for which we want to
-     *                           verify which
-     *                           ones were successfully committed and which ones did not.
-     * @return A list of {@link LakeSoulMultiTableSinkGlobalCommittable} that should be committed again.
+     * @param globalCommittables A list of {@link LakeSoulMultiTableSinkGlobalCommittable} for which
+     *     we want to verify which ones were successfully committed and which ones did not.
+     * @return A list of {@link LakeSoulMultiTableSinkGlobalCommittable} that should be committed
+     *     again.
      * @throws IOException if fail to filter the recovered committables.
      */
     @Override
     public List<LakeSoulMultiTableSinkGlobalCommittable> filterRecoveredCommittables(
-        List<LakeSoulMultiTableSinkGlobalCommittable> globalCommittables
-    ) {
+            List<LakeSoulMultiTableSinkGlobalCommittable> globalCommittables) {
         return globalCommittables;
     }
 
@@ -102,61 +97,57 @@ public class LakeSoulSinkGlobalCommitter
      * Compute an aggregated committable from a list of committables.
      *
      * @param committables A list of {@link LakeSoulMultiTableSinkCommittable} to be combined into a
-     *                     {@link LakeSoulMultiTableSinkGlobalCommittable}.
+     *     {@link LakeSoulMultiTableSinkGlobalCommittable}.
      * @return an aggregated committable
      * @throws IOException if fail to combine the given committables.
      */
     @Override
     public LakeSoulMultiTableSinkGlobalCommittable combine(
-        List<LakeSoulMultiTableSinkCommittable> committables
-    ) throws IOException {
+            List<LakeSoulMultiTableSinkCommittable> committables) throws IOException {
         return LakeSoulMultiTableSinkGlobalCommittable.fromLakeSoulMultiTableSinkCommittable(
-            committables,
-            isBounded
-        );
+                committables, isBounded);
     }
 
     /**
      * Commit the given list of {@link LakeSoulMultiTableSinkGlobalCommittable}.
      *
      * @param globalCommittables a list of {@link LakeSoulMultiTableSinkGlobalCommittable}.
-     * @return A list of {@link LakeSoulMultiTableSinkGlobalCommittable} needed to re-commit, which is needed in case we
-     * implement a "commit-with-retry" pattern.
+     * @return A list of {@link LakeSoulMultiTableSinkGlobalCommittable} needed to re-commit, which
+     *     is needed in case we implement a "commit-with-retry" pattern.
      * @throws IOException if the commit operation fail and do not want to retry anymore.
      */
     @Override
     public List<LakeSoulMultiTableSinkGlobalCommittable> commit(
-        List<LakeSoulMultiTableSinkGlobalCommittable> globalCommittables
-    ) throws IOException, InterruptedException {
+            List<LakeSoulMultiTableSinkGlobalCommittable> globalCommittables)
+            throws IOException, InterruptedException {
         long startTime = System.currentTimeMillis();
         LakeSoulMultiTableSinkGlobalCommittable globalCommittable =
-            LakeSoulMultiTableSinkGlobalCommittable.fromLakeSoulMultiTableSinkGlobalCommittable(
-                globalCommittables,
-                isBounded
-            );
+                LakeSoulMultiTableSinkGlobalCommittable.fromLakeSoulMultiTableSinkGlobalCommittable(
+                        globalCommittables, isBounded);
         LOG.info(
-            "Global Committing #{}, object {}, {}",
-            globalCommittable.getGroupedCommittable().size(),
-            globalCommittable.hashCode(),
-            globalCommittable
-        );
+                "Global Committing #{}, object {}, {}",
+                globalCommittable.getGroupedCommittable().size(),
+                globalCommittable.hashCode(),
+                globalCommittable);
         ForkJoinPool commitPool = new ForkJoinPool(4);
         try {
             commitPool
-                .submit(() -> {
-                    globalCommittable
-                        .getGroupedCommittable()
-                        .entrySet()
-                        .parallelStream()
-                        .forEach(entry -> {
-                            try {
-                                commitEntry(entry);
-                            } catch (IOException | InterruptedException e) {
-                                throw new RuntimeException(e);
-                            }
-                        });
-                })
-                .join();
+                    .submit(
+                            () -> {
+                                globalCommittable
+                                        .getGroupedCommittable()
+                                        .entrySet()
+                                        .parallelStream()
+                                        .forEach(
+                                                entry -> {
+                                                    try {
+                                                        commitEntry(entry);
+                                                    } catch (IOException | InterruptedException e) {
+                                                        throw new RuntimeException(e);
+                                                    }
+                                                });
+                            })
+                    .join();
         } catch (Exception e) {
             throw e;
         } finally {
@@ -164,248 +155,185 @@ public class LakeSoulSinkGlobalCommitter
         }
         long endTime = System.currentTimeMillis();
         LOG.info(
-            "Global Committing done, #{}, object {}, time {}ms",
-            globalCommittable.getGroupedCommittable().size(),
-            globalCommittable.hashCode(),
-            endTime - startTime
-        );
+                "Global Committing done, #{}, object {}, time {}ms",
+                globalCommittable.getGroupedCommittable().size(),
+                globalCommittable.hashCode(),
+                endTime - startTime);
 
         return Collections.emptyList();
     }
 
     private void commitEntry(
-        Map.Entry<
-            Tuple2<TableSchemaIdentity, String>,
-            List<LakeSoulMultiTableSinkCommittable>
-        > entry
-    ) throws IOException, InterruptedException {
+            Map.Entry<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>>
+                    entry)
+            throws IOException, InterruptedException {
         String dbType = this.conf.getString(SOURCE_DB_TYPE, "");
         TableSchemaIdentity identity = entry.getKey().f0;
         List<LakeSoulMultiTableSinkCommittable> lakeSoulMultiTableSinkCommittable =
-            entry.getValue();
+                entry.getValue();
         String tableName = identity.tableId.table();
         String tableNamespace = identity.tableId.schema();
         if (tableNamespace == null) {
             tableNamespace = identity.tableId.catalog();
         }
         boolean isCdc = identity.useCDC;
-        Schema msgSchema = FlinkUtil.toArrowSchema(
-            identity.rowType,
-            isCdc ? Optional.of(identity.cdcColumn) : Optional.empty()
-        );
+        Schema msgSchema =
+                FlinkUtil.toArrowSchema(
+                        identity.rowType,
+                        isCdc ? Optional.of(identity.cdcColumn) : Optional.empty());
         StructType sparkSchema = ArrowUtils.fromArrowSchema(msgSchema);
 
-        TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(
-            tableName,
-            tableNamespace
-        );
+        TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(tableName, tableNamespace);
         if (tableInfo == null) {
             if (!conf.getBoolean(AUTO_SCHEMA_CHANGE)) {
                 throw new SuppressRestartsException(
-                    new TableNotExistException(
-                        "lakesoul",
-                        new ObjectPath(tableNamespace, tableName)
-                    )
-                );
+                        new TableNotExistException(
+                                "lakesoul", new ObjectPath(tableNamespace, tableName)));
             }
             String tableId = TABLE_ID_PREFIX + UUID.randomUUID();
-            String partition = DBUtil.formatTableInfoPartitionsField(
-                identity.primaryKeys,
-                identity.partitionKeyList
-            );
+            String partition =
+                    DBUtil.formatTableInfoPartitionsField(
+                            identity.primaryKeys, identity.partitionKeyList);
 
             LOG.info(
-                "Creating table: {}, {}, {}, {}, {}, {}, {}, {}",
-                tableId,
-                tableNamespace,
-                tableName,
-                identity.tableLocation,
-                msgSchema,
-                identity.useCDC,
-                identity.cdcColumn,
-                partition
-            );
+                    "Creating table: {}, {}, {}, {}, {}, {}, {}, {}",
+                    tableId,
+                    tableNamespace,
+                    tableName,
+                    identity.tableLocation,
+                    msgSchema,
+                    identity.useCDC,
+                    identity.cdcColumn,
+                    partition);
             JSONObject properties = new JSONObject();
             if (!identity.primaryKeys.isEmpty()) {
                 properties.put(
-                    HASH_BUCKET_NUM.key(),
-                    Integer.toString(conf.getInteger(HASH_BUCKET_NUM))
-                );
+                        HASH_BUCKET_NUM.key(), Integer.toString(conf.getInteger(HASH_BUCKET_NUM)));
                 properties.put(
-                    HASH_PARTITIONS,
-                    String.join(
-                        LAKESOUL_HASH_PARTITION_SPLITTER,
-                        identity.primaryKeys
-                    )
-                );
+                        HASH_PARTITIONS,
+                        String.join(LAKESOUL_HASH_PARTITION_SPLITTER, identity.primaryKeys));
                 if (isCdc) {
                     properties.put(USE_CDC.key(), "true");
-                    properties.put(
-                        CDC_CHANGE_COLUMN,
-                        CDC_CHANGE_COLUMN_DEFAULT
-                    );
+                    properties.put(CDC_CHANGE_COLUMN, CDC_CHANGE_COLUMN_DEFAULT);
                 }
             }
-            FileSystem fileSystem = new Path(
-                identity.tableLocation
-            ).getFileSystem();
-            Path qp = new Path(identity.tableLocation).makeQualified(
-                fileSystem
-            );
+            FileSystem fileSystem = new Path(identity.tableLocation).getFileSystem();
+            Path qp = new Path(identity.tableLocation).makeQualified(fileSystem);
             FlinkUtil.createAndSetTableDirPermission(qp, true);
-            dbManager.createNewTable(tableId, tableNamespace, tableName, identity.tableLocation, msgSchema.toJson(),
-                    properties, partition);
+            dbManager.createNewTable(
+                    tableId,
+                    tableNamespace,
+                    tableName,
+                    identity.tableLocation,
+                    msgSchema.toJson(),
+                    properties,
+                    partition);
         } else {
             if (conf.getBoolean(AUTO_SCHEMA_CHANGE)) {
                 DBUtil.TablePartitionKeys partitionKeys =
-                    DBUtil.parseTableInfoPartitions(tableInfo.getPartitions());
-                if (
-                    partitionKeys.primaryKeys.size() !=
-                        identity.primaryKeys.size() ||
-                    !new HashSet<>(partitionKeys.primaryKeys).containsAll(
-                        identity.primaryKeys
-                    )
-                ) {
+                        DBUtil.parseTableInfoPartitions(tableInfo.getPartitions());
+                if (partitionKeys.primaryKeys.size() != identity.primaryKeys.size()
+                        || !new HashSet<>(partitionKeys.primaryKeys)
+                                .containsAll(identity.primaryKeys)) {
                     throw new IOException(
-                        "Change of primary key column of table " +
-                            tableName +
-                            " is forbidden"
-                    );
+                            "Change of primary key column of table " + tableName + " is forbidden");
                 }
-                if (
-                    partitionKeys.rangeKeys.size() !=
-                        identity.partitionKeyList.size() ||
-                    !new HashSet<>(partitionKeys.rangeKeys).containsAll(
-                        identity.partitionKeyList
-                    )
-                ) {
+                if (partitionKeys.rangeKeys.size() != identity.partitionKeyList.size()
+                        || !new HashSet<>(partitionKeys.rangeKeys)
+                                .containsAll(identity.partitionKeyList)) {
                     LOG.error(
-                        "rangeKeys: {}, partitionKeyList: {}",
-                        partitionKeys.rangeKeys,
-                        identity.partitionKeyList
-                    );
+                            "rangeKeys: {}, partitionKeyList: {}",
+                            partitionKeys.rangeKeys,
+                            identity.partitionKeyList);
                     throw new IOException(
-                        "Change of partition key column of table " +
-                            tableName +
-                            " is forbidden"
-                    );
+                            "Change of partition key column of table "
+                                    + tableName
+                                    + " is forbidden");
                 }
                 StructType origSchema;
-                if (
-                    TableInfoDao.isArrowKindSchema(tableInfo.getTableSchema())
-                ) {
-                    Schema arrowSchema = Schema.fromJSON(
-                        tableInfo.getTableSchema()
-                    );
+                if (TableInfoDao.isArrowKindSchema(tableInfo.getTableSchema())) {
+                    Schema arrowSchema = Schema.fromJSON(tableInfo.getTableSchema());
                     origSchema = ArrowUtils.fromArrowSchema(arrowSchema);
                 } else {
-                    origSchema = (StructType) StructType.fromJson(
-                        tableInfo.getTableSchema()
-                    );
+                    origSchema = (StructType) StructType.fromJson(tableInfo.getTableSchema());
                 }
                 scala.Tuple3<String, Object, StructType> equalOrCanCastTuple3 =
-                    DataTypeCastUtils.checkSchemaEqualOrCanCast(
-                        origSchema,
-                        ArrowUtils.fromArrowSchema(msgSchema),
-                        identity.partitionKeyList,
-                        identity.primaryKeys
-                    );
+                        DataTypeCastUtils.checkSchemaEqualOrCanCast(
+                                origSchema,
+                                ArrowUtils.fromArrowSchema(msgSchema),
+                                identity.partitionKeyList,
+                                identity.primaryKeys);
                 String equalOrCanCast = equalOrCanCastTuple3._1();
                 boolean schemaChanged = (boolean) equalOrCanCastTuple3._2();
                 StructType mergeStructType = equalOrCanCastTuple3._3();
                 if (equalOrCanCast.equals(DataTypeCastUtils.CAN_CAST())) {
                     LOG.warn(
-                        "Schema change found, origin schema = {}, changed schema = {}",
-                        origSchema.json(),
-                        msgSchema.toJson()
-                    );
+                            "Schema change found, origin schema = {}, changed schema = {}",
+                            origSchema.json(),
+                            msgSchema.toJson());
                     if (dbType.equals("mongodb")) {
                         if (schemaChanged) {
-                            dbManager.updateTableSchema(tableInfo.getTableId(), mergeStructType.json());
+                            dbManager.updateTableSchema(
+                                    tableInfo.getTableId(), mergeStructType.json());
                         }
                     } else {
                         if (logicallyDropColumn) {
                             List<String> droppedColumn =
-                                DataTypeCastUtils.getDroppedColumn(
-                                    origSchema,
-                                    sparkSchema
-                                );
+                                    DataTypeCastUtils.getDroppedColumn(origSchema, sparkSchema);
                             if (droppedColumn.size() > 0) {
-                                LOG.warn(
-                                    "Dropping Column {} Logically",
-                                    droppedColumn
-                                );
+                                LOG.warn("Dropping Column {} Logically", droppedColumn);
                                 dbManager.logicallyDropColumn(
-                                    tableInfo.getTableId(),
-                                    droppedColumn
-                                );
+                                        tableInfo.getTableId(), droppedColumn);
                                 if (schemaChanged) {
-                                    dbManager.updateTableSchema(tableInfo.getTableId(), mergeStructType.json());
+                                    dbManager.updateTableSchema(
+                                            tableInfo.getTableId(), mergeStructType.json());
                                 }
                             } else {
-                                dbManager.updateTableSchema(tableInfo.getTableId(), msgSchema.toJson());
+                                dbManager.updateTableSchema(
+                                        tableInfo.getTableId(), msgSchema.toJson());
                             }
                         } else {
                             LOG.info(
-                                "Changing table schema: {}, {}, {}, {}, {}, {}",
-                                tableNamespace,
-                                tableName,
-                                identity.tableLocation,
-                                msgSchema,
-                                identity.useCDC,
-                                identity.cdcColumn
-                            );
-                            // For physical column drop, remove dropped columns from the merged schema
+                                    "Changing table schema: {}, {}, {}, {}, {}, {}",
+                                    tableNamespace,
+                                    tableName,
+                                    identity.tableLocation,
+                                    msgSchema,
+                                    identity.useCDC,
+                                    identity.cdcColumn);
+                            // For physical column drop, remove dropped columns from the merged
+                            // schema
                             List<String> droppedColumns =
-                                    DataTypeCastUtils.getDroppedColumn(
-                                            origSchema,
-                                            sparkSchema
-                                    );
+                                    DataTypeCastUtils.getDroppedColumn(origSchema, sparkSchema);
                             StructType schemaToUpdate = mergeStructType;
                             if (!droppedColumns.isEmpty()) {
                                 LOG.info(
                                         "Physically dropping columns {} from table {}.{}",
                                         droppedColumns,
                                         tableNamespace,
-                                        tableName
-                                );
-                                StructField[] filteredFields = Arrays.stream(
-                                                mergeStructType.fields()
-                                        )
-                                        .filter(
-                                                f -> !droppedColumns.contains(f.name())
-                                        )
-                                        .toArray(StructField[]::new);
+                                        tableName);
+                                StructField[] filteredFields =
+                                        Arrays.stream(mergeStructType.fields())
+                                                .filter(f -> !droppedColumns.contains(f.name()))
+                                                .toArray(StructField[]::new);
                                 schemaToUpdate = new StructType(filteredFields);
                             }
                             dbManager.updateTableSchema(
-                                tableInfo.getTableId(),
-                                ArrowUtils.toMetadataArrowSchema(
-                                    schemaToUpdate,
-                                    "UTC"
-                                ).toJson()
-                            );
-                            if (
-                                JSONObject.parseObject(
-                                    tableInfo.getProperties()
-                                ).containsKey(
-                                    DBConfig.TableInfoProperty.DROPPED_COLUMN
-                                )
-                            ) {
-                                dbManager.removeLogicallyDropColumn(
-                                    tableInfo.getTableId()
-                                );
+                                    tableInfo.getTableId(),
+                                    ArrowUtils.toMetadataArrowSchema(schemaToUpdate, "UTC")
+                                            .toJson());
+                            if (JSONObject.parseObject(tableInfo.getProperties())
+                                    .containsKey(DBConfig.TableInfoProperty.DROPPED_COLUMN)) {
+                                dbManager.removeLogicallyDropColumn(tableInfo.getTableId());
                             }
                         }
                     }
-                } else if (
-                    !equalOrCanCast.equals(DataTypeCastUtils.IS_EQUAL())
-                ) {
-                    long schemaLastChangeTime = JSON.parseObject(
-                        tableInfo.getProperties()
-                    ).getLongValue(
-                        DBConfig.TableInfoProperty.LAST_TABLE_SCHEMA_CHANGE_TIME
-                    );
+                } else if (!equalOrCanCast.equals(DataTypeCastUtils.IS_EQUAL())) {
+                    long schemaLastChangeTime =
+                            JSON.parseObject(tableInfo.getProperties())
+                                    .getLongValue(
+                                            DBConfig.TableInfoProperty
+                                                    .LAST_TABLE_SCHEMA_CHANGE_TIME);
                     StringBuilder sb = new StringBuilder();
                     sb.append(equalOrCanCast);
                     sb.append(", for table ");
@@ -413,24 +341,19 @@ public class LakeSoulSinkGlobalCommitter
                     sb.append(".");
                     sb.append(tableInfo.getTableName());
                     String msg = sb.toString();
-                    if (
-                        equalOrCanCast.contains("Change of Partition Column") ||
-                        equalOrCanCast.contains("Change of Primary Key Column")
-                    ) {
-                        throw new SuppressRestartsException(
-                            new IllegalStateException(msg)
-                        );
+                    if (equalOrCanCast.contains("Change of Partition Column")
+                            || equalOrCanCast.contains("Change of Primary Key Column")) {
+                        throw new SuppressRestartsException(new IllegalStateException(msg));
                     }
-                    for (LakeSoulMultiTableSinkCommittable committable : lakeSoulMultiTableSinkCommittable) {
-                        if (
-                            committable.getCreationTime() > schemaLastChangeTime
-                        ) {
+                    for (LakeSoulMultiTableSinkCommittable committable :
+                            lakeSoulMultiTableSinkCommittable) {
+                        if (committable.getCreationTime() > schemaLastChangeTime) {
                             LOG.error(
-                                "Incompatible cast data {} created and delayThreshold time: {}, dml create time: {}",
-                                msg,
-                                schemaLastChangeTime,
-                                committable.getCreationTime()
-                            );
+                                    "Incompatible cast data {} created and delayThreshold time: {},"
+                                            + " dml create time: {}",
+                                    msg,
+                                    schemaLastChangeTime,
+                                    committable.getCreationTime());
                             throw new IOException(msg);
                         }
                     }
@@ -441,9 +364,7 @@ public class LakeSoulSinkGlobalCommitter
         committer.commit(lakeSoulMultiTableSinkCommittable, true);
     }
 
-    /**
-     * Signals that there is no committable any more.
-     */
+    /** Signals that there is no committable any more. */
     @Override
     public void endOfInput() {
         // do nothing

@@ -20,15 +20,12 @@ package com.dmetasoul.lakesoul.lakesoul.local.arrow.writers;
 
 import org.apache.arrow.vector.IntVector;
 
-/**
- * {@link ArrowFieldWriter} for Int.
- */
+/** {@link ArrowFieldWriter} for Int. */
 public abstract class IntWriter<T> extends ArrowFieldWriter<T> {
 
     public static IntWriter<Object[]> forObject(IntVector intVector) {
         return new IntWriterforObject(intVector);
     }
-
 
     // ------------------------------------------------------------------------------------------
 
@@ -51,9 +48,7 @@ public abstract class IntWriter<T> extends ArrowFieldWriter<T> {
 
     // ------------------------------------------------------------------------------------------
 
-    /**
-     * {@link IntWriter} for {@link Object[]} input.
-     */
+    /** {@link IntWriter} for {@link Object[]} input. */
     public static final class IntWriterforObject extends IntWriter<Object[]> {
 
         private IntWriterforObject(IntVector intVector) {
@@ -70,6 +65,4 @@ public abstract class IntWriter<T> extends ArrowFieldWriter<T> {
             return (int) in[ordinal];
         }
     }
-
-
 }

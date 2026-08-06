@@ -18,11 +18,10 @@
 
 package org.apache.flink.table.runtime.arrow.vectors;
 
+import org.apache.arrow.vector.Float8Vector;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.data.columnar.vector.DoubleColumnVector;
 import org.apache.flink.util.Preconditions;
-
-import org.apache.arrow.vector.Float8Vector;
 
 /** Arrow column vector for Double. */
 @Internal

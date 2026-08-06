@@ -13,7 +13,7 @@ import org.apache.spark.sql.types.{DataType, StringType}
 
 object Benchmark {
 
-  //var hostname = "localhost"
+  // var hostname = "localhost"
   var hostname = "mysql"
   var dbName = "test_cdc"
   var mysqlUserName = "root"
@@ -27,27 +27,21 @@ object Benchmark {
   var lakeSoulDBName = "default"
   var lakeSoulTableName = "s_test_cdc_default_init"
 
-
-  var url: String = "jdbc:mysql://" + hostname + ":" + mysqlPort + "/" + dbName + "?allowPublicKeyRetrieval=true&useSSL=false&useUnicode=true&characterEncoding=utf-8&serverTimezone=" + serverTimeZone
+  var url: String =
+    "jdbc:mysql://" + hostname + ":" + mysqlPort + "/" + dbName + "?allowPublicKeyRetrieval=true&useSSL=false&useUnicode=true&characterEncoding=utf-8&serverTimezone=" + serverTimeZone
 
   val DEFAULT_INIT_TABLE = "s_test_cdc_default_init"
   val DEFAULT_INIT_TABLE_1 = "s_test_cdc_default_init_1"
   val printLine = " ******** "
-  val splitLine = " --------------------------------------------------------------- "
+  val splitLine =
+    " --------------------------------------------------------------- "
 
-  /**
-   * param example:
-   * --mysql.hostname localhost
-   * --mysql.database.name default_init
-   * --mysql.username root
-   * --mysql.password root
-   * --mysql.port 3306
-   * --server.time.zone UTC
-   * --cdc.contract true
-   * --single.table.contract false
-   * --lakesoul.database.name lakesoul_test
-   * --lakesoul.table.name lakesoul_table
-   */
+  /** param example: --mysql.hostname localhost --mysql.database.name
+    * default_init --mysql.username root --mysql.password root --mysql.port 3306
+    * --server.time.zone UTC --cdc.contract true --single.table.contract false
+    * --lakesoul.database.name lakesoul_test --lakesoul.table.name
+    * lakesoul_table
+    */
   def main(args: Array[String]): Unit = {
     val parameter = ParametersTool.fromArgs(args)
     hostname = parameter.get("mysql.hostname", hostname)
@@ -58,22 +52,35 @@ object Benchmark {
     serverTimeZone = parameter.get("server.time.zone", serverTimeZone)
     verifyCDC = parameter.getBoolean("cdc.contract", true)
 
-    url = "jdbc:mysql://" + hostname + ":" + mysqlPort + "/" + dbName + "?allowPublicKeyRetrieval=true&useSSL=false&useUnicode=true&characterEncoding=utf-8&serverTimezone=" + serverTimeZone
+    url =
+      "jdbc:mysql://" + hostname + ":" + mysqlPort + "/" + dbName + "?allowPublicKeyRetrieval=true&useSSL=false&useUnicode=true&characterEncoding=utf-8&serverTimezone=" + serverTimeZone
 
-    singleLakeSoulContrast = parameter.getBoolean("single.table.contract", false)
+    singleLakeSoulContrast =
+      parameter.getBoolean("single.table.contract", false)
     if (singleLakeSoulContrast) {
       lakeSoulDBName = parameter.get("lakesoul.database.name", lakeSoulDBName)
-      lakeSoulTableName = parameter.get("lakesoul.table.name", lakeSoulTableName)
+      lakeSoulTableName =
+        parameter.get("lakesoul.table.name", lakeSoulTableName)
     }
 
-    val builder = SparkSession.builder()
+    val builder = SparkSession
+      .builder()
       .appName("BENCHMARK TEST")
       .master("local[4]")
-      .config("spark.hadoop.fs.s3.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+      .config(
+        "spark.hadoop.fs.s3.impl",
+        "org.apache.hadoop.fs.s3a.S3AFileSystem"
+      )
       .config("hadoop.fs.s3a.committer.name", "directory")
       .config("spark.hadoop.fs.s3a.committer.staging.conflict-mode", "append")
-      .config("spark.hadoop.fs.s3a.committer.staging.tmp.path", "/opt/spark/work-dir/s3a_staging")
-      .config("spark.hadoop.mapreduce.outputcommitter.factory.scheme.s3a", "org.apache.hadoop.fs.s3a.commit.S3ACommitterFactory")
+      .config(
+        "spark.hadoop.fs.s3a.committer.staging.tmp.path",
+        "/opt/spark/work-dir/s3a_staging"
+      )
+      .config(
+        "spark.hadoop.mapreduce.outputcommitter.factory.scheme.s3a",
+        "org.apache.hadoop.fs.s3a.commit.S3ACommitterFactory"
+      )
       .config("spark.hadoop.fs.s3a.path.style.access", "true")
       .config("spark.hadoop.fs.s3.buffer.dir", "/opt/spark/work-dir/s3")
       .config("spark.hadoop.fs.s3a.buffer.dir", "/opt/spark/work-dir/s3a")
@@ -90,10 +97,16 @@ object Benchmark {
       .config("spark.default.parallelism", 8)
       .config("spark.sql.parquet.mergeSchema", value = false)
       .config("spark.sql.parquet.filterPushdown", value = true)
-      .config("spark.hadoop.mapred.output.committer.class", "org.apache.hadoop.mapred.FileOutputCommitter")
+      .config(
+        "spark.hadoop.mapred.output.committer.class",
+        "org.apache.hadoop.mapred.FileOutputCommitter"
+      )
       .config("spark.sql.warehouse.dir", "s3://lakesoul-test-bucket/")
       .config("spark.sql.session.timeZone", serverTimeZone)
-      .config("spark.sql.extensions", "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension")
+      .config(
+        "spark.sql.extensions",
+        "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension"
+      )
       .config("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
       .config(SQLConf.DEFAULT_CATALOG.key, LakeSoulCatalog.CATALOG_NAME)
       .config("spark.default.parallelism", "16")
@@ -114,11 +127,14 @@ object Benchmark {
 
       val tableInfo = spark.sql("show tables").select("tableName")
       val mysqlTable = getMysqlTables(spark).select("table_name")
-      val tableInfoRdd = tableInfo.rdd.map { row =>
-        "[" + row.getString(0).replaceFirst("^s_test_cdc_", "") + "]"
-      }.filter(table_name => !table_name.contains("sink_table"))
+      val tableInfoRdd = tableInfo.rdd
+        .map { row =>
+          "[" + row.getString(0).replaceFirst("^s_test_cdc_", "") + "]"
+        }
+        .filter(table_name => !table_name.contains("sink_table"))
 
-      val mysqlTableRdd = mysqlTable.rdd.map(table_name => table_name.toString())
+      val mysqlTableRdd =
+        mysqlTable.rdd.map(table_name => table_name.toString())
       val diff1 = tableInfoRdd.subtract(mysqlTableRdd)
       val diff2 = mysqlTableRdd.subtract(tableInfoRdd)
       val result = diff1.count() == 0 && diff2.count() == 0
@@ -130,30 +146,35 @@ object Benchmark {
         System.exit(1)
       }
 
-      val tables = tableInfo.collect().map(_ (0).toString)
-      tables.filter(s => !s.equals("sink_table")).foreach(tableName => verifyQuery(spark, tableName))
+      val tables = tableInfo.collect().map(_(0).toString)
+      tables
+        .filter(s => !s.equals("sink_table"))
+        .foreach(tableName => verifyQuery(spark, tableName))
     }
   }
 
   def getMysqlTables(spark: SparkSession): DataFrame = {
-    spark.read.format("jdbc")
+    spark.read
+      .format("jdbc")
       .option("driver", "com.mysql.cj.jdbc.Driver")
       .option("url", url)
       .option("dbtable", "information_schema.tables")
       .option("user", mysqlUserName)
       .option("password", mysqlPassword)
       .load()
-      .filter("table_schema='" + dbName +"'")
+      .filter("table_schema='" + dbName + "'")
   }
 
   def verifyQuery(spark: SparkSession, table: String): Unit = {
-    var jdbcDF = spark.read.format("jdbc")
+    var jdbcDF = spark.read
+      .format("jdbc")
       .option("driver", "com.mysql.jdbc.Driver")
       .option("url", url)
       .option("dbtable", table.substring(11))
       .option("user", mysqlUserName)
       .option("numPartitions", "16")
-      .option("password", mysqlPassword).load()
+      .option("password", mysqlPassword)
+      .load()
     var lakesoulDF = spark.sql("select * from " + table).drop("rowKinds")
 
     jdbcDF = changeDF(jdbcDF, table)
@@ -168,19 +189,31 @@ object Benchmark {
     if (!result) {
       println(printLine + table + " result: " + result + printLine)
       println("*************diff1**************")
-      spark.createDataFrame(diff1, jdbcDF.schema).sort(jdbcDF.schema.fields(0).name).show(false)
+      spark
+        .createDataFrame(diff1, jdbcDF.schema)
+        .sort(jdbcDF.schema.fields(0).name)
+        .show(false)
       println("*************diff2**************")
-      spark.createDataFrame(diff2, lakesoulDF.schema).sort(lakesoulDF.schema.fields(0).name).show(false)
+      spark
+        .createDataFrame(diff2, lakesoulDF.schema)
+        .sort(lakesoulDF.schema.fields(0).name)
+        .show(false)
       println(table + " data verification ERROR!!!")
 
-      val jdbcRow = jdbcDF.sort(jdbcDF.schema.fields(0).name).limit(1).collect()(0)
-      val lakesoulRow = lakesoulDF.sort(lakesoulDF.schema.fields(0).name).limit(1).collect()(0)
-      jdbcRow.toSeq.zip(lakesoulRow.toSeq).foreach(pair => {
-        if (!pair._1.equals(pair._2)) {
-          println(s"${pair._1}, ${pair._2}")
-          println(s"${pair._1.getClass.getSimpleName}, ${pair._2.getClass.getSimpleName}")
-        }
-      })
+      val jdbcRow =
+        jdbcDF.sort(jdbcDF.schema.fields(0).name).limit(1).collect()(0)
+      val lakesoulRow =
+        lakesoulDF.sort(lakesoulDF.schema.fields(0).name).limit(1).collect()(0)
+      jdbcRow.toSeq
+        .zip(lakesoulRow.toSeq)
+        .foreach(pair => {
+          if (!pair._1.equals(pair._2)) {
+            println(s"${pair._1}, ${pair._2}")
+            println(
+              s"${pair._1.getClass.getSimpleName}, ${pair._2.getClass.getSimpleName}"
+            )
+          }
+        })
       System.exit(1)
     }
     println(printLine + table + " result: " + result + printLine)
@@ -197,7 +230,10 @@ object Benchmark {
         .withColumn("col_21", col("col_21").cast("integer"))
         .withColumn("col_23", col("col_23").cast("string"))
     } else {
-      if (df.columns.contains("col_14") && df.schema("col_14").dataType.equals(StringType)) {
+      if (
+        df.columns
+          .contains("col_14") && df.schema("col_14").dataType.equals(StringType)
+      ) {
         df.withColumn("col_14", functions.trim(col("col_14")))
       } else {
         df

@@ -5,6 +5,7 @@ package org.apache.flink.lakesoul.entry.clean;
 
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
+
 import org.apache.flink.api.common.state.*;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.FileSystem;
@@ -19,7 +20,12 @@ import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
-public class TtlBroadcastProcessFunction extends KeyedBroadcastProcessFunction<String, TableTtlProFunction.PartitionINfoUpdateEvents, TableInfoRecordGets.TableInfo, String> {
+public class TtlBroadcastProcessFunction
+        extends KeyedBroadcastProcessFunction<
+                String,
+                TableTtlProFunction.PartitionINfoUpdateEvents,
+                TableInfoRecordGets.TableInfo,
+                String> {
 
     private static final Logger log = LoggerFactory.getLogger(TtlBroadcastProcessFunction.class);
     private final long maxProcessIntervalMillis;
@@ -28,7 +34,9 @@ public class TtlBroadcastProcessFunction extends KeyedBroadcastProcessFunction<S
     private transient ValueState<Long> partitionLatestFreshTimeState;
     private transient ValueState<Long> partitionLatestProcessTimeState;
     private transient ValueState<Long> partitionTimerTimestampState;
-    public TtlBroadcastProcessFunction(MapStateDescriptor<String, Integer> ttlBroadcastStateDesc , int maxProcessIntervalDays) {
+
+    public TtlBroadcastProcessFunction(
+            MapStateDescriptor<String, Integer> ttlBroadcastStateDesc, int maxProcessIntervalDays) {
 
         this.ttlBroadcastStateDesc = ttlBroadcastStateDesc;
         this.maxProcessIntervalMillis = TimeUnit.DAYS.toMillis(maxProcessIntervalDays);
@@ -38,18 +46,30 @@ public class TtlBroadcastProcessFunction extends KeyedBroadcastProcessFunction<S
     public void open(Configuration parameters) throws Exception {
         ValueStateDescriptor<Long> partitionLatestFreshTimeStateDesc =
                 new ValueStateDescriptor<>("partitionLatestFreshTimeState", Long.class);
-        partitionTimerTimestampState = getRuntimeContext().getState(
-                new ValueStateDescriptor<>("timerTsState", Long.class)
-        );
+        partitionTimerTimestampState =
+                getRuntimeContext()
+                        .getState(new ValueStateDescriptor<>("timerTsState", Long.class));
 
         ValueStateDescriptor<Long> partitionLatestProcessTimeStateDesc =
                 new ValueStateDescriptor<>("partitionLatestProcessTimeState", Long.class);
-        partitionLatestFreshTimeState = getRuntimeContext().getState(partitionLatestFreshTimeStateDesc);
-        partitionLatestProcessTimeState = getRuntimeContext().getState(partitionLatestProcessTimeStateDesc);
+        partitionLatestFreshTimeState =
+                getRuntimeContext().getState(partitionLatestFreshTimeStateDesc);
+        partitionLatestProcessTimeState =
+                getRuntimeContext().getState(partitionLatestProcessTimeStateDesc);
     }
 
     @Override
-    public void processElement(TableTtlProFunction.PartitionINfoUpdateEvents value, KeyedBroadcastProcessFunction<String, TableTtlProFunction.PartitionINfoUpdateEvents, TableInfoRecordGets.TableInfo, String>.ReadOnlyContext ctx, Collector<String> out) throws Exception {
+    public void processElement(
+            TableTtlProFunction.PartitionINfoUpdateEvents value,
+            KeyedBroadcastProcessFunction<
+                                    String,
+                                    TableTtlProFunction.PartitionINfoUpdateEvents,
+                                    TableInfoRecordGets.TableInfo,
+                                    String>
+                            .ReadOnlyContext
+                    ctx,
+            Collector<String> out)
+            throws Exception {
         Long updateTimestamp = value.timestamp;
         Long latestTimestamp = partitionLatestFreshTimeState.value();
         long currentProcTime = ctx.timerService().currentProcessingTime();
@@ -67,15 +87,26 @@ public class TtlBroadcastProcessFunction extends KeyedBroadcastProcessFunction<S
     }
 
     @Override
-    public void processBroadcastElement(TableInfoRecordGets.TableInfo value, KeyedBroadcastProcessFunction<String, TableTtlProFunction.PartitionINfoUpdateEvents, TableInfoRecordGets.TableInfo, String>.Context ctx, Collector<String> out) throws Exception {
+    public void processBroadcastElement(
+            TableInfoRecordGets.TableInfo value,
+            KeyedBroadcastProcessFunction<
+                                    String,
+                                    TableTtlProFunction.PartitionINfoUpdateEvents,
+                                    TableInfoRecordGets.TableInfo,
+                                    String>
+                            .Context
+                    ctx,
+            Collector<String> out)
+            throws Exception {
         String tableId = value.tableId;
         int partitionTtl = value.partitionTtl;
-        BroadcastState<String, Integer> broadcastState = ctx.getBroadcastState(ttlBroadcastStateDesc);
+        BroadcastState<String, Integer> broadcastState =
+                ctx.getBroadcastState(ttlBroadcastStateDesc);
         if (partitionTtl == -1) {
-            log.info("检测到用户取消表：{} partition.ttl配置 ，清理相关状态",tableId);
+            log.info("检测到用户取消表：{} partition.ttl配置 ，清理相关状态", tableId);
             broadcastState.remove(tableId);
         } else if (partitionTtl == -5) {
-            log.info("检测到表：{} 已经被删除，清理相关状态",tableId);
+            log.info("检测到表：{} 已经被删除，清理相关状态", tableId);
             broadcastState.remove(tableId);
             partitionTimerTimestampState.clear();
             partitionLatestFreshTimeState.clear();
@@ -86,7 +117,8 @@ public class TtlBroadcastProcessFunction extends KeyedBroadcastProcessFunction<S
     }
 
     @Override
-    public void onTimer(long timestamp, OnTimerContext ctx, Collector<String> out) throws Exception {
+    public void onTimer(long timestamp, OnTimerContext ctx, Collector<String> out)
+            throws Exception {
         long currentProcTime = timestamp;
         Long timerTs = partitionTimerTimestampState.value();
         if (timerTs == null || timerTs != timestamp) {
@@ -98,12 +130,12 @@ public class TtlBroadcastProcessFunction extends KeyedBroadcastProcessFunction<S
         String partitionDesc = split[1];
         ReadOnlyBroadcastState<String, Integer> broadcastState =
                 ctx.getBroadcastState(ttlBroadcastStateDesc);
-        if (broadcastState == null){
+        if (broadcastState == null) {
             return;
         }
-        if (broadcastState.contains(tableId)){
+        if (broadcastState.contains(tableId)) {
             int partitionTtl = broadcastState.get(tableId);
-            if (partitionTtl == -1){
+            if (partitionTtl == -1) {
                 partitionLatestProcessTimeState.clear();
             } else {
                 long expiredTime = TimeUnit.DAYS.toMillis(partitionTtl);
@@ -125,7 +157,7 @@ public class TtlBroadcastProcessFunction extends KeyedBroadcastProcessFunction<S
                     partitionTimerTimestampState.clear();
                 } else {
                     long nextCheckTime = currentProcTime + maxProcessIntervalMillis;
-                    log.info("table_id: {},分区 {}并没有过期，将在后续继续判断",tableId,partitionDesc);
+                    log.info("table_id: {},分区 {}并没有过期，将在后续继续判断", tableId, partitionDesc);
                     ctx.timerService().registerProcessingTimeTimer(nextCheckTime);
                     partitionTimerTimestampState.update(nextCheckTime);
                 }
@@ -144,7 +176,8 @@ public class TtlBroadcastProcessFunction extends KeyedBroadcastProcessFunction<S
         if (tableInfo == null) {
             throw new CatalogException("Table " + tableId + " does not exist");
         }
-        List<String> deleteFilePath = dbManager.deleteMetaPartitionInfo(tableInfo.getTableId(), partitionDesc);
+        List<String> deleteFilePath =
+                dbManager.deleteMetaPartitionInfo(tableInfo.getTableId(), partitionDesc);
         Path partitionDir = null;
         log.info("开始清理过期分区数据：" + tableInfo.getTableName() + "/" + partitionDesc);
         for (String filePath : deleteFilePath) {
@@ -169,9 +202,9 @@ public class TtlBroadcastProcessFunction extends KeyedBroadcastProcessFunction<S
                     fs.delete(partitionDir, true);
                 }
             } catch (IOException e) {
-                throw new RuntimeException("Failed to delete partition directory: " + partitionDir, e);
+                throw new RuntimeException(
+                        "Failed to delete partition directory: " + partitionDir, e);
             }
         }
     }
-
 }

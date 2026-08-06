@@ -17,14 +17,24 @@ object UpsertWriteWithPartitionJoin {
   val tablePathGt = "s3://lakesoul-test-bucket/datalake_table/gt"
 
   def main(args: Array[String]): Unit = {
-    val builder = SparkSession.builder()
+    val builder = SparkSession
+      .builder()
       .appName("CCF BDCI 2022 DataLake Contest")
       .master("local[4]")
-      .config("spark.hadoop.fs.s3.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+      .config(
+        "spark.hadoop.fs.s3.impl",
+        "org.apache.hadoop.fs.s3a.S3AFileSystem"
+      )
       .config("hadoop.fs.s3a.committer.name", "directory")
       .config("spark.hadoop.fs.s3a.committer.staging.conflict-mode", "append")
-      .config("spark.hadoop.fs.s3a.committer.staging.tmp.path", "/opt/spark/work-dir/s3a_staging")
-      .config("spark.hadoop.mapreduce.outputcommitter.factory.scheme.s3a", "org.apache.hadoop.fs.s3a.commit.S3ACommitterFactory")
+      .config(
+        "spark.hadoop.fs.s3a.committer.staging.tmp.path",
+        "/opt/spark/work-dir/s3a_staging"
+      )
+      .config(
+        "spark.hadoop.mapreduce.outputcommitter.factory.scheme.s3a",
+        "org.apache.hadoop.fs.s3a.commit.S3ACommitterFactory"
+      )
       .config("spark.hadoop.fs.s3a.path.style.access", "true")
       .config("spark.hadoop.fs.s3.buffer.dir", "/opt/spark/work-dir/s3")
       .config("spark.hadoop.fs.s3a.buffer.dir", "/opt/spark/work-dir/s3a")
@@ -36,14 +46,27 @@ object UpsertWriteWithPartitionJoin {
       .config("spark.default.parallelism", 8)
       .config("spark.sql.parquet.mergeSchema", value = false)
       .config("spark.sql.parquet.filterPushdown", value = true)
-      .config("spark.hadoop.mapred.output.committer.class", "org.apache.hadoop.mapred.FileOutputCommitter")
-      .config("spark.sql.warehouse.dir", "s3://lakesoul-test-bucket/datalake_table/")
-      .config("spark.sql.extensions", "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension")
-      .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog")
+      .config(
+        "spark.hadoop.mapred.output.committer.class",
+        "org.apache.hadoop.mapred.FileOutputCommitter"
+      )
+      .config(
+        "spark.sql.warehouse.dir",
+        "s3://lakesoul-test-bucket/datalake_table/"
+      )
+      .config(
+        "spark.sql.extensions",
+        "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension"
+      )
+      .config(
+        "spark.sql.catalog.spark_catalog",
+        "org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog"
+      )
       .config("spark.hadoop.fs.s3a.connection.maximum", 400)
 
     if (args.length >= 1 && args(0) == "--localtest")
-      builder.config("spark.hadoop.fs.s3a.endpoint", "http://minio:9000")
+      builder
+        .config("spark.hadoop.fs.s3a.endpoint", "http://minio:9000")
         .config("spark.hadoop.fs.s3a.endpoint.region", "us-east-1")
         .config("spark.hadoop.fs.s3a.access.key", "minioadmin1")
         .config("spark.hadoop.fs.s3a.secret.key", "minioadmin1")
@@ -51,7 +74,10 @@ object UpsertWriteWithPartitionJoin {
     val spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
     SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, "true")
-    SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_READER_AWAIT_TIMEOUT.key, "60000")
+    SQLConf.get.setConfString(
+      LakeSoulSQLConf.NATIVE_IO_READER_AWAIT_TIMEOUT.key,
+      "60000"
+    )
 
     val dataPath0 = "/opt/spark/work-dir/data/base-0.parquet"
     val dataPath1 = "/opt/spark/work-dir/data/base-1.parquet"
@@ -64,42 +90,68 @@ object UpsertWriteWithPartitionJoin {
     val dataPath8 = "/opt/spark/work-dir/data/base-8.parquet"
     val dataPath9 = "/opt/spark/work-dir/data/base-9.parquet"
     val dataPath10 = "/opt/spark/work-dir/data/base-10.parquet"
-    val DeltaDataPathList = scala.util.Random.shuffle(List(
-      "l2" -> dataPath4,
-      "l2" -> dataPath2,
-      "l1" -> dataPath3,
-      "r2" -> dataPath6,
-      "r1" -> dataPath4,
-      "r2" -> dataPath3,
-      "r1" -> dataPath5,
-    ))
-
+    val DeltaDataPathList = scala.util.Random.shuffle(
+      List(
+        "l2" -> dataPath4,
+        "l2" -> dataPath2,
+        "l1" -> dataPath3,
+        "r2" -> dataPath6,
+        "r1" -> dataPath4,
+        "r2" -> dataPath3,
+        "r1" -> dataPath5
+      )
+    )
 
     spark.time({
-      spark.read.format("parquet").load(dataPath1).selectExpr("uuid", "substring(uuid, 1) as pk").select(col("uuid"), col("pk"), lit("1").as("rangeA"))
-        .write.format("lakesoul")
+      spark.read
+        .format("parquet")
+        .load(dataPath1)
+        .selectExpr("uuid", "substring(uuid, 1) as pk")
+        .select(col("uuid"), col("pk"), lit("1").as("rangeA"))
+        .write
+        .format("lakesoul")
         .option("rangePartitions", "rangeA")
         .option("hashPartitions", "pk")
         .option("hashBucketNum", 4)
         .partitionBy("rangeA")
-        .mode("Overwrite").save(tablePathLeft)
+        .mode("Overwrite")
+        .save(tablePathLeft)
 
-      spark.read.format("parquet").load(dataPath1).select(col("uuid"), col("ip"), col("requests"), col("city"), lit("1").as("rangeB"))
-        .write.format("lakesoul")
+      spark.read
+        .format("parquet")
+        .load(dataPath1)
+        .select(
+          col("uuid"),
+          col("ip"),
+          col("requests"),
+          col("city"),
+          lit("1").as("rangeB")
+        )
+        .write
+        .format("lakesoul")
         .option("rangePartitions", "rangeB")
         .option("hashPartitions", "uuid")
         .option("hashBucketNum", 4)
         .partitionBy("rangeB")
-        .mode("Overwrite").save(tablePathRight)
+        .mode("Overwrite")
+        .save(tablePathRight)
 
-      val df = LakeSoulTable.forPath(tablePathLeft).toDF.join(LakeSoulTable.forPath(tablePathRight).toDF, Seq("uuid"), "left_outer")
-      df
-        .write.format("lakesoul")
+      val df = LakeSoulTable
+        .forPath(tablePathLeft)
+        .toDF
+        .join(
+          LakeSoulTable.forPath(tablePathRight).toDF,
+          Seq("uuid"),
+          "left_outer"
+        )
+      df.write
+        .format("lakesoul")
         .option("rangePartitions", "rangeA")
         .option("hashPartitions", "pk")
         .option("hashBucketNum", 4)
         .partitionBy("rangeA")
-        .mode("Overwrite").save(tablePathJoin)
+        .mode("Overwrite")
+        .save(tablePathJoin)
 
       DeltaDataPathList.foreach(tup =>
         if (tup._1 == "r1") {
@@ -123,61 +175,128 @@ object UpsertWriteWithPartitionJoin {
       joinLeftTablePartitionTwo(rightDf1)
 
       println("saving gt")
-      val gt1 = LakeSoulTable.forPath(tablePathLeft).toDF.filter("rangeA=1").join(LakeSoulTable.forPath(tablePathRight).toDF.filter("rangeB=1"), Seq("uuid"), "left_outer")
-      val gt2 = LakeSoulTable.forPath(tablePathLeft).toDF.filter("rangeA=2").join(LakeSoulTable.forPath(tablePathRight).toDF.filter("rangeB=2"), Seq("uuid"), "left_outer")
-      val gt  = gt1.union(gt2)
-      gt.write.format("lakesoul")
+      val gt1 = LakeSoulTable
+        .forPath(tablePathLeft)
+        .toDF
+        .filter("rangeA=1")
+        .join(
+          LakeSoulTable.forPath(tablePathRight).toDF.filter("rangeB=1"),
+          Seq("uuid"),
+          "left_outer"
+        )
+      val gt2 = LakeSoulTable
+        .forPath(tablePathLeft)
+        .toDF
+        .filter("rangeA=2")
+        .join(
+          LakeSoulTable.forPath(tablePathRight).toDF.filter("rangeB=2"),
+          Seq("uuid"),
+          "left_outer"
+        )
+      val gt = gt1.union(gt2)
+      gt.write
+        .format("lakesoul")
         .option("rangePartitions", "rangeA")
         .option("hashPartitions", "pk")
         .option("hashBucketNum", 4)
         .partitionBy("rangeA")
-        .mode("Overwrite").save(tablePathGt)
+        .mode("Overwrite")
+        .save(tablePathGt)
       println("saving gt done")
     })
   }
 
-  private def upsertTableRightRangeOne(spark: SparkSession, path: String): DataFrame = {
+  private def upsertTableRightRangeOne(
+      spark: SparkSession,
+      path: String
+  ): DataFrame = {
     println(s"upsertTableRightRange1: $path")
-    val deltaRight = spark.read.parquet(path).select(col("uuid"), col("ip"), col("requests"), col("city"), lit("1").as("rangeB"))
+    val deltaRight = spark.read
+      .parquet(path)
+      .select(
+        col("uuid"),
+        col("ip"),
+        col("requests"),
+        col("city"),
+        lit("1").as("rangeB")
+      )
     LakeSoulTable.forPath(tablePathRight).upsert(deltaRight)
     deltaRight
   }
 
-  private def upsertTableRightRangeTwo(spark: SparkSession, path: String): DataFrame = {
+  private def upsertTableRightRangeTwo(
+      spark: SparkSession,
+      path: String
+  ): DataFrame = {
     println(s"upsertTableRightRange2: $path")
-    val deltaRight = spark.read.parquet(path).select(col("uuid"), col("ip"), col("requests"), col("city"), lit("2").as("rangeB"))
+    val deltaRight = spark.read
+      .parquet(path)
+      .select(
+        col("uuid"),
+        col("ip"),
+        col("requests"),
+        col("city"),
+        lit("2").as("rangeB")
+      )
     LakeSoulTable.forPath(tablePathRight).upsert(deltaRight)
     deltaRight
   }
 
-  private def upsertTableLeftRangeOne(spark: SparkSession, path: String): DataFrame = {
+  private def upsertTableLeftRangeOne(
+      spark: SparkSession,
+      path: String
+  ): DataFrame = {
     println(s"upsertTableLeftRange1: $path")
-    val deltaLeft = spark.read.parquet(path).selectExpr("uuid", "substring(uuid, 1) as pk").select(col("uuid"), col("pk"), lit("1").as("rangeA"))
+    val deltaLeft = spark.read
+      .parquet(path)
+      .selectExpr("uuid", "substring(uuid, 1) as pk")
+      .select(col("uuid"), col("pk"), lit("1").as("rangeA"))
     LakeSoulTable.forPath(tablePathLeft).upsert(deltaLeft)
     deltaLeft
   }
 
-  private def upsertTableLeftRangeTwo(spark: SparkSession, path: String): DataFrame = {
+  private def upsertTableLeftRangeTwo(
+      spark: SparkSession,
+      path: String
+  ): DataFrame = {
     println(s"upsertTableLeftRange2: $path")
-    val deltaLeft = spark.read.parquet(path).selectExpr("uuid", "substring(uuid, 1) as pk").select(col("uuid"), col("pk"), lit("2").as("rangeA"))
+    val deltaLeft = spark.read
+      .parquet(path)
+      .selectExpr("uuid", "substring(uuid, 1) as pk")
+      .select(col("uuid"), col("pk"), lit("2").as("rangeA"))
     LakeSoulTable.forPath(tablePathLeft).upsert(deltaLeft)
     deltaLeft
   }
 
   private def joinLeftTablePartitionOne(deltaRightDF: DataFrame): Unit = {
-    LakeSoulTable.forPath(tablePathJoin).upsertOnJoinKey(deltaRightDF, Seq("uuid"), Seq("rangeA=1"))
+    LakeSoulTable
+      .forPath(tablePathJoin)
+      .upsertOnJoinKey(deltaRightDF, Seq("uuid"), Seq("rangeA=1"))
   }
 
   private def joinLeftTablePartitionTwo(deltaRightDF: DataFrame): Unit = {
-    LakeSoulTable.forPath(tablePathJoin).upsertOnJoinKey(deltaRightDF, Seq("uuid"), Seq("rangeA=2"))
+    LakeSoulTable
+      .forPath(tablePathJoin)
+      .upsertOnJoinKey(deltaRightDF, Seq("uuid"), Seq("rangeA=2"))
   }
 
   private def joinRightTablePartitionOne(deltaLeftDF: DataFrame): Unit = {
-    LakeSoulTable.forPath(tablePathJoin).joinWithTablePathsAndUpsert(deltaLeftDF, Seq(tablePathRight), Seq(Seq("rangeB=1")))
+    LakeSoulTable
+      .forPath(tablePathJoin)
+      .joinWithTablePathsAndUpsert(
+        deltaLeftDF,
+        Seq(tablePathRight),
+        Seq(Seq("rangeB=1"))
+      )
   }
 
   private def joinRightTablePartitionTwo(deltaLeftDF: DataFrame): Unit = {
-    LakeSoulTable.forPath(tablePathJoin).joinWithTablePathsAndUpsert(deltaLeftDF, Seq(tablePathRight), Seq(Seq("rangeB=2")))
+    LakeSoulTable
+      .forPath(tablePathJoin)
+      .joinWithTablePathsAndUpsert(
+        deltaLeftDF,
+        Seq(tablePathRight),
+        Seq(Seq("rangeB=2"))
+      )
   }
 }
-

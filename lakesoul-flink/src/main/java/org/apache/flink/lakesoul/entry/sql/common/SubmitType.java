@@ -44,5 +44,4 @@ public enum SubmitType {
         }
         return null;
     }
-
 }

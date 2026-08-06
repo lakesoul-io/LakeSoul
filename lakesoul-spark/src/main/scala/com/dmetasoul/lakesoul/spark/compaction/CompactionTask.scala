@@ -47,10 +47,14 @@ object CompactionTask {
       fileSizeLimit = Some(parameter.get(FILE_SIZE_LIMIT_PARAMETER))
     }
 
-    val builder = SparkSession.builder()
+    val builder = SparkSession
+      .builder()
       .config("spark.sql.parquet.mergeSchema", value = true)
       .config("spark.sql.parquet.filterPushdown", value = true)
-      .config("spark.sql.extensions", "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension")
+      .config(
+        "spark.sql.extensions",
+        "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension"
+      )
       .config("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
       .config(SQLConf.DEFAULT_CATALOG.key, LakeSoulCatalog.CATALOG_NAME)
 
@@ -69,7 +73,8 @@ object CompactionTask {
     private val conn = DBConnector.getConn
     private val pgconn = conn.unwrap(classOf[PGConnection])
 
-    val threadPool: ExecutorService = Executors.newFixedThreadPool(threadPoolSize)
+    val threadPool: ExecutorService =
+      Executors.newFixedThreadPool(threadPoolSize)
 
     override def run(): Unit = {
       val stmt = conn.createStatement
@@ -84,14 +89,31 @@ object CompactionTask {
             val notificationParameter = notification.getParameter
             if (threadMap.get(notificationParameter) != 1) {
               threadMap.put(notificationParameter, 1)
-              val jsonObj = jsonParser.parse(notificationParameter).asInstanceOf[JsonObject]
-              println("========== " + dateFormat.format(new Date()) + " start processing notification: " + jsonObj + " ==========")
+              val jsonObj =
+                jsonParser.parse(notificationParameter).asInstanceOf[JsonObject]
+              println(
+                "========== " + dateFormat.format(
+                  new Date()
+                ) + " start processing notification: " + jsonObj + " =========="
+              )
               val tablePath = jsonObj.get("table_path").getAsString
-              val partitionDesc = jsonObj.get("table_partition_desc").getAsString
+              val partitionDesc =
+                jsonObj.get("table_partition_desc").getAsString
               val tableNamespace = jsonObj.get("table_namespace").getAsString
               if (tableNamespace.equals(database) || database.equals("")) {
-                val rsPartitionDesc = if (partitionDesc.equals(MetaUtils.DEFAULT_RANGE_PARTITION_VALUE)) "" else partitionDesc
-                threadPool.execute(new CompactionTableInfo(tablePath, rsPartitionDesc, notificationParameter))
+                val rsPartitionDesc =
+                  if (
+                    partitionDesc
+                      .equals(MetaUtils.DEFAULT_RANGE_PARTITION_VALUE)
+                  ) ""
+                  else partitionDesc
+                threadPool.execute(
+                  new CompactionTableInfo(
+                    tablePath,
+                    rsPartitionDesc,
+                    notificationParameter
+                  )
+                )
               }
             }
           })
@@ -101,25 +123,45 @@ object CompactionTask {
     }
   }
 
-  class CompactionTableInfo(path: String, partitionDesc: String, setValue: String) extends Thread {
+  class CompactionTableInfo(
+      path: String,
+      partitionDesc: String,
+      setValue: String
+  ) extends Thread {
     override def run(): Unit = {
       try {
         val table = LakeSoulTable.forPath(path)
         if (partitionDesc == "") {
-          table.compaction(cleanOldCompaction = cleanOldCompaction.get, fileNumLimit = fileNumLimit, fileSizeLimit = fileSizeLimit, force = fileSizeLimit.isEmpty)
+          table.compaction(
+            cleanOldCompaction = cleanOldCompaction.get,
+            fileNumLimit = fileNumLimit,
+            fileSizeLimit = fileSizeLimit,
+            force = fileSizeLimit.isEmpty
+          )
         } else {
-          val partitions = partitionDesc.split(",").map(
-            partition => {
+          val partitions = partitionDesc
+            .split(",")
+            .map(partition => {
               partition.replace("=", "='") + "'"
-            }
-          ).mkString(" and ")
-          table.compaction(partitions, cleanOldCompaction = cleanOldCompaction.get, fileNumLimit = fileNumLimit, fileSizeLimit = fileSizeLimit, force = fileSizeLimit.isEmpty)
+            })
+            .mkString(" and ")
+          table.compaction(
+            partitions,
+            cleanOldCompaction = cleanOldCompaction.get,
+            fileNumLimit = fileNumLimit,
+            fileSizeLimit = fileSizeLimit,
+            force = fileSizeLimit.isEmpty
+          )
         }
       } catch {
         case e: Exception => throw e
       } finally {
         threadMap.put(setValue, 0)
-        println("========== " + dateFormat.format(new Date()) + " processed notification: " + setValue + " ========== ")
+        println(
+          "========== " + dateFormat.format(
+            new Date()
+          ) + " processed notification: " + setValue + " ========== "
+        )
       }
     }
   }

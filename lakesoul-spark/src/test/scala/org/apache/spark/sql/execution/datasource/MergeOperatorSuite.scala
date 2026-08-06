@@ -10,22 +10,34 @@ import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
-import org.apache.spark.sql.lakesoul.test.{LakeSoulTestSparkSession, LakeSoulTestUtils, MergeOpInt, MergeOpString, MergeOpString02, TestUtils}
+import org.apache.spark.sql.lakesoul.test.{
+  LakeSoulTestSparkSession,
+  LakeSoulTestUtils,
+  MergeOpInt,
+  MergeOpString,
+  MergeOpString02,
+  TestUtils
+}
 import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
 import org.apache.spark.sql.{AnalysisException, QueryTest, SparkSession}
 import org.junit.runner.RunWith
 import org.scalatestplus.junit.JUnitRunner
 
 @RunWith(classOf[JUnitRunner])
-class MergeOperatorSuite extends QueryTest
-  with SharedSparkSession with LakeSoulTestUtils {
+class MergeOperatorSuite
+    extends QueryTest
+    with SharedSparkSession
+    with LakeSoulTestUtils {
 
   import testImplicits._
 
   override protected def createSparkSession: TestSparkSession = {
     SparkSession.cleanupAnyExistingSession()
     val session = new LakeSoulTestSparkSession(sparkConf)
-    session.conf.set("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
+    session.conf.set(
+      "spark.sql.catalog.lakesoul",
+      classOf[LakeSoulCatalog].getName
+    )
     session.conf.set(SQLConf.DEFAULT_CATALOG.key, "lakesoul")
     // Java Merge Operator is not supported by NATIVE_IO
     session.conf.set(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, true)
@@ -35,13 +47,16 @@ class MergeOperatorSuite extends QueryTest
   }
 
   test("read by defined merge operator - long type") {
-    LakeSoulTable.registerMergeOperator(spark,
+    LakeSoulTable.registerMergeOperator(
+      spark,
       "org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOpLong",
-      "longMOp")
+      "longMOp"
+    )
 
     withTempDir(dir => {
       val tableName = dir.getCanonicalPath
-      Seq(("a", 1L), ("b", 2L), ("c", 3L)).toDF("hash", "value")
+      Seq(("a", 1L), ("b", 2L), ("c", 3L))
+        .toDF("hash", "value")
         .write
         .mode("overwrite")
         .format("lakesoul")
@@ -55,7 +70,8 @@ class MergeOperatorSuite extends QueryTest
       )
 
       checkAnswer(
-        starTable.toDF.withColumn("value", expr("longMOp(value)"))
+        starTable.toDF
+          .withColumn("value", expr("longMOp(value)"))
           .select("hash", "value"),
         Seq(("a", 12L), ("b", 24L), ("c", 3L), ("d", 44L)).toDF("hash", "value")
       )
@@ -68,7 +84,8 @@ class MergeOperatorSuite extends QueryTest
 
     withTempDir(dir => {
       val tableName = dir.getCanonicalPath
-      Seq((1, 1, 1), (2, 2, 2), (3, 3, 3)).toDF("hash", "v1", "v2")
+      Seq((1, 1, 1), (2, 2, 2), (3, 3, 3))
+        .toDF("hash", "v1", "v2")
         .write
         .mode("overwrite")
         .format("lakesoul")
@@ -82,7 +99,8 @@ class MergeOperatorSuite extends QueryTest
       )
 
       checkAnswer(
-        starTable.toDF.withColumn("v2", expr("intOp(v2)"))
+        starTable.toDF
+          .withColumn("v2", expr("intOp(v2)"))
           .select("hash", "v1", "v2"),
         Seq((1, 12, 14), (2, 22, 25), (3, 32, 36)).toDF("hash", "v1", "v2")
       )
@@ -95,7 +113,8 @@ class MergeOperatorSuite extends QueryTest
 
     withTempDir(dir => {
       val tableName = dir.getCanonicalPath
-      Seq(("1", "1", "1"), ("2", "2", "2"), ("3", "3", "3")).toDF("hash", "v1", "v2")
+      Seq(("1", "1", "1"), ("2", "2", "2"), ("3", "3", "3"))
+        .toDF("hash", "v1", "v2")
         .write
         .mode("overwrite")
         .format("lakesoul")
@@ -105,12 +124,15 @@ class MergeOperatorSuite extends QueryTest
 
       val starTable = LakeSoulTable.forPath(tableName)
       starTable.upsert(
-        Seq(("1", "12", "13"), ("2", "22", "23"), ("3", "32", "33")).toDF("hash", "v1", "v2")
+        Seq(("1", "12", "13"), ("2", "22", "23"), ("3", "32", "33"))
+          .toDF("hash", "v1", "v2")
       )
       checkAnswer(
-        starTable.toDF.withColumn("v2", expr("stringOp(v2)"))
+        starTable.toDF
+          .withColumn("v2", expr("stringOp(v2)"))
           .select("hash", "v1", "v2"),
-        Seq(("1", "12", "1,13"), ("2", "22", "2,23"), ("3", "32", "3,33")).toDF("hash", "v1", "v2")
+        Seq(("1", "12", "1,13"), ("2", "22", "2,23"), ("3", "32", "3,33"))
+          .toDF("hash", "v1", "v2")
       )
     })
   }
@@ -120,7 +142,8 @@ class MergeOperatorSuite extends QueryTest
 
     withTempDir(dir => {
       val tableName = dir.getCanonicalPath
-      Seq((1, 1, 1), (2, 2, 2), (3, 3, 3)).toDF("hash", "v1", "v2")
+      Seq((1, 1, 1), (2, 2, 2), (3, 3, 3))
+        .toDF("hash", "v1", "v2")
         .write
         .mode("overwrite")
         .format("lakesoul")
@@ -131,7 +154,11 @@ class MergeOperatorSuite extends QueryTest
       val e = intercept[SparkException] {
         starTable.toDF.withColumn("v2", expr("intOp(v2)")).show()
       }
-      assert(e.getCause.getMessage.contains("Merge operator should be used with hash partitioned table"))
+      assert(
+        e.getCause.getMessage.contains(
+          "Merge operator should be used with hash partitioned table"
+        )
+      )
 
     })
   }
@@ -141,24 +168,38 @@ class MergeOperatorSuite extends QueryTest
     new MergeOpInt().register(spark, "intOp")
 
     val e1 = intercept[AnalysisException] {
-      spark.range(5).withColumn("external", lit("external field"))
+      spark
+        .range(5)
+        .withColumn("external", lit("external field"))
         .withColumn("externalV2", expr("stringOp(external)"))
         .select("externalV2")
         .show()
     }
     println(e1.getMessage())
 
-    assert(e1.getMessage().contains("is not in LakeSoulTableRel, you can't perform merge operator on it"))
+    assert(
+      e1.getMessage()
+        .contains(
+          "is not in LakeSoulTableRel, you can't perform merge operator on it"
+        )
+    )
 
     val e2 = intercept[AnalysisException] {
-      spark.range(5).withColumn("external", lit(1))
+      spark
+        .range(5)
+        .withColumn("external", lit(1))
         .withColumn("externalV2", expr("stringOp(external)"))
         .select("externalV2")
         .show()
     }
     println(e2.getMessage())
 
-    assert(e2.getMessage().contains("is not in LakeSoulTableRel, you can't perform merge operator on it"))
+    assert(
+      e2.getMessage()
+        .contains(
+          "is not in LakeSoulTableRel, you can't perform merge operator on it"
+        )
+    )
   }
 
   test("perform simple udf should success") {
@@ -172,7 +213,7 @@ class MergeOperatorSuite extends QueryTest
   }
 
   // TODO: merge operator for partition column not supported by native io
-  
+
   //  test("perform merge operator for partition column") {
   //    new MergeOpString().register(spark, "stringOp")
   //    new MergeOpInt().register(spark, "intOp")
@@ -221,15 +262,20 @@ class MergeOperatorSuite extends QueryTest
   //
   //  }
 
-
   test("perform different merge operator for different scan") {
     new MergeOpString().register(spark, "stringOp")
     new MergeOpInt().register(spark, "intOp")
 
     withTempDir(dir => {
       val tableName = dir.getCanonicalPath
-      Seq(("range1", "1", "1", 1), ("range1", "2", "2", 2), ("range1", "3", "3", 3),
-        ("range2", "1", "1", 1), ("range2", "2", "2", 2), ("range2", "3", "3", 3))
+      Seq(
+        ("range1", "1", "1", 1),
+        ("range1", "2", "2", 2),
+        ("range1", "3", "3", 3),
+        ("range2", "1", "1", 1),
+        ("range2", "2", "2", 2),
+        ("range2", "3", "3", 3)
+      )
         .toDF("range", "hash", "v1", "v2")
         .write
         .mode("overwrite")
@@ -241,8 +287,14 @@ class MergeOperatorSuite extends QueryTest
 
       val starTable = LakeSoulTable.forPath(tableName)
       starTable.upsert(
-        Seq(("range1", "1", "12", 13), ("range1", "2", "22", 23), ("range1", "3", "32", 33),
-          ("range2", "1", "12", 13), ("range2", "2", "22", 23), ("range2", "3", "32", 33))
+        Seq(
+          ("range1", "1", "12", 13),
+          ("range1", "2", "22", 23),
+          ("range1", "3", "32", 33),
+          ("range2", "1", "12", 13),
+          ("range2", "2", "22", 23),
+          ("range2", "3", "32", 33)
+        )
           .toDF("range", "hash", "v1", "v2")
       )
 
@@ -251,22 +303,36 @@ class MergeOperatorSuite extends QueryTest
         .select(col("range"), col("hash"), col("v1"), expr("intOp(v2) as v2"))
       val df2 = starTable.toDF
         .filter("range='range2'")
-        .select(col("range"), col("hash"), expr("stringOp(v1) as v1"), col("v2"))
+        .select(
+          col("range"),
+          col("hash"),
+          expr("stringOp(v1) as v1"),
+          col("v2")
+        )
 
+      val resultDF = df1
+        .join(df2, "hash")
+        .select(
+          col("hash"),
+          df1("range").as("r1"),
+          df1("v1"),
+          df1("v2"),
+          df2("range").as("r2"),
+          df2("v1"),
+          df2("v2")
+        )
 
-      val resultDF = df1.join(df2, "hash")
-        .select(col("hash"), df1("range").as("r1"), df1("v1"), df1("v2"),
-          df2("range").as("r2"), df2("v1"), df2("v2"))
-
-      checkAnswer(resultDF,
+      checkAnswer(
+        resultDF,
         Seq(
           ("1", "range1", "12", 14, "range2", "1,12", 13),
           ("2", "range1", "22", 25, "range2", "2,22", 23),
-          ("3", "range1", "32", 36, "range2", "3,32", 33))
-          .toDF("hash", "r1", "v1", "v2", "r2", "v1", "v2"))
+          ("3", "range1", "32", 36, "range2", "3,32", 33)
+        )
+          .toDF("hash", "r1", "v1", "v2", "r2", "v1", "v2")
+      )
 
     })
-
 
   }
 
@@ -297,7 +363,6 @@ class MergeOperatorSuite extends QueryTest
   //      )
   //    })
   //  }
-
 
   // TODO: append entire null column to "v2" physically to fix this case
 
@@ -343,7 +408,6 @@ class MergeOperatorSuite extends QueryTest
   //    })
   //  }
 
-
   test("compact after upsert, check for null value merge") {
     new MergeOpString().register(spark, "stringOp")
     new MergeOpInt().register(spark, "intOp")
@@ -352,15 +416,18 @@ class MergeOperatorSuite extends QueryTest
       withTempDir(dir => {
         val tableName = dir.getCanonicalPath
 
-        val data1 = TestUtils.getData1(50).toDF("hash", "value", "range").persist()
-        val data2 = TestUtils.getData1(50).toDF("hash", "name", "range").persist()
-        val data3 = TestUtils.getData1(50).toDF("hash", "value", "range").persist()
-        val data4 = TestUtils.getData2(50).toDF("hash", "value", "name", "range").persist()
+        val data1 =
+          TestUtils.getData1(50).toDF("hash", "value", "range").persist()
+        val data2 =
+          TestUtils.getData1(50).toDF("hash", "name", "range").persist()
+        val data3 =
+          TestUtils.getData1(50).toDF("hash", "value", "range").persist()
+        val data4 = TestUtils
+          .getData2(50)
+          .toDF("hash", "value", "name", "range")
+          .persist()
 
-        TestUtils.initTable(tableName,
-          data1,
-          "range",
-          "hash")
+        TestUtils.initTable(tableName, data1, "range", "hash")
 
         val table = LakeSoulTable.forPath(tableName)
         table.upsert(data2)
@@ -372,7 +439,8 @@ class MergeOperatorSuite extends QueryTest
             col("range"),
             col("hash"),
             expr("stringOp(value)"),
-            expr("stringOp(name)"))
+            expr("stringOp(name)")
+          )
           .show(false)
 
       })
@@ -381,18 +449,18 @@ class MergeOperatorSuite extends QueryTest
 
   }
 
-
   test("merge with large number of data - same data") {
     new MergeOpString().register(spark, "stringOp")
     new MergeOpInt().register(spark, "intOp")
 
     withTempDir(dir => {
       val tableName = dir.getCanonicalPath
-      val oriDF = TestUtils.getData1(20000, false).toDF("hash", "value", "range")
+      val oriDF = TestUtils
+        .getData1(20000, false)
+        .toDF("hash", "value", "range")
         .persist()
 
-      oriDF
-        .write
+      oriDF.write
         .mode("overwrite")
         .format("lakesoul")
         .option("rangePartitions", "range")
@@ -403,25 +471,25 @@ class MergeOperatorSuite extends QueryTest
       val starTable = LakeSoulTable.forPath(tableName)
       starTable.upsert(oriDF)
 
-      val resultDF = oriDF.groupBy("range", "hash")
+      val resultDF = oriDF
+        .groupBy("range", "hash")
         .agg(last("value").as("v"))
         .select(
           col("range"),
           col("hash"),
-          concat_ws(",", col("v"), col("v")).as("value"))
+          concat_ws(",", col("v"), col("v")).as("value")
+        )
 
       checkAnswer(
-        starTable.toDF.withColumn("value", expr("stringOp(value)"))
+        starTable.toDF
+          .withColumn("value", expr("stringOp(value)"))
           .select("range", "hash", "value"),
         resultDF
       )
 
-
     })
 
-
   }
-
 
   test("multi merge operator on one column should failed") {
     new MergeOpString().register(spark, "stringOp")
@@ -429,7 +497,8 @@ class MergeOperatorSuite extends QueryTest
 
     withTempDir(dir => {
       val tableName = dir.getCanonicalPath
-      Seq(("1", "1", "1"), ("2", "2", "2"), ("3", "3", "3")).toDF("hash", "v1", "v2")
+      Seq(("1", "1", "1"), ("2", "2", "2"), ("3", "3", "3"))
+        .toDF("hash", "v1", "v2")
         .write
         .mode("overwrite")
         .format("lakesoul")
@@ -439,29 +508,40 @@ class MergeOperatorSuite extends QueryTest
 
       val starTable = LakeSoulTable.forPath(tableName)
       starTable.upsert(
-        Seq(("1", "12", "13"), ("2", "22", "23"), ("3", "32", "33")).toDF("hash", "v1", "v2")
+        Seq(("1", "12", "13"), ("2", "22", "23"), ("3", "32", "33"))
+          .toDF("hash", "v1", "v2")
       )
 
       val e = intercept[AnalysisException] {
-        starTable.toDF.select("v2")
+        starTable.toDF
+          .select("v2")
           .withColumn("v3", expr("stringOp(v2)"))
           .withColumn("v4", expr("stringOp02(v2)"))
       }
-      assert(e.getMessage().contains("has multi merge operators, but only one merge operator can be set"))
+      assert(
+        e.getMessage()
+          .contains(
+            "has multi merge operators, but only one merge operator can be set"
+          )
+      )
 
     })
 
-
   }
 
-
-  test("merge operator on different columns with multi level project should success") {
+  test(
+    "merge operator on different columns with multi level project should success"
+  ) {
     new MergeOpString().register(spark, "stringOp")
     new MergeOpInt().register(spark, "intOp")
 
     withTempDir(dir => {
       val tableName = dir.getCanonicalPath
-      Seq(("range1", "1", "1", 1), ("range1", "2", "2", 2), ("range1", "3", "3", 3))
+      Seq(
+        ("range1", "1", "1", 1),
+        ("range1", "2", "2", 2),
+        ("range1", "3", "3", 3)
+      )
         .toDF("range", "hash", "v1", "v2")
         .write
         .mode("overwrite")
@@ -473,27 +553,32 @@ class MergeOperatorSuite extends QueryTest
 
       val starTable = LakeSoulTable.forPath(tableName)
       starTable.upsert(
-        Seq(("range1", "1", "12", 13), ("range1", "2", "22", 23), ("range1", "3", "32", 33))
+        Seq(
+          ("range1", "1", "12", 13),
+          ("range1", "2", "22", 23),
+          ("range1", "3", "32", 33)
+        )
           .toDF("range", "hash", "v1", "v2")
       )
 
-      val df = starTable.toDF.select("range", "hash", "v1", "v2")
+      val df = starTable.toDF
+        .select("range", "hash", "v1", "v2")
         .withColumn("v1", expr("stringOp(v1)"))
         .withColumn("v2", expr("intOp(v2)"))
         .select("range", "hash", "v1", "v2")
       df.explain("extended")
 
-      checkAnswer(df.select("range", "hash", "v1", "v2"),
+      checkAnswer(
+        df.select("range", "hash", "v1", "v2"),
         Seq(
           ("range1", "1", "1,12", 14),
           ("range1", "2", "2,22", 25),
-          ("range1", "3", "3,32", 36))
-          .toDF("range", "hash", "v1", "v2"))
+          ("range1", "3", "3,32", 36)
+        )
+          .toDF("range", "hash", "v1", "v2")
+      )
     })
 
   }
 
-
 }
-
-

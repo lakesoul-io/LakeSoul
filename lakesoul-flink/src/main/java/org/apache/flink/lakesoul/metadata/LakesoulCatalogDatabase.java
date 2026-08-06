@@ -16,7 +16,6 @@ public class LakesoulCatalogDatabase implements CatalogDatabase {
     private final Map<String, String> properties;
     private final String comment;
 
-
     public LakesoulCatalogDatabase(Map<String, String> properties, String comment) {
         this.properties = new HashMap<>();
         if (properties != null) {
@@ -28,7 +27,6 @@ public class LakesoulCatalogDatabase implements CatalogDatabase {
     public LakesoulCatalogDatabase() {
         this(null, DefaultComment);
     }
-
 
     @Override
     public Map<String, String> getProperties() {

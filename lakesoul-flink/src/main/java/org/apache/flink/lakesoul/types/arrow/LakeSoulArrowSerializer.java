@@ -17,11 +17,10 @@ import java.io.IOException;
 
 public class LakeSoulArrowSerializer extends TypeSerializer<LakeSoulArrowWrapper> {
 
-    private static final SimpleVersionedSerializer<TableSchemaIdentity> tableSchemaIdentitySerializer = new TableSchemaIdentitySerializer();
+    private static final SimpleVersionedSerializer<TableSchemaIdentity>
+            tableSchemaIdentitySerializer = new TableSchemaIdentitySerializer();
 
-    public LakeSoulArrowSerializer() {
-
-    }
+    public LakeSoulArrowSerializer() {}
 
     /**
      * Gets whether the type is an immutable type.
@@ -70,7 +69,7 @@ public class LakeSoulArrowSerializer extends TypeSerializer<LakeSoulArrowWrapper
      * Creates a copy from the given element. The method makes an attempt to store the copy in the
      * given reuse element, if the type is mutable. This is, however, not guaranteed.
      *
-     * @param from  The element to be copied.
+     * @param from The element to be copied.
      * @param reuse The element to be reused. May or may not be used.
      * @return A deep copy of the element.
      */
@@ -95,8 +94,8 @@ public class LakeSoulArrowSerializer extends TypeSerializer<LakeSoulArrowWrapper
      * @param record The record to serialize.
      * @param target The output view to write the serialized data to.
      * @throws IOException Thrown, if the serialization encountered an I/O related error. Typically
-     *                     raised by the output view, which may have an underlying I/O channel to which it
-     *                     delegates.
+     *     raised by the output view, which may have an underlying I/O channel to which it
+     *     delegates.
      */
     @Override
     public void serialize(LakeSoulArrowWrapper record, DataOutputView target) throws IOException {
@@ -108,7 +107,6 @@ public class LakeSoulArrowSerializer extends TypeSerializer<LakeSoulArrowWrapper
 
         target.writeInt(encodedBatch.length);
         target.write(encodedBatch);
-
     }
 
     /**
@@ -117,8 +115,8 @@ public class LakeSoulArrowSerializer extends TypeSerializer<LakeSoulArrowWrapper
      * @param source The input view from which to read the data.
      * @return The deserialized element.
      * @throws IOException Thrown, if the de-serialization encountered an I/O related error.
-     *                     Typically raised by the input view, which may have an underlying I/O channel from which
-     *                     it reads.
+     *     Typically raised by the input view, which may have an underlying I/O channel from which
+     *     it reads.
      */
     @Override
     public LakeSoulArrowWrapper deserialize(DataInputView source) throws IOException {
@@ -136,15 +134,16 @@ public class LakeSoulArrowSerializer extends TypeSerializer<LakeSoulArrowWrapper
      * De-serializes a record from the given source input view into the given reuse record instance
      * if mutable.
      *
-     * @param reuse  The record instance into which to de-serialize the data.
+     * @param reuse The record instance into which to de-serialize the data.
      * @param source The input view from which to read the data.
      * @return The deserialized element.
      * @throws IOException Thrown, if the de-serialization encountered an I/O related error.
-     *                     Typically raised by the input view, which may have an underlying I/O channel from which
-     *                     it reads.
+     *     Typically raised by the input view, which may have an underlying I/O channel from which
+     *     it reads.
      */
     @Override
-    public LakeSoulArrowWrapper deserialize(LakeSoulArrowWrapper reuse, DataInputView source) throws IOException {
+    public LakeSoulArrowWrapper deserialize(LakeSoulArrowWrapper reuse, DataInputView source)
+            throws IOException {
         int len = source.readInt();
         byte[] encodedTableInfo = new byte[len];
         source.read(encodedTableInfo);
@@ -175,9 +174,11 @@ public class LakeSoulArrowSerializer extends TypeSerializer<LakeSoulArrowWrapper
         source.read(bytes);
         target.write(bytes);
 
-        TableSchemaIdentity identity = SimpleVersionedSerialization.readVersionAndDeSerialize(
-                tableSchemaIdentitySerializer, source);
-        SimpleVersionedSerialization.writeVersionAndSerialize(tableSchemaIdentitySerializer, identity, target);
+        TableSchemaIdentity identity =
+                SimpleVersionedSerialization.readVersionAndDeSerialize(
+                        tableSchemaIdentitySerializer, source);
+        SimpleVersionedSerialization.writeVersionAndSerialize(
+                tableSchemaIdentitySerializer, identity, target);
     }
 
     @Override

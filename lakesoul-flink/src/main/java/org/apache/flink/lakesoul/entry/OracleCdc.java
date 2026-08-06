@@ -2,10 +2,17 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-
 package org.apache.flink.lakesoul.entry;
 
+import static org.apache.flink.lakesoul.tool.JobOptions.*;
+import static org.apache.flink.lakesoul.tool.LakeSoulDDLSinkOptions.*;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BUCKET_PARALLELISM;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SERVER_TIME_ZONE;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SOURCE_PARALLELISM;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.WAREHOUSE_PATH;
+
 import com.dmetasoul.lakesoul.meta.external.oracle.OracleDBManager;
+
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.api.java.utils.ParameterTool;
@@ -13,7 +20,6 @@ import org.apache.flink.cdc.connectors.base.options.StartupOptions;
 import org.apache.flink.cdc.connectors.base.source.jdbc.JdbcIncrementalSource;
 import org.apache.flink.cdc.connectors.oracle.source.OracleSourceBuilder;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTableSinkStreamBuilder;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
@@ -32,13 +38,6 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import java.util.Properties;
 import java.util.concurrent.TimeUnit;
 
-import static org.apache.flink.lakesoul.tool.JobOptions.*;
-import static org.apache.flink.lakesoul.tool.LakeSoulDDLSinkOptions.*;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BUCKET_PARALLELISM;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SERVER_TIME_ZONE;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SOURCE_PARALLELISM;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.WAREHOUSE_PATH;
-
 public class OracleCdc {
     public static void main(String[] args) throws Exception {
         ParameterTool parameter = ParameterTool.fromArgs(args);
@@ -47,15 +46,18 @@ public class OracleCdc {
         String passWord = parameter.get(SOURCE_DB_PASSWORD.key());
         String[] schemaList = parameter.get(SOURCE_DB_SCHEMA_LIST.key()).split(",");
         String host = parameter.get(SOURCE_DB_HOST.key());
-        int splitSize = parameter.getInt(SOURCE_DB_SPLIT_SIZE.key(), SOURCE_DB_SPLIT_SIZE.defaultValue());
+        int splitSize =
+                parameter.getInt(SOURCE_DB_SPLIT_SIZE.key(), SOURCE_DB_SPLIT_SIZE.defaultValue());
         int port = parameter.getInt(SOURCE_DB_PORT.key(), OracleDBManager.DEFAULT_ORACLE_PORT);
         String sinkDBName = parameter.get(SINK_DBNAME.key(), SINK_DBNAME.defaultValue());
         String databasePrefixPath = parameter.get(WAREHOUSE_PATH.key());
-        String serverTimezone = parameter.get(SERVER_TIME_ZONE.key(), SERVER_TIME_ZONE.defaultValue());
+        String serverTimezone =
+                parameter.get(SERVER_TIME_ZONE.key(), SERVER_TIME_ZONE.defaultValue());
         int sourceParallelism = parameter.getInt(SOURCE_PARALLELISM.key());
         int bucketParallelism = parameter.getInt(BUCKET_PARALLELISM.key());
-        int checkpointInterval = parameter.getInt(JOB_CHECKPOINT_INTERVAL.key(),
-                JOB_CHECKPOINT_INTERVAL.defaultValue());
+        int checkpointInterval =
+                parameter.getInt(
+                        JOB_CHECKPOINT_INTERVAL.key(), JOB_CHECKPOINT_INTERVAL.defaultValue());
         String tableList = parameter.get(SOURCE_DB_SCHEMA_TABLES.key());
         String flinkCheckpoint = parameter.get(FLINK_CHECKPOINT.key());
 
@@ -65,17 +67,17 @@ public class OracleCdc {
             userTables[i] = tables[i].toUpperCase();
         }
 
-        OracleDBManager dbManager = new OracleDBManager(dbName,
-                userName,
-                passWord,
-                host,
-                Integer.toString(port));
+        OracleDBManager dbManager =
+                new OracleDBManager(dbName, userName, passWord, host, Integer.toString(port));
 
         for (String schema : schemaList) {
             dbManager.importOrSyncLakeSoulNamespace(schema);
         }
         Configuration globalConfig = FlinkUtil.IOConfigs.getInstance().conf;
-        String warehousePath = databasePrefixPath == null ? globalConfig.getString(WAREHOUSE_PATH.key(), null): databasePrefixPath;
+        String warehousePath =
+                databasePrefixPath == null
+                        ? globalConfig.getString(WAREHOUSE_PATH.key(), null)
+                        : databasePrefixPath;
         Configuration conf = new Configuration();
         conf.set(LakeSoulSinkOptions.USE_CDC, true);
         conf.set(LakeSoulSinkOptions.isMultiTableSource, true);
@@ -87,7 +89,9 @@ public class OracleCdc {
         conf.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        env.getConfig().registerTypeWithKryoSerializer(BinarySourceRecord.class, BinarySourceRecordSerializer.class);
+        env.getConfig()
+                .registerTypeWithKryoSerializer(
+                        BinarySourceRecord.class, BinarySourceRecordSerializer.class);
 
         ParameterTool pt = ParameterTool.fromMap(conf.toMap());
         env.getConfig().setGlobalJobParameters(pt);
@@ -100,16 +104,16 @@ public class OracleCdc {
         env.getCheckpointConfig().setTolerableCheckpointFailureNumber(5);
         env.getCheckpointConfig().setCheckpointingMode(checkpointingMode);
         env.getCheckpointConfig()
-                .setExternalizedCheckpointCleanup(CheckpointConfig.ExternalizedCheckpointCleanup.DELETE_ON_CANCELLATION);
+                .setExternalizedCheckpointCleanup(
+                        CheckpointConfig.ExternalizedCheckpointCleanup.DELETE_ON_CANCELLATION);
 
         env.getCheckpointConfig().setCheckpointStorage(flinkCheckpoint);
-        env.setRestartStrategy(RestartStrategies.failureRateRestart(
-                3,
-                Time.of(10, TimeUnit.MINUTES),
-                Time.of(20, TimeUnit.SECONDS)
-        ));
+        env.setRestartStrategy(
+                RestartStrategies.failureRateRestart(
+                        3, Time.of(10, TimeUnit.MINUTES), Time.of(20, TimeUnit.SECONDS)));
 
-        LakeSoulRecordConvert lakeSoulRecordConvert = new LakeSoulRecordConvert(conf, conf.getString(SERVER_TIME_ZONE));
+        LakeSoulRecordConvert lakeSoulRecordConvert =
+                new LakeSoulRecordConvert(conf, conf.getString(SERVER_TIME_ZONE));
 
         Properties debeziumProperties = new Properties();
         debeziumProperties.setProperty("log.mining.strategy", "online_catalog");
@@ -123,18 +127,26 @@ public class OracleCdc {
                         .port(port)
                         .username(userName)
                         .password(passWord)
-                        .deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert, conf.getString(WAREHOUSE_PATH), sinkDBName))
+                        .deserializer(
+                                new BinaryDebeziumDeserializationSchema(
+                                        lakeSoulRecordConvert,
+                                        conf.getString(WAREHOUSE_PATH),
+                                        sinkDBName))
                         .includeSchemaChanges(true) // output the schema changes as well
                         .startupOptions(StartupOptions.initial())
                         .debeziumProperties(debeziumProperties)
                         .splitSize(splitSize)
                         .build();
 
-        LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
+        LakeSoulMultiTableSinkStreamBuilder.Context context =
+                new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;
         context.conf = (Configuration) env.getConfiguration();
-        LakeSoulMultiTableSinkStreamBuilder builder = new LakeSoulMultiTableSinkStreamBuilder(oracleChangeEventSource, context, lakeSoulRecordConvert);
-        DataStreamSource<BinarySourceRecord> source = builder.buildMultiTableSource("Oracle Source");
+        LakeSoulMultiTableSinkStreamBuilder builder =
+                new LakeSoulMultiTableSinkStreamBuilder(
+                        oracleChangeEventSource, context, lakeSoulRecordConvert);
+        DataStreamSource<BinarySourceRecord> source =
+                builder.buildMultiTableSource("Oracle Source");
         DataStream<BinarySourceRecord> stream = builder.buildHashPartitionedCDCStream(source);
         DataStreamSink<BinarySourceRecord> dmSink = builder.buildLakeSoulDMLSink(stream);
         env.execute("LakeSoul CDC Sink From Oracle Database" + dbName);

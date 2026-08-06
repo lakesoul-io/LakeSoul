@@ -20,15 +20,12 @@ package com.dmetasoul.lakesoul.lakesoul.local.arrow.writers;
 
 import org.apache.arrow.vector.VarCharVector;
 
-/**
- * {@link ArrowFieldWriter} for VarChar.
- */
+/** {@link ArrowFieldWriter} for VarChar. */
 public abstract class VarCharWriter<T> extends ArrowFieldWriter<T> {
 
     public static VarCharWriter<Object[]> forObject(VarCharVector varCharVector) {
         return new VarCharWriterForObject(varCharVector);
     }
-
 
     // ------------------------------------------------------------------------------------------
 
@@ -52,9 +49,7 @@ public abstract class VarCharWriter<T> extends ArrowFieldWriter<T> {
 
     // ------------------------------------------------------------------------------------------
 
-    /**
-     * {@link VarCharWriter} for {@link Object[]} input.
-     */
+    /** {@link VarCharWriter} for {@link Object[]} input. */
     public static final class VarCharWriterForObject extends VarCharWriter<Object[]> {
 
         private VarCharWriterForObject(VarCharVector varCharVector) {
@@ -71,5 +66,4 @@ public abstract class VarCharWriter<T> extends ArrowFieldWriter<T> {
             return (String) in[ordinal];
         }
     }
-
 }

@@ -2,7 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Modified from https://github.com/apache/flink/blob/master/flink-core/src/main/java/org/apache/flink/core/fs/Path.java
+// Modified from
+// https://github.com/apache/flink/blob/master/flink-core/src/main/java/org/apache/flink/core/fs/Path.java
 // to avoid using Hadoop's Path class
 
 package com.dmetasoul.lakesoul.meta;
@@ -387,7 +388,7 @@ public class Path implements Serializable {
                 && (!slashed || path.charAt(0) == '/')
                 && path.charAt(start + 1) == ':'
                 && ((path.charAt(start) >= 'A' && path.charAt(start) <= 'Z')
-                || (path.charAt(start) >= 'a' && path.charAt(start) <= 'z'));
+                        || (path.charAt(start) >= 'a' && path.charAt(start) <= 'z'));
     }
 
     // ------------------------------------------------------------------------

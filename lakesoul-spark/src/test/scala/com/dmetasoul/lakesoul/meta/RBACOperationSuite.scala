@@ -16,9 +16,10 @@ import org.junit.runner.RunWith
 import org.scalatestplus.junit.JUnitRunner
 
 @RunWith(classOf[JUnitRunner])
-class RBACOperationSuite extends QueryTest
-  with SharedSparkSession
-  with LakeSoulSQLCommandTest {
+class RBACOperationSuite
+    extends QueryTest
+    with SharedSparkSession
+    with LakeSoulSQLCommandTest {
 
   final val ADMIN1: String = "admin1"
   final val ADMIN1_PASS: String = "admin1"
@@ -31,7 +32,11 @@ class RBACOperationSuite extends QueryTest
   final val DOMAIN1: String = "domain1"
   final val DOMAIN2: String = "domain2"
 
-  def resetMetaConn(username: String, password: String, domain: String): Unit = {
+  def resetMetaConn(
+      username: String,
+      password: String,
+      domain: String
+  ): Unit = {
     println("TEST: LOGIN USERNAME " + username)
     println("TEST: LOGIN PASSWORD " + password)
     println("TEST: LOGIN DOMAIN " + domain)
@@ -81,8 +86,12 @@ class RBACOperationSuite extends QueryTest
     //    assert(df2.collectAsList().get(0).getString(1).equals("default"))
     // create tables
     spark.sql("use database1;")
-    spark.sql("create table if not exists table1 ( id int, foo string, bar string ) using lakesoul ")
-    spark.sql("create table if not exists table2 ( id int, foo string, bar string ) using lakesoul ")
+    spark.sql(
+      "create table if not exists table1 ( id int, foo string, bar string ) using lakesoul "
+    )
+    spark.sql(
+      "create table if not exists table2 ( id int, foo string, bar string ) using lakesoul "
+    )
     val df3 = spark.sql("show tables").toDF()
     assert(df3.count() == 2)
 
@@ -93,7 +102,9 @@ class RBACOperationSuite extends QueryTest
     assert(df4.count() == 0)
 
     // write and read data
-    spark.sql("create table if not exists table1 ( id int, foo string, bar string ) using lakesoul ")
+    spark.sql(
+      "create table if not exists table1 ( id int, foo string, bar string ) using lakesoul "
+    )
     spark.sql("insert into table1 values(1, 'foo1', 'bar1')")
     spark.sql("insert into table1 values(2, 'foo2', 'bar2')")
     val df5 = spark.sql("select * from table1").toDF()
@@ -102,7 +113,8 @@ class RBACOperationSuite extends QueryTest
     // update data
     spark.sql("update table1 set foo = 'foo3', bar = 'bar3'  where id = 2")
     val df6 = spark.sql("select (id, foo, bar) from table1 where id = 2").toDF()
-    val row = df6.collectAsList().get(0).get(0).asInstanceOf[GenericRowWithSchema];
+    val row =
+      df6.collectAsList().get(0).get(0).asInstanceOf[GenericRowWithSchema];
     assert(row.getString(1).equals("foo3"))
     assert(row.getString(2).equals("bar3"))
 
@@ -110,8 +122,6 @@ class RBACOperationSuite extends QueryTest
     spark.sql("delete from table1")
     val df7 = spark.sql("select * from table1").toDF()
     assert(df7.count() == 0)
-
-
 
     // create & drop database
     spark.sql("insert into table1 values(3, 'foo3', 'bar3')")
@@ -124,7 +134,11 @@ class RBACOperationSuite extends QueryTest
       spark.sql("create database if not exists database2")
     }
     println(err1.getMessage)
-    assert(err1.getMessage.contains("new row violates row-level security policy for table \"namespace\""))
+    assert(
+      err1.getMessage.contains(
+        "new row violates row-level security policy for table \"namespace\""
+      )
+    )
 
     val err11 = intercept[Exception] {
       spark.sql("drop database database1").collect()
@@ -134,7 +148,9 @@ class RBACOperationSuite extends QueryTest
 
     // create table & drop table
     val err2 = intercept[Exception] {
-      spark.sql("create table if not exists database1.table3 ( id int, foo string, bar string ) using lakesoul ")
+      spark.sql(
+        "create table if not exists database1.table3 ( id int, foo string, bar string ) using lakesoul "
+      )
     }
     println(err2.getMessage)
     assert(err2.isInstanceOf[NoSuchNamespaceException])
@@ -151,7 +167,9 @@ class RBACOperationSuite extends QueryTest
     println(err4.getMessage)
     assert(err4.getMessage.contains("cannot be found"))
     val err5 = intercept[Exception] {
-      spark.sql("update database1.table1 set foo='foo4', bar='bar44' where id = 3")
+      spark.sql(
+        "update database1.table1 set foo='foo4', bar='bar44' where id = 3"
+      )
     }
     println(err5.getMessage)
     assert(err5.getMessage.contains("cannot be found"))
@@ -178,7 +196,6 @@ class RBACOperationSuite extends QueryTest
     // create
     spark.sql("create database if not exists database1")
 
-
     login(USER1, USER1_PASS, DOMAIN1)
     // create table & drop database
     spark.sql("use database1;")
@@ -197,21 +214,28 @@ class RBACOperationSuite extends QueryTest
     assert(spark.sql("show databases").toDF().count() == 2)
 
     // create & drop table
-    spark.sql("create table if not exists table1 ( id int, foo string, bar string ) using lakesoul ")
-    spark.sql("create table if not exists table2 ( id int, foo string, bar string ) using lakesoul ")
+    spark.sql(
+      "create table if not exists table1 ( id int, foo string, bar string ) using lakesoul "
+    )
+    spark.sql(
+      "create table if not exists table2 ( id int, foo string, bar string ) using lakesoul "
+    )
     assert(spark.sql("show tables").toDF().count() == 2)
     spark.sql("drop table table1")
     spark.sql("drop table table2")
     assert(spark.sql("show tables").toDF().count() == 0)
 
     // CRUD data
-    spark.sql("create table if not exists table1 ( id int, foo string, bar string ) using lakesoul ")
+    spark.sql(
+      "create table if not exists table1 ( id int, foo string, bar string ) using lakesoul "
+    )
     spark.sql("insert into table1 values(1, 'foo1', 'bar1')")
     spark.sql("insert into table1 values(2, 'foo2', 'bar2')")
     assert(spark.sql("select * from table1").toDF().count() == 2)
     spark.sql("update table1 set foo = 'foo3', bar = 'bar3'  where id = 2")
     val df1 = spark.sql("select (id, foo, bar) from table1 where id = 2").toDF()
-    val row = df1.collectAsList().get(0).get(0).asInstanceOf[GenericRowWithSchema];
+    val row =
+      df1.collectAsList().get(0).get(0).asInstanceOf[GenericRowWithSchema];
     assert(row.getString(1).equals("foo3"))
     assert(row.getString(2).equals("bar3"))
     spark.sql("delete from table1")
@@ -230,8 +254,11 @@ class RBACOperationSuite extends QueryTest
     login(USER1, USER1_PASS, DOMAIN1)
     // create table
     sql("use database1")
-    val tablePath = new Path("hdfs://localhost:9000/lakesoul-test-bucket/database1/table1")
-    sql("create table if not exists table1 ( id int, foo string, bar string ) using lakesoul location '" + tablePath.toString + "'")
+    val tablePath =
+      new Path("hdfs://localhost:9000/lakesoul-test-bucket/database1/table1")
+    sql(
+      "create table if not exists table1 ( id int, foo string, bar string ) using lakesoul location '" + tablePath.toString + "'"
+    )
     // table owner can read/write
     sql("insert into table1 values(1, 'foo1', 'bar1')")
     sql("select * from table1")
@@ -244,7 +271,10 @@ class RBACOperationSuite extends QueryTest
     login(ADMIN2, ADMIN2_PASS, DOMAIN2)
     val dir = new org.apache.hadoop.fs.Path(tablePath.toString)
     val fs = dir.getFileSystem(spark.sparkContext.hadoopConfiguration)
-    Assert.assertThrows(classOf[org.apache.hadoop.security.AccessControlException], () => fs.listFiles(dir, true))
+    Assert.assertThrows(
+      classOf[org.apache.hadoop.security.AccessControlException],
+      () => fs.listFiles(dir, true)
+    )
 
     login(ADMIN1, ADMIN1_PASS, DOMAIN1)
     sql("drop database if exists database1 cascade")

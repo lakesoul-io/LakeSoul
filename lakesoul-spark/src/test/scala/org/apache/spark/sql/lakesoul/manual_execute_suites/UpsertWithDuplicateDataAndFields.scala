@@ -24,67 +24,64 @@ class UpsertWithDuplicateDataAndFields {
 
     try {
 
-      val data1 = TestUtils.getData1(20000, onlyOnePartition)
+      val data1 = TestUtils
+        .getData1(20000, onlyOnePartition)
         .toDF("hash", "name", "range")
         .persist()
-      lazy val data2 = TestUtils.getData3(18000, onlyOnePartition)
+      lazy val data2 = TestUtils
+        .getData3(18000, onlyOnePartition)
         .toDF("hash", "name", "age", "grade", "range")
         .persist()
-      lazy val data3 = TestUtils.getData1(15000, onlyOnePartition)
+      lazy val data3 = TestUtils
+        .getData1(15000, onlyOnePartition)
         .toDF("hash", "grade", "range")
         .persist()
-      lazy val data4 = TestUtils.getData2(23000, onlyOnePartition)
+      lazy val data4 = TestUtils
+        .getData2(23000, onlyOnePartition)
         .toDF("hash", "age", "grade", "range")
         .persist()
 
-      val distinctData1 = data1.groupBy("range", "hash")
-        .agg(
-          last("name").as("n"))
-        .select(
-          col("range"),
-          col("hash"),
-          col("n").as("name"))
+      val distinctData1 = data1
+        .groupBy("range", "hash")
+        .agg(last("name").as("n"))
+        .select(col("range"), col("hash"), col("n").as("name"))
         .persist()
 
-      lazy val distinctData2 = data2.groupBy("range", "hash")
-        .agg(
-          last("name").as("n"),
-          last("age").as("a"),
-          last("grade").as("g"))
+      lazy val distinctData2 = data2
+        .groupBy("range", "hash")
+        .agg(last("name").as("n"), last("age").as("a"), last("grade").as("g"))
         .select(
           col("range"),
           col("hash"),
           col("n").as("name"),
           col("a").as("age"),
-          col("g").as("grade"))
+          col("g").as("grade")
+        )
         .persist()
 
-      lazy val distinctData3 = data3.groupBy("range", "hash")
-        .agg(
-          last("grade").as("g"))
-        .select(
-          col("range"),
-          col("hash"),
-          col("g").as("grade"))
+      lazy val distinctData3 = data3
+        .groupBy("range", "hash")
+        .agg(last("grade").as("g"))
+        .select(col("range"), col("hash"), col("g").as("grade"))
         .persist()
 
-      lazy val distinctData4 = data4.groupBy("range", "hash")
-        .agg(
-          last("age").as("a"),
-          last("grade").as("g"))
+      lazy val distinctData4 = data4
+        .groupBy("range", "hash")
+        .agg(last("age").as("a"), last("grade").as("g"))
         .select(
           col("range"),
           col("hash"),
           col("a").as("age"),
-          col("g").as("grade"))
+          col("g").as("grade")
+        )
         .persist()
 
-
-      TestUtils.initTable(tableName,
+      TestUtils.initTable(
+        tableName,
         data1.select("range", "hash", "name"),
         "range",
-        "hash")
-
+        "hash"
+      )
 
       TestUtils.checkUpsertResult(
         tableName,
@@ -96,11 +93,14 @@ class UpsertWithDuplicateDataAndFields {
             col("hash"),
             coalesce(distinctData2("name"), distinctData1("name")).as("name"),
             distinctData2("age").as("age"),
-            distinctData2("grade").as("grade")),
+            distinctData2("grade").as("grade")
+          ),
         Seq("range", "hash", "name", "age", "grade"),
-        None)
+        None
+      )
 
-      TestUtils.checkUpsertResult(tableName,
+      TestUtils.checkUpsertResult(
+        tableName,
         data3.select("range", "hash", "grade"),
         distinctData1
           .join(distinctData2, Seq("range", "hash"), "full")
@@ -110,11 +110,14 @@ class UpsertWithDuplicateDataAndFields {
             col("hash"),
             coalesce(distinctData2("name"), distinctData1("name")).as("name"),
             distinctData2("age").as("age"),
-            coalesce(distinctData3("grade"), distinctData2("grade")).as("grade")),
+            coalesce(distinctData3("grade"), distinctData2("grade")).as("grade")
+          ),
         Seq("range", "hash", "name", "age", "grade"),
-        None)
+        None
+      )
 
-      TestUtils.checkUpsertResult(tableName,
+      TestUtils.checkUpsertResult(
+        tableName,
         data4.select("range", "hash", "age", "grade"),
         distinctData1
           .join(distinctData2, Seq("range", "hash"), "full")
@@ -125,7 +128,12 @@ class UpsertWithDuplicateDataAndFields {
             col("hash"),
             coalesce(distinctData2("name"), distinctData1("name")).as("name"),
             coalesce(distinctData4("age"), distinctData2("age")).as("age"),
-            coalesce(distinctData4("grade"), distinctData3("grade"), distinctData2("grade")).as("grade")),
+            coalesce(
+              distinctData4("grade"),
+              distinctData3("grade"),
+              distinctData2("grade")
+            ).as("grade")
+          ),
         Seq("range", "hash", "name", "age", "grade"),
         None
       )

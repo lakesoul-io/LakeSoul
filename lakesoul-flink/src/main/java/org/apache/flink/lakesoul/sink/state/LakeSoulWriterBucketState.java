@@ -4,6 +4,8 @@
 
 package org.apache.flink.lakesoul.sink.state;
 
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKET;
+
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.sink.writer.LakeSoulWriterBucket;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
@@ -15,23 +17,18 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKET;
-
-/**
- * States for {@link LakeSoulWriterBucket}.
- */
+/** States for {@link LakeSoulWriterBucket}. */
 public class LakeSoulWriterBucketState {
 
     private final TableSchemaIdentity identity;
 
     private final String bucketId;
 
-    /**
-     * The directory where all the part files of the bucket are stored.
-     */
+    /** The directory where all the part files of the bucket are stored. */
     private final Path bucketPath;
 
-    private final Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFileRecoverableMap;
+    private final Map<String, List<InProgressFileWriter.PendingFileRecoverable>>
+            pendingFileRecoverableMap;
 
     private final int restartTimes;
 
@@ -39,8 +36,7 @@ public class LakeSoulWriterBucketState {
             TableSchemaIdentity identity,
             String bucketId,
             Path bucketPath,
-            List<InProgressFileWriter.PendingFileRecoverable> pendingFileRecoverableList
-    ) {
+            List<InProgressFileWriter.PendingFileRecoverable> pendingFileRecoverableList) {
         this.identity = identity;
         this.bucketId = bucketId;
         this.bucketPath = bucketPath;
@@ -52,19 +48,20 @@ public class LakeSoulWriterBucketState {
     public LakeSoulWriterBucketState(
             TableSchemaIdentity identity,
             Path bucketPath,
-            HashMap<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFileRecoverableMap
-    ) {
+            HashMap<String, List<InProgressFileWriter.PendingFileRecoverable>>
+                    pendingFileRecoverableMap) {
         this(identity, bucketPath, pendingFileRecoverableMap, 0);
     }
 
     public LakeSoulWriterBucketState(
             TableSchemaIdentity identity,
             Path bucketPath,
-            HashMap<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFileRecoverableMap,
-            int restartTimes
-    ) {
+            HashMap<String, List<InProgressFileWriter.PendingFileRecoverable>>
+                    pendingFileRecoverableMap,
+            int restartTimes) {
         this.identity = identity;
-        Optional<Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>>> first = pendingFileRecoverableMap.entrySet().stream().findFirst();
+        Optional<Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>>> first =
+                pendingFileRecoverableMap.entrySet().stream().findFirst();
         if (first.isPresent()) {
             this.bucketId = first.get().getKey();
         } else {
@@ -91,15 +88,16 @@ public class LakeSoulWriterBucketState {
     @Override
     public String toString() {
 
-        return "BucketState for bucketId=" +
-                bucketId +
-                " and bucketPath=" +
-                bucketPath +
-                " and identity=" +
-                identity +
-                " and pendingFilesMap=" +
-                pendingFileRecoverableMap.entrySet().stream().map(Object::toString).collect(Collectors.joining("; "))
-                ;
+        return "BucketState for bucketId="
+                + bucketId
+                + " and bucketPath="
+                + bucketPath
+                + " and identity="
+                + identity
+                + " and pendingFilesMap="
+                + pendingFileRecoverableMap.entrySet().stream()
+                        .map(Object::toString)
+                        .collect(Collectors.joining("; "));
     }
 
     public TableSchemaIdentity getIdentity() {
@@ -110,7 +108,8 @@ public class LakeSoulWriterBucketState {
         return pendingFileRecoverableMap.values().stream().findFirst().get();
     }
 
-    public Map<String, List<InProgressFileWriter.PendingFileRecoverable>> getPendingFileRecoverableMap() {
+    public Map<String, List<InProgressFileWriter.PendingFileRecoverable>>
+            getPendingFileRecoverableMap() {
         return pendingFileRecoverableMap;
     }
 }

@@ -16,7 +16,7 @@ public class DBFactory {
     private static volatile PartitionInfoDao partitionInfoDao;
     private static volatile DiscardCompressedFileDao discardCompressedFileDao;
 
-    private DBFactory(){}
+    private DBFactory() {}
 
     public static NamespaceDao getNamespaceDao() {
         if (namespaceDao == null) {

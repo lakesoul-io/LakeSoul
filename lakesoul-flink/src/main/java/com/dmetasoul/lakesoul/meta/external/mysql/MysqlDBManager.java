@@ -9,6 +9,7 @@ import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.DataBaseProperty;
 import com.dmetasoul.lakesoul.meta.external.DBConnector;
 import com.dmetasoul.lakesoul.meta.external.ExternalDBManager;
+
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -29,16 +30,42 @@ public class MysqlDBManager implements ExternalDBManager {
     MysqlDataTypeConverter converter = new MysqlDataTypeConverter();
     private final HashSet<String> excludeTables;
     private final HashSet<String> includeTables;
-    private final String[] filterTables = new String[]{"sys_config"};
+    private final String[] filterTables = new String[] {"sys_config"};
 
-    public MysqlDBManager(String dbName, String user, String passwd, String host, String port,
-                          HashSet<String> excludeTables, String pathPrefix, int hashBucketNum, boolean useCdc) {
-        this(dbName, user, passwd, host, port, excludeTables, new HashSet<>(), pathPrefix, hashBucketNum, useCdc);
+    public MysqlDBManager(
+            String dbName,
+            String user,
+            String passwd,
+            String host,
+            String port,
+            HashSet<String> excludeTables,
+            String pathPrefix,
+            int hashBucketNum,
+            boolean useCdc) {
+        this(
+                dbName,
+                user,
+                passwd,
+                host,
+                port,
+                excludeTables,
+                new HashSet<>(),
+                pathPrefix,
+                hashBucketNum,
+                useCdc);
     }
 
-    public MysqlDBManager(String dbName, String user, String passwd, String host, String port,
-                          HashSet<String> excludeTables, HashSet<String> includeTables, String pathPrefix,
-                          int hashBucketNum, boolean useCdc) {
+    public MysqlDBManager(
+            String dbName,
+            String user,
+            String passwd,
+            String host,
+            String port,
+            HashSet<String> excludeTables,
+            HashSet<String> includeTables,
+            String pathPrefix,
+            int hashBucketNum,
+            boolean useCdc) {
         this.dbName = dbName;
         this.excludeTables = excludeTables;
         this.includeTables = includeTables;
@@ -46,7 +73,14 @@ public class MysqlDBManager implements ExternalDBManager {
 
         DataBaseProperty dataBaseProperty = new DataBaseProperty();
         dataBaseProperty.setDriver("com.mysql.jdbc.Driver");
-        String url = "jdbc:mysql://" + host + ":" + port + "/" + dbName + "?useSSL=false&allowPublicKeyRetrieval=true";
+        String url =
+                "jdbc:mysql://"
+                        + host
+                        + ":"
+                        + port
+                        + "/"
+                        + dbName
+                        + "?useSSL=false&allowPublicKeyRetrieval=true";
         dataBaseProperty.setUrl(url);
         dataBaseProperty.setUsername(user);
         dataBaseProperty.setPassword(passwd);
@@ -85,5 +119,4 @@ public class MysqlDBManager implements ExternalDBManager {
         }
         return result;
     }
-
 }

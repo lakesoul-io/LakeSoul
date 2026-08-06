@@ -5,6 +5,7 @@ package org.apache.flink.lakesoul.entry;
 
 import com.mongodb.client.model.InsertOneModel;
 import com.mongodb.client.model.WriteModel;
+
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.connector.mongodb.sink.writer.context.MongoSinkContext;
 import org.apache.flink.connector.mongodb.sink.writer.serializer.MongoSerializationSchema;
@@ -18,7 +19,6 @@ import java.io.Serializable;
 import java.text.ParseException;
 import java.util.List;
 
-
 public class MyMongoSerializationSchema
         implements MongoSerializationSchema<Tuple2<Boolean, Row>>, Serializable {
 
@@ -28,9 +28,8 @@ public class MyMongoSerializationSchema
 
     public MyMongoSerializationSchema(Table coll) {
 
-        RowType rowType = (RowType) coll.getResolvedSchema()
-                .toPhysicalRowDataType()
-                .getLogicalType();
+        RowType rowType =
+                (RowType) coll.getResolvedSchema().toPhysicalRowDataType().getLogicalType();
 
         this.fieldNames = rowType.getFieldNames();
         this.fieldTypes = rowType.getChildren();
@@ -39,7 +38,8 @@ public class MyMongoSerializationSchema
     }
 
     @Override
-    public WriteModel<BsonDocument> serialize(Tuple2<Boolean, Row> record, MongoSinkContext context) {
+    public WriteModel<BsonDocument> serialize(
+            Tuple2<Boolean, Row> record, MongoSinkContext context) {
         Row row = record.f1;
         BsonDocument document = new BsonDocument();
         MongoSinkUtils mongoSinkUtils = new MongoSinkUtils();
@@ -53,8 +53,7 @@ public class MyMongoSerializationSchema
             try {
                 document.append(
                         fieldNames.get(i),
-                        mongoSinkUtils.convertTonBsonValue(fieldValue, structNameFieldList)
-                );
+                        mongoSinkUtils.convertTonBsonValue(fieldValue, structNameFieldList));
             } catch (ParseException e) {
                 throw new RuntimeException("Failed to convert field: " + fieldNames.get(i), e);
             }
@@ -67,4 +66,3 @@ public class MyMongoSerializationSchema
         return structNameFieldList;
     }
 }
-

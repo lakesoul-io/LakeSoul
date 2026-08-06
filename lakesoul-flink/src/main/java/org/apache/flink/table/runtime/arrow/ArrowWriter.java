@@ -33,9 +33,7 @@ import org.slf4j.LoggerFactory;
 @Internal
 public final class ArrowWriter<IN> {
 
-    private static final Logger LOG = LoggerFactory.getLogger(
-        ArrowWriter.class
-    );
+    private static final Logger LOG = LoggerFactory.getLogger(ArrowWriter.class);
 
     /** Container that holds a set of vectors for the rows to be sent to the Python worker. */
     private final VectorSchemaRoot root;
@@ -45,10 +43,7 @@ public final class ArrowWriter<IN> {
      */
     private final ArrowFieldWriter<IN>[] fieldWriters;
 
-    public ArrowWriter(
-        VectorSchemaRoot root,
-        ArrowFieldWriter<IN>[] fieldWriters
-    ) {
+    public ArrowWriter(VectorSchemaRoot root, ArrowFieldWriter<IN>[] fieldWriters) {
         this.root = Preconditions.checkNotNull(root);
         this.fieldWriters = Preconditions.checkNotNull(fieldWriters);
     }

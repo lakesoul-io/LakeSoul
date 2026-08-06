@@ -60,15 +60,15 @@ public class DataBaseProperty implements Serializable {
 
     @Override
     public String toString() {
-        return "lakesoul.pg.driver=" +
-                driver +
-                "\nlakesoul.pg.url=" +
-                url +
-                "\nlakesoul.pg.username" +
-                username +
-                "\nlakesoul.pg.password" +
-                password +
-                "\n";
+        return "lakesoul.pg.driver="
+                + driver
+                + "\nlakesoul.pg.url="
+                + url
+                + "\nlakesoul.pg.username"
+                + username
+                + "\nlakesoul.pg.password"
+                + password
+                + "\n";
     }
 
     public String getHost() {

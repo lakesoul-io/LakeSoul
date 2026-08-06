@@ -29,10 +29,11 @@ public class FileUtil {
         }
         LOG.info("Reading sql file from path: {}", sqlFilePath);
         FileSystem fs = FileSystem.get(path.toUri());
-        String sql = new BufferedReader(new InputStreamReader(fs.open(path)))
-                .lines().collect(Collectors.joining("\n"));
+        String sql =
+                new BufferedReader(new InputStreamReader(fs.open(path)))
+                        .lines()
+                        .collect(Collectors.joining("\n"));
         return replaceDefaultKeywordFromZeppelin(sql);
-
     }
 
     /*
@@ -52,11 +53,12 @@ public class FileUtil {
         String replacedStr = pc.matcher(text).replaceAll(replaceText);
         return replacedStr;
     }
+
     public static String getSubNameFromBatch(String batchName) {
         if (batchName.matches(".*-(\\d+)-(batch$)")) {
-            int index = batchName.lastIndexOf("-",batchName.lastIndexOf("-")-1);
-            return batchName.substring(0,index);
-        }else{
+            int index = batchName.lastIndexOf("-", batchName.lastIndexOf("-") - 1);
+            return batchName.substring(0, index);
+        } else {
             return batchName;
         }
     }

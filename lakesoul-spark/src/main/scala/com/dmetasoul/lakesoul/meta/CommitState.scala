@@ -11,11 +11,10 @@ object CommitState extends Enumeration {
   val CommitTimeout = Value("CommitTimeout")
   val RollBackTimeout = Value("RollBackTimeout")
 
-
-  //Clean state is rarely appear, in which commit type undo log has been delete, but undo log with other type exist
+  // Clean state is rarely appear, in which commit type undo log has been delete, but undo log with other type exist
   val Clean = Value("Clean")
 
-  //in these state, commit should be performed successfully, while rollback is forbidden
+  // in these state, commit should be performed successfully, while rollback is forbidden
   val Redoing = Value("Redoing")
   val RedoTimeout = Value("RedoTimeout")
 }
@@ -39,7 +38,8 @@ object UndoLogType extends Enumeration {
       Schema.toString,
       ShortTableName.toString,
       DropTable.toString,
-      DropPartition.toString)
+      DropPartition.toString
+    )
   }
 }
 
@@ -49,14 +49,27 @@ sealed abstract class CommitType {
 
 object CommitType {
   def apply(typ: String): CommitType = typ.toLowerCase(Locale.ROOT) match {
-    case "append" | "AppendCommit" => AppendCommit
-    case "merge" | "MergeCommit" => MergeCommit
+    case "append" | "AppendCommit"                     => AppendCommit
+    case "merge" | "MergeCommit"                       => MergeCommit
     case "compaction" | "compact" | "CompactionCommit" => CompactionCommit
-    case "update" | "UpdateCommit" => UpdateCommit
-    case _ =>
-      val supported = Seq("simple", "delta", "compaction", "compact", "part_compaction", "part_compact")
-      throw new IllegalArgumentException(s"Unsupported commit type '$typ'. " +
-        "Supported commit types include: " + supported.mkString("'", "', '", "'") + ".")
+    case "update" | "UpdateCommit"                     => UpdateCommit
+    case _                                             =>
+      val supported = Seq(
+        "simple",
+        "delta",
+        "compaction",
+        "compact",
+        "part_compaction",
+        "part_compact"
+      )
+      throw new IllegalArgumentException(
+        s"Unsupported commit type '$typ'. " +
+          "Supported commit types include: " + supported.mkString(
+            "'",
+            "', '",
+            "'"
+          ) + "."
+      )
   }
 }
 

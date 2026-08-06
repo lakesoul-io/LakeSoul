@@ -12,9 +12,7 @@ public class LakeSoulTransactionHandle implements ConnectorTransactionHandle {
     private Long id;
 
     @JsonCreator
-    public LakeSoulTransactionHandle(){
-
-    }
+    public LakeSoulTransactionHandle() {}
 
     @JsonProperty
     public Long getId() {

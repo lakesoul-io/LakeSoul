@@ -22,8 +22,11 @@ import org.junit.runner.RunWith
 import org.scalatestplus.junit.JUnitRunner
 
 @RunWith(classOf[JUnitRunner])
-class CaseSensitivitySuite extends QueryTest
-  with SharedSparkSession with SQLTestUtils with LakeSoulSQLCommandTest {
+class CaseSensitivitySuite
+    extends QueryTest
+    with SharedSparkSession
+    with SQLTestUtils
+    with LakeSoulSQLCommandTest {
 
   import testImplicits._
 
@@ -39,18 +42,24 @@ class CaseSensitivitySuite extends QueryTest
     }
   }
 
-  private def getPartitionValues(allFiles: Dataset[DataFileInfo], colName: String): Array[String] = {
+  private def getPartitionValues(
+      allFiles: Dataset[DataFileInfo],
+      colName: String
+  ): Array[String] = {
     allFiles.select(col(s"range_partitions")).distinct().as[String].collect()
   }
-
 
   test("set range partition columns with option - rangePartitions") {
     withTempDir { tempDir =>
       val p = tempDir.getCanonicalPath
       val path = SparkUtil.makeQualifiedTablePath(new Path(p)).toUri.toString
-      Seq((1, "a"), (2, "b")).toDF("Key", "val").write
+      Seq((1, "a"), (2, "b"))
+        .toDF("Key", "val")
+        .write
         .option("rangePartitions", "key")
-        .format("lakesoul").mode("append").save(path)
+        .format("lakesoul")
+        .mode("append")
+        .save(path)
 
       checkAnswer(
         spark.read.format("lakesoul").load(path).select("Key", "val"),
@@ -58,9 +67,11 @@ class CaseSensitivitySuite extends QueryTest
       )
 
       val tableInfo = SnapshotManagement(path).getTableInfoOnly
-      assert(tableInfo.schema == new StructType()
-        .add("Key", "int", nullable = true)
-        .add("val", "string"))
+      assert(
+        tableInfo.schema == new StructType()
+          .add("Key", "int", nullable = true)
+          .add("val", "string")
+      )
       assert(tableInfo.range_column.equals("Key"))
 
     }
@@ -70,9 +81,13 @@ class CaseSensitivitySuite extends QueryTest
     withTempDir { tempDir =>
       val p = tempDir.getCanonicalPath
       val path = SparkUtil.makeQualifiedTablePath(new Path(p)).toUri.toString
-      Seq((1, "a"), (2, "b")).toDF("Key", "val").write
+      Seq((1, "a"), (2, "b"))
+        .toDF("Key", "val")
+        .write
         .partitionBy("key")
-        .format("lakesoul").mode("append").save(path)
+        .format("lakesoul")
+        .mode("append")
+        .save(path)
 
       checkAnswer(
         spark.read.format("lakesoul").load(path).select("Key", "val"),
@@ -80,21 +95,29 @@ class CaseSensitivitySuite extends QueryTest
       )
 
       val tableInfo = SnapshotManagement(path).getTableInfoOnly
-      assert(tableInfo.schema == new StructType()
-        .add("Key", "int", nullable = true)
-        .add("val", "string"))
+      assert(
+        tableInfo.schema == new StructType()
+          .add("Key", "int", nullable = true)
+          .add("val", "string")
+      )
       assert(tableInfo.range_column.equals("Key"))
     }
   }
 
-  test("set range partition columns - rangePartitions has higher priority than partitionBy") {
+  test(
+    "set range partition columns - rangePartitions has higher priority than partitionBy"
+  ) {
     withTempDir { tempDir =>
       val p = tempDir.getCanonicalPath
       val path = SparkUtil.makeQualifiedTablePath(new Path(p)).toUri.toString
-      Seq((1, "a"), (2, "b")).toDF("Key", "val").write
+      Seq((1, "a"), (2, "b"))
+        .toDF("Key", "val")
+        .write
         .option("rangePartitions", "val")
         .partitionBy("key")
-        .format("lakesoul").mode("append").save(path)
+        .format("lakesoul")
+        .mode("append")
+        .save(path)
 
       checkAnswer(
         spark.read.format("lakesoul").load(path).select("Key", "val"),
@@ -102,21 +125,27 @@ class CaseSensitivitySuite extends QueryTest
       )
 
       val tableInfo = SnapshotManagement(path).getTableInfoOnly
-      assert(tableInfo.schema == new StructType()
-        .add("Key", "int")
-        .add("val", "string", nullable = true))
+      assert(
+        tableInfo.schema == new StructType()
+          .add("Key", "int")
+          .add("val", "string", nullable = true)
+      )
       assert(tableInfo.range_column.equals("val"))
 
     }
   }
 
-  test("set hash partition columns with option- hashPartitions and hashBucketNum") {
+  test(
+    "set hash partition columns with option- hashPartitions and hashBucketNum"
+  ) {
     withTempDir { tempDir =>
       val p = tempDir.getCanonicalPath
       val path = SparkUtil.makeQualifiedTablePath(new Path(p)).toUri.toString
 
       val e1 = intercept[AnalysisException] {
-        Seq((1, "a"), (2, "d")).toDF("key", "val").write
+        Seq((1, "a"), (2, "d"))
+          .toDF("key", "val")
+          .write
           .format("lakesoul")
           .mode("overwrite")
           .option("hashPartitions", "key")
@@ -124,13 +153,15 @@ class CaseSensitivitySuite extends QueryTest
       }
       assert(e1.getMessage.contains("You must set the bucket num"))
 
-
-      //first commit can use hash partition with append mode
-      Seq((1, "a"), (2, "b")).toDF("key", "val").write
+      // first commit can use hash partition with append mode
+      Seq((1, "a"), (2, "b"))
+        .toDF("key", "val")
+        .write
         .option("hashPartitions", "key")
         .option("hashBucketNum", 2)
         .format("lakesoul")
-        .mode("append").save(path)
+        .mode("append")
+        .save(path)
 
       checkAnswer(
         spark.read.format("lakesoul").load(path).select("key", "val"),
@@ -138,22 +169,29 @@ class CaseSensitivitySuite extends QueryTest
       )
 
       val tableInfo = SnapshotManagement(path).getTableInfoOnly
-      assert(tableInfo.schema == new StructType()
-        .add("key", "int", false)
-        .add("val", "string"))
+      assert(
+        tableInfo.schema == new StructType()
+          .add("key", "int", false)
+          .add("val", "string")
+      )
       assert(tableInfo.hash_column.equals("key"))
       assert(tableInfo.bucket_num == 2)
 
-
-      //don't support append when use hash partition and not first commit
+      // don't support append when use hash partition and not first commit
       val e2 = intercept[AnalysisException] {
-        Seq((3, "d")).toDF("key", "val").write
+        Seq((3, "d"))
+          .toDF("key", "val")
+          .write
           .format("lakesoul")
           .mode("append")
           .save(path)
       }
-      assert(e2.getMessage
-        .contains("When use hash partition and not first commit, `Append` mode is not supported"))
+      assert(
+        e2.getMessage
+          .contains(
+            "When use hash partition and not first commit, `Append` mode is not supported"
+          )
+      )
     }
   }
 
@@ -162,7 +200,9 @@ class CaseSensitivitySuite extends QueryTest
       val p = tempDir.getCanonicalPath
       val path = SparkUtil.makeQualifiedTablePath(new Path(p)).toUri.toString
 
-      Seq((1, "a", "1"), (2, "b", "2")).toDF("key", "val", "hash").write
+      Seq((1, "a", "1"), (2, "b", "2"))
+        .toDF("key", "val", "hash")
+        .write
         .partitionBy("key")
         .option("hashPartitions", "hash")
         .option("hashBucketNum", 2)
@@ -171,16 +211,19 @@ class CaseSensitivitySuite extends QueryTest
         .save(path)
 
       val tableInfo = SnapshotManagement(path).getTableInfoOnly
-      assert(tableInfo.schema == new StructType()
-        .add("key", "int", nullable = true)
-        .add("val", "string")
-        .add("hash", "string", nullable = false))
+      assert(
+        tableInfo.schema == new StructType()
+          .add("key", "int", nullable = true)
+          .add("val", "string")
+          .add("hash", "string", nullable = false)
+      )
       assert(tableInfo.range_column.equals("key"))
       assert(tableInfo.hash_column.equals("hash"))
 
-
-      //don't need to define partition columns when table exists
-      Seq((3, "d", "3")).toDF("key", "val", "hash").write
+      // don't need to define partition columns when table exists
+      Seq((3, "d", "3"))
+        .toDF("key", "val", "hash")
+        .write
         .format("lakesoul")
         .mode("overwrite")
         .save(path)
@@ -188,23 +231,31 @@ class CaseSensitivitySuite extends QueryTest
       checkAnswer(
         spark.read.format("lakesoul").load(path).select("key", "val", "hash"),
         Row(1, "a", "1") ::
-        Row(2, "b", "2") ::
-        Row(3, "d", "3")
+          Row(2, "b", "2") ::
+          Row(3, "d", "3")
           :: Nil
       )
 
-      //can't change partition columns
+      // can't change partition columns
       val e1 = intercept[AnalysisException] {
-        Seq((4, "e", "4")).toDF("key", "val", "hash").write
+        Seq((4, "e", "4"))
+          .toDF("key", "val", "hash")
+          .write
           .format("lakesoul")
           .mode("overwrite")
           .option("rangePartitions", "val")
           .save(path)
       }
-      assert(e1.getMessage.contains("was already set when creating table, it conflicts with your partition columns"))
+      assert(
+        e1.getMessage.contains(
+          "was already set when creating table, it conflicts with your partition columns"
+        )
+      )
 
       val e2 = intercept[AnalysisException] {
-        Seq((4, "e", "4")).toDF("key", "val", "hash").write
+        Seq((4, "e", "4"))
+          .toDF("key", "val", "hash")
+          .write
           .format("lakesoul")
           .mode("overwrite")
           .option("hashPartitions", "val")
@@ -221,7 +272,9 @@ class CaseSensitivitySuite extends QueryTest
       val path = SparkUtil.makeQualifiedTablePath(new Path(p)).toUri.toString
 
       withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
-        Seq((1, "a", "1"), (2, "b", "2")).toDF("key", "val", "hash").write
+        Seq((1, "a", "1"), (2, "b", "2"))
+          .toDF("key", "val", "hash")
+          .write
           .format("lakesoul")
           .mode("overwrite")
           .option("rAngeParTitionS", "key") // note the different case
@@ -236,10 +289,12 @@ class CaseSensitivitySuite extends QueryTest
       )
 
       val tableInfo = SnapshotManagement(path).getTableInfoOnly
-      assert(tableInfo.schema == new StructType()
-        .add("key", "int", nullable = true)
-        .add("val", "string")
-        .add("hash", "string", nullable = false))
+      assert(
+        tableInfo.schema == new StructType()
+          .add("key", "int", nullable = true)
+          .add("val", "string")
+          .add("hash", "string", nullable = false)
+      )
       assert(tableInfo.range_column.equals("key"))
       assert(tableInfo.hash_column.equals("hash"))
 
@@ -252,7 +307,9 @@ class CaseSensitivitySuite extends QueryTest
       val path = SparkUtil.makeQualifiedTablePath(new Path(p)).toUri.toString
 
       withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
-        Seq((1, "a", "1"), (2, "b", "2")).toDF("key", "val", "hash").write
+        Seq((1, "a", "1"), (2, "b", "2"))
+          .toDF("key", "val", "hash")
+          .write
           .format("lakesoul")
           .mode("overwrite")
           .option("rAngeParTitionS", "key") // note the different case
@@ -267,10 +324,12 @@ class CaseSensitivitySuite extends QueryTest
       )
 
       val tableInfo = SnapshotManagement(path).getTableInfoOnly
-      assert(tableInfo.schema == new StructType()
-        .add("key", "int", nullable = true)
-        .add("val", "string")
-        .add("hash", "string", nullable = false))
+      assert(
+        tableInfo.schema == new StructType()
+          .add("key", "int", nullable = true)
+          .add("val", "string")
+          .add("hash", "string", nullable = false)
+      )
       assert(tableInfo.range_column.equals("key"))
       assert(tableInfo.hash_column.equals("hash"))
 
@@ -283,17 +342,30 @@ class CaseSensitivitySuite extends QueryTest
       sql(query).write
         //        .partitionBy("foo")
         .option("rangePartitions", "foo")
-        .format("lakesoul").save(tempDir.getAbsolutePath)
+        .format("lakesoul")
+        .save(tempDir.getAbsolutePath)
       checkAnswer(
         sql(query),
-        spark.read.format("lakesoul").load(tempDir.getAbsolutePath).select("Foo", "Bar")
+        spark.read
+          .format("lakesoul")
+          .load(tempDir.getAbsolutePath)
+          .select("Foo", "Bar")
       )
 
-
-      val allFiles = SparkUtil.allDataInfo(SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(tempDir.getAbsolutePath))).snapshot).toSeq.toDS()
+      val allFiles = SparkUtil
+        .allDataInfo(
+          SnapshotManagement(
+            SparkUtil.makeQualifiedTablePath(new Path(tempDir.getAbsolutePath))
+          ).snapshot
+        )
+        .toSeq
+        .toDS()
       assert(getPartitionValues(allFiles, "Foo") === Array("Foo=1"))
       checkAnswer(
-        spark.read.format("lakesoul").load(tempDir.getAbsolutePath).select("Foo", "Bar"),
+        spark.read
+          .format("lakesoul")
+          .load(tempDir.getAbsolutePath)
+          .select("Foo", "Bar"),
         Row(1L, 0L)
       )
     }
@@ -306,7 +378,11 @@ class CaseSensitivitySuite extends QueryTest
       withTempDir(checkpointDir => {
         withTempDir { tempDir =>
           val memSource = MemoryStream[(Long, Long)]
-          val stream1 = startStream(memSource.toDF().toDF("Foo", "Bar"), tempDir, checkpointDir)
+          val stream1 = startStream(
+            memSource.toDF().toDF("Foo", "Bar"),
+            tempDir,
+            checkpointDir
+          )
           try {
             memSource.addData((1L, 0L))
             stream1.processAllAvailable()
@@ -315,11 +391,23 @@ class CaseSensitivitySuite extends QueryTest
           }
 
           checkAnswer(
-            spark.read.format("lakesoul").load(tempDir.getAbsolutePath).select("foo", "bar"),
+            spark.read
+              .format("lakesoul")
+              .load(tempDir.getAbsolutePath)
+              .select("foo", "bar"),
             Row(1L, 0L)
           )
 
-          val allFiles = SparkUtil.allDataInfo(SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(tempDir.getAbsolutePath))).snapshot).toSeq.toDS()
+          val allFiles = SparkUtil
+            .allDataInfo(
+              SnapshotManagement(
+                SparkUtil.makeQualifiedTablePath(
+                  new Path(tempDir.getAbsolutePath)
+                )
+              ).snapshot
+            )
+            .toSeq
+            .toDS()
           assert(getPartitionValues(allFiles, "Foo") === Array("Foo=1"))
         }
 
@@ -332,7 +420,10 @@ class CaseSensitivitySuite extends QueryTest
       intercept[AnalysisException] {
         val query = "SELECT id as Foo, id as foo FROM RANGE(1)"
         //        sql(query).write.partitionBy("foo").format("lakesoul").save(tempDir.getAbsolutePath)
-        sql(query).write.option("rangePartitions", "foo").format("lakesoul").save(tempDir.getAbsolutePath)
+        sql(query).write
+          .option("rangePartitions", "foo")
+          .format("lakesoul")
+          .save(tempDir.getAbsolutePath)
       }
     }
   }
@@ -341,7 +432,11 @@ class CaseSensitivitySuite extends QueryTest
     withTempDir(checkpointDir => {
       withTempDir { tempDir =>
         val memSource = MemoryStream[(Long, Long)]
-        val stream1 = startStream(memSource.toDF().toDF("Foo", "foo"), tempDir, checkpointDir)
+        val stream1 = startStream(
+          memSource.toDF().toDF("Foo", "foo"),
+          tempDir,
+          checkpointDir
+        )
         try {
           val e = intercept[StreamingQueryException] {
             memSource.addData((0L, 0L))
@@ -356,16 +451,26 @@ class CaseSensitivitySuite extends QueryTest
     })
   }
 
-  testWithCaseSensitivity("schema merging is case insenstive but preserves original case") {
+  testWithCaseSensitivity(
+    "schema merging is case insenstive but preserves original case"
+  ) {
     withTempDir { tempDir =>
       val query1 = "SELECT id as foo, id as bar FROM RANGE(1)"
       sql(query1).write.format("lakesoul").save(tempDir.getAbsolutePath)
 
-      val query2 = "SELECT id + 1 as Foo, id as bar FROM RANGE(1)" // notice how 'F' is capitalized
-      sql(query2).write.format("lakesoul").mode("append").save(tempDir.getAbsolutePath)
+      val query2 =
+        "SELECT id + 1 as Foo, id as bar FROM RANGE(1)" // notice how 'F' is capitalized
+      sql(query2).write
+        .format("lakesoul")
+        .mode("append")
+        .save(tempDir.getAbsolutePath)
 
-      val query3 = "SELECT id as bAr, id + 2 as Foo FROM RANGE(1)" // changed order as well
-      sql(query3).write.format("lakesoul").mode("append").save(tempDir.getAbsolutePath)
+      val query3 =
+        "SELECT id as bAr, id + 2 as Foo FROM RANGE(1)" // changed order as well
+      sql(query3).write
+        .format("lakesoul")
+        .mode("append")
+        .save(tempDir.getAbsolutePath)
 
       val df = spark.read.format("lakesoul").load(tempDir.getAbsolutePath)
       checkAnswer(
@@ -380,14 +485,24 @@ class CaseSensitivitySuite extends QueryTest
     withTempDir(checkpointDir => {
       withTempDir { tempDir =>
         val memSource = MemoryStream[(Long, Long)]
-        val stream1 = startStream(memSource.toDF().toDF("Foo", "Bar"), tempDir, checkpointDir, None)
+        val stream1 = startStream(
+          memSource.toDF().toDF("Foo", "Bar"),
+          tempDir,
+          checkpointDir,
+          None
+        )
         try {
           memSource.addData((0L, 0L))
           stream1.processAllAvailable()
         } finally {
           stream1.stop()
         }
-        val stream2 = startStream(memSource.toDF().toDF("foo", "Bar"), tempDir, checkpointDir, None)
+        val stream2 = startStream(
+          memSource.toDF().toDF("foo", "Bar"),
+          tempDir,
+          checkpointDir,
+          None
+        )
         try {
           memSource.addData((1L, 2L))
           stream2.processAllAvailable()
@@ -406,17 +521,22 @@ class CaseSensitivitySuite extends QueryTest
     })
   }
 
-
   test("replaceWhere predicate should be case insensitive") {
     withTempDir { tempDir =>
       val path = tempDir.getCanonicalPath
-      Seq((1, "a"), (2, "b")).toDF("Key", "val").write
+      Seq((1, "a"), (2, "b"))
+        .toDF("Key", "val")
+        .write
         //        .partitionBy("key")
         .option("rangePartitions", "key")
-        .format("lakesoul").mode("append").save(path)
+        .format("lakesoul")
+        .mode("append")
+        .save(path)
 
       withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
-        Seq((2, "c")).toDF("Key", "val").write
+        Seq((2, "c"))
+          .toDF("Key", "val")
+          .write
           .format("lakesoul")
           .mode("overwrite")
           .option("replaceWhere", "key = 2") // note the different case
@@ -430,7 +550,9 @@ class CaseSensitivitySuite extends QueryTest
 
       withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
         val e = intercept[AnalysisException] {
-          Seq((2, "d")).toDF("Key", "val").write
+          Seq((2, "d"))
+            .toDF("Key", "val")
+            .write
             .format("lakesoul")
             .mode("overwrite")
             .option("replaceWhere", "key = 2") // note the different case
@@ -446,16 +568,20 @@ class CaseSensitivitySuite extends QueryTest
     }
   }
 
-  private def startStream(df: Dataset[_],
-                          tempDir: File,
-                          checkpointDir: File,
-                          partitionBy: Option[String] = Some("foo")): StreamingQuery = {
+  private def startStream(
+      df: Dataset[_],
+      tempDir: File,
+      checkpointDir: File,
+      partitionBy: Option[String] = Some("foo")
+  ): StreamingQuery = {
     val writer = df.writeStream
-      .option("checkpointLocation", new File(checkpointDir, "_checkpoint").getAbsolutePath)
+      .option(
+        "checkpointLocation",
+        new File(checkpointDir, "_checkpoint").getAbsolutePath
+      )
       .format("lakesoul")
     partitionBy.foreach(writer.partitionBy(_))
     writer.start(tempDir.getAbsolutePath)
   }
-
 
 }

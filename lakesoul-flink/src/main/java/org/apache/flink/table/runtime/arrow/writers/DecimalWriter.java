@@ -18,16 +18,15 @@
 
 package org.apache.flink.table.runtime.arrow.writers;
 
+import static org.apache.flink.table.runtime.typeutils.PythonTypeUtils.fromBigDecimal;
+
+import org.apache.arrow.vector.DecimalVector;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.data.ArrayData;
 import org.apache.flink.table.data.DecimalData;
 import org.apache.flink.table.data.RowData;
 
-import org.apache.arrow.vector.DecimalVector;
-
 import java.math.BigDecimal;
-
-import static org.apache.flink.table.runtime.typeutils.PythonTypeUtils.fromBigDecimal;
 
 /** {@link ArrowFieldWriter} for Decimal. */
 @Internal

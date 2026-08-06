@@ -24,8 +24,6 @@ import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.table.data.columnar.vector.TimestampColumnVector;
 import org.apache.flink.util.Preconditions;
 
-import org.apache.arrow.vector.types.pojo.ArrowType;
-
 /** Arrow column vector for Timestamp. */
 @Internal
 public final class ArrowTimestampColumnVector implements TimestampColumnVector {
@@ -35,8 +33,7 @@ public final class ArrowTimestampColumnVector implements TimestampColumnVector {
 
     public ArrowTimestampColumnVector(ValueVector valueVector) {
         this.valueVector = Preconditions.checkNotNull(valueVector);
-        Preconditions.checkState(
-                valueVector instanceof TimeStampVector);
+        Preconditions.checkState(valueVector instanceof TimeStampVector);
     }
 
     @Override
@@ -44,7 +41,8 @@ public final class ArrowTimestampColumnVector implements TimestampColumnVector {
         if (valueVector instanceof TimeStampSecVector) {
             return TimestampData.fromEpochMillis(((TimeStampSecVector) valueVector).get(i) * 1000);
         } else if (valueVector instanceof TimeStampSecTZVector) {
-            return TimestampData.fromEpochMillis(((TimeStampSecTZVector) valueVector).get(i) * 1000);
+            return TimestampData.fromEpochMillis(
+                    ((TimeStampSecTZVector) valueVector).get(i) * 1000);
         } else if (valueVector instanceof TimeStampMilliVector) {
             return TimestampData.fromEpochMillis(((TimeStampMilliVector) valueVector).get(i));
         } else if (valueVector instanceof TimeStampMilliTZVector) {

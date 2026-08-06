@@ -9,6 +9,6 @@ import org.junit.runner.RunWith
 import org.scalatestplus.junit.JUnitRunner
 
 @RunWith(classOf[JUnitRunner])
-class UpdateGlutenTestSuite extends UpdateScalaSuite with LakeSoulSQLCommandGlutenTest {
-
-}
+class UpdateGlutenTestSuite
+    extends UpdateScalaSuite
+    with LakeSoulSQLCommandGlutenTest {}

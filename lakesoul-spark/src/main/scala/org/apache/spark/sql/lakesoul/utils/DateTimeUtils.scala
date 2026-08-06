@@ -9,17 +9,17 @@ import java.time._
 import java.util.TimeZone
 import java.util.concurrent.TimeUnit._
 
-/**
-  * Forked from [[org.apache.spark.sql.catalyst.util.DateTimeUtils]].
-  * Only included the methods that are used by LakeSoulTableRel and added after Spark 2.4.
+/** Forked from [[org.apache.spark.sql.catalyst.util.DateTimeUtils]]. Only
+  * included the methods that are used by LakeSoulTableRel and added after Spark
+  * 2.4.
   */
 
-/**
-  * Helper functions for converting between internal and external date and time representations.
-  * Dates are exposed externally as java.sql.Date and are represented internally as the number of
-  * dates since the Unix epoch (1970-01-01). Timestamps are exposed externally as java.sql.Timestamp
-  * and are stored internally as longs, which are capable of storing timestamps with microsecond
-  * precision.
+/** Helper functions for converting between internal and external date and time
+  * representations. Dates are exposed externally as java.sql.Date and are
+  * represented internally as the number of dates since the Unix epoch
+  * (1970-01-01). Timestamps are exposed externally as java.sql.Timestamp and
+  * are stored internally as longs, which are capable of storing timestamps with
+  * microsecond precision.
   */
 object DateTimeUtils {
 
@@ -71,12 +71,13 @@ object DateTimeUtils {
     days.toInt
   }
 
-  /**
-    * Returns the number of micros since epoch from java.sql.Timestamp.
+  /** Returns the number of micros since epoch from java.sql.Timestamp.
     */
   def fromJavaTimestamp(t: Timestamp): SQLTimestamp = {
     if (t != null) {
-      MILLISECONDS.toMicros(t.getTime()) + NANOSECONDS.toMicros(t.getNanos()) % NANOS_PER_MICROS
+      MILLISECONDS.toMicros(t.getTime()) + NANOSECONDS.toMicros(
+        t.getNanos()
+      ) % NANOS_PER_MICROS
     } else {
       0L
     }

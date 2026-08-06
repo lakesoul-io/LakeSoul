@@ -5,6 +5,7 @@
 package org.apache.flink.lakesoul.source;
 
 import io.substrait.proto.Plan;
+
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
@@ -44,15 +45,16 @@ public class LakeSoulSplitReader implements SplitReader<RowData, LakeSoulPartiti
 
     private LakeSoulOneSplitRecordsReader lastSplitReader;
 
-    public LakeSoulSplitReader(Configuration conf,
-                               RowType tableRowType,
-                               RowType projectedRowType,
-                               RowType projectedRowTypeWithPk,
-                               List<String> pkColumns,
-                               boolean isBounded,
-                               String cdcColumn,
-                               List<String> partitionColumns,
-                               Plan filter) {
+    public LakeSoulSplitReader(
+            Configuration conf,
+            RowType tableRowType,
+            RowType projectedRowType,
+            RowType projectedRowTypeWithPk,
+            List<String> pkColumns,
+            boolean isBounded,
+            String cdcColumn,
+            List<String> partitionColumns,
+            Plan filter) {
         this.conf = conf;
         this.splits = new ArrayDeque<>();
         this.tableRowType = tableRowType;
@@ -70,12 +72,14 @@ public class LakeSoulSplitReader implements SplitReader<RowData, LakeSoulPartiti
         try {
             close();
             LakeSoulPartitionSplit split = splits.poll();
-            LOG.info("Fetched split {}, oid {}, tid {}",
+            LOG.info(
+                    "Fetched split {}, oid {}, tid {}",
                     split,
                     System.identityHashCode(this),
                     Thread.currentThread().getId());
             lastSplitReader =
-                    new LakeSoulOneSplitRecordsReader(this.conf,
+                    new LakeSoulOneSplitRecordsReader(
+                            this.conf,
                             Objects.requireNonNull(split),
                             this.tableRowType,
                             this.projectedRowType,
@@ -84,8 +88,7 @@ public class LakeSoulSplitReader implements SplitReader<RowData, LakeSoulPartiti
                             this.isBounded,
                             this.cdcColumn,
                             this.partitionColumns,
-                            this.filter
-                    );
+                            this.filter);
             return lastSplitReader;
         } catch (Exception e) {
             throw new IOException(e);
@@ -96,11 +99,13 @@ public class LakeSoulSplitReader implements SplitReader<RowData, LakeSoulPartiti
     public synchronized void handleSplitsChanges(SplitsChange<LakeSoulPartitionSplit> splitChange) {
         if (!(splitChange instanceof SplitsAddition)) {
             throw new UnsupportedOperationException(
-                    String.format("The SplitChange type of %s is not supported.",
+                    String.format(
+                            "The SplitChange type of %s is not supported.",
                             splitChange.getClass()));
         }
 
-        LOG.info("Handling split change {}, oid {}, tid {}",
+        LOG.info(
+                "Handling split change {}, oid {}, tid {}",
                 splitChange,
                 System.identityHashCode(this),
                 Thread.currentThread().getId());
@@ -108,8 +113,7 @@ public class LakeSoulSplitReader implements SplitReader<RowData, LakeSoulPartiti
     }
 
     @Override
-    public void wakeUp() {
-    }
+    public void wakeUp() {}
 
     @Override
     public synchronized void close() throws Exception {

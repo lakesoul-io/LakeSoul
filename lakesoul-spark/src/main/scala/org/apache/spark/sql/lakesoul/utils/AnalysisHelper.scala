@@ -13,9 +13,9 @@ trait AnalysisHelper {
 
   import AnalysisHelper._
 
-  protected def tryResolveReferences(sparkSession: SparkSession)(
-    expr: Expression,
-    planContainingExpr: LogicalPlan): Expression = {
+  protected def tryResolveReferences(
+      sparkSession: SparkSession
+  )(expr: Expression, planContainingExpr: LogicalPlan): Expression = {
     val newPlan = FakeLogicalPlan(expr, planContainingExpr.children)
     sparkSession.sessionState.analyzer.execute(newPlan) match {
       case FakeLogicalPlan(resolvedExpr, _) =>
@@ -24,11 +24,16 @@ trait AnalysisHelper {
       case _ =>
         // This is unexpected
         throw LakeSoulErrors.analysisException(
-          s"Could not resolve expression $expr", plan = Option(planContainingExpr))
+          s"Could not resolve expression $expr",
+          plan = Option(planContainingExpr)
+        )
     }
   }
 
-  protected def toDataset(sparkSession: SparkSession, logicalPlan: LogicalPlan): Dataset[Row] = {
+  protected def toDataset(
+      sparkSession: SparkSession,
+      logicalPlan: LogicalPlan
+  ): Dataset[Row] = {
     Dataset.ofRows(sparkSession, logicalPlan)
   }
 
@@ -41,7 +46,9 @@ trait AnalysisHelper {
     ).map(_.toLowerCase())
 
     def isExtensionOrCatalogError(error: Exception): Boolean = {
-      possibleErrorMsgs.exists(m => error.getMessage().toLowerCase().contains(m))
+      possibleErrorMsgs.exists(m =>
+        error.getMessage().toLowerCase().contains(m)
+      )
     }
 
     try {
@@ -57,13 +64,14 @@ object AnalysisHelper {
 
   /** LogicalPlan to help resolve the given expression */
   case class FakeLogicalPlan(expr: Expression, children: Seq[LogicalPlan])
-    extends LogicalPlan {
+      extends LogicalPlan {
     override def output: Seq[Attribute] = Nil
 
-    override protected def withNewChildrenInternal(newChildren: IndexedSeq[LogicalPlan]): LogicalPlan = {
+    override protected def withNewChildrenInternal(
+        newChildren: IndexedSeq[LogicalPlan]
+    ): LogicalPlan = {
       copy(children = newChildren)
     }
   }
 
 }
-

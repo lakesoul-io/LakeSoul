@@ -19,11 +19,11 @@ public class CosineDistanceFunction {
     public static double consineDistance(
             @TypeParameter("T") Type elementType,
             @SqlType("array(T)") Block x,
-            @SqlType("array(T)") Block y)
-    {
+            @SqlType("array(T)") Block y) {
         int positionCount = x.getPositionCount();
         if (y.getPositionCount() != positionCount) {
-            throw new IllegalArgumentException("cosine distance input arrays should have same length");
+            throw new IllegalArgumentException(
+                    "cosine distance input arrays should have same length");
         }
 
         if (elementType instanceof RealType) {
@@ -31,15 +31,12 @@ public class CosineDistanceFunction {
         } else if (elementType instanceof DoubleType) {
             return consineDistanceDouble(elementType, x, y, positionCount);
         }
-        throw new IllegalArgumentException("unknown element type for cosine_distance: " + elementType);
+        throw new IllegalArgumentException(
+                "unknown element type for cosine_distance: " + elementType);
     }
 
     public static double consineDistanceDouble(
-            Type elementType,
-            Block x,
-            Block y,
-            int positionCount)
-    {
+            Type elementType, Block x, Block y, int positionCount) {
         double x_norm = 0.0;
         double y_norm = 0.0;
         double dot_product = 0.0;
@@ -54,11 +51,7 @@ public class CosineDistanceFunction {
     }
 
     public static double consineDistanceReal(
-            Type elementType,
-            Block x,
-            Block y,
-            int positionCount)
-    {
+            Type elementType, Block x, Block y, int positionCount) {
         double x_norm = 0.0;
         double y_norm = 0.0;
         double dot_product = 0.0;

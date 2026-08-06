@@ -16,19 +16,19 @@
  * limitations under the License.
  */
 
-//package com.dmetasoul.lakesoul.lakesoul.local.arrow.writers;
+// package com.dmetasoul.lakesoul.lakesoul.local.arrow.writers;
 //
-//import org.apache.arrow.vector.complex.ListVector;
-//import org.apache.flink.annotation.Internal;
-//import org.apache.flink.table.data.ArrayData;
-//import org.apache.flink.table.data.RowData;
-//import org.apache.flink.util.Preconditions;
+// import org.apache.arrow.vector.complex.ListVector;
+// import org.apache.flink.annotation.Internal;
+// import org.apache.flink.table.data.ArrayData;
+// import org.apache.flink.table.data.RowData;
+// import org.apache.flink.util.Preconditions;
 //
-///**
+/// **
 // * {@link ArrowFieldWriter} for Array.
 // */
-//@Internal
-//public abstract class ArrayWriter<T> extends ArrowFieldWriter<T> {
+// @Internal
+// public abstract class ArrayWriter<T> extends ArrowFieldWriter<T> {
 //
 //    public static ArrayWriter<RowData> forRow(
 //            ListVector listVector, ArrowFieldWriter<ArrayData> elementWriter) {
@@ -120,4 +120,4 @@
 //            return in.getArray(ordinal);
 //        }
 //    }
-//}
+// }

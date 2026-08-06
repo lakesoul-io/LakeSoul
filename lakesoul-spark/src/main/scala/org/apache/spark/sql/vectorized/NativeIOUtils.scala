@@ -15,33 +15,38 @@ import org.apache.parquet.hadoop.ParquetInputFormat
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.execution.datasources.LakeSoulFileWriter.MAX_FILE_SIZE_KEY
-import org.apache.spark.sql.execution.datasources.parquet.{ParquetReadSupport, ParquetWriteSupport}
+import org.apache.spark.sql.execution.datasources.parquet.{
+  ParquetReadSupport,
+  ParquetWriteSupport
+}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructType
 
 import scala.collection.JavaConverters._
 
-class NativeIOUtils {
-}
+class NativeIOUtils {}
 
-class NativeIOOptions(val s3Bucket: String,
-                      val s3Ak: String,
-                      val s3Sk: String,
-                      val s3Endpoint: String,
-                      val s3Region: String,
-                      val s3Signer: String,
-                      val fsUser: String,
-                      val defaultFS: String,
-                      val virtual_path_style: Boolean,
-                      val others: Map[String, String] = Map.empty
-                     )
+class NativeIOOptions(
+    val s3Bucket: String,
+    val s3Ak: String,
+    val s3Sk: String,
+    val s3Endpoint: String,
+    val s3Region: String,
+    val s3Signer: String,
+    val fsUser: String,
+    val defaultFS: String,
+    val virtual_path_style: Boolean,
+    val others: Map[String, String] = Map.empty
+)
 
 object NativeIOUtils extends Logging {
 
-  def asArrayColumnVector(vectorSchemaRoot: VectorSchemaRoot): Array[ColumnVector] = {
-    asScalaIteratorConverter(vectorSchemaRoot.getFieldVectors.iterator())
-      .asScala
-      .toSeq
+  def asArrayColumnVector(
+      vectorSchemaRoot: VectorSchemaRoot
+  ): Array[ColumnVector] = {
+    asScalaIteratorConverter(
+      vectorSchemaRoot.getFieldVectors.iterator()
+    ).asScala.toSeq
       .map(vector => {
         asColumnVector(vector)
       })
@@ -60,11 +65,17 @@ object NativeIOUtils extends Logging {
     asArrowColumnVector(vector)
   }
 
-  def getNativeIOOptions(taskAttemptContext: TaskAttemptContext, file: Path): NativeIOOptions = {
+  def getNativeIOOptions(
+      taskAttemptContext: TaskAttemptContext,
+      file: Path
+  ): NativeIOOptions = {
     getNativeIOOptions(taskAttemptContext.getConfiguration, file)
   }
 
-  def getNativeIOOptions(configuration: Configuration, file: Path): NativeIOOptions = {
+  def getNativeIOOptions(
+      configuration: Configuration,
+      file: Path
+  ): NativeIOOptions = {
     var user: String = null
     val userConf = configuration.get("fs.hdfs.user")
     if (userConf != null) user = userConf
@@ -83,17 +94,42 @@ object NativeIOUtils extends Logging {
           val s3aRegion = configuration.get("fs.s3a.endpoint.region")
           val s3aAccessKey = configuration.get("fs.s3a.access.key")
           val s3aSecretKey = configuration.get("fs.s3a.secret.key")
-          val virtualPathStyle = configuration.getBoolean("fs.s3a.path.style.access", false)
+          val virtualPathStyle =
+            configuration.getBoolean("fs.s3a.path.style.access", false)
           val s3aSigner = configuration.get("fs.s3a.s3.signing-algorithm")
-          return new NativeIOOptions(awsS3Bucket, s3aAccessKey, s3aSecretKey,
-            s3aEndpoint, s3aRegion, s3aSigner, user, defaultFS, virtualPathStyle, otherOptions)
+          return new NativeIOOptions(
+            awsS3Bucket,
+            s3aAccessKey,
+            s3aSecretKey,
+            s3aEndpoint,
+            s3aRegion,
+            s3aSigner,
+            user,
+            defaultFS,
+            virtualPathStyle,
+            otherOptions
+          )
         case _ =>
       }
     }
-    new NativeIOOptions(null, null, null, null, null, null, user, defaultFS, false, otherOptions)
+    new NativeIOOptions(
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      user,
+      defaultFS,
+      false,
+      otherOptions
+    )
   }
 
-  def setNativeIOOptions(nativeIO: NativeIOBase, options: NativeIOOptions): Unit = {
+  def setNativeIOOptions(
+      nativeIO: NativeIOBase,
+      options: NativeIOOptions
+  ): Unit = {
     nativeIO.setObjectStoreOptions(
       options.s3Ak,
       options.s3Sk,
@@ -105,44 +141,59 @@ object NativeIOUtils extends Logging {
       options.defaultFS,
       options.virtual_path_style
     )
-    options.others.foreach(options => nativeIO.setOption(options._1, options._2))
+    options.others.foreach(options =>
+      nativeIO.setOption(options._1, options._2)
+    )
   }
 
-  def setParquetConfigurations(sparkSession: SparkSession, hadoopConf: Configuration, readDataSchema: StructType): Unit = {
+  def setParquetConfigurations(
+      sparkSession: SparkSession,
+      hadoopConf: Configuration,
+      readDataSchema: StructType
+  ): Unit = {
     val readDataSchemaAsJson = readDataSchema.json
-    hadoopConf.set(ParquetInputFormat.READ_SUPPORT_CLASS, classOf[ParquetReadSupport].getName)
+    hadoopConf.set(
+      ParquetInputFormat.READ_SUPPORT_CLASS,
+      classOf[ParquetReadSupport].getName
+    )
     hadoopConf.set(
       ParquetReadSupport.SPARK_ROW_REQUESTED_SCHEMA,
-      readDataSchemaAsJson)
-    hadoopConf.set(
-      ParquetWriteSupport.SPARK_ROW_SCHEMA,
-      readDataSchemaAsJson)
+      readDataSchemaAsJson
+    )
+    hadoopConf.set(ParquetWriteSupport.SPARK_ROW_SCHEMA, readDataSchemaAsJson)
     hadoopConf.set(
       SQLConf.SESSION_LOCAL_TIMEZONE.key,
-      sparkSession.sessionState.conf.sessionLocalTimeZone)
+      sparkSession.sessionState.conf.sessionLocalTimeZone
+    )
     hadoopConf.setBoolean(
       SQLConf.NESTED_SCHEMA_PRUNING_ENABLED.key,
-      sparkSession.sessionState.conf.nestedSchemaPruningEnabled)
+      sparkSession.sessionState.conf.nestedSchemaPruningEnabled
+    )
     hadoopConf.setBoolean(
       SQLConf.CASE_SENSITIVE.key,
-      sparkSession.sessionState.conf.caseSensitiveAnalysis)
+      sparkSession.sessionState.conf.caseSensitiveAnalysis
+    )
 
     ParquetWriteSupport.setSchema(readDataSchema, hadoopConf)
 
     // Sets flags for `ParquetToSparkSchemaConverter`
     hadoopConf.setBoolean(
       SQLConf.PARQUET_BINARY_AS_STRING.key,
-      sparkSession.sessionState.conf.isParquetBinaryAsString)
+      sparkSession.sessionState.conf.isParquetBinaryAsString
+    )
     hadoopConf.setBoolean(
       SQLConf.PARQUET_INT96_AS_TIMESTAMP.key,
-      sparkSession.sessionState.conf.isParquetINT96AsTimestamp)
+      sparkSession.sessionState.conf.isParquetINT96AsTimestamp
+    )
     // Spark 3.3.2 introduced this config
     hadoopConf.set("spark.sql.legacy.parquet.nanosAsLong", "false")
   }
 
   private def hasS3AFileSystemClass: Boolean = {
     try {
-      NativeIOUtils.getClass.getClassLoader.loadClass("org.apache.hadoop.fs.s3a.S3AFileSystem")
+      NativeIOUtils.getClass.getClassLoader.loadClass(
+        "org.apache.hadoop.fs.s3a.S3AFileSystem"
+      )
       true
     } catch {
       case e: ClassNotFoundException => false

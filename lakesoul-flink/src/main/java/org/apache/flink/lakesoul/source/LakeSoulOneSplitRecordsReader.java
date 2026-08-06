@@ -4,10 +4,15 @@
 
 package org.apache.flink.lakesoul.source;
 
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BATCH_SIZE;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.LIMIT;
+
 import com.dmetasoul.lakesoul.LakeSoulArrowReader;
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOReader;
 import com.dmetasoul.lakesoul.meta.DBUtil;
+
 import io.substrait.proto.Plan;
+
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Field;
@@ -26,13 +31,11 @@ import org.apache.flink.types.RowKind;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.*;
 import java.util.stream.Collectors;
 
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BATCH_SIZE;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.LIMIT;
+import javax.annotation.Nullable;
 
 public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowData>, AutoCloseable {
 
@@ -84,16 +87,17 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
     private long startTime;
     private long limit = Long.MAX_VALUE;
 
-    public LakeSoulOneSplitRecordsReader(Configuration conf,
-                                         LakeSoulPartitionSplit split,
-                                         RowType tableRowType,
-                                         RowType projectedRowType,
-                                         RowType projectedRowTypeWithPk,
-                                         List<String> pkColumns,
-                                         boolean isBounded,
-                                         String cdcColumn,
-                                         List<String> partitionColumns,
-                                         Plan filter)
+    public LakeSoulOneSplitRecordsReader(
+            Configuration conf,
+            LakeSoulPartitionSplit split,
+            RowType tableRowType,
+            RowType projectedRowType,
+            RowType projectedRowTypeWithPk,
+            List<String> pkColumns,
+            boolean isBounded,
+            String cdcColumn,
+            List<String> partitionColumns,
+            Plan filter)
             throws Exception {
         this.split = split;
         this.skipRecords = split.getSkipRecord();
@@ -107,7 +111,8 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
         this.finishedSplit = Collections.singleton(splitId);
         this.startTime = System.currentTimeMillis();
         Schema tableSchema = ArrowUtils.toArrowSchema(tableRowType);
-        List<Field> partitionFields = partitionColumns.stream().map(tableSchema::findField).collect(Collectors.toList());
+        List<Field> partitionFields =
+                partitionColumns.stream().map(tableSchema::findField).collect(Collectors.toList());
 
         this.partitionSchema = new Schema(partitionFields);
         this.partitionValues = DBUtil.parsePartitionDesc(split.getPartitionDesc());
@@ -148,8 +153,9 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
             reader.addFilterProto(this.filter);
         }
 
-        LOG.info("Initializing reader for split {}, pk={}, partitions={}," +
-                        " actual read cols={}, cdc column={}, filter={}",
+        LOG.info(
+                "Initializing reader for split {}, pk={}, partitions={},"
+                        + " actual read cols={}, cdc column={}, filter={}",
                 split,
                 pkColumns,
                 partitionValues,
@@ -168,15 +174,16 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
             if (t instanceof IOException) throw (IOException) t;
             throw new IOException("Initialize native reader failed", t);
         }
-        this.reader = new LakeSoulArrowReader(reader,
-                10000);
-        LOG.info("Initialized reader for split {}, time {}ms", split, System.currentTimeMillis() - startTime);
+        this.reader = new LakeSoulArrowReader(reader, 10000);
+        LOG.info(
+                "Initialized reader for split {}, time {}ms",
+                split,
+                System.currentTimeMillis() - startTime);
     }
 
     // final returned row should only contain requested schema in query
     private void makeCurrentArrowReader() {
-        this.curArrowReader = ArrowUtils.createArrowReader(currentVCR,
-                this.projectedRowTypeWithPk);
+        this.curArrowReader = ArrowUtils.createArrowReader(currentVCR, this.projectedRowTypeWithPk);
         // this.schema contains only requested fields, which does not include cdc column
         // and may not include pk columns
         ArrayList<FieldVector> requestedVectors = new ArrayList<>();
@@ -185,7 +192,8 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
             requestedVectors.add(currentVCR.getVector(index));
         }
         this.curArrowReaderRequestedSchema =
-                ArrowUtils.createArrowReader(new VectorSchemaRoot(requestedVectors), projectedRowType);
+                ArrowUtils.createArrowReader(
+                        new VectorSchemaRoot(requestedVectors), projectedRowType);
     }
 
     private void recoverFromSkipRecord() throws Exception {
@@ -197,16 +205,15 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
                 if (!hasNext) {
                     close();
                     String error =
-                            String.format("Encounter unexpected EOF in split=%s, skipRecords=%s, skipRowCount=%s",
-                                    split,
-                                    skipRecords,
-                                    skipRowCount);
+                            String.format(
+                                    "Encounter unexpected EOF in split=%s, skipRecords=%s,"
+                                            + " skipRowCount=%s",
+                                    split, skipRecords, skipRowCount);
                     LOG.error(error);
                     throw new IOException(error);
                 }
                 this.currentVCR = this.reader.nextResultVectorSchemaRoot();
                 skipRowCount += this.currentVCR.getRowCount();
-
             }
             skipRowCount -= currentVCR.getRowCount();
             curRecordIdx = (int) (skipRecords - skipRowCount);
@@ -269,7 +276,9 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
                 if (!cdcColumn.isEmpty()) {
                     if (!this.isBounded) {
                         // set rowkind according to cdc row kind field value
-                        rk = FlinkUtil.operationToRowKind((StringData) cdcFieldGetter.getFieldOrNull(rd));
+                        rk =
+                                FlinkUtil.operationToRowKind(
+                                        (StringData) cdcFieldGetter.getFieldOrNull(rd));
                         LOG.debug("Set RowKind to {}", rk);
                     } else {
                         if (FlinkUtil.isCDCDelete((StringData) cdcFieldGetter.getFieldOrNull(rd))) {
@@ -307,7 +316,11 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
     @Override
     public void close() throws Exception {
         long endTime = System.currentTimeMillis();
-        LOG.info("Close reader split {}, read num {}, time {}ms", split, totalRead, endTime - startTime);
+        LOG.info(
+                "Close reader split {}, read num {}, time {}ms",
+                split,
+                totalRead,
+                endTime - startTime);
         if (this.currentVCR != null) {
             this.currentVCR.close();
             this.currentVCR = null;

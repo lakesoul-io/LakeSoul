@@ -18,9 +18,10 @@ public class SourceRecordJsonSerde implements Serializable {
     private final transient JsonConverter keyJsonConverter;
     private final transient JsonConverter valueJsonConverter;
 
-    public static SourceRecordJsonSerde getInstance(){
+    public static SourceRecordJsonSerde getInstance() {
         return Inner.instance;
     }
+
     private static class Inner {
         private static final SourceRecordJsonSerde instance = new SourceRecordJsonSerde();
     }
@@ -40,12 +41,16 @@ public class SourceRecordJsonSerde implements Serializable {
     }
 
     public String serializeKey(SourceRecord record) {
-        byte[] bytes = this.keyJsonConverter.fromConnectData(record.topic(), record.keySchema(), record.key());
+        byte[] bytes =
+                this.keyJsonConverter.fromConnectData(
+                        record.topic(), record.keySchema(), record.key());
         return new String(bytes);
     }
 
     public String serializeValue(SourceRecord record) {
-        byte[] bytes = this.valueJsonConverter.fromConnectData(record.topic(), record.valueSchema(), record.value());
+        byte[] bytes =
+                this.valueJsonConverter.fromConnectData(
+                        record.topic(), record.valueSchema(), record.value());
         return new String(bytes, StandardCharsets.UTF_8);
     }
 

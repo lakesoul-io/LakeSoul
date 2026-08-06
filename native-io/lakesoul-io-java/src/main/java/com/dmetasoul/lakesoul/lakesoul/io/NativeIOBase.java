@@ -7,9 +7,11 @@ package com.dmetasoul.lakesoul.lakesoul.io;
 import com.dmetasoul.lakesoul.lakesoul.io.jnr.JnrLoader;
 import com.dmetasoul.lakesoul.lakesoul.io.jnr.LibLakeSoulIO;
 import com.dmetasoul.lakesoul.lakesoul.memory.ArrowMemoryUtils;
+
 import jnr.ffi.ObjectReferenceManager;
 import jnr.ffi.Pointer;
 import jnr.ffi.Runtime;
+
 import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.c.CDataDictionaryProvider;
 import org.apache.arrow.c.Data;
@@ -47,7 +49,9 @@ public class NativeIOBase implements AutoCloseable {
     }
 
     public NativeIOBase(String allocatorName) {
-        this.allocator = ArrowMemoryUtils.rootAllocator.newChildAllocator(allocatorName, 32 * 1024 * 1024, Long.MAX_VALUE);
+        this.allocator =
+                ArrowMemoryUtils.rootAllocator.newChildAllocator(
+                        allocatorName, 32 * 1024 * 1024, Long.MAX_VALUE);
         this.provider = new CDataDictionaryProvider();
 
         libLakeSoulIO = JnrLoader.get();
@@ -85,27 +89,34 @@ public class NativeIOBase implements AutoCloseable {
     }
 
     public void addFile(String file) {
-        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_single_file(ioConfigBuilder, file);
+        ioConfigBuilder =
+                libLakeSoulIO.lakesoul_config_builder_add_single_file(ioConfigBuilder, file);
     }
 
     public void withPrefix(String prefix) {
-        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_with_prefix(ioConfigBuilder, prefix);
+        ioConfigBuilder =
+                libLakeSoulIO.lakesoul_config_builder_with_prefix(ioConfigBuilder, prefix);
     }
 
     public void addColumn(String column) {
         assert ioConfigBuilder != null;
-        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_single_column(ioConfigBuilder, column);
+        ioConfigBuilder =
+                libLakeSoulIO.lakesoul_config_builder_add_single_column(ioConfigBuilder, column);
     }
 
     public void setPrimaryKeys(Iterable<String> primaryKeys) {
         for (String pk : primaryKeys) {
-            ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_single_primary_key(ioConfigBuilder, pk);
+            ioConfigBuilder =
+                    libLakeSoulIO.lakesoul_config_builder_add_single_primary_key(
+                            ioConfigBuilder, pk);
         }
     }
 
     public void setRangePartitions(Iterable<String> rangePartitions) {
         for (String col : rangePartitions) {
-            ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_single_range_partition(ioConfigBuilder, col);
+            ioConfigBuilder =
+                    libLakeSoulIO.lakesoul_config_builder_add_single_range_partition(
+                            ioConfigBuilder, col);
         }
     }
 
@@ -114,7 +125,9 @@ public class NativeIOBase implements AutoCloseable {
         ArrowSchema ffiSchema = ArrowSchema.allocateNew(allocator);
         CDataDictionaryProvider tmpProvider = new CDataDictionaryProvider();
         Data.exportSchema(allocator, schema, tmpProvider, ffiSchema);
-        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_schema(ioConfigBuilder, ffiSchema.memoryAddress());
+        ioConfigBuilder =
+                libLakeSoulIO.lakesoul_config_builder_set_schema(
+                        ioConfigBuilder, ffiSchema.memoryAddress());
         tmpProvider.close();
         ffiSchema.close();
     }
@@ -124,40 +137,54 @@ public class NativeIOBase implements AutoCloseable {
         ArrowSchema ffiSchema = ArrowSchema.allocateNew(allocator);
         CDataDictionaryProvider tmpProvider = new CDataDictionaryProvider();
         Data.exportSchema(allocator, schema, tmpProvider, ffiSchema);
-        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_partition_schema(ioConfigBuilder, ffiSchema.memoryAddress());
+        ioConfigBuilder =
+                libLakeSoulIO.lakesoul_config_builder_set_partition_schema(
+                        ioConfigBuilder, ffiSchema.memoryAddress());
         tmpProvider.close();
         ffiSchema.close();
     }
 
     public void setThreadNum(int threadNum) {
         assert ioConfigBuilder != null;
-        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_thread_num(ioConfigBuilder, threadNum);
+        ioConfigBuilder =
+                libLakeSoulIO.lakesoul_config_builder_set_thread_num(ioConfigBuilder, threadNum);
     }
 
     public void useDynamicPartition(boolean enable) {
         assert ioConfigBuilder != null;
-        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_dynamic_partition(ioConfigBuilder, enable);
+        ioConfigBuilder =
+                libLakeSoulIO.lakesoul_config_builder_set_dynamic_partition(
+                        ioConfigBuilder, enable);
     }
 
     public void setInferringSchema(boolean enable) {
         assert ioConfigBuilder != null;
-        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_inferring_schema(ioConfigBuilder, enable);
+        ioConfigBuilder =
+                libLakeSoulIO.lakesoul_config_builder_set_inferring_schema(ioConfigBuilder, enable);
     }
 
     public void setBatchSize(int batchSize) {
         assert ioConfigBuilder != null;
-        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_batch_size(ioConfigBuilder, batchSize);
+        ioConfigBuilder =
+                libLakeSoulIO.lakesoul_config_builder_set_batch_size(ioConfigBuilder, batchSize);
     }
 
     public void setBufferSize(int bufferSize) {
         assert ioConfigBuilder != null;
-        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_buffer_size(ioConfigBuilder, bufferSize);
+        ioConfigBuilder =
+                libLakeSoulIO.lakesoul_config_builder_set_buffer_size(ioConfigBuilder, bufferSize);
     }
 
-    public void setObjectStoreOptions(String accessKey, String accessSecret,
-                                      String region, String bucketName, String endpoint,
-                                      String signer, String user, String defaultFS,
-                                      boolean virtual_path_style) {
+    public void setObjectStoreOptions(
+            String accessKey,
+            String accessSecret,
+            String region,
+            String bucketName,
+            String endpoint,
+            String signer,
+            String user,
+            String defaultFS,
+            boolean virtual_path_style) {
         setObjectStoreOption("fs.s3a.access.key", accessKey);
         setObjectStoreOption("fs.s3a.secret.key", accessSecret);
         setObjectStoreOption("fs.s3a.endpoint.region", region);
@@ -172,14 +199,17 @@ public class NativeIOBase implements AutoCloseable {
     public void setObjectStoreOption(String key, String value) {
         assert ioConfigBuilder != null;
         if (key != null && value != null) {
-            ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_object_store_option(ioConfigBuilder, key, value);
+            ioConfigBuilder =
+                    libLakeSoulIO.lakesoul_config_builder_set_object_store_option(
+                            ioConfigBuilder, key, value);
         }
     }
 
     public void setOption(String key, String value) {
         assert ioConfigBuilder != null;
         if (key != null && value != null) {
-            ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_option(ioConfigBuilder, key, value);
+            ioConfigBuilder =
+                    libLakeSoulIO.lakesoul_config_builder_set_option(ioConfigBuilder, key, value);
         }
     }
 
@@ -217,7 +247,9 @@ public class NativeIOBase implements AutoCloseable {
         private Pointer key;
         private final ObjectReferenceManager<BooleanCallback> referenceManager;
 
-        public BooleanCallback(BiConsumer<Boolean, String> callback, ObjectReferenceManager<BooleanCallback> referenceManager) {
+        public BooleanCallback(
+                BiConsumer<Boolean, String> callback,
+                ObjectReferenceManager<BooleanCallback> referenceManager) {
             this.callback = callback;
             this.referenceManager = referenceManager;
             key = null;
@@ -236,7 +268,9 @@ public class NativeIOBase implements AutoCloseable {
         @Override
         public void invoke(Boolean status, String err) {
             if (err != null) {
-                System.err.println("[ERROR][com.dmetasoul.lakesoul.io.lakesoul.NativeIOBase.BooleanCallback.invoke]" + err);
+                System.err.println(
+                        "[ERROR][com.dmetasoul.lakesoul.io.lakesoul.NativeIOBase.BooleanCallback.invoke]"
+                                + err);
             }
             callback.accept(status, err);
             removerReferenceKey();
@@ -249,7 +283,9 @@ public class NativeIOBase implements AutoCloseable {
         private Pointer key;
         private final ObjectReferenceManager<IntegerCallback> referenceManager;
 
-        public IntegerCallback(BiConsumer<Integer, String> callback, ObjectReferenceManager<IntegerCallback> referenceManager) {
+        public IntegerCallback(
+                BiConsumer<Integer, String> callback,
+                ObjectReferenceManager<IntegerCallback> referenceManager) {
             this.callback = callback;
             this.referenceManager = referenceManager;
             key = null;
@@ -268,13 +304,14 @@ public class NativeIOBase implements AutoCloseable {
         @Override
         public void invoke(Integer status, String err) {
             if (err != null) {
-                System.err.println("[ERROR][com.dmetasoul.lakesoul.io.lakesoul.NativeIOBase.IntegerCallback.invoke]" + err);
+                System.err.println(
+                        "[ERROR][com.dmetasoul.lakesoul.io.lakesoul.NativeIOBase.IntegerCallback.invoke]"
+                                + err);
             }
             callback.accept(status, err);
             removerReferenceKey();
         }
     }
-
 
     public BufferAllocator getAllocator() {
         return allocator;

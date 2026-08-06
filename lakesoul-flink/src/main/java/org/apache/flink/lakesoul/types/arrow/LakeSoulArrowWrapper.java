@@ -5,6 +5,7 @@
 package org.apache.flink.lakesoul.types.arrow;
 
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
+
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.ipc.ArrowStreamReader;
@@ -43,18 +44,24 @@ public class LakeSoulArrowWrapper implements Serializable {
     @Override
     public String toString() {
         AtomicReference<String> result = new AtomicReference<>();
-        withDecoded(ArrowUtils.getRootAllocator(), (tableInfo, recordBatch) -> {
-            result.set("LakeSoulVectorSchemaRootWrapper{" +
-                    "tableInfo=" + tableInfo +
-                    ", vectorSchemaRoot=" + recordBatch.contentToTSVString() +
-                    '}');
-
-        });
+        withDecoded(
+                ArrowUtils.getRootAllocator(),
+                (tableInfo, recordBatch) -> {
+                    result.set(
+                            "LakeSoulVectorSchemaRootWrapper{"
+                                    + "tableInfo="
+                                    + tableInfo
+                                    + ", vectorSchemaRoot="
+                                    + recordBatch.contentToTSVString()
+                                    + '}');
+                });
         return result.get();
     }
 
-    public void withDecoded(BufferAllocator allocator, BiConsumer<TableInfo, VectorSchemaRoot> consumer) {
-        try (ArrowStreamReader reader = new ArrowStreamReader(new ByteArrayInputStream(encodedBatch), allocator)) {
+    public void withDecoded(
+            BufferAllocator allocator, BiConsumer<TableInfo, VectorSchemaRoot> consumer) {
+        try (ArrowStreamReader reader =
+                new ArrowStreamReader(new ByteArrayInputStream(encodedBatch), allocator)) {
             reader.loadNextBatch();
             TableInfo tableInfo = TableInfo.parseFrom(encodedTableInfo);
             consumer.accept(tableInfo, reader.getVectorSchemaRoot());
@@ -64,11 +71,12 @@ public class LakeSoulArrowWrapper implements Serializable {
     }
 
     private static byte[] encodeBatch(VectorSchemaRoot vectorSchemaRoot) {
-        try (
-                ByteArrayOutputStream out = new ByteArrayOutputStream();
-                ArrowStreamWriter writer = new ArrowStreamWriter(vectorSchemaRoot, /*DictionaryProvider=*/null,
-                        Channels.newChannel(out));
-        ) {
+        try (ByteArrayOutputStream out = new ByteArrayOutputStream();
+                ArrowStreamWriter writer =
+                        new ArrowStreamWriter(
+                                vectorSchemaRoot,
+                                /* DictionaryProvider= */ null,
+                                Channels.newChannel(out)); ) {
             writer.start();
             writer.writeBatch();
             writer.end();

@@ -11,14 +11,15 @@ import com.facebook.presto.common.CatalogSchemaName;
 import com.facebook.presto.common.QualifiedObjectName;
 import com.facebook.presto.lakesoul.LakeSoulConfig;
 import com.facebook.presto.spi.CatalogSchemaTableName;
-import com.facebook.presto.spi.SchemaTableName;
-import com.facebook.presto.spi.security.*;
-import com.facebook.presto.spi.analyzer.ViewDefinition;
-import com.facebook.presto.spi.MaterializedViewDefinition;
 import com.facebook.presto.spi.ColumnMetadata;
+import com.facebook.presto.spi.MaterializedViewDefinition;
+import com.facebook.presto.spi.SchemaTableName;
+import com.facebook.presto.spi.analyzer.ViewDefinition;
+import com.facebook.presto.spi.security.*;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+
 import java.security.Principal;
 import java.security.cert.X509Certificate;
 import java.util.*;
@@ -65,9 +66,12 @@ public class LakeSoulSystemAccessControl implements SystemAccessControl {
             Set<String> systemSchemas) {
         this.sensitiveSystemSessionProperties = sensitiveSystemSessionProperties;
         this.principalNeedMatchUsername = principalNeedMatchUsername;
-        this.sensitiveSystemSessionPropertiesEnableRestrictions = sensitiveSystemSessionPropertiesEnableRestrictions;
-        this.sensitiveSystemSessionPropertiesAllowUsernames = sensitiveSystemSessionPropertiesAllowUsernames;
-        this.sensitiveSystemSessionPropertiesAllowDomains = sensitiveSystemSessionPropertiesAllowDomains;
+        this.sensitiveSystemSessionPropertiesEnableRestrictions =
+                sensitiveSystemSessionPropertiesEnableRestrictions;
+        this.sensitiveSystemSessionPropertiesAllowUsernames =
+                sensitiveSystemSessionPropertiesAllowUsernames;
+        this.sensitiveSystemSessionPropertiesAllowDomains =
+                sensitiveSystemSessionPropertiesAllowDomains;
         this.systemSchemas = systemSchemas;
     }
 
@@ -87,7 +91,10 @@ public class LakeSoulSystemAccessControl implements SystemAccessControl {
     }
 
     @Override
-    public void checkCanSetUser(Identity identity, AccessControlContext context, Optional<Principal> principal,
+    public void checkCanSetUser(
+            Identity identity,
+            AccessControlContext context,
+            Optional<Principal> principal,
             String userName) {
         if (principalNeedMatchUsername) {
             if (getPrincipal(identity).isPresent()) {
@@ -97,29 +104,39 @@ public class LakeSoulSystemAccessControl implements SystemAccessControl {
                     if (!sub.equals(userName)) {
                         throw new AccessDeniedException(
                                 String.format(
-                                        "Access denied: principal <group: '%s', sub: '%s'> does not match requested user name '%s'.",
-                                        lakesoulPrincipal.getGroup(), lakesoulPrincipal.getSub(), userName));
+                                        "Access denied: principal <group: '%s', sub: '%s'> does not"
+                                                + " match requested user name '%s'.",
+                                        lakesoulPrincipal.getGroup(),
+                                        lakesoulPrincipal.getSub(),
+                                        userName));
                     }
                 } else {
                     throw new AccessDeniedException(
-                            String.format("Access denied: principal <group: '%s', sub: '%s'> is expired.",
+                            String.format(
+                                    "Access denied: principal <group: '%s', sub: '%s'> is expired.",
                                     lakesoulPrincipal.getGroup(), lakesoulPrincipal.getSub()));
                 }
             } else {
                 throw new AccessDeniedException(
-                        "Access denied: no principal information available to verify requested user name.");
+                        "Access denied: no principal information available to verify requested user"
+                                + " name.");
             }
         }
     }
 
     @Override
-    public AuthorizedIdentity selectAuthorizedIdentity(Identity identity, AccessControlContext context, String userName,
+    public AuthorizedIdentity selectAuthorizedIdentity(
+            Identity identity,
+            AccessControlContext context,
+            String userName,
             List<X509Certificate> certificates) {
-        return SystemAccessControl.super.selectAuthorizedIdentity(identity, context, userName, certificates);
+        return SystemAccessControl.super.selectAuthorizedIdentity(
+                identity, context, userName, certificates);
     }
 
     @Override
-    public void checkCanSetSystemSessionProperty(Identity identity, AccessControlContext context, String propertyName) {
+    public void checkCanSetSystemSessionProperty(
+            Identity identity, AccessControlContext context, String propertyName) {
         if (sensitiveSystemSessionPropertiesEnableRestrictions
                 && sensitiveSystemSessionProperties.contains(propertyName)) {
             if (getPrincipal(identity).isPresent()) {
@@ -131,7 +148,8 @@ public class LakeSoulSystemAccessControl implements SystemAccessControl {
                             && !sensitiveSystemSessionPropertiesAllowDomains.contains(domain)) {
                         throw new AccessDeniedException(
                                 String.format(
-                                        "Access denied: principal <group: '%s', sub: '%s'> is not allowed to set system session property '%s'.",
+                                        "Access denied: principal <group: '%s', sub: '%s'> is not"
+                                                + " allowed to set system session property '%s'.",
                                         username, domain, propertyName));
                     }
                     return;
@@ -139,7 +157,9 @@ public class LakeSoulSystemAccessControl implements SystemAccessControl {
             }
             if (!sensitiveSystemSessionPropertiesAllowUsernames.contains(identity.getUser())) {
                 throw new AccessDeniedException(
-                        String.format("Access denied: user '%s' is not allowed to set system session property '%s'.",
+                        String.format(
+                                "Access denied: user '%s' is not allowed to set system session"
+                                        + " property '%s'.",
                                 identity.getUser(), propertyName));
             }
         }
@@ -148,22 +168,31 @@ public class LakeSoulSystemAccessControl implements SystemAccessControl {
     // ===== For catalogs, we pass all of them. =====
 
     @Override
-    public void checkCanAccessCatalog(Identity identity, AccessControlContext context, String catalogName) {
+    public void checkCanAccessCatalog(
+            Identity identity, AccessControlContext context, String catalogName) {
         // no-op
     }
 
     @Override
-    public Set<String> filterCatalogs(Identity identity, AccessControlContext context, Set<String> catalogs) {
+    public Set<String> filterCatalogs(
+            Identity identity, AccessControlContext context, Set<String> catalogs) {
         return catalogs;
     }
 
     @Override
-    public List<ColumnMetadata> filterColumns(Identity identity, AccessControlContext context, CatalogSchemaTableName table, List<ColumnMetadata> columns) {
+    public List<ColumnMetadata> filterColumns(
+            Identity identity,
+            AccessControlContext context,
+            CatalogSchemaTableName table,
+            List<ColumnMetadata> columns) {
         return columns;
     }
 
     @Override
-    public void checkCanSetCatalogSessionProperty(Identity identity, AccessControlContext context, String catalogName,
+    public void checkCanSetCatalogSessionProperty(
+            Identity identity,
+            AccessControlContext context,
+            String catalogName,
             String propertyName) {
         // no-op
     }
@@ -171,10 +200,14 @@ public class LakeSoulSystemAccessControl implements SystemAccessControl {
     // ===== For schemas, we filter them by domain. =====
 
     @Override
-    public Set<String> filterSchemas(Identity identity, AccessControlContext context, String catalogName,
+    public Set<String> filterSchemas(
+            Identity identity,
+            AccessControlContext context,
+            String catalogName,
             Set<String> schemaNames) {
         Set<String> filteredSchemas = new HashSet<>(schemaNames);
-        List<String> publicAndSystemNamespaces = new ArrayList<>(dbManager.listNamespacesByDomain(publicDomain));
+        List<String> publicAndSystemNamespaces =
+                new ArrayList<>(dbManager.listNamespacesByDomain(publicDomain));
         publicAndSystemNamespaces.addAll(systemSchemas);
         if (getPrincipal(identity).isPresent()) {
             LakeSoulAuthenticatedPrincipal lakesoulPrincipal = getPrincipal(identity).get();
@@ -186,26 +219,33 @@ public class LakeSoulSystemAccessControl implements SystemAccessControl {
                     namespaces.addAll(dbManager.listNamespacesByDomain(domain));
                 }
                 filteredSchemas.retainAll(normalizeNamespaces(namespaces));
-                log.info("Filter schemas by domain <%s + public>, original schemas: %s, filtered schemas: %s",
+                log.info(
+                        "Filter schemas by domain <%s + public>, original schemas: %s, filtered"
+                                + " schemas: %s",
                         domain, schemaNames, filteredSchemas);
                 return filteredSchemas;
             }
         }
         filteredSchemas.retainAll(normalizeNamespaces(publicAndSystemNamespaces));
-        log.info("Filter schemas by domain <public>, original schemas: %s, filtered schemas: %s",
+        log.info(
+                "Filter schemas by domain <public>, original schemas: %s, filtered schemas: %s",
                 schemaNames, filteredSchemas);
         return filteredSchemas;
     }
 
     @Override
-    public void checkCanShowSchemas(Identity identity, AccessControlContext context, String catalogName) {
+    public void checkCanShowSchemas(
+            Identity identity, AccessControlContext context, String catalogName) {
         // no-op
     }
 
     // ===== For tables, we filter them by domain. =====
 
     @Override
-    public Set<SchemaTableName> filterTables(Identity identity, AccessControlContext context, String catalogName,
+    public Set<SchemaTableName> filterTables(
+            Identity identity,
+            AccessControlContext context,
+            String catalogName,
             Set<SchemaTableName> tableNames) {
         Set<SchemaTableName> filteredTableNames = new HashSet<>(tableNames);
         List<NamespaceTableName> publicTables = dbManager.listTableNamesByDomain(publicDomain);
@@ -218,36 +258,49 @@ public class LakeSoulSystemAccessControl implements SystemAccessControl {
                 if (!domain.equals(publicDomain)) {
                     tables.addAll(dbManager.listTableNamesByDomain(domain));
                 }
-                List<SchemaTableName> schemaTableNames = tables.stream()
-                        .map(LakeSoulSystemAccessControl::normalizeSchemaTableName)
-                        .collect(Collectors.toList());
+                List<SchemaTableName> schemaTableNames =
+                        tables.stream()
+                                .map(LakeSoulSystemAccessControl::normalizeSchemaTableName)
+                                .collect(Collectors.toList());
                 filteredTableNames.retainAll(schemaTableNames);
                 filteredTableNames.addAll(
-                        tableNames.stream().filter(e -> {
-                            return systemSchemas.contains(e.getSchemaName());
-                        }).collect(Collectors.toList()));
+                        tableNames.stream()
+                                .filter(
+                                        e -> {
+                                            return systemSchemas.contains(e.getSchemaName());
+                                        })
+                                .collect(Collectors.toList()));
                 log.info(
-                        "Filter tables by domain <%s + public> in catalog <%s>, original tables: %s, filtered tables: %s",
+                        "Filter tables by domain <%s + public> in catalog <%s>, original tables:"
+                                + " %s, filtered tables: %s",
                         domain, catalogName, tableNames, filteredTableNames);
                 return filteredTableNames;
             }
         }
-        List<SchemaTableName> schemaTableNames = publicTables.stream()
-                .map(LakeSoulSystemAccessControl::normalizeSchemaTableName)
-                .collect(Collectors.toList());
+        List<SchemaTableName> schemaTableNames =
+                publicTables.stream()
+                        .map(LakeSoulSystemAccessControl::normalizeSchemaTableName)
+                        .collect(Collectors.toList());
         filteredTableNames.retainAll(schemaTableNames);
         filteredTableNames.addAll(
-                tableNames.stream().filter(e -> {
-                    return systemSchemas.contains(e.getSchemaName());
-                }).collect(Collectors.toList()));
-        log.info("Filter tables by domain <public> in catalog <%s>, original tables: %s, filtered tables: %s",
+                tableNames.stream()
+                        .filter(
+                                e -> {
+                                    return systemSchemas.contains(e.getSchemaName());
+                                })
+                        .collect(Collectors.toList()));
+        log.info(
+                "Filter tables by domain <public> in catalog <%s>, original tables: %s, filtered"
+                        + " tables: %s",
                 catalogName, tableNames, filteredTableNames);
         return filteredTableNames;
     }
 
     @Override
-    public void checkCanShowTablesMetadata(Identity identity, AccessControlContext context, CatalogSchemaName schema) {
-        List<String> publicAndSystemNamespaces = new ArrayList<>(dbManager.listNamespacesByDomain(publicDomain));
+    public void checkCanShowTablesMetadata(
+            Identity identity, AccessControlContext context, CatalogSchemaName schema) {
+        List<String> publicAndSystemNamespaces =
+                new ArrayList<>(dbManager.listNamespacesByDomain(publicDomain));
         publicAndSystemNamespaces.addAll(systemSchemas);
         if (getPrincipal(identity).isPresent()) {
             LakeSoulAuthenticatedPrincipal lakesoulPrincipal = getPrincipal(identity).get();
@@ -260,7 +313,8 @@ public class LakeSoulSystemAccessControl implements SystemAccessControl {
                 if (!normalizeNamespaces(namespaces).contains(schema.getSchemaName())) {
                     throw new AccessDeniedException(
                             String.format(
-                                    "Access denied: user '%s' and domain '%s' is not allowed to show tables metadata in schema '%s'.",
+                                    "Access denied: user '%s' and domain '%s' is not allowed to"
+                                            + " show tables metadata in schema '%s'.",
                                     lakesoulPrincipal.getSub(), domain, schema.getSchemaName()));
                 }
                 return;
@@ -268,31 +322,41 @@ public class LakeSoulSystemAccessControl implements SystemAccessControl {
         }
         if (!normalizeNamespaces(publicAndSystemNamespaces).contains(schema.getSchemaName())) {
             throw new AccessDeniedException(
-                    String.format("Access denied: user '%s' is not allowed to show tables metadata in schema '%s'.",
+                    String.format(
+                            "Access denied: user '%s' is not allowed to show tables metadata in"
+                                    + " schema '%s'.",
                             identity.getUser(), schema.getSchemaName()));
         }
     }
 
     @Override
-    public void checkCanShowColumnsMetadata(Identity identity, AccessControlContext context,
-                                            CatalogSchemaTableName table) {
+    public void checkCanShowColumnsMetadata(
+            Identity identity, AccessControlContext context, CatalogSchemaTableName table) {
         // no-op
     }
 
     @Override
-    public void checkCanShowCreateTable(Identity identity, AccessControlContext context, CatalogSchemaTableName table) {
+    public void checkCanShowCreateTable(
+            Identity identity, AccessControlContext context, CatalogSchemaTableName table) {
         // no-op
     }
 
     @Override
-    public void checkQueryIntegrity(Identity identity, AccessControlContext context, String query, Map<QualifiedObjectName, ViewDefinition> viewDefinitions, Map<QualifiedObjectName, MaterializedViewDefinition> materializedViewDefinitions) {
+    public void checkQueryIntegrity(
+            Identity identity,
+            AccessControlContext context,
+            String query,
+            Map<QualifiedObjectName, ViewDefinition> viewDefinitions,
+            Map<QualifiedObjectName, MaterializedViewDefinition> materializedViewDefinitions) {
         // no-op
     }
 
     @Override
-    public void checkCanSelectFromColumns(Identity identity, AccessControlContext context, CatalogSchemaTableName table,
-        Set<String> columns) {
-    // no-op
+    public void checkCanSelectFromColumns(
+            Identity identity,
+            AccessControlContext context,
+            CatalogSchemaTableName table,
+            Set<String> columns) {
+        // no-op
     }
-
 }
