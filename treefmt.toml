@@ -2,8 +2,8 @@
 # https://treefmt.com
 #
 # Usage:
-#   treefmt              # format all files
-#   treefmt --fail-on-change  # check-only (CI / pre-push)
+#   treefmt <paths...>  # format selected files
+#   treefmt --ci <paths...>  # check selected files (CI / pre-push)
 
 [global]
 excludes = [
@@ -21,6 +21,7 @@ excludes = [
   "**/uv.lock",
   "website/package-lock.json",
   # Generated code
+  "lakesoul-flink/src/main/java/org/apache/flink/fnexecution/v1/FlinkFnApi.java",
   "python/src/lakesoul/metadata/generated/**",
 ]
 
@@ -28,6 +29,7 @@ excludes = [
 # Config: rust/rustfmt.toml (picked up automatically)
 [formatter.rust]
 command = "rustfmt"
+options = ["--edition", "2024", "--config", "skip_children=true"]
 includes = ["*.rs"]
 
 # Java ─────────────────────────────────────────────────
