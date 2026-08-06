@@ -80,13 +80,12 @@ Please find tutorials in doc site:
 
 # Usage Documentations
 Please find usage documentations in doc site:
-[Usage Doc](https://lakesoul-io.github.io/docs/Usage%20Docs/setup-meta-env)
 
-[快速开始](https://lakesoul-io.github.io/zh-Hans/docs/Getting%20Started/setup-local-env)
+[Quick Start](https://lakesoul-io.github.io/docs/Getting%20Started/setup-local-env)
 
-[教程](https://lakesoul-io.github.io/zh-Hans/docs/Tutorials/flink-cdc-sink)
+[Tutorials](https://lakesoul-io.github.io/docs/Tutorials/consume-cdc-via-spark-streaming)
 
-[使用文档](https://lakesoul-io.github.io/zh-Hans/docs/Usage%20Docs/setup-meta-env)
+[Usage Documentation](https://lakesoul-io.github.io/docs/Usage%20Docs/setup-meta-env)
 
 # Feature Roadmap
 ## Roadmap 2026

@@ -59,6 +59,8 @@ LakeSoul 支持自动分离式多层 Compaction 、自动表生命周期清理�
 
 [快速开始](https://lakesoul-io.github.io/zh-Hans/docs/Getting%20Started/setup-local-env)
 
+[教程](https://lakesoul-io.github.io/zh-Hans/docs/Tutorials/flink-cdc-sink)
+
 [使用文档](https://lakesoul-io.github.io/zh-Hans/docs/Usage%20Docs/setup-meta-env)
 
 # 特性路线
