@@ -17,18 +17,20 @@ import org.scalatestplus.junit.JUnitRunner
 
 import java.util.concurrent.CountDownLatch
 
-
-/**
-  * This Suite tests the behavior of LakeSoul commands when a schema altering commit is run after the
-  * command completes analysis but before the command starts the transaction. We want to make sure
-  * that we do not corrupt tables.
+/** This Suite tests the behavior of LakeSoul commands when a schema altering
+  * commit is run after the command completes analysis but before the command
+  * starts the transaction. We want to make sure that we do not corrupt tables.
   */
 @RunWith(classOf[JUnitRunner])
-class SchemaValidationSuite extends QueryTest with SharedSparkSession with LakeSoulSQLCommandTest {
+class SchemaValidationSuite
+    extends QueryTest
+    with SharedSparkSession
+    with LakeSoulSQLCommandTest {
 
   class BlockingRule(
-                      blockActionLatch: CountDownLatch,
-                      startConcurrentUpdateLatch: CountDownLatch) extends Rule[LogicalPlan] {
+      blockActionLatch: CountDownLatch,
+      startConcurrentUpdateLatch: CountDownLatch
+  ) extends Rule[LogicalPlan] {
     override def apply(plan: LogicalPlan): LogicalPlan = {
       startConcurrentUpdateLatch.countDown()
       blockActionLatch.await()
@@ -36,18 +38,19 @@ class SchemaValidationSuite extends QueryTest with SharedSparkSession with LakeS
     }
   }
 
-  /**
-    * Blocks the thread with the help of an optimizer rule until end of scope.
-    * We need two latches to ensure that the thread executing the query is blocked until
-    * the other thread concurrently updates the metadata. `blockActionLatch` blocks the action
-    * until it is counted down by the thread updating the metadata. `startConcurrentUpdateLatch`
-    * will block the concurrent update to happen until it is counted down by the action reaches the
-    * optimizer rule.
+  /** Blocks the thread with the help of an optimizer rule until end of scope.
+    * We need two latches to ensure that the thread executing the query is
+    * blocked until the other thread concurrently updates the metadata.
+    * `blockActionLatch` blocks the action until it is counted down by the
+    * thread updating the metadata. `startConcurrentUpdateLatch` will block the
+    * concurrent update to happen until it is counted down by the action reaches
+    * the optimizer rule.
     */
   private def withBlockedExecution(
-                                    t: Thread,
-                                    blockActionLatch: CountDownLatch,
-                                    startConcurrentUpdateLatch: CountDownLatch)(f: => Unit): Unit = {
+      t: Thread,
+      blockActionLatch: CountDownLatch,
+      startConcurrentUpdateLatch: CountDownLatch
+  )(f: => Unit): Unit = {
     t.start()
     startConcurrentUpdateLatch.await()
     try {
@@ -65,13 +68,13 @@ class SchemaValidationSuite extends QueryTest with SharedSparkSession with LakeS
     clonedSession
   }
 
-  /**
-    * Common base method for both the path based and table name based tests.
+  /** Common base method for both the path based and table name based tests.
     */
   private def testConcurrentChangeBase(identifier: String)(
-    createTable: (SparkSession, String) => Unit,
-    actionToTest: (SparkSession, String) => Unit,
-    concurrentChange: (SparkSession, String) => Unit): Unit = {
+      createTable: (SparkSession, String) => Unit,
+      actionToTest: (SparkSession, String) => Unit,
+      concurrentChange: (SparkSession, String) => Unit
+  ): Unit = {
     createTable(spark, identifier)
 
     // Clone the session to run the query in a separate thread.
@@ -92,7 +95,11 @@ class SchemaValidationSuite extends QueryTest with SharedSparkSession with LakeS
         }
       }
     }
-    withBlockedExecution(actionToTestThread, blockActionLatch, startConcurrentUpdateLatch) {
+    withBlockedExecution(
+      actionToTestThread,
+      blockActionLatch,
+      startConcurrentUpdateLatch
+    ) {
       concurrentChange(spark, identifier)
     }
     if (actionException != null) {
@@ -100,8 +107,7 @@ class SchemaValidationSuite extends QueryTest with SharedSparkSession with LakeS
     }
   }
 
-  /**
-    * tests the behavior of concurrent changes to schema on a blocked command.
+  /** tests the behavior of concurrent changes to schema on a blocked command.
     *
     * @param testName         - name of the test
     * @param createTable      - method that creates a table given an identifier and spark session.
@@ -111,9 +117,10 @@ class SchemaValidationSuite extends QueryTest with SharedSparkSession with LakeS
     *                         All the above methods take SparkSession and the table path as parameters
     */
   def testConcurrentChange(testName: String)(
-    createTable: (SparkSession, String) => Unit,
-    actionToTest: (SparkSession, String) => Unit,
-    concurrentChange: (SparkSession, String) => Unit): Unit = {
+      createTable: (SparkSession, String) => Unit,
+      actionToTest: (SparkSession, String) => Unit,
+      concurrentChange: (SparkSession, String) => Unit
+  ): Unit = {
 
     test(testName) {
       withTempDir { tempDir =>
@@ -126,8 +133,7 @@ class SchemaValidationSuite extends QueryTest with SharedSparkSession with LakeS
     }
   }
 
-  /**
-    * tests the behavior of concurrent changes pf schema on a blocked command with metastore tables.
+  /** tests the behavior of concurrent changes pf schema on a blocked command with metastore tables.
     *
     * @param testName         - name of the test
     * @param createTable      - method that creates a table given an identifier and spark session.
@@ -137,9 +143,10 @@ class SchemaValidationSuite extends QueryTest with SharedSparkSession with LakeS
     *                         All the above methods take SparkSession and the table name as parameters
     */
   def testConcurrentChangeWithTable(testName: String)(
-    createTable: (SparkSession, String) => Unit,
-    actionToTest: (SparkSession, String) => Unit,
-    concurrentChange: (SparkSession, String) => Unit): Unit = {
+      createTable: (SparkSession, String) => Unit,
+      actionToTest: (SparkSession, String) => Unit,
+      concurrentChange: (SparkSession, String) => Unit
+  ): Unit = {
 
     val tblName = "metastoreTable"
     test(testName) {
@@ -153,35 +160,41 @@ class SchemaValidationSuite extends QueryTest with SharedSparkSession with LakeS
     }
   }
 
-  /**
-    * Creates a method to remove a column from the table by taking column as an argument.
+  /** Creates a method to remove a column from the table by taking column as an
+    * argument.
     */
   def dropColFromSampleTable(col: String): (SparkSession, String) => Unit = {
-    (spark: SparkSession, tblPath: String) => {
-      spark.read.format("lakesoul").load(tblPath)
-        .drop(col)
-        .write
-        .format("lakesoul")
-        .mode("overwrite")
-        .option("overwriteSchema", "true")
-        .save(tblPath)
-    }
+    (spark: SparkSession, tblPath: String) =>
+      {
+        spark.read
+          .format("lakesoul")
+          .load(tblPath)
+          .drop(col)
+          .write
+          .format("lakesoul")
+          .mode("overwrite")
+          .option("overwriteSchema", "true")
+          .save(tblPath)
+      }
   }
 
-  /**
-    * Adding a column to the schema will result in the blocked thread appending to the table
-    * with null values for the new column.
+  /** Adding a column to the schema will result in the blocked thread appending
+    * to the table with null values for the new column.
     */
   testConcurrentChange("write - add a column concurrently")(
     createTable = (spark: SparkSession, tblPath: String) => {
       spark.range(10).write.format("lakesoul").save(tblPath)
     },
     actionToTest = (spark: SparkSession, tblPath: String) => {
-      spark.range(11, 20).write.format("lakesoul")
+      spark
+        .range(11, 20)
+        .write
+        .format("lakesoul")
         .mode("append")
         .save(tblPath)
 
-      val appendedCol2Values = spark.read.format("lakesoul")
+      val appendedCol2Values = spark.read
+        .format("lakesoul")
         .load(tblPath)
         .filter(col("id") <= 20)
         .select("col2")
@@ -191,7 +204,10 @@ class SchemaValidationSuite extends QueryTest with SharedSparkSession with LakeS
       assert(appendedCol2Values == List(Row(null)))
     },
     concurrentChange = (spark: SparkSession, tblPath: String) => {
-      spark.range(21, 30).withColumn("col2", lit(2)).write
+      spark
+        .range(21, 30)
+        .withColumn("col2", lit(2))
+        .write
         .format("lakesoul")
         .mode("append")
         .option("mergeSchema", "true")
@@ -199,37 +215,45 @@ class SchemaValidationSuite extends QueryTest with SharedSparkSession with LakeS
     }
   )
 
-  /**
-    * Removing a column while a query is in running should throw an analysis
+  /** Removing a column while a query is in running should throw an analysis
     * exception
     */
   testConcurrentChange("write - remove a column concurrently")(
     createTable = (spark: SparkSession, tblPath: String) => {
-      spark.range(10).withColumn("col2", lit(1))
+      spark
+        .range(10)
+        .withColumn("col2", lit(1))
         .write
         .format("lakesoul")
         .save(tblPath)
     },
     actionToTest = (spark: SparkSession, tblPath: String) => {
       val e = intercept[AnalysisException] {
-        spark.range(11, 20)
-          .withColumn("col2", lit(1)).write.format("lakesoul")
+        spark
+          .range(11, 20)
+          .withColumn("col2", lit(1))
+          .write
+          .format("lakesoul")
           .mode("append")
           .save(tblPath)
       }
-      assert(e.getMessage.contains(
-        "A schema mismatch detected when writing to the table"))
+      assert(
+        e.getMessage.contains(
+          "A schema mismatch detected when writing to the table"
+        )
+      )
     },
     concurrentChange = dropColFromSampleTable("col2")
   )
 
-  /**
-    * Removing a column while performing a delete should be caught while
-    * writing the deleted files(i.e files with rows that were not deleted).
+  /** Removing a column while performing a delete should be caught while writing
+    * the deleted files(i.e files with rows that were not deleted).
     */
   testConcurrentChange("delete - remove a column concurrently")(
     createTable = (spark: SparkSession, tblPath: String) => {
-      spark.range(10).withColumn("col2", lit(1))
+      spark
+        .range(10)
+        .withColumn("col2", lit(1))
         .write
         .format("lakesoul")
         .save(tblPath)
@@ -244,13 +268,14 @@ class SchemaValidationSuite extends QueryTest with SharedSparkSession with LakeS
     concurrentChange = dropColFromSampleTable("col2")
   )
 
-  /**
-    * Removing a column(referenced in condition) while performing a delete will
+  /** Removing a column(referenced in condition) while performing a delete will
     * result in a no-op.
     */
   testConcurrentChange("delete - remove condition column concurrently")(
     createTable = (spark: SparkSession, tblPath: String) => {
-      spark.range(10).withColumn("col2", lit(1))
+      spark
+        .range(10)
+        .withColumn("col2", lit(1))
         .repartition(2)
         .write
         .format("lakesoul")
@@ -268,13 +293,14 @@ class SchemaValidationSuite extends QueryTest with SharedSparkSession with LakeS
     concurrentChange = dropColFromSampleTable("id")
   )
 
-  /**
-    * An update command that has to rewrite files will have the old schema,
-    * we catch the outdated schema during the write.
+  /** An update command that has to rewrite files will have the old schema, we
+    * catch the outdated schema during the write.
     */
   testConcurrentChange("update - remove a column concurrently")(
     createTable = (spark: SparkSession, tblPath: String) => {
-      spark.range(10).withColumn("col2", lit(1))
+      spark
+        .range(10)
+        .withColumn("col2", lit(1))
         .write
         .format("lakesoul")
         .save(tblPath)
@@ -289,13 +315,14 @@ class SchemaValidationSuite extends QueryTest with SharedSparkSession with LakeS
     concurrentChange = dropColFromSampleTable("col2")
   )
 
-  /**
-    * Removing a column(referenced in condition) while performing a update will
+  /** Removing a column(referenced in condition) while performing a update will
     * result in a no-op.
     */
   testConcurrentChange("update - remove condition column concurrently")(
     createTable = (spark: SparkSession, tblPath: String) => {
-      spark.range(10).withColumn("col2", lit(1))
+      spark
+        .range(10)
+        .withColumn("col2", lit(1))
         .repartition(2)
         .write
         .format("lakesoul")
@@ -311,11 +338,12 @@ class SchemaValidationSuite extends QueryTest with SharedSparkSession with LakeS
     concurrentChange = dropColFromSampleTable("id")
   )
 
-
-  /**
-    * Alter table to add a column and at the same time add a column concurrently.
+  /** Alter table to add a column and at the same time add a column
+    * concurrently.
     */
-  testConcurrentChangeWithTable("alter table add column - remove column and add same column")(
+  testConcurrentChangeWithTable(
+    "alter table add column - remove column and add same column"
+  )(
     createTable = (spark: SparkSession, tblName: String) => {
       spark.range(10).write.format("lakesoul").saveAsTable(tblName)
     },
@@ -323,11 +351,14 @@ class SchemaValidationSuite extends QueryTest with SharedSparkSession with LakeS
       val e = intercept[AnalysisException] {
         spark.sql(s"ALTER TABLE `$tblName` ADD COLUMNS (col2 string)")
       }
-      assert(e.getMessage.contains("Found duplicate column(s) in adding columns: col2"))
+      assert(
+        e.getMessage.contains(
+          "Found duplicate column(s) in adding columns: col2"
+        )
+      )
     },
     concurrentChange = (spark: SparkSession, tblName: String) => {
       spark.sql(s"ALTER TABLE `$tblName` ADD COLUMNS (col2 string)")
     }
   )
 }
-

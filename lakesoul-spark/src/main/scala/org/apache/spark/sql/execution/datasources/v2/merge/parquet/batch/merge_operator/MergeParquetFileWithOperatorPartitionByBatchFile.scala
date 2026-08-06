@@ -11,17 +11,20 @@ import org.apache.spark.sql.connector.read.PartitionReader
 import org.apache.spark.sql.execution.datasources.v2.merge.MergePartitionedFile
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
+class MergeParquetFileWithOperatorPartitionByBatchFile[T](
+    filesInfo: Seq[Seq[(MergePartitionedFile, PartitionReader[ColumnarBatch])]],
+    mergeOperatorInfo: Map[String, MergeOperator[Any]],
+    defaultMergeOp: MergeOperator[Any]
+) extends PartitionReader[InternalRow]
+    with Logging {
 
-class MergeParquetFileWithOperatorPartitionByBatchFile[T](filesInfo: Seq[Seq[(MergePartitionedFile, PartitionReader[ColumnarBatch])]],
-                                                          mergeOperatorInfo: Map[String, MergeOperator[Any]],
-                                                          defaultMergeOp: MergeOperator[Any])
-  extends PartitionReader[InternalRow] with Logging {
-
-  val filesItr: Iterator[Seq[(MergePartitionedFile, PartitionReader[ColumnarBatch])]] = filesInfo.iterator
+  val filesItr
+      : Iterator[Seq[(MergePartitionedFile, PartitionReader[ColumnarBatch])]] =
+    filesInfo.iterator
   var mergeLogic: MergeMultiFileWithOperator = _
 
-  /**
-    * @return Boolean
+  /** @return
+    *   Boolean
     */
   override def next(): Boolean = {
 
@@ -31,7 +34,11 @@ class MergeParquetFileWithOperatorPartitionByBatchFile[T](filesInfo: Seq[Seq[(Me
         if (nextFiles.isEmpty) {
           return false
         } else {
-          mergeLogic = new MergeMultiFileWithOperator(nextFiles, mergeOperatorInfo, defaultMergeOp)
+          mergeLogic = new MergeMultiFileWithOperator(
+            nextFiles,
+            mergeOperatorInfo,
+            defaultMergeOp
+          )
         }
       } else {
         return false
@@ -40,10 +47,14 @@ class MergeParquetFileWithOperatorPartitionByBatchFile[T](filesInfo: Seq[Seq[(Me
 
     if (mergeLogic.isHeapEmpty) {
       if (filesItr.hasNext) {
-        //close current file readers
+        // close current file readers
         mergeLogic.closeReadFileReader()
 
-        mergeLogic = new MergeMultiFileWithOperator(filesItr.next(), mergeOperatorInfo, defaultMergeOp)
+        mergeLogic = new MergeMultiFileWithOperator(
+          filesItr.next(),
+          mergeOperatorInfo,
+          defaultMergeOp
+        )
       } else {
         return false
       }
@@ -53,8 +64,8 @@ class MergeParquetFileWithOperatorPartitionByBatchFile[T](filesInfo: Seq[Seq[(Me
     true
   }
 
-  /**
-    * @return InternalRow
+  /** @return
+    *   InternalRow
     */
   override def get(): InternalRow = {
 
@@ -73,6 +84,5 @@ class MergeParquetFileWithOperatorPartitionByBatchFile[T](filesInfo: Seq[Seq[(Me
       filesInfo.foreach(f => f.foreach(_._2.close()))
     }
   }
-
 
 }

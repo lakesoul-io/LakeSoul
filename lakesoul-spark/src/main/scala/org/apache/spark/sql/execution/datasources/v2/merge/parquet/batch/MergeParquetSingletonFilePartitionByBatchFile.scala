@@ -10,20 +10,24 @@ import org.apache.spark.sql.connector.read.PartitionReader
 import org.apache.spark.sql.execution.datasources.v2.merge.MergePartitionedFile
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-/**
-  * merge on multi partition files
+/** merge on multi partition files
   *
-  * @param filesInfo Seq(Seq()) => rangePartitions(filesInOnePartition())
+  * @param filesInfo
+  *   Seq(Seq()) => rangePartitions(filesInOnePartition())
   * @tparam T
   */
-class MergeParquetSingletonFilePartitionByBatchFile[T](filesInfo: Seq[Seq[(MergePartitionedFile, PartitionReader[ColumnarBatch])]])
-  extends PartitionReader[InternalRow] with Logging {
+class MergeParquetSingletonFilePartitionByBatchFile[T](
+    filesInfo: Seq[Seq[(MergePartitionedFile, PartitionReader[ColumnarBatch])]]
+) extends PartitionReader[InternalRow]
+    with Logging {
 
-  val filesItr: Iterator[Seq[(MergePartitionedFile, PartitionReader[ColumnarBatch])]] = filesInfo.iterator
+  val filesItr
+      : Iterator[Seq[(MergePartitionedFile, PartitionReader[ColumnarBatch])]] =
+    filesInfo.iterator
   var mergeLogic: MergeSingletonFile = _
 
-  /**
-    * @return Boolean
+  /** @return
+    *   Boolean
     */
   override def next(): Boolean = {
     if (mergeLogic == null) {
@@ -42,7 +46,7 @@ class MergeParquetSingletonFilePartitionByBatchFile[T](filesInfo: Seq[Seq[(Merge
     if (mergeLogic.deDuplication()) {
       true
     } else if (filesItr.hasNext) {
-      //close current file readers
+      // close current file readers
       mergeLogic.closeReadFileReader()
 
       mergeLogic = new MergeSingletonFile(filesItr.next())
@@ -52,8 +56,8 @@ class MergeParquetSingletonFilePartitionByBatchFile[T](filesInfo: Seq[Seq[(Merge
     }
   }
 
-  /**
-    * @return InternalRow
+  /** @return
+    *   InternalRow
     */
   override def get(): InternalRow = {
     mergeLogic.getRow()

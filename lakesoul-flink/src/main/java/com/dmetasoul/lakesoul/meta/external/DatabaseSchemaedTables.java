@@ -24,7 +24,7 @@ public class DatabaseSchemaedTables {
         return tables.get(tableName);
     }
 
-    public List<Table> getTables(){
+    public List<Table> getTables() {
         return new ArrayList<>(tables.values());
     }
 
@@ -46,15 +46,10 @@ public class DatabaseSchemaedTables {
                 PKs.add(new PK(key, index));
             }
         }
-        
 
         @Override
         public String toString() {
-            return "Table{" +
-                    "TName='" + TName + '\'' +
-                    ", cols=" + cols +
-                    ", PKs=" + PKs +
-                    '}';
+            return "Table{" + "TName='" + TName + '\'' + ", cols=" + cols + ", PKs=" + PKs + '}';
         }
     }
 
@@ -69,10 +64,7 @@ public class DatabaseSchemaedTables {
 
         @Override
         public String toString() {
-            return "Column{" +
-                    "colName='" + colName + '\'' +
-                    ", type='" + type + '\'' +
-                    '}';
+            return "Column{" + "colName='" + colName + '\'' + ", type='" + type + '\'' + '}';
         }
     }
 
@@ -92,18 +84,12 @@ public class DatabaseSchemaedTables {
 
         @Override
         public String toString() {
-            return "PK{" +
-                    "colName='" + colName + '\'' +
-                    ", pos=" + pos +
-                    '}';
+            return "PK{" + "colName='" + colName + '\'' + ", pos=" + pos + '}';
         }
     }
 
     @Override
     public String toString() {
-        return "DatabaseSchemaedTables{" +
-               "DBName='" + dbName + '\'' +
-               ", tables=" + tables +
-               '}';
+        return "DatabaseSchemaedTables{" + "DBName='" + dbName + '\'' + ", tables=" + tables + '}';
     }
 }

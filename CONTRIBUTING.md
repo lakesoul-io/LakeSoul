@@ -42,6 +42,22 @@ To ensure your pull request is accepted, follow these guidelines:
 * Your pull request title should be of the form `[component] name`, where `[component]` is the part of LakeSoul repo that your PR changes. For example: `[Flink] add table source implementation`
 * Use tags to indicate parts of the repository that your PR refers to
 
+### Formatting
+
+LakeSoul uses [treefmt](https://treefmt.com) as the repository-wide formatting entry point. During the incremental rollout, format the files you change before opening a pull request:
+
+```sh
+treefmt path/to/changed-file
+```
+
+On x86-64 Linux, use the formatter versions provided by the Nix development environment:
+
+```sh
+nix develop .#formatter --command treefmt path/to/changed-file
+```
+
+The pre-push hook provides a best-effort local check with `treefmt --ci`. The Format Check workflow is the authoritative check for pull requests and pushes.
+
 ### Branching
 
 * Use a _group_ at the beginning of your branch names:

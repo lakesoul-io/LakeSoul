@@ -6,49 +6,44 @@ package com.facebook.presto.benchmark;
 
 import java.sql.*;
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.Set;
 
 public class Benchmark {
     static String hostname = "mysql";
-    //static String hostname = "localhost";
-    static String  mysqlUserName = "root";
-    static String  mysqlPassword = "root";
+    // static String hostname = "localhost";
+    static String mysqlUserName = "root";
+    static String mysqlPassword = "root";
     static int mysqlPort = 3306;
-    static String  serverTimeZone = "UTC";
+    static String serverTimeZone = "UTC";
     static String prestoHost = "127.0.0.1";
     static String prestoPort = "8080";
 
-
     /** for CDC */
-    static String  dbName = "test_cdc";
+    static String dbName = "test_cdc";
+
     static boolean verifyCDC = true;
 
-    /** for single test  */
+    /** for single test */
     static boolean singleLakeSoulContrast = false;
-    static String  lakeSoulDBName = "default";
-    static String  lakeSoulTableName = "default_init";
 
-    static final String  DEFAULT_INIT_TABLE = "default_init";
-    static final String  printLine = " ******** ";
-    static final String  splitLine = " --------------------------------------------------------------- ";
+    static String lakeSoulDBName = "default";
+    static String lakeSoulTableName = "default_init";
+
+    static final String DEFAULT_INIT_TABLE = "default_init";
+    static final String printLine = " ******** ";
+    static final String splitLine =
+            " --------------------------------------------------------------- ";
 
     static Connection mysqlCon = null;
     static Connection prestoCon = null;
 
     /**
-     * param example:
-     * --mysql.hostname localhost
-     * --mysql.database.name default_init
-     * --mysql.username root
-     * --mysql.password root
-     * --mysql.port 3306
-     * --server.time.zone UTC
-     * --cdc.contract true
-     * --single.table.contract false
-     * --lakesoul.database.name lakesoul_test
-     * --lakesoul.table.name lakesoul_table
+     * param example: --mysql.hostname localhost --mysql.database.name default_init --mysql.username
+     * root --mysql.password root --mysql.port 3306 --server.time.zone UTC --cdc.contract true
+     * --single.table.contract false --lakesoul.database.name lakesoul_test --lakesoul.table.name
+     * lakesoul_table
      */
     public static void main(String[] args) throws Exception {
         ParametersTool parameter = ParametersTool.fromArgs(args);
@@ -62,7 +57,15 @@ public class Benchmark {
         serverTimeZone = parameter.get("server.time.zone", serverTimeZone);
         verifyCDC = parameter.getBoolean("cdc.contract", true);
 
-        String mysqlUrl = "jdbc:mysql://" + hostname + ":" + mysqlPort + "/" + dbName + "?allowPublicKeyRetrieval=true&useSSL=false&useUnicode=true&characterEncoding=utf-8&serverTimezone=" + serverTimeZone;
+        String mysqlUrl =
+                "jdbc:mysql://"
+                        + hostname
+                        + ":"
+                        + mysqlPort
+                        + "/"
+                        + dbName
+                        + "?allowPublicKeyRetrieval=true&useSSL=false&useUnicode=true&characterEncoding=utf-8&serverTimezone="
+                        + serverTimeZone;
         String prestoUrl = "jdbc:presto://" + prestoHost + ":" + prestoPort + "/lakesoul/";
         mysqlCon = DriverManager.getConnection(mysqlUrl, mysqlUserName, mysqlPassword);
         prestoCon = DriverManager.getConnection(prestoUrl, "test", null);
@@ -74,7 +77,8 @@ public class Benchmark {
             mysqlCon.setSchema(lakeSoulDBName);
             prestoCon.setSchema(lakeSoulDBName);
             System.out.println(splitLine);
-            System.out.println("verifing single tableName = " + lakeSoulDBName + "." + lakeSoulTableName);
+            System.out.println(
+                    "verifing single tableName = " + lakeSoulDBName + "." + lakeSoulTableName);
             verifyQuery(dbName, lakeSoulDBName, lakeSoulTableName);
             System.out.println(splitLine);
         }
@@ -84,7 +88,7 @@ public class Benchmark {
             prestoCon.setSchema(dbName);
             // query tables in mysql and then verify them in presto
             ResultSet tablesResults = mysqlCon.prepareStatement("show tables").executeQuery();
-            while (tablesResults.next()){
+            while (tablesResults.next()) {
                 String tableName = tablesResults.getString(1);
                 System.out.println(splitLine);
                 System.out.println("verifing tableName = " + dbName + "." + tableName);
@@ -97,35 +101,36 @@ public class Benchmark {
     }
 
     @Deprecated
-    public static void verifyQueryHard (String table) throws SQLException {
+    public static void verifyQueryHard(String table) throws SQLException {
         String sql = "select * from " + table;
         ResultSet res1 = mysqlCon.prepareStatement(sql).executeQuery();
         ResultSet res2 = prestoCon.prepareStatement(sql).executeQuery();
-        while (res1.next()){
-            if(!res2.next()) {
+        while (res1.next()) {
+            if (!res2.next()) {
                 throw new RuntimeException("row count do not match");
             }
             int n = res1.getMetaData().getColumnCount();
-            for(int i = 1; i <= n; i++){
+            for (int i = 1; i <= n; i++) {
                 Object object1 = res1.getObject(i);
                 Object object2 = res2.getObject(i);
-                if(object1 == object2 || object1.equals(object2)){
+                if (object1 == object2 || object1.equals(object2)) {
                     continue;
                 }
-                throw new RuntimeException("not equals: " + object1  + " and " + object2);
+                throw new RuntimeException("not equals: " + object1 + " and " + object2);
             }
         }
 
         System.out.println("table " + table + " matched");
     }
 
+    public static void verifyQuery(String sourceSchema, String sinkSchema, String table)
+            throws SQLException {
 
-     public static void verifyQuery(String sourceSchema, String sinkSchema, String table) throws SQLException {
-        
-        String sourceSchemaTableName = table; 
-        String sinkSchemaTableName =  sinkSchema + ".s_test_cdc_" + table;
+        String sourceSchemaTableName = table;
+        String sinkSchemaTableName = sinkSchema + ".s_test_cdc_" + table;
 
-        String prestoSqlCount = String.format("select count(*) from lakesoul.%s", sinkSchemaTableName);
+        String prestoSqlCount =
+                String.format("select count(*) from lakesoul.%s", sinkSchemaTableName);
         String mysqlSqlCount = String.format("select count(*) from %s", sourceSchemaTableName);
 
         String prestoSqlData = String.format("select * from lakesoul.%s", sinkSchemaTableName);
@@ -149,13 +154,14 @@ public class Benchmark {
             Set<String> lakesoulExceptMysql = new HashSet<>(prestoRows);
             lakesoulExceptMysql.removeAll(mysqlRows);
 
-        
             Set<String> mysqlExceptLakesoul = new HashSet<>(mysqlRows);
             mysqlExceptLakesoul.removeAll(prestoRows);
 
             if (!lakesoulExceptMysql.isEmpty() || !mysqlExceptLakesoul.isEmpty()) {
-                System.out.println(table + " lakesoul - mysql diff count=" + lakesoulExceptMysql.size());
-                System.out.println(table + " mysql - lakesoul diff count=" + mysqlExceptLakesoul.size());
+                System.out.println(
+                        table + " lakesoul - mysql diff count=" + lakesoulExceptMysql.size());
+                System.out.println(
+                        table + " mysql - lakesoul diff count=" + mysqlExceptLakesoul.size());
                 throw new RuntimeException("table " + table + " data content is not matched");
             }
 
@@ -165,9 +171,11 @@ public class Benchmark {
             System.out.println("table " + table + " not matched! Exception: " + e.getMessage());
             try {
                 System.out.println("========= LakeSoul Data =========");
-                ResultSetPrinter.printResultSet(prestoCon.prepareStatement(prestoSqlData).executeQuery());
+                ResultSetPrinter.printResultSet(
+                        prestoCon.prepareStatement(prestoSqlData).executeQuery());
                 System.out.println("========= MySQL Data =========");
-                ResultSetPrinter.printResultSet(mysqlCon.prepareStatement(mysqlSqlData).executeQuery());
+                ResultSetPrinter.printResultSet(
+                        mysqlCon.prepareStatement(mysqlSqlData).executeQuery());
             } catch (Exception ex) {
                 System.out.println("Failed to print results: " + ex.getMessage());
             }
@@ -179,8 +187,10 @@ public class Benchmark {
         Set<String> rows = new HashSet<>();
         int columnCount = rs.getMetaData().getColumnCount();
 
-        java.time.format.DateTimeFormatter dateTimeFormatter = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-        java.time.format.DateTimeFormatter dateFormatter = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd");
+        java.time.format.DateTimeFormatter dateTimeFormatter =
+                java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+        java.time.format.DateTimeFormatter dateFormatter =
+                java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd");
 
         while (rs.next()) {
             StringBuilder sb = new StringBuilder();
@@ -200,19 +210,13 @@ public class Benchmark {
                     }
                     val = hex.toString();
                 } else if (obj instanceof java.sql.Timestamp) {
-                    val = ((java.sql.Timestamp) obj)
-                            .toLocalDateTime()
-                            .format(dateTimeFormatter);
+                    val = ((java.sql.Timestamp) obj).toLocalDateTime().format(dateTimeFormatter);
                 } else if (obj instanceof java.time.LocalDateTime) {
-                    val = ((java.time.LocalDateTime) obj)
-                            .format(dateTimeFormatter);
+                    val = ((java.time.LocalDateTime) obj).format(dateTimeFormatter);
                 } else if (obj instanceof java.sql.Date) {
-                    val = ((java.sql.Date) obj)
-                            .toLocalDate()
-                            .format(dateFormatter);
+                    val = ((java.sql.Date) obj).toLocalDate().format(dateFormatter);
                 } else if (obj instanceof java.time.LocalDate) {
-                    val = ((java.time.LocalDate) obj)
-                            .format(dateFormatter);
+                    val = ((java.time.LocalDate) obj).format(dateFormatter);
                 } else {
                     val = obj.toString().trim();
                 }
@@ -225,17 +229,14 @@ public class Benchmark {
     }
 
     static int getCount(ResultSet res) throws SQLException {
-        if(res.next()){
+        if (res.next()) {
             return res.getInt(1);
         }
         throw new RuntimeException("resultset has not records");
     }
 }
 
-
-/**
- * Result Printer - print resultset to table
- */
+/** Result Printer - print resultset to table */
 class ResultSetPrinter {
     public static void printResultSet(ResultSet rs) throws SQLException {
         ResultSetMetaData resultSetMetaData = rs.getMetaData();
@@ -251,12 +252,16 @@ class ResultSetPrinter {
                 if (obj instanceof byte[]) {
                     byte[] bytes = (byte[]) obj;
                     StringBuilder hex = new StringBuilder();
-                    for (int j = 0; j < Math.min(bytes.length, 10); j++) hex.append(String.format("%02x", bytes[j]));
+                    for (int j = 0; j < Math.min(bytes.length, 10); j++)
+                        hex.append(String.format("%02x", bytes[j]));
                     columnStr[i] = hex.toString() + (bytes.length > 10 ? "..." : "");
                 } else {
                     columnStr[i] = (obj == null) ? "NULL" : obj.toString();
                 }
-                columnMaxLengths[i] = Math.max(columnMaxLengths[i], (columnStr[i] == null) ? 0 : columnStr[i].length());
+                columnMaxLengths[i] =
+                        Math.max(
+                                columnMaxLengths[i],
+                                (columnStr[i] == null) ? 0 : columnStr[i].length());
             }
             results.add(columnStr);
         }
@@ -278,20 +283,24 @@ class ResultSetPrinter {
 
     /**
      * ouput column name.
+     *
      * @param resultSetMetaData ResultSet meta
      * @param columnMaxLengths column max length
      * @throws SQLException
      */
-    private static void printColumnName(ResultSetMetaData resultSetMetaData, int[] columnMaxLengths) throws SQLException {
+    private static void printColumnName(ResultSetMetaData resultSetMetaData, int[] columnMaxLengths)
+            throws SQLException {
         int columnCount = resultSetMetaData.getColumnCount();
         for (int i = 0; i < columnCount; i++) {
-            System.out.printf("|%" + columnMaxLengths[i] + "s", resultSetMetaData.getColumnName(i + 1));
+            System.out.printf(
+                    "|%" + columnMaxLengths[i] + "s", resultSetMetaData.getColumnName(i + 1));
         }
         System.out.println("|");
     }
 
     /**
      * print spliter.
+     *
      * @param columnMaxLengths column max length
      */
     private static void printSeparator(int[] columnMaxLengths) {
@@ -303,6 +312,4 @@ class ResultSetPrinter {
         }
         System.out.println("+");
     }
-
 }
-

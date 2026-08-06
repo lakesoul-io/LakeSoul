@@ -25,8 +25,6 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.util.Preconditions;
 
-import org.apache.arrow.vector.types.pojo.ArrowType;
-
 /** {@link ArrowFieldWriter} for Timestamp. */
 @Internal
 public abstract class TimestampWriter<T> extends ArrowFieldWriter<T> {
@@ -45,8 +43,7 @@ public abstract class TimestampWriter<T> extends ArrowFieldWriter<T> {
 
     private TimestampWriter(ValueVector valueVector, int precision) {
         super(valueVector);
-        Preconditions.checkState(
-                valueVector instanceof TimeStampVector);
+        Preconditions.checkState(valueVector instanceof TimeStampVector);
         this.precision = precision;
     }
 
@@ -86,7 +83,7 @@ public abstract class TimestampWriter<T> extends ArrowFieldWriter<T> {
                                 getCount(),
                                 timestamp.getMillisecond() * 1000
                                         + timestamp.getNanoOfMillisecond() / 1000);
-            } else if (valueVector instanceof TimeStampNanoTZVector){
+            } else if (valueVector instanceof TimeStampNanoTZVector) {
                 ((TimeStampNanoTZVector) valueVector)
                         .setSafe(
                                 getCount(),

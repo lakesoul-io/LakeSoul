@@ -5,13 +5,13 @@ package org.apache.flink.lakesoul.entry.clean;
 
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
+
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.functions.ProcessFunction;
 import org.apache.flink.util.Collector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
@@ -19,8 +19,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.*;
 
+import javax.sql.DataSource;
+
 public class DiscardFileDeleteFunction extends ProcessFunction<String, String> {
-    private final ConcurrentLinkedQueue<String> GLOBAL_PENDING_DELETES = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<String> GLOBAL_PENDING_DELETES =
+            new ConcurrentLinkedQueue<>();
     private ExecutorService asyncExecutor;
     private ScheduledExecutorService scheduler;
     private final int batchSize = 500;
@@ -37,6 +40,7 @@ public class DiscardFileDeleteFunction extends ProcessFunction<String, String> {
         this.pgUserName = pgUserName;
         this.pgPasswd = pgPasswd;
     }
+
     @Override
     public void open(Configuration parameters) throws Exception {
         // 初始化 HikariCP
@@ -60,13 +64,18 @@ public class DiscardFileDeleteFunction extends ProcessFunction<String, String> {
         }
         if (scheduler == null) {
             scheduler = Executors.newSingleThreadScheduledExecutor();
-            scheduler.scheduleAtFixedRate(this::flushBatchDeletes, 0, flushIntervalMs, TimeUnit.MILLISECONDS);
+            scheduler.scheduleAtFixedRate(
+                    this::flushBatchDeletes, 0, flushIntervalMs, TimeUnit.MILLISECONDS);
         }
     }
+
     @Override
-    public void processElement(String filePath, ProcessFunction<String, String>.Context ctx, Collector<String> out) throws Exception {
+    public void processElement(
+            String filePath, ProcessFunction<String, String>.Context ctx, Collector<String> out)
+            throws Exception {
         GLOBAL_PENDING_DELETES.add(filePath);
     }
+
     private void flushBatchDeletes() {
         if (GLOBAL_PENDING_DELETES.isEmpty()) return;
         List<String> batch = new ArrayList<>();
@@ -76,25 +85,28 @@ public class DiscardFileDeleteFunction extends ProcessFunction<String, String> {
         }
 
         if (batch.isEmpty()) return;
-        asyncExecutor.submit(() -> {
-            try (Connection conn = dataSource.getConnection();
-                 PreparedStatement ps = conn.prepareStatement(
-                         "DELETE FROM discard_compressed_file_info WHERE file_path = ANY(?)")) {
-                ps.setArray(1, conn.createArrayOf("text", batch.toArray()));
-                int rowsDeleted = ps.executeUpdate();
-                log.info("批量删除数据库记录 {} 条", rowsDeleted);
-            } catch (SQLException e) {
-                log.error("批量删除数据库失败", e);
-            }
-            CleanUtils cleanUtils = new CleanUtils();
-            batch.forEach(path -> {
-                try {
-                    cleanUtils.deleteFile(path);
-                } catch (Exception e) {
-                    log.error("删除文件失败 [{}]", path, e);
-                }
-            });
-        });
-
+        asyncExecutor.submit(
+                () -> {
+                    try (Connection conn = dataSource.getConnection();
+                            PreparedStatement ps =
+                                    conn.prepareStatement(
+                                            "DELETE FROM discard_compressed_file_info WHERE"
+                                                    + " file_path = ANY(?)")) {
+                        ps.setArray(1, conn.createArrayOf("text", batch.toArray()));
+                        int rowsDeleted = ps.executeUpdate();
+                        log.info("批量删除数据库记录 {} 条", rowsDeleted);
+                    } catch (SQLException e) {
+                        log.error("批量删除数据库失败", e);
+                    }
+                    CleanUtils cleanUtils = new CleanUtils();
+                    batch.forEach(
+                            path -> {
+                                try {
+                                    cleanUtils.deleteFile(path);
+                                } catch (Exception e) {
+                                    log.error("删除文件失败 [{}]", path, e);
+                                }
+                            });
+                });
     }
 }

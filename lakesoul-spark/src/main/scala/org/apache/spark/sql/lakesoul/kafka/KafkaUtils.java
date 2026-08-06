@@ -38,7 +38,9 @@ public class KafkaUtils {
             props.put("value.deserializer", "io.confluent.kafka.serializers.KafkaAvroDeserializer");
             props.put("schema.registry.url", schemaRegistryUrl);
         } else {
-            props.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+            props.put(
+                    "value.deserializer",
+                    "org.apache.kafka.common.serialization.StringDeserializer");
         }
 
         consumer = new KafkaConsumer(props);
@@ -70,20 +72,24 @@ public class KafkaUtils {
         Set<String> topics = kafkaListTopics(topicPattern);
 
         DescribeTopicsResult describeTopicsResult = kafkaClient.describeTopics(topics);
-        Map<String, KafkaFuture<TopicDescription>> stringKafkaFutureMap = describeTopicsResult.values();
+        Map<String, KafkaFuture<TopicDescription>> stringKafkaFutureMap =
+                describeTopicsResult.values();
 
         for (String topic : topics) {
             try {
-                List<TopicPartitionInfo> partitions = stringKafkaFutureMap.get(topic).get().partitions();
+                List<TopicPartitionInfo> partitions =
+                        stringKafkaFutureMap.get(topic).get().partitions();
                 for (TopicPartitionInfo partition : partitions) {
-                    TopicPartition topicPartition = new TopicPartition(topic, partition.partition());
+                    TopicPartition topicPartition =
+                            new TopicPartition(topic, partition.partition());
                     List<TopicPartition> topicPartitionList = Arrays.asList(topicPartition);
                     consumer.assign(topicPartitionList);
                     consumer.seekToEnd(topicPartitionList);
                     long current = consumer.position(topicPartition);
                     if (current >= 1) {
                         consumer.seek(topicPartition, current - 1);
-                        ConsumerRecords<String, GenericRecord> records = consumer.poll(Duration.ofSeconds(1));
+                        ConsumerRecords<String, GenericRecord> records =
+                                consumer.poll(Duration.ofSeconds(1));
                         for (ConsumerRecord record : records) {
                             rsMap.put(topic, record.value().toString());
                         }

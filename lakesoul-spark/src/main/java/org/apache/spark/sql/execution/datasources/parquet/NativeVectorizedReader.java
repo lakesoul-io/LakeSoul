@@ -6,12 +6,7 @@ package org.apache.spark.sql.execution.datasources.parquet;
 
 import com.dmetasoul.lakesoul.LakeSoulArrowReader;
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOReader;
-import java.io.IOException;
-import java.time.ZoneId;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Map;
+
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.hadoop.mapred.FileSplit;
@@ -27,63 +22,61 @@ import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.vectorized.*;
 
+import java.io.IOException;
+import java.time.ZoneId;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+
 /**
  * A specialized RecordReader that reads into InternalRows or ColumnarBatches directly using the
  * Parquet column APIs. This is somewhat based on parquet-mr's ColumnReader.
- * <p>
- * TODO: handle complex types, decimal requiring more than 8 bytes, INT96. Schema mismatch.
- * All of these can be handled efficiently and easily with codegen.
- * <p>
- * This class can either return InternalRows or ColumnarBatches. With whole stage codegen
- * enabled, this class returns ColumnarBatches which offers significant performance gains.
- * TODO: make this always return ColumnarBatches.
+ *
+ * <p>TODO: handle complex types, decimal requiring more than 8 bytes, INT96. Schema mismatch. All
+ * of these can be handled efficiently and easily with codegen.
+ *
+ * <p>This class can either return InternalRows or ColumnarBatches. With whole stage codegen
+ * enabled, this class returns ColumnarBatches which offers significant performance gains. TODO:
+ * make this always return ColumnarBatches.
  */
-public class NativeVectorizedReader
-    extends SpecificParquetRecordReaderBase<Object>
-{
+public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Object> {
 
     // The capacity of vectorized batch.
     private final int capacity;
 
     /**
-     * Batch of rows that we assemble and the current index we've returned. Every time this
-     * batch is used up (batchIdx == numBatched), we populated the batch.
+     * Batch of rows that we assemble and the current index we've returned. Every time this batch is
+     * used up (batchIdx == numBatched), we populated the batch.
      */
     private int batchIdx = 0;
 
     private int numBatched = 0;
 
-    /**
-     * The number of rows that have been returned.
-     */
+    /** The number of rows that have been returned. */
     private long rowsReturned;
 
     /**
-     * The timezone that timestamp INT96 values should be converted to. Null if no conversion. Here to
-     * workaround incompatibilities between different engines when writing timestamp values.
+     * The timezone that timestamp INT96 values should be converted to. Null if no conversion. Here
+     * to workaround incompatibilities between different engines when writing timestamp values.
      */
     private final ZoneId convertTz;
 
-    /**
-     * The mode of rebasing date/timestamp from Julian to Proleptic Gregorian calendar.
-     */
+    /** The mode of rebasing date/timestamp from Julian to Proleptic Gregorian calendar. */
     private final String datetimeRebaseMode;
 
-    /**
-     * The mode of rebasing INT96 timestamp from Julian to Proleptic Gregorian calendar.
-     */
+    /** The mode of rebasing INT96 timestamp from Julian to Proleptic Gregorian calendar. */
     private final String int96RebaseMode;
 
     /**
      * columnBatch object that is used for batch decoding. This is created on first use and triggers
      * batched decoding. It is not valid to interleave calls to the batched interface with the row
-     * by row RecordReader APIs.
-     * This is only enabled with additional flags for development. This is still a work in progress
-     * and currently unsupported cases will fail with potentially difficult to diagnose errors.
-     * This should be only turned on for development to work on this feature.
-     * <p>
-     * When this is set, the code will branch early on in the RecordReader APIs. There is no shared
-     * code between the path that uses the MR decoders and the vectorized ones.
+     * by row RecordReader APIs. This is only enabled with additional flags for development. This is
+     * still a work in progress and currently unsupported cases will fail with potentially difficult
+     * to diagnose errors. This should be only turned on for development to work on this feature.
+     *
+     * <p>When this is set, the code will branch early on in the RecordReader APIs. There is no
+     * shared code between the path that uses the MR decoders and the vectorized ones.
      */
     private ColumnarBatch columnarBatch;
 
@@ -97,41 +90,28 @@ public class NativeVectorizedReader
 
     private boolean baseReaderClosed = false;
 
-    /**
-     * If true, this class returns batches instead of rows.
-     */
+    /** If true, this class returns batches instead of rows. */
     private boolean returnColumnarBatch;
 
-    /**
-     * The memory mode of the columnarBatch
-     */
+    /** The memory mode of the columnarBatch */
     private final MemoryMode MEMORY_MODE;
 
     public NativeVectorizedReader(
-        ZoneId convertTz,
-        String datetimeRebaseMode,
-        String int96RebaseMode,
-        boolean useOffHeap,
-        int capacity
-    ) {
-        this(
-            convertTz,
-            datetimeRebaseMode,
-            int96RebaseMode,
-            useOffHeap,
-            capacity,
-            null
-        );
+            ZoneId convertTz,
+            String datetimeRebaseMode,
+            String int96RebaseMode,
+            boolean useOffHeap,
+            int capacity) {
+        this(convertTz, datetimeRebaseMode, int96RebaseMode, useOffHeap, capacity, null);
     }
 
     public NativeVectorizedReader(
-        ZoneId convertTz,
-        String datetimeRebaseMode,
-        String int96RebaseMode,
-        boolean useOffHeap,
-        int capacity,
-        FilterPredicate filter
-    ) {
+            ZoneId convertTz,
+            String datetimeRebaseMode,
+            String int96RebaseMode,
+            boolean useOffHeap,
+            int capacity,
+            FilterPredicate filter) {
         this.convertTz = convertTz;
         this.datetimeRebaseMode = datetimeRebaseMode;
         this.int96RebaseMode = int96RebaseMode;
@@ -141,34 +121,33 @@ public class NativeVectorizedReader
     }
 
     public void initialize(
-        InputSplit[] inputSplits,
-        TaskAttemptContext taskAttemptContext,
-        StructType requestSchema
-    ) throws IOException, InterruptedException, UnsupportedOperationException {
+            InputSplit[] inputSplits,
+            TaskAttemptContext taskAttemptContext,
+            StructType requestSchema)
+            throws IOException, InterruptedException, UnsupportedOperationException {
         assert (inputSplits.length == 1);
         initialize(inputSplits, taskAttemptContext, null, requestSchema, null);
     }
 
     public void initialize(
-        InputSplit[] inputSplits,
-        TaskAttemptContext taskAttemptContext,
-        String[] primaryKeys,
-        StructType requestSchema,
-        Map<String, String> mergeOperatorInfo
-    ) throws IOException, InterruptedException, UnsupportedOperationException {
+            InputSplit[] inputSplits,
+            TaskAttemptContext taskAttemptContext,
+            String[] primaryKeys,
+            StructType requestSchema,
+            Map<String, String> mergeOperatorInfo)
+            throws IOException, InterruptedException, UnsupportedOperationException {
         FileSplit split = (FileSplit) inputSplits[0];
         this.file = split.getPath();
         boolean isVortex = this.file.getName().endsWith(".vortex");
         if (isVortex) {
             this.sparkSchema = requestSchema;
         } else {
-            taskAttemptContext.getConfiguration().set("spark.sql.parquet.inferTimestampNTZ.enabled", "true");
+            taskAttemptContext
+                    .getConfiguration()
+                    .set("spark.sql.parquet.inferTimestampNTZ.enabled", "true");
             super.initialize(split, taskAttemptContext);
         }
-        this.nativeIOOptions = NativeIOUtils.getNativeIOOptions(
-            taskAttemptContext,
-            this.file
-        );
+        this.nativeIOOptions = NativeIOUtils.getNativeIOOptions(taskAttemptContext, this.file);
         this.filePathList = new ArrayList<>();
 
         for (int i = 0; i < inputSplits.length; i++) {
@@ -180,15 +159,16 @@ public class NativeVectorizedReader
             this.primaryKeys = Arrays.asList(primaryKeys);
         }
         this.mergeOps = mergeOperatorInfo;
-        this.requestSchema =
-            requestSchema == null ? sparkSchema : requestSchema;
-        TaskContext.get().addTaskCompletionListener(context -> {
-            try {
-                close(true);
-            } catch (IOException e) {
-                throw new RuntimeException(e);
-            }
-        });
+        this.requestSchema = requestSchema == null ? sparkSchema : requestSchema;
+        TaskContext.get()
+                .addTaskCompletionListener(
+                        context -> {
+                            try {
+                                close(true);
+                            } catch (IOException e) {
+                                throw new RuntimeException(e);
+                            }
+                        });
     }
 
     public void deferNativeReaderCloseUntilTaskCompletion() {
@@ -274,22 +254,15 @@ public class NativeVectorizedReader
         }
 
         String timeZoneId =
-            convertTz == null
-                ? SQLConf.get().sessionLocalTimeZone()
-                : convertTz.toString();
-        Schema arrowSchema = ArrowUtils.toArrowSchema(
-            requestSchema,
-            timeZoneId
-        );
+                convertTz == null ? SQLConf.get().sessionLocalTimeZone() : convertTz.toString();
+        Schema arrowSchema = ArrowUtils.toArrowSchema(requestSchema, timeZoneId);
         reader.setSchema(arrowSchema);
 
         if (partitionColumns != null) {
             for (int i = 0; i < partitionColumns.fields().length; i++) {
                 StructField field = partitionColumns.fields()[i];
                 reader.setDefaultColumnValue(
-                    field.name(),
-                    partitionValues.get(i, field.dataType()).toString()
-                );
+                        field.name(), partitionValues.get(i, field.dataType()).toString());
             }
         }
         reader.setBatchSize(capacity);
@@ -324,10 +297,8 @@ public class NativeVectorizedReader
 
     // Create partitions' column vector
     private void initBatch(
-        MemoryMode memMode,
-        StructType partitionColumns,
-        InternalRow partitionValues
-    ) throws IOException {
+            MemoryMode memMode, StructType partitionColumns, InternalRow partitionValues)
+            throws IOException {
         this.partitionColumns = partitionColumns;
         this.partitionValues = partitionValues;
         if (partitionColumns != null && !partitionColumns.isEmpty()) {
@@ -335,8 +306,7 @@ public class NativeVectorizedReader
             for (StructField f : requestSchema.fields()) {
                 boolean is_partition = false;
                 for (StructField partitionField : partitionColumns.fields()) {
-                    if (partitionField.name().equals(f.name())) is_partition =
-                        true;
+                    if (partitionField.name().equals(f.name())) is_partition = true;
                 }
                 if (!is_partition) newSchema = newSchema.add(f);
             }
@@ -348,38 +318,26 @@ public class NativeVectorizedReader
         recreateNativeReader();
     }
 
-    public void initBatch(
-        StructType partitionColumns,
-        InternalRow partitionValues
-    ) throws IOException {
+    public void initBatch(StructType partitionColumns, InternalRow partitionValues)
+            throws IOException {
         initBatch(MEMORY_MODE, partitionColumns, partitionValues);
     }
 
-    /**
-     * Can be called before any rows are returned to enable returning columnar batches directly.
-     */
+    /** Can be called before any rows are returned to enable returning columnar batches directly. */
     public void enableReturningBatches() {
         returnColumnarBatch = true;
     }
 
-    /**
-     * Advances to the next batch of rows. Returns false if there are no more.
-     */
+    /** Advances to the next batch of rows. Returns false if there are no more. */
     public boolean nextBatch() throws IOException {
         closeCurrentBatch();
         if (nativeReader.hasNext()) {
-            VectorSchemaRoot nextVectorSchemaRoot =
-                nativeReader.nextResultVectorSchemaRoot();
+            VectorSchemaRoot nextVectorSchemaRoot = nativeReader.nextResultVectorSchemaRoot();
             int rowCount = nextVectorSchemaRoot.getRowCount();
             if (nextVectorSchemaRoot.getSchema().getFields().isEmpty()) {
-                columnarBatch = new ColumnarBatch(
-                    new ColumnVector[] {},
-                    rowCount
-                );
+                columnarBatch = new ColumnarBatch(new ColumnVector[] {}, rowCount);
             } else {
-                nativeColumnVector = NativeIOUtils.asArrayColumnVector(
-                    nextVectorSchemaRoot
-                );
+                nativeColumnVector = NativeIOUtils.asArrayColumnVector(nextVectorSchemaRoot);
                 columnarBatch = new ColumnarBatch(nativeColumnVector, rowCount);
             }
             return true;

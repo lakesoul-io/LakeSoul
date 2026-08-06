@@ -15,7 +15,17 @@ public class TableCountsWithTableInfo {
     long fileBaseSize;
     long fileSize;
 
-    public TableCountsWithTableInfo(String tableId, String tableName, String creator, String namespace, String domain, int partionCount, int fileBaseCount, int fileCount, long fileBaseSize, long fileSize) {
+    public TableCountsWithTableInfo(
+            String tableId,
+            String tableName,
+            String creator,
+            String namespace,
+            String domain,
+            int partionCount,
+            int fileBaseCount,
+            int fileCount,
+            long fileBaseSize,
+            long fileSize) {
         this.tableId = tableId;
         this.tableName = tableName;
         this.creator = creator;
@@ -30,17 +40,32 @@ public class TableCountsWithTableInfo {
 
     @Override
     public String toString() {
-        return "TableCountsWithTableInfo{" +
-                "tableId='" + tableId + '\'' +
-                ", tableName='" + tableName + '\'' +
-                ", creator='" + creator + '\'' +
-                ", namespace='" + namespace + '\'' +
-                ", domain='" + domain + '\'' +
-                ", partionCount=" + partionCount +
-                ", fileBaseCount=" + fileBaseCount +
-                ", fileCount=" + fileCount +
-                ", fileBaseSize=" + fileBaseSize +
-                ", fileSize=" + fileSize +
-                '}';
+        return "TableCountsWithTableInfo{"
+                + "tableId='"
+                + tableId
+                + '\''
+                + ", tableName='"
+                + tableName
+                + '\''
+                + ", creator='"
+                + creator
+                + '\''
+                + ", namespace='"
+                + namespace
+                + '\''
+                + ", domain='"
+                + domain
+                + '\''
+                + ", partionCount="
+                + partionCount
+                + ", fileBaseCount="
+                + fileBaseCount
+                + ", fileCount="
+                + fileCount
+                + ", fileBaseSize="
+                + fileBaseSize
+                + ", fileSize="
+                + fileSize
+                + '}';
     }
 }

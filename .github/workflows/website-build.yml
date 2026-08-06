@@ -8,13 +8,13 @@ on:
     paths:
       - "website/**"
     branches:
-      - 'main'
+      - "main"
   pull_request:
     paths:
       - "website/**"
     branches:
-      - 'main'
-      - 'release/**'
+      - "main"
+      - "release/**"
   workflow_dispatch:
 
 jobs:
@@ -25,7 +25,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 18
-          cache-dependency-path: 'website/package-lock.json'
+          cache-dependency-path: "website/package-lock.json"
           cache: npm
       - name: Build website
         working-directory: ./website

@@ -4,6 +4,9 @@
 
 package org.apache.flink.lakesoul.sink.bucket;
 
+import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_EMPTY_STRING;
+import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_NULL_STRING;
+
 import org.apache.flink.connector.file.table.PartitionComputer;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.table.data.GenericRowData;
@@ -21,9 +24,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
-
-import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_EMPTY_STRING;
-import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_NULL_STRING;
 
 public class CdcPartitionComputer implements PartitionComputer<RowData> {
 
@@ -45,29 +45,33 @@ public class CdcPartitionComputer implements PartitionComputer<RowData> {
             String defaultPartValue,
             String[] columnNames,
             RowType rowType,
-            String[] partitionColumns, Boolean isCdc) {
-        this(defaultPartValue, columnNames,
-                rowType.getChildren(),
-                partitionColumns, isCdc);
+            String[] partitionColumns,
+            Boolean isCdc) {
+        this(defaultPartValue, columnNames, rowType.getChildren(), partitionColumns, isCdc);
     }
 
     public CdcPartitionComputer(
             String defaultPartValue,
             String[] columnNames,
             DataType[] columnTypes,
-            String[] partitionColumns, Boolean isCdc) {
-        this(defaultPartValue, columnNames,
+            String[] partitionColumns,
+            Boolean isCdc) {
+        this(
+                defaultPartValue,
+                columnNames,
                 Arrays.stream(columnTypes)
                         .map(DataType::getLogicalType)
                         .collect(Collectors.toList()),
-                partitionColumns, isCdc);
+                partitionColumns,
+                isCdc);
     }
 
     public CdcPartitionComputer(
             String defaultPartValue,
             String[] columnNames,
             List<LogicalType> columnTypeList,
-            String[] partitionColumns, Boolean isCdc) {
+            String[] partitionColumns,
+            Boolean isCdc) {
         this.defaultPartValue = defaultPartValue;
         this.isCdc = isCdc;
         List<String> columnList = Arrays.asList(columnNames);
@@ -119,8 +123,11 @@ public class CdcPartitionComputer implements PartitionComputer<RowData> {
                 // convert date to readable date string
                 LocalDate d = LocalDate.ofEpochDay((Integer) field);
                 partitionValue = d.toString();
-            } else if (partitionTypes[i].getTypeRoot() == LogicalTypeRoot.TIMESTAMP_WITHOUT_TIME_ZONE) {
-                partitionValue = DateTimeUtils.formatTimestamp((TimestampData) field, "yyyy-MM-dd HH:mm:ss.SSSSSSSSS");
+            } else if (partitionTypes[i].getTypeRoot()
+                    == LogicalTypeRoot.TIMESTAMP_WITHOUT_TIME_ZONE) {
+                partitionValue =
+                        DateTimeUtils.formatTimestamp(
+                                (TimestampData) field, "yyyy-MM-dd HH:mm:ss.SSSSSSSSS");
             } else {
                 partitionValue = field.toString();
                 if ("".equals(partitionValue)) {

@@ -4,12 +4,12 @@
 
 package com.facebook.presto.lakesoul.handle;
 
+import static java.util.Objects.requireNonNull;
+
 import com.facebook.presto.spi.ConnectorTableHandle;
 import com.facebook.presto.spi.SchemaTableName;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-
-import static java.util.Objects.requireNonNull;
 
 /** table handle */
 public class LakeSoulTableHandle implements ConnectorTableHandle {
@@ -19,8 +19,7 @@ public class LakeSoulTableHandle implements ConnectorTableHandle {
 
     @JsonCreator
     public LakeSoulTableHandle(
-            @JsonProperty("id")  String id,
-            @JsonProperty("names") SchemaTableName names) {
+            @JsonProperty("id") String id, @JsonProperty("names") SchemaTableName names) {
         this.id = requireNonNull(id, "id should not be null");
         this.names = requireNonNull(names, "names should not be null");
     }
@@ -43,10 +42,8 @@ public class LakeSoulTableHandle implements ConnectorTableHandle {
         this.names = names;
     }
 
-    @Override public String toString() {
-        return "LakeSoulTableHandle{" +
-                "id='" + id + '\'' +
-                ", names=" + names +
-                '}';
+    @Override
+    public String toString() {
+        return "LakeSoulTableHandle{" + "id='" + id + '\'' + ", names=" + names + '}';
     }
 }

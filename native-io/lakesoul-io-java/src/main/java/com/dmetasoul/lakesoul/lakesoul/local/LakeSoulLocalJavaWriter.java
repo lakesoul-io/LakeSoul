@@ -1,5 +1,7 @@
 package com.dmetasoul.lakesoul.lakesoul.local;
 
+import static com.dmetasoul.lakesoul.meta.DBConfig.TableInfoProperty;
+
 import com.dmetasoul.lakesoul.lakesoul.LakeSoulArrowUtils;
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOBase;
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOWriter;
@@ -10,6 +12,7 @@ import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.*;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+
 import org.apache.arrow.util.Preconditions;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.DateUnit;
@@ -27,22 +30,17 @@ import java.sql.Timestamp;
 import java.time.ZoneId;
 import java.util.*;
 
-import static com.dmetasoul.lakesoul.meta.DBConfig.TableInfoProperty;
-
 /**
  * LakeSoulLocalJavaWriter is responsible for writing LakeSoul data in a local environment.
- * <p>
- * This class implements the AutoCloseable interface, supporting automatic resource management.
- * <p>
- * Key functionalities include:
- * 1. Initializing and configuring the LakeSoul writer
- * 2. Managing Arrow batch data
- * 3. Handling table information and metadata
- * 4. Setting up file system and S3-related configurations
- * 5. Supporting writing of various data types
- * <p>
- * When using this class, it's important to correctly set database connection parameters,
- * table information, and file system configurations.
+ *
+ * <p>This class implements the AutoCloseable interface, supporting automatic resource management.
+ *
+ * <p>Key functionalities include: 1. Initializing and configuring the LakeSoul writer 2. Managing
+ * Arrow batch data 3. Handling table information and metadata 4. Setting up file system and
+ * S3-related configurations 5. Supporting writing of various data types
+ *
+ * <p>When using this class, it's important to correctly set database connection parameters, table
+ * information, and file system configurations.
  */
 public class LakeSoulLocalJavaWriter implements AutoCloseable {
 
@@ -126,14 +124,14 @@ public class LakeSoulLocalJavaWriter implements AutoCloseable {
         }
     }
 
-    public static void setFSConf(Map<String, String> conf, String confKey, String fsConfKey, NativeIOBase io) {
+    public static void setFSConf(
+            Map<String, String> conf, String confKey, String fsConfKey, NativeIOBase io) {
         String value = conf.getOrDefault(confKey, "");
         if (!value.isEmpty()) {
             LOG.info("Set native object store option {}={}", fsConfKey, value);
             io.setObjectStoreOption(fsConfKey, value);
         }
     }
-
 
     public void init(Map<String, String> params) throws IOException {
         LOG.info(String.format("LakeSoulLocalJavaWriter init with params=%s", params));
@@ -158,14 +156,17 @@ public class LakeSoulLocalJavaWriter implements AutoCloseable {
         }
 
         initNativeWriter();
-
     }
 
     private void initNativeWriter() throws IOException {
-        LOG.info(String.format("LakeSoulLocalJavaWriter initNativeWriter with tableInfo=%s", tableInfo));
+        LOG.info(
+                String.format(
+                        "LakeSoulLocalJavaWriter initNativeWriter with tableInfo=%s", tableInfo));
         nativeWriter = new NativeIOWriter(tableInfo);
 
-        Schema arrowSchema = LakeSoulArrowUtils.cdcColumnAlignment(Schema.fromJSON(tableInfo.getTableSchema()), cdcColumn);
+        Schema arrowSchema =
+                LakeSoulArrowUtils.cdcColumnAlignment(
+                        Schema.fromJSON(tableInfo.getTableSchema()), cdcColumn);
 
         batch = VectorSchemaRoot.create(arrowSchema, nativeWriter.getAllocator());
         arrowWriter = ArrowBatchWriter.createWriter(batch);
@@ -194,7 +195,8 @@ public class LakeSoulLocalJavaWriter implements AutoCloseable {
     }
 
     public void writeDeleteRow(Object[] row) {
-        Preconditions.checkArgument(cdcColumn != null, "DeleteRow is not support for Non Cdc Table");
+        Preconditions.checkArgument(
+                cdcColumn != null, "DeleteRow is not support for Non Cdc Table");
         Object[] delRow = new Object[row.length + 1];
         for (int i = 0; i < row.length; i++) {
             delRow[i] = row[i];
@@ -203,15 +205,19 @@ public class LakeSoulLocalJavaWriter implements AutoCloseable {
         write(delRow);
     }
 
-
     public void commit() throws IOException {
-        LOG.info(String.format("LakeSoulLocalJavaWriter commit batch size = %s, batch schema=%s", batch.getRowCount(), batch.getSchema().toJson()));
+        LOG.info(
+                String.format(
+                        "LakeSoulLocalJavaWriter commit batch size = %s, batch schema=%s",
+                        batch.getRowCount(), batch.getSchema().toJson()));
         this.arrowWriter.finish();
         this.nativeWriter.write(this.batch);
 
         List<DataCommitInfo> commitInfoList = new ArrayList<>();
-        HashMap<String, List<NativeIOWriter.FlushResult>> partitionDescAndFilesMap = this.nativeWriter.flush();
-        for (Map.Entry<String, List<NativeIOWriter.FlushResult>> entry : partitionDescAndFilesMap.entrySet()) {
+        HashMap<String, List<NativeIOWriter.FlushResult>> partitionDescAndFilesMap =
+                this.nativeWriter.flush();
+        for (Map.Entry<String, List<NativeIOWriter.FlushResult>> entry :
+                partitionDescAndFilesMap.entrySet()) {
             commitInfoList.add(createDataCommitInfo(entry.getKey(), entry.getValue()));
         }
 
@@ -237,27 +243,29 @@ public class LakeSoulLocalJavaWriter implements AutoCloseable {
         initNativeWriter();
     }
 
-    private DataCommitInfo createDataCommitInfo(String partitionDesc, List<NativeIOWriter.FlushResult> fileList) {
-        DataCommitInfo.Builder builder = DataCommitInfo.newBuilder()
-                .setTableId(tableInfo.getTableId())
-                .setPartitionDesc(partitionDesc)
-                .setCommitId(DBUtil.toProtoUuid(UUID.randomUUID()))
-                .setCommitted(false)
-                .setCommitOp(CommitOp.AppendCommit)
-                .setTimestamp(System.currentTimeMillis())
-                .setDomain("public");
+    private DataCommitInfo createDataCommitInfo(
+            String partitionDesc, List<NativeIOWriter.FlushResult> fileList) {
+        DataCommitInfo.Builder builder =
+                DataCommitInfo.newBuilder()
+                        .setTableId(tableInfo.getTableId())
+                        .setPartitionDesc(partitionDesc)
+                        .setCommitId(DBUtil.toProtoUuid(UUID.randomUUID()))
+                        .setCommitted(false)
+                        .setCommitOp(CommitOp.AppendCommit)
+                        .setTimestamp(System.currentTimeMillis())
+                        .setDomain("public");
         for (NativeIOWriter.FlushResult file : fileList) {
-            DataFileOp.Builder fileOp = DataFileOp.newBuilder()
-                    .setFileOp(FileOp.add)
-                    .setPath(file.getFilePath())
-                    .setSize(file.getFileSize())
-                    .setFileExistCols(file.getFileExistCols());
+            DataFileOp.Builder fileOp =
+                    DataFileOp.newBuilder()
+                            .setFileOp(FileOp.add)
+                            .setPath(file.getFilePath())
+                            .setSize(file.getFileSize())
+                            .setFileExistCols(file.getFileExistCols());
             builder.addFileOps(fileOp.build());
         }
 
         return builder.build();
     }
-
 
     @Override
     public void close() throws Exception {
@@ -271,8 +279,7 @@ public class LakeSoulLocalJavaWriter implements AutoCloseable {
         }
     }
 
-    private static class ArrowTypeMockDataGenerator
-            implements ArrowType.ArrowTypeVisitor<Object> {
+    private static class ArrowTypeMockDataGenerator implements ArrowType.ArrowTypeVisitor<Object> {
 
         long count = 0;
 
@@ -368,7 +375,8 @@ public class LakeSoulLocalJavaWriter implements AutoCloseable {
 
         @Override
         public Object visit(ArrowType.Decimal decimal) {
-            return new BigDecimal(((double) (count++)) / mod).setScale(decimal.getScale(), BigDecimal.ROUND_UP);
+            return new BigDecimal(((double) (count++)) / mod)
+                    .setScale(decimal.getScale(), BigDecimal.ROUND_UP);
         }
 
         @Override
@@ -408,38 +416,76 @@ public class LakeSoulLocalJavaWriter implements AutoCloseable {
         String tableId = "table_" + UUID.randomUUID();
         List<String> primaryKeys = Arrays.asList("id");
         List<String> partitionKeys = Arrays.asList("range");
-//        List<String> partitionKeys = Collections.emptyList();
-        String partition = DBUtil.formatTableInfoPartitionsField(
-                primaryKeys,
-                partitionKeys
-        );
+        //        List<String> partitionKeys = Collections.emptyList();
+        String partition = DBUtil.formatTableInfoPartitionsField(primaryKeys, partitionKeys);
 
         List<Field> fields;
         if (cdc) {
-            fields = Arrays.asList(
-                    new Field("id", FieldType.nullable(new ArrowType.Int(32, true)), null)
-                    , new Field("range", FieldType.nullable(new ArrowType.Int(32, true)), null)
-                    , new Field("int", FieldType.nullable(new ArrowType.Int(32, true)), null)
-                    , new Field("utf8", FieldType.nullable(new ArrowType.Utf8()), null)
-                    , new Field("decimal", FieldType.nullable(ArrowType.Decimal.createDecimal(10, 3, null)), null)
-                    , new Field("boolean", FieldType.nullable(new ArrowType.Bool()), null)
-                    , new Field("date", FieldType.nullable(new ArrowType.Date(DateUnit.DAY)), null)
-                    , new Field("datetimeSec", FieldType.nullable(new ArrowType.Timestamp(TimeUnit.SECOND, ZoneId.of("UTC").toString())), null)
-                    , new Field(TableInfoProperty.CDC_CHANGE_COLUMN_DEFAULT, FieldType.notNullable(new ArrowType.Utf8()), null)
-                    , new Field("datetimeMilli", FieldType.nullable(new ArrowType.Timestamp(TimeUnit.MILLISECOND, ZoneId.of("UTC").toString())), null)
-            );
+            fields =
+                    Arrays.asList(
+                            new Field("id", FieldType.nullable(new ArrowType.Int(32, true)), null),
+                            new Field(
+                                    "range", FieldType.nullable(new ArrowType.Int(32, true)), null),
+                            new Field("int", FieldType.nullable(new ArrowType.Int(32, true)), null),
+                            new Field("utf8", FieldType.nullable(new ArrowType.Utf8()), null),
+                            new Field(
+                                    "decimal",
+                                    FieldType.nullable(
+                                            ArrowType.Decimal.createDecimal(10, 3, null)),
+                                    null),
+                            new Field("boolean", FieldType.nullable(new ArrowType.Bool()), null),
+                            new Field(
+                                    "date",
+                                    FieldType.nullable(new ArrowType.Date(DateUnit.DAY)),
+                                    null),
+                            new Field(
+                                    "datetimeSec",
+                                    FieldType.nullable(
+                                            new ArrowType.Timestamp(
+                                                    TimeUnit.SECOND, ZoneId.of("UTC").toString())),
+                                    null),
+                            new Field(
+                                    TableInfoProperty.CDC_CHANGE_COLUMN_DEFAULT,
+                                    FieldType.notNullable(new ArrowType.Utf8()),
+                                    null),
+                            new Field(
+                                    "datetimeMilli",
+                                    FieldType.nullable(
+                                            new ArrowType.Timestamp(
+                                                    TimeUnit.MILLISECOND,
+                                                    ZoneId.of("UTC").toString())),
+                                    null));
         } else {
-            fields = Arrays.asList(
-                    new Field("id", FieldType.nullable(new ArrowType.Int(32, true)), null)
-                    , new Field("range", FieldType.nullable(new ArrowType.Int(32, true)), null)
-                    , new Field("int", FieldType.nullable(new ArrowType.Int(32, true)), null)
-                    , new Field("utf8", FieldType.nullable(new ArrowType.Utf8()), null)
-                    , new Field("decimal", FieldType.nullable(ArrowType.Decimal.createDecimal(10, 3, null)), null)
-                    , new Field("boolean", FieldType.nullable(new ArrowType.Bool()), null)
-                    , new Field("date", FieldType.nullable(new ArrowType.Date(DateUnit.DAY)), null)
-                    , new Field("datetimeSec", FieldType.nullable(new ArrowType.Timestamp(TimeUnit.SECOND, ZoneId.of("UTC").toString())), null)
-                    , new Field("datetimeMilli", FieldType.nullable(new ArrowType.Timestamp(TimeUnit.MILLISECOND, ZoneId.of("UTC").toString())), null)
-            );
+            fields =
+                    Arrays.asList(
+                            new Field("id", FieldType.nullable(new ArrowType.Int(32, true)), null),
+                            new Field(
+                                    "range", FieldType.nullable(new ArrowType.Int(32, true)), null),
+                            new Field("int", FieldType.nullable(new ArrowType.Int(32, true)), null),
+                            new Field("utf8", FieldType.nullable(new ArrowType.Utf8()), null),
+                            new Field(
+                                    "decimal",
+                                    FieldType.nullable(
+                                            ArrowType.Decimal.createDecimal(10, 3, null)),
+                                    null),
+                            new Field("boolean", FieldType.nullable(new ArrowType.Bool()), null),
+                            new Field(
+                                    "date",
+                                    FieldType.nullable(new ArrowType.Date(DateUnit.DAY)),
+                                    null),
+                            new Field(
+                                    "datetimeSec",
+                                    FieldType.nullable(
+                                            new ArrowType.Timestamp(
+                                                    TimeUnit.SECOND, ZoneId.of("UTC").toString())),
+                                    null),
+                            new Field(
+                                    "datetimeMilli",
+                                    FieldType.nullable(
+                                            new ArrowType.Timestamp(
+                                                    TimeUnit.MILLISECOND,
+                                                    ZoneId.of("UTC").toString())),
+                                    null));
         }
         Schema schema = new Schema(fields);
 
@@ -448,11 +494,13 @@ public class LakeSoulLocalJavaWriter implements AutoCloseable {
         Map<String, String> properties = new HashMap<>();
         if (!primaryKeys.isEmpty()) {
             properties.put(TableInfoProperty.HASH_BUCKET_NUM, "4");
-            properties.put("hashPartitions",
+            properties.put(
+                    "hashPartitions",
                     String.join(DBConfig.LAKESOUL_HASH_PARTITION_SPLITTER, primaryKeys));
             if (cdc) {
                 properties.put(TableInfoProperty.USE_CDC, "true");
-                properties.put(TableInfoProperty.CDC_CHANGE_COLUMN,
+                properties.put(
+                        TableInfoProperty.CDC_CHANGE_COLUMN,
                         TableInfoProperty.CDC_CHANGE_COLUMN_DEFAULT);
             }
         }
@@ -469,7 +517,9 @@ public class LakeSoulLocalJavaWriter implements AutoCloseable {
         LakeSoulLocalJavaWriter localJavaWriter = new LakeSoulLocalJavaWriter();
 
         Map<String, String> params = new HashMap<>();
-        params.put("lakesoul.pg.url", "jdbc:postgresql://127.0.0.1:5433/test_lakesoul_meta?stringtype=unspecified");
+        params.put(
+                "lakesoul.pg.url",
+                "jdbc:postgresql://127.0.0.1:5433/test_lakesoul_meta?stringtype=unspecified");
         params.put("lakesoul.pg.username", "yugabyte");
         params.put("lakesoul.pg.password", "yugabyte");
         params.put(TABLE_NAME, "test_local_java_table");
@@ -483,14 +533,17 @@ public class LakeSoulLocalJavaWriter implements AutoCloseable {
             for (int i = 0; i < numRows; i++) {
                 Object[] row = new Object[cdc ? numCols - 1 : numCols];
                 for (int j = 0, k = 0; j < numCols; j++) {
-                    if (fields.get(j).getName().contains(TableInfoProperty.CDC_CHANGE_COLUMN_DEFAULT)) {
+                    if (fields.get(j)
+                            .getName()
+                            .contains(TableInfoProperty.CDC_CHANGE_COLUMN_DEFAULT)) {
                         continue;
                     } else if (fields.get(j).getName().contains("id")) {
                         row[k++] = i;
                     } else if (fields.get(j).getName().contains("range")) {
                         row[k++] = i % ranges;
                     } else {
-                        row[k++] = fields.get(j).getType().accept(ArrowTypeMockDataGenerator.INSTANCE);
+                        row[k++] =
+                                fields.get(j).getType().accept(ArrowTypeMockDataGenerator.INSTANCE);
                     }
                 }
                 localJavaWriter.writeAddRow(row);
@@ -500,7 +553,6 @@ public class LakeSoulLocalJavaWriter implements AutoCloseable {
             }
             localJavaWriter.commit();
         }
-
 
         assert meta.getAllPartitionInfo(tableId).size() == times;
 

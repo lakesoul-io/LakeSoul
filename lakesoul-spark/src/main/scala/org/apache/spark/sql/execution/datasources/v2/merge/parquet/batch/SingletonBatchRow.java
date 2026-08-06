@@ -136,5 +136,4 @@ class SingletonBatchRow extends MergeBatchRow {
     public void setNullAt(int ordinal) {
         throw new UnsupportedOperationException();
     }
-
 }

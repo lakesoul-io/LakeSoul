@@ -12,7 +12,11 @@ import scala.collection.mutable.Set
 
 object CleanOldCompaction {
 
-  def cleanOldCommitOpDiskData(tablePath: String, partitionDesc: String, spark: SparkSession): Unit = {
+  def cleanOldCommitOpDiskData(
+      tablePath: String,
+      partitionDesc: String,
+      spark: SparkSession
+  ): Unit = {
     val sql =
       s"""
          |SELECT DISTINCT table_id,
@@ -29,14 +33,26 @@ object CleanOldCompaction {
       partitionRows.foreach(p => {
         val table_id = p.get(0).toString
         val partition_desc = p.get(1).toString
-        cleanSinglePartitionCompactionDataInDisk(table_id, partition_desc, spark)
+        cleanSinglePartitionCompactionDataInDisk(
+          table_id,
+          partition_desc,
+          spark
+        )
       })
     } else {
-      cleanSinglePartitionCompactionDataInDisk(partitionRows.head.get(0).toString, partitionDesc, spark)
+      cleanSinglePartitionCompactionDataInDisk(
+        partitionRows.head.get(0).toString,
+        partitionDesc,
+        spark
+      )
     }
   }
 
-  def cleanSinglePartitionCompactionDataInDisk(tableId: String, partitionDesc: String, spark: SparkSession): Unit = {
+  def cleanSinglePartitionCompactionDataInDisk(
+      tableId: String,
+      partitionDesc: String,
+      spark: SparkSession
+  ): Unit = {
     val pathSet = Set.empty[String]
     val sql =
       s"""
@@ -78,10 +94,12 @@ object CleanOldCompaction {
          |WHERE file_op.file_op = 'add';
          |""".stripMargin
 
-    sqlToDataframe(sql, spark).rdd.collect().foreach(p => {
-      pathSet.add(splitCompactFilePath(p.get(0).toString)._1)
+    sqlToDataframe(sql, spark).rdd
+      .collect()
+      .foreach(p => {
+        pathSet.add(splitCompactFilePath(p.get(0).toString)._1)
 
-    })
+      })
     pathSet.foreach(p => {
       if (p != null && p != "") {
         val path = new Path(p)

@@ -4,7 +4,6 @@
 
 package org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch;
 
-
 import org.apache.spark.sql.catalyst.InternalRow;
 import org.apache.spark.sql.vectorized.ColumnVector;
 import org.apache.spark.sql.vectorized.ColumnarBatch;

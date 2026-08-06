@@ -7,13 +7,11 @@ package org.apache.flink.lakesoul.entry.sql.flink;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.core.execution.JobListener;
 import org.apache.flink.lakesoul.entry.sql.Submitter;
 import org.apache.flink.lakesoul.entry.sql.common.FlinkOption;
 import org.apache.flink.lakesoul.entry.sql.common.JobType;
 import org.apache.flink.lakesoul.entry.sql.common.SubmitOption;
 import org.apache.flink.lakesoul.entry.sql.utils.FileUtil;
-import org.apache.flink.lakesoul.tool.JobOptions;
 import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
@@ -31,7 +29,6 @@ public class FlinkSqlSubmitter extends Submitter {
 
     public FlinkSqlSubmitter(SubmitOption submitOption) {
         super(submitOption);
-
     }
 
     @Override
@@ -40,15 +37,10 @@ public class FlinkSqlSubmitter extends Submitter {
         EnvironmentSettings settings = null;
         StreamTableEnvironment tEnv = null;
         if (submitOption.getJobType().equals(JobType.STREAM.getType())) {
-            settings = EnvironmentSettings
-                    .newInstance()
-                    .inStreamingMode()
-                    .build();
+            settings = EnvironmentSettings.newInstance().inStreamingMode().build();
 
         } else if (submitOption.getJobType().equals(JobType.BATCH.getType())) {
-            settings = EnvironmentSettings.newInstance()
-                    .inBatchMode()
-                    .build();
+            settings = EnvironmentSettings.newInstance().inBatchMode().build();
         } else {
             throw new RuntimeException("jobType is not supported: " + submitOption.getJobType());
         }
@@ -60,8 +52,11 @@ public class FlinkSqlSubmitter extends Submitter {
 
         String sql = FileUtil.readHDFSFile(submitOption.getSqlFilePath());
         LOG.info(
-                MessageFormatter.format("\n======SQL Script Content from file {}:\n{}",
-                        submitOption.getSqlFilePath(), sql).getMessage());
+                MessageFormatter.format(
+                                "\n======SQL Script Content from file {}:\n{}",
+                                submitOption.getSqlFilePath(),
+                                sql)
+                        .getMessage());
         long scheduleTime = submitOption.getScheduleTime();
         if (scheduleTime <= 0) {
             LOG.info("Use current time as scheduleTime");
@@ -84,14 +79,16 @@ public class FlinkSqlSubmitter extends Submitter {
         }
         env.getCheckpointConfig().setCheckpointingMode(checkpointingMode);
         env.getCheckpointConfig().setTolerableCheckpointFailureNumber(5);
-        env.getCheckpointConfig().setExternalizedCheckpointCleanup(
-                CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
+        env.getCheckpointConfig()
+                .setExternalizedCheckpointCleanup(
+                        CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
         env.getCheckpointConfig().setCheckpointStorage(flinkOption.getCheckpointPath());
-        env.setRestartStrategy(RestartStrategies.failureRateRestart(
-                3, // max failures per interval
-                Time.of(10, TimeUnit.MINUTES), //time interval for measuring failure rate
-                Time.of(20, TimeUnit.SECONDS) // delay
-        ));
+        env.setRestartStrategy(
+                RestartStrategies.failureRateRestart(
+                        3, // max failures per interval
+                        Time.of(10, TimeUnit.MINUTES), // time interval for measuring failure rate
+                        Time.of(20, TimeUnit.SECONDS) // delay
+                        ));
     }
 
     public static String replaceSchedulerTime(String sqlText, Long scheduleTime) {

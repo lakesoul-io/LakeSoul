@@ -8,8 +8,8 @@ import com.dmetasoul.lakesoul.lakesoul.io.NativeIOReader
 import org.apache.arrow.c.{ArrowArray, CDataDictionaryProvider, Data}
 import org.apache.arrow.vector.VectorSchemaRoot
 
-case class LakeSoulArrowReader(reader: NativeIOReader,
-                               timeout: Int = 10000) extends AutoCloseable {
+case class LakeSoulArrowReader(reader: NativeIOReader, timeout: Int = 10000)
+    extends AutoCloseable {
 
   var ex: Option[Throwable] = None
 
@@ -28,7 +28,8 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
   class BatchIterator extends Iterator[VectorSchemaRoot] {
     var finished = false
     val provider = new CDataDictionaryProvider
-    val root: VectorSchemaRoot = VectorSchemaRoot.create(reader.getSchema, reader.getAllocator)
+    val root: VectorSchemaRoot =
+      VectorSchemaRoot.create(reader.getSchema, reader.getAllocator)
 
     override def hasNext: Boolean = {
       if (!finished) {
@@ -36,7 +37,12 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
         try {
           val rowCount = reader.nextBatchBlocked(consumerArray.memoryAddress());
           if (rowCount > 0) {
-            Data.importIntoVectorSchemaRoot(reader.getAllocator, consumerArray, root, provider)
+            Data.importIntoVectorSchemaRoot(
+              reader.getAllocator,
+              consumerArray,
+              root,
+              provider
+            )
             root.setRowCount(rowCount)
             true
           } else {

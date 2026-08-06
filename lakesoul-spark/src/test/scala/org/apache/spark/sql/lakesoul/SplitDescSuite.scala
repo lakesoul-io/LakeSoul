@@ -4,7 +4,10 @@ import com.dmetasoul.lakesoul.meta.jnr.NativeMetadataJavaClient
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.sql._
 import org.apache.spark.sql.lakesoul.RandomStringGenerator.generateRandomString
-import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestUtils}
+import org.apache.spark.sql.lakesoul.test.{
+  LakeSoulSQLCommandTest,
+  LakeSoulTestUtils
+}
 import org.apache.spark.sql.test.SharedSparkSession
 import org.junit.runner.RunWith
 import org.scalatestplus.junit.JUnitRunner
@@ -13,9 +16,10 @@ import scala.collection.JavaConverters.collectionAsScalaIterableConverter
 import scala.util.Random
 
 @RunWith(classOf[JUnitRunner])
-class SplitDescSuite extends QueryTest
-  with SharedSparkSession
-  with LakeSoulSQLCommandTest {
+class SplitDescSuite
+    extends QueryTest
+    with SharedSparkSession
+    with LakeSoulSQLCommandTest {
 
   import testImplicits._
 
@@ -32,7 +36,7 @@ class SplitDescSuite extends QueryTest
       ("2021-01-03", 5, 5, "watermelon"),
       ("2021-01-03", 6, 6, "grape"),
       ("2021-01-04", 7, 7, "cherry"),
-      ("2021-01-04", 8, 8, "pineapple"),
+      ("2021-01-04", 8, 8, "pineapple")
     ).toDF("date", "id", "num", "name")
     df
   }
@@ -41,7 +45,7 @@ class SplitDescSuite extends QueryTest
 
     val df1 = Seq(
       ("2021-01-01", 1, 1, "apple"),
-      ("2021-01-02", 2, 2, "banana"),
+      ("2021-01-02", 2, 2, "banana")
     ).toDF("date", "id", "num", "name")
 
     val tablePath = s"$basePath/$tableName"
@@ -59,26 +63,25 @@ class SplitDescSuite extends QueryTest
 
     val df2 = Seq(
       ("2021-01-01", 1, 1, "pear"),
-      ("2021-01-02", 2, 2, "lemon"),
+      ("2021-01-02", 2, 2, "lemon")
     ).toDF("date", "id", "num", "name")
 
     lake.upsert(df2)
 
     val df3 = Seq(
       ("2021-01-01", 1, 2, "watermelon"),
-      ("2021-01-02", 1, 2, "grape"),
+      ("2021-01-02", 1, 2, "grape")
     ).toDF("date", "id", "num", "name")
 
     lake.upsert(df3)
 
     val df4 = Seq(
       ("2021-01-01", 1, 1, "cherry"),
-      ("2021-01-02", 2, 2, "pineapple"),
+      ("2021-01-02", 2, 2, "pineapple")
     ).toDF("date", "id", "num", "name")
 
     lake.upsert(df4)
   }
-
 
   test("no range, no hash") {
     val tName = generateRandomString(nameLength);
@@ -237,7 +240,6 @@ class SplitDescSuite extends QueryTest
     }
   }
 
-
   test("multiple range, multiple hash , with upsert") {
     val tName = generateRandomString(nameLength);
     withTable(tName) {
@@ -251,7 +253,6 @@ class SplitDescSuite extends QueryTest
     }
   }
 }
-
 
 object RandomStringGenerator {
   val random = new Random()

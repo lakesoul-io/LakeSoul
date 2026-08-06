@@ -16,9 +16,7 @@ import org.apache.flink.table.data.RowData;
 
 import java.io.IOException;
 
-/**
- * A factory returning {@link AbstractLakeSoulMultiTableSinkWriter writer}.
- */
+/** A factory returning {@link AbstractLakeSoulMultiTableSinkWriter writer}. */
 @Internal
 public class DefaultLakeSoulWriterBucketFactory implements LakeSoulWriterBucketFactory<RowData> {
 
@@ -39,8 +37,7 @@ public class DefaultLakeSoulWriterBucketFactory implements LakeSoulWriterBucketF
             RollingPolicy<RowData, String> rollingPolicy,
             OutputFileConfig outputFileConfig) {
         return LakeSoulWriterBucket.getNew(
-                tableId,
-                bucketId, bucketPath, bucketWriter, rollingPolicy);
+                tableId, bucketId, bucketPath, bucketWriter, rollingPolicy);
     }
 
     @Override

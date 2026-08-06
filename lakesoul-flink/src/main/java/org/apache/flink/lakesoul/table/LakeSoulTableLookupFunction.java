@@ -30,7 +30,8 @@ public class LakeSoulTableLookupFunction<P> extends TableFunction<RowData> {
 
     private static final Logger LOG = LoggerFactory.getLogger(LakeSoulTableLookupFunction.class);
 
-    // the max number of retries before throwing exception, in case of failure to load the table into cache
+    // the max number of retries before throwing exception, in case of failure to load the table
+    // into cache
     private static final int MAX_RETRIES = 3;
     // interval between retries
     private static final Duration RETRY_INTERVAL = Duration.ofSeconds(5);
@@ -110,8 +111,11 @@ public class LakeSoulTableLookupFunction<P> extends TableFunction<RowData> {
                     reloadInterval,
                     cacheMaxSize);
         } else {
-            LOG.info("Populating lookup join cache for {}, cache max size {}, interval {}",
-                    tableId,  cacheMaxSize, reloadInterval);
+            LOG.info(
+                    "Populating lookup join cache for {}, cache max size {}, interval {}",
+                    tableId,
+                    cacheMaxSize,
+                    reloadInterval);
         }
         int numRetry = 0;
         // load data from lakesoul to cache
@@ -120,8 +124,7 @@ public class LakeSoulTableLookupFunction<P> extends TableFunction<RowData> {
             try {
                 long count = 0;
                 GenericRowData reuse = new GenericRowData(rowType.getFieldCount());
-                partitionReader.
-                        open(partitionFetcher.fetch(fetcherContext));
+                partitionReader.open(partitionFetcher.fetch(fetcherContext));
                 RowData row;
                 while ((row = partitionReader.read(reuse)) != null) {
                     count++;
@@ -131,33 +134,45 @@ public class LakeSoulTableLookupFunction<P> extends TableFunction<RowData> {
                     rows.add(rowData);
 
                     if (cache.size() >= this.cacheMaxSize) {
-                        String err = String.format(
-                                "Lookup Cache for %s has too many rows than cache limit %s",
-                                tableId.toString(),
-                                cacheMaxSize);
+                        String err =
+                                String.format(
+                                        "Lookup Cache for %s has too many rows than cache limit %s",
+                                        tableId.toString(), cacheMaxSize);
                         LOG.error(err);
                         throw new SuppressRestartsException(new IllegalStateException(err));
                     }
                 }
                 partitionReader.close();
                 nextLoadTime = System.currentTimeMillis() + reloadInterval.toMillis();
-                LOG.info("Loaded {} row(s) into lookup join cache for {}, next load time {}",
-                        count, tableId, nextLoadTime);
+                LOG.info(
+                        "Loaded {} row(s) into lookup join cache for {}, next load time {}",
+                        count,
+                        tableId,
+                        nextLoadTime);
                 return;
             } catch (Exception e) {
                 if (numRetry >= MAX_RETRIES) {
-                    throw new SuppressRestartsException(new FlinkRuntimeException(
-                            String.format(
-                                    "Failed to load table into cache after %d retries", numRetry),
-                            e));
+                    throw new SuppressRestartsException(
+                            new FlinkRuntimeException(
+                                    String.format(
+                                            "Failed to load table into cache after %d retries",
+                                            numRetry),
+                                    e));
                 }
                 numRetry++;
                 long toSleep = numRetry * RETRY_INTERVAL.toMillis();
-                LOG.warn("Failed to load table {} into cache, will retry in {} seconds", tableId, toSleep / 1000, e);
+                LOG.warn(
+                        "Failed to load table {} into cache, will retry in {} seconds",
+                        tableId,
+                        toSleep / 1000,
+                        e);
                 try {
                     Thread.sleep(toSleep);
                 } catch (InterruptedException ex) {
-                    LOG.warn("Interrupted while waiting to retry failed cache load for {}, aborting", tableId, ex);
+                    LOG.warn(
+                            "Interrupted while waiting to retry failed cache load for {}, aborting",
+                            tableId,
+                            ex);
                     throw new FlinkRuntimeException(ex);
                 }
             }

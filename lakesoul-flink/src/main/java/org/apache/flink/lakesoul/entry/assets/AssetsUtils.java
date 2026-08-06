@@ -5,11 +5,10 @@
 package org.apache.flink.lakesoul.entry.assets;
 
 public class AssetsUtils {
-    public AssetsUtils() {
-    }
+    public AssetsUtils() {}
 
     public static String[] parseFileOpsString(String fileOPs) {
-        String[] fileInfo = new String[]{fileOPs.split(",")[1], fileOPs.split(",")[2]};
+        String[] fileInfo = new String[] {fileOPs.split(",")[1], fileOPs.split(",")[2]};
         return fileInfo;
     }
 }

@@ -54,7 +54,17 @@
         '';
       };
 
-      commonPackages = with pkgs; [
+      formatterPackages = with pkgs; [
+        google-java-format
+        prettier
+        ruff
+        rustfmt
+        scalafmt
+        taplo
+        treefmt
+      ];
+
+      commonPackages = formatterPackages ++ (with pkgs; [
 
         clang
         lld
@@ -66,11 +76,6 @@
         metals
         jdt-language-server
 
-        google-java-format
-        prettier
-        treefmt
-        scalafmt
-
         postgresql_14
 
         tzdata
@@ -81,9 +86,9 @@
         pkg-config
 
         unstable.ty
-      ];
+      ]);
 
-      fhsPackages = with pkgs; [
+      fhsPackages = formatterPackages ++ (with pkgs; [
 
         clang
         lld
@@ -94,11 +99,6 @@
 
         metals
 
-        google-java-format
-        prettier
-        treefmt
-        scalafmt
-
         postgresql_14
 
         tzdata
@@ -109,7 +109,7 @@
         pkg-config
 
         unstable.ty
-      ];
+      ]);
 
       envFor = javaPkg: ''
         export CC=${pkgs.clang}/bin/clang
@@ -152,6 +152,10 @@
     in
     {
       devShells.${system} = {
+
+        formatter = pkgs.mkShell {
+          packages = formatterPackages;
+        };
 
         #
         # 普通开发环境（推荐）

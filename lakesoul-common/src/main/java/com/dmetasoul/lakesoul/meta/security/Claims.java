@@ -5,6 +5,7 @@
 package com.dmetasoul.lakesoul.meta.security;
 
 import com.alibaba.fastjson.annotation.JSONField;
+
 import org.apache.commons.lang3.builder.ToStringBuilder;
 import org.apache.commons.lang3.builder.ToStringStyle;
 

@@ -15,7 +15,7 @@ public class DBFactory {
     private static DataCommitInfoDao dataCommitInfoDao;
     private static PartitionInfoDao partitionInfoDao;
 
-    private DBFactory(){}
+    private DBFactory() {}
 
     public static NamespaceDao getNamespaceDao() {
         if (namespaceDao == null) {

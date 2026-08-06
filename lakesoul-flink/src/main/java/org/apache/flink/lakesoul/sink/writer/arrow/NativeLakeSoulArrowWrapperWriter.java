@@ -4,7 +4,10 @@
 
 package org.apache.flink.lakesoul.sink.writer.arrow;
 
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
+
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOWriter;
+
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
@@ -20,17 +23,16 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
+public class NativeLakeSoulArrowWrapperWriter
+        implements InProgressFileWriter<LakeSoulArrowWrapper, String> {
 
-public class NativeLakeSoulArrowWrapperWriter implements InProgressFileWriter<LakeSoulArrowWrapper, String> {
-
-    private static final Logger LOG = LoggerFactory.getLogger(NativeLakeSoulArrowWrapperWriter.class);
+    private static final Logger LOG =
+            LoggerFactory.getLogger(NativeLakeSoulArrowWrapperWriter.class);
 
     private final RowType rowType;
 
@@ -52,12 +54,14 @@ public class NativeLakeSoulArrowWrapperWriter implements InProgressFileWriter<La
 
     private long totalRows = 0;
 
-    public NativeLakeSoulArrowWrapperWriter(RowType rowType,
-                                            List<String> primaryKeys,
-                                            List<String> rangeColumns,
-                                            Path path,
-                                            long creationTime,
-                                            Configuration conf) throws IOException {
+    public NativeLakeSoulArrowWrapperWriter(
+            RowType rowType,
+            List<String> primaryKeys,
+            List<String> rangeColumns,
+            Path path,
+            long creationTime,
+            Configuration conf)
+            throws IOException {
         this.maxRowGroupRows = conf.getInteger(MAX_ROW_GROUP_SIZE);
         this.creationTime = creationTime;
         this.rowType = rowType;
@@ -81,7 +85,8 @@ public class NativeLakeSoulArrowWrapperWriter implements InProgressFileWriter<La
         nativeWriter.setBatchSize(conf.get(BATCH_SIZE));
         int maxRowGroupValueNumber = conf.getInteger(MAX_ROW_GROUP_VALUE_NUMBER);
         LOG.info("maxRowGroupValueNumber={}", maxRowGroupValueNumber);
-        if (maxRowGroupValueNumber != -1) nativeWriter.setRowGroupValueNumber(maxRowGroupValueNumber);
+        if (maxRowGroupValueNumber != -1)
+            nativeWriter.setRowGroupValueNumber(maxRowGroupValueNumber);
 
         nativeWriter.withPrefix(this.prefix);
         nativeWriter.useDynamicPartition(true);
@@ -91,7 +96,7 @@ public class NativeLakeSoulArrowWrapperWriter implements InProgressFileWriter<La
             nativeWriter.setOption(STABLE_SORT, "true");
         }
         nativeWriter.initializeWriter();
-//        LOG.info("Initialized NativeLakeSoulArrowWrapperWriter: {}", this);
+        //        LOG.info("Initialized NativeLakeSoulArrowWrapperWriter: {}", this);
     }
 
     @Override
@@ -105,25 +110,29 @@ public class NativeLakeSoulArrowWrapperWriter implements InProgressFileWriter<La
         return null;
     }
 
-
     @Override
     public PendingFileRecoverable closeForCommit() throws IOException {
         throw new UnsupportedEncodingException();
     }
 
-    public Map<String, List<PendingFileRecoverable>> closeForCommitWithRecoverableMap() throws IOException {
+    public Map<String, List<PendingFileRecoverable>> closeForCommitWithRecoverableMap()
+            throws IOException {
         long timer = System.currentTimeMillis();
         Map<String, List<PendingFileRecoverable>> recoverableMap = new HashMap<>();
 
-        HashMap<String, List<NativeIOWriter.FlushResult>> partitionDescAndFilesMap = this.nativeWriter.flush();
-        for (Map.Entry<String, List<NativeIOWriter.FlushResult>> entry : partitionDescAndFilesMap.entrySet()) {
+        HashMap<String, List<NativeIOWriter.FlushResult>> partitionDescAndFilesMap =
+                this.nativeWriter.flush();
+        for (Map.Entry<String, List<NativeIOWriter.FlushResult>> entry :
+                partitionDescAndFilesMap.entrySet()) {
             recoverableMap.put(
                     entry.getKey(),
-                    entry.getValue()
-                            .stream()
-                            .map(result -> new NativeLakeSoulWriter.NativeWriterPendingFileRecoverable(result.getFilePath(), creationTime))
-                            .collect(Collectors.toList())
-            );
+                    entry.getValue().stream()
+                            .map(
+                                    result ->
+                                            new NativeLakeSoulWriter
+                                                    .NativeWriterPendingFileRecoverable(
+                                                    result.getFilePath(), creationTime))
+                            .collect(Collectors.toList()));
         }
 
         try {
@@ -132,7 +141,10 @@ public class NativeLakeSoulArrowWrapperWriter implements InProgressFileWriter<La
             throw new RuntimeException(e);
         }
 
-        LOG.info("CloseForCommitWithRecoverableMap done, costTime={}ms, recoverableMap={}", String.format("%06d", System.currentTimeMillis() - timer), recoverableMap);
+        LOG.info(
+                "CloseForCommitWithRecoverableMap done, costTime={}ms, recoverableMap={}",
+                String.format("%06d", System.currentTimeMillis() - timer),
+                recoverableMap);
         return recoverableMap;
     }
 
@@ -168,13 +180,20 @@ public class NativeLakeSoulArrowWrapperWriter implements InProgressFileWriter<La
 
     @Override
     public String toString() {
-        return "NativeLakeSoulArrowWrapperWriter{" +
-                "rowType=" + rowType +
-                ", primaryKeys=" + primaryKeys +
-                ", rangeColumns=" + rangeColumns +
-                ", maxRowGroupRows=" + maxRowGroupRows +
-                ", creationTime=" + creationTime +
-                ", prefix='" + prefix + '\'' +
-                '}';
+        return "NativeLakeSoulArrowWrapperWriter{"
+                + "rowType="
+                + rowType
+                + ", primaryKeys="
+                + primaryKeys
+                + ", rangeColumns="
+                + rangeColumns
+                + ", maxRowGroupRows="
+                + maxRowGroupRows
+                + ", creationTime="
+                + creationTime
+                + ", prefix='"
+                + prefix
+                + '\''
+                + '}';
     }
 }

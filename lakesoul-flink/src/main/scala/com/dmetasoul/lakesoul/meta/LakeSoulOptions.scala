@@ -6,11 +6,17 @@ package com.dmetasoul.lakesoul.meta
 
 object LakeSoulOptions {
 
-  /** An option to overwrite only the data that matches predicates over partition columns. */
+  /** An option to overwrite only the data that matches predicates over
+    * partition columns.
+    */
   val REPLACE_WHERE_OPTION = "replaceWhere"
+
   /** An option to allow automatic schema merging during a write operation. */
   val MERGE_SCHEMA_OPTION = "mergeSchema"
-  /** An option to allow overwriting schema and partitioning during an overwrite write operation. */
+
+  /** An option to allow overwriting schema and partitioning during an overwrite
+    * write operation.
+    */
   val OVERWRITE_SCHEMA_OPTION = "overwriteSchema"
 
   val PARTITION_BY = "__partition_columns"
@@ -26,6 +32,7 @@ object LakeSoulOptions {
   val PARTITION_DESC = "partitiondesc"
   val READ_START_TIME = "readstarttime"
   val READ_END_TIME = "readendtime"
+
   /** An option to allow read type whether snapshot or increamental. */
   val READ_TYPE = "readtype"
   val TIME_ZONE = "timezone"

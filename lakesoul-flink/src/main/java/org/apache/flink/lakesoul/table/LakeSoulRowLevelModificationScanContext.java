@@ -2,13 +2,14 @@ package org.apache.flink.lakesoul.table;
 
 import com.dmetasoul.lakesoul.meta.entity.JniWrapper;
 import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
+
 import io.substrait.proto.Plan;
+
 import org.apache.flink.table.connector.RowLevelModificationScanContext;
 import org.apache.flink.table.connector.source.abilities.SupportsRowLevelModificationScan;
 
 import java.util.Base64;
 import java.util.List;
-import java.util.Map;
 
 public class LakeSoulRowLevelModificationScanContext implements RowLevelModificationScanContext {
 
@@ -19,10 +20,12 @@ public class LakeSoulRowLevelModificationScanContext implements RowLevelModifica
 
     Plan nonPartitionFilters;
 
-
-    public LakeSoulRowLevelModificationScanContext(SupportsRowLevelModificationScan.RowLevelModificationType type, List<PartitionInfo> listPartitionInfo) {
+    public LakeSoulRowLevelModificationScanContext(
+            SupportsRowLevelModificationScan.RowLevelModificationType type,
+            List<PartitionInfo> listPartitionInfo) {
         this.type = type;
-        sourcePartitionInfo = JniWrapper.newBuilder().addAllPartitionInfo(listPartitionInfo).build();
+        sourcePartitionInfo =
+                JniWrapper.newBuilder().addAllPartitionInfo(listPartitionInfo).build();
     }
 
     public void setSourcePartitionInfo(JniWrapper sourcePartitionInfo) {
@@ -67,11 +70,15 @@ public class LakeSoulRowLevelModificationScanContext implements RowLevelModifica
 
     @Override
     public String toString() {
-        return "LakeSoulRowLevelModificationScanContext{" +
-                "sourcePartitionInfo=" + sourcePartitionInfo +
-                ", type=" + type +
-                ", partitionFilters=" + partitionFilters +
-                ", nonPartitionFilters=" + nonPartitionFilters +
-                '}';
+        return "LakeSoulRowLevelModificationScanContext{"
+                + "sourcePartitionInfo="
+                + sourcePartitionInfo
+                + ", type="
+                + type
+                + ", partitionFilters="
+                + partitionFilters
+                + ", nonPartitionFilters="
+                + nonPartitionFilters
+                + '}';
     }
 }

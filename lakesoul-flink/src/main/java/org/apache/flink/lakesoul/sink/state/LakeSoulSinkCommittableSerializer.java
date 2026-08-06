@@ -4,6 +4,8 @@
 
 package org.apache.flink.lakesoul.sink.state;
 
+import static org.apache.flink.util.Preconditions.checkNotNull;
+
 import org.apache.flink.core.io.SimpleVersionedSerialization;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.core.memory.DataInputDeserializer;
@@ -20,15 +22,13 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import static org.apache.flink.util.Preconditions.checkNotNull;
-
-/**
- * Versioned serializer for {@link LakeSoulMultiTableSinkCommittable}.
- */
+/** Versioned serializer for {@link LakeSoulMultiTableSinkCommittable}. */
 public class LakeSoulSinkCommittableSerializer
         implements SimpleVersionedSerializer<LakeSoulMultiTableSinkCommittable> {
 
-    public static final LakeSoulSinkCommittableSerializer INSTANCE = new LakeSoulSinkCommittableSerializer(NativeLakeSoulWriter.NativePendingFileRecoverableSerializer.INSTANCE);
+    public static final LakeSoulSinkCommittableSerializer INSTANCE =
+            new LakeSoulSinkCommittableSerializer(
+                    NativeLakeSoulWriter.NativePendingFileRecoverableSerializer.INSTANCE);
     private static final int MAGIC_NUMBER = 0x1e765c80;
 
     private final SimpleVersionedSerializer<InProgressFileWriter.PendingFileRecoverable>
@@ -57,7 +57,8 @@ public class LakeSoulSinkCommittableSerializer
     }
 
     @Override
-    public LakeSoulMultiTableSinkCommittable deserialize(int version, byte[] serialized) throws IOException {
+    public LakeSoulMultiTableSinkCommittable deserialize(int version, byte[] serialized)
+            throws IOException {
         DataInputDeserializer in = new DataInputDeserializer(serialized);
 
         if (version == 1) {
@@ -67,7 +68,8 @@ public class LakeSoulSinkCommittableSerializer
         throw new IOException("Unrecognized version or corrupt state: " + version);
     }
 
-    private void serializeV1(LakeSoulMultiTableSinkCommittable committable, DataOutputView dataOutputView)
+    private void serializeV1(
+            LakeSoulMultiTableSinkCommittable committable, DataOutputView dataOutputView)
             throws IOException {
 
         if (!committable.getPendingFilesMap().isEmpty()) {
@@ -76,7 +78,8 @@ public class LakeSoulSinkCommittableSerializer
 
             dataOutputView.writeBoolean(true);
             dataOutputView.writeInt(committable.getPendingFilesMap().entrySet().size());
-            for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry : committable.getPendingFilesMap().entrySet()) {
+            for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry :
+                    committable.getPendingFilesMap().entrySet()) {
                 dataOutputView.writeUTF(entry.getKey());
                 dataOutputView.writeInt(entry.getValue().size());
                 for (InProgressFileWriter.PendingFileRecoverable pendingFile : entry.getValue()) {
@@ -97,11 +100,13 @@ public class LakeSoulSinkCommittableSerializer
 
         SimpleVersionedSerialization.writeVersionAndSerialize(
                 tableSchemaIdentitySerializer, committable.getIdentity(), dataOutputView);
-//        dataOutputView.writeUTF(committable.getBucketId());
+        //        dataOutputView.writeUTF(committable.getBucketId());
     }
 
-    private LakeSoulMultiTableSinkCommittable deserializeV1(DataInputView dataInputView) throws IOException {
-        Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFileMap = new HashMap<>();
+    private LakeSoulMultiTableSinkCommittable deserializeV1(DataInputView dataInputView)
+            throws IOException {
+        Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFileMap =
+                new HashMap<>();
         String commitId = null;
         long time = Long.MIN_VALUE;
         String dmlType = null;
@@ -112,7 +117,8 @@ public class LakeSoulSinkCommittableSerializer
                 for (int i = 0; i < size; ++i) {
                     String bucketId = dataInputView.readUTF();
                     int fileNum = dataInputView.readInt();
-                    List<InProgressFileWriter.PendingFileRecoverable> pendingFiles = new ArrayList<>();
+                    List<InProgressFileWriter.PendingFileRecoverable> pendingFiles =
+                            new ArrayList<>();
                     for (int j = 0; j < fileNum; j++) {
                         pendingFiles.add(
                                 SimpleVersionedSerialization.readVersionAndDeSerialize(
@@ -129,8 +135,9 @@ public class LakeSoulSinkCommittableSerializer
             }
         }
 
-        TableSchemaIdentity identity = SimpleVersionedSerialization.readVersionAndDeSerialize(
-                tableSchemaIdentitySerializer, dataInputView);
+        TableSchemaIdentity identity =
+                SimpleVersionedSerialization.readVersionAndDeSerialize(
+                        tableSchemaIdentitySerializer, dataInputView);
 
         return new LakeSoulMultiTableSinkCommittable(
                 identity, pendingFileMap, time, commitId, dmlType, sourcePartitionInfo);

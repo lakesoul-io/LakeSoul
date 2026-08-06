@@ -4,7 +4,13 @@
 
 package org.apache.flink.lakesoul.entry;
 
+import static org.apache.flink.lakesoul.tool.JobOptions.FLINK_CHECKPOINT;
+import static org.apache.flink.lakesoul.tool.JobOptions.JOB_CHECKPOINT_INTERVAL;
+import static org.apache.flink.lakesoul.tool.JobOptions.JOB_CHECKPOINT_MODE;
+import static org.apache.flink.lakesoul.tool.LakeSoulDDLSinkOptions.*;
+
 import com.dmetasoul.lakesoul.meta.external.mysql.MysqlDBManager;
+
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.api.java.utils.ParameterTool;
@@ -29,11 +35,6 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 
-import static org.apache.flink.lakesoul.tool.JobOptions.FLINK_CHECKPOINT;
-import static org.apache.flink.lakesoul.tool.JobOptions.JOB_CHECKPOINT_INTERVAL;
-import static org.apache.flink.lakesoul.tool.JobOptions.JOB_CHECKPOINT_MODE;
-import static org.apache.flink.lakesoul.tool.LakeSoulDDLSinkOptions.*;
-
 public class MysqlCdc {
 
     public static void main(String[] args) throws Exception {
@@ -46,30 +47,46 @@ public class MysqlCdc {
         int port = parameter.getInt(SOURCE_DB_PORT.key(), MysqlDBManager.DEFAULT_MYSQL_PORT);
         String sinkDBName = parameter.get(SINK_DBNAME.key(), SINK_DBNAME.defaultValue());
         String databasePrefixPath = parameter.get(WAREHOUSE_PATH.key());
-        String serverTimezone = parameter.get(SERVER_TIME_ZONE.key(), SERVER_TIME_ZONE.defaultValue());
-        String cdcYamlPath = parameter.get(CONNFIG_YAML_PATH.key(),null);
+        String serverTimezone =
+                parameter.get(SERVER_TIME_ZONE.key(), SERVER_TIME_ZONE.defaultValue());
+        String cdcYamlPath = parameter.get(CONNFIG_YAML_PATH.key(), null);
         int sourceParallelism = parameter.getInt(SOURCE_PARALLELISM.key());
         int bucketParallelism = parameter.getInt(BUCKET_PARALLELISM.key());
-        int checkpointInterval = parameter.getInt(JOB_CHECKPOINT_INTERVAL.key(),
-                JOB_CHECKPOINT_INTERVAL.defaultValue());     //mill second
+        int checkpointInterval =
+                parameter.getInt(
+                        JOB_CHECKPOINT_INTERVAL.key(),
+                        JOB_CHECKPOINT_INTERVAL.defaultValue()); // mill second
         HashMap<String, List<String>> partitionMap = new HashMap<>();
-        parameter.toMap().forEach((confKey,confValue) -> {if (confKey.contains("topic_partitions_")) partitionMap.put(confKey.substring(17), Arrays.asList(confValue.split(","))); else return;});
+        parameter
+                .toMap()
+                .forEach(
+                        (confKey, confValue) -> {
+                            if (confKey.contains("topic_partitions_"))
+                                partitionMap.put(
+                                        confKey.substring(17), Arrays.asList(confValue.split(",")));
+                            else return;
+                        });
 
-        MysqlDBManager mysqlDBManager = new MysqlDBManager(dbName,
-                userName,
-                passWord,
-                host,
-                Integer.toString(port),
-                new HashSet<>(),
-                databasePrefixPath,
-                bucketParallelism,
-                true);
+        MysqlDBManager mysqlDBManager =
+                new MysqlDBManager(
+                        dbName,
+                        userName,
+                        passWord,
+                        host,
+                        Integer.toString(port),
+                        new HashSet<>(),
+                        databasePrefixPath,
+                        bucketParallelism,
+                        true);
 
         mysqlDBManager.importOrSyncLakeSoulNamespace(dbName);
         Configuration globalConfig = FlinkUtil.IOConfigs.getInstance().conf;
-        String warehousePath = databasePrefixPath == null ? globalConfig.getString(WAREHOUSE_PATH.key(), null): databasePrefixPath;
+        String warehousePath =
+                databasePrefixPath == null
+                        ? globalConfig.getString(WAREHOUSE_PATH.key(), null)
+                        : databasePrefixPath;
         Configuration conf = new Configuration();
-        if (sinkDBName == null){
+        if (sinkDBName == null) {
             sinkDBName = dbName;
         }
         // parameters for mutil tables ddl sink
@@ -91,7 +108,9 @@ public class MysqlCdc {
         conf.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(conf);
-        env.getConfig().registerTypeWithKryoSerializer(BinarySourceRecord.class, BinarySourceRecordSerializer.class);
+        env.getConfig()
+                .registerTypeWithKryoSerializer(
+                        BinarySourceRecord.class, BinarySourceRecordSerializer.class);
 
         ParameterTool pt = ParameterTool.fromMap(conf.toMap());
         env.getConfig().setGlobalJobParameters(pt);
@@ -100,31 +119,36 @@ public class MysqlCdc {
         env.getCheckpointConfig().setMinPauseBetweenCheckpoints(4023);
 
         CheckpointingMode checkpointingMode = CheckpointingMode.EXACTLY_ONCE;
-        if (parameter.get(JOB_CHECKPOINT_MODE.key(), JOB_CHECKPOINT_MODE.defaultValue()).equals("AT_LEAST_ONCE")) {
+        if (parameter
+                .get(JOB_CHECKPOINT_MODE.key(), JOB_CHECKPOINT_MODE.defaultValue())
+                .equals("AT_LEAST_ONCE")) {
             checkpointingMode = CheckpointingMode.AT_LEAST_ONCE;
         }
         env.getCheckpointConfig().setCheckpointingMode(checkpointingMode);
         env.getCheckpointConfig()
-                .setExternalizedCheckpointCleanup(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
+                .setExternalizedCheckpointCleanup(
+                        CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
 
         env.getCheckpointConfig().setCheckpointStorage(parameter.get(FLINK_CHECKPOINT.key()));
-        env.setRestartStrategy(RestartStrategies.failureRateRestart(
-                3, // max failures per interval
-                Time.of(10, TimeUnit.MINUTES), //time interval for measuring failure rate
-                Time.of(20, TimeUnit.SECONDS) // delay
-        ));
+        env.setRestartStrategy(
+                RestartStrategies.failureRateRestart(
+                        3, // max failures per interval
+                        Time.of(10, TimeUnit.MINUTES), // time interval for measuring failure rate
+                        Time.of(20, TimeUnit.SECONDS) // delay
+                        ));
 
-        MySqlSourceBuilder<BinarySourceRecord> sourceBuilder = MySqlSource.<BinarySourceRecord>builder()
-                .hostname(host)
-                .port(port)
-                .tableList(dbName + ".*") // set captured table
-                .databaseList(dbName) // set captured database
-                .serverTimeZone(serverTimezone)  // default -- Asia/Shanghai
-                .username(userName)
-                .includeSchemaChanges(true)
-                .password(passWord);
+        MySqlSourceBuilder<BinarySourceRecord> sourceBuilder =
+                MySqlSource.<BinarySourceRecord>builder()
+                        .hostname(host)
+                        .port(port)
+                        .tableList(dbName + ".*") // set captured table
+                        .databaseList(dbName) // set captured database
+                        .serverTimeZone(serverTimezone) // default -- Asia/Shanghai
+                        .username(userName)
+                        .includeSchemaChanges(true)
+                        .password(passWord);
 
-        if (cdcYamlPath != null){
+        if (cdcYamlPath != null) {
             JdbcSourceBuilderTool mysqlSourceBuilderTool = new JdbcSourceBuilderTool();
             sourceBuilder = mysqlSourceBuilderTool.mySqlSourceBuilder(cdcYamlPath, sourceBuilder);
         } else {
@@ -133,17 +157,25 @@ public class MysqlCdc {
             jdbcProperties.put("useSSL", "false");
             sourceBuilder.jdbcProperties(jdbcProperties);
         }
-        LakeSoulRecordConvert lakeSoulRecordConvert = new LakeSoulRecordConvert(conf, conf.getString(SERVER_TIME_ZONE),partitionMap, new HashMap<>(), globalConfig);
-        sourceBuilder.deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert,
-                conf.getString(WAREHOUSE_PATH), sinkDBName));
+        LakeSoulRecordConvert lakeSoulRecordConvert =
+                new LakeSoulRecordConvert(
+                        conf,
+                        conf.getString(SERVER_TIME_ZONE),
+                        partitionMap,
+                        new HashMap<>(),
+                        globalConfig);
+        sourceBuilder.deserializer(
+                new BinaryDebeziumDeserializationSchema(
+                        lakeSoulRecordConvert, conf.getString(WAREHOUSE_PATH), sinkDBName));
         MySqlSource<BinarySourceRecord> mySqlSource = sourceBuilder.build();
 
-        LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
+        LakeSoulMultiTableSinkStreamBuilder.Context context =
+                new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;
         context.conf = (Configuration) env.getConfiguration();
-        LakeSoulMultiTableSinkStreamBuilder
-                builder =
-                new LakeSoulMultiTableSinkStreamBuilder(mySqlSource, context, lakeSoulRecordConvert);
+        LakeSoulMultiTableSinkStreamBuilder builder =
+                new LakeSoulMultiTableSinkStreamBuilder(
+                        mySqlSource, context, lakeSoulRecordConvert);
         DataStreamSource<BinarySourceRecord> source = builder.buildMultiTableSource("MySQL Source");
 
         DataStream<BinarySourceRecord> stream = builder.buildHashPartitionedCDCStream(source);

@@ -13,12 +13,15 @@ import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
 import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
 
 trait LakeSoulSQLCommandGlutenTest
-  extends QueryTest
+    extends QueryTest
     with SharedSparkSession
     with LakeSoulSQLCommandTest {
   override def sparkConf: SparkConf = {
     super.sparkConf
-      .set("spark.shuffle.manager", "org.apache.spark.shuffle.sort.ColumnarShuffleManager")
+      .set(
+        "spark.shuffle.manager",
+        "org.apache.spark.shuffle.sort.ColumnarShuffleManager"
+      )
       .set("spark.sql.adaptive.logLevel", "info")
       .set("spark.network.timeout", "10000000")
       .set("spark.plugins", "org.apache.gluten.GlutenPlugin")
@@ -29,7 +32,10 @@ trait LakeSoulSQLCommandGlutenTest
       .set(GlutenConfig.GLUTEN_UI_ENABLED.key, "false")
       .set("spark.ui.enabled", "false")
       .set("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
-      .set("spark.sql.extensions", "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension")
+      .set(
+        "spark.sql.extensions",
+        "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension"
+      )
       .set("spark.gluten.sql.native.writer.enabled", "true")
       .set(SQLConf.DEFAULT_CATALOG.key, LakeSoulCatalog.CATALOG_NAME)
   }

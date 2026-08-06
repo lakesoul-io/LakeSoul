@@ -18,11 +18,10 @@
 
 package org.apache.flink.table.runtime.arrow.vectors;
 
+import org.apache.arrow.vector.Float4Vector;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.data.columnar.vector.FloatColumnVector;
 import org.apache.flink.util.Preconditions;
-
-import org.apache.arrow.vector.Float4Vector;
 
 /** Arrow column vector for Float. */
 @Internal

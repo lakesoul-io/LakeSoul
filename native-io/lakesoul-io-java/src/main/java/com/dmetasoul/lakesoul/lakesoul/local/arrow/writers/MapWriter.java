@@ -18,19 +18,19 @@
 
 package com.dmetasoul.lakesoul.lakesoul.local.arrow.writers;
 //
-//import org.apache.arrow.vector.complex.MapVector;
-//import org.apache.arrow.vector.complex.StructVector;
-//import org.apache.flink.annotation.Internal;
-//import org.apache.flink.table.data.ArrayData;
-//import org.apache.flink.table.data.MapData;
-//import org.apache.flink.table.data.RowData;
-//import org.apache.flink.util.Preconditions;
+// import org.apache.arrow.vector.complex.MapVector;
+// import org.apache.arrow.vector.complex.StructVector;
+// import org.apache.flink.annotation.Internal;
+// import org.apache.flink.table.data.ArrayData;
+// import org.apache.flink.table.data.MapData;
+// import org.apache.flink.table.data.RowData;
+// import org.apache.flink.util.Preconditions;
 //
-///**
+/// **
 // * {@link ArrowFieldWriter} for Map.
 // */
-//@Internal
-//public abstract class MapWriter<T> extends ArrowFieldWriter<T> {
+// @Internal
+// public abstract class MapWriter<T> extends ArrowFieldWriter<T> {
 //
 //    public static MapWriter<RowData> forRow(
 //            MapVector mapVector,
@@ -132,4 +132,4 @@ package com.dmetasoul.lakesoul.lakesoul.local.arrow.writers;
 //            return in.getMap(ordinal);
 //        }
 //    }
-//}
+// }

@@ -4,16 +4,15 @@
 
 package org.apache.flink.lakesoul.entry.sql;
 
-import org.apache.flink.lakesoul.entry.sql.common.SubmitOption;
 import org.apache.flink.api.java.utils.ParameterTool;
+import org.apache.flink.lakesoul.entry.sql.common.SubmitOption;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class SubmitMain {
     private static final Logger LOG = LoggerFactory.getLogger(SubmitMain.class);
 
-    public static void main(String[] args)
-            throws Exception {
+    public static void main(String[] args) throws Exception {
         for (String arg : args) {
             LOG.info("arg: {}", arg);
         }

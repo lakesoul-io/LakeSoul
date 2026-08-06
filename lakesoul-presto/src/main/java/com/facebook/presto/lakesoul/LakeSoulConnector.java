@@ -4,6 +4,8 @@
 
 package com.facebook.presto.lakesoul;
 
+import static java.util.Objects.requireNonNull;
+
 import com.facebook.presto.lakesoul.handle.LakeSoulTransactionHandle;
 import com.facebook.presto.spi.*;
 import com.facebook.presto.spi.connector.*;
@@ -14,27 +16,25 @@ import com.facebook.presto.spi.transaction.IsolationLevel;
 import java.util.List;
 import java.util.Set;
 
-import static java.util.Objects.requireNonNull;
-
 public class LakeSoulConnector implements Connector {
 
     private final LakeSoulMetadata metadata;
     private final LakeSoulSplitManager splitManager;
     private final LakeSoulRecordSetProvider recordSetProvider;
 
-
     public LakeSoulConnector(
             LakeSoulMetadata metadata,
             LakeSoulSplitManager splitManager,
-            LakeSoulRecordSetProvider recordSetProvider
-    ){
+            LakeSoulRecordSetProvider recordSetProvider) {
         this.metadata = requireNonNull(metadata, "metadata should not be null");
         this.splitManager = requireNonNull(splitManager, "splitManager should not be null");
-        this.recordSetProvider = requireNonNull(recordSetProvider, "recordSetProvider should not be null");
+        this.recordSetProvider =
+                requireNonNull(recordSetProvider, "recordSetProvider should not be null");
     }
 
     @Override
-    public ConnectorTransactionHandle beginTransaction(IsolationLevel isolationLevel, boolean readOnly) {
+    public ConnectorTransactionHandle beginTransaction(
+            IsolationLevel isolationLevel, boolean readOnly) {
         return new LakeSoulTransactionHandle();
     }
 

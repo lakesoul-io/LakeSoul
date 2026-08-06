@@ -23,15 +23,12 @@ import org.apache.arrow.vector.*;
 
 import java.sql.Timestamp;
 
-/**
- * {@link ArrowFieldWriter} for Timestamp.
- */
+/** {@link ArrowFieldWriter} for Timestamp. */
 public abstract class TimestampWriter<T> extends ArrowFieldWriter<T> {
 
     public static TimestampWriter<Object[]> forObject(ValueVector valueVector, int precision) {
         return new TimestampWriterforObject(valueVector, precision);
     }
-
 
     // ------------------------------------------------------------------------------------------
 
@@ -39,9 +36,7 @@ public abstract class TimestampWriter<T> extends ArrowFieldWriter<T> {
 
     private TimestampWriter(ValueVector valueVector, int precision) {
         super(valueVector);
-        Preconditions.checkState(
-                valueVector instanceof TimeStampVector
-        );
+        Preconditions.checkState(valueVector instanceof TimeStampVector);
         this.precision = precision;
     }
 
@@ -61,47 +56,36 @@ public abstract class TimestampWriter<T> extends ArrowFieldWriter<T> {
                 ((TimeStampSecTZVector) valueVector)
                         .setSafe(getCount(), timestamp.getTime() / 1000);
             } else if (valueVector instanceof TimeStampSecVector) {
-                ((TimeStampSecVector) valueVector)
-                        .setSafe(getCount(), timestamp.getTime() / 1000);
+                ((TimeStampSecVector) valueVector).setSafe(getCount(), timestamp.getTime() / 1000);
             } else if (valueVector instanceof TimeStampMilliTZVector) {
-                ((TimeStampMilliTZVector) valueVector)
-                        .setSafe(getCount(), timestamp.getTime());
+                ((TimeStampMilliTZVector) valueVector).setSafe(getCount(), timestamp.getTime());
             } else if (valueVector instanceof TimeStampMilliVector) {
-                ((TimeStampMilliVector) valueVector)
-                        .setSafe(getCount(), timestamp.getTime());
+                ((TimeStampMilliVector) valueVector).setSafe(getCount(), timestamp.getTime());
             } else if (valueVector instanceof TimeStampMicroTZVector) {
                 ((TimeStampMicroTZVector) valueVector)
                         .setSafe(
                                 getCount(),
-                                timestamp.getTime() * 1000
-                                        + timestamp.getNanos() / 1000);
+                                timestamp.getTime() * 1000 + timestamp.getNanos() / 1000);
             } else if (valueVector instanceof TimeStampMicroVector) {
                 ((TimeStampMicroVector) valueVector)
                         .setSafe(
                                 getCount(),
-                                timestamp.getTime() * 1000
-                                        + timestamp.getNanos() / 1000);
+                                timestamp.getTime() * 1000 + timestamp.getNanos() / 1000);
             } else if (valueVector instanceof TimeStampNanoTZVector) {
                 ((TimeStampNanoTZVector) valueVector)
                         .setSafe(
-                                getCount(),
-                                timestamp.getTime() * 1_000_000
-                                        + timestamp.getNanos());
+                                getCount(), timestamp.getTime() * 1_000_000 + timestamp.getNanos());
             } else {
                 ((TimeStampNanoVector) valueVector)
                         .setSafe(
-                                getCount(),
-                                timestamp.getTime() * 1_000_000
-                                        + timestamp.getNanos());
+                                getCount(), timestamp.getTime() * 1_000_000 + timestamp.getNanos());
             }
         }
     }
 
     // ------------------------------------------------------------------------------------------
 
-    /**
-     * {@link TimestampWriter} for {@link Object[]} input.
-     */
+    /** {@link TimestampWriter} for {@link Object[]} input. */
     public static final class TimestampWriterforObject extends TimestampWriter<Object[]> {
 
         private TimestampWriterforObject(ValueVector valueVector, int precision) {
@@ -118,5 +102,4 @@ public abstract class TimestampWriter<T> extends ArrowFieldWriter<T> {
             return (Timestamp) in[ordinal];
         }
     }
-
 }

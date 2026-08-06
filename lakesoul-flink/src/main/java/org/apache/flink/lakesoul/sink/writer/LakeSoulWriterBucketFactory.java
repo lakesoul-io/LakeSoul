@@ -11,7 +11,6 @@ import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.streaming.api.functions.sink.filesystem.BucketWriter;
 import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;
 import org.apache.flink.streaming.api.functions.sink.filesystem.RollingPolicy;
-import org.apache.flink.table.data.RowData;
 
 import java.io.IOException;
 import java.io.Serializable;
@@ -28,7 +27,8 @@ public interface LakeSoulWriterBucketFactory<OUT> extends Serializable {
             Path bucketPath,
             BucketWriter<OUT, String> bucketWriter,
             RollingPolicy<OUT, String> rollingPolicy,
-            OutputFileConfig outputFileConfig) throws IOException;
+            OutputFileConfig outputFileConfig)
+            throws IOException;
 
     LakeSoulWriterBucket restoreBucket(
             int subTaskId,
@@ -36,5 +36,6 @@ public interface LakeSoulWriterBucketFactory<OUT> extends Serializable {
             BucketWriter<OUT, String> bucketWriter,
             RollingPolicy<OUT, String> rollingPolicy,
             LakeSoulWriterBucketState bucketState,
-            OutputFileConfig outputFileConfig) throws IOException;
+            OutputFileConfig outputFileConfig)
+            throws IOException;
 }

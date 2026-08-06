@@ -23,8 +23,14 @@ object TestUtils {
   def getSparkSession(sparkConf: SparkConf = new SparkConf()): SparkSession = {
 
     sparkConf.set("spark.sql.autoBroadcastJoinThreshold", "-1")
-    sparkConf.set("spark.sql.extensions", "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension")
-    sparkConf.set("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog")
+    sparkConf.set(
+      "spark.sql.extensions",
+      "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension"
+    )
+    sparkConf.set(
+      "spark.sql.catalog.spark_catalog",
+      "org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog"
+    )
     sparkConf.set("spark.dmetasoul.lakesoul.deltaFile.enabled", "true")
     sparkConf.set("spark.dmetasoul.lakesoul.schema.autoMerge.enabled", "true")
     sparkConf.set("spark.sql.shuffle.partitions", "10")
@@ -32,28 +38,31 @@ object TestUtils {
     sparkConf.set("spark.default.parallelism", "8")
     sparkConf.set("spark.ui.enabled", "false")
 
-    SparkSession
-      .builder
+    SparkSession.builder
       .appName("manual unit test")
       .config(sparkConf)
       .master("local")
       .getOrCreate()
   }
 
-  def getData1(num: Int, onlyOne: Boolean = true): Seq[(Int, String, String)] = {
+  def getData1(
+      num: Int,
+      onlyOne: Boolean = true
+  ): Seq[(Int, String, String)] = {
     var data = Seq.empty[(Int, String, String)]
     val max_id = num * 2
     val rand = scala.util.Random
     for (i <- 0 until num) {
-      data = data :+ (
-        rand.nextInt(max_id),
-        getStr(5),
-        getRangePartition(onlyOne))
+      data =
+        data :+ (rand.nextInt(max_id), getStr(5), getRangePartition(onlyOne))
     }
     data
   }
 
-  def getData2(num: Int, onlyOne: Boolean = true): Seq[(Int, String, String, String)] = {
+  def getData2(
+      num: Int,
+      onlyOne: Boolean = true
+  ): Seq[(Int, String, String, String)] = {
     var data = Seq.empty[(Int, String, String, String)]
     val max_id = num * 2
     val rand = scala.util.Random
@@ -62,12 +71,16 @@ object TestUtils {
         rand.nextInt(max_id),
         getStr(5),
         getStr(5),
-        getRangePartition(onlyOne))
+        getRangePartition(onlyOne)
+      )
     }
     data
   }
 
-  def getData3(num: Int, onlyOne: Boolean = true): Seq[(Int, String, String, String, String)] = {
+  def getData3(
+      num: Int,
+      onlyOne: Boolean = true
+  ): Seq[(Int, String, String, String, String)] = {
     var data = Seq.empty[(Int, String, String, String, String)]
     val max_id = num * 2
     val rand = scala.util.Random
@@ -77,13 +90,16 @@ object TestUtils {
         getStr(5),
         getStr(5),
         getStr(5),
-        getRangePartition(onlyOne))
+        getRangePartition(onlyOne)
+      )
     }
     data
   }
 
-
-  def getDataNew(num: Int, onlyOne: Boolean = true): Seq[(Int, String, Int, String, Int, String)] = {
+  def getDataNew(
+      num: Int,
+      onlyOne: Boolean = true
+  ): Seq[(Int, String, Int, String, Int, String)] = {
     var data = Seq.empty[(Int, String, Int, String, Int, String)]
     val max_id = num * 2
     val rand = scala.util.Random
@@ -94,7 +110,8 @@ object TestUtils {
         rand.nextInt(35),
         getStr(5),
         rand.nextInt(35),
-        getRangePartition(onlyOne))
+        getRangePartition(onlyOne)
+      )
     }
     data
   }
@@ -110,17 +127,18 @@ object TestUtils {
     }
   }
 
-
   def getStr(num: Int): String = {
     val rand = scala.util.Random
     (0 until num).map(n => rand.alphanumeric.head).mkString("")
   }
 
-  def initTable(table_name: String,
-                df: DataFrame,
-                rangePartition: String,
-                hashPartition: String,
-                hashBucketNum: Int = 2): Unit = {
+  def initTable(
+      table_name: String,
+      df: DataFrame,
+      rangePartition: String,
+      hashPartition: String,
+      hashBucketNum: Int = 2
+  ): Unit = {
     val writer = df.write.format("lakesoul").mode("overwrite")
 
     writer
@@ -130,20 +148,23 @@ object TestUtils {
       .save(table_name)
   }
 
-  private def executeUpsert(tableName: String,
-                            df: DataFrame,
-                            condition: Option[String]): Unit = {
+  private def executeUpsert(
+      tableName: String,
+      df: DataFrame,
+      condition: Option[String]
+  ): Unit = {
     if (condition.isEmpty) {
-      LakeSoulTable.forPath(tableName)
+      LakeSoulTable
+        .forPath(tableName)
         .upsert(df)
     } else {
-      LakeSoulTable.forPath(tableName)
+      LakeSoulTable
+        .forPath(tableName)
         .upsert(df, condition.get)
     }
   }
 
-  def checkDFResult(lakeSoulDF: DataFrame,
-                    expectedDF: DataFrame): Unit = {
+  def checkDFResult(lakeSoulDF: DataFrame, expectedDF: DataFrame): Unit = {
     val lakeSoulData = lakeSoulDF.rdd.persist()
     val expectedData = expectedDF.rdd.persist()
 
@@ -155,16 +176,19 @@ object TestUtils {
     assert(secondDiff.count() == 0)
   }
 
-
-  def checkUpsertResult(tableName: String,
-                        df: DataFrame,
-                        expectedResults: DataFrame,
-                        colNames: Seq[String],
-                        condition: Option[String]): Unit = {
+  def checkUpsertResult(
+      tableName: String,
+      df: DataFrame,
+      expectedResults: DataFrame,
+      colNames: Seq[String],
+      condition: Option[String]
+  ): Unit = {
 
     executeUpsert(tableName, df, condition)
 
-    val lakeSoulData = LakeSoulTable.forPath(tableName).toDF
+    val lakeSoulData = LakeSoulTable
+      .forPath(tableName)
+      .toDF
       .select(colNames.map(col): _*)
 
     checkDFResult(lakeSoulData, expectedResults)
@@ -202,7 +226,10 @@ trait LakeSoulTestBeforeAndAfterEach extends BeforeAndAfterEach {
 
   var snapshotManagement: SnapshotManagement = _
 
-  protected def tempPath: String = SparkUtil.makeQualifiedTablePath(new Path(tempDir.getCanonicalPath)).toUri.toString
+  protected def tempPath: String = SparkUtil
+    .makeQualifiedTablePath(new Path(tempDir.getCanonicalPath))
+    .toUri
+    .toString
 
   protected def readLakeSoulTable(path: String): DataFrame = {
     spark.read.format("lakesoul").load(path)

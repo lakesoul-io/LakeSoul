@@ -4,10 +4,10 @@
 
 package org.apache.flink.lakesoul.entry.sql.common;
 
-import org.apache.flink.api.java.utils.ParameterTool;
-
 import static org.apache.flink.lakesoul.tool.JobOptions.*;
 import static org.apache.flink.lakesoul.tool.JobOptions.JOB_CHECKPOINT_MODE;
+
+import org.apache.flink.api.java.utils.ParameterTool;
 
 public class SubmitOption {
     private final String submitType;
@@ -49,7 +49,6 @@ public class SubmitOption {
         return language;
     }
 
-
     public FlinkOption getFlinkOption() {
         return flinkOption;
     }
@@ -58,24 +57,32 @@ public class SubmitOption {
         this.flinkOption = flinkOption;
     }
 
-
     public void checkParam() {
         if (SubmitType.getSubmitType(submitType) == null) {
-            throw new RuntimeException(String.format("submitType: %s is not supported. Supported submitTypes: %s", submitType, SubmitType.getSupportSubmitType()));
+            throw new RuntimeException(
+                    String.format(
+                            "submitType: %s is not supported. Supported submitTypes: %s",
+                            submitType, SubmitType.getSupportSubmitType()));
         }
         if (JobType.getJobType(jobType) == null) {
-            throw new RuntimeException("jobType is not supported. Supported jobType: " + JobType.getSupportJobType());
+            throw new RuntimeException(
+                    "jobType is not supported. Supported jobType: " + JobType.getSupportJobType());
         }
         if (LanguageType.getLanguageType(language) == null) {
-            throw new RuntimeException("language is not supported. Supported language: " + LanguageType.getSupportLanguage());
+            throw new RuntimeException(
+                    "language is not supported. Supported language: "
+                            + LanguageType.getSupportLanguage());
         }
     }
 
     private void setFlinkOption(ParameterTool params, SubmitOption submitOption) {
         String checkpointPath = params.get(FLINK_CHECKPOINT.key());
         String savepointPath = params.get(FLINK_SAVEPOINT.key());
-        long checkpointInterval = params.getLong(JOB_CHECKPOINT_INTERVAL.key(), JOB_CHECKPOINT_INTERVAL.defaultValue());
-        String checkpointingMode = params.get(JOB_CHECKPOINT_MODE.key(), JOB_CHECKPOINT_MODE.defaultValue());
+        long checkpointInterval =
+                params.getLong(
+                        JOB_CHECKPOINT_INTERVAL.key(), JOB_CHECKPOINT_INTERVAL.defaultValue());
+        String checkpointingMode =
+                params.get(JOB_CHECKPOINT_MODE.key(), JOB_CHECKPOINT_MODE.defaultValue());
         FlinkOption flinkOption = new FlinkOption();
         flinkOption.setCheckpointPath(checkpointPath);
         flinkOption.setSavepointPath(savepointPath);
@@ -83,5 +90,4 @@ public class SubmitOption {
         flinkOption.setCheckpointingMode(checkpointingMode);
         submitOption.setFlinkOption(flinkOption);
     }
-
 }

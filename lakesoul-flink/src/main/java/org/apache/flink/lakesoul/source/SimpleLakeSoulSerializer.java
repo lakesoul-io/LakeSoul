@@ -41,7 +41,6 @@ public class SimpleLakeSoulSerializer implements SimpleVersionedSerializer<LakeS
         return result;
     }
 
-
     @Override
     public LakeSoulPartitionSplit deserialize(int version, byte[] serialized) throws IOException {
         if (version == 1) {
@@ -57,7 +56,8 @@ public class SimpleLakeSoulSerializer implements SimpleVersionedSerializer<LakeS
             final long skipRecord = in.readLong();
             final int bucketid = in.readInt();
             final String partitionDesc = in.readUTF();
-            return new LakeSoulPartitionSplit(id, Arrays.asList(paths), skipRecord, bucketid, partitionDesc);
+            return new LakeSoulPartitionSplit(
+                    id, Arrays.asList(paths), skipRecord, bucketid, partitionDesc);
         }
         throw new IOException("Unknown version: " + version);
     }

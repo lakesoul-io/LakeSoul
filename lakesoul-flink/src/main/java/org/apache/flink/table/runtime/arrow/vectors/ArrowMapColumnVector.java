@@ -18,14 +18,13 @@
 
 package org.apache.flink.table.runtime.arrow.vectors;
 
+import org.apache.arrow.vector.complex.MapVector;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.data.MapData;
 import org.apache.flink.table.data.columnar.ColumnarMapData;
 import org.apache.flink.table.data.columnar.vector.ColumnVector;
 import org.apache.flink.table.data.columnar.vector.MapColumnVector;
 import org.apache.flink.util.Preconditions;
-
-import org.apache.arrow.vector.complex.MapVector;
 
 /** Arrow column vector for Map. */
 @Internal

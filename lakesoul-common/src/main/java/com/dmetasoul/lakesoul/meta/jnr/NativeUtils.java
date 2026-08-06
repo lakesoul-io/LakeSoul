@@ -52,7 +52,8 @@ public class NativeUtils {
         SelectOnePartitionVersionByTableIdAndDesc(DAO_TYPE_QUERY_ONE_OFFSET + 7, 2),
         SelectPartitionVersionByTableIdAndDescAndVersion(DAO_TYPE_QUERY_ONE_OFFSET + 8, 3),
 
-        SelectOneDataCommitInfoByTableIdAndPartitionDescAndCommitId(DAO_TYPE_QUERY_ONE_OFFSET + 9, 3),
+        SelectOneDataCommitInfoByTableIdAndPartitionDescAndCommitId(
+                DAO_TYPE_QUERY_ONE_OFFSET + 9, 3),
         SelectOneDataCommitInfoByTableId(DAO_TYPE_QUERY_ONE_OFFSET + 10, 3),
 
         SelectDiscardCompressedFileInfoByFilePath(DAO_TYPE_QUERY_ONE_OFFSET + 11, 1),
@@ -67,13 +68,16 @@ public class NativeUtils {
         ListPartitionByTableId(DAO_TYPE_QUERY_LIST_OFFSET + 4, 1),
         ListPartitionDescByTableIdAndParList(DAO_TYPE_QUERY_LIST_OFFSET + 5, 2),
         ListPartitionByTableIdAndDesc(DAO_TYPE_QUERY_LIST_OFFSET + 6, 2),
-        ListPartitionVersionByTableIdAndPartitionDescAndVersionRange(DAO_TYPE_QUERY_LIST_OFFSET + 7, 4),
-        ListPartitionVersionByTableIdAndPartitionDescAndTimestampRange(DAO_TYPE_QUERY_LIST_OFFSET + 8, 4),
+        ListPartitionVersionByTableIdAndPartitionDescAndVersionRange(
+                DAO_TYPE_QUERY_LIST_OFFSET + 7, 4),
+        ListPartitionVersionByTableIdAndPartitionDescAndTimestampRange(
+                DAO_TYPE_QUERY_LIST_OFFSET + 8, 4),
         ListCommitOpsBetweenVersions(DAO_TYPE_QUERY_LIST_OFFSET + 9, 4),
         ListPartitionByTableIdAndFilterCondition(DAO_TYPE_QUERY_LIST_OFFSET + 16, 2),
 
         // Query DataCommitInfo List
-        ListDataCommitInfoByTableIdAndPartitionDescAndCommitList(DAO_TYPE_QUERY_LIST_OFFSET + 10, 3),
+        ListDataCommitInfoByTableIdAndPartitionDescAndCommitList(
+                DAO_TYPE_QUERY_LIST_OFFSET + 10, 3),
 
         ListAllDiscardCompressedFileInfo(DAO_TYPE_QUERY_LIST_OFFSET + 11),
         ListDiscardCompressedFileInfoBeforeTimestamp(DAO_TYPE_QUERY_LIST_OFFSET + 12, 1),
@@ -100,7 +104,8 @@ public class NativeUtils {
 
         // ==== Query SCALAR ====
         GetLatestTimestampFromPartitionInfo(DAO_TYPE_QUERY_SCALAR_OFFSET, 2),
-        GetLatestTimestampFromPartitionInfoWithoutPartitionDesc(DAO_TYPE_QUERY_SCALAR_OFFSET + 1, 1),
+        GetLatestTimestampFromPartitionInfoWithoutPartitionDesc(
+                DAO_TYPE_QUERY_SCALAR_OFFSET + 1, 1),
         GetLatestVersionUpToTimeFromPartitionInfo(DAO_TYPE_QUERY_SCALAR_OFFSET + 2, 3),
         GetLatestVersionTimestampUpToTimeFromPartitionInfo(DAO_TYPE_QUERY_SCALAR_OFFSET + 3, 3),
 
@@ -126,14 +131,14 @@ public class NativeUtils {
         DeletePreviousVersionPartition(DAO_TYPE_UPDATE_OFFSET + 11, 3),
         // Update DataCommitInfo
         DeleteOneDataCommitInfoByTableIdAndPartitionDescAndCommitId(DAO_TYPE_UPDATE_OFFSET + 12, 3),
-        DeleteDataCommitInfoByTableIdAndPartitionDescAndCommitIdList(DAO_TYPE_UPDATE_OFFSET + 13, 3),
+        DeleteDataCommitInfoByTableIdAndPartitionDescAndCommitIdList(
+                DAO_TYPE_UPDATE_OFFSET + 13, 3),
         DeleteDataCommitInfoByTableIdAndPartitionDesc(DAO_TYPE_UPDATE_OFFSET + 14, 2),
         DeleteDataCommitInfoByTableId(DAO_TYPE_UPDATE_OFFSET + 15, 1),
 
         DeleteDiscardCompressedFileInfoByFilePath(DAO_TYPE_UPDATE_OFFSET + 16, 1),
         DeleteDiscardCompressedFileByFilterCondition(DAO_TYPE_UPDATE_OFFSET + 17, 3),
-        DeleteDiscardCompressedFileInfoByTablePath(DAO_TYPE_UPDATE_OFFSET + 18, 1)
-        ;
+        DeleteDiscardCompressedFileInfoByTablePath(DAO_TYPE_UPDATE_OFFSET + 18, 1);
 
         private final int code;
         private final int paramsNum;
@@ -155,5 +160,4 @@ public class NativeUtils {
             return paramsNum;
         }
     }
-
 }

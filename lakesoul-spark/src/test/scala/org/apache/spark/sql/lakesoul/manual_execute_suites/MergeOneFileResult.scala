@@ -21,31 +21,35 @@ class MergeOneFileResult {
     val spark = TestUtils.getSparkSession()
     import spark.implicits._
     try {
-      val allData = TestUtils.getDataNew(20000, onlyOnePartition)
+      val allData = TestUtils
+        .getDataNew(20000, onlyOnePartition)
         .toDF("hash", "name", "age", "stu", "grade", "range")
         .persist()
 
-
-      TestUtils.initTable(tableName,
+      TestUtils.initTable(
+        tableName,
         allData.select("range", "hash", "name", "age"),
         "range",
-        "hash")
+        "hash"
+      )
 
-      val expectedData = allData.groupBy("range", "hash")
-        .agg(
-          last("name").as("n"),
-          last("age").as("a"))
+      val expectedData = allData
+        .groupBy("range", "hash")
+        .agg(last("name").as("n"), last("age").as("a"))
         .select(
           col("range"),
           col("hash"),
           col("n").as("name"),
-          col("a").as("age"))
-
+          col("a").as("age")
+        )
 
       TestUtils.checkDFResult(
-        LakeSoulTable.forPath(tableName).toDF
+        LakeSoulTable
+          .forPath(tableName)
+          .toDF
           .select("range", "hash", "name", "age"),
-        expectedData)
+        expectedData
+      )
 
       LakeSoulTable.forPath(tableName).dropTable()
 

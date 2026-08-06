@@ -17,24 +17,27 @@ import scala.collection.JavaConversions._
 
 object LakeSoulPartFileMerge {
 
-  def partMergeCompaction(sparkSession: SparkSession,
-                          snapshotManagement: SnapshotManagement,
-                          groupAndSortedFiles: Iterable[Seq[DataFileInfo]],
-                          mergeOperatorInfo: Map[String, String],
-                          isCompactionCommand: Boolean): Seq[DataFileInfo] = {
+  def partMergeCompaction(
+      sparkSession: SparkSession,
+      snapshotManagement: SnapshotManagement,
+      groupAndSortedFiles: Iterable[Seq[DataFileInfo]],
+      mergeOperatorInfo: Map[String, String],
+      isCompactionCommand: Boolean
+  ): Seq[DataFileInfo] = {
 
     val needMergeFiles = groupAndSortedFiles
 
     needMergeFiles.flatten.toSeq
   }
 
-
-  def executePartFileCompaction(spark: SparkSession,
-                                snapshotManagement: SnapshotManagement,
-                                pmtc: PartMergeTransactionCommit,
-                                files: Seq[DataFileInfo],
-                                mergeOperatorInfo: Map[String, String],
-                                commitFlag: Boolean): (Boolean, Seq[DataFileInfo]) = {
+  def executePartFileCompaction(
+      spark: SparkSession,
+      snapshotManagement: SnapshotManagement,
+      pmtc: PartMergeTransactionCommit,
+      files: Seq[DataFileInfo],
+      mergeOperatorInfo: Map[String, String],
+      commitFlag: Boolean
+  ): (Boolean, Seq[DataFileInfo]) = {
     val fileIndex = BatchDataSoulFileIndexV2(spark, snapshotManagement, files)
     val table = LakeSoulTableV2(
       spark,
@@ -44,7 +47,12 @@ object LakeSoulPartFileMerge {
       Option(fileIndex),
       Option(mergeOperatorInfo)
     )
-    val option = new CaseInsensitiveStringMap(Map("basePath" -> pmtc.tableInfo.table_path_s.get, "isCompaction" -> "true"))
+    val option = new CaseInsensitiveStringMap(
+      Map(
+        "basePath" -> pmtc.tableInfo.table_path_s.get,
+        "isCompaction" -> "true"
+      )
+    )
 
     val compactDF = Dataset.ofRows(
       spark,
@@ -62,7 +70,7 @@ object LakeSoulPartFileMerge {
 
     val newFiles = pmtc.writeFiles(compactDF, isCompaction = true)._1
 
-    //if part compaction failed before, it will not commit later
+    // if part compaction failed before, it will not commit later
     var flag = commitFlag
     if (flag) {
       try {
@@ -80,6 +88,5 @@ object LakeSoulPartFileMerge {
     (flag, newFiles)
 
   }
-
 
 }

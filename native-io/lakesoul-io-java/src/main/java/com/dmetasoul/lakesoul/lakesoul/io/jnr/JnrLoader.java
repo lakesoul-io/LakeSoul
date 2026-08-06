@@ -30,7 +30,7 @@ public class JnrLoader {
         return INSTANCE.libLakeSoulIO;
     }
 
-    public synchronized static void tryLoad() {
+    public static synchronized void tryLoad() {
         if (INSTANCE.hasLoaded) {
             return;
         }
@@ -51,7 +51,11 @@ public class JnrLoader {
                     if (is == null) {
                         throw new FileNotFoundException(libName);
                     }
-                    File temp = File.createTempFile(libName + "_", ".tmp", new File(System.getProperty("java.io.tmpdir")));
+                    File temp =
+                            File.createTempFile(
+                                    libName + "_",
+                                    ".tmp",
+                                    new File(System.getProperty("java.io.tmpdir")));
                     temp.deleteOnExit();
                     Files.copy(is, temp.toPath(), StandardCopyOption.REPLACE_EXISTING);
                     finalPath = temp.getAbsolutePath();
@@ -67,11 +71,8 @@ public class JnrLoader {
             libraryOptions.put(LibraryOption.LoadNow, true);
             libraryOptions.put(LibraryOption.IgnoreError, true);
 
-            JnrLoader.INSTANCE.libLakeSoulIO = LibraryLoader.loadLibrary(
-                    LibLakeSoulIO.class,
-                    libraryOptions,
-                    finalPath
-            );
+            JnrLoader.INSTANCE.libLakeSoulIO =
+                    LibraryLoader.loadLibrary(LibLakeSoulIO.class, libraryOptions, finalPath);
             if (INSTANCE.libLakeSoulIO != null) {
                 // spark will do the bound checking and null checking
                 // so disable them
@@ -84,7 +85,7 @@ public class JnrLoader {
         INSTANCE.hasLoaded = true;
     }
 
-    public synchronized static void unload() {
+    public static synchronized void unload() {
         INSTANCE.hasLoaded = false;
         INSTANCE.libLakeSoulIO = null;
         INSTANCE = null;

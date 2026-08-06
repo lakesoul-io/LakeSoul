@@ -19,118 +19,168 @@ class LakeSoulGlutenCompatSuite extends LakeSoulSQLCommandGlutenTest {
   test("lakesoul write scan - nopk no partition") {
     withTempDir(dir => {
       val tablePath = dir.getCanonicalPath
-      val df = Seq(("2021-01-01",1,"rice"),("2021-01-01",2,"bread")).toDF("date","id","name")
+      val df = Seq(("2021-01-01", 1, "rice"), ("2021-01-01", 2, "bread"))
+        .toDF("date", "id", "name")
       df.write
         .mode("overwrite")
         .format("lakesoul")
         .save(tablePath)
-      val dfRead = spark.read.format("lakesoul").load(tablePath).select("date", "name", "id")
+      val dfRead = spark.read
+        .format("lakesoul")
+        .load(tablePath)
+        .select("date", "name", "id")
       val plan = dfRead.queryExecution.explainString(ExtendedMode)
       println(plan)
-      assert(plan.matches("(?:.|\\n)*VeloxColumnarToRow(?:.|\\n)*" +
-        "\\bProjectExecTransformer\\b(?:.|\\n)*" +
-        "\\bInputIteratorTransformer\\b(?:.|\\n)*" +
-        "\\bOffloadToVelox(?:.|\\n)*" +
-        "\\bBatchScan\\b.*\\bNativeScan\\b(?:.|\\n)*"))
-      checkAnswer(dfRead, Seq(("2021-01-01","rice",1),("2021-01-01","bread",2)).toDF("date", "name", "id"))
+      assert(
+        plan.matches(
+          "(?:.|\\n)*VeloxColumnarToRow(?:.|\\n)*" +
+            "\\bProjectExecTransformer\\b(?:.|\\n)*" +
+            "\\bInputIteratorTransformer\\b(?:.|\\n)*" +
+            "\\bOffloadToVelox(?:.|\\n)*" +
+            "\\bBatchScan\\b.*\\bNativeScan\\b(?:.|\\n)*"
+        )
+      )
+      checkAnswer(
+        dfRead,
+        Seq(("2021-01-01", "rice", 1), ("2021-01-01", "bread", 2))
+          .toDF("date", "name", "id")
+      )
     })
   }
 
   test("lakesoul write scan - nopk") {
     withTempDir(dir => {
       val tablePath = dir.getCanonicalPath
-      val df = Seq(("2021-01-01",1,"rice"),("2021-01-01",2,"bread")).toDF("date","id","name")
+      val df = Seq(("2021-01-01", 1, "rice"), ("2021-01-01", 2, "bread"))
+        .toDF("date", "id", "name")
       df.write
         .mode("overwrite")
         .format("lakesoul")
-        .option("rangePartitions","date")
+        .option("rangePartitions", "date")
         .save(tablePath)
-      val dfRead = spark.read.format("lakesoul").load(tablePath).select("date", "id", "name")
+      val dfRead = spark.read
+        .format("lakesoul")
+        .load(tablePath)
+        .select("date", "id", "name")
       val plan = dfRead.queryExecution.explainString(ExtendedMode)
       println(plan)
-      assert(plan.matches("(?:.|\\n)*VeloxColumnarToRow(?:.|\\n)*" +
-        "\\bProjectExecTransformer\\b(?:.|\\n)*" +
-        "\\bInputIteratorTransformer\\b(?:.|\\n)*" +
-        "\\bOffloadToVelox(?:.|\\n)*" +
-        "\\bBatchScan\\b.*\\bNativeScan\\b(?:.|\\n)*"))
-      checkAnswer(dfRead, Seq(("2021-01-01",1,"rice"),("2021-01-01",2,"bread")).toDF("date", "id", "name"))
+      assert(
+        plan.matches(
+          "(?:.|\\n)*VeloxColumnarToRow(?:.|\\n)*" +
+            "\\bProjectExecTransformer\\b(?:.|\\n)*" +
+            "\\bInputIteratorTransformer\\b(?:.|\\n)*" +
+            "\\bOffloadToVelox(?:.|\\n)*" +
+            "\\bBatchScan\\b.*\\bNativeScan\\b(?:.|\\n)*"
+        )
+      )
+      checkAnswer(
+        dfRead,
+        Seq(("2021-01-01", 1, "rice"), ("2021-01-01", 2, "bread"))
+          .toDF("date", "id", "name")
+      )
     })
   }
 
   test("lakesoul write scan - pk") {
     withTempDir(dir => {
       val tablePath = dir.getCanonicalPath
-      val df = Seq(("2021-01-01",1,"rice"),("2021-01-01",2,"bread")).toDF("date","id","name")
+      val df = Seq(("2021-01-01", 1, "rice"), ("2021-01-01", 2, "bread"))
+        .toDF("date", "id", "name")
       df.write
         .mode("overwrite")
         .format("lakesoul")
-        .option("hashPartitions","id")
-        .option("hashBucketNum","2")
-        .option("rangePartitions","date")
+        .option("hashPartitions", "id")
+        .option("hashBucketNum", "2")
+        .option("rangePartitions", "date")
         .save(tablePath)
-      val dfRead = spark.read.format("lakesoul").load(tablePath).select("date","name","id")
+      val dfRead = spark.read
+        .format("lakesoul")
+        .load(tablePath)
+        .select("date", "name", "id")
       val plan = dfRead.queryExecution.explainString(ExtendedMode)
       println(plan)
-      assert(plan.matches("(?:.|\\n)*VeloxColumnarToRow(?:.|\\n)*" +
-        "\\bwithPartitionAndOrdering\\b(?:.|\\n)*" +
-        "\\bProjectExecTransformer\\b(?:.|\\n)*" +
-        "\\bInputIteratorTransformer\\b(?:.|\\n)*" +
-        "\\bOffloadToVelox(?:.|\\n)*" +
-        "\\bBatchScan\\b.*BucketScan\\b(?:.|\\n)*"))
-      checkAnswer(dfRead, Seq(("2021-01-01","rice",1),("2021-01-01","bread",2)).toDF("date", "name", "id"))
+      assert(
+        plan.matches(
+          "(?:.|\\n)*VeloxColumnarToRow(?:.|\\n)*" +
+            "\\bwithPartitionAndOrdering\\b(?:.|\\n)*" +
+            "\\bProjectExecTransformer\\b(?:.|\\n)*" +
+            "\\bInputIteratorTransformer\\b(?:.|\\n)*" +
+            "\\bOffloadToVelox(?:.|\\n)*" +
+            "\\bBatchScan\\b.*BucketScan\\b(?:.|\\n)*"
+        )
+      )
+      checkAnswer(
+        dfRead,
+        Seq(("2021-01-01", "rice", 1), ("2021-01-01", "bread", 2))
+          .toDF("date", "name", "id")
+      )
     })
   }
 
   test("lakesoul write scan - table") {
     withTable("temp")({
-      val df = Seq(("2021-01-01",1,"rice"),("2021-01-01",2,"bread")).toDF("date","id","name")
+      val df = Seq(("2021-01-01", 1, "rice"), ("2021-01-01", 2, "bread"))
+        .toDF("date", "id", "name")
       df.write
         .mode("overwrite")
         .format("lakesoul")
-        .option("hashPartitions","id")
-        .option("hashBucketNum","2")
-        .option("rangePartitions","date")
+        .option("hashPartitions", "id")
+        .option("hashBucketNum", "2")
+        .option("rangePartitions", "date")
         .saveAsTable("temp")
       val dfRead = spark.sql(s"select date, id, name from temp")
       val plan = dfRead.queryExecution.explainString(ExtendedMode)
-      assert(plan.matches("(?:.|\\n)*VeloxColumnarToRow(?:.|\\n)*" +
-        "\\bwithPartitionAndOrdering\\b(?:.|\\n)*" +
-        "\\bProjectExecTransformer\\b(?:.|\\n)*" +
-        "\\bInputIteratorTransformer\\b(?:.|\\n)*" +
-        "\\bOffloadToVelox(?:.|\\n)*" +
-        "\\bBatchScan\\b.*BucketScan\\b(?:.|\\n)*"))
-      checkAnswer(dfRead, Seq(("2021-01-01",1,"rice"),("2021-01-01",2,"bread")).toDF("date", "id", "name"))
+      assert(
+        plan.matches(
+          "(?:.|\\n)*VeloxColumnarToRow(?:.|\\n)*" +
+            "\\bwithPartitionAndOrdering\\b(?:.|\\n)*" +
+            "\\bProjectExecTransformer\\b(?:.|\\n)*" +
+            "\\bInputIteratorTransformer\\b(?:.|\\n)*" +
+            "\\bOffloadToVelox(?:.|\\n)*" +
+            "\\bBatchScan\\b.*BucketScan\\b(?:.|\\n)*"
+        )
+      )
+      checkAnswer(
+        dfRead,
+        Seq(("2021-01-01", 1, "rice"), ("2021-01-01", 2, "bread"))
+          .toDF("date", "id", "name")
+      )
     })
   }
 
   test("lakesoul write scan - table cdc") {
     withTable("temp")({
       val df = Seq(
-        ("2021-01-01",1,"rice","insert"),
-        ("2021-01-01",2,"bread","insert"),
-        ("2021-01-01",1,"rice","delete"),
-        ("2021-01-01",2,"noodle","update"),
-      ).toDF("date","id","name","rowKinds")
+        ("2021-01-01", 1, "rice", "insert"),
+        ("2021-01-01", 2, "bread", "insert"),
+        ("2021-01-01", 1, "rice", "delete"),
+        ("2021-01-01", 2, "noodle", "update")
+      ).toDF("date", "id", "name", "rowKinds")
       df.write
         .mode("overwrite")
         .format("lakesoul")
-        .option("hashPartitions","id")
-        .option("hashBucketNum","2")
-        .option("lakesoul_cdc_change_column","rowKinds")
-        .option("rangePartitions","date")
+        .option("hashPartitions", "id")
+        .option("hashBucketNum", "2")
+        .option("lakesoul_cdc_change_column", "rowKinds")
+        .option("rangePartitions", "date")
         .saveAsTable("temp")
       val dfRead = spark.sql(s"select date, id, name from temp")
       val plan = dfRead.queryExecution.explainString(ExtendedMode)
       println(plan)
-      assert(plan.matches(
-        "(?:.|\\n)*VeloxColumnarToRow(?:.|\\n)*" +
-        "\\bwithPartitionAndOrdering\\b(?:.|\\n)*" +
-        "\\bProjectExecTransformer\\b(?:.|\\n)*" +
-        "\\bInputIteratorTransformer\\b(?:.|\\n)*" +
-        "\\bOffloadToVelox(?:.|\\n)*" +
-        "\\bBatchScan\\b.*BucketScan\\b.*PushedFilters: \\[IsNotNull\\(rowKinds\\), Not\\(EqualTo\\(rowKinds,delete\\)\\)\\](?:.|\\n)*"
-      ))
-      checkAnswer(dfRead, Seq(("2021-01-01",2,"noodle")).toDF("date", "id", "name"))
+      assert(
+        plan.matches(
+          "(?:.|\\n)*VeloxColumnarToRow(?:.|\\n)*" +
+            "\\bwithPartitionAndOrdering\\b(?:.|\\n)*" +
+            "\\bProjectExecTransformer\\b(?:.|\\n)*" +
+            "\\bInputIteratorTransformer\\b(?:.|\\n)*" +
+            "\\bOffloadToVelox(?:.|\\n)*" +
+            "\\bBatchScan\\b.*BucketScan\\b.*PushedFilters: \\[IsNotNull\\(rowKinds\\), Not\\(EqualTo\\(rowKinds,delete\\)\\)\\](?:.|\\n)*"
+        )
+      )
+      checkAnswer(
+        dfRead,
+        Seq(("2021-01-01", 2, "noodle")).toDF("date", "id", "name")
+      )
     })
   }
 

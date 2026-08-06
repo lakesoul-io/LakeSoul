@@ -7,9 +7,11 @@ import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-case class withPartitionAndOrdering(partition: Partitioning,
-                                    ordering: Seq[SortOrder],
-                                    child: SparkPlan) extends UnaryExecNode {
+case class withPartitionAndOrdering(
+    partition: Partitioning,
+    ordering: Seq[SortOrder],
+    child: SparkPlan
+) extends UnaryExecNode {
   override def output: Seq[Attribute] = child.output
 
   override def doExecute(): RDD[InternalRow] = child.execute()
@@ -18,7 +20,9 @@ case class withPartitionAndOrdering(partition: Partitioning,
 
   override def outputOrdering: Seq[SortOrder] = ordering
 
-  override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan = {
+  override protected def withNewChildInternal(
+      newChild: SparkPlan
+  ): SparkPlan = {
     copy(child = newChild)
   }
 

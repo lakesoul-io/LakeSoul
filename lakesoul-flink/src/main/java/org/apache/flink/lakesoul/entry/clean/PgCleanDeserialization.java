@@ -4,7 +4,9 @@
 package org.apache.flink.lakesoul.entry.clean;
 
 import com.alibaba.fastjson.JSONObject;
+
 import io.debezium.data.Envelope;
+
 import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.cdc.connectors.shaded.org.apache.kafka.connect.data.Field;
@@ -20,7 +22,8 @@ import java.util.ArrayList;
 public class PgCleanDeserialization implements DebeziumDeserializationSchema<String> {
 
     @Override
-    public void deserialize(SourceRecord sourceRecord, Collector<String> collector) throws Exception {
+    public void deserialize(SourceRecord sourceRecord, Collector<String> collector)
+            throws Exception {
         String topic = sourceRecord.topic();
         String[] fields = topic.split("\\.");
         if (fields.length < 3) return;
@@ -37,12 +40,13 @@ public class PgCleanDeserialization implements DebeziumDeserializationSchema<Str
         result.put("tableName", tableName);
         if (tableName.equals("table_info")) {
             boolean hasPartitionTtlProperty = false;
-            if (beforeJson.containsKey("properties") && operation.toString().equalsIgnoreCase("delete")){
+            if (beforeJson.containsKey("properties")
+                    && operation.toString().equalsIgnoreCase("delete")) {
                 String tableId = beforeJson.getString("table_id");
                 JSONObject deleteJson = new JSONObject();
-                deleteJson.put("tableId",tableId);
-                deleteJson.put("operation","delete");
-                result.put("after",deleteJson);
+                deleteJson.put("tableId", tableId);
+                deleteJson.put("operation", "delete");
+                result.put("after", deleteJson);
             }
             if (afterJson.containsKey("properties")) {
                 String afterProperties = afterJson.get("properties").toString();
@@ -50,9 +54,11 @@ public class PgCleanDeserialization implements DebeziumDeserializationSchema<Str
                 String tableId = afterJson.getString("table_id");
                 afterPropertiesParse.put("tableId", tableId);
                 result.put("after", afterPropertiesParse);
-                hasPartitionTtlProperty = ((JSONObject) JSONObject.parse(afterProperties)).containsKey("partition.ttl");
+                hasPartitionTtlProperty =
+                        ((JSONObject) JSONObject.parse(afterProperties))
+                                .containsKey("partition.ttl");
             }
-            if (hasPartitionTtlProperty || operation.toString().equalsIgnoreCase("delete")){
+            if (hasPartitionTtlProperty || operation.toString().equalsIgnoreCase("delete")) {
                 collector.collect(result.toJSONString());
             }
         } else {
@@ -62,7 +68,6 @@ public class PgCleanDeserialization implements DebeziumDeserializationSchema<Str
                 collector.collect(result.toJSONString());
             }
         }
-
     }
 
     private JSONObject extractStructJson(Struct struct) {

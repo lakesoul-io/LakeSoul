@@ -12,7 +12,11 @@ public class Desalting extends ProcessFunction<TableCounts, TableCounts> {
     private static final Logger log = LoggerFactory.getLogger(Desalting.class);
 
     @Override
-    public void processElement(TableCounts value, ProcessFunction<TableCounts, TableCounts>.Context ctx, Collector<TableCounts> out) throws Exception {
+    public void processElement(
+            TableCounts value,
+            ProcessFunction<TableCounts, TableCounts>.Context ctx,
+            Collector<TableCounts> out)
+            throws Exception {
         String tableId = value.getTableId();
         value.setTableId(tableId.split("\\$")[0]);
         log.info("=================================");

@@ -12,7 +12,10 @@ import org.apache.spark.sql.execution.streaming.MemoryStream
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
-import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestUtils}
+import org.apache.spark.sql.lakesoul.test.{
+  LakeSoulSQLCommandTest,
+  LakeSoulTestUtils
+}
 import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.lakesoul.{LakeSoulOptions, SnapshotManagement}
 import org.apache.spark.sql.streaming.StreamingQueryException
@@ -36,7 +39,9 @@ case class SaveAsTable(tableName: String) extends SaveOperation {
 }
 
 sealed trait SchemaEnforcementSuiteBase
-  extends QueryTest with SharedSparkSession with LakeSoulTestUtils {
+    extends QueryTest
+    with SharedSparkSession
+    with LakeSoulTestUtils {
   protected def enableAutoMigration(f: => Unit): Unit = {
     withSQLConf(LakeSoulSQLConf.SCHEMA_AUTO_MIGRATE.key -> "true") {
       f
@@ -50,27 +55,40 @@ sealed trait SchemaEnforcementSuiteBase
   }
 }
 
-sealed trait BatchWriterSoulTest extends SchemaEnforcementSuiteBase with SharedSparkSession {
+sealed trait BatchWriterSoulTest
+    extends SchemaEnforcementSuiteBase
+    with SharedSparkSession {
 
   def saveOperation: SaveOperation
 
   implicit class RichDataFrameWriter(dfw: DataFrameWriter[_]) {
     def append(path: File): Unit = {
-      saveOperation(dfw.format("lakesoul").mode("append").option("path", path.getAbsolutePath))
+      saveOperation(
+        dfw
+          .format("lakesoul")
+          .mode("append")
+          .option("path", path.getAbsolutePath)
+      )
     }
 
     def overwrite(path: File): Unit = {
-      saveOperation(dfw.format("lakesoul").mode("overwrite").option("path", path.getAbsolutePath))
+      saveOperation(
+        dfw
+          .format("lakesoul")
+          .mode("overwrite")
+          .option("path", path.getAbsolutePath)
+      )
     }
   }
 
   def equivalenceTest(testName: String)(f: => Unit): Unit = {
     test(s"batch: $testName") {
       saveOperation match {
-        case _: SaveWithPath => f
-        case SaveAsTable(tbl) => withTable(tbl) {
-          f
-        }
+        case _: SaveWithPath  => f
+        case SaveAsTable(tbl) =>
+          withTable(tbl) {
+            f
+          }
       }
     }
   }
@@ -97,18 +115,30 @@ trait AppendSaveModeTests extends BatchWriterSoulTest {
       withTempDir { dir =>
         spark.range(10).write.append(dir)
         spark.range(10).withColumn("part", 'id + 1).write.append(dir)
-        assert(spark.read.format("lakesoul").load(dir.getAbsolutePath).schema.length == 2)
+        assert(
+          spark.read
+            .format("lakesoul")
+            .load(dir.getAbsolutePath)
+            .schema
+            .length == 2
+        )
       }
     }
   }
 
-  equivalenceTest("disallow schema changes when autoMigrate enabled but writer config disabled") {
+  equivalenceTest(
+    "disallow schema changes when autoMigrate enabled but writer config disabled"
+  ) {
     enableAutoMigration {
       withTempDir { dir =>
         spark.range(10).write.append(dir)
         val e = intercept[AnalysisException] {
-          spark.range(10).withColumn("part", 'id + 1).write
-            .option(LakeSoulOptions.MERGE_SCHEMA_OPTION, "false").append(dir)
+          spark
+            .range(10)
+            .withColumn("part", 'id + 1)
+            .write
+            .option(LakeSoulOptions.MERGE_SCHEMA_OPTION, "false")
+            .append(dir)
         }
         assert(e.getMessage.contains(LakeSoulOptions.MERGE_SCHEMA_OPTION))
       }
@@ -119,9 +149,19 @@ trait AppendSaveModeTests extends BatchWriterSoulTest {
     disableAutoMigration {
       withTempDir { dir =>
         spark.range(10).write.append(dir)
-        spark.range(10).withColumn("part", 'id + 1).write
-          .option(LakeSoulOptions.MERGE_SCHEMA_OPTION, "true").append(dir)
-        assert(spark.read.format("lakesoul").load(dir.getAbsolutePath).schema.length == 2)
+        spark
+          .range(10)
+          .withColumn("part", 'id + 1)
+          .write
+          .option(LakeSoulOptions.MERGE_SCHEMA_OPTION, "true")
+          .append(dir)
+        assert(
+          spark.read
+            .format("lakesoul")
+            .load(dir.getAbsolutePath)
+            .schema
+            .length == 2
+        )
       }
     }
   }
@@ -133,54 +173,94 @@ trait AppendSaveModeTests extends BatchWriterSoulTest {
       val row3 = """{"key":"ghi","id":null,"extra":3}"""
       withTempDir { dir =>
         val schema1 = new StructType()
-          .add("key", StringType).add("id", NullType).add("extra", IntegerType)
+          .add("key", StringType)
+          .add("id", NullType)
+          .add("extra", IntegerType)
         val schema2 = new StructType()
-          .add("key", StringType).add("id", IntegerType).add("extra", NullType)
+          .add("key", StringType)
+          .add("id", IntegerType)
+          .add("extra", NullType)
         spark.read.schema(schema1).json(Seq(row1).toDS()).write.append(dir)
         spark.read.schema(schema2).json(Seq(row2).toDS()).write.append(dir)
         spark.read.schema(schema1).json(Seq(row3).toDS()).write.append(dir)
 
         checkAnswer(
           spark.read.format("lakesoul").load(dir.getAbsolutePath),
-          Row("abc", null, 1) :: Row("def", 2, null) :: Row("ghi", null, 3) :: Nil
+          Row("abc", null, 1) :: Row("def", 2, null) :: Row(
+            "ghi",
+            null,
+            3
+          ) :: Nil
         )
       }
     }
   }
 
-  equivalenceTest("JSON ETL workflow, schema merging NullTypes - nested struct") {
+  equivalenceTest(
+    "JSON ETL workflow, schema merging NullTypes - nested struct"
+  ) {
     enableAutoMigration {
       val row1 = """{"key":"abc","top":{"id":null,"extra":1}}"""
       val row2 = """{"key":"def","top":{"id":2,"extra":null}}"""
       val row3 = """{"key":"ghi","top":{"id":null,"extra":3}}"""
       withTempDir { dir =>
-        val schema1 = new StructType().add("key", StringType)
-          .add("top", new StructType().add("id", NullType).add("extra", IntegerType))
-        val schema2 = new StructType().add("key", StringType)
-          .add("top", new StructType().add("id", IntegerType).add("extra", NullType))
-        val mergedSchema = new StructType().add("key", StringType)
-          .add("top", new StructType().add("id", IntegerType).add("extra", IntegerType))
+        val schema1 = new StructType()
+          .add("key", StringType)
+          .add(
+            "top",
+            new StructType().add("id", NullType).add("extra", IntegerType)
+          )
+        val schema2 = new StructType()
+          .add("key", StringType)
+          .add(
+            "top",
+            new StructType().add("id", IntegerType).add("extra", NullType)
+          )
+        val mergedSchema = new StructType()
+          .add("key", StringType)
+          .add(
+            "top",
+            new StructType().add("id", IntegerType).add("extra", IntegerType)
+          )
         spark.read.schema(schema1).json(Seq(row1).toDS()).write.append(dir)
         spark.read.schema(schema2).json(Seq(row2).toDS()).write.append(dir)
-        assert(spark.read.format("lakesoul").load(dir.getAbsolutePath).schema === mergedSchema)
+        assert(
+          spark.read
+            .format("lakesoul")
+            .load(dir.getAbsolutePath)
+            .schema === mergedSchema
+        )
         spark.read.schema(schema1).json(Seq(row3).toDS()).write.append(dir)
-        assert(spark.read.format("lakesoul").load(dir.getAbsolutePath).schema === mergedSchema)
+        assert(
+          spark.read
+            .format("lakesoul")
+            .load(dir.getAbsolutePath)
+            .schema === mergedSchema
+        )
 
         checkAnswer(
           spark.read.format("lakesoul").load(dir.getAbsolutePath),
-          Row("abc", Row(null, 1)) :: Row("def", Row(2, null)) :: Row("ghi", Row(null, 3)) :: Nil
+          Row("abc", Row(null, 1)) :: Row("def", Row(2, null)) :: Row(
+            "ghi",
+            Row(null, 3)
+          ) :: Nil
         )
       }
     }
   }
 
-  equivalenceTest("JSON ETL workflow, schema merging NullTypes - throw error on complex types") {
+  equivalenceTest(
+    "JSON ETL workflow, schema merging NullTypes - throw error on complex types"
+  ) {
     enableAutoMigration {
       val row1 = """{"key":"abc","top":[]}"""
       val row2 = """{"key":"abc","top":[{"id":null}]}"""
       withTempDir { dir =>
-        val schema1 = new StructType().add("key", StringType).add("top", ArrayType(NullType))
-        val schema2 = new StructType().add("key", StringType)
+        val schema1 = new StructType()
+          .add("key", StringType)
+          .add("top", ArrayType(NullType))
+        val schema2 = new StructType()
+          .add("key", StringType)
           .add("top", ArrayType(new StructType().add("id", NullType)))
         val e1 = intercept[AnalysisException] {
           spark.read.schema(schema1).json(Seq(row1).toDS()).write.append(dir)
@@ -198,10 +278,15 @@ trait AppendSaveModeTests extends BatchWriterSoulTest {
     enableAutoMigration {
       val row1 = """{"key":"abc","id":null}"""
       withTempDir { dir =>
-        val schema1 = new StructType().add("key", StringType).add("id", NullType)
+        val schema1 =
+          new StructType().add("key", StringType).add("id", NullType)
         val e1 = intercept[AnalysisException] {
-          spark.read.schema(schema1).json(Seq(row1).toDS()).write
-            .option("rangePartitions", "key").append(dir)
+          spark.read
+            .schema(schema1)
+            .json(Seq(row1).toDS())
+            .write
+            .option("rangePartitions", "key")
+            .append(dir)
         }
         assert(e1.getMessage.contains("NullType have been dropped"))
 
@@ -213,28 +298,41 @@ trait AppendSaveModeTests extends BatchWriterSoulTest {
     enableAutoMigration {
       val row1 = """{"key":"abc","id":null}"""
       withTempDir { dir =>
-        val schema1 = new StructType().add("key", StringType).add("id", NullType)
+        val schema1 =
+          new StructType().add("key", StringType).add("id", NullType)
         intercept[AnalysisException] {
-          spark.read.schema(schema1).json(Seq(row1).toDS()).write
+          spark.read
+            .schema(schema1)
+            .json(Seq(row1).toDS())
+            .write
             .option("rangePartitions", "id")
             .append(dir)
         }
         intercept[AnalysisException] {
           // check case sensitivity with regards to column dropping
-          spark.read.schema(schema1).json(Seq(row1).toDS()).write
+          spark.read
+            .schema(schema1)
+            .json(Seq(row1).toDS())
+            .write
             .option("rangePartitions", "iD")
             .append(dir)
         }
 
         intercept[AnalysisException] {
-          spark.read.schema(schema1).json(Seq(row1).toDS()).write
+          spark.read
+            .schema(schema1)
+            .json(Seq(row1).toDS())
+            .write
             .option("hashPartitions", "id")
             .option("hashBucketNum", "2")
             .append(dir)
         }
         intercept[AnalysisException] {
           // check case sensitivity with regards to column dropping
-          spark.read.schema(schema1).json(Seq(row1).toDS()).write
+          spark.read
+            .schema(schema1)
+            .json(Seq(row1).toDS())
+            .write
             .option("hashPartitions", "iD")
             .option("hashBucketNum", "2")
             .append(dir)
@@ -251,20 +349,32 @@ trait AppendSaveModeTests extends BatchWriterSoulTest {
         }
 
         intercept[AnalysisException] {
-          spark.range(10).withColumn("ID", 'id + 1).write
-            .option(LakeSoulOptions.MERGE_SCHEMA_OPTION, "true").append(dir)
+          spark
+            .range(10)
+            .withColumn("ID", 'id + 1)
+            .write
+            .option(LakeSoulOptions.MERGE_SCHEMA_OPTION, "true")
+            .append(dir)
         }
 
         intercept[AnalysisException] {
-          spark.range(10).withColumn("a", 'id + 1).write
+          spark
+            .range(10)
+            .withColumn("a", 'id + 1)
+            .write
             .option("rangePartitions", "a,A")
-            .option(LakeSoulOptions.MERGE_SCHEMA_OPTION, "true").append(dir)
+            .option(LakeSoulOptions.MERGE_SCHEMA_OPTION, "true")
+            .append(dir)
         }
         intercept[AnalysisException] {
-          spark.range(10).withColumn("a", 'id + 1).write
+          spark
+            .range(10)
+            .withColumn("a", 'id + 1)
+            .write
             .option("hashPartitions", "a,A")
             .option("hashBucketNum", "2")
-            .option(LakeSoulOptions.MERGE_SCHEMA_OPTION, "true").append(dir)
+            .option(LakeSoulOptions.MERGE_SCHEMA_OPTION, "true")
+            .append(dir)
         }
       }
     }
@@ -284,8 +394,10 @@ trait AppendSaveModeTests extends BatchWriterSoulTest {
   }
 }
 
-trait AppendOutputModeTests extends SchemaEnforcementSuiteBase with SharedSparkSession
-  with LakeSoulSQLCommandTest {
+trait AppendOutputModeTests
+    extends SchemaEnforcementSuiteBase
+    with SharedSparkSession
+    with LakeSoulSQLCommandTest {
 
   import testImplicits._
 
@@ -294,9 +406,14 @@ trait AppendOutputModeTests extends SchemaEnforcementSuiteBase with SharedSparkS
       spark.range(10).write.format("lakesoul").save(dir.getAbsolutePath)
 
       val memStream = MemoryStream[Long]
-      val stream = memStream.toDS().toDF("value1234") // different column name
+      val stream = memStream
+        .toDS()
+        .toDF("value1234") // different column name
         .writeStream
-        .option("checkpointLocation", new File(dir, "_checkpoint").getAbsolutePath)
+        .option(
+          "checkpointLocation",
+          new File(dir, "_checkpoint").getAbsolutePath
+        )
         .format("lakesoul")
         .start(dir.getAbsolutePath)
       try {
@@ -306,7 +423,9 @@ trait AppendOutputModeTests extends SchemaEnforcementSuiteBase with SharedSparkS
             stream.processAllAvailable()
           }
           assert(e.cause.isInstanceOf[AnalysisException])
-          assert(e.cause.getMessage.contains(LakeSoulOptions.MERGE_SCHEMA_OPTION))
+          assert(
+            e.cause.getMessage.contains(LakeSoulOptions.MERGE_SCHEMA_OPTION)
+          )
         }
       } finally {
         stream.stop()
@@ -314,14 +433,21 @@ trait AppendOutputModeTests extends SchemaEnforcementSuiteBase with SharedSparkS
     }
   }
 
-  test("reject schema changes when autoMigrate enabled but writer config disabled") {
+  test(
+    "reject schema changes when autoMigrate enabled but writer config disabled"
+  ) {
     withTempDir { dir =>
       spark.range(10).write.format("lakesoul").save(dir.getAbsolutePath)
 
       val memStream = MemoryStream[Long]
-      val stream = memStream.toDS().toDF("value1234") // different column name
+      val stream = memStream
+        .toDS()
+        .toDF("value1234") // different column name
         .writeStream
-        .option("checkpointLocation", new File(dir, "_checkpoint").getAbsolutePath)
+        .option(
+          "checkpointLocation",
+          new File(dir, "_checkpoint").getAbsolutePath
+        )
         .format("lakesoul")
         .option(LakeSoulOptions.MERGE_SCHEMA_OPTION, "false")
         .start(dir.getAbsolutePath)
@@ -332,7 +458,9 @@ trait AppendOutputModeTests extends SchemaEnforcementSuiteBase with SharedSparkS
             stream.processAllAvailable()
           }
           assert(e.cause.isInstanceOf[AnalysisException])
-          assert(e.cause.getMessage.contains(LakeSoulOptions.MERGE_SCHEMA_OPTION))
+          assert(
+            e.cause.getMessage.contains(LakeSoulOptions.MERGE_SCHEMA_OPTION)
+          )
         }
       } finally {
         stream.stop()
@@ -346,16 +474,27 @@ trait AppendOutputModeTests extends SchemaEnforcementSuiteBase with SharedSparkS
 
       enableAutoMigration {
         val memStream = MemoryStream[Long]
-        val stream = memStream.toDS().toDF("value1234") // different column name
+        val stream = memStream
+          .toDS()
+          .toDF("value1234") // different column name
           .writeStream
-          .option("checkpointLocation", new File(dir, "_checkpoint").getAbsolutePath)
+          .option(
+            "checkpointLocation",
+            new File(dir, "_checkpoint").getAbsolutePath
+          )
           .format("lakesoul")
           .start(dir.getAbsolutePath)
         try {
           memStream.addData(1L)
           stream.processAllAvailable()
 
-          assert(spark.read.format("lakesoul").load(dir.getAbsolutePath).schema.length == 2)
+          assert(
+            spark.read
+              .format("lakesoul")
+              .load(dir.getAbsolutePath)
+              .schema
+              .length == 2
+          )
         } finally {
           stream.stop()
         }
@@ -368,9 +507,14 @@ trait AppendOutputModeTests extends SchemaEnforcementSuiteBase with SharedSparkS
       spark.range(10).write.format("lakesoul").save(dir.getAbsolutePath)
 
       val memStream = MemoryStream[Long]
-      val stream = memStream.toDS().toDF("value1234") // different column name
+      val stream = memStream
+        .toDS()
+        .toDF("value1234") // different column name
         .writeStream
-        .option("checkpointLocation", new File(dir, "_checkpoint").getAbsolutePath)
+        .option(
+          "checkpointLocation",
+          new File(dir, "_checkpoint").getAbsolutePath
+        )
         .option(LakeSoulOptions.MERGE_SCHEMA_OPTION, "true")
         .format("lakesoul")
         .start(dir.getAbsolutePath)
@@ -379,7 +523,13 @@ trait AppendOutputModeTests extends SchemaEnforcementSuiteBase with SharedSparkS
           memStream.addData(1L)
           stream.processAllAvailable()
 
-          assert(spark.read.format("lakesoul").load(dir.getAbsolutePath).schema.length == 2)
+          assert(
+            spark.read
+              .format("lakesoul")
+              .load(dir.getAbsolutePath)
+              .schema
+              .length == 2
+          )
         }
       } finally {
         stream.stop()
@@ -392,13 +542,19 @@ trait AppendOutputModeTests extends SchemaEnforcementSuiteBase with SharedSparkS
       val row1 = """{"key":"abc","id":null}"""
       withTempDir(checkpointDir => {
         withTempDir { dir =>
-          val schema = new StructType().add("key", StringType).add("id", NullType)
+          val schema =
+            new StructType().add("key", StringType).add("id", NullType)
 
           val memStream = MemoryStream[String]
-          val stream = memStream.toDS().select(from_json('value, schema).as("value"))
+          val stream = memStream
+            .toDS()
+            .select(from_json('value, schema).as("value"))
             .select($"value.*")
             .writeStream
-            .option("checkpointLocation", new File(checkpointDir, "_checkpoint").getAbsolutePath)
+            .option(
+              "checkpointLocation",
+              new File(checkpointDir, "_checkpoint").getAbsolutePath
+            )
             .format("lakesoul")
             .start(dir.getAbsolutePath)
 
@@ -423,14 +579,20 @@ trait AppendOutputModeTests extends SchemaEnforcementSuiteBase with SharedSparkS
       val row1 = """{"key":"abc","id":{"a":null}}"""
       withTempDir(checkpointDir => {
         withTempDir { dir =>
-          val schema = new StructType().add("key", StringType)
+          val schema = new StructType()
+            .add("key", StringType)
             .add("id", new StructType().add("a", NullType))
 
           val memStream = MemoryStream[String]
-          val stream = memStream.toDS().select(from_json('value, schema).as("value"))
+          val stream = memStream
+            .toDS()
+            .select(from_json('value, schema).as("value"))
             .select($"value.*")
             .writeStream
-            .option("checkpointLocation", new File(checkpointDir, "_checkpoint").getAbsolutePath)
+            .option(
+              "checkpointLocation",
+              new File(checkpointDir, "_checkpoint").getAbsolutePath
+            )
             .format("lakesoul")
             .start(dir.getAbsolutePath)
 
@@ -471,7 +633,11 @@ trait OverwriteSaveModeTests extends BatchWriterSoulTest {
     disableAutoMigration {
       withTempDir { dir =>
         spark.range(5).toDF("id").write.overwrite(dir)
-        spark.range(5).toDF("value").write.option(LakeSoulOptions.OVERWRITE_SCHEMA_OPTION, "true")
+        spark
+          .range(5)
+          .toDF("value")
+          .write
+          .option(LakeSoulOptions.OVERWRITE_SCHEMA_OPTION, "true")
           .overwrite(dir)
 
         val df = spark.read.format("lakesoul").load(dir.getAbsolutePath)
@@ -492,12 +658,18 @@ trait OverwriteSaveModeTests extends BatchWriterSoulTest {
     }
   }
 
-  equivalenceTest("reject migration when autoMerge sqlConf is enabled and writer config disabled") {
+  equivalenceTest(
+    "reject migration when autoMerge sqlConf is enabled and writer config disabled"
+  ) {
     enableAutoMigration {
       withTempDir { dir =>
         spark.range(5).toDF("id").write.overwrite(dir)
         intercept[AnalysisException] {
-          spark.range(5).toDF("value").write.option(LakeSoulOptions.MERGE_SCHEMA_OPTION, "false")
+          spark
+            .range(5)
+            .toDF("value")
+            .write
+            .option(LakeSoulOptions.MERGE_SCHEMA_OPTION, "false")
             .overwrite(dir)
         }
 
@@ -510,14 +682,23 @@ trait OverwriteSaveModeTests extends BatchWriterSoulTest {
   equivalenceTest("schema merging with replaceWhere - sqlConf") {
     enableAutoMigration {
       withTempDir { dir =>
-        spark.range(5).toDF("id").withColumn("part", 'id % 2).write
+        spark
+          .range(5)
+          .toDF("id")
+          .withColumn("part", 'id % 2)
+          .write
           .option("rangePartitions", "part")
           .overwrite(dir)
-        Seq((1L, 0L), (2L, 0L)).toDF("value", "part").write
+        Seq((1L, 0L), (2L, 0L))
+          .toDF("value", "part")
+          .write
           .option(LakeSoulOptions.REPLACE_WHERE_OPTION, "part = 0")
           .overwrite(dir)
 
-        val df = spark.read.format("lakesoul").load(dir.getAbsolutePath).select("id", "part", "value")
+        val df = spark.read
+          .format("lakesoul")
+          .load(dir.getAbsolutePath)
+          .select("id", "part", "value")
         assert(df.schema.fieldNames === Array("id", "part", "value"))
       }
     }
@@ -526,45 +707,73 @@ trait OverwriteSaveModeTests extends BatchWriterSoulTest {
   equivalenceTest("schema merging with replaceWhere - option") {
     disableAutoMigration {
       withTempDir { dir =>
-        spark.range(5).toDF("id").withColumn("part", 'id % 2).write
+        spark
+          .range(5)
+          .toDF("id")
+          .withColumn("part", 'id % 2)
+          .write
           .option("rangePartitions", "part")
           .overwrite(dir)
-        Seq((1L, 0L), (2L, 0L)).toDF("value", "part").write
+        Seq((1L, 0L), (2L, 0L))
+          .toDF("value", "part")
+          .write
           .option(LakeSoulOptions.REPLACE_WHERE_OPTION, "part = 0")
           .option(LakeSoulOptions.MERGE_SCHEMA_OPTION, "true")
           .overwrite(dir)
 
-        val df = spark.read.format("lakesoul").load(dir.getAbsolutePath).select("id", "part", "value")
+        val df = spark.read
+          .format("lakesoul")
+          .load(dir.getAbsolutePath)
+          .select("id", "part", "value")
         assert(df.schema.fieldNames === Array("id", "part", "value"))
       }
     }
   }
 
-  equivalenceTest("schema merging with replaceWhere - option case insensitive") {
+  equivalenceTest(
+    "schema merging with replaceWhere - option case insensitive"
+  ) {
     disableAutoMigration {
       withTempDir { dir =>
-        spark.range(5).toDF("id").withColumn("part", 'id % 2).write
+        spark
+          .range(5)
+          .toDF("id")
+          .withColumn("part", 'id % 2)
+          .write
           .option("rangePartitions", "part")
           .overwrite(dir)
-        Seq((1L, 0L), (2L, 0L)).toDF("value", "part").write
+        Seq((1L, 0L), (2L, 0L))
+          .toDF("value", "part")
+          .write
           .option("RePlAcEwHeRe", "part = 0")
           .option("mErGeScHeMa", "true")
           .overwrite(dir)
 
-        val df = spark.read.format("lakesoul").load(dir.getAbsolutePath).select("id", "part", "value")
+        val df = spark.read
+          .format("lakesoul")
+          .load(dir.getAbsolutePath)
+          .select("id", "part", "value")
         assert(df.schema.fieldNames === Array("id", "part", "value"))
       }
     }
   }
 
-  equivalenceTest("reject schema merging with replaceWhere - overwrite option") {
+  equivalenceTest(
+    "reject schema merging with replaceWhere - overwrite option"
+  ) {
     disableAutoMigration {
       withTempDir { dir =>
-        spark.range(5).toDF("id").withColumn("part", 'id % 2).write
+        spark
+          .range(5)
+          .toDF("id")
+          .withColumn("part", 'id % 2)
+          .write
           .option("rangePartitions", "part")
           .overwrite(dir)
         val e = intercept[AnalysisException] {
-          Seq((1L, 0L), (2L, 0L)).toDF("value", "part").write
+          Seq((1L, 0L), (2L, 0L))
+            .toDF("value", "part")
+            .write
             .option(LakeSoulOptions.REPLACE_WHERE_OPTION, "part = 0")
             .option(LakeSoulOptions.OVERWRITE_SCHEMA_OPTION, "true")
             .overwrite(dir)
@@ -577,11 +786,17 @@ trait OverwriteSaveModeTests extends BatchWriterSoulTest {
   equivalenceTest("reject schema merging with replaceWhere - no option") {
     disableAutoMigration {
       withTempDir { dir =>
-        spark.range(5).toDF("id").withColumn("part", 'id % 2).write
+        spark
+          .range(5)
+          .toDF("id")
+          .withColumn("part", 'id % 2)
+          .write
           .option("rangePartitions", "part")
           .overwrite(dir)
         val e = intercept[AnalysisException] {
-          Seq((1L, 0L), (2L, 0L)).toDF("value", "part").write
+          Seq((1L, 0L), (2L, 0L))
+            .toDF("value", "part")
+            .write
             .option("rangePartitions", "part")
             .option(LakeSoulOptions.REPLACE_WHERE_OPTION, "part = 0")
             .overwrite(dir)
@@ -591,14 +806,22 @@ trait OverwriteSaveModeTests extends BatchWriterSoulTest {
     }
   }
 
-  equivalenceTest("reject schema merging with replaceWhere - option set to false, config true") {
+  equivalenceTest(
+    "reject schema merging with replaceWhere - option set to false, config true"
+  ) {
     enableAutoMigration {
       withTempDir { dir =>
-        spark.range(5).toDF("id").withColumn("part", 'id % 2).write
+        spark
+          .range(5)
+          .toDF("id")
+          .withColumn("part", 'id % 2)
+          .write
           .option("rangePartitions", "part")
           .overwrite(dir)
         val e = intercept[AnalysisException] {
-          Seq((1L, 0L), (2L, 0L)).toDF("value", "part").write
+          Seq((1L, 0L), (2L, 0L))
+            .toDF("value", "part")
+            .write
             .option("rangePartitions", "part")
             .option(LakeSoulOptions.REPLACE_WHERE_OPTION, "part = 0")
             .option(LakeSoulOptions.MERGE_SCHEMA_OPTION, "false")
@@ -609,13 +832,22 @@ trait OverwriteSaveModeTests extends BatchWriterSoulTest {
     }
   }
 
-  equivalenceTest("reject change partition columns with overwrite - sqlConf or option") {
+  equivalenceTest(
+    "reject change partition columns with overwrite - sqlConf or option"
+  ) {
     enableAutoMigration {
       withTempDir { dir =>
-        spark.range(5).toDF("id").write
+        spark
+          .range(5)
+          .toDF("id")
+          .write
           .overwrite(dir)
         val e1 = intercept[AnalysisException] {
-          spark.range(5).toDF("id").withColumn("part", 'id % 2).write
+          spark
+            .range(5)
+            .toDF("id")
+            .withColumn("part", 'id % 2)
+            .write
             .option(LakeSoulOptions.OVERWRITE_SCHEMA_OPTION, "true")
             .option("rangePartitions", "part")
             .overwrite(dir)
@@ -623,7 +855,9 @@ trait OverwriteSaveModeTests extends BatchWriterSoulTest {
         assert(e1.getMessage.contains("partition columns"))
 
         val e2 = intercept[AnalysisException] {
-          spark.range(5).toDF("id")
+          spark
+            .range(5)
+            .toDF("id")
             .withColumn("part", 'id % 2)
             .write
             .option(LakeSoulOptions.OVERWRITE_SCHEMA_OPTION, "true")
@@ -633,9 +867,19 @@ trait OverwriteSaveModeTests extends BatchWriterSoulTest {
         }
         assert(e2.getMessage.contains("partition columns"))
 
-        val snapshotManagement = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(dir.getAbsolutePath)).toString)
-        assert(snapshotManagement.snapshot.getTableInfo.range_partition_columns === Nil)
-        assert(snapshotManagement.snapshot.getTableInfo.schema.fieldNames === Array("id"))
+        val snapshotManagement = SnapshotManagement(
+          SparkUtil
+            .makeQualifiedTablePath(new Path(dir.getAbsolutePath))
+            .toString
+        )
+        assert(
+          snapshotManagement.snapshot.getTableInfo.range_partition_columns === Nil
+        )
+        assert(
+          snapshotManagement.snapshot.getTableInfo.schema.fieldNames === Array(
+            "id"
+          )
+        )
       }
     }
   }
@@ -644,7 +888,9 @@ trait OverwriteSaveModeTests extends BatchWriterSoulTest {
     disableAutoMigration {
       withTempDir { dir =>
         val e = intercept[AnalysisException] {
-          spark.range(5).toDF("id")
+          spark
+            .range(5)
+            .toDF("id")
             .withColumn("hash", 'id % 3)
             .write
             .option("hashPartitions", "hash")
@@ -658,17 +904,32 @@ trait OverwriteSaveModeTests extends BatchWriterSoulTest {
   equivalenceTest("can drop data columns with overwriteSchema") {
     disableAutoMigration {
       withTempDir { dir =>
-        spark.range(5).toDF("id")
+        spark
+          .range(5)
+          .toDF("id")
           .withColumn("part", 'id % 2)
           .write
           .overwrite(dir)
-        spark.range(5).toDF("id").write
+        spark
+          .range(5)
+          .toDF("id")
+          .write
           .option(LakeSoulOptions.OVERWRITE_SCHEMA_OPTION, "true")
           .overwrite(dir)
 
-        val snapshotManagement = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(dir.getAbsolutePath)).toString)
-        assert(snapshotManagement.snapshot.getTableInfo.range_partition_columns === Nil)
-        assert(snapshotManagement.snapshot.getTableInfo.schema.fieldNames === Array("id"))
+        val snapshotManagement = SnapshotManagement(
+          SparkUtil
+            .makeQualifiedTablePath(new Path(dir.getAbsolutePath))
+            .toString
+        )
+        assert(
+          snapshotManagement.snapshot.getTableInfo.range_partition_columns === Nil
+        )
+        assert(
+          snapshotManagement.snapshot.getTableInfo.schema.fieldNames === Array(
+            "id"
+          )
+        )
       }
     }
   }
@@ -676,16 +937,37 @@ trait OverwriteSaveModeTests extends BatchWriterSoulTest {
   equivalenceTest("can change column data type with overwriteSchema") {
     disableAutoMigration {
       withTempDir { dir =>
-        val snapshotManagement = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(dir.getAbsolutePath)).toString)
-        spark.range(5).toDF("id").write
+        val snapshotManagement = SnapshotManagement(
+          SparkUtil
+            .makeQualifiedTablePath(new Path(dir.getAbsolutePath))
+            .toString
+        )
+        spark
+          .range(5)
+          .toDF("id")
+          .write
           .overwrite(dir)
-        assert(snapshotManagement.updateSnapshot()
-          .getTableInfo.schema.head === StructField("id", LongType))
-        spark.range(5).toDF("id").selectExpr("cast(id as string) as id").write
+        assert(
+          snapshotManagement
+            .updateSnapshot()
+            .getTableInfo
+            .schema
+            .head === StructField("id", LongType)
+        )
+        spark
+          .range(5)
+          .toDF("id")
+          .selectExpr("cast(id as string) as id")
+          .write
           .option(LakeSoulOptions.OVERWRITE_SCHEMA_OPTION, "true")
           .overwrite(dir)
-        assert(snapshotManagement.updateSnapshot()
-          .getTableInfo.schema.head === StructField("id", StringType))
+        assert(
+          snapshotManagement
+            .updateSnapshot()
+            .getTableInfo
+            .schema
+            .head === StructField("id", StringType)
+        )
       }
     }
   }
@@ -698,13 +980,19 @@ trait OverwriteSaveModeTests extends BatchWriterSoulTest {
         }
 
         intercept[AnalysisException] {
-          spark.range(10).withColumn("ID", 'id + 1).write
+          spark
+            .range(10)
+            .withColumn("ID", 'id + 1)
+            .write
             .option(LakeSoulOptions.OVERWRITE_SCHEMA_OPTION, "true")
             .overwrite(dir)
         }
 
         intercept[AnalysisException] {
-          spark.range(10).withColumn("a", 'id + 1).write
+          spark
+            .range(10)
+            .withColumn("a", 'id + 1)
+            .write
             .option("rangePartitions", "a,A")
             .option(LakeSoulOptions.OVERWRITE_SCHEMA_OPTION, "true")
             .overwrite(dir)
@@ -714,8 +1002,10 @@ trait OverwriteSaveModeTests extends BatchWriterSoulTest {
   }
 }
 
-trait CompleteOutputModeTests extends SchemaEnforcementSuiteBase with SharedSparkSession
-  with LakeSoulSQLCommandTest {
+trait CompleteOutputModeTests
+    extends SchemaEnforcementSuiteBase
+    with SharedSparkSession
+    with LakeSoulSQLCommandTest {
 
   import testImplicits._
 
@@ -724,13 +1014,18 @@ trait CompleteOutputModeTests extends SchemaEnforcementSuiteBase with SharedSpar
       withTempDir(checkpointDir => {
         withTempDir { dir =>
           val memStream = MemoryStream[Long]
-          val query = memStream.toDS().toDF("id")
+          val query = memStream
+            .toDS()
+            .toDF("id")
             .withColumn("part", 'id % 3)
             .groupBy("part")
             .count()
 
           val stream1 = query.writeStream
-            .option("checkpointLocation", new File(checkpointDir, "_checkpoint").getAbsolutePath)
+            .option(
+              "checkpointLocation",
+              new File(checkpointDir, "_checkpoint").getAbsolutePath
+            )
             .outputMode("complete")
             .format("lakesoul")
             .start(dir.getAbsolutePath)
@@ -741,10 +1036,21 @@ trait CompleteOutputModeTests extends SchemaEnforcementSuiteBase with SharedSpar
             stream1.stop()
           }
 
-          assert(spark.read.format("lakesoul").load(dir.getAbsolutePath).schema.length == 2)
+          assert(
+            spark.read
+              .format("lakesoul")
+              .load(dir.getAbsolutePath)
+              .schema
+              .length == 2
+          )
 
-          val stream2 = query.withColumn("test", lit("abc")).writeStream
-            .option("checkpointLocation", new File(checkpointDir, "_checkpoint").getAbsolutePath)
+          val stream2 = query
+            .withColumn("test", lit("abc"))
+            .writeStream
+            .option(
+              "checkpointLocation",
+              new File(checkpointDir, "_checkpoint").getAbsolutePath
+            )
             .outputMode("complete")
             .format("lakesoul")
             .start(dir.getAbsolutePath)
@@ -754,7 +1060,10 @@ trait CompleteOutputModeTests extends SchemaEnforcementSuiteBase with SharedSpar
               stream2.processAllAvailable()
             }
             assert(e.cause.isInstanceOf[AnalysisException])
-            assert(e.cause.getMessage.contains(LakeSoulOptions.OVERWRITE_SCHEMA_OPTION))
+            assert(
+              e.cause.getMessage
+                .contains(LakeSoulOptions.OVERWRITE_SCHEMA_OPTION)
+            )
 
           } finally {
             stream2.stop()
@@ -770,13 +1079,18 @@ trait CompleteOutputModeTests extends SchemaEnforcementSuiteBase with SharedSpar
       withTempDir(checkpointDir => {
         withTempDir { dir =>
           val memStream = MemoryStream[Long]
-          val query = memStream.toDS().toDF("id")
+          val query = memStream
+            .toDS()
+            .toDF("id")
             .withColumn("part", 'id % 3)
             .groupBy("part")
             .count()
 
           val stream1 = query.writeStream
-            .option("checkpointLocation", new File(checkpointDir, "_checkpoint").getAbsolutePath)
+            .option(
+              "checkpointLocation",
+              new File(checkpointDir, "_checkpoint").getAbsolutePath
+            )
             .option(LakeSoulOptions.OVERWRITE_SCHEMA_OPTION, "true")
             .outputMode("complete")
             .format("lakesoul")
@@ -788,10 +1102,21 @@ trait CompleteOutputModeTests extends SchemaEnforcementSuiteBase with SharedSpar
             stream1.stop()
           }
 
-          assert(spark.read.format("lakesoul").load(dir.getAbsolutePath).schema.length == 2)
+          assert(
+            spark.read
+              .format("lakesoul")
+              .load(dir.getAbsolutePath)
+              .schema
+              .length == 2
+          )
 
-          val stream2 = query.withColumn("test", lit("abc")).writeStream
-            .option("checkpointLocation", new File(checkpointDir, "_checkpoint").getAbsolutePath)
+          val stream2 = query
+            .withColumn("test", lit("abc"))
+            .writeStream
+            .option(
+              "checkpointLocation",
+              new File(checkpointDir, "_checkpoint").getAbsolutePath
+            )
             .option(LakeSoulOptions.OVERWRITE_SCHEMA_OPTION, "true")
             .outputMode("complete")
             .format("lakesoul")
@@ -811,7 +1136,12 @@ trait CompleteOutputModeTests extends SchemaEnforcementSuiteBase with SharedSpar
 
           checkAnswer(
             df,
-            Row(0L, 1L, "abc") :: Row(1L, 1L, "abc") :: Row(2L, 1L, "abc") :: Nil)
+            Row(0L, 1L, "abc") :: Row(1L, 1L, "abc") :: Row(
+              2L,
+              1L,
+              "abc"
+            ) :: Nil
+          )
         }
 
       })
@@ -823,13 +1153,18 @@ trait CompleteOutputModeTests extends SchemaEnforcementSuiteBase with SharedSpar
       withTempDir(checkpointDir => {
         withTempDir { dir =>
           val memStream = MemoryStream[Long]
-          val query = memStream.toDS().toDF("id")
+          val query = memStream
+            .toDS()
+            .toDF("id")
             .withColumn("part", 'id % 3)
             .groupBy("part")
             .count()
 
           val stream1 = query.writeStream
-            .option("checkpointLocation", new File(checkpointDir, "_checkpoint").getAbsolutePath)
+            .option(
+              "checkpointLocation",
+              new File(checkpointDir, "_checkpoint").getAbsolutePath
+            )
             .outputMode("complete")
             .format("lakesoul")
             .start(dir.getAbsolutePath)
@@ -840,10 +1175,21 @@ trait CompleteOutputModeTests extends SchemaEnforcementSuiteBase with SharedSpar
             stream1.stop()
           }
 
-          assert(spark.read.format("lakesoul").load(dir.getAbsolutePath).schema.length == 2)
+          assert(
+            spark.read
+              .format("lakesoul")
+              .load(dir.getAbsolutePath)
+              .schema
+              .length == 2
+          )
 
-          val stream2 = query.withColumn("test", lit("abc")).writeStream
-            .option("checkpointLocation", new File(checkpointDir, "_checkpoint").getAbsolutePath)
+          val stream2 = query
+            .withColumn("test", lit("abc"))
+            .writeStream
+            .option(
+              "checkpointLocation",
+              new File(checkpointDir, "_checkpoint").getAbsolutePath
+            )
             .outputMode("complete")
             .format("lakesoul")
             .start(dir.getAbsolutePath)
@@ -862,7 +1208,12 @@ trait CompleteOutputModeTests extends SchemaEnforcementSuiteBase with SharedSpar
 
           checkAnswer(
             df,
-            Row(0L, 1L, "abc") :: Row(1L, 1L, "abc") :: Row(2L, 1L, "abc") :: Nil)
+            Row(0L, 1L, "abc") :: Row(1L, 1L, "abc") :: Row(
+              2L,
+              1L,
+              "abc"
+            ) :: Nil
+          )
         }
 
       })
@@ -871,13 +1222,13 @@ trait CompleteOutputModeTests extends SchemaEnforcementSuiteBase with SharedSpar
 }
 
 @RunWith(classOf[JUnitRunner])
-class SchemaEnforcementWithPathSuite extends AppendSaveModeTests with OverwriteSaveModeTests {
+class SchemaEnforcementWithPathSuite
+    extends AppendSaveModeTests
+    with OverwriteSaveModeTests {
   override val saveOperation: SaveWithPath = SaveWithPath()
 }
 
 @RunWith(classOf[JUnitRunner])
 class SchemaEnforcementStreamingSuite
-  extends AppendOutputModeTests
-    with CompleteOutputModeTests {
-}
-
+    extends AppendOutputModeTests
+    with CompleteOutputModeTests {}

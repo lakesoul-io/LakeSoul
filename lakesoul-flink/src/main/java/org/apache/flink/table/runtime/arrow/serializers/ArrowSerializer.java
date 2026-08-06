@@ -18,17 +18,16 @@
 
 package org.apache.flink.table.runtime.arrow.serializers;
 
+import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.vector.VectorSchemaRoot;
+import org.apache.arrow.vector.ipc.ArrowStreamReader;
+import org.apache.arrow.vector.ipc.ArrowStreamWriter;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.runtime.arrow.ArrowReader;
 import org.apache.flink.table.runtime.arrow.ArrowUtils;
 import org.apache.flink.table.runtime.arrow.ArrowWriter;
 import org.apache.flink.table.types.logical.RowType;
-
-import org.apache.arrow.memory.BufferAllocator;
-import org.apache.arrow.vector.VectorSchemaRoot;
-import org.apache.arrow.vector.ipc.ArrowStreamReader;
-import org.apache.arrow.vector.ipc.ArrowStreamWriter;
 
 import java.io.IOException;
 import java.io.InputStream;

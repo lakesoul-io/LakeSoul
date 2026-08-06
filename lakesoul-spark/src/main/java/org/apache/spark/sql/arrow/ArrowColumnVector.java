@@ -7,7 +7,6 @@ package org.apache.spark.sql.arrow;
 import org.apache.arrow.vector.*;
 import org.apache.arrow.vector.complex.*;
 import org.apache.arrow.vector.holders.NullableVarCharHolder;
-
 import org.apache.spark.annotation.DeveloperApi;
 import org.apache.spark.sql.types.*;
 import org.apache.spark.sql.vectorized.ColumnVector;
@@ -15,9 +14,7 @@ import org.apache.spark.sql.vectorized.ColumnarArray;
 import org.apache.spark.sql.vectorized.ColumnarMap;
 import org.apache.spark.unsafe.types.UTF8String;
 
-/**
- * A column vector backed by Apache Arrow.
- */
+/** A column vector backed by Apache Arrow. */
 @DeveloperApi
 public class ArrowColumnVector extends ColumnVector {
 
@@ -192,7 +189,8 @@ public class ArrowColumnVector extends ColumnVector {
         } else if (vector instanceof TimeSecVector) {
             accessor = new TimeSecAccessor((TimeSecVector) vector);
         } else {
-            throw new UnsupportedOperationException("Unsupported vector type: " + vector.getClass());
+            throw new UnsupportedOperationException(
+                    "Unsupported vector type: " + vector.getClass());
         }
     }
 
@@ -403,7 +401,8 @@ public class ArrowColumnVector extends ColumnVector {
             if (stringResult.isSet == 0) {
                 return null;
             } else {
-                return UTF8String.fromAddress(null,
+                return UTF8String.fromAddress(
+                        null,
                         stringResult.buffer.memoryAddress() + stringResult.start,
                         stringResult.end - stringResult.start);
             }
@@ -561,8 +560,8 @@ public class ArrowColumnVector extends ColumnVector {
 
     /**
      * Any call to "get" method will throw UnsupportedOperationException.
-     * <p>
-     * Access struct values in a ArrowColumnVector doesn't use this accessor. Instead, it uses
+     *
+     * <p>Access struct values in a ArrowColumnVector doesn't use this accessor. Instead, it uses
      * getStruct() method defined in the parent class. Any call to "get" method in this class is a
      * bug in the code.
      */

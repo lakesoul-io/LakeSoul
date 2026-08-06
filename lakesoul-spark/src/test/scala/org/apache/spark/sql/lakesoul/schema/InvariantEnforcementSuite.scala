@@ -10,7 +10,11 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkException
 import org.apache.spark.sql._
 import org.apache.spark.sql.lakesoul.SnapshotManagement
-import org.apache.spark.sql.lakesoul.schema.Invariants.{ArbitraryExpression, NotNull, PersistedExpression}
+import org.apache.spark.sql.lakesoul.schema.Invariants.{
+  ArbitraryExpression,
+  NotNull,
+  PersistedExpression
+}
 import org.apache.spark.sql.lakesoul.test.LakeSoulTestUtils
 import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
@@ -21,17 +25,29 @@ import org.scalatestplus.junit.JUnitRunner
 import scala.collection.JavaConverters._
 
 @RunWith(classOf[JUnitRunner])
-class InvariantEnforcementSuite extends QueryTest
-  with SharedSparkSession with SQLTestUtils with LakeSoulTestUtils {
+class InvariantEnforcementSuite
+    extends QueryTest
+    with SharedSparkSession
+    with SQLTestUtils
+    with LakeSoulTestUtils {
 
   import testImplicits._
 
   private def tableWithSchema(schema: StructType)(f: String => Unit): Unit = {
     withTempDir { tempDir =>
-      val snapshotManagement = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(tempDir.getAbsolutePath)).toString)
+      val snapshotManagement = SnapshotManagement(
+        SparkUtil
+          .makeQualifiedTablePath(new Path(tempDir.getAbsolutePath))
+          .toString
+      )
       val tc = snapshotManagement.startTransaction()
-      tc.commit(Seq.empty[DataFileInfo], Seq.empty[DataFileInfo], tc.tableInfo.copy(table_schema = schema.json))
-      spark.read.format("lakesoul")
+      tc.commit(
+        Seq.empty[DataFileInfo],
+        Seq.empty[DataFileInfo],
+        tc.tableInfo.copy(table_schema = schema.json)
+      )
+      spark.read
+        .format("lakesoul")
         .load(tempDir.getAbsolutePath)
         .write
         .format("lakesoul")
@@ -41,8 +57,15 @@ class InvariantEnforcementSuite extends QueryTest
     }
   }
 
-  private def initTable(tablePath: String, df: DataFrame, rangeCols: String, hashCols: String): Unit = {
-    df.write.mode("overwrite").format("lakesoul")
+  private def initTable(
+      tablePath: String,
+      df: DataFrame,
+      rangeCols: String,
+      hashCols: String
+  ): Unit = {
+    df.write
+      .mode("overwrite")
+      .format("lakesoul")
       .option("rangePartitions", rangeCols)
       .option("hashPartitions", hashCols)
       .option("hashBucketNum", "2")
@@ -51,8 +74,10 @@ class InvariantEnforcementSuite extends QueryTest
 
   private def getExceptionMessage(e: Exception): String = {
     var violationException = e.getCause
-    while (violationException != null &&
-      !violationException.isInstanceOf[InvariantViolationException]) {
+    while (
+      violationException != null &&
+      !violationException.isInstanceOf[InvariantViolationException]
+    ) {
       violationException = violationException.getCause
     }
     if (violationException == null) {
@@ -62,10 +87,12 @@ class InvariantEnforcementSuite extends QueryTest
     violationException.getMessage
   }
 
-  private def testBatchWriteRejection(invariant: Invariants.Rule,
-                                      schema: StructType,
-                                      df: Dataset[_],
-                                      expectedErrors: String*): Unit = {
+  private def testBatchWriteRejection(
+      invariant: Invariants.Rule,
+      schema: StructType,
+      df: Dataset[_],
+      expectedErrors: String*
+  ): Unit = {
     tableWithSchema(schema) { path =>
       val e = intercept[SparkException] {
         df.write.mode("append").format("lakesoul").save(path)
@@ -81,13 +108,20 @@ class InvariantEnforcementSuite extends QueryTest
   test("create table - hash partition keys can't be null") {
     withTempDir(dir => {
       val tablePath = dir.getCanonicalPath
-      val df1 = Seq[(String, Int, Int, Int)](("a", 1, 1, 1)).toDF("range", "hash1", "hash2", "value")
+      val df1 = Seq[(String, Int, Int, Int)](("a", 1, 1, 1))
+        .toDF("range", "hash1", "hash2", "value")
 
-      val df2 = df1.union(Seq(("a", 1, null, 1)).toDF("range", "hash1", "hash2", "value"))
+      val df2 = df1.union(
+        Seq(("a", 1, null, 1)).toDF("range", "hash1", "hash2", "value")
+      )
       val e = intercept[SparkException] {
         initTable(tablePath, df2, "range", "hash1,hash2")
       }
-      assert(getExceptionMessage(e).contains("Invariant NOT NULL violated for column: hash2"))
+      assert(
+        getExceptionMessage(e).contains(
+          "Invariant NOT NULL violated for column: hash2"
+        )
+      )
 
     })
   }
@@ -95,7 +129,8 @@ class InvariantEnforcementSuite extends QueryTest
   test("upsert - primary key can't be null") {
     withTempDir(dir => {
       val tablePath = dir.getCanonicalPath
-      val df = Seq[(String, Int, Int)](("a", 1, 1)).toDF("range", "hash", "value")
+      val df =
+        Seq[(String, Int, Int)](("a", 1, 1)).toDF("range", "hash", "value")
 
       initTable(tablePath, df, "range", "hash")
 
@@ -103,7 +138,11 @@ class InvariantEnforcementSuite extends QueryTest
         val df2 = df.union(Seq(("c", null, 1)).toDF("range", "hash", "value"))
         LakeSoulTable.forPath(tablePath).upsert(df2)
       }
-      assert(getExceptionMessage(e2).contains("Invariant NOT NULL violated for column: hash"))
+      assert(
+        getExceptionMessage(e2).contains(
+          "Invariant NOT NULL violated for column: hash"
+        )
+      )
 
       val df3 = df.union(Seq(("c", 1, null)).toDF("range", "hash", "value"))
       LakeSoulTable.forPath(tablePath).upsert(df3)
@@ -141,8 +180,12 @@ class InvariantEnforcementSuite extends QueryTest
       .add("key", StringType, nullable = false)
       .add("value", IntegerType)
     tableWithSchema(schema) { path =>
-      spark.createDataFrame(Seq.empty[Row].asJava, schema.asNullable).write
-        .mode("append").format("lakesoul").save(path)
+      spark
+        .createDataFrame(Seq.empty[Row].asJava, schema.asNullable)
+        .write
+        .mode("append")
+        .format("lakesoul")
+        .save(path)
     }
   }
 
@@ -160,45 +203,86 @@ class InvariantEnforcementSuite extends QueryTest
 
   test("reject non-nullable nested column") {
     val schema = new StructType()
-      .add("top", new StructType()
-        .add("key", StringType, nullable = false)
-        .add("value", IntegerType))
+      .add(
+        "top",
+        new StructType()
+          .add("key", StringType, nullable = false)
+          .add("value", IntegerType)
+      )
     testBatchWriteRejection(
       NotNull,
       schema,
-      spark.createDataFrame(Seq(Row(Row("a", 1)), Row(Row(null, 2))).asJava, schema.asNullable),
+      spark.createDataFrame(
+        Seq(Row(Row("a", 1)), Row(Row(null, 2))).asJava,
+        schema.asNullable
+      ),
       "top.key"
     )
     testBatchWriteRejection(
       NotNull,
       schema,
-      spark.createDataFrame(Seq(Row(Row("a", 1)), Row(null)).asJava, schema.asNullable),
+      spark.createDataFrame(
+        Seq(Row(Row("a", 1)), Row(null)).asJava,
+        schema.asNullable
+      ),
       "top.key"
     )
   }
 
   test("complex type - children of array type can't be checked") {
     val schema = new StructType()
-      .add("top", ArrayType(ArrayType(new StructType()
-        .add("key", StringType, nullable = false)
-        .add("value", IntegerType))))
+      .add(
+        "top",
+        ArrayType(
+          ArrayType(
+            new StructType()
+              .add("key", StringType, nullable = false)
+              .add("value", IntegerType)
+          )
+        )
+      )
     tableWithSchema(schema) { path =>
-      spark.createDataFrame(Seq(Row(Seq(Seq(Row("a", 1)))), Row(Seq(Seq(Row(null, 2))))).asJava,
-        schema.asNullable).write.mode("append").format("lakesoul").save(path)
-      spark.createDataFrame(Seq(Row(Seq(Seq(Row("a", 1)))), Row(null)).asJava, schema.asNullable)
-        .write.mode("append").format("lakesoul").save(path)
+      spark
+        .createDataFrame(
+          Seq(Row(Seq(Seq(Row("a", 1)))), Row(Seq(Seq(Row(null, 2))))).asJava,
+          schema.asNullable
+        )
+        .write
+        .mode("append")
+        .format("lakesoul")
+        .save(path)
+      spark
+        .createDataFrame(
+          Seq(Row(Seq(Seq(Row("a", 1)))), Row(null)).asJava,
+          schema.asNullable
+        )
+        .write
+        .mode("append")
+        .format("lakesoul")
+        .save(path)
     }
   }
 
   test("reject non-nullable array column") {
     val schema = new StructType()
-      .add("top", ArrayType(ArrayType(new StructType()
-        .add("key", StringType)
-        .add("value", IntegerType))), nullable = false)
+      .add(
+        "top",
+        ArrayType(
+          ArrayType(
+            new StructType()
+              .add("key", StringType)
+              .add("value", IntegerType)
+          )
+        ),
+        nullable = false
+      )
     testBatchWriteRejection(
       NotNull,
       schema,
-      spark.createDataFrame(Seq(Row(Seq(Seq(Row("a", 1)))), Row(null)).asJava, schema.asNullable),
+      spark.createDataFrame(
+        Seq(Row(Seq(Seq(Row("a", 1)))), Row(null)).asJava,
+        schema.asNullable
+      ),
       "top"
     )
   }
@@ -216,7 +300,8 @@ class InvariantEnforcementSuite extends QueryTest
       rule,
       schema,
       Seq[(String, Int)](("a", 1), (null, 5)).toDF("key", "value"),
-      "value", "5"
+      "value",
+      "5"
     )
   }
 
@@ -227,14 +312,21 @@ class InvariantEnforcementSuite extends QueryTest
       .putString(Invariants.INVARIANTS_FIELD, PersistedExpression(expr).json)
       .build()
     val schema = new StructType()
-      .add("top", new StructType()
-        .add("key", StringType)
-        .add("value", IntegerType, nullable = true, metadata))
+      .add(
+        "top",
+        new StructType()
+          .add("key", StringType)
+          .add("value", IntegerType, nullable = true, metadata)
+      )
     testBatchWriteRejection(
       rule,
       schema,
-      spark.createDataFrame(Seq(Row(Row("a", 1)), Row(Row(null, 5))).asJava, schema.asNullable),
-      "top.key", "5"
+      spark.createDataFrame(
+        Seq(Row(Row("a", 1)), Row(Row(null, 5))).asJava,
+        schema.asNullable
+      ),
+      "top.key",
+      "5"
     )
   }
 
@@ -251,13 +343,15 @@ class InvariantEnforcementSuite extends QueryTest
       rule,
       schema,
       Seq[String]("a", "b").toDF("key"),
-      "value", "null"
+      "value",
+      "null"
     )
     testBatchWriteRejection(
       rule,
       schema,
       Seq[(String, Integer)](("a", 1), ("b", null)).toDF("key", "value"),
-      "value", "null"
+      "value",
+      "null"
     )
   }
 
@@ -268,23 +362,37 @@ class InvariantEnforcementSuite extends QueryTest
       .build()
     val rule = ArbitraryExpression(spark, expr)
     val schema = new StructType()
-      .add("top", new StructType()
-        .add("key", StringType)
-        .add("value", IntegerType, nullable = true, metadata))
+      .add(
+        "top",
+        new StructType()
+          .add("key", StringType)
+          .add("value", IntegerType, nullable = true, metadata)
+      )
     testBatchWriteRejection(
       rule,
       schema,
-      spark.createDataFrame(Seq(Row(Row("a", 1)), Row(Row("b", null))).asJava, schema.asNullable),
-      "top.value", "null"
+      spark.createDataFrame(
+        Seq(Row(Row("a", 1)), Row(Row("b", null))).asJava,
+        schema.asNullable
+      ),
+      "top.value",
+      "null"
     )
     val schema2 = new StructType()
-      .add("top", new StructType()
-        .add("key", StringType))
+      .add(
+        "top",
+        new StructType()
+          .add("key", StringType)
+      )
     testBatchWriteRejection(
       rule,
       schema,
-      spark.createDataFrame(Seq(Row(Row("a")), Row(Row("b"))).asJava, schema2.asNullable),
-      "top.value", "null"
+      spark.createDataFrame(
+        Seq(Row(Row("a")), Row(Row("b"))).asJava,
+        schema2.asNullable
+      ),
+      "top.value",
+      "null"
     )
   }
 
@@ -297,10 +405,18 @@ class InvariantEnforcementSuite extends QueryTest
       .add("key", StringType)
       .add("value", IntegerType, nullable = true, metadata)
     tableWithSchema(schema) { path =>
-      Seq[String]("a", "b").toDF("key").write
-        .mode("append").format("lakesoul").save(path)
-      Seq[(String, Integer)](("a", 1), ("b", null)).toDF("key", "value").write
-        .mode("append").format("lakesoul").save(path)
+      Seq[String]("a", "b")
+        .toDF("key")
+        .write
+        .mode("append")
+        .format("lakesoul")
+        .save(path)
+      Seq[(String, Integer)](("a", 1), ("b", null))
+        .toDF("key", "value")
+        .write
+        .mode("append")
+        .format("lakesoul")
+        .save(path)
     }
   }
 
@@ -310,17 +426,37 @@ class InvariantEnforcementSuite extends QueryTest
       .putString(Invariants.INVARIANTS_FIELD, PersistedExpression(expr).json)
       .build()
     val schema = new StructType()
-      .add("top", new StructType()
-        .add("key", StringType)
-        .add("value", IntegerType, nullable = true, metadata))
+      .add(
+        "top",
+        new StructType()
+          .add("key", StringType)
+          .add("value", IntegerType, nullable = true, metadata)
+      )
     val schema2 = new StructType()
-      .add("top", new StructType()
-        .add("key", StringType))
+      .add(
+        "top",
+        new StructType()
+          .add("key", StringType)
+      )
     tableWithSchema(schema) { path =>
-      spark.createDataFrame(Seq(Row(Row("a", 1)), Row(Row("b", null))).asJava, schema.asNullable)
-        .write.mode("append").format("lakesoul").save(path)
-      spark.createDataFrame(Seq(Row(Row("a")), Row(Row("b"))).asJava, schema2.asNullable)
-        .write.mode("append").format("lakesoul").save(path)
+      spark
+        .createDataFrame(
+          Seq(Row(Row("a", 1)), Row(Row("b", null))).asJava,
+          schema.asNullable
+        )
+        .write
+        .mode("append")
+        .format("lakesoul")
+        .save(path)
+      spark
+        .createDataFrame(
+          Seq(Row(Row("a")), Row(Row("b"))).asJava,
+          schema2.asNullable
+        )
+        .write
+        .mode("append")
+        .format("lakesoul")
+        .save(path)
     }
   }
 
@@ -335,10 +471,20 @@ class InvariantEnforcementSuite extends QueryTest
     tableWithSchema(schema) { path =>
       Seq(1, 2).toDF("value").write.mode("append").format("lakesoul").save(path)
       intercept[SparkException] {
-        Seq(1, 4).toDF("value").write.mode("append").format("lakesoul").save(path)
+        Seq(1, 4)
+          .toDF("value")
+          .write
+          .mode("append")
+          .format("lakesoul")
+          .save(path)
       }
       intercept[SparkException] {
-        Seq(-1, 2).toDF("value").write.mode("append").format("lakesoul").save(path)
+        Seq(-1, 2)
+          .toDF("value")
+          .write
+          .mode("append")
+          .format("lakesoul")
+          .save(path)
       }
     }
   }

@@ -18,11 +18,10 @@
 
 package org.apache.flink.table.runtime.arrow.writers;
 
+import org.apache.arrow.vector.Float4Vector;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.data.ArrayData;
 import org.apache.flink.table.data.RowData;
-
-import org.apache.arrow.vector.Float4Vector;
 
 /** {@link ArrowFieldWriter} for Float. */
 @Internal

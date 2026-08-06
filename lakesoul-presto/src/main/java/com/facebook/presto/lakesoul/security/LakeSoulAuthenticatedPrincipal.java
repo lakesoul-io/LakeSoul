@@ -4,9 +4,6 @@
 
 package com.facebook.presto.lakesoul.security;
 
-import java.security.Principal;
-import java.time.Instant;
-
 import com.dmetasoul.lakesoul.meta.security.Claims;
 import com.facebook.presto.jdbc.internal.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonCreator;
@@ -15,6 +12,9 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+
+import java.security.Principal;
+import java.time.Instant;
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class LakeSoulAuthenticatedPrincipal implements Principal {

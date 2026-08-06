@@ -12,7 +12,7 @@ object SqlSubmitter {
     val pathParam = s"--$sqlFilePathParam"
     val timeParam = s"--$scheduleTimeParam"
     list match {
-      case Nil => map
+      case Nil                          => map
       case `pathParam` :: value :: tail =>
         nextArg(map ++ Map(sqlFilePathParam -> value), tail)
       case `timeParam` :: value :: tail =>
@@ -34,7 +34,10 @@ object SqlSubmitter {
     }
 
     val options = nextArg(Map(), args.toList)
-    if (!options.contains(sqlFilePathParam) || !options.contains(scheduleTimeParam)) {
+    if (
+      !options
+        .contains(sqlFilePathParam) || !options.contains(scheduleTimeParam)
+    ) {
       println(usage)
       exit(1)
     }
@@ -42,22 +45,37 @@ object SqlSubmitter {
 
     val spark = SparkSession.builder().getOrCreate()
 
-    val sqlContent = spark.sparkContext.wholeTextFiles(options(sqlFilePathParam).toString).take(1)(0)._2
-    println(s"==============SQL file content:\n$sqlContent\n============================\n")
+    val sqlContent = spark.sparkContext
+      .wholeTextFiles(options(sqlFilePathParam).toString)
+      .take(1)(0)
+      ._2
+    println(
+      s"==============SQL file content:\n$sqlContent\n============================\n"
+    )
 
     def isEmptyLine(sql: String): Boolean = {
-      if (sql.isEmpty || sql.split("\n").iterator.forall(p => p.startsWith("--"))) true else false
+      if (
+        sql.isEmpty || sql.split("\n").iterator.forall(p => p.startsWith("--"))
+      ) true
+      else false
     }
 
     val sqlStatement = sqlContent.split(";")
     sqlStatement.foreach(sql => {
       val sqlStr = sql.trim
       if (!isEmptyLine(sqlStr)) {
-        val sqlReplaced = sqlStr.replaceAll("\\$\\{scheduleTime}", options(scheduleTimeParam).toString)
-        println(s"==========Executing:\n$sqlReplaced\n=================================")
+        val sqlReplaced = sqlStr.replaceAll(
+          "\\$\\{scheduleTime}",
+          options(scheduleTimeParam).toString
+        )
+        println(
+          s"==========Executing:\n$sqlReplaced\n================================="
+        )
         spark.sql(sqlReplaced).show()
       } else {
-        println(s"==========Ignoring comments:\n$sqlStr\n==============================")
+        println(
+          s"==========Ignoring comments:\n$sqlStr\n=============================="
+        )
       }
     })
   }

@@ -5,12 +5,6 @@ package org.apache.flink.lakesoul.entry;
 
 import static org.apache.flink.cdc.connectors.mysql.source.config.MySqlSourceOptions.*;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.time.Duration;
-import java.util.*;
-import java.util.stream.Collectors;
-
 import org.apache.flink.cdc.connectors.base.options.StartupOptions;
 import org.apache.flink.cdc.connectors.mysql.source.MySqlSourceBuilder;
 import org.apache.flink.cdc.connectors.postgres.source.PostgresSourceBuilder;
@@ -23,6 +17,12 @@ import org.apache.flink.table.catalog.ObjectPath;
 import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.constructor.SafeConstructor;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.time.Duration;
+import java.util.*;
+import java.util.stream.Collectors;
 
 public class JdbcSourceBuilderTool {
 
@@ -56,7 +56,9 @@ public class JdbcSourceBuilderTool {
         }
     }
 
-    public PostgresSourceBuilder<BinarySourceRecord> buildPostgresSource(String cdcConfigYamlPath, PostgresSourceBuilder<BinarySourceRecord> sourceBuilder) throws IOException {
+    public PostgresSourceBuilder<BinarySourceRecord> buildPostgresSource(
+            String cdcConfigYamlPath, PostgresSourceBuilder<BinarySourceRecord> sourceBuilder)
+            throws IOException {
         Path path = new Path(cdcConfigYamlPath);
         FileSystem fs = FileSystem.get(path.toUri());
 
@@ -73,53 +75,71 @@ public class JdbcSourceBuilderTool {
 
         /* ------------------ fetch / split ------------------ */
         if (cdcParams.containsKey("scan.snapshot.fetch.size")) {
-            sourceBuilder.fetchSize(Integer.parseInt(cdcParams.get("scan.snapshot.fetch.size").toString()));
+            sourceBuilder.fetchSize(
+                    Integer.parseInt(cdcParams.get("scan.snapshot.fetch.size").toString()));
         }
 
         if (cdcParams.containsKey("chunk-meta.group.size")) {
-            sourceBuilder.splitMetaGroupSize(Integer.parseInt(cdcParams.get("chunk-meta.group.size").toString()));
+            sourceBuilder.splitMetaGroupSize(
+                    Integer.parseInt(cdcParams.get("chunk-meta.group.size").toString()));
         }
 
         /* ------------------ startup ------------------ */
         if (cdcParams.containsKey("scan.startup.mode")) {
-            sourceBuilder.startupOptions(parsePgStartupOptions(cdcParams.get("scan.startup.mode").toString()));
+            sourceBuilder.startupOptions(
+                    parsePgStartupOptions(cdcParams.get("scan.startup.mode").toString()));
         }
 
         /* ------------------ heartbeat ------------------ */
         if (cdcParams.containsKey("heartbeat.interval")) {
-            sourceBuilder.heartbeatInterval(Duration.ofSeconds(Long.parseLong(cdcParams.get("heartbeat.interval").toString())));
+            sourceBuilder.heartbeatInterval(
+                    Duration.ofSeconds(
+                            Long.parseLong(cdcParams.get("heartbeat.interval").toString())));
         }
 
         /* ------------------ connection ------------------ */
         if (cdcParams.containsKey("connect.timeout")) {
-            sourceBuilder.connectTimeout(Duration.ofSeconds(Long.parseLong(cdcParams.get("connect.timeout").toString())));
+            sourceBuilder.connectTimeout(
+                    Duration.ofSeconds(
+                            Long.parseLong(cdcParams.get("connect.timeout").toString())));
         }
 
         if (cdcParams.containsKey("connect.max-retries")) {
-            sourceBuilder.connectMaxRetries(Integer.parseInt(cdcParams.get("connect.max-retries").toString()));
+            sourceBuilder.connectMaxRetries(
+                    Integer.parseInt(cdcParams.get("connect.max-retries").toString()));
         }
 
         if (cdcParams.containsKey("connection.pool.size")) {
-            sourceBuilder.connectionPoolSize(Integer.parseInt(cdcParams.get("connection.pool.size").toString()));
+            sourceBuilder.connectionPoolSize(
+                    Integer.parseInt(cdcParams.get("connection.pool.size").toString()));
         }
 
         /* ------------------ behavior flags ------------------ */
         if (cdcParams.containsKey("scan.incremental.close-idle-reader.enabled")) {
-            sourceBuilder.closeIdleReaders(Boolean.parseBoolean(cdcParams.get("scan.incremental.close-idle-reader.enabled").toString()));
+            sourceBuilder.closeIdleReaders(
+                    Boolean.parseBoolean(
+                            cdcParams
+                                    .get("scan.incremental.close-idle-reader.enabled")
+                                    .toString()));
         }
 
         if (cdcParams.containsKey("scan.incremental.snapshot.backfill.skip")) {
-            sourceBuilder.skipSnapshotBackfill(Boolean.parseBoolean(cdcParams.get("scan.incremental.snapshot.backfill.skip").toString()));
+            sourceBuilder.skipSnapshotBackfill(
+                    Boolean.parseBoolean(
+                            cdcParams.get("scan.incremental.snapshot.backfill.skip").toString()));
         }
 
         if (cdcParams.containsKey("scan.incremental.snapshot.chunk.key-column")) {
-            sourceBuilder.chunkKeyColumn(cdcParams.get("scan.incremental.snapshot.chunk.key-column").toString());
+            sourceBuilder.chunkKeyColumn(
+                    cdcParams.get("scan.incremental.snapshot.chunk.key-column").toString());
         }
 
         return sourceBuilder;
     }
 
-    public MySqlSourceBuilder<BinarySourceRecord> mySqlSourceBuilder(String cdcConfigYamlPath, MySqlSourceBuilder<BinarySourceRecord> sourceBuilder) throws IOException {
+    public MySqlSourceBuilder<BinarySourceRecord> mySqlSourceBuilder(
+            String cdcConfigYamlPath, MySqlSourceBuilder<BinarySourceRecord> sourceBuilder)
+            throws IOException {
         Path path = new Path(cdcConfigYamlPath);
         FileSystem fs = FileSystem.get(path.toUri());
         Map<String, Object> cdcParams;
@@ -138,68 +158,103 @@ public class JdbcSourceBuilderTool {
             Object sid = cdcParams.get(SERVER_ID.key());
             if (sid != null) {
                 String serverId = sid.toString();
-                if  (!serverId.isEmpty()) {
+                if (!serverId.isEmpty()) {
                     sourceBuilder.serverId(serverId);
                 }
             }
         }
         if (cdcParams.containsKey(SCAN_SNAPSHOT_FETCH_SIZE.key())) {
-            sourceBuilder.fetchSize(Integer.parseInt(cdcParams.get(SCAN_SNAPSHOT_FETCH_SIZE.key()).toString()));
+            sourceBuilder.fetchSize(
+                    Integer.parseInt(cdcParams.get(SCAN_SNAPSHOT_FETCH_SIZE.key()).toString()));
         }
         if (cdcParams.containsKey(SCAN_NEWLY_ADDED_TABLE_ENABLED.key())) {
-            sourceBuilder.scanNewlyAddedTableEnabled(Boolean.parseBoolean(cdcParams.get(SCAN_NEWLY_ADDED_TABLE_ENABLED.key()).toString()));
+            sourceBuilder.scanNewlyAddedTableEnabled(
+                    Boolean.parseBoolean(
+                            cdcParams.get(SCAN_NEWLY_ADDED_TABLE_ENABLED.key()).toString()));
         }
-        if (cdcParams.containsKey(SCAN_INCREMENTAL_SNAPSHOT_CHUNK_KEY_COLUMN.key()) && cdcParams.get(SCAN_INCREMENTAL_SNAPSHOT_CHUNK_KEY_COLUMN.key()) != null) {
+        if (cdcParams.containsKey(SCAN_INCREMENTAL_SNAPSHOT_CHUNK_KEY_COLUMN.key())
+                && cdcParams.get(SCAN_INCREMENTAL_SNAPSHOT_CHUNK_KEY_COLUMN.key()) != null) {
             String databaseName = cdcParams.get(DATABASE_NAME.key()).toString();
             String tableName = cdcParams.get(TABLE_NAME.key()).toString();
-            sourceBuilder.chunkKeyColumn(new ObjectPath(databaseName, tableName), cdcParams.get(SCAN_INCREMENTAL_SNAPSHOT_CHUNK_KEY_COLUMN.key()).toString());
+            sourceBuilder.chunkKeyColumn(
+                    new ObjectPath(databaseName, tableName),
+                    cdcParams.get(SCAN_INCREMENTAL_SNAPSHOT_CHUNK_KEY_COLUMN.key()).toString());
         }
         if (cdcParams.containsKey(CHUNK_META_GROUP_SIZE.key())) {
-            sourceBuilder.splitMetaGroupSize(Integer.parseInt(cdcParams.get(CHUNK_META_GROUP_SIZE.key()).toString()));
+            sourceBuilder.splitMetaGroupSize(
+                    Integer.parseInt(cdcParams.get(CHUNK_META_GROUP_SIZE.key()).toString()));
         }
         if (cdcParams.containsKey(CHUNK_KEY_EVEN_DISTRIBUTION_FACTOR_LOWER_BOUND.key())) {
-            sourceBuilder.distributionFactorLower(Double.parseDouble(cdcParams.get(CHUNK_KEY_EVEN_DISTRIBUTION_FACTOR_LOWER_BOUND.key()).toString()));
+            sourceBuilder.distributionFactorLower(
+                    Double.parseDouble(
+                            cdcParams
+                                    .get(CHUNK_KEY_EVEN_DISTRIBUTION_FACTOR_LOWER_BOUND.key())
+                                    .toString()));
         }
         if (cdcParams.containsKey(CHUNK_KEY_EVEN_DISTRIBUTION_FACTOR_UPPER_BOUND.key())) {
-            sourceBuilder.distributionFactorUpper(Double.parseDouble(cdcParams.get(CHUNK_KEY_EVEN_DISTRIBUTION_FACTOR_UPPER_BOUND.key()).toString()));
+            sourceBuilder.distributionFactorUpper(
+                    Double.parseDouble(
+                            cdcParams
+                                    .get(CHUNK_KEY_EVEN_DISTRIBUTION_FACTOR_UPPER_BOUND.key())
+                                    .toString()));
         }
         if (cdcParams.containsKey(CONNECT_TIMEOUT.key())) {
-            sourceBuilder.connectTimeout(Duration.ofSeconds(Long.parseLong(cdcParams.get(CONNECT_TIMEOUT.key()).toString())));
+            sourceBuilder.connectTimeout(
+                    Duration.ofSeconds(
+                            Long.parseLong(cdcParams.get(CONNECT_TIMEOUT.key()).toString())));
         }
         if (cdcParams.containsKey(CONNECT_MAX_RETRIES.key())) {
-            sourceBuilder.connectMaxRetries(Integer.parseInt(cdcParams.get(CONNECT_MAX_RETRIES.key()).toString()));
+            sourceBuilder.connectMaxRetries(
+                    Integer.parseInt(cdcParams.get(CONNECT_MAX_RETRIES.key()).toString()));
         }
         if (cdcParams.containsKey(CONNECTION_POOL_SIZE.key())) {
-            sourceBuilder.connectionPoolSize(Integer.parseInt(cdcParams.get(CONNECTION_POOL_SIZE.key()).toString()));
+            sourceBuilder.connectionPoolSize(
+                    Integer.parseInt(cdcParams.get(CONNECTION_POOL_SIZE.key()).toString()));
         }
         if (cdcParams.containsKey(SCAN_STARTUP_MODE.key())) {
-            sourceBuilder.startupOptions(parseMysqlStartupOptions(cdcParams, cdcParams.get(SCAN_STARTUP_MODE.key()).toString()));
+            sourceBuilder.startupOptions(
+                    parseMysqlStartupOptions(
+                            cdcParams, cdcParams.get(SCAN_STARTUP_MODE.key()).toString()));
         }
         if (cdcParams.containsKey(SCAN_INCREMENTAL_SNAPSHOT_CHUNK_SIZE.key())) {
-            sourceBuilder.splitSize(Integer.parseInt(cdcParams.get(SCAN_INCREMENTAL_SNAPSHOT_CHUNK_SIZE.key()).toString()));
+            sourceBuilder.splitSize(
+                    Integer.parseInt(
+                            cdcParams.get(SCAN_INCREMENTAL_SNAPSHOT_CHUNK_SIZE.key()).toString()));
         }
         if (cdcParams.containsKey(HEARTBEAT_INTERVAL.key())) {
-            sourceBuilder.heartbeatInterval(Duration.ofSeconds(Long.parseLong(cdcParams.get(HEARTBEAT_INTERVAL.key()).toString())));
+            sourceBuilder.heartbeatInterval(
+                    Duration.ofSeconds(
+                            Long.parseLong(cdcParams.get(HEARTBEAT_INTERVAL.key()).toString())));
         }
         if (cdcParams.containsKey(SERVER_ID.key())) {
             String serverId = (String) cdcParams.get(SERVER_ID.key());
             sourceBuilder.serverId(serverId);
         }
         if (cdcParams.containsKey(SCAN_INCREMENTAL_SNAPSHOT_BACKFILL_SKIP.key())) {
-            sourceBuilder.skipSnapshotBackfill(Boolean.parseBoolean(cdcParams.get(SCAN_INCREMENTAL_SNAPSHOT_BACKFILL_SKIP.key()).toString()));
+            sourceBuilder.skipSnapshotBackfill(
+                    Boolean.parseBoolean(
+                            cdcParams
+                                    .get(SCAN_INCREMENTAL_SNAPSHOT_BACKFILL_SKIP.key())
+                                    .toString()));
         }
         if (cdcParams.containsKey(SCAN_INCREMENTAL_CLOSE_IDLE_READER_ENABLED.key())) {
-            sourceBuilder.closeIdleReaders(Boolean.parseBoolean(cdcParams.get(SCAN_INCREMENTAL_CLOSE_IDLE_READER_ENABLED.key()).toString()));
+            sourceBuilder.closeIdleReaders(
+                    Boolean.parseBoolean(
+                            cdcParams
+                                    .get(SCAN_INCREMENTAL_CLOSE_IDLE_READER_ENABLED.key())
+                                    .toString()));
         }
         return sourceBuilder;
     }
 
-    private org.apache.flink.cdc.connectors.mysql.table.StartupOptions parseMysqlStartupOptions(Map<String, Object> cdcParams, String mode) {
+    private org.apache.flink.cdc.connectors.mysql.table.StartupOptions parseMysqlStartupOptions(
+            Map<String, Object> cdcParams, String mode) {
         switch (mode.toLowerCase()) {
             case "timestamp":
                 Object tsObj = cdcParams.get(SCAN_STARTUP_TIMESTAMP_MILLIS.key());
                 if (tsObj == null) {
-                    throw new IllegalArgumentException("Timestamp mode requires a valid timestamp-millis");
+                    throw new IllegalArgumentException(
+                            "Timestamp mode requires a valid timestamp-millis");
                 }
                 try {
                     Long ts = Long.parseLong(tsObj.toString());
@@ -265,7 +320,8 @@ public class JdbcSourceBuilderTool {
         return DebeziumOptions.getDebeziumProperties(dbzParams);
     }
 
-    public HashMap<String, List<String>> getTablePartitionList(String cdcConfigPath) throws IOException {
+    public HashMap<String, List<String>> getTablePartitionList(String cdcConfigPath)
+            throws IOException {
         Path path = new Path(cdcConfigPath);
         FileSystem fs = FileSystem.get(path.toUri());
         try (InputStream input = fs.open(path)) {
@@ -291,10 +347,11 @@ public class JdbcSourceBuilderTool {
                     continue;
                 }
 
-                List<String> partitionCols = Arrays.stream(cols.split(","))
-                        .map(String::trim)
-                        .filter(s -> !s.isEmpty())
-                        .collect(Collectors.toList());
+                List<String> partitionCols =
+                        Arrays.stream(cols.split(","))
+                                .map(String::trim)
+                                .filter(s -> !s.isEmpty())
+                                .collect(Collectors.toList());
 
                 tablePartitions.put(tableName, partitionCols);
             }
@@ -302,7 +359,8 @@ public class JdbcSourceBuilderTool {
         }
     }
 
-    public HashMap<String, String> getTablePartitionFormatRuleList(String cdcConfigPath) throws IOException {
+    public HashMap<String, String> getTablePartitionFormatRuleList(String cdcConfigPath)
+            throws IOException {
         Path path = new Path(cdcConfigPath);
         FileSystem fs = FileSystem.get(path.toUri());
         try (InputStream input = fs.open(path)) {

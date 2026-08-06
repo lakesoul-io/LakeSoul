@@ -12,9 +12,9 @@ import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.SparkSession
 
-/**
- * this class is used to check flink write data: with the same two data, one write to csv, the other write to LakeSoul.
- */
+/** this class is used to check flink write data: with the same two data, one
+  * write to csv, the other write to LakeSoul.
+  */
 object FlinkWriteDataCheck {
 
   var csvPath = "file:///tmp/csv/"
@@ -23,26 +23,33 @@ object FlinkWriteDataCheck {
 
   val printLine = " ******** "
 
-  /**
-   * param example:
-   * --csv.path file:///tmp/csv/
-   * --lakesoul.table.path file:///tmp/lakesoul/
-   * --server.time.zone UTC
-   */
+  /** param example: --csv.path file:///tmp/csv/ --lakesoul.table.path
+    * file:///tmp/lakesoul/ --server.time.zone UTC
+    */
   def main(args: Array[String]): Unit = {
     val parameter = ParametersTool.fromArgs(args)
     csvPath = parameter.get("csv.path", "file:///tmp/csv/")
     lakeSoulPath = parameter.get("lakesoul.table.path", "file:///tmp/lakesoul/")
     serverTimeZone = parameter.get("server.time.zone", serverTimeZone)
 
-    val builder = SparkSession.builder()
+    val builder = SparkSession
+      .builder()
       .appName("FLINK_DATA_CHECK")
       .master("local[4]")
-      .config("spark.hadoop.fs.s3.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+      .config(
+        "spark.hadoop.fs.s3.impl",
+        "org.apache.hadoop.fs.s3a.S3AFileSystem"
+      )
       .config("hadoop.fs.s3a.committer.name", "directory")
       .config("spark.hadoop.fs.s3a.committer.staging.conflict-mode", "append")
-      .config("spark.hadoop.fs.s3a.committer.staging.tmp.path", "/opt/spark/work-dir/s3a_staging")
-      .config("spark.hadoop.mapreduce.outputcommitter.factory.scheme.s3a", "org.apache.hadoop.fs.s3a.commit.S3ACommitterFactory")
+      .config(
+        "spark.hadoop.fs.s3a.committer.staging.tmp.path",
+        "/opt/spark/work-dir/s3a_staging"
+      )
+      .config(
+        "spark.hadoop.mapreduce.outputcommitter.factory.scheme.s3a",
+        "org.apache.hadoop.fs.s3a.commit.S3ACommitterFactory"
+      )
       .config("spark.hadoop.fs.s3a.path.style.access", "true")
       .config("spark.hadoop.fs.s3.buffer.dir", "/opt/spark/work-dir/s3")
       .config("spark.hadoop.fs.s3a.buffer.dir", "/opt/spark/work-dir/s3a")
@@ -59,10 +66,16 @@ object FlinkWriteDataCheck {
       .config("spark.default.parallelism", 8)
       .config("spark.sql.parquet.mergeSchema", value = false)
       .config("spark.sql.parquet.filterPushdown", value = true)
-      .config("spark.hadoop.mapred.output.committer.class", "org.apache.hadoop.mapred.FileOutputCommitter")
+      .config(
+        "spark.hadoop.mapred.output.committer.class",
+        "org.apache.hadoop.mapred.FileOutputCommitter"
+      )
       .config("spark.sql.warehouse.dir", "s3://lakesoul-test-bucket/")
       .config("spark.sql.session.timeZone", serverTimeZone)
-      .config("spark.sql.extensions", "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension")
+      .config(
+        "spark.sql.extensions",
+        "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension"
+      )
       .config("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
       .config(SQLConf.DEFAULT_CATALOG.key, LakeSoulCatalog.CATALOG_NAME)
       .config("spark.default.parallelism", "16")
@@ -70,18 +83,23 @@ object FlinkWriteDataCheck {
     val spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
 
-    val lakeSoulTablePath = SparkUtil.makeQualifiedTablePath(new Path(lakeSoulPath)).toUri.toString
-    val csvTablePath = SparkUtil.makeQualifiedTablePath(new Path(csvPath)).toUri.toString
+    val lakeSoulTablePath =
+      SparkUtil.makeQualifiedTablePath(new Path(lakeSoulPath)).toUri.toString
+    val csvTablePath =
+      SparkUtil.makeQualifiedTablePath(new Path(csvPath)).toUri.toString
 
     val lakeSoulDF = LakeSoulTable.forPath(lakeSoulTablePath).toDF
-    val csvDF = spark.read.schema(lakeSoulDF.schema).format("parquet").load(csvTablePath)
+    val csvDF =
+      spark.read.schema(lakeSoulDF.schema).format("parquet").load(csvTablePath)
 
     val diff1 = lakeSoulDF.rdd.subtract(csvDF.rdd)
     val result = lakeSoulDF.count() == csvDF.count() && diff1.count() == 0
 
     if (!result) {
       println(printLine)
-      println(s"CSV count ${csvDF.count()}, LakeSoul count ${lakeSoulDF.count()}")
+      println(
+        s"CSV count ${csvDF.count()}, LakeSoul count ${lakeSoulDF.count()}"
+      )
       println("*************diff1**************")
       spark.createDataFrame(diff1, lakeSoulDF.schema).show()
       println("data verification ERROR!!!")

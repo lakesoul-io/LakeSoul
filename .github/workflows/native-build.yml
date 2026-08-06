@@ -11,15 +11,15 @@ on:
       - "website/**"
       - "**.md"
     branches:
-      - 'main'
+      - "main"
   pull_request:
     paths-ignore:
       - "javadoc/**"
       - "website/**"
       - "**.md"
     branches:
-      - 'main'
-      - 'release/**'
+      - "main"
+      - "release/**"
   workflow_dispatch:
 
 jobs:
@@ -40,8 +40,8 @@ jobs:
       - name: Set up JDK 11
         uses: actions/setup-java@v5
         with:
-          java-version: '11'
-          distribution: 'temurin'
+          java-version: "11"
+          distribution: "temurin"
           cache: maven
           cache-path: |
             /home/runner/.m2/repository
@@ -62,7 +62,7 @@ jobs:
         with:
           use-cross: true
           command: build
-          args: '--target x86_64-unknown-linux-gnu --package lakesoul-io-c --package lakesoul-metadata-c --release --all-features'
+          args: "--target x86_64-unknown-linux-gnu --package lakesoul-io-c --package lakesoul-metadata-c --release --all-features"
       - uses: actions/upload-artifact@v4
         with:
           name: lakesoul-nativeio-x86_64-unknown-linux-gnu
@@ -79,8 +79,8 @@ jobs:
       - name: Set up JDK 11
         uses: actions/setup-java@v5
         with:
-          java-version: '11'
-          distribution: 'temurin'
+          java-version: "11"
+          distribution: "temurin"
           cache: maven
           cache-path: |
             C:\Users\runneradmin\.m2\repository
@@ -100,7 +100,7 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: build
-          args: '--release --package lakesoul-io-c --package lakesoul-metadata-c --all-features'
+          args: "--release --package lakesoul-io-c --package lakesoul-metadata-c --all-features"
       - uses: actions/upload-artifact@v4
         with:
           name: lakesoul-nativeio-x86_64-pc-windows-msvc
@@ -119,8 +119,8 @@ jobs:
       - name: Set up JDK 11
         uses: actions/setup-java@v5
         with:
-          java-version: '11'
-          distribution: 'temurin'
+          java-version: "11"
+          distribution: "temurin"
           cache: maven
           cache-path: |
             /Users/runner/.m2/repository
@@ -140,7 +140,7 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: build
-          args: '--release --package lakesoul-io-c --package lakesoul-metadata-c --all-features'
+          args: "--release --package lakesoul-io-c --package lakesoul-metadata-c --all-features"
       - uses: actions/upload-artifact@v4
         with:
           name: lakesoul-nativeio-x86_64-apple-darwin
@@ -152,7 +152,7 @@ jobs:
 
   build-maven-package:
     runs-on: ubuntu-24.04
-    needs: [ build-linux-x86_64, build-windows-x86_64, build-macos-x86_64 ]
+    needs: [build-linux-x86_64, build-windows-x86_64, build-macos-x86_64]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -182,8 +182,8 @@ jobs:
       - name: Set up JDK 11
         uses: actions/setup-java@v5
         with:
-          java-version: '11'
-          distribution: 'temurin'
+          java-version: "11"
+          distribution: "temurin"
           cache: maven
           cache-path: |
             /home/runner/.m2/repository

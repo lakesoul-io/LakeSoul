@@ -1,6 +1,9 @@
 package org.apache.flink.lakesoul.substrait;
 
+import static com.dmetasoul.lakesoul.lakesoul.io.substrait.SubstraitUtil.and;
+
 import io.substrait.expression.Expression;
+
 import org.apache.commons.lang3.StringUtils;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.table.connector.source.abilities.SupportsFilterPushDown;
@@ -12,13 +15,10 @@ import org.apache.flink.table.functions.BuiltInFunctionDefinition;
 
 import java.util.*;
 
-import static com.dmetasoul.lakesoul.lakesoul.io.substrait.SubstraitUtil.and;
-
 public class SubstraitFlinkUtil {
 
     public static Tuple2<SupportsFilterPushDown.Result, Expression> flinkExprToSubStraitExpr(
-            List<ResolvedExpression> filters
-    ) {
+            List<ResolvedExpression> filters) {
         List<ResolvedExpression> pushed = new ArrayList<>();
         List<ResolvedExpression> remaining = new ArrayList<>();
         Expression combined = null;
@@ -65,16 +65,19 @@ public class SubstraitFlinkUtil {
         }
     }
 
-    public static boolean filterAllPartitionColumn(ResolvedExpression expression, Set<String> partitionCols) {
+    public static boolean filterAllPartitionColumn(
+            ResolvedExpression expression, Set<String> partitionCols) {
         if (expression instanceof FieldReferenceExpression) {
             return partitionCols.contains(((FieldReferenceExpression) expression).getName());
         } else if (expression instanceof CallExpression) {
-            return expression.getResolvedChildren().stream().allMatch(child -> filterAllPartitionColumn(child, partitionCols));
+            return expression.getResolvedChildren().stream()
+                    .allMatch(child -> filterAllPartitionColumn(child, partitionCols));
 
         } else return expression instanceof ValueLiteralExpression;
     }
 
-    public static boolean filterContainsPartitionColumn(ResolvedExpression expression, Set<String> partitionCols) {
+    public static boolean filterContainsPartitionColumn(
+            ResolvedExpression expression, Set<String> partitionCols) {
         if (expression instanceof FieldReferenceExpression) {
             return partitionCols.contains(((FieldReferenceExpression) expression).getName());
         } else if (expression instanceof CallExpression) {
@@ -90,21 +93,26 @@ public class SubstraitFlinkUtil {
     }
 
     // check if this partition filter is equality with literal
-    public static Map<String, String> equalityFilterFieldNames(List<ResolvedExpression> partitionFilters) {
+    public static Map<String, String> equalityFilterFieldNames(
+            List<ResolvedExpression> partitionFilters) {
         Map<String, String> fieldNames = new HashMap<>();
         for (ResolvedExpression expression : partitionFilters) {
             if (expression instanceof CallExpression) {
                 CallExpression call = (CallExpression) expression;
                 if (call.getFunctionDefinition() instanceof BuiltInFunctionDefinition) {
-                    BuiltInFunctionDefinition functionDefinition = (BuiltInFunctionDefinition) call.getFunctionDefinition();
+                    BuiltInFunctionDefinition functionDefinition =
+                            (BuiltInFunctionDefinition) call.getFunctionDefinition();
                     if (functionDefinition.getName().equals("equals")) {
                         List<ResolvedExpression> resolvedChildren = call.getResolvedChildren();
                         if (resolvedChildren.size() == 2) {
                             if (resolvedChildren.get(0) instanceof FieldReferenceExpression) {
-                                FieldReferenceExpression fieldRef = (FieldReferenceExpression) resolvedChildren.get(0);
+                                FieldReferenceExpression fieldRef =
+                                        (FieldReferenceExpression) resolvedChildren.get(0);
                                 if (resolvedChildren.get(1) instanceof ValueLiteralExpression) {
-                                    ValueLiteralExpression valueLiteral = (ValueLiteralExpression) resolvedChildren.get(1);
-                                    fieldNames.put(fieldRef.getName(),
+                                    ValueLiteralExpression valueLiteral =
+                                            (ValueLiteralExpression) resolvedChildren.get(1);
+                                    fieldNames.put(
+                                            fieldRef.getName(),
                                             StringUtils.strip(valueLiteral.asSummaryString(), "'"));
                                 }
                             }

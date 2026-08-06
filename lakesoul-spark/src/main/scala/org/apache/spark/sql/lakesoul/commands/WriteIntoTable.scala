@@ -9,32 +9,39 @@ import org.apache.spark.sql._
 import org.apache.spark.sql.execution.command.LeafRunnableCommand
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.schema.ImplicitMetadataOperation
-import org.apache.spark.sql.lakesoul.{LakeSoulOptions, PartitionFilter, SnapshotManagement, TransactionCommit}
+import org.apache.spark.sql.lakesoul.{
+  LakeSoulOptions,
+  PartitionFilter,
+  SnapshotManagement,
+  TransactionCommit
+}
 
-/**
-  * Used to write a [[DataFrame]] into a lakesoul table.
+/** Used to write a [[DataFrame]] into a lakesoul table.
   *
   * New Table Semantics
-  *  - The schema of the [[DataFrame]] is used to initialize the table.
-  *  - The partition columns will be used to partition the table.
+  *   - The schema of the [[DataFrame]] is used to initialize the table.
+  *   - The partition columns will be used to partition the table.
   *
   * Existing Table Semantics
-  *  - The save mode will control how existing data is handled (i.e. overwrite, append, etc)
-  *  - The schema will of the DataFrame will be checked and if there are new columns present
-  *    they will be added to the tables schema. Conflicting columns (i.e. a INT, and a STRING)
-  *    will result in an exception
-  *  - The partition columns, if present are validated against the existing metadata. If not
-  *    present, then the partitioning of the table is respected.
+  *   - The save mode will control how existing data is handled (i.e. overwrite,
+  *     append, etc)
+  *   - The schema will of the DataFrame will be checked and if there are new
+  *     columns present they will be added to the tables schema. Conflicting
+  *     columns (i.e. a INT, and a STRING) will result in an exception
+  *   - The partition columns, if present are validated against the existing
+  *     metadata. If not present, then the partitioning of the table is
+  *     respected.
   *
-  * In combination with `Overwrite`, a `replaceWhere` option can be used to transactionally
-  * replace data that matches a predicate.
+  * In combination with `Overwrite`, a `replaceWhere` option can be used to
+  * transactionally replace data that matches a predicate.
   */
-case class WriteIntoTable(snapshotManagement: SnapshotManagement,
-                          mode: SaveMode,
-                          options: LakeSoulOptions,
-                          configuration: Map[String, String],
-                          data: DataFrame)
-  extends LeafRunnableCommand
+case class WriteIntoTable(
+    snapshotManagement: SnapshotManagement,
+    mode: SaveMode,
+    options: LakeSoulOptions,
+    configuration: Map[String, String],
+    data: DataFrame
+) extends LeafRunnableCommand
     with ImplicitMetadataOperation
     with Command {
 
@@ -56,13 +63,20 @@ case class WriteIntoTable(snapshotManagement: SnapshotManagement,
   override def run(sparkSession: SparkSession): Seq[Row] = {
     snapshotManagement.withNewTransaction { tc =>
       val (addFiles, expireFiles) = write(tc, sparkSession)
-      tc.commit(addFiles, expireFiles, snapshotManagement.snapshot.readPartitionInfo.toArray)
+      tc.commit(
+        addFiles,
+        expireFiles,
+        snapshotManagement.snapshot.readPartitionInfo.toArray
+      )
     }
     Seq.empty
   }
 
   /** @return (newFiles, deletedFiles) */
-  def write(tc: TransactionCommit, sparkSession: SparkSession): (Seq[DataFileInfo], Seq[DataFileInfo]) = {
+  def write(
+      tc: TransactionCommit,
+      sparkSession: SparkSession
+  ): (Seq[DataFileInfo], Seq[DataFileInfo]) = {
 
     val hashCols = if (tc.isFirstCommit) {
       hashPartitions
@@ -71,16 +85,18 @@ case class WriteIntoTable(snapshotManagement: SnapshotManagement,
     }
 
     mode match {
-      case SaveMode.ErrorIfExists | SaveMode.Append | SaveMode.Ignore => tc.setCommitType("append")
+      case SaveMode.ErrorIfExists | SaveMode.Append | SaveMode.Ignore =>
+        tc.setCommitType("append")
       case SaveMode.Overwrite => tc.setCommitType("update")
     }
 
     if (!tc.isFirstCommit) {
       // This table already exists, check if the insert is valid.
       if (mode == SaveMode.ErrorIfExists) {
-        throw LakeSoulErrors.pathAlreadyExistsException(snapshotManagement.snapshot.getTableInfo.table_path)
-      }
-      else if (mode == SaveMode.Append && hashCols.nonEmpty) {
+        throw LakeSoulErrors.pathAlreadyExistsException(
+          snapshotManagement.snapshot.getTableInfo.table_path
+        )
+      } else if (mode == SaveMode.Append && hashCols.nonEmpty) {
         throw LakeSoulErrors.appendNotSupportException
       } else if (mode == SaveMode.Ignore) {
         return (Nil, Nil)
@@ -96,13 +112,15 @@ case class WriteIntoTable(snapshotManagement: SnapshotManagement,
       val predicates = parsePartitionPredicates(sparkSession, replaceWhere.get)
       if (mode == SaveMode.Overwrite) {
         verifyPartitionPredicates(
-          sparkSession, tc.tableInfo.range_column, predicates)
+          sparkSession,
+          tc.tableInfo.range_column,
+          predicates
+        )
       }
       Some(predicates)
     } else {
       None
     }
-
 
     val newFiles = tc.writeFiles(data, Some(options))
     val deletedFiles = (mode, partitionFilters) match {
@@ -114,9 +132,11 @@ case class WriteIntoTable(snapshotManagement: SnapshotManagement,
         } else {
           // only delete affected partitions
           val written_partitions = newFiles
-            .groupBy(_.range_partitions).keys
+            .groupBy(_.range_partitions)
+            .keys
             .toSet
-          tc.filterFiles().filter(f => written_partitions.contains(f.range_partitions))
+          tc.filterFiles()
+            .filter(f => written_partitions.contains(f.range_partitions))
             .map(_.expire(deleteTime))
         }
       case (SaveMode.Overwrite, Some(predicates)) =>
@@ -124,10 +144,14 @@ case class WriteIntoTable(snapshotManagement: SnapshotManagement,
         val matchingFiles = PartitionFilter.filterFileList(
           tc.tableInfo.range_partition_schema,
           newFiles,
-          predicates)
+          predicates
+        )
         if (matchingFiles.length != newFiles.length) {
           val badPartitions = (newFiles.toSet -- matchingFiles).mkString(",")
-          throw LakeSoulErrors.replaceWhereMismatchException(replaceWhere.get, badPartitions)
+          throw LakeSoulErrors.replaceWhereMismatchException(
+            replaceWhere.get,
+            badPartitions
+          )
         }
         val deleteTime = System.currentTimeMillis()
         tc.filterFiles(predicates).map(_.expire(deleteTime))

@@ -52,6 +52,4 @@ public class MockLakeSoulCatalog {
             return testSource;
         }
     }
-
-
 }

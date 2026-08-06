@@ -4,6 +4,9 @@
 
 package org.apache.flink.lakesoul.test;
 
+import static org.apache.flink.table.api.config.ExecutionConfigOptions.TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM;
+import static org.assertj.core.api.Assertions.assertThat;
+
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
 import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
@@ -20,9 +23,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
-
-import static org.apache.flink.table.api.config.ExecutionConfigOptions.TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM;
-import static org.assertj.core.api.Assertions.assertThat;
 
 public class LakeSoulTestUtils {
 
@@ -47,17 +47,20 @@ public class LakeSoulTestUtils {
 
     public static TableEnvironment createTableEnvInBatchMode(SqlDialect dialect) {
         TableEnvironment tableEnv = TableEnvironment.create(EnvironmentSettings.inBatchMode());
-        tableEnv.getConfig().getConfiguration().setInteger(TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM, 2);
+        tableEnv.getConfig()
+                .getConfiguration()
+                .setInteger(TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM, 2);
         tableEnv.getConfig().setSqlDialect(dialect);
         return tableEnv;
     }
 
-    public static StreamTableEnvironment createTableEnvInStreamingMode(StreamExecutionEnvironment env) {
+    public static StreamTableEnvironment createTableEnvInStreamingMode(
+            StreamExecutionEnvironment env) {
         return createTableEnvInStreamingMode(env, SqlDialect.DEFAULT);
     }
 
-    public static StreamTableEnvironment createTableEnvInStreamingMode(StreamExecutionEnvironment env,
-                                                                       int parallelism) {
+    public static StreamTableEnvironment createTableEnvInStreamingMode(
+            StreamExecutionEnvironment env, int parallelism) {
         return createTableEnvInStreamingMode(env, SqlDialect.DEFAULT, parallelism);
     }
 
@@ -65,8 +68,10 @@ public class LakeSoulTestUtils {
         return createStreamExecutionEnvironment(2, 5000, 5000);
     }
 
-    public static StreamExecutionEnvironment createStreamExecutionEnvironment(int parallelism, long checkpointInterval, long checkpointTimeout) {
-        org.apache.flink.configuration.Configuration config = new org.apache.flink.configuration.Configuration();
+    public static StreamExecutionEnvironment createStreamExecutionEnvironment(
+            int parallelism, long checkpointInterval, long checkpointTimeout) {
+        org.apache.flink.configuration.Configuration config =
+                new org.apache.flink.configuration.Configuration();
         config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(config);
         env.setParallelism(parallelism);
@@ -79,13 +84,13 @@ public class LakeSoulTestUtils {
         return env;
     }
 
-    public static StreamTableEnvironment createTableEnvInStreamingMode(StreamExecutionEnvironment env,
-                                                                       SqlDialect dialect) {
+    public static StreamTableEnvironment createTableEnvInStreamingMode(
+            StreamExecutionEnvironment env, SqlDialect dialect) {
         return createTableEnvInStreamingMode(env, dialect, 2);
     }
 
-    public static StreamTableEnvironment createTableEnvInStreamingMode(StreamExecutionEnvironment env,
-                                                                       SqlDialect dialect, int parallelism) {
+    public static StreamTableEnvironment createTableEnvInStreamingMode(
+            StreamExecutionEnvironment env, SqlDialect dialect, int parallelism) {
         StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env);
         tableEnv.getConfig()
                 .getConfiguration()
@@ -101,31 +106,44 @@ public class LakeSoulTestUtils {
         return tableEnv;
     }
 
-    public static void checkStreamingQueryAnswer(StreamTableEnvironment tableEnv, String sourceTable, String querySql,
-                                                 String schemaString,
-                                                 Consumer<String> f, String expectedAnswer, long timeout) {
+    public static void checkStreamingQueryAnswer(
+            StreamTableEnvironment tableEnv,
+            String sourceTable,
+            String querySql,
+            String schemaString,
+            Consumer<String> f,
+            String expectedAnswer,
+            long timeout) {
         tableEnv.executeSql(
-                String.format("DROP TABLE IF EXISTS default_catalog.default_database.%s_sink", sourceTable));
-        tableEnv.executeSql(String.format("CREATE TABLE default_catalog.default_database.%s_sink(", sourceTable) +
-                schemaString +
-                ")WITH (" +
-                "'connector' = 'values', 'sink-insert-only' = 'false'" +
-                ")");
+                String.format(
+                        "DROP TABLE IF EXISTS default_catalog.default_database.%s_sink",
+                        sourceTable));
+        tableEnv.executeSql(
+                String.format("CREATE TABLE default_catalog.default_database.%s_sink(", sourceTable)
+                        + schemaString
+                        + ")WITH ("
+                        + "'connector' = 'values', 'sink-insert-only' = 'false'"
+                        + ")");
         TestValuesTableFactory.clearAllData();
         final TableResult execute =
                 tableEnv.executeSql(
-                        String.format("INSERT INTO default_catalog.default_database.%s_sink ", sourceTable) + querySql);
-        Thread thread = new Thread(() -> {
-            try {
-                execute.await(timeout, TimeUnit.SECONDS);
-            } catch (InterruptedException | ExecutionException e) {
-                throw new RuntimeException(e);
-            } catch (TimeoutException e) {
+                        String.format(
+                                        "INSERT INTO default_catalog.default_database.%s_sink ",
+                                        sourceTable)
+                                + querySql);
+        Thread thread =
+                new Thread(
+                        () -> {
+                            try {
+                                execute.await(timeout, TimeUnit.SECONDS);
+                            } catch (InterruptedException | ExecutionException e) {
+                                throw new RuntimeException(e);
+                            } catch (TimeoutException e) {
 
-            } finally {
-                execute.getJobClient().get().cancel();
-            }
-        });
+                            } finally {
+                                execute.getJobClient().get().cancel();
+                            }
+                        });
         thread.start();
         f.accept("");
         try {
@@ -133,16 +151,26 @@ public class LakeSoulTestUtils {
         } catch (InterruptedException e) {
             throw new RuntimeException(e);
         }
-        List<Row> results = TestValuesTableFactory.getResults(String.format("%s_sink", sourceTable));
+        List<Row> results =
+                TestValuesTableFactory.getResults(String.format("%s_sink", sourceTable));
         System.out.println(results);
         if (expectedAnswer.isEmpty()) {
             System.out.println(results);
         } else {
-            List<String> sorted = results.stream().map(Row::toString).sorted(Comparator.comparing(
-                    row -> Integer.valueOf(row.substring(3, (row.contains(",")) ? row.indexOf(",") : row.length() - 1))))
-                    .collect(Collectors.toList());
+            List<String> sorted =
+                    results.stream()
+                            .map(Row::toString)
+                            .sorted(
+                                    Comparator.comparing(
+                                            row ->
+                                                    Integer.valueOf(
+                                                            row.substring(
+                                                                    3,
+                                                                    (row.contains(","))
+                                                                            ? row.indexOf(",")
+                                                                            : row.length() - 1))))
+                            .collect(Collectors.toList());
             assertThat(sorted.toString()).isEqualTo(expectedAnswer);
         }
     }
-
 }

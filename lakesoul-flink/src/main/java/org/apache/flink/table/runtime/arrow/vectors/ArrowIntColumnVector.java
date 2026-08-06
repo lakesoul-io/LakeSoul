@@ -18,11 +18,10 @@
 
 package org.apache.flink.table.runtime.arrow.vectors;
 
+import org.apache.arrow.vector.IntVector;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.data.columnar.vector.IntColumnVector;
 import org.apache.flink.util.Preconditions;
-
-import org.apache.arrow.vector.IntVector;
 
 /** Arrow column vector for Int. */
 @Internal

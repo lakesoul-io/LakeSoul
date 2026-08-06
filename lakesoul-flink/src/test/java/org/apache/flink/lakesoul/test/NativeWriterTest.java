@@ -1,6 +1,10 @@
 package org.apache.flink.lakesoul.test;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOWriter;
+
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.lakesoul.sink.writer.NativeLakeSoulWriter;
 import org.apache.flink.lakesoul.sink.writer.NativeParquetWriter;
@@ -9,10 +13,6 @@ import org.junit.Test;
 
 import java.io.IOException;
 import java.util.Collections;
-
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-
 
 public class NativeWriterTest {
 
@@ -35,11 +35,15 @@ public class NativeWriterTest {
     @Test
     public void native_writer_serializer_accepts_deprecated_recoverable() throws IOException {
         NativeParquetWriter.NativeWriterPendingFileRecoverable recoverable =
-                new NativeParquetWriter.NativeWriterPendingFileRecoverable("file:///tmp/part-0001.vortex", 123L);
+                new NativeParquetWriter.NativeWriterPendingFileRecoverable(
+                        "file:///tmp/part-0001.vortex", 123L);
 
-        byte[] bytes = NativeLakeSoulWriter.NativePendingFileRecoverableSerializer.INSTANCE.serialize(recoverable);
+        byte[] bytes =
+                NativeLakeSoulWriter.NativePendingFileRecoverableSerializer.INSTANCE.serialize(
+                        recoverable);
         InProgressFileWriter.PendingFileRecoverable restored =
-                NativeLakeSoulWriter.NativePendingFileRecoverableSerializer.INSTANCE.deserialize(0, bytes);
+                NativeLakeSoulWriter.NativePendingFileRecoverableSerializer.INSTANCE.deserialize(
+                        0, bytes);
 
         assertTrue(restored instanceof NativeLakeSoulWriter.NativeWriterPendingFileRecoverable);
         NativeLakeSoulWriter.NativeWriterPendingFileRecoverable nativeRecoverable =
@@ -51,11 +55,15 @@ public class NativeWriterTest {
     @Test
     public void deprecated_serializer_accepts_native_recoverable() throws IOException {
         NativeLakeSoulWriter.NativeWriterPendingFileRecoverable recoverable =
-                new NativeLakeSoulWriter.NativeWriterPendingFileRecoverable("file:///tmp/part-0002.vortex", 456L);
+                new NativeLakeSoulWriter.NativeWriterPendingFileRecoverable(
+                        "file:///tmp/part-0002.vortex", 456L);
 
-        byte[] bytes = NativeParquetWriter.NativePendingFileRecoverableSerializer.INSTANCE.serialize(recoverable);
+        byte[] bytes =
+                NativeParquetWriter.NativePendingFileRecoverableSerializer.INSTANCE.serialize(
+                        recoverable);
         InProgressFileWriter.PendingFileRecoverable restored =
-                NativeParquetWriter.NativePendingFileRecoverableSerializer.INSTANCE.deserialize(0, bytes);
+                NativeParquetWriter.NativePendingFileRecoverableSerializer.INSTANCE.deserialize(
+                        0, bytes);
 
         assertTrue(restored instanceof NativeParquetWriter.NativeWriterPendingFileRecoverable);
         NativeParquetWriter.NativeWriterPendingFileRecoverable parquetRecoverable =

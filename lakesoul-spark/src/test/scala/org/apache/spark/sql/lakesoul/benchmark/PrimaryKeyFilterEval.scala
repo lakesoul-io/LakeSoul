@@ -27,14 +27,24 @@ object PrimaryKeyFilterEval {
   }
 
   def main(args: Array[String]): Unit = {
-    val builder = SparkSession.builder()
+    val builder = SparkSession
+      .builder()
       .appName("PrimaryKeyFilter PushDown TEST")
       .master("local[4]")
-      .config("spark.hadoop.fs.s3.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+      .config(
+        "spark.hadoop.fs.s3.impl",
+        "org.apache.hadoop.fs.s3a.S3AFileSystem"
+      )
       .config("hadoop.fs.s3a.committer.name", "directory")
       .config("spark.hadoop.fs.s3a.committer.staging.conflict-mode", "append")
-      .config("spark.hadoop.fs.s3a.committer.staging.tmp.path", "/opt/spark/work-dir/s3a_staging")
-      .config("spark.hadoop.mapreduce.outputcommitter.factory.scheme.s3a", "org.apache.hadoop.fs.s3a.commit.S3ACommitterFactory")
+      .config(
+        "spark.hadoop.fs.s3a.committer.staging.tmp.path",
+        "/opt/spark/work-dir/s3a_staging"
+      )
+      .config(
+        "spark.hadoop.mapreduce.outputcommitter.factory.scheme.s3a",
+        "org.apache.hadoop.fs.s3a.commit.S3ACommitterFactory"
+      )
       .config("spark.hadoop.fs.s3a.path.style.access", "true")
       .config("spark.hadoop.fs.s3.buffer.dir", "/opt/spark/work-dir/s3")
       .config("spark.hadoop.fs.s3a.buffer.dir", "/opt/spark/work-dir/s3a")
@@ -51,9 +61,15 @@ object PrimaryKeyFilterEval {
       .config("spark.default.parallelism", 8)
       .config("spark.sql.parquet.mergeSchema", value = false)
       .config("spark.sql.parquet.filterPushdown", value = false)
-      .config("spark.hadoop.mapred.output.committer.class", "org.apache.hadoop.mapred.FileOutputCommitter")
+      .config(
+        "spark.hadoop.mapred.output.committer.class",
+        "org.apache.hadoop.mapred.FileOutputCommitter"
+      )
       .config("spark.sql.session.timeZone", serverTimeZone)
-      .config("spark.sql.extensions", "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension")
+      .config(
+        "spark.sql.extensions",
+        "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension"
+      )
       .config("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
       .config(SQLConf.DEFAULT_CATALOG.key, LakeSoulCatalog.CATALOG_NAME)
       .config("spark.default.parallelism", "16")
@@ -65,18 +81,23 @@ object PrimaryKeyFilterEval {
 
     withTempDir(dir => {
       //  create table and insert mocked data
-      spark.sql(s"create table if not exists test_pk_filter_table (hash INT, value INT) USING lakesoul LOCATION '${dir.getCanonicalPath}' TBLPROPERTIES( 'hashPartitions'='hash', 'hashBucketNum'='4');")
+      spark.sql(
+        s"create table if not exists test_pk_filter_table (hash INT, value INT) USING lakesoul LOCATION '${dir.getCanonicalPath}' TBLPROPERTIES( 'hashPartitions'='hash', 'hashBucketNum'='4');"
+      )
 
       val table = LakeSoulTable.forPath(dir.getCanonicalPath)
       Range(0, 20).foreach(i => {
-        var seq = (0 to 200).map(_ => (Random.nextInt(10000), Random.nextInt(1000) + i * 1000))
+        var seq = (0 to 200).map(_ =>
+          (Random.nextInt(10000), Random.nextInt(1000) + i * 1000)
+        )
 
         val df = spark.createDataFrame(seq).toDF("hash", "value")
         table.upsert(df)
 
       })
 
-      spark.sessionState.conf.setConfString("spark.sql.parquet.filterPushdown", "true")
+      spark.sessionState.conf
+        .setConfString("spark.sql.parquet.filterPushdown", "true")
       spark.time({
         println("warmup")
         table.toDF.where("hash < 200").collect()
@@ -84,17 +105,25 @@ object PrimaryKeyFilterEval {
 
       var notPush: Option[Array[Row]] = None
       var push: Option[Array[Row]] = None
-      
-      spark.sessionState.conf.setConfString("spark.sql.parquet.filterPushdown", "true")
+
+      spark.sessionState.conf
+        .setConfString("spark.sql.parquet.filterPushdown", "true")
       spark.time({
-        println("spark.sql.parquet.filterPushdown=" + spark.sessionState.conf.getConfString("spark.sql.parquet.filterPushdown"))
+        println(
+          "spark.sql.parquet.filterPushdown=" + spark.sessionState.conf
+            .getConfString("spark.sql.parquet.filterPushdown")
+        )
         LakeSoulTable.uncached(dir.getCanonicalPath)
         push = Some(table.toDF.where("hash < 200").collect())
       })
 
-      spark.sessionState.conf.setConfString("spark.sql.parquet.filterPushdown", "false")
+      spark.sessionState.conf
+        .setConfString("spark.sql.parquet.filterPushdown", "false")
       spark.time({
-        println("spark.sql.parquet.filterPushdown=" + spark.sessionState.conf.getConfString("spark.sql.parquet.filterPushdown"))
+        println(
+          "spark.sql.parquet.filterPushdown=" + spark.sessionState.conf
+            .getConfString("spark.sql.parquet.filterPushdown")
+        )
         LakeSoulTable.uncached(dir.getCanonicalPath)
         notPush = Some(table.toDF.where("hash < 200").collect())
       })

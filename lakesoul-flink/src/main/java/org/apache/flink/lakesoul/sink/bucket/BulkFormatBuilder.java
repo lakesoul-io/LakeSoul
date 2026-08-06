@@ -4,6 +4,8 @@
 
 package org.apache.flink.lakesoul.sink.bucket;
 
+import static org.apache.flink.util.Preconditions.checkNotNull;
+
 import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
@@ -16,15 +18,10 @@ import org.apache.flink.lakesoul.sink.writer.*;
 import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;
 import org.apache.flink.streaming.api.functions.sink.filesystem.rollingpolicies.CheckpointRollingPolicy;
 import org.apache.flink.streaming.api.functions.sink.filesystem.rollingpolicies.OnCheckpointRollingPolicy;
-import org.apache.flink.table.data.RowData;
 
 import java.io.IOException;
 
-import static org.apache.flink.util.Preconditions.checkNotNull;
-
-/**
- * A builder for configuring the sink for bulk-encoding formats
- */
+/** A builder for configuring the sink for bulk-encoding formats */
 public abstract class BulkFormatBuilder<IN, OUT, T extends BulkFormatBuilder<IN, OUT, T>>
         extends BucketsBuilder<IN, OUT, T> {
 
@@ -41,7 +38,8 @@ public abstract class BulkFormatBuilder<IN, OUT, T extends BulkFormatBuilder<IN,
 
     protected Configuration conf;
 
-    protected BulkFormatBuilder(Path basePath, Configuration conf, LakeSoulWriterBucketFactory bucketFactory) {
+    protected BulkFormatBuilder(
+            Path basePath, Configuration conf, LakeSoulWriterBucketFactory bucketFactory) {
         this(
                 basePath,
                 conf,
@@ -81,15 +79,14 @@ public abstract class BulkFormatBuilder<IN, OUT, T extends BulkFormatBuilder<IN,
         return self();
     }
 
-    /**
-     * Creates the actual sink.
-     */
+    /** Creates the actual sink. */
     public LakeSoulMultiTablesSink<IN, OUT> build() {
         return new LakeSoulMultiTablesSink<>(this);
     }
 
     @Override
-    public abstract AbstractLakeSoulMultiTableSinkWriter<IN, OUT> createWriter(Sink.InitContext context, int subTaskId) throws IOException;
+    public abstract AbstractLakeSoulMultiTableSinkWriter<IN, OUT> createWriter(
+            Sink.InitContext context, int subTaskId) throws IOException;
 
     @Override
     public LakeSoulSinkCommitter createCommitter() throws IOException {
@@ -116,7 +113,9 @@ public abstract class BulkFormatBuilder<IN, OUT, T extends BulkFormatBuilder<IN,
     }
 
     @Override
-    public SimpleVersionedSerializer<LakeSoulMultiTableSinkGlobalCommittable> getGlobalCommittableSerializer() throws IOException {
-        return new LakeSoulSinkGlobalCommittableSerializer(LakeSoulSinkCommittableSerializer.INSTANCE);
+    public SimpleVersionedSerializer<LakeSoulMultiTableSinkGlobalCommittable>
+            getGlobalCommittableSerializer() throws IOException {
+        return new LakeSoulSinkGlobalCommittableSerializer(
+                LakeSoulSinkCommittableSerializer.INSTANCE);
     }
 }

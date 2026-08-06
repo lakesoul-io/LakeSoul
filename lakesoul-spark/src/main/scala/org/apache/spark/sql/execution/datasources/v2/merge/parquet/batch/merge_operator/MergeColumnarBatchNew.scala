@@ -9,16 +9,20 @@ import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.MergeOp
 import org.apache.spark.sql.types.DataType
 import org.apache.spark.sql.vectorized.ColumnVector
 
-/**
-  * Construct a column batch for merged result.
+/** Construct a column batch for merged result.
   *
-  * @param columns        ordered column vectors of all file
-  * @param mergeOps       merge operators
-  * @param indexTypeArray result schema index and type
+  * @param columns
+  *   ordered column vectors of all file
+  * @param mergeOps
+  *   merge operators
+  * @param indexTypeArray
+  *   result schema index and type
   */
-class MergeColumnarBatchNew(columns: Array[ColumnVector],
-                            mergeOps: Seq[MergeOperator[Any]],
-                            indexTypeArray: Seq[FieldIndex]) extends AutoCloseable {
+class MergeColumnarBatchNew(
+    columns: Array[ColumnVector],
+    mergeOps: Seq[MergeOperator[Any]],
+    indexTypeArray: Seq[FieldIndex]
+) extends AutoCloseable {
 
   val row = new MergeOperatorColumnarBatchRow(columns, mergeOps, indexTypeArray)
 
@@ -28,7 +32,9 @@ class MergeColumnarBatchNew(columns: Array[ColumnVector],
     row
   }
 
-  def getMergeRow(resultIndex: Seq[Seq[MergeColumnIndex]]): MergeOperatorColumnarBatchRow = {
+  def getMergeRow(
+      resultIndex: Seq[Seq[MergeColumnIndex]]
+  ): MergeOperatorColumnarBatchRow = {
     row.idMix = resultIndex
     row.mergeValues()
     row
@@ -39,6 +45,5 @@ class MergeColumnarBatchNew(columns: Array[ColumnVector],
       c.close()
     }
   }
-
 
 }

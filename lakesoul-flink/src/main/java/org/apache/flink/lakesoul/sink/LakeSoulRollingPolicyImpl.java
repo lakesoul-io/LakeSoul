@@ -30,7 +30,8 @@ public class LakeSoulRollingPolicyImpl<In> extends CheckpointRollingPolicy<In, S
     }
 
     @Override
-    public boolean shouldRollOnEvent(PartFileInfo<String> partFileState, In element) throws IOException {
+    public boolean shouldRollOnEvent(PartFileInfo<String> partFileState, In element)
+            throws IOException {
         return partFileState.getSize() >= this.rollingSize;
     }
 

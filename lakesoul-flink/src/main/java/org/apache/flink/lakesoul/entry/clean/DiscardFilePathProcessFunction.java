@@ -25,6 +25,7 @@ public class DiscardFilePathProcessFunction
 
     private transient ValueState<Long> lastOntimerTimestampState;
     private transient ValueState<Long> recordTimestampState;
+
     public DiscardFilePathProcessFunction(long expiredTimestamp) {
         this.expiredTimestamp = expiredTimestamp;
     }
@@ -39,19 +40,16 @@ public class DiscardFilePathProcessFunction
         ValueStateDescriptor<Long> lastOntimerTimestampStateDesc =
                 new ValueStateDescriptor<>("lastUpdateTimestampState", Long.class);
         lastOntimerTimestampState = getRuntimeContext().getState(lastOntimerTimestampStateDesc);
-
     }
 
     @Override
-    public void processElement(
-            Tuple2<String, Long> value,
-            Context ctx,
-            Collector<String> out) throws Exception {
+    public void processElement(Tuple2<String, Long> value, Context ctx, Collector<String> out)
+            throws Exception {
 
         String filePath = value.f0;
         long fileTimestamp = value.f1;
         long currentProcessingTime = ctx.timerService().currentProcessingTime();
-        if (fileTimestamp != -5L){
+        if (fileTimestamp != -5L) {
             recordTimestampState.update(fileTimestamp);
             if (currentProcessingTime - fileTimestamp > expiredTimestamp) {
                 log.info("文件 [{}] 已过期，加入清理队列准备清理。", filePath);
@@ -61,14 +59,15 @@ public class DiscardFilePathProcessFunction
                 long triggerTime = fileTimestamp + expiredTimestamp;
                 lastOntimerTimestampState.update(triggerTime);
                 ctx.timerService().registerProcessingTimeTimer(triggerTime);
-                LocalDateTime dateTime = LocalDateTime.ofInstant(
-                        Instant.ofEpochMilli(triggerTime),
-                        ZoneId.systemDefault());
-                String formatted = dateTime.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+                LocalDateTime dateTime =
+                        LocalDateTime.ofInstant(
+                                Instant.ofEpochMilli(triggerTime), ZoneId.systemDefault());
+                String formatted =
+                        dateTime.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
                 log.info("文件 [{}] 未过期，注册定时器将在 {} 触发清理。", filePath, formatted);
             }
         } else {
-            if (lastOntimerTimestampState.value() != null){
+            if (lastOntimerTimestampState.value() != null) {
                 log.info("文件:" + filePath + "已在别处被清理，删除该文件相关的定时器和状态");
                 ctx.timerService().deleteProcessingTimeTimer(lastOntimerTimestampState.value());
                 recordTimestampState.clear();
@@ -77,7 +76,8 @@ public class DiscardFilePathProcessFunction
     }
 
     @Override
-    public void onTimer(long timestamp, OnTimerContext ctx, Collector<String> out) throws Exception {
+    public void onTimer(long timestamp, OnTimerContext ctx, Collector<String> out)
+            throws Exception {
         String filePath = ctx.getCurrentKey();
         Long fileTimestamp = recordTimestampState.value();
         if (fileTimestamp == null) return;

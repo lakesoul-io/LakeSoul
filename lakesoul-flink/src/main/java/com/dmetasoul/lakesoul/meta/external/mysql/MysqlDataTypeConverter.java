@@ -4,16 +4,16 @@
 
 package com.dmetasoul.lakesoul.meta.external.mysql;
 
-import com.dmetasoul.lakesoul.meta.external.jdbc.JdbcDataTypeConverter;
-import io.debezium.relational.Column;
-import io.debezium.util.Strings;
-import org.apache.spark.sql.types.DataType;
-import org.apache.spark.sql.types.DecimalType;
-
-import java.util.List;
+import static org.apache.spark.sql.types.DataTypes.*;
 
 import static java.util.regex.Pattern.matches;
-import static org.apache.spark.sql.types.DataTypes.*;
+
+import com.dmetasoul.lakesoul.meta.external.jdbc.JdbcDataTypeConverter;
+
+import io.debezium.relational.Column;
+
+import org.apache.spark.sql.types.DataType;
+import org.apache.spark.sql.types.DecimalType;
 
 public class MysqlDataTypeConverter extends JdbcDataTypeConverter {
 
@@ -22,7 +22,8 @@ public class MysqlDataTypeConverter extends JdbcDataTypeConverter {
     }
 
     public DataType schemaBuilder(Column column) {
-        // Handle a few MySQL-specific types based upon how they are handled by the MySQL binlog client ...
+        // Handle a few MySQL-specific types based upon how they are handled by the MySQL binlog
+        // client ...
         String typeName = column.typeName().toUpperCase();
         if (matches(typeName, "JSON")) {
             return StringType;
@@ -48,27 +49,40 @@ public class MysqlDataTypeConverter extends JdbcDataTypeConverter {
         if (matches(typeName, "SET")) {
             return StringType;
         }
-        if (matches(typeName, "SMALLINT UNSIGNED") || matches(typeName, "SMALLINT UNSIGNED ZEROFILL")
-                || matches(typeName, "INT2 UNSIGNED") || matches(typeName, "INT2 UNSIGNED ZEROFILL")) {
-            // In order to capture unsigned SMALLINT 16-bit data source, INT32 will be required to safely capture all valid values
-            // Source: https://kafka.apache.org/0102/javadoc/org/apache/kafka/connect/data/Schema.Type.html
+        if (matches(typeName, "SMALLINT UNSIGNED")
+                || matches(typeName, "SMALLINT UNSIGNED ZEROFILL")
+                || matches(typeName, "INT2 UNSIGNED")
+                || matches(typeName, "INT2 UNSIGNED ZEROFILL")) {
+            // In order to capture unsigned SMALLINT 16-bit data source, INT32 will be required to
+            // safely capture all valid values
+            // Source:
+            // https://kafka.apache.org/0102/javadoc/org/apache/kafka/connect/data/Schema.Type.html
             return IntegerType;
         }
-        if (matches(typeName, "INT UNSIGNED") || matches(typeName, "INT UNSIGNED ZEROFILL")
-                || matches(typeName, "INT4 UNSIGNED") || matches(typeName, "INT4 UNSIGNED ZEROFILL")) {
-            // In order to capture unsigned INT 32-bit data source, INT64 will be required to safely capture all valid values
-            // Source: https://kafka.apache.org/0102/javadoc/org/apache/kafka/connect/data/Schema.Type.html
+        if (matches(typeName, "INT UNSIGNED")
+                || matches(typeName, "INT UNSIGNED ZEROFILL")
+                || matches(typeName, "INT4 UNSIGNED")
+                || matches(typeName, "INT4 UNSIGNED ZEROFILL")) {
+            // In order to capture unsigned INT 32-bit data source, INT64 will be required to safely
+            // capture all valid values
+            // Source:
+            // https://kafka.apache.org/0102/javadoc/org/apache/kafka/connect/data/Schema.Type.html
             return LongType;
         }
-        if (matches(typeName, "BIGINT UNSIGNED") || matches(typeName, "BIGINT UNSIGNED ZEROFILL")
-                || matches(typeName, "INT8 UNSIGNED") || matches(typeName, "INT8 UNSIGNED ZEROFILL")) {
+        if (matches(typeName, "BIGINT UNSIGNED")
+                || matches(typeName, "BIGINT UNSIGNED ZEROFILL")
+                || matches(typeName, "INT8 UNSIGNED")
+                || matches(typeName, "INT8 UNSIGNED ZEROFILL")) {
             switch (super.bigIntUnsignedMode) {
                 case LONG:
                     return LongType;
                 case PRECISE:
-                    // In order to capture unsigned INT 64-bit data source, org.apache.kafka.connect.data.Decimal:Byte will be required to safely capture all valid values with scale of 0
-                    // Source: https://kafka.apache.org/0102/javadoc/org/apache/kafka/connect/data/Schema.Type.html
-                    return new DecimalType(column.length(),0);
+                    // In order to capture unsigned INT 64-bit data source,
+                    // org.apache.kafka.connect.data.Decimal:Byte will be required to safely capture
+                    // all valid values with scale of 0
+                    // Source:
+                    // https://kafka.apache.org/0102/javadoc/org/apache/kafka/connect/data/Schema.Type.html
+                    return new DecimalType(column.length(), 0);
             }
         }
         if (matches(typeName, "FLOAT") && column.scale().isPresent() && column.length() <= 24) {
@@ -79,9 +93,11 @@ public class MysqlDataTypeConverter extends JdbcDataTypeConverter {
     }
 
     /**
-     * Determine if the uppercase form of a column's type is geometry collection independent of JDBC driver or server version.
+     * Determine if the uppercase form of a column's type is geometry collection independent of JDBC
+     * driver or server version.
      *
-     * @param upperCaseTypeName the upper case form of the column's {@link Column#typeName() type name}
+     * @param upperCaseTypeName the upper case form of the column's {@link Column#typeName() type
+     *     name}
      * @return {@code true} if the type is geometry collection
      */
     protected boolean isGeometryCollection(String upperCaseTypeName) {
@@ -89,9 +105,8 @@ public class MysqlDataTypeConverter extends JdbcDataTypeConverter {
             return false;
         }
 
-        return upperCaseTypeName.equals("GEOMETRYCOLLECTION") || upperCaseTypeName.equals("GEOMCOLLECTION")
+        return upperCaseTypeName.equals("GEOMETRYCOLLECTION")
+                || upperCaseTypeName.equals("GEOMCOLLECTION")
                 || upperCaseTypeName.endsWith(".GEOMCOLLECTION");
     }
-
-
 }

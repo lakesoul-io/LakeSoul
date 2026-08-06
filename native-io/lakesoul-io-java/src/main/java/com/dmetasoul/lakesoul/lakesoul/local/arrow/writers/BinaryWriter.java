@@ -20,15 +20,12 @@ package com.dmetasoul.lakesoul.lakesoul.local.arrow.writers;
 
 import org.apache.arrow.vector.FixedSizeBinaryVector;
 
-/**
- * {@link ArrowFieldWriter} for Binary.
- */
+/** {@link ArrowFieldWriter} for Binary. */
 public abstract class BinaryWriter<T> extends ArrowFieldWriter<T> {
 
     public static BinaryWriter<Object[]> forObject(FixedSizeBinaryVector fixedSizeBinaryVector) {
         return new BinaryWriterForObject(fixedSizeBinaryVector);
     }
-
 
     // ------------------------------------------------------------------------------------------
 
@@ -51,9 +48,7 @@ public abstract class BinaryWriter<T> extends ArrowFieldWriter<T> {
 
     // ------------------------------------------------------------------------------------------
 
-    /**
-     * {@link BinaryWriter} for {@link Object[]} input.
-     */
+    /** {@link BinaryWriter} for {@link Object[]} input. */
     public static final class BinaryWriterForObject extends BinaryWriter<Object[]> {
 
         private BinaryWriterForObject(FixedSizeBinaryVector fixedSizeBinaryVector) {
@@ -70,5 +65,4 @@ public abstract class BinaryWriter<T> extends ArrowFieldWriter<T> {
             return (byte[]) in[ordinal];
         }
     }
-
 }

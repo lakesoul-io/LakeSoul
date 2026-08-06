@@ -5,17 +5,18 @@ package org.apache.flink.lakesoul.entry.clean;
 
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
-import org.apache.flink.cdc.connectors.base.options.StartupOptions;
-import org.apache.flink.cdc.connectors.base.source.jdbc.JdbcIncrementalSource;
-import org.apache.flink.cdc.connectors.postgres.source.PostgresSourceBuilder;
-import org.apache.flink.lakesoul.entry.SourceOptions;
-import org.apache.flink.lakesoul.entry.clean.PartitionInfoRecordGets.PartitionInfo;
+
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.state.MapStateDescriptor;
 import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
 import org.apache.flink.api.common.typeinfo.TypeHint;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.utils.ParameterTool;
+import org.apache.flink.cdc.connectors.base.options.StartupOptions;
+import org.apache.flink.cdc.connectors.base.source.jdbc.JdbcIncrementalSource;
+import org.apache.flink.cdc.connectors.postgres.source.PostgresSourceBuilder;
+import org.apache.flink.lakesoul.entry.SourceOptions;
+import org.apache.flink.lakesoul.entry.clean.PartitionInfoRecordGets.PartitionInfo;
 import org.apache.flink.streaming.api.datastream.*;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.ProcessFunction;
@@ -52,20 +53,36 @@ public class NewCleanJob {
         Properties debeziumProperties = new Properties();
         debeziumProperties.setProperty("include.unknown.datatypes", "true");
         debeziumProperties.setProperty("heartbeat.interval.ms", "10000");
-        String[] tableList = new String[]{"public.partition_info", "public.discard_compressed_file_info", "public.table_info"};
+        String[] tableList =
+                new String[] {
+                    "public.partition_info",
+                    "public.discard_compressed_file_info",
+                    "public.table_info"
+                };
         userName = parameter.get(SourceOptions.SOURCE_DB_USER.key());
         dbName = parameter.get(SourceOptions.SOURCE_DB_DB_NAME.key());
         passWord = parameter.get(SourceOptions.SOURCE_DB_PASSWORD.key());
         host = parameter.get(SourceOptions.SOURCE_DB_HOST.key());
-        port = parameter.getInt(SourceOptions.SOURCE_DB_PORT.key(), SourceOptions.SOURCE_DB_PORT.defaultValue());
+        port =
+                parameter.getInt(
+                        SourceOptions.SOURCE_DB_PORT.key(),
+                        SourceOptions.SOURCE_DB_PORT.defaultValue());
         slotName = parameter.get(SourceOptions.SLOT_NAME.key());
         pluginName = parameter.get(SourceOptions.PLUG_NAME.key());
-        splitSize = parameter.getInt(SourceOptions.SPLIT_SIZE.key(), SourceOptions.SPLIT_SIZE.defaultValue());
+        splitSize =
+                parameter.getInt(
+                        SourceOptions.SPLIT_SIZE.key(), SourceOptions.SPLIT_SIZE.defaultValue());
         schemaList = parameter.get(SourceOptions.SCHEMA_LIST.key());
-        startMode = parameter.get(SourceOptions.STARTUP_OPTIONS_CONFIG_OPTION.key(), (String)SourceOptions.STARTUP_OPTIONS_CONFIG_OPTION.defaultValue());
+        startMode =
+                parameter.get(
+                        SourceOptions.STARTUP_OPTIONS_CONFIG_OPTION.key(),
+                        (String) SourceOptions.STARTUP_OPTIONS_CONFIG_OPTION.defaultValue());
         pgUrl = parameter.get(SourceOptions.PG_URL.key());
-        sourceParallelism = parameter.getInt(SourceOptions.SOURCE_PARALLELISM.key(), SourceOptions.SOURCE_PARALLELISM.defaultValue());
-        targetTables = parameter.get(SourceOptions.TARGET_TABLES.key(),null);
+        sourceParallelism =
+                parameter.getInt(
+                        SourceOptions.SOURCE_PARALLELISM.key(),
+                        SourceOptions.SOURCE_PARALLELISM.defaultValue());
+        targetTables = parameter.get(SourceOptions.TARGET_TABLES.key(), null);
         StartupOptions startupOptions = StartupOptions.initial();
         if (startMode.equals("latest")) {
             startupOptions = StartupOptions.latest();
@@ -73,11 +90,12 @@ public class NewCleanJob {
             startupOptions = StartupOptions.initial();
         }
 
-        //int ontimerInterval = 60000;
-        int ontimerInterval = parameter.getInt(SourceOptions.ONTIMER_INTERVAL.key(), 10) * 60000 * 60;
-        //expiredTime = 60000;
-        expiredTime = parameter.getInt(SourceOptions.DATA_EXPIRED_TIME.key(),120000) ;
-        if (expiredTime < 10){
+        // int ontimerInterval = 60000;
+        int ontimerInterval =
+                parameter.getInt(SourceOptions.ONTIMER_INTERVAL.key(), 10) * 60000 * 60;
+        // expiredTime = 60000;
+        expiredTime = parameter.getInt(SourceOptions.DATA_EXPIRED_TIME.key(), 120000);
+        if (expiredTime < 10) {
             expiredTime = expiredTime * 86400000;
         }
 
@@ -99,43 +117,47 @@ public class NewCleanJob {
                         .build();
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        DataStreamSource<String> postgresParallelSource = env.fromSource(
-                        postgresIncrementalSource,
-                        WatermarkStrategy.noWatermarks(),
-                        "PostgresParallelSource")
-                .setParallelism(sourceParallelism);
+        DataStreamSource<String> postgresParallelSource =
+                env.fromSource(
+                                postgresIncrementalSource,
+                                WatermarkStrategy.noWatermarks(),
+                                "PostgresParallelSource")
+                        .setParallelism(sourceParallelism);
         final OutputTag<String> partitionInfoTag = new OutputTag<String>("partition_info") {};
-        final OutputTag<String> discardFileInfoTag = new OutputTag<String>("discard_compressed_file_info") {};
+        final OutputTag<String> discardFileInfoTag =
+                new OutputTag<String>("discard_compressed_file_info") {};
         final OutputTag<String> tableInfoTag = new OutputTag<String>("table_info") {};
-        SingleOutputStreamOperator<String> mainStream = postgresParallelSource.process(
-                new ProcessFunction<String, String>() {
-                    @Override
-                    public void processElement(String value, Context ctx, Collector<String> out) throws Exception {
-                        try {
-                            JSONObject json = JSON.parseObject(value);
-                            String tableName = json.getString("tableName");
-                            if ("partition_info".equals(tableName)) {
-                                ctx.output(partitionInfoTag, value);
-                            } else if ("discard_compressed_file_info".equals(tableName)) {
-                                ctx.output(discardFileInfoTag, value);
-                            } else if ("table_info".equals(tableName)) {
-                                ctx.output(tableInfoTag, value);
+        SingleOutputStreamOperator<String> mainStream =
+                postgresParallelSource.process(
+                        new ProcessFunction<String, String>() {
+                            @Override
+                            public void processElement(
+                                    String value, Context ctx, Collector<String> out)
+                                    throws Exception {
+                                try {
+                                    JSONObject json = JSON.parseObject(value);
+                                    String tableName = json.getString("tableName");
+                                    if ("partition_info".equals(tableName)) {
+                                        ctx.output(partitionInfoTag, value);
+                                    } else if ("discard_compressed_file_info".equals(tableName)) {
+                                        ctx.output(discardFileInfoTag, value);
+                                    } else if ("table_info".equals(tableName)) {
+                                        ctx.output(tableInfoTag, value);
+                                    }
+                                } catch (Exception e) {
+                                    System.err.println("JSON parse error: " + e.getMessage());
+                                }
                             }
-                        } catch (Exception e) {
-                            System.err.println("JSON parse error: " + e.getMessage());
-                        }
-                    }
-                }
-        );
-        SideOutputDataStream<String> partitionInfoStream = mainStream.getSideOutput(partitionInfoTag);
-        SideOutputDataStream<String> discardFileInfoStream = mainStream.getSideOutput(discardFileInfoTag);
+                        });
+        SideOutputDataStream<String> partitionInfoStream =
+                mainStream.getSideOutput(partitionInfoTag);
+        SideOutputDataStream<String> discardFileInfoStream =
+                mainStream.getSideOutput(discardFileInfoTag);
         SideOutputDataStream<String> tableInfoStream = mainStream.getSideOutput(tableInfoTag);
         CleanUtils utils = new CleanUtils();
         final OutputTag<PartitionInfo> compactionCommitTag =
                 new OutputTag<PartitionInfo>(
-                        "compactionCommit",
-                        TypeInformation.of(PartitionInfo.class)
-                ) {};
+                        "compactionCommit", TypeInformation.of(PartitionInfo.class)) {};
         List<String> tableIdList = null;
 
         if (targetTables != null) {
@@ -144,57 +166,75 @@ public class NewCleanJob {
             }
         }
 
-        SingleOutputStreamOperator<PartitionInfo> mainStreaming = partitionInfoStream.map(new PartitionInfoRecordGets.metaMapper(tableIdList))
-                .process(new ProcessFunction<PartitionInfo, PartitionInfo>() {
-                    @Override
-                    public void processElement(PartitionInfo value,
-                                               ProcessFunction<PartitionInfo,
-                                                       PartitionInfo>.Context ctx,
-                                               Collector<PartitionInfo> out) throws Exception {
-                        if (value.commitOp != null){
-                            if (value.commitOp.equals("CompactionCommit") || value.commitOp.equals("UpdateCommit")){
-                                ctx.output(compactionCommitTag,value);
-                            }
-                        }
-                        out.collect(value);
+        SingleOutputStreamOperator<PartitionInfo> mainStreaming =
+                partitionInfoStream
+                        .map(new PartitionInfoRecordGets.metaMapper(tableIdList))
+                        .process(
+                                new ProcessFunction<PartitionInfo, PartitionInfo>() {
+                                    @Override
+                                    public void processElement(
+                                            PartitionInfo value,
+                                            ProcessFunction<PartitionInfo, PartitionInfo>.Context
+                                                    ctx,
+                                            Collector<PartitionInfo> out)
+                                            throws Exception {
+                                        if (value.commitOp != null) {
+                                            if (value.commitOp.equals("CompactionCommit")
+                                                    || value.commitOp.equals("UpdateCommit")) {
+                                                ctx.output(compactionCommitTag, value);
+                                            }
+                                        }
+                                        out.collect(value);
+                                    }
+                                });
 
-                    }
-                });
-
-        SideOutputDataStream<PartitionInfo> compactStreaming = mainStreaming.getSideOutput(compactionCommitTag);
-        KeyedStream<PartitionInfo, String> partitionInfoStringKeyedStream = mainStreaming.keyBy(value -> value.tableId + "/" + value.partitionDesc + "/" + value.version);
-        SingleOutputStreamOperator<CompactProcessFunction.CompactionOut> compactiomStreaming = compactStreaming
-                .keyBy(value -> value.tableId + "/" + value.partitionDesc)
-                .process(new CompactProcessFunction(pgUrl, userName, passWord));
+        SideOutputDataStream<PartitionInfo> compactStreaming =
+                mainStreaming.getSideOutput(compactionCommitTag);
+        KeyedStream<PartitionInfo, String> partitionInfoStringKeyedStream =
+                mainStreaming.keyBy(
+                        value -> value.tableId + "/" + value.partitionDesc + "/" + value.version);
+        SingleOutputStreamOperator<CompactProcessFunction.CompactionOut> compactiomStreaming =
+                compactStreaming
+                        .keyBy(value -> value.tableId + "/" + value.partitionDesc)
+                        .process(new CompactProcessFunction(pgUrl, userName, passWord));
 
         MapStateDescriptor<String, CompactProcessFunction.CompactionOut> broadcastStateDesc =
                 new MapStateDescriptor<>(
                         "compactionBroadcastState",
                         BasicTypeInfo.STRING_TYPE_INFO,
-                        TypeInformation.of(new TypeHint<CompactProcessFunction.CompactionOut>() {}));
+                        TypeInformation.of(
+                                new TypeHint<CompactProcessFunction.CompactionOut>() {}));
         MapStateDescriptor<String, Integer> TABLE_TTL_DESC =
-                new MapStateDescriptor<>(
-                        "table-ttl-broadcast-state",
-                        String.class,
-                        Integer.class
-                );
-        BroadcastStream<TableInfoRecordGets.TableInfo> tableInfoBroadcastStreming = tableInfoStream
-                .map(new TableInfoRecordGets.tableInfoMapper())
-                .broadcast(TABLE_TTL_DESC);
+                new MapStateDescriptor<>("table-ttl-broadcast-state", String.class, Integer.class);
+        BroadcastStream<TableInfoRecordGets.TableInfo> tableInfoBroadcastStreming =
+                tableInfoStream
+                        .map(new TableInfoRecordGets.tableInfoMapper())
+                        .broadcast(TABLE_TTL_DESC);
         BroadcastStream<CompactProcessFunction.CompactionOut> broadcastStream =
                 compactiomStreaming.broadcast(broadcastStateDesc);
 
-        BroadcastConnectedStream<PartitionInfo, CompactProcessFunction.CompactionOut> connectedStream =
-                partitionInfoStringKeyedStream.connect(broadcastStream);
+        BroadcastConnectedStream<PartitionInfo, CompactProcessFunction.CompactionOut>
+                connectedStream = partitionInfoStringKeyedStream.connect(broadcastStream);
 
-        connectedStream.process(new CompactionBroadcastProcessFunction(broadcastStateDesc, pgUrl, userName, passWord, expiredTime, ontimerInterval));
+        connectedStream.process(
+                new CompactionBroadcastProcessFunction(
+                        broadcastStateDesc,
+                        pgUrl,
+                        userName,
+                        passWord,
+                        expiredTime,
+                        ontimerInterval));
 
-        BroadcastConnectedStream<TableTtlProFunction.PartitionINfoUpdateEvents, TableInfoRecordGets.TableInfo> connect = mainStreaming
-                .keyBy(value -> value.tableId + "/" + value.partitionDesc)
-                .process(new TableTtlProFunction())
-                .keyBy(value -> value.tableId + "/" + value.partitionDesc)
-                .connect(tableInfoBroadcastStreming);
-        connect.process(new TtlBroadcastProcessFunction(TABLE_TTL_DESC,1)).name("清理过期分区数据");
+        BroadcastConnectedStream<
+                        TableTtlProFunction.PartitionINfoUpdateEvents,
+                        TableInfoRecordGets.TableInfo>
+                connect =
+                        mainStreaming
+                                .keyBy(value -> value.tableId + "/" + value.partitionDesc)
+                                .process(new TableTtlProFunction())
+                                .keyBy(value -> value.tableId + "/" + value.partitionDesc)
+                                .connect(tableInfoBroadcastStreming);
+        connect.process(new TtlBroadcastProcessFunction(TABLE_TTL_DESC, 1)).name("清理过期分区数据");
 
         discardFileInfoStream
                 .map(new DiscardPathMapFunction())
@@ -206,6 +246,5 @@ public class NewCleanJob {
                 .name("批量异步删除数据");
 
         env.execute("清理服务");
-
     }
 }

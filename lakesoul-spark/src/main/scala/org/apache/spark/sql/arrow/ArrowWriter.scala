@@ -32,28 +32,34 @@ object ArrowWriter {
   private def createFieldWriter(vector: ValueVector): ArrowFieldWriter = {
     val field = vector.getField()
     (ArrowUtils.sparkTypeFromArrowField(field), vector) match {
-      case (BooleanType, vector: BitVector) => new BooleanWriter(vector)
-      case (ByteType, vector: TinyIntVector) => new ByteWriter(vector)
+      case (BooleanType, vector: BitVector)    => new BooleanWriter(vector)
+      case (ByteType, vector: TinyIntVector)   => new ByteWriter(vector)
       case (ShortType, vector: SmallIntVector) => new ShortWriter(vector)
-      case (IntegerType, vector: IntVector) => new IntegerWriter(vector)
-      case (LongType, vector: BigIntVector) => new LongWriter(vector)
-      case (FloatType, vector: Float4Vector) => new FloatWriter(vector)
-      case (DoubleType, vector: Float8Vector) => new DoubleWriter(vector)
+      case (IntegerType, vector: IntVector)    => new IntegerWriter(vector)
+      case (LongType, vector: BigIntVector)    => new LongWriter(vector)
+      case (FloatType, vector: Float4Vector)   => new FloatWriter(vector)
+      case (DoubleType, vector: Float8Vector)  => new DoubleWriter(vector)
       case (DecimalType.Fixed(precision, scale), vector: DecimalVector) =>
         new DecimalWriter(vector, precision, scale)
-      case (StringType, vector: VarCharVector) => new StringWriter(vector)
-      case (BinaryType, vector: VarBinaryVector) => new BinaryWriter(vector)
-      case (DateType, vector: DateDayVector) => new DateWriter(vector)
-      case (TimestampType, vector: TimeStampVector) => new TimestampWriter(vector)
+      case (StringType, vector: VarCharVector)      => new StringWriter(vector)
+      case (BinaryType, vector: VarBinaryVector)    => new BinaryWriter(vector)
+      case (DateType, vector: DateDayVector)        => new DateWriter(vector)
+      case (TimestampType, vector: TimeStampVector) =>
+        new TimestampWriter(vector)
       case (_, vector: TimeSecVector) => new TimeSecWriter(vector)
-      case (TimestampNTZType, vector: TimeStampMicroVector) => new TimestampNTZWriter(vector)
+      case (TimestampNTZType, vector: TimeStampMicroVector) =>
+        new TimestampNTZWriter(vector)
       case (ArrayType(_, _), vector: ListVector) =>
         val elementVector = createFieldWriter(vector.getDataVector())
         new ArrayWriter(vector, elementVector)
       case (MapType(_, _, _), vector: MapVector) =>
         val structVector = vector.getDataVector.asInstanceOf[StructVector]
-        val keyWriter = createFieldWriter(structVector.getChild(MapVector.KEY_NAME))
-        val valueWriter = createFieldWriter(structVector.getChild(MapVector.VALUE_NAME))
+        val keyWriter = createFieldWriter(
+          structVector.getChild(MapVector.KEY_NAME)
+        )
+        val valueWriter = createFieldWriter(
+          structVector.getChild(MapVector.VALUE_NAME)
+        )
         new MapWriter(vector, structVector, keyWriter, valueWriter)
       case (StructType(_), vector: StructVector) =>
         val children = (0 until vector.size()).map { ordinal =>
@@ -61,8 +67,10 @@ object ArrowWriter {
         }
         new StructWriter(vector, children.toArray)
       case (NullType, vector: NullVector) => new NullWriter(vector)
-      case (_: YearMonthIntervalType, vector: IntervalYearVector) => new IntervalYearWriter(vector)
-      case (_: DayTimeIntervalType, vector: DurationVector) => new DurationWriter(vector)
+      case (_: YearMonthIntervalType, vector: IntervalYearVector) =>
+        new IntervalYearWriter(vector)
+      case (_: DayTimeIntervalType, vector: DurationVector) =>
+        new DurationWriter(vector)
       case (dt, _) =>
         throw ExecutionErrors.unsupportedDataTypeError(dt)
     }
@@ -102,7 +110,8 @@ private[arrow] abstract class ArrowFieldWriter {
 
   def name: String = valueVector.getField().getName()
 
-  def dataType: DataType = ArrowUtils.sparkTypeFromArrowField(valueVector.getField())
+  def dataType: DataType =
+    ArrowUtils.sparkTypeFromArrowField(valueVector.getField())
 
   def nullable: Boolean = valueVector.getField().isNullable()
 
@@ -131,7 +140,8 @@ private[arrow] abstract class ArrowFieldWriter {
   }
 }
 
-private[arrow] class BooleanWriter(val valueVector: BitVector) extends ArrowFieldWriter {
+private[arrow] class BooleanWriter(val valueVector: BitVector)
+    extends ArrowFieldWriter {
 
   override def setNull(): Unit = {
     valueVector.setNull(count)
@@ -142,7 +152,8 @@ private[arrow] class BooleanWriter(val valueVector: BitVector) extends ArrowFiel
   }
 }
 
-private[arrow] class ByteWriter(val valueVector: TinyIntVector) extends ArrowFieldWriter {
+private[arrow] class ByteWriter(val valueVector: TinyIntVector)
+    extends ArrowFieldWriter {
 
   override def setNull(): Unit = {
     valueVector.setNull(count)
@@ -153,7 +164,8 @@ private[arrow] class ByteWriter(val valueVector: TinyIntVector) extends ArrowFie
   }
 }
 
-private[arrow] class ShortWriter(val valueVector: SmallIntVector) extends ArrowFieldWriter {
+private[arrow] class ShortWriter(val valueVector: SmallIntVector)
+    extends ArrowFieldWriter {
 
   override def setNull(): Unit = {
     valueVector.setNull(count)
@@ -164,7 +176,8 @@ private[arrow] class ShortWriter(val valueVector: SmallIntVector) extends ArrowF
   }
 }
 
-private[arrow] class IntegerWriter(val valueVector: IntVector) extends ArrowFieldWriter {
+private[arrow] class IntegerWriter(val valueVector: IntVector)
+    extends ArrowFieldWriter {
 
   override def setNull(): Unit = {
     valueVector.setNull(count)
@@ -175,7 +188,8 @@ private[arrow] class IntegerWriter(val valueVector: IntVector) extends ArrowFiel
   }
 }
 
-private[arrow] class LongWriter(val valueVector: BigIntVector) extends ArrowFieldWriter {
+private[arrow] class LongWriter(val valueVector: BigIntVector)
+    extends ArrowFieldWriter {
 
   override def setNull(): Unit = {
     valueVector.setNull(count)
@@ -186,7 +200,8 @@ private[arrow] class LongWriter(val valueVector: BigIntVector) extends ArrowFiel
   }
 }
 
-private[arrow] class FloatWriter(val valueVector: Float4Vector) extends ArrowFieldWriter {
+private[arrow] class FloatWriter(val valueVector: Float4Vector)
+    extends ArrowFieldWriter {
 
   override def setNull(): Unit = {
     valueVector.setNull(count)
@@ -197,7 +212,8 @@ private[arrow] class FloatWriter(val valueVector: Float4Vector) extends ArrowFie
   }
 }
 
-private[arrow] class DoubleWriter(val valueVector: Float8Vector) extends ArrowFieldWriter {
+private[arrow] class DoubleWriter(val valueVector: Float8Vector)
+    extends ArrowFieldWriter {
 
   override def setNull(): Unit = {
     valueVector.setNull(count)
@@ -209,9 +225,10 @@ private[arrow] class DoubleWriter(val valueVector: Float8Vector) extends ArrowFi
 }
 
 private[arrow] class DecimalWriter(
-                                    val valueVector: DecimalVector,
-                                    precision: Int,
-                                    scale: Int) extends ArrowFieldWriter {
+    val valueVector: DecimalVector,
+    precision: Int,
+    scale: Int
+) extends ArrowFieldWriter {
 
   override def setNull(): Unit = {
     valueVector.setNull(count)
@@ -227,7 +244,8 @@ private[arrow] class DecimalWriter(
   }
 }
 
-private[arrow] class StringWriter(val valueVector: VarCharVector) extends ArrowFieldWriter {
+private[arrow] class StringWriter(val valueVector: VarCharVector)
+    extends ArrowFieldWriter {
 
   override def setNull(): Unit = {
     valueVector.setNull(count)
@@ -237,12 +255,17 @@ private[arrow] class StringWriter(val valueVector: VarCharVector) extends ArrowF
     val utf8 = input.getUTF8String(ordinal)
     val utf8ByteBuffer = utf8.getByteBuffer
     // todo: for off-heap UTF8String, how to pass in to arrow without copy?
-    valueVector.setSafe(count, utf8ByteBuffer, utf8ByteBuffer.position(), utf8.numBytes())
+    valueVector.setSafe(
+      count,
+      utf8ByteBuffer,
+      utf8ByteBuffer.position(),
+      utf8.numBytes()
+    )
   }
 }
 
-private[arrow] class BinaryWriter(
-                                   val valueVector: VarBinaryVector) extends ArrowFieldWriter {
+private[arrow] class BinaryWriter(val valueVector: VarBinaryVector)
+    extends ArrowFieldWriter {
 
   override def setNull(): Unit = {
     valueVector.setNull(count)
@@ -254,7 +277,8 @@ private[arrow] class BinaryWriter(
   }
 }
 
-private[arrow] class DateWriter(val valueVector: DateDayVector) extends ArrowFieldWriter {
+private[arrow] class DateWriter(val valueVector: DateDayVector)
+    extends ArrowFieldWriter {
 
   override def setNull(): Unit = {
     valueVector.setNull(count)
@@ -265,8 +289,8 @@ private[arrow] class DateWriter(val valueVector: DateDayVector) extends ArrowFie
   }
 }
 
-private[arrow] class TimestampWriter(
-                                      val valueVector: TimeStampVector) extends ArrowFieldWriter {
+private[arrow] class TimestampWriter(val valueVector: TimeStampVector)
+    extends ArrowFieldWriter {
 
   override def setNull(): Unit = {
     valueVector.setNull(count)
@@ -277,8 +301,8 @@ private[arrow] class TimestampWriter(
   }
 }
 
-private[arrow] class TimestampNTZWriter(
-                                         val valueVector: TimeStampMicroVector) extends ArrowFieldWriter {
+private[arrow] class TimestampNTZWriter(val valueVector: TimeStampMicroVector)
+    extends ArrowFieldWriter {
 
   override def setNull(): Unit = {
     valueVector.setNull(count)
@@ -289,7 +313,8 @@ private[arrow] class TimestampNTZWriter(
   }
 }
 
-private[arrow] class TimeSecWriter(val valueVector: TimeSecVector) extends ArrowFieldWriter {
+private[arrow] class TimeSecWriter(val valueVector: TimeSecVector)
+    extends ArrowFieldWriter {
 
   override def setNull(): Unit = {
     valueVector.setNull(count)
@@ -301,11 +326,11 @@ private[arrow] class TimeSecWriter(val valueVector: TimeSecVector) extends Arrow
 }
 
 private[arrow] class ArrayWriter(
-                                  val valueVector: ListVector,
-                                  val elementWriter: ArrowFieldWriter) extends ArrowFieldWriter {
+    val valueVector: ListVector,
+    val elementWriter: ArrowFieldWriter
+) extends ArrowFieldWriter {
 
-  override def setNull(): Unit = {
-  }
+  override def setNull(): Unit = {}
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     val array = input.getArray(ordinal)
@@ -330,8 +355,9 @@ private[arrow] class ArrayWriter(
 }
 
 private[arrow] class StructWriter(
-                                   val valueVector: StructVector,
-                                   children: Array[ArrowFieldWriter]) extends ArrowFieldWriter {
+    val valueVector: StructVector,
+    children: Array[ArrowFieldWriter]
+) extends ArrowFieldWriter {
 
   override def setNull(): Unit = {
     var i = 0
@@ -365,10 +391,11 @@ private[arrow] class StructWriter(
 }
 
 private[arrow] class MapWriter(
-                                val valueVector: MapVector,
-                                val structVector: StructVector,
-                                val keyWriter: ArrowFieldWriter,
-                                val valueWriter: ArrowFieldWriter) extends ArrowFieldWriter {
+    val valueVector: MapVector,
+    val structVector: StructVector,
+    val keyWriter: ArrowFieldWriter,
+    val valueWriter: ArrowFieldWriter
+) extends ArrowFieldWriter {
 
   override def setNull(): Unit = {}
 
@@ -401,17 +428,16 @@ private[arrow] class MapWriter(
   }
 }
 
-private[arrow] class NullWriter(val valueVector: NullVector) extends ArrowFieldWriter {
+private[arrow] class NullWriter(val valueVector: NullVector)
+    extends ArrowFieldWriter {
 
-  override def setNull(): Unit = {
-  }
+  override def setNull(): Unit = {}
 
-  override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
-  }
+  override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {}
 }
 
 private[arrow] class IntervalYearWriter(val valueVector: IntervalYearVector)
-  extends ArrowFieldWriter {
+    extends ArrowFieldWriter {
   override def setNull(): Unit = {
     valueVector.setNull(count)
   }
@@ -422,7 +448,7 @@ private[arrow] class IntervalYearWriter(val valueVector: IntervalYearVector)
 }
 
 private[arrow] class DurationWriter(val valueVector: DurationVector)
-  extends ArrowFieldWriter {
+    extends ArrowFieldWriter {
   override def setNull(): Unit = {
     valueVector.setNull(count)
   }

@@ -39,6 +39,7 @@ from .metadata.native_client import NativeMetadataClient
 @dataclass
 class ShardInfo:
     """A set of files belonging to one (partition, bucket) shard."""
+
     partition_desc: str
     bucket_id: int
     file_paths: list[str]
@@ -52,9 +53,7 @@ def _extract_bucket_id(file_path: str) -> int:
     """
     match = re.search(r".*_(\d+)(?:\..*)?$", file_path)
     if not match:
-        raise ValueError(
-            f"Cannot determine bucket id from file name {file_path}"
-        )
+        raise ValueError(f"Cannot determine bucket id from file name {file_path}")
     return int(match.group(1))
 
 
@@ -156,12 +155,12 @@ def build_partition_vector_index(
     pk_column = pk_cols[0]
 
     table_path = table_info.table_path
-    table_path = table_path.replace("file://", "").replace("s3://", "").replace("s3a://", "")
+    table_path = (
+        table_path.replace("file://", "").replace("s3://", "").replace("s3a://", "")
+    )
 
     # 2. Group files by (partition, bucket)
-    shards = _group_files_by_shard(
-        client, table_info.table_id, partition_desc, pk_cols
-    )
+    shards = _group_files_by_shard(client, table_info.table_id, partition_desc, pk_cols)
     if not shards:
         return {
             "status": "ok",

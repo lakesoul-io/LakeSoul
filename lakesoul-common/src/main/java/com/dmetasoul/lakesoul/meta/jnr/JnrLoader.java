@@ -29,7 +29,7 @@ public class JnrLoader {
         return INSTANCE.libLakeSoulMetaData;
     }
 
-    public synchronized static void tryLoad() {
+    public static synchronized void tryLoad() {
         if (INSTANCE.hasLoaded) {
             return;
         }
@@ -50,7 +50,11 @@ public class JnrLoader {
                     if (is == null) {
                         throw new FileNotFoundException(libName);
                     }
-                    File temp = File.createTempFile(libName + "_", ".tmp", new File(System.getProperty("java.io.tmpdir")));
+                    File temp =
+                            File.createTempFile(
+                                    libName + "_",
+                                    ".tmp",
+                                    new File(System.getProperty("java.io.tmpdir")));
                     temp.deleteOnExit();
                     Files.copy(is, temp.toPath(), StandardCopyOption.REPLACE_EXISTING);
                     finalPath = temp.getAbsolutePath();
@@ -66,12 +70,8 @@ public class JnrLoader {
             libraryOptions.put(LibraryOption.LoadNow, true);
             libraryOptions.put(LibraryOption.IgnoreError, true);
 
-            JnrLoader.INSTANCE.libLakeSoulMetaData = LibraryLoader.loadLibrary(
-                    LibLakeSoulMetaData.class,
-                    libraryOptions,
-                    finalPath
-            );
-
+            JnrLoader.INSTANCE.libLakeSoulMetaData =
+                    LibraryLoader.loadLibrary(LibLakeSoulMetaData.class, libraryOptions, finalPath);
         }
 
         INSTANCE.hasLoaded = true;

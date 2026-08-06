@@ -10,6 +10,7 @@ import com.dmetasoul.lakesoul.meta.entity.JniWrapper;
 import com.dmetasoul.lakesoul.meta.entity.TableNameId;
 import com.dmetasoul.lakesoul.meta.jnr.NativeMetadataJavaClient;
 import com.dmetasoul.lakesoul.meta.jnr.NativeUtils;
+
 import org.apache.commons.lang3.StringUtils;
 
 import java.sql.Connection;
@@ -26,9 +27,10 @@ public class TableNameIdDao {
 
     public TableNameId findByTableName(String tableName, String tableNamespace) {
         if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
-            JniWrapper jniWrapper = NativeMetadataJavaClient.query(
-                    NativeUtils.CodedDaoType.SelectTableNameIdByTableName,
-                    Arrays.asList(tableName, tableNamespace));
+            JniWrapper jniWrapper =
+                    NativeMetadataJavaClient.query(
+                            NativeUtils.CodedDaoType.SelectTableNameIdByTableName,
+                            Arrays.asList(tableName, tableNamespace));
             if (jniWrapper == null) return null;
             List<TableNameId> tableNameIdList = jniWrapper.getTableNameIdList();
             return tableNameIdList.isEmpty() ? null : tableNameIdList.get(0);
@@ -36,8 +38,11 @@ public class TableNameIdDao {
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
-        String sql = String.format("select * from table_name_id where table_name = '%s' and table_namespace = '%s'",
-                tableName, tableNamespace);
+        String sql =
+                String.format(
+                        "select * from table_name_id where table_name = '%s' and table_namespace ="
+                                + " '%s'",
+                        tableName, tableNamespace);
         TableNameId tableNameId = null;
         try {
             conn = DBConnector.getConn();
@@ -56,18 +61,23 @@ public class TableNameIdDao {
 
     public List<String> listAllNameByNamespace(String tableNamespace) {
         if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
-            JniWrapper jniWrapper = NativeMetadataJavaClient.query(
-                    NativeUtils.CodedDaoType.ListTableNameByNamespace,
-                    Collections.singletonList(tableNamespace));
+            JniWrapper jniWrapper =
+                    NativeMetadataJavaClient.query(
+                            NativeUtils.CodedDaoType.ListTableNameByNamespace,
+                            Collections.singletonList(tableNamespace));
             if (jniWrapper == null) return null;
             List<TableNameId> tableNameIdList = jniWrapper.getTableNameIdList();
-            return tableNameIdList.stream().map(TableNameId::getTableName).collect(Collectors.toList());
+            return tableNameIdList.stream()
+                    .map(TableNameId::getTableName)
+                    .collect(Collectors.toList());
         }
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
         String sql =
-                String.format("select table_name from table_name_id where table_namespace = '%s'", tableNamespace);
+                String.format(
+                        "select table_name from table_name_id where table_namespace = '%s'",
+                        tableNamespace);
         List<String> list = new ArrayList<>();
         try {
             conn = DBConnector.getConn();
@@ -87,20 +97,27 @@ public class TableNameIdDao {
 
     public List<NamespaceTableName> listAllNamesByDomain(String domain) {
         if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
-            JniWrapper jniWrapper = NativeMetadataJavaClient.query(
-                    NativeUtils.CodedDaoType.ListTableNamesByDomain,
-                    Collections.singletonList(domain));
-            if (jniWrapper == null)
-                return null;
+            JniWrapper jniWrapper =
+                    NativeMetadataJavaClient.query(
+                            NativeUtils.CodedDaoType.ListTableNamesByDomain,
+                            Collections.singletonList(domain));
+            if (jniWrapper == null) return null;
             List<TableNameId> tableNameIdList = jniWrapper.getTableNameIdList();
-            return tableNameIdList.stream().map(e -> {
-                return new NamespaceTableName(e.getTableNamespace(), e.getTableName());
-            }).collect(Collectors.toList());
+            return tableNameIdList.stream()
+                    .map(
+                            e -> {
+                                return new NamespaceTableName(
+                                        e.getTableNamespace(), e.getTableName());
+                            })
+                    .collect(Collectors.toList());
         }
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
-        String sql = String.format("select table_name, table_namespace from table_name_id where domain = '%s'", domain);
+        String sql =
+                String.format(
+                        "select table_name, table_namespace from table_name_id where domain = '%s'",
+                        domain);
         List<NamespaceTableName> list = new ArrayList<>();
         try {
             conn = DBConnector.getConn();
@@ -122,17 +139,20 @@ public class TableNameIdDao {
 
     public void insert(TableNameId tableNameId) {
         if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
-            Integer count = NativeMetadataJavaClient.insert(
-                    NativeUtils.CodedDaoType.InsertTableNameId,
-                    JniWrapper.newBuilder().addTableNameId(tableNameId).build());
+            Integer count =
+                    NativeMetadataJavaClient.insert(
+                            NativeUtils.CodedDaoType.InsertTableNameId,
+                            JniWrapper.newBuilder().addTableNameId(tableNameId).build());
             return;
         }
         Connection conn = null;
         PreparedStatement pstmt = null;
         try {
             conn = DBConnector.getConn();
-            pstmt = conn.prepareStatement(
-                    "insert into table_name_id (table_name, table_id, table_namespace, domain) values (?, ?, ?, ?)");
+            pstmt =
+                    conn.prepareStatement(
+                            "insert into table_name_id (table_name, table_id, table_namespace,"
+                                    + " domain) values (?, ?, ?, ?)");
             pstmt.setString(1, tableNameId.getTableName());
             pstmt.setString(2, tableNameId.getTableId());
             pstmt.setString(3, tableNameId.getTableNamespace());
@@ -147,14 +167,19 @@ public class TableNameIdDao {
 
     public void delete(String tableName, String tableNamespace) {
         if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
-            Integer count = NativeMetadataJavaClient.update(NativeUtils.CodedDaoType.DeleteTableNameIdByTableNameAndNamespace, Arrays.asList(tableName, tableNamespace));
+            Integer count =
+                    NativeMetadataJavaClient.update(
+                            NativeUtils.CodedDaoType.DeleteTableNameIdByTableNameAndNamespace,
+                            Arrays.asList(tableName, tableNamespace));
             return;
         }
         Connection conn = null;
         PreparedStatement pstmt = null;
         String sql =
-                String.format("delete from table_name_id where table_name = '%s' and table_namespace = '%s'", tableName,
-                        tableNamespace);
+                String.format(
+                        "delete from table_name_id where table_name = '%s' and table_namespace ="
+                                + " '%s'",
+                        tableName, tableNamespace);
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sql);
@@ -168,9 +193,10 @@ public class TableNameIdDao {
 
     public void deleteByTableId(String tableId) {
         if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
-            Integer count = NativeMetadataJavaClient.update(
-                    NativeUtils.CodedDaoType.DeleteTableNameIdByTableId,
-                    Collections.singletonList(tableId));
+            Integer count =
+                    NativeMetadataJavaClient.update(
+                            NativeUtils.CodedDaoType.DeleteTableNameIdByTableId,
+                            Collections.singletonList(tableId));
             return;
         }
         Connection conn = null;
@@ -194,9 +220,11 @@ public class TableNameIdDao {
         }
         Connection conn = null;
         PreparedStatement pstmt = null;
-        String sql = String.format(
-                "update table_name_id set table_id = '%s' where table_name = '%s' and table_namespace = '%s'", table_id,
-                tableName, tableNamespace);
+        String sql =
+                String.format(
+                        "update table_name_id set table_id = '%s' where table_name = '%s' and"
+                                + " table_namespace = '%s'",
+                        table_id, tableName, tableNamespace);
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sql);
@@ -207,7 +235,6 @@ public class TableNameIdDao {
             DBConnector.closeConn(pstmt, conn);
         }
         return result;
-
     }
 
     public void clean() {
@@ -234,9 +261,9 @@ public class TableNameIdDao {
                 .build();
     }
 
-    public static TableNameId newTableNameId(String tableName, String tableId, String namespace, String domain) {
-        return TableNameId
-                .newBuilder()
+    public static TableNameId newTableNameId(
+            String tableName, String tableId, String namespace, String domain) {
+        return TableNameId.newBuilder()
                 .setTableName(tableName)
                 .setTableId(tableId)
                 .setTableNamespace(namespace)

@@ -3,7 +3,6 @@ package com.dmetasoul.lakesoul.lakesoul.io;
 import java.sql.Timestamp;
 import java.time.*;
 
-
 public class DateTimeUtils {
     private static final int MONTHS_PER_YEAR = 12;
     private static final byte DAYS_PER_WEEK = 7;
@@ -54,11 +53,11 @@ public class DateTimeUtils {
     }
 
     static long instantToMicros(Instant i) {
-//        OffsetDateTime ot = Off
-//        ZonedDateTime zt = i.atZone(ZoneId.of("Asia/Shanghai"));
-//        i = zt.withZoneSameInstant(ZoneId.of("UTC")).toInstant();
+        //        OffsetDateTime ot = Off
+        //        ZonedDateTime zt = i.atZone(ZoneId.of("Asia/Shanghai"));
+        //        i = zt.withZoneSameInstant(ZoneId.of("UTC")).toInstant();
 
-//        i = Instant.ofEpochSecond(1612176000);
+        //        i = Instant.ofEpochSecond(1612176000);
         long epochSecond = i.getEpochSecond();
         if (epochSecond == MIN_SECONDS) {
             long us = Math.multiplyExact(epochSecond + 1, MICROS_PER_SECOND);

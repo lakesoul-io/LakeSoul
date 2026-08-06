@@ -4,7 +4,11 @@
 
 package org.apache.spark.sql.lakesoul
 
-import com.dmetasoul.lakesoul.meta.DBConfig.{LAKESOUL_EMPTY_STRING, LAKESOUL_NULL_STRING, LAKESOUL_RANGE_PARTITION_SPLITTER}
+import com.dmetasoul.lakesoul.meta.DBConfig.{
+  LAKESOUL_EMPTY_STRING,
+  LAKESOUL_NULL_STRING,
+  LAKESOUL_RANGE_PARTITION_SPLITTER
+}
 import com.dmetasoul.lakesoul.meta.{CommitType, DataFileInfo}
 import com.dmetasoul.lakesoul.meta.entity.DataCommitInfo
 import org.apache.hadoop.fs.Path
@@ -13,12 +17,20 @@ import org.apache.spark.sql.Dataset
 import org.apache.spark.sql.catalyst.catalog.BucketSpec
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.execution.datasources.LakeSoulFileWriter.COPY_FILE_WRITER_KEY
-import org.apache.spark.sql.execution.datasources.{BasicWriteJobStatsTracker, LakeSoulFileWriter, WriteJobStatsTracker}
+import org.apache.spark.sql.execution.datasources.{
+  BasicWriteJobStatsTracker,
+  LakeSoulFileWriter,
+  WriteJobStatsTracker
+}
 import org.apache.spark.sql.execution.{QueryExecution, SQLExecution}
 import org.apache.spark.sql.functions.{col, when}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
-import org.apache.spark.sql.lakesoul.schema.{InvariantCheckerExec, Invariants, SchemaUtils}
+import org.apache.spark.sql.lakesoul.schema.{
+  InvariantCheckerExec,
+  Invariants,
+  SchemaUtils
+}
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.types.{StringType, StructType}
@@ -41,15 +53,19 @@ trait TransactionalWrite {
   protected def getCommitter(outputPath: Path): DelayedCommitProtocol =
     new DelayedCommitProtocol("lakesoul", outputPath.toUri.toString, None)
 
-  /**
-    * Normalize the schema of the query, and return the QueryExecution to execute. The output
-    * attributes of the QueryExecution may not match the attributes we return as the output schema.
-    * This is because streaming queries create `IncrementalExecution`, which cannot be further
-    * modified. We can however have the Parquet writer use the physical plan from
-    * `IncrementalExecution` and the output schema provided through the attributes.
+  /** Normalize the schema of the query, and return the QueryExecution to
+    * execute. The output attributes of the QueryExecution may not match the
+    * attributes we return as the output schema. This is because streaming
+    * queries create `IncrementalExecution`, which cannot be further modified.
+    * We can however have the Parquet writer use the physical plan from
+    * `IncrementalExecution` and the output schema provided through the
+    * attributes.
     */
-  protected def normalizeData(data: Dataset[_]): (QueryExecution, Seq[Attribute]) = {
-    val normalizedData = SchemaUtils.normalizeColumnNames(tableInfo.schema, data)
+  protected def normalizeData(
+      data: Dataset[_]
+  ): (QueryExecution, Seq[Attribute]) = {
+    val normalizedData =
+      SchemaUtils.normalizeColumnNames(tableInfo.schema, data)
     val cleanedData = SchemaUtils.dropNullTypeColumns(normalizedData)
     val queryExecution = if (cleanedData.schema != normalizedData.schema) {
       // For batch executions, we need to use the latest DataFrame query execution
@@ -61,27 +77,39 @@ trait TransactionalWrite {
     queryExecution -> cleanedData.queryExecution.analyzed.output
   }
 
-
-  protected def getPartitioningColumns(rangePartitionSchema: StructType,
-                                       hashPartitionSchema: StructType,
-                                       output: Seq[Attribute],
-                                       colsDropped: Boolean): Seq[Attribute] = {
-    val rangePartitionColumns: Seq[Attribute] = rangePartitionSchema.map { col =>
-      // schema is already normalized, therefore we can do an equality check
-      output.find(f => f.name == col.name)
-        .getOrElse {
-          throw LakeSoulErrors.partitionColumnNotFoundException(col.name, output)
-        }
+  protected def getPartitioningColumns(
+      rangePartitionSchema: StructType,
+      hashPartitionSchema: StructType,
+      output: Seq[Attribute],
+      colsDropped: Boolean
+  ): Seq[Attribute] = {
+    val rangePartitionColumns: Seq[Attribute] = rangePartitionSchema.map {
+      col =>
+        // schema is already normalized, therefore we can do an equality check
+        output
+          .find(f => f.name == col.name)
+          .getOrElse {
+            throw LakeSoulErrors.partitionColumnNotFoundException(
+              col.name,
+              output
+            )
+          }
     }
     hashPartitionSchema.map { col =>
       // schema is already normalized, therefore we can do an equality check
-      output.find(f => f.name == col.name)
+      output
+        .find(f => f.name == col.name)
         .getOrElse {
-          throw LakeSoulErrors.partitionColumnNotFoundException(col.name, output)
+          throw LakeSoulErrors.partitionColumnNotFoundException(
+            col.name,
+            output
+          )
         }
     }
 
-    if (rangePartitionColumns.nonEmpty && rangePartitionColumns.length == output.length) {
+    if (
+      rangePartitionColumns.nonEmpty && rangePartitionColumns.length == output.length
+    ) {
       throw LakeSoulErrors.nonPartitionColumnAbsentException(colsDropped)
     }
     rangePartitionColumns
@@ -91,22 +119,30 @@ trait TransactionalWrite {
     files.foreach(srcAndDst => addRenameFile(srcAndDst._1, srcAndDst._2))
   }
 
-  def writeFiles(data: Dataset[_]): Seq[DataFileInfo] = writeFiles(data, None, isCompaction = false)._1
+  def writeFiles(data: Dataset[_]): Seq[DataFileInfo] =
+    writeFiles(data, None, isCompaction = false)._1
 
-  def writeFiles(data: Dataset[_], writeOptions: Option[LakeSoulOptions]): Seq[DataFileInfo] =
+  def writeFiles(
+      data: Dataset[_],
+      writeOptions: Option[LakeSoulOptions]
+  ): Seq[DataFileInfo] =
     writeFiles(data, writeOptions, isCompaction = false)._1
 
-  def writeFiles(data: Dataset[_], isCompaction: Boolean): (Seq[DataFileInfo], Path) =
+  def writeFiles(
+      data: Dataset[_],
+      isCompaction: Boolean
+  ): (Seq[DataFileInfo], Path) =
     writeFiles(data, None, isCompaction = isCompaction)
 
-  /**
-    * Writes out the dataframe after performing schema validation. Returns a list of
-    * actions to append these files to the reservoir.
+  /** Writes out the dataframe after performing schema validation. Returns a
+    * list of actions to append these files to the reservoir.
     */
-  def writeFiles(oriData: Dataset[_],
-                 writeOptions: Option[LakeSoulOptions],
-                 isCompaction: Boolean,
-                 copyCompactedFile: Seq[DataFileInfo] = Seq.empty): (Seq[DataFileInfo], Path) = {
+  def writeFiles(
+      oriData: Dataset[_],
+      writeOptions: Option[LakeSoulOptions],
+      isCompaction: Boolean,
+      copyCompactedFile: Seq[DataFileInfo] = Seq.empty
+  ): (Seq[DataFileInfo], Path) = {
     val spark = oriData.sparkSession
     // LakeSoul always writes timestamp data with timezone=UTC
     spark.conf.set("spark.sql.session.timeZone", "UTC")
@@ -119,21 +155,33 @@ trait TransactionalWrite {
     }
     val bucketNumChanged = newBucketNum.exists(tableInfo.bucket_num != _)
 
-    val data = Dataset.ofRows(spark, (if (!isCompaction && tableInfo.hash_partition_columns.nonEmpty) {
-      oriData.repartition(tableInfo.bucket_num, tableInfo.hash_partition_columns.map(col): _*)
-    } else {
-      if (isCompaction && bucketNumChanged && tableInfo.hash_partition_columns.nonEmpty) {
-        oriData.repartition(newBucketNum.get, tableInfo.hash_partition_columns.map(col): _*)
-      } else {
-        oriData
-      }
-    }).logicalPlan)
+    val data = Dataset.ofRows(
+      spark,
+      (if (!isCompaction && tableInfo.hash_partition_columns.nonEmpty) {
+         oriData.repartition(
+           tableInfo.bucket_num,
+           tableInfo.hash_partition_columns.map(col): _*
+         )
+       } else {
+         if (
+           isCompaction && bucketNumChanged && tableInfo.hash_partition_columns.nonEmpty
+         ) {
+           oriData.repartition(
+             newBucketNum.get,
+             tableInfo.hash_partition_columns.map(col): _*
+           )
+         } else {
+           oriData
+         }
+       }).logicalPlan
+    )
 
     hasWritten = true
-    spark.sessionState.conf.setConfString(SQLConf.UNSUPPORTED_OPERATION_CHECK_ENABLED.key, "false")
+    spark.sessionState.conf
+      .setConfString(SQLConf.UNSUPPORTED_OPERATION_CHECK_ENABLED.key, "false")
 
-    //If this is the first time to commit, you need to check if there is data in the path where the table is located.
-    //If there has data, you cannot create a new table
+    // If this is the first time to commit, you need to check if there is data in the path where the table is located.
+    // If there has data, you cannot create a new table
     if (isFirstCommit) {
       val path = new Path(table_path)
       val fs = path.getFileSystem(spark.sessionState.newHadoopConf())
@@ -150,7 +198,11 @@ trait TransactionalWrite {
     if (isCompaction) {
 
       val compactionPath = if (writeOptions.isDefined) {
-        writeOptions.get.options.getOrElse("compactionPath", tableInfo.table_path.toString + "/compact_" + System.currentTimeMillis())
+        writeOptions.get.options.getOrElse(
+          "compactionPath",
+          tableInfo.table_path.toString + "/compact_" + System
+            .currentTimeMillis()
+        )
       } else {
         tableInfo.table_path.toString + "/compact_" + System.currentTimeMillis()
       }
@@ -162,17 +214,27 @@ trait TransactionalWrite {
       } else {
         options.put("isBucketNumChanged", "false")
       }
-      val cdcCol = snapshot.getTableInfo.configuration.get(LakeSoulTableProperties.lakeSoulCDCChangePropKey)
+      val cdcCol = snapshot.getTableInfo.configuration.get(
+        LakeSoulTableProperties.lakeSoulCDCChangePropKey
+      )
       if (cdcCol.nonEmpty && copyCompactedFile.isEmpty) {
         options.put("isCDC", "true")
         val cdcColName = cdcCol.get
-        if (writeOptions.forall(_.options.getOrElse("fullCompaction", "true").equals("true"))) {
-          data.withColumn(cdcColName,
-            when(col(cdcColName) === "update", "insert")
-              .otherwise(col(cdcColName))
-          ).where(s"$cdcColName != 'delete'")
+        if (
+          writeOptions.forall(
+            _.options.getOrElse("fullCompaction", "true").equals("true")
+          )
+        ) {
+          data
+            .withColumn(
+              cdcColName,
+              when(col(cdcColName) === "update", "insert")
+                .otherwise(col(cdcColName))
+            )
+            .where(s"$cdcColName != 'delete'")
         } else {
-          data.withColumn(cdcColName,
+          data.withColumn(
+            cdcColName,
             when(col(cdcColName) === "update", "insert")
               .otherwise(col(cdcColName))
           )
@@ -190,7 +252,8 @@ trait TransactionalWrite {
       rangePartitionCols.foreach(p => {
         if (p._2 == StringType) {
           val name = p._1
-          dataset = dataset.withColumn(name,
+          dataset = dataset.withColumn(
+            name,
             when(col(name) === "", LAKESOUL_EMPTY_STRING)
               .when(col(name).isNull, LAKESOUL_NULL_STRING)
               .otherwise(col(name))
@@ -209,17 +272,24 @@ trait TransactionalWrite {
       normalizeData(dataset)
     }
     val partitioningColumns = {
-      if (isCompaction) Seq.empty else
+      if (isCompaction) Seq.empty
+      else
         getPartitioningColumns(
           rangePartitionSchema,
           hashPartitionSchema,
           output,
-          output.length < data.schema.size)
+          output.length < data.schema.size
+        )
     }
 
     val committer = if (copyCompactedFile.nonEmpty) {
       options.put(COPY_FILE_WRITER_KEY, "true")
-      new DelayedCopyCommitProtocol(copyCompactedFile, "lakesoul", outputPath.toString, None)
+      new DelayedCopyCommitProtocol(
+        copyCompactedFile,
+        "lakesoul",
+        outputPath.toString,
+        None
+      )
     } else {
       getCommitter(outputPath)
     }
@@ -228,31 +298,45 @@ trait TransactionalWrite {
       val outputSpec = LakeSoulFileWriter.OutputSpec(
         outputPath.toUri.toString,
         Map.empty,
-        output)
+        output
+      )
 
       val statsTrackers: ListBuffer[WriteJobStatsTracker] = ListBuffer()
 
       val basicWriteJobStatsTracker = new BasicWriteJobStatsTracker(
         new SerializableConfiguration(spark.sessionState.newHadoopConf()),
-        BasicWriteJobStatsTracker.metrics)
+        BasicWriteJobStatsTracker.metrics
+      )
       statsTrackers.append(basicWriteJobStatsTracker)
 
-
       val hashBucketSpec = tableInfo.hash_column match {
-        case "" => None
-        case _ if bucketNumChanged => Option(BucketSpec(newBucketNum.get,
-          tableInfo.hash_partition_columns,
-          tableInfo.hash_partition_columns))
-        case _ => Option(BucketSpec(tableInfo.bucket_num,
-          tableInfo.hash_partition_columns,
-          tableInfo.hash_partition_columns))
+        case ""                    => None
+        case _ if bucketNumChanged =>
+          Option(
+            BucketSpec(
+              newBucketNum.get,
+              tableInfo.hash_partition_columns,
+              tableInfo.hash_partition_columns
+            )
+          )
+        case _ =>
+          Option(
+            BucketSpec(
+              tableInfo.bucket_num,
+              tableInfo.hash_partition_columns,
+              tableInfo.hash_partition_columns
+            )
+          )
       }
 
       val sqlConf = spark.sessionState.conf
       writeOptions.map(options ++= _.options)
 
       if (sqlConf.getConf(LakeSoulSQLConf.PARQUET_COMPRESSION_ENABLE)) {
-        options.put("compression", sqlConf.getConf(LakeSoulSQLConf.PARQUET_COMPRESSION))
+        options.put(
+          "compression",
+          sqlConf.getConf(LakeSoulSQLConf.PARQUET_COMPRESSION)
+        )
       } else {
         options.put("compression", "uncompressed")
       }
@@ -270,17 +354,27 @@ trait TransactionalWrite {
         fileFormat = snapshot.fileFormat,
         committer = committer,
         outputSpec = outputSpec,
-        hadoopConf = spark.sessionState.newHadoopConfWithOptions(snapshot.getConfiguration),
+        hadoopConf = spark.sessionState.newHadoopConfWithOptions(
+          snapshot.getConfiguration
+        ),
         partitionColumns = partitioningColumns,
         bucketSpec = hashBucketSpec,
         statsTrackers = statsTrackers,
-        options = options.toMap)
+        options = options.toMap
+      )
     }
     val partitionCols = tableInfo.range_partition_columns
-    //Returns the absolute path to the file
-    val real_write_cols = data.schema.fieldNames.filter(!partitionCols.contains(_)).mkString(LAKESOUL_RANGE_PARTITION_SPLITTER)
-    (committer.addedStatuses.map(file => file.copy(
-      file_exist_cols = real_write_cols
-    )), outputPath)
+    // Returns the absolute path to the file
+    val real_write_cols = data.schema.fieldNames
+      .filter(!partitionCols.contains(_))
+      .mkString(LAKESOUL_RANGE_PARTITION_SPLITTER)
+    (
+      committer.addedStatuses.map(file =>
+        file.copy(
+          file_exist_cols = real_write_cols
+        )
+      ),
+      outputPath
+    )
   }
 }

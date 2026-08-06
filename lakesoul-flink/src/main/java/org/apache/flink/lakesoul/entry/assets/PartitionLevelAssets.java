@@ -5,6 +5,7 @@ package org.apache.flink.lakesoul.entry.assets;
 
 import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
+
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.api.common.state.ValueStateDescriptor;
@@ -22,7 +23,8 @@ import java.util.Random;
 public class PartitionLevelAssets {
     private static final Logger log = LoggerFactory.getLogger(PartitionLevelAssets.class);
 
-    public static class metaMapper implements MapFunction<String, Tuple3<String, String, String[]>> {
+    public static class metaMapper
+            implements MapFunction<String, Tuple3<String, String, String[]>> {
 
         @Override
         public Tuple3<String, String, String[]> map(String s) {
@@ -34,11 +36,11 @@ public class PartitionLevelAssets {
 
             if (PGtableName.equals("data_commit_info")) {
                 String beforeCommitted = "true";
-                if (!parse.getJSONObject("before").isEmpty()){
-                    JSONObject before =(JSONObject) parse.get("before");
+                if (!parse.getJSONObject("before").isEmpty()) {
+                    JSONObject before = (JSONObject) parse.get("before");
                     beforeCommitted = before.getString("committed");
                 }
-                if (!parse.getJSONObject("after").isEmpty()){
+                if (!parse.getJSONObject("after").isEmpty()) {
                     commitJson = (JSONObject) parse.get("after");
                 } else {
                     commitJson = (JSONObject) parse.get("before");
@@ -57,7 +59,7 @@ public class PartitionLevelAssets {
                     String fileOp = new String(decode, StandardCharsets.UTF_8);
                     AssetsUtils assetsUtils = new AssetsUtils();
                     String[] fileOpsString = assetsUtils.parseFileOpsString(fileOp);
-                    fileCount ++;
+                    fileCount++;
                     fileBytesSize = fileBytesSize + Long.parseLong(fileOpsString[1]);
                 }
 
@@ -68,37 +70,43 @@ public class PartitionLevelAssets {
                 tableInfos[4] = commitOp;
                 tableInfos[5] = beforeCommitted;
                 boolean dealingWithSkew = CountDataAssets.dealingDataSkew;
-                if (dealingWithSkew){
+                if (dealingWithSkew) {
                     log.info("开启数据倾斜处理");
                     Random random = new Random();
                     int randomNumer = random.nextInt(2);
-                    return new Tuple3<>(PGtableName, tableId+ "$" + randomNumer+" "+partitionDesc, tableInfos);
+                    return new Tuple3<>(
+                            PGtableName,
+                            tableId + "$" + randomNumer + " " + partitionDesc,
+                            tableInfos);
                 } else {
-                    return new Tuple3<>(PGtableName, tableId + " "+partitionDesc, tableInfos);
+                    return new Tuple3<>(PGtableName, tableId + " " + partitionDesc, tableInfos);
                 }
-
             }
             return null;
         }
     }
 
-//    public static class sideProcessing extends ProcessFunction<Tuple3<String, String, String[]>, Tuple3<String, String, String[]>> {
-//        @Override
-//        public void processElement(Tuple3<String, String, String[]> value, Context ctx, Collector<Tuple3<String, String, String[]>> out) throws Exception {
-//            // 根据表名选择旁数据流
-//            switch (value.f0) {
-//                case "table_info":
-//                    ctx.output(new OutputTag<Tuple3<String, String, String[]>>("table_info") {
-//                    }, value);
-//                    break;
-//                case "data_commit_info":
-//                    ctx.output(new OutputTag<Tuple3<String, String, String[]>>("data_commit_info") {
-//                    }, value);
-//                    break;
-//            }
-//        }
-//    }
-    public static class PartitionLevelProcessFunction extends ProcessFunction<Tuple3<String, String, String[]>, PartitionCounts> {
+    //    public static class sideProcessing extends ProcessFunction<Tuple3<String, String,
+    // String[]>, Tuple3<String, String, String[]>> {
+    //        @Override
+    //        public void processElement(Tuple3<String, String, String[]> value, Context ctx,
+    // Collector<Tuple3<String, String, String[]>> out) throws Exception {
+    //            // 根据表名选择旁数据流
+    //            switch (value.f0) {
+    //                case "table_info":
+    //                    ctx.output(new OutputTag<Tuple3<String, String, String[]>>("table_info") {
+    //                    }, value);
+    //                    break;
+    //                case "data_commit_info":
+    //                    ctx.output(new OutputTag<Tuple3<String, String,
+    // String[]>>("data_commit_info") {
+    //                    }, value);
+    //                    break;
+    //            }
+    //        }
+    //    }
+    public static class PartitionLevelProcessFunction
+            extends ProcessFunction<Tuple3<String, String, String[]>, PartitionCounts> {
 
         // 定义一个 ValueState 来存储累加的值
         private transient ValueState<Integer> partitionBaseFileCountValue;
@@ -106,43 +114,50 @@ public class PartitionLevelAssets {
         private transient ValueState<Long> partitionBaseSizeValue;
         private transient ValueState<Long> partitionTotalSizeValue;
 
-
         @Override
         public void open(Configuration parameters) throws Exception {
             // 初始化累加状态
-            ValueStateDescriptor<Integer> partitionBaseFileCountDescriptor = new ValueStateDescriptor<>(
-                    "partitionBaseFileCountValue", // 状态的名称
-                    Integer.class,      // 状态的类型
-                    0                   // 默认值为 0
-            );
-            partitionBaseFileCountValue = getRuntimeContext().getState(partitionBaseFileCountDescriptor);
-            ValueStateDescriptor<Integer> partitionTotalFileCountDescriptor = new ValueStateDescriptor<>(
-                    "partitionTotalFileCountValue", // 状态的名称
-                    Integer.class,      // 状态的类型
-                    0                   // 默认值为 0
-            );
-            partitionTotalFileCountValue = getRuntimeContext().getState(partitionTotalFileCountDescriptor);
+            ValueStateDescriptor<Integer> partitionBaseFileCountDescriptor =
+                    new ValueStateDescriptor<>(
+                            "partitionBaseFileCountValue", // 状态的名称
+                            Integer.class, // 状态的类型
+                            0 // 默认值为 0
+                            );
+            partitionBaseFileCountValue =
+                    getRuntimeContext().getState(partitionBaseFileCountDescriptor);
+            ValueStateDescriptor<Integer> partitionTotalFileCountDescriptor =
+                    new ValueStateDescriptor<>(
+                            "partitionTotalFileCountValue", // 状态的名称
+                            Integer.class, // 状态的类型
+                            0 // 默认值为 0
+                            );
+            partitionTotalFileCountValue =
+                    getRuntimeContext().getState(partitionTotalFileCountDescriptor);
 
-            ValueStateDescriptor<Long> partitionBaseSizeDescriptor = new ValueStateDescriptor<>(
-                    "partitionBaseSizeValue", // 状态的名称
-                    Long.class,          // 状态的类型
-                    0L                   // 默认值为 0L
-            );
+            ValueStateDescriptor<Long> partitionBaseSizeDescriptor =
+                    new ValueStateDescriptor<>(
+                            "partitionBaseSizeValue", // 状态的名称
+                            Long.class, // 状态的类型
+                            0L // 默认值为 0L
+                            );
             partitionBaseSizeValue = getRuntimeContext().getState(partitionBaseSizeDescriptor);
 
-            ValueStateDescriptor<Long> partitionTotalSizeValueDescriptor = new ValueStateDescriptor<>(
-                    "partitionTotalSizeValue", // 状态的名称
-                    Long.class,          // 状态的类型
-                    0L                   // 默认值为 0L
-            );
-            partitionTotalSizeValue = getRuntimeContext().getState(partitionTotalSizeValueDescriptor);
-
+            ValueStateDescriptor<Long> partitionTotalSizeValueDescriptor =
+                    new ValueStateDescriptor<>(
+                            "partitionTotalSizeValue", // 状态的名称
+                            Long.class, // 状态的类型
+                            0L // 默认值为 0L
+                            );
+            partitionTotalSizeValue =
+                    getRuntimeContext().getState(partitionTotalSizeValueDescriptor);
         }
 
         @Override
-        public void processElement(Tuple3<String, String, String[]> value, Context ctx, Collector<PartitionCounts> out) throws Exception {
-            //PartitionCounts partitionCounts = new PartitionCounts()
-            //System.out.println(value);
+        public void processElement(
+                Tuple3<String, String, String[]> value, Context ctx, Collector<PartitionCounts> out)
+                throws Exception {
+            // PartitionCounts partitionCounts = new PartitionCounts()
+            // System.out.println(value);
             String tableId = value.f1.split(" ")[0];
             String partitionDesc = value.f1.split(" ")[1];
             int currentFileCountValue = Integer.parseInt(value.f2[0]);
@@ -161,7 +176,7 @@ public class PartitionLevelAssets {
             int newTotalFileCount;
             long newBaseFileSize;
             long newTotalFileSize;
-            if (enventOp.equals("delete") && beforeCommitted && committed){
+            if (enventOp.equals("delete") && beforeCommitted && committed) {
                 newTotalFileCount = previousTotalFileCountValue - currentFileCountValue;
                 newTotalFileSize = fileBytesSizePreviousTotalValue - currentFileBytesSize;
                 partitionTotalFileCountValue.update(newTotalFileCount);
@@ -171,11 +186,14 @@ public class PartitionLevelAssets {
 
                 partitionBaseSizeValue.update(newBaseFileSize);
                 partitionBaseFileCountValue.update(newBaseFileCount);
-                PartitionCounts partitionCounts = new PartitionCounts(tableId,partitionDesc,
-                        partitionTotalFileCountValue.value(),
-                        partitionBaseFileCountValue.value(),
-                        partitionTotalSizeValue.value(),
-                        partitionBaseSizeValue.value());
+                PartitionCounts partitionCounts =
+                        new PartitionCounts(
+                                tableId,
+                                partitionDesc,
+                                partitionTotalFileCountValue.value(),
+                                partitionBaseFileCountValue.value(),
+                                partitionTotalSizeValue.value(),
+                                partitionBaseSizeValue.value());
                 out.collect(partitionCounts);
             } else {
                 if (committed) {
@@ -183,12 +201,18 @@ public class PartitionLevelAssets {
                     newTotalFileSize = fileBytesSizePreviousTotalValue + currentFileBytesSize;
                     newTotalFileCount = Math.max(0, newTotalFileCount);
                     newTotalFileSize = Math.max(0, newTotalFileSize);
-                    if (commitOp.equals("CompactionCommit")){
+                    if (commitOp.equals("CompactionCommit")) {
                         newBaseFileCount = currentFileCountValue;
                         newBaseFileSize = currentFileBytesSize;
                     } else {
-                        newBaseFileCount = newTotalFileCount == 0 ? 0 : previousBaseFileCountValue + currentFileCountValue;
-                        newBaseFileSize = newTotalFileCount == 0 ? 0 : fileBytesSizePreviousBaseValue + currentFileBytesSize;
+                        newBaseFileCount =
+                                newTotalFileCount == 0
+                                        ? 0
+                                        : previousBaseFileCountValue + currentFileCountValue;
+                        newBaseFileSize =
+                                newTotalFileCount == 0
+                                        ? 0
+                                        : fileBytesSizePreviousBaseValue + currentFileBytesSize;
                     }
                     newBaseFileCount = Math.max(0, newBaseFileCount);
                     newBaseFileSize = Math.max(0, newBaseFileSize);
@@ -197,10 +221,14 @@ public class PartitionLevelAssets {
                     partitionBaseFileCountValue.update(newBaseFileCount);
                     partitionTotalFileCountValue.update(newTotalFileCount);
                     partitionTotalSizeValue.update(newTotalFileSize);
-                    PartitionCounts partitionCounts = new PartitionCounts(tableId,partitionDesc,partitionTotalFileCountValue.value(),
-                            newBaseFileCount,
-                            partitionTotalSizeValue.value(),
-                            newBaseFileSize);
+                    PartitionCounts partitionCounts =
+                            new PartitionCounts(
+                                    tableId,
+                                    partitionDesc,
+                                    partitionTotalFileCountValue.value(),
+                                    newBaseFileCount,
+                                    partitionTotalSizeValue.value(),
+                                    newBaseFileSize);
 
                     out.collect(partitionCounts);
                 }

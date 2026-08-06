@@ -10,15 +10,13 @@ import org.apache.flink.lakesoul.sink.committer.LakeSoulSinkCommitter;
 import org.apache.flink.lakesoul.sink.committer.LakeSoulSinkGlobalCommitter;
 import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
 import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkGlobalCommittable;
-import org.apache.flink.lakesoul.sink.writer.AbstractLakeSoulMultiTableSinkWriter;
 import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketState;
+import org.apache.flink.lakesoul.sink.writer.AbstractLakeSoulMultiTableSinkWriter;
 
 import java.io.IOException;
 import java.io.Serializable;
 
-/**
- * The base abstract class for the {@link BulkFormatBuilder}.
- */
+/** The base abstract class for the {@link BulkFormatBuilder}. */
 public abstract class BucketsBuilder<IN, OUT, T extends BucketsBuilder<IN, OUT, T>>
         implements Serializable {
 
@@ -30,18 +28,19 @@ public abstract class BucketsBuilder<IN, OUT, T extends BucketsBuilder<IN, OUT, 
         return (T) this;
     }
 
-    public abstract AbstractLakeSoulMultiTableSinkWriter<IN, OUT> createWriter(final Sink.InitContext context, int subTaskId) throws IOException;
+    public abstract AbstractLakeSoulMultiTableSinkWriter<IN, OUT> createWriter(
+            final Sink.InitContext context, int subTaskId) throws IOException;
 
     public abstract LakeSoulSinkCommitter createCommitter() throws IOException;
 
     public abstract SimpleVersionedSerializer<LakeSoulWriterBucketState> getWriterStateSerializer()
             throws IOException;
 
-    public abstract SimpleVersionedSerializer<LakeSoulMultiTableSinkCommittable> getCommittableSerializer()
-            throws IOException;
+    public abstract SimpleVersionedSerializer<LakeSoulMultiTableSinkCommittable>
+            getCommittableSerializer() throws IOException;
 
     public abstract LakeSoulSinkGlobalCommitter createGlobalCommitter();
 
-    public abstract SimpleVersionedSerializer<LakeSoulMultiTableSinkGlobalCommittable> getGlobalCommittableSerializer()
-            throws IOException;
+    public abstract SimpleVersionedSerializer<LakeSoulMultiTableSinkGlobalCommittable>
+            getGlobalCommittableSerializer() throws IOException;
 }

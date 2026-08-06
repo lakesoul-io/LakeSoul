@@ -15,7 +15,6 @@ public class PostgresContainerHelper {
     private static final Logger LOG = LoggerFactory.getLogger(PostgresContainerHelper.class);
     private static String CONTAINER_NAME = "lakesoul-test-pg";
 
-
     public static void setContainerName(String containerName) {
         CONTAINER_NAME = containerName;
     }
@@ -31,7 +30,8 @@ public class PostgresContainerHelper {
     public static void runCommand(String command) throws IOException {
 
         Process process = Runtime.getRuntime().exec(command);
-        BufferedReader stdoutReader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+        BufferedReader stdoutReader =
+                new BufferedReader(new InputStreamReader(process.getInputStream()));
         LOG.warn("======== stdout of Command: [" + command + "] ========");
         String line = "";
         while ((line = stdoutReader.readLine()) != null) {
@@ -39,7 +39,8 @@ public class PostgresContainerHelper {
         }
         LOG.warn("======== stdout End ========");
 
-        BufferedReader stderrReader = new BufferedReader(new InputStreamReader(process.getErrorStream()));
+        BufferedReader stderrReader =
+                new BufferedReader(new InputStreamReader(process.getErrorStream()));
         LOG.warn("======== stderr of Command: [" + command + "] ========");
         while ((line = stderrReader.readLine()) != null) {
             System.out.println(line);
@@ -48,23 +49,25 @@ public class PostgresContainerHelper {
     }
 
     public static void stopPostgresForMills(long mills) {
-        Thread thread = new Thread(() -> {
-            try {
-                runCommand(getStopCommand(CONTAINER_NAME));
-            } catch (IOException e) {
-                LOG.error("Failed to stop Postgres by " + e.getMessage());
-            }
-            try {
-                Thread.sleep(mills);
-            } catch (InterruptedException e) {
-                throw new RuntimeException(e);
-            }
-            try {
-                runCommand(getStartCommand(CONTAINER_NAME));
-            } catch (IOException e) {
-                LOG.error("Failed to restart Postgres by " + e.getMessage());
-            }
-        });
+        Thread thread =
+                new Thread(
+                        () -> {
+                            try {
+                                runCommand(getStopCommand(CONTAINER_NAME));
+                            } catch (IOException e) {
+                                LOG.error("Failed to stop Postgres by " + e.getMessage());
+                            }
+                            try {
+                                Thread.sleep(mills);
+                            } catch (InterruptedException e) {
+                                throw new RuntimeException(e);
+                            }
+                            try {
+                                runCommand(getStartCommand(CONTAINER_NAME));
+                            } catch (IOException e) {
+                                LOG.error("Failed to restart Postgres by " + e.getMessage());
+                            }
+                        });
         thread.start();
     }
 

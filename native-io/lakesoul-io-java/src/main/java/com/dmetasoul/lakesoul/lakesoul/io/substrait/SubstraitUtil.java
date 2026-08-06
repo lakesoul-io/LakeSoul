@@ -1,5 +1,7 @@
 package com.dmetasoul.lakesoul.lakesoul.io.substrait;
 
+import static io.substrait.extension.DefaultExtensionCatalog.*;
+
 import com.dmetasoul.lakesoul.lakesoul.GlobalResourceManager;
 import com.dmetasoul.lakesoul.lakesoul.io.DateTimeUtils;
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOBase;
@@ -9,9 +11,9 @@ import com.dmetasoul.lakesoul.lakesoul.memory.ArrowMemoryUtils;
 import com.dmetasoul.lakesoul.meta.entity.JniWrapper;
 import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
 import com.google.protobuf.InvalidProtocolBufferException;
+
 import io.substrait.dsl.SubstraitBuilder;
 import io.substrait.expression.Expression;
-
 import io.substrait.expression.ExpressionCreator;
 import io.substrait.expression.FieldReference;
 import io.substrait.expression.ImmutableMapKey;
@@ -23,8 +25,10 @@ import io.substrait.plan.PlanProtoConverter;
 import io.substrait.relation.NamedScan;
 import io.substrait.type.Type;
 import io.substrait.type.TypeCreator;
+
 import jnr.ffi.Pointer;
 import jnr.ffi.Runtime;
+
 import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.c.CDataDictionaryProvider;
 import org.apache.arrow.c.Data;
@@ -52,8 +56,6 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import static io.substrait.extension.DefaultExtensionCatalog.*;
-
 public class SubstraitUtil {
     public static final SimpleExtension.ExtensionCollection EXTENSIONS;
     public static final SubstraitBuilder BUILDER;
@@ -68,7 +70,6 @@ public class SubstraitUtil {
     public static final Expression CONST_ZERO = ExpressionCreator.i64(false, 0);
 
     private static final LibLakeSoulIO LIB;
-
 
     private static final NativeIOBase NATIVE_IO_BASE;
 
@@ -102,17 +103,30 @@ public class SubstraitUtil {
     }
 
     public static Expression notNull(Expression expression) {
-        return makeUnary(expression, FUNCTIONS_COMPARISON, "is_not_null:any", TypeCreator.NULLABLE.BOOLEAN);
+        return makeUnary(
+                expression, FUNCTIONS_COMPARISON, "is_not_null:any", TypeCreator.NULLABLE.BOOLEAN);
     }
 
     public static Expression isNull(Expression expression) {
-        return makeUnary(expression, SubstraitUtil.CompNamespace, "is_null:any", TypeCreator.NULLABLE.BOOLEAN);
+        return makeUnary(
+                expression,
+                SubstraitUtil.CompNamespace,
+                "is_null:any",
+                TypeCreator.NULLABLE.BOOLEAN);
     }
 
     public static Expression in(Expression expr, List<Expression.Literal> set) {
-        List<Expression> eqList = set.stream().map(
-                lit -> makeBinary(expr, lit, FUNCTIONS_COMPARISON, "equal:any_any", TypeCreator.NULLABLE.BOOLEAN)
-        ).collect(Collectors.toList());
+        List<Expression> eqList =
+                set.stream()
+                        .map(
+                                lit ->
+                                        makeBinary(
+                                                expr,
+                                                lit,
+                                                FUNCTIONS_COMPARISON,
+                                                "equal:any_any",
+                                                TypeCreator.NULLABLE.BOOLEAN))
+                        .collect(Collectors.toList());
         Expression ret = null;
         for (int i = 0; i < eqList.size(); i++) {
             if (i == 0) {
@@ -125,9 +139,17 @@ public class SubstraitUtil {
     }
 
     public static Expression notIn(Expression expr, List<Expression.Literal> set) {
-        List<Expression> notEqList = set.stream().map(
-                lit -> makeBinary(expr, lit, FUNCTIONS_COMPARISON, "not_equal:any_any", TypeCreator.NULLABLE.BOOLEAN)
-        ).collect(Collectors.toList());
+        List<Expression> notEqList =
+                set.stream()
+                        .map(
+                                lit ->
+                                        makeBinary(
+                                                expr,
+                                                lit,
+                                                FUNCTIONS_COMPARISON,
+                                                "not_equal:any_any",
+                                                TypeCreator.NULLABLE.BOOLEAN))
+                        .collect(Collectors.toList());
         Expression ret = null;
         for (int i = 0; i < notEqList.size(); i++) {
             if (i == 0) {
@@ -139,12 +161,15 @@ public class SubstraitUtil {
         return ret;
     }
 
-    public static Expression makeBinary(Expression left, Expression right, String namespace, String funcKey, Type type) {
+    public static Expression makeBinary(
+            Expression left, Expression right, String namespace, String funcKey, Type type) {
         SimpleExtension.FunctionAnchor fa = SimpleExtension.FunctionAnchor.of(namespace, funcKey);
-        return ExpressionCreator.scalarFunction(EXTENSIONS.getScalarFunction(fa), type, left, right);
+        return ExpressionCreator.scalarFunction(
+                EXTENSIONS.getScalarFunction(fa), type, left, right);
     }
 
-    public static Expression makeUnary(Expression expr, String namespace, String funcKey, Type type) {
+    public static Expression makeUnary(
+            Expression expr, String namespace, String funcKey, Type type) {
         SimpleExtension.FunctionAnchor fa = SimpleExtension.FunctionAnchor.of(namespace, funcKey);
         return ExpressionCreator.scalarFunction(EXTENSIONS.getScalarFunction(fa), type, expr);
     }
@@ -161,23 +186,16 @@ public class SubstraitUtil {
         List<String> columnNames = new ArrayList<>();
         List<Type> columnTypes = new ArrayList<>();
         NamedScan namedScan = BUILDER.namedScan(tableNames, columnNames, columnTypes);
-        namedScan =
-                NamedScan.builder()
-                        .from(namedScan)
-                        .filter(e)
-                        .build();
-
+        namedScan = NamedScan.builder().from(namedScan).filter(e).build();
 
         Plan.Root root = BUILDER.root(namedScan);
         return BUILDER.plan(root);
     }
 
-
     public static io.substrait.proto.Expression exprToProto(Expression expr) {
         ExpressionProtoConverter converter = new ExpressionProtoConverter(null, null);
         return expr.accept(converter);
     }
-
 
     public static io.substrait.proto.Plan planToProto(Plan plan) {
         if (plan == null) {
@@ -190,11 +208,15 @@ public class SubstraitUtil {
         return Base64.getEncoder().encodeToString(plan.toByteArray());
     }
 
-    public static io.substrait.proto.Plan decodeBase64String(String base64) throws InvalidProtocolBufferException {
+    public static io.substrait.proto.Plan decodeBase64String(String base64)
+            throws InvalidProtocolBufferException {
         return io.substrait.proto.Plan.parseFrom(Base64.getDecoder().decode(base64));
     }
 
-    public static List<PartitionInfo> applyPartitionFilters(List<PartitionInfo> allPartitionInfo, Schema schema, io.substrait.proto.Plan partitionFilter) {
+    public static List<PartitionInfo> applyPartitionFilters(
+            List<PartitionInfo> allPartitionInfo,
+            Schema schema,
+            io.substrait.proto.Plan partitionFilter) {
         if (allPartitionInfo.isEmpty()) {
             return Collections.emptyList();
         }
@@ -206,55 +228,68 @@ public class SubstraitUtil {
         CDataDictionaryProvider tmpProvider = new CDataDictionaryProvider();
         Data.exportSchema(ArrowMemoryUtils.rootAllocator, schema, tmpProvider, ffiSchema);
 
-
-        JniWrapper jniWrapper = JniWrapper.newBuilder().addAllPartitionInfo(allPartitionInfo).build();
+        JniWrapper jniWrapper =
+                JniWrapper.newBuilder().addAllPartitionInfo(allPartitionInfo).build();
 
         byte[] jniBytes = jniWrapper.toByteArray();
-        Pointer jniBuffer = Runtime.getRuntime(LIB).getMemoryManager().allocateDirect(jniBytes.length + 1, true);
+        Pointer jniBuffer =
+                Runtime.getRuntime(LIB)
+                        .getMemoryManager()
+                        .allocateDirect(jniBytes.length + 1, true);
         jniBuffer.put(0, jniBytes, 0, jniBytes.length);
         jniBuffer.putByte(jniBytes.length, (byte) 0);
 
         byte[] filterBytes = partitionFilter.toByteArray();
-        Pointer filterBuffer = Runtime.getRuntime(LIB).getMemoryManager().allocateDirect(filterBytes.length + 1, true);
+        Pointer filterBuffer =
+                Runtime.getRuntime(LIB)
+                        .getMemoryManager()
+                        .allocateDirect(filterBytes.length + 1, true);
         filterBuffer.put(0, filterBytes, 0, filterBytes.length);
         filterBuffer.putByte(filterBytes.length, (byte) 0);
 
         try {
             final CompletableFuture<Integer> filterFuture = new CompletableFuture<>();
-            Pointer filterResult = LIB.apply_partition_filter(
-                    new NativeIOBase.IntegerCallback((resultLen, msg) -> {
-                        if (msg == null || msg.isEmpty()) {
-                            filterFuture.complete(resultLen);
-                        } else {
-                            filterFuture.completeExceptionally(new SQLException(msg));
-                        }
-                    }, NATIVE_IO_BASE.getIntReferenceManager()),
-                    jniBytes.length, jniBuffer.address(),
-                    ffiSchema.memoryAddress(),
-                    filterBytes.length,
-                    filterBuffer.address()
-            );
+            Pointer filterResult =
+                    LIB.apply_partition_filter(
+                            new NativeIOBase.IntegerCallback(
+                                    (resultLen, msg) -> {
+                                        if (msg == null || msg.isEmpty()) {
+                                            filterFuture.complete(resultLen);
+                                        } else {
+                                            filterFuture.completeExceptionally(
+                                                    new SQLException(msg));
+                                        }
+                                    },
+                                    NATIVE_IO_BASE.getIntReferenceManager()),
+                            jniBytes.length,
+                            jniBuffer.address(),
+                            ffiSchema.memoryAddress(),
+                            filterBytes.length,
+                            filterBuffer.address());
             Integer len = null;
             len = filterFuture.get(TIMEOUT, TimeUnit.MILLISECONDS);
             if (len < 0) {
-                throw new RuntimeException("applyPartitionFilters filterFuture returned a negative result");
+                throw new RuntimeException(
+                        "applyPartitionFilters filterFuture returned a negative result");
             }
             int lenWithTail = len + 1;
-            Pointer exportBuffer = Runtime.getRuntime(LIB).getMemoryManager().allocateDirect(lenWithTail, true);
+            Pointer exportBuffer =
+                    Runtime.getRuntime(LIB).getMemoryManager().allocateDirect(lenWithTail, true);
 
             final CompletableFuture<Boolean> importFuture = new CompletableFuture<>();
             LIB.export_bytes_result(
-                    new NativeIOBase.BooleanCallback((result, msg) -> {
-                        if (msg == null || msg.isEmpty()) {
-                            importFuture.complete(result);
-                        } else {
-                            importFuture.completeExceptionally(new SQLException(msg));
-                        }
-                    }, NATIVE_IO_BASE.getBoolReferenceManager()),
+                    new NativeIOBase.BooleanCallback(
+                            (result, msg) -> {
+                                if (msg == null || msg.isEmpty()) {
+                                    importFuture.complete(result);
+                                } else {
+                                    importFuture.completeExceptionally(new SQLException(msg));
+                                }
+                            },
+                            NATIVE_IO_BASE.getBoolReferenceManager()),
                     filterResult,
                     len,
-                    exportBuffer.address()
-            );
+                    exportBuffer.address());
             Boolean b = importFuture.get(TIMEOUT, TimeUnit.MILLISECONDS);
             if (!b) {
                 throw new RuntimeException("applyPartitionFilters importFuture returned false");
@@ -263,7 +298,10 @@ public class SubstraitUtil {
             byte[] bytes = new byte[len];
             exportBuffer.get(0, bytes, 0, len);
             resultPartitionInfo = JniWrapper.parseFrom(bytes).getPartitionInfoList();
-        } catch (InterruptedException | ExecutionException | TimeoutException | InvalidProtocolBufferException e) {
+        } catch (InterruptedException
+                | ExecutionException
+                | TimeoutException
+                | InvalidProtocolBufferException e) {
             throw new RuntimeException(e);
         } finally {
             tmpProvider.close();
@@ -274,39 +312,33 @@ public class SubstraitUtil {
     }
 
     public static FieldReference arrowFieldToSubstraitField(Field field) {
-        return FieldReference
-                .builder()
-                .type(arrowFieldToSubstraitType(field)).addSegments(
-                        ImmutableMapKey.of(ExpressionCreator.string(true, field.getName()))
-                )
+        return FieldReference.builder()
+                .type(arrowFieldToSubstraitType(field))
+                .addSegments(ImmutableMapKey.of(ExpressionCreator.string(true, field.getName())))
                 .build();
     }
 
     public static Type arrowFieldToSubstraitType(Field field) {
         Type type = null;
         if (field.getType() instanceof ArrowType.Struct) {
-            type = TypeCreator
-                    .of(field.isNullable())
-                    .struct(field
-                            .getChildren()
-                            .stream()
-                            .map(SubstraitUtil::arrowFieldToSubstraitType)
-                            .collect(Collectors.toList())
-                    );
+            type =
+                    TypeCreator.of(field.isNullable())
+                            .struct(
+                                    field.getChildren().stream()
+                                            .map(SubstraitUtil::arrowFieldToSubstraitType)
+                                            .collect(Collectors.toList()));
         } else if (field.getType() instanceof ArrowType.List
                 || field.getType() instanceof ArrowType.LargeList
-                || field.getType() instanceof ArrowType.FixedSizeList
-        ) {
-            type = TypeCreator
-                    .of(field.isNullable())
-                    .list(arrowFieldToSubstraitType(field.getChildren().get(0)));
+                || field.getType() instanceof ArrowType.FixedSizeList) {
+            type =
+                    TypeCreator.of(field.isNullable())
+                            .list(arrowFieldToSubstraitType(field.getChildren().get(0)));
         } else if (field.getType() instanceof ArrowType.Map) {
-            type = TypeCreator
-                    .of(field.isNullable())
-                    .map(
-                            arrowFieldToSubstraitType(field.getChildren().get(0)),
-                            arrowFieldToSubstraitType(field.getChildren().get(1))
-                    );
+            type =
+                    TypeCreator.of(field.isNullable())
+                            .map(
+                                    arrowFieldToSubstraitType(field.getChildren().get(0)),
+                                    arrowFieldToSubstraitType(field.getChildren().get(1)));
         } else {
             type = field.getType().accept(ArrowTypeToSubstraitTypeConverter.of(field.isNullable()));
         }
@@ -318,8 +350,10 @@ public class SubstraitUtil {
 
         public final TypeCreator typeCreator;
 
-        public static final ArrowTypeToSubstraitTypeConverter NULLABLE = new ArrowTypeToSubstraitTypeConverter(true);
-        public static final ArrowTypeToSubstraitTypeConverter REQUIRED = new ArrowTypeToSubstraitTypeConverter(false);
+        public static final ArrowTypeToSubstraitTypeConverter NULLABLE =
+                new ArrowTypeToSubstraitTypeConverter(true);
+        public static final ArrowTypeToSubstraitTypeConverter REQUIRED =
+                new ArrowTypeToSubstraitTypeConverter(false);
 
         public static ArrowTypeToSubstraitTypeConverter of(boolean nullability) {
             return nullability ? NULLABLE : REQUIRED;
@@ -371,8 +405,10 @@ public class SubstraitUtil {
 
         @Override
         public Type visit(ArrowType.FloatingPoint floatingPoint) {
-            if (floatingPoint.getPrecision() == FloatingPointPrecision.SINGLE) return typeCreator.FP32;
-            if (floatingPoint.getPrecision() == FloatingPointPrecision.DOUBLE) return typeCreator.FP64;
+            if (floatingPoint.getPrecision() == FloatingPointPrecision.SINGLE)
+                return typeCreator.FP32;
+            if (floatingPoint.getPrecision() == FloatingPointPrecision.DOUBLE)
+                return typeCreator.FP64;
             return null;
         }
 
@@ -423,12 +459,16 @@ public class SubstraitUtil {
 
         @Override
         public Type visit(ArrowType.Timestamp timestamp) {
-            return timestamp.getTimezone() != null ? typeCreator.TIMESTAMP_TZ : typeCreator.TIMESTAMP;
+            return timestamp.getTimezone() != null
+                    ? typeCreator.TIMESTAMP_TZ
+                    : typeCreator.TIMESTAMP;
         }
 
         @Override
         public Type visit(ArrowType.Interval interval) {
-            return interval.getUnit() == IntervalUnit.DAY_TIME ? typeCreator.INTERVAL_DAY : typeCreator.INTERVAL_YEAR;
+            return interval.getUnit() == IntervalUnit.DAY_TIME
+                    ? typeCreator.INTERVAL_DAY
+                    : typeCreator.INTERVAL_YEAR;
         }
 
         @Override
@@ -441,27 +481,32 @@ public class SubstraitUtil {
         return ExpressionCreator.typedNull(type);
     }
 
-    public static Expression.Literal anyToSubstraitLiteral(Type type, Object any) throws IOException {
+    public static Expression.Literal anyToSubstraitLiteral(Type type, Object any)
+            throws IOException {
         if (type instanceof Type.Date) {
             if (any instanceof Integer) {
-               return ExpressionCreator.date(false, (Integer) any);
-            } else if(any instanceof Long) {
-               return ExpressionCreator.date(false, ((Long) any).intValue());
-	    } else if (any instanceof Date || any instanceof LocalDate) {
+                return ExpressionCreator.date(false, (Integer) any);
+            } else if (any instanceof Long) {
+                return ExpressionCreator.date(false, ((Long) any).intValue());
+            } else if (any instanceof Date || any instanceof LocalDate) {
                 return ExpressionCreator.date(false, DateTimeUtils$.MODULE$.anyToDays(any));
             }
         }
         if (type instanceof Type.Timestamp) {
             if (any instanceof Long) {
                 return ExpressionCreator.timestamp(false, (Long) any);
-            } else if (any instanceof LocalDateTime || any instanceof Timestamp || any instanceof Instant) {
+            } else if (any instanceof LocalDateTime
+                    || any instanceof Timestamp
+                    || any instanceof Instant) {
                 return ExpressionCreator.timestamp(false, DateTimeUtils.toMicros(any));
             }
         }
         if (type instanceof Type.TimestampTZ) {
             if (any instanceof Long) {
                 return ExpressionCreator.timestampTZ(false, (Long) any);
-            } else if (any instanceof LocalDateTime || any instanceof Timestamp || any instanceof Instant) {
+            } else if (any instanceof LocalDateTime
+                    || any instanceof Timestamp
+                    || any instanceof Instant) {
                 return ExpressionCreator.timestampTZ(false, DateTimeUtils.toMicros(any));
             }
         }
@@ -504,7 +549,6 @@ public class SubstraitUtil {
             return ExpressionCreator.decimal(false, (BigDecimal) any, precision, scale);
         }
 
-
         throw new IOException("Fail convert to SubstraitLiteral for " + any.toString());
     }
 
@@ -512,7 +556,11 @@ public class SubstraitUtil {
         Preconditions.checkArgument(field.getType() instanceof ArrowType.Utf8);
         FieldReference fieldReference = arrowFieldToSubstraitField(field);
         Expression literal = ExpressionCreator.string(false, "delete");
-        return makeBinary(fieldReference, literal, DefaultExtensionCatalog.FUNCTIONS_COMPARISON, "not_equal:any_any", TypeCreator.REQUIRED.STRING);
+        return makeBinary(
+                fieldReference,
+                literal,
+                DefaultExtensionCatalog.FUNCTIONS_COMPARISON,
+                "not_equal:any_any",
+                TypeCreator.REQUIRED.STRING);
     }
 }
-

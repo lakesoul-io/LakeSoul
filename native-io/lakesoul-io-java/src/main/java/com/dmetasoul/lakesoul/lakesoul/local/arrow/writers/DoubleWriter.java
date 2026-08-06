@@ -20,9 +20,7 @@ package com.dmetasoul.lakesoul.lakesoul.local.arrow.writers;
 
 import org.apache.arrow.vector.Float8Vector;
 
-/**
- * {@link ArrowFieldWriter} for Double.
- */
+/** {@link ArrowFieldWriter} for Double. */
 public abstract class DoubleWriter<T> extends ArrowFieldWriter<T> {
 
     public static DoubleWriter<Object[]> forObject(Float8Vector doubleVector) {
@@ -50,9 +48,7 @@ public abstract class DoubleWriter<T> extends ArrowFieldWriter<T> {
 
     // ------------------------------------------------------------------------------------------
 
-    /**
-     * {@link DoubleWriter} for {@link Object[]} input.
-     */
+    /** {@link DoubleWriter} for {@link Object[]} input. */
     public static final class DoubleWriterForObject extends DoubleWriter<Object[]> {
 
         private DoubleWriterForObject(Float8Vector doubleVector) {
@@ -69,5 +65,4 @@ public abstract class DoubleWriter<T> extends ArrowFieldWriter<T> {
             return (double) in[ordinal];
         }
     }
-
 }

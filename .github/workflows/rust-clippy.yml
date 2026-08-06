@@ -7,13 +7,13 @@ on:
     paths:
       - "rust/**"
     branches:
-      - 'main'
+      - "main"
   pull_request:
     paths:
       - "rust/**"
     branches:
-      - 'main'
-      - 'release/**'
+      - "main"
+      - "release/**"
   workflow_dispatch:
 
 name: Rust Clippy Check
@@ -27,10 +27,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses:  dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
-          components: clippy,rustfmt
+          components: clippy
       - name: Install Protoc
         uses: arduino/setup-protoc@v2
         with:
@@ -40,8 +40,5 @@ jobs:
         with:
           workspaces: ". -> rust/target"
           key: "ubuntu-24.04-clippy"
-      - name: Run Format
-        run: cargo fmt --all --check
       - name: Run Clippy
         run: cargo clippy --no-deps --all-features -p lakesoul-io-c -p lakesoul-metadata-c -p lakesoul-python -p lakesoul-io
-

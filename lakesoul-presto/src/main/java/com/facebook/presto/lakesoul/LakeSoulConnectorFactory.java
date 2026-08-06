@@ -30,9 +30,7 @@ public class LakeSoulConnectorFactory implements ConnectorFactory {
 
     @Override
     public Connector create(
-            String catalogName,
-            Map<String, String> config,
-            ConnectorContext context) {
+            String catalogName, Map<String, String> config, ConnectorContext context) {
         LakeSoulConfig.initInstance(config);
         metadata = new LakeSoulMetadata(context.getTypeManager());
         return new LakeSoulConnector(metadata, manager, provider);

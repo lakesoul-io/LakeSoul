@@ -18,17 +18,17 @@
 
 package com.dmetasoul.lakesoul.lakesoul.local.arrow.writers;
 
-//import org.apache.arrow.vector.complex.StructVector;
-//import org.apache.flink.annotation.Internal;
-//import org.apache.flink.table.data.ArrayData;
-//import org.apache.flink.table.data.GenericRowData;
-//import org.apache.flink.table.data.RowData;
+// import org.apache.arrow.vector.complex.StructVector;
+// import org.apache.flink.annotation.Internal;
+// import org.apache.flink.table.data.ArrayData;
+// import org.apache.flink.table.data.GenericRowData;
+// import org.apache.flink.table.data.RowData;
 //
-///**
+/// **
 // * {@link ArrowFieldWriter} for Row.
 // */
-//@Internal
-//public abstract class RowWriter<T> extends ArrowFieldWriter<T> {
+// @Internal
+// public abstract class RowWriter<T> extends ArrowFieldWriter<T> {
 //
 //    public static RowWriter<RowData> forRow(
 //            StructVector structVector, ArrowFieldWriter<RowData>[] fieldsWriters) {
@@ -129,4 +129,4 @@ package com.dmetasoul.lakesoul.lakesoul.local.arrow.writers;
 //            return in.getRow(ordinal, fieldsWriters.length);
 //        }
 //    }
-//}
+// }

@@ -18,11 +18,10 @@
 
 package org.apache.flink.table.runtime.arrow.vectors;
 
+import org.apache.arrow.vector.FixedSizeBinaryVector;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.data.columnar.vector.BytesColumnVector;
 import org.apache.flink.util.Preconditions;
-
-import org.apache.arrow.vector.FixedSizeBinaryVector;
 
 /** Arrow column vector for Binary. */
 @Internal

@@ -4,6 +4,11 @@
 
 package org.apache.flink.lakesoul.sink.writer;
 
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKET;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKETING;
+import static org.apache.flink.util.Preconditions.checkArgument;
+import static org.apache.flink.util.Preconditions.checkNotNull;
+
 import org.apache.flink.api.common.operators.ProcessingTimeService;
 import org.apache.flink.api.connector.sink2.StatefulSink;
 import org.apache.flink.api.connector.sink2.TwoPhaseCommittingSink;
@@ -25,14 +30,10 @@ import org.apache.flink.table.data.RowData;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.*;
 
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKET;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKETING;
-import static org.apache.flink.util.Preconditions.checkArgument;
-import static org.apache.flink.util.Preconditions.checkNotNull;
+import javax.annotation.Nullable;
 
 /**
  * A sink writer implementation for {@link LakeSoulMultiTablesSink}.
@@ -43,11 +44,12 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  * @param <IN> The type of input elements.
  */
 public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
-        implements
-        StatefulSink.StatefulSinkWriter<IN, LakeSoulWriterBucketState>,
-        TwoPhaseCommittingSink.PrecommittingSinkWriter<IN, LakeSoulMultiTableSinkCommittable> {
+        implements StatefulSink.StatefulSinkWriter<IN, LakeSoulWriterBucketState>,
+                TwoPhaseCommittingSink.PrecommittingSinkWriter<
+                        IN, LakeSoulMultiTableSinkCommittable> {
 
-    private static final Logger LOG = LoggerFactory.getLogger(AbstractLakeSoulMultiTableSinkWriter.class);
+    private static final Logger LOG =
+            LoggerFactory.getLogger(AbstractLakeSoulMultiTableSinkWriter.class);
 
     private final int subTaskId;
 
@@ -125,7 +127,8 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
         }
     }
 
-    private void updateActiveBucketId(TableSchemaIdentity tableId, String bucketId, LakeSoulWriterBucket restoredBucket)
+    private void updateActiveBucketId(
+            TableSchemaIdentity tableId, String bucketId, LakeSoulWriterBucket restoredBucket)
             throws IOException {
         final LakeSoulWriterBucket bucket = activeBuckets.get(Tuple2.of(tableId, bucketId));
         if (bucket != null) {
@@ -135,9 +138,11 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
         }
     }
 
-    protected abstract TableSchemaWriterCreator getOrCreateTableSchemaWriterCreator(TableSchemaIdentity identity);
+    protected abstract TableSchemaWriterCreator getOrCreateTableSchemaWriterCreator(
+            TableSchemaIdentity identity);
 
-    protected abstract List<Tuple2<TableSchemaIdentity, RowData>> extractTableSchemaAndRowData(IN element) throws Exception;
+    protected abstract List<Tuple2<TableSchemaIdentity, RowData>> extractTableSchemaAndRowData(
+            IN element) throws Exception;
 
     protected long getDataDmlTsMs(IN element) {
         return Long.MAX_VALUE;
@@ -166,11 +171,14 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
             RowData rowData = schemaAndRowData.f1;
             TableSchemaWriterCreator creator = getOrCreateTableSchemaWriterCreator(identity);
             if (conf.get(DYNAMIC_BUCKETING)) {
-                final LakeSoulWriterBucket bucket = getOrCreateBucketForBucketId(identity, DYNAMIC_BUCKET, creator);
+                final LakeSoulWriterBucket bucket =
+                        getOrCreateBucketForBucketId(identity, DYNAMIC_BUCKET, creator);
                 bucket.write(rowData, processingTimeService.getCurrentProcessingTime());
             } else {
-                final String bucketId = creator.bucketAssigner.getBucketId(rowData, bucketerContext);
-                final LakeSoulWriterBucket bucket = getOrCreateBucketForBucketId(identity, bucketId, creator);
+                final String bucketId =
+                        creator.bucketAssigner.getBucketId(rowData, bucketerContext);
+                final LakeSoulWriterBucket bucket =
+                        getOrCreateBucketForBucketId(identity, bucketId, creator);
                 bucket.write(rowData, processingTimeService.getCurrentProcessingTime());
             }
             recordsOutCounter.inc();
@@ -185,10 +193,11 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
         // Every time before we prepare commit, we first check and remove the inactive
         // buckets. Checking the activeness right before pre-committing avoid re-creating
         // the bucket every time if the bucket use OnCheckpointingRollingPolicy.
-        Iterator<Map.Entry<Tuple2<TableSchemaIdentity, String>, LakeSoulWriterBucket>> activeBucketIt =
-                activeBuckets.entrySet().iterator();
+        Iterator<Map.Entry<Tuple2<TableSchemaIdentity, String>, LakeSoulWriterBucket>>
+                activeBucketIt = activeBuckets.entrySet().iterator();
         while (activeBucketIt.hasNext()) {
-            Map.Entry<Tuple2<TableSchemaIdentity, String>, LakeSoulWriterBucket> entry = activeBucketIt.next();
+            Map.Entry<Tuple2<TableSchemaIdentity, String>, LakeSoulWriterBucket> entry =
+                    activeBucketIt.next();
             if (!entry.getValue().isActive()) {
                 activeBucketIt.remove();
             } else {
@@ -214,9 +223,8 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
     }
 
     protected LakeSoulWriterBucket getOrCreateBucketForBucketId(
-            TableSchemaIdentity identity,
-            String bucketId,
-            TableSchemaWriterCreator creator) throws IOException {
+            TableSchemaIdentity identity, String bucketId, TableSchemaWriterCreator creator)
+            throws IOException {
         LakeSoulWriterBucket bucket = activeBuckets.get(Tuple2.of(identity, bucketId));
         if (bucket == null) {
             final Path bucketPath = creator.tableLocation;
@@ -231,16 +239,13 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
                             rollingPolicy,
                             outputFileConfig);
             activeBuckets.put(Tuple2.of(identity, bucketId), bucket);
-            LOG.info("Create new bucket {}, {}, {}",
-                    identity, bucketId, bucketPath);
+            LOG.info("Create new bucket {}, {}, {}", identity, bucketId, bucketPath);
         }
         return bucket;
     }
 
     @Override
-    public void flush(boolean endOfInput) throws IOException, InterruptedException {
-
-    }
+    public void flush(boolean endOfInput) throws IOException, InterruptedException {}
 
     @Override
     public void close() {
@@ -266,7 +271,9 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
         activeBuckets.clear();
 
         if (firstException != null) {
-            LOG.error("Close completed with errors, native memory may have leaked if close() failed critically.");
+            LOG.error(
+                    "Close completed with errors, native memory may have leaked if close() failed"
+                            + " critically.");
             if (firstException instanceof RuntimeException) {
                 throw (RuntimeException) firstException;
             }
@@ -299,8 +306,7 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
      */
     protected static final class BucketerContext implements BucketAssigner.Context {
 
-        @Nullable
-        private Long elementTimestamp;
+        @Nullable private Long elementTimestamp;
 
         private long currentWatermark;
 
@@ -312,7 +318,8 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
             this.currentProcessingTime = Long.MIN_VALUE;
         }
 
-        public void update(@Nullable Long elementTimestamp, long watermark, long currentProcessingTime) {
+        public void update(
+                @Nullable Long elementTimestamp, long watermark, long currentProcessingTime) {
             this.elementTimestamp = elementTimestamp;
             this.currentWatermark = watermark;
             this.currentProcessingTime = currentProcessingTime;

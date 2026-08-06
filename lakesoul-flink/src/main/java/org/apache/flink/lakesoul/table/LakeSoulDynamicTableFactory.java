@@ -4,11 +4,13 @@
 
 package org.apache.flink.lakesoul.table;
 
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CATALOG_PATH;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.FACTORY_IDENTIFIER;
+
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ExecutionOptions;
-import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.lakesoul.source.LakeSoulLookupTableSource;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.types.TableId;
@@ -26,35 +28,36 @@ import org.apache.flink.table.types.logical.RowType;
 
 import java.util.*;
 
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CATALOG_PATH;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.FACTORY_IDENTIFIER;
-
-public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, DynamicTableSourceFactory {
+public class LakeSoulDynamicTableFactory
+        implements DynamicTableSinkFactory, DynamicTableSourceFactory {
 
     @Override
     public DynamicTableSink createDynamicTableSink(Context context) {
         Configuration options = new Configuration();
         options.addAll(FlinkUtil.IOConfigs.getInstance().conf);
-        options.addAll((Configuration) FactoryUtil.createTableFactoryHelper(this, context).getOptions());
-        FlinkUtil.setLocalTimeZone(options,
-                FlinkUtil.getLocalTimeZone(((TableConfig) context.getConfiguration()).getConfiguration()));
-        FlinkUtil.setS3Options(options,
-                ((TableConfig) context.getConfiguration()).getConfiguration());
-
+        options.addAll(
+                (Configuration) FactoryUtil.createTableFactoryHelper(this, context).getOptions());
+        FlinkUtil.setLocalTimeZone(
+                options,
+                FlinkUtil.getLocalTimeZone(
+                        ((TableConfig) context.getConfiguration()).getConfiguration()));
+        FlinkUtil.setS3Options(
+                options, ((TableConfig) context.getConfiguration()).getConfiguration());
 
         ObjectIdentifier objectIdentifier = context.getObjectIdentifier();
         ResolvedCatalogTable catalogTable = context.getCatalogTable();
         TableSchema schema = catalogTable.getSchema();
-        List<String> pkColumns = schema.getPrimaryKey().map(UniqueConstraint::getColumns).orElse(new ArrayList<>());
+        List<String> pkColumns =
+                schema.getPrimaryKey().map(UniqueConstraint::getColumns).orElse(new ArrayList<>());
 
         return new LakeSoulTableSink(
                 objectIdentifier.asSummaryString(),
                 objectIdentifier.getObjectName(),
                 catalogTable.getResolvedSchema().toPhysicalRowDataType(),
-                pkColumns, catalogTable.getPartitionKeys(),
+                pkColumns,
+                catalogTable.getPartitionKeys(),
                 options,
-                context.getCatalogTable().getResolvedSchema()
-        );
+                context.getCatalogTable().getResolvedSchema());
     }
 
     @Override
@@ -79,15 +82,24 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
     public DynamicTableSource createDynamicTableSource(Context context) {
         Configuration options = new Configuration();
         options.addAll(FlinkUtil.IOConfigs.getInstance().conf);
-        options.addAll((Configuration) FactoryUtil.createTableFactoryHelper(this, context).getOptions());
-        FlinkUtil.setLocalTimeZone(options,
-                FlinkUtil.getLocalTimeZone(((TableConfig) context.getConfiguration()).getConfiguration()));
-        FlinkUtil.setS3Options(options,
-                ((TableConfig) context.getConfiguration()).getConfiguration());
+        options.addAll(
+                (Configuration) FactoryUtil.createTableFactoryHelper(this, context).getOptions());
+        FlinkUtil.setLocalTimeZone(
+                options,
+                FlinkUtil.getLocalTimeZone(
+                        ((TableConfig) context.getConfiguration()).getConfiguration()));
+        FlinkUtil.setS3Options(
+                options, ((TableConfig) context.getConfiguration()).getConfiguration());
         ObjectIdentifier objectIdentifier = context.getObjectIdentifier();
         ResolvedCatalogTable catalogTable = context.getCatalogTable();
         TableSchema schema = catalogTable.getSchema();
-        RowType tableRowType = (RowType) catalogTable.getResolvedSchema().toSourceRowDataType().notNull().getLogicalType();
+        RowType tableRowType =
+                (RowType)
+                        catalogTable
+                                .getResolvedSchema()
+                                .toSourceRowDataType()
+                                .notNull()
+                                .getLogicalType();
         List<String> pkColumns;
         if (schema.getPrimaryKey().isPresent()) {
             pkColumns = schema.getPrimaryKey().get().getColumns();
@@ -97,7 +109,8 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
         List<String> partitionColumns = catalogTable.getPartitionKeys();
 
         boolean isBounded = false;
-        final RuntimeExecutionMode mode = context.getConfiguration().get(ExecutionOptions.RUNTIME_MODE);
+        final RuntimeExecutionMode mode =
+                context.getConfiguration().get(ExecutionOptions.RUNTIME_MODE);
         if (mode == RuntimeExecutionMode.AUTOMATIC) {
             throw new RuntimeException(
                     String.format("Runtime execution mode '%s' is not supported yet.", mode));
@@ -110,7 +123,8 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
         Configuration conf = new Configuration();
         catalogTable.getOptions().forEach(conf::setString);
         return new LakeSoulLookupTableSource(
-                new TableId(io.debezium.relational.TableId.parse(objectIdentifier.asSummaryString())),
+                new TableId(
+                        io.debezium.relational.TableId.parse(objectIdentifier.asSummaryString())),
                 tableRowType,
                 isBounded,
                 pkColumns,
@@ -118,7 +132,6 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
                 catalogTable.getResolvedSchema().toPhysicalRowDataType(),
                 catalogTable.getPartitionKeys(),
                 new Configuration(),
-                options.toMap()
-        );
+                options.toMap());
     }
 }

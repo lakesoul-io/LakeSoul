@@ -18,14 +18,13 @@
 
 package org.apache.flink.table.runtime.arrow.vectors;
 
+import org.apache.arrow.vector.complex.StructVector;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.data.columnar.ColumnarRowData;
 import org.apache.flink.table.data.columnar.vector.ColumnVector;
 import org.apache.flink.table.data.columnar.vector.RowColumnVector;
 import org.apache.flink.table.data.columnar.vector.VectorizedColumnBatch;
 import org.apache.flink.util.Preconditions;
-
-import org.apache.arrow.vector.complex.StructVector;
 
 /** Arrow column vector for Row. */
 @Internal

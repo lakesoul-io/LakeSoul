@@ -4,12 +4,15 @@
 
 package com.dmetasoul.lakesoul.meta.external.jdbc;
 
+import static org.apache.spark.sql.types.DataTypes.*;
+
 import io.debezium.config.CommonConnectorConfig;
 import io.debezium.jdbc.JdbcValueConverters;
 import io.debezium.jdbc.TemporalPrecisionMode;
 import io.debezium.relational.Column;
 import io.debezium.time.ZonedTime;
 import io.debezium.time.ZonedTimestamp;
+
 import org.apache.spark.sql.types.DataType;
 import org.apache.spark.sql.types.DecimalType;
 import org.slf4j.Logger;
@@ -19,23 +22,18 @@ import java.sql.Types;
 import java.time.*;
 import java.time.temporal.TemporalAdjuster;
 
-import static org.apache.spark.sql.types.DataTypes.*;
-
 public class JdbcDataTypeConverter {
 
     protected final Logger logger = LoggerFactory.getLogger(getClass());
 
     private final ZoneOffset defaultOffset;
 
-    /**
-     * Fallback value for TIMESTAMP WITH TZ is epoch
-     */
+    /** Fallback value for TIMESTAMP WITH TZ is epoch */
     private final String fallbackTimestampWithTimeZone;
 
-    /**
-     * Fallback value for TIME WITH TZ is 00:00
-     */
+    /** Fallback value for TIME WITH TZ is 00:00 */
     private final String fallbackTimeWithTimeZone;
+
     protected final boolean adaptiveTimePrecisionMode;
     protected final boolean adaptiveTimeMicrosecondsPrecisionMode;
     protected final JdbcValueConverters.DecimalMode decimalMode;
@@ -44,60 +42,64 @@ public class JdbcDataTypeConverter {
     protected final CommonConnectorConfig.BinaryHandlingMode binaryMode;
 
     /**
-     * Create a new instance that always uses UTC for the default time zone when converting values without timezone
-     * information
-     * to values that require timezones, and uses adapts time and timestamp values based upon the precision of the
-     * database
-     * columns.
+     * Create a new instance that always uses UTC for the default time zone when converting values
+     * without timezone information to values that require timezones, and uses adapts time and
+     * timestamp values based upon the precision of the database columns.
      */
     public JdbcDataTypeConverter() {
         this(null, TemporalPrecisionMode.ADAPTIVE, ZoneOffset.UTC, null, null, null);
     }
 
     /**
-     * Create a new instance, and specify the time zone offset that should be used only when converting values
-     * without timezone
-     * information to values that require timezones. This default offset should not be needed when values are
-     * highly-correlated
-     * with the expected SQL/JDBC types.
+     * Create a new instance, and specify the time zone offset that should be used only when
+     * converting values without timezone information to values that require timezones. This default
+     * offset should not be needed when values are highly-correlated with the expected SQL/JDBC
+     * types.
      *
-     * @param decimalMode           how {@code DECIMAL} and {@code NUMERIC} values should be treated; may be null if
-     *                              {@link JdbcValueConverters.DecimalMode#PRECISE} is to be used
-     * @param temporalPrecisionMode temporal precision mode based on {@link io.debezium.jdbc.TemporalPrecisionMode}
-     * @param defaultOffset         the zone offset that is to be used when converting non-timezone related values to
-     *                             values that do
-     *                              have timezones; may be null if UTC is to be used
-     * @param adjuster              the optional component that adjusts the local date value before obtaining the
-     *                              epoch day; may be null if no
-     *                              adjustment is necessary
-     * @param bigIntUnsignedMode    how {@code BIGINT UNSIGNED} values should be treated; may be null if
-     *                              {@link JdbcValueConverters.BigIntUnsignedMode#PRECISE} is to be used
-     * @param binaryMode            how binary columns should be represented
+     * @param decimalMode how {@code DECIMAL} and {@code NUMERIC} values should be treated; may be
+     *     null if {@link JdbcValueConverters.DecimalMode#PRECISE} is to be used
+     * @param temporalPrecisionMode temporal precision mode based on {@link
+     *     io.debezium.jdbc.TemporalPrecisionMode}
+     * @param defaultOffset the zone offset that is to be used when converting non-timezone related
+     *     values to values that do have timezones; may be null if UTC is to be used
+     * @param adjuster the optional component that adjusts the local date value before obtaining the
+     *     epoch day; may be null if no adjustment is necessary
+     * @param bigIntUnsignedMode how {@code BIGINT UNSIGNED} values should be treated; may be null
+     *     if {@link JdbcValueConverters.BigIntUnsignedMode#PRECISE} is to be used
+     * @param binaryMode how binary columns should be represented
      */
-    public JdbcDataTypeConverter(JdbcValueConverters.DecimalMode decimalMode,
-                                 TemporalPrecisionMode temporalPrecisionMode, ZoneOffset defaultOffset,
-                                 TemporalAdjuster adjuster, JdbcValueConverters.BigIntUnsignedMode bigIntUnsignedMode
-            , CommonConnectorConfig.BinaryHandlingMode binaryMode) {
+    public JdbcDataTypeConverter(
+            JdbcValueConverters.DecimalMode decimalMode,
+            TemporalPrecisionMode temporalPrecisionMode,
+            ZoneOffset defaultOffset,
+            TemporalAdjuster adjuster,
+            JdbcValueConverters.BigIntUnsignedMode bigIntUnsignedMode,
+            CommonConnectorConfig.BinaryHandlingMode binaryMode) {
         this.defaultOffset = defaultOffset != null ? defaultOffset : ZoneOffset.UTC;
-        this.adaptiveTimePrecisionMode = temporalPrecisionMode.equals(TemporalPrecisionMode.ADAPTIVE);
+        this.adaptiveTimePrecisionMode =
+                temporalPrecisionMode.equals(TemporalPrecisionMode.ADAPTIVE);
         this.adaptiveTimeMicrosecondsPrecisionMode =
                 temporalPrecisionMode.equals(TemporalPrecisionMode.ADAPTIVE_TIME_MICROSECONDS);
-        this.decimalMode = decimalMode != null ? decimalMode : JdbcValueConverters.DecimalMode.PRECISE;
+        this.decimalMode =
+                decimalMode != null ? decimalMode : JdbcValueConverters.DecimalMode.PRECISE;
         this.adjuster = adjuster;
-        this.bigIntUnsignedMode = bigIntUnsignedMode != null ? bigIntUnsignedMode :
-                                  JdbcValueConverters.BigIntUnsignedMode.PRECISE;
-        this.binaryMode = binaryMode != null ? binaryMode : CommonConnectorConfig.BinaryHandlingMode.BYTES;
+        this.bigIntUnsignedMode =
+                bigIntUnsignedMode != null
+                        ? bigIntUnsignedMode
+                        : JdbcValueConverters.BigIntUnsignedMode.PRECISE;
+        this.binaryMode =
+                binaryMode != null ? binaryMode : CommonConnectorConfig.BinaryHandlingMode.BYTES;
 
-        this.fallbackTimestampWithTimeZone = ZonedTimestamp.toIsoString(
-                OffsetDateTime.of(LocalDate.ofEpochDay(0), LocalTime.MIDNIGHT, defaultOffset),
-                defaultOffset,
-                adjuster);
-        this.fallbackTimeWithTimeZone = ZonedTime.toIsoString(
-                OffsetTime.of(LocalTime.MIDNIGHT, defaultOffset),
-                defaultOffset,
-                adjuster);
+        this.fallbackTimestampWithTimeZone =
+                ZonedTimestamp.toIsoString(
+                        OffsetDateTime.of(
+                                LocalDate.ofEpochDay(0), LocalTime.MIDNIGHT, defaultOffset),
+                        defaultOffset,
+                        adjuster);
+        this.fallbackTimeWithTimeZone =
+                ZonedTime.toIsoString(
+                        OffsetTime.of(LocalTime.MIDNIGHT, defaultOffset), defaultOffset, adjuster);
     }
-
 
     public DataType schemaBuilder(Column column) {
         switch (column.jdbcType()) {
@@ -110,7 +112,7 @@ public class JdbcDataTypeConverter {
                 if (column.length() > 1) {
                     return BinaryType;
                 }
-                // otherwise, it is just one bit so use a boolean ...
+            // otherwise, it is just one bit so use a boolean ...
             case Types.BOOLEAN:
                 return BooleanType;
 
@@ -135,15 +137,18 @@ public class JdbcDataTypeConverter {
                 // values are a 32-bit signed integer value between - 2147483648 and 2147483647
                 return IntegerType;
             case Types.BIGINT:
-                // values are a 64-bit signed integer value between -9223372036854775808 and 9223372036854775807
+                // values are a 64-bit signed integer value between -9223372036854775808 and
+                // 9223372036854775807
                 return LongType;
 
             // Numeric decimal numbers
             case Types.REAL:
-                // values are single precision floating point number which supports 7 digits of mantissa.
+            // values are single precision floating point number which supports 7 digits of
+            // mantissa.
             case Types.FLOAT:
             case Types.DOUBLE:
-                // values are double precision floating point number which supports 15 digits of mantissa.
+                // values are double precision floating point number which supports 15 digits of
+                // mantissa.
                 return DoubleType;
             case Types.NUMERIC:
             case Types.DECIMAL:
@@ -158,7 +163,7 @@ public class JdbcDataTypeConverter {
                         throw new IllegalArgumentException("Unknown decimalMode");
                 }
 
-                // Fixed-length string values
+            // Fixed-length string values
             case Types.CHAR:
             case Types.NCHAR:
             case Types.NVARCHAR:
@@ -181,19 +186,20 @@ public class JdbcDataTypeConverter {
                 }
                 return IntegerType;
             case Types.TIME:
-                // CalendarIntervalType is not supported by org.apache.spark.sql.execution.datasources.parquet.SparkToParquetSchemaConverter
-//                if (adaptiveTimeMicrosecondsPrecisionMode) {
-//                    return CalendarIntervalType;
-//                }
-//                if (adaptiveTimePrecisionMode) {
-//                    if (getTimePrecision(column) <= 3) {
-//                        return CalendarIntervalType;
-//                    }
-//                    if (getTimePrecision(column) <= 6) {
-//                        return CalendarIntervalType;
-//                    }
-//                    return CalendarIntervalType;
-//                }
+                // CalendarIntervalType is not supported by
+                // org.apache.spark.sql.execution.datasources.parquet.SparkToParquetSchemaConverter
+                //                if (adaptiveTimeMicrosecondsPrecisionMode) {
+                //                    return CalendarIntervalType;
+                //                }
+                //                if (adaptiveTimePrecisionMode) {
+                //                    if (getTimePrecision(column) <= 3) {
+                //                        return CalendarIntervalType;
+                //                    }
+                //                    if (getTimePrecision(column) <= 6) {
+                //                        return CalendarIntervalType;
+                //                    }
+                //                    return CalendarIntervalType;
+                //                }
                 return LongType;
             case Types.TIMESTAMP:
                 if (adaptiveTimePrecisionMode || adaptiveTimeMicrosecondsPrecisionMode) {

@@ -13,7 +13,10 @@ import org.junit.runner.RunWith
 import org.scalatestplus.junit.JUnitRunner
 
 @RunWith(classOf[JUnitRunner])
-class LakeSoulPostHocAnalysisSuiteSoul extends QueryTest with SharedSparkSession with LakeSoulSQLCommandTest {
+class LakeSoulPostHocAnalysisSuiteSoul
+    extends QueryTest
+    with SharedSparkSession
+    with LakeSoulSQLCommandTest {
 
   import testImplicits._
 
@@ -21,23 +24,26 @@ class LakeSoulPostHocAnalysisSuiteSoul extends QueryTest with SharedSparkSession
     test(s"$op on hash keys without shuffle and sort - same table") {
       withTempDir(dir => {
         val tableName = dir.getCanonicalPath
-        val data = TestUtils.getData1(200, onlyOne = false).toDF("hash", "value", "range").persist()
-        data.write.mode("overwrite")
+        val data = TestUtils
+          .getData1(200, onlyOne = false)
+          .toDF("hash", "value", "range")
+          .persist()
+        data.write
+          .mode("overwrite")
           .format("lakesoul")
           .option("rangePartitions", "range")
           .option("hashPartitions", "hash")
           .option("hashBucketNum", "2")
           .save(tableName)
 
-
         val df1 = data.filter("range='range1'").select("hash").distinct()
         val df2 = data.filter("range='range2'").select("hash").distinct()
         val intersectDF1 = if (op.equals("intersect")) {
           df1.intersect(df2)
-        } else {
-          df1.intersectAll(df2)
-        }.persist()
-
+        } else
+          {
+            df1.intersectAll(df2)
+          }.persist()
 
         val tableDF = LakeSoulTable.forPath(tableName).toDF.persist()
         val tableDF1 = tableDF.filter("range='range1'").select("hash")
@@ -56,10 +62,11 @@ class LakeSoulPostHocAnalysisSuiteSoul extends QueryTest with SharedSparkSession
         assert(!plan2.contains("coalesce") && !plan2.contains("replicaterows"))
         checkAnswer(intersectDF1, intersectDF2)
 
-
-        val tableDF3 = tableDF.filter("range='range1'")
+        val tableDF3 = tableDF
+          .filter("range='range1'")
           .select(col("hash").as("a"))
-        val tableDF4 = tableDF.filter("range='range2'")
+        val tableDF4 = tableDF
+          .filter("range='range2'")
           .select(col("hash").as("b"))
         val intersectDF3 = if (op.equals("intersect")) {
           tableDF3.intersect(tableDF4)
@@ -85,32 +92,42 @@ class LakeSoulPostHocAnalysisSuiteSoul extends QueryTest with SharedSparkSession
           val tableName1 = dir1.getCanonicalPath
           val tableName2 = dir2.getCanonicalPath
 
-          val data1 = TestUtils.getData2(200).toDF("hash1", "hash2", "value", "range").persist()
-          val data2 = TestUtils.getData2(200).toDF("hash3", "hash4", "value", "range").persist()
+          val data1 = TestUtils
+            .getData2(200)
+            .toDF("hash1", "hash2", "value", "range")
+            .persist()
+          val data2 = TestUtils
+            .getData2(200)
+            .toDF("hash3", "hash4", "value", "range")
+            .persist()
 
-          data1.write.mode("overwrite")
+          data1.write
+            .mode("overwrite")
             .format("lakesoul")
             .option("rangePartitions", "range")
             .option("hashPartitions", "hash1,hash2")
             .option("hashBucketNum", "2")
             .save(tableName1)
-          data2.write.mode("overwrite")
+          data2.write
+            .mode("overwrite")
             .format("lakesoul")
             .option("rangePartitions", "range")
             .option("hashPartitions", "hash3,hash4")
             .option("hashBucketNum", "2")
             .save(tableName2)
 
-          val df1 = data1.filter("range='range1'").select("hash1", "hash2").distinct()
-          val df2 = data2.filter("range='range1'").select("hash3", "hash4").distinct()
+          val df1 =
+            data1.filter("range='range1'").select("hash1", "hash2").distinct()
+          val df2 =
+            data2.filter("range='range1'").select("hash3", "hash4").distinct()
           val intersectDF1 =
             if (op.equals("intersect")) {
               df1.intersect(df2)
-            } else {
-              df1.intersectAll(df2)
-            }
-              .persist()
-
+            } else
+              {
+                df1.intersectAll(df2)
+              }
+                .persist()
 
           val table1 = LakeSoulTable.forPath(tableName1).toDF.persist()
           val table2 = LakeSoulTable.forPath(tableName2).toDF.persist()
@@ -128,9 +145,10 @@ class LakeSoulPostHocAnalysisSuiteSoul extends QueryTest with SharedSparkSession
           println(plan1)
           println(plan2)
           assert(plan1.contains("coalesce") || plan1.contains("replicaterows"))
-          assert(!plan2.contains("coalesce") && !plan2.contains("replicaterows"))
+          assert(
+            !plan2.contains("coalesce") && !plan2.contains("replicaterows")
+          )
           checkAnswer(intersectDF1, intersectDF2)
-
 
           val tableDF3 = table1
             .select(col("hash1").as("a1"), col("hash2").as("a2"))
@@ -145,41 +163,44 @@ class LakeSoulPostHocAnalysisSuiteSoul extends QueryTest with SharedSparkSession
 
           val plan3 = intersectDF3.queryExecution.toString()
           println(plan3)
-          assert(!plan3.contains("coalesce") && !plan3.contains("replicaterows"))
+          assert(
+            !plan3.contains("coalesce") && !plan3.contains("replicaterows")
+          )
 
           checkAnswer(intersectDF1, intersectDF3)
 
         })
       })
 
-
     }
 
   })
-
 
   Seq("except", "exceptAll").foreach(op => {
     test(s"$op on hash keys without shuffle and sort - same table") {
       withTempDir(dir => {
         val op = "except"
         val tableName = dir.getCanonicalPath
-        val data = TestUtils.getData1(200, onlyOne = false).toDF("hash", "value", "range").persist()
-        data.write.mode("overwrite")
+        val data = TestUtils
+          .getData1(200, onlyOne = false)
+          .toDF("hash", "value", "range")
+          .persist()
+        data.write
+          .mode("overwrite")
           .format("lakesoul")
           .option("rangePartitions", "range")
           .option("hashPartitions", "hash")
           .option("hashBucketNum", "2")
           .save(tableName)
 
-
         val df1 = data.filter("range='range1'").select("hash")
         val df2 = data.filter("range='range2'").select("hash")
         val exceptDF1 = if (op.equals("except")) {
           df1.except(df2)
-        } else {
-          df1.exceptAll(df2)
-        }.persist()
-
+        } else
+          {
+            df1.exceptAll(df2)
+          }.persist()
 
         val tableDF = LakeSoulTable.forPath(tableName).toDF.persist()
         val tableDF1 = tableDF.filter("range='range1'").select("hash")
@@ -198,10 +219,11 @@ class LakeSoulPostHocAnalysisSuiteSoul extends QueryTest with SharedSparkSession
         assert(!plan2.contains("coalesce") && !plan2.contains("replicaterows"))
         checkAnswer(exceptDF1, exceptDF2)
 
-
-        val tableDF3 = tableDF.filter("range='range1'")
+        val tableDF3 = tableDF
+          .filter("range='range1'")
           .select(col("hash").as("a"))
-        val tableDF4 = tableDF.filter("range='range2'")
+        val tableDF4 = tableDF
+          .filter("range='range2'")
           .select(col("hash").as("b"))
         val exceptDF3 = if (op.equals("except")) {
           tableDF3.except(tableDF4)
@@ -227,32 +249,42 @@ class LakeSoulPostHocAnalysisSuiteSoul extends QueryTest with SharedSparkSession
           val tableName1 = dir1.getCanonicalPath
           val tableName2 = dir2.getCanonicalPath
 
-          val data1 = TestUtils.getData2(200).toDF("hash1", "hash2", "value", "range").persist()
-          val data2 = TestUtils.getData2(200).toDF("hash3", "hash4", "value", "range").persist()
+          val data1 = TestUtils
+            .getData2(200)
+            .toDF("hash1", "hash2", "value", "range")
+            .persist()
+          val data2 = TestUtils
+            .getData2(200)
+            .toDF("hash3", "hash4", "value", "range")
+            .persist()
 
-          data1.write.mode("overwrite")
+          data1.write
+            .mode("overwrite")
             .format("lakesoul")
             .option("rangePartitions", "range")
             .option("hashPartitions", "hash1,hash2")
             .option("hashBucketNum", "2")
             .save(tableName1)
-          data2.write.mode("overwrite")
+          data2.write
+            .mode("overwrite")
             .format("lakesoul")
             .option("rangePartitions", "range")
             .option("hashPartitions", "hash3,hash4")
             .option("hashBucketNum", "2")
             .save(tableName2)
 
-          val df1 = data1.filter("range='range1'").select("hash1", "hash2").distinct()
-          val df2 = data2.filter("range='range1'").select("hash3", "hash4").distinct()
+          val df1 =
+            data1.filter("range='range1'").select("hash1", "hash2").distinct()
+          val df2 =
+            data2.filter("range='range1'").select("hash3", "hash4").distinct()
           val exceptDF1 =
             if (op.equals("except")) {
               df1.except(df2)
-            } else {
-              df1.exceptAll(df2)
-            }
-              .persist()
-
+            } else
+              {
+                df1.exceptAll(df2)
+              }
+                .persist()
 
           val table1 = LakeSoulTable.forPath(tableName1).toDF.persist()
           val table2 = LakeSoulTable.forPath(tableName2).toDF.persist()
@@ -270,9 +302,10 @@ class LakeSoulPostHocAnalysisSuiteSoul extends QueryTest with SharedSparkSession
           println(plan1)
           println(plan2)
           assert(plan1.contains("coalesce") || plan1.contains("replicaterows"))
-          assert(!plan2.contains("coalesce") && !plan2.contains("replicaterows"))
+          assert(
+            !plan2.contains("coalesce") && !plan2.contains("replicaterows")
+          )
           checkAnswer(exceptDF1, exceptDF2)
-
 
           val tableDF3 = table1
             .select(col("hash1").as("a1"), col("hash2").as("a2"))
@@ -287,18 +320,18 @@ class LakeSoulPostHocAnalysisSuiteSoul extends QueryTest with SharedSparkSession
 
           val plan3 = exceptDF3.queryExecution.toString()
           println(plan3)
-          assert(!plan3.contains("coalesce") && !plan3.contains("replicaterows"))
+          assert(
+            !plan3.contains("coalesce") && !plan3.contains("replicaterows")
+          )
 
           checkAnswer(exceptDF1, exceptDF3)
 
         })
       })
 
-
     }
 
   })
-
 
   Seq("except", "intersect").foreach(op => {
     test(s"$op on different hash info without optimize") {
@@ -307,22 +340,29 @@ class LakeSoulPostHocAnalysisSuiteSoul extends QueryTest with SharedSparkSession
           val tableName1 = dir1.getCanonicalPath
           val tableName2 = dir2.getCanonicalPath
 
-          val data1 = TestUtils.getData2(20).toDF("hash1", "hash2", "value", "range").persist()
-          val data2 = TestUtils.getData2(20).toDF("hash3", "hash4", "value", "range").persist()
+          val data1 = TestUtils
+            .getData2(20)
+            .toDF("hash1", "hash2", "value", "range")
+            .persist()
+          val data2 = TestUtils
+            .getData2(20)
+            .toDF("hash3", "hash4", "value", "range")
+            .persist()
 
-          data1.write.mode("overwrite")
+          data1.write
+            .mode("overwrite")
             .format("lakesoul")
             .option("rangePartitions", "range")
             .option("hashPartitions", "hash1,hash2")
             .option("hashBucketNum", "2")
             .save(tableName1)
-          data2.write.mode("overwrite")
+          data2.write
+            .mode("overwrite")
             .format("lakesoul")
             .option("rangePartitions", "range")
             .option("hashPartitions", "hash3,hash4")
             .option("hashBucketNum", "3")
             .save(tableName2)
-
 
           val table1 = LakeSoulTable.forPath(tableName1).toDF.persist()
           val table2 = LakeSoulTable.forPath(tableName2).toDF.persist()
@@ -339,22 +379,27 @@ class LakeSoulPostHocAnalysisSuiteSoul extends QueryTest with SharedSparkSession
           println(plan2)
           assert(plan2.contains("coalesce"))
 
-
         })
       })
-
 
     }
 
   })
 
-
   test("lakesoul table has no duplicate hash data") {
     withTempDir(dir => {
       val tableName = dir.getCanonicalPath
 
-      val data = Seq((1, 1, 1), (1, 2, 1), (2, 1, 1), (1, 1, 2), (1, 2, 2), (2, 1, 2)).toDF("hash", "value", "range").persist()
-      data.write.mode("overwrite")
+      val data = Seq(
+        (1, 1, 1),
+        (1, 2, 1),
+        (2, 1, 1),
+        (1, 1, 2),
+        (1, 2, 2),
+        (2, 1, 2)
+      ).toDF("hash", "value", "range").persist()
+      data.write
+        .mode("overwrite")
         .format("lakesoul")
         .option("rangePartitions", "range")
         .option("hashPartitions", "hash")
@@ -382,9 +427,7 @@ class LakeSoulPostHocAnalysisSuiteSoul extends QueryTest with SharedSparkSession
 
       assert(result.equals("wrong"))
 
-
     })
   }
-
 
 }

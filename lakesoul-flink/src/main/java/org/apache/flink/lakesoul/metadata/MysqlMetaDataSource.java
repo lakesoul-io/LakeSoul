@@ -6,8 +6,6 @@ package org.apache.flink.lakesoul.metadata;
 
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
-import org.apache.flink.lakesoul.metadata.DatabaseSchemaedTables;
-import org.apache.flink.lakesoul.metadata.JdbcMetaDataSource;
 
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
@@ -22,10 +20,15 @@ public class MysqlMetaDataSource implements JdbcMetaDataSource {
     private final HikariConfig config = new HikariConfig();
     private final HikariDataSource ds;
     private final String databaseName;
-    private final String[] filterTables = new String[]{"sys_config"};
+    private final String[] filterTables = new String[] {"sys_config"};
 
-    public MysqlMetaDataSource(String DBName, String user, String passwd, String host, String port,
-                               HashSet<String> excludeTables) {
+    public MysqlMetaDataSource(
+            String DBName,
+            String user,
+            String passwd,
+            String host,
+            String port,
+            HashSet<String> excludeTables) {
         this.excludeTables = excludeTables;
         excludeTables.addAll(Arrays.asList(filterTables));
         this.databaseName = DBName;
@@ -47,7 +50,7 @@ public class MysqlMetaDataSource implements JdbcMetaDataSource {
         try {
             connection = ds.getConnection();
             DatabaseMetaData dmd = connection.getMetaData();
-            ResultSet tables = dmd.getTables(null, null, null, new String[]{"TABLE"});
+            ResultSet tables = dmd.getTables(null, null, null, new String[] {"TABLE"});
             while (tables.next()) {
                 String tablename = tables.getString("TABLE_NAME");
                 if (excludeTables.contains(tablename)) {

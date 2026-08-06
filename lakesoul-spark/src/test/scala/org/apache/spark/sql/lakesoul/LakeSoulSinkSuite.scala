@@ -26,7 +26,6 @@ class LakeSoulSinkSuite extends StreamTest with LakeSoulTestUtils {
 
   import testImplicits._
 
-
   private def withTempDirs(f: (File, File) => Unit): Unit = {
     withTempDir { file1 =>
       withTempDir { file2 =>
@@ -48,10 +47,12 @@ class LakeSoulSinkSuite extends StreamTest with LakeSoulTestUtils {
           inputData.addData(1)
           query.processAllAvailable()
 
-          val outputDf = spark.read.format("lakesoul").load(outputDir.getCanonicalPath)
+          val outputDf =
+            spark.read.format("lakesoul").load(outputDir.getCanonicalPath)
           checkDatasetUnorderly(outputDf.as[Int], 1)
 
-          val snapshotManagement = SnapshotManagement(outputDir.getCanonicalPath)
+          val snapshotManagement =
+            SnapshotManagement(outputDir.getCanonicalPath)
           //          val tableId = snapshotManagement.snapshot.getTableInfo.table_id
           //          var info = StreamingRecord.getStreamingInfo(tableId)
           //          assert(info._1.equals(query.id.toString) && info._2 == 0L)
@@ -83,7 +84,8 @@ class LakeSoulSinkSuite extends StreamTest with LakeSoulTestUtils {
         val inputData = MemoryStream[Int]
         val df = inputData.toDF()
         val query =
-          df.groupBy().count()
+          df.groupBy()
+            .count()
             .writeStream
             .outputMode("complete")
             .option("checkpointLocation", checkpointDir.getCanonicalPath)
@@ -93,10 +95,12 @@ class LakeSoulSinkSuite extends StreamTest with LakeSoulTestUtils {
           inputData.addData(1)
           query.processAllAvailable()
 
-          val outputDf = spark.read.format("lakesoul").load(outputDir.getCanonicalPath)
+          val outputDf =
+            spark.read.format("lakesoul").load(outputDir.getCanonicalPath)
           checkDatasetUnorderly(outputDf.as[Long], 1L)
 
-          val snapshotManagement = SnapshotManagement(outputDir.getCanonicalPath)
+          val snapshotManagement =
+            SnapshotManagement(outputDir.getCanonicalPath)
           //          val tableId = snapshotManagement.snapshot.getTableInfo.table_id
           //          var info = StreamingRecord.getStreamingInfo(tableId)
           //          assert(info._1.equals(query.id.toString) && info._2 == 0L)
@@ -136,7 +140,10 @@ class LakeSoulSinkSuite extends StreamTest with LakeSoulTestUtils {
           .start(outputDir.getCanonicalPath)
       }
 
-      assert(e.getMessage().contains("only support Update output mode with hash partition"))
+      assert(
+        e.getMessage()
+          .contains("only support Update output mode with hash partition")
+      )
 
       val query =
         ds.map(i => (i, i * 1000))
@@ -155,25 +162,35 @@ class LakeSoulSinkSuite extends StreamTest with LakeSoulTestUtils {
           query.processAllAvailable()
         }
 
-        val outputDf = spark.read.format("lakesoul").load(outputDir.getCanonicalPath)
+        val outputDf = spark.read
+          .format("lakesoul")
+          .load(outputDir.getCanonicalPath)
           .select("id", "value")
         val expectedSchema = new StructType()
           .add(StructField("id", IntegerType, false))
           .add(StructField("value", IntegerType))
         assert(outputDf.schema === expectedSchema)
 
-
-
         // Verify the data is correctly read
         checkDatasetUnorderly(
           outputDf.as[(Int, Int)],
-          (1, 1000), (2, 2000), (3, 3000))
+          (1, 1000),
+          (2, 2000),
+          (3, 3000)
+        )
 
-        val snapshotManagement = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(outputDir.getCanonicalPath)).toString)
-        val tableInfo = SparkMetaVersion.getTableInfoByPath(snapshotManagement.table_path)
-        assert(tableInfo.hash_column.equals("id")
-          && tableInfo.range_column.isEmpty
-          && tableInfo.bucket_num == 2)
+        val snapshotManagement = SnapshotManagement(
+          SparkUtil
+            .makeQualifiedTablePath(new Path(outputDir.getCanonicalPath))
+            .toString
+        )
+        val tableInfo =
+          SparkMetaVersion.getTableInfoByPath(snapshotManagement.table_path)
+        assert(
+          tableInfo.hash_column.equals("id")
+            && tableInfo.range_column.isEmpty
+            && tableInfo.bucket_num == 2
+        )
 
       } finally {
         if (query != null) {
@@ -182,7 +199,6 @@ class LakeSoulSinkSuite extends StreamTest with LakeSoulTestUtils {
       }
     }
   }
-
 
   test("path not specified") {
     failAfter(streamingTimeout) {
@@ -201,7 +217,6 @@ class LakeSoulSinkSuite extends StreamTest with LakeSoulTestUtils {
       }
     }
   }
-
 
   test("range partitioned writing and batch reading") {
     withTempDirs { (outputDir, checkpointDir) =>
@@ -222,25 +237,35 @@ class LakeSoulSinkSuite extends StreamTest with LakeSoulTestUtils {
           query.processAllAvailable()
         }
 
-        val outputDf = spark.read.format("lakesoul").load(outputDir.getCanonicalPath)
+        val outputDf = spark.read
+          .format("lakesoul")
+          .load(outputDir.getCanonicalPath)
           .select("id", "value")
         val expectedSchema = new StructType()
           .add(StructField("id", IntegerType, nullable = true))
           .add(StructField("value", IntegerType))
         assert(outputDf.schema === expectedSchema)
 
-
-
         // Verify the data is correctly read
         checkDatasetUnorderly(
           outputDf.as[(Int, Int)],
-          (1, 1000), (2, 2000), (3, 3000))
+          (1, 1000),
+          (2, 2000),
+          (3, 3000)
+        )
 
-        val snapshotManagement = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(outputDir.getCanonicalPath)).toString)
-        val tableInfo = SparkMetaVersion.getTableInfoByPath(snapshotManagement.table_path)
-        assert(tableInfo.range_column.equals("id")
-          && tableInfo.hash_column.isEmpty
-          && tableInfo.bucket_num == -1)
+        val snapshotManagement = SnapshotManagement(
+          SparkUtil
+            .makeQualifiedTablePath(new Path(outputDir.getCanonicalPath))
+            .toString
+        )
+        val tableInfo =
+          SparkMetaVersion.getTableInfoByPath(snapshotManagement.table_path)
+        assert(
+          tableInfo.range_column.equals("id")
+            && tableInfo.hash_column.isEmpty
+            && tableInfo.bucket_num == -1
+        )
 
       } finally {
         if (query != null) {
@@ -271,7 +296,9 @@ class LakeSoulSinkSuite extends StreamTest with LakeSoulTestUtils {
           query.processAllAvailable()
         }
 
-        val outputDf = spark.read.format("lakesoul").load(outputDir.getCanonicalPath)
+        val outputDf = spark.read
+          .format("lakesoul")
+          .load(outputDir.getCanonicalPath)
           .select("range", "hash", "value")
         val expectedSchema = new StructType()
           .add(StructField("range", IntegerType, nullable = true))
@@ -282,13 +309,23 @@ class LakeSoulSinkSuite extends StreamTest with LakeSoulTestUtils {
         // Verify the data is correctly read
         checkDatasetUnorderly(
           outputDf.as[(Int, Int, Int)],
-          (1, 1, 1000), (2, 2, 2000), (3, 3, 3000))
+          (1, 1, 1000),
+          (2, 2, 2000),
+          (3, 3, 3000)
+        )
 
-        val snapshotManagement = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(outputDir.getCanonicalPath)).toString)
-        val tableInfo = SparkMetaVersion.getTableInfoByPath(snapshotManagement.table_path)
-        assert(tableInfo.range_column.equals("range")
-          && tableInfo.hash_column.equals("hash")
-          && tableInfo.bucket_num == 2)
+        val snapshotManagement = SnapshotManagement(
+          SparkUtil
+            .makeQualifiedTablePath(new Path(outputDir.getCanonicalPath))
+            .toString
+        )
+        val tableInfo =
+          SparkMetaVersion.getTableInfoByPath(snapshotManagement.table_path)
+        assert(
+          tableInfo.range_column.equals("range")
+            && tableInfo.hash_column.equals("hash")
+            && tableInfo.bucket_num == 2
+        )
 
       } finally {
         if (query != null) {
@@ -297,7 +334,6 @@ class LakeSoulSinkSuite extends StreamTest with LakeSoulTestUtils {
       }
     }
   }
-
 
   test("work with aggregation + watermark") {
     withTempDirs { (outputDir, checkpointDir) =>
@@ -324,21 +360,35 @@ class LakeSoulSinkSuite extends StreamTest with LakeSoulTestUtils {
         }
 
         def check(expectedResult: ((Long, Long), Long)*): Unit = {
-          val outputDf = spark.read.format("lakesoul").load(outputDir.getCanonicalPath)
+          val outputDf = spark.read
+            .format("lakesoul")
+            .load(outputDir.getCanonicalPath)
             .selectExpr(
               "CAST(start as BIGINT) AS start",
               "CAST(end as BIGINT) AS end",
-              "count")
+              "count"
+            )
           checkDatasetUnorderly(
             outputDf.as[(Long, Long, Long)],
-            expectedResult.map(x => (x._1._1, x._1._2, x._2)): _*)
+            expectedResult.map(x => (x._1._1, x._1._2, x._2)): _*
+          )
         }
 
-        addTimestamp(100) // watermark = None before this, watermark = 100 - 10 = 90 after this
-        addTimestamp(104, 123) // watermark = 90 before this, watermark = 123 - 10 = 113 after this
+        addTimestamp(
+          100
+        ) // watermark = None before this, watermark = 100 - 10 = 90 after this
+        addTimestamp(
+          104,
+          123
+        ) // watermark = 90 before this, watermark = 123 - 10 = 113 after this
 
-        addTimestamp(140) // wm = 113 before this, emit results on 100-105, wm = 130 after this
-        check((100L, 105L) -> 2L, (120L, 125L) -> 1L) // no-data-batch emits results on 120-125
+        addTimestamp(
+          140
+        ) // wm = 113 before this, emit results on 100-105, wm = 130 after this
+        check(
+          (100L, 105L) -> 2L,
+          (120L, 125L) -> 1L
+        ) // no-data-batch emits results on 120-125
 
       } finally {
         if (query != null) {
@@ -348,8 +398,9 @@ class LakeSoulSinkSuite extends StreamTest with LakeSoulTestUtils {
     }
   }
 
-
-  test("throw exception when users are trying to write in batch with different partitioning") {
+  test(
+    "throw exception when users are trying to write in batch with different partitioning"
+  ) {
     withTempDirs { (outputDir, checkpointDir) =>
       val inputData = MemoryStream[Int]
       val ds = inputData.toDS()
@@ -369,15 +420,22 @@ class LakeSoulSinkSuite extends StreamTest with LakeSoulTestUtils {
         }
 
         val e = intercept[AnalysisException] {
-          spark.range(100)
-            .select('id.cast("integer"), 'id % 4 as 'by4, 'id.cast("integer") * 1000 as 'value)
+          spark
+            .range(100)
+            .select(
+              'id.cast("integer"),
+              'id % 4 as 'by4,
+              'id.cast("integer") * 1000 as 'value
+            )
             .write
             .format("lakesoul")
             .partitionBy("id", "by4")
             .mode("append")
             .save(outputDir.getCanonicalPath)
         }
-        assert(e.getMessage.contains("Range partition column `id` was already set"))
+        assert(
+          e.getMessage.contains("Range partition column `id` was already set")
+        )
 
       } finally {
         query.stop()
@@ -385,7 +443,9 @@ class LakeSoulSinkSuite extends StreamTest with LakeSoulTestUtils {
     }
   }
 
-  test("incompatible schema merging throws errors - first streaming then batch") {
+  test(
+    "incompatible schema merging throws errors - first streaming then batch"
+  ) {
     withTempDirs { (outputDir, checkpointDir) =>
       val inputData = MemoryStream[Int]
       val ds = inputData.toDS()
@@ -405,7 +465,9 @@ class LakeSoulSinkSuite extends StreamTest with LakeSoulTestUtils {
         }
 
         val e = intercept[AnalysisException] {
-          spark.range(100).select('id, ('id * 3).cast("string") as 'value)
+          spark
+            .range(100)
+            .select('id, ('id * 3).cast("string") as 'value)
             .write
             .partitionBy("id")
             .format("lakesoul")
@@ -419,7 +481,9 @@ class LakeSoulSinkSuite extends StreamTest with LakeSoulTestUtils {
     }
   }
 
-  test("incompatible schema merging throws errors - first batch then streaming") {
+  test(
+    "incompatible schema merging throws errors - first batch then streaming"
+  ) {
     withTempDirs { (outputDir, checkpointDir) =>
       val inputData = MemoryStream[Int]
       val ds = inputData.toDS()
@@ -429,7 +493,9 @@ class LakeSoulSinkSuite extends StreamTest with LakeSoulTestUtils {
           .writeStream
           .option("checkpointLocation", checkpointDir.getCanonicalPath)
           .format("lakesoul")
-      spark.range(100).select('id, ('id * 3).cast("string") as 'value)
+      spark
+        .range(100)
+        .select('id, ('id * 3).cast("string") as 'value)
         .write
         .format("lakesoul")
         .mode("append")
@@ -461,10 +527,13 @@ class LakeSoulSinkSuite extends StreamTest with LakeSoulTestUtils {
         inputData.addData(1)
         query.awaitTermination(10000)
       }
-      assert(e.cause.isInstanceOf[AnalysisException]
-        && e.getMessage.contains("Cannot use all columns for partition columns"))
+      assert(
+        e.cause.isInstanceOf[AnalysisException]
+          && e.getMessage.contains(
+            "Cannot use all columns for partition columns"
+          )
+      )
     }
   }
-
 
 }

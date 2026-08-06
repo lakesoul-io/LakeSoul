@@ -9,10 +9,12 @@ import java.util.Objects
 import org.apache.hadoop.fs.{FileStatus, LocatedFileStatus, Path}
 
 /** A serializable variant of HDFS's FileStatus. */
-case class SerializableFileStatus(path: String,
-                                  length: Long,
-                                  isDir: Boolean,
-                                  modificationTime: Long) {
+case class SerializableFileStatus(
+    path: String,
+    length: Long,
+    isDir: Boolean,
+    modificationTime: Long
+) {
 
   // Important note! This is very expensive to compute, but we don't want to cache it
   // as a `val` because Paths internally contain URIs and therefore consume lots of memory.
@@ -27,7 +29,8 @@ case class SerializableFileStatus(path: String,
   def toFileStatus: FileStatus = {
     new LocatedFileStatus(
       new FileStatus(length, isDir, 0, 0, modificationTime, new Path(path)),
-      null)
+      null
+    )
   }
 
   override def equals(obj: Any): Boolean = obj match {
@@ -49,7 +52,8 @@ object SerializableFileStatus {
       Option(status.getPath).map(_.toString).orNull,
       status.getLen,
       status.isDirectory,
-      status.getModificationTime)
+      status.getModificationTime
+    )
   }
 
   val EMPTY: SerializableFileStatus = fromStatus(new FileStatus())

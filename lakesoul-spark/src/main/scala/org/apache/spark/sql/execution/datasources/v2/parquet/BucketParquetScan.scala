@@ -13,7 +13,12 @@ import org.apache.spark.sql.connector.read.PartitionReaderFactory
 import org.apache.spark.sql.execution.PartitionedFileUtil
 import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
 import org.apache.spark.sql.execution.datasources.v2.FileScan
-import org.apache.spark.sql.execution.datasources.{BucketingUtils, FilePartition, PartitionedFile, PartitioningAwareFileIndex}
+import org.apache.spark.sql.execution.datasources.{
+  BucketingUtils,
+  FilePartition,
+  PartitionedFile,
+  PartitioningAwareFileIndex
+}
 import org.apache.spark.sql.lakesoul.utils.TableInfo
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.StructType
@@ -25,35 +30,51 @@ import org.apache.spark.util.SerializableConfiguration
 import java.util.Locale
 import scala.collection.JavaConverters.mapAsScalaMapConverter
 
-case class BucketParquetScan(sparkSession: SparkSession,
-                             hadoopConf: Configuration,
-                             fileIndex: PartitioningAwareFileIndex,
-                             dataSchema: StructType,
-                             readDataSchema: StructType,
-                             readPartitionSchema: StructType,
-                             pushedFilters: Array[Filter],
-                             options: CaseInsensitiveStringMap,
-                             tableInfo: TableInfo,
-                             partitionFilters: Seq[Expression] = Seq.empty,
-                             dataFilters: Seq[Expression] = Seq.empty) extends FileScan {
+case class BucketParquetScan(
+    sparkSession: SparkSession,
+    hadoopConf: Configuration,
+    fileIndex: PartitioningAwareFileIndex,
+    dataSchema: StructType,
+    readDataSchema: StructType,
+    readPartitionSchema: StructType,
+    pushedFilters: Array[Filter],
+    options: CaseInsensitiveStringMap,
+    tableInfo: TableInfo,
+    partitionFilters: Seq[Expression] = Seq.empty,
+    dataFilters: Seq[Expression] = Seq.empty
+) extends FileScan {
   override def isSplitable(path: Path): Boolean = false
 
   override def createReaderFactory(): PartitionReaderFactory = {
-    NativeIOUtils.setParquetConfigurations(sparkSession, hadoopConf, readDataSchema)
+    NativeIOUtils.setParquetConfigurations(
+      sparkSession,
+      hadoopConf,
+      readDataSchema
+    )
 
     val broadcastedConf = sparkSession.sparkContext.broadcast(
-      new SerializableConfiguration(hadoopConf))
+      new SerializableConfiguration(hadoopConf)
+    )
 
-    ParquetPartitionReaderFactory(sparkSession.sessionState.conf, broadcastedConf,
-      dataSchema, readDataSchema, readPartitionSchema, pushedFilters, None,
-      new ParquetOptions(options.asCaseSensitiveMap.asScala.toMap, sparkSession.sessionState.conf)
+    ParquetPartitionReaderFactory(
+      sparkSession.sessionState.conf,
+      broadcastedConf,
+      dataSchema,
+      readDataSchema,
+      readPartitionSchema,
+      pushedFilters,
+      None,
+      new ParquetOptions(
+        options.asCaseSensitiveMap.asScala.toMap,
+        sparkSession.sessionState.conf
+      )
     )
   }
 
   override def equals(obj: Any): Boolean = obj match {
     case p: BucketParquetScan =>
       super.equals(p) && dataSchema == p.dataSchema && options == p.options &&
-        equivalentFilters(pushedFilters, p.pushedFilters)
+      equivalentFilters(pushedFilters, p.pushedFilters)
     case _ => false
   }
 
@@ -66,24 +87,35 @@ case class BucketParquetScan(sparkSession: SparkSession,
   override def partitions: Seq[FilePartition] = {
     val t0 = System.currentTimeMillis()
     val selectedPartitions = fileIndex.listFiles(partitionFilters, dataFilters)
-    logInfo(s"\tpartitions list files took ${System.currentTimeMillis() - t0}ms")
-    val partitionAttributes = DataTypeUtils.toAttributes(fileIndex.partitionSchema)
-    val attributeMap = partitionAttributes.map(a => normalizeName(a.name) -> a).toMap
+    logInfo(
+      s"\tpartitions list files took ${System.currentTimeMillis() - t0}ms"
+    )
+    val partitionAttributes =
+      DataTypeUtils.toAttributes(fileIndex.partitionSchema)
+    val attributeMap =
+      partitionAttributes.map(a => normalizeName(a.name) -> a).toMap
     val readPartitionAttributes = readPartitionSchema.map { readField =>
-      attributeMap.getOrElse(normalizeName(readField.name),
-        throw new AnalysisException(s"Can't find required partition column ${readField.name} " +
-          s"in partition schema ${fileIndex.partitionSchema}")
+      attributeMap.getOrElse(
+        normalizeName(readField.name),
+        throw new AnalysisException(
+          s"Can't find required partition column ${readField.name} " +
+            s"in partition schema ${fileIndex.partitionSchema}"
+        )
       )
     }
     lazy val partitionValueProject =
-      GenerateUnsafeProjection.generate(readPartitionAttributes, partitionAttributes)
+      GenerateUnsafeProjection.generate(
+        readPartitionAttributes,
+        partitionAttributes
+      )
     val splitFiles = selectedPartitions.flatMap { partition =>
       // Prune partition values if part of the partition columns are not required.
-      val partitionValues = if (readPartitionAttributes != partitionAttributes) {
-        partitionValueProject(partition.values).copy()
-      } else {
-        partition.values
-      }
+      val partitionValues =
+        if (readPartitionAttributes != partitionAttributes) {
+          partitionValueProject(partition.values).copy()
+        } else {
+          partition.values
+        }
       partition.files.flatMap { file =>
         val filePath = file.getPath
         PartitionedFileUtil.splitFiles(
@@ -95,21 +127,32 @@ case class BucketParquetScan(sparkSession: SparkSession,
           partitionValues = partitionValues
         )
       }.toSeq
-        //.sortBy(_.length)(implicitly[Ordering[Long]].reverse)
+      // .sortBy(_.length)(implicitly[Ordering[Long]].reverse)
     }
-    logInfo(s"\tpartitions split files took ${System.currentTimeMillis() - t0}ms")
+    logInfo(
+      s"\tpartitions split files took ${System.currentTimeMillis() - t0}ms"
+    )
     val ret = getFilePartitions(splitFiles)
-    logInfo(s"\tpartitions split files to file partitions took ${System.currentTimeMillis() - t0}ms")
+    logInfo(
+      s"\tpartitions split files to file partitions took ${System.currentTimeMillis() - t0}ms"
+    )
     ret
   }
 
-  private def getFilePartitions(partitionedFiles: Seq[PartitionedFile]): Seq[FilePartition] = {
+  private def getFilePartitions(
+      partitionedFiles: Seq[PartitionedFile]
+  ): Seq[FilePartition] = {
 
-    val fileWithBucketId = partitionedFiles.map(file =>
-      (BucketingUtils
-        .getBucketId(file.filePath.toPath.getName)
-        .getOrElse(sys.error(s"Invalid bucket file ${file.filePath}")),
-        Array(file))).toMap
+    val fileWithBucketId = partitionedFiles
+      .map(file =>
+        (
+          BucketingUtils
+            .getBucketId(file.filePath.toPath.getName)
+            .getOrElse(sys.error(s"Invalid bucket file ${file.filePath}")),
+          Array(file)
+        )
+      )
+      .toMap
 
     assert(fileWithBucketId.groupBy(_._1).forall(_._2.size == 1))
 
@@ -118,7 +161,8 @@ case class BucketParquetScan(sparkSession: SparkSession,
     }
   }
 
-  private val isCaseSensitive = sparkSession.sessionState.conf.caseSensitiveAnalysis
+  private val isCaseSensitive =
+    sparkSession.sessionState.conf.caseSensitiveAnalysis
 
   private def normalizeName(name: String): String = {
     if (isCaseSensitive) {
@@ -127,6 +171,5 @@ case class BucketParquetScan(sparkSession: SparkSession,
       name.toLowerCase(Locale.ROOT)
     }
   }
-
 
 }

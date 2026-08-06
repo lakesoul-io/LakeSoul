@@ -11,7 +11,8 @@ import org.apache.spark.sql.{AnalysisException, Row, SparkSession}
 import org.apache.spark.sql.execution.command.LeafRunnableCommand
 import org.apache.spark.sql.types.{IntegerType, LongType}
 
-case class CallExecCommand(action: String, args: Seq[CallArgument]) extends LeafRunnableCommand {
+case class CallExecCommand(action: String, args: Seq[CallArgument])
+    extends LeafRunnableCommand {
   private val tableName = "tablename"
   private val tableNamespace = "tablenamespace"
   private val tablePath = "tablepath"
@@ -22,7 +23,6 @@ case class CallExecCommand(action: String, args: Seq[CallArgument]) extends Leaf
   private val cleanOld = "cleanold"
   private val condition = "condition"
   private val toVersion = "toversion"
-
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
     val argsMap = scala.collection.mutable.HashMap[String, Expression]()
@@ -41,11 +41,21 @@ case class CallExecCommand(action: String, args: Seq[CallArgument]) extends Leaf
         checkRollbackArgs(args)
         val table = getLakeSoulTable(argsMap)
         if (argsMap.contains(toVersion)) {
-          table.rollbackPartition(getPartitionVal(argsMap(parValue)), argsMap(toVersion).toString().toInt)
+          table.rollbackPartition(
+            getPartitionVal(argsMap(parValue)),
+            argsMap(toVersion).toString().toInt
+          )
         } else if (argsMap.contains(zoneId)) {
-          table.rollbackPartition(getPartitionVal(argsMap(parValue)), argsMap(toTime).toString(), argsMap(zoneId).toString())
+          table.rollbackPartition(
+            getPartitionVal(argsMap(parValue)),
+            argsMap(toTime).toString(),
+            argsMap(zoneId).toString()
+          )
         } else {
-          table.rollbackPartition(getPartitionVal(argsMap(parValue)), argsMap(toTime).toString())
+          table.rollbackPartition(
+            getPartitionVal(argsMap(parValue)),
+            argsMap(toTime).toString()
+          )
         }
       }
       case "compaction" => {
@@ -57,10 +67,15 @@ case class CallExecCommand(action: String, args: Seq[CallArgument]) extends Leaf
           ""
         }
         if (argsMap.contains(hiveTableName)) {
-          table.compaction(conditons, hiveTableName = argsMap(hiveTableName).toString())
+          table.compaction(
+            conditons,
+            hiveTableName = argsMap(hiveTableName).toString()
+          )
         }
         if (argsMap.contains(cleanOld)) {
-          table.compaction(cleanOldCompaction = argsMap(cleanOld).toString().toBoolean)
+          table.compaction(cleanOldCompaction =
+            argsMap(cleanOld).toString().toBoolean
+          )
         }
         table.compaction(conditons)
       }
@@ -68,7 +83,9 @@ case class CallExecCommand(action: String, args: Seq[CallArgument]) extends Leaf
     Seq.empty
   }
 
-  private def getLakeSoulTable(argsMap: scala.collection.mutable.HashMap[String, Expression]): LakeSoulTable = {
+  private def getLakeSoulTable(
+      argsMap: scala.collection.mutable.HashMap[String, Expression]
+  ): LakeSoulTable = {
     if (argsMap.contains(tableName)) {
       val tName = argsMap(tableName).toString()
       val tNameSpace = if (argsMap.contains(tableNamespace)) {
@@ -92,11 +109,15 @@ case class CallExecCommand(action: String, args: Seq[CallArgument]) extends Leaf
       return contitons.asInstanceOf[Literal].toString()
     }
     if (!contitons.isInstanceOf[UnresolvedFunction]) {
-      throw new AnalysisException("conditions not support;for example condition='' or condition=map(a=>1,c=>'d')")
+      throw new AnalysisException(
+        "conditions not support;for example condition='' or condition=map(a=>1,c=>'d')"
+      )
     }
     val parType = contitons.asInstanceOf[UnresolvedFunction].nameParts(0)
     if (!"map".equalsIgnoreCase(parType)) {
-      throw new AnalysisException("condititon type is not map; for example map(a=>1,c=>'d')")
+      throw new AnalysisException(
+        "condititon type is not map; for example map(a=>1,c=>'d')"
+      )
     }
     val parValue = contitons.asInstanceOf[UnresolvedFunction].arguments
     if (parValue.size == 0) {
@@ -106,7 +127,10 @@ case class CallExecCommand(action: String, args: Seq[CallArgument]) extends Leaf
     for (i <- (1 to parValue.size by 2)) {
       val parName = parValue(i - 1)
       val parVal = parValue(i)
-      if (parVal.dataType.isInstanceOf[IntegerType] || parVal.dataType.isInstanceOf[LongType]) {
+      if (
+        parVal.dataType.isInstanceOf[IntegerType] || parVal.dataType
+          .isInstanceOf[LongType]
+      ) {
         content.append(parName.toString() + "=" + parVal.toString() + " and ")
       } else {
         content.append(parName.toString() + "='" + parVal.toString() + "' and ")
@@ -115,11 +139,12 @@ case class CallExecCommand(action: String, args: Seq[CallArgument]) extends Leaf
     content.toString().substring(0, content.toString().length - 5)
   }
 
-
   private def getPartitionVal(partition: Expression): String = {
     val parType = partition.asInstanceOf[UnresolvedFunction].nameParts(0)
     if (!"map".equalsIgnoreCase(parType)) {
-      throw new AnalysisException("partition type not map; for example map(a=>1,c=>'d')")
+      throw new AnalysisException(
+        "partition type not map; for example map(a=>1,c=>'d')"
+      )
     }
     val parValue = partition.asInstanceOf[UnresolvedFunction].arguments
     if (parValue.size == 2) {
@@ -131,7 +156,10 @@ case class CallExecCommand(action: String, args: Seq[CallArgument]) extends Leaf
     for (i <- (1 to parValue.size by 2)) {
       val parName = parValue(i - 1)
       val parVal = parValue(i)
-      if (parVal.dataType.isInstanceOf[IntegerType] || parVal.dataType.isInstanceOf[LongType]) {
+      if (
+        parVal.dataType.isInstanceOf[IntegerType] || parVal.dataType
+          .isInstanceOf[LongType]
+      ) {
         content.append(parName.toString() + "=" + parVal.toString() + ",")
       } else {
         content.append(parName.toString() + "='" + parVal.toString() + "',")
@@ -148,16 +176,26 @@ case class CallExecCommand(action: String, args: Seq[CallArgument]) extends Leaf
     LakeSoulTable.forName(tableName)
   }
 
-  private def toLakeSoulDFFromNameAndNamespace(tableName: String, nameSpace: String): LakeSoulTable = {
+  private def toLakeSoulDFFromNameAndNamespace(
+      tableName: String,
+      nameSpace: String
+  ): LakeSoulTable = {
     LakeSoulTable.forName(tableName, nameSpace)
   }
 
   private def checkRollbackArgs(rollbackArgs: Seq[CallArgument]): Boolean = {
-    val names = rollbackArgs.map(arg => if (arg.isInstanceOf[NamedArgument]) {
-      arg.asInstanceOf[NamedArgument].name.toLowerCase()
-    })
+    val names = rollbackArgs.map(arg =>
+      if (arg.isInstanceOf[NamedArgument]) {
+        arg.asInstanceOf[NamedArgument].name.toLowerCase()
+      }
+    )
     if (names.size > 0) {
-      if ((names.contains(tableName) || names.contains(tablePath)) && names.contains(parValue) && (names.contains(toTime) || names.contains(toVersion))) {
+      if (
+        (names.contains(tableName) || names.contains(tablePath)) && names
+          .contains(parValue) && (names.contains(toTime) || names.contains(
+          toVersion
+        ))
+      ) {
         true
       } else {
         false
@@ -168,10 +206,14 @@ case class CallExecCommand(action: String, args: Seq[CallArgument]) extends Leaf
 
   }
 
-  private def checkCompactionArgs(compactionArgs: Seq[CallArgument]): Boolean = {
-    val names = compactionArgs.map(arg => if (arg.isInstanceOf[NamedArgument]) {
-      arg.asInstanceOf[NamedArgument].name.toLowerCase()
-    })
+  private def checkCompactionArgs(
+      compactionArgs: Seq[CallArgument]
+  ): Boolean = {
+    val names = compactionArgs.map(arg =>
+      if (arg.isInstanceOf[NamedArgument]) {
+        arg.asInstanceOf[NamedArgument].name.toLowerCase()
+      }
+    )
     if (names.size > 0) {
       if ((names.contains(tablePath) || names.contains(tableName))) {
         true

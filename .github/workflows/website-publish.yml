@@ -6,8 +6,8 @@ name: Website Publish
 on:
   push:
     tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
-      - 'py-v[0-9]+.[0-9]+.[0-9]+'
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "py-v[0-9]+.[0-9]+.[0-9]+"
   workflow_dispatch:
 
 jobs:
@@ -18,7 +18,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 18
-          cache-dependency-path: 'website/package-lock.json'
+          cache-dependency-path: "website/package-lock.json"
           cache: npm
       - uses: webfactory/ssh-agent@v0.5.0
         with:

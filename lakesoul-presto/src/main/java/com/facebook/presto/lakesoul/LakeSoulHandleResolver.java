@@ -33,8 +33,7 @@ public class LakeSoulHandleResolver implements ConnectorHandleResolver {
     }
 
     @Override
-    public Class<? extends ConnectorTransactionHandle> getTransactionHandleClass()
-    {
+    public Class<? extends ConnectorTransactionHandle> getTransactionHandleClass() {
         return LakeSoulTransactionHandle.class;
     }
 }

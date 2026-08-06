@@ -5,6 +5,7 @@
 package com.dmetasoul.lakesoul.meta;
 
 import com.dmetasoul.lakesoul.meta.jnr.NativeMetadataJavaClient;
+
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.test.LakeSoulFlinkTestBase;
 import org.apache.flink.table.catalog.exceptions.CatalogException;
@@ -60,14 +61,16 @@ public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
         assert (sql("show databases").size() == 2);
         // create tables
         sql("use database1");
-        sql("create table if not exists table1 ( id int, foo string, bar string )"
-                + " with ('format' = 'lakesoul', 'path' = '"
-                + getTempDirUri("/lakeSource/table1")
-                + "')");
-        sql("create table if not exists table2 ( id int, foo string, bar string )"
-                + " with ('format' = 'lakesoul', 'path' = '"
-                + getTempDirUri("/lakeSource/table2")
-                + "')");
+        sql(
+                "create table if not exists table1 ( id int, foo string, bar string )"
+                        + " with ('format' = 'lakesoul', 'path' = '"
+                        + getTempDirUri("/lakeSource/table1")
+                        + "')");
+        sql(
+                "create table if not exists table2 ( id int, foo string, bar string )"
+                        + " with ('format' = 'lakesoul', 'path' = '"
+                        + getTempDirUri("/lakeSource/table2")
+                        + "')");
         assert (sql("show tables").size() == 2);
 
         // drop table
@@ -76,10 +79,11 @@ public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
         assert (sql("show tables").size() == 0);
 
         // write and read data
-        sql("create table if not exists table1 ( id int, foo string, bar string )"
-                + " with ('format' = 'lakesoul', 'path' = '"
-                + getTempDirUri("/lakeSource/table1")
-                + "')");
+        sql(
+                "create table if not exists table1 ( id int, foo string, bar string )"
+                        + " with ('format' = 'lakesoul', 'path' = '"
+                        + getTempDirUri("/lakeSource/table1")
+                        + "')");
         sql("insert into table1 values(1, 'foo1', 'bar1')");
         sql("insert into table1 values(2, 'foo2', 'bar2')");
         assert (sql("select * from table1").size() == 2);
@@ -103,10 +107,11 @@ public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
 
         // create table & drop table
         try {
-            sql("create table if not exists database1.table3 ( id int, foo string, bar string )"
-                    + " with ('format' = 'lakesoul', 'path' = '"
-                    + getTempDirUri("/lakeSource/table3")
-                    + "')");
+            sql(
+                    "create table if not exists database1.table3 ( id int, foo string, bar string )"
+                            + " with ('format' = 'lakesoul', 'path' = '"
+                            + getTempDirUri("/lakeSource/table3")
+                            + "')");
             throw new RuntimeException("test state was unexcepted");
         } catch (Exception e) {
             System.out.println(e.getMessage());
@@ -117,7 +122,8 @@ public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
             throw new RuntimeException("test state was unexcepted");
         } catch (Exception e) {
             System.out.println(e.getMessage());
-            assert e.getMessage().contains("Table with identifier 'lakesoul.database1.table1' does not exist.");
+            assert e.getMessage()
+                    .contains("Table with identifier 'lakesoul.database1.table1' does not exist.");
         }
 
         // CRUD data
@@ -126,7 +132,10 @@ public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
             throw new RuntimeException("test state was unexcepted");
         } catch (Exception e) {
             System.out.println(e.getMessage());
-            assert (e.getMessage().contains("Cannot find table '`lakesoul`.`database1`.`table1`' in any of the catalogs"));
+            assert (e.getMessage()
+                    .contains(
+                            "Cannot find table '`lakesoul`.`database1`.`table1`' in any of the"
+                                    + " catalogs"));
         }
 
         try {
@@ -150,7 +159,6 @@ public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
         // create
         sql("create database if not exists database1");
 
-
         login(USER1, USER1_PASS, DOMAIN1);
         // create table & drop database
         sql("use database1");
@@ -166,28 +174,32 @@ public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
             throw new RuntimeException("test state was unexcepted");
         } catch (Exception e) {
             System.out.println(e.getMessage());
-            assert e.getMessage().contains("Could not execute DROP DATABASE lakesoul.database1 RESTRICT");
+            assert e.getMessage()
+                    .contains("Could not execute DROP DATABASE lakesoul.database1 RESTRICT");
         }
 
         // create & drop table
-        sql("create table if not exists table1 ( id int, foo string, bar string )"
-                + " with ('format' = 'lakesoul', 'path' = '"
-                + getTempDirUri("/lakeSource/table1")
-                + "')");
-        sql("create table if not exists table2 ( id int, foo string, bar string )"
-                + " with ('format' = 'lakesoul', 'path' = '"
-                + getTempDirUri("/lakeSource/table2")
-                + "')");
+        sql(
+                "create table if not exists table1 ( id int, foo string, bar string )"
+                        + " with ('format' = 'lakesoul', 'path' = '"
+                        + getTempDirUri("/lakeSource/table1")
+                        + "')");
+        sql(
+                "create table if not exists table2 ( id int, foo string, bar string )"
+                        + " with ('format' = 'lakesoul', 'path' = '"
+                        + getTempDirUri("/lakeSource/table2")
+                        + "')");
         assert (sql("show tables").size() == 2);
         sql("drop table table1");
         sql("drop table table2");
         assert (sql("show tables").size() == 0);
 
         // CRUD data
-        sql("create table if not exists table1 ( id int, foo string, bar string )"
-                + " with ('format' = 'lakesoul', 'path' = '"
-                + getTempDirUri("/lakeSource/table2")
-                + "')");
+        sql(
+                "create table if not exists table1 ( id int, foo string, bar string )"
+                        + " with ('format' = 'lakesoul', 'path' = '"
+                        + getTempDirUri("/lakeSource/table2")
+                        + "')");
         sql("insert into table1 values(1, 'foo1', 'bar1')");
         sql("insert into table1 values(2, 'foo2', 'bar2')");
         assert (sql("select * from table1").size() == 2);
@@ -212,10 +224,11 @@ public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
         // create table
         sql("use database1");
         Path tablePath = new Path("hdfs://localhost:9000/lakesoul-test-bucket/database1/table1");
-        sql("create table if not exists table1 ( id int, foo string, bar string )"
-                + " with ('format' = 'lakesoul', 'path' = '"
-                + tablePath.toString()
-                + "')");
+        sql(
+                "create table if not exists table1 ( id int, foo string, bar string )"
+                        + " with ('format' = 'lakesoul', 'path' = '"
+                        + tablePath.toString()
+                        + "')");
         // table owner can read/write
         sql("insert into table1 values(1, 'foo1', 'bar1')");
         sql("select * from table1");

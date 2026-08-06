@@ -18,11 +18,10 @@
 
 package org.apache.flink.table.runtime.arrow.vectors;
 
+import org.apache.arrow.vector.DateDayVector;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.data.columnar.vector.IntColumnVector;
 import org.apache.flink.util.Preconditions;
-
-import org.apache.arrow.vector.DateDayVector;
 
 /** Arrow column vector for Date. */
 @Internal

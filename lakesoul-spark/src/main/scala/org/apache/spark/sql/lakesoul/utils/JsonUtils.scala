@@ -6,9 +6,13 @@ package org.apache.spark.sql.lakesoul.utils
 
 import com.fasterxml.jackson.annotation.JsonInclude.Include
 import com.fasterxml.jackson.databind.{DeserializationFeature, ObjectMapper}
-import com.fasterxml.jackson.module.scala.{DefaultScalaModule, ScalaObjectMapper}
+import com.fasterxml.jackson.module.scala.{
+  DefaultScalaModule,
+  ScalaObjectMapper
+}
 
 object JsonUtils {
+
   /** Used to convert between classes and JSON. */
   val mapper = new ObjectMapper with ScalaObjectMapper
   mapper.setSerializationInclusion(Include.NON_ABSENT)

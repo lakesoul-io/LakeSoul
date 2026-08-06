@@ -93,7 +93,9 @@ def main(argv: list[str] | None = None) -> int:
         "records": [asdict(record) for record in records],
     }
     manifest_file = output_dir / "manifest.json"
-    manifest_file.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    manifest_file.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
+    )
 
     failures = [record for record in records if record.status != "passed"]
     print(f"LakeSoul compatibility manifest: {manifest_file}")
@@ -105,7 +107,9 @@ def main(argv: list[str] | None = None) -> int:
                 if failure.reader is not None
                 else failure.writer
             )
-            print(f"FAILED {failure.operation} {target} {failure.case}: {failure.error}")
+            print(
+                f"FAILED {failure.operation} {target} {failure.case}: {failure.error}"
+            )
         return 1
     return 0
 
@@ -194,7 +198,9 @@ def _plan_tasks(
 
     write_tasks: set[tuple[str, str]] = set()
     read_tasks: set[tuple[str, str, str]] = set()
-    core_readers = [reader for reader in ("pyarrow", "spark", "datafusion") if reader in readable]
+    core_readers = [
+        reader for reader in ("pyarrow", "spark", "datafusion") if reader in readable
+    ]
 
     for writer in ("spark", "pyarrow", "datafusion", "flink"):
         if writer in writable and "basic_append" in cases:
@@ -303,9 +309,15 @@ def _object_store_options(storage: str) -> dict[str, str]:
     bucket = storage.split("://", 1)[1].split("/", 1)[0]
     return {
         "fs.s3a.bucket": os.environ.get("LAKESOUL_COMPAT_S3_BUCKET", bucket),
-        "fs.s3a.endpoint": os.environ.get("LAKESOUL_COMPAT_S3_ENDPOINT", "http://127.0.0.1:9000"),
-        "fs.s3a.access.key": os.environ.get("LAKESOUL_COMPAT_S3_ACCESS_KEY", "rustfsadmin"),
-        "fs.s3a.secret.key": os.environ.get("LAKESOUL_COMPAT_S3_SECRET_KEY", "rustfsadmin"),
+        "fs.s3a.endpoint": os.environ.get(
+            "LAKESOUL_COMPAT_S3_ENDPOINT", "http://127.0.0.1:9000"
+        ),
+        "fs.s3a.access.key": os.environ.get(
+            "LAKESOUL_COMPAT_S3_ACCESS_KEY", "rustfsadmin"
+        ),
+        "fs.s3a.secret.key": os.environ.get(
+            "LAKESOUL_COMPAT_S3_SECRET_KEY", "rustfsadmin"
+        ),
         "fs.s3a.path.style.access": "true",
     }
 
@@ -314,10 +326,14 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=["smoke", "full"], default="smoke")
     parser.add_argument("--storage", default="file:///tmp/lakesoul-compat")
-    parser.add_argument("--engines", choices=["all", "python", "jvm", "rust"], default="all")
+    parser.add_argument(
+        "--engines", choices=["all", "python", "jvm", "rust"], default="all"
+    )
     parser.add_argument("--writers", help="comma-separated writer engine override")
     parser.add_argument("--readers", help="comma-separated reader engine override")
-    parser.add_argument("--cases", default="smoke", help="smoke, full, or comma-separated case names")
+    parser.add_argument(
+        "--cases", default="smoke", help="smoke, full, or comma-separated case names"
+    )
     parser.add_argument("--output-dir", default="/tmp/lakesoul-compat-artifacts")
     parser.add_argument("--run-id")
     parser.add_argument(

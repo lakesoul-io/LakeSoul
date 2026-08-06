@@ -23,18 +23,25 @@ public class DiscardCompressedFileDao {
 
     public DiscardCompressedFileInfo findByFilePath(String filePath) {
         if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
-            JniWrapper jniWrapper = NativeMetadataJavaClient.query(
-                    NativeUtils.CodedDaoType.SelectDiscardCompressedFileInfoByFilePath,
-                    Collections.singletonList(filePath));
+            JniWrapper jniWrapper =
+                    NativeMetadataJavaClient.query(
+                            NativeUtils.CodedDaoType.SelectDiscardCompressedFileInfoByFilePath,
+                            Collections.singletonList(filePath));
             if (jniWrapper == null) return null;
-            List<DiscardCompressedFileInfo> discardCompressedFileInfoList = jniWrapper.getDiscardCompressedFileInfoList();
-            return discardCompressedFileInfoList.isEmpty() ? null : discardCompressedFileInfoList.get(0);
+            List<DiscardCompressedFileInfo> discardCompressedFileInfoList =
+                    jniWrapper.getDiscardCompressedFileInfoList();
+            return discardCompressedFileInfoList.isEmpty()
+                    ? null
+                    : discardCompressedFileInfoList.get(0);
         }
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
-        String sql = String.format("select file_path, table_path, partition_desc, timestamp, t_date "
-                + "from discard_compressed_file_info where file_path = '%s'", filePath);
+        String sql =
+                String.format(
+                        "select file_path, table_path, partition_desc, timestamp, t_date "
+                                + "from discard_compressed_file_info where file_path = '%s'",
+                        filePath);
         DiscardCompressedFileInfo discardCompressedFileInfo = null;
         try {
             conn = DBConnector.getConn();
@@ -53,16 +60,19 @@ public class DiscardCompressedFileDao {
 
     public List<DiscardCompressedFileInfo> listAllDiscardCompressedFile() {
         if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
-            JniWrapper jniWrapper = NativeMetadataJavaClient.query(
-                    NativeUtils.CodedDaoType.ListAllDiscardCompressedFileInfo,
-                    Collections.emptyList());
+            JniWrapper jniWrapper =
+                    NativeMetadataJavaClient.query(
+                            NativeUtils.CodedDaoType.ListAllDiscardCompressedFileInfo,
+                            Collections.emptyList());
             if (jniWrapper == null) return null;
             return jniWrapper.getDiscardCompressedFileInfoList();
         }
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
-        String sql = "select file_path, table_path, partition_desc, timestamp, t_date from discard_compressed_file_info";
+        String sql =
+                "select file_path, table_path, partition_desc, timestamp, t_date from"
+                        + " discard_compressed_file_info";
         List<DiscardCompressedFileInfo> list = new ArrayList<>();
         try {
             conn = DBConnector.getConn();
@@ -81,17 +91,21 @@ public class DiscardCompressedFileDao {
 
     public List<DiscardCompressedFileInfo> getDiscardCompressedFileBeforeTimestamp(long timestamp) {
         if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
-            JniWrapper jniWrapper = NativeMetadataJavaClient.query(
-                    NativeUtils.CodedDaoType.ListDiscardCompressedFileInfoBeforeTimestamp,
-                    Collections.singletonList(Long.toString(timestamp)));
+            JniWrapper jniWrapper =
+                    NativeMetadataJavaClient.query(
+                            NativeUtils.CodedDaoType.ListDiscardCompressedFileInfoBeforeTimestamp,
+                            Collections.singletonList(Long.toString(timestamp)));
             if (jniWrapper == null) return null;
             return jniWrapper.getDiscardCompressedFileInfoList();
         }
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
-        String sql = String.format("select file_path, table_path, partition_desc, timestamp, t_date "
-                + "from discard_compressed_file_info where timestamp < %s", timestamp);
+        String sql =
+                String.format(
+                        "select file_path, table_path, partition_desc, timestamp, t_date "
+                                + "from discard_compressed_file_info where timestamp < %s",
+                        timestamp);
         List<DiscardCompressedFileInfo> list = new ArrayList<>();
         try {
             conn = DBConnector.getConn();
@@ -108,20 +122,25 @@ public class DiscardCompressedFileDao {
         return list;
     }
 
-    public List<DiscardCompressedFileInfo> getDiscardCompressedFileByFilterCondition(String tablePath, String partition, long timestamp) {
+    public List<DiscardCompressedFileInfo> getDiscardCompressedFileByFilterCondition(
+            String tablePath, String partition, long timestamp) {
         if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
-            JniWrapper jniWrapper = NativeMetadataJavaClient.query(
-                    NativeUtils.CodedDaoType.ListDiscardCompressedFileByFilterCondition,
-                    Arrays.asList(tablePath, partition, Long.toString(timestamp)));
+            JniWrapper jniWrapper =
+                    NativeMetadataJavaClient.query(
+                            NativeUtils.CodedDaoType.ListDiscardCompressedFileByFilterCondition,
+                            Arrays.asList(tablePath, partition, Long.toString(timestamp)));
             if (jniWrapper == null) return null;
             return jniWrapper.getDiscardCompressedFileInfoList();
         }
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
-        String sql = String.format("select file_path, table_path, partition_desc, timestamp, t_date "
-                + "from discard_compressed_file_info where table_path = '%s' and partition_desc = '%s' and timestamp < %s",
-                timestamp, partition, timestamp);
+        String sql =
+                String.format(
+                        "select file_path, table_path, partition_desc, timestamp, t_date from"
+                                + " discard_compressed_file_info where table_path = '%s' and"
+                                + " partition_desc = '%s' and timestamp < %s",
+                        timestamp, partition, timestamp);
         List<DiscardCompressedFileInfo> list = new ArrayList<>();
         try {
             conn = DBConnector.getConn();
@@ -140,16 +159,22 @@ public class DiscardCompressedFileDao {
 
     public void insert(DiscardCompressedFileInfo discardCompressedFileInfo) {
         if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
-            Integer count = NativeMetadataJavaClient.insert(
-                    NativeUtils.CodedDaoType.InsertDiscardCompressedFileInfo,
-                    JniWrapper.newBuilder().addDiscardCompressedFileInfo(discardCompressedFileInfo).build());
+            Integer count =
+                    NativeMetadataJavaClient.insert(
+                            NativeUtils.CodedDaoType.InsertDiscardCompressedFileInfo,
+                            JniWrapper.newBuilder()
+                                    .addDiscardCompressedFileInfo(discardCompressedFileInfo)
+                                    .build());
             return;
         }
         Connection conn = null;
         PreparedStatement pstmt = null;
         try {
             conn = DBConnector.getConn();
-            pstmt = conn.prepareStatement("insert into discard_compressed_file_info (file_path, table_path, partition_desc, timestamp, t_date) values (?, ?, ?, ?, ?)");
+            pstmt =
+                    conn.prepareStatement(
+                            "insert into discard_compressed_file_info (file_path, table_path,"
+                                    + " partition_desc, timestamp, t_date) values (?, ?, ?, ?, ?)");
             dataCommitInsert(pstmt, discardCompressedFileInfo);
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -160,9 +185,12 @@ public class DiscardCompressedFileDao {
 
     public boolean batchInsert(List<DiscardCompressedFileInfo> discardCompressedFileInfoList) {
         if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
-            Integer count = NativeMetadataJavaClient.insert(
-                    NativeUtils.CodedDaoType.TransactionInsertDiscardCompressedFile,
-                    JniWrapper.newBuilder().addAllDiscardCompressedFileInfo(discardCompressedFileInfoList).build());
+            Integer count =
+                    NativeMetadataJavaClient.insert(
+                            NativeUtils.CodedDaoType.TransactionInsertDiscardCompressedFile,
+                            JniWrapper.newBuilder()
+                                    .addAllDiscardCompressedFileInfo(discardCompressedFileInfoList)
+                                    .build());
             return count > 0;
         }
         Connection conn = null;
@@ -170,9 +198,13 @@ public class DiscardCompressedFileDao {
         boolean result = true;
         try {
             conn = DBConnector.getConn();
-            pstmt = conn.prepareStatement("insert into discard_compressed_file_info (file_path, table_path, partition_desc, timestamp, t_date) values (?, ?, ?, ?, ?)");
+            pstmt =
+                    conn.prepareStatement(
+                            "insert into discard_compressed_file_info (file_path, table_path,"
+                                    + " partition_desc, timestamp, t_date) values (?, ?, ?, ?, ?)");
             conn.setAutoCommit(false);
-            for (DiscardCompressedFileInfo discardCompressedFileInfo : discardCompressedFileInfoList) {
+            for (DiscardCompressedFileInfo discardCompressedFileInfo :
+                    discardCompressedFileInfoList) {
                 dataCommitInsert(pstmt, discardCompressedFileInfo);
             }
             conn.commit();
@@ -191,7 +223,8 @@ public class DiscardCompressedFileDao {
         return result;
     }
 
-    private void dataCommitInsert(PreparedStatement pstmt, DiscardCompressedFileInfo discardCompressedFileInfo)
+    private void dataCommitInsert(
+            PreparedStatement pstmt, DiscardCompressedFileInfo discardCompressedFileInfo)
             throws SQLException {
         pstmt.setString(1, discardCompressedFileInfo.getFilePath());
         pstmt.setString(2, discardCompressedFileInfo.getTablePath());
@@ -203,14 +236,18 @@ public class DiscardCompressedFileDao {
 
     public void deleteByFilePath(String filePath) {
         if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
-            Integer count = NativeMetadataJavaClient.update(
-                    NativeUtils.CodedDaoType.DeleteDiscardCompressedFileInfoByFilePath,
-                    Collections.singletonList(filePath));
+            Integer count =
+                    NativeMetadataJavaClient.update(
+                            NativeUtils.CodedDaoType.DeleteDiscardCompressedFileInfoByFilePath,
+                            Collections.singletonList(filePath));
             return;
         }
         Connection conn = null;
         PreparedStatement pstmt = null;
-        String sql = String.format("delete from discard_compressed_file_info where file_path = '%s' ", filePath);
+        String sql =
+                String.format(
+                        "delete from discard_compressed_file_info where file_path = '%s' ",
+                        filePath);
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sql);
@@ -224,14 +261,18 @@ public class DiscardCompressedFileDao {
 
     public void deleteByTablePath(String tablePath) {
         if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
-            Integer count = NativeMetadataJavaClient.update(
-                    NativeUtils.CodedDaoType.DeleteDiscardCompressedFileInfoByTablePath,
-                    Collections.singletonList(tablePath));
+            Integer count =
+                    NativeMetadataJavaClient.update(
+                            NativeUtils.CodedDaoType.DeleteDiscardCompressedFileInfoByTablePath,
+                            Collections.singletonList(tablePath));
             return;
         }
         Connection conn = null;
         PreparedStatement pstmt = null;
-        String sql = String.format("delete from discard_compressed_file_info where table_path = '%s' ", tablePath);
+        String sql =
+                String.format(
+                        "delete from discard_compressed_file_info where table_path = '%s' ",
+                        tablePath);
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sql);
@@ -243,17 +284,22 @@ public class DiscardCompressedFileDao {
         }
     }
 
-    public void deleteDiscardCompressedFileByFilterCondition(String tablePath, String partition, long timestamp) {
+    public void deleteDiscardCompressedFileByFilterCondition(
+            String tablePath, String partition, long timestamp) {
         if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
-            Integer count = NativeMetadataJavaClient.update(
-                    NativeUtils.CodedDaoType.DeleteDiscardCompressedFileByFilterCondition,
-                    Arrays.asList(tablePath, partition, Long.toString(timestamp)));
+            Integer count =
+                    NativeMetadataJavaClient.update(
+                            NativeUtils.CodedDaoType.DeleteDiscardCompressedFileByFilterCondition,
+                            Arrays.asList(tablePath, partition, Long.toString(timestamp)));
             return;
         }
         Connection conn = null;
         PreparedStatement pstmt = null;
-        String sql = String.format("delete from discard_compressed_file_info where table_path = '%s' "
-                + "and partition_desc = '%s' and timestamp < %s", tablePath, partition, timestamp);
+        String sql =
+                String.format(
+                        "delete from discard_compressed_file_info where table_path = '%s' "
+                                + "and partition_desc = '%s' and timestamp < %s",
+                        tablePath, partition, timestamp);
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sql);
@@ -280,7 +326,8 @@ public class DiscardCompressedFileDao {
         }
     }
 
-    public static DiscardCompressedFileInfo discardCompressedFileInfoFromResultSet(ResultSet rs) throws SQLException {
+    public static DiscardCompressedFileInfo discardCompressedFileInfoFromResultSet(ResultSet rs)
+            throws SQLException {
         return DiscardCompressedFileInfo.newBuilder()
                 .setFilePath(rs.getString("file_path"))
                 .setTablePath(rs.getString("table_path"))

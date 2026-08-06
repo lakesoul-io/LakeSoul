@@ -4,6 +4,8 @@
 
 package org.apache.flink.lakesoul.sink.state;
 
+import static org.apache.flink.util.Preconditions.checkNotNull;
+
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.core.io.SimpleVersionedSerialization;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
@@ -20,22 +22,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
-import static org.apache.flink.util.Preconditions.checkNotNull;
-
-/**
- * Versioned serializer for {@link LakeSoulMultiTableSinkGlobalCommittable}.
- */
+/** Versioned serializer for {@link LakeSoulMultiTableSinkGlobalCommittable}. */
 public class LakeSoulSinkGlobalCommittableSerializer
         implements SimpleVersionedSerializer<LakeSoulMultiTableSinkGlobalCommittable> {
 
     private static final int MAGIC_NUMBER = 0x1e765c80;
 
-    private final LakeSoulSinkCommittableSerializer
-            committableSerializer;
+    private final LakeSoulSinkCommittableSerializer committableSerializer;
 
     public LakeSoulSinkGlobalCommittableSerializer(
-            LakeSoulSinkCommittableSerializer
-                    committableSerializer) {
+            LakeSoulSinkCommittableSerializer committableSerializer) {
         this.committableSerializer = checkNotNull(committableSerializer);
     }
 
@@ -53,7 +49,8 @@ public class LakeSoulSinkGlobalCommittableSerializer
     }
 
     @Override
-    public byte[] serialize(LakeSoulMultiTableSinkGlobalCommittable committable) throws IOException {
+    public byte[] serialize(LakeSoulMultiTableSinkGlobalCommittable committable)
+            throws IOException {
         DataOutputSerializer out = new DataOutputSerializer(256);
         out.writeInt(MAGIC_NUMBER);
         serializeV1(committable, out);
@@ -61,8 +58,8 @@ public class LakeSoulSinkGlobalCommittableSerializer
     }
 
     @Override
-    public LakeSoulMultiTableSinkGlobalCommittable deserialize(int version,
-                                                               byte[] serialized) throws IOException {
+    public LakeSoulMultiTableSinkGlobalCommittable deserialize(int version, byte[] serialized)
+            throws IOException {
         DataInputDeserializer in = new DataInputDeserializer(serialized);
 
         if (version == 1) {
@@ -72,21 +69,26 @@ public class LakeSoulSinkGlobalCommittableSerializer
         throw new IOException("Unrecognized version or corrupt state: " + version);
     }
 
-    private void serializeV1(LakeSoulMultiTableSinkGlobalCommittable globalCommittable,
-                             DataOutputView dataOutputView)
+    private void serializeV1(
+            LakeSoulMultiTableSinkGlobalCommittable globalCommittable,
+            DataOutputView dataOutputView)
             throws IOException {
-        Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommittable =
-                globalCommittable.getGroupedCommittable();
+        Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>>
+                groupedCommittable = globalCommittable.getGroupedCommittable();
         assert groupedCommittable != null;
         List<LakeSoulMultiTableSinkCommittable> committableList =
-                groupedCommittable.values().stream().flatMap(Collection::stream).collect(Collectors.toList());
+                groupedCommittable.values().stream()
+                        .flatMap(Collection::stream)
+                        .collect(Collectors.toList());
         dataOutputView.writeInt(committableList.size());
         for (LakeSoulMultiTableSinkCommittable committable : committableList) {
-            SimpleVersionedSerialization.writeVersionAndSerialize(committableSerializer, committable, dataOutputView);
+            SimpleVersionedSerialization.writeVersionAndSerialize(
+                    committableSerializer, committable, dataOutputView);
         }
     }
 
-    private LakeSoulMultiTableSinkGlobalCommittable deserializeV1(DataInputView dataInputView) throws IOException {
+    private LakeSoulMultiTableSinkGlobalCommittable deserializeV1(DataInputView dataInputView)
+            throws IOException {
         List<LakeSoulMultiTableSinkCommittable> committables = new ArrayList<>();
         int size = dataInputView.readInt();
         if (size > 0) {
@@ -96,6 +98,7 @@ public class LakeSoulSinkGlobalCommittableSerializer
                                 committableSerializer, dataInputView));
             }
         }
-        return LakeSoulMultiTableSinkGlobalCommittable.fromLakeSoulMultiTableSinkCommittable(committables, false);
+        return LakeSoulMultiTableSinkGlobalCommittable.fromLakeSoulMultiTableSinkCommittable(
+                committables, false);
     }
 }

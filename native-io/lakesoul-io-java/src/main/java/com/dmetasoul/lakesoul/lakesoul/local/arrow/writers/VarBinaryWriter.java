@@ -20,15 +20,12 @@ package com.dmetasoul.lakesoul.lakesoul.local.arrow.writers;
 
 import org.apache.arrow.vector.VarBinaryVector;
 
-/**
- * {@link ArrowFieldWriter} for VarBinary.
- */
+/** {@link ArrowFieldWriter} for VarBinary. */
 public abstract class VarBinaryWriter<T> extends ArrowFieldWriter<T> {
 
     public static VarBinaryWriter<Object[]> forObject(VarBinaryVector varBinaryVector) {
         return new VarBinaryWriterForObject(varBinaryVector);
     }
-
 
     // ------------------------------------------------------------------------------------------
 
@@ -51,9 +48,7 @@ public abstract class VarBinaryWriter<T> extends ArrowFieldWriter<T> {
 
     // ------------------------------------------------------------------------------------------
 
-    /**
-     * {@link VarBinaryWriter} for {@link Object[]} input.
-     */
+    /** {@link VarBinaryWriter} for {@link Object[]} input. */
     public static final class VarBinaryWriterForObject extends VarBinaryWriter<Object[]> {
 
         private VarBinaryWriterForObject(VarBinaryVector varBinaryVector) {
@@ -70,5 +65,4 @@ public abstract class VarBinaryWriter<T> extends ArrowFieldWriter<T> {
             return (byte[]) in[ordinal];
         }
     }
-
 }

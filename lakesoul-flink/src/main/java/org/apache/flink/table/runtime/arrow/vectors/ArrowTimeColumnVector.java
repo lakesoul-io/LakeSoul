@@ -18,15 +18,14 @@
 
 package org.apache.flink.table.runtime.arrow.vectors;
 
-import org.apache.flink.annotation.Internal;
-import org.apache.flink.table.data.columnar.vector.IntColumnVector;
-import org.apache.flink.util.Preconditions;
-
 import org.apache.arrow.vector.TimeMicroVector;
 import org.apache.arrow.vector.TimeMilliVector;
 import org.apache.arrow.vector.TimeNanoVector;
 import org.apache.arrow.vector.TimeSecVector;
 import org.apache.arrow.vector.ValueVector;
+import org.apache.flink.annotation.Internal;
+import org.apache.flink.table.data.columnar.vector.IntColumnVector;
+import org.apache.flink.util.Preconditions;
 
 /** Arrow column vector for Time. */
 @Internal

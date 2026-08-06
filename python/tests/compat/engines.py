@@ -144,9 +144,7 @@ class SparkEngine(Engine):
                     .option("shortTableName", ref.table_name)
                 )
                 if case.primary_keys:
-                    writer = writer.option(
-                        "hashBucketNum", str(case.hash_bucket_num)
-                    )
+                    writer = writer.option("hashBucketNum", str(case.hash_bucket_num))
                 if case.partition_by:
                     writer = writer.option(
                         "rangePartitions", ",".join(case.partition_by)
@@ -405,7 +403,9 @@ class FlinkEngine(Engine):
         for values in payload["rows"]:
             row: dict[str, Any] = {}
             for col_name, raw in zip(payload["columns"], values):
-                row[col_name] = _coerce_value(raw, case.read_schema.field(col_name).type)
+                row[col_name] = _coerce_value(
+                    raw, case.read_schema.field(col_name).type
+                )
             rows.append(row)
         return _table_from_rows(rows, case.read_schema)
 
@@ -434,9 +434,7 @@ def _arrow_filter(case: CaseSpec) -> Any | None:
     return expression
 
 
-def _pyspark_to_arrow(
-    spark: Any, df: Any, expected_schema: pa.Schema
-) -> pa.Table:
+def _pyspark_to_arrow(spark: Any, df: Any, expected_schema: pa.Schema) -> pa.Table:
     """Collect a PySpark DataFrame as a PyArrow Table, avoiding timestamp tz shift.
 
     PySpark converts java.sql.Timestamp to Python datetime via
@@ -448,9 +446,7 @@ def _pyspark_to_arrow(
     from pyspark.sql import functions as F
 
     timestamp_columns = [
-        field.name
-        for field in expected_schema
-        if pa.types.is_timestamp(field.type)
+        field.name for field in expected_schema if pa.types.is_timestamp(field.type)
     ]
 
     select_exprs = []
@@ -647,9 +643,7 @@ def _flink_create_table_sql(case: CaseSpec, ref: TableRef) -> str:
         else ""
     )
     hash_bucket = (
-        f",'hashBucketNum'='{case.hash_bucket_num}'"
-        if case.primary_keys
-        else ""
+        f",'hashBucketNum'='{case.hash_bucket_num}'" if case.primary_keys else ""
     )
     return (
         f"CREATE TABLE {ref.table_name} (\n  "

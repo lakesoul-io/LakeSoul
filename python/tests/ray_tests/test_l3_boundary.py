@@ -116,9 +116,7 @@ class TestFilterExpressions:
             [decimal.Decimal("1500.00")],
             type=pa.decimal128(15, 2),
         )[0]
-        filter = (pc.field("p_retailprice") >= threshold) & (
-            pc.field("p_size") == 50
-        )
+        filter = (pc.field("p_retailprice") >= threshold) & (pc.field("p_size") == 50)
         ds = lakesoul_ray_dataset(
             TABLE_NAME_PART,
             columns=("p_size", "p_retailprice"),

@@ -3,15 +3,19 @@
 // SPDX-License-Identifier: Apache-2.0
 package com.dmetasoul.lakesoul.meta.jnr;
 
+import static com.dmetasoul.lakesoul.meta.jnr.NativeUtils.*;
+
 import com.alibaba.fastjson.JSON;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.DataBaseProperty;
 import com.dmetasoul.lakesoul.meta.entity.JniWrapper;
 import com.dmetasoul.lakesoul.meta.security.Claims;
 import com.google.protobuf.InvalidProtocolBufferException;
+
 import jnr.ffi.ObjectReferenceManager;
 import jnr.ffi.Pointer;
 import jnr.ffi.Runtime;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -28,8 +32,6 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.BiConsumer;
 import java.util.stream.Collectors;
 
-import static com.dmetasoul.lakesoul.meta.jnr.NativeUtils.*;
-
 public class NativeMetadataJavaClient implements AutoCloseable {
 
     private static final Logger LOG = LoggerFactory.getLogger(NativeMetadataJavaClient.class);
@@ -41,11 +43,14 @@ public class NativeMetadataJavaClient implements AutoCloseable {
 
     protected final LibLakeSoulMetaData libLakeSoulMetaData;
 
-    protected final ObjectReferenceManager<LibLakeSoulMetaData.BooleanCallback> booleanCallbackObjectReferenceManager;
+    protected final ObjectReferenceManager<LibLakeSoulMetaData.BooleanCallback>
+            booleanCallbackObjectReferenceManager;
 
-    protected final ObjectReferenceManager<LibLakeSoulMetaData.StringCallback> stringCallbackObjectReferenceManager;
+    protected final ObjectReferenceManager<LibLakeSoulMetaData.StringCallback>
+            stringCallbackObjectReferenceManager;
 
-    protected final ObjectReferenceManager<LibLakeSoulMetaData.IntegerCallback> integerCallbackObjectReferenceManager;
+    protected final ObjectReferenceManager<LibLakeSoulMetaData.IntegerCallback>
+            integerCallbackObjectReferenceManager;
 
     private static NativeMetadataJavaClient instance = null;
 
@@ -58,9 +63,12 @@ public class NativeMetadataJavaClient implements AutoCloseable {
     public NativeMetadataJavaClient(long timeout, int bufferSize) {
         this.timeout = timeout;
         libLakeSoulMetaData = JnrLoader.get();
-        booleanCallbackObjectReferenceManager = Runtime.getRuntime(libLakeSoulMetaData).newObjectReferenceManager();
-        stringCallbackObjectReferenceManager = Runtime.getRuntime(libLakeSoulMetaData).newObjectReferenceManager();
-        integerCallbackObjectReferenceManager = Runtime.getRuntime(libLakeSoulMetaData).newObjectReferenceManager();
+        booleanCallbackObjectReferenceManager =
+                Runtime.getRuntime(libLakeSoulMetaData).newObjectReferenceManager();
+        stringCallbackObjectReferenceManager =
+                Runtime.getRuntime(libLakeSoulMetaData).newObjectReferenceManager();
+        integerCallbackObjectReferenceManager =
+                Runtime.getRuntime(libLakeSoulMetaData).newObjectReferenceManager();
 
         lock = new ReentrantReadWriteLock();
         initialize();
@@ -81,15 +89,18 @@ public class NativeMetadataJavaClient implements AutoCloseable {
         return tokioPostgresClient;
     }
 
-    public ObjectReferenceManager<LibLakeSoulMetaData.BooleanCallback> getbooleanCallbackObjectReferenceManager() {
+    public ObjectReferenceManager<LibLakeSoulMetaData.BooleanCallback>
+            getbooleanCallbackObjectReferenceManager() {
         return booleanCallbackObjectReferenceManager;
     }
 
-    public ObjectReferenceManager<LibLakeSoulMetaData.StringCallback> getStringCallbackObjectReferenceManager() {
+    public ObjectReferenceManager<LibLakeSoulMetaData.StringCallback>
+            getStringCallbackObjectReferenceManager() {
         return stringCallbackObjectReferenceManager;
     }
 
-    public ObjectReferenceManager<LibLakeSoulMetaData.IntegerCallback> getIntegerCallbackObjectReferenceManager() {
+    public ObjectReferenceManager<LibLakeSoulMetaData.IntegerCallback>
+            getIntegerCallbackObjectReferenceManager() {
         return integerCallbackObjectReferenceManager;
     }
 
@@ -106,7 +117,9 @@ public class NativeMetadataJavaClient implements AutoCloseable {
         private final Pointer key;
         private final ObjectReferenceManager<LibLakeSoulMetaData.BooleanCallback> referenceManager;
 
-        public ReferencedBooleanCallback(BiConsumer<Boolean, String> callback, ObjectReferenceManager<LibLakeSoulMetaData.BooleanCallback> referenceManager) {
+        public ReferencedBooleanCallback(
+                BiConsumer<Boolean, String> callback,
+                ObjectReferenceManager<LibLakeSoulMetaData.BooleanCallback> referenceManager) {
             this.callback = callback;
             this.referenceManager = referenceManager;
             key = this.referenceManager.add(this);
@@ -130,7 +143,9 @@ public class NativeMetadataJavaClient implements AutoCloseable {
         private final Pointer key;
         private final ObjectReferenceManager<LibLakeSoulMetaData.IntegerCallback> referenceManager;
 
-        public ReferencedIntegerCallback(BiConsumer<Integer, String> callback, ObjectReferenceManager<LibLakeSoulMetaData.IntegerCallback> referenceManager) {
+        public ReferencedIntegerCallback(
+                BiConsumer<Integer, String> callback,
+                ObjectReferenceManager<LibLakeSoulMetaData.IntegerCallback> referenceManager) {
             this.callback = callback;
             this.referenceManager = referenceManager;
             key = this.referenceManager.add(this);
@@ -149,12 +164,15 @@ public class NativeMetadataJavaClient implements AutoCloseable {
         }
     }
 
-    static class ReferencedStringCallback implements LibLakeSoulMetaData.StringCallback, AutoCloseable {
+    static class ReferencedStringCallback
+            implements LibLakeSoulMetaData.StringCallback, AutoCloseable {
         public final BiConsumer<String, String> callback;
         private final Pointer key;
         private final ObjectReferenceManager<LibLakeSoulMetaData.StringCallback> referenceManager;
 
-        public ReferencedStringCallback(BiConsumer<String, String> callback, ObjectReferenceManager<LibLakeSoulMetaData.StringCallback> referenceManager) {
+        public ReferencedStringCallback(
+                BiConsumer<String, String> callback,
+                ObjectReferenceManager<LibLakeSoulMetaData.StringCallback> referenceManager) {
             this.callback = callback;
             this.referenceManager = referenceManager;
             key = this.referenceManager.add(this);
@@ -179,49 +197,58 @@ public class NativeMetadataJavaClient implements AutoCloseable {
         DataBaseProperty dataBaseProperty = DBUtil.getDBInfo();
         tokioRuntime = libLakeSoulMetaData.create_tokio_runtime();
 
-        String config = String.format(
-                "host=%s port=%s dbname=%s user=%s password=%s connect_timeout=10 ",
-                dataBaseProperty.getHost(),
-                dataBaseProperty.getPort(),
-                dataBaseProperty.getDbName(),
-                dataBaseProperty.getUsername(),
-                dataBaseProperty.getPassword());
+        String config =
+                String.format(
+                        "host=%s port=%s dbname=%s user=%s password=%s connect_timeout=10 ",
+                        dataBaseProperty.getHost(),
+                        dataBaseProperty.getPort(),
+                        dataBaseProperty.getDbName(),
+                        dataBaseProperty.getUsername(),
+                        dataBaseProperty.getPassword());
         String secondary = null;
         if (dataBaseProperty.getSecondaryHost() != null
-            && dataBaseProperty.getSecondaryPort() != null) {
-            secondary = String.format(
-                    "host=%s port=%s dbname=%s user=%s password=%s connect_timeout=10 ",
-                    dataBaseProperty.getSecondaryHost(),
-                    dataBaseProperty.getSecondaryPort(),
-                    dataBaseProperty.getDbName(),
-                    dataBaseProperty.getUsername(),
-                    dataBaseProperty.getPassword());
+                && dataBaseProperty.getSecondaryPort() != null) {
+            secondary =
+                    String.format(
+                            "host=%s port=%s dbname=%s user=%s password=%s connect_timeout=10 ",
+                            dataBaseProperty.getSecondaryHost(),
+                            dataBaseProperty.getSecondaryPort(),
+                            dataBaseProperty.getDbName(),
+                            dataBaseProperty.getUsername(),
+                            dataBaseProperty.getPassword());
         }
         final CompletableFuture<Boolean> future = new CompletableFuture<>();
         long startTime = System.currentTimeMillis();
-        LOG.info("Creating native postgres client primary {}:{}, secondary {}:{}",
-                dataBaseProperty.getHost(), dataBaseProperty.getPort(),
-                dataBaseProperty.getSecondaryHost(), dataBaseProperty.getSecondaryPort());
-        tokioPostgresClient = libLakeSoulMetaData.create_tokio_postgres_client(
-                new ReferencedBooleanCallback((bool, msg) -> {
-                    if (msg == null || msg.isEmpty()) {
-                        future.complete(bool);
-                    } else {
-                        System.err.println(msg);
-                        future.completeExceptionally(new IOException(msg));
-                    }
-                }, getbooleanCallbackObjectReferenceManager()),
-                config,
-                secondary,
-                tokioRuntime
-        );
+        LOG.info(
+                "Creating native postgres client primary {}:{}, secondary {}:{}",
+                dataBaseProperty.getHost(),
+                dataBaseProperty.getPort(),
+                dataBaseProperty.getSecondaryHost(),
+                dataBaseProperty.getSecondaryPort());
+        tokioPostgresClient =
+                libLakeSoulMetaData.create_tokio_postgres_client(
+                        new ReferencedBooleanCallback(
+                                (bool, msg) -> {
+                                    if (msg == null || msg.isEmpty()) {
+                                        future.complete(bool);
+                                    } else {
+                                        System.err.println(msg);
+                                        future.completeExceptionally(new IOException(msg));
+                                    }
+                                },
+                                getbooleanCallbackObjectReferenceManager()),
+                        config,
+                        secondary,
+                        tokioRuntime);
         try {
             future.get(timeout, TimeUnit.MILLISECONDS);
         } catch (InterruptedException | ExecutionException | TimeoutException e) {
             LOG.error("Create native postgres client timeout", e);
             throw new RuntimeException(e);
         } finally {
-            LOG.info("Create native postgres client cost {} ms", System.currentTimeMillis() - startTime);
+            LOG.info(
+                    "Create native postgres client cost {} ms",
+                    System.currentTimeMillis() - startTime);
         }
     }
 
@@ -233,38 +260,48 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                 long startTime = System.currentTimeMillis();
                 try {
                     final CompletableFuture<Integer> queryFuture = new CompletableFuture<>();
-                    Pointer queryResult = getLibLakeSoulMetaData().execute_query(
-                            new ReferencedIntegerCallback((result, msg) -> {
-                                if (msg == null || msg.isEmpty()) {
-                                    queryFuture.complete(result);
-                                } else {
-                                    queryFuture.completeExceptionally(new SQLException(msg));
-                                }
-                            }, getIntegerCallbackObjectReferenceManager()),
-                            tokioRuntime,
-                            tokioPostgresClient,
-                            queryType,
-                            String.join(PARAM_DELIM, params)
-                    );
+                    Pointer queryResult =
+                            getLibLakeSoulMetaData()
+                                    .execute_query(
+                                            new ReferencedIntegerCallback(
+                                                    (result, msg) -> {
+                                                        if (msg == null || msg.isEmpty()) {
+                                                            queryFuture.complete(result);
+                                                        } else {
+                                                            queryFuture.completeExceptionally(
+                                                                    new SQLException(msg));
+                                                        }
+                                                    },
+                                                    getIntegerCallbackObjectReferenceManager()),
+                                            tokioRuntime,
+                                            tokioPostgresClient,
+                                            queryType,
+                                            String.join(PARAM_DELIM, params));
                     Integer len = queryFuture.get(timeout, TimeUnit.MILLISECONDS);
                     if (len < 0) return null;
                     Integer lenWithTail = len + 1;
 
-                    Pointer buffer = Runtime.getRuntime(libLakeSoulMetaData).getMemoryManager().allocateDirect(lenWithTail, true);
+                    Pointer buffer =
+                            Runtime.getRuntime(libLakeSoulMetaData)
+                                    .getMemoryManager()
+                                    .allocateDirect(lenWithTail, true);
 
                     final CompletableFuture<Boolean> importFuture = new CompletableFuture<>();
-                    getLibLakeSoulMetaData().export_bytes_result(
-                            new ReferencedBooleanCallback((result, msg) -> {
-                                if (msg == null || msg.isEmpty()) {
-                                    importFuture.complete(result);
-                                } else {
-                                    importFuture.completeExceptionally(new SQLException(msg));
-                                }
-                            }, getbooleanCallbackObjectReferenceManager()),
-                            queryResult,
-                            len,
-                            buffer.address()
-                    );
+                    getLibLakeSoulMetaData()
+                            .export_bytes_result(
+                                    new ReferencedBooleanCallback(
+                                            (result, msg) -> {
+                                                if (msg == null || msg.isEmpty()) {
+                                                    importFuture.complete(result);
+                                                } else {
+                                                    importFuture.completeExceptionally(
+                                                            new SQLException(msg));
+                                                }
+                                            },
+                                            getbooleanCallbackObjectReferenceManager()),
+                                    queryResult,
+                                    len,
+                                    buffer.address());
                     Boolean b = importFuture.get(timeout, TimeUnit.MILLISECONDS);
                     if (!b) return null;
 
@@ -274,9 +311,16 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                     getLibLakeSoulMetaData().free_bytes_result(queryResult);
                     return jniWrapper;
 
-                } catch (InvalidProtocolBufferException | InterruptedException | ExecutionException | TimeoutException e) {
-                    LOG.error("Failed to execute postgres query, type {}, params {}, retry {}",
-                            NativeUtils.getQueryName(queryType), params, retryCounter, e);
+                } catch (InvalidProtocolBufferException
+                        | InterruptedException
+                        | ExecutionException
+                        | TimeoutException e) {
+                    LOG.error(
+                            "Failed to execute postgres query, type {}, params {}, retry {}",
+                            NativeUtils.getQueryName(queryType),
+                            params,
+                            retryCounter,
+                            e);
                     if (retryCounter == 0) {
                         throw new RuntimeException(e);
                     } else {
@@ -284,8 +328,10 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                         retryCounter--;
                     }
                 } finally {
-                    LOG.info("Execute postgres query, type {}, cost {} ms",
-                            NativeUtils.getQueryName(queryType), System.currentTimeMillis() - startTime);
+                    LOG.info(
+                            "Execute postgres query, type {}, cost {} ms",
+                            NativeUtils.getQueryName(queryType),
+                            System.currentTimeMillis() - startTime);
                 }
             }
         } finally {
@@ -324,27 +370,37 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                     final CompletableFuture<Integer> future = new CompletableFuture<>();
 
                     byte[] bytes = jniWrapper.toByteArray();
-                    Pointer buffer = Runtime.getRuntime(libLakeSoulMetaData).getMemoryManager().allocateDirect(bytes.length, true);;
+                    Pointer buffer =
+                            Runtime.getRuntime(libLakeSoulMetaData)
+                                    .getMemoryManager()
+                                    .allocateDirect(bytes.length, true);
+                    ;
                     buffer.put(0, bytes, 0, bytes.length);
 
-                    getLibLakeSoulMetaData().execute_insert(
-                            new ReferencedIntegerCallback((result, msg) -> {
-                                if (msg == null || msg.isEmpty()) {
-                                    future.complete(result);
-                                } else {
-                                    future.completeExceptionally(new SQLException(msg));
-                                }
-                            }, getIntegerCallbackObjectReferenceManager()),
-                            tokioRuntime,
-                            tokioPostgresClient,
-                            insertType,
-                            buffer.address(),
-                            bytes.length
-                    );
+                    getLibLakeSoulMetaData()
+                            .execute_insert(
+                                    new ReferencedIntegerCallback(
+                                            (result, msg) -> {
+                                                if (msg == null || msg.isEmpty()) {
+                                                    future.complete(result);
+                                                } else {
+                                                    future.completeExceptionally(
+                                                            new SQLException(msg));
+                                                }
+                                            },
+                                            getIntegerCallbackObjectReferenceManager()),
+                                    tokioRuntime,
+                                    tokioPostgresClient,
+                                    insertType,
+                                    buffer.address(),
+                                    bytes.length);
                     return future.get(timeout, TimeUnit.MILLISECONDS);
                 } catch (InterruptedException | ExecutionException | TimeoutException e) {
-                    LOG.error("Failed to execute postgres insert, type {}, retry {}",
-                            NativeUtils.getQueryName(insertType), retryCounter, e);
+                    LOG.error(
+                            "Failed to execute postgres insert, type {}, retry {}",
+                            NativeUtils.getQueryName(insertType),
+                            retryCounter,
+                            e);
                     if (retryCounter == 0) {
                         throw new RuntimeException(e);
                     } else {
@@ -352,8 +408,10 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                         retryCounter--;
                     }
                 } finally {
-                    LOG.info("Execute postgres insert, type {}, cost {} ms",
-                            NativeUtils.getQueryName(insertType), System.currentTimeMillis() - startTime);
+                    LOG.info(
+                            "Execute postgres insert, type {}, cost {} ms",
+                            NativeUtils.getQueryName(insertType),
+                            System.currentTimeMillis() - startTime);
                 }
             }
         } finally {
@@ -371,23 +429,30 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                 try {
                     final CompletableFuture<Integer> future = new CompletableFuture<>();
 
-                    getLibLakeSoulMetaData().execute_update(
-                            new ReferencedIntegerCallback((result, msg) -> {
-                                if (msg == null || msg.isEmpty()) {
-                                    future.complete(result);
-                                } else {
-                                    future.completeExceptionally(new SQLException(msg));
-                                }
-                            }, getIntegerCallbackObjectReferenceManager()),
-                            tokioRuntime,
-                            tokioPostgresClient,
-                            updateType,
-                            String.join(PARAM_DELIM, params)
-                    );
+                    getLibLakeSoulMetaData()
+                            .execute_update(
+                                    new ReferencedIntegerCallback(
+                                            (result, msg) -> {
+                                                if (msg == null || msg.isEmpty()) {
+                                                    future.complete(result);
+                                                } else {
+                                                    future.completeExceptionally(
+                                                            new SQLException(msg));
+                                                }
+                                            },
+                                            getIntegerCallbackObjectReferenceManager()),
+                                    tokioRuntime,
+                                    tokioPostgresClient,
+                                    updateType,
+                                    String.join(PARAM_DELIM, params));
                     return future.get(timeout, TimeUnit.MILLISECONDS);
                 } catch (InterruptedException | ExecutionException | TimeoutException e) {
-                    LOG.error("Failed to execute postgres update, type {}, params {}, retry {}",
-                            NativeUtils.getQueryName(updateType), params, retryCounter, e);
+                    LOG.error(
+                            "Failed to execute postgres update, type {}, params {}, retry {}",
+                            NativeUtils.getQueryName(updateType),
+                            params,
+                            retryCounter,
+                            e);
                     if (retryCounter == 0) {
                         throw new RuntimeException(e);
                     } else {
@@ -395,8 +460,10 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                         retryCounter--;
                     }
                 } finally {
-                    LOG.info("Execute postgres update, type {}, cost {} ms",
-                            NativeUtils.getQueryName(updateType), System.currentTimeMillis() - startTime);
+                    LOG.info(
+                            "Execute postgres update, type {}, cost {} ms",
+                            NativeUtils.getQueryName(updateType),
+                            System.currentTimeMillis() - startTime);
                 }
             }
         } finally {
@@ -414,25 +481,32 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                 try {
                     final CompletableFuture<String> future = new CompletableFuture<>();
 
-                    getLibLakeSoulMetaData().execute_query_scalar(
-                            new ReferencedStringCallback((result, msg) -> {
-                                if (msg == null || msg.isEmpty()) {
-                                    future.complete(result);
-                                } else {
-                                    future.completeExceptionally(new SQLException(msg));
-                                }
-                            }, getStringCallbackObjectReferenceManager()),
-                            tokioRuntime,
-                            tokioPostgresClient,
-                            queryScalarType,
-                            String.join(PARAM_DELIM, params)
-                    );
+                    getLibLakeSoulMetaData()
+                            .execute_query_scalar(
+                                    new ReferencedStringCallback(
+                                            (result, msg) -> {
+                                                if (msg == null || msg.isEmpty()) {
+                                                    future.complete(result);
+                                                } else {
+                                                    future.completeExceptionally(
+                                                            new SQLException(msg));
+                                                }
+                                            },
+                                            getStringCallbackObjectReferenceManager()),
+                                    tokioRuntime,
+                                    tokioPostgresClient,
+                                    queryScalarType,
+                                    String.join(PARAM_DELIM, params));
                     String result = future.get(timeout, TimeUnit.MILLISECONDS);
                     if (result.isEmpty()) return Collections.emptyList();
                     return Arrays.stream(result.split(PARAM_DELIM)).collect(Collectors.toList());
                 } catch (InterruptedException | ExecutionException | TimeoutException e) {
-                    LOG.error("Failed to execute postgres query scalar, type {}, params {}, retry {}",
-                            NativeUtils.getQueryName(queryScalarType), params, retryCounter, e);
+                    LOG.error(
+                            "Failed to execute postgres query scalar, type {}, params {}, retry {}",
+                            NativeUtils.getQueryName(queryScalarType),
+                            params,
+                            retryCounter,
+                            e);
                     if (retryCounter == 0) {
                         throw new RuntimeException(e);
                     } else {
@@ -440,8 +514,10 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                         retryCounter--;
                     }
                 } finally {
-                    LOG.info("Execute postgres query scalar, type {}, cost {} ms",
-                            NativeUtils.getQueryName(queryScalarType), System.currentTimeMillis() - startTime);
+                    LOG.info(
+                            "Execute postgres query scalar, type {}, cost {} ms",
+                            NativeUtils.getQueryName(queryScalarType),
+                            System.currentTimeMillis() - startTime);
                 }
             }
         } finally {
@@ -456,21 +532,40 @@ public class NativeMetadataJavaClient implements AutoCloseable {
 
     public static JniWrapper query(NativeUtils.CodedDaoType queryType, List<String> params) {
         if (params.size() != queryType.getParamsNum()) {
-            throw new RuntimeException("Params Num mismatch for " + queryType.name() + ", params=" + params + " paramsNum=" + params.size());
+            throw new RuntimeException(
+                    "Params Num mismatch for "
+                            + queryType.name()
+                            + ", params="
+                            + params
+                            + " paramsNum="
+                            + params.size());
         }
         return getInstance().executeQuery(queryType.getCode(), params);
     }
 
     public static Integer update(NativeUtils.CodedDaoType updateType, List<String> params) {
         if (params.size() != updateType.getParamsNum()) {
-            throw new RuntimeException("Params Num mismatch for " + updateType.name() + ", params=" + params + " paramsNum=" + params.size());
+            throw new RuntimeException(
+                    "Params Num mismatch for "
+                            + updateType.name()
+                            + ", params="
+                            + params
+                            + " paramsNum="
+                            + params.size());
         }
         return getInstance().executeUpdate(updateType.getCode(), params);
     }
 
-    public static List<String> queryScalar(NativeUtils.CodedDaoType queryScalarType, List<String> params) {
+    public static List<String> queryScalar(
+            NativeUtils.CodedDaoType queryScalarType, List<String> params) {
         if (params.size() != queryScalarType.getParamsNum()) {
-            throw new RuntimeException("Params Num mismatch for " + queryScalarType.name() + ", params=" + params + " paramsNum=" + params.size());
+            throw new RuntimeException(
+                    "Params Num mismatch for "
+                            + queryScalarType.name()
+                            + ", params="
+                            + params
+                            + " paramsNum="
+                            + params.size());
         }
         return getInstance().executeQueryScalar(queryScalarType.getCode(), params);
     }
@@ -481,17 +576,19 @@ public class NativeMetadataJavaClient implements AutoCloseable {
         NativeMetadataJavaClient instance = getInstance();
         instance.getWriteLock();
         try {
-            instance.getLibLakeSoulMetaData().clean_meta_for_test(
-                    new ReferencedIntegerCallback((result, msg) -> {
-                        if (msg == null || msg.isEmpty()) {
-                            future.complete(result);
-                        } else {
-                            future.completeExceptionally(new SQLException(msg));
-                        }
-                    }, instance.getIntegerCallbackObjectReferenceManager()),
-                    instance.tokioRuntime,
-                    instance.tokioPostgresClient
-            );
+            instance.getLibLakeSoulMetaData()
+                    .clean_meta_for_test(
+                            new ReferencedIntegerCallback(
+                                    (result, msg) -> {
+                                        if (msg == null || msg.isEmpty()) {
+                                            future.complete(result);
+                                        } else {
+                                            future.completeExceptionally(new SQLException(msg));
+                                        }
+                                    },
+                                    instance.getIntegerCallbackObjectReferenceManager()),
+                            instance.tokioRuntime,
+                            instance.tokioPostgresClient);
             return future.get(instance.timeout, TimeUnit.MILLISECONDS);
         } catch (InterruptedException | ExecutionException e) {
             throw new RuntimeException(e);
@@ -524,12 +621,12 @@ public class NativeMetadataJavaClient implements AutoCloseable {
     }
 
     static {
-        java.lang.Runtime.getRuntime().addShutdownHook(new Thread(NativeMetadataJavaClient::closeAll));
+        java.lang.Runtime.getRuntime()
+                .addShutdownHook(new Thread(NativeMetadataJavaClient::closeAll));
     }
 
     /**
-     * if ffi function failed with -100
-     * should recreate pg client and prepared map
+     * if ffi function failed with -100 should recreate pg client and prepared map
      *
      * @param tableName name
      * @param namespace the np of TableInfo
@@ -538,18 +635,21 @@ public class NativeMetadataJavaClient implements AutoCloseable {
     public List<SplitDesc> createSplitDescArray(String tableName, String namespace) {
         getReadLock();
         final CompletableFuture<Boolean> future = new CompletableFuture<>();
-        Pointer ptr = getLibLakeSoulMetaData()
-                .create_split_desc_array(
-                        new ReferencedBooleanCallback((result, msg) -> {
-                            if (msg != null) {
-                                System.err.println(msg);
-                            }
-                            future.complete(result);
-                        }, getbooleanCallbackObjectReferenceManager()),
-                        tokioPostgresClient,
-                        tokioRuntime,
-                        tableName,
-                        namespace);
+        Pointer ptr =
+                getLibLakeSoulMetaData()
+                        .create_split_desc_array(
+                                new ReferencedBooleanCallback(
+                                        (result, msg) -> {
+                                            if (msg != null) {
+                                                System.err.println(msg);
+                                            }
+                                            future.complete(result);
+                                        },
+                                        getbooleanCallbackObjectReferenceManager()),
+                                tokioPostgresClient,
+                                tokioRuntime,
+                                tableName,
+                                namespace);
         try {
             Boolean ans = future.get(timeout, TimeUnit.MILLISECONDS);
             if (ans) {
@@ -572,18 +672,23 @@ public class NativeMetadataJavaClient implements AutoCloseable {
     }
 
     public String encodeTokenFromClaims(Claims claims) {
-        String secret = DBUtil.generateSecret(DBUtil.getDBInfo().getUsername(), DBUtil.getDBInfo().getPassword());
+        String secret =
+                DBUtil.generateSecret(
+                        DBUtil.getDBInfo().getUsername(), DBUtil.getDBInfo().getPassword());
         String claimsJson = JSON.toJSONString(claims);
         final CompletableFuture<String> future = new CompletableFuture<>();
-        getLibLakeSoulMetaData().encode_token_from_claims(
-                new ReferencedStringCallback((result, msg) -> {
-                    if (msg != null) {
-                        System.err.println(msg);
-                    }
-                    future.complete(result);
-                }, getStringCallbackObjectReferenceManager()),
-                claimsJson,
-                secret);
+        getLibLakeSoulMetaData()
+                .encode_token_from_claims(
+                        new ReferencedStringCallback(
+                                (result, msg) -> {
+                                    if (msg != null) {
+                                        System.err.println(msg);
+                                    }
+                                    future.complete(result);
+                                },
+                                getStringCallbackObjectReferenceManager()),
+                        claimsJson,
+                        secret);
         try {
             return future.get(timeout, TimeUnit.MILLISECONDS);
         } catch (InterruptedException | ExecutionException e) {
@@ -595,17 +700,22 @@ public class NativeMetadataJavaClient implements AutoCloseable {
     }
 
     public Claims decodeTokenToClaims(String token) {
-        String secret = DBUtil.generateSecret(DBUtil.getDBInfo().getUsername(), DBUtil.getDBInfo().getPassword());
+        String secret =
+                DBUtil.generateSecret(
+                        DBUtil.getDBInfo().getUsername(), DBUtil.getDBInfo().getPassword());
         final CompletableFuture<String> future = new CompletableFuture<>();
-        getLibLakeSoulMetaData().decode_token_to_claims(
-                new ReferencedStringCallback((result, msg) -> {
-                    if (msg != null) {
-                        System.err.println(msg);
-                    }
-                    future.complete(result);
-                }, getStringCallbackObjectReferenceManager()),
-                token,
-                secret);
+        getLibLakeSoulMetaData()
+                .decode_token_to_claims(
+                        new ReferencedStringCallback(
+                                (result, msg) -> {
+                                    if (msg != null) {
+                                        System.err.println(msg);
+                                    }
+                                    future.complete(result);
+                                },
+                                getStringCallbackObjectReferenceManager()),
+                        token,
+                        secret);
         try {
             String claimsJson = future.get(timeout, TimeUnit.MILLISECONDS);
             return JSON.parseObject(claimsJson, Claims.class);

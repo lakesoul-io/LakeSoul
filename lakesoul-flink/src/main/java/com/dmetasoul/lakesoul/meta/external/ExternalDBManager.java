@@ -4,9 +4,6 @@
 
 package com.dmetasoul.lakesoul.meta.external;
 
-import java.io.IOException;
-import java.util.List;
-
 public interface ExternalDBManager {
     void importOrSyncLakeSoulNamespace(String namespace);
 }
