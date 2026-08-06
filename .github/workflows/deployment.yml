@@ -20,9 +20,6 @@ jobs:
                   java-version: "11"
                   distribution: "temurin"
                   cache: maven
-                  cache-path: |
-                    /home/runner/.m2/repository
-                    /home/runner/.m2/build-cache
             - name: Install Protoc
               uses: arduino/setup-protoc@v2
               with:
@@ -35,11 +32,12 @@ jobs:
               with:
                 workspaces: ". -> rust/target"
                 env-vars: "JAVA_HOME"
-            - uses: actions-rs/cargo@v1
+            - name: Install cross
+              uses: taiki-e/install-action@v2
               with:
-                  use-cross: true
-                  command: build
-                  args: "--target x86_64-unknown-linux-gnu --package lakesoul-io-c --package lakesoul-metadata-c --release --all-features"
+                  tool: cross@0.2.5
+            - name: Build native libraries
+              run: cross -q build --target x86_64-unknown-linux-gnu --package lakesoul-io-c --package lakesoul-metadata-c --release --all-features
             - uses: actions/upload-artifact@v4
               with:
                   name: lakesoul-nativeio-x86_64-unknown-linux-gnu
@@ -59,9 +57,6 @@ jobs:
                   java-version: "11"
                   distribution: "temurin"
                   cache: maven
-                  cache-path: |
-                    C:\Users\runneradmin\.m2\repository
-                    C:\Users\runneradmin\.m2\build-cache
             - name: Install Protoc
               uses: arduino/setup-protoc@v2
               with:
@@ -74,10 +69,8 @@ jobs:
               with:
                 workspaces: ". -> rust/target"
                 env-vars: "JAVA_HOME"
-            - uses: actions-rs/cargo@v1
-              with:
-                  command: build
-                  args: "--release --package lakesoul-io-c --package lakesoul-metadata-c --all-features"
+            - name: Build native libraries
+              run: cargo -q build --release --package lakesoul-io-c --package lakesoul-metadata-c --all-features
             - uses: actions/upload-artifact@v4
               with:
                   name: lakesoul-nativeio-x86_64-pc-windows-msvc
@@ -99,9 +92,6 @@ jobs:
                   java-version: "11"
                   distribution: "temurin"
                   cache: maven
-                  cache-path: |
-                    /Users/runner/.m2/repository
-                    /Users/runner/.m2/build-cache
             - name: Install Protoc
               uses: arduino/setup-protoc@v2
               with:
@@ -113,10 +103,8 @@ jobs:
             - uses: Swatinem/rust-cache@v2
               with:
                   workspaces: "./rust -> target"
-            - uses: actions-rs/cargo@v1
-              with:
-                  command: build
-                  args: "--package lakesoul-io-c --package lakesoul-metadata-c --release --all-features"
+            - name: Build native libraries
+              run: cargo -q build --package lakesoul-io-c --package lakesoul-metadata-c --release --all-features
             - uses: actions/upload-artifact@v4
               with:
                   name: lakesoul-nativeio-x86_64-apple-darwin

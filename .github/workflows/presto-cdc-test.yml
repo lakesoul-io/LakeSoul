@@ -48,23 +48,20 @@ jobs:
                   java-version: "11"
                   distribution: "temurin"
                   cache: maven
-                  cache-path: |
-                    /home/runner/.m2/repository
-                    /home/runner/.m2/build-cache
             - name: Set up Python 3.9
-              uses: actions/setup-python@v4
+              uses: actions/setup-python@v5
               with:
                   python-version: "3.9"
             - name: Install dependencies
               run: |
                   python -m pip install --upgrade pip setuptools wheel
                   pip install pymysql cryptography jproperties --no-cache-dir
-                  wget -q https://dlcdn.apache.org/hadoop/common/hadoop-3.3.5/hadoop-3.3.5.tar.gz -O $HOME/hadoop-3.3.5.tar.gz && tar xf $HOME/hadoop-3.3.5.tar.gz -C $HOME
-                  echo "HADOOP_HOME=$HOME/hadoop-3.3.5" >> $GITHUB_ENV
-                  wget -q https://repo1.maven.org/maven2/org/apache/flink/flink-s3-fs-hadoop/1.20.1/flink-s3-fs-hadoop-1.20.1.jar -O $HOME/flink-s3-fs-hadoop-1.20.1.jar
-                  wget -q https://repo1.maven.org/maven2/org/apache/parquet/parquet-hadoop-bundle/1.12.3/parquet-hadoop-bundle-1.12.3.jar -O $HOME/parquet-hadoop-bundle-1.12.3.jar
-                  wget -q https://repo1.maven.org/maven2/org/apache/flink/flink-parquet/1.20.1/flink-parquet-1.20.1.jar -O $HOME/flink-parquet-1.20.1.jar
-                  wget -q https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.0.33/mysql-connector-j-8.0.33.jar -O $HOME/mysql-connector-j-8.0.33.jar
+                  wget -q https://dlcdn.apache.org/hadoop/common/hadoop-3.3.5/hadoop-3.3.5.tar.gz -O "$HOME/hadoop-3.3.5.tar.gz" && tar xf "$HOME/hadoop-3.3.5.tar.gz" -C "$HOME"
+                  echo "HADOOP_HOME=$HOME/hadoop-3.3.5" >> "$GITHUB_ENV"
+                  wget -q https://repo1.maven.org/maven2/org/apache/flink/flink-s3-fs-hadoop/1.20.1/flink-s3-fs-hadoop-1.20.1.jar -O "$HOME/flink-s3-fs-hadoop-1.20.1.jar"
+                  wget -q https://repo1.maven.org/maven2/org/apache/parquet/parquet-hadoop-bundle/1.12.3/parquet-hadoop-bundle-1.12.3.jar -O "$HOME/parquet-hadoop-bundle-1.12.3.jar"
+                  wget -q https://repo1.maven.org/maven2/org/apache/flink/flink-parquet/1.20.1/flink-parquet-1.20.1.jar -O "$HOME/flink-parquet-1.20.1.jar"
+                  wget -q https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.0.33/mysql-connector-j-8.0.33.jar -O "$HOME/mysql-connector-j-8.0.33.jar"
 
             - name: Install Protoc
               uses: arduino/setup-protoc@v2
@@ -78,14 +75,16 @@ jobs:
               with:
                   workspaces: ". -> rust/target"
                   env-vars: "JAVA_HOME"
+            - name: Install cross
+              uses: taiki-e/install-action@v2
+              with:
+                  tool: cross@0.2.5
             - name: Pull images
               run: |
                   docker pull -q swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/spark:3.5.8-py310-hadoop334
-            - uses: actions-rs/cargo@v1
-              with:
-                  use-cross: true
-                  command: build
-                  args: "--target x86_64-unknown-linux-gnu --package lakesoul-io-c --package lakesoul-metadata-c --release"
+            - name: Build Rust libraries
+              run: |
+                  cross -q build --target x86_64-unknown-linux-gnu --package lakesoul-io-c --package lakesoul-metadata-c --release
             - name: Build with Maven
               run: |
                   mkdir -p rust/target/release
@@ -98,28 +97,27 @@ jobs:
                   java-version: "17"
                   distribution: "temurin"
                   cache: maven
-                  cache-path: |
-                    /home/runner/.m2/repository
-                    /home/runner/.m2/build-cache
             - name: Build LakeSoul Presto with Java 17
               run: |
                   MAVEN_OPTS="-Xmx4000m" mvn -B package -f pom.xml -pl lakesoul-presto -Pcross-build -DskipTests -e
             - name: Get jar names
               run: |
-                  echo "FLINK_JAR_NAME=$(python script/get_jar_name.py lakesoul-flink)" >> $GITHUB_ENV
-                  echo "FLINK_TEST_JAR_NAME=$(python script/get_jar_name.py lakesoul-flink | sed -e 's/.jar/-tests.jar/g')" >> $GITHUB_ENV
-                  echo "SPARK_JAR_NAME=$(python script/get_jar_name.py lakesoul-spark)" >> $GITHUB_ENV
-                  echo "SPARK_TEST_JAR_NAME=$(python script/get_jar_name.py lakesoul-spark | sed -e 's/.jar/-tests.jar/g')" >> $GITHUB_ENV
-                  echo "PRESTO_JAR_NAME=$(python script/get_jar_name.py lakesoul-presto)" >> $GITHUB_ENV
-                  echo "PRESTO_TEST_JAR_NAME=$(python script/get_jar_name.py lakesoul-presto | sed -e 's/.jar/-tests.jar/g')" >> $GITHUB_ENV
+                  {
+                    echo "FLINK_JAR_NAME=$(python script/get_jar_name.py lakesoul-flink)"
+                    echo "FLINK_TEST_JAR_NAME=$(python script/get_jar_name.py lakesoul-flink | sed -e 's/.jar/-tests.jar/g')"
+                    echo "SPARK_JAR_NAME=$(python script/get_jar_name.py lakesoul-spark)"
+                    echo "SPARK_TEST_JAR_NAME=$(python script/get_jar_name.py lakesoul-spark | sed -e 's/.jar/-tests.jar/g')"
+                    echo "PRESTO_JAR_NAME=$(python script/get_jar_name.py lakesoul-presto)"
+                    echo "PRESTO_TEST_JAR_NAME=$(python script/get_jar_name.py lakesoul-presto | sed -e 's/.jar/-tests.jar/g')"
+                  } >> "$GITHUB_ENV"
             - name: Copy built jar to work-dir
               run: |
-                  cp ./lakesoul-flink/target/$FLINK_JAR_NAME ./script/benchmark/work-dir
-                  cp ./lakesoul-flink/target/$FLINK_TEST_JAR_NAME ./script/benchmark/work-dir
-                  cp ./lakesoul-spark/target/$SPARK_JAR_NAME ./script/benchmark/work-dir
-                  cp ./lakesoul-spark/target/$SPARK_TEST_JAR_NAME ./script/benchmark/work-dir
-                  cp ./lakesoul-presto/target/$PRESTO_JAR_NAME ./script/benchmark/work-dir
-                  cp ./lakesoul-presto/target/$PRESTO_TEST_JAR_NAME ./script/benchmark/work-dir
+                  cp "./lakesoul-flink/target/$FLINK_JAR_NAME" ./script/benchmark/work-dir
+                  cp "./lakesoul-flink/target/$FLINK_TEST_JAR_NAME" ./script/benchmark/work-dir
+                  cp "./lakesoul-spark/target/$SPARK_JAR_NAME" ./script/benchmark/work-dir
+                  cp "./lakesoul-spark/target/$SPARK_TEST_JAR_NAME" ./script/benchmark/work-dir
+                  cp "./lakesoul-presto/target/$PRESTO_JAR_NAME" ./script/benchmark/work-dir
+                  cp "./lakesoul-presto/target/$PRESTO_TEST_JAR_NAME" ./script/benchmark/work-dir
             - name: Deploy cluster
               run: |
                   sed -i 's/if NEW.version - rs_version >= 10 then/if NEW.version - rs_version >= 1 then/' script/meta_init.sql
@@ -132,12 +130,32 @@ jobs:
             - name: Deploy Presto Server
               run: |
                   echo "deploy presto server pwd: ${PWD}"
-                  docker run -d --net lakesoul-docker-compose-env_default --name=presto --network-alias presto-discovery --env LAKESOUL_IO_USE_V2_MERGE=true --env RUST_LOG=info --env RUST_BACKTRACE=full -v ${PWD}/script/benchmark/work-dir/${PRESTO_JAR_NAME}:/opt/presto-server/plugin/lakesoul/${PRESTO_JAR_NAME} -v ${PWD}/script/benchmark/presto-native-coordinator/catalog:/opt/presto-server/etc/catalog -v ${PWD}/script/benchmark/presto-native-coordinator/config.properties:/opt/presto-server/etc/config.properties -v ${PWD}/script/benchmark/presto-native-coordinator/jvm.config:/opt/presto-server/etc/jvm.config -v ${PWD}/script/benchmark/work-dir:/opt/spark/work-dir -v ${PWD}/script/benchmark/presto-native-coordinator/lakesoul.properties:/root/lakesoul.properties --env lakesoul_home=/root/lakesoul.properties swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/presto:0.296
+                  docker run -d \
+                    --net lakesoul-docker-compose-env_default \
+                    --name=presto \
+                    --network-alias presto-discovery \
+                    --env LAKESOUL_IO_USE_V2_MERGE=true \
+                    --env RUST_LOG=info \
+                    --env RUST_BACKTRACE=full \
+                    -v "${PWD}/script/benchmark/work-dir/${PRESTO_JAR_NAME}:/opt/presto-server/plugin/lakesoul/${PRESTO_JAR_NAME}" \
+                    -v "${PWD}/script/benchmark/presto-native-coordinator/catalog:/opt/presto-server/etc/catalog" \
+                    -v "${PWD}/script/benchmark/presto-native-coordinator/config.properties:/opt/presto-server/etc/config.properties" \
+                    -v "${PWD}/script/benchmark/presto-native-coordinator/jvm.config:/opt/presto-server/etc/jvm.config" \
+                    -v "${PWD}/script/benchmark/work-dir:/opt/spark/work-dir" \
+                    -v "${PWD}/script/benchmark/presto-native-coordinator/lakesoul.properties:/root/lakesoul.properties" \
+                    --env lakesoul_home=/root/lakesoul.properties \
+                    swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/presto:0.296
                   sleep 15s
-                  docker run -d --net lakesoul-docker-compose-env_default --name=presto-worker --env LAKESOUL_IO_USE_V2_MERGE=true -v ${PWD}/rust/target/release/liblakesoul_io_c.so:/usr/lib64/prestissimo-libs/liblakesoul_io_c.so -v ${PWD}/script/benchmark/presto-native-worker:/opt/presto-server/etc \
-                    -v ${PWD}/script/benchmark/presto-native-worker/catalog:/opt/presto-server/etc/catalog \
-                    --env RUST_BACKTRACE=full  -v ${PWD}/script/benchmark/presto-native-worker/config.properties:/opt/etc/config.properties \
-                    -v ${PWD}/script/benchmark/presto-native-worker/lakesoul.properties:/root/lakesoul.properties  \
+                  docker run -d \
+                    --net lakesoul-docker-compose-env_default \
+                    --name=presto-worker \
+                    --env LAKESOUL_IO_USE_V2_MERGE=true \
+                    -v "${PWD}/rust/target/release/liblakesoul_io_c.so:/usr/lib64/prestissimo-libs/liblakesoul_io_c.so" \
+                    -v "${PWD}/script/benchmark/presto-native-worker:/opt/presto-server/etc" \
+                    -v "${PWD}/script/benchmark/presto-native-worker/catalog:/opt/presto-server/etc/catalog" \
+                    --env RUST_BACKTRACE=full \
+                    -v "${PWD}/script/benchmark/presto-native-worker/config.properties:/opt/etc/config.properties" \
+                    -v "${PWD}/script/benchmark/presto-native-worker/lakesoul.properties:/root/lakesoul.properties" \
                     swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/prestissimo-runtime:0.296-hotfix
             - name: Wait for Presto worker to become active
               run: |
@@ -145,14 +163,40 @@ jobs:
             - name: Start compaction task
               run: |
                   cd ./script/benchmark/work-dir
-                  nohup docker run --cpus 2 -m 5000m --net lakesoul-docker-compose-env_default --rm -t -v ${PWD}:/opt/spark/work-dir --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties --env LAKESOUL_IO_USE_V2_MERGE=true --env RUST_LOG=info swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/spark:3.5.8-py310-hadoop334 spark-submit --driver-memory 2G --executor-memory 2G --conf spark.driver.memoryOverhead=1500m --conf spark.executor.memoryOverhead=1500m --conf spark.hadoop.fs.s3.buffer.dir=/tmp --conf spark.hadoop.fs.s3a.buffer.dir=/tmp --conf spark.hadoop.fs.s3.impl=org.apache.hadoop.fs.s3a.S3AFileSystem --conf spark.hadoop.fs.s3a.path.style.access=true --conf spark.hadoop.fs.s3a.endpoint=http://rustfs:9000 --conf spark.hadoop.fs.s3a.access.key=rustfsadmin --conf spark.hadoop.fs.s3a.secret.key=rustfsadmin --conf spark.sql.warehouse.dir=s3://lakesoul-test-bucket/ --conf spark.hadoop.fs.s3a.fast.upload.buffer=disk --conf spark.hadoop.fs.s3a.fast.upload=true --conf spark.dmetasoul.lakesoul.native.io.enable=true --conf spark.dmetasoul.lakesoul.compaction.level1.file.number.limit=5 --conf spark.dmetasoul.lakesoul.compaction.level1.file.merge.num.limit=2 --class com.dmetasoul.lakesoul.spark.compaction.NewCompactionTask --master local[4] /opt/spark/work-dir/$SPARK_JAR_NAME --threadpool.size=10 --database="" --file_num_limit=5 --file_size_limit=10KB > compaction.log 2>&1 &
+                  nohup docker run --cpus 2 -m 5000m --net lakesoul-docker-compose-env_default --rm -t \
+                    -v "${PWD}:/opt/spark/work-dir" \
+                    --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties \
+                    --env LAKESOUL_IO_USE_V2_MERGE=true \
+                    --env RUST_LOG=info \
+                    swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/spark:3.5.8-py310-hadoop334 \
+                    spark-submit --driver-memory 2G --executor-memory 2G \
+                    --conf spark.driver.memoryOverhead=1500m \
+                    --conf spark.executor.memoryOverhead=1500m \
+                    --conf spark.hadoop.fs.s3.buffer.dir=/tmp \
+                    --conf spark.hadoop.fs.s3a.buffer.dir=/tmp \
+                    --conf spark.hadoop.fs.s3.impl=org.apache.hadoop.fs.s3a.S3AFileSystem \
+                    --conf spark.hadoop.fs.s3a.path.style.access=true \
+                    --conf spark.hadoop.fs.s3a.endpoint=http://rustfs:9000 \
+                    --conf spark.hadoop.fs.s3a.access.key=rustfsadmin \
+                    --conf spark.hadoop.fs.s3a.secret.key=rustfsadmin \
+                    --conf spark.sql.warehouse.dir=s3://lakesoul-test-bucket/ \
+                    --conf spark.hadoop.fs.s3a.fast.upload.buffer=disk \
+                    --conf spark.hadoop.fs.s3a.fast.upload=true \
+                    --conf spark.dmetasoul.lakesoul.native.io.enable=true \
+                    --conf spark.dmetasoul.lakesoul.compaction.level1.file.number.limit=5 \
+                    --conf spark.dmetasoul.lakesoul.compaction.level1.file.merge.num.limit=2 \
+                    --class com.dmetasoul.lakesoul.spark.compaction.NewCompactionTask \
+                    --master "local[4]" \
+                    "/opt/spark/work-dir/$SPARK_JAR_NAME" \
+                    --threadpool.size=10 --database="" --file_num_limit=5 --file_size_limit=10KB \
+                    > compaction.log 2>&1 &
             - name: Start flink mysql cdc task-1
               run: |
-                  docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.entry.MysqlCdc /opt/flink/work-dir/$FLINK_JAR_NAME --source_db.host mysql --source_db.port 3306 --source_db.db_name test_cdc --source_db.user root --source_db.password root --source.parallelism 2 --sink_db_name default --sink.parallelism 4 --use.cdc true --warehouse_path s3://lakesoul-test-bucket/data/ --flink.checkpoint s3://lakesoul-test-bucket/chk --flink.savepoint s3://lakesoul-test-bucket/svp --job.checkpoint_interval 5000 --server_time_zone UTC
+                  docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.entry.MysqlCdc "/opt/flink/work-dir/$FLINK_JAR_NAME" --source_db.host mysql --source_db.port 3306 --source_db.db_name test_cdc --source_db.user root --source_db.password root --source.parallelism 2 --sink_db_name default --sink.parallelism 4 --use.cdc true --warehouse_path s3://lakesoul-test-bucket/data/ --flink.checkpoint s3://lakesoul-test-bucket/chk --flink.savepoint s3://lakesoul-test-bucket/svp --job.checkpoint_interval 5000 --server_time_zone UTC
                   sleep 30s
             - name: Start flink source to sink task-2
               run: |
-                  docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.test.benchmark.LakeSoulSourceToSinkTable -C file:///opt/flink/work-dir/$FLINK_JAR_NAME /opt/flink/work-dir/$FLINK_TEST_JAR_NAME --source.database.name default --source.table.name s_test_cdc_default_init --sink.database.name flink_sink --sink.table.name default_init --use.cdc true --hash.bucket.number 2 --job.checkpoint_interval 10000 --server_time_zone UTC --warehouse.path s3://lakesoul-test-bucket/flink-sink/data --flink.checkpoint s3://lakesoul-test-bucket/flink-sink/chk
+                  docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.test.benchmark.LakeSoulSourceToSinkTable -C "file:///opt/flink/work-dir/$FLINK_JAR_NAME" "/opt/flink/work-dir/$FLINK_TEST_JAR_NAME" --source.database.name default --source.table.name s_test_cdc_default_init --sink.database.name flink_sink --sink.table.name default_init --use.cdc true --hash.bucket.number 2 --job.checkpoint_interval 10000 --server_time_zone UTC --warehouse.path s3://lakesoul-test-bucket/flink-sink/data --flink.checkpoint s3://lakesoul-test-bucket/flink-sink/chk
                   sleep 30s
             - name: Download mysql driver jar
               run: |
@@ -171,11 +215,11 @@ jobs:
             - name: "[Check] Mysql cdc data accuracy verification task"
               run: |
                   cd ./script/benchmark
-                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root eclipse-temurin:17-jre-jammy java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-j-8.0.33.jar:/root/presto-jdbc-0.292.jar com.facebook.presto.benchmark.Benchmark
+                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v "${PWD}/work-dir:/root" eclipse-temurin:17-jre-jammy java -cp "/root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-j-8.0.33.jar:/root/presto-jdbc-0.292.jar" com.facebook.presto.benchmark.Benchmark
             - name: "[Check] Presto source to sink data accuracy verification task"
               run: |
                   cd ./script/benchmark
-                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root eclipse-temurin:17-jre-jammy java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-j-8.0.33.jar:/root/presto-jdbc-0.292.jar com.facebook.presto.benchmark.Benchmark --cdc.contract false --single.table.contract true
+                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v "${PWD}/work-dir:/root" eclipse-temurin:17-jre-jammy java -cp "/root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-j-8.0.33.jar:/root/presto-jdbc-0.292.jar" com.facebook.presto.benchmark.Benchmark --cdc.contract false --single.table.contract true
             - name: Adding columns for tables and deleting some data from tables
               run: |
                   cd ./script/benchmark
@@ -189,11 +233,11 @@ jobs:
             - name: "[Check] Mysql cdc data accuracy verification task"
               run: |
                   cd ./script/benchmark
-                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root eclipse-temurin:17-jre-jammy java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-j-8.0.33.jar:/root/presto-jdbc-0.292.jar com.facebook.presto.benchmark.Benchmark
+                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v "${PWD}/work-dir:/root" eclipse-temurin:17-jre-jammy java -cp "/root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-j-8.0.33.jar:/root/presto-jdbc-0.292.jar" com.facebook.presto.benchmark.Benchmark
             - name: "[Check] Presto source to sink data accuracy verification task"
               run: |
                   cd ./script/benchmark
-                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root eclipse-temurin:17-jre-jammy java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-j-8.0.33.jar:/root/presto-jdbc-0.292.jar com.facebook.presto.benchmark.Benchmark --cdc.contract false --single.table.contract true
+                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v "${PWD}/work-dir:/root" eclipse-temurin:17-jre-jammy java -cp "/root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-j-8.0.33.jar:/root/presto-jdbc-0.292.jar" com.facebook.presto.benchmark.Benchmark --cdc.contract false --single.table.contract true
             - name: Updating data in tables
               run: |
                   cd ./script/benchmark
@@ -205,11 +249,11 @@ jobs:
             - name: "[Check] Mysql cdc data accuracy verification task"
               run: |
                   cd ./script/benchmark
-                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root eclipse-temurin:17-jre-jammy java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-j-8.0.33.jar:/root/presto-jdbc-0.292.jar com.facebook.presto.benchmark.Benchmark
+                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v "${PWD}/work-dir:/root" eclipse-temurin:17-jre-jammy java -cp "/root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-j-8.0.33.jar:/root/presto-jdbc-0.292.jar" com.facebook.presto.benchmark.Benchmark
             - name: "[Check] Presto source to sink data accuracy verification task"
               run: |
                   cd ./script/benchmark
-                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root eclipse-temurin:17-jre-jammy java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-j-8.0.33.jar:/root/presto-jdbc-0.292.jar com.facebook.presto.benchmark.Benchmark --cdc.contract false --single.table.contract true
+                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v "${PWD}/work-dir:/root" eclipse-temurin:17-jre-jammy java -cp "/root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-j-8.0.33.jar:/root/presto-jdbc-0.292.jar" com.facebook.presto.benchmark.Benchmark --cdc.contract false --single.table.contract true
             - name: Dropping columns and deleting some data in tables
               run: |
                   cd ./script/benchmark
@@ -223,11 +267,11 @@ jobs:
             - name: "[Check] Mysql cdc data accuracy verification task"
               run: |
                   cd ./script/benchmark
-                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root eclipse-temurin:17-jre-jammy java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-j-8.0.33.jar:/root/presto-jdbc-0.292.jar com.facebook.presto.benchmark.Benchmark
+                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v "${PWD}/work-dir:/root" eclipse-temurin:17-jre-jammy java -cp "/root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-j-8.0.33.jar:/root/presto-jdbc-0.292.jar" com.facebook.presto.benchmark.Benchmark
             - name: "[Check] Presto source to sink data accuracy verification task"
               run: |
                   cd ./script/benchmark
-                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root eclipse-temurin:17-jre-jammy java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-j-8.0.33.jar:/root/presto-jdbc-0.292.jar com.facebook.presto.benchmark.Benchmark --cdc.contract false --single.table.contract true
+                  docker run --cpus 2 -m 5000m --net container:presto --rm -t -v "${PWD}/work-dir:/root" eclipse-temurin:17-jre-jammy java -cp "/root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME:/root/mysql-connector-j-8.0.33.jar:/root/presto-jdbc-0.292.jar" com.facebook.presto.benchmark.Benchmark --cdc.contract false --single.table.contract true
             - name: Print Flink Log
               if: always()
               run: |

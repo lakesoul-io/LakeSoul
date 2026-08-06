@@ -72,11 +72,8 @@ jobs:
                   java-version: "11"
                   distribution: "temurin"
                   cache: maven
-                  cache-path: |
-                    /home/runner/.m2/repository
-                    /home/runner/.m2/build-cache
             - name: Set up Python 3.9
-              uses: actions/setup-python@v4
+              uses: actions/setup-python@v5
               with:
                   python-version: "3.9"
             - name: Install dependencies
@@ -102,11 +99,12 @@ jobs:
               with:
                   workspaces: ". -> rust/target"
                   env-vars: "JAVA_HOME"
-            - uses: actions-rs/cargo@v1
+            - name: Install cross
+              uses: taiki-e/install-action@v2
               with:
-                  use-cross: true
-                  command: build
-                  args: "--target x86_64-unknown-linux-gnu --package lakesoul-io-c --package lakesoul-metadata-c --release --all-features"
+                  tool: cross@0.2.5
+            - name: Build native libraries
+              run: cross -q build --target x86_64-unknown-linux-gnu --package lakesoul-io-c --package lakesoul-metadata-c --release --all-features
             - name: Build with Maven
               run: |
                   mkdir -p rust/target/release
@@ -118,24 +116,23 @@ jobs:
               with:
                   java-version: "17"
                   distribution: "temurin"
-                  cache-path: |
-                    /home/runner/.m2/repository
-                    /home/runner/.m2/build-cache
             - name: Build LakeSoul Presto with Java 17
               run: |
                   MAVEN_OPTS="-Xmx4000m" mvn -B package -f pom.xml -pl lakesoul-presto -Pcross-build -DskipTests -e
             - name: Get jar names
               run: |
-                  echo "FLINK_JAR_NAME=$(python script/get_jar_name.py lakesoul-flink)" >> $GITHUB_ENV
-                  echo "FLINK_TEST_JAR_NAME=$(python script/get_jar_name.py lakesoul-flink | sed -e 's/.jar/-tests.jar/g')" >> $GITHUB_ENV
-                  echo "SPARK_JAR_NAME=$(python script/get_jar_name.py lakesoul-spark)" >> $GITHUB_ENV
-                  echo "SPARK_TEST_JAR_NAME=$(python script/get_jar_name.py lakesoul-spark | sed -e 's/.jar/-tests.jar/g')" >> $GITHUB_ENV
+                  {
+                      echo "FLINK_JAR_NAME=$(python script/get_jar_name.py lakesoul-flink)"
+                      echo "FLINK_TEST_JAR_NAME=$(python script/get_jar_name.py lakesoul-flink | sed -e 's/.jar/-tests.jar/g')"
+                      echo "SPARK_JAR_NAME=$(python script/get_jar_name.py lakesoul-spark)"
+                      echo "SPARK_TEST_JAR_NAME=$(python script/get_jar_name.py lakesoul-spark | sed -e 's/.jar/-tests.jar/g')"
+                  } >> "$GITHUB_ENV"
             - name: Copy built jar to work-dir
               run: |
-                  cp ./lakesoul-flink/target/$FLINK_JAR_NAME ./script/ci/work-dir
-                  cp ./lakesoul-flink/target/$FLINK_TEST_JAR_NAME ./script/ci/work-dir
-                  cp ./lakesoul-spark/target/$SPARK_JAR_NAME ./script/ci/work-dir
-                  cp ./lakesoul-spark/target/$SPARK_TEST_JAR_NAME ./script/ci/work-dir
+                  cp "./lakesoul-flink/target/$FLINK_JAR_NAME" ./script/ci/work-dir
+                  cp "./lakesoul-flink/target/$FLINK_TEST_JAR_NAME" ./script/ci/work-dir
+                  cp "./lakesoul-spark/target/$SPARK_JAR_NAME" ./script/ci/work-dir
+                  cp "./lakesoul-spark/target/$SPARK_TEST_JAR_NAME" ./script/ci/work-dir
                   rm -rf lakesoul-spark/target lakesoul-common/target native-io/lakesoul-io-java/target lakesoul-flink/target
             - name: Generate benchmark data and expected query results
               run: |
@@ -144,18 +141,21 @@ jobs:
                   cd tpch-dbgen
                   make
                   ./dbgen -f -s 0.1
-                  mv *.tbl ../lakesoul/test_files/tpch/data
+                  mv ./*.tbl ../lakesoul/test_files/tpch/data
                   cd ..
                   rm -rf tpch-dbgen
             - name: Verify that benchmark queries return expected results
               run: |
-                  export TPCH_DATA=`realpath lakesoul/test_files/tpch/data`
+                  TPCH_DATA="$(realpath lakesoul/test_files/tpch/data)"
+                  export TPCH_DATA
                   # use release build for plan verificaton because debug build causes stack overflow
                   cargo test --release load_tpch_data --package lakesoul-datafusion --features=ci -- --nocapture
                   PGPASSWORD='lakesoul_test' psql -U lakesoul_test  -h 127.0.0.1 -p 5432 -d lakesoul_test -c "select * from table_info;"
                   PGPASSWORD='lakesoul_test' psql -U lakesoul_test  -h 127.0.0.1 -p 5432 -d lakesoul_test -c "select * from data_commit_info;"
             - name: Hash-Consistency Verification task
               run: |
-                  export TPCH_DATA=`realpath lakesoul/test_files/tpch/data`
-                  export lakesoul_home=`realpath script/ci/work-dir/lakesoul.properties`
-                  spark-submit --driver-memory 4G --executor-memory 4G --conf spark.driver.memoryOverhead=1500m --conf spark.executor.memoryOverhead=1500m --jars script/ci/work-dir/$SPARK_JAR_NAME --class org.apache.spark.sql.lakesoul.benchmark.ConsistencyCI --master local[4] script/ci/work-dir/$SPARK_TEST_JAR_NAME
+                  TPCH_DATA="$(realpath lakesoul/test_files/tpch/data)"
+                  lakesoul_home="$(realpath script/ci/work-dir/lakesoul.properties)"
+                  export TPCH_DATA
+                  export lakesoul_home
+                  spark-submit --driver-memory 4G --executor-memory 4G --conf spark.driver.memoryOverhead=1500m --conf spark.executor.memoryOverhead=1500m --jars "script/ci/work-dir/$SPARK_JAR_NAME" --class org.apache.spark.sql.lakesoul.benchmark.ConsistencyCI --master local[4] "script/ci/work-dir/$SPARK_TEST_JAR_NAME"

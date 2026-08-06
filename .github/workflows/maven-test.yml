@@ -50,9 +50,6 @@ jobs:
                   java-version: "11"
                   distribution: "temurin"
                   cache: maven
-                  cache-path: |
-                    /home/runner/.m2/repository
-                    /home/runner/.m2/build-cache
             - uses: dtolnay/rust-toolchain@master
               with:
                   toolchain: stable
@@ -60,11 +57,13 @@ jobs:
               with:
                   workspaces: ". -> rust/target"
                   env-vars: "JAVA_HOME"
-            - uses: actions-rs/cargo@v1
+            - name: Install cross
+              uses: taiki-e/install-action@v2
               with:
-                  use-cross: true
-                  command: build
-                  args: "--target x86_64-unknown-linux-gnu --package lakesoul-io-c --package lakesoul-metadata-c --release --all-features"
+                  tool: cross@0.2.5
+            - name: Build native libraries
+              run: |
+                  cross -q build --target x86_64-unknown-linux-gnu --package lakesoul-io-c --package lakesoul-metadata-c --release --all-features
             - uses: actions/upload-artifact@v4
               with:
                   name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
@@ -107,9 +106,6 @@ jobs:
                   java-version: "11"
                   distribution: "temurin"
                   cache: maven
-                  cache-path: |
-                    /home/runner/.m2/repository
-                    /home/runner/.m2/build-cache
             - name: Install psql
               run: sudo apt-get install -y postgresql-client-16
             - name: Init PG
@@ -180,9 +176,6 @@ jobs:
                   java-version: "11"
                   distribution: "temurin"
                   cache: maven
-                  cache-path: |
-                    /home/runner/.m2/repository
-                    /home/runner/.m2/build-cache
             - name: Install psql
               run: sudo apt-get install -y postgresql-client-16
             - name: Init PG
@@ -252,9 +245,6 @@ jobs:
                   java-version: "11"
                   distribution: "temurin"
                   cache: maven
-                  cache-path: |
-                    /home/runner/.m2/repository
-                    /home/runner/.m2/build-cache
             - name: Install psql
               run: sudo apt-get install -y postgresql-client-16
             - name: Init PG
@@ -330,9 +320,6 @@ jobs:
                   java-version: "11"
                   distribution: "temurin"
                   cache: maven
-                  cache-path: |
-                    /home/runner/.m2/repository
-                    /home/runner/.m2/build-cache
             - name: Install psql
               run: sudo apt-get install -y postgresql-client-16
             - name: Init PG
@@ -351,10 +338,10 @@ jobs:
                   hdfs-version: "3.3.6"
             - name: Modify HDFS User Group Mapping
               run: |
-                  sed -i '/^<\/configuration>/i <property><name>hadoop.user.group.static.mapping.overrides</name><value>admin1=domain1;user1=domain1;user2=domain1;admin2=domain2</value></property>' $HADOOP_HOME/etc/hadoop/core-site.xml
-                  $HADOOP_HOME/sbin/stop-dfs.sh
-                  $HADOOP_HOME/sbin/start-dfs.sh
-                  $HADOOP_HOME/bin/hadoop fs -chmod -R 777 /
+                  sed -i '/^<\/configuration>/i <property><name>hadoop.user.group.static.mapping.overrides</name><value>admin1=domain1;user1=domain1;user2=domain1;admin2=domain2</value></property>' "$HADOOP_HOME/etc/hadoop/core-site.xml"
+                  "$HADOOP_HOME/sbin/stop-dfs.sh"
+                  "$HADOOP_HOME/sbin/start-dfs.sh"
+                  "$HADOOP_HOME/bin/hadoop" fs -chmod -R 777 /
             - uses: actions/download-artifact@v4
               with:
                   name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
@@ -413,9 +400,6 @@ jobs:
                   java-version: "11"
                   distribution: "temurin"
                   cache: maven
-                  cache-path: |
-                    /home/runner/.m2/repository
-                    /home/runner/.m2/build-cache
             - name: Install psql
               run: sudo apt-get install -y postgresql-client-16
             - name: Init PG
@@ -486,9 +470,6 @@ jobs:
                   java-version: "11"
                   distribution: "temurin"
                   cache: maven
-                  cache-path: |
-                    /home/runner/.m2/repository
-                    /home/runner/.m2/build-cache
             - name: Install psql
               run: sudo apt-get install -y postgresql-client-16
             - name: Init PG
@@ -514,10 +495,10 @@ jobs:
                   hdfs-version: "3.3.6"
             - name: Modify HDFS User Group Mapping
               run: |
-                  sed -i '/^<\/configuration>/i <property><name>hadoop.user.group.static.mapping.overrides</name><value>admin1=domain1;user1=domain1;user2=domain1;admin2=domain2</value></property>' $HADOOP_HOME/etc/hadoop/core-site.xml
-                  $HADOOP_HOME/sbin/stop-dfs.sh
-                  $HADOOP_HOME/sbin/start-dfs.sh
-                  $HADOOP_HOME/bin/hadoop fs -chmod -R 777 /
+                  sed -i '/^<\/configuration>/i <property><name>hadoop.user.group.static.mapping.overrides</name><value>admin1=domain1;user1=domain1;user2=domain1;admin2=domain2</value></property>' "$HADOOP_HOME/etc/hadoop/core-site.xml"
+                  "$HADOOP_HOME/sbin/stop-dfs.sh"
+                  "$HADOOP_HOME/sbin/start-dfs.sh"
+                  "$HADOOP_HOME/bin/hadoop" fs -chmod -R 777 /
             - uses: actions/download-artifact@v4
               with:
                   name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
