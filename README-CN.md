@@ -65,7 +65,7 @@ LakeSoul 支持自动分离式多层 Compaction 、自动表生命周期清理�
 [Feature Roadmap](https://github.com/lakesoul-io/LakeSoul#feature-roadmap)
 
 # 社区准则
-[社区准则](community-guideline-cn.md)
+[社区准则](docs/community/community-guideline-cn.md)
 
 # 问题反馈
 
