@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 use arrow_pyarrow::PyArrowType;
 use arrow_schema::Schema;
 use lakesoul_metadata::{MetaDataClient, transfusion::DataFileInfo, utils::qualify_path};
-use proto::proto::entity::{CommitOp, TableInfo};
+use lakesoul_metadata_proto::entity::{CommitOp, TableInfo};
 use pyo3::{exceptions::PyRuntimeError, exceptions::PyValueError, prelude::*};
 
 use crate::install_module;

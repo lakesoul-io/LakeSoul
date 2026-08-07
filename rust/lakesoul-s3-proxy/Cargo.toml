@@ -4,8 +4,9 @@
 
 [package]
 name = "lakesoul-s3-proxy"
-version = "3.0.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+
 
 [dependencies]
 lakesoul-metadata = { path = "../lakesoul-metadata" }
@@ -44,7 +45,7 @@ hex = { workspace = true }
 [dev-dependencies]
 lakesoul-io = { path = "../lakesoul-io" }
 lakesoul-datafusion = { path = "../lakesoul-datafusion" }
-proto = { path = "../proto" }
+lakesoul-metadata-proto = { path = "../lakesoul-metadata-proto" }
 arrow = { workspace = true }
 arrow-array = { workspace = true }
 serde_json = { workspace = true }

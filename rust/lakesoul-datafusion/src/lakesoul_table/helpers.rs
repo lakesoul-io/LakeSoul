@@ -23,8 +23,8 @@ use lakesoul_io::config::{
     LakeSoulIOConfigBuilder, OPTION_KEY_CDC_COLUMN, OPTION_KEY_STABLE_SORT,
 };
 use lakesoul_metadata::MetaDataClientRef;
+use lakesoul_metadata_proto::entity::{PartitionInfo, TableInfo};
 use object_store::{ObjectMeta, ObjectStore, ObjectStoreExt, path::Path};
-use proto::proto::entity::{PartitionInfo, TableInfo};
 use url::Url;
 
 use crate::Result;

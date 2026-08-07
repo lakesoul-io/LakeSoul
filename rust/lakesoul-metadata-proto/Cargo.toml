@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 [package]
-name = "proto"
+name = "lakesoul-metadata-proto"
 version = { workspace = true }
 edition = { workspace = true }
 build = "build.rs"

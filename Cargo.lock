@@ -4684,6 +4684,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "lakesoul-build-info"
+version = "0.1.0"
+
+[[package]]
 name = "lakesoul-common"
 version = "0.1.0"
 dependencies = [
@@ -4737,11 +4741,11 @@ dependencies = [
  "lakesoul-common",
  "lakesoul-io",
  "lakesoul-metadata",
+ "lakesoul-metadata-proto",
  "log",
  "object_store",
  "parquet",
  "prost",
- "proto",
  "rand 0.9.5",
  "rootcause",
  "serde",
@@ -4760,7 +4764,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-flight"
-version = "3.0.0"
+version = "0.1.0"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4803,7 +4807,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-io"
-version = "3.0.0"
+version = "0.1.0"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4844,6 +4848,7 @@ dependencies = [
  "hex",
  "itertools 0.14.0",
  "jemalloc_pprof",
+ "lakesoul-metadata-proto",
  "lakesoul-vector",
  "lazy_static",
  "linked-hash-map",
@@ -4857,7 +4862,6 @@ dependencies = [
  "parking_lot",
  "parquet",
  "prost",
- "proto",
  "rand 0.9.5",
  "rand_distr 0.5.1",
  "regex",
@@ -4896,9 +4900,10 @@ dependencies = [
  "cbindgen",
  "datafusion-common",
  "datafusion-substrait",
+ "lakesoul-build-info",
  "lakesoul-io",
+ "lakesoul-metadata-proto",
  "prost",
- "proto",
  "rootcause",
  "tokio",
  "tracing",
@@ -4915,12 +4920,12 @@ dependencies = [
  "cached",
  "chrono",
  "jsonwebtoken",
+ "lakesoul-metadata-proto",
  "md5",
  "num_enum 0.5.11",
  "postgres",
  "postgres-types",
  "prost",
- "proto",
  "regex",
  "rootcause",
  "serde",
@@ -4939,17 +4944,27 @@ dependencies = [
 name = "lakesoul-metadata-c"
 version = "0.1.0"
 dependencies = [
+ "lakesoul-build-info",
  "lakesoul-metadata",
+ "lakesoul-metadata-proto",
  "prost",
- "proto",
  "serde_json",
  "tracing",
  "tracing-subscriber",
 ]
 
 [[package]]
+name = "lakesoul-metadata-proto"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "prost",
+ "prost-build",
+]
+
+[[package]]
 name = "lakesoul-python"
-version = "1.1.0"
+version = "2.0.0-dev.0"
 dependencies = [
  "arrow-array",
  "arrow-pyarrow",
@@ -4958,16 +4973,17 @@ dependencies = [
  "datafusion-common",
  "datafusion-execution",
  "futures",
+ "lakesoul-build-info",
  "lakesoul-common",
  "lakesoul-io",
  "lakesoul-io-c",
  "lakesoul-metadata",
  "lakesoul-metadata-c",
+ "lakesoul-metadata-proto",
  "lakesoul-vector",
  "log",
  "object_store",
  "prost",
- "proto",
  "pyo3",
  "pyo3-log",
  "rootcause",
@@ -4978,7 +4994,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-s3-proxy"
-version = "3.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -4999,12 +5015,12 @@ dependencies = [
  "lakesoul-datafusion",
  "lakesoul-io",
  "lakesoul-metadata",
+ "lakesoul-metadata-proto",
  "lazy_static",
  "pad",
  "pingora",
  "pingora-core",
  "prometheus",
- "proto",
  "quick-xml 0.38.4",
  "rand 0.9.5",
  "regex",
@@ -7003,15 +7019,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f94967dc7688f3054c7fac87473ffae4cc4c3904800e2d9f5b857246d8963b0a"
 dependencies = [
  "prost",
-]
-
-[[package]]
-name = "proto"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "prost",
- "prost-build",
 ]
 
 [[package]]

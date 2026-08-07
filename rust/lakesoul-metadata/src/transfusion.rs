@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::Mutex;
 
-use proto::proto::entity::{
+use lakesoul_metadata_proto::entity::{
     DataCommitInfo, DataFileOp, FileOp, JniWrapper, PartitionInfo, TableInfo,
 };
 

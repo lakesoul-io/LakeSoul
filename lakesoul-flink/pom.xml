@@ -17,8 +17,8 @@ SPDX-License-Identifier: Apache-2.0
     <modelVersion>4.0.0</modelVersion>
     <name>LakeSoul Flink</name>
 
-    <artifactId>lakesoul-flink</artifactId>
-    <version>1.20-${revision}</version>
+    <artifactId>lakesoul-flink-1.20_2.12</artifactId>
+    <version>${revision}</version>
     <properties>
         <flink.version>1.20.0</flink.version>
         <log4j.version>2.17.2</log4j.version>

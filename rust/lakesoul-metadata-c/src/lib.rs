@@ -19,15 +19,31 @@ use lakesoul_metadata::transfusion::SplitDesc;
 use lakesoul_metadata::{
     Builder, Claims, JwtServer, MetaDataClient, PooledClient, Runtime,
 };
+use lakesoul_metadata_proto::entity;
 use prost::Message;
 use prost::bytes::BufMut;
-use proto::proto::entity;
 use tracing_subscriber::EnvFilter;
 
 #[allow(non_camel_case_types)]
 pub type c_size_t = usize;
 #[allow(non_camel_case_types)]
 pub type c_ptrdiff_t = isize;
+
+/// Return the LakeSoul Core version.
+///
+/// The returned pointer remains valid for the lifetime of the process and must not be freed.
+#[unsafe(no_mangle)]
+pub extern "C" fn lakesoul_metadata_version() -> *const c_char {
+    lakesoul_build_info::VERSION_NUL.as_ptr().cast()
+}
+
+/// Return the LakeSoul native build identity.
+///
+/// The returned pointer remains valid for the lifetime of the process and must not be freed.
+#[unsafe(no_mangle)]
+pub extern "C" fn lakesoul_metadata_build_info() -> *const c_char {
+    lakesoul_build_info::BUILD_INFO_NUL.as_ptr().cast()
+}
 
 /// Opaque wrapper for the result of a function call.
 #[repr(C)]

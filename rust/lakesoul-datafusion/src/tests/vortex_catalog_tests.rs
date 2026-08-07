@@ -17,7 +17,7 @@ use lakesoul_io::writer::async_writer::{
     AsyncBatchWriter, AsyncSendableMutableLakeSoulWriter,
 };
 use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
-use proto::proto::entity::TableInfo;
+use lakesoul_metadata_proto::entity::TableInfo;
 
 use crate::Result;
 use crate::catalog::{

@@ -23,8 +23,8 @@ pub use crate::metadata_client::{
 pub use crate::pooled_client::PooledClient;
 use crate::pooled_client::{PgConnection, QueryType};
 pub use error::{LakeSoulMetaDataError, Result};
+use lakesoul_metadata_proto::entity;
 pub use metadata_client::{MetaDataClient, MetaDataClientRef, pg_config_from_env};
-use proto::proto::entity;
 
 pub mod transfusion;
 
@@ -1781,7 +1781,7 @@ fn row_to_uuid_list(row: &Row) -> Vec<entity::Uuid> {
 mod tests {
     use prost::Message;
 
-    use proto::proto::entity;
+    use lakesoul_metadata_proto::entity;
 
     #[test]
     fn test_entity() -> std::io::Result<()> {

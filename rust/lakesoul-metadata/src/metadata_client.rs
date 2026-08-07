@@ -15,7 +15,7 @@ use prost::Message;
 use tokio::sync::Mutex;
 use url::Url;
 
-use proto::proto::entity::{
+use lakesoul_metadata_proto::entity::{
     self, CommitOp, DataCommitInfo, JniWrapper, MetaInfo, Namespace, PartitionInfo,
     TableInfo, TableNameId, TablePathId,
 };

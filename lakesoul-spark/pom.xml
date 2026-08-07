@@ -17,8 +17,8 @@ SPDX-License-Identifier: Apache-2.0
     <modelVersion>4.0.0</modelVersion>
     <name>LakeSoul Spark</name>
 
-    <artifactId>lakesoul-spark</artifactId>
-    <version>3.5-${revision}</version>
+    <artifactId>lakesoul-spark-3.5_2.12</artifactId>
+    <version>${revision}</version>
 
     <properties>
         <scalatest.version>3.2.14</scalatest.version>
