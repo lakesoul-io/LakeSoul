@@ -28,7 +28,7 @@ SPDX-License-Identifier: Apache-2.0
                 <configuration>
                     <attachProtoSources>false</attachProtoSources>
                     <clearOutputDirectory>false</clearOutputDirectory>
-                    <protoSourceRoot>${basedir}/../rust/proto/src</protoSourceRoot>
+                    <protoSourceRoot>${basedir}/../rust/lakesoul-metadata-proto/src</protoSourceRoot>
                     <outputDirectory>${basedir}/target/generated-sources</outputDirectory>
                 </configuration>
                 <executions>

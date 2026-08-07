@@ -27,8 +27,8 @@ use lakesoul_io::helpers::transform::{
 };
 use lakesoul_io::reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
 use lakesoul_io::writer::SyncSendableMutableLakeSoulWriter;
+use lakesoul_metadata_proto::entity;
 use prost::Message;
-use proto::proto::entity;
 use rootcause::Report;
 use tokio::runtime::{Builder, Runtime};
 use tracing_subscriber::EnvFilter;
@@ -37,6 +37,22 @@ use tracing_subscriber::EnvFilter;
 pub type c_size_t = usize;
 #[allow(non_camel_case_types)]
 pub type c_ptrdiff_t = isize;
+
+/// Return the LakeSoul Core version.
+///
+/// The returned pointer remains valid for the lifetime of the process and must not be freed.
+#[unsafe(no_mangle)]
+pub extern "C" fn lakesoul_io_version() -> *const c_char {
+    lakesoul_build_info::VERSION_NUL.as_ptr().cast()
+}
+
+/// Return the LakeSoul native build identity.
+///
+/// The returned pointer remains valid for the lifetime of the process and must not be freed.
+#[unsafe(no_mangle)]
+pub extern "C" fn lakesoul_io_build_info() -> *const c_char {
+    lakesoul_build_info::BUILD_INFO_NUL.as_ptr().cast()
+}
 
 /// Opaque wrapper for the result of a function call
 /// containing a pointer to a type and an error msg
