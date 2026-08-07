@@ -22,7 +22,7 @@ mod update_tests {
     use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 
     use crate::error::Result;
-    use proto::proto::entity::{DataCommitInfo, PartitionInfo};
+    use lakesoul_metadata_proto::entity::{DataCommitInfo, PartitionInfo};
 
     use crate::catalog::{create_table, create_io_config_builder, commit_data};
     use crate::transaction::{Transaction, DataFileInfo};

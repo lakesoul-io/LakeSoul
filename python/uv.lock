@@ -849,7 +849,7 @@ wheels = [
 
 [[package]]
 name = "lakesoul"
-version = "1.2.0.dev0"
+version = "2.0.0.dev0"
 source = { editable = "." }
 dependencies = [
     { name = "colorlog" },

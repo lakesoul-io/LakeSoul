@@ -18,6 +18,11 @@ type Result<T, E = Report> = std::result::Result<T, E>;
 
 #[pymodule]
 fn _lib(py: Python, m: &Bound<PyModule>) -> PyResult<()> {
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    m.add("__build_info__", env!("LAKESOUL_PYTHON_BUILD_INFO"))?;
+    m.add("__core_version__", lakesoul_build_info::VERSION)?;
+    m.add("__core_build_info__", lakesoul_build_info::BUILD_INFO)?;
+
     let level_str = std::env::var("RUST_LOG").unwrap_or_else(|_| "off".to_string());
     let level = log::LevelFilter::from_str(&level_str).unwrap_or(log::LevelFilter::Off);
 

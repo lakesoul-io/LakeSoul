@@ -4,8 +4,8 @@
 
 [package]
 name = "lakesoul-io"
-version = "3.0.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 
 [[bench]]
 name = "buf_bench"
@@ -29,7 +29,7 @@ harness = false
 
 [dependencies]
 # lakesoul
-proto = { path = "../proto" }
+lakesoul-metadata-proto = { path = "../lakesoul-metadata-proto" }
 lakesoul-vector = { path = "../lakesoul-vector" }
 # datafusion
 datafusion = { workspace = true }

@@ -12,7 +12,7 @@ use datafusion::catalog::{CatalogProvider, SchemaProvider};
 use lakesoul_io::config::LakeSoulIOConfigBuilder;
 use lakesoul_io::session::create_session_context;
 use lakesoul_metadata::MetaDataClient;
-use proto::proto::entity::{Namespace, TableInfo};
+use lakesoul_metadata_proto::entity::{Namespace, TableInfo};
 use rand::Rng;
 use rand::distr::Alphanumeric;
 

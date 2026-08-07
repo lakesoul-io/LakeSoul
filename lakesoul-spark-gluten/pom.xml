@@ -10,8 +10,8 @@
     </parent>
 
     <name>LakeSoul Spark Gluten</name>
-    <artifactId>lakesoul-spark-gluten</artifactId>
-    <version>3.5-${revision}</version>
+    <artifactId>lakesoul-spark-gluten-3.5_2.12</artifactId>
+    <version>${revision}</version>
 
     <properties>
         <maven.compiler.source>8</maven.compiler.source>
@@ -67,8 +67,8 @@
         </dependency>
         <dependency>
             <groupId>com.dmetasoul</groupId>
-            <artifactId>lakesoul-spark</artifactId>
-            <version>3.5-${revision}</version>
+            <artifactId>lakesoul-spark-3.5_2.12</artifactId>
+            <version>${revision}</version>
             <exclusions>
                 <exclusion>
                     <groupId>org.apache.arrow</groupId>
@@ -78,8 +78,8 @@
         </dependency>
         <dependency>
             <groupId>com.dmetasoul</groupId>
-            <artifactId>lakesoul-spark</artifactId>
-            <version>3.5-${revision}</version>
+            <artifactId>lakesoul-spark-3.5_2.12</artifactId>
+            <version>${revision}</version>
             <type>test-jar</type>
             <scope>test</scope>
         </dependency>

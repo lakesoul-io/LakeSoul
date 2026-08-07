@@ -13,7 +13,7 @@ use std::time::SystemTime;
 use datafusion::sql::TableReference;
 use lakesoul_io::config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_metadata::MetaDataClientRef;
-use proto::proto::entity::{
+use lakesoul_metadata_proto::entity::{
     CommitOp, DataCommitInfo, DataFileOp, FileOp, TableInfo, Uuid,
 };
 use rootcause::report;
