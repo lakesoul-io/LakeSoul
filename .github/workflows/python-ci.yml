@@ -55,7 +55,7 @@ jobs:
     steps:
       - name: Wait for RustFS
         run: |
-          for i in {1..60}; do
+          for _ in {1..60}; do
             if curl -fsS http://127.0.0.1:9000/health \
               && curl -fsS http://127.0.0.1:9001/rustfs/console/health; then
               echo "RustFS is ready"
@@ -109,9 +109,6 @@ jobs:
           java-version: "11"
           distribution: "temurin"
           cache: maven
-          cache-path: |
-            /home/runner/.m2/repository
-            /home/runner/.m2/build-cache
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:
@@ -160,7 +157,7 @@ jobs:
       id-token: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Install uv
         uses: astral-sh/setup-uv@v6
       - name: build

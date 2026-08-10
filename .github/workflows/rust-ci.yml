@@ -57,7 +57,7 @@ jobs:
     steps:
       - name: Wait for RustFS
         run: |
-          for i in {1..60}; do
+          for _ in {1..60}; do
             if curl -fsS http://127.0.0.1:9000/health \
               && curl -fsS http://127.0.0.1:9001/rustfs/console/health; then
               echo "RustFS is ready"
