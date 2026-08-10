@@ -182,8 +182,13 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
                 overlap_ranges.push(*batch_idx);
             }
         }
+        // This should not happen in theory (r_star always satisfies its own
+        // overlap check), but handle gracefully by producing r_star directly.
         if overlap_ranges.is_empty() {
-            panic!("overlap_ranges is empty");
+            let range = self.ranges.get_mut(&r_star_range_idx).unwrap();
+            let batch = range.slice_remaining_and_advance();
+            tx.send(Ok(batch)).await?;
+            return Ok(());
         }
         // Fast path 2: if overlap ranges contains only one range, produce it directly
         if overlap_ranges.len() == 1 {
@@ -230,10 +235,18 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
                 new_overlap_range_idx.push(*range);
             }
         }
-        // new_overlap_range should have at least two elements
+        // If fewer than 2 ranges have values within the window,
+        // produce the single range directly (if any) rather than erroring.
+        // This can happen when other ranges' begin_row has advanced past
+        // the window_end, so their remaining values don't overlap yet.
         if new_overlap_range_idx.len() < 2 {
-            tx.send(Err(report!("Not enough overlap ranges"))).await?;
-            return Err(report!("Not enough overlap ranges"));
+            if new_overlap_range_idx.len() == 1 {
+                let range = self.ranges.get_mut(&new_overlap_range_idx[0]).unwrap();
+                let batch = range.slice_remaining_and_advance();
+                tx.send(Ok(batch)).await?;
+            }
+            // If 0 ranges (should not happen), just continue to the next iteration
+            return Ok(());
         }
         // Step 5. Merge all ranges in `new_overlap_ranges`
         let new_overlap_ranges: Vec<&mut BatchRange<C>> = self
@@ -550,6 +563,139 @@ mod tests {
                 "| 7  | 304 |",
                 "| 9  | 305 |",
                 "| 10 | 306 |",
+                "+----+-----+",
+            ],
+            &batches
+        );
+        Ok(())
+    }
+
+    /// Test V2 merge with 4 streams where dedup creates many small batches.
+    /// This mirrors production scenarios where some streams have many
+    /// duplicate keys (producing small dedup batches) while other streams
+    /// have wide key ranges in single large batches. The V2 merge must
+    /// handle the case where find_le_start_index filters out all but one
+    /// range in the overlap set.
+    #[tokio::test]
+    async fn test_four_stream_merge_with_dedup_small_batches() -> Result<()> {
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+        let pool = Arc::new(GreedyMemoryPool::new(100 * 1024 * 1024)) as _;
+        let reservation = MemoryConsumer::new("test4").register(&pool);
+        let primary_keys = vec!["a".to_string()];
+
+        // Stream 0: wide range, distinct keys, no dedup splitting
+        let s0b1 = create_batch_two_col_i32(
+            "a",
+            &[1, 3, 5, 7, 9],
+            "b",
+            &[101, 103, 105, 107, 109],
+        );
+        let s0b2 = create_batch_two_col_i32(
+            "a",
+            &[11, 13, 15, 17, 19],
+            "b",
+            &[111, 113, 115, 117, 119],
+        );
+        let schema = s0b1.schema();
+        let s0 = create_stream(
+            vec![s0b1, s0b2],
+            task_ctx.clone(),
+            primary_keys.clone(),
+            reservation.new_empty(),
+        )
+        .await?;
+
+        // Stream 1: same keys as stream 0 (simulates overlapping ranges)
+        let s1b1 = create_batch_two_col_i32(
+            "a",
+            &[1, 3, 5, 7, 9],
+            "b",
+            &[201, 203, 205, 207, 209],
+        );
+        let s1b2 = create_batch_two_col_i32(
+            "a",
+            &[11, 13, 15, 17, 19],
+            "b",
+            &[211, 213, 215, 217, 219],
+        );
+        let s1 = create_stream(
+            vec![s1b1, s1b2],
+            task_ctx.clone(),
+            primary_keys.clone(),
+            reservation.new_empty(),
+        )
+        .await?;
+
+        // Stream 2: many duplicates → dedup splits into small batches
+        // Input: [1,1, 5,5, 9,9, 13,13, 17,17]
+        // After dedup: [1], [5], [9], [13], [17]
+        let s2b1 = create_batch_two_col_i32(
+            "a",
+            &[1, 1, 5, 5, 9, 9],
+            "b",
+            &[301, 302, 305, 306, 309, 310],
+        );
+        let s2b2 =
+            create_batch_two_col_i32("a", &[13, 13, 17, 17], "b", &[313, 314, 317, 318]);
+        let s2 = create_stream(
+            vec![s2b1, s2b2],
+            task_ctx.clone(),
+            primary_keys.clone(),
+            reservation.new_empty(),
+        )
+        .await?;
+
+        // Stream 3: many duplicates → dedup splits into small batches
+        // Input: [3,3, 7,7, 11,11, 15,15, 19,19]
+        // After dedup: [3], [7], [11], [15], [19]
+        let s3b1 = create_batch_two_col_i32(
+            "a",
+            &[3, 3, 7, 7, 11, 11],
+            "b",
+            &[403, 404, 407, 408, 411, 412],
+        );
+        let s3b2 =
+            create_batch_two_col_i32("a", &[15, 15, 19, 19], "b", &[415, 416, 419, 420]);
+        let s3 = create_stream(
+            vec![s3b1, s3b2],
+            task_ctx.clone(),
+            primary_keys.clone(),
+            reservation.new_empty(),
+        )
+        .await?;
+
+        let fields_map = vec![vec![0, 1], vec![0, 1], vec![0, 1], vec![0, 1]];
+        let cm = Arc::new(ColumnMapping::from_fields_map(&fields_map, 2));
+        let combiner = WindowSlidingMerger::new(
+            vec![(s0, true), (s1, true), (s2, true), (s3, true)],
+            schema,
+            4,
+            10,
+            cm,
+        )?;
+        let stream = WindowSlidingMerger::build_merged_stream(combiner)?;
+        let batches: Vec<RecordBatch> = stream.try_collect().await?;
+
+        // With UseLast merge and dedup, the last stream's value wins for each key:
+        // Keys in stream 2 (1,5,9,13,17): stream 2 wins (last among 3 streams)
+        // Keys in stream 3 (3,7,11,15,19): stream 3 wins (last among 3 streams)
+        // Result: ordered by key, b column from the last stream that has each key
+        assert_batches_eq!(
+            &[
+                "+----+-----+",
+                "| a  | b   |",
+                "+----+-----+",
+                "| 1  | 302 |",
+                "| 3  | 404 |",
+                "| 5  | 306 |",
+                "| 7  | 408 |",
+                "| 9  | 310 |",
+                "| 11 | 412 |",
+                "| 13 | 314 |",
+                "| 15 | 416 |",
+                "| 17 | 318 |",
+                "| 19 | 420 |",
                 "+----+-----+",
             ],
             &batches
