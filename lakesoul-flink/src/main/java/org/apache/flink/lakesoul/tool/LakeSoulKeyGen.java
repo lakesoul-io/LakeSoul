@@ -4,6 +4,8 @@
 
 package org.apache.flink.lakesoul.tool;
 
+import static org.apache.spark.sql.types.DataTypes.*;
+
 import org.apache.flink.table.data.DecimalData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.TimestampData;
@@ -17,8 +19,6 @@ import org.apache.spark.unsafe.types.UTF8String;
 import java.io.Serializable;
 import java.util.Arrays;
 import java.util.List;
-
-import static org.apache.spark.sql.types.DataTypes.*;
 
 public class LakeSoulKeyGen implements Serializable {
 
@@ -35,10 +35,12 @@ public class LakeSoulKeyGen implements Serializable {
             this.simpleRecordKey = true;
         }
         this.hashKeyIndex = getFieldPositions(recordKeyFields, fieldNames);
-        this.hashKeyType = Arrays.stream(hashKeyIndex).mapToObj(fieldTypes::get).toArray(LogicalType[]::new);
+        this.hashKeyType =
+                Arrays.stream(hashKeyIndex).mapToObj(fieldTypes::get).toArray(LogicalType[]::new);
         this.hashKeyFieldGetters = new RowData.FieldGetter[hashKeyIndex.length];
         for (int i = 0; i < hashKeyIndex.length; i++) {
-            this.hashKeyFieldGetters[i] = RowData.createFieldGetter(hashKeyType[i], hashKeyIndex[i]);
+            this.hashKeyFieldGetters[i] =
+                    RowData.createFieldGetter(hashKeyType[i], hashKeyIndex[i]);
         }
     }
 
@@ -103,19 +105,26 @@ public class LakeSoulKeyGen implements Serializable {
                 DecimalType decimalType = (DecimalType) type;
                 DecimalData decimalData = (DecimalData) field;
                 seed =
-                        Murmur3HashFunction.hash(Decimal.apply(decimalData.toBigDecimal(), decimalType.getPrecision(),
+                        Murmur3HashFunction.hash(
+                                Decimal.apply(
+                                        decimalData.toBigDecimal(),
+                                        decimalType.getPrecision(),
                                         decimalType.getScale()),
-                                new org.apache.spark.sql.types.DecimalType(decimalType.getPrecision(),
-                                        decimalType.getScale()), seed);
+                                new org.apache.spark.sql.types.DecimalType(
+                                        decimalType.getPrecision(), decimalType.getScale()),
+                                seed);
                 break;
             case TIMESTAMP_WITHOUT_TIME_ZONE:
             case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
                 TimestampData timestampData = (TimestampData) field;
-                long value = timestampData.getMillisecond() * 1000 + timestampData.getNanoOfMillisecond() / 1000;
+                long value =
+                        timestampData.getMillisecond() * 1000
+                                + timestampData.getNanoOfMillisecond() / 1000;
                 seed = Murmur3HashFunction.hash(value, LongType, seed);
                 break;
             default:
-                throw new RuntimeException("not support this partition type now :" + type.getTypeRoot().toString());
+                throw new RuntimeException(
+                        "not support this partition type now :" + type.getTypeRoot().toString());
         }
         return seed;
     }

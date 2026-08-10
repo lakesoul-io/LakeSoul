@@ -58,6 +58,7 @@ def _write_result(row_count: int) -> WriteResult:
 
 def _fake_table(schema: pa.Schema):
     committed: list[WriteResult] = []
+
     def write_config(format="vortex-compact"):
         return TableWriteConfig(
             table_name="target",
@@ -142,7 +143,7 @@ def test_read_lakesoul_splits_scan_partitions_and_preserves_scan_options(
             self._config = config
 
         def to_batches(self, *, columns=None, filter=None):
-            seen.append((self._config.scan_partitions, columns, filter)) # type: ignore
+            seen.append((self._config.scan_partitions, columns, filter))  # type: ignore
             value = 1 if self._config.scan_partitions[0] is partitions[0] else 2
             yield pa.record_batch([pa.array([value], type=pa.int64())], names=["id"])
 
@@ -241,9 +242,13 @@ def test_write_lakesoul_streams_tables_normalizes_metadata_and_commits(
         "endpoint": "override",
         "region": "us",
     }
-    assert writer_instances[0].writes[0].schema.equals(
-        expected_schema,
-        check_metadata=True,
+    assert (
+        writer_instances[0]
+        .writes[0]
+        .schema.equals(
+            expected_schema,
+            check_metadata=True,
+        )
     )
     assert committed == [result]
 

@@ -11,7 +11,13 @@ public class PartitionCounts {
     long totalPartitionSize;
     long partitionSize;
 
-    public PartitionCounts(String tableId, String partitionDesc, int allFileCounts, int fileCounts, long totalPartitionSize, long partitionSize) {
+    public PartitionCounts(
+            String tableId,
+            String partitionDesc,
+            int allFileCounts,
+            int fileCounts,
+            long totalPartitionSize,
+            long partitionSize) {
         this.tableId = tableId;
         this.partitionDesc = partitionDesc;
         this.allFileCounts = allFileCounts;
@@ -22,13 +28,21 @@ public class PartitionCounts {
 
     @Override
     public String toString() {
-        return "PartitionCounts{" +
-                "tableId='" + tableId + '\'' +
-                ", partitionDesc='" + partitionDesc + '\'' +
-                ", allFileCounts=" + allFileCounts +
-                ", fileCounts=" + baseFileCounts +
-                ", totalPartitionSize=" + totalPartitionSize +
-                ", partitionSize=" + partitionSize +
-                '}';
+        return "PartitionCounts{"
+                + "tableId='"
+                + tableId
+                + '\''
+                + ", partitionDesc='"
+                + partitionDesc
+                + '\''
+                + ", allFileCounts="
+                + allFileCounts
+                + ", fileCounts="
+                + baseFileCounts
+                + ", totalPartitionSize="
+                + totalPartitionSize
+                + ", partitionSize="
+                + partitionSize
+                + '}';
     }
 }

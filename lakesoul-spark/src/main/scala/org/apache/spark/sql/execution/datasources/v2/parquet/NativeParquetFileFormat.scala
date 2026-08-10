@@ -13,7 +13,8 @@ private[parquet] object NativeParquetFileFormat {
   def resolvePhysicalFormat(
       options: Map[String, String],
       job: Job,
-      sqlConf: SQLConf): String = {
+      sqlConf: SQLConf
+  ): String = {
     NativeLakeSoulFileFormat.resolvePhysicalFormat(options, job, sqlConf)
   }
 

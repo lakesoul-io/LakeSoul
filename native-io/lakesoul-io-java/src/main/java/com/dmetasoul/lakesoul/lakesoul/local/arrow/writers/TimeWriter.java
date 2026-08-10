@@ -21,15 +21,12 @@ package com.dmetasoul.lakesoul.lakesoul.local.arrow.writers;
 import org.apache.arrow.util.Preconditions;
 import org.apache.arrow.vector.*;
 
-/**
- * {@link ArrowFieldWriter} for Time.
- */
+/** {@link ArrowFieldWriter} for Time. */
 public abstract class TimeWriter<T> extends ArrowFieldWriter<T> {
 
     public static TimeWriter<Object[]> forObject(ValueVector valueVector) {
         return new TimeWriterForObject(valueVector);
     }
-
 
     // ------------------------------------------------------------------------------------------
 
@@ -64,9 +61,7 @@ public abstract class TimeWriter<T> extends ArrowFieldWriter<T> {
 
     // ------------------------------------------------------------------------------------------
 
-    /**
-     * {@link TimeWriter} for {@link Object[]} input.
-     */
+    /** {@link TimeWriter} for {@link Object[]} input. */
     public static final class TimeWriterForObject extends TimeWriter<Object[]> {
 
         private TimeWriterForObject(ValueVector valueVector) {
@@ -83,5 +78,4 @@ public abstract class TimeWriter<T> extends ArrowFieldWriter<T> {
             return (int) in[ordinal];
         }
     }
-    
 }

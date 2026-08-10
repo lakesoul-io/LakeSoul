@@ -41,7 +41,6 @@ abstract class MergeBatchRow extends InternalRow {
         }
     }
 
-
     @Override
     public Object get(int ordinal, DataType dataType) {
         if (dataType instanceof BooleanType) {
@@ -79,5 +78,4 @@ abstract class MergeBatchRow extends InternalRow {
             throw new UnsupportedOperationException("Datatype not supported " + dataType);
         }
     }
-
 }

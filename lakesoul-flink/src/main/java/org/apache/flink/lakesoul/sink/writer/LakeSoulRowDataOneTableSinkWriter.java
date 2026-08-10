@@ -4,6 +4,8 @@
 
 package org.apache.flink.lakesoul.sink.writer;
 
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SERVER_TIME_ZONE;
+
 import org.apache.flink.api.common.operators.ProcessingTimeService;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.Configuration;
@@ -19,9 +21,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.stream.IntStream;
 
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SERVER_TIME_ZONE;
-
-public class LakeSoulRowDataOneTableSinkWriter extends AbstractLakeSoulMultiTableSinkWriter<RowData, RowData> {
+public class LakeSoulRowDataOneTableSinkWriter
+        extends AbstractLakeSoulMultiTableSinkWriter<RowData, RowData> {
 
     private final LakeSoulRecordConvert converter;
 
@@ -40,21 +41,27 @@ public class LakeSoulRowDataOneTableSinkWriter extends AbstractLakeSoulMultiTabl
             OutputFileConfig outputFileConfig,
             ProcessingTimeService processingTimeService,
             long bucketCheckInterval,
-            Configuration conf) throws IOException {
-        super(subTaskId, metricGroup, bucketFactory, rollingPolicy, outputFileConfig,
-                processingTimeService, bucketCheckInterval, conf);
+            Configuration conf)
+            throws IOException {
+        super(
+                subTaskId,
+                metricGroup,
+                bucketFactory,
+                rollingPolicy,
+                outputFileConfig,
+                processingTimeService,
+                bucketCheckInterval,
+                conf);
         this.converter = new LakeSoulRecordConvert(conf, conf.getString(SERVER_TIME_ZONE));
         this.identity = identity;
         this.fieldGetters =
                 IntStream.range(0, this.identity.rowType.getFieldCount())
-                        .mapToObj(
-                                i ->
-                                        RowData.createFieldGetter(
-                                                identity.rowType.getTypeAt(i), i))
+                        .mapToObj(i -> RowData.createFieldGetter(identity.rowType.getTypeAt(i), i))
                         .toArray(RowData.FieldGetter[]::new);
         this.identity.rowType = converter.toFlinkRowTypeCDC(this.identity.rowType);
         this.creator =
-                TableSchemaWriterCreator.create(this.identity.tableId,
+                TableSchemaWriterCreator.create(
+                        this.identity.tableId,
                         this.identity.rowType,
                         this.identity.tableLocation,
                         this.identity.primaryKeys,
@@ -63,12 +70,15 @@ public class LakeSoulRowDataOneTableSinkWriter extends AbstractLakeSoulMultiTabl
     }
 
     @Override
-    protected TableSchemaWriterCreator getOrCreateTableSchemaWriterCreator(TableSchemaIdentity identity) {
+    protected TableSchemaWriterCreator getOrCreateTableSchemaWriterCreator(
+            TableSchemaIdentity identity) {
         return this.creator;
     }
 
     @Override
-    protected List<Tuple2<TableSchemaIdentity, RowData>> extractTableSchemaAndRowData(RowData element) {
-        return Collections.singletonList(Tuple2.of(identity, converter.addCDCKindField(element, this.fieldGetters)));
+    protected List<Tuple2<TableSchemaIdentity, RowData>> extractTableSchemaAndRowData(
+            RowData element) {
+        return Collections.singletonList(
+                Tuple2.of(identity, converter.addCDCKindField(element, this.fieldGetters)));
     }
 }

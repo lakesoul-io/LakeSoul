@@ -24,7 +24,8 @@ public class LakesoulPrestoAuthenticator implements PrestoAuthenticator {
         } else if (!(headers.get(AUTHORIZATION_HEADER).size() >= 1
                 && headers.get(AUTHORIZATION_HEADER).get(0).startsWith(BEARER_PREFIX))) {
             throw new AccessDeniedException(
-                    "Authorization header format must be Bearer <token>, but is " + headers.get(AUTHORIZATION_HEADER));
+                    "Authorization header format must be Bearer <token>, but is "
+                            + headers.get(AUTHORIZATION_HEADER));
         }
 
         String token = headers.get(AUTHORIZATION_HEADER).get(0).substring(BEARER_PREFIX.length());

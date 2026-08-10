@@ -1,9 +1,9 @@
 package com.dmetasoul.lakesoul.meta.jnr;
 
 import com.alibaba.fastjson.annotation.JSONField;
+
 import org.apache.commons.lang3.builder.ToStringBuilder;
 import org.apache.commons.lang3.builder.ToStringStyle;
-import org.apache.hadoop.util.hash.Hash;
 
 import java.util.HashMap;
 import java.util.List;
@@ -11,10 +11,13 @@ import java.util.List;
 public class SplitDesc {
     @JSONField(name = "file_paths")
     private List<String> filePaths;
+
     @JSONField(name = "primary_keys")
     private List<String> primaryKeys;
+
     @JSONField(name = "partition_desc")
     private HashMap<String, String> partitionDesc;
+
     @JSONField(name = "table_schema")
     private String tableSchema;
 
@@ -39,7 +42,7 @@ public class SplitDesc {
     }
 
     public void setPartitionDesc(HashMap<String, String> partitionDesc) {
-        this.partitionDesc= partitionDesc;
+        this.partitionDesc = partitionDesc;
     }
 
     public String getTableSchema() {

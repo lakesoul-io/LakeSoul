@@ -18,21 +18,23 @@ class ShuffleJoinSuite extends Logging {
     val dataNum = 8000
     val bucketNum = 23
 
-
     val spark = TestUtils.getSparkSession()
 
     import spark.implicits._
 
     try {
-      val allData1 = TestUtils.getData2(dataNum)
+      val allData1 = TestUtils
+        .getData2(dataNum)
         .toDF("hash", "name", "stu", "range")
         .persist()
 
-      val allData2 = TestUtils.getData2(dataNum)
+      val allData2 = TestUtils
+        .getData2(dataNum)
         .toDF("hash", "name", "stu", "range")
         .persist()
 
-      allData1.select("range", "hash", "name")
+      allData1
+        .select("range", "hash", "name")
         .write
         .mode("overwrite")
         .format("lakesoul")
@@ -41,7 +43,8 @@ class ShuffleJoinSuite extends Logging {
         .option("hashBucketNum", bucketNum)
         .save(table_name1)
 
-      allData2.select("range", "hash", "name")
+      allData2
+        .select("range", "hash", "name")
         .write
         .mode("overwrite")
         .format("lakesoul")
@@ -50,47 +53,57 @@ class ShuffleJoinSuite extends Logging {
         .option("hashBucketNum", bucketNum)
         .save(table_name2)
 
+      LakeSoulTable
+        .forPath(table_name1)
+        .upsert(allData1.select("range", "hash", "stu"))
+      LakeSoulTable
+        .forPath(table_name2)
+        .upsert(allData2.select("range", "hash", "stu"))
 
-      LakeSoulTable.forPath(table_name1).upsert(allData1.select("range", "hash", "stu"))
-      LakeSoulTable.forPath(table_name2).upsert(allData2.select("range", "hash", "stu"))
-
-      val realData1 = allData1.groupBy("range", "hash")
-        .agg(
-          last("name").as("n"),
-          last("stu").as("s"))
+      val realData1 = allData1
+        .groupBy("range", "hash")
+        .agg(last("name").as("n"), last("stu").as("s"))
         .select(
           col("range"),
           col("hash"),
           col("n").as("name"),
-          col("s").as("stu"))
+          col("s").as("stu")
+        )
         .persist()
 
-      val realData2 = allData2.groupBy("range", "hash")
-        .agg(
-          last("name").as("n"),
-          last("stu").as("s"))
+      val realData2 = allData2
+        .groupBy("range", "hash")
+        .agg(last("name").as("n"), last("stu").as("s"))
         .select(
           col("range"),
           col("hash"),
           col("n").as("name"),
-          col("s").as("stu"))
+          col("s").as("stu")
+        )
         .persist()
 
       realData1.createOrReplaceTempView("r1")
       realData2.createOrReplaceTempView("r2")
-      LakeSoulTable.forPath(table_name1).toDF.persist().createOrReplaceTempView("e1")
-      LakeSoulTable.forPath(table_name2).toDF.persist().createOrReplaceTempView("e2")
+      LakeSoulTable
+        .forPath(table_name1)
+        .toDF
+        .persist()
+        .createOrReplaceTempView("e1")
+      LakeSoulTable
+        .forPath(table_name2)
+        .toDF
+        .persist()
+        .createOrReplaceTempView("e2")
 
-
-      val re1 = spark.sql(
-        """
+      val re1 = spark
+        .sql("""
           |select r1.hash,r1.name,r1.stu,r2.hash,r2.name,r2.stu
           |from r1 join r2 on r1.hash=r2.hash
         """.stripMargin)
         .persist()
 
-      val re2 = spark.sql(
-        """
+      val re2 = spark
+        .sql("""
           |select e1.hash,e1.name,e1.stu,e2.hash,e2.name,e2.stu
           |from e1 join e2 on e1.hash=e2.hash
         """.stripMargin)
@@ -100,14 +113,12 @@ class ShuffleJoinSuite extends Logging {
       logInfo(plan)
       assert(!plan.contains("Exchange") && !plan.contains("Sort "))
 
-
       val expectedData = re1.rdd.persist()
       val starData = re2.rdd.persist()
       val firstDiff = expectedData.subtract(starData).persist()
       val secondDiff = starData.subtract(expectedData).persist()
       assert(firstDiff.count() == 0)
       assert(secondDiff.count() == 0)
-
 
       LakeSoulTable.forPath(table_name2).dropTable()
       LakeSoulTable.forPath(table_name1).dropTable()
@@ -120,6 +131,5 @@ class ShuffleJoinSuite extends Logging {
     }
 
   }
-
 
 }

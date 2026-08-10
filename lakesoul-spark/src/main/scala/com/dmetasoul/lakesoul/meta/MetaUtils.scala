@@ -9,7 +9,8 @@ import org.apache.spark.internal.Logging
 
 object MetaUtils extends Logging {
 
-  lazy val DEFAULT_RANGE_PARTITION_VALUE: String = DBConfig.LAKESOUL_NON_PARTITION_TABLE_PART_DESC
+  lazy val DEFAULT_RANGE_PARTITION_VALUE: String =
+    DBConfig.LAKESOUL_NON_PARTITION_TABLE_PART_DESC
 
   var DATA_BASE: String = "test_lakesoul_meta"
 
@@ -22,9 +23,11 @@ object MetaUtils extends Logging {
     if (cols.isEmpty) {
       DEFAULT_RANGE_PARTITION_VALUE
     } else {
-      cols.map(list => {
-        list._1 + "=" + list._2
-      }).mkString(LAKESOUL_RANGE_PARTITION_SPLITTER)
+      cols
+        .map(list => {
+          list._1 + "=" + list._2
+        })
+        .mkString(LAKESOUL_RANGE_PARTITION_SPLITTER)
     }
   }
 
@@ -42,4 +45,3 @@ object MetaUtils extends Logging {
   }
 
 }
-

@@ -3,11 +3,13 @@ package org.apache.flink.lakesoul.substrait;
 import com.dmetasoul.lakesoul.lakesoul.io.DateTimeUtils;
 import com.dmetasoul.lakesoul.lakesoul.io.substrait.SubstraitUtil;
 import com.google.common.collect.ImmutableMap;
+
 import io.substrait.expression.*;
 import io.substrait.expression.Expression;
 import io.substrait.extension.SimpleExtension;
 import io.substrait.type.Type;
 import io.substrait.type.TypeCreator;
+
 import org.apache.flink.table.expressions.*;
 import org.apache.flink.table.expressions.ExpressionVisitor;
 import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
@@ -25,10 +27,7 @@ import java.time.LocalDate;
 import java.util.*;
 import java.util.function.Function;
 
-
-/**
- * return null means cannot convert
- */
+/** return null means cannot convert */
 public class SubstraitVisitor implements ExpressionVisitor<Expression> {
     private static final Logger LOG = LoggerFactory.getLogger(SubstraitVisitor.class);
 
@@ -71,7 +70,6 @@ public class SubstraitVisitor implements ExpressionVisitor<Expression> {
     }
 }
 
-
 class LiteralVisitor extends ExpressionDefaultVisitor<Expression.Literal> {
     private static final Logger LOG = LoggerFactory.getLogger(LiteralVisitor.class);
 
@@ -88,117 +86,130 @@ class LiteralVisitor extends ExpressionDefaultVisitor<Expression.Literal> {
         LogicalTypeRoot typeRoot = logicalType.getTypeRoot();
         switch (typeRoot) {
             case CHAR:
-            case VARCHAR: {
-                String s = "";
-                if (value != null) {
-                    s = (String) value;
+            case VARCHAR:
+                {
+                    String s = "";
+                    if (value != null) {
+                        s = (String) value;
+                    }
+                    return ExpressionCreator.string(nullable, s);
                 }
-                return ExpressionCreator.string(nullable, s);
-            }
-            case BOOLEAN: {
-                boolean b = false;
-                if (value != null) {
-                    b = (Boolean) value;
+            case BOOLEAN:
+                {
+                    boolean b = false;
+                    if (value != null) {
+                        b = (Boolean) value;
+                    }
+                    return ExpressionCreator.bool(nullable, b);
                 }
-                return ExpressionCreator.bool(nullable, b);
-            }
             case BINARY:
-            case VARBINARY: {
-                byte[] b = new byte[]{};
-                if (value != null) {
-                    b = (byte[]) value;
-                }
-                return ExpressionCreator.binary(nullable, b);
-            }
-            case TINYINT: {
-                byte b = 0;
-                if (value != null) {
-                    b = (byte) value;
-                }
-                return ExpressionCreator.i8(nullable, b);
-            }
-            case SMALLINT: {
-                short s = 0;
-                if (value != null) {
-                    s = (short) value;
-                }
-                return ExpressionCreator.i16(nullable, s);
-            }
-            case INTEGER: {
-                int i = 0;
-                if (value != null) {
-                    i = (int) value;
-                }
-                return ExpressionCreator.i32(nullable, i);
-
-            }
-            case BIGINT: {
-                long l = 0;
-                if (value != null) {
-                    l = (long) value;
-                }
-                return ExpressionCreator.i64(nullable, l);
-            }
-            case FLOAT: {
-                float f = 0.0F;
-                if (value != null) {
-                    f = (float) value;
-                }
-                return ExpressionCreator.fp32(nullable, f);
-            }
-            case DOUBLE: {
-                double d = 0.0;
-                if (value != null) {
-                    d = (double) value;
-                }
-                return ExpressionCreator.fp64(nullable, d);
-            }
-            case DECIMAL: {
-                BigDecimal bigDecimal = new BigDecimal(0);
-                DecimalType dt = (DecimalType) logicalType;
-                if (value != null) {
-                    bigDecimal = (BigDecimal) value;
-                }
-                return ExpressionCreator.decimal(nullable, bigDecimal, dt.getPrecision(), dt.getScale());
-            }
-            case DATE: {
-                int days = 0;
-                if (value != null) {
-                    Object o = value;
-                    if (o instanceof Date || o instanceof LocalDate) {
-                        days = DateTimeUtils$.MODULE$.anyToDays(o);
-                    } else {
-                        LOG.info("Date filter push down not supported");
-                        return null;
+            case VARBINARY:
+                {
+                    byte[] b = new byte[] {};
+                    if (value != null) {
+                        b = (byte[]) value;
                     }
+                    return ExpressionCreator.binary(nullable, b);
                 }
-                return ExpressionCreator.date(nullable, days);
-            }
-            case TIMESTAMP_WITHOUT_TIME_ZONE: {
-                long micros = 0;
-                if (value != null) {
-                    Long res = DateTimeUtils.toMicros(value);
-                    if (res == null) {
-                        LOG.warn("Timestamp filter push down not supported");
-                        return null;
+            case TINYINT:
+                {
+                    byte b = 0;
+                    if (value != null) {
+                        b = (byte) value;
                     }
-                    micros = res;
+                    return ExpressionCreator.i8(nullable, b);
                 }
-                return ExpressionCreator.timestamp(nullable, micros);
-            }
+            case SMALLINT:
+                {
+                    short s = 0;
+                    if (value != null) {
+                        s = (short) value;
+                    }
+                    return ExpressionCreator.i16(nullable, s);
+                }
+            case INTEGER:
+                {
+                    int i = 0;
+                    if (value != null) {
+                        i = (int) value;
+                    }
+                    return ExpressionCreator.i32(nullable, i);
+                }
+            case BIGINT:
+                {
+                    long l = 0;
+                    if (value != null) {
+                        l = (long) value;
+                    }
+                    return ExpressionCreator.i64(nullable, l);
+                }
+            case FLOAT:
+                {
+                    float f = 0.0F;
+                    if (value != null) {
+                        f = (float) value;
+                    }
+                    return ExpressionCreator.fp32(nullable, f);
+                }
+            case DOUBLE:
+                {
+                    double d = 0.0;
+                    if (value != null) {
+                        d = (double) value;
+                    }
+                    return ExpressionCreator.fp64(nullable, d);
+                }
+            case DECIMAL:
+                {
+                    BigDecimal bigDecimal = new BigDecimal(0);
+                    DecimalType dt = (DecimalType) logicalType;
+                    if (value != null) {
+                        bigDecimal = (BigDecimal) value;
+                    }
+                    return ExpressionCreator.decimal(
+                            nullable, bigDecimal, dt.getPrecision(), dt.getScale());
+                }
+            case DATE:
+                {
+                    int days = 0;
+                    if (value != null) {
+                        Object o = value;
+                        if (o instanceof Date || o instanceof LocalDate) {
+                            days = DateTimeUtils$.MODULE$.anyToDays(o);
+                        } else {
+                            LOG.info("Date filter push down not supported");
+                            return null;
+                        }
+                    }
+                    return ExpressionCreator.date(nullable, days);
+                }
+            case TIMESTAMP_WITHOUT_TIME_ZONE:
+                {
+                    long micros = 0;
+                    if (value != null) {
+                        Long res = DateTimeUtils.toMicros(value);
+                        if (res == null) {
+                            LOG.warn("Timestamp filter push down not supported");
+                            return null;
+                        }
+                        micros = res;
+                    }
+                    return ExpressionCreator.timestamp(nullable, micros);
+                }
             case TIMESTAMP_WITH_TIME_ZONE:
-            case TIMESTAMP_WITH_LOCAL_TIME_ZONE: {
-                long micros = 0;
-                if (value != null) {
-                    Long res = DateTimeUtils.toMicros(value);
-                    if (res == null) {
-                        LOG.warn("Timestamp filter push down not supported");
-                        return null;
+            case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
+                {
+                    long micros = 0;
+                    if (value != null) {
+                        Long res = DateTimeUtils.toMicros(value);
+                        if (res == null) {
+                            LOG.warn("Timestamp filter push down not supported");
+                            return null;
+                        }
+                        micros = res;
                     }
-                    micros = res;
+                    return ExpressionCreator.timestampTZ(nullable, micros);
                 }
-                return ExpressionCreator.timestampTZ(nullable, micros);
-            }
             default:
                 LOG.warn("Filter push down not supported");
                 break;
@@ -207,10 +218,10 @@ class LiteralVisitor extends ExpressionDefaultVisitor<Expression.Literal> {
     }
 
     @Override
-    protected Expression.Literal defaultMethod(org.apache.flink.table.expressions.Expression expression) {
+    protected Expression.Literal defaultMethod(
+            org.apache.flink.table.expressions.Expression expression) {
         return null;
     }
-
 }
 
 class FieldRefVisitor extends ExpressionDefaultVisitor<FieldReference> {
@@ -231,14 +242,13 @@ class FieldRefVisitor extends ExpressionDefaultVisitor<FieldReference> {
         String name = fieldReference.getName();
         return FieldReference.builder()
                 .type(Objects.requireNonNull(type))
-                .addSegments(
-                        ImmutableMapKey.of(ExpressionCreator.string(true, name))
-                )
+                .addSegments(ImmutableMapKey.of(ExpressionCreator.string(true, name)))
                 .build();
     }
 
     @Override
-    protected FieldReference defaultMethod(org.apache.flink.table.expressions.Expression expression) {
+    protected FieldReference defaultMethod(
+            org.apache.flink.table.expressions.Expression expression) {
         return null;
     }
 
@@ -248,83 +258,159 @@ class FieldRefVisitor extends ExpressionDefaultVisitor<FieldReference> {
         TypeCreator R = TypeCreator.of(nullable);
         switch (typeRoot) {
             case CHAR:
-            case VARCHAR: {
-                // datafusion only support STRING
-                return R.STRING;
-            }
-            case BOOLEAN: {
-                return R.BOOLEAN;
-            }
+            case VARCHAR:
+                {
+                    // datafusion only support STRING
+                    return R.STRING;
+                }
+            case BOOLEAN:
+                {
+                    return R.BOOLEAN;
+                }
             case BINARY:
-            case VARBINARY: {
-                return R.BINARY;
-            }
+            case VARBINARY:
+                {
+                    return R.BINARY;
+                }
             case TINYINT:
                 return R.I8;
             case SMALLINT:
                 return R.I16;
-            case INTEGER: {
-                return R.I32;
-            }
-            case BIGINT: {
-                return R.I64;
-            }
-            case FLOAT: {
-                return R.FP32;
-            }
-            case DOUBLE: {
-                return R.FP64;
-            }
-            case DECIMAL: {
-                DecimalType dt = (DecimalType) logicalType;
-                return R.decimal(dt.getPrecision(), dt.getScale());
-            }
-            case DATE: {
-                return R.DATE;
-            }
-            case TIMESTAMP_WITHOUT_TIME_ZONE: {
-                return R.TIMESTAMP;
-            }
+            case INTEGER:
+                {
+                    return R.I32;
+                }
+            case BIGINT:
+                {
+                    return R.I64;
+                }
+            case FLOAT:
+                {
+                    return R.FP32;
+                }
+            case DOUBLE:
+                {
+                    return R.FP64;
+                }
+            case DECIMAL:
+                {
+                    DecimalType dt = (DecimalType) logicalType;
+                    return R.decimal(dt.getPrecision(), dt.getScale());
+                }
+            case DATE:
+                {
+                    return R.DATE;
+                }
+            case TIMESTAMP_WITHOUT_TIME_ZONE:
+                {
+                    return R.TIMESTAMP;
+                }
             case TIMESTAMP_WITH_TIME_ZONE:
-            case TIMESTAMP_WITH_LOCAL_TIME_ZONE: {
-                return R.TIMESTAMP_TZ;
-            }
+            case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
+                {
+                    return R.TIMESTAMP_TZ;
+                }
             default:
-                String msg = String.format("Unsupported LogicalType %s for LogicalTypeToSubstraitType", typeRoot);
+                String msg =
+                        String.format(
+                                "Unsupported LogicalType %s for LogicalTypeToSubstraitType",
+                                typeRoot);
                 LOG.info(msg);
                 throw new RuntimeException(msg);
         }
     }
-
-
 }
 
 class CallExprVisitor extends ExpressionDefaultVisitor<Expression> {
     private static final Logger LOG = LoggerFactory.getLogger(CallExprVisitor.class);
     private static final ImmutableMap<FunctionDefinition, Function<CallExpression, Expression>>
             FILTERS =
-            new ImmutableMap.Builder<
-                    FunctionDefinition, Function<CallExpression, Expression>>()
-                    .put(BuiltInFunctionDefinitions.IS_NULL, call -> makeUnaryFunction(call, "is_null:any", SubstraitUtil.CompNamespace))
-                    .put(BuiltInFunctionDefinitions.IS_NOT_NULL, call -> makeUnaryFunction(call, "is_not_null:any", SubstraitUtil.CompNamespace))
-                    .put(BuiltInFunctionDefinitions.NOT, call -> makeUnaryFunction(call, "not:bool", SubstraitUtil.BooleanNamespace))
-                    .put(BuiltInFunctionDefinitions.OR, call -> makeBinaryFunction(call, "or:bool", SubstraitUtil.BooleanNamespace))
-                    .put(BuiltInFunctionDefinitions.AND, call -> makeBinaryFunction(call, "and:bool", SubstraitUtil.BooleanNamespace))
-                    .put(BuiltInFunctionDefinitions.EQUALS, call -> makeBinaryFunction(call, "equal:any_any", SubstraitUtil.CompNamespace))
-                    .put(BuiltInFunctionDefinitions.NOT_EQUALS, call -> makeBinaryFunction(call, "not_equal:any_any", SubstraitUtil.CompNamespace))
-                    .put(BuiltInFunctionDefinitions.GREATER_THAN, call -> makeBinaryFunction(call, "gt:any_any", SubstraitUtil.CompNamespace))
-                    .put(BuiltInFunctionDefinitions.GREATER_THAN_OR_EQUAL, call -> makeBinaryFunction(call, "gte:any_any", SubstraitUtil.CompNamespace))
-                    .put(BuiltInFunctionDefinitions.LESS_THAN, call -> makeBinaryFunction(call, "lt:any_any", SubstraitUtil.CompNamespace))
-                    .put(BuiltInFunctionDefinitions.LESS_THAN_OR_EQUAL, call -> makeBinaryFunction(call, "lte:any_any", SubstraitUtil.CompNamespace))
-                    .build();
+                    new ImmutableMap.Builder<
+                                    FunctionDefinition, Function<CallExpression, Expression>>()
+                            .put(
+                                    BuiltInFunctionDefinitions.IS_NULL,
+                                    call ->
+                                            makeUnaryFunction(
+                                                    call,
+                                                    "is_null:any",
+                                                    SubstraitUtil.CompNamespace))
+                            .put(
+                                    BuiltInFunctionDefinitions.IS_NOT_NULL,
+                                    call ->
+                                            makeUnaryFunction(
+                                                    call,
+                                                    "is_not_null:any",
+                                                    SubstraitUtil.CompNamespace))
+                            .put(
+                                    BuiltInFunctionDefinitions.NOT,
+                                    call ->
+                                            makeUnaryFunction(
+                                                    call,
+                                                    "not:bool",
+                                                    SubstraitUtil.BooleanNamespace))
+                            .put(
+                                    BuiltInFunctionDefinitions.OR,
+                                    call ->
+                                            makeBinaryFunction(
+                                                    call,
+                                                    "or:bool",
+                                                    SubstraitUtil.BooleanNamespace))
+                            .put(
+                                    BuiltInFunctionDefinitions.AND,
+                                    call ->
+                                            makeBinaryFunction(
+                                                    call,
+                                                    "and:bool",
+                                                    SubstraitUtil.BooleanNamespace))
+                            .put(
+                                    BuiltInFunctionDefinitions.EQUALS,
+                                    call ->
+                                            makeBinaryFunction(
+                                                    call,
+                                                    "equal:any_any",
+                                                    SubstraitUtil.CompNamespace))
+                            .put(
+                                    BuiltInFunctionDefinitions.NOT_EQUALS,
+                                    call ->
+                                            makeBinaryFunction(
+                                                    call,
+                                                    "not_equal:any_any",
+                                                    SubstraitUtil.CompNamespace))
+                            .put(
+                                    BuiltInFunctionDefinitions.GREATER_THAN,
+                                    call ->
+                                            makeBinaryFunction(
+                                                    call,
+                                                    "gt:any_any",
+                                                    SubstraitUtil.CompNamespace))
+                            .put(
+                                    BuiltInFunctionDefinitions.GREATER_THAN_OR_EQUAL,
+                                    call ->
+                                            makeBinaryFunction(
+                                                    call,
+                                                    "gte:any_any",
+                                                    SubstraitUtil.CompNamespace))
+                            .put(
+                                    BuiltInFunctionDefinitions.LESS_THAN,
+                                    call ->
+                                            makeBinaryFunction(
+                                                    call,
+                                                    "lt:any_any",
+                                                    SubstraitUtil.CompNamespace))
+                            .put(
+                                    BuiltInFunctionDefinitions.LESS_THAN_OR_EQUAL,
+                                    call ->
+                                            makeBinaryFunction(
+                                                    call,
+                                                    "lte:any_any",
+                                                    SubstraitUtil.CompNamespace))
+                            .build();
 
     @Override
     public Expression visit(CallExpression call) {
         if (FILTERS.get(call.getFunctionDefinition()) == null) {
             // unsupported predicate
-            LOG.info(
-                    "Unsupported predicate [{}] cannot be pushed into native io.",
-                    call);
+            LOG.info("Unsupported predicate [{}] cannot be pushed into native io.", call);
             return null;
         }
         return FILTERS.get(call.getFunctionDefinition()).apply(call);
@@ -339,7 +425,9 @@ class CallExprVisitor extends ExpressionDefaultVisitor<Expression> {
         if (left == null || right == null) {
             return null;
         }
-        SimpleExtension.ScalarFunctionVariant func = SubstraitUtil.EXTENSIONS.getScalarFunction(SimpleExtension.FunctionAnchor.of(namespace, funcKey));
+        SimpleExtension.ScalarFunctionVariant func =
+                SubstraitUtil.EXTENSIONS.getScalarFunction(
+                        SimpleExtension.FunctionAnchor.of(namespace, funcKey));
         List<Expression> args = new ArrayList<>();
         args.add(left);
         args.add(right);
@@ -354,7 +442,9 @@ class CallExprVisitor extends ExpressionDefaultVisitor<Expression> {
         if (child == null) {
             return null;
         }
-        SimpleExtension.ScalarFunctionVariant func = SubstraitUtil.EXTENSIONS.getScalarFunction(SimpleExtension.FunctionAnchor.of(namespace, funcKey));
+        SimpleExtension.ScalarFunctionVariant func =
+                SubstraitUtil.EXTENSIONS.getScalarFunction(
+                        SimpleExtension.FunctionAnchor.of(namespace, funcKey));
         List<Expression> args = new ArrayList<>();
         args.add(child);
         return ExpressionCreator.scalarFunction(func, TypeCreator.NULLABLE.BOOLEAN, args);

@@ -4,8 +4,6 @@
 
 package org.apache.flink.lakesoul.entry.sql.common;
 
-import org.apache.flink.configuration.ConfigOption;
-
 public class FlinkOption {
     private String checkpointPath;
 
@@ -46,5 +44,4 @@ public class FlinkOption {
     public void setCheckpointingMode(String checkpointingMode) {
         this.checkpointingMode = checkpointingMode;
     }
-
 }

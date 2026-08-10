@@ -17,9 +17,17 @@ public class CleanUtils {
 
     private static final Logger logger = LoggerFactory.getLogger(CleanUtils.class);
 
-    public void cleanPartitionInfo(String table_id, String partition_desc, int version, Connection connection) throws SQLException {
-        String sql = "DELETE FROM partition_info where table_id= '" + table_id +
-                "' and partition_desc ='" + partition_desc + "' and version = '" + version + "'";
+    public void cleanPartitionInfo(
+            String table_id, String partition_desc, int version, Connection connection)
+            throws SQLException {
+        String sql =
+                "DELETE FROM partition_info where table_id= '"
+                        + table_id
+                        + "' and partition_desc ='"
+                        + partition_desc
+                        + "' and version = '"
+                        + version
+                        + "'";
         try (PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
             preparedStatement.executeUpdate();
             logger.info(sql);
@@ -56,10 +64,13 @@ public class CleanUtils {
         }
     }
 
-    public boolean getCompactVersion(String tableId, String partitionDesc, long version, Connection connection) throws SQLException {
+    public boolean getCompactVersion(
+            String tableId, String partitionDesc, long version, Connection connection)
+            throws SQLException {
 
-        String snapshotSql = "SELECT snapshot FROM partition_info " +
-                "WHERE table_id = ? AND partition_desc = ? AND version = ?";
+        String snapshotSql =
+                "SELECT snapshot FROM partition_info "
+                        + "WHERE table_id = ? AND partition_desc = ? AND version = ?";
 
         List<UUID> snapshotCommitIds = new ArrayList<>();
 
@@ -79,7 +90,8 @@ public class CleanUtils {
             }
         }
 
-        String fileSql = "SELECT unnest(file_ops) AS op FROM data_commit_info WHERE commit_id = ANY(?)";
+        String fileSql =
+                "SELECT unnest(file_ops) AS op FROM data_commit_info WHERE commit_id = ANY(?)";
 
         try (PreparedStatement ps = connection.prepareStatement(fileSql)) {
             Array uuidArray = connection.createArrayOf("uuid", snapshotCommitIds.toArray());
@@ -87,7 +99,7 @@ public class CleanUtils {
 
             try (ResultSet rs = ps.executeQuery()) {
                 boolean allCompact = true; // 假设全部都包含 "compact_"
-                while (rs.next()){
+                while (rs.next()) {
                     Object op = rs.getObject("op");
                     String path = op.toString();
                     logger.info("当前压缩的文件目录：" + path);
@@ -102,22 +114,36 @@ public class CleanUtils {
         }
     }
 
-    public void deleteFileAndDataCommitInfo(List<String> snapshot, String tableId, String partitionDesc, Connection connection, Boolean oldCompaction) {
-        snapshot.forEach(commitId -> {
+    public void deleteFileAndDataCommitInfo(
+            List<String> snapshot,
+            String tableId,
+            String partitionDesc,
+            Connection connection,
+            Boolean oldCompaction) {
+        snapshot.forEach(
+                commitId -> {
                     if (oldCompaction) {
-                        String sql = "SELECT \n" +
-                                "    dci.table_id, \n" +
-                                "    dci.partition_desc, \n" +
-                                "    dci.commit_id, \n" +
-                                "    file_op.path \n" +
-                                "FROM \n" +
-                                "    data_commit_info dci, \n" +
-                                "    unnest(dci.file_ops) AS file_op \n" +
-                                "WHERE \n" +
-                                "    dci.table_id = '" + tableId + "' \n" +
-                                "    AND dci.partition_desc = '" + partitionDesc + "' \n" +
-                                "    AND dci.commit_id = '" + commitId + "'";
-                        try (PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
+                        String sql =
+                                "SELECT \n"
+                                        + "    dci.table_id, \n"
+                                        + "    dci.partition_desc, \n"
+                                        + "    dci.commit_id, \n"
+                                        + "    file_op.path \n"
+                                        + "FROM \n"
+                                        + "    data_commit_info dci, \n"
+                                        + "    unnest(dci.file_ops) AS file_op \n"
+                                        + "WHERE \n"
+                                        + "    dci.table_id = '"
+                                        + tableId
+                                        + "' \n"
+                                        + "    AND dci.partition_desc = '"
+                                        + partitionDesc
+                                        + "' \n"
+                                        + "    AND dci.commit_id = '"
+                                        + commitId
+                                        + "'";
+                        try (PreparedStatement preparedStatement =
+                                connection.prepareStatement(sql)) {
                             // 执行删除操作
                             ResultSet pathSet = preparedStatement.executeQuery();
                             logger.info(sql);
@@ -126,30 +152,35 @@ public class CleanUtils {
                                 String path = pathSet.getString("path");
                                 oldCompactionFileList.add(path);
                             }
-                            if (!oldCompactionFileList.isEmpty()){
+                            if (!oldCompactionFileList.isEmpty()) {
                                 deleteFile(oldCompactionFileList);
                             }
                         } catch (SQLException e) {
                             e.printStackTrace();
-
                         }
                     }
-                    String deleteDataCommitInfoSql = "DELETE FROM data_commit_info \n" +
-                            "WHERE table_id = '" + tableId + "' \n" +
-                            "AND commit_id = '" + commitId + "' \n" +
-                            "AND partition_desc = '" + partitionDesc + "'";
-                    try (PreparedStatement preparedStatement = connection.prepareStatement(deleteDataCommitInfoSql)) {
+                    String deleteDataCommitInfoSql =
+                            "DELETE FROM data_commit_info \n"
+                                    + "WHERE table_id = '"
+                                    + tableId
+                                    + "' \n"
+                                    + "AND commit_id = '"
+                                    + commitId
+                                    + "' \n"
+                                    + "AND partition_desc = '"
+                                    + partitionDesc
+                                    + "'";
+                    try (PreparedStatement preparedStatement =
+                            connection.prepareStatement(deleteDataCommitInfoSql)) {
                         logger.info(deleteDataCommitInfoSql);
                         preparedStatement.executeUpdate();
                     } catch (SQLException e) {
                         throw new RuntimeException(e);
                     }
-                }
-        );
+                });
     }
-    /**
-     * 使用 Flink FileSystem API 删除空的父目录
-     */
+
+    /** 使用 Flink FileSystem API 删除空的父目录 */
     private void deleteEmptyParentDirs(FileSystem fs, Path dir) {
         try {
             while (dir != null && fs.exists(dir)) {
@@ -170,7 +201,8 @@ public class CleanUtils {
         }
     }
 
-    public List<String> getTableIdByTableName(String tableNames, Connection connection) throws SQLException {
+    public List<String> getTableIdByTableName(String tableNames, Connection connection)
+            throws SQLException {
         if (tableNames == null) {
             return null;
         }
@@ -178,12 +210,14 @@ public class CleanUtils {
         for (String table : tableNames.split(",")) {
             String dbName = table.split("\\.")[0];
             String tableName = table.split("\\.")[1];
-            String sql = "select table_id from table_name_id where table_name = ? and table_namespace = ?";
+            String sql =
+                    "select table_id from table_name_id where table_name = ? and table_namespace ="
+                            + " ?";
             try (PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
-                preparedStatement.setString(1,tableName);
+                preparedStatement.setString(1, tableName);
                 preparedStatement.setString(2, dbName);
                 try (ResultSet resultSet = preparedStatement.executeQuery()) {
-                    while (resultSet.next()){
+                    while (resultSet.next()) {
                         String tableId = resultSet.getString("table_id");
                         tableList.add(tableId);
                     }

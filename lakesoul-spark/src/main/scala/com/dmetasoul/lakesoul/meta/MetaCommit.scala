@@ -15,10 +15,12 @@ import scala.collection.JavaConverters
 import scala.collection.JavaConverters.asScalaBufferConverter
 
 object MetaCommit extends Logging {
-  //meta commit process
-  def doMetaCommit(meta_info: MetaInfo,
-                   changeSchema: Boolean,
-                   times: Int = 0): Unit = {
+  // meta commit process
+  def doMetaCommit(
+      meta_info: MetaInfo,
+      changeSchema: Boolean,
+      times: Int = 0
+  ): Unit = {
 
     val table_info = meta_info.table_info
     val partitionInfoArray = meta_info.partitionInfoArray
@@ -33,7 +35,12 @@ object MetaCommit extends Logging {
     tableInfo.setTableNamespace(table_info.namespace)
     tableInfo.setTablePath(table_info.table_path.toUri.toString)
     tableInfo.setTableSchema(table_info.table_schema)
-    tableInfo.setPartitions(DBUtil.formatTableInfoPartitionsField(table_info.hash_column, table_info.range_column))
+    tableInfo.setPartitions(
+      DBUtil.formatTableInfoPartitionsField(
+        table_info.hash_column,
+        table_info.range_column
+      )
+    )
     val json = new JSONObject()
     table_info.configuration.foreach(x => json.put(x._1, x._2))
     json.put("hashBucketNum", table_info.bucket_num.toString)
@@ -43,25 +50,44 @@ object MetaCommit extends Logging {
     }
     info.setTableInfo(tableInfo)
 
-    val javaPartitionInfoList: util.List[entity.PartitionInfo] = new util.ArrayList[entity.PartitionInfo]()
+    val javaPartitionInfoList: util.List[entity.PartitionInfo] =
+      new util.ArrayList[entity.PartitionInfo]()
     for (partition_info <- partitionInfoArray) {
       val partitionInfo = entity.PartitionInfo.newBuilder
       partitionInfo.setTableId(table_info.table_id)
       partitionInfo.setPartitionDesc(partition_info.range_value)
-      partitionInfo.addAllSnapshot(JavaConverters.bufferAsJavaList(partition_info.read_files.map(uuid => DBUtil.toProtoUuid(uuid)).toBuffer))
+      partitionInfo.addAllSnapshot(
+        JavaConverters.bufferAsJavaList(
+          partition_info.read_files
+            .map(uuid => DBUtil.toProtoUuid(uuid))
+            .toBuffer
+        )
+      )
       partitionInfo.setCommitOp(commit_type)
       javaPartitionInfoList.add(partitionInfo.build)
     }
     info.addAllListPartition(javaPartitionInfoList)
 
     if (readPartitionInfo != null) {
-      val readPartitionInfoList: util.List[entity.PartitionInfo] = new util.ArrayList[entity.PartitionInfo]()
+      val readPartitionInfoList: util.List[entity.PartitionInfo] =
+        new util.ArrayList[entity.PartitionInfo]()
       for (partition <- readPartitionInfo) {
         val partitionInfo = entity.PartitionInfo.newBuilder
         partitionInfo.setTableId(table_info.table_id)
         partitionInfo.setPartitionDesc(partition.range_value)
         partitionInfo.setVersion(partition.version)
-        partitionInfo.addAllSnapshot(JavaConverters.bufferAsJavaList(partition.read_files.map(uuid => Uuid.newBuilder.setHigh(uuid.getMostSignificantBits).setLow(uuid.getLeastSignificantBits).build).toBuffer))
+        partitionInfo.addAllSnapshot(
+          JavaConverters.bufferAsJavaList(
+            partition.read_files
+              .map(uuid =>
+                Uuid.newBuilder
+                  .setHigh(uuid.getMostSignificantBits)
+                  .setLow(uuid.getLeastSignificantBits)
+                  .build
+              )
+              .toBuffer
+          )
+        )
         partitionInfo.setCommitOp(commit_type)
         readPartitionInfoList.add(partitionInfo.build)
       }
@@ -70,7 +96,11 @@ object MetaCommit extends Logging {
 
     var result = addDataInfo(meta_info)
     if (result) {
-      result = SparkMetaVersion.dbManager.commitData(info.build, changeSchema, commit_type)
+      result = SparkMetaVersion.dbManager.commitData(
+        info.build,
+        changeSchema,
+        commit_type
+      )
     } else {
       throw LakeSoulErrors.failCommitDataFile()
     }
@@ -78,13 +108,16 @@ object MetaCommit extends Logging {
       throw LakeSoulErrors.commitFailedReachLimit(
         meta_info.table_info.table_path.toUri.toString,
         "",
-        MetaUtils.MAX_COMMIT_ATTEMPTS)
+        MetaUtils.MAX_COMMIT_ATTEMPTS
+      )
     }
     if (result && changeSchema) {
-      SparkMetaVersion.dbManager.updateTableSchema(table_info.table_id, table_schema)
+      SparkMetaVersion.dbManager.updateTableSchema(
+        table_info.table_id,
+        table_schema
+      )
     }
   }
-
 
   def addDataInfo(meta_info: MetaInfo): Boolean = {
     val table_id = meta_info.table_info.table_id
@@ -115,8 +148,12 @@ object MetaCommit extends Logging {
     SparkMetaVersion.dbManager.batchCommitDataCommitInfo(metaDataCommitInfoList)
   }
 
-  def recordDiscardFileInfo(discardCompressedFileList: util.List[DiscardCompressedFileInfo]): Unit = {
-    SparkMetaVersion.dbManager.batchInsertDiscardCompressedFile(discardCompressedFileList)
+  def recordDiscardFileInfo(
+      discardCompressedFileList: util.List[DiscardCompressedFileInfo]
+  ): Unit = {
+    SparkMetaVersion.dbManager.batchInsertDiscardCompressedFile(
+      discardCompressedFileList
+    )
   }
 
 }

@@ -4,13 +4,17 @@
 
 package org.apache.flink.lakesoul.source;
 
+import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_NON_PARTITION_TABLE_PART_DESC;
+
 import com.dmetasoul.lakesoul.lakesoul.io.substrait.SubstraitUtil;
 import com.dmetasoul.lakesoul.meta.DataFileInfo;
 import com.dmetasoul.lakesoul.meta.DataOperation;
 import com.dmetasoul.lakesoul.meta.MetaVersion;
 import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
+
 import io.substrait.proto.Plan;
+
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.api.connector.source.SplitEnumerator;
@@ -25,16 +29,16 @@ import org.apache.flink.table.types.logical.RowType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.*;
 import java.util.stream.Collectors;
 
-import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_NON_PARTITION_TABLE_PART_DESC;
+import javax.annotation.Nullable;
 
 public class LakeSoulAllPartitionDynamicSplitEnumerator
         implements SplitEnumerator<LakeSoulPartitionSplit, LakeSoulPendingSplits> {
-    private static final Logger LOG = LoggerFactory.getLogger(LakeSoulAllPartitionDynamicSplitEnumerator.class);
+    private static final Logger LOG =
+            LoggerFactory.getLogger(LakeSoulAllPartitionDynamicSplitEnumerator.class);
 
     private final SplitEnumeratorContext<LakeSoulPartitionSplit> context;
 
@@ -52,11 +56,16 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator
     private long nextStartTime;
     private int hashBucketNum = -1;
 
-    public LakeSoulAllPartitionDynamicSplitEnumerator(SplitEnumeratorContext<LakeSoulPartitionSplit> context,
-                                                      LakeSoulDynSplitAssigner splitAssigner, RowType rowType,
-                                                      long discoveryInterval, long startTime, String tableId,
-                                                      String hashBucketNum, List<String> partitionColumns,
-                                                      Plan partitionFilters) {
+    public LakeSoulAllPartitionDynamicSplitEnumerator(
+            SplitEnumeratorContext<LakeSoulPartitionSplit> context,
+            LakeSoulDynSplitAssigner splitAssigner,
+            RowType rowType,
+            long discoveryInterval,
+            long startTime,
+            String tableId,
+            String hashBucketNum,
+            List<String> partitionColumns,
+            Plan partitionFilters) {
         this.context = context;
         this.splitAssigner = splitAssigner;
         this.discoveryInterval = discoveryInterval;
@@ -68,40 +77,52 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator
         this.partitionColumns = partitionColumns;
 
         Schema tableSchema = ArrowUtils.toArrowSchema(rowType);
-        List<Field>
-                partitionFields =
+        List<Field> partitionFields =
                 partitionColumns.stream().map(tableSchema::findField).collect(Collectors.toList());
 
         this.partitionArrowSchema = new Schema(partitionFields);
         this.partitionFilters = partitionFilters;
         tableInfo = DataOperation.dbManager().getTableInfoByTableId(tableId);
         fullTableName = tableInfo.getTableNamespace() + "." + tableInfo.getTableName();
-        LOG.info("Create Dyn enumerator for table name {}, tableId {}, context {}," +
-                        " filter {}, interval {}",
-                fullTableName, tableId, System.identityHashCode(context),
-                partitionFilters, discoveryInterval);
+        LOG.info(
+                "Create Dyn enumerator for table name {}, tableId {}, context {},"
+                        + " filter {}, interval {}",
+                fullTableName,
+                tableId,
+                System.identityHashCode(context),
+                partitionFilters,
+                discoveryInterval);
     }
 
     @Override
     public void start() {
-        context.callAsync(this::enumerateSplits, this::processDiscoveredSplits, 0, discoveryInterval);
+        context.callAsync(
+                this::enumerateSplits, this::processDiscoveredSplits, 0, discoveryInterval);
     }
 
     @Override
     public synchronized void handleSplitRequest(int subtaskId, @Nullable String requesterHostname) {
-        LOG.info("handleSplitRequest for {}, subTaskId {}, oid {}, tid {}",
-                fullTableName, subtaskId, System.identityHashCode(this), Thread.currentThread().getId());
+        LOG.info(
+                "handleSplitRequest for {}, subTaskId {}, oid {}, tid {}",
+                fullTableName,
+                subtaskId,
+                System.identityHashCode(this),
+                Thread.currentThread().getId());
         if (!context.registeredReaders().containsKey(subtaskId)) {
             // reader failed between sending the request and now. skip this request.
             return;
         }
         int tasksSize = context.registeredReaders().size();
         if (tasksSize == 0) {
-            LOG.info("handleSplitRequest: Task size is 0 for subtaskId {} for table {}", subtaskId, fullTableName);
+            LOG.info(
+                    "handleSplitRequest: Task size is 0 for subtaskId {} for table {}",
+                    subtaskId,
+                    fullTableName);
             taskIdsAwaitingSplit.add(subtaskId);
             return;
         }
-        Optional<LakeSoulPartitionSplit> nextSplit = this.splitAssigner.getNext(subtaskId, tasksSize);
+        Optional<LakeSoulPartitionSplit> nextSplit =
+                this.splitAssigner.getNext(subtaskId, tasksSize);
         if (nextSplit.isPresent()) {
             context.assignSplit(nextSplit.get(), subtaskId);
             taskIdsAwaitingSplit.remove(subtaskId);
@@ -112,16 +133,18 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator
 
     @Override
     public synchronized void addSplitsBack(List<LakeSoulPartitionSplit> splits, int subtaskId) {
-        LOG.info("Add split back {}, for table {}, subTaskId {}, oid {}, tid {}",
-                splits, fullTableName, subtaskId,
+        LOG.info(
+                "Add split back {}, for table {}, subTaskId {}, oid {}, tid {}",
+                splits,
+                fullTableName,
+                subtaskId,
                 System.identityHashCode(this),
                 Thread.currentThread().getId());
         splitAssigner.addSplits(splits);
     }
 
     @Override
-    public void addReader(int subtaskId) {
-    }
+    public void addReader(int subtaskId) {}
 
     @Override
     public LakeSoulPendingSplits snapshotState(long checkpointId) throws Exception {
@@ -129,21 +152,27 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator
         synchronized (this) {
             remaining = splitAssigner.remainingSplits();
         }
-        LakeSoulPendingSplits pendingSplits = new LakeSoulPendingSplits(
-                remaining, this.nextStartTime, this.tableId,
-                "", this.discoveryInterval, this.hashBucketNum);
-        LOG.info("LakeSoulAllPartitionDynamicSplitEnumerator" +
-                        "snapshotState, table {}, chkId {}, splits {}, oid {}, tid {}",
-                fullTableName, checkpointId, pendingSplits,
+        LakeSoulPendingSplits pendingSplits =
+                new LakeSoulPendingSplits(
+                        remaining,
+                        this.nextStartTime,
+                        this.tableId,
+                        "",
+                        this.discoveryInterval,
+                        this.hashBucketNum);
+        LOG.info(
+                "LakeSoulAllPartitionDynamicSplitEnumerator"
+                        + "snapshotState, table {}, chkId {}, splits {}, oid {}, tid {}",
+                fullTableName,
+                checkpointId,
+                pendingSplits,
                 System.identityHashCode(this),
                 Thread.currentThread().getId());
         return pendingSplits;
     }
 
     @Override
-    public void close() throws IOException {
-
-    }
+    public void close() throws IOException {}
 
     private synchronized void processDiscoveredSplits(
             Collection<LakeSoulPartitionSplit> splits, Throwable error) {
@@ -152,8 +181,12 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator
             return;
         }
         int tasksSize = context.registeredReaders().size();
-        LOG.info("Process discovered splits for table {}, {}, taskSize {}, oid {}, tid {}", splits,
-                fullTableName, tasksSize, System.identityHashCode(this),
+        LOG.info(
+                "Process discovered splits for table {}, {}, taskSize {}, oid {}, tid {}",
+                splits,
+                fullTableName,
+                tasksSize,
+                System.identityHashCode(this),
                 Thread.currentThread().getId());
         this.splitAssigner.addSplits(splits);
         if (tasksSize == 0) {
@@ -172,40 +205,60 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator
                 iter.remove();
             }
         }
-        LOG.info("Process discovered splits done for table {}, {}, oid {}, tid {}",
-                fullTableName, splits,
+        LOG.info(
+                "Process discovered splits done for table {}, {}, oid {}, tid {}",
+                fullTableName,
+                splits,
                 System.identityHashCode(this),
                 Thread.currentThread().getId());
     }
 
     public Collection<LakeSoulPartitionSplit> enumerateSplits() {
-        LOG.info("enumerateSplits begin for table {}, partition columns {}," +
-                        " interval {}, oid {}, tid {}",
-                fullTableName, partitionColumns, discoveryInterval,
+        LOG.info(
+                "enumerateSplits begin for table {}, partition columns {},"
+                        + " interval {}, oid {}, tid {}",
+                fullTableName,
+                partitionColumns,
+                discoveryInterval,
                 System.identityHashCode(this),
                 Thread.currentThread().getId());
         long s = System.currentTimeMillis();
         List<PartitionInfo> allPartitionInfo;
         if (partitionColumns.isEmpty()) {
-            allPartitionInfo = DataOperation.dbManager().getPartitionInfos(tableId,
-                    Collections.singletonList(LAKESOUL_NON_PARTITION_TABLE_PART_DESC));
+            allPartitionInfo =
+                    DataOperation.dbManager()
+                            .getPartitionInfos(
+                                    tableId,
+                                    Collections.singletonList(
+                                            LAKESOUL_NON_PARTITION_TABLE_PART_DESC));
         } else {
             allPartitionInfo = MetaVersion.getAllPartitionInfo(tableId);
         }
         long e = System.currentTimeMillis();
         if (allPartitionInfo == null || allPartitionInfo.isEmpty()) {
-            String err = String.format("Table %s with tableId %s does not exist. " +
-                            "This table may have been dropped, please restart this streaming job " +
-                            "without savepoint recovery",
-                    fullTableName, tableId);
+            String err =
+                    String.format(
+                            "Table %s with tableId %s does not exist. This table may have been"
+                                + " dropped, please restart this streaming job without savepoint"
+                                + " recovery",
+                            fullTableName, tableId);
             LOG.error(err);
             throw new SuppressRestartsException(new RuntimeException(err));
         }
-        LOG.info("Table {} allPartitionInfo num {}, queryTime={}ms, interval={}",
-                fullTableName, allPartitionInfo.size(), e - s, discoveryInterval);
-        List<PartitionInfo> filteredPartition = SubstraitUtil.applyPartitionFilters(
-                allPartitionInfo, partitionArrowSchema, partitionFilters);
-        LOG.info("Table {} filteredPartition num {}, filter={}", fullTableName, filteredPartition.size(), partitionFilters);
+        LOG.info(
+                "Table {} allPartitionInfo num {}, queryTime={}ms, interval={}",
+                fullTableName,
+                allPartitionInfo.size(),
+                e - s,
+                discoveryInterval);
+        List<PartitionInfo> filteredPartition =
+                SubstraitUtil.applyPartitionFilters(
+                        allPartitionInfo, partitionArrowSchema, partitionFilters);
+        LOG.info(
+                "Table {} filteredPartition num {}, filter={}",
+                fullTableName,
+                filteredPartition.size(),
+                partitionFilters);
 
         ArrayList<LakeSoulPartitionSplit> splits = new ArrayList<>(16);
         for (PartitionInfo partitionInfo : filteredPartition) {
@@ -219,30 +272,49 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator
             }
             DataFileInfo[] dataFileInfos;
             if (lastTimestamp != null) {
-                LOG.info("getIncrementalPartitionDataInfo {}/{}, startTime={}, endTime={}",
-                        fullTableName, partitionDesc,
-                        lastTimestamp, latestTimestamp);
+                LOG.info(
+                        "getIncrementalPartitionDataInfo {}/{}, startTime={}, endTime={}",
+                        fullTableName,
+                        partitionDesc,
+                        lastTimestamp,
+                        latestTimestamp);
                 if (lastTimestamp == latestTimestamp) {
                     // no timestamp change for this partition
-                    LOG.info("Ignore partition for no new data {}/{}", fullTableName, partitionDesc);
+                    LOG.info(
+                            "Ignore partition for no new data {}/{}", fullTableName, partitionDesc);
                     continue;
                 }
-                dataFileInfos = DataOperation.getIncrementalPartitionDataInfo(
-                        tableId, partitionDesc, lastTimestamp, latestTimestamp, "incremental");
+                dataFileInfos =
+                        DataOperation.getIncrementalPartitionDataInfo(
+                                tableId,
+                                partitionDesc,
+                                lastTimestamp,
+                                latestTimestamp,
+                                "incremental");
             } else {
-                LOG.info("new getIncrementalPartitionDataInfo {}/{}, startTime={}, endTime={}",
-                        fullTableName, partitionDesc,
-                        startTime, latestTimestamp);
-                dataFileInfos = DataOperation.getIncrementalPartitionDataInfo(
-                        tableId, partitionDesc, startTime, latestTimestamp, "incremental");
+                LOG.info(
+                        "new getIncrementalPartitionDataInfo {}/{}, startTime={}, endTime={}",
+                        fullTableName,
+                        partitionDesc,
+                        startTime,
+                        latestTimestamp);
+                dataFileInfos =
+                        DataOperation.getIncrementalPartitionDataInfo(
+                                tableId, partitionDesc, startTime, latestTimestamp, "incremental");
             }
             if (dataFileInfos.length > 0) {
                 Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition =
                         FlinkUtil.splitDataInfosToRangeAndHashPartition(tableInfo, dataFileInfos);
-                for (Map.Entry<String, Map<Integer, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
+                for (Map.Entry<String, Map<Integer, List<Path>>> entry :
+                        splitByRangeAndHashPartition.entrySet()) {
                     for (Map.Entry<Integer, List<Path>> split : entry.getValue().entrySet()) {
-                        splits.add(new LakeSoulPartitionSplit(String.valueOf(split.hashCode()), split.getValue(),
-                                0, split.getKey(), partitionDesc));
+                        splits.add(
+                                new LakeSoulPartitionSplit(
+                                        String.valueOf(split.hashCode()),
+                                        split.getValue(),
+                                        0,
+                                        split.getKey(),
+                                        partitionDesc));
                     }
                 }
             }
@@ -250,8 +322,10 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator
                 partitionLatestTimestamp.put(partitionDesc, latestTimestamp);
             }
         }
-        LOG.info("dynamic enumerate table {} done, partitionLatestTimestamp={}, oid {}, tid {}",
-                fullTableName, partitionLatestTimestamp,
+        LOG.info(
+                "dynamic enumerate table {} done, partitionLatestTimestamp={}, oid {}, tid {}",
+                fullTableName,
+                partitionLatestTimestamp,
                 System.identityHashCode(this),
                 Thread.currentThread().getId());
 

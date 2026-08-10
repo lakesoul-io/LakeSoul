@@ -19,34 +19,37 @@ public class DBConnector {
     public DBConnector(DataBaseProperty dataBaseProperty) {
         HikariConfig config = new HikariConfig();
 
-        config.setDriverClassName( dataBaseProperty.getDriver());
-        config.setJdbcUrl( dataBaseProperty.getUrl());
-        config.setUsername( dataBaseProperty.getUsername());
-        config.setPassword( dataBaseProperty.getPassword());
-        config.addDataSourceProperty( "cachePrepStmts" , "true" );
-        config.addDataSourceProperty( "prepStmtCacheSize" , "250" );
-        config.addDataSourceProperty( "prepStmtCacheSqlLimit" , "2048" );
-        ds = new HikariDataSource( config );
+        config.setDriverClassName(dataBaseProperty.getDriver());
+        config.setJdbcUrl(dataBaseProperty.getUrl());
+        config.setUsername(dataBaseProperty.getUsername());
+        config.setPassword(dataBaseProperty.getPassword());
+        config.addDataSourceProperty("cachePrepStmts", "true");
+        config.addDataSourceProperty("prepStmtCacheSize", "250");
+        config.addDataSourceProperty("prepStmtCacheSqlLimit", "2048");
+        ds = new HikariDataSource(config);
     }
-    public  Connection getConn() throws SQLException {
+
+    public Connection getConn() throws SQLException {
         return ds.getConnection();
     }
-    public  void closeConn()  {
-        if(ds != null) {
+
+    public void closeConn() {
+        if (ds != null) {
             ds.close();
         }
     }
-    public  void closeConn(Connection conn) {
+
+    public void closeConn(Connection conn) {
         if (conn != null) {
-           try {
-               conn.close();
-           } catch (SQLException e) {
-               e.printStackTrace();
-           }
+            try {
+                conn.close();
+            } catch (SQLException e) {
+                e.printStackTrace();
+            }
         }
     }
 
-    public  void closeConn(Statement statement, Connection conn) {
+    public void closeConn(Statement statement, Connection conn) {
         if (statement != null) {
             try {
                 statement.close();
@@ -57,7 +60,7 @@ public class DBConnector {
         closeConn(conn);
     }
 
-    public  void closeConn(ResultSet set, Statement statement, Connection conn) {
+    public void closeConn(ResultSet set, Statement statement, Connection conn) {
         if (set != null) {
             try {
                 set.close();

@@ -14,12 +14,14 @@ import java.util.Map;
 import java.util.function.Supplier;
 
 public class LakeSoulSourceReader<T>
-        extends SingleThreadMultiplexSourceReaderBase<T, T, LakeSoulPartitionSplit, LakeSoulPartitionSplit> {
+        extends SingleThreadMultiplexSourceReaderBase<
+                T, T, LakeSoulPartitionSplit, LakeSoulPartitionSplit> {
 
-    public LakeSoulSourceReader(Supplier<SplitReader<T, LakeSoulPartitionSplit>> splitReaderSupplier,
-                                RecordEmitter<T, T, LakeSoulPartitionSplit> recordEmitter,
-                                Configuration config,
-                                SourceReaderContext context) {
+    public LakeSoulSourceReader(
+            Supplier<SplitReader<T, LakeSoulPartitionSplit>> splitReaderSupplier,
+            RecordEmitter<T, T, LakeSoulPartitionSplit> recordEmitter,
+            Configuration config,
+            SourceReaderContext context) {
         super(splitReaderSupplier, recordEmitter, config, context);
     }
 
@@ -41,9 +43,9 @@ public class LakeSoulSourceReader<T>
     }
 
     @Override
-    protected LakeSoulPartitionSplit toSplitType(String splitId, LakeSoulPartitionSplit splitState) {
+    protected LakeSoulPartitionSplit toSplitType(
+            String splitId, LakeSoulPartitionSplit splitState) {
 
         return splitState;
     }
-
 }

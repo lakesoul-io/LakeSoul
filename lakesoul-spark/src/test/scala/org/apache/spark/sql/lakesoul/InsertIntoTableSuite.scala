@@ -9,11 +9,20 @@ package org.apache.spark.sql.lakesoul
 import org.apache.spark.sql._
 import org.apache.spark.sql.functions.{col, lit, struct}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.internal.SQLConf.{PARTITION_OVERWRITE_MODE, PartitionOverwriteMode}
+import org.apache.spark.sql.internal.SQLConf.{
+  PARTITION_OVERWRITE_MODE,
+  PartitionOverwriteMode
+}
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.schema.SchemaUtils
-import org.apache.spark.sql.lakesoul.sources.{LakeSoulSQLConf, LakeSoulSourceUtils}
-import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestUtils}
+import org.apache.spark.sql.lakesoul.sources.{
+  LakeSoulSQLConf,
+  LakeSoulSourceUtils
+}
+import org.apache.spark.sql.lakesoul.test.{
+  LakeSoulSQLCommandTest,
+  LakeSoulTestUtils
+}
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types._
 import org.junit.runner.RunWith
@@ -23,11 +32,16 @@ import org.scalatestplus.junit.JUnitRunner
 import scala.collection.JavaConverters._
 
 @RunWith(classOf[JUnitRunner])
-class InsertIntoSQLSuite extends InsertIntoTests(false, true)
-  with LakeSoulSQLCommandTest {
+class InsertIntoSQLSuite
+    extends InsertIntoTests(false, true)
+    with LakeSoulSQLCommandTest {
   override def suiteName: String = "InsertIntoSQLSuite"
 
-  override protected def doInsert(tableName: String, insert: DataFrame, mode: SaveMode): Unit = {
+  override protected def doInsert(
+      tableName: String,
+      insert: DataFrame,
+      mode: SaveMode
+  ): Unit = {
     val tmpView = "tmp_view"
     withTempView(tmpView) {
       insert.createOrReplaceTempView(tmpView)
@@ -38,11 +52,16 @@ class InsertIntoSQLSuite extends InsertIntoTests(false, true)
 }
 
 @RunWith(classOf[JUnitRunner])
-class InsertIntoSQLByPathSuite extends InsertIntoTests(false, true)
-  with LakeSoulSQLCommandTest {
+class InsertIntoSQLByPathSuite
+    extends InsertIntoTests(false, true)
+    with LakeSoulSQLCommandTest {
   override def suiteName: String = "InsertIntoSQLByPathSuite"
 
-  override protected def doInsert(tableName: String, insert: DataFrame, mode: SaveMode): Unit = {
+  override protected def doInsert(
+      tableName: String,
+      insert: DataFrame,
+      mode: SaveMode
+  ): Unit = {
     val tmpView = "tmp_view"
     withTempView(tmpView) {
       insert.createOrReplaceTempView(tmpView)
@@ -50,7 +69,9 @@ class InsertIntoSQLByPathSuite extends InsertIntoTests(false, true)
       val ident = spark.sessionState.sqlParser.parseTableIdentifier(tableName)
       val location = LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(ident)
       assert(location.isDefined)
-      sql(s"INSERT $overwrite TABLE lakesoul.default.`${location.get}` SELECT * FROM $tmpView")
+      sql(
+        s"INSERT $overwrite TABLE lakesoul.default.`${location.get}` SELECT * FROM $tmpView"
+      )
     }
   }
 
@@ -61,7 +82,8 @@ class InsertIntoSQLByPathSuite extends InsertIntoTests(false, true)
         val t1 = s"lakesoul.`${dir.getCanonicalPath}`"
         val tmpView = "tmp_view"
         withTempView(tmpView) {
-          val overwrite = if (mode == SaveMode.Overwrite) "OVERWRITE" else "INTO"
+          val overwrite =
+            if (mode == SaveMode.Overwrite) "OVERWRITE" else "INTO"
           val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data")
           df.createOrReplaceTempView(tmpView)
 
@@ -79,11 +101,16 @@ class InsertIntoSQLByPathSuite extends InsertIntoTests(false, true)
 }
 
 @RunWith(classOf[JUnitRunner])
-class InsertIntoDataFrameSuite extends InsertIntoTests(false, false)
-  with LakeSoulSQLCommandTest {
+class InsertIntoDataFrameSuite
+    extends InsertIntoTests(false, false)
+    with LakeSoulSQLCommandTest {
   override def suiteName: String = "InsertIntoDataFrameSuite"
 
-  override protected def doInsert(tableName: String, insert: DataFrame, mode: SaveMode): Unit = {
+  override protected def doInsert(
+      tableName: String,
+      insert: DataFrame,
+      mode: SaveMode
+  ): Unit = {
     val dfw = insert.write.format(v2Format)
     if (mode != null) {
       dfw.mode(mode)
@@ -93,11 +120,16 @@ class InsertIntoDataFrameSuite extends InsertIntoTests(false, false)
 }
 
 @RunWith(classOf[JUnitRunner])
-class InsertIntoDataFrameByPathSuite extends InsertIntoTests(false, false)
-  with LakeSoulSQLCommandTest {
+class InsertIntoDataFrameByPathSuite
+    extends InsertIntoTests(false, false)
+    with LakeSoulSQLCommandTest {
   override def suiteName: String = "InsertIntoDataFrameByPathSuite"
 
-  override protected def doInsert(tableName: String, insert: DataFrame, mode: SaveMode): Unit = {
+  override protected def doInsert(
+      tableName: String,
+      insert: DataFrame,
+      mode: SaveMode
+  ): Unit = {
     val dfw = insert.write.format(v2Format)
     if (mode != null) {
       dfw.mode(mode)
@@ -139,32 +171,41 @@ class InsertIntoDataFrameByPathSuite extends InsertIntoTests(false, false)
   }
 }
 
-/** These tests come from Apache Spark with some modifications to match LakeSoul behavior. */
+/** These tests come from Apache Spark with some modifications to match LakeSoul
+  * behavior.
+  */
 abstract class InsertIntoTests(
-                                override protected val supportsDynamicOverwrite: Boolean,
-                                override protected val includeSQLOnlyTests: Boolean)
-  extends InsertIntoSQLOnlyTests {
+    override protected val supportsDynamicOverwrite: Boolean,
+    override protected val includeSQLOnlyTests: Boolean
+) extends InsertIntoSQLOnlyTests {
 
   import testImplicits._
 
   override def suiteName: String = ???
 
   override def afterEach(): Unit = {
-    val catalog = spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
-    catalog.listTables(Array("default")).foreach(t => {
-      sql(s"drop table default.`${t.name}`")
-      sql(s"drop table lakesoul.`${t.name}`")
-    })
+    val catalog = spark.sessionState.catalogManager.currentCatalog
+      .asInstanceOf[LakeSoulCatalog]
+    catalog
+      .listTables(Array("default"))
+      .foreach(t => {
+        sql(s"drop table default.`${t.name}`")
+        sql(s"drop table lakesoul.`${t.name}`")
+      })
   }
 
   // START Apache Spark tests
 
-  /**
-    * Insert data into a table using the insertInto statement. Implementations can be in SQL
-    * ("INSERT") or using the DataFrameWriter (`df.write.insertInto`). Insertions will be
-    * by column ordinal and not by column name.
+  /** Insert data into a table using the insertInto statement. Implementations
+    * can be in SQL ("INSERT") or using the DataFrameWriter
+    * (`df.write.insertInto`). Insertions will be by column ordinal and not by
+    * column name.
     */
-  protected def doInsert(tableName: String, insert: DataFrame, mode: SaveMode = null): Unit
+  protected def doInsert(
+      tableName: String,
+      insert: DataFrame,
+      mode: SaveMode = null
+  ): Unit
 
   test("insertInto: append") {
     val t1 = "tbl"
@@ -191,8 +232,12 @@ abstract class InsertIntoTests(
   test("insertInto: append partitioned table") {
     val t1 = "tbl"
     withTable(t1) {
-      sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY (id)")
-      val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data").select("data", "id")
+      sql(
+        s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY (id)"
+      )
+      val df = Seq((1L, "a"), (2L, "b"), (3L, "c"))
+        .toDF("id", "data")
+        .select("data", "id")
       doInsert(t1, df)
       verifyTable(t1, df, Seq("data", "id"))
     }
@@ -209,89 +254,181 @@ abstract class InsertIntoTests(
     }
   }
 
-  test("insertInto: append partitioned table and read with partition filter int type") {
+  test(
+    "insertInto: append partitioned table and read with partition filter int type"
+  ) {
     val t1 = "default.tbl" + System.currentTimeMillis()
     withTable(t1) {
-      sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY(id)")
-      val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data").select("data", "id")
+      sql(
+        s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY(id)"
+      )
+      val df = Seq((1L, "a"), (2L, "b"), (3L, "c"))
+        .toDF("id", "data")
+        .select("data", "id")
       doInsert(t1, df)
       val expected = Seq((1L, "a"), (2L, "b")).toDF("id", "data")
-      checkAnswer(spark.table(t1).filter("id <= 2").select("id", "data"), expected)
+      checkAnswer(
+        spark.table(t1).filter("id <= 2").select("id", "data"),
+        expected
+      )
     }
   }
 
-  test("insertInto: append partitioned table and read with partition filter string type") {
+  test(
+    "insertInto: append partitioned table and read with partition filter string type"
+  ) {
     val t1 = "default.tbl" + System.currentTimeMillis()
     withTable(t1) {
-      sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY(data)")
+      sql(
+        s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY(data)"
+      )
       val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data")
       doInsert(t1, df)
       val expected = Seq((1L, "a")).toDF("id", "data")
-      checkAnswer(spark.table(t1).filter("data = 'a'").select("id", "data"), expected)
+      checkAnswer(
+        spark.table(t1).filter("data = 'a'").select("id", "data"),
+        expected
+      )
     }
   }
 
-  test("insertInto: append partitioned table and read with partition filter date type") {
+  test(
+    "insertInto: append partitioned table and read with partition filter date type"
+  ) {
     val t1 = "default.tbl" + System.currentTimeMillis()
     withTable(t1) {
-      sql(s"CREATE TABLE $t1 (id bigint, data date) USING $v2Format PARTITIONED BY(data)")
-      val df = Seq((1L, "2025-01-01"), (2L, "2025-01-01"), (3L, "2025-01-02")).toDF("id", "data")
+      sql(
+        s"CREATE TABLE $t1 (id bigint, data date) USING $v2Format PARTITIONED BY(data)"
+      )
+      val df = Seq((1L, "2025-01-01"), (2L, "2025-01-01"), (3L, "2025-01-02"))
+        .toDF("id", "data")
         .withColumn("data", col("data").cast(DateType))
       doInsert(t1, df)
-      val expected = Seq((1L, "2025-01-01"), (2L, "2025-01-01")).toDF("id", "data")
+      val expected = Seq((1L, "2025-01-01"), (2L, "2025-01-01"))
+        .toDF("id", "data")
         .withColumn("data", col("data").cast(DateType))
-      checkAnswer(spark.table(t1).filter("data = to_date('2025-01-01')").select("id", "data"), expected)
+      checkAnswer(
+        spark
+          .table(t1)
+          .filter("data = to_date('2025-01-01')")
+          .select("id", "data"),
+        expected
+      )
     }
   }
 
-  test("insertInto: append partitioned table and read with partition all eq filter") {
+  test(
+    "insertInto: append partitioned table and read with partition all eq filter"
+  ) {
     val t1 = "default.tbl" + System.currentTimeMillis()
     withTable(t1) {
-      sql(s"CREATE TABLE $t1 (id bigint, data string, `date` date) USING $v2Format PARTITIONED BY(data, `date`)")
-      val df = Seq((1L, "a", "2025-01-01"), (2L, "b", "2025-01-01"), (3L, "b", "2025-01-02")).toDF("id", "data", "date")
+      sql(
+        s"CREATE TABLE $t1 (id bigint, data string, `date` date) USING $v2Format PARTITIONED BY(data, `date`)"
+      )
+      val df = Seq(
+        (1L, "a", "2025-01-01"),
+        (2L, "b", "2025-01-01"),
+        (3L, "b", "2025-01-02")
+      ).toDF("id", "data", "date")
         .withColumn("date", col("date").cast(DateType))
       doInsert(t1, df)
-      val expected = Seq((2L, "b", "2025-01-01")).toDF("id", "data", "date")
+      val expected = Seq((2L, "b", "2025-01-01"))
+        .toDF("id", "data", "date")
         .withColumn("date", col("date").cast(DateType))
-      checkAnswer(spark.table(t1).filter("data = 'b' and `date` = to_date('2025-01-01')").select("id", "data", "date"), expected)
+      checkAnswer(
+        spark
+          .table(t1)
+          .filter("data = 'b' and `date` = to_date('2025-01-01')")
+          .select("id", "data", "date"),
+        expected
+      )
     }
   }
 
-  test("insertInto: append partitioned table and read with partition partial filter string type") {
+  test(
+    "insertInto: append partitioned table and read with partition partial filter string type"
+  ) {
     val t1 = "default.tbl" + System.currentTimeMillis()
     withTable(t1) {
-      sql(s"CREATE TABLE $t1 (id bigint, data string, `date` date) USING $v2Format PARTITIONED BY(data, `date`)")
-      val df = Seq((1L, "a", "2025-01-01"), (2L, "b", "2025-01-01"), (3L, "c", "2025-01-02")).toDF("id", "data", "date")
+      sql(
+        s"CREATE TABLE $t1 (id bigint, data string, `date` date) USING $v2Format PARTITIONED BY(data, `date`)"
+      )
+      val df = Seq(
+        (1L, "a", "2025-01-01"),
+        (2L, "b", "2025-01-01"),
+        (3L, "c", "2025-01-02")
+      ).toDF("id", "data", "date")
         .withColumn("date", col("date").cast(DateType))
       doInsert(t1, df)
-      val expected = Seq((2L, "b", "2025-01-01")).toDF("id", "data", "date")
+      val expected = Seq((2L, "b", "2025-01-01"))
+        .toDF("id", "data", "date")
         .withColumn("date", col("date").cast(DateType))
-      checkAnswer(spark.table(t1).filter("data = 'b'").select("id", "data", "date"), expected)
+      checkAnswer(
+        spark.table(t1).filter("data = 'b'").select("id", "data", "date"),
+        expected
+      )
     }
   }
 
-  test("insertInto: append partitioned table and read with partition partial filter date type") {
+  test(
+    "insertInto: append partitioned table and read with partition partial filter date type"
+  ) {
     val t1 = "default.tbl" + System.currentTimeMillis()
     withTable(t1) {
-      sql(s"CREATE TABLE $t1 (id bigint, data string, `date` date) USING $v2Format PARTITIONED BY(data, `date`)")
-      val df = Seq((1L, "a", "2025-01-01"), (2L, "b", "2025-01-02"), (3L, "c", "2025-01-03")).toDF("id", "data", "date")
+      sql(
+        s"CREATE TABLE $t1 (id bigint, data string, `date` date) USING $v2Format PARTITIONED BY(data, `date`)"
+      )
+      val df = Seq(
+        (1L, "a", "2025-01-01"),
+        (2L, "b", "2025-01-02"),
+        (3L, "c", "2025-01-03")
+      ).toDF("id", "data", "date")
         .withColumn("date", col("date").cast(DateType))
       doInsert(t1, df)
-      val expected = Seq((2L, "b", "2025-01-02")).toDF("id", "data", "date")
+      val expected = Seq((2L, "b", "2025-01-02"))
+        .toDF("id", "data", "date")
         .withColumn("date", col("date").cast(DateType))
-      checkAnswer(spark.table(t1).filter("`date` = to_date('2025-01-02')").select("id", "data", "date"), expected)
-      val df2 = Seq((2L, "a", "2025-01-01")).toDF("id", "data", "date")
+      checkAnswer(
+        spark
+          .table(t1)
+          .filter("`date` = to_date('2025-01-02')")
+          .select("id", "data", "date"),
+        expected
+      )
+      val df2 = Seq((2L, "a", "2025-01-01"))
+        .toDF("id", "data", "date")
         .withColumn("date", col("date").cast(DateType))
       doInsert(t1, df2)
-      val expected2 = Seq((1L, "a", "2025-01-01"), (2L, "a", "2025-01-01")).toDF("id", "data", "date")
+      val expected2 = Seq((1L, "a", "2025-01-01"), (2L, "a", "2025-01-01"))
+        .toDF("id", "data", "date")
         .withColumn("date", col("date").cast(DateType))
-      checkAnswer(spark.table(t1).filter("`date` = to_date('2025-01-01')").select("id", "data", "date"), expected2)
-      val expected3 = Seq((2L, "b", "2025-01-02")).toDF("id", "data", "date")
+      checkAnswer(
+        spark
+          .table(t1)
+          .filter("`date` = to_date('2025-01-01')")
+          .select("id", "data", "date"),
+        expected2
+      )
+      val expected3 = Seq((2L, "b", "2025-01-02"))
+        .toDF("id", "data", "date")
         .withColumn("date", col("date").cast(DateType))
-      checkAnswer(spark.table(t1).filter("`date` = to_date('2025-01-02')").select("id", "data", "date"), expected3)
-      val expected4 = Seq((3L, "c", "2025-01-03")).toDF("id", "data", "date")
+      checkAnswer(
+        spark
+          .table(t1)
+          .filter("`date` = to_date('2025-01-02')")
+          .select("id", "data", "date"),
+        expected3
+      )
+      val expected4 = Seq((3L, "c", "2025-01-03"))
+        .toDF("id", "data", "date")
         .withColumn("date", col("date").cast(DateType))
-      checkAnswer(spark.table(t1).filter("`date` = to_date('2025-01-03')").select("id", "data", "date"), expected4)
+      checkAnswer(
+        spark
+          .table(t1)
+          .filter("`date` = to_date('2025-01-03')")
+          .select("id", "data", "date"),
+        expected4
+      )
     }
   }
 
@@ -308,38 +445,63 @@ abstract class InsertIntoTests(
   }
 
   test("insertInto: overwrite partitioned table in static mode") {
-    withSQLConf(PARTITION_OVERWRITE_MODE.key -> PartitionOverwriteMode.STATIC.toString) {
+    withSQLConf(
+      PARTITION_OVERWRITE_MODE.key -> PartitionOverwriteMode.STATIC.toString
+    ) {
       val t1 = "tbl"
       withTable(t1) {
-        sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY (id)")
-        val init = Seq((2L, "dummy"), (4L, "keep")).toDF("id", "data").select("data", "id")
+        sql(
+          s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY (id)"
+        )
+        val init = Seq((2L, "dummy"), (4L, "keep"))
+          .toDF("id", "data")
+          .select("data", "id")
         doInsert(t1, init)
 
-        val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data").select("data", "id")
+        val df = Seq((1L, "a"), (2L, "b"), (3L, "c"))
+          .toDF("id", "data")
+          .select("data", "id")
         doInsert(t1, df, SaveMode.Overwrite)
-        verifyTable(t1,
-          Seq((1L, "a"), (2L, "b"), (3L, "c"), (4L, "keep")).toDF("id", "data").select("data", "id")
-          , Seq("data", "id"))
+        verifyTable(
+          t1,
+          Seq((1L, "a"), (2L, "b"), (3L, "c"), (4L, "keep"))
+            .toDF("id", "data")
+            .select("data", "id"),
+          Seq("data", "id")
+        )
       }
     }
   }
 
-
   test("insertInto: overwrite by position") {
-    withSQLConf(PARTITION_OVERWRITE_MODE.key -> PartitionOverwriteMode.STATIC.toString) {
+    withSQLConf(
+      PARTITION_OVERWRITE_MODE.key -> PartitionOverwriteMode.STATIC.toString
+    ) {
       val t1 = "tbl"
       withTable(t1) {
-        sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY (id)")
-        val init = Seq((2L, "dummy"), (4L, "keep")).toDF("id", "data").select("data", "id")
+        sql(
+          s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY (id)"
+        )
+        val init = Seq((2L, "dummy"), (4L, "keep"))
+          .toDF("id", "data")
+          .select("data", "id")
         doInsert(t1, init)
 
-        val dfr = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("data", "id").select("id", "data")
+        val dfr = Seq((1L, "a"), (2L, "b"), (3L, "c"))
+          .toDF("data", "id")
+          .select("id", "data")
         doInsert(t1, dfr, SaveMode.Overwrite)
 
-        val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data").select("data", "id")
-        verifyTable(t1,
-          Seq((1L, "a"), (2L, "b"), (3L, "c"), (4L, "keep")).toDF("id", "data").select("data", "id")
-          , Seq("data", "id"))
+        val df = Seq((1L, "a"), (2L, "b"), (3L, "c"))
+          .toDF("id", "data")
+          .select("data", "id")
+        verifyTable(
+          t1,
+          Seq((1L, "a"), (2L, "b"), (3L, "c"), (4L, "keep"))
+            .toDF("id", "data")
+            .select("data", "id"),
+          Seq("data", "id")
+        )
       }
     }
   }
@@ -347,19 +509,27 @@ abstract class InsertIntoTests(
   test("insertInto: fails when missing a column") {
     val t1 = "tbl"
     withTable(t1) {
-      sql(s"CREATE TABLE $t1 (id bigint, data string, missing string) USING $v2Format")
+      sql(
+        s"CREATE TABLE $t1 (id bigint, data string, missing string) USING $v2Format"
+      )
       val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data")
       val exc = intercept[AnalysisException] {
         doInsert(t1, df)
       }
 
-      verifyTable(t1, Seq.empty[(Long, String, String)].toDF("id", "data", "missing"), Seq("id", "data", "missing"))
+      verifyTable(
+        t1,
+        Seq.empty[(Long, String, String)].toDF("id", "data", "missing"),
+        Seq("id", "data", "missing")
+      )
       assert(exc.getMessage.contains("not enough data columns"))
     }
   }
 
   // This behavior is specific to LakeSoul
-  test("insertInto: fails when an extra column is present but can evolve schema") {
+  test(
+    "insertInto: fails when an extra column is present but can evolve schema"
+  ) {
     val t1 = "tbl"
     withTable(t1) {
       sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format")
@@ -368,13 +538,21 @@ abstract class InsertIntoTests(
         doInsert(t1, df)
       }
 
-      verifyTable(t1, Seq.empty[(Long, String)].toDF("id", "data"), Seq("id", "data"))
+      verifyTable(
+        t1,
+        Seq.empty[(Long, String)].toDF("id", "data"),
+        Seq("id", "data")
+      )
       assert(exc.getMessage.contains(s"too many data columns"))
 
       withSQLConf(LakeSoulSQLConf.SCHEMA_AUTO_MIGRATE.key -> "true") {
         doInsert(t1, df)
       }
-      verifyTable(t1, Seq((1L, "a", "mango")).toDF("id", "data", "fruit"), Seq("id", "data", "fruit"))
+      verifyTable(
+        t1,
+        Seq((1L, "a", "mango")).toDF("id", "data", "fruit"),
+        Seq("id", "data", "fruit")
+      )
     }
   }
 
@@ -390,13 +568,21 @@ abstract class InsertIntoTests(
           doInsert(t1, df, SaveMode.Overwrite)
         }
 
-        verifyTable(t1, Seq.empty[(Long, String)].toDF("id", "data"), Seq("id", "data"))
+        verifyTable(
+          t1,
+          Seq.empty[(Long, String)].toDF("id", "data"),
+          Seq("id", "data")
+        )
 
         intercept[AnalysisException] {
           doInsert(t1, df)
         }
 
-        verifyTable(t1, Seq.empty[(Long, String)].toDF("id", "data"), Seq("id", "data"))
+        verifyTable(
+          t1,
+          Seq.empty[(Long, String)].toDF("id", "data"),
+          Seq("id", "data")
+        )
       }
 
       withSQLConf(SQLConf.STORE_ASSIGNMENT_POLICY.key -> "ansi") {
@@ -404,13 +590,21 @@ abstract class InsertIntoTests(
           doInsert(t1, df, SaveMode.Overwrite)
         }
 
-        verifyTable(t1, Seq.empty[(Long, String)].toDF("id", "data"), Seq("id", "data"))
+        verifyTable(
+          t1,
+          Seq.empty[(Long, String)].toDF("id", "data"),
+          Seq("id", "data")
+        )
 
         intercept[AnalysisException] {
           doInsert(t1, df)
         }
 
-        verifyTable(t1, Seq.empty[(Long, String)].toDF("id", "data"), Seq("id", "data"))
+        verifyTable(
+          t1,
+          Seq.empty[(Long, String)].toDF("id", "data"),
+          Seq("id", "data")
+        )
       }
 
       /*
@@ -428,15 +622,14 @@ abstract class InsertIntoTests(
           getDF(Row(null, "1"), Row(null, "1")),
           Seq("id", "data"))
       }
-      */
+       */
     }
   }
 
   test("insertInto: struct types and schema enforcement") {
     val t1 = "tbl"
     withTable(t1) {
-      sql(
-        s"""CREATE TABLE $t1 (
+      sql(s"""CREATE TABLE $t1 (
            |  id bigint,
            |  point struct<x: double, y: double>
            |)
@@ -444,7 +637,10 @@ abstract class InsertIntoTests(
       val init = Seq((1L, (0.0, 1.0))).toDF("id", "point")
       doInsert(t1, init)
 
-      doInsert(t1, Seq((2L, (1.0, 0.0))).toDF("col1", "col2")) // naming doesn't matter
+      doInsert(
+        t1,
+        Seq((2L, (1.0, 0.0))).toDF("col1", "col2")
+      ) // naming doesn't matter
 
       // can handle null types
       doInsert(t1, Seq((3L, (1.0, null))).toDF("col1", "col2"))
@@ -454,24 +650,32 @@ abstract class InsertIntoTests(
         Row(1L, Row(0.0, 1.0)),
         Row(2L, Row(1.0, 0.0)),
         Row(3L, Row(1.0, null)),
-        Row(4L, Row(null, 1.0)))
+        Row(4L, Row(null, 1.0))
+      )
       verifyTable(
         t1,
-        spark.createDataFrame(expected.asJava, spark.table(t1).select("id", "point").schema),
-        Seq("id", "point"))
+        spark.createDataFrame(
+          expected.asJava,
+          spark.table(t1).select("id", "point").schema
+        ),
+        Seq("id", "point")
+      )
 
       // schema enforcement
-      val complexSchema = Seq((5L, (0.5, 0.5), (2.5, 2.5, 1.0), "a", (0.5, "b")))
-        .toDF("long", "struct", "newstruct", "string", "badstruct")
-        .select(
-          $"long",
-          $"struct",
-          struct(
-            $"newstruct._1".as("x"),
-            $"newstruct._2".as("y"),
-            $"newstruct._3".as("z")) as "newstruct",
-          $"string",
-          $"badstruct")
+      val complexSchema =
+        Seq((5L, (0.5, 0.5), (2.5, 2.5, 1.0), "a", (0.5, "b")))
+          .toDF("long", "struct", "newstruct", "string", "badstruct")
+          .select(
+            $"long",
+            $"struct",
+            struct(
+              $"newstruct._1".as("x"),
+              $"newstruct._2".as("y"),
+              $"newstruct._3".as("z")
+            ) as "newstruct",
+            $"string",
+            $"badstruct"
+          )
 
       // new column in root
       intercept[AnalysisException] {
@@ -508,7 +712,8 @@ abstract class InsertIntoTests(
       // schema evolution
       withSQLConf(
         LakeSoulSQLConf.SCHEMA_AUTO_MIGRATE.key -> "true",
-        SQLConf.STORE_ASSIGNMENT_POLICY.key -> "strict") {
+        SQLConf.STORE_ASSIGNMENT_POLICY.key -> "strict"
+      ) {
         // ordering should still match
         intercept[AnalysisException] {
           doInsert(t1, complexSchema.select("struct", "long"))
@@ -519,7 +724,10 @@ abstract class InsertIntoTests(
         }
 
         // new column to the end works
-        doInsert(t1, complexSchema.select($"long", $"struct", $"string".as("letter")))
+        doInsert(
+          t1,
+          complexSchema.select($"long", $"struct", $"string".as("letter"))
+        )
 
         // still cannot insert missing column
         intercept[AnalysisException] {
@@ -527,7 +735,10 @@ abstract class InsertIntoTests(
         }
 
         intercept[AnalysisException] {
-          doInsert(t1, complexSchema.select($"long", struct(lit(0.1)), $"string"))
+          doInsert(
+            t1,
+            complexSchema.select($"long", struct(lit(0.1)), $"string")
+          )
         }
 
         // still perform nested data type checks
@@ -537,8 +748,14 @@ abstract class InsertIntoTests(
 
         // bad column within struct
         intercept[AnalysisException] {
-          doInsert(t1, complexSchema.select(
-            $"long", struct(lit(0.1), lit("a"), lit(0.2)), $"string"))
+          doInsert(
+            t1,
+            complexSchema.select(
+              $"long",
+              struct(lit(0.1), lit("a"), lit(0.2)),
+              $"string"
+            )
+          )
         }
 
         // Add column to nested field
@@ -556,19 +773,25 @@ abstract class InsertIntoTests(
         Row(3L, Row(1.0, null, null), null),
         Row(4L, Row(null, 1.0, null), null),
         Row(5L, Row(0.5, 0.5, null), "a"),
-        Row(5L, Row(2.5, 2.5, 1.0), null))
+        Row(5L, Row(2.5, 2.5, 1.0), null)
+      )
       verifyTable(
         t1,
-        spark.createDataFrame(expected2.asJava, spark.table(t1).schema))
+        spark.createDataFrame(expected2.asJava, spark.table(t1).schema)
+      )
 
       val expectedSchema = new StructType()
         .add("id", LongType)
-        .add("point", new StructType()
-          .add("x", DoubleType)
-          .add("y", DoubleType)
-          .add("z", DoubleType))
+        .add(
+          "point",
+          new StructType()
+            .add("x", DoubleType)
+            .add("y", DoubleType)
+            .add("z", DoubleType)
+        )
         .add("letter", StringType)
-      val diff = SchemaUtils.reportDifferences(spark.table(t1).schema, expectedSchema)
+      val diff =
+        SchemaUtils.reportDifferences(spark.table(t1).schema, expectedSchema)
       if (diff.nonEmpty) {
         fail(diff.mkString("\n"))
       }
@@ -576,24 +799,39 @@ abstract class InsertIntoTests(
     }
   }
 
-  dynamicOverwriteTest("insertInto: overwrite partitioned table in dynamic mode") {
+  dynamicOverwriteTest(
+    "insertInto: overwrite partitioned table in dynamic mode"
+  ) {
     val t1 = "tbl"
     withTable(t1) {
-      sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY (id)")
-      val init = Seq((2L, "dummy"), (4L, "keep")).toDF("id", "data").select("data", "id")
+      sql(
+        s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY (id)"
+      )
+      val init =
+        Seq((2L, "dummy"), (4L, "keep")).toDF("id", "data").select("data", "id")
       doInsert(t1, init)
 
-      val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data").select("data", "id")
+      val df = Seq((1L, "a"), (2L, "b"), (3L, "c"))
+        .toDF("id", "data")
+        .select("data", "id")
       doInsert(t1, df, SaveMode.Overwrite)
 
-      verifyTable(t1, df.select("id", "data").union(sql("SELECT 4L, 'keep'")), Seq("id", "data"))
+      verifyTable(
+        t1,
+        df.select("id", "data").union(sql("SELECT 4L, 'keep'")),
+        Seq("id", "data")
+      )
     }
   }
 
-  dynamicOverwriteTest("insertInto: overwrite partitioned table in dynamic mode by position") {
+  dynamicOverwriteTest(
+    "insertInto: overwrite partitioned table in dynamic mode by position"
+  ) {
     val t1 = "tbl"
     withTable(t1) {
-      sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY (id)")
+      sql(
+        s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY (id)"
+      )
       val init = createDF(
         Seq((2L, "dummy"), (4L, "keep")),
         Seq("id", "data"),
@@ -619,7 +857,7 @@ abstract class InsertIntoTests(
 }
 
 trait InsertIntoSQLOnlyTests
-  extends QueryTest
+    extends QueryTest
     with SharedSparkSession
     with BeforeAndAfter
     with LakeSoulTestUtils {
@@ -632,31 +870,44 @@ trait InsertIntoSQLOnlyTests
     waitForTasksToFinish()
   }
 
-  protected def verifyTable(tableName: String, expected: DataFrame, colNames: Seq[String]): Unit = {
+  protected def verifyTable(
+      tableName: String,
+      expected: DataFrame,
+      colNames: Seq[String]
+  ): Unit = {
     checkAnswer(spark.table(tableName).select(colNames.map(col): _*), expected)
     waitForTasksToFinish()
   }
 
   protected val v2Format: String = "lakesoul"
 
-  /**
-    * Whether dynamic partition overwrites are supported by the `Table` definitions used in the
-    * test suites. Tables that leverage the V1 Write interface do not support dynamic partition
-    * overwrites.
+  /** Whether dynamic partition overwrites are supported by the `Table`
+    * definitions used in the test suites. Tables that leverage the V1 Write
+    * interface do not support dynamic partition overwrites.
     */
   protected val supportsDynamicOverwrite: Boolean
 
-  /** Whether to include the SQL specific tests in this trait within the extending test suite. */
+  /** Whether to include the SQL specific tests in this trait within the
+    * extending test suite.
+    */
   protected val includeSQLOnlyTests: Boolean
 
-  protected def withTableAndData(tableName: String)(testFn: String => Unit): Unit = {
+  protected def withTableAndData(
+      tableName: String
+  )(testFn: String => Unit): Unit = {
     withTable(tableName) {
       val viewName = "tmp_view"
-      val df = spark.createDataFrame(spark.sparkContext.parallelize(
-        Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c"))),
+      val df = spark.createDataFrame(
+        spark.sparkContext.parallelize(
+          Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c"))
+        ),
         StructType(
-          Seq(StructField("id", LongType, nullable = false), StructField("data", StringType, nullable = false))
-        ))
+          Seq(
+            StructField("id", LongType, nullable = false),
+            StructField("data", StringType, nullable = false)
+          )
+        )
+      )
       df.createOrReplaceTempView(viewName)
       withTempView(viewName) {
         testFn(viewName)
@@ -667,12 +918,16 @@ trait InsertIntoSQLOnlyTests
   protected def dynamicOverwriteTest(testName: String)(f: => Unit): Unit = {
     test(testName) {
       try {
-        withSQLConf(PARTITION_OVERWRITE_MODE.key -> PartitionOverwriteMode.DYNAMIC.toString,
-          LakeSoulSQLConf.SCHEMA_AUTO_MIGRATE.key -> "true") {
+        withSQLConf(
+          PARTITION_OVERWRITE_MODE.key -> PartitionOverwriteMode.DYNAMIC.toString,
+          LakeSoulSQLConf.SCHEMA_AUTO_MIGRATE.key -> "true"
+        ) {
           f
         }
         if (!supportsDynamicOverwrite) {
-          fail("Expected failure from test, because the table doesn't support dynamic overwrites")
+          fail(
+            "Expected failure from test, because the table doesn't support dynamic overwrites"
+          )
         }
       } catch {
         case a: AnalysisException if !supportsDynamicOverwrite =>
@@ -699,106 +954,143 @@ trait InsertIntoSQLOnlyTests
       val t1 = "tbl"
       withSQLConf(LakeSoulSQLConf.SCHEMA_AUTO_MIGRATE.key -> "true") {
         withTableAndData(t1) { view =>
-          sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY (id)")
+          sql(
+            s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY (id)"
+          )
           sql(s"INSERT INTO $t1 PARTITION (id = 23) SELECT data FROM $view")
           verifyTable(t1, sql(s"SELECT 23, data FROM $view"), Seq("id", "data"))
         }
       }
     }
 
-    test("InsertInto: static PARTITION clause fails with non-partition column") {
+    test(
+      "InsertInto: static PARTITION clause fails with non-partition column"
+    ) {
       val t1 = "tbl"
       withTableAndData(t1) { view =>
-        sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY (data)")
+        sql(
+          s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY (data)"
+        )
 
         val exc = intercept[AnalysisException] {
           sql(s"INSERT INTO TABLE $t1 PARTITION (id=1) SELECT data FROM $view")
         }
 
         verifyTable(t1, spark.emptyDataFrame, Seq("id", "data"))
-        assert(exc.getMessage.contains(
-          "PARTITION clause cannot contain the non-partition column"))
+        assert(
+          exc.getMessage.contains(
+            "PARTITION clause cannot contain the non-partition column"
+          )
+        )
         assert(exc.getMessage.contains("id"))
       }
     }
 
-    test("InsertInto: dynamic PARTITION clause fails with non-partition column") {
+    test(
+      "InsertInto: dynamic PARTITION clause fails with non-partition column"
+    ) {
       val t1 = "tbl"
       withTableAndData(t1) { view =>
-        sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY (id)")
+        sql(
+          s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY (id)"
+        )
 
         val exc = intercept[AnalysisException] {
           sql(s"INSERT INTO TABLE $t1 PARTITION (data) SELECT * FROM $view")
         }
 
         verifyTable(t1, spark.emptyDataFrame, Seq("id", "data"))
-        assert(exc.getMessage.contains(
-          "PARTITION clause cannot contain the non-partition column"))
+        assert(
+          exc.getMessage.contains(
+            "PARTITION clause cannot contain the non-partition column"
+          )
+        )
         assert(exc.getMessage.contains("data"))
       }
     }
 
     test("InsertInto: overwrite - dynamic clause - static mode") {
-      withSQLConf(PARTITION_OVERWRITE_MODE.key -> PartitionOverwriteMode.STATIC.toString) {
+      withSQLConf(
+        PARTITION_OVERWRITE_MODE.key -> PartitionOverwriteMode.STATIC.toString
+      ) {
         val t1 = "tbl"
         withTableAndData(t1) { view =>
-          sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY (id)")
-          sql(s"INSERT INTO $t1 VALUES ('dummy',2L), ('also-deleted',3L),('not-deleted',4L)")
-          sql(s"INSERT OVERWRITE TABLE $t1 PARTITION (id) SELECT data,id FROM $view")
-          verifyTable(t1, Seq(
-            (1, "a"),
-            (2, "b"),
-            (3, "c"),
-            (4, "not-deleted")).toDF(),
-            Seq("id", "data"))
+          sql(
+            s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY (id)"
+          )
+          sql(
+            s"INSERT INTO $t1 VALUES ('dummy',2L), ('also-deleted',3L),('not-deleted',4L)"
+          )
+          sql(
+            s"INSERT OVERWRITE TABLE $t1 PARTITION (id) SELECT data,id FROM $view"
+          )
+          verifyTable(
+            t1,
+            Seq((1, "a"), (2, "b"), (3, "c"), (4, "not-deleted")).toDF(),
+            Seq("id", "data")
+          )
         }
       }
     }
 
-    dynamicOverwriteTest("InsertInto: overwrite - dynamic clause - dynamic mode") {
+    dynamicOverwriteTest(
+      "InsertInto: overwrite - dynamic clause - dynamic mode"
+    ) {
       val t1 = "tbl"
       withTableAndData(t1) { view =>
-        sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY (id)")
+        sql(
+          s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY (id)"
+        )
         sql(s"INSERT INTO $t1 VALUES ('dummy',2L), ('keep',4L)")
-        sql(s"INSERT OVERWRITE TABLE $t1 PARTITION (id) SELECT data,id FROM $view")
-        verifyTable(t1, Seq(
-          (1, "a"),
-          (2, "b"),
-          (3, "c"),
-          (4, "keep")).toDF("id", "data"),
-          Seq("id", "data"))
+        sql(
+          s"INSERT OVERWRITE TABLE $t1 PARTITION (id) SELECT data,id FROM $view"
+        )
+        verifyTable(
+          t1,
+          Seq((1, "a"), (2, "b"), (3, "c"), (4, "keep")).toDF("id", "data"),
+          Seq("id", "data")
+        )
       }
     }
 
     test("InsertInto: overwrite - missing clause - static mode") {
-      withSQLConf(PARTITION_OVERWRITE_MODE.key -> PartitionOverwriteMode.STATIC.toString) {
+      withSQLConf(
+        PARTITION_OVERWRITE_MODE.key -> PartitionOverwriteMode.STATIC.toString
+      ) {
         val t1 = "tbl"
         withTableAndData(t1) { view =>
-          sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY (id)")
-          sql(s"INSERT INTO $t1 VALUES ('dummy',2L), ('also-deleted',3L),('not-deleted', 4L)")
+          sql(
+            s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY (id)"
+          )
+          sql(
+            s"INSERT INTO $t1 VALUES ('dummy',2L), ('also-deleted',3L),('not-deleted', 4L)"
+          )
           sql(s"INSERT OVERWRITE TABLE $t1 SELECT data,id FROM $view")
-          verifyTable(t1, Seq(
-            (1, "a"),
-            (2, "b"),
-            (3, "c"),
-            (4, "not-deleted")).toDF("id", "data"),
-            Seq("id", "data"))
+          verifyTable(
+            t1,
+            Seq((1, "a"), (2, "b"), (3, "c"), (4, "not-deleted"))
+              .toDF("id", "data"),
+            Seq("id", "data")
+          )
         }
       }
     }
 
-    dynamicOverwriteTest("InsertInto: overwrite - missing clause - dynamic mode") {
+    dynamicOverwriteTest(
+      "InsertInto: overwrite - missing clause - dynamic mode"
+    ) {
       val t1 = "tbl"
       withTableAndData(t1) { view =>
-        sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY (id)")
+        sql(
+          s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY (id)"
+        )
         sql(s"INSERT INTO $t1 VALUES ('dummy',2L), ('keep',4L)")
         sql(s"INSERT OVERWRITE TABLE $t1 SELECT data,id FROM $view")
-        verifyTable(t1, Seq(
-          (1, "a"),
-          (2, "b"),
-          (3, "c"),
-          (4, "keep")).toDF("id", "data"),
-          Seq("id", "data"))
+        verifyTable(
+          t1,
+          Seq((1, "a"), (2, "b"), (3, "c"), (4, "keep")).toDF("id", "data"),
+          Seq("id", "data")
+        )
       }
     }
 
@@ -806,123 +1098,170 @@ trait InsertIntoSQLOnlyTests
       val t1 = "tbl"
       withTableAndData(t1) { view =>
         withSQLConf(LakeSoulSQLConf.SCHEMA_AUTO_MIGRATE.key -> "true") {
-          sql(s"CREATE TABLE $t1 (id bigint, data string, p1 int) " +
-            s"USING $v2Format PARTITIONED BY (p1)")
+          sql(
+            s"CREATE TABLE $t1 (id bigint, data string, p1 int) " +
+              s"USING $v2Format PARTITIONED BY (p1)"
+          )
           sql(s"INSERT INTO $t1 VALUES (2L, 'dummy', 23), (4L, 'keep', 2)")
-          verifyTable(t1, Seq(
-            (2L, "dummy", 23),
-            (4L, "keep", 2)).toDF("id", "data", "p1"),
-            Seq("id", "data", "p1"))
-          sql(s"INSERT OVERWRITE TABLE $t1 PARTITION (p1 = 23) SELECT * FROM $view")
-          verifyTable(t1, Seq(
-            (1, "a", 23),
-            (2, "b", 23),
-            (3, "c", 23),
-            (4, "keep", 2)).toDF("id", "data", "p1"),
-            Seq("id", "data", "p1"))
+          verifyTable(
+            t1,
+            Seq((2L, "dummy", 23), (4L, "keep", 2)).toDF("id", "data", "p1"),
+            Seq("id", "data", "p1")
+          )
+          sql(
+            s"INSERT OVERWRITE TABLE $t1 PARTITION (p1 = 23) SELECT * FROM $view"
+          )
+          verifyTable(
+            t1,
+            Seq((1, "a", 23), (2, "b", 23), (3, "c", 23), (4, "keep", 2))
+              .toDF("id", "data", "p1"),
+            Seq("id", "data", "p1")
+          )
         }
       }
     }
 
     test("InsertInto: overwrite - mixed clause - static mode") {
-      withSQLConf(PARTITION_OVERWRITE_MODE.key -> PartitionOverwriteMode.STATIC.toString,
-        LakeSoulSQLConf.SCHEMA_AUTO_MIGRATE.key -> "true") {
+      withSQLConf(
+        PARTITION_OVERWRITE_MODE.key -> PartitionOverwriteMode.STATIC.toString,
+        LakeSoulSQLConf.SCHEMA_AUTO_MIGRATE.key -> "true"
+      ) {
         val t1 = "tbl"
         withTableAndData(t1) { view =>
-          sql(s"CREATE TABLE $t1 (id bigint, data string, p int) " +
-            s"USING $v2Format PARTITIONED BY (id, p)")
-          sql(s"INSERT INTO $t1 VALUES ('dummy', 2L, 2), ('also-deleted', 4L, 2)")
-          sql(s"INSERT OVERWRITE TABLE $t1 PARTITION (id, p = 2) SELECT data,id FROM $view")
-          verifyTable(t1, Seq(
-            (1, "a", 2),
-            (2, "b", 2),
-            (3, "c", 2)).toDF("id", "data", "p"),
-            Seq("id", "data", "p"))
+          sql(
+            s"CREATE TABLE $t1 (id bigint, data string, p int) " +
+              s"USING $v2Format PARTITIONED BY (id, p)"
+          )
+          sql(
+            s"INSERT INTO $t1 VALUES ('dummy', 2L, 2), ('also-deleted', 4L, 2)"
+          )
+          sql(
+            s"INSERT OVERWRITE TABLE $t1 PARTITION (id, p = 2) SELECT data,id FROM $view"
+          )
+          verifyTable(
+            t1,
+            Seq((1, "a", 2), (2, "b", 2), (3, "c", 2)).toDF("id", "data", "p"),
+            Seq("id", "data", "p")
+          )
         }
       }
     }
 
     test("InsertInto: overwrite - mixed clause reordered - static mode") {
-      withSQLConf(PARTITION_OVERWRITE_MODE.key -> PartitionOverwriteMode.STATIC.toString,
-        LakeSoulSQLConf.SCHEMA_AUTO_MIGRATE.key -> "true") {
+      withSQLConf(
+        PARTITION_OVERWRITE_MODE.key -> PartitionOverwriteMode.STATIC.toString,
+        LakeSoulSQLConf.SCHEMA_AUTO_MIGRATE.key -> "true"
+      ) {
         val t1 = "tbl"
         withTableAndData(t1) { view =>
-          sql(s"CREATE TABLE $t1 (id bigint, data string, p int) " +
-            s"USING $v2Format PARTITIONED BY (id, p)")
-          sql(s"INSERT INTO $t1 VALUES ('dummy', 2L, 2), ('also-deleted', 4L, 2)")
-          sql(s"INSERT OVERWRITE TABLE $t1 PARTITION (p = 2, id) SELECT data,id FROM $view")
-          verifyTable(t1, Seq(
-            (1, "a", 2),
-            (2, "b", 2),
-            (3, "c", 2)).toDF("id", "data", "p"),
-            Seq("id", "data", "p"))
+          sql(
+            s"CREATE TABLE $t1 (id bigint, data string, p int) " +
+              s"USING $v2Format PARTITIONED BY (id, p)"
+          )
+          sql(
+            s"INSERT INTO $t1 VALUES ('dummy', 2L, 2), ('also-deleted', 4L, 2)"
+          )
+          sql(
+            s"INSERT OVERWRITE TABLE $t1 PARTITION (p = 2, id) SELECT data,id FROM $view"
+          )
+          verifyTable(
+            t1,
+            Seq((1, "a", 2), (2, "b", 2), (3, "c", 2)).toDF("id", "data", "p"),
+            Seq("id", "data", "p")
+          )
         }
       }
     }
 
     test("InsertInto: overwrite - implicit dynamic partition - static mode") {
-      withSQLConf(PARTITION_OVERWRITE_MODE.key -> PartitionOverwriteMode.STATIC.toString,
-        LakeSoulSQLConf.SCHEMA_AUTO_MIGRATE.key -> "true") {
+      withSQLConf(
+        PARTITION_OVERWRITE_MODE.key -> PartitionOverwriteMode.STATIC.toString,
+        LakeSoulSQLConf.SCHEMA_AUTO_MIGRATE.key -> "true"
+      ) {
         val t1 = "tbl"
         withTableAndData(t1) { view =>
-          sql(s"CREATE TABLE $t1 (id bigint, data string, p int) " +
-            s"USING $v2Format PARTITIONED BY (id, p)")
-          sql(s"INSERT INTO $t1 VALUES ('dummy', 2L, 2), ('also-deleted', 4L, 2)")
-          sql(s"INSERT OVERWRITE TABLE $t1 PARTITION (p = 2) SELECT data,id FROM $view")
-          verifyTable(t1, Seq(
-            (1, "a", 2),
-            (2, "b", 2),
-            (3, "c", 2)).toDF("id", "data", "p"),
-            Seq("id", "data", "p"))
+          sql(
+            s"CREATE TABLE $t1 (id bigint, data string, p int) " +
+              s"USING $v2Format PARTITIONED BY (id, p)"
+          )
+          sql(
+            s"INSERT INTO $t1 VALUES ('dummy', 2L, 2), ('also-deleted', 4L, 2)"
+          )
+          sql(
+            s"INSERT OVERWRITE TABLE $t1 PARTITION (p = 2) SELECT data,id FROM $view"
+          )
+          verifyTable(
+            t1,
+            Seq((1, "a", 2), (2, "b", 2), (3, "c", 2)).toDF("id", "data", "p"),
+            Seq("id", "data", "p")
+          )
         }
       }
     }
 
-    dynamicOverwriteTest("InsertInto: overwrite - mixed clause - dynamic mode") {
+    dynamicOverwriteTest(
+      "InsertInto: overwrite - mixed clause - dynamic mode"
+    ) {
       val t1 = "tbl"
       withTableAndData(t1) { view =>
-        sql(s"CREATE TABLE $t1 (id bigint, data string, p int) " +
-          s"USING $v2Format PARTITIONED BY (id, p)")
+        sql(
+          s"CREATE TABLE $t1 (id bigint, data string, p int) " +
+            s"USING $v2Format PARTITIONED BY (id, p)"
+        )
         sql(s"INSERT INTO $t1 VALUES ('dummy', 2L, 2), ('keep', 4L, 2)")
-        sql(s"INSERT OVERWRITE TABLE $t1 PARTITION (p = 2, id) SELECT data,id FROM $view")
-        verifyTable(t1, Seq(
-          (1, "a", 2),
-          (2, "b", 2),
-          (3, "c", 2),
-          (4, "keep", 2)).toDF("id", "data", "p"),
-          Seq("id", "data", "p"))
+        sql(
+          s"INSERT OVERWRITE TABLE $t1 PARTITION (p = 2, id) SELECT data,id FROM $view"
+        )
+        verifyTable(
+          t1,
+          Seq((1, "a", 2), (2, "b", 2), (3, "c", 2), (4, "keep", 2))
+            .toDF("id", "data", "p"),
+          Seq("id", "data", "p")
+        )
       }
     }
 
-    dynamicOverwriteTest("InsertInto: overwrite - mixed clause reordered - dynamic mode") {
+    dynamicOverwriteTest(
+      "InsertInto: overwrite - mixed clause reordered - dynamic mode"
+    ) {
       val t1 = "tbl"
       withTableAndData(t1) { view =>
-        sql(s"CREATE TABLE $t1 (id bigint, data string, p int) " +
-          s"USING $v2Format PARTITIONED BY (id, p)")
+        sql(
+          s"CREATE TABLE $t1 (id bigint, data string, p int) " +
+            s"USING $v2Format PARTITIONED BY (id, p)"
+        )
         sql(s"INSERT INTO $t1 VALUES ('dummy', 2L, 2), ('keep', 4L, 2)")
-        sql(s"INSERT OVERWRITE TABLE $t1 PARTITION (id, p = 2) SELECT data,id FROM $view")
-        verifyTable(t1, Seq(
-          (1, "a", 2),
-          (2, "b", 2),
-          (3, "c", 2),
-          (4, "keep", 2)).toDF("id", "data", "p"),
-          Seq("id", "data", "p"))
+        sql(
+          s"INSERT OVERWRITE TABLE $t1 PARTITION (id, p = 2) SELECT data,id FROM $view"
+        )
+        verifyTable(
+          t1,
+          Seq((1, "a", 2), (2, "b", 2), (3, "c", 2), (4, "keep", 2))
+            .toDF("id", "data", "p"),
+          Seq("id", "data", "p")
+        )
       }
     }
 
-    dynamicOverwriteTest("InsertInto: overwrite - implicit dynamic partition - dynamic mode") {
+    dynamicOverwriteTest(
+      "InsertInto: overwrite - implicit dynamic partition - dynamic mode"
+    ) {
       val t1 = "tbl"
       withTableAndData(t1) { view =>
-        sql(s"CREATE TABLE $t1 (id bigint, data string, p int) " +
-          s"USING $v2Format PARTITIONED BY (id, p)")
+        sql(
+          s"CREATE TABLE $t1 (id bigint, data string, p int) " +
+            s"USING $v2Format PARTITIONED BY (id, p)"
+        )
         sql(s"INSERT INTO $t1 VALUES ('dummy', 2L, 2), ('keep', 4L, 2)")
-        sql(s"INSERT OVERWRITE TABLE $t1 PARTITION (p = 2) SELECT data,id FROM $view")
-        verifyTable(t1, Seq(
-          (1, "a", 2),
-          (2, "b", 2),
-          (3, "c", 2),
-          (4, "keep", 2)).toDF("id", "data", "p"),
-          Seq("id", "data", "p"))
+        sql(
+          s"INSERT OVERWRITE TABLE $t1 PARTITION (p = 2) SELECT data,id FROM $view"
+        )
+        verifyTable(
+          t1,
+          Seq((1, "a", 2), (2, "b", 2), (3, "c", 2), (4, "keep", 2))
+            .toDF("id", "data", "p"),
+          Seq("id", "data", "p")
+        )
       }
     }
 

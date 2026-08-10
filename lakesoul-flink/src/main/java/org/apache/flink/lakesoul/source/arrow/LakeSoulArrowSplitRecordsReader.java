@@ -4,11 +4,16 @@
 
 package org.apache.flink.lakesoul.source.arrow;
 
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BATCH_SIZE;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.INFERRING_SCHEMA;
+
 import com.dmetasoul.lakesoul.LakeSoulArrowReader;
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOReader;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
+
 import io.substrait.proto.Plan;
+
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
@@ -25,17 +30,17 @@ import org.apache.flink.table.types.logical.VarCharType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.*;
 import java.util.stream.Collectors;
 
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BATCH_SIZE;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.INFERRING_SCHEMA;
+import javax.annotation.Nullable;
 
-public class LakeSoulArrowSplitRecordsReader implements RecordsWithSplitIds<LakeSoulArrowWrapper>, AutoCloseable {
+public class LakeSoulArrowSplitRecordsReader
+        implements RecordsWithSplitIds<LakeSoulArrowWrapper>, AutoCloseable {
 
-    private static final Logger LOG = LoggerFactory.getLogger(LakeSoulArrowSplitRecordsReader.class);
+    private static final Logger LOG =
+            LoggerFactory.getLogger(LakeSoulArrowSplitRecordsReader.class);
 
     private final LakeSoulPartitionSplit split;
 
@@ -83,8 +88,8 @@ public class LakeSoulArrowSplitRecordsReader implements RecordsWithSplitIds<Lake
             boolean isBounded,
             String cdcColumn,
             List<String> partitionColumns,
-            Plan filter
-    ) throws Exception {
+            Plan filter)
+            throws Exception {
         this.tableInfo = TableInfo.parseFrom(encodedTableInfo);
         this.split = split;
         this.skipRecords = split.getSkipRecord();
@@ -99,7 +104,8 @@ public class LakeSoulArrowSplitRecordsReader implements RecordsWithSplitIds<Lake
         this.inferringSchema = conf.getBoolean(INFERRING_SCHEMA);
 
         Schema tableSchema = ArrowUtils.toArrowSchema(tableRowType);
-        List<Field> partitionFields = partitionColumns.stream().map(tableSchema::findField).collect(Collectors.toList());
+        List<Field> partitionFields =
+                partitionColumns.stream().map(tableSchema::findField).collect(Collectors.toList());
 
         this.partitionSchema = new Schema(partitionFields);
         this.partitionValues = DBUtil.parsePartitionDesc(split.getPartitionDesc());
@@ -117,7 +123,8 @@ public class LakeSoulArrowSplitRecordsReader implements RecordsWithSplitIds<Lake
         reader.setBatchSize(conf.get(BATCH_SIZE));
 
         List<String> nonPartitionColumns =
-                this.projectedRowType.getFieldNames().stream().filter(name -> !this.partitionValues.containsKey(name))
+                this.projectedRowType.getFieldNames().stream()
+                        .filter(name -> !this.partitionValues.containsKey(name))
                         .collect(Collectors.toList());
 
         if (!nonPartitionColumns.isEmpty()) {
@@ -144,8 +151,9 @@ public class LakeSoulArrowSplitRecordsReader implements RecordsWithSplitIds<Lake
             reader.addFilterProto(this.filter);
         }
 
-        LOG.info("Initializing reader for split {}, pk={}, partitions={}," +
-                        " non partition cols={}, cdc column={}, filter={}",
+        LOG.info(
+                "Initializing reader for split {}, pk={}, partitions={},"
+                        + " non partition cols={}, cdc column={}, filter={}",
                 split,
                 pkColumns,
                 partitionValues,
@@ -153,8 +161,7 @@ public class LakeSoulArrowSplitRecordsReader implements RecordsWithSplitIds<Lake
                 cdcColumn,
                 filter);
         reader.initializeReader();
-        this.reader = new LakeSoulArrowReader(reader,
-                10000);
+        this.reader = new LakeSoulArrowReader(reader, 10000);
     }
 
     private void recoverFromSkipRecord() throws Exception {
@@ -166,10 +173,10 @@ public class LakeSoulArrowSplitRecordsReader implements RecordsWithSplitIds<Lake
                 if (!hasNext) {
                     close();
                     String error =
-                            String.format("Encounter unexpected EOF in split=%s, skipRecords=%s, skipRowCount=%s",
-                                    split,
-                                    skipRecords,
-                                    skipRowCount);
+                            String.format(
+                                    "Encounter unexpected EOF in split=%s, skipRecords=%s,"
+                                            + " skipRowCount=%s",
+                                    split, skipRecords, skipRowCount);
                     LOG.error(error);
                     throw new IOException(error);
                 }

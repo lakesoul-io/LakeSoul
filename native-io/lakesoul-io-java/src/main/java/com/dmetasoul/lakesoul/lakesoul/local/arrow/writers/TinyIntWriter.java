@@ -20,10 +20,7 @@ package com.dmetasoul.lakesoul.lakesoul.local.arrow.writers;
 
 import org.apache.arrow.vector.TinyIntVector;
 
-
-/**
- * {@link ArrowFieldWriter} for TinyInt.
- */
+/** {@link ArrowFieldWriter} for TinyInt. */
 public abstract class TinyIntWriter<T> extends ArrowFieldWriter<T> {
 
     public static TinyIntWriter<Object[]> forObject(TinyIntVector tinyIntVector) {
@@ -51,9 +48,7 @@ public abstract class TinyIntWriter<T> extends ArrowFieldWriter<T> {
 
     // ------------------------------------------------------------------------------------------
 
-    /**
-     * {@link TinyIntWriter} for {@link Object} input.
-     */
+    /** {@link TinyIntWriter} for {@link Object} input. */
     public static final class TinyIntWriterForObject extends TinyIntWriter<Object[]> {
 
         private TinyIntWriterForObject(TinyIntVector tinyIntVector) {
@@ -70,5 +65,4 @@ public abstract class TinyIntWriter<T> extends ArrowFieldWriter<T> {
             return (byte) in[ordinal];
         }
     }
-
 }

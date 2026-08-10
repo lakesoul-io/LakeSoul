@@ -4,6 +4,8 @@
 
 package org.apache.flink.lakesoul.table;
 
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
+
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ReadableConfig;
@@ -37,18 +39,19 @@ import org.apache.flink.types.RowKind;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.annotation.Nullable;
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-import static org.apache.flink.configuration.CoreOptions.DEFAULT_PARALLELISM;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
+import javax.annotation.Nullable;
 
-public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning,
-        SupportsOverwrite, SupportsRowLevelDelete, SupportsRowLevelUpdate {
+public class LakeSoulTableSink
+        implements DynamicTableSink,
+                SupportsPartitioning,
+                SupportsOverwrite,
+                SupportsRowLevelDelete,
+                SupportsRowLevelUpdate {
 
     private static final Logger LOG = LoggerFactory.getLogger(LakeSoulTableSink.class);
 
@@ -66,8 +69,14 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
         return modificationContext;
     }
 
-    public LakeSoulTableSink(String summaryName, String tableName, DataType dataType, List<String> primaryKeyList,
-                             List<String> partitionKeyList, ReadableConfig flinkConf, ResolvedSchema schema) {
+    public LakeSoulTableSink(
+            String summaryName,
+            String tableName,
+            DataType dataType,
+            List<String> primaryKeyList,
+            List<String> partitionKeyList,
+            ReadableConfig flinkConf,
+            ResolvedSchema schema) {
         this.summaryName = summaryName;
         this.tableName = tableName;
         this.primaryKeyList = primaryKeyList;
@@ -96,8 +105,8 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
     public SinkRuntimeProvider getSinkRuntimeProvider(Context context) {
         return new DataStreamSinkProvider() {
             @Override
-            public DataStreamSink<?> consumeDataStream(ProviderContext providerContext,
-                                                       DataStream<RowData> dataStream) {
+            public DataStreamSink<?> consumeDataStream(
+                    ProviderContext providerContext, DataStream<RowData> dataStream) {
                 try {
                     return createStreamingSink(dataStream, context);
                 } catch (IOException e) {
@@ -114,16 +123,16 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
         } else if (this.primaryKeyList.isEmpty()) {
             return ChangelogMode.insertOnly();
         } else {
-            return ChangelogMode.newBuilder().addContainedKind(RowKind.INSERT).addContainedKind(RowKind.UPDATE_AFTER)
+            return ChangelogMode.newBuilder()
+                    .addContainedKind(RowKind.INSERT)
+                    .addContainedKind(RowKind.UPDATE_AFTER)
                     .build();
         }
     }
 
-    /**
-     * DataStream sink fileSystem and upload metadata
-     */
-    private DataStreamSink<?> createStreamingSink(DataStream<RowData> dataStream, Context sinkContext)
-            throws IOException {
+    /** DataStream sink fileSystem and upload metadata */
+    private DataStreamSink<?> createStreamingSink(
+            DataStream<RowData> dataStream, Context sinkContext) throws IOException {
 
         if (modificationContext != null) {
             if (modificationContext.getPartitionFilters() != null) {
@@ -132,38 +141,56 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
         }
         flinkConf.set(IS_BOUNDED, String.valueOf(sinkContext.isBounded()));
         Path path = FlinkUtil.makeQualifiedPath(new Path(flinkConf.getString(CATALOG_PATH)));
-        //rowData key tools
+        // rowData key tools
         RowType rowType = (RowType) schema.toPhysicalRowDataType().notNull().getLogicalType();
-        //bucket file name config
+        // bucket file name config
         OutputFileConfig fileNameConfig = OutputFileConfig.builder().build();
-        //file rolling rule
-        LakeSoulRollingPolicyImpl rollingPolicy = new LakeSoulRollingPolicyImpl(flinkConf.getLong(FILE_ROLLING_SIZE),
-                flinkConf.getLong(FILE_ROLLING_TIME));
-        //rowData sink fileSystem Task
-        LakeSoulMultiTablesSink<RowData, RowData> sink = LakeSoulMultiTablesSink.forOneTableBulkFormat(path,
-                        new TableSchemaIdentity(new TableId(io.debezium.relational.TableId.parse(summaryName)), rowType,
-                                path.toString(), primaryKeyList, partitionKeyList,
-                                flinkConf.getBoolean(USE_CDC, false),
-                                flinkConf.getString(CDC_CHANGE_COLUMN, CDC_CHANGE_COLUMN_DEFAULT)
-                        ), flinkConf)
-                .withBucketCheckInterval(flinkConf.getLong(BUCKET_CHECK_INTERVAL)).withRollingPolicy(rollingPolicy)
-                .withOutputFileConfig(fileNameConfig).build();
+        // file rolling rule
+        LakeSoulRollingPolicyImpl rollingPolicy =
+                new LakeSoulRollingPolicyImpl(
+                        flinkConf.getLong(FILE_ROLLING_SIZE), flinkConf.getLong(FILE_ROLLING_TIME));
+        // rowData sink fileSystem Task
+        LakeSoulMultiTablesSink<RowData, RowData> sink =
+                LakeSoulMultiTablesSink.forOneTableBulkFormat(
+                                path,
+                                new TableSchemaIdentity(
+                                        new TableId(
+                                                io.debezium.relational.TableId.parse(summaryName)),
+                                        rowType,
+                                        path.toString(),
+                                        primaryKeyList,
+                                        partitionKeyList,
+                                        flinkConf.getBoolean(USE_CDC, false),
+                                        flinkConf.getString(
+                                                CDC_CHANGE_COLUMN, CDC_CHANGE_COLUMN_DEFAULT)),
+                                flinkConf)
+                        .withBucketCheckInterval(flinkConf.getLong(BUCKET_CHECK_INTERVAL))
+                        .withRollingPolicy(rollingPolicy)
+                        .withOutputFileConfig(fileNameConfig)
+                        .build();
         if (!primaryKeyList.isEmpty() || !partitionKeyList.isEmpty()) {
-            LakeSoulKeyGen pkKeyGen = new LakeSoulKeyGen(rowType, primaryKeyList.toArray(new String[0]));
+            LakeSoulKeyGen pkKeyGen =
+                    new LakeSoulKeyGen(rowType, primaryKeyList.toArray(new String[0]));
             int hashBucketNum = flinkConf.get(HASH_BUCKET_NUM);
             if (flinkConf.get(DYNAMIC_BUCKETING)) {
-                // for dynamic bucket, we try to let same hash bucket and partitions rows to fall into same bucket
-                LakeSoulKeyGen partKeygen = new  LakeSoulKeyGen(rowType, partitionKeyList.toArray(new String[0]));
-                dataStream = dataStream.partitionCustom(new HashPartitioner(hashBucketNum),
-                        new HashGen(pkKeyGen));
+                // for dynamic bucket, we try to let same hash bucket and partitions rows to fall
+                // into same bucket
+                LakeSoulKeyGen partKeygen =
+                        new LakeSoulKeyGen(rowType, partitionKeyList.toArray(new String[0]));
+                dataStream =
+                        dataStream.partitionCustom(
+                                new HashPartitioner(hashBucketNum), new HashGen(pkKeyGen));
                 return dataStream.sinkTo(sink);
             } else {
                 // before dynamic bucket routing in native, we rely on flink's
                 // parallelism to partition primary keys to target hash bucket
-                dataStream = dataStream.partitionCustom(new HashPartitioner(hashBucketNum),
-                        pkKeyGen::getRePartitionHash);
-                Integer parallelism = flinkConf.get(BUCKET_PARALLELISM) > hashBucketNum ?
-                        flinkConf.get(BUCKET_PARALLELISM) : hashBucketNum;
+                dataStream =
+                        dataStream.partitionCustom(
+                                new HashPartitioner(hashBucketNum), pkKeyGen::getRePartitionHash);
+                Integer parallelism =
+                        flinkConf.get(BUCKET_PARALLELISM) > hashBucketNum
+                                ? flinkConf.get(BUCKET_PARALLELISM)
+                                : hashBucketNum;
                 return dataStream.sinkTo(sink).setParallelism(parallelism);
             }
         } else {
@@ -174,6 +201,7 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
     private static class HashGen implements KeySelector<RowData, Long> {
         private static final long serialVersionUID = -1045500398735673526L;
         LakeSoulKeyGen pkKeyGen;
+
         public HashGen(LakeSoulKeyGen pkKeyGen) {
             this.pkKeyGen = pkKeyGen;
         }
@@ -200,8 +228,7 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
     }
 
     @Override
-    public void applyStaticPartition(Map<String, String> map) {
-    }
+    public void applyStaticPartition(Map<String, String> map) {}
 
     private boolean isDelete() {
         LakeSoulRowLevelModificationScanContext context = getModificationContext();
@@ -214,11 +241,14 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
     }
 
     @Override
-    public RowLevelDeleteInfo applyRowLevelDelete(@Nullable RowLevelModificationScanContext context) {
+    public RowLevelDeleteInfo applyRowLevelDelete(
+            @Nullable RowLevelModificationScanContext context) {
 
         if (context instanceof LakeSoulRowLevelModificationScanContext) {
             this.modificationContext = (LakeSoulRowLevelModificationScanContext) context;
-            flinkConf.set(SOURCE_PARTITION_INFO, modificationContext.getBas64EncodedSourcePartitionInfo());
+            flinkConf.set(
+                    SOURCE_PARTITION_INFO,
+                    modificationContext.getBas64EncodedSourcePartitionInfo());
             if (flinkConf.getBoolean(USE_CDC, false)) {
                 flinkConf.set(DML_TYPE, DELETE_CDC);
             } else {
@@ -228,20 +258,24 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
             return new LakeSoulRowLevelDelete();
         }
         throw new RuntimeException(
-                "LakeSoulTableSink.applyRowLevelDelete only supports LakeSoulRowLevelModificationScanContext");
+                "LakeSoulTableSink.applyRowLevelDelete only supports"
+                        + " LakeSoulRowLevelModificationScanContext");
     }
 
     @Override
-    public RowLevelUpdateInfo applyRowLevelUpdate(List<Column> updatedColumns,
-                                                  @Nullable RowLevelModificationScanContext context) {
+    public RowLevelUpdateInfo applyRowLevelUpdate(
+            List<Column> updatedColumns, @Nullable RowLevelModificationScanContext context) {
         if (context instanceof LakeSoulRowLevelModificationScanContext) {
-            flinkConf.set(SOURCE_PARTITION_INFO,
-                    ((LakeSoulRowLevelModificationScanContext) context).getBas64EncodedSourcePartitionInfo());
+            flinkConf.set(
+                    SOURCE_PARTITION_INFO,
+                    ((LakeSoulRowLevelModificationScanContext) context)
+                            .getBas64EncodedSourcePartitionInfo());
             flinkConf.set(DML_TYPE, UPDATE);
             return new LakeSoulRowLevelUpdate();
         }
         throw new RuntimeException(
-                "LakeSoulTableSink.applyRowLevelUpdate only supports LakeSoulRowLevelModificationScanContext");
+                "LakeSoulTableSink.applyRowLevelUpdate only supports"
+                        + " LakeSoulRowLevelModificationScanContext");
     }
 
     private class LakeSoulRowLevelDelete implements RowLevelDeleteInfo {
@@ -262,7 +296,6 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
     private class LakeSoulRowLevelUpdate implements RowLevelUpdateInfo {
         public Optional<List<Column>> requiredColumns() {
             return Optional.empty();
-
         }
 
         public SupportsRowLevelUpdate.RowLevelUpdateMode getRowLevelUpdateMode() {

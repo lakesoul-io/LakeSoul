@@ -4,6 +4,8 @@
 
 package org.apache.flink.lakesoul.sink.writer.arrow;
 
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKET;
+
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
@@ -17,8 +19,6 @@ import org.apache.flink.table.types.logical.RowType;
 import java.io.IOException;
 import java.util.List;
 
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKET;
-
 public class NativeArrowBucketWriter implements BucketWriter<LakeSoulArrowWrapper, String> {
 
     private final RowType rowType;
@@ -28,7 +28,11 @@ public class NativeArrowBucketWriter implements BucketWriter<LakeSoulArrowWrappe
     private final Configuration conf;
     private final List<String> partitionKeys;
 
-    public NativeArrowBucketWriter(RowType rowType, List<String> primaryKeys, List<String> partitionKeys, Configuration conf) {
+    public NativeArrowBucketWriter(
+            RowType rowType,
+            List<String> primaryKeys,
+            List<String> partitionKeys,
+            Configuration conf) {
         this.rowType = rowType;
         this.primaryKeys = primaryKeys;
         this.partitionKeys = partitionKeys;
@@ -36,9 +40,11 @@ public class NativeArrowBucketWriter implements BucketWriter<LakeSoulArrowWrappe
     }
 
     @Override
-    public InProgressFileWriter<LakeSoulArrowWrapper, String> openNewInProgressFile(String bucketId, Path path, long creationTime) throws IOException {
+    public InProgressFileWriter<LakeSoulArrowWrapper, String> openNewInProgressFile(
+            String bucketId, Path path, long creationTime) throws IOException {
         if (DYNAMIC_BUCKET.equals(bucketId)) {
-            return new NativeLakeSoulArrowWrapperWriter(rowType, primaryKeys, partitionKeys, path, creationTime, conf);
+            return new NativeLakeSoulArrowWrapperWriter(
+                    rowType, primaryKeys, partitionKeys, path, creationTime, conf);
         }
         throw new RuntimeException("Static Bucketing not supported");
     }
@@ -47,7 +53,8 @@ public class NativeArrowBucketWriter implements BucketWriter<LakeSoulArrowWrappe
     public InProgressFileWriter<LakeSoulArrowWrapper, String> resumeInProgressFileFrom(
             String s,
             InProgressFileWriter.InProgressFileRecoverable inProgressFileSnapshot,
-            long creationTime) throws IOException {
+            long creationTime)
+            throws IOException {
         throw new UnsupportedOperationException("NativeBucketWriter does not support resume");
     }
 
@@ -56,17 +63,19 @@ public class NativeArrowBucketWriter implements BucketWriter<LakeSoulArrowWrappe
         return new WriterProperties(
                 UnsupportedInProgressFileRecoverableSerializable.INSTANCE,
                 NativeLakeSoulWriter.NativePendingFileRecoverableSerializer.INSTANCE,
-                false
-        );
+                false);
     }
 
     @Override
-    public PendingFile recoverPendingFile(InProgressFileWriter.PendingFileRecoverable pendingFileRecoverable) throws IOException {
+    public PendingFile recoverPendingFile(
+            InProgressFileWriter.PendingFileRecoverable pendingFileRecoverable) throws IOException {
         return null;
     }
 
     @Override
-    public boolean cleanupInProgressFileRecoverable(InProgressFileWriter.InProgressFileRecoverable inProgressFileRecoverable) throws IOException {
+    public boolean cleanupInProgressFileRecoverable(
+            InProgressFileWriter.InProgressFileRecoverable inProgressFileRecoverable)
+            throws IOException {
         return false;
     }
 
@@ -90,11 +99,10 @@ public class NativeArrowBucketWriter implements BucketWriter<LakeSoulArrowWrappe
         }
 
         @Override
-        public InProgressFileWriter.InProgressFileRecoverable deserialize(int version, byte[] serialized) {
+        public InProgressFileWriter.InProgressFileRecoverable deserialize(
+                int version, byte[] serialized) {
             throw new UnsupportedOperationException(
                     "Persists the path-based part file write is not supported");
         }
     }
-
-
 }

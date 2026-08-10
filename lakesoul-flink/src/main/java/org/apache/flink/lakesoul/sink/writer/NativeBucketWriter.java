@@ -26,7 +26,12 @@ public class NativeBucketWriter implements BucketWriter<RowData, String> {
     private final List<String> partitionKeys;
     private final int subTaskId;
 
-    public NativeBucketWriter(RowType rowType, List<String> primaryKeys, List<String> partitionKeys, Configuration conf, int subTaskId) {
+    public NativeBucketWriter(
+            RowType rowType,
+            List<String> primaryKeys,
+            List<String> partitionKeys,
+            Configuration conf,
+            int subTaskId) {
         this.rowType = rowType;
         this.primaryKeys = primaryKeys;
         this.partitionKeys = partitionKeys;
@@ -35,15 +40,18 @@ public class NativeBucketWriter implements BucketWriter<RowData, String> {
     }
 
     @Override
-    public InProgressFileWriter<RowData, String> openNewInProgressFile(String bucketId, Path path, long creationTime) throws IOException {
-        return new NativeLakeSoulWriter(rowType, primaryKeys, partitionKeys, bucketId, path, creationTime, conf, subTaskId);
+    public InProgressFileWriter<RowData, String> openNewInProgressFile(
+            String bucketId, Path path, long creationTime) throws IOException {
+        return new NativeLakeSoulWriter(
+                rowType, primaryKeys, partitionKeys, bucketId, path, creationTime, conf, subTaskId);
     }
 
     @Override
     public InProgressFileWriter<RowData, String> resumeInProgressFileFrom(
             String s,
             InProgressFileWriter.InProgressFileRecoverable inProgressFileSnapshot,
-            long creationTime) throws IOException {
+            long creationTime)
+            throws IOException {
         throw new UnsupportedOperationException("NativeBucketWriter does not support resume");
     }
 
@@ -52,17 +60,19 @@ public class NativeBucketWriter implements BucketWriter<RowData, String> {
         return new WriterProperties(
                 UnsupportedInProgressFileRecoverableSerializable.INSTANCE,
                 NativeLakeSoulWriter.NativePendingFileRecoverableSerializer.INSTANCE,
-                false
-        );
+                false);
     }
 
     @Override
-    public PendingFile recoverPendingFile(InProgressFileWriter.PendingFileRecoverable pendingFileRecoverable) throws IOException {
+    public PendingFile recoverPendingFile(
+            InProgressFileWriter.PendingFileRecoverable pendingFileRecoverable) throws IOException {
         return null;
     }
 
     @Override
-    public boolean cleanupInProgressFileRecoverable(InProgressFileWriter.InProgressFileRecoverable inProgressFileRecoverable) throws IOException {
+    public boolean cleanupInProgressFileRecoverable(
+            InProgressFileWriter.InProgressFileRecoverable inProgressFileRecoverable)
+            throws IOException {
         return false;
     }
 
@@ -86,11 +96,10 @@ public class NativeBucketWriter implements BucketWriter<RowData, String> {
         }
 
         @Override
-        public InProgressFileWriter.InProgressFileRecoverable deserialize(int version, byte[] serialized) {
+        public InProgressFileWriter.InProgressFileRecoverable deserialize(
+                int version, byte[] serialized) {
             throw new UnsupportedOperationException(
                     "Persists the path-based part file write is not supported");
         }
     }
-
-
 }

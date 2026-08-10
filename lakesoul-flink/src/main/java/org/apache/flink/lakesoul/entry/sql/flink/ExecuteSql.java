@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2023 LakeSoul Contributors
 //
 // SPDX-License-Identifier: Apache-2.0
-// This file is modified from https://github.com/apache/flink-kubernetes-operator/blob/main/examples/flink-sql-runner-example/src/main/java/org/apache/flink/examples/SqlRunner.java
+// This file is modified from
+// https://github.com/apache/flink-kubernetes-operator/blob/main/examples/flink-sql-runner-example/src/main/java/org/apache/flink/examples/SqlRunner.java
 
 package org.apache.flink.lakesoul.entry.sql.flink;
 
@@ -33,8 +34,8 @@ public class ExecuteSql {
 
     private static final String COMMENT_PATTERN = "(--.*)|(((\\/\\*)+?[\\w\\W]+?(\\*\\/)+))";
 
-    public static void executeSqlFileContent(String script, StreamTableEnvironment tableEnv,
-                                             StreamExecutionEnvironment env)
+    public static void executeSqlFileContent(
+            String script, StreamTableEnvironment tableEnv, StreamExecutionEnvironment env)
             throws Exception {
         List<String> statements = parseStatements(script);
         Parser parser = ((TableEnvironmentInternal) tableEnv).getParser();
@@ -56,36 +57,52 @@ public class ExecuteSql {
             if (operation instanceof SetOperation) {
                 SetOperation setOperation = (SetOperation) operation;
                 if (setOperation.getKey().isPresent() && setOperation.getValue().isPresent()) {
-                    System.out.println(MessageFormatter.format("\n======Setting config: {}={}",
-                            setOperation.getKey().get(),
-                            setOperation.getValue().get()).getMessage());
-                    tableEnv.getConfig().getConfiguration()
+                    System.out.println(
+                            MessageFormatter.format(
+                                            "\n======Setting config: {}={}",
+                                            setOperation.getKey().get(),
+                                            setOperation.getValue().get())
+                                    .getMessage());
+                    tableEnv.getConfig()
+                            .getConfiguration()
                             .setString(setOperation.getKey().get(), setOperation.getValue().get());
                 } else if (setOperation.getKey().isPresent()) {
-                    String value = tableEnv.getConfig().getConfiguration().getString(setOperation.getKey().get(), "");
-                    System.out.println(MessageFormatter.format("Config {}={}",
-                            setOperation.getKey().get(), value).getMessage());
+                    String value =
+                            tableEnv.getConfig()
+                                    .getConfiguration()
+                                    .getString(setOperation.getKey().get(), "");
+                    System.out.println(
+                            MessageFormatter.format(
+                                            "Config {}={}", setOperation.getKey().get(), value)
+                                    .getMessage());
                 } else {
-                    System.out.println(MessageFormatter.format("All configs: {}",
-                            tableEnv.getConfig().getConfiguration()).getMessage());
+                    System.out.println(
+                            MessageFormatter.format(
+                                            "All configs: {}",
+                                            tableEnv.getConfig().getConfiguration())
+                                    .getMessage());
                 }
             } else if (operation instanceof CreateTableASOperation) {
                 String message = String.format("CTAS statement is not supported: %s", statement);
                 System.out.println(message);
                 throw new RuntimeException(message);
-            } else if (operation instanceof BeginStatementSetOperation || operation instanceof EndStatementSetOperation) {
+            } else if (operation instanceof BeginStatementSetOperation
+                    || operation instanceof EndStatementSetOperation) {
                 System.out.println(statement);
                 continue;
             } else if (operation instanceof ModifyOperation) {
-                System.out.println(MessageFormatter.format("\n======Executing insertion:\n{}", statement).getMessage());
+                System.out.println(
+                        MessageFormatter.format("\n======Executing insertion:\n{}", statement)
+                                .getMessage());
                 // add insertion to statement set
                 hasModifiedOp = true;
                 statementSet.addInsertSql(statement);
-            } else if ((operation instanceof QueryOperation) || (operation instanceof AddJarOperation)) {
+            } else if ((operation instanceof QueryOperation)
+                    || (operation instanceof AddJarOperation)) {
                 LOG.warn("SQL Statement {} is ignored", statement);
             } else if (operation instanceof CreateCatalogOperation) {
                 CreateCatalogOperation createCatalogOperation = (CreateCatalogOperation) operation;
-                if (createCatalogOperation.getCatalogName().equals("lakesoul")){
+                if (createCatalogOperation.getCatalogName().equals("lakesoul")) {
                     continue;
                 } else {
                     tableEnv.executeSql(statement);
@@ -93,7 +110,8 @@ public class ExecuteSql {
             } else {
                 // for all show/alter/use but not select statements
                 // execute and print results
-                System.out.println(MessageFormatter.format("\n======Executing:\n{}", statement).getMessage());
+                System.out.println(
+                        MessageFormatter.format("\n======Executing:\n{}", statement).getMessage());
                 tableEnv.executeSql(statement).print();
             }
         }
@@ -110,9 +128,7 @@ public class ExecuteSql {
     }
 
     public static List<String> parseStatements(String script) {
-        String formatted =
-                formatSqlFile(script)
-                        .replaceAll(COMMENT_PATTERN, "");
+        String formatted = formatSqlFile(script).replaceAll(COMMENT_PATTERN, "");
 
         List<String> statements = new ArrayList<String>();
 

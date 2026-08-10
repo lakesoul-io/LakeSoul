@@ -4,14 +4,21 @@ import org.apache.spark.sql.SparkSession
 
 object LargeColumnsBench {
   def main(args: Array[String]): Unit = {
-    val builder = SparkSession.builder()
+    val builder = SparkSession
+      .builder()
       .appName("ParquetScanBenchmark")
       .master("local[1]")
       .config("spark.sql.shuffle.partitions", 1)
       .config("spark.sql.files.maxPartitionBytes", "2g")
       .config("spark.default.parallelism", 1)
-      .config("spark.sql.extensions", "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension")
-      .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog")
+      .config(
+        "spark.sql.extensions",
+        "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension"
+      )
+      .config(
+        "spark.sql.catalog.spark_catalog",
+        "org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog"
+      )
     val spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
     val tablePath = "/tmp/lakesoul/spark/large_columns"

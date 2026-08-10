@@ -48,11 +48,15 @@ def read_fvecs(path, n=None):
         return data
 
 
-def _make_record_batch(train: np.ndarray, dim: int, id_start: int = 0) -> pa.RecordBatch:
-    schema = pa.schema([
-        pa.field("id", pa.uint64(), False),
-        pa.field("vec", pa.list_(pa.field("item", pa.float32()), dim), False),
-    ])
+def _make_record_batch(
+    train: np.ndarray, dim: int, id_start: int = 0
+) -> pa.RecordBatch:
+    schema = pa.schema(
+        [
+            pa.field("id", pa.uint64(), False),
+            pa.field("vec", pa.list_(pa.field("item", pa.float32()), dim), False),
+        ]
+    )
     ids = pa.array(range(id_start, id_start + len(train)), type=pa.uint64())
     vec_col = pa.FixedSizeListArray.from_arrays(
         pa.array(train.flatten(), type=pa.float32()), dim
@@ -60,7 +64,9 @@ def _make_record_batch(train: np.ndarray, dim: int, id_start: int = 0) -> pa.Rec
     return pa.RecordBatch.from_arrays([ids, vec_col], schema=schema)
 
 
-def _compute_recall(query: np.ndarray, train: np.ndarray, pred_ids: list[int], k: int) -> float:
+def _compute_recall(
+    query: np.ndarray, train: np.ndarray, pred_ids: list[int], k: int
+) -> float:
     """Compute recall@k: fraction of predicted IDs that are in the brute-force top-k."""
     # Brute-force L2 distances from query to all train vectors
     diff = train - query  # [N, D]
@@ -90,9 +96,12 @@ def test_e2e_glove_local_writer():
 
     tmp_dir = tempfile.mkdtemp(prefix="lakesoul_e2e_")
     config = IOConfig(
-        path=f"file://{tmp_dir}", schema=schema,
-        primary_keys=["id"], hash_bucket_num=4,
-        batch_size=8192, thread_num=2,
+        path=f"file://{tmp_dir}",
+        schema=schema,
+        primary_keys=["id"],
+        hash_bucket_num=4,
+        batch_size=8192,
+        thread_num=2,
     )
     with Writer(config) as writer:
         writer.write(_make_record_batch(train, dim))
@@ -109,18 +118,27 @@ def test_e2e_glove_local_writer():
         bucket_files[bid].append(fp)
 
     n_buckets = len(bucket_files)
-    assert n_buckets >= 2, f"Expected ≥2 non-empty buckets with hash_bucket_num=4, got {n_buckets}"
-    print(f"[2/6] Files grouped into {n_buckets} bucket(s): "
-          f"{ {b: len(fs) for b, fs in sorted(bucket_files.items())} }")
+    assert n_buckets >= 2, (
+        f"Expected ≥2 non-empty buckets with hash_bucket_num=4, got {n_buckets}"
+    )
+    print(
+        f"[2/6] Files grouped into {n_buckets} bucket(s): "
+        f"{ {b: len(fs) for b, fs in sorted(bucket_files.items())} }"
+    )
 
     # Build index for each bucket independently
     from lakesoul._lib.vector import build_shard_vector_index
 
     for bid, bfiles in sorted(bucket_files.items()):
         r = build_shard_vector_index(
-            store_config={"type": "local"}, file_paths=bfiles,
-            pk_column="id", vector_column="vec", dim=dim,
-            nlist=16, total_bits=7, metric="L2",
+            store_config={"type": "local"},
+            file_paths=bfiles,
+            pk_column="id",
+            vector_column="vec",
+            dim=dim,
+            nlist=16,
+            total_bits=7,
+            metric="L2",
         )
         assert r == "ok", f"build_shard_vector_index failed for bucket {bid}"
     print(f"[3/6] Index built for all {n_buckets} bucket(s)")
@@ -129,8 +147,9 @@ def test_e2e_glove_local_writer():
     for bid in bucket_files:
         idx_dir = f"{tmp_dir}/_vector_index/vec/-5/{bid}/"
         idx_files = glob.glob(f"{idx_dir}**", recursive=True)
-        assert any("LATEST" in f for f in idx_files), \
+        assert any("LATEST" in f for f in idx_files), (
             f"Bucket {bid}: missing LATEST in {idx_dir}"
+        )
         print(f"      Bucket {bid}: {len(idx_files)} index file(s) at {idx_dir}")
     print(f"[4/6] {n_buckets} independent index directories verified")
 
@@ -150,19 +169,29 @@ def test_e2e_glove_local_writer():
     all_batches = []
     for bid, bfiles in sorted(bucket_files.items()):
         reader = sync_reader(
-            batch_size=8192, thread_num=2, schema=schema,
-            file_urls=bfiles, primary_keys=["id"],
-            partition_info=[], oss_conf=[],
-            partition_schema=None, filter=None, options=options,
+            batch_size=8192,
+            thread_num=2,
+            schema=schema,
+            file_urls=bfiles,
+            primary_keys=["id"],
+            partition_info=[],
+            oss_conf=[],
+            partition_schema=None,
+            filter=None,
+            options=options,
         )
         all_batches.extend(list(reader))
 
     # Combine all bucket results
-    result_table = pa.Table.from_batches(all_batches) if all_batches else schema.empty_table()
+    result_table = (
+        pa.Table.from_batches(all_batches) if all_batches else schema.empty_table()
+    )
     n_candidates = result_table.num_rows
     candidate_ids = result_table.column("id").to_pylist()
-    print(f"[5/6] Vector search ({n_buckets} buckets × top_k={top_k}): "
-          f"{n_candidates} candidates, IDs={candidate_ids}")
+    print(
+        f"[5/6] Vector search ({n_buckets} buckets × top_k={top_k}): "
+        f"{n_candidates} candidates, IDs={candidate_ids}"
+    )
 
     assert n_candidates > 0, "No candidates from any bucket"
 
@@ -201,10 +230,14 @@ def test_e2e_glove_catalog():
     import shutil
     from lakesoul import LakeSoulCatalog
 
-    cat = LakeSoulCatalog(pg_url=os.environ.get(
-        "LAKESOUL_PG_URL",
-        "postgresql://lakesoul_test:lakesoul_test@localhost:5432/lakesoul_test",
-    ), pg_username="lakesoul_test", pg_password="lakesoul_test")
+    cat = LakeSoulCatalog(
+        pg_url=os.environ.get(
+            "LAKESOUL_PG_URL",
+            "postgresql://lakesoul_test:lakesoul_test@localhost:5432/lakesoul_test",
+        ),
+        pg_username="lakesoul_test",
+        pg_password="lakesoul_test",
+    )
     train = read_fvecs(TRAIN_PATH, 500)
     test_vecs = read_fvecs(TEST_PATH, 5)
     n_train, dim = train.shape
@@ -221,49 +254,67 @@ def test_e2e_glove_catalog():
 
     # 1. Create table + write via Catalog with 4 hash buckets
     table = cat.create_table(
-        table_name, path=f"file://{table_path}",
-        schema=schema, primary_keys=["id"],
+        table_name,
+        path=f"file://{table_path}",
+        schema=schema,
+        primary_keys=["id"],
         hash_bucket_num=4,
         properties={"vector_index_columns": f"vec:{dim}:64:7:L2"},
     )
     table.write_arrow(
         _make_record_batch(train, dim),
-        batch_size=8192, thread_num=2,
+        batch_size=8192,
+        thread_num=2,
     )
     print(f"[1/7] Table created + {n_train} rows written (4 buckets)")
 
     # 2. Build index via table API — should process multiple shards.
     # Use nlist=8 for ~16 vectors/cluster with 125 vec/bucket.
     result = table.build_vector_index(
-        column="vec", dim=dim,
-        nlist=8, total_bits=7, metric="L2",
+        column="vec",
+        dim=dim,
+        nlist=8,
+        total_bits=7,
+        metric="L2",
     )
     assert result["status"] == "ok", f"Build failed: {result}"
-    n_processed = result.get("partitions_processed", result.get("shards_succeeded", "?"))
+    n_processed = result.get(
+        "partitions_processed", result.get("shards_succeeded", "?")
+    )
     n_total = result.get("partitions_total", result.get("shards_total", "?"))
     details = result.get("details", [])
     n_shards = sum(d.get("shards_total", 0) for d in details) if details else n_total
     assert n_shards >= 2, f"Expected ≥2 shards (buckets), got {n_shards}"
-    print(f"[2/7] Index built: {n_processed}/{n_total} partitions, "
-          f"{n_shards} shard(s) total")
+    print(
+        f"[2/7] Index built: {n_processed}/{n_total} partitions, "
+        f"{n_shards} shard(s) total"
+    )
 
     # 3. Read via table.scan() with vector search — each per-bucket reader
     #    searches its own index. Merge + re-rank happens in Python.
     query_vec = test_vecs[0]
     top_k = 3
 
-    ds = table.scan().options(reader_options={
-        "vector_search_column": "vec",
-        "vector_search_query": ",".join(f"{v:.6f}" for v in query_vec),
-        "vector_search_top_k": str(top_k),
-        "vector_search_nprobe": "8",
-    }).to_arrow_dataset()
+    ds = (
+        table.scan()
+        .options(
+            reader_options={
+                "vector_search_column": "vec",
+                "vector_search_query": ",".join(f"{v:.6f}" for v in query_vec),
+                "vector_search_top_k": str(top_k),
+                "vector_search_nprobe": "8",
+            }
+        )
+        .to_arrow_dataset()
+    )
     result_table = ds.scanner().to_table()
 
     n_candidates = result_table.num_rows
     candidate_ids = result_table.column("id").to_pylist()
-    print(f"[3/7] Vector search candidates ({n_shards} shards): "
-          f"{n_candidates} rows, IDs={candidate_ids}")
+    print(
+        f"[3/7] Vector search candidates ({n_shards} shards): "
+        f"{n_candidates} rows, IDs={candidate_ids}"
+    )
 
     assert n_candidates > 0
 
@@ -286,12 +337,17 @@ def test_e2e_glove_catalog():
     more_train = read_fvecs(TRAIN_PATH, 700)[500:]  # IDs 500-699
     batch2 = _make_record_batch(more_train, dim, id_start=500)
     table.write_arrow(batch2, batch_size=8192, thread_num=2)
-    print(f"[5/7] Incremental write: {len(more_train)} vectors "
-          f"(IDs 500-{500+len(more_train)-1})")
+    print(
+        f"[5/7] Incremental write: {len(more_train)} vectors "
+        f"(IDs 500-{500 + len(more_train) - 1})"
+    )
 
     result2 = table.build_vector_index(
-        column="vec", dim=dim,
-        nlist=8, total_bits=7, metric="L2",
+        column="vec",
+        dim=dim,
+        nlist=8,
+        total_bits=7,
+        metric="L2",
     )
     assert result2["status"] == "ok", f"Incremental build failed: {result2}"
     details2 = result2.get("details", [])
@@ -303,12 +359,18 @@ def test_e2e_glove_catalog():
     query_vec2 = more_train[0]  # vector 500
     top_k2 = 5
 
-    ds2 = table.scan().options(reader_options={
-        "vector_search_column": "vec",
-        "vector_search_query": ",".join(f"{v:.6f}" for v in query_vec2),
-        "vector_search_top_k": str(top_k2),
-        "vector_search_nprobe": "4",
-    }).to_arrow_dataset()
+    ds2 = (
+        table.scan()
+        .options(
+            reader_options={
+                "vector_search_column": "vec",
+                "vector_search_query": ",".join(f"{v:.6f}" for v in query_vec2),
+                "vector_search_top_k": str(top_k2),
+                "vector_search_nprobe": "4",
+            }
+        )
+        .to_arrow_dataset()
+    )
     result2 = ds2.scanner().to_table()
 
     # Re-rank by exact distance
@@ -317,12 +379,15 @@ def test_e2e_glove_catalog():
     result2 = rerank_by_distance(result2, query_vec2, "vec", top_k2)
     ids2 = result2.column("id").to_pylist()
     new_ids = [i for i in ids2 if i >= 500]
-    print(f"[7/7] After incremental update: top-{len(ids2)} IDs, "
-          f"new IDs (>=500)={new_ids}")
+    print(
+        f"[7/7] After incremental update: top-{len(ids2)} IDs, "
+        f"new IDs (>=500)={new_ids}"
+    )
 
     # Verify new vectors from the incremental batch are searchable
-    assert len(new_ids) > 0, \
+    assert len(new_ids) > 0, (
         f"No new vectors (ID >= 500) in top-{top_k2}; found: {ids2[:10]}..."
+    )
     print("✓ Catalog test PASSED (multi-bucket)")
 
     table.drop()
@@ -335,6 +400,7 @@ def test_e2e_s3_incremental():
     """
     if os.environ.get("LAKESOUL_S3_TEST") != "1":
         import pytest
+
         pytest.skip("set LAKESOUL_S3_TEST=1 to enable S3 tests")
 
     from lakesoul import LakeSoulCatalog
@@ -389,30 +455,42 @@ def test_e2e_s3_incremental():
     batch1 = _make_record_batch(train, dim)
     result = table.write_arrow_and_build_vector_index(
         batch1,
-        column="vec", dim=dim,
-        nlist=8, total_bits=7, metric="L2",
+        column="vec",
+        dim=dim,
+        nlist=8,
+        total_bits=7,
+        metric="L2",
     )
     assert result["status"] == "ok", f"Build failed: {result}"
     assert result["shards_built"] >= 2, f"Expected >=2 shards: {result}"
-    print(f"[1/6] Initial write+build: {result['row_count']} rows, "
-          f"{result['shards_built']}/{result['shards_total']} shards built")
+    print(
+        f"[1/6] Initial write+build: {result['row_count']} rows, "
+        f"{result['shards_built']}/{result['shards_total']} shards built"
+    )
 
     # 3. Read via table.scan() with vector search on S3
     query_vec = test_vecs[0]
     top_k = 3
 
-    ds = table.scan().options(reader_options={
-        "vector_search_column": "vec",
-        "vector_search_query": ",".join(f"{v:.6f}" for v in query_vec),
-        "vector_search_top_k": str(top_k),
-        "vector_search_nprobe": "8",
-    }).to_arrow_dataset()
+    ds = (
+        table.scan()
+        .options(
+            reader_options={
+                "vector_search_column": "vec",
+                "vector_search_query": ",".join(f"{v:.6f}" for v in query_vec),
+                "vector_search_top_k": str(top_k),
+                "vector_search_nprobe": "8",
+            }
+        )
+        .to_arrow_dataset()
+    )
     result_table = ds.scanner().to_table()
 
     n_candidates = result_table.num_rows
     print(f"[2/6] Vector search candidates: {n_candidates} rows")
 
     from lakesoul.vector_index import rerank_by_distance
+
     result_table = rerank_by_distance(result_table, query_vec, "vec", top_k)
     final_ids = result_table.column("id").to_pylist()
     print(f"      After re-rank: top-{len(final_ids)} IDs={final_ids}")
@@ -428,31 +506,44 @@ def test_e2e_s3_incremental():
     batch2 = _make_record_batch(more_train, dim, id_start=500)
     result2 = table.write_arrow_and_build_vector_index(
         batch2,
-        column="vec", dim=dim,
-        nlist=8, total_bits=7, metric="L2",
+        column="vec",
+        dim=dim,
+        nlist=8,
+        total_bits=7,
+        metric="L2",
     )
     assert result2["status"] == "ok"
-    print(f"[4/6] Incremental write+build: {result2['row_count']} rows, "
-          f"{result2['shards_built']}/{result2['shards_total']} shards built")
+    print(
+        f"[4/6] Incremental write+build: {result2['row_count']} rows, "
+        f"{result2['shards_built']}/{result2['shards_total']} shards built"
+    )
 
     # 5. Search with a broader top_k to capture new vectors from delta
     # segments spread across only a subset of clusters.
     query_vec2 = more_train[0]  # vector 500
     top_k2 = 100
 
-    ds2 = table.scan().options(reader_options={
-        "vector_search_column": "vec",
-        "vector_search_query": ",".join(f"{v:.6f}" for v in query_vec2),
-        "vector_search_top_k": str(top_k2),
-        "vector_search_nprobe": "8",
-    }).to_arrow_dataset()
+    ds2 = (
+        table.scan()
+        .options(
+            reader_options={
+                "vector_search_column": "vec",
+                "vector_search_query": ",".join(f"{v:.6f}" for v in query_vec2),
+                "vector_search_top_k": str(top_k2),
+                "vector_search_nprobe": "8",
+            }
+        )
+        .to_arrow_dataset()
+    )
     result2_table = ds2.scanner().to_table()
 
     # Check raw candidates (before re-rank) for new vectors
     all_candidate_ids = result2_table.column("id").to_pylist()
     new_candidates = [i for i in all_candidate_ids if i >= 500]
-    print(f"[5/6] After incremental: {len(all_candidate_ids)} candidates, "
-          f"new IDs (>=500)={sorted(new_candidates)[:20]}...")
+    print(
+        f"[5/6] After incremental: {len(all_candidate_ids)} candidates, "
+        f"new IDs (>=500)={sorted(new_candidates)[:20]}..."
+    )
     assert len(new_candidates) > 0, (
         f"No new vectors in {len(all_candidate_ids)} candidates"
     )
@@ -465,7 +556,9 @@ def test_e2e_s3_incremental():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--use-catalog", action="store_true", help="Use Catalog + PG")
-    parser.add_argument("--use-s3", action="store_true", help="Use S3/MinIO + incremental API")
+    parser.add_argument(
+        "--use-s3", action="store_true", help="Use S3/MinIO + incremental API"
+    )
     args = parser.parse_args()
 
     if args.use_s3:

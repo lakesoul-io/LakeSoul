@@ -18,14 +18,13 @@
 
 package org.apache.flink.table.runtime.arrow.writers;
 
+import org.apache.arrow.vector.complex.MapVector;
+import org.apache.arrow.vector.complex.StructVector;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.data.ArrayData;
 import org.apache.flink.table.data.MapData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.util.Preconditions;
-
-import org.apache.arrow.vector.complex.MapVector;
-import org.apache.arrow.vector.complex.StructVector;
 
 /** {@link ArrowFieldWriter} for Map. */
 @Internal

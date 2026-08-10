@@ -14,5 +14,4 @@ public abstract class Submitter {
     }
 
     public abstract void submit() throws Exception;
-
 }

@@ -4,6 +4,8 @@
 
 package com.dmetasoul.lakesoul.meta;
 
+import static com.dmetasoul.lakesoul.meta.DBConfig.*;
+
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
@@ -11,6 +13,7 @@ import com.dmetasoul.lakesoul.meta.entity.DataFileOp;
 import com.dmetasoul.lakesoul.meta.entity.FileOp;
 import com.dmetasoul.lakesoul.meta.entity.Uuid;
 import com.zaxxer.hikari.HikariConfig;
+
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.permission.*;
@@ -34,14 +37,13 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-import static com.dmetasoul.lakesoul.meta.DBConfig.*;
-
 public class DBUtil {
 
     private static final Logger LOG = LoggerFactory.getLogger(DBUtil.class);
 
     private static final String driverNameDefault = "org.postgresql.Driver";
-    private static final String urlDefault = "jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified";
+    private static final String urlDefault =
+            "jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified";
     private static final String usernameDefault = "lakesoul_test";
     private static final String passwordDefault = "lakesoul_test";
 
@@ -81,14 +83,12 @@ public class DBUtil {
     }
 
     /**
-     * PG connection config retrieved in the following order:
-     * 1. An env var "LAKESOUL_HOME" (case-insensitive) point to a property file or
-     * 2. A system property "lakesoul_home" (in lower case) point to a property file;
-     * Following config keys are used to read the property file:
-     * lakesoul.pg.driver, lakesoul.pg.url, lakesoul.pg.username, lakesoul.pg.password
-     * 3. Any of the following env var exist:
-     * LAKESOUL_PG_DRIVER, LAKESOUL_PG_URL, LAKESOUL_PG_USERNAME, LAKESOUL_PG_PASSWORD
-     * 4. Otherwise, resolved to each's config's default
+     * PG connection config retrieved in the following order: 1. An env var "LAKESOUL_HOME"
+     * (case-insensitive) point to a property file or 2. A system property "lakesoul_home" (in lower
+     * case) point to a property file; Following config keys are used to read the property file:
+     * lakesoul.pg.driver, lakesoul.pg.url, lakesoul.pg.username, lakesoul.pg.password 3. Any of the
+     * following env var exist: LAKESOUL_PG_DRIVER, LAKESOUL_PG_URL, LAKESOUL_PG_USERNAME,
+     * LAKESOUL_PG_PASSWORD 4. Otherwise, resolved to each's config's default
      */
     public static DataBaseProperty getDBInfo() {
 
@@ -108,11 +108,15 @@ public class DBUtil {
                 throw new RuntimeException(e);
             }
         } else {
-            properties.setProperty(driverNameKey, getConfigValue(driverNameEnv, driverNameKey, driverNameDefault));
+            properties.setProperty(
+                    driverNameKey, getConfigValue(driverNameEnv, driverNameKey, driverNameDefault));
             properties.setProperty(urlKey, getConfigValue(urlEnv, urlKey, urlDefault));
-            properties.setProperty(secondaryUrlKey, getConfigValue(secondaryUrlEnv, secondaryUrlKey, ""));
-            properties.setProperty(usernameKey, getConfigValue(usernameEnv, usernameKey, usernameDefault));
-            properties.setProperty(passwordKey, getConfigValue(passwordEnv, passwordKey, passwordDefault));
+            properties.setProperty(
+                    secondaryUrlKey, getConfigValue(secondaryUrlEnv, secondaryUrlKey, ""));
+            properties.setProperty(
+                    usernameKey, getConfigValue(usernameEnv, usernameKey, usernameDefault));
+            properties.setProperty(
+                    passwordKey, getConfigValue(passwordEnv, passwordKey, passwordDefault));
         }
         DataBaseProperty dataBaseProperty = new DataBaseProperty();
         dataBaseProperty.setDriver(properties.getProperty(driverNameKey, driverNameDefault));
@@ -120,7 +124,11 @@ public class DBUtil {
         dataBaseProperty.setUsername(properties.getProperty(usernameKey, usernameDefault));
         dataBaseProperty.setPassword(properties.getProperty(passwordKey, passwordDefault));
         try {
-            URL url = new URL(properties.getProperty(urlKey, urlDefault).replaceFirst("jdbc:postgresql", "http"));
+            URL url =
+                    new URL(
+                            properties
+                                    .getProperty(urlKey, urlDefault)
+                                    .replaceFirst("jdbc:postgresql", "http"));
             dataBaseProperty.setDbName(url.getPath().substring(1));
             dataBaseProperty.setHost(url.getHost());
             dataBaseProperty.setPort(String.valueOf(url.getPort()));
@@ -211,7 +219,8 @@ public class DBUtil {
             String fileOp = dataFileOp.getFileOp().name();
             long size = dataFileOp.getSize();
             String fileExistCols = dataFileOp.getFileExistCols();
-            sb.append(String.format("\"(%s,%s,%s,\\\"%s\\\")\",", path, fileOp, size, fileExistCols));
+            sb.append(
+                    String.format("\"(%s,%s,%s,\\\"%s\\\")\",", path, fileOp, size, fileExistCols));
         }
         sb = new StringBuilder(sb.substring(0, sb.length() - 1));
         sb.append("}");
@@ -246,42 +255,50 @@ public class DBUtil {
         return rsList;
     }
 
-    public static String formatTableInfoPartitionsField(List<String> primaryKeys, List<String> rangePartitions) {
+    public static String formatTableInfoPartitionsField(
+            List<String> primaryKeys, List<String> rangePartitions) {
         return formatTableInfoPartitionsField(
                 String.join(LAKESOUL_HASH_PARTITION_SPLITTER, primaryKeys),
                 String.join(LAKESOUL_RANGE_PARTITION_SPLITTER, rangePartitions));
     }
 
-    public static String formatTableInfoPartitionsField(String primaryKeys, List<String> rangePartitions) {
-        return formatTableInfoPartitionsField(primaryKeys,
-                String.join(LAKESOUL_RANGE_PARTITION_SPLITTER,
-                        rangePartitions));
+    public static String formatTableInfoPartitionsField(
+            String primaryKeys, List<String> rangePartitions) {
+        return formatTableInfoPartitionsField(
+                primaryKeys, String.join(LAKESOUL_RANGE_PARTITION_SPLITTER, rangePartitions));
     }
 
-    public static String formatTableInfoPartitionsField(String primaryKeys, String rangePartitions) {
-        return String.join(LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH, rangePartitions, primaryKeys);
+    public static String formatTableInfoPartitionsField(
+            String primaryKeys, String rangePartitions) {
+        return String.join(
+                LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH, rangePartitions, primaryKeys);
     }
 
     public static TablePartitionKeys parseTableInfoPartitions(String partitions) {
-        if (StringUtils.isBlank(partitions) || partitions.equals(LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH)) {
+        if (StringUtils.isBlank(partitions)
+                || partitions.equals(LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH)) {
             return new TablePartitionKeys();
         }
         // has hash keys, no range keys
-        String[] rangeAndPks = StringUtils.split(partitions, LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH);
+        String[] rangeAndPks =
+                StringUtils.split(partitions, LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH);
         if (StringUtils.startsWith(partitions, LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH)) {
             return new TablePartitionKeys(
-                    Arrays.asList(StringUtils.split(rangeAndPks[0], LAKESOUL_HASH_PARTITION_SPLITTER)),
+                    Arrays.asList(
+                            StringUtils.split(rangeAndPks[0], LAKESOUL_HASH_PARTITION_SPLITTER)),
                     Collections.emptyList());
         }
         // has range keys, no pks
         if (StringUtils.endsWith(partitions, LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH)) {
-            return new TablePartitionKeys(Collections.emptyList(),
-                    Arrays.asList(StringUtils.split(rangeAndPks[0], LAKESOUL_RANGE_PARTITION_SPLITTER)));
+            return new TablePartitionKeys(
+                    Collections.emptyList(),
+                    Arrays.asList(
+                            StringUtils.split(rangeAndPks[0], LAKESOUL_RANGE_PARTITION_SPLITTER)));
         }
         return new TablePartitionKeys(
                 Arrays.asList(StringUtils.split(rangeAndPks[1], LAKESOUL_HASH_PARTITION_SPLITTER)),
-                Arrays.asList(StringUtils.split(rangeAndPks[0], LAKESOUL_RANGE_PARTITION_SPLITTER))
-        );
+                Arrays.asList(
+                        StringUtils.split(rangeAndPks[0], LAKESOUL_RANGE_PARTITION_SPLITTER)));
     }
 
     // assume that map iteration order is partition level order
@@ -290,9 +307,14 @@ public class DBUtil {
         if (partitionDesc.isEmpty()) {
             return LAKESOUL_NON_PARTITION_TABLE_PART_DESC;
         }
-        return partitionDesc.entrySet().stream().map(entry -> String.join(LAKESOUL_PARTITION_DESC_KV_DELIM,
-                entry.getKey(),
-                entry.getValue())).collect(Collectors.joining(LAKESOUL_RANGE_PARTITION_SPLITTER));
+        return partitionDesc.entrySet().stream()
+                .map(
+                        entry ->
+                                String.join(
+                                        LAKESOUL_PARTITION_DESC_KV_DELIM,
+                                        entry.getKey(),
+                                        entry.getValue()))
+                .collect(Collectors.joining(LAKESOUL_RANGE_PARTITION_SPLITTER));
     }
 
     public static LinkedHashMap<String, String> parsePartitionDesc(String partitionDesc) {
@@ -358,7 +380,10 @@ public class DBUtil {
     }
 
     public static Uuid toProtoUuid(UUID uuid) {
-        return Uuid.newBuilder().setHigh(uuid.getMostSignificantBits()).setLow(uuid.getLeastSignificantBits()).build();
+        return Uuid.newBuilder()
+                .setHigh(uuid.getMostSignificantBits())
+                .setLow(uuid.getLeastSignificantBits())
+                .build();
     }
 
     public static String protoUuidToJniString(Uuid uuid) {
@@ -401,9 +426,10 @@ public class DBUtil {
         }
 
         public void report() {
-            System.out.printf("Timer %s: totalCost=%d, times=%d, avgCost=%.3f\n", name, totalCost, times, (double) totalCost / times);
+            System.out.printf(
+                    "Timer %s: totalCost=%d, times=%d, avgCost=%.3f\n",
+                    name, totalCost, times, (double) totalCost / times);
         }
-
     }
 
     public static long parseMemoryExpression(String memoryExpression) {
@@ -428,8 +454,8 @@ public class DBUtil {
 
     /**
      * Generate secret from username and password
-     * 
-     * Reference:
+     *
+     * <p>Reference:
      * https://github.com/lakesoul-io/LakeSoul/blob/main/rust/lakesoul-metadata/src/metadata_client.rs#L115
      */
     public static String generateSecret(String username, String password) {
@@ -448,30 +474,38 @@ public class DBUtil {
         }
     }
 
-    private static void setDirPermission(org.apache.hadoop.fs.Path dir, String userName, String domain,
-        DistributedFileSystem hdfs, boolean ignoreExists) throws IOException {
+    private static void setDirPermission(
+            org.apache.hadoop.fs.Path dir,
+            String userName,
+            String domain,
+            DistributedFileSystem hdfs,
+            boolean ignoreExists)
+            throws IOException {
         if (!hdfs.exists(dir)) {
             hdfs.mkdirs(dir);
             if (domain.equalsIgnoreCase("public") || domain.equalsIgnoreCase("lake-public")) {
                 // set 777 for public domain and sticky bit
-                hdfs.setPermission(dir, new FsPermission(FsAction.ALL, FsAction.ALL, FsAction.ALL, true));
+                hdfs.setPermission(
+                        dir, new FsPermission(FsAction.ALL, FsAction.ALL, FsAction.ALL, true));
             } else {
                 // set dir owner to user:domain
                 hdfs.setOwner(dir, userName, domain);
                 // set 770 for other domain
-                hdfs.setPermission(dir, new FsPermission(FsAction.ALL, FsAction.ALL, FsAction.NONE));
+                hdfs.setPermission(
+                        dir, new FsPermission(FsAction.ALL, FsAction.ALL, FsAction.NONE));
             }
             try {
                 // try set default acl to allow domain users have
                 // permission to read/write compaction dirs
-                hdfs.setAcl(dir, java.util.Collections.singletonList(
-                        new AclEntry.Builder()
-                                .setName(domain)
-                                .setType(AclEntryType.GROUP)
-                                .setScope(AclEntryScope.DEFAULT)
-                                .setPermission(FsAction.ALL)
-                                .build()
-                ));
+                hdfs.setAcl(
+                        dir,
+                        java.util.Collections.singletonList(
+                                new AclEntry.Builder()
+                                        .setName(domain)
+                                        .setType(AclEntryType.GROUP)
+                                        .setScope(AclEntryScope.DEFAULT)
+                                        .setPermission(FsAction.ALL)
+                                        .build()));
             } catch (Exception e) {
                 LOG.info("Ignore set acl exception for {}", dir, e);
             }
@@ -482,8 +516,9 @@ public class DBUtil {
 
     // try to set dir permission and acl for HDFS
     // ignore if no hdfs fs class exists or path is local/s3 fs
-    public static void createAndSetTableDirPermission(FileSystem fs, org.apache.hadoop.fs.Path tbDir,
-                                                      boolean ignoreTableDirExists) throws IOException {
+    public static void createAndSetTableDirPermission(
+            FileSystem fs, org.apache.hadoop.fs.Path tbDir, boolean ignoreTableDirExists)
+            throws IOException {
         try {
             DBUtil.class.getClassLoader().loadClass("org.apache.hadoop.hdfs.DistributedFileSystem");
         } catch (Exception e) {

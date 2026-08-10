@@ -526,22 +526,23 @@ class LakeSoulTable:
             Dict with summary: ``{"status": "ok", "partitions": 2, ...}``.
         """
         if partition_desc is not None and partitions is not None:
-            raise ValueError(
-                "partition_desc and partitions are mutually exclusive"
-            )
+            raise ValueError("partition_desc and partitions are mutually exclusive")
 
         # Auto-detect vector column from table properties
         vec_col, vec_dim = self._vector_column_info(column, dim)
 
-        store_config = _default_object_store_config(
-            catalog=self._catalog, table=self
-        )
+        store_config = _default_object_store_config(catalog=self._catalog, table=self)
 
         if partition_desc is not None:
             return _build_vector_index_for_one(
-                table=self, column=vec_col, dim=vec_dim,
-                nlist=nlist, total_bits=total_bits, metric=metric,
-                partition_desc=partition_desc, store_config=store_config,
+                table=self,
+                column=vec_col,
+                dim=vec_dim,
+                nlist=nlist,
+                total_bits=total_bits,
+                metric=metric,
+                partition_desc=partition_desc,
+                store_config=store_config,
             )
 
         if partitions is not None:
@@ -549,22 +550,30 @@ class LakeSoulTable:
             part_cols = self.partition_by
             missing = [c for c in part_cols if c not in partitions]
             if missing:
-                raise ValueError(
-                    f"missing partition columns: {missing}"
-                )
+                raise ValueError(f"missing partition columns: {missing}")
             desc = ",".join(f"{c}={partitions[c]}" for c in part_cols)
             return _build_vector_index_for_one(
-                table=self, column=vec_col, dim=vec_dim,
-                nlist=nlist, total_bits=total_bits, metric=metric,
-                partition_desc=desc, store_config=store_config,
+                table=self,
+                column=vec_col,
+                dim=vec_dim,
+                nlist=nlist,
+                total_bits=total_bits,
+                metric=metric,
+                partition_desc=desc,
+                store_config=store_config,
             )
 
         # Build for all partitions
         from lakesoul.vector_index import build_table_vector_index
+
         return build_table_vector_index(
-            table_name=self.name, namespace=self.namespace,
-            vector_column=vec_col, dim=vec_dim,
-            nlist=nlist, total_bits=total_bits, metric=metric,
+            table_name=self.name,
+            namespace=self.namespace,
+            vector_column=vec_col,
+            dim=vec_dim,
+            nlist=nlist,
+            total_bits=total_bits,
+            metric=metric,
             store_config=store_config,
         )
 
@@ -640,9 +649,7 @@ class LakeSoulTable:
         # 2. Auto-detect vector column info
         vec_col, vec_dim = self._vector_column_info(column, dim)
 
-        store_config = _default_object_store_config(
-            catalog=self._catalog, table=self
-        )
+        store_config = _default_object_store_config(catalog=self._catalog, table=self)
 
         # 3. Group new files by hash bucket
         file_paths = [f.path for f in write_result.files]
@@ -678,7 +685,9 @@ class LakeSoulTable:
         }
 
     def _vector_column_info(
-        self, column: str | None, dim: int | None,
+        self,
+        column: str | None,
+        dim: int | None,
     ) -> tuple[str, int]:
         props = dict(self.properties)
         raw = props.get("vector_index_columns", "")

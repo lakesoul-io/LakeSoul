@@ -9,7 +9,10 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.InternalRow.getAccessor
 import org.apache.spark.sql.catalyst.expressions.GenericInternalRow
 import org.apache.spark.sql.connector.read.PartitionReader
-import org.apache.spark.sql.execution.datasources.v2.merge.{KeyIndex, MergePartitionedFile}
+import org.apache.spark.sql.execution.datasources.v2.merge.{
+  KeyIndex,
+  MergePartitionedFile
+}
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
@@ -17,24 +20,46 @@ import scala.collection.BufferedIterator
 
 trait MergeLogic {
 
-  def getValueByType(row: InternalRow, fieldIndex: Int, dataType: DataType): Any = {
+  def getValueByType(
+      row: InternalRow,
+      fieldIndex: Int,
+      dataType: DataType
+  ): Any = {
     dataType match {
-      case StringType => if (row.isNullAt(fieldIndex)) null else row.getUTF8String(fieldIndex).clone()
-      case IntegerType | DateType => if (row.isNullAt(fieldIndex)) null else row.getInt(fieldIndex)
-      case BooleanType => if (row.isNullAt(fieldIndex)) null else row.getBoolean(fieldIndex)
-      case ByteType => if (row.isNullAt(fieldIndex)) null else row.getByte(fieldIndex)
-      case ShortType => if (row.isNullAt(fieldIndex)) null else row.getShort(fieldIndex)
-      case LongType | TimestampType => if (row.isNullAt(fieldIndex)) null else row.getLong(fieldIndex)
-      case FloatType => if (row.isNullAt(fieldIndex)) null else row.getFloat(fieldIndex)
-      case DoubleType => if (row.isNullAt(fieldIndex)) null else row.getDouble(fieldIndex)
-      case BinaryType => if (row.isNullAt(fieldIndex)) null else row.getBinary(fieldIndex)
-      case CalendarIntervalType => if (row.isNullAt(fieldIndex)) null else row.getInterval(fieldIndex)
-      case t: DecimalType => if (row.isNullAt(fieldIndex)) null else row.getDecimal(fieldIndex, t.precision, t.scale)
-      case t: StructType => if (row.isNullAt(fieldIndex)) null else row.getStruct(fieldIndex, t.size)
-      case _: ArrayType => if (row.isNullAt(fieldIndex)) null else row.getArray(fieldIndex)
-      case _: MapType => if (row.isNullAt(fieldIndex)) null else row.getMap(fieldIndex)
+      case StringType =>
+        if (row.isNullAt(fieldIndex)) null
+        else row.getUTF8String(fieldIndex).clone()
+      case IntegerType | DateType =>
+        if (row.isNullAt(fieldIndex)) null else row.getInt(fieldIndex)
+      case BooleanType =>
+        if (row.isNullAt(fieldIndex)) null else row.getBoolean(fieldIndex)
+      case ByteType =>
+        if (row.isNullAt(fieldIndex)) null else row.getByte(fieldIndex)
+      case ShortType =>
+        if (row.isNullAt(fieldIndex)) null else row.getShort(fieldIndex)
+      case LongType | TimestampType =>
+        if (row.isNullAt(fieldIndex)) null else row.getLong(fieldIndex)
+      case FloatType =>
+        if (row.isNullAt(fieldIndex)) null else row.getFloat(fieldIndex)
+      case DoubleType =>
+        if (row.isNullAt(fieldIndex)) null else row.getDouble(fieldIndex)
+      case BinaryType =>
+        if (row.isNullAt(fieldIndex)) null else row.getBinary(fieldIndex)
+      case CalendarIntervalType =>
+        if (row.isNullAt(fieldIndex)) null else row.getInterval(fieldIndex)
+      case t: DecimalType =>
+        if (row.isNullAt(fieldIndex)) null
+        else row.getDecimal(fieldIndex, t.precision, t.scale)
+      case t: StructType =>
+        if (row.isNullAt(fieldIndex)) null
+        else row.getStruct(fieldIndex, t.size)
+      case _: ArrayType =>
+        if (row.isNullAt(fieldIndex)) null else row.getArray(fieldIndex)
+      case _: MapType =>
+        if (row.isNullAt(fieldIndex)) null else row.getMap(fieldIndex)
       case u: UserDefinedType[_] => getAccessor(u.sqlType, true)
-      case _ => if (row.isNullAt(fieldIndex)) null else row.get(fieldIndex, dataType)
+      case _                     =>
+        if (row.isNullAt(fieldIndex)) null else row.get(fieldIndex, dataType)
     }
   }
 
@@ -43,24 +68,31 @@ trait MergeLogic {
 
 }
 
-
 import scala.collection.JavaConverters._
 
-class MergeSingletonFile(filesInfo: Seq[(MergePartitionedFile, PartitionReader[ColumnarBatch])]) extends MergeLogic {
+class MergeSingletonFile(
+    filesInfo: Seq[(MergePartitionedFile, PartitionReader[ColumnarBatch])]
+) extends MergeLogic {
 
-  //initialize index
+  // initialize index
   val keyInfoArray: Array[KeyIndex] = filesInfo.head._1.keyInfo.toArray
 
-  val typeArray: Array[DataType] = filesInfo.head._1.fileInfo.map(_.fieldType).toArray
+  val typeArray: Array[DataType] =
+    filesInfo.head._1.fileInfo.map(_.fieldType).toArray
 
-  var temporaryRow: Array[Any] = new Array[Any](filesInfo.head._1.resultSchema.length)
+  var temporaryRow: Array[Any] =
+    new Array[Any](filesInfo.head._1.resultSchema.length)
   // get next batch
-  var fileSeq: Seq[(MergePartitionedFile, ColumnarBatch)] = MergeUtils.getNextBatch(filesInfo)
+  var fileSeq: Seq[(MergePartitionedFile, ColumnarBatch)] =
+    MergeUtils.getNextBatch(filesInfo)
 
   val fileSchema: Seq[String] = filesInfo.head._1.fileInfo.map(_.fieldName)
-  val resIndex: Array[Int] = filesInfo.head._1.resultSchema.map(_.fieldName).map(schema => {
-    fileSchema.indexOf(schema)
-  }).toArray
+  val resIndex: Array[Int] = filesInfo.head._1.resultSchema
+    .map(_.fieldName)
+    .map(schema => {
+      fileSchema.indexOf(schema)
+    })
+    .toArray
 
   val emptyBatch: Boolean = fileSeq.isEmpty
   var temporaryStoreLastRow = false
@@ -109,7 +141,8 @@ class MergeSingletonFile(filesInfo: Seq[(MergePartitionedFile, PartitionReader[C
         temporaryStoreLastRow = true
         fileSeq = MergeUtils.getNextBatch(filesInfo)
         if (fileSeq.nonEmpty) {
-          bufferedIt = fileSeq.head._2.rowIterator().asScala.zipWithIndex.buffered
+          bufferedIt =
+            fileSeq.head._2.rowIterator().asScala.zipWithIndex.buffered
           singletonBatch = initMergeBatch(fileSeq.head, resIndex)
         } else {
           return true
@@ -121,9 +154,10 @@ class MergeSingletonFile(filesInfo: Seq[(MergePartitionedFile, PartitionReader[C
   }
 
   def combineKey(row: InternalRow): String = {
-    keyInfoArray.map(keyIndex => {
-      row.get(keyIndex.index, keyIndex.keyType).toString
-    })
+    keyInfoArray
+      .map(keyIndex => {
+        row.get(keyIndex.index, keyIndex.keyType).toString
+      })
       .reduce(_.concat(_))
   }
 
@@ -138,7 +172,10 @@ class MergeSingletonFile(filesInfo: Seq[(MergePartitionedFile, PartitionReader[C
     }
   }
 
-  def initMergeBatch(file: (MergePartitionedFile, ColumnarBatch), resIndex: Array[Int]): SingletonFileColumnarBatch = {
+  def initMergeBatch(
+      file: (MergePartitionedFile, ColumnarBatch),
+      resIndex: Array[Int]
+  ): SingletonFileColumnarBatch = {
     val columnArr =
       resIndex.map(res => {
         if (res == -1) {
@@ -155,5 +192,3 @@ class MergeSingletonFile(filesInfo: Seq[(MergePartitionedFile, PartitionReader[C
   }
 
 }
-
-

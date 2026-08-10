@@ -20,15 +20,12 @@ package com.dmetasoul.lakesoul.lakesoul.local.arrow.writers;
 
 import org.apache.arrow.vector.BitVector;
 
-/**
- * {@link ArrowFieldWriter} for Boolean.
- */
+/** {@link ArrowFieldWriter} for Boolean. */
 public abstract class BooleanWriter<T> extends ArrowFieldWriter<T> {
 
     public static BooleanWriter<Object[]> forObject(BitVector bitVector) {
         return new BooleanWriterForObject(bitVector);
     }
-
 
     // ------------------------------------------------------------------------------------------
 
@@ -53,9 +50,7 @@ public abstract class BooleanWriter<T> extends ArrowFieldWriter<T> {
 
     // ------------------------------------------------------------------------------------------
 
-    /**
-     * {@link BooleanWriter} for {@link Object[]} input.
-     */
+    /** {@link BooleanWriter} for {@link Object[]} input. */
     public static final class BooleanWriterForObject extends BooleanWriter<Object[]> {
 
         private BooleanWriterForObject(BitVector bitVector) {
@@ -72,5 +67,4 @@ public abstract class BooleanWriter<T> extends ArrowFieldWriter<T> {
             return (boolean) in[ordinal];
         }
     }
-
 }

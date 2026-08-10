@@ -12,9 +12,9 @@ import org.apache.flink.core.memory.DataOutputView;
 
 import java.io.IOException;
 
-public class LakeSoulArrowTypeSerializerSnapshot implements TypeSerializerSnapshot<LakeSoulArrowWrapper> {
-    public LakeSoulArrowTypeSerializerSnapshot() {
-    }
+public class LakeSoulArrowTypeSerializerSnapshot
+        implements TypeSerializerSnapshot<LakeSoulArrowWrapper> {
+    public LakeSoulArrowTypeSerializerSnapshot() {}
 
     /**
      * Returns the version of the current snapshot's written binary format.
@@ -36,25 +36,22 @@ public class LakeSoulArrowTypeSerializerSnapshot implements TypeSerializerSnapsh
      * @see #writeVersionedSnapshot(DataOutputView, TypeSerializerSnapshot)
      */
     @Override
-    public void writeSnapshot(DataOutputView out) throws IOException {
-
-    }
+    public void writeSnapshot(DataOutputView out) throws IOException {}
 
     /**
      * Reads the serializer snapshot from the provided {@link DataInputView}. The version of the
      * binary format that the serializer snapshot was written with is provided. This version can be
      * used to determine how the serializer snapshot should be read.
      *
-     * @param readVersion         version of the serializer snapshot's written binary format
-     * @param in                  the {@link DataInputView} to read the snapshot from.
+     * @param readVersion version of the serializer snapshot's written binary format
+     * @param in the {@link DataInputView} to read the snapshot from.
      * @param userCodeClassLoader the user code classloader
      * @throws IOException Thrown if the snapshot data could be read or parsed.
      * @see #readVersionedSnapshot(DataInputView, ClassLoader)
      */
     @Override
-    public void readSnapshot(int readVersion, DataInputView in, ClassLoader userCodeClassLoader) throws IOException {
-
-    }
+    public void readSnapshot(int readVersion, DataInputView in, ClassLoader userCodeClassLoader)
+            throws IOException {}
 
     /**
      * Recreates a serializer instance from this snapshot. The returned serializer can be safely
@@ -85,7 +82,8 @@ public class LakeSoulArrowTypeSerializerSnapshot implements TypeSerializerSnapsh
      * @return the serializer compatibility result.
      */
     @Override
-    public TypeSerializerSchemaCompatibility resolveSchemaCompatibility(TypeSerializer newSerializer) {
+    public TypeSerializerSchemaCompatibility resolveSchemaCompatibility(
+            TypeSerializer newSerializer) {
         return null;
     }
 }

@@ -14,8 +14,7 @@ import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
 import org.apache.spark.sql.lakesoul.commands.DeleteCommand
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 
-/**
-  * Preprocess the [[LakeSoulDelete]] plan to convert to [[DeleteCommand]].
+/** Preprocess the [[LakeSoulDelete]] plan to convert to [[DeleteCommand]].
   */
 case class PreprocessTableDelete(sqlConf: SQLConf) extends Rule[LogicalPlan] {
 
@@ -31,7 +30,9 @@ case class PreprocessTableDelete(sqlConf: SQLConf) extends Rule[LogicalPlan] {
     }
   }
 
-  def toCommand(d: LakeSoulDelete): DeleteCommand = EliminateSubqueryAliases(d.child) match {
+  def toCommand(d: LakeSoulDelete): DeleteCommand = EliminateSubqueryAliases(
+    d.child
+  ) match {
     case LakeSoulTableRelationV2(tbl: LakeSoulTableV2) =>
       DeleteCommand(tbl.snapshotManagement, d.child, d.condition)
 

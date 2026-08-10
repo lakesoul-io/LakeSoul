@@ -4,6 +4,8 @@
 
 package com.dmetasoul.lakesoul.lakesoul.io;
 
+import static com.dmetasoul.lakesoul.meta.DBConfig.TableInfoProperty.HASH_BUCKET_NUM;
+
 import com.dmetasoul.lakesoul.lakesoul.LakeSoulArrowUtils;
 import com.dmetasoul.lakesoul.lakesoul.io.jnr.LibLakeSoulIO;
 import com.dmetasoul.lakesoul.meta.DBConfig;
@@ -11,8 +13,10 @@ import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+
 import jnr.ffi.Pointer;
 import jnr.ffi.Runtime;
+
 import org.apache.arrow.c.ArrowArray;
 import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.c.Data;
@@ -29,11 +33,9 @@ import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
-import static com.dmetasoul.lakesoul.meta.DBConfig.TableInfoProperty.HASH_BUCKET_NUM;
-
 public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
 
-    private final static Logger LOG = LoggerFactory.getLogger(NativeIOWriter.class);
+    private static final Logger LOG = LoggerFactory.getLogger(NativeIOWriter.class);
 
     private Pointer writer = null;
 
@@ -60,35 +62,40 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
-        DBUtil.TablePartitionKeys partitionKeys = DBUtil.parseTableInfoPartitions(tableInfo.getPartitions());
+        DBUtil.TablePartitionKeys partitionKeys =
+                DBUtil.parseTableInfoPartitions(tableInfo.getPartitions());
         setPrimaryKeys(partitionKeys.primaryKeys);
         setRangePartitions(partitionKeys.rangeKeys);
         useDynamicPartition(true);
 
-
         withPrefix(tableInfo.getTablePath());
-
     }
-
 
     public void setAuxSortColumns(Iterable<String> auxSortColumns) {
         for (String col : auxSortColumns) {
-            ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_single_aux_sort_column(ioConfigBuilder, col);
+            ioConfigBuilder =
+                    libLakeSoulIO.lakesoul_config_builder_add_single_aux_sort_column(
+                            ioConfigBuilder, col);
         }
     }
 
     public void setHashBucketNum(Integer hashBucketNum) {
         hashBucketNum = hashBucketNum < 1 ? 1 : hashBucketNum;
-        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_hash_bucket_num(ioConfigBuilder, hashBucketNum);
+        ioConfigBuilder =
+                libLakeSoulIO.lakesoul_config_builder_set_hash_bucket_num(
+                        ioConfigBuilder, hashBucketNum);
     }
 
-
     public void setRowGroupRowNumber(int rowNum) {
-        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_max_row_group_size(ioConfigBuilder, rowNum);
+        ioConfigBuilder =
+                libLakeSoulIO.lakesoul_config_builder_set_max_row_group_size(
+                        ioConfigBuilder, rowNum);
     }
 
     public void setRowGroupValueNumber(int valueNum) {
-        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_max_row_group_num_values(ioConfigBuilder, valueNum);
+        ioConfigBuilder =
+                libLakeSoulIO.lakesoul_config_builder_set_max_row_group_num_values(
+                        ioConfigBuilder, valueNum);
     }
 
     public void initializeWriter() throws IOException {
@@ -106,10 +113,12 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
         IOException pending = null;
         try {
             if (status.status.get() < 0) {
-                pending = new IOException(
-                        "Init native writer failed with error: " +
-                                (status.err.get() != null ? status.err.get() : "unknown")
-                );
+                pending =
+                        new IOException(
+                                "Init native writer failed with error: "
+                                        + (status.err.get() != null
+                                                ? status.err.get()
+                                                : "unknown"));
             }
             writer = newWriter;
             newWriter = null;
@@ -137,7 +146,8 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
 
     public int writeIpc(byte[] encodedBatch) throws IOException {
         int batchSize = 0;
-        try (ArrowStreamReader reader = new ArrowStreamReader(new ByteArrayInputStream(encodedBatch), allocator)) {
+        try (ArrowStreamReader reader =
+                new ArrowStreamReader(new ByteArrayInputStream(encodedBatch), allocator)) {
             if (reader.loadNextBatch()) {
                 VectorSchemaRoot batch = reader.getVectorSchemaRoot();
                 batchSize = batch.getRowCount();
@@ -151,11 +161,14 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
         ArrowArray array = ArrowArray.allocateNew(allocator);
         ArrowSchema schema = ArrowSchema.allocateNew(allocator);
         Data.exportVectorSchemaRoot(allocator, batch, provider, array, schema);
-        LibLakeSoulIO.CStatus status = libLakeSoulIO.write_record_batch_blocked(writer, schema.memoryAddress(), array.memoryAddress());
+        LibLakeSoulIO.CStatus status =
+                libLakeSoulIO.write_record_batch_blocked(
+                        writer, schema.memoryAddress(), array.memoryAddress());
         try {
             if (status.status.get() < 0) {
-                throw new IOException("Native writer write batch failed with error: " +
-                        (status.err.get() != null ? status.err.get() : "unknown"));
+                throw new IOException(
+                        "Native writer write batch failed with error: "
+                                + (status.err.get() != null ? status.err.get() : "unknown"));
             }
         } finally {
             array.close();
@@ -190,11 +203,16 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
 
         @Override
         public String toString() {
-            return "FlushResult{" +
-                    "filePath='" + filePath + '\'' +
-                    ", fileSize=" + fileSize +
-                    ", fileExistCols='" + fileExistCols + '\'' +
-                    '}';
+            return "FlushResult{"
+                    + "filePath='"
+                    + filePath
+                    + '\''
+                    + ", fileSize="
+                    + fileSize
+                    + ", fileExistCols='"
+                    + fileExistCols
+                    + '\''
+                    + '}';
         }
     }
 
@@ -208,13 +226,15 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
     public HashMap<String, List<FlushResult>> flush() throws IOException {
         AtomicReference<String> errMsg = new AtomicReference<>();
         AtomicReference<Integer> lenResult = new AtomicReference<>();
-        IntegerCallback nativeIntegerCallback = new IntegerCallback((len, err) -> {
-            if (len < 0 && err != null) {
-                errMsg.set(err);
-            }
-            lenResult.set(len);
-
-        }, intReferenceManager);
+        IntegerCallback nativeIntegerCallback =
+                new IntegerCallback(
+                        (len, err) -> {
+                            if (len < 0 && err != null) {
+                                errMsg.set(err);
+                            }
+                            lenResult.set(len);
+                        },
+                        intReferenceManager);
         nativeIntegerCallback.registerReferenceKey();
         Pointer ptrResult = libLakeSoulIO.flush_and_close_writer(writer, nativeIntegerCallback);
         writer = null;
@@ -229,19 +249,26 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
             Pointer buffer = fixedBuffer;
             if (lenWithTail > fixedBuffer.size()) {
                 if (lenWithTail > mutableBuffer.size()) {
-                    mutableBuffer = Runtime.getRuntime(libLakeSoulIO).getMemoryManager().allocateDirect(lenWithTail);
+                    mutableBuffer =
+                            Runtime.getRuntime(libLakeSoulIO)
+                                    .getMemoryManager()
+                                    .allocateDirect(lenWithTail);
                 }
                 buffer = mutableBuffer;
             }
             AtomicReference<Boolean> exported = new AtomicReference<>();
-            BooleanCallback nativeBooleanCallback = new BooleanCallback((status, err) -> {
-                if (!status && err != null) {
-                    errMsg.set(err);
-                }
-                exported.set(status);
-            }, boolReferenceManager);
+            BooleanCallback nativeBooleanCallback =
+                    new BooleanCallback(
+                            (status, err) -> {
+                                if (!status && err != null) {
+                                    errMsg.set(err);
+                                }
+                                exported.set(status);
+                            },
+                            boolReferenceManager);
             nativeBooleanCallback.registerReferenceKey();
-            libLakeSoulIO.export_bytes_result(nativeBooleanCallback, ptrResult, len, buffer.address());
+            libLakeSoulIO.export_bytes_result(
+                    nativeBooleanCallback, ptrResult, len, buffer.address());
             ptrResult = null;
             if (exported.get() != null && exported.get()) {
                 byte[] bytes = new byte[len];
@@ -250,15 +277,26 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
                 String[] splits = decodedResult.split("\u0001");
                 int partitionNum = Integer.parseInt(splits[0]);
                 if (partitionNum != splits.length - 1) {
-                    throw new IOException("Dynamic Partitions Result [" + decodedResult + "] encode error: partition number mismatch " + partitionNum + "!=" + (splits.length - 1));
+                    throw new IOException(
+                            "Dynamic Partitions Result ["
+                                    + decodedResult
+                                    + "] encode error: partition number mismatch "
+                                    + partitionNum
+                                    + "!="
+                                    + (splits.length - 1));
                 }
                 HashMap<String, List<FlushResult>> partitionDescAndFilesMap = new HashMap<>();
                 for (int i = 1; i < splits.length; i++) {
                     String[] partitionDescAndFiles = splits[i].split("\u0002");
-                    List<String> list = new ArrayList<>(Arrays.asList(partitionDescAndFiles).subList(1, partitionDescAndFiles.length));
-                    List<FlushResult> result = list.stream().map(NativeIOWriter::decodeFlushResult).collect(Collectors.toList());
+                    List<String> list =
+                            new ArrayList<>(
+                                    Arrays.asList(partitionDescAndFiles)
+                                            .subList(1, partitionDescAndFiles.length));
+                    List<FlushResult> result =
+                            list.stream()
+                                    .map(NativeIOWriter::decodeFlushResult)
+                                    .collect(Collectors.toList());
                     partitionDescAndFilesMap.put(partitionDescAndFiles[0], result);
-
                 }
                 return partitionDescAndFilesMap;
             }
@@ -272,11 +310,14 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
         }
         LOG.info("NativeIOWriter start abort");
         AtomicReference<String> errMsg = new AtomicReference<>();
-        BooleanCallback nativeBooleanCallback = new BooleanCallback((status, err) -> {
-            if (!status && err != null) {
-                errMsg.set(err);
-            }
-        }, boolReferenceManager);
+        BooleanCallback nativeBooleanCallback =
+                new BooleanCallback(
+                        (status, err) -> {
+                            if (!status && err != null) {
+                                errMsg.set(err);
+                            }
+                        },
+                        boolReferenceManager);
         nativeBooleanCallback.registerReferenceKey();
         libLakeSoulIO.abort_and_close_writer(writer, nativeBooleanCallback);
         writer = null;

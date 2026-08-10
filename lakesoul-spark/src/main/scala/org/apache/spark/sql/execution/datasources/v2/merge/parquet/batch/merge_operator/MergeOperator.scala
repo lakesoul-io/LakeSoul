@@ -24,20 +24,35 @@ trait MergeOperator[T] extends Serializable {
     val udf = getUdf(name)
     val funIdentName = FunctionIdentifier(name)
     val info = new ExpressionInfo(
-      this.getClass.getCanonicalName, funIdentName.database.orNull, funIdentName.funcName)
+      this.getClass.getCanonicalName,
+      funIdentName.database.orNull,
+      funIdentName.funcName
+    )
 
-    def builder(children: Seq[Expression]): Expression = udf.apply(children.map(Column.apply): _*).expr
+    def builder(children: Seq[Expression]): Expression =
+      udf.apply(children.map(Column.apply): _*).expr
 
     val builderFunc: FunctionBuilder = builder
 
-    spark.sessionState.functionRegistry.registerFunction(funIdentName, info, builderFunc)
+    spark.sessionState.functionRegistry.registerFunction(
+      funIdentName,
+      info,
+      builderFunc
+    )
   }
 
   private def getUdf(name: String): SparkUserDefinedFunction = {
     val f = (data: String) => data
-    val ScalaReflection.Schema(dataType, nullable) = ScalaReflection.schemaFor[String]
+    val ScalaReflection.Schema(dataType, nullable) =
+      ScalaReflection.schemaFor[String]
     val inputEncoders = Try(ExpressionEncoder[String]()).toOption :: Nil
-    val udf = SparkUserDefinedFunction(f, dataType, inputEncoders, None, Option(s"${LakeSoulUtils.MERGE_OP}$name"))
+    val udf = SparkUserDefinedFunction(
+      f,
+      dataType,
+      inputEncoders,
+      None,
+      Option(s"${LakeSoulUtils.MERGE_OP}$name")
+    )
     if (nullable) udf else udf.asNonNullable()
   }
 }

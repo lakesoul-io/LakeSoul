@@ -4,7 +4,9 @@
 package org.apache.flink.lakesoul.entry;
 
 import com.alibaba.fastjson.JSONObject;
+
 import io.debezium.data.Envelope;
+
 import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.cdc.connectors.shaded.org.apache.kafka.connect.data.Field;
@@ -21,7 +23,8 @@ import java.util.List;
 public class PgDeserialization implements DebeziumDeserializationSchema<String> {
 
     @Override
-    public void deserialize(SourceRecord sourceRecord, Collector<String> collector) throws Exception {
+    public void deserialize(SourceRecord sourceRecord, Collector<String> collector)
+            throws Exception {
         JSONObject result = new JSONObject();
         String topic = sourceRecord.topic();
         String[] fields = topic.split("\\.");
@@ -38,9 +41,9 @@ public class PgDeserialization implements DebeziumDeserializationSchema<String> 
             for (Field beforeField : beforeFields) {
                 Object beforeValue = before.get(beforeField);
                 String name = beforeField.name();
-                if (name.equals("file_ops")){
+                if (name.equals("file_ops")) {
                     ArrayList beforeValue1 = (ArrayList) before.get(beforeField);
-                    if (beforeValue1 != null){
+                    if (beforeValue1 != null) {
                         Object[] objects = beforeValue1.toArray();
                         ArrayList<byte[]> arrayList = new ArrayList();
                         for (Object object : objects) {
@@ -65,10 +68,10 @@ public class PgDeserialization implements DebeziumDeserializationSchema<String> 
             for (Field field : afterFields) {
                 Object afterValue = after.get(field);
                 String name = field.name();
-                if (name.equals("file_ops")){
+                if (name.equals("file_ops")) {
                     ArrayList afterValue1 = (ArrayList) after.get(field);
                     Object[] objects = afterValue1.toArray();
-                    //byte[] b = o.array();
+                    // byte[] b = o.array();
                     ArrayList<byte[]> arrayList = new ArrayList();
                     for (Object object : objects) {
                         ByteBuffer o = (ByteBuffer) object;
@@ -84,19 +87,17 @@ public class PgDeserialization implements DebeziumDeserializationSchema<String> 
 
         Envelope.Operation operation = Envelope.operationFor(sourceRecord);
         String type = operation.toString().toLowerCase();
-        result.put("commitOp",type);
-        result.put("tableName",tableName);
-        result.put("before",beforeJson);
-        result.put("after",afterJson);
+        result.put("commitOp", type);
+        result.put("tableName", tableName);
+        result.put("before", beforeJson);
+        result.put("after", afterJson);
         if (!beforeJson.isEmpty() || !afterJson.isEmpty()) {
             collector.collect(result.toJSONString());
         }
     }
-
 
     @Override
     public TypeInformation<String> getProducedType() {
         return BasicTypeInfo.STRING_TYPE_INFO;
     }
 }
-

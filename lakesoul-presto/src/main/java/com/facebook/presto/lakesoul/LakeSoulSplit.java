@@ -4,6 +4,9 @@
 
 package com.facebook.presto.lakesoul;
 
+import static java.util.Objects.requireNonNull;
+
+import com.dmetasoul.lakesoul.meta.BucketingUtils;
 import com.facebook.airlift.log.Logger;
 import com.facebook.presto.lakesoul.handle.LakeSoulTableLayoutHandle;
 import com.facebook.presto.lakesoul.pojo.Path;
@@ -14,12 +17,10 @@ import com.facebook.presto.spi.SplitWeight;
 import com.facebook.presto.spi.schedule.NodeSelectionStrategy;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import com.dmetasoul.lakesoul.meta.BucketingUtils;
+
 import scala.Option;
 
 import java.util.*;
-
-import static java.util.Objects.requireNonNull;
 
 public class LakeSoulSplit implements ConnectorSplit {
     private final LakeSoulTableLayoutHandle layout;
@@ -31,12 +32,11 @@ public class LakeSoulSplit implements ConnectorSplit {
     @JsonCreator
     public LakeSoulSplit(
             @JsonProperty("layout") LakeSoulTableLayoutHandle layout,
-	    @JsonProperty("partitionDesc") String partitionDesc,
-            @JsonProperty("paths")  List<Path> paths
-    ){
-        this.layout = requireNonNull(layout, "layout is not null") ;
-        this.paths = requireNonNull(paths, "paths is not null") ;
-	this.partitionDesc = partitionDesc;
+            @JsonProperty("partitionDesc") String partitionDesc,
+            @JsonProperty("paths") List<Path> paths) {
+        this.layout = requireNonNull(layout, "layout is not null");
+        this.paths = requireNonNull(paths, "paths is not null");
+        this.partitionDesc = partitionDesc;
     }
 
     @JsonProperty
@@ -56,11 +56,11 @@ public class LakeSoulSplit implements ConnectorSplit {
 
     @Override
     public List<HostAddress> getPreferredNodes(NodeProvider nodeProvider) {
-	   return nodeProvider.get(buildStableSplitIdentifier());
+        return nodeProvider.get(buildStableSplitIdentifier());
     }
 
     private String buildStableSplitIdentifier() {
-        if(layout.getPrimaryKeys().isEmpty()) {
+        if (layout.getPrimaryKeys().isEmpty()) {
             String result = "LakeSoul:" + paths.get(0).toString();
             log.info("buildStableSplitIdentifier noPrimaryKeys resultString is %s", result);
             return result;
@@ -69,14 +69,16 @@ public class LakeSoulSplit implements ConnectorSplit {
         String tableName = layout.getTableHandle().getNames().toString();
         Option<Object> hashBucketId = BucketingUtils.getBucketId(path);
         String bucketIdStr = hashBucketId.isEmpty() ? "0" : hashBucketId.get().toString();
-        String stablePartitionKey = (this.partitionDesc == null || this.partitionDesc.isEmpty())
-                                    ? "NO_PARTITION"
-                                    : this.partitionDesc;
-        String result = String.format("LakeSoul:%s#%s#bucket=%s", tableName, stablePartitionKey, bucketIdStr);
+        String stablePartitionKey =
+                (this.partitionDesc == null || this.partitionDesc.isEmpty())
+                        ? "NO_PARTITION"
+                        : this.partitionDesc;
+        String result =
+                String.format(
+                        "LakeSoul:%s#%s#bucket=%s", tableName, stablePartitionKey, bucketIdStr);
         log.info("buildStableSplitIdentifier hasPrimaryKeys resultString is %s", result);
         return result;
     }
-
 
     @Override
     @JsonProperty
@@ -104,10 +106,8 @@ public class LakeSoulSplit implements ConnectorSplit {
         return ConnectorSplit.super.getSplitWeight();
     }
 
-    @Override public String toString() {
-        return "LakeSoulSplit{" +
-                "layout=" + layout +
-                ", paths=" + paths +
-                '}';
+    @Override
+    public String toString() {
+        return "LakeSoulSplit{" + "layout=" + layout + ", paths=" + paths + '}';
     }
 }

@@ -1,6 +1,9 @@
 package com.dmetasoul.lakesoul.lakesoul.local.arrow;
 
+import static com.dmetasoul.lakesoul.lakesoul.local.arrow.writers.DecimalWriter.getPrecision;
+
 import com.dmetasoul.lakesoul.lakesoul.local.arrow.writers.*;
+
 import org.apache.arrow.util.Preconditions;
 import org.apache.arrow.vector.*;
 import org.apache.arrow.vector.types.pojo.ArrowType;
@@ -8,13 +11,9 @@ import org.apache.arrow.vector.types.pojo.Field;
 
 import java.util.List;
 
-import static com.dmetasoul.lakesoul.lakesoul.local.arrow.writers.DecimalWriter.getPrecision;
-
 public class ArrowBatchWriter<IN> {
 
-    /**
-     * Container that holds a set of vectors for the rows to be sent to the Python worker.
-     */
+    /** Container that holds a set of vectors for the rows to be sent to the Python worker. */
     private final VectorSchemaRoot root;
 
     /**
@@ -27,25 +26,19 @@ public class ArrowBatchWriter<IN> {
         this.fieldWriters = Preconditions.checkNotNull(fieldWriters);
     }
 
-    /**
-     * Gets the field writers.
-     */
+    /** Gets the field writers. */
     public ArrowFieldWriter<IN>[] getFieldWriters() {
         return fieldWriters;
     }
 
-    /**
-     * Writes the specified row which is serialized into Arrow format.
-     */
+    /** Writes the specified row which is serialized into Arrow format. */
     public void write(IN row) {
         for (int i = 0; i < fieldWriters.length; i++) {
             fieldWriters[i].write(row, i);
         }
     }
 
-    /**
-     * Finishes the writing of the current row batch.
-     */
+    /** Finishes the writing of the current row batch. */
     public void finish() {
         root.setRowCount(fieldWriters[0].getCount());
         for (ArrowFieldWriter<IN> fieldWriter : fieldWriters) {
@@ -53,9 +46,7 @@ public class ArrowBatchWriter<IN> {
         }
     }
 
-    /**
-     * Resets the state of the writer to write the next batch of rows.
-     */
+    /** Resets the state of the writer to write the next batch of rows. */
     public void reset() {
         root.setRowCount(0);
         for (ArrowFieldWriter fieldWriter : fieldWriters) {
@@ -123,38 +114,39 @@ public class ArrowBatchWriter<IN> {
                     break;
             }
             return TimestampWriter.forObject(vector, precision);
-//        } else if (vector instanceof MapVector) {
-//            MapVector mapVector = (MapVector) vector;
-//            LogicalType keyType = ((MapType) field).getKeyType();
-//            LogicalType valueType = ((MapType) field).getValueType();
-//            StructVector structVector = (StructVector) mapVector.getDataVector();
-//            return MapWriter.forObject(
-//                    mapVector,
-//                    createArrowFieldWriterForArray(
-//                            structVector.getChild(MapVector.KEY_NAME), keyType),
-//                    createArrowFieldWriterForArray(
-//                            structVector.getChild(MapVector.VALUE_NAME), valueType));
-//        } else if (vector instanceof ListVector) {
-//            ListVector listVector = (ListVector) vector;
-//            LogicalType elementType = ((ArrayType) field).getElementType();
-//            return ArrayWriter.forObject(
-//                    listVector,
-//                    createArrowFieldWriterForArray(listVector.getDataVector(), elementType));
-//        } else if (vector instanceof StructVector) {
-//            RowType rowType = (RowType) field;
-//            ArrowFieldWriter<RowData>[] fieldsWriters =
-//                    new ArrowFieldWriter[rowType.getFieldCount()];
-//            for (int i = 0; i < fieldsWriters.length; i++) {
-//                fieldsWriters[i] =
-//                        createArrowFieldWriterforObject(
-//                                ((StructVector) vector).getVectorById(i), rowType.getTypeAt(i));
-//            }
-//            return RowWriter.forObject((StructVector) vector, fieldsWriters);
+            //        } else if (vector instanceof MapVector) {
+            //            MapVector mapVector = (MapVector) vector;
+            //            LogicalType keyType = ((MapType) field).getKeyType();
+            //            LogicalType valueType = ((MapType) field).getValueType();
+            //            StructVector structVector = (StructVector) mapVector.getDataVector();
+            //            return MapWriter.forObject(
+            //                    mapVector,
+            //                    createArrowFieldWriterForArray(
+            //                            structVector.getChild(MapVector.KEY_NAME), keyType),
+            //                    createArrowFieldWriterForArray(
+            //                            structVector.getChild(MapVector.VALUE_NAME), valueType));
+            //        } else if (vector instanceof ListVector) {
+            //            ListVector listVector = (ListVector) vector;
+            //            LogicalType elementType = ((ArrayType) field).getElementType();
+            //            return ArrayWriter.forObject(
+            //                    listVector,
+            //                    createArrowFieldWriterForArray(listVector.getDataVector(),
+            // elementType));
+            //        } else if (vector instanceof StructVector) {
+            //            RowType rowType = (RowType) field;
+            //            ArrowFieldWriter<RowData>[] fieldsWriters =
+            //                    new ArrowFieldWriter[rowType.getFieldCount()];
+            //            for (int i = 0; i < fieldsWriters.length; i++) {
+            //                fieldsWriters[i] =
+            //                        createArrowFieldWriterforObject(
+            //                                ((StructVector) vector).getVectorById(i),
+            // rowType.getTypeAt(i));
+            //            }
+            //            return RowWriter.forObject((StructVector) vector, fieldsWriters);
         } else if (vector instanceof NullVector) {
             return new NullWriter<>((NullVector) vector);
         } else {
-            throw new UnsupportedOperationException(
-                    String.format("Unsupported type %s.", field));
+            throw new UnsupportedOperationException(String.format("Unsupported type %s.", field));
         }
     }
 }

@@ -20,15 +20,12 @@ package com.dmetasoul.lakesoul.lakesoul.local.arrow.writers;
 
 import org.apache.arrow.vector.BigIntVector;
 
-/**
- * {@link ArrowFieldWriter} for BigInt.
- */
+/** {@link ArrowFieldWriter} for BigInt. */
 public abstract class BigIntWriter<T> extends ArrowFieldWriter<T> {
 
     public static BigIntWriter<Object[]> forObject(BigIntVector bigIntVector) {
         return new BigIntWriterforObject(bigIntVector);
     }
-
 
     // ------------------------------------------------------------------------------------------
 
@@ -51,9 +48,7 @@ public abstract class BigIntWriter<T> extends ArrowFieldWriter<T> {
 
     // ------------------------------------------------------------------------------------------
 
-    /**
-     * {@link BigIntWriter} for {@link Object[]} input.
-     */
+    /** {@link BigIntWriter} for {@link Object[]} input. */
     public static final class BigIntWriterforObject extends BigIntWriter<Object[]> {
 
         private BigIntWriterforObject(BigIntVector bigIntVector) {
@@ -70,5 +65,4 @@ public abstract class BigIntWriter<T> extends ArrowFieldWriter<T> {
             return (long) in[ordinal];
         }
     }
-
 }

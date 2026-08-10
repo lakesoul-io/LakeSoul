@@ -4,27 +4,28 @@
 
 package com.facebook.presto.lakesoul.handle;
 
+import static java.util.Objects.requireNonNull;
+
 import com.alibaba.fastjson.JSONObject;
 import com.facebook.airlift.log.Logger;
 import com.facebook.presto.common.predicate.Domain;
 import com.facebook.presto.common.predicate.Range;
 import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.common.type.*;
+import com.facebook.presto.lakesoul.substrait.SubstraitPlanBuilder;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ConnectorTableLayoutHandle;
-import com.facebook.presto.lakesoul.substrait.SubstraitPlanBuilder;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+
 import io.airlift.slice.Slice;
+
 import org.apache.parquet.filter2.predicate.FilterApi;
 import org.apache.parquet.filter2.predicate.FilterPredicate;
 import org.apache.parquet.io.api.Binary;
 import org.apache.spark.sql.types.LongType;
 
 import java.util.*;
-import java.util.stream.Collectors;
-
-import static java.util.Objects.requireNonNull;
 
 public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
 
@@ -51,15 +52,14 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
             @JsonProperty("rangeKeys") List<String> rangeKeys,
             @JsonProperty("tableParameters") JSONObject tableParameters,
             @JsonProperty("tupleDomain") TupleDomain<ColumnHandle> tupleDomain,
-            @JsonProperty("allColumns") HashMap<String, ColumnHandle> allColumns
+            @JsonProperty("allColumns") HashMap<String, ColumnHandle> allColumns) {
 
-
-    ) {
         this.tableHandle = requireNonNull(tableHandle, "tableHandle should not be null");
         this.dataColumns = requireNonNull(dataColumns, "dataColumns should not be null");
         this.primaryKeys = requireNonNull(primaryKeys, "primaryKeys should not be null");
         this.rangeKeys = requireNonNull(rangeKeys, "rangeKeys should not be null");
-        this.tableParameters = requireNonNull(tableParameters, "tableParameters should not be null");
+        this.tableParameters =
+                requireNonNull(tableParameters, "tableParameters should not be null");
         this.tupleDomain = requireNonNull(tupleDomain, "tupleDomain should not be null");
         this.allColumns = requireNonNull(allColumns, "allColumns should not be null");
         this.filters = buildFilters();
@@ -67,15 +67,26 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
         this.filterProtosList = new ArrayList<>();
         for (FilterPredicate filter : this.parFilters) {
             try {
-                io.substrait.proto.Plan substraitPlan = SubstraitPlanBuilder.buildSubstraitPlan(Collections.singletonList(filter), allColumns, tableHandle.getNames().getTableName());
+                io.substrait.proto.Plan substraitPlan =
+                        SubstraitPlanBuilder.buildSubstraitPlan(
+                                Collections.singletonList(filter),
+                                allColumns,
+                                tableHandle.getNames().getTableName());
                 if (substraitPlan != null) {
                     byte[] bytes = substraitPlan.toByteArray();
                     this.filterProtosList.add(bytes);
                 } else {
-                    log.warn("LakeSoul Pushdown Warning: Filter too complex for Substrait, skipping pushdown. Filter: " + filter.toString());
+                    log.warn(
+                            "LakeSoul Pushdown Warning: Filter too complex for Substrait, skipping"
+                                    + " pushdown. Filter: "
+                                    + filter.toString());
                 }
             } catch (Exception e) {
-                log.error("LakeSoul Pushdown Error: Substrait conversion crashed, skipping pushdown. Filter: " + filter.toString(), e);
+                log.error(
+                        "LakeSoul Pushdown Error: Substrait conversion crashed, skipping pushdown."
+                                + " Filter: "
+                                + filter.toString(),
+                        e);
             }
         }
     }
@@ -143,12 +154,12 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
         return parFilters;
     }
 
-
     private List<FilterPredicate> buildFilters() {
         List<FilterPredicate> query = new LinkedList<>();
         List<FilterPredicate> parFilters = new LinkedList<>();
         if (tupleDomain.getDomains().isPresent()) {
-            for (Map.Entry<ColumnHandle, Domain> entry : tupleDomain.getDomains().get().entrySet()) {
+            for (Map.Entry<ColumnHandle, Domain> entry :
+                    tupleDomain.getDomains().get().entrySet()) {
                 LakeSoulTableColumnHandle column = (LakeSoulTableColumnHandle) entry.getKey();
                 FilterPredicate predicate = buildPredicate(column, entry.getValue());
                 if (predicate != null) {
@@ -199,12 +210,13 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
                 FilterPredicate rangeConjuncts = null;
                 if (lowerBound != null && upperBound != null) {
                     rangeConjuncts = FilterApi.and(lowerBound, upperBound);
-                }else if(lowerBound != null) {
+                } else if (lowerBound != null) {
                     rangeConjuncts = lowerBound;
-                }else if(upperBound != null) {
+                } else if (upperBound != null) {
                     rangeConjuncts = upperBound;
                 }
-                // If rangeConjuncts is null, then the range was ALL, which should already have been checked for
+                // If rangeConjuncts is null, then the range was ALL, which should already have been
+                // checked for
                 if (rangeConjuncts != null) {
                     disjuncts.add(rangeConjuncts);
                 }
@@ -221,21 +233,21 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
         if (domain.isNullAllowed()) {
             disjuncts.add(eq(type, name, null));
         }
-        Optional<FilterPredicate> predicate = disjuncts.stream().filter(Objects::nonNull).reduce(FilterApi::or);
+        Optional<FilterPredicate> predicate =
+                disjuncts.stream().filter(Objects::nonNull).reduce(FilterApi::or);
         return predicate.orElse(null);
-
     }
 
     private FilterPredicate eq(Type type, String name, Object value) {
         if (type instanceof IntegerType
                 || type instanceof SmallintType
-                || type instanceof TinyintType
-        ) {
+                || type instanceof TinyintType) {
             if (value == null) {
                 return FilterApi.eq(FilterApi.intColumn(name), null);
             }
             if (!(value instanceof Long)) {
-                throw new RuntimeException("except filter value type is long, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.eq(FilterApi.intColumn(name), ((Long) value).intValue());
         } else if (type instanceof LongType) {
@@ -243,7 +255,8 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
                 return FilterApi.eq(FilterApi.longColumn(name), null);
             }
             if (!(value instanceof Long)) {
-                throw new RuntimeException("except filter value type is long, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.eq(FilterApi.longColumn(name), ((Long) value));
         } else if (type instanceof RealType) {
@@ -251,15 +264,18 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
                 return FilterApi.eq(FilterApi.floatColumn(name), null);
             }
             if (!(value instanceof Long)) {
-                throw new RuntimeException("except filter value type is long, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "except filter value type is long, but it is " + value.getClass());
             }
-            return FilterApi.eq(FilterApi.floatColumn(name), Float.intBitsToFloat(((Long) value).intValue()));
+            return FilterApi.eq(
+                    FilterApi.floatColumn(name), Float.intBitsToFloat(((Long) value).intValue()));
         } else if (type instanceof DoubleType) {
             if (value == null) {
                 return FilterApi.eq(FilterApi.doubleColumn(name), null);
             }
             if (!(value instanceof Double)) {
-                throw new RuntimeException("except filter value type is double, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "except filter value type is double, but it is " + value.getClass());
             }
             return FilterApi.eq(FilterApi.doubleColumn(name), ((Double) value));
         } else if (type instanceof BooleanType) {
@@ -267,7 +283,8 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
                 return FilterApi.eq(FilterApi.booleanColumn(name), null);
             }
             if (!(value instanceof Boolean)) {
-                throw new RuntimeException("except filter value type is boolean, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "except filter value type is boolean, but it is " + value.getClass());
             }
             return FilterApi.eq(FilterApi.booleanColumn(name), ((Boolean) value));
         } else if (type instanceof DecimalType) {
@@ -280,7 +297,8 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
                 return FilterApi.eq(FilterApi.binaryColumn(name), null);
             }
             if (!(value instanceof Slice)) {
-                throw new RuntimeException("except filter value type is string, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "except filter value type is string, but it is " + value.getClass());
             }
 
             return FilterApi.eq(
@@ -292,64 +310,78 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
             }
 
             if (!(value instanceof Long)) {
-                throw new RuntimeException("datetype except filter value type is long, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "datetype except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.eq(FilterApi.longColumn(name), (Long) value);
-        } else if (type instanceof TimeType | type instanceof TimeWithTimeZoneType
-                | type instanceof TimestampType | type instanceof TimestampWithTimeZoneType) {
+        } else if (type instanceof TimeType
+                | type instanceof TimeWithTimeZoneType
+                | type instanceof TimestampType
+                | type instanceof TimestampWithTimeZoneType) {
             if (value == null) {
                 return FilterApi.eq(FilterApi.longColumn(name), null);
             }
             if (!(value instanceof Long)) {
-                throw new RuntimeException("time/timestamptype except filter value type is long, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "time/timestamptype except filter value type is long, but it is "
+                                + value.getClass());
             }
             return FilterApi.eq(FilterApi.longColumn(name), (Long) value * 1000);
         }
         return null;
     }
 
-
     private FilterPredicate gt(Type type, String name, Object value) {
         if (type instanceof IntegerType
                 || type instanceof SmallintType
-                || type instanceof TinyintType
-        ) {
+                || type instanceof TinyintType) {
             if (!(value instanceof Long)) {
-                throw new RuntimeException("except filter value type is long, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.gt(FilterApi.intColumn(name), ((Long) value).intValue());
         } else if (type instanceof BigintType) {
             if (!(value instanceof Long)) {
-                throw new RuntimeException("except filter value type is long, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.gt(FilterApi.longColumn(name), ((Long) value));
         } else if (type instanceof RealType) {
             if (!(value instanceof Long)) {
-                throw new RuntimeException("except filter value type is long, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "except filter value type is long, but it is " + value.getClass());
             }
-            return FilterApi.gt(FilterApi.floatColumn(name), Float.intBitsToFloat(((Long) value).intValue()));
+            return FilterApi.gt(
+                    FilterApi.floatColumn(name), Float.intBitsToFloat(((Long) value).intValue()));
         } else if (type instanceof DoubleType) {
             if (!(value instanceof Double)) {
-                throw new RuntimeException("except filter value type is double, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "except filter value type is double, but it is " + value.getClass());
             }
             return FilterApi.gt(FilterApi.doubleColumn(name), ((Double) value));
-        }  else if (type instanceof DateType) {
+        } else if (type instanceof DateType) {
             if (!(value instanceof Long)) {
-                throw new RuntimeException("datetype except filter value type is long, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "datetype except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.gt(FilterApi.longColumn(name), (Long) value);
-        } else if (type instanceof TimeType | type instanceof TimeWithTimeZoneType
-                | type instanceof TimestampType | type instanceof TimestampWithTimeZoneType) {
+        } else if (type instanceof TimeType
+                | type instanceof TimeWithTimeZoneType
+                | type instanceof TimestampType
+                | type instanceof TimestampWithTimeZoneType) {
             if (!(value instanceof Long)) {
-                throw new RuntimeException("time/timestamptype except filter value type is long, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "time/timestamptype except filter value type is long, but it is "
+                                + value.getClass());
             }
             return FilterApi.gt(FilterApi.longColumn(name), (Long) value * 1000);
-        }else if (type instanceof VarcharType) {
+        } else if (type instanceof VarcharType) {
             if (value == null) {
                 return FilterApi.gt(FilterApi.binaryColumn(name), null);
             }
             if (!(value instanceof Slice)) {
-                throw new RuntimeException("except filter value type is string, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "except filter value type is string, but it is " + value.getClass());
             }
 
             return FilterApi.gt(
@@ -362,44 +394,54 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
     private FilterPredicate gte(Type type, String name, Object value) {
         if (type instanceof IntegerType
                 || type instanceof SmallintType
-                || type instanceof TinyintType
-        ) {
+                || type instanceof TinyintType) {
             if (!(value instanceof Long)) {
-                throw new RuntimeException("except filter value type is long, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.gtEq(FilterApi.intColumn(name), ((Long) value).intValue());
         } else if (type instanceof LongType) {
             if (!(value instanceof Long)) {
-                throw new RuntimeException("except filter value type is long, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.gtEq(FilterApi.longColumn(name), ((Long) value));
         } else if (type instanceof RealType) {
             if (!(value instanceof Long)) {
-                throw new RuntimeException("except filter value type is long, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "except filter value type is long, but it is " + value.getClass());
             }
-            return FilterApi.gtEq(FilterApi.floatColumn(name), Float.intBitsToFloat(((Long) value).intValue()));
+            return FilterApi.gtEq(
+                    FilterApi.floatColumn(name), Float.intBitsToFloat(((Long) value).intValue()));
         } else if (type instanceof DoubleType) {
             if (!(value instanceof Double)) {
-                throw new RuntimeException("except filter value type is double, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "except filter value type is double, but it is " + value.getClass());
             }
             return FilterApi.gtEq(FilterApi.doubleColumn(name), ((Double) value));
         } else if (type instanceof DateType) {
             if (!(value instanceof Long)) {
-                throw new RuntimeException("datetype except filter value type is long, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "datetype except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.gtEq(FilterApi.longColumn(name), (Long) value);
-        } else if (type instanceof TimeType | type instanceof TimeWithTimeZoneType
-                | type instanceof TimestampType | type instanceof TimestampWithTimeZoneType) {
+        } else if (type instanceof TimeType
+                | type instanceof TimeWithTimeZoneType
+                | type instanceof TimestampType
+                | type instanceof TimestampWithTimeZoneType) {
             if (!(value instanceof Long)) {
-                throw new RuntimeException("time/timestamptype except filter value type is long, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "time/timestamptype except filter value type is long, but it is "
+                                + value.getClass());
             }
             return FilterApi.gtEq(FilterApi.longColumn(name), (Long) value * 1000);
-        }else if (type instanceof VarcharType) {
+        } else if (type instanceof VarcharType) {
             if (value == null) {
                 return FilterApi.gtEq(FilterApi.binaryColumn(name), null);
             }
             if (!(value instanceof Slice)) {
-                throw new RuntimeException("except filter value type is string, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "except filter value type is string, but it is " + value.getClass());
             }
 
             return FilterApi.gtEq(
@@ -412,44 +454,54 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
     private FilterPredicate lt(Type type, String name, Object value) {
         if (type instanceof IntegerType
                 || type instanceof SmallintType
-                || type instanceof TinyintType
-        ) {
+                || type instanceof TinyintType) {
             if (!(value instanceof Long)) {
-                throw new RuntimeException("except filter value type is long, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.lt(FilterApi.intColumn(name), ((Long) value).intValue());
         } else if (type instanceof LongType) {
             if (!(value instanceof Long)) {
-                throw new RuntimeException("except filter value type is long, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.lt(FilterApi.longColumn(name), ((Long) value));
         } else if (type instanceof RealType) {
             if (!(value instanceof Long)) {
-                throw new RuntimeException("except filter value type is long, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "except filter value type is long, but it is " + value.getClass());
             }
-            return FilterApi.lt(FilterApi.floatColumn(name), Float.intBitsToFloat(((Long) value).intValue()));
+            return FilterApi.lt(
+                    FilterApi.floatColumn(name), Float.intBitsToFloat(((Long) value).intValue()));
         } else if (type instanceof DoubleType) {
             if (!(value instanceof Double)) {
-                throw new RuntimeException("except filter value type is double, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "except filter value type is double, but it is " + value.getClass());
             }
             return FilterApi.lt(FilterApi.doubleColumn(name), ((Double) value));
         } else if (type instanceof DateType) {
             if (!(value instanceof Long)) {
-                throw new RuntimeException("datetype except filter value type is long, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "datetype except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.lt(FilterApi.longColumn(name), (Long) value);
-        } else if (type instanceof TimeType | type instanceof TimeWithTimeZoneType
-                | type instanceof TimestampType | type instanceof TimestampWithTimeZoneType) {
+        } else if (type instanceof TimeType
+                | type instanceof TimeWithTimeZoneType
+                | type instanceof TimestampType
+                | type instanceof TimestampWithTimeZoneType) {
             if (!(value instanceof Long)) {
-                throw new RuntimeException("time/timestamptype except filter value type is long, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "time/timestamptype except filter value type is long, but it is "
+                                + value.getClass());
             }
             return FilterApi.lt(FilterApi.longColumn(name), (Long) value * 1000);
-        }else if (type instanceof VarcharType) {
+        } else if (type instanceof VarcharType) {
             if (value == null) {
                 return FilterApi.lt(FilterApi.binaryColumn(name), null);
             }
             if (!(value instanceof Slice)) {
-                throw new RuntimeException("except filter value type is string, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "except filter value type is string, but it is " + value.getClass());
             }
 
             return FilterApi.lt(
@@ -462,36 +514,45 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
     private FilterPredicate lte(Type type, String name, Object value) {
         if (type instanceof IntegerType
                 || type instanceof SmallintType
-                || type instanceof TinyintType
-        ) {
+                || type instanceof TinyintType) {
             if (!(value instanceof Long)) {
-                throw new RuntimeException("except filter value type is long, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.ltEq(FilterApi.intColumn(name), ((Long) value).intValue());
         } else if (type instanceof LongType) {
             if (!(value instanceof Long)) {
-                throw new RuntimeException("except filter value type is long, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.ltEq(FilterApi.longColumn(name), ((Long) value));
         } else if (type instanceof RealType) {
             if (!(value instanceof Long)) {
-                throw new RuntimeException("except filter value type is long, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "except filter value type is long, but it is " + value.getClass());
             }
-            return FilterApi.ltEq(FilterApi.floatColumn(name), Float.intBitsToFloat(((Long) value).intValue()));
+            return FilterApi.ltEq(
+                    FilterApi.floatColumn(name), Float.intBitsToFloat(((Long) value).intValue()));
         } else if (type instanceof DoubleType) {
             if (!(value instanceof Double)) {
-                throw new RuntimeException("except filter value type is double, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "except filter value type is double, but it is " + value.getClass());
             }
             return FilterApi.ltEq(FilterApi.doubleColumn(name), ((Double) value));
         } else if (type instanceof DateType) {
             if (!(value instanceof Long)) {
-                throw new RuntimeException("datetype except filter value type is long, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "datetype except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.ltEq(FilterApi.longColumn(name), (Long) value);
-        } else if (type instanceof TimeType | type instanceof TimeWithTimeZoneType
-                | type instanceof TimestampType | type instanceof TimestampWithTimeZoneType) {
+        } else if (type instanceof TimeType
+                | type instanceof TimeWithTimeZoneType
+                | type instanceof TimestampType
+                | type instanceof TimestampWithTimeZoneType) {
             if (!(value instanceof Long)) {
-                throw new RuntimeException("time/timestamptype except filter value type is long, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "time/timestamptype except filter value type is long, but it is "
+                                + value.getClass());
             }
             return FilterApi.ltEq(FilterApi.longColumn(name), (Long) value * 1000);
         } else if (type instanceof VarcharType) {
@@ -499,7 +560,8 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
                 return FilterApi.ltEq(FilterApi.binaryColumn(name), null);
             }
             if (!(value instanceof Slice)) {
-                throw new RuntimeException("except filter value type is string, but it is " + value.getClass());
+                throw new RuntimeException(
+                        "except filter value type is string, but it is " + value.getClass());
             }
 
             return FilterApi.ltEq(
@@ -511,18 +573,29 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
 
     @Override
     public String toString() {
-        return "LakeSoulTableLayoutHandle{" +
-                "tableHandle=" + tableHandle +
-                ", dataColumns=" + dataColumns +
-                ", primaryKeys=" + primaryKeys +
-                ", rangeKeys=" + rangeKeys +
-                ", tableParameters=" + tableParameters +
-                ", allColumns=" + allColumns +
-                ", filters=" + filters +
-                ", parFilters=" + parFilters +
-                ", tupleDomain=" + tupleDomain +
-                ", filterStrList=" + filterStrList +
-                ", filterProtosList=" + filterProtosList +
-                '}';
+        return "LakeSoulTableLayoutHandle{"
+                + "tableHandle="
+                + tableHandle
+                + ", dataColumns="
+                + dataColumns
+                + ", primaryKeys="
+                + primaryKeys
+                + ", rangeKeys="
+                + rangeKeys
+                + ", tableParameters="
+                + tableParameters
+                + ", allColumns="
+                + allColumns
+                + ", filters="
+                + filters
+                + ", parFilters="
+                + parFilters
+                + ", tupleDomain="
+                + tupleDomain
+                + ", filterStrList="
+                + filterStrList
+                + ", filterProtosList="
+                + filterProtosList
+                + '}';
     }
 }

@@ -21,19 +21,21 @@ public class DataCommitInfoDao {
 
     public void insert(DataCommitInfo dataCommitInfo) {
         if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
-            Integer count = NativeMetadataJavaClient.insert(
-                    NativeUtils.CodedDaoType.InsertDataCommitInfo,
-                    JniWrapper.newBuilder().addDataCommitInfo(dataCommitInfo).build());
+            Integer count =
+                    NativeMetadataJavaClient.insert(
+                            NativeUtils.CodedDaoType.InsertDataCommitInfo,
+                            JniWrapper.newBuilder().addDataCommitInfo(dataCommitInfo).build());
             return;
         }
         Connection conn = null;
         PreparedStatement pstmt = null;
         try {
             conn = DBConnector.getConn();
-            pstmt = conn.prepareStatement(
-                    "insert into data_commit_info (table_id, partition_desc, commit_id, file_ops, commit_op, " +
-                            "timestamp, committed, domain)" +
-                            " values (?, ?, ?, ?, ?, ?, ?, ?)");
+            pstmt =
+                    conn.prepareStatement(
+                            "insert into data_commit_info (table_id, partition_desc, commit_id,"
+                                + " file_ops, commit_op, timestamp, committed, domain) values (?,"
+                                + " ?, ?, ?, ?, ?, ?, ?)");
             dataCommitInsert(pstmt, dataCommitInfo);
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -44,14 +46,18 @@ public class DataCommitInfoDao {
 
     public void deleteByPrimaryKey(String tableId, String partitionDesc, UUID commitId) {
         if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
-            Integer count = NativeMetadataJavaClient.update(
-                    NativeUtils.CodedDaoType.DeleteOneDataCommitInfoByTableIdAndPartitionDescAndCommitId,
-                    Arrays.asList(tableId, partitionDesc, commitId.toString()));
+            Integer count =
+                    NativeMetadataJavaClient.update(
+                            NativeUtils.CodedDaoType
+                                    .DeleteOneDataCommitInfoByTableIdAndPartitionDescAndCommitId,
+                            Arrays.asList(tableId, partitionDesc, commitId.toString()));
             return;
         }
         Connection conn = null;
         PreparedStatement pstmt = null;
-        String sql = "delete from data_commit_info where table_id = ? and partition_desc = ? and commit_id = ? ";
+        String sql =
+                "delete from data_commit_info where table_id = ? and partition_desc = ? and"
+                        + " commit_id = ? ";
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sql);
@@ -66,13 +72,19 @@ public class DataCommitInfoDao {
         }
     }
 
-    public void deleteByTableIdPartitionDescCommitList(String tableId, String partitionDesc, List<Uuid> commitIdList) {
+    public void deleteByTableIdPartitionDescCommitList(
+            String tableId, String partitionDesc, List<Uuid> commitIdList) {
         if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
-            Integer count = NativeMetadataJavaClient.update(
-                    NativeUtils.CodedDaoType.DeleteDataCommitInfoByTableIdAndPartitionDescAndCommitIdList,
-                    Arrays.asList(tableId, partitionDesc,
-                            commitIdList.stream().map(DBUtil::protoUuidToJniString).collect(Collectors.joining(""))
-                    ));
+            Integer count =
+                    NativeMetadataJavaClient.update(
+                            NativeUtils.CodedDaoType
+                                    .DeleteDataCommitInfoByTableIdAndPartitionDescAndCommitIdList,
+                            Arrays.asList(
+                                    tableId,
+                                    partitionDesc,
+                                    commitIdList.stream()
+                                            .map(DBUtil::protoUuidToJniString)
+                                            .collect(Collectors.joining(""))));
             return;
         }
         Connection conn = null;
@@ -81,8 +93,11 @@ public class DataCommitInfoDao {
             return;
         }
 
-        String sql = String.format("delete from data_commit_info where table_id = ? and partition_desc = ? and " +
-                "commit_id in (%s)", String.join(",", Collections.nCopies(commitIdList.size(), "?")));
+        String sql =
+                String.format(
+                        "delete from data_commit_info where table_id = ? and partition_desc = ? and"
+                                + " commit_id in (%s)",
+                        String.join(",", Collections.nCopies(commitIdList.size(), "?")));
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sql);
@@ -102,9 +117,10 @@ public class DataCommitInfoDao {
 
     public void deleteByTableIdAndPartitionDesc(String tableId, String partitionDesc) {
         if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
-            Integer count = NativeMetadataJavaClient.update(
-                    NativeUtils.CodedDaoType.DeleteDataCommitInfoByTableIdAndPartitionDesc,
-                    Arrays.asList(tableId, partitionDesc));
+            Integer count =
+                    NativeMetadataJavaClient.update(
+                            NativeUtils.CodedDaoType.DeleteDataCommitInfoByTableIdAndPartitionDesc,
+                            Arrays.asList(tableId, partitionDesc));
             return;
         }
         Connection conn = null;
@@ -125,9 +141,10 @@ public class DataCommitInfoDao {
 
     public void deleteByTableId(String tableId) {
         if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
-            Integer count = NativeMetadataJavaClient.update(
-                    NativeUtils.CodedDaoType.DeleteDataCommitInfoByTableId,
-                    Collections.singletonList(tableId));
+            Integer count =
+                    NativeMetadataJavaClient.update(
+                            NativeUtils.CodedDaoType.DeleteDataCommitInfoByTableId,
+                            Collections.singletonList(tableId));
             return;
         }
         Connection conn = null;
@@ -145,11 +162,14 @@ public class DataCommitInfoDao {
         }
     }
 
-    public DataCommitInfo selectByPrimaryKey(String tableId, String partitionDesc, String commitId) {
+    public DataCommitInfo selectByPrimaryKey(
+            String tableId, String partitionDesc, String commitId) {
         if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
-            JniWrapper jniWrapper = NativeMetadataJavaClient.query(
-                    NativeUtils.CodedDaoType.SelectOneDataCommitInfoByTableIdAndPartitionDescAndCommitId,
-                    Arrays.asList(tableId, partitionDesc, commitId));
+            JniWrapper jniWrapper =
+                    NativeMetadataJavaClient.query(
+                            NativeUtils.CodedDaoType
+                                    .SelectOneDataCommitInfoByTableIdAndPartitionDescAndCommitId,
+                            Arrays.asList(tableId, partitionDesc, commitId));
             if (jniWrapper == null) return null;
             List<DataCommitInfo> dataCommitInfoList = jniWrapper.getDataCommitInfoList();
             return dataCommitInfoList.isEmpty() ? null : dataCommitInfoList.get(0);
@@ -157,8 +177,9 @@ public class DataCommitInfoDao {
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
-        String sql = "select * from data_commit_info where table_id = ? and partition_desc = ? and " +
-                "commit_id = ?";
+        String sql =
+                "select * from data_commit_info where table_id = ? and partition_desc = ? and "
+                        + "commit_id = ?";
         DataCommitInfo dataCommitInfo = null;
         try {
             conn = DBConnector.getConn();
@@ -180,9 +201,10 @@ public class DataCommitInfoDao {
 
     public DataCommitInfo selectByTableId(String tableId) {
         if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
-            JniWrapper jniWrapper = NativeMetadataJavaClient.query(
-                    NativeUtils.CodedDaoType.SelectOneDataCommitInfoByTableId,
-                    Collections.singletonList(tableId));
+            JniWrapper jniWrapper =
+                    NativeMetadataJavaClient.query(
+                            NativeUtils.CodedDaoType.SelectOneDataCommitInfoByTableId,
+                            Collections.singletonList(tableId));
             if (jniWrapper == null) return null;
             List<DataCommitInfo> dataCommitInfoList = jniWrapper.getDataCommitInfoList();
             return dataCommitInfoList.isEmpty() ? null : dataCommitInfoList.get(0);
@@ -191,7 +213,9 @@ public class DataCommitInfoDao {
         PreparedStatement pstmt = null;
         ResultSet rs = null;
         String sql =
-                String.format("select * from data_commit_info where table_id = '%s' order by timestamp DESC LIMIT 1",
+                String.format(
+                        "select * from data_commit_info where table_id = '%s' order by timestamp"
+                                + " DESC LIMIT 1",
                         tableId);
         DataCommitInfo dataCommitInfo = null;
         try {
@@ -209,17 +233,22 @@ public class DataCommitInfoDao {
         return dataCommitInfo;
     }
 
-    public List<DataCommitInfo> selectByTableIdPartitionDescCommitList(String tableId, String partitionDesc,
-                                                                       List<Uuid> commitIdList) {
+    public List<DataCommitInfo> selectByTableIdPartitionDescCommitList(
+            String tableId, String partitionDesc, List<Uuid> commitIdList) {
         if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
             if (commitIdList.isEmpty()) {
                 return Collections.emptyList();
             }
-            JniWrapper jniWrapper = NativeMetadataJavaClient.query(
-                    NativeUtils.CodedDaoType.ListDataCommitInfoByTableIdAndPartitionDescAndCommitList,
-                    Arrays.asList(tableId, partitionDesc,
-                            commitIdList.stream().map(DBUtil::protoUuidToJniString).collect(Collectors.joining(""))
-                    ));
+            JniWrapper jniWrapper =
+                    NativeMetadataJavaClient.query(
+                            NativeUtils.CodedDaoType
+                                    .ListDataCommitInfoByTableIdAndPartitionDescAndCommitList,
+                            Arrays.asList(
+                                    tableId,
+                                    partitionDesc,
+                                    commitIdList.stream()
+                                            .map(DBUtil::protoUuidToJniString)
+                                            .collect(Collectors.joining(""))));
             if (jniWrapper == null) return null;
             return jniWrapper.getDataCommitInfoList();
         }
@@ -230,9 +259,15 @@ public class DataCommitInfoDao {
         if (commitIdList.size() < 1) {
             return commitInfoList;
         }
-        String uuidListOrderString = commitIdList.stream().map(uuid -> DBUtil.toJavaUUID(uuid).toString()).collect(Collectors.joining(","));
-        String sql = String.format("select * from data_commit_info where table_id = ? and partition_desc = ? and " +
-                "commit_id in (%s) order by position(commit_id::text in ?) ", String.join(",", Collections.nCopies(commitIdList.size(), "?")));
+        String uuidListOrderString =
+                commitIdList.stream()
+                        .map(uuid -> DBUtil.toJavaUUID(uuid).toString())
+                        .collect(Collectors.joining(","));
+        String sql =
+                String.format(
+                        "select * from data_commit_info where table_id = ? and partition_desc = ?"
+                                + " and commit_id in (%s) order by position(commit_id::text in ?) ",
+                        String.join(",", Collections.nCopies(commitIdList.size(), "?")));
 
         try {
             conn = DBConnector.getConn();
@@ -276,9 +311,10 @@ public class DataCommitInfoDao {
     public boolean batchInsert(List<DataCommitInfo> listData) {
         if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
             if (listData.isEmpty()) return true;
-            Integer count = NativeMetadataJavaClient.insert(
-                    NativeUtils.CodedDaoType.TransactionInsertDataCommitInfo,
-                    JniWrapper.newBuilder().addAllDataCommitInfo(listData).build());
+            Integer count =
+                    NativeMetadataJavaClient.insert(
+                            NativeUtils.CodedDaoType.TransactionInsertDataCommitInfo,
+                            JniWrapper.newBuilder().addAllDataCommitInfo(listData).build());
             return count > 0;
         }
         Connection conn = null;
@@ -286,10 +322,11 @@ public class DataCommitInfoDao {
         boolean result = true;
         try {
             conn = DBConnector.getConn();
-            pstmt = conn.prepareStatement(
-                    "insert into data_commit_info (table_id, partition_desc, commit_id, file_ops, commit_op, " +
-                            "timestamp, committed, domain)" +
-                            " values (?, ?, ?, ?, ?, ?, ?, ?)");
+            pstmt =
+                    conn.prepareStatement(
+                            "insert into data_commit_info (table_id, partition_desc, commit_id,"
+                                + " file_ops, commit_op, timestamp, committed, domain) values (?,"
+                                + " ?, ?, ?, ?, ?, ?, ?)");
             conn.setAutoCommit(false);
             for (DataCommitInfo dataCommitInfo : listData) {
                 dataCommitInsert(pstmt, dataCommitInfo);
@@ -310,7 +347,8 @@ public class DataCommitInfoDao {
         return result;
     }
 
-    private void dataCommitInsert(PreparedStatement pstmt, DataCommitInfo dataCommitInfo) throws SQLException {
+    private void dataCommitInsert(PreparedStatement pstmt, DataCommitInfo dataCommitInfo)
+            throws SQLException {
         pstmt.setString(1, dataCommitInfo.getTableId());
         pstmt.setString(2, dataCommitInfo.getPartitionDesc());
         pstmt.setString(3, DBUtil.toJavaUUID(dataCommitInfo.getCommitId()).toString());

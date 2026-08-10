@@ -9,7 +9,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Literal,Any
+from typing import Literal, Any
 
 import pyarrow as pa
 
@@ -115,16 +115,15 @@ class WriteResult:
             )
             for output in outputs
         )
-    
+
         grouped: dict[str, list[FileInfo]] = {}
         for file_info in files:
             grouped.setdefault(file_info.partition, []).append(file_info)
-    
+
         partitions: dict[str, tuple[FileInfo, ...]] = {
-            partition: tuple(file_infos)
-            for partition, file_infos in grouped.items()
+            partition: tuple(file_infos) for partition, file_infos in grouped.items()
         }
-    
+
         return cls(
             files=files,
             partitions=partitions,

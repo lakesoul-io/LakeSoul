@@ -23,9 +23,7 @@ import org.apache.arrow.vector.DecimalVector;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 
-/**
- * {@link ArrowFieldWriter} for Decimal.
- */
+/** {@link ArrowFieldWriter} for Decimal. */
 public abstract class DecimalWriter<T> extends ArrowFieldWriter<T> {
 
     public static DecimalWriter<Object[]> forObject(
@@ -65,9 +63,7 @@ public abstract class DecimalWriter<T> extends ArrowFieldWriter<T> {
 
     // ------------------------------------------------------------------------------------------
 
-    /**
-     * {@link DecimalWriter} for {@link Object[]} input.
-     */
+    /** {@link DecimalWriter} for {@link Object[]} input. */
     public static final class DecimalWriterForObject extends DecimalWriter<Object[]> {
 
         private DecimalWriterForObject(DecimalVector decimalVector, int precision, int scale) {
@@ -113,5 +109,4 @@ public abstract class DecimalWriter<T> extends ArrowFieldWriter<T> {
         }
         return precision;
     }
-
 }

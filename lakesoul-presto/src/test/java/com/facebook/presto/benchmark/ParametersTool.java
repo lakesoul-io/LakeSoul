@@ -25,7 +25,8 @@ public class ParametersTool {
         while (i < args.length) {
             String key = getKeyFromArgs(args, i);
             if (key.isEmpty()) {
-                throw new IllegalArgumentException("The input " + Arrays.toString(args) + " contains an empty argument");
+                throw new IllegalArgumentException(
+                        "The input " + Arrays.toString(args) + " contains an empty argument");
             }
 
             ++i;
@@ -51,7 +52,8 @@ public class ParametersTool {
 
     public static ParametersTool fromPropertiesFile(File file) throws IOException {
         if (!file.exists()) {
-            throw new FileNotFoundException("Properties file " + file.getAbsolutePath() + " does not exist");
+            throw new FileNotFoundException(
+                    "Properties file " + file.getAbsolutePath() + " does not exist");
         } else {
             FileInputStream fis = new FileInputStream(file);
             Throwable var2 = null;
@@ -107,14 +109,16 @@ public class ParametersTool {
             return true;
         } else if (o != null && this.getClass() == o.getClass()) {
             ParametersTool that = (ParametersTool) o;
-            return Objects.equals(this.data, that.data) && Objects.equals(this.defaultData, that.defaultData) && Objects.equals(this.unrequestedParameters, that.unrequestedParameters);
+            return Objects.equals(this.data, that.data)
+                    && Objects.equals(this.defaultData, that.defaultData)
+                    && Objects.equals(this.unrequestedParameters, that.unrequestedParameters);
         } else {
             return false;
         }
     }
 
     public int hashCode() {
-        return Objects.hash(new Object[]{this.data, this.defaultData, this.unrequestedParameters});
+        return Objects.hash(new Object[] {this.data, this.defaultData, this.unrequestedParameters});
     }
 
     public int getNumberOfParameters() {
@@ -133,17 +137,17 @@ public class ParametersTool {
         return this.data.containsKey(value);
     }
 
-//    public Configuration getConfiguration() {
-//        Configuration conf = new Configuration();
-//        Iterator var2 = this.data.entrySet().iterator();
-//
-//        while (var2.hasNext()) {
-//            Map.Entry<String, String> entry = (Map.Entry) var2.next();
-//            conf.setString((String) entry.getKey(), (String) entry.getValue());
-//        }
-//
-//        return conf;
-//    }
+    //    public Configuration getConfiguration() {
+    //        Configuration conf = new Configuration();
+    //        Iterator var2 = this.data.entrySet().iterator();
+    //
+    //        while (var2.hasNext()) {
+    //            Map.Entry<String, String> entry = (Map.Entry) var2.next();
+    //            conf.setString((String) entry.getKey(), (String) entry.getValue());
+    //        }
+    //
+    //        return conf;
+    //    }
 
     public Properties getProperties() {
         Properties props = new Properties();
@@ -159,7 +163,8 @@ public class ParametersTool {
         File file = new File(pathToFile);
         if (file.exists()) {
             if (!overwrite) {
-                throw new RuntimeException("File " + pathToFile + " exists and overwriting is not allowed");
+                throw new RuntimeException(
+                        "File " + pathToFile + " exists and overwriting is not allowed");
             }
 
             file.delete();
@@ -171,7 +176,8 @@ public class ParametersTool {
         Throwable var6 = null;
 
         try {
-            defaultProps.store(out, "Default file created by Flink's ParameterUtil.createPropertiesFile()");
+            defaultProps.store(
+                    out, "Default file created by Flink's ParameterUtil.createPropertiesFile()");
         } catch (Throwable var15) {
             var6 = var15;
             throw var15;
@@ -186,7 +192,6 @@ public class ParametersTool {
                 out.close();
             }
         }
-
     }
 
     protected Object clone() throws CloneNotSupportedException {
@@ -214,7 +219,8 @@ public class ParametersTool {
     private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {
         in.defaultReadObject();
         this.defaultData = new ConcurrentHashMap(this.data.size());
-        this.unrequestedParameters = Collections.newSetFromMap(new ConcurrentHashMap(this.data.size()));
+        this.unrequestedParameters =
+                Collections.newSetFromMap(new ConcurrentHashMap(this.data.size()));
     }
 
     public static String getKeyFromArgs(String[] args, int index) {
@@ -223,14 +229,19 @@ public class ParametersTool {
             key = args[index].substring(2);
         } else {
             if (!args[index].startsWith("-")) {
-                throw new IllegalArgumentException(String.format("Error parsing arguments '%s' on '%s'. Please prefix keys with -- or -.", Arrays.toString(args), args[index]));
+                throw new IllegalArgumentException(
+                        String.format(
+                                "Error parsing arguments '%s' on '%s'. Please prefix keys with --"
+                                        + " or -.",
+                                Arrays.toString(args), args[index]));
             }
 
             key = args[index].substring(1);
         }
 
         if (key.isEmpty()) {
-            throw new IllegalArgumentException("The input " + Arrays.toString(args) + " contains an empty argument");
+            throw new IllegalArgumentException(
+                    "The input " + Arrays.toString(args) + " contains an empty argument");
         } else {
             return key;
         }
@@ -347,6 +358,5 @@ public class ParametersTool {
         } else if (currentValue.equals("<undefined>") && value != null) {
             this.defaultData.put(key, value);
         }
-
     }
 }

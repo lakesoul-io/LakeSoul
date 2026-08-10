@@ -4,6 +4,8 @@
 
 package com.facebook.presto.lakesoul.handle;
 
+import static java.util.Objects.requireNonNull;
+
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.ColumnHandle;
 import com.fasterxml.jackson.annotation.JsonCreator;
@@ -13,15 +15,14 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectReader;
 import com.fasterxml.jackson.databind.ObjectWriter;
-import org.apache.arrow.vector.types.pojo.Field;
 
-import static java.util.Objects.requireNonNull;
+import org.apache.arrow.vector.types.pojo.Field;
 
 public class LakeSoulTableColumnHandle implements ColumnHandle {
     private LakeSoulTableHandle tableHandle;
     private String columnName;
     private Type columnType;
-    private final Field arrowField ;
+    private final Field arrowField;
 
     private static final ObjectMapper mapper = new ObjectMapper();
     private static final ObjectWriter writer = mapper.writerWithDefaultPrettyPrinter();
@@ -37,14 +38,11 @@ public class LakeSoulTableColumnHandle implements ColumnHandle {
     }
 
     public LakeSoulTableColumnHandle(
-            LakeSoulTableHandle tableHandle,
-            String columnName,
-            Type columnType,
-            Field arrowField) {
-        this.tableHandle = requireNonNull(tableHandle, "tableHandle should not be null") ;
-        this.columnName = requireNonNull(columnName, "columnName should not be null") ;
-        this.columnType = requireNonNull(columnType, "columnType should not be null") ;
-        this.arrowField = requireNonNull(arrowField, "arrowField should not be null") ;
+            LakeSoulTableHandle tableHandle, String columnName, Type columnType, Field arrowField) {
+        this.tableHandle = requireNonNull(tableHandle, "tableHandle should not be null");
+        this.columnName = requireNonNull(columnName, "columnName should not be null");
+        this.columnType = requireNonNull(columnType, "columnType should not be null");
+        this.arrowField = requireNonNull(arrowField, "arrowField should not be null");
     }
 
     @JsonProperty
@@ -92,12 +90,16 @@ public class LakeSoulTableColumnHandle implements ColumnHandle {
         }
     }
 
-    @Override public String toString() {
-        return "LakeSoulTableColumnHandle{" +
-                "tableHandle=" + tableHandle +
-                ", columnName='" + columnName + '\'' +
-                ", columnType=" + columnType +
-                '}';
+    @Override
+    public String toString() {
+        return "LakeSoulTableColumnHandle{"
+                + "tableHandle="
+                + tableHandle
+                + ", columnName='"
+                + columnName
+                + '\''
+                + ", columnType="
+                + columnType
+                + '}';
     }
 }
-

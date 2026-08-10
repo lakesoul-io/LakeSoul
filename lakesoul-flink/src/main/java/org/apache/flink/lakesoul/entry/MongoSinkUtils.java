@@ -9,6 +9,7 @@ import com.alibaba.fastjson.JSONObject;
 import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoClients;
 import com.mongodb.client.MongoDatabase;
+
 import org.apache.flink.table.types.logical.BinaryType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
@@ -23,7 +24,8 @@ import java.util.*;
 
 public class MongoSinkUtils {
 
-    public BsonValue convertTonBsonValue(Object value, List<String> structNameFiledList) throws ParseException {
+    public BsonValue convertTonBsonValue(Object value, List<String> structNameFiledList)
+            throws ParseException {
         if (value == null) {
             return new BsonNull();
         } else if (value instanceof Integer) {
@@ -95,13 +97,20 @@ public class MongoSinkUtils {
         mongoClient.close();
     }
 
-    public List<String> findDirectNestedNames(JSONObject jsonObject, String targetFieldName, int currentLevel, int targetLevel) {
+    public List<String> findDirectNestedNames(
+            JSONObject jsonObject, String targetFieldName, int currentLevel, int targetLevel) {
         List<String> nestedNames = new ArrayList<>();
-        findDirectNestedNamesHelper(jsonObject, targetFieldName, currentLevel, targetLevel, nestedNames);
+        findDirectNestedNamesHelper(
+                jsonObject, targetFieldName, currentLevel, targetLevel, nestedNames);
         return nestedNames;
     }
 
-    public void findDirectNestedNamesHelper(JSONObject jsonObject, String targetFieldName, int currentLevel, int targetLevel, List<String> nestedNames) {
+    public void findDirectNestedNamesHelper(
+            JSONObject jsonObject,
+            String targetFieldName,
+            int currentLevel,
+            int targetLevel,
+            List<String> nestedNames) {
         if (currentLevel == targetLevel) {
             if (jsonObject.getString("name").equals(targetFieldName)) {
                 JSONArray children = jsonObject.getJSONArray("children");
@@ -114,7 +123,8 @@ public class MongoSinkUtils {
             JSONArray children = jsonObject.getJSONArray("children");
             for (Object obj : children) {
                 JSONObject child = (JSONObject) obj;
-                findDirectNestedNamesHelper(child, targetFieldName, currentLevel + 1, targetLevel, nestedNames);
+                findDirectNestedNamesHelper(
+                        child, targetFieldName, currentLevel + 1, targetLevel, nestedNames);
             }
         }
     }
@@ -128,5 +138,4 @@ public class MongoSinkUtils {
         dateFormat.setTimeZone(TimeZone.getTimeZone("UTC"));
         return dateFormat.parse(value);
     }
-
 }

@@ -6,15 +6,29 @@ package org.apache.flink.lakesoul.entry.clean;
 import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
 import org.apache.flink.util.Collector;
 
-public class TableTtlProFunction extends KeyedProcessFunction<String,PartitionInfoRecordGets.PartitionInfo, TableTtlProFunction.PartitionINfoUpdateEvents> {
+public class TableTtlProFunction
+        extends KeyedProcessFunction<
+                String,
+                PartitionInfoRecordGets.PartitionInfo,
+                TableTtlProFunction.PartitionINfoUpdateEvents> {
 
     @Override
-    public void processElement(PartitionInfoRecordGets.PartitionInfo value, KeyedProcessFunction<String, PartitionInfoRecordGets.PartitionInfo, PartitionINfoUpdateEvents>.Context ctx, Collector<PartitionINfoUpdateEvents> out) throws Exception {
+    public void processElement(
+            PartitionInfoRecordGets.PartitionInfo value,
+            KeyedProcessFunction<
+                                    String,
+                                    PartitionInfoRecordGets.PartitionInfo,
+                                    PartitionINfoUpdateEvents>
+                            .Context
+                    ctx,
+            Collector<PartitionINfoUpdateEvents> out)
+            throws Exception {
         String tableId = value.tableId;
         String partitionDesc = value.partitionDesc;
         long timestamp = value.timestamp;
-        if (timestamp != -5L){ // filter delete events
-            PartitionINfoUpdateEvents partitionINfoUpdateEvents = new PartitionINfoUpdateEvents(tableId, partitionDesc, timestamp);
+        if (timestamp != -5L) { // filter delete events
+            PartitionINfoUpdateEvents partitionINfoUpdateEvents =
+                    new PartitionINfoUpdateEvents(tableId, partitionDesc, timestamp);
             out.collect(partitionINfoUpdateEvents);
         }
     }
@@ -32,11 +46,16 @@ public class TableTtlProFunction extends KeyedProcessFunction<String,PartitionIn
 
         @Override
         public String toString() {
-            return "PartitionINfoUpdateEvents{" +
-                    "tableId='" + tableId + '\'' +
-                    ", partitionDesc='" + partitionDesc + '\'' +
-                    ", updateTimestamp=" + timestamp +
-                    '}';
+            return "PartitionINfoUpdateEvents{"
+                    + "tableId='"
+                    + tableId
+                    + '\''
+                    + ", partitionDesc='"
+                    + partitionDesc
+                    + '\''
+                    + ", updateTimestamp="
+                    + timestamp
+                    + '}';
         }
     }
 }

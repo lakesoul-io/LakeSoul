@@ -9,12 +9,9 @@ import org.apache.flink.core.fs.Path;
 
 import java.io.Serializable;
 import java.util.List;
-import java.util.Map;
 import java.util.stream.Collectors;
 
-/**
- * Source split for LakeSoul's flink source
- */
+/** Source split for LakeSoul's flink source */
 public class LakeSoulPartitionSplit implements SourceSplit, Serializable {
 
     private static final long serialVersionUID = -5405040572678422182L;
@@ -26,7 +23,8 @@ public class LakeSoulPartitionSplit implements SourceSplit, Serializable {
 
     private final String partitionDesc;
 
-    public LakeSoulPartitionSplit(String id, List<Path> files, long skipRecord, String partitionDesc) {
+    public LakeSoulPartitionSplit(
+            String id, List<Path> files, long skipRecord, String partitionDesc) {
         assert id != null;
         this.id = id;
         this.files = files;
@@ -34,7 +32,8 @@ public class LakeSoulPartitionSplit implements SourceSplit, Serializable {
         this.partitionDesc = partitionDesc;
     }
 
-    public LakeSoulPartitionSplit(String id, List<Path> files, long skipRecord, int bucketId, String partitionDesc) {
+    public LakeSoulPartitionSplit(
+            String id, List<Path> files, long skipRecord, int bucketId, String partitionDesc) {
         assert id != null;
         this.id = id;
         this.files = files;
@@ -62,11 +61,11 @@ public class LakeSoulPartitionSplit implements SourceSplit, Serializable {
 
     @Override
     public String toString() {
-        return "LakeSoulSplit:" + id +
-                "[" +
-                files.stream().map(Object::toString)
-                        .collect(Collectors.joining(", ")) +
-                "]";
+        return "LakeSoulSplit:"
+                + id
+                + "["
+                + files.stream().map(Object::toString).collect(Collectors.joining(", "))
+                + "]";
     }
 
     public long getSkipRecord() {

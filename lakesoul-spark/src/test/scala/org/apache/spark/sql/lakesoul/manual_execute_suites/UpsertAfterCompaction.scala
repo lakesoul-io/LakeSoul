@@ -22,72 +22,68 @@ class UpsertAfterCompaction {
 
     import spark.implicits._
 
-
     try {
-      val data1 = TestUtils.getData1(13000, onlyOnePartition)
+      val data1 = TestUtils
+        .getData1(13000, onlyOnePartition)
         .toDF("hash", "value", "range")
         .persist()
 
-      val data2 = TestUtils.getData1(12000, onlyOnePartition)
+      val data2 = TestUtils
+        .getData1(12000, onlyOnePartition)
         .toDF("hash", "name", "range")
         .persist()
 
-      val data3 = TestUtils.getData1(15000, onlyOnePartition)
+      val data3 = TestUtils
+        .getData1(15000, onlyOnePartition)
         .toDF("hash", "value", "range")
         .persist()
-      val data4 = TestUtils.getData2(10000, onlyOnePartition)
+      val data4 = TestUtils
+        .getData2(10000, onlyOnePartition)
         .toDF("hash", "value", "name", "range")
         .persist()
 
-      val distinctData1 = data1.groupBy("range", "hash")
-        .agg(
-          last("value").as("v"))
-        .select(
-          col("range"),
-          col("hash"),
-          col("v").as("value"))
+      val distinctData1 = data1
+        .groupBy("range", "hash")
+        .agg(last("value").as("v"))
+        .select(col("range"), col("hash"), col("v").as("value"))
 
-      val distinctData2 = data2.groupBy("range", "hash")
-        .agg(
-          last("name").as("n"))
-        .select(
-          col("range"),
-          col("hash"),
-          col("n").as("name"))
+      val distinctData2 = data2
+        .groupBy("range", "hash")
+        .agg(last("name").as("n"))
+        .select(col("range"), col("hash"), col("n").as("name"))
 
-      val distinctData3 = data3.groupBy("range", "hash")
-        .agg(
-          last("value").as("v"))
-        .select(
-          col("range"),
-          col("hash"),
-          col("v").as("value"))
+      val distinctData3 = data3
+        .groupBy("range", "hash")
+        .agg(last("value").as("v"))
+        .select(col("range"), col("hash"), col("v").as("value"))
 
-      val distinctData4 = data4.groupBy("range", "hash")
-        .agg(
-          last("value").as("v"),
-          last("name").as("n"))
+      val distinctData4 = data4
+        .groupBy("range", "hash")
+        .agg(last("value").as("v"), last("name").as("n"))
         .select(
           col("range"),
           col("hash"),
           col("v").as("value"),
-          col("n").as("name"))
+          col("n").as("name")
+        )
 
       val expectedData = distinctData1
         .join(distinctData2, Seq("range", "hash"), "full")
         .join(distinctData3, Seq("range", "hash"), "full")
         .join(distinctData4, Seq("range", "hash"), "full")
-        .select(col("range"),
+        .select(
+          col("range"),
           col("hash"),
-          coalesce(distinctData4("value"), distinctData3("value"), distinctData1("value")).as("value"),
-          coalesce(distinctData4("name"), distinctData2("name")).as("name"))
+          coalesce(
+            distinctData4("value"),
+            distinctData3("value"),
+            distinctData1("value")
+          ).as("value"),
+          coalesce(distinctData4("name"), distinctData2("name")).as("name")
+        )
         .persist()
 
-
-      TestUtils.initTable(tableName,
-        data1,
-        "range",
-        "hash")
+      TestUtils.initTable(tableName, data1, "range", "hash")
 
       val table = LakeSoulTable.forPath(tableName)
 
@@ -98,25 +94,26 @@ class UpsertAfterCompaction {
       table.compaction()
 
       TestUtils.checkDFResult(
-        LakeSoulTable.forPath(tableName).toDF
+        LakeSoulTable
+          .forPath(tableName)
+          .toDF
           .select("range", "hash", "value", "name"),
-        expectedData)
+        expectedData
+      )
 
-
-      TestUtils.initTable(tableName,
-        data1,
-        "range",
-        "hash")
+      TestUtils.initTable(tableName, data1, "range", "hash")
       table.upsert(data2)
       table.upsert(data3)
       table.compaction()
       table.upsert(data4)
 
-
       TestUtils.checkDFResult(
-        LakeSoulTable.forPath(tableName).toDF
+        LakeSoulTable
+          .forPath(tableName)
+          .toDF
           .select("range", "hash", "value", "name"),
-        expectedData)
+        expectedData
+      )
 
       LakeSoulTable.forPath(tableName).dropTable()
 
@@ -126,7 +123,6 @@ class UpsertAfterCompaction {
         throw e
     }
   }
-
 
 }
 

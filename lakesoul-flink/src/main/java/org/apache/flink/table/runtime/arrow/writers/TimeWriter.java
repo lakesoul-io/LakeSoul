@@ -18,17 +18,16 @@
 
 package org.apache.flink.table.runtime.arrow.writers;
 
-import org.apache.flink.annotation.Internal;
-import org.apache.flink.table.data.ArrayData;
-import org.apache.flink.table.data.RowData;
-import org.apache.flink.util.Preconditions;
-
 import org.apache.arrow.vector.BaseFixedWidthVector;
 import org.apache.arrow.vector.TimeMicroVector;
 import org.apache.arrow.vector.TimeMilliVector;
 import org.apache.arrow.vector.TimeNanoVector;
 import org.apache.arrow.vector.TimeSecVector;
 import org.apache.arrow.vector.ValueVector;
+import org.apache.flink.annotation.Internal;
+import org.apache.flink.table.data.ArrayData;
+import org.apache.flink.table.data.RowData;
+import org.apache.flink.util.Preconditions;
 
 /** {@link ArrowFieldWriter} for Time. */
 @Internal

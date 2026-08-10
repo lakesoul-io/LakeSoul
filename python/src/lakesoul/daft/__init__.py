@@ -154,8 +154,7 @@ def _to_arrow_iter(
         return iter(to_arrow_iter(results_buffer_size=results_buffer_size))
     if results_buffer_size != "num_cpus":
         raise TypeError(
-            "this Daft DataFrame.to_arrow_iter() does not support "
-            "results_buffer_size"
+            "this Daft DataFrame.to_arrow_iter() does not support results_buffer_size"
         )
     return iter(to_arrow_iter())
 

@@ -8,13 +8,23 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 import org.apache.spark.sql.catalyst.expressions.codegen.Block._
 import org.apache.spark.sql.catalyst.expressions.codegen._
-import org.apache.spark.sql.catalyst.expressions.{Expression, NonSQLExpression, UnaryExpression}
-import org.apache.spark.sql.lakesoul.schema.Invariants.{ArbitraryExpression, NotNull}
+import org.apache.spark.sql.catalyst.expressions.{
+  Expression,
+  NonSQLExpression,
+  UnaryExpression
+}
+import org.apache.spark.sql.lakesoul.schema.Invariants.{
+  ArbitraryExpression,
+  NotNull
+}
 import org.apache.spark.sql.types.{DataType, NullType}
 
-/** An expression that validates a specific invariant on a column, before writing into lakesoul table. */
-case class CheckInvariant(child: Expression,
-                          invariant: Invariant) extends UnaryExpression with NonSQLExpression {
+/** An expression that validates a specific invariant on a column, before
+  * writing into lakesoul table.
+  */
+case class CheckInvariant(child: Expression, invariant: Invariant)
+    extends UnaryExpression
+    with NonSQLExpression {
 
   override def dataType: DataType = NullType
 
@@ -28,13 +38,15 @@ case class CheckInvariant(child: Expression,
     case NotNull if child.eval(input) == null =>
       throw InvariantViolationException(invariant, "")
     case ArbitraryExpression(expr) =>
-      val resolvedExpr = expr.transform {
-        case _: UnresolvedAttribute => child
+      val resolvedExpr = expr.transform { case _: UnresolvedAttribute =>
+        child
       }
       val result = resolvedExpr.eval(input)
       if (result == null || result == false) {
         throw InvariantViolationException(
-          invariant, s"Value ${child.eval(input)} violates requirement.")
+          invariant,
+          s"Value ${child.eval(input)} violates requirement."
+        )
       }
   }
 
@@ -55,9 +67,12 @@ case class CheckInvariant(child: Expression,
      """.stripMargin
   }
 
-  private def generateExpressionValidationCode(expr: Expression, ctx: CodegenContext): Block = {
-    val resolvedExpr = expr.transform {
-      case _: UnresolvedAttribute => child
+  private def generateExpressionValidationCode(
+      expr: Expression,
+      ctx: CodegenContext
+  ): Block = {
+    val resolvedExpr = expr.transform { case _: UnresolvedAttribute =>
+      child
     }
     val elementValue = child.genCode(ctx)
     val childGen = resolvedExpr.genCode(ctx)
@@ -77,15 +92,25 @@ case class CheckInvariant(child: Expression,
      """.stripMargin
   }
 
-  override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+  override protected def doGenCode(
+      ctx: CodegenContext,
+      ev: ExprCode
+  ): ExprCode = {
     val code = invariant.rule match {
-      case NotNull => generateNotNullCode(ctx)
-      case ArbitraryExpression(expr) => generateExpressionValidationCode(expr, ctx)
+      case NotNull                   => generateNotNullCode(ctx)
+      case ArbitraryExpression(expr) =>
+        generateExpressionValidationCode(expr, ctx)
     }
-    ev.copy(code = code, isNull = TrueLiteral, value = JavaCode.literal("null", NullType))
+    ev.copy(
+      code = code,
+      isNull = TrueLiteral,
+      value = JavaCode.literal("null", NullType)
+    )
   }
 
-  override protected def withNewChildInternal(newChild: Expression): Expression = {
+  override protected def withNewChildInternal(
+      newChild: Expression
+  ): Expression = {
     copy(child = newChild)
   }
 }

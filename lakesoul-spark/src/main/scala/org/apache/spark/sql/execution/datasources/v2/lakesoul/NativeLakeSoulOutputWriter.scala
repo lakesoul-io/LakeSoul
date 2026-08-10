@@ -23,17 +23,21 @@ import java.util
 import scala.collection.JavaConverters.mapAsScalaMapConverter
 import scala.collection.mutable
 
-class NativeLakeSoulOutputWriter(val path: String,
-                                 dataSchema: StructType,
-                                 timeZoneId: String,
-                                 context: TaskAttemptContext,
-                                 physicalFormat: String = "vortex-compact") extends OutputWriter {
+class NativeLakeSoulOutputWriter(
+    val path: String,
+    dataSchema: StructType,
+    timeZoneId: String,
+    context: TaskAttemptContext,
+    physicalFormat: String = "vortex-compact"
+) extends OutputWriter {
 
-  val NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE: Int = SQLConf.get.getConf(LakeSoulSQLConf.NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE)
+  val NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE: Int =
+    SQLConf.get.getConf(LakeSoulSQLConf.NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE)
 
   private var recordCount = 0
 
-  var flushResult: mutable.Map[String, util.List[FlushResult]] = mutable.Map.empty
+  var flushResult: mutable.Map[String, util.List[FlushResult]] =
+    mutable.Map.empty
 
   val arrowSchema: Schema = ArrowUtils.toArrowSchema(dataSchema, timeZoneId)
 
@@ -49,14 +53,18 @@ class NativeLakeSoulOutputWriter(val path: String,
     nativeIOWriter.withPrefix(path)
   }
 
-  NativeIOUtils.setNativeIOOptions(nativeIOWriter, NativeIOUtils.getNativeIOOptions(context, new Path(path)))
+  NativeIOUtils.setNativeIOOptions(
+    nativeIOWriter,
+    NativeIOUtils.getNativeIOOptions(context, new Path(path))
+  )
   nativeIOWriter.setOption("physical_format", physicalFormat)
 
   nativeIOWriter.initializeWriter()
 
   val allocator: BufferAllocator = nativeIOWriter.getAllocator
 
-  protected val root: VectorSchemaRoot = VectorSchemaRoot.create(arrowSchema, allocator)
+  protected val root: VectorSchemaRoot =
+    VectorSchemaRoot.create(arrowSchema, allocator)
 
   private val recordWriter: ArrowWriter = ArrowWriter.create(root)
 

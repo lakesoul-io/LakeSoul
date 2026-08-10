@@ -9,12 +9,14 @@ import org.apache.flink.api.connector.source.SplitEnumeratorContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.List;
 import java.util.Optional;
 
-public class LakeSoulStaticSplitEnumerator implements SplitEnumerator<LakeSoulPartitionSplit, LakeSoulPendingSplits> {
+import javax.annotation.Nullable;
+
+public class LakeSoulStaticSplitEnumerator
+        implements SplitEnumerator<LakeSoulPartitionSplit, LakeSoulPendingSplits> {
 
     private static final Logger LOG = LoggerFactory.getLogger(LakeSoulStaticSplitEnumerator.class);
 
@@ -22,15 +24,15 @@ public class LakeSoulStaticSplitEnumerator implements SplitEnumerator<LakeSoulPa
 
     private final LakeSoulSimpleSplitAssigner splitAssigner;
 
-    public LakeSoulStaticSplitEnumerator(SplitEnumeratorContext<LakeSoulPartitionSplit> context,
-                                         LakeSoulSimpleSplitAssigner splitAssigner) {
+    public LakeSoulStaticSplitEnumerator(
+            SplitEnumeratorContext<LakeSoulPartitionSplit> context,
+            LakeSoulSimpleSplitAssigner splitAssigner) {
         this.context = context;
         this.splitAssigner = splitAssigner;
     }
 
     @Override
-    public void start() {
-    }
+    public void start() {}
 
     @Override
     public synchronized void handleSplitRequest(int subtaskId, @Nullable String requesterHostname) {
@@ -57,8 +59,7 @@ public class LakeSoulStaticSplitEnumerator implements SplitEnumerator<LakeSoulPa
     }
 
     @Override
-    public void addReader(int subtaskId) {
-    }
+    public void addReader(int subtaskId) {}
 
     @Override
     public synchronized LakeSoulPendingSplits snapshotState(long checkpointId) throws Exception {
@@ -67,6 +68,5 @@ public class LakeSoulStaticSplitEnumerator implements SplitEnumerator<LakeSoulPa
     }
 
     @Override
-    public void close() throws IOException {
-    }
+    public void close() throws IOException {}
 }

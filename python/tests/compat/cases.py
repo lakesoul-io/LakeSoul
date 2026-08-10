@@ -28,7 +28,10 @@ class CaseSpec:
             rows = [
                 row
                 for row in table.to_pylist()
-                if all(row.get(key) == value for key, value in self.read_partition_filter.items())
+                if all(
+                    row.get(key) == value
+                    for key, value in self.read_partition_filter.items()
+                )
             ]
             table = _table_from_rows(rows, table.schema)
         if self.read_columns is not None:

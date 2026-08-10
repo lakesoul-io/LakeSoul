@@ -12,7 +12,14 @@ public class NameSpaceCount {
     long fileTotalSize;
     long fileBaseSize;
 
-    public NameSpaceCount(String nameSpace, int tableCounts, int fileCounts, int fileBaseCount, int partitionCounts, long fileTotalSize, long fileBaseSize) {
+    public NameSpaceCount(
+            String nameSpace,
+            int tableCounts,
+            int fileCounts,
+            int fileBaseCount,
+            int partitionCounts,
+            long fileTotalSize,
+            long fileBaseSize) {
         this.nameSpace = nameSpace;
         this.tableCounts = tableCounts;
         this.fileCounts = fileCounts;
@@ -24,14 +31,22 @@ public class NameSpaceCount {
 
     @Override
     public String toString() {
-        return "NameSpaceCount{" +
-                "nameSpace='" + nameSpace + '\'' +
-                ", tableCounts=" + tableCounts +
-                ", fileCounts=" + fileCounts +
-                ", fileBaseCount=" + fileBaseCount +
-                ", partitionCounts=" + partitionCounts +
-                ", fileTotalSize=" + fileTotalSize +
-                ", fileBaseSize=" + fileBaseSize +
-                '}';
+        return "NameSpaceCount{"
+                + "nameSpace='"
+                + nameSpace
+                + '\''
+                + ", tableCounts="
+                + tableCounts
+                + ", fileCounts="
+                + fileCounts
+                + ", fileBaseCount="
+                + fileBaseCount
+                + ", partitionCounts="
+                + partitionCounts
+                + ", fileTotalSize="
+                + fileTotalSize
+                + ", fileBaseSize="
+                + fileBaseSize
+                + '}';
     }
 }

@@ -17,6 +17,7 @@ import com.facebook.presto.lakesoul.util.ArrowBlockBuilder;
 import com.facebook.presto.lakesoul.util.PrestoUtil;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ConnectorPageSource;
+
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.ArrowType;
@@ -42,8 +43,11 @@ public class LakeSoulPageSource implements ConnectorPageSource {
     LinkedHashMap<String, String> partitions;
     private boolean isFinished = false;
 
-    public LakeSoulPageSource(LakeSoulSplit split, ArrowBlockBuilder arrowBlockBuilder,
-                              List<LakeSoulTableColumnHandle> columns) throws IOException {
+    public LakeSoulPageSource(
+            LakeSoulSplit split,
+            ArrowBlockBuilder arrowBlockBuilder,
+            List<LakeSoulTableColumnHandle> columns)
+            throws IOException {
         this.split = split;
         this.arrowBlockBuilder = arrowBlockBuilder;
         this.columns = columns;
@@ -54,17 +58,22 @@ public class LakeSoulPageSource implements ConnectorPageSource {
         }
         this.partitions = PrestoUtil.extractPartitionSpecFromPath(split.getPaths().get(0));
 
-        List<Field> fields = columns.stream()
-                .map(LakeSoulTableColumnHandle::getArrowField)
-                .map(ArrowBlockBuilder::toExecutionField)
-                .collect(Collectors.toList());
+        List<Field> fields =
+                columns.stream()
+                        .map(LakeSoulTableColumnHandle::getArrowField)
+                        .map(ArrowBlockBuilder::toExecutionField)
+                        .collect(Collectors.toList());
         HashMap<String, ColumnHandle> allcolumns = split.getLayout().getAllColumns();
-        List<String> dataCols = columns.stream().map(LakeSoulTableColumnHandle::getColumnName).collect(Collectors.toList());
+        List<String> dataCols =
+                columns.stream()
+                        .map(LakeSoulTableColumnHandle::getColumnName)
+                        .collect(Collectors.toList());
         // add extra pks
         List<String> prikeys = split.getLayout().getPrimaryKeys();
         for (String item : prikeys) {
             if (!dataCols.contains(item)) {
-                LakeSoulTableColumnHandle columnHandle = (LakeSoulTableColumnHandle) allcolumns.get(item);
+                LakeSoulTableColumnHandle columnHandle =
+                        (LakeSoulTableColumnHandle) allcolumns.get(item);
                 fields.add(ArrowBlockBuilder.toExecutionField(columnHandle.getArrowField()));
             }
         }
@@ -73,10 +82,9 @@ public class LakeSoulPageSource implements ConnectorPageSource {
                 split.getLayout().getTableParameters().getString(PrestoUtil.CDC_CHANGE_COLUMN);
         if (cdcColumn != null) {
             fields.add(Field.notNullable(cdcColumn, new ArrowType.Utf8()));
-            reader.addFilter(FilterApi.notEq(
-                            FilterApi.binaryColumn(cdcColumn),
-                            Binary.fromString("delete"))
-                    .toString());
+            reader.addFilter(
+                    FilterApi.notEq(FilterApi.binaryColumn(cdcColumn), Binary.fromString("delete"))
+                            .toString());
         }
 
         reader.setPrimaryKeys(prikeys);
@@ -96,33 +104,36 @@ public class LakeSoulPageSource implements ConnectorPageSource {
                 LakeSoulConfig.getInstance().getSigner(),
                 LakeSoulConfig.getInstance().getDefaultFS(),
                 LakeSoulConfig.getInstance().getUser(),
-                LakeSoulConfig.getInstance().isVirtualPathStyle()
-        );
+                LakeSoulConfig.getInstance().isVirtualPathStyle());
 
         // init reader
         reader.initializeReader();
-        this.reader = new LakeSoulArrowReader(reader,
-                100000);
+        this.reader = new LakeSoulArrowReader(reader, 100000);
         log.info("Initialized LakeSoulPageSource {}", this);
     }
 
-    @Override public long getCompletedBytes() {
+    @Override
+    public long getCompletedBytes() {
         return 0;
     }
 
-    @Override public long getCompletedPositions() {
+    @Override
+    public long getCompletedPositions() {
         return currentPositition;
     }
 
-    @Override public long getReadTimeNanos() {
+    @Override
+    public long getReadTimeNanos() {
         return 0;
     }
 
-    @Override public boolean isFinished() {
+    @Override
+    public boolean isFinished() {
         return isFinished;
     }
 
-    @Override public Page getNextPage() {
+    @Override
+    public Page getNextPage() {
         if (this.currentVCR != null) {
             this.currentVCR.close();
         }
@@ -135,7 +146,9 @@ public class LakeSoulPageSource implements ConnectorPageSource {
             for (int columnIndex = 0; columnIndex < columns.size(); columnIndex++) {
                 FieldVector vector = vectors.get(columnIndex);
                 Type type = columns.get(columnIndex).getColumnType();
-                Block block = arrowBlockBuilder.buildBlockFromFieldVector(vector, type, reader.reader().getProvider());
+                Block block =
+                        arrowBlockBuilder.buildBlockFromFieldVector(
+                                vector, type, reader.reader().getProvider());
                 blocks.add(block);
             }
 
@@ -146,11 +159,13 @@ public class LakeSoulPageSource implements ConnectorPageSource {
         }
     }
 
-    @Override public long getSystemMemoryUsage() {
+    @Override
+    public long getSystemMemoryUsage() {
         return 0;
     }
 
-    @Override public void close() throws IOException {
+    @Override
+    public void close() throws IOException {
         if (this.currentVCR != null) {
             this.currentVCR.close();
             this.currentVCR = null;
@@ -161,19 +176,25 @@ public class LakeSoulPageSource implements ConnectorPageSource {
         }
     }
 
-    @Override public CompletableFuture<?> isBlocked() {
+    @Override
+    public CompletableFuture<?> isBlocked() {
         return ConnectorPageSource.super.isBlocked();
     }
 
-    @Override public RuntimeStats getRuntimeStats() {
+    @Override
+    public RuntimeStats getRuntimeStats() {
         return ConnectorPageSource.super.getRuntimeStats();
     }
 
-    @Override public String toString() {
-        return "LakeSoulPageSource{" +
-                "split=" + split +
-                ", columns=" + columns +
-                ", partitions=" + partitions +
-                '}';
+    @Override
+    public String toString() {
+        return "LakeSoulPageSource{"
+                + "split="
+                + split
+                + ", columns="
+                + columns
+                + ", partitions="
+                + partitions
+                + '}';
     }
 }

@@ -22,6 +22,7 @@ public class PostgresTableReader {
 
     /**
      * 根据 table_id 获取表信息
+     *
      * @param tableId 要查询的表的主键ID
      * @return 包含 table_name, table_namespace, domain, creator 的 Map
      * @throws SQLException 如果数据库操作出错
@@ -33,11 +34,12 @@ public class PostgresTableReader {
         // 准备返回结果
         Map<String, String> result = new HashMap<>();
 
-        String sql = "SELECT table_name, table_namespace, domain, creator " +
-                "FROM table_info WHERE table_id = ?";
+        String sql =
+                "SELECT table_name, table_namespace, domain, creator "
+                        + "FROM table_info WHERE table_id = ?";
 
         try (Connection connection = DriverManager.getConnection(dbUrl, dbUser, dbPassword);
-             PreparedStatement statement = connection.prepareStatement(sql)) {
+                PreparedStatement statement = connection.prepareStatement(sql)) {
 
             // 设置参数
             statement.setString(1, tableId);
@@ -66,7 +68,8 @@ public class PostgresTableReader {
 
         try {
             // 查询 table_id 为 1 的记录
-            Map<String, String> tableInfo = reader.getTableInfoById("table_8f2dda2d-b2cc-40b0-97b0-65ee0fa9ef8b");
+            Map<String, String> tableInfo =
+                    reader.getTableInfoById("table_8f2dda2d-b2cc-40b0-97b0-65ee0fa9ef8b");
 
             if (tableInfo.isEmpty()) {
                 System.out.println("未找到对应记录");

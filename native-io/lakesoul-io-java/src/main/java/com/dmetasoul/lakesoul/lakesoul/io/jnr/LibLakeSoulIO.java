@@ -33,15 +33,18 @@ public interface LibLakeSoulIO {
 
     Pointer lakesoul_config_builder_add_filter(Pointer builder, String filter);
 
-    Pointer lakesoul_config_builder_add_filter_proto(Pointer builder, @LongLong long proto_addr, int len);
+    Pointer lakesoul_config_builder_add_filter_proto(
+            Pointer builder, @LongLong long proto_addr, int len);
 
     Pointer lakesoul_config_builder_add_merge_op(Pointer builder, String field, String mergeOp);
 
     Pointer lakesoul_config_builder_set_schema(Pointer builder, @LongLong long schemaAddr);
 
-    Pointer lakesoul_config_builder_set_partition_schema(Pointer builder, @LongLong long schemaAddr);
+    Pointer lakesoul_config_builder_set_partition_schema(
+            Pointer builder, @LongLong long schemaAddr);
 
-    Pointer lakesoul_config_builder_set_object_store_option(Pointer builder, String key, String value);
+    Pointer lakesoul_config_builder_set_object_store_option(
+            Pointer builder, String key, String value);
 
     Pointer lakesoul_config_builder_set_option(Pointer builder, String key, String value);
 
@@ -57,7 +60,8 @@ public interface LibLakeSoulIO {
 
     Pointer lakesoul_config_builder_set_max_row_group_size(Pointer builder, int row_group_size);
 
-    Pointer lakesoul_config_builder_set_max_row_group_num_values(Pointer builder, int row_group_num_values);
+    Pointer lakesoul_config_builder_set_max_row_group_num_values(
+            Pointer builder, int row_group_num_values);
 
     Pointer create_lakesoul_io_config_from_builder(Pointer builder);
 
@@ -71,16 +75,23 @@ public interface LibLakeSoulIO {
 
     CStatus check_writer_created(Pointer writer);
 
-    Pointer lakesoul_config_builder_set_default_column_value(Pointer ioConfigBuilder, String column, String value);
+    Pointer lakesoul_config_builder_set_default_column_value(
+            Pointer ioConfigBuilder, String column, String value);
 
     interface BooleanCallback { // type representing callback
         @Delegate
-        void invoke(Boolean status, String err); // function name doesn't matter, it just needs to be the only function and have @Delegate
+        void invoke(
+                Boolean status,
+                String err); // function name doesn't matter, it just needs to be the only function
+        // and have @Delegate
     }
 
     interface IntegerCallback { // type representing callback
         @Delegate
-        void invoke(Integer status, String err); // function name doesn't matter, it just needs to be the only function and have @Delegate
+        void invoke(
+                Integer status,
+                String err); // function name doesn't matter, it just needs to be the only function
+        // and have @Delegate
     }
 
     class CStatus extends Struct {
@@ -95,13 +106,22 @@ public interface LibLakeSoulIO {
 
     CStatus start_reader(Pointer reader);
 
-    void next_record_batch(Pointer reader, @LongLong long schemaAddr, @LongLong long arrayAddr, IntegerCallback callback);
+    void next_record_batch(
+            Pointer reader,
+            @LongLong long schemaAddr,
+            @LongLong long arrayAddr,
+            IntegerCallback callback);
 
     CStatus next_record_batch_blocked(Pointer reader, @LongLong long arrayAddr);
 
-    void write_record_batch(Pointer writer, @LongLong long schemaAddr, @LongLong long arrayAddr, BooleanCallback callback);
+    void write_record_batch(
+            Pointer writer,
+            @LongLong long schemaAddr,
+            @LongLong long arrayAddr,
+            BooleanCallback callback);
 
-    CStatus write_record_batch_blocked(Pointer writer, @LongLong long schemaAddr, @LongLong long arrayAddr);
+    CStatus write_record_batch_blocked(
+            Pointer writer, @LongLong long schemaAddr, @LongLong long arrayAddr);
 
     void free_lakesoul_reader(Pointer reader);
 
@@ -123,12 +143,18 @@ public interface LibLakeSoulIO {
 
     void free_c_status(@Pinned @In @Transient CStatus status);
 
-    Pointer apply_partition_filter(IntegerCallback callback, int pbLen, long jniWrapperAddr, long schemaAddr, int filterLen, long filterAddr);
+    Pointer apply_partition_filter(
+            IntegerCallback callback,
+            int pbLen,
+            long jniWrapperAddr,
+            long schemaAddr,
+            int filterLen,
+            long filterAddr);
 
-    void export_bytes_result(BooleanCallback booleanCallback, Pointer bytes, Integer len, @LongLong long addr);
+    void export_bytes_result(
+            BooleanCallback booleanCallback, Pointer bytes, Integer len, @LongLong long addr);
 
     void free_bytes_result(Pointer bytes);
 
     void rust_logger_init();
-
 }

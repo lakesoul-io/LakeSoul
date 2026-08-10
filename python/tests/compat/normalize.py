@@ -16,7 +16,9 @@ def normalize_table(table: pa.Table, expected_schema: pa.Schema) -> pa.Table:
     arrays = []
     for field in expected_schema:
         if field.name not in table.schema.names:
-            raise AssertionError(f"missing column {field.name!r} in table {table.schema}")
+            raise AssertionError(
+                f"missing column {field.name!r} in table {table.schema}"
+            )
         column = table[field.name]
         if not column.type.equals(field.type):
             column = column.cast(field.type)
@@ -30,8 +32,12 @@ def table_summary(
     partition_by: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     normalized = normalize_table(table, expected_schema)
-    rows = [_canonical_row(row, normalized.schema.names) for row in normalized.to_pylist()]
-    row_lines = sorted(json.dumps(row, sort_keys=True, separators=(",", ":")) for row in rows)
+    rows = [
+        _canonical_row(row, normalized.schema.names) for row in normalized.to_pylist()
+    ]
+    row_lines = sorted(
+        json.dumps(row, sort_keys=True, separators=(",", ":")) for row in rows
+    )
     return {
         "schema": schema_fingerprint(normalized.schema),
         "row_count": normalized.num_rows,

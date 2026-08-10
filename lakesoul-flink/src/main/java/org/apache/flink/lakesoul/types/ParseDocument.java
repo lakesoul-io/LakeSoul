@@ -12,8 +12,8 @@ import org.bson.types.Decimal128;
 
 import java.math.BigDecimal;
 import java.util.Date;
-import java.util.Map;
 import java.util.List;
+import java.util.Map;
 
 public class ParseDocument {
     public static Struct convertBSONToStruct(String value) {
@@ -31,8 +31,9 @@ public class ParseDocument {
             Object value = entry.getValue();
             if (value instanceof Document) {
                 SchemaBuilder nestedStructSchemaBuilder = SchemaBuilder.struct();
-                structSchemaBuilder.field(fieldName, buildSchema((Document) value, nestedStructSchemaBuilder));
-            }  else if (value instanceof List) {
+                structSchemaBuilder.field(
+                        fieldName, buildSchema((Document) value, nestedStructSchemaBuilder));
+            } else if (value instanceof List) {
                 List<?> arrayList = (List<?>) value;
                 Schema arraySchema = getSchemaForArrayList(arrayList);
                 structSchemaBuilder.field(fieldName, arraySchema);
@@ -68,12 +69,12 @@ public class ParseDocument {
                 struct.put(fieldName, decimalValue);
             } else if (value instanceof Binary) {
                 Binary binaryData = (Binary) value;
-                struct.put(fieldName,binaryData.getData());
+                struct.put(fieldName, binaryData.getData());
             } else if (value instanceof BsonTimestamp) {
                 BsonTimestamp bsonTimestamp = (BsonTimestamp) value;
-                struct.put(fieldName,bsonTimestamp.getValue());
+                struct.put(fieldName, bsonTimestamp.getValue());
             } else {
-                struct.put(fieldName,value);
+                struct.put(fieldName, value);
             }
         }
     }

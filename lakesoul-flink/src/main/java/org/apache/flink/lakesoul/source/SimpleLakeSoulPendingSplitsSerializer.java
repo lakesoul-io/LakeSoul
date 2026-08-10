@@ -12,9 +12,9 @@ import org.apache.flink.core.memory.DataOutputSerializer;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
 
-public class SimpleLakeSoulPendingSplitsSerializer implements SimpleVersionedSerializer<LakeSoulPendingSplits> {
+public class SimpleLakeSoulPendingSplitsSerializer
+        implements SimpleVersionedSerializer<LakeSoulPendingSplits> {
     private static final ThreadLocal<DataOutputSerializer> SERIALIZER_CACHE =
             ThreadLocal.withInitial(() -> new DataOutputSerializer(64));
     private static final int VERSION = 2;
@@ -68,13 +68,21 @@ public class SimpleLakeSoulPendingSplitsSerializer implements SimpleVersionedSer
                 final long skipRecord = in.readLong();
                 final int bucketID = in.readInt();
                 final String partitionDesc = in.readUTF();
-                lsplits[j] = new LakeSoulPartitionSplit(id, Arrays.asList(paths), skipRecord, bucketID, partitionDesc);
+                lsplits[j] =
+                        new LakeSoulPartitionSplit(
+                                id, Arrays.asList(paths), skipRecord, bucketID, partitionDesc);
             }
             final String tableid = in.readUTF();
             final String parDesc = in.readUTF();
             final long discoverInterval = in.readLong();
             final int hashBucketNum = in.readInt();
-            return new LakeSoulPendingSplits(Arrays.asList(lsplits), startReadTime, tableid, parDesc, discoverInterval, hashBucketNum);
+            return new LakeSoulPendingSplits(
+                    Arrays.asList(lsplits),
+                    startReadTime,
+                    tableid,
+                    parDesc,
+                    discoverInterval,
+                    hashBucketNum);
         }
         throw new IOException("Unknown version: " + version);
     }

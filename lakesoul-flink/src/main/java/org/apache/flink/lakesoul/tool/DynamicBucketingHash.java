@@ -17,16 +17,14 @@ public class DynamicBucketingHash implements Serializable {
 
     static Random random = new Random(System.currentTimeMillis());
 
-    public static long hash(RowData rowData,
-                            LakeSoulKeyGen pkKeyGen) {
+    public static long hash(RowData rowData, LakeSoulKeyGen pkKeyGen) {
         if (pkKeyGen == null) {
             return random.nextLong();
         }
         return pkKeyGen.getRePartitionHash(rowData);
     }
 
-    public static long hash(RowType rowType, RowData rowData,
-                            List<String> primaryKeyList) {
+    public static long hash(RowType rowType, RowData rowData, List<String> primaryKeyList) {
         if (primaryKeyList.isEmpty()) {
             return random.nextLong();
         }

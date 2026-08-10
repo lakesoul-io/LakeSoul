@@ -17,22 +17,22 @@ public class JdbcTableLevelAssets extends ProcessFunction<TableCounts, TableCoun
     String dbPassword = CountDataAssets.passWord;
 
     private transient MapState<String, TableInfo> tableInfoCount;
+
     @Override
     public void open(Configuration parameters) throws Exception {
 
-
-        MapStateDescriptor<String, TableInfo> tableValueDescriptor = new MapStateDescriptor<>(
-                "partitionCountStateValue",
-                String.class,
-                TableInfo.class
-        );
+        MapStateDescriptor<String, TableInfo> tableValueDescriptor =
+                new MapStateDescriptor<>("partitionCountStateValue", String.class, TableInfo.class);
 
         tableInfoCount = getRuntimeContext().getMapState(tableValueDescriptor);
-
     }
-    @Override
-    public void processElement(TableCounts tableCounts, ProcessFunction<TableCounts, TableCountsWithTableInfo>.Context context, Collector<TableCountsWithTableInfo> collector) throws Exception {
 
+    @Override
+    public void processElement(
+            TableCounts tableCounts,
+            ProcessFunction<TableCounts, TableCountsWithTableInfo>.Context context,
+            Collector<TableCountsWithTableInfo> collector)
+            throws Exception {
 
         String table_id = tableCounts.tableId;
         int partitionCounts = tableCounts.partitionCounts;
@@ -52,20 +52,35 @@ public class JdbcTableLevelAssets extends ProcessFunction<TableCounts, TableCoun
             creator = tableInfo.creator;
 
         } else {
-            PostgresTableReader postgresTableReader = new PostgresTableReader(dbUrl,dbUser,dbPassword);
+            PostgresTableReader postgresTableReader =
+                    new PostgresTableReader(dbUrl, dbUser, dbPassword);
             Map<String, String> tableInfoById = postgresTableReader.getTableInfoById(table_id);
-            tableName = tableInfoById.get("table_name") == null ? null:tableInfoById.get("table_name");
+            tableName =
+                    tableInfoById.get("table_name") == null
+                            ? null
+                            : tableInfoById.get("table_name");
             tableNameSpace = tableInfoById.get("table_namespace");
             domain = tableInfoById.get("domain");
             creator = tableInfoById.get("creator");
 
-            tableInfoCount.put(table_id,new TableInfo(table_id,tableName,domain,creator,tableNameSpace));
+            tableInfoCount.put(
+                    table_id, new TableInfo(table_id, tableName, domain, creator, tableNameSpace));
         }
         try {
-            collector.collect(new TableCountsWithTableInfo(table_id,tableName,creator,tableNameSpace,domain,partitionCounts,baseFileCounts,totalFileCounts,baseFileSize,totalFileSize));
+            collector.collect(
+                    new TableCountsWithTableInfo(
+                            table_id,
+                            tableName,
+                            creator,
+                            tableNameSpace,
+                            domain,
+                            partitionCounts,
+                            baseFileCounts,
+                            totalFileCounts,
+                            baseFileSize,
+                            totalFileSize));
         } catch (Exception e) {
-            System.out.println(table_id+"  "+ tableNameSpace+"===================");
+            System.out.println(table_id + "  " + tableNameSpace + "===================");
         }
-
     }
 }

@@ -15,7 +15,8 @@ import org.apache.flink.lakesoul.types.BinarySourceRecord;
 import org.apache.flink.table.data.RowData;
 
 public class DefaultMultiTablesBulkFormatBuilder
-        extends BulkFormatBuilder<BinarySourceRecord, RowData, DefaultMultiTablesBulkFormatBuilder> {
+        extends BulkFormatBuilder<
+                BinarySourceRecord, RowData, DefaultMultiTablesBulkFormatBuilder> {
 
     private static final long serialVersionUID = -6961479881213627107L;
 
@@ -24,10 +25,14 @@ public class DefaultMultiTablesBulkFormatBuilder
     }
 
     @Override
-    public AbstractLakeSoulMultiTableSinkWriter<BinarySourceRecord, RowData> createWriter(Sink.InitContext context, int subTaskId) {
+    public AbstractLakeSoulMultiTableSinkWriter<BinarySourceRecord, RowData> createWriter(
+            Sink.InitContext context, int subTaskId) {
         int hashBucketNum = conf.getInteger(LakeSoulSinkOptions.HASH_BUCKET_NUM);
         int hashBucketId = hashBucketNum == -1 ? subTaskId : subTaskId % hashBucketNum;
-        System.out.printf("DefaultMultiTablesBulkFormatBuilder::createWriter, subTaskId=%d, hashBucketId=%d\n", subTaskId, hashBucketId);
+        System.out.printf(
+                "DefaultMultiTablesBulkFormatBuilder::createWriter, subTaskId=%d,"
+                        + " hashBucketId=%d\n",
+                subTaskId, hashBucketId);
         return new LakeSoulMultiTableSinkWriter(
                 hashBucketId,
                 context.metricGroup(),
@@ -36,7 +41,6 @@ public class DefaultMultiTablesBulkFormatBuilder
                 super.outputFileConfig,
                 context.getProcessingTimeService(),
                 super.bucketCheckInterval,
-                super.conf
-        );
+                super.conf);
     }
 }

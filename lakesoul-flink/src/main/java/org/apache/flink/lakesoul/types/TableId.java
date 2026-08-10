@@ -17,10 +17,10 @@ public final class TableId implements Serializable {
     /**
      * Create a new table identifier.
      *
-     * @param catalogName the name of the database catalog that contains the table; may be null if the JDBC driver does not
-     *            show a schema for this table
-     * @param schemaName the name of the database schema that contains the table; may be null if the JDBC driver does not
-     *            show a schema for this table
+     * @param catalogName the name of the database catalog that contains the table; may be null if
+     *     the JDBC driver does not show a schema for this table
+     * @param schemaName the name of the database schema that contains the table; may be null if the
+     *     JDBC driver does not show a schema for this table
      * @param tableName the name of the table; may not be null
      */
     public TableId(String catalogName, String schemaName, String tableName) {
@@ -92,16 +92,14 @@ public final class TableId implements Serializable {
     }
 
     /**
-     * Returns a dot-separated String representation of this identifier, quoting all
-     * name parts with the {@code "} char.
+     * Returns a dot-separated String representation of this identifier, quoting all name parts with
+     * the {@code "} char.
      */
     public String toDoubleQuotedString() {
         return toQuotedString('"');
     }
 
-    /**
-     * Returns a new {@link TableId} with all parts of the identifier using {@code "} character.
-     */
+    /** Returns a new {@link TableId} with all parts of the identifier using {@code "} character. */
     public TableId toDoubleQuoted() {
         return toQuoted('"');
     }
@@ -126,8 +124,8 @@ public final class TableId implements Serializable {
     }
 
     /**
-     * Returns a dot-separated String representation of this identifier, quoting all
-     * name parts with the given quoting char.
+     * Returns a dot-separated String representation of this identifier, quoting all name parts with
+     * the given quoting char.
      */
     public String toQuotedString(char quotingChar) {
         StringBuilder quoted = new StringBuilder();
@@ -158,9 +156,7 @@ public final class TableId implements Serializable {
         return catalog + "." + schema + "." + table;
     }
 
-    /**
-     * Quotes the given identifier part, e.g. schema or table name.
-     */
+    /** Quotes the given identifier part, e.g. schema or table name. */
     private static String quote(String identifierPart, char quotingChar) {
         if (identifierPart == null) {
             return null;
@@ -170,7 +166,8 @@ public final class TableId implements Serializable {
             return new StringBuilder().append(quotingChar).append(quotingChar).toString();
         }
 
-        if (identifierPart.charAt(0) != quotingChar && identifierPart.charAt(identifierPart.length() - 1) != quotingChar) {
+        if (identifierPart.charAt(0) != quotingChar
+                && identifierPart.charAt(identifierPart.length() - 1) != quotingChar) {
             identifierPart = identifierPart.replace(quotingChar + "", repeat(quotingChar));
             identifierPart = quotingChar + identifierPart + quotingChar;
         }

@@ -9,6 +9,6 @@ import org.junit.runner.RunWith
 import org.scalatestplus.junit.JUnitRunner
 
 @RunWith(classOf[JUnitRunner])
-class DeleteSQLGlutenTestSuite extends DeleteSQLSuite with LakeSoulSQLCommandGlutenTest {
-
-}
+class DeleteSQLGlutenTestSuite
+    extends DeleteSQLSuite
+    with LakeSoulSQLCommandGlutenTest {}

@@ -9,9 +9,16 @@ import org.apache.spark.sql.execution.datasources.v2.lakesoul.NativeLakeSoulOutp
 import org.apache.spark.sql.types.StructType
 
 @deprecated("Use NativeLakeSoulOutputWriter instead.", "3.0.0")
-class NativeParquetOutputWriter(path: String,
-                                dataSchema: StructType,
-                                timeZoneId: String,
-                                context: TaskAttemptContext,
-                                physicalFormat: String = "vortex-compact")
-  extends NativeLakeSoulOutputWriter(path, dataSchema, timeZoneId, context, physicalFormat)
+class NativeParquetOutputWriter(
+    path: String,
+    dataSchema: StructType,
+    timeZoneId: String,
+    context: TaskAttemptContext,
+    physicalFormat: String = "vortex-compact"
+) extends NativeLakeSoulOutputWriter(
+      path,
+      dataSchema,
+      timeZoneId,
+      context,
+      physicalFormat
+    )

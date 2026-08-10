@@ -4,11 +4,11 @@
 
 package org.apache.flink.lakesoul.test.compat;
 
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
 import org.apache.flink.lakesoul.test.AbstractTestBase;
 import org.apache.flink.lakesoul.test.LakeSoulTestUtils;
 import org.apache.flink.lakesoul.tool.JobOptions;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.TableResult;
 import org.apache.flink.types.Row;
@@ -37,13 +37,16 @@ public class CompatibilitySqlRunnerTest extends AbstractTestBase {
         env.useCatalog("lakesoul");
         env.useDatabase("default");
 
-        List<String> statements = splitStatements(Files.readString(Path.of(sqlFile), StandardCharsets.UTF_8));
+        List<String> statements =
+                splitStatements(Files.readString(Path.of(sqlFile), StandardCharsets.UTF_8));
         String outputFile = System.getProperty("lakesoul.compat.output", "");
         for (int i = 0; i < statements.size(); i++) {
             String statement = statements.get(i);
             TableResult result = env.executeSql(statement);
-            boolean collectResult = !outputFile.isEmpty() && i == statements.size() - 1
-                    && statement.trim().toLowerCase().startsWith("select");
+            boolean collectResult =
+                    !outputFile.isEmpty()
+                            && i == statements.size() - 1
+                            && statement.trim().toLowerCase().startsWith("select");
             if (collectResult) {
                 writeResult(result, Path.of(outputFile));
             } else {
@@ -59,7 +62,10 @@ public class CompatibilitySqlRunnerTest extends AbstractTestBase {
         setIfPresent(configuration, JobOptions.S3_ENDPOINT.key(), "lakesoul.compat.s3.endpoint");
         setIfPresent(configuration, JobOptions.S3_ACCESS_KEY.key(), "lakesoul.compat.s3.accessKey");
         setIfPresent(configuration, JobOptions.S3_SECRET_KEY.key(), "lakesoul.compat.s3.secretKey");
-        setIfPresent(configuration, JobOptions.S3_PATH_STYLE_ACCESS.key(), "lakesoul.compat.s3.pathStyleAccess");
+        setIfPresent(
+                configuration,
+                JobOptions.S3_PATH_STYLE_ACCESS.key(),
+                "lakesoul.compat.s3.pathStyleAccess");
     }
 
     private static void setIfPresent(Configuration configuration, String key, String property) {

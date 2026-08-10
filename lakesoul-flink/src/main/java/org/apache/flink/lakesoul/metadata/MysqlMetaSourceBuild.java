@@ -46,7 +46,7 @@ public class MysqlMetaSourceBuild {
     }
 
     public MysqlMetaDataSource build() {
-        return new MysqlMetaDataSource(this.DBName, this.user, this.passwd, this.host, this.port, this.excludeTables);
+        return new MysqlMetaDataSource(
+                this.DBName, this.user, this.passwd, this.host, this.port, this.excludeTables);
     }
-
 }

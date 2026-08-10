@@ -4,6 +4,8 @@
 
 package org.apache.flink.lakesoul.test;
 
+import static org.apache.flink.lakesoul.test.fail.LakeSoulSinkFailTest.generateObjectWithIndexByDatatype;
+
 import org.apache.flink.api.connector.source.*;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.Configuration;
@@ -37,8 +39,6 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.*;
 import java.util.function.Supplier;
-
-import static org.apache.flink.lakesoul.test.fail.LakeSoulSinkFailTest.generateObjectWithIndexByDatatype;
 
 public class MockTableSource implements ScanTableSource {
 
@@ -78,13 +78,13 @@ public class MockTableSource implements ScanTableSource {
     private final Integer parallelism;
     private final StopBehavior stopBehavior;
 
-    public MockTableSource(DataType dataType, String name, Integer parallelism, StopBehavior stopBehavior) {
+    public MockTableSource(
+            DataType dataType, String name, Integer parallelism, StopBehavior stopBehavior) {
         this.dataType = dataType;
         this.name = name;
         this.parallelism = parallelism;
         this.stopBehavior = stopBehavior;
     }
-
 
     /**
      * Creates a copy of this instance during planning. The copy should be a deep copy of all
@@ -95,9 +95,7 @@ public class MockTableSource implements ScanTableSource {
         return new MockTableSource(dataType, name, parallelism, stopBehavior);
     }
 
-    /**
-     * Returns a string that summarizes this source for printing to a console or log.
-     */
+    /** Returns a string that summarizes this source for printing to a console or log. */
     @Override
     public String asSummaryString() {
         return null;
@@ -121,8 +119,7 @@ public class MockTableSource implements ScanTableSource {
      * interfaces might be located in other Flink modules.
      *
      * <p>Independent of the provider interface, the table runtime expects that a source
-     * implementation emits internal data structures (see {@link
-     * RowData} for more information).
+     * implementation emits internal data structures (see {@link RowData} for more information).
      *
      * <p>The given {@link ScanContext} offers utilities by the planner for creating runtime
      * implementation with minimal dependencies to internal data structures.
@@ -160,20 +157,25 @@ public class MockTableSource implements ScanTableSource {
         }
 
         /**
-         * Creates a new reader to read data from the splits it gets assigned. The reader starts fresh
-         * and does not have any state to resume.
+         * Creates a new reader to read data from the splits it gets assigned. The reader starts
+         * fresh and does not have any state to resume.
          *
          * @param readerContext The {@link SourceReaderContext context} for the source reader.
          * @return A new SourceReader.
          * @throws Exception The implementor is free to forward all exceptions directly. Exceptions
-         *                   thrown from this method cause task failure/recovery.
+         *     thrown from this method cause task failure/recovery.
          */
         @Override
-        public SourceReader<RowData, MockSplit> createReader(SourceReaderContext readerContext) throws Exception {
-            return new MockSourceReader(() -> new MockSplitReader(dataType, stopBehavior), (rowData, sourceOutput, split) -> {
-                sourceOutput.collect(rowData);
-                tryStop(StopBehavior.FAIL_ON_COLLECT_FINISHED, stopBehavior);
-            }, readerContext.getConfiguration(), readerContext);
+        public SourceReader<RowData, MockSplit> createReader(SourceReaderContext readerContext)
+                throws Exception {
+            return new MockSourceReader(
+                    () -> new MockSplitReader(dataType, stopBehavior),
+                    (rowData, sourceOutput, split) -> {
+                        sourceOutput.collect(rowData);
+                        tryStop(StopBehavior.FAIL_ON_COLLECT_FINISHED, stopBehavior);
+                    },
+                    readerContext.getConfiguration(),
+                    readerContext);
         }
 
         /**
@@ -181,11 +183,12 @@ public class MockTableSource implements ScanTableSource {
          *
          * @param enumContext The {@link SplitEnumeratorContext context} for the split enumerator.
          * @return A new SplitEnumerator.
-         * @throws Exception The implementor is free to forward all exceptions directly. * Exceptions
-         *                   thrown from this method cause JobManager failure/recovery.
+         * @throws Exception The implementor is free to forward all exceptions directly. *
+         *     Exceptions thrown from this method cause JobManager failure/recovery.
          */
         @Override
-        public SplitEnumerator<MockSplit, Integer> createEnumerator(SplitEnumeratorContext<MockSplit> enumContext) throws Exception {
+        public SplitEnumerator<MockSplit, Integer> createEnumerator(
+                SplitEnumeratorContext<MockSplit> enumContext) throws Exception {
             return new MockSplitEnumerator(enumContext, stopBehavior);
         }
 
@@ -193,14 +196,16 @@ public class MockTableSource implements ScanTableSource {
          * Restores an enumerator from a checkpoint.
          *
          * @param enumContext The {@link SplitEnumeratorContext context} for the restored split
-         *                    enumerator.
-         * @param checkpoint  The checkpoint to restore the SplitEnumerator from.
+         *     enumerator.
+         * @param checkpoint The checkpoint to restore the SplitEnumerator from.
          * @return A SplitEnumerator restored from the given checkpoint.
-         * @throws Exception The implementor is free to forward all exceptions directly. * Exceptions
-         *                   thrown from this method cause JobManager failure/recovery.
+         * @throws Exception The implementor is free to forward all exceptions directly. *
+         *     Exceptions thrown from this method cause JobManager failure/recovery.
          */
         @Override
-        public SplitEnumerator<MockSplit, Integer> restoreEnumerator(SplitEnumeratorContext<MockSplit> enumContext, Integer checkpoint) throws Exception {
+        public SplitEnumerator<MockSplit, Integer> restoreEnumerator(
+                SplitEnumeratorContext<MockSplit> enumContext, Integer checkpoint)
+                throws Exception {
             return new MockSplitEnumerator(enumContext, stopBehavior, checkpoint);
         }
 
@@ -237,8 +242,8 @@ public class MockTableSource implements ScanTableSource {
         }
 
         /**
-         * Creates the serializer for the {@link SplitEnumerator} checkpoint. The serializer is used for
-         * the result of the {@link SplitEnumerator #snapshotState()} method.
+         * Creates the serializer for the {@link SplitEnumerator} checkpoint. The serializer is used
+         * for the result of the {@link SplitEnumerator #snapshotState()} method.
          *
          * @return The serializer for the SplitEnumerator checkpoint.
          */
@@ -251,8 +256,8 @@ public class MockTableSource implements ScanTableSource {
                 }
 
                 /**
-                 * Serializes the given object. The serialization is assumed to correspond to the current
-                 * serialization version (as returned by {@link #getVersion()}.
+                 * Serializes the given object. The serialization is assumed to correspond to the
+                 * current serialization version (as returned by {@link #getVersion()}.
                  *
                  * @param obj The object to serialize.
                  * @return The serialized data (bytes).
@@ -265,7 +270,6 @@ public class MockTableSource implements ScanTableSource {
                     return out.getCopyOfBuffer();
                 }
 
-
                 @Override
                 public Integer deserialize(int version, byte[] serialized) throws IOException {
                     DataInputDeserializer in = new DataInputDeserializer(serialized);
@@ -276,8 +280,6 @@ public class MockTableSource implements ScanTableSource {
                 }
             };
         }
-
-
     }
 
     static class MockSplit implements SourceSplit, Serializable {
@@ -304,9 +306,7 @@ public class MockTableSource implements ScanTableSource {
 
         @Override
         public String toString() {
-            return "MockSplit{" +
-                    "index=" + index +
-                    '}';
+            return "MockSplit{" + "index=" + index + '}';
         }
     }
 
@@ -318,11 +318,13 @@ public class MockTableSource implements ScanTableSource {
         public static int indexBound = 20;
         private final ArrayDeque<MockSplit> backSplits;
 
-        public MockSplitEnumerator(SplitEnumeratorContext<MockSplit> enumContext, StopBehavior behavior) {
+        public MockSplitEnumerator(
+                SplitEnumeratorContext<MockSplit> enumContext, StopBehavior behavior) {
             this(enumContext, behavior, 0);
         }
 
-        public MockSplitEnumerator(SplitEnumeratorContext<MockSplit> enumContext, StopBehavior behavior, int index) {
+        public MockSplitEnumerator(
+                SplitEnumeratorContext<MockSplit> enumContext, StopBehavior behavior, int index) {
             this.enumContext = enumContext;
             this.index = index;
             this.stopBehavior = behavior;
@@ -335,8 +337,17 @@ public class MockTableSource implements ScanTableSource {
                 FAIL_OVER_INTERVAL_START = System.currentTimeMillis() + FAIL_OPTION.get().f0;
                 FAIL_OVER_INTERVAL_END = FAIL_OVER_INTERVAL_START + FAIL_OPTION.get().f1;
                 FAIL_OPTION = Optional.empty();
-                String msg = "Sink will fail with " + stopBehavior + " from " + LocalDateTime.ofInstant(Instant.ofEpochMilli(FAIL_OVER_INTERVAL_START), ZoneId.systemDefault()) + " to " +
-                        LocalDateTime.ofInstant(Instant.ofEpochMilli(FAIL_OVER_INTERVAL_END), ZoneId.systemDefault());
+                String msg =
+                        "Sink will fail with "
+                                + stopBehavior
+                                + " from "
+                                + LocalDateTime.ofInstant(
+                                        Instant.ofEpochMilli(FAIL_OVER_INTERVAL_START),
+                                        ZoneId.systemDefault())
+                                + " to "
+                                + LocalDateTime.ofInstant(
+                                        Instant.ofEpochMilli(FAIL_OVER_INTERVAL_END),
+                                        ZoneId.systemDefault());
                 LOG.warn(msg);
             }
         }
@@ -374,9 +385,7 @@ public class MockTableSource implements ScanTableSource {
         }
 
         @Override
-        public void addReader(int subtaskId) {
-
-        }
+        public void addReader(int subtaskId) {}
 
         @Override
         public Integer snapshotState(long checkpointId) throws Exception {
@@ -386,14 +395,17 @@ public class MockTableSource implements ScanTableSource {
         }
 
         @Override
-        public void close() throws IOException {
-
-        }
+        public void close() throws IOException {}
     }
 
-    static class MockSourceReader extends SingleThreadMultiplexSourceReaderBase<RowData, RowData, MockSplit, MockSplit> {
+    static class MockSourceReader
+            extends SingleThreadMultiplexSourceReaderBase<RowData, RowData, MockSplit, MockSplit> {
 
-        public MockSourceReader(Supplier<SplitReader<RowData, MockSplit>> splitReaderSupplier, RecordEmitter<RowData, RowData, MockSplit> recordEmitter, Configuration config, SourceReaderContext context) {
+        public MockSourceReader(
+                Supplier<SplitReader<RowData, MockSplit>> splitReaderSupplier,
+                RecordEmitter<RowData, RowData, MockSplit> recordEmitter,
+                Configuration config,
+                SourceReaderContext context) {
             super(splitReaderSupplier, recordEmitter, config, context);
         }
 
@@ -447,21 +459,19 @@ public class MockTableSource implements ScanTableSource {
         public void handleSplitsChanges(SplitsChange<MockSplit> splitsChange) {
             if (!(splitsChange instanceof SplitsAddition)) {
                 throw new UnsupportedOperationException(
-                        String.format("The SplitChange type of %s is not supported.", splitsChange.getClass()));
+                        String.format(
+                                "The SplitChange type of %s is not supported.",
+                                splitsChange.getClass()));
             }
 
             splits.addAll(splitsChange.splits());
         }
 
         @Override
-        public void wakeUp() {
-
-        }
+        public void wakeUp() {}
 
         @Override
-        public void close() throws Exception {
-
-        }
+        public void close() throws Exception {}
     }
 
     static class MockRecordsWithSplitIds implements RecordsWithSplitIds<RowData> {
@@ -491,13 +501,22 @@ public class MockTableSource implements ScanTableSource {
         }
 
         /**
-         * Gets the next record from the current split. Returns null if no more records are left in this
-         * split.
+         * Gets the next record from the current split. Returns null if no more records are left in
+         * this split.
          */
         @Nullable
         @Override
         public RowData nextRecordFromSplit() {
-            RowData next = finished ? null : GenericRowData.of(rowType.getFields().stream().map(field -> generateObjectWithIndexByDatatype(split.getIndex(), field)).toArray());
+            RowData next =
+                    finished
+                            ? null
+                            : GenericRowData.of(
+                                    rowType.getFields().stream()
+                                            .map(
+                                                    field ->
+                                                            generateObjectWithIndexByDatatype(
+                                                                    split.getIndex(), field))
+                                            .toArray());
             finished = true;
             return next;
         }

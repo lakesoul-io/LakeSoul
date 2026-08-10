@@ -387,12 +387,7 @@ def test_streaming_incremental_query(spark_and_file):
 
 def test_jvm():
     from pyspark.sql import SparkSession
-    
-    spark = (
-        SparkSession.builder
-        .master("local[4]")
-        .appName("test")
-        .getOrCreate()
-    )
-    
+
+    spark = SparkSession.builder.master("local[4]").appName("test").getOrCreate()
+
     spark.range(10).count()

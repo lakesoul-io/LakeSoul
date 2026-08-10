@@ -17,9 +17,7 @@ import org.apache.flink.streaming.api.functions.sink.filesystem.RollingPolicy;
 import java.io.IOException;
 import java.io.Serializable;
 
-/**
- * A factory returning {@link AbstractLakeSoulMultiTableSinkWriter writer}.
- */
+/** A factory returning {@link AbstractLakeSoulMultiTableSinkWriter writer}. */
 @Internal
 public class LakeSoulArrowWriterBucketFactory implements Serializable {
 
@@ -34,8 +32,13 @@ public class LakeSoulArrowWriterBucketFactory implements Serializable {
             RollingPolicy<LakeSoulArrowWrapper, String> rollingPolicy,
             OutputFileConfig outputFileConfig) {
         return LakeSoulArrowWriterBucket.getNew(
-                subTaskId, tableId,
-                bucketId, bucketPath, bucketWriter, rollingPolicy, outputFileConfig);
+                subTaskId,
+                tableId,
+                bucketId,
+                bucketPath,
+                bucketWriter,
+                rollingPolicy,
+                outputFileConfig);
     }
 
     public LakeSoulArrowWriterBucket restoreBucket(
@@ -46,6 +49,7 @@ public class LakeSoulArrowWriterBucketFactory implements Serializable {
             LakeSoulWriterBucketState bucketState,
             OutputFileConfig outputFileConfig)
             throws IOException {
-        return LakeSoulArrowWriterBucket.restore(subTaskId, tableId, bucketWriter, rollingPolicy, bucketState, outputFileConfig);
+        return LakeSoulArrowWriterBucket.restore(
+                subTaskId, tableId, bucketWriter, rollingPolicy, bucketState, outputFileConfig);
     }
 }

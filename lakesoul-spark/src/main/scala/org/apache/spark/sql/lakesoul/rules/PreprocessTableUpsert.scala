@@ -13,10 +13,14 @@ import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.commands.UpsertCommand
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
-import org.apache.spark.sql.lakesoul.{LakeSoulTableRelationV2, UpdateExpressionsSupport}
+import org.apache.spark.sql.lakesoul.{
+  LakeSoulTableRelationV2,
+  UpdateExpressionsSupport
+}
 
 case class PreprocessTableUpsert(sqlConf: SQLConf)
-  extends Rule[LogicalPlan] with UpdateExpressionsSupport {
+    extends Rule[LogicalPlan]
+    with UpdateExpressionsSupport {
 
   override def apply(plan: LogicalPlan): LogicalPlan = plan.resolveOperators {
     case m: LakeSoulUpsert if m.resolved => apply(m)
@@ -28,20 +32,26 @@ case class PreprocessTableUpsert(sqlConf: SQLConf)
     def checkCondition(conditionString: String, conditionName: String): Unit = {
       val cond = conditionString match {
         case "" => Literal(true)
-        case _ => expr(conditionString).expr
+        case _  => expr(conditionString).expr
       }
 
       if (!cond.deterministic) {
         throw LakeSoulErrors.nonDeterministicNotSupportedException(
-          s"$conditionName condition of UPSERT operation", cond)
+          s"$conditionName condition of UPSERT operation",
+          cond
+        )
       }
       if (cond.find(_.isInstanceOf[AggregateExpression]).isDefined) {
         throw LakeSoulErrors.aggsNotSupportedException(
-          s"$conditionName condition of UPSERT operation", cond)
+          s"$conditionName condition of UPSERT operation",
+          cond
+        )
       }
       if (SubqueryExpression.hasSubquery(cond)) {
         throw LakeSoulErrors.subqueryNotSupportedException(
-          s"$conditionName condition of UPSERT operation", cond)
+          s"$conditionName condition of UPSERT operation",
+          cond
+        )
       }
     }
 
@@ -49,7 +59,8 @@ case class PreprocessTableUpsert(sqlConf: SQLConf)
 
     val snapshotManagement = EliminateSubqueryAliases(target) match {
       case LakeSoulTableRelationV2(tbl) => tbl.snapshotManagement
-      case o => throw LakeSoulErrors.notALakeSoulSourceException("Upsert", Some(o))
+      case o                            =>
+        throw LakeSoulErrors.notALakeSoulSourceException("Upsert", Some(o))
     }
 
     UpsertCommand(source, target, snapshotManagement, condition, migratedSchema)

@@ -17,25 +17,35 @@ import org.antlr.v4.runtime.misc.{Interval, ParseCancellationException}
 import org.antlr.v4.runtime.tree.TerminalNodeImpl
 import org.apache.spark.sql.catalyst.trees.Origin
 import org.apache.spark.sql.AnalysisException
-import org.apache.spark.sql.catalyst.parser.extensions.LakeSoulSqlExtensionsParser.{NonReservedContext, QuotedIdentifierContext}
+import org.apache.spark.sql.catalyst.parser.extensions.LakeSoulSqlExtensionsParser.{
+  NonReservedContext,
+  QuotedIdentifierContext
+}
 
 import java.util.Locale
 
-class LakeSoulSparkSqlExtensionsParser(delegate: ParserInterface) extends ParserInterface {
+class LakeSoulSparkSqlExtensionsParser(delegate: ParserInterface)
+    extends ParserInterface {
   private lazy val substitutor = new VariableSubstitution
   private lazy val astBuilder = new LakeSoulSqlExtensionsAstBuilder(delegate)
 
   override def parsePlan(sqlText: String): LogicalPlan = {
     val sqlTextAfter = substitutor.substitute(sqlText)
-    if(isLakeSoulCommand(sqlTextAfter)){
-      parse(sqlTextAfter) { parser => astBuilder.visit(parser.singleStatement()) }.asInstanceOf[LogicalPlan]
+    if (isLakeSoulCommand(sqlTextAfter)) {
+      parse(sqlTextAfter) { parser =>
+        astBuilder.visit(parser.singleStatement())
+      }.asInstanceOf[LogicalPlan]
 
-    }else{
+    } else {
       delegate.parsePlan(sqlText)
     }
   }
-  protected def parse[T](command: String)(toResult: LakeSoulSqlExtensionsParser => T): T = {
-    val lexer = new LakeSoulSqlExtensionsLexer(new UpperCaseCharStream(CharStreams.fromString(command)))
+  protected def parse[T](
+      command: String
+  )(toResult: LakeSoulSqlExtensionsParser => T): T = {
+    val lexer = new LakeSoulSqlExtensionsLexer(
+      new UpperCaseCharStream(CharStreams.fromString(command))
+    )
     lexer.removeErrorListeners()
     lexer.addErrorListener(LakeSoulParseErrorListener)
     val tokenStream = new CommonTokenStream(lexer)
@@ -48,8 +58,7 @@ class LakeSoulSparkSqlExtensionsParser(delegate: ParserInterface) extends Parser
         // first, try parsing with potentially faster SLL mode
         parser.getInterpreter.setPredictionMode(PredictionMode.SLL)
         toResult(parser)
-      }
-      catch {
+      } catch {
         case _: ParseCancellationException =>
           // if we fail, parse with LL mode
           tokenStream.seek(0) // rewind input stream
@@ -59,74 +68,72 @@ class LakeSoulSparkSqlExtensionsParser(delegate: ParserInterface) extends Parser
           parser.getInterpreter.setPredictionMode(PredictionMode.LL)
           toResult(parser)
       }
-    }
-    catch {
+    } catch {
       case e: LakeSoulParseException if e.command.isDefined =>
         throw e
       case e: LakeSoulParseException =>
         throw e.withCommand(command)
       case e: AnalysisException =>
         val position = Origin(e.line, e.startPosition)
-        throw new LakeSoulParseException(Option(command), e.message, position, position)
+        throw new LakeSoulParseException(
+          Option(command),
+          e.message,
+          position,
+          position
+        )
     }
   }
 
-  /**
-   * Parse a string to a DataType.
-   */
+  /** Parse a string to a DataType.
+    */
   override def parseDataType(sqlText: String): DataType = {
     delegate.parseDataType(sqlText)
   }
 
-  /**
-   * Parse a string to a raw DataType without CHAR/VARCHAR replacement.
-   */
-  def parseRawDataType(sqlText: String): DataType = throw new UnsupportedOperationException()
+  /** Parse a string to a raw DataType without CHAR/VARCHAR replacement.
+    */
+  def parseRawDataType(sqlText: String): DataType =
+    throw new UnsupportedOperationException()
 
-  /**
-   * Parse a string to an Expression.
-   */
+  /** Parse a string to an Expression.
+    */
   override def parseExpression(sqlText: String): Expression = {
     delegate.parseExpression(sqlText)
   }
 
-  /**
-   * Parse a string to a TableIdentifier.
-   */
+  /** Parse a string to a TableIdentifier.
+    */
   override def parseTableIdentifier(sqlText: String): TableIdentifier = {
     delegate.parseTableIdentifier(sqlText)
   }
 
-  /**
-   * Parse a string to a FunctionIdentifier.
-   */
+  /** Parse a string to a FunctionIdentifier.
+    */
   override def parseFunctionIdentifier(sqlText: String): FunctionIdentifier = {
     delegate.parseFunctionIdentifier(sqlText)
   }
 
-  /**
-   * Parse a string to a multi-part identifier.
-   */
+  /** Parse a string to a multi-part identifier.
+    */
   override def parseMultipartIdentifier(sqlText: String): Seq[String] = {
     delegate.parseMultipartIdentifier(sqlText)
   }
 
-  /**
-   * Creates StructType for a given SQL string, which is a comma separated list of field
-   * definitions which will preserve the correct Hive metadata.
-   */
+  /** Creates StructType for a given SQL string, which is a comma separated list
+    * of field definitions which will preserve the correct Hive metadata.
+    */
   override def parseTableSchema(sqlText: String): StructType = {
     delegate.parseTableSchema(sqlText)
   }
-
 
   override def parseQuery(sqlText: String): LogicalPlan = {
     delegate.parseQuery(sqlText)
   }
 
-
   private def isLakeSoulCommand(sqlText: String): Boolean = {
-    val normalized = sqlText.toLowerCase(Locale.ROOT).trim()
+    val normalized = sqlText
+      .toLowerCase(Locale.ROOT)
+      .trim()
       // Strip simple SQL comments that terminate a line, e.g. comments starting with `--` .
       .replaceAll("--.*?\\n", " ")
       // Strip newlines.
@@ -138,7 +145,8 @@ class LakeSoulSparkSqlExtensionsParser(delegate: ParserInterface) extends Parser
     normalized.startsWith("call")
   }
 }
-case object LakeSoulSqlExtensionsPostProcessor extends LakeSoulSqlExtensionsListener {
+case object LakeSoulSqlExtensionsPostProcessor
+    extends LakeSoulSqlExtensionsListener {
 
   /** Remove the back ticks from an Identifier. */
   override def exitQuotedIdentifier(ctx: QuotedIdentifierContext): Unit = {
@@ -155,18 +163,22 @@ case object LakeSoulSqlExtensionsPostProcessor extends LakeSoulSqlExtensionsList
   }
 
   private def replaceTokenByIdentifier(
-                                        ctx: ParserRuleContext,
-                                        stripMargins: Int)(
-                                        f: CommonToken => CommonToken = identity): Unit = {
+      ctx: ParserRuleContext,
+      stripMargins: Int
+  )(f: CommonToken => CommonToken = identity): Unit = {
     val parent = ctx.getParent
     parent.removeLastChild()
     val token = ctx.getChild(0).getPayload.asInstanceOf[Token]
     val newToken = new CommonToken(
-      new org.antlr.v4.runtime.misc.Pair(token.getTokenSource, token.getInputStream),
+      new org.antlr.v4.runtime.misc.Pair(
+        token.getTokenSource,
+        token.getInputStream
+      ),
       LakeSoulSqlExtensionsParser.IDENTIFIER,
       token.getChannel,
       token.getStartIndex + stripMargins,
-      token.getStopIndex - stripMargins)
+      token.getStopIndex - stripMargins
+    )
     parent.addChild(new TerminalNodeImpl(f(newToken)))
   }
 }
@@ -191,23 +203,34 @@ class UpperCaseCharStream(wrapped: CodePointCharStream) extends CharStream {
   // scalastyle:on
 }
 class LakeSoulParseException(
-                             val command: Option[String],
-                             message: String,
-                             val start: Origin,
-                             val stop: Origin) extends AnalysisException(message, start.line, start.startPosition) {
+    val command: Option[String],
+    message: String,
+    val start: Origin,
+    val stop: Origin
+) extends AnalysisException(message, start.line, start.startPosition) {
 
   def this(message: String, ctx: ParserRuleContext) = {
-    this(Option(LakeSoulParserUtils.command(ctx)),
+    this(
+      Option(LakeSoulParserUtils.command(ctx)),
       message,
       LakeSoulParserUtils.position(ctx.getStart),
-      LakeSoulParserUtils.position(ctx.getStop))
+      LakeSoulParserUtils.position(ctx.getStop)
+    )
   }
 
   override def getMessage: String = {
     val builder = new StringBuilder
     builder ++= "\n" ++= message
     start match {
-      case Origin(Some(l), Some(p),Some(t),Some(m),Some(n),Some(s),Some(o)) =>
+      case Origin(
+            Some(l),
+            Some(p),
+            Some(t),
+            Some(m),
+            Some(n),
+            Some(s),
+            Some(o)
+          ) =>
         builder ++= s"(line $l, pos $p)\n"
         command.foreach { cmd =>
           val (above, below) = cmd.split("\n").splitAt(l)
@@ -230,17 +253,19 @@ class LakeSoulParseException(
 }
 case object LakeSoulParseErrorListener extends BaseErrorListener {
   override def syntaxError(
-                            recognizer: Recognizer[_, _],
-                            offendingSymbol: scala.Any,
-                            line: Int,
-                            charPositionInLine: Int,
-                            msg: String,
-                            e: RecognitionException): Unit = {
+      recognizer: Recognizer[_, _],
+      offendingSymbol: scala.Any,
+      line: Int,
+      charPositionInLine: Int,
+      msg: String,
+      e: RecognitionException
+  ): Unit = {
     val (start, stop) = offendingSymbol match {
       case token: CommonToken =>
         val start = Origin(Some(line), Some(token.getCharPositionInLine))
         val length = token.getStopIndex - token.getStartIndex + 1
-        val stop = Origin(Some(line), Some(token.getCharPositionInLine + length))
+        val stop =
+          Origin(Some(line), Some(token.getCharPositionInLine + length))
         (start, stop)
       case _ =>
         val start = Origin(Some(line), Some(charPositionInLine))

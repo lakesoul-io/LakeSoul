@@ -48,7 +48,7 @@ public class GlobalConfig {
         return authZEnabled;
     }
 
-    public void setAuthZEnabled(boolean enabled){
+    public void setAuthZEnabled(boolean enabled) {
         this.authZEnabled = enabled;
     }
 
@@ -72,7 +72,8 @@ public class GlobalConfig {
         return pstmt.executeQuery();
     }
 
-    private String getStringValue(String key, PreparedStatement pstmt, String defaultValue) throws SQLException {
+    private String getStringValue(String key, PreparedStatement pstmt, String defaultValue)
+            throws SQLException {
         ResultSet rs = getResultSet(key, pstmt);
         if (rs.next()) {
             String value = rs.getString("value");
@@ -86,7 +87,8 @@ public class GlobalConfig {
         }
     }
 
-    private boolean getBooleanValue(String key, PreparedStatement pstmt, boolean defaultValue) throws SQLException {
+    private boolean getBooleanValue(String key, PreparedStatement pstmt, boolean defaultValue)
+            throws SQLException {
         ResultSet rs = getResultSet(key, pstmt);
         if (rs.next()) {
             String value = rs.getString("value");

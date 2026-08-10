@@ -23,8 +23,11 @@ public class LakeSoulPartition implements Serializable {
     private final List<String> partitionKeys;
     private final List<String> partitionValues;
 
-    public LakeSoulPartition(TableId tableId, List<Path> paths,
-                             List<String> partitionKeys, List<String> partitionValues) {
+    public LakeSoulPartition(
+            TableId tableId,
+            List<Path> paths,
+            List<String> partitionKeys,
+            List<String> partitionValues) {
         this.tableId = tableId;
         this.paths = paths;
         this.partitionKeys = partitionKeys;
@@ -43,12 +46,17 @@ public class LakeSoulPartition implements Serializable {
         return partitionValues;
     }
 
-    @Override public String toString() {
-        return "LakeSoulPartition{" +
-                "tableId=" + tableId +
-                ", paths=" + paths +
-                ", partitionKeys=" + partitionKeys +
-                ", partitionValues=" + partitionValues +
-                '}';
+    @Override
+    public String toString() {
+        return "LakeSoulPartition{"
+                + "tableId="
+                + tableId
+                + ", paths="
+                + paths
+                + ", partitionKeys="
+                + partitionKeys
+                + ", partitionValues="
+                + partitionValues
+                + '}';
     }
 }

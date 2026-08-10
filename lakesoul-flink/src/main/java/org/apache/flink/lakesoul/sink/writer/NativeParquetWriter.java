@@ -24,14 +24,16 @@ import java.util.Map;
 @Deprecated
 public class NativeParquetWriter extends NativeLakeSoulWriter {
 
-    public NativeParquetWriter(RowType rowType,
-                               List<String> primaryKeys,
-                               List<String> rangeColumns,
-                               String bucketID,
-                               Path path,
-                               long creationTime,
-                               Configuration conf,
-                               int subTaskId) throws IOException {
+    public NativeParquetWriter(
+            RowType rowType,
+            List<String> primaryKeys,
+            List<String> rangeColumns,
+            String bucketID,
+            Path path,
+            long creationTime,
+            Configuration conf,
+            int subTaskId)
+            throws IOException {
         super(rowType, primaryKeys, rangeColumns, bucketID, path, creationTime, conf, subTaskId);
     }
 
@@ -44,20 +46,26 @@ public class NativeParquetWriter extends NativeLakeSoulWriter {
     }
 
     @Override
-    public Map<String, List<InProgressFileWriter.PendingFileRecoverable>> closeForCommitWithRecoverableMap()
-            throws IOException {
+    public Map<String, List<InProgressFileWriter.PendingFileRecoverable>>
+            closeForCommitWithRecoverableMap() throws IOException {
         Map<String, List<InProgressFileWriter.PendingFileRecoverable>> recoverableMap =
                 super.closeForCommitWithRecoverableMap();
         Map<String, List<InProgressFileWriter.PendingFileRecoverable>> parquetRecoverableMap =
                 new HashMap<>();
-        for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry : recoverableMap.entrySet()) {
-            List<InProgressFileWriter.PendingFileRecoverable> parquetRecoverables = new ArrayList<>();
-            for (InProgressFileWriter.PendingFileRecoverable pendingFileRecoverable : entry.getValue()) {
-                if (pendingFileRecoverable instanceof NativeLakeSoulWriter.NativeWriterPendingFileRecoverable) {
+        for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry :
+                recoverableMap.entrySet()) {
+            List<InProgressFileWriter.PendingFileRecoverable> parquetRecoverables =
+                    new ArrayList<>();
+            for (InProgressFileWriter.PendingFileRecoverable pendingFileRecoverable :
+                    entry.getValue()) {
+                if (pendingFileRecoverable
+                        instanceof NativeLakeSoulWriter.NativeWriterPendingFileRecoverable) {
                     NativeLakeSoulWriter.NativeWriterPendingFileRecoverable recoverable =
-                            (NativeLakeSoulWriter.NativeWriterPendingFileRecoverable) pendingFileRecoverable;
-                    parquetRecoverables.add(new NativeParquetWriter.NativeWriterPendingFileRecoverable(
-                            recoverable.path, recoverable.creationTime));
+                            (NativeLakeSoulWriter.NativeWriterPendingFileRecoverable)
+                                    pendingFileRecoverable;
+                    parquetRecoverables.add(
+                            new NativeParquetWriter.NativeWriterPendingFileRecoverable(
+                                    recoverable.path, recoverable.creationTime));
                 } else {
                     parquetRecoverables.add(pendingFileRecoverable);
                 }
@@ -83,10 +91,12 @@ public class NativeParquetWriter extends NativeLakeSoulWriter {
         }
 
         @Override
-        public byte[] serialize(InProgressFileWriter.PendingFileRecoverable obj) throws IOException {
+        public byte[] serialize(InProgressFileWriter.PendingFileRecoverable obj)
+                throws IOException {
             if (!(obj instanceof NativeLakeSoulWriter.NativeWriterPendingFileRecoverable)) {
                 throw new UnsupportedOperationException(
-                        "Only NativeLakeSoulWriter.NativeWriterPendingFileRecoverable is supported.");
+                        "Only NativeLakeSoulWriter.NativeWriterPendingFileRecoverable is"
+                                + " supported.");
             }
             DataOutputSerializer out = new DataOutputSerializer(256);
             NativeLakeSoulWriter.NativeWriterPendingFileRecoverable recoverable =
@@ -97,8 +107,8 @@ public class NativeParquetWriter extends NativeLakeSoulWriter {
         }
 
         @Override
-        public InProgressFileWriter.PendingFileRecoverable deserialize(int version, byte[] serialized)
-                throws IOException {
+        public InProgressFileWriter.PendingFileRecoverable deserialize(
+                int version, byte[] serialized) throws IOException {
             DataInputDeserializer in = new DataInputDeserializer(serialized);
             String path = in.readUTF();
             long time = in.readLong();
@@ -110,7 +120,7 @@ public class NativeParquetWriter extends NativeLakeSoulWriter {
      * @deprecated Use {@link NativeLakeSoulWriter.NativeWriterPendingFileRecoverable} instead.
      */
     @Deprecated
-    static public class NativeWriterPendingFileRecoverable
+    public static class NativeWriterPendingFileRecoverable
             extends NativeLakeSoulWriter.NativeWriterPendingFileRecoverable {
 
         public NativeWriterPendingFileRecoverable(String path, long creationTime) {

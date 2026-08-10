@@ -13,28 +13,27 @@ import org.apache.flink.table.data.RowData;
 
 public class FlinkBucketAssigner implements BucketAssigner<RowData, String> {
 
-  private static final long serialVersionUID = 8820063244447502134L;
-  private final PartitionComputer<RowData> computer;
+    private static final long serialVersionUID = 8820063244447502134L;
+    private final PartitionComputer<RowData> computer;
 
-  public FlinkBucketAssigner(PartitionComputer<RowData> computer) {
-    this.computer = computer;
-  }
-
-  /*
-   * RowData bucket logic
-   */
-  @Override
-  public String getBucketId(RowData element, Context context) {
-    try {
-      return FlinkUtil.generatePartitionPath(
-          computer.generatePartValues(element));
-    } catch (Exception e) {
-      throw new RuntimeException(e);
+    public FlinkBucketAssigner(PartitionComputer<RowData> computer) {
+        this.computer = computer;
     }
-  }
 
-  @Override
-  public SimpleVersionedSerializer<String> getSerializer() {
-    return SimpleVersionedStringSerializer.INSTANCE;
-  }
+    /*
+     * RowData bucket logic
+     */
+    @Override
+    public String getBucketId(RowData element, Context context) {
+        try {
+            return FlinkUtil.generatePartitionPath(computer.generatePartValues(element));
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    @Override
+    public SimpleVersionedSerializer<String> getSerializer() {
+        return SimpleVersionedStringSerializer.INSTANCE;
+    }
 }

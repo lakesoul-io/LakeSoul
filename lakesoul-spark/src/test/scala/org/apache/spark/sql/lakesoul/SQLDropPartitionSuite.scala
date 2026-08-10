@@ -10,7 +10,10 @@ import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
-import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestUtils}
+import org.apache.spark.sql.lakesoul.test.{
+  LakeSoulSQLCommandTest,
+  LakeSoulTestUtils
+}
 import org.apache.spark.sql.test.SharedSparkSession
 import org.junit.runner.RunWith
 import org.scalatestplus.junit.JUnitRunner
@@ -18,11 +21,14 @@ import org.scalatestplus.junit.JUnitRunner
 import scala.util.control.NonFatal
 
 @RunWith(classOf[JUnitRunner])
-class SQLDropPartitionSuite extends SQLDropPartitionBase with LakeSoulSQLCommandTest
+class SQLDropPartitionSuite
+    extends SQLDropPartitionBase
+    with LakeSoulSQLCommandTest
 
-abstract class SQLDropPartitionBase extends QueryTest
-  with SharedSparkSession
-  with LakeSoulTestUtils {
+abstract class SQLDropPartitionBase
+    extends QueryTest
+    with SharedSparkSession
+    with LakeSoulTestUtils {
 
   import testImplicits._
 
@@ -35,23 +41,25 @@ abstract class SQLDropPartitionBase extends QueryTest
   protected override def beforeEach(): Unit = {
     super.beforeEach()
     try {
-      sql(
-        s"""
+      sql(s"""
            |CREATE TABLE $singlePartitionedTableName (a INT, b STRING, p INT)
            |USING $format
            |PARTITIONED BY (p)
           """.stripMargin)
 
-      sql(s"INSERT INTO $singlePartitionedTableName values (1, 'A', 1), (2, 'B', 2)")
-
       sql(
-        s"""
+        s"INSERT INTO $singlePartitionedTableName values (1, 'A', 1), (2, 'B', 2)"
+      )
+
+      sql(s"""
            |CREATE TABLE $multiPartitionedTableName (a INT, b STRING, p1 INT, p2 INT)
            |USING $format
            |PARTITIONED BY (p1, p2)
           """.stripMargin)
 
-      sql(s"INSERT INTO $multiPartitionedTableName values (1, 'A', 1, 1), (2, 'B', 1, 2)")
+      sql(
+        s"INSERT INTO $multiPartitionedTableName values (1, 'A', 1, 1), (2, 'B', 1, 2)"
+      )
     } catch {
       case NonFatal(e) =>
         afterAll()
@@ -61,15 +69,16 @@ abstract class SQLDropPartitionBase extends QueryTest
 
   protected override def afterEach(): Unit = {
     try {
-      val location = Seq(singlePartitionedTableName, multiPartitionedTableName).map(tbl => {
-        try {
-          LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(
-            TableIdentifier(tbl, Some("default"))
-          )
-        } catch {
-          case _: Exception => None
-        }
-      })
+      val location =
+        Seq(singlePartitionedTableName, multiPartitionedTableName).map(tbl => {
+          try {
+            LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(
+              TableIdentifier(tbl, Some("default"))
+            )
+          } catch {
+            case _: Exception => None
+          }
+        })
 
       location.foreach(loc => {
         if (loc.isDefined) {
@@ -87,7 +96,11 @@ abstract class SQLDropPartitionBase extends QueryTest
     }
   }
 
-  protected def verifyTable(tableName: String, expected: DataFrame, colNames: Seq[String]): Unit = {
+  protected def verifyTable(
+      tableName: String,
+      expected: DataFrame,
+      colNames: Seq[String]
+  ): Unit = {
     checkAnswer(spark.table(tableName).select(colNames.map(col): _*), expected)
     waitForTasksToFinish()
   }
@@ -111,11 +124,17 @@ abstract class SQLDropPartitionBase extends QueryTest
     verifyTable(multiPartitionedTableName, df, Seq("a", "b", "p1", "p2"))
   }
 
-  test("ALTER TABLE DROP SINGLE-LEVEL PARTITION WHEN TABLE WITH SINGLE-LEVEL PARTITION") {
+  test(
+    "ALTER TABLE DROP SINGLE-LEVEL PARTITION WHEN TABLE WITH SINGLE-LEVEL PARTITION"
+  ) {
     val e = intercept[AnalysisException] {
       sql(s"ALTER TABLE $multiPartitionedTableName DROP PARTITION (p1=1)")
     }
     assert(e.getMessage.contains("Partition spec is invalid"))
-    assert(e.getMessage.contains("The spec (p1) must match the partition spec (p1, p2)"))
+    assert(
+      e.getMessage.contains(
+        "The spec (p1) must match the partition spec (p1, p2)"
+      )
+    )
   }
 }

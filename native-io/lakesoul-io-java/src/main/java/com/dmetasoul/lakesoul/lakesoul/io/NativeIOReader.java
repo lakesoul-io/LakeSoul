@@ -5,17 +5,18 @@
 package com.dmetasoul.lakesoul.lakesoul.io;
 
 import com.dmetasoul.lakesoul.lakesoul.io.jnr.LibLakeSoulIO;
+
 import io.substrait.proto.Plan;
+
 import jnr.ffi.Pointer;
 import jnr.ffi.Runtime;
-import jnr.ffi.byref.IntByReference;
+
 import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.c.Data;
 import org.apache.arrow.vector.types.pojo.Schema;
 
 import java.io.IOException;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicReference;
 
 public class NativeIOReader extends NativeIOBase implements AutoCloseable {
     private Pointer reader = null;
@@ -42,19 +43,26 @@ public class NativeIOReader extends NativeIOBase implements AutoCloseable {
      */
     public void addFilterProto(Plan plan) {
         byte[] bytes = plan.toByteArray();
-        Pointer buf = Runtime.getRuntime(libLakeSoulIO).getMemoryManager().allocateDirect(bytes.length);
+        Pointer buf =
+                Runtime.getRuntime(libLakeSoulIO).getMemoryManager().allocateDirect(bytes.length);
         buf.put(0, bytes, 0, bytes.length);
-        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_filter_proto(ioConfigBuilder, buf.address(), bytes.length);
+        ioConfigBuilder =
+                libLakeSoulIO.lakesoul_config_builder_add_filter_proto(
+                        ioConfigBuilder, buf.address(), bytes.length);
     }
 
     public void addMergeOps(Map<String, String> mergeOps) {
         for (Map.Entry<String, String> entry : mergeOps.entrySet()) {
-            ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_merge_op(ioConfigBuilder, entry.getKey(), entry.getValue());
+            ioConfigBuilder =
+                    libLakeSoulIO.lakesoul_config_builder_add_merge_op(
+                            ioConfigBuilder, entry.getKey(), entry.getValue());
         }
     }
 
     public void setDefaultColumnValue(String column, String value) {
-        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_default_column_value(ioConfigBuilder, column, value);
+        ioConfigBuilder =
+                libLakeSoulIO.lakesoul_config_builder_set_default_column_value(
+                        ioConfigBuilder, column, value);
     }
 
     public void initializeReader() throws IOException {
@@ -80,8 +88,9 @@ public class NativeIOReader extends NativeIOBase implements AutoCloseable {
         LibLakeSoulIO.CStatus status = startReader();
         try {
             if (status.status.get() != 0) {
-                throw new IOException("Init native reader failed with error: " +
-                        (status.err.get() != null ? status.err.get() : "unknown error"));
+                throw new IOException(
+                        "Init native reader failed with error: "
+                                + (status.err.get() != null ? status.err.get() : "unknown error"));
             }
             this.readerSchema = getReaderSchema();
         } finally {
@@ -119,8 +128,9 @@ public class NativeIOReader extends NativeIOBase implements AutoCloseable {
         LibLakeSoulIO.CStatus status = libLakeSoulIO.next_record_batch_blocked(reader, arrayAddr);
         try {
             if (status.status.get() < 0) {
-                throw new IOException("Init native reader failed with error: " +
-                        (status.err.get() != null ? status.err.get() : "unknown error"));
+                throw new IOException(
+                        "Init native reader failed with error: "
+                                + (status.err.get() != null ? status.err.get() : "unknown error"));
             }
             return status.status.get();
         } finally {

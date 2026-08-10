@@ -10,7 +10,8 @@ public class LakeSoulDynSplitAssigner {
     private final HashMap<Integer, ArrayList<LakeSoulPartitionSplit>> splits;
     private int hashBucketNum = -1;
 
-    public LakeSoulDynSplitAssigner(Collection<LakeSoulPartitionSplit> splits, String hashBucketNum) {
+    public LakeSoulDynSplitAssigner(
+            Collection<LakeSoulPartitionSplit> splits, String hashBucketNum) {
         this.hashBucketNum = Integer.valueOf(hashBucketNum);
         this.splits = new HashMap<>(100);
         addSplitsFromCollection(splits);
@@ -33,7 +34,6 @@ public class LakeSoulDynSplitAssigner {
         this.splits = new HashMap<>(100);
     }
 
-
     public Optional<LakeSoulPartitionSplit> getNext(int taskId, int tasksNum) {
         final int size = splits.size();
         if (size > 0) {
@@ -48,7 +48,9 @@ public class LakeSoulDynSplitAssigner {
             } else {
                 if (this.hashBucketNum <= tasksNum) {
                     ArrayList<LakeSoulPartitionSplit> taskSplits = this.splits.get(taskId);
-                    return (taskSplits == null || taskSplits.size() == 0) ? Optional.empty() : Optional.of(taskSplits.remove(0));
+                    return (taskSplits == null || taskSplits.size() == 0)
+                            ? Optional.empty()
+                            : Optional.of(taskSplits.remove(0));
                 } else {
                     for (int i = taskId; i < this.hashBucketNum; i += tasksNum) {
                         ArrayList<LakeSoulPartitionSplit> splits = this.splits.get(i);
@@ -58,12 +60,10 @@ public class LakeSoulDynSplitAssigner {
                     }
                     return Optional.empty();
                 }
-
             }
         } else {
             return Optional.empty();
         }
-
     }
 
     public void addSplits(Collection<LakeSoulPartitionSplit> newSplits) {
@@ -82,5 +82,4 @@ public class LakeSoulDynSplitAssigner {
     public String toString() {
         return "LakeSoulDynSplitAssigner " + splits;
     }
-
 }

@@ -18,6 +18,9 @@
 
 package org.apache.flink.table.runtime.typeutils.serializers.python;
 
+import static org.apache.flink.api.java.typeutils.runtime.MaskUtils.readIntoMask;
+import static org.apache.flink.api.java.typeutils.runtime.MaskUtils.writeMask;
+
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.typeutils.CompositeTypeSerializerUtil;
 import org.apache.flink.api.common.typeutils.NestedSerializersSnapshotDelegate;
@@ -37,9 +40,6 @@ import org.apache.flink.util.InstantiationUtil;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.stream.IntStream;
-
-import static org.apache.flink.api.java.typeutils.runtime.MaskUtils.readIntoMask;
-import static org.apache.flink.api.java.typeutils.runtime.MaskUtils.writeMask;
 
 /**
  * A {@link TypeSerializer} for {@link RowData}. It should be noted that the row kind will be

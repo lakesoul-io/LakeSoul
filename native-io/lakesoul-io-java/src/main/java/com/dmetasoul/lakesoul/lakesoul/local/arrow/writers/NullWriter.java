@@ -20,9 +20,7 @@ package com.dmetasoul.lakesoul.lakesoul.local.arrow.writers;
 
 import org.apache.arrow.vector.NullVector;
 
-/**
- * {@link ArrowFieldWriter} for Null.
- */
+/** {@link ArrowFieldWriter} for Null. */
 public class NullWriter<T> extends ArrowFieldWriter<T> {
 
     public NullWriter(NullVector nullVector) {
@@ -30,6 +28,5 @@ public class NullWriter<T> extends ArrowFieldWriter<T> {
     }
 
     @Override
-    public void doWrite(T in, int ordinal) {
-    }
+    public void doWrite(T in, int ordinal) {}
 }

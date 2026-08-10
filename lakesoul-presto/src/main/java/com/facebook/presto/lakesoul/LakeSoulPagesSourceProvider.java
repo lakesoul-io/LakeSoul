@@ -24,10 +24,14 @@ public class LakeSoulPagesSourceProvider implements ConnectorPageSourceProvider 
     }
 
     @Override
-    public ConnectorPageSource createPageSource(ConnectorTransactionHandle transactionHandle, ConnectorSession session,
-                                                ConnectorSplit split, ConnectorTableLayoutHandle layout,
-                                                List<ColumnHandle> columns, SplitContext splitContext,
-                                                RuntimeStats runtimeStats) {
+    public ConnectorPageSource createPageSource(
+            ConnectorTransactionHandle transactionHandle,
+            ConnectorSession session,
+            ConnectorSplit split,
+            ConnectorTableLayoutHandle layout,
+            List<ColumnHandle> columns,
+            SplitContext splitContext,
+            RuntimeStats runtimeStats) {
         ImmutableList.Builder<LakeSoulTableColumnHandle> columnHandles = ImmutableList.builder();
         for (ColumnHandle handle : columns) {
             columnHandles.add((LakeSoulTableColumnHandle) handle);
