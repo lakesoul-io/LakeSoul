@@ -323,13 +323,11 @@ impl ObjectStore for Hdfs {
             })?;
         let read = async_read.take((range.end - range.start) as u64);
         let stream = ReaderStream::new(read);
-        // hdrs::File retains only a raw hdfsFS pointer. Keep the owning Client alive
-        // until the returned stream is consumed or dropped, even if the ObjectStore
-        // and its DataFusion RuntimeEnv have already been released.
-        let client_guard = self.client.clone();
+        // hdrs::AsyncFile shares an `Arc<ClientCore>` that owns the `hdfsFS` handle, so
+        // the returned stream keeps the connection alive on its own: the ObjectStore and
+        // its DataFusion RuntimeEnv may be released while the stream is still consumed.
         Ok(GetResult {
-            payload: GetResultPayload::Stream(Box::pin(stream.map(move |item| {
-                let _keep_alive = &client_guard;
+            payload: GetResultPayload::Stream(Box::pin(stream.map(|item| {
                 item.map_err(|e| Generic {
                     store: "hdfs",
                     source: Box::new(e),
@@ -347,9 +345,11 @@ impl ObjectStore for Hdfs {
         ranges: &[Range<u64>],
     ) -> object_store::Result<Vec<Bytes>> {
         let location = add_leading_slash(location);
-        let client = self.client.clone();
+        // `File` keeps the `hdfsFS` connection alive via its `Arc<ClientCore>`, so the
+        // handle below stays valid for the blocking range reads even without a separate
+        // Client guard, and `self.client` only needs to be borrowed for `open_file()`.
         let file = Arc::new(
-            client
+            self.client
                 .open_file()
                 .read(true)
                 .open(location.as_ref())
@@ -615,8 +615,12 @@ mod tests {
         let s = read_file_from_hdfs(write_path.clone(), object_store.clone()).await;
         assert_eq!(s, string);
 
-        // The payload must remain readable after its object store is dropped. DataFusion can
-        // retain a GetResult while releasing the RuntimeEnv that owned the object store.
+        // Regression guard: the payload must remain readable after its object store is
+        // dropped. DataFusion can retain a `GetResult` while releasing the `RuntimeEnv` that
+        // owned the object store. This now relies on hdrs sharing `hdfsFS` via
+        // `Arc<ClientCore>` (lakesoul-io/hdrs#1), so dropping the `Hdfs` store here does not
+        // `hdfsDisconnect` the connection until the open `AsyncFile` stream is also
+        // dropped; previously it relied on the now-removed `client_guard` workaround.
         let transient_store = super::Hdfs::try_new(&hdfs_url, conf.clone()).unwrap();
         let payload = transient_store
             .get(&Path::from(write_path.as_str()))
