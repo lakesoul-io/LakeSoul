@@ -184,6 +184,35 @@ public class LakeSoulSinkGlobalCommitter
         StructType sparkSchema = ArrowUtils.fromArrowSchema(msgSchema);
 
         TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(tableName, tableNamespace);
+        if (tableInfo != null) {
+            // Validate PK compatibility for every distinct committable identity in
+            // this group, not just the map key. TableSchemaIdentity.equals only
+            // compares tableId+rowType, so stale committables with different PKs
+            // can be grouped under a key with matching PK.
+            DBUtil.TablePartitionKeys partitionKeys =
+                    DBUtil.parseTableInfoPartitions(tableInfo.getPartitions());
+            for (LakeSoulMultiTableSinkCommittable committable :
+                    lakeSoulMultiTableSinkCommittable) {
+                if (!committable.getIdentity().primaryKeys.equals(partitionKeys.primaryKeys)) {
+                    LOG.error(
+                            "Primary keys of table {} have changed: expected={}, found={}. "
+                                    + "Table rebuild with different primary keys requires a new "
+                                    + "Flink job. Stopping to prevent data corruption.",
+                            tableName,
+                            partitionKeys.primaryKeys,
+                            committable.getIdentity().primaryKeys);
+                    throw new SuppressRestartsException(
+                            new IllegalStateException(
+                                    "Primary keys of table "
+                                            + tableName
+                                            + " have changed from "
+                                            + partitionKeys.primaryKeys
+                                            + " to "
+                                            + committable.getIdentity().primaryKeys
+                                            + ". This is not allowed for a running Flink job."));
+                }
+            }
+        }
         if (tableInfo == null) {
             if (!conf.getBoolean(AUTO_SCHEMA_CHANGE)) {
                 throw new SuppressRestartsException(
@@ -232,12 +261,6 @@ public class LakeSoulSinkGlobalCommitter
             if (conf.getBoolean(AUTO_SCHEMA_CHANGE)) {
                 DBUtil.TablePartitionKeys partitionKeys =
                         DBUtil.parseTableInfoPartitions(tableInfo.getPartitions());
-                if (partitionKeys.primaryKeys.size() != identity.primaryKeys.size()
-                        || !new HashSet<>(partitionKeys.primaryKeys)
-                                .containsAll(identity.primaryKeys)) {
-                    throw new IOException(
-                            "Change of primary key column of table " + tableName + " is forbidden");
-                }
                 if (partitionKeys.rangeKeys.size() != identity.partitionKeyList.size()
                         || !new HashSet<>(partitionKeys.rangeKeys)
                                 .containsAll(identity.partitionKeyList)) {
