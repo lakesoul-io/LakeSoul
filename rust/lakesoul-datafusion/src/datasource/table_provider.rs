@@ -57,7 +57,7 @@ use lakesoul_io::helpers::{
 };
 use lakesoul_metadata::MetaDataClientRef;
 use lakesoul_metadata::utils::qualify_path;
-use proto::proto::entity::TableInfo;
+use lakesoul_metadata_proto::entity::TableInfo;
 use rootcause::compat::boxed_error::IntoBoxedError;
 use rootcause::prelude::ResultExt;
 use rootcause::report;

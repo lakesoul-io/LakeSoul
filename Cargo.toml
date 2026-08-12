@@ -5,7 +5,8 @@
 
 [workspace]
 members = [
-  "rust/proto",
+  "rust/lakesoul-build-info",
+  "rust/lakesoul-metadata-proto",
   "rust/lakesoul-metadata",
   "rust/lakesoul-metadata-c",
   "rust/lakesoul-io",

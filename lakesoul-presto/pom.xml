@@ -16,8 +16,8 @@
     </parent>
     <name>LakeSoul Presto</name>
 
-    <artifactId>lakesoul-presto</artifactId>
-    <version>0.29-${revision}</version>
+    <artifactId>lakesoul-presto-0.296</artifactId>
+    <version>${revision}</version>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>

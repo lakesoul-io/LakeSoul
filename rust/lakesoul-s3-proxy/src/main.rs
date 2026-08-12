@@ -739,7 +739,7 @@ mod tests {
     use lakesoul_datafusion::ser::arrow_java::schema_to_metadata_parts;
     use lakesoul_io::session::create_session_context_with_planner;
     use lakesoul_metadata::MetaDataClientRef;
-    use proto::proto::entity::TableInfo;
+    use lakesoul_metadata_proto::entity::TableInfo;
     use rootcause::compat::anyhow1::IntoAnyhow;
 
     #[test]

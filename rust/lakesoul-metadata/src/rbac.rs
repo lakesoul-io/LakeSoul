@@ -72,7 +72,7 @@ mod tests {
     use super::*;
     use crate::MetaDataClient;
     use cached::Cached;
-    use proto::proto::entity::TableInfo;
+    use lakesoul_metadata_proto::entity::TableInfo;
     use std::sync::Arc;
 
     async fn create_table(

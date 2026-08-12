@@ -517,16 +517,16 @@ def _safe_name(value: str) -> str:
 
 def _spark_jars(repo_root: Path) -> list[str]:
     source_dir = Path(os.environ.get("LAKESOUL_SOURCE_DIR", repo_root))
-    pattern = (
-        source_dir / "lakesoul-spark" / "target" / "lakesoul-spark-3.5-*-SNAPSHOT.jar"
-    )
+    pattern = source_dir / "lakesoul-spark" / "target" / "lakesoul-spark-3.5_2.12-*.jar"
     jars = [
         path
         for path in glob.glob(str(pattern))
         if not path.endswith(("-sources.jar", "-javadoc.jar", "-tests.jar"))
     ]
-    if not jars:
-        raise RuntimeError(f"LakeSoul Spark jar not found with pattern {pattern}")
+    if len(jars) != 1:
+        raise RuntimeError(
+            f"Expected exactly one LakeSoul Spark jar with pattern {pattern}, found {jars}"
+        )
     return jars
 
 

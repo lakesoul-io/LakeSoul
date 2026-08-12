@@ -13,8 +13,9 @@ edition = { workspace = true }
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+lakesoul-build-info = { path = "../lakesoul-build-info" }
 lakesoul-metadata = { path = "../lakesoul-metadata" }
-proto = { path = "../proto" }
+lakesoul-metadata-proto = { path = "../lakesoul-metadata-proto" }
 prost = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }

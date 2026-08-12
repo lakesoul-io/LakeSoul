@@ -12,8 +12,9 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # lakesoul
+lakesoul-build-info = { path = "../lakesoul-build-info" }
 lakesoul-io = { path = "../lakesoul-io" }
-proto = { path = "../proto" }
+lakesoul-metadata-proto = { path = "../lakesoul-metadata-proto" }
 # datafusion
 datafusion-common = { workspace = true }
 datafusion-substrait = { workspace = true }

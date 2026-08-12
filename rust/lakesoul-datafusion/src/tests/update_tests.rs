@@ -29,7 +29,7 @@ mod update_tests {
     use tokio::runtime::Builder;
 
     use crate::error::Result;
-    use proto::proto::entity::{DataCommitInfo, PartitionInfo};
+    use lakesoul_metadata_proto::entity::{DataCommitInfo, PartitionInfo};
 
     use crate::catalog::{commit_data, create_io_config_builder, create_table};
     use crate::transaction::{DataFileInfo, Transaction};

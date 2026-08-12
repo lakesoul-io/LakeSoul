@@ -27,7 +27,9 @@ use lakesoul_io::writer::async_writer::{
     AsyncBatchWriter, AsyncSendableMutableLakeSoulWriter, FlushOutput,
 };
 use lakesoul_metadata::{LakeSoulMetaDataError, MetaDataClient, MetaDataClientRef};
-use proto::proto::entity::{CommitOp, DataCommitInfo, DataFileOp, FileOp, TableInfo};
+use lakesoul_metadata_proto::entity::{
+    CommitOp, DataCommitInfo, DataFileOp, FileOp, TableInfo,
+};
 use rootcause::{Report, report};
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -384,7 +386,7 @@ impl LakeSoulTable {
                 partition_desc,
                 commit_id: {
                     let (high, low) = Uuid::new_v4().as_u64_pair();
-                    Some(proto::proto::entity::Uuid { high, low })
+                    Some(lakesoul_metadata_proto::entity::Uuid { high, low })
                 },
                 file_ops: {
                     file_list
