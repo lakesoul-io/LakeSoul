@@ -20,10 +20,12 @@ use arrow_array::ffi::{FFI_ArrowArray, FFI_ArrowSchema, from_ffi};
 use arrow_array::{Array, StructArray};
 use arrow_schema::{Schema, SchemaRef};
 use datafusion_substrait::substrait::proto::Plan;
+// Re-export FFI types so cbindgen picks them up from this crate
+pub use lakesoul_common::ffi::{CResult, CStatus};
+
 use lakesoul_common::ffi::{
-    CResult, CStatus, catch_unwind_cresult, catch_unwind_cstatus, convert_to_nonnull,
-    convert_to_opaque, from_nonnull, from_opaque, into_c_string,
-    log_panic_and_extract_message,
+    catch_unwind_cresult, catch_unwind_cstatus, convert_to_nonnull, convert_to_opaque,
+    from_nonnull, from_opaque, into_c_string, log_panic_and_extract_message,
 };
 use lakesoul_io::config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_io::helpers;
