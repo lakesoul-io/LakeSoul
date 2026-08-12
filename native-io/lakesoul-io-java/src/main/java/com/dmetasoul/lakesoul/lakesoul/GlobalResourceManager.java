@@ -1,8 +1,10 @@
 package com.dmetasoul.lakesoul.lakesoul;
 
-import com.dmetasoul.lakesoul.lakesoul.io.jnr.LibLakeSoulIO;
 import com.dmetasoul.lakesoul.lakesoul.io.jnr.JnrLoader;
+import com.dmetasoul.lakesoul.lakesoul.io.jnr.LibLakeSoulIO;
+
 import jnr.ffi.Pointer;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -16,7 +18,8 @@ public class GlobalResourceManager {
     private static final AtomicBoolean SHUTDOWN_STARTED = new AtomicBoolean(false);
 
     static {
-        Runtime.getRuntime().addShutdownHook(new Thread(GlobalResourceManager::shutdown, "GlobalShutdownHook"));
+        Runtime.getRuntime()
+                .addShutdownHook(new Thread(GlobalResourceManager::shutdown, "GlobalShutdownHook"));
 
         LibLakeSoulIO nativeLibrary = JnrLoader.get();
         Pointer buildInfo = nativeLibrary.lakesoul_io_build_info();

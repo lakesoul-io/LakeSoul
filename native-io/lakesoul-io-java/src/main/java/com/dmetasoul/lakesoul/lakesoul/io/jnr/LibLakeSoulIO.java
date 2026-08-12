@@ -12,14 +12,14 @@ import jnr.ffi.annotations.*;
 public interface LibLakeSoulIO {
 
     /**
-     * Returns the NUL-terminated LakeSoul Core version owned by the native library.
-     * The returned pointer must not be freed.
+     * Returns the NUL-terminated LakeSoul Core version owned by the native library. The returned
+     * pointer must not be freed.
      */
     Pointer lakesoul_io_version();
 
     /**
-     * Returns the NUL-terminated native build information owned by the native library.
-     * The returned pointer must not be freed.
+     * Returns the NUL-terminated native build information owned by the native library. The returned
+     * pointer must not be freed.
      */
     Pointer lakesoul_io_build_info();
 

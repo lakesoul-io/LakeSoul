@@ -83,7 +83,7 @@ def spark_and_file(tmp_path):
         lakesoul_source_dir,
         "lakesoul-spark",
         "target",
-        "lakesoul-spark-3.5-*-SNAPSHOT.jar",
+        "lakesoul-spark-3.5_2.12-*.jar",
     )
 
     jar_files = [
@@ -93,7 +93,10 @@ def spark_and_file(tmp_path):
         and not p.endswith("-javadoc.jar")
         and not p.endswith("-tests.jar")
     ]
-    assert jar_files, len(jar_files) == 1
+    assert len(jar_files) == 1, (
+        f"Expected exactly one LakeSoul Spark jar with pattern {jar_pattern}, "
+        f"found {jar_files}"
+    )
     spark = (
         SparkSession.builder.appName("PySparkLakeSoulTest")
         .master("local[4]")
