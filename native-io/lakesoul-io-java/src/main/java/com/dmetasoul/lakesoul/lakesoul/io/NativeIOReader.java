@@ -27,13 +27,16 @@ public class NativeIOReader extends NativeIOBase implements AutoCloseable {
         super("NativeReader");
     }
 
-    public void addFile(String file) {
+    public void addFile(String file) throws IOException {
         super.addFile(file);
     }
 
-    public void addFilter(String filter) {
+    public void addFilter(String filter) throws IOException {
         assert ioConfigBuilder != null;
-        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_filter(ioConfigBuilder, filter);
+        ioConfigBuilder =
+                requireBuilderNonNull(
+                        libLakeSoulIO.lakesoul_config_builder_add_filter(ioConfigBuilder, filter),
+                        "addFilter");
     }
 
     /**
@@ -41,37 +44,49 @@ public class NativeIOReader extends NativeIOBase implements AutoCloseable {
      *
      * @param plan Filter{}
      */
-    public void addFilterProto(Plan plan) {
+    public void addFilterProto(Plan plan) throws IOException {
         byte[] bytes = plan.toByteArray();
         Pointer buf =
                 Runtime.getRuntime(libLakeSoulIO).getMemoryManager().allocateDirect(bytes.length);
         buf.put(0, bytes, 0, bytes.length);
         ioConfigBuilder =
-                libLakeSoulIO.lakesoul_config_builder_add_filter_proto(
-                        ioConfigBuilder, buf.address(), bytes.length);
+                requireBuilderNonNull(
+                        libLakeSoulIO.lakesoul_config_builder_add_filter_proto(
+                                ioConfigBuilder, buf.address(), bytes.length),
+                        "addFilterProto");
     }
 
-    public void addMergeOps(Map<String, String> mergeOps) {
+    public void addMergeOps(Map<String, String> mergeOps) throws IOException {
         for (Map.Entry<String, String> entry : mergeOps.entrySet()) {
             ioConfigBuilder =
-                    libLakeSoulIO.lakesoul_config_builder_add_merge_op(
-                            ioConfigBuilder, entry.getKey(), entry.getValue());
+                    requireBuilderNonNull(
+                            libLakeSoulIO.lakesoul_config_builder_add_merge_op(
+                                    ioConfigBuilder, entry.getKey(), entry.getValue()),
+                            "addMergeOp");
         }
     }
 
-    public void setDefaultColumnValue(String column, String value) {
+    public void setDefaultColumnValue(String column, String value) throws IOException {
         ioConfigBuilder =
-                libLakeSoulIO.lakesoul_config_builder_set_default_column_value(
-                        ioConfigBuilder, column, value);
+                requireBuilderNonNull(
+                        libLakeSoulIO.lakesoul_config_builder_set_default_column_value(
+                                ioConfigBuilder, column, value),
+                        "setDefaultColumnValue");
     }
 
     public void initializeReader() throws IOException {
         assert tokioRuntimeBuilder != null;
         assert ioConfigBuilder != null;
 
-        tokioRuntime = libLakeSoulIO.create_tokio_runtime_from_builder(tokioRuntimeBuilder);
+        tokioRuntime =
+                requireNonNull(
+                        libLakeSoulIO.create_tokio_runtime_from_builder(tokioRuntimeBuilder),
+                        "create_tokio_runtime_from_builder");
         tokioRuntimeBuilder = null;
-        config = libLakeSoulIO.create_lakesoul_io_config_from_builder(ioConfigBuilder);
+        config =
+                requireNonNull(
+                        libLakeSoulIO.create_lakesoul_io_config_from_builder(ioConfigBuilder),
+                        "create_lakesoul_io_config_from_builder");
         ioConfigBuilder = null;
         // tokioRuntime will be moved to reader
         reader = libLakeSoulIO.create_lakesoul_reader_from_config(config, tokioRuntime);

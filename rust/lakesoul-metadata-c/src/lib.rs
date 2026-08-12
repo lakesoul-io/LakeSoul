@@ -42,6 +42,14 @@ pub extern "C" fn lakesoul_metadata_version() -> *const c_char {
     lakesoul_build_info::VERSION_NUL.as_ptr().cast()
 }
 
+/// Return the LakeSoul native build identity.
+///
+/// The returned pointer remains valid for the lifetime of the process and must not be freed.
+#[unsafe(no_mangle)]
+pub extern "C" fn lakesoul_metadata_build_info() -> *const c_char {
+    lakesoul_build_info::BUILD_INFO_NUL.as_ptr().cast()
+}
+
 /// The callback function with bool result and error string.
 pub type ResultCallback = extern "C" fn(bool, *const c_char);
 

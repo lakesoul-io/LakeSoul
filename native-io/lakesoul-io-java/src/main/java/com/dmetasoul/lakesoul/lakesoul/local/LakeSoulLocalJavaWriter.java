@@ -93,7 +93,7 @@ public class LakeSoulLocalJavaWriter implements AutoCloseable {
 
     String cdcColumn = null;
 
-    public static void setIOConfigs(Map<String, String> conf, NativeIOBase io) {
+    public static void setIOConfigs(Map<String, String> conf, NativeIOBase io) throws IOException {
 
         if (conf.containsKey(DEFAULT_FS)) {
             setFSConf(conf, DEFAULT_FS, DEFAULT_FS, io);
@@ -125,7 +125,8 @@ public class LakeSoulLocalJavaWriter implements AutoCloseable {
     }
 
     public static void setFSConf(
-            Map<String, String> conf, String confKey, String fsConfKey, NativeIOBase io) {
+            Map<String, String> conf, String confKey, String fsConfKey, NativeIOBase io)
+            throws IOException {
         String value = conf.getOrDefault(confKey, "");
         if (!value.isEmpty()) {
             LOG.info("Set native object store option {}={}", fsConfKey, value);
