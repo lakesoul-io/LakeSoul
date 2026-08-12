@@ -88,6 +88,11 @@ struct BytesResult {
 
 extern "C" {
 
+/// Return the LakeSoul Core version.
+///
+/// The returned pointer remains valid for the lifetime of the process and must not be freed.
+const char *lakesoul_io_version();
+
 /// Create a new [`IOConfigBuilder`]
 IOConfigBuilder *new_lakesoul_io_config_builder();
 

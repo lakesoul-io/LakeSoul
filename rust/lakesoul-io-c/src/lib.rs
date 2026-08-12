@@ -36,7 +36,6 @@ use lakesoul_io::reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
 use lakesoul_io::writer::SyncSendableMutableLakeSoulWriter;
 use lakesoul_metadata_proto::entity;
 use prost::Message;
-use std::any::Any;
 use std::panic::{self, AssertUnwindSafe};
 
 use rootcause::Report;
@@ -48,7 +47,6 @@ pub type c_size_t = usize;
 #[allow(non_camel_case_types)]
 pub type c_ptrdiff_t = isize;
 
-<<<<<<< HEAD
 /// Return the LakeSoul Core version.
 ///
 /// The returned pointer remains valid for the lifetime of the process and must not be freed.
@@ -57,129 +55,6 @@ pub extern "C" fn lakesoul_io_version() -> *const c_char {
     lakesoul_build_info::VERSION_NUL.as_ptr().cast()
 }
 
-/// Return the LakeSoul native build identity.
-///
-/// The returned pointer remains valid for the lifetime of the process and must not be freed.
-#[unsafe(no_mangle)]
-pub extern "C" fn lakesoul_io_build_info() -> *const c_char {
-    lakesoul_build_info::BUILD_INFO_NUL.as_ptr().cast()
-}
-
-/// Opaque wrapper for the result of a function call
-/// containing a pointer to a type and an error msg
-#[repr(C)]
-pub struct CResult<OpaqueT> {
-    ptr: *mut OpaqueT,
-    err: *const c_char,
-}
-
-impl<OpaqueT> CResult<OpaqueT> {
-    pub fn new<T>(obj: T) -> Self {
-        CResult {
-            ptr: convert_to_opaque_raw::<T, OpaqueT>(obj),
-            err: std::ptr::null(),
-        }
-    }
-
-    pub fn error<T: Into<Vec<u8>>>(err_msg: T) -> Self {
-        CResult {
-            ptr: std::ptr::null_mut(),
-            err: CString::new(err_msg).unwrap().into_raw(),
-        }
-    }
-
-    pub fn free<T>(&mut self) {
-        unsafe {
-            if !self.ptr.is_null() {
-                drop(from_opaque::<OpaqueT, T>(NonNull::new_unchecked(self.ptr)));
-                self.ptr = std::ptr::null_mut();
-            }
-            if !self.err.is_null() {
-                drop(CString::from_raw(self.err as *mut c_char));
-                self.err = std::ptr::null();
-            }
-        }
-    }
-}
-
-/// Opaque wrapper for the result of a function call
-/// containing a status and an error msg
-#[repr(C)]
-pub struct CStatus {
-    err: *const c_char,
-    status: c_int,
-}
-
-impl CStatus {
-    pub fn new(status: c_int) -> Self {
-        CStatus {
-            err: std::ptr::null(),
-            status,
-        }
-    }
-
-    pub fn error<T: Into<Vec<u8>>>(err_msg: T, status: c_int) -> Self {
-        CStatus {
-            err: CString::new(err_msg).unwrap().into_raw(),
-            status,
-        }
-    }
-
-    pub fn free(&mut self) {
-        unsafe {
-            if !self.err.is_null() {
-                drop(CString::from_raw(self.err as *mut c_char));
-            }
-        }
-    }
-}
-
-/// Extract a human-readable message from a panic payload.
-/// Outputs to both tracing (structured) and stderr (direct fallback)
-/// to maximize visibility in Presto worker logs.
-fn log_panic_and_extract_message(panic_payload: Box<dyn Any + Send>) -> String {
-    let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-        s.to_string()
-    } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "unknown panic payload".to_string()
-    };
-    error!(
-        "LakeSoul native FFI caught a panic: {}. \
-         This is a bug in the Rust reader code, please report.",
-        msg
-    );
-    msg
-}
-
-/// Convert the object to a raw opaque pointer
-fn convert_to_opaque_raw<F, T>(obj: F) -> *mut T {
-    Box::into_raw(Box::new(obj)) as *mut T
-}
-
-/// Convert the object to a [`NonNull`] opaque pointer
-fn convert_to_opaque<F, T>(obj: F) -> NonNull<T> {
-    unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(obj)) as *mut T) }
-}
-
-/// Convert the [`NonNull`] opaque pointer to the object
-fn from_opaque<F, T>(obj: NonNull<F>) -> T {
-    unsafe { *Box::from_raw(obj.as_ptr() as *mut T) }
-}
-
-/// Convert the object to a [`NonNull`] opaque pointer
-fn convert_to_nonnull<T>(obj: T) -> NonNull<T> {
-    unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(obj))) }
-}
-
-/// Convert the [`NonNull`] opaque pointer to the object
-fn from_nonnull<T>(obj: NonNull<T>) -> T {
-    unsafe { *Box::from_raw(obj.as_ptr()) }
-}
-
-=======
->>>>>>> bb491a44 (refactor(rust): extract common FFI utilities to lakesoul-common and catch panics at FFI boundary)
 /// The opaque builder of the IO config
 #[repr(C)]
 pub struct IOConfigBuilder {
@@ -210,21 +85,25 @@ pub struct BytesResult {
     private: [u8; 0],
 }
 
-/// Catch a panic in a closure that returns `NonNull<IOConfigBuilder>`,
-/// returning a fresh default builder on panic.
-fn catch_unwind_builder<F: FnOnce() -> NonNull<IOConfigBuilder>>(
-    f: F,
-) -> NonNull<IOConfigBuilder> {
-    panic::catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|payload| {
-        let _msg = log_panic_and_extract_message(payload);
-        convert_to_opaque(LakeSoulIOConfigBuilder::new())
-    })
+/// Catch a panic in a builder closure, returning null on failure.
+/// Unlike returning a fresh default builder, this alerts the caller
+/// that the operation failed — preventing silent config loss and leaks.
+fn catch_null_on_panic<F>(f: F) -> *mut IOConfigBuilder
+where
+    F: FnOnce() -> NonNull<IOConfigBuilder>,
+{
+    panic::catch_unwind(AssertUnwindSafe(f))
+        .map(|p| p.as_ptr())
+        .unwrap_or_else(|payload| {
+            let _msg = log_panic_and_extract_message(payload);
+            std::ptr::null_mut()
+        })
 }
 
 /// Create a new [`IOConfigBuilder`]
 #[unsafe(no_mangle)]
-pub extern "C" fn new_lakesoul_io_config_builder() -> NonNull<IOConfigBuilder> {
-    catch_unwind_builder(|| convert_to_opaque(LakeSoulIOConfigBuilder::new()))
+pub extern "C" fn new_lakesoul_io_config_builder() -> *mut IOConfigBuilder {
+    catch_null_on_panic(|| convert_to_opaque(LakeSoulIOConfigBuilder::new()))
 }
 
 /// Set the prefix of the IO config
@@ -237,8 +116,8 @@ pub extern "C" fn new_lakesoul_io_config_builder() -> NonNull<IOConfigBuilder> {
 pub unsafe extern "C" fn lakesoul_config_builder_with_prefix(
     builder: NonNull<IOConfigBuilder>,
     prefix: *const c_char,
-) -> NonNull<IOConfigBuilder> {
-    catch_unwind_builder(|| {
+) -> *mut IOConfigBuilder {
+    catch_null_on_panic(|| {
         let prefix = unsafe { CStr::from_ptr(prefix).to_str().unwrap().to_string() };
         convert_to_opaque(
             from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
@@ -257,8 +136,8 @@ pub unsafe extern "C" fn lakesoul_config_builder_with_prefix(
 pub unsafe extern "C" fn lakesoul_config_builder_add_single_file(
     builder: NonNull<IOConfigBuilder>,
     file: *const c_char,
-) -> NonNull<IOConfigBuilder> {
-    catch_unwind_builder(|| {
+) -> *mut IOConfigBuilder {
+    catch_null_on_panic(|| {
         let file = unsafe { CStr::from_ptr(file).to_str().unwrap().to_string() };
         convert_to_opaque(
             from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
@@ -278,8 +157,8 @@ pub unsafe extern "C" fn lakesoul_config_builder_add_single_file(
 pub unsafe extern "C" fn lakesoul_config_builder_add_single_column(
     builder: NonNull<IOConfigBuilder>,
     column: *const c_char,
-) -> NonNull<IOConfigBuilder> {
-    catch_unwind_builder(|| {
+) -> *mut IOConfigBuilder {
+    catch_null_on_panic(|| {
         let column = unsafe { CStr::from_ptr(column).to_str().unwrap().to_string() };
         convert_to_opaque(
             from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
@@ -298,8 +177,8 @@ pub unsafe extern "C" fn lakesoul_config_builder_add_single_column(
 pub unsafe extern "C" fn lakesoul_config_builder_add_single_aux_sort_column(
     builder: NonNull<IOConfigBuilder>,
     column: *const c_char,
-) -> NonNull<IOConfigBuilder> {
-    catch_unwind_builder(|| {
+) -> *mut IOConfigBuilder {
+    catch_null_on_panic(|| {
         let column = unsafe { CStr::from_ptr(column).to_str().unwrap().to_string() };
         convert_to_opaque(
             from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
@@ -318,8 +197,8 @@ pub unsafe extern "C" fn lakesoul_config_builder_add_single_aux_sort_column(
 pub unsafe extern "C" fn lakesoul_config_builder_add_filter(
     builder: NonNull<IOConfigBuilder>,
     filter: *const c_char,
-) -> NonNull<IOConfigBuilder> {
-    catch_unwind_builder(|| {
+) -> *mut IOConfigBuilder {
+    catch_null_on_panic(|| {
         let filter = unsafe { CStr::from_ptr(filter).to_str().unwrap().to_string() };
         convert_to_opaque(
             from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
@@ -341,8 +220,8 @@ pub unsafe extern "C" fn lakesoul_config_builder_add_filter_proto(
     builder: NonNull<IOConfigBuilder>,
     proto_addr: c_ptrdiff_t,
     len: i32,
-) -> NonNull<IOConfigBuilder> {
-    catch_unwind_builder(|| {
+) -> *mut IOConfigBuilder {
+    catch_null_on_panic(|| {
         debug!("proto_addr: {:#x}, len:{}", proto_addr, len);
         let dst: &mut [u8] =
             unsafe { slice::from_raw_parts_mut(proto_addr as *mut u8, len as usize) };
@@ -365,8 +244,8 @@ pub unsafe extern "C" fn lakesoul_config_builder_add_filter_proto(
 pub unsafe extern "C" fn lakesoul_config_builder_set_schema(
     builder: NonNull<IOConfigBuilder>,
     schema_addr: c_ptrdiff_t,
-) -> NonNull<IOConfigBuilder> {
-    catch_unwind_builder(|| unsafe {
+) -> *mut IOConfigBuilder {
+    catch_null_on_panic(|| unsafe {
         let ffi_schema = FFI_ArrowSchema::from_raw(schema_addr as *mut FFI_ArrowSchema);
         let schema = Schema::try_from(&ffi_schema).unwrap();
         convert_to_opaque(
@@ -386,8 +265,8 @@ pub unsafe extern "C" fn lakesoul_config_builder_set_schema(
 pub unsafe extern "C" fn lakesoul_config_builder_set_partition_schema(
     builder: NonNull<IOConfigBuilder>,
     schema_addr: c_ptrdiff_t,
-) -> NonNull<IOConfigBuilder> {
-    catch_unwind_builder(|| unsafe {
+) -> *mut IOConfigBuilder {
+    catch_null_on_panic(|| unsafe {
         let ffi_schema = FFI_ArrowSchema::from_raw(schema_addr as *mut FFI_ArrowSchema);
         let schema = Schema::try_from(&ffi_schema).unwrap();
         convert_to_opaque(
@@ -406,8 +285,8 @@ pub unsafe extern "C" fn lakesoul_config_builder_set_partition_schema(
 pub unsafe extern "C" fn lakesoul_config_builder_set_thread_num(
     builder: NonNull<IOConfigBuilder>,
     thread_num: c_size_t,
-) -> NonNull<IOConfigBuilder> {
-    catch_unwind_builder(|| {
+) -> *mut IOConfigBuilder {
+    catch_null_on_panic(|| {
         convert_to_opaque(
             from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
                 .with_thread_num(thread_num),
@@ -424,8 +303,8 @@ pub unsafe extern "C" fn lakesoul_config_builder_set_thread_num(
 pub unsafe extern "C" fn lakesoul_config_builder_set_dynamic_partition(
     builder: NonNull<IOConfigBuilder>,
     enable: bool,
-) -> NonNull<IOConfigBuilder> {
-    catch_unwind_builder(|| {
+) -> *mut IOConfigBuilder {
+    catch_null_on_panic(|| {
         convert_to_opaque(
             from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
                 .set_dynamic_partition(enable),
@@ -442,8 +321,8 @@ pub unsafe extern "C" fn lakesoul_config_builder_set_dynamic_partition(
 pub unsafe extern "C" fn lakesoul_config_builder_set_inferring_schema(
     builder: NonNull<IOConfigBuilder>,
     enable: bool,
-) -> NonNull<IOConfigBuilder> {
-    catch_unwind_builder(|| {
+) -> *mut IOConfigBuilder {
+    catch_null_on_panic(|| {
         convert_to_opaque(
             from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
                 .set_inferring_schema(enable),
@@ -461,8 +340,8 @@ pub unsafe extern "C" fn lakesoul_config_builder_set_inferring_schema(
 pub unsafe extern "C" fn lakesoul_config_builder_set_batch_size(
     builder: NonNull<IOConfigBuilder>,
     batch_size: c_size_t,
-) -> NonNull<IOConfigBuilder> {
-    catch_unwind_builder(|| {
+) -> *mut IOConfigBuilder {
+    catch_null_on_panic(|| {
         convert_to_opaque(
             from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
                 .with_batch_size(batch_size),
@@ -479,8 +358,8 @@ pub unsafe extern "C" fn lakesoul_config_builder_set_batch_size(
 pub unsafe extern "C" fn lakesoul_config_builder_set_max_row_group_size(
     builder: NonNull<IOConfigBuilder>,
     max_row_group_size: c_size_t,
-) -> NonNull<IOConfigBuilder> {
-    catch_unwind_builder(|| {
+) -> *mut IOConfigBuilder {
+    catch_null_on_panic(|| {
         convert_to_opaque(
             from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
                 .with_max_row_group_size(max_row_group_size),
@@ -497,8 +376,8 @@ pub unsafe extern "C" fn lakesoul_config_builder_set_max_row_group_size(
 pub unsafe extern "C" fn lakesoul_config_builder_set_max_row_group_num_values(
     builder: NonNull<IOConfigBuilder>,
     max_row_group_num_values: c_size_t,
-) -> NonNull<IOConfigBuilder> {
-    catch_unwind_builder(|| {
+) -> *mut IOConfigBuilder {
+    catch_null_on_panic(|| {
         convert_to_opaque(
             from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
                 .with_max_row_group_num_values(max_row_group_num_values),
@@ -515,8 +394,8 @@ pub unsafe extern "C" fn lakesoul_config_builder_set_max_row_group_num_values(
 pub unsafe extern "C" fn lakesoul_config_builder_set_buffer_size(
     builder: NonNull<IOConfigBuilder>,
     buffer_size: c_size_t,
-) -> NonNull<IOConfigBuilder> {
-    catch_unwind_builder(|| {
+) -> *mut IOConfigBuilder {
+    catch_null_on_panic(|| {
         convert_to_opaque(
             from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
                 .with_prefetch_size(buffer_size),
@@ -533,8 +412,8 @@ pub unsafe extern "C" fn lakesoul_config_builder_set_buffer_size(
 pub unsafe extern "C" fn lakesoul_config_builder_set_hash_bucket_num(
     builder: NonNull<IOConfigBuilder>,
     hash_bucket_num: c_size_t,
-) -> NonNull<IOConfigBuilder> {
-    catch_unwind_builder(|| {
+) -> *mut IOConfigBuilder {
+    catch_null_on_panic(|| {
         convert_to_opaque(
             from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
                 .with_hash_bucket_num(hash_bucket_num.to_string()),
@@ -553,8 +432,8 @@ pub unsafe extern "C" fn lakesoul_config_builder_set_object_store_option(
     builder: NonNull<IOConfigBuilder>,
     key: *const c_char,
     value: *const c_char,
-) -> NonNull<IOConfigBuilder> {
-    catch_unwind_builder(|| unsafe {
+) -> *mut IOConfigBuilder {
+    catch_null_on_panic(|| unsafe {
         let key = CStr::from_ptr(key).to_str().unwrap().to_string();
         let value = CStr::from_ptr(value).to_str().unwrap().to_string();
         convert_to_opaque(
@@ -574,8 +453,8 @@ pub unsafe extern "C" fn lakesoul_config_builder_set_option(
     builder: NonNull<IOConfigBuilder>,
     key: *const c_char,
     value: *const c_char,
-) -> NonNull<IOConfigBuilder> {
-    catch_unwind_builder(|| unsafe {
+) -> *mut IOConfigBuilder {
+    catch_null_on_panic(|| unsafe {
         let key = CStr::from_ptr(key).to_str().unwrap().to_string();
         let value = CStr::from_ptr(value).to_str().unwrap().to_string();
         convert_to_opaque(
@@ -596,8 +475,8 @@ pub unsafe extern "C" fn lakesoul_config_builder_add_files(
     builder: NonNull<IOConfigBuilder>,
     files: *const *const c_char,
     file_num: c_size_t,
-) -> NonNull<IOConfigBuilder> {
-    catch_unwind_builder(|| unsafe {
+) -> *mut IOConfigBuilder {
+    catch_null_on_panic(|| unsafe {
         let files = slice::from_raw_parts(files, file_num);
         let files: Vec<_> = files
             .iter()
@@ -622,8 +501,8 @@ pub unsafe extern "C" fn lakesoul_config_builder_add_files(
 pub unsafe extern "C" fn lakesoul_config_builder_add_single_primary_key(
     builder: NonNull<IOConfigBuilder>,
     pk: *const c_char,
-) -> NonNull<IOConfigBuilder> {
-    catch_unwind_builder(|| unsafe {
+) -> *mut IOConfigBuilder {
+    catch_null_on_panic(|| unsafe {
         let pk = CStr::from_ptr(pk).to_str().unwrap().to_string();
         convert_to_opaque(
             from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
@@ -642,8 +521,8 @@ pub unsafe extern "C" fn lakesoul_config_builder_add_single_primary_key(
 pub unsafe extern "C" fn lakesoul_config_builder_add_single_range_partition(
     builder: NonNull<IOConfigBuilder>,
     col: *const c_char,
-) -> NonNull<IOConfigBuilder> {
-    catch_unwind_builder(|| unsafe {
+) -> *mut IOConfigBuilder {
+    catch_null_on_panic(|| unsafe {
         let col = CStr::from_ptr(col).to_str().unwrap().to_string();
         convert_to_opaque(
             from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder)
@@ -663,8 +542,8 @@ pub unsafe extern "C" fn lakesoul_config_builder_add_merge_op(
     builder: NonNull<IOConfigBuilder>,
     field: *const c_char,
     merge_op: *const c_char,
-) -> NonNull<IOConfigBuilder> {
-    catch_unwind_builder(|| unsafe {
+) -> *mut IOConfigBuilder {
+    catch_null_on_panic(|| unsafe {
         let field = CStr::from_ptr(field).to_str().unwrap().to_string();
         let merge_op = CStr::from_ptr(merge_op).to_str().unwrap().to_string();
         convert_to_opaque(
@@ -685,8 +564,8 @@ pub unsafe extern "C" fn lakesoul_config_builder_add_primary_keys(
     builder: NonNull<IOConfigBuilder>,
     pks: *const *const c_char,
     pk_num: c_size_t,
-) -> NonNull<IOConfigBuilder> {
-    catch_unwind_builder(|| unsafe {
+) -> *mut IOConfigBuilder {
+    catch_null_on_panic(|| unsafe {
         let pks = slice::from_raw_parts(pks, pk_num);
         let pks: Vec<_> = pks
             .iter()
@@ -712,8 +591,8 @@ pub unsafe extern "C" fn lakesoul_config_builder_set_default_column_value(
     builder: NonNull<IOConfigBuilder>,
     field: *const c_char,
     value: *const c_char,
-) -> NonNull<IOConfigBuilder> {
-    catch_unwind_builder(|| unsafe {
+) -> *mut IOConfigBuilder {
+    catch_null_on_panic(|| unsafe {
         let field = CStr::from_ptr(field).to_str().unwrap().to_string();
         let value = CStr::from_ptr(value).to_str().unwrap().to_string();
         convert_to_opaque(
@@ -727,17 +606,17 @@ pub unsafe extern "C" fn lakesoul_config_builder_set_default_column_value(
 #[unsafe(no_mangle)]
 pub extern "C" fn create_lakesoul_io_config_from_builder(
     builder: NonNull<IOConfigBuilder>,
-) -> NonNull<IOConfig> {
+) -> *mut IOConfig {
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         convert_to_opaque(
             from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).build(),
         )
     }));
     match result {
-        Ok(r) => r,
+        Ok(r) => r.as_ptr(),
         Err(payload) => {
             let _msg = log_panic_and_extract_message(payload);
-            convert_to_opaque(LakeSoulIOConfigBuilder::new().build())
+            std::ptr::null_mut()
         }
     }
 }
@@ -1563,7 +1442,7 @@ pub struct TokioRuntime {
 
 /// Create a new [`TokioRuntimeBuilder`].
 #[unsafe(no_mangle)]
-pub extern "C" fn new_tokio_runtime_builder() -> NonNull<TokioRuntimeBuilder> {
+pub extern "C" fn new_tokio_runtime_builder() -> *mut TokioRuntimeBuilder {
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         let mut builder = Builder::new_multi_thread();
         builder.enable_all();
@@ -1572,14 +1451,10 @@ pub extern "C" fn new_tokio_runtime_builder() -> NonNull<TokioRuntimeBuilder> {
         convert_to_opaque(builder)
     }));
     match result {
-        Ok(r) => r,
+        Ok(r) => r.as_ptr(),
         Err(payload) => {
             let _msg = log_panic_and_extract_message(payload);
-            let mut builder = Builder::new_multi_thread();
-            builder.enable_all();
-            builder.worker_threads(2);
-            builder.max_blocking_threads(8);
-            convert_to_opaque(builder)
+            std::ptr::null_mut()
         }
     }
 }
@@ -1594,21 +1469,17 @@ pub extern "C" fn new_tokio_runtime_builder() -> NonNull<TokioRuntimeBuilder> {
 pub unsafe extern "C" fn tokio_runtime_builder_set_thread_num(
     builder: NonNull<TokioRuntimeBuilder>,
     thread_num: c_size_t,
-) -> NonNull<TokioRuntimeBuilder> {
+) -> *mut TokioRuntimeBuilder {
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         let mut builder = from_opaque::<TokioRuntimeBuilder, Builder>(builder);
         builder.worker_threads(thread_num);
         convert_to_opaque(builder)
     }));
     match result {
-        Ok(r) => r,
+        Ok(r) => r.as_ptr(),
         Err(payload) => {
             let _msg = log_panic_and_extract_message(payload);
-            let mut builder = Builder::new_multi_thread();
-            builder.enable_all();
-            builder.worker_threads(2);
-            builder.max_blocking_threads(8);
-            convert_to_opaque(builder)
+            std::ptr::null_mut()
         }
     }
 }
@@ -1621,23 +1492,17 @@ pub unsafe extern "C" fn tokio_runtime_builder_set_thread_num(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn create_tokio_runtime_from_builder(
     builder: NonNull<TokioRuntimeBuilder>,
-) -> NonNull<TokioRuntime> {
+) -> *mut TokioRuntime {
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         let mut builder = from_opaque::<TokioRuntimeBuilder, Builder>(builder);
         let runtime = builder.build().unwrap();
         convert_to_opaque(runtime)
     }));
     match result {
-        Ok(r) => r,
+        Ok(r) => r.as_ptr(),
         Err(payload) => {
             let _msg = log_panic_and_extract_message(payload);
-            let runtime = Builder::new_multi_thread()
-                .enable_all()
-                .worker_threads(2)
-                .max_blocking_threads(8)
-                .build()
-                .unwrap();
-            convert_to_opaque(runtime)
+            std::ptr::null_mut()
         }
     }
 }

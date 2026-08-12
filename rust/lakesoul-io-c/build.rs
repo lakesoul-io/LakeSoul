@@ -49,7 +49,10 @@ struct CStatus {
     // Inject extra types after the namespace opening brace
     header = header.replacen(
         "namespace lakesoul {\ntypedef ptrdiff_t c_ptrdiff_t;",
-        &format!("namespace lakesoul {{{}\ntypedef ptrdiff_t c_ptrdiff_t;", extra),
+        &format!(
+            "namespace lakesoul {{{}\ntypedef ptrdiff_t c_ptrdiff_t;",
+            extra
+        ),
         1,
     );
 
@@ -69,7 +72,9 @@ struct CStatus {
                 "cargo:warning=Header smoke test FAILED. Run: c++ -std=c++17 -fsyntax-only -x c++ {}",
                 header_path
             );
-            return Err(format!("Header smoke test failed with exit code {status}").into());
+            return Err(
+                format!("Header smoke test failed with exit code {status}").into()
+            );
         }
         Err(e) => {
             println!("cargo:warning=Header smoke test skipped (c++ not found): {e}");
