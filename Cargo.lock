@@ -4685,7 +4685,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-build-info"
-version = "0.1.0"
+version = "4.0.0-dev.0"
 
 [[package]]
 name = "lakesoul-common"
@@ -4764,7 +4764,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-flight"
-version = "0.1.0"
+version = "4.0.0-dev.0"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4807,7 +4807,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-io"
-version = "0.1.0"
+version = "4.0.0-dev.0"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4955,7 +4955,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-metadata-proto"
-version = "0.1.0"
+version = "4.0.0-dev.0"
 dependencies = [
  "bytes",
  "prost",
@@ -4994,7 +4994,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-s3-proxy"
-version = "0.1.0"
+version = "4.0.0-dev.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -7019,15 +7019,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f94967dc7688f3054c7fac87473ffae4cc4c3904800e2d9f5b857246d8963b0a"
 dependencies = [
  "prost",
-]
-
-[[package]]
-name = "proto"
-version = "4.0.0-dev.0"
-dependencies = [
- "bytes",
- "prost",
- "prost-build",
 ]
 
 [[package]]
