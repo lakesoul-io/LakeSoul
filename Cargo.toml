@@ -27,7 +27,7 @@ edition = "2024"
 homepage = "https://github.com/lakesoul-io/LakeSoul"
 license = "Apache-2.0"
 readme = "README.md"
-version = "0.1.0"
+version = "4.0.0-dev.0"
 
 [profile.bench]
 debug = true

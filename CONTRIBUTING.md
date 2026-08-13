@@ -14,7 +14,7 @@ willing to follow the simple processes outlined below, as well as adhere to the
 
 The community collaborates primarily through  `GitHub` and the instance messaging tool, `Slack`.
 There is also a mailing list.
-See how to join [here](https://github.com/lakesoul-io/LakeSoul/blob/main/community-guideline.md)
+See how to join [here](https://github.com/lakesoul-io/LakeSoul/blob/main/docs/community/community-guideline.md)
 
 ## Reporting an Issue
 

@@ -172,7 +172,7 @@ Please find usage documentations in doc site:
   - [x] Multi-layer storage classes support with local-disk data cache
 
 # Community guidelines
-[Community guidelines](community-guideline.md)
+[Community guidelines](docs/community/community-guideline.md)
 
 # Feedback and Contribution
 Please feel free to open an issue or dicussion if you have any questions.
@@ -182,5 +182,5 @@ Join our [Discord](https://discord.gg/WJrHKq4BPf) server for discussions.
 # Contact Us
 Email us at [lakesoul-technical-discuss@lists.lfaidata.foundation](mailto:lakesoul-technical-discuss@lists.lfaidata.foundation).
 
-# Opensource License
+# Open Source License
 LakeSoul is opensourced under Apache License v2.0.
