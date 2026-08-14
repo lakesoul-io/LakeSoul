@@ -3,11 +3,15 @@
 #   Refer for explanation to following link:
 #   https://lefthook.dev/configuration/
 #
-pre-push:
+pre-commit:
   parallel: false
   jobs:
     - name: Format
       glob: "*.{rs,java,scala,sbt,py,toml,yml,yaml,json}"
-      run: treefmt --ci -- {push_files}
+      run: treefmt --ci -- {staged_files}
+
+pre-push:
+  parallel: false
+  jobs:
     - name: Rust Clippy
       run: cargo clippy --no-deps --all-features --all-targets --workspace -- -D warnings

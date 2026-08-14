@@ -133,11 +133,12 @@ public class JdbcIngest {
                 Schema sinkSchema = sinkSchemaBuilder.build();
                 System.out.println("Sink schema: " + sinkSchema);
 
-                TableDescriptor.Builder sinkTableBuilder = TableDescriptor.forConnector("lakesoul")
-                        .schema(sinkSchema)
-                        .option("hashBucketNum", "8")
-                        .option("use_cdc", "true")
-                        .option("file_format", fileFormat);
+                TableDescriptor.Builder sinkTableBuilder =
+                        TableDescriptor.forConnector("lakesoul")
+                                .schema(sinkSchema)
+                                .option("hashBucketNum", "8")
+                                .option("use_cdc", "true")
+                                .option("file_format", fileFormat);
                 if (needPartition) {
                     sinkTableBuilder.partitionedBy(formatedCol);
                 }
@@ -175,17 +176,26 @@ public class JdbcIngest {
                     System.out.println("Submitting date: " + date);
                 }
 
-                String selectColumns = needPartition
-                        ? String.format("*, date_format(%s,'yyyy-MM') as %s", partitionColumn, formatedCol)
-                        : "*";
-                String sql = String.format(
-                        "INSERT INTO %s /*+ OPTIONS('file_format'='%s') */ " +
-                                "SELECT %s " +
-                                "FROM %s " +
-                                "WHERE %s >= '%s' AND %s < '%s'",
-                        lakesoulCatalogDBTable, fileFormat, selectColumns,
-                        jdbcTableName,
-                        partitionColumn, dayStart, partitionColumn, dayEnd);
+                String selectColumns =
+                        needPartition
+                                ? String.format(
+                                        "*, date_format(%s,'yyyy-MM') as %s",
+                                        partitionColumn, formatedCol)
+                                : "*";
+                String sql =
+                        String.format(
+                                "INSERT INTO %s /*+ OPTIONS('file_format'='%s') */ "
+                                        + "SELECT %s "
+                                        + "FROM %s "
+                                        + "WHERE %s >= '%s' AND %s < '%s'",
+                                lakesoulCatalogDBTable,
+                                fileFormat,
+                                selectColumns,
+                                jdbcTableName,
+                                partitionColumn,
+                                dayStart,
+                                partitionColumn,
+                                dayEnd);
 
                 System.out.println("add sql: " + sql);
 
