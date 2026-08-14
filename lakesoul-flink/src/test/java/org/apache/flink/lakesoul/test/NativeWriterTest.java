@@ -17,7 +17,7 @@ import java.util.Collections;
 public class NativeWriterTest {
 
     @Test
-    public void check_writer_test() {
+    public void check_writer_test() throws IOException {
         Schema testSchema = new Schema(Collections.emptyList());
 
         NativeIOWriter writer = new NativeIOWriter(testSchema);

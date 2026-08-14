@@ -39,12 +39,12 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
 
     private Pointer writer = null;
 
-    public NativeIOWriter(Schema schema) {
+    public NativeIOWriter(Schema schema) throws IOException {
         super("NativeWriter");
         setSchema(schema);
     }
 
-    public NativeIOWriter(TableInfo tableInfo) {
+    public NativeIOWriter(TableInfo tableInfo) throws IOException {
         super("NativeWriter");
 
         String cdcColumn;
@@ -71,40 +71,54 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
         withPrefix(tableInfo.getTablePath());
     }
 
-    public void setAuxSortColumns(Iterable<String> auxSortColumns) {
+    public void setAuxSortColumns(Iterable<String> auxSortColumns) throws IOException {
         for (String col : auxSortColumns) {
             ioConfigBuilder =
-                    libLakeSoulIO.lakesoul_config_builder_add_single_aux_sort_column(
-                            ioConfigBuilder, col);
+                    requireBuilderNonNull(
+                            libLakeSoulIO.lakesoul_config_builder_add_single_aux_sort_column(
+                                    ioConfigBuilder, col),
+                            "addAuxSortColumn");
         }
     }
 
-    public void setHashBucketNum(Integer hashBucketNum) {
+    public void setHashBucketNum(Integer hashBucketNum) throws IOException {
         hashBucketNum = hashBucketNum < 1 ? 1 : hashBucketNum;
         ioConfigBuilder =
-                libLakeSoulIO.lakesoul_config_builder_set_hash_bucket_num(
-                        ioConfigBuilder, hashBucketNum);
+                requireBuilderNonNull(
+                        libLakeSoulIO.lakesoul_config_builder_set_hash_bucket_num(
+                                ioConfigBuilder, hashBucketNum),
+                        "setHashBucketNum");
     }
 
-    public void setRowGroupRowNumber(int rowNum) {
+    public void setRowGroupRowNumber(int rowNum) throws IOException {
         ioConfigBuilder =
-                libLakeSoulIO.lakesoul_config_builder_set_max_row_group_size(
-                        ioConfigBuilder, rowNum);
+                requireBuilderNonNull(
+                        libLakeSoulIO.lakesoul_config_builder_set_max_row_group_size(
+                                ioConfigBuilder, rowNum),
+                        "setMaxRowGroupSize");
     }
 
-    public void setRowGroupValueNumber(int valueNum) {
+    public void setRowGroupValueNumber(int valueNum) throws IOException {
         ioConfigBuilder =
-                libLakeSoulIO.lakesoul_config_builder_set_max_row_group_num_values(
-                        ioConfigBuilder, valueNum);
+                requireBuilderNonNull(
+                        libLakeSoulIO.lakesoul_config_builder_set_max_row_group_num_values(
+                                ioConfigBuilder, valueNum),
+                        "setMaxRowGroupNumValues");
     }
 
     public void initializeWriter() throws IOException {
         assert tokioRuntimeBuilder != null;
         assert ioConfigBuilder != null;
 
-        tokioRuntime = libLakeSoulIO.create_tokio_runtime_from_builder(tokioRuntimeBuilder);
+        tokioRuntime =
+                requireNonNull(
+                        libLakeSoulIO.create_tokio_runtime_from_builder(tokioRuntimeBuilder),
+                        "create_tokio_runtime_from_builder");
         tokioRuntimeBuilder = null;
-        config = libLakeSoulIO.create_lakesoul_io_config_from_builder(ioConfigBuilder);
+        config =
+                requireNonNull(
+                        libLakeSoulIO.create_lakesoul_io_config_from_builder(ioConfigBuilder),
+                        "create_lakesoul_io_config_from_builder");
         ioConfigBuilder = null;
         Pointer newWriter = libLakeSoulIO.create_lakesoul_writer_from_config(config, tokioRuntime);
         config = null;

@@ -93,7 +93,16 @@ public class LakeSoulPageSource implements ConnectorPageSource {
             reader.setDefaultColumnValue(partition.getKey(), partition.getValue());
         }
         // set filters
-        split.getLayout().getFilters().forEach((filter) -> reader.addFilter(filter.toString()));
+        split.getLayout()
+                .getFilters()
+                .forEach(
+                        (filter) -> {
+                            try {
+                                reader.addFilter(filter.toString());
+                            } catch (IOException e) {
+                                throw new RuntimeException(e);
+                            }
+                        });
         // set s3 options
         reader.setObjectStoreOptions(
                 LakeSoulConfig.getInstance().getAccessKey(),

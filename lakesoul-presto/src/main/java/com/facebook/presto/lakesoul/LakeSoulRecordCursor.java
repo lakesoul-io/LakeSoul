@@ -104,7 +104,14 @@ public class LakeSoulRecordCursor implements RecordCursor {
                 .getSplit()
                 .getLayout()
                 .getFilters()
-                .forEach((filter) -> reader.addFilter(filter.toString()));
+                .forEach(
+                        (filter) -> {
+                            try {
+                                reader.addFilter(filter.toString());
+                            } catch (IOException e) {
+                                throw new RuntimeException(e);
+                            }
+                        });
         // set s3 options
         reader.setObjectStoreOptions(
                 LakeSoulConfig.getInstance().getAccessKey(),

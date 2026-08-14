@@ -433,7 +433,7 @@ public class FlinkUtil {
         }
     }
 
-    public static void setIOConfigs(Configuration conf, NativeIOBase io) {
+    public static void setIOConfigs(Configuration conf, NativeIOBase io) throws IOException {
         IOConfigs configs = IOConfigs.getInstance();
         Configuration globalConf = configs.conf;
         globalConf
@@ -500,7 +500,8 @@ public class FlinkUtil {
     }
 
     public static void setFSConf(
-            Configuration conf, String confKey, String fsConfKey, NativeIOBase io) {
+            Configuration conf, String confKey, String fsConfKey, NativeIOBase io)
+            throws IOException {
         String value = conf.getString(confKey, "");
         if (!value.isEmpty()) {
             if (!fsConfKey.toLowerCase().contains("secret")) {

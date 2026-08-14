@@ -18,6 +18,7 @@ import org.apache.arrow.c.Data;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.types.pojo.Schema;
 
+import java.io.IOException;
 import java.util.function.BiConsumer;
 
 public class NativeIOBase implements AutoCloseable {
@@ -61,11 +62,22 @@ public class NativeIOBase implements AutoCloseable {
         ioConfigBuilder = libLakeSoulIO.new_lakesoul_io_config_builder();
         tokioRuntimeBuilder = libLakeSoulIO.new_tokio_runtime_builder();
 
+        if (ioConfigBuilder == null) {
+            throw new RuntimeException("Failed to create native IO config builder");
+        }
+        if (tokioRuntimeBuilder == null) {
+            throw new RuntimeException("Failed to create native tokio runtime builder");
+        }
+
         fixedBuffer = getRuntime().getMemoryManager().allocateDirect(5000L);
         mutableBuffer = getRuntime().getMemoryManager().allocateDirect(1 << 12);
 
-        setBatchSize(10240);
-        setThreadNum(2);
+        try {
+            setBatchSize(10240);
+            setThreadNum(2);
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to initialize native IO builder defaults", e);
+        }
         libLakeSoulIO.rust_logger_init();
     }
 
@@ -88,91 +100,141 @@ public class NativeIOBase implements AutoCloseable {
         this.allocator = allocator;
     }
 
-    public void addFile(String file) {
-        ioConfigBuilder =
-                libLakeSoulIO.lakesoul_config_builder_add_single_file(ioConfigBuilder, file);
+    /**
+     * Check that a builder pointer is non-null after a native call. On null, the builder is in an
+     * undefined state (the native operation panicked and the original allocation may have leaked).
+     * We null our reference to avoid use-after-free and throw.
+     */
+    protected Pointer requireBuilderNonNull(Pointer result, String operation) throws IOException {
+        if (result == null) {
+            ioConfigBuilder = null;
+            throw new IOException(
+                    "Native IO builder operation returned null (native panic): " + operation);
+        }
+        return result;
     }
 
-    public void withPrefix(String prefix) {
-        ioConfigBuilder =
-                libLakeSoulIO.lakesoul_config_builder_with_prefix(ioConfigBuilder, prefix);
+    /** Check that a pointer returned from a native call is non-null. */
+    protected static Pointer requireNonNull(Pointer ptr, String operation) throws IOException {
+        if (ptr == null) {
+            throw new IOException("Native IO operation returned null: " + operation);
+        }
+        return ptr;
     }
 
-    public void addColumn(String column) {
+    public void addFile(String file) throws IOException {
+        ioConfigBuilder =
+                requireBuilderNonNull(
+                        libLakeSoulIO.lakesoul_config_builder_add_single_file(
+                                ioConfigBuilder, file),
+                        "addFile");
+    }
+
+    public void withPrefix(String prefix) throws IOException {
+        ioConfigBuilder =
+                requireBuilderNonNull(
+                        libLakeSoulIO.lakesoul_config_builder_with_prefix(ioConfigBuilder, prefix),
+                        "withPrefix");
+    }
+
+    public void addColumn(String column) throws IOException {
         assert ioConfigBuilder != null;
         ioConfigBuilder =
-                libLakeSoulIO.lakesoul_config_builder_add_single_column(ioConfigBuilder, column);
+                requireBuilderNonNull(
+                        libLakeSoulIO.lakesoul_config_builder_add_single_column(
+                                ioConfigBuilder, column),
+                        "addColumn");
     }
 
-    public void setPrimaryKeys(Iterable<String> primaryKeys) {
+    public void setPrimaryKeys(Iterable<String> primaryKeys) throws IOException {
         for (String pk : primaryKeys) {
             ioConfigBuilder =
-                    libLakeSoulIO.lakesoul_config_builder_add_single_primary_key(
-                            ioConfigBuilder, pk);
+                    requireBuilderNonNull(
+                            libLakeSoulIO.lakesoul_config_builder_add_single_primary_key(
+                                    ioConfigBuilder, pk),
+                            "addPrimaryKey");
         }
     }
 
-    public void setRangePartitions(Iterable<String> rangePartitions) {
+    public void setRangePartitions(Iterable<String> rangePartitions) throws IOException {
         for (String col : rangePartitions) {
             ioConfigBuilder =
-                    libLakeSoulIO.lakesoul_config_builder_add_single_range_partition(
-                            ioConfigBuilder, col);
+                    requireBuilderNonNull(
+                            libLakeSoulIO.lakesoul_config_builder_add_single_range_partition(
+                                    ioConfigBuilder, col),
+                            "addRangePartition");
         }
     }
 
-    public void setSchema(Schema schema) {
+    public void setSchema(Schema schema) throws IOException {
         assert ioConfigBuilder != null;
         ArrowSchema ffiSchema = ArrowSchema.allocateNew(allocator);
         CDataDictionaryProvider tmpProvider = new CDataDictionaryProvider();
         Data.exportSchema(allocator, schema, tmpProvider, ffiSchema);
-        ioConfigBuilder =
+        Pointer result =
                 libLakeSoulIO.lakesoul_config_builder_set_schema(
                         ioConfigBuilder, ffiSchema.memoryAddress());
         tmpProvider.close();
         ffiSchema.close();
+        ioConfigBuilder = requireBuilderNonNull(result, "setSchema");
     }
 
-    public void setPartitionSchema(Schema schema) {
+    public void setPartitionSchema(Schema schema) throws IOException {
         assert ioConfigBuilder != null;
         ArrowSchema ffiSchema = ArrowSchema.allocateNew(allocator);
         CDataDictionaryProvider tmpProvider = new CDataDictionaryProvider();
         Data.exportSchema(allocator, schema, tmpProvider, ffiSchema);
-        ioConfigBuilder =
+        Pointer result =
                 libLakeSoulIO.lakesoul_config_builder_set_partition_schema(
                         ioConfigBuilder, ffiSchema.memoryAddress());
         tmpProvider.close();
         ffiSchema.close();
+        ioConfigBuilder = requireBuilderNonNull(result, "setPartitionSchema");
     }
 
-    public void setThreadNum(int threadNum) {
+    public void setThreadNum(int threadNum) throws IOException {
         assert ioConfigBuilder != null;
         ioConfigBuilder =
-                libLakeSoulIO.lakesoul_config_builder_set_thread_num(ioConfigBuilder, threadNum);
+                requireBuilderNonNull(
+                        libLakeSoulIO.lakesoul_config_builder_set_thread_num(
+                                ioConfigBuilder, threadNum),
+                        "setThreadNum");
     }
 
-    public void useDynamicPartition(boolean enable) {
+    public void useDynamicPartition(boolean enable) throws IOException {
         assert ioConfigBuilder != null;
         ioConfigBuilder =
-                libLakeSoulIO.lakesoul_config_builder_set_dynamic_partition(
-                        ioConfigBuilder, enable);
+                requireBuilderNonNull(
+                        libLakeSoulIO.lakesoul_config_builder_set_dynamic_partition(
+                                ioConfigBuilder, enable),
+                        "useDynamicPartition");
     }
 
-    public void setInferringSchema(boolean enable) {
+    public void setInferringSchema(boolean enable) throws IOException {
         assert ioConfigBuilder != null;
         ioConfigBuilder =
-                libLakeSoulIO.lakesoul_config_builder_set_inferring_schema(ioConfigBuilder, enable);
+                requireBuilderNonNull(
+                        libLakeSoulIO.lakesoul_config_builder_set_inferring_schema(
+                                ioConfigBuilder, enable),
+                        "setInferringSchema");
     }
 
-    public void setBatchSize(int batchSize) {
+    public void setBatchSize(int batchSize) throws IOException {
         assert ioConfigBuilder != null;
         ioConfigBuilder =
-                libLakeSoulIO.lakesoul_config_builder_set_batch_size(ioConfigBuilder, batchSize);
+                requireBuilderNonNull(
+                        libLakeSoulIO.lakesoul_config_builder_set_batch_size(
+                                ioConfigBuilder, batchSize),
+                        "setBatchSize");
     }
 
-    public void setBufferSize(int bufferSize) {
+    public void setBufferSize(int bufferSize) throws IOException {
         assert ioConfigBuilder != null;
         ioConfigBuilder =
-                libLakeSoulIO.lakesoul_config_builder_set_buffer_size(ioConfigBuilder, bufferSize);
+                requireBuilderNonNull(
+                        libLakeSoulIO.lakesoul_config_builder_set_buffer_size(
+                                ioConfigBuilder, bufferSize),
+                        "setBufferSize");
     }
 
     public void setObjectStoreOptions(
@@ -184,7 +246,8 @@ public class NativeIOBase implements AutoCloseable {
             String signer,
             String user,
             String defaultFS,
-            boolean virtual_path_style) {
+            boolean virtual_path_style)
+            throws IOException {
         setObjectStoreOption("fs.s3a.access.key", accessKey);
         setObjectStoreOption("fs.s3a.secret.key", accessSecret);
         setObjectStoreOption("fs.s3a.endpoint.region", region);
@@ -196,20 +259,25 @@ public class NativeIOBase implements AutoCloseable {
         setObjectStoreOption("fs.s3a.s3.signing-algorithm", signer);
     }
 
-    public void setObjectStoreOption(String key, String value) {
+    public void setObjectStoreOption(String key, String value) throws IOException {
         assert ioConfigBuilder != null;
         if (key != null && value != null) {
             ioConfigBuilder =
-                    libLakeSoulIO.lakesoul_config_builder_set_object_store_option(
-                            ioConfigBuilder, key, value);
+                    requireBuilderNonNull(
+                            libLakeSoulIO.lakesoul_config_builder_set_object_store_option(
+                                    ioConfigBuilder, key, value),
+                            "setObjectStoreOption");
         }
     }
 
-    public void setOption(String key, String value) {
+    public void setOption(String key, String value) throws IOException {
         assert ioConfigBuilder != null;
         if (key != null && value != null) {
             ioConfigBuilder =
-                    libLakeSoulIO.lakesoul_config_builder_set_option(ioConfigBuilder, key, value);
+                    requireBuilderNonNull(
+                            libLakeSoulIO.lakesoul_config_builder_set_option(
+                                    ioConfigBuilder, key, value),
+                            "setOption");
         }
     }
 
