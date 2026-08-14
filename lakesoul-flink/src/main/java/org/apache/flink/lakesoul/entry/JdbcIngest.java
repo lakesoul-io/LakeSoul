@@ -41,9 +41,13 @@ public class JdbcIngest {
         String baseUrl = params.getRequired("baseUrl");
         String lakesoulDB = params.getRequired("lakesoulDB");
         String partitionColumn = params.getRequired("partitionColumn");
+        boolean needPartition = params.getBoolean("needPartition", false);
         int parallelism = Integer.parseInt(params.getRequired("parallelism"));
         String userStart = params.get("userStart");
         String userEnd = params.get("userEnd");
+        String fileFormat = params.get("fileFormat", "parquet");
+
+        System.out.println("need: " + needPartition);
 
         EnvironmentSettings.Builder builder = EnvironmentSettings.newInstance();
         builder.inBatchMode();
@@ -122,21 +126,23 @@ public class JdbcIngest {
 
             if (!lakesoulCatalog.tableExists(ObjectPath.fromString(lakesoulDBTable))) {
                 System.out.println("Create sink table");
-                Schema sinkSchema =
-                        Schema.newBuilder()
-                                .fromSchema(sourceSchema)
-                                .column(formatedCol, DataTypes.STRING())
-                                .build();
+                Schema.Builder sinkSchemaBuilder = Schema.newBuilder().fromSchema(sourceSchema);
+                if (needPartition) {
+                    sinkSchemaBuilder.column(formatedCol, DataTypes.STRING());
+                }
+                Schema sinkSchema = sinkSchemaBuilder.build();
                 System.out.println("Sink schema: " + sinkSchema);
 
-                tEnv.createTable(
-                        lakesoulCatalogDBTable,
+                TableDescriptor.Builder sinkTableBuilder =
                         TableDescriptor.forConnector("lakesoul")
                                 .schema(sinkSchema)
-                                .partitionedBy(formatedCol)
                                 .option("hashBucketNum", "8")
                                 .option("use_cdc", "true")
-                                .build());
+                                .option("file_format", fileFormat);
+                if (needPartition) {
+                    sinkTableBuilder.partitionedBy(formatedCol);
+                }
+                tEnv.createTable(lakesoulCatalogDBTable, sinkTableBuilder.build());
             }
 
             assert min != null;
@@ -164,17 +170,27 @@ public class JdbcIngest {
             for (LocalDate date = start; !date.isAfter(end); date = date.plusDays(1)) {
                 String dayStart = date.atStartOfDay().format(formatter);
                 String dayEnd = date.plusDays(1).atStartOfDay().format(formatter);
-                System.out.println("Submitting date: " + formatedCol + "=" + date);
+                if (needPartition) {
+                    System.out.println("Submitting date: " + formatedCol + "=" + date);
+                } else {
+                    System.out.println("Submitting date: " + date);
+                }
 
+                String selectColumns =
+                        needPartition
+                                ? String.format(
+                                        "*, date_format(%s,'yyyy-MM') as %s",
+                                        partitionColumn, formatedCol)
+                                : "*";
                 String sql =
                         String.format(
-                                "INSERT INTO %s "
-                                        + "SELECT *, date_format(%s,'yyyy-MM') as %s "
+                                "INSERT INTO %s /*+ OPTIONS('file_format'='%s') */ "
+                                        + "SELECT %s "
                                         + "FROM %s "
                                         + "WHERE %s >= '%s' AND %s < '%s'",
                                 lakesoulCatalogDBTable,
-                                partitionColumn,
-                                formatedCol,
+                                fileFormat,
+                                selectColumns,
                                 jdbcTableName,
                                 partitionColumn,
                                 dayStart,

@@ -31,9 +31,23 @@ spark-test-gluten:
     mvn -q surefire-report:report-only -pl lakesoul-spark-gluten -am -Pgluten
 
 cross:
-    cross build --target x86_64-unknown-linux-gnu --release --package lakesoul-io-c -F hdfs
-    cross build --target x86_64-unknown-linux-gnu --release  --package lakesoul-metadata-c --all-features
-    cp rust/target/x86_64-unknown-linux-gnu/release/lib*.so rust/target/release
+    #!/usr/bin/env bash
+    set -euo pipefail
+    sysroot="$(rustc --print sysroot)"
+    export NIX_STORE=/nix/store
+    export CROSS_CONTAINER_OPTS="--volume=${sysroot}:${sysroot}:ro"
+    cross build \
+        --target x86_64-unknown-linux-gnu \
+        --release \
+        --package lakesoul-io-c \
+        -F hdfs
+    cross build \
+        --target x86_64-unknown-linux-gnu \
+        --release \
+        --package lakesoul-metadata-c \
+        --all-features
+    mkdir -p rust/target/release
+    cp rust/target/x86_64-unknown-linux-gnu/release/lib*.so rust/target/release/
 
 copy-to-java ext="dylib":
   cargo build -p lakesoul-io-c -p lakesoul-metadata-c
