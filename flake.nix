@@ -66,6 +66,8 @@
 
       commonPackages = formatterPackages ++ (with pkgs; [
 
+        actionlint
+
         clang
         lld
         llvmPackages.libclang
@@ -89,6 +91,8 @@
       ]);
 
       fhsPackages = formatterPackages ++ (with pkgs; [
+
+        actionlint
 
         clang
         lld

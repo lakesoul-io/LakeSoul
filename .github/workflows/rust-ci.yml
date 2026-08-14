@@ -18,12 +18,11 @@ on:
 
 name: Rust CI
 
-env:
-  RUSTFLAGS: "-Awarnings"
-
 jobs:
   rust_ci:
     runs-on: ubuntu-24.04
+    env:
+      RUSTFLAGS: "-Awarnings"
     services:
       # Label used to access the service container
       postgres:
@@ -134,3 +133,26 @@ jobs:
           RUST_BACKTRACE: full
         run: |
           cargo test --profile test-fast --lib --bins --tests --jobs 2
+
+  clippy_check:
+    runs-on: ubuntu-24.04
+    env:
+      # Make sure CI fails on all warnings, including Clippy lints.
+      RUSTFLAGS: "-Dwarnings"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: clippy
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          version: "23.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> rust/target"
+          key: "ubuntu-24.04-clippy"
+      - name: Run Clippy
+        run: cargo clippy --no-deps --all-features -p lakesoul-io-c -p lakesoul-metadata-c -p lakesoul-python -p lakesoul-io
