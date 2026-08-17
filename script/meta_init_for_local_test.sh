@@ -32,6 +32,8 @@ done
 init_database() {
   PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -tc "SELECT 1 FROM pg_database WHERE datname = '$1'" | grep -q 1 || PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -c "CREATE DATABASE $1"
   PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f "$BASEDIR"/meta_init.sql $1
+  PGPASSWORD=lakesoul_test python3 "$BASEDIR"/metadata_migrate.py migrate \
+    --database-url "postgresql://lakesoul_test@localhost:5432/$1"
   PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f "$BASEDIR"/meta_cleanup.sql $1
 }
 

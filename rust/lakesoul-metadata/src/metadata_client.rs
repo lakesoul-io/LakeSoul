@@ -54,7 +54,81 @@ pub const PRIMARY_URL_ENV_KEY: &str = "LAKESOUL_PG_URL";
 pub const SECONDARY_URL_PROP_KEY: &str = "lakesoul.pg.secondary.url=";
 pub const SECONDARY_URL_ENV_KEY: &str = "LAKESOUL_PG_SECONDARY_URL";
 
-/// Generate pg config from environment variable
+const DEFAULT_PG_URL: &str =
+    "jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified";
+const DEFAULT_PG_USERNAME: &str = "lakesoul_test";
+const DEFAULT_PG_PASSWORD: &str = "lakesoul_test";
+
+fn secondary_url_not_found() -> LakeSoulMetaDataError {
+    LakeSoulMetaDataError::NotFound("Secondary url not found".to_string())
+}
+
+fn parse_pg_config(
+    pg_url: &str,
+    username: &str,
+    password: &str,
+) -> Result<String, LakeSoulMetaDataError> {
+    let pg_url = pg_url.strip_prefix("jdbc:").ok_or_else(|| {
+        LakeSoulMetaDataError::Internal(
+            "PostgreSQL URL must start with jdbc:".to_string(),
+        )
+    })?;
+    let url = Url::parse(pg_url)?;
+    let database = url.path().trim_start_matches('/');
+    if database.is_empty() {
+        return Err(LakeSoulMetaDataError::Internal(
+            "url database name missing".to_string(),
+        ));
+    }
+    Ok(format!(
+        "host={} port={} dbname={} user={} password={}",
+        url.host_str()
+            .ok_or_else(|| LakeSoulMetaDataError::Internal(
+                "url host missing".to_string()
+            ))?,
+        url.port().ok_or_else(|| LakeSoulMetaDataError::Internal(
+            "url port missing".to_string()
+        ))?,
+        database,
+        username,
+        password
+    ))
+}
+
+fn pg_config_from_properties(
+    config: &str,
+    url_prop: &str,
+    url_env: &str,
+) -> Result<String, LakeSoulMetaDataError> {
+    let config_map = config
+        .lines()
+        .filter_map(|property| {
+            property.find('=').map(|index| property.split_at(index + 1))
+        })
+        .collect::<HashMap<_, _>>();
+    let pg_url = match config_map
+        .get(url_prop)
+        .copied()
+        .filter(|value| !value.trim().is_empty())
+    {
+        Some(value) => value,
+        None if url_env == SECONDARY_URL_ENV_KEY => return Err(secondary_url_not_found()),
+        None => DEFAULT_PG_URL,
+    };
+    parse_pg_config(
+        pg_url,
+        config_map
+            .get("lakesoul.pg.username=")
+            .copied()
+            .unwrap_or(DEFAULT_PG_USERNAME),
+        config_map
+            .get("lakesoul.pg.password=")
+            .copied()
+            .unwrap_or(DEFAULT_PG_PASSWORD),
+    )
+}
+
+/// Generate a PostgreSQL connection config from LakeSoul properties and environment variables.
 pub fn pg_config_from_env(
     url_prop: &str,
     url_env: &str,
@@ -63,75 +137,25 @@ pub fn pg_config_from_env(
         trace!("get config from lakesoul_home: {}", config_path);
         let config = fs::read_to_string(&config_path)
             .unwrap_or_else(|_| panic!("Fails at reading a config file {}", config_path));
-        let config_map = config
-            .split('\n')
-            .filter_map(|property| {
-                property.find('=').map(|idx| property.split_at(idx + 1))
-            })
-            .collect::<HashMap<_, _>>();
-        let url = Url::parse(
-            &config_map.get(url_prop).unwrap_or(
-                &"jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified",
-            )[5..],
-        )?;
-        return Ok(format!(
-            "host={} port={} dbname={} user={} password={}",
-            url.host_str().ok_or(LakeSoulMetaDataError::Internal(
-                "url host missing".to_string()
-            ))?,
-            url.port().ok_or(LakeSoulMetaDataError::Internal(
-                "url port missing".to_string()
-            ))?,
-            url.path_segments()
-                .ok_or(LakeSoulMetaDataError::Internal(
-                    "url path missing".to_string()
-                ))?
-                .next()
-                .ok_or(LakeSoulMetaDataError::Internal(
-                    "url path missing".to_string()
-                ))?,
-            config_map
-                .get("lakesoul.pg.username=")
-                .unwrap_or(&"lakesoul_test"),
-            config_map
-                .get("lakesoul.pg.password=")
-                .unwrap_or(&"lakesoul_test")
-        ));
+        return pg_config_from_properties(&config, url_prop, url_env);
     }
     if let Ok(pg_url) = std::env::var(url_env) {
+        if pg_url.trim().is_empty() && url_env == SECONDARY_URL_ENV_KEY {
+            return Err(secondary_url_not_found());
+        }
         trace!("get config from env {}={}", url_env, pg_url);
-        let url = Url::parse(&pg_url[5..])?;
-        return Ok(format!(
-            "host={} port={} dbname={} user={} password={}",
-            url.host_str().ok_or(LakeSoulMetaDataError::Internal(
-                "url host missing".to_string()
-            ))?,
-            url.port().ok_or(LakeSoulMetaDataError::Internal(
-                "url port missing".to_string()
-            ))?,
-            url.path_segments()
-                .ok_or(LakeSoulMetaDataError::Internal(
-                    "url path missing".to_string()
-                ))?
-                .next()
-                .ok_or(LakeSoulMetaDataError::Internal(
-                    "url path missing".to_string()
-                ))?,
-            env::var("LAKESOUL_PG_USERNAME")
-                .unwrap_or_else(|_| "lakesoul_test".to_string()),
-            env::var("LAKESOUL_PG_PASSWORD")
-                .unwrap_or_else(|_| "lakesoul_test".to_string())
-        ));
+        return parse_pg_config(
+            &pg_url,
+            &env::var("LAKESOUL_PG_USERNAME")
+                .unwrap_or_else(|_| DEFAULT_PG_USERNAME.to_string()),
+            &env::var("LAKESOUL_PG_PASSWORD")
+                .unwrap_or_else(|_| DEFAULT_PG_PASSWORD.to_string()),
+        );
     }
     if url_env == SECONDARY_URL_ENV_KEY {
-        Err(LakeSoulMetaDataError::NotFound(
-            "Secondary url not found".to_string(),
-        ))
+        Err(secondary_url_not_found())
     } else {
-        // use default
-        let default_config = "host=127.0.0.1 port=5432 dbname=lakesoul_test user=lakesoul_test password=lakesoul_test";
-        trace!("get config by default {}", default_config);
-        Ok(default_config.to_string())
+        parse_pg_config(DEFAULT_PG_URL, DEFAULT_PG_USERNAME, DEFAULT_PG_PASSWORD)
     }
 }
 
@@ -139,7 +163,11 @@ impl MetaDataClient {
     pub async fn from_env() -> Result<Self> {
         let config = pg_config_from_env(PRIMARY_URL_PROP_KEY, PRIMARY_URL_ENV_KEY)?;
         let secondary_config =
-            pg_config_from_env(SECONDARY_URL_PROP_KEY, SECONDARY_URL_ENV_KEY).ok();
+            match pg_config_from_env(SECONDARY_URL_PROP_KEY, SECONDARY_URL_ENV_KEY) {
+                Ok(config) => Some(config),
+                Err(LakeSoulMetaDataError::NotFound(_)) => None,
+                Err(error) => return Err(error),
+            };
         Self::from_config(config, secondary_config).await
     }
 
@@ -1257,6 +1285,44 @@ pub fn table_name_id_from_table_info(table_info: &TableInfo) -> TableNameId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_secondary_url_in_properties_does_not_use_primary_default() {
+        let config = "lakesoul.pg.url=jdbc:postgresql://primary.example:5432/production\n\
+                      lakesoul.pg.username=production_user\n\
+                      lakesoul.pg.password=secret\n";
+
+        let error = pg_config_from_properties(
+            config,
+            SECONDARY_URL_PROP_KEY,
+            SECONDARY_URL_ENV_KEY,
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, LakeSoulMetaDataError::NotFound(_)));
+        assert!(!error.to_string().contains("127.0.0.1"));
+        assert!(!error.to_string().contains("lakesoul_test"));
+    }
+
+    #[test]
+    fn configured_secondary_url_is_used() {
+        let config = "lakesoul.pg.secondary.url=jdbc:postgresql://secondary.example:5433/production\n\
+             lakesoul.pg.username=production_user\n\
+             lakesoul.pg.password=secret\n";
+
+        let secondary = pg_config_from_properties(
+            config,
+            SECONDARY_URL_PROP_KEY,
+            SECONDARY_URL_ENV_KEY,
+        )
+        .unwrap();
+
+        assert_eq!(
+            secondary,
+            "host=secondary.example port=5433 dbname=production \
+             user=production_user password=secret"
+        );
+    }
 
     #[test]
     fn data_files_are_grouped_into_partition_commits() {

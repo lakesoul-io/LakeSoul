@@ -14,6 +14,12 @@ suffix="${suffix//[^a-zA-Z0-9_]/_}"
 migration_db="lakesoul_migration_${suffix}"
 fresh_db="lakesoul_fresh_${suffix}"
 work_dir="$(mktemp -d)"
+python_command="${PYTHON:-python3}"
+migration_runner=( "$python_command" script/metadata_migrate.py )
+
+database_url() {
+  printf 'postgresql://%s@%s:%s/%s' "$user" "$host" "$port" "$1"
+}
 
 connection=(-h "$host" -p "$port" -U "$user")
 cleanup() {
@@ -35,8 +41,10 @@ createdb "${connection[@]}" "$fresh_db"
 psql "${connection[@]}" -v ON_ERROR_STOP=1 -d "$migration_db" -f "$work_dir/legacy.sql" >/dev/null
 psql "${connection[@]}" -v ON_ERROR_STOP=1 -d "$migration_db" -c \
   "insert into namespace(namespace, properties, comment) values ('release_migration', '{\"source\":\"$baseline_tag\"}', 'preserve me');" >/dev/null
-psql "${connection[@]}" -v ON_ERROR_STOP=1 -d "$migration_db" -f script/meta_init.sql >/dev/null
+"${migration_runner[@]}" migrate --database-url "$(database_url "$migration_db")"
+"${migration_runner[@]}" migrate --database-url "$(database_url "$migration_db")"
 psql "${connection[@]}" -v ON_ERROR_STOP=1 -d "$fresh_db" -f script/meta_init.sql >/dev/null
+"${migration_runner[@]}" migrate --database-url "$(database_url "$fresh_db")"
 
 schema_query="
 select table_name || '|' || column_name || '|' || data_type || '|' || is_nullable
@@ -61,6 +69,30 @@ test "$new_columns" = "2"
 replica_identity="$(psql "${connection[@]}" -At -d "$migration_db" -c \
   "select relreplident from pg_class where relname = 'data_commit_info';")"
 test "$replica_identity" = "f"
+migration_records="$(psql "${connection[@]}" -At -d "$migration_db" -c \
+  "select count(*) from lakesoul_schema_migrations where version = 4000000;")"
+test "$migration_records" = "1"
+
+cp -R script/metadata-migrations "$work_dir/changed-migrations"
+printf '\n-- checksum regression\n' >> "$work_dir/changed-migrations/V4000000__core_4_0_0.sql"
+if "${migration_runner[@]}" check \
+  --database-url "$(database_url "$migration_db")" \
+  --migrations-dir "$work_dir/changed-migrations" >/dev/null 2>&1; then
+  echo "Modified applied migration unexpectedly passed checksum validation" >&2
+  exit 1
+fi
+cp -R script/metadata-migrations "$work_dir/failing-migrations"
+printf 'ALTER TABLE table_that_does_not_exist ADD COLUMN value text;\n' \
+  > "$work_dir/failing-migrations/V4000001__intentional_failure.sql"
+if "${migration_runner[@]}" migrate \
+  --database-url "$(database_url "$migration_db")" \
+  --migrations-dir "$work_dir/failing-migrations" >/dev/null 2>&1; then
+  echo "Failed migration unexpectedly succeeded" >&2
+  exit 1
+fi
+failed_migration_records="$(psql "${connection[@]}" -At -d "$migration_db" -c \
+  "select count(*) from lakesoul_schema_migrations where version = 4000001;")"
+test "$failed_migration_records" = "0"
 
 pg_dump "${connection[@]}" --format=custom --file="$work_dir/metadata.dump" "$migration_db"
 dropdb "${connection[@]}" "$migration_db"
@@ -69,5 +101,9 @@ pg_restore "${connection[@]}" --exit-on-error --dbname="$migration_db" "$work_di
 restored_row="$(psql "${connection[@]}" -At -d "$migration_db" -c \
   "select properties->>'source' || '|' || comment from namespace where namespace = 'release_migration';")"
 test "$restored_row" = "$baseline_tag|preserve me"
+"${migration_runner[@]}" check --database-url "$(database_url "$migration_db")"
+restored_migration_records="$(psql "${connection[@]}" -At -d "$migration_db" -c \
+  "select count(*) from lakesoul_schema_migrations where version = 4000000;")"
+test "$restored_migration_records" = "1"
 
 printf 'Metadata migration from %s and PostgreSQL backup recovery passed.\n' "$baseline_tag"
