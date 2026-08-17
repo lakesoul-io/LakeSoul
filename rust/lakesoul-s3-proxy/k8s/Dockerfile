@@ -1,3 +1,4 @@
+# Experimental component; not part of LakeSoul Core GA.
 FROM ubuntu:22.04
 
 RUN sed -i "s@http://.*archive.ubuntu.com@http://mirrors.huaweicloud.com@g" /etc/apt/sources.list && \

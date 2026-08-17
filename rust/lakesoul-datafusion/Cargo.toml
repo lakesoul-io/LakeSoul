@@ -5,6 +5,7 @@
 [package]
 name = "lakesoul-datafusion"
 version = { workspace = true }
+publish = false
 edition = { workspace = true }
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

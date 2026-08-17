@@ -1,3 +1,4 @@
+# Experimental component; not part of LakeSoul Core GA.
 FROM ubuntu:22.04
 
 ENV HADOOP_VERSION=3.3.6

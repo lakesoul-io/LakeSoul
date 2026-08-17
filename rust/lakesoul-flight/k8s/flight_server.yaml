@@ -1,3 +1,4 @@
+# Experimental component; not part of LakeSoul Core GA.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
