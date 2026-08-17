@@ -8,6 +8,11 @@ import jnr.ffi.annotations.Delegate;
 import jnr.ffi.annotations.LongLong;
 
 public interface LibLakeSoulMetaData {
+    /** Returns the NUL-terminated LakeSoul Core version owned by the native library. */
+    Pointer lakesoul_metadata_version();
+
+    /** Returns the NUL-terminated native build information owned by the native library. */
+    Pointer lakesoul_metadata_build_info();
 
     Pointer create_tokio_runtime();
 

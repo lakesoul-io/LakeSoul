@@ -4,22 +4,17 @@
 
 package com.dmetasoul.lakesoul.lakesoul.io.jnr;
 
-import com.dmetasoul.lakesoul.meta.jnr.NativeLibraryResource;
+import com.dmetasoul.lakesoul.nativeio.NativeLibraryLoader;
 
 import jnr.ffi.LibraryLoader;
 import jnr.ffi.LibraryOption;
 
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.InputStream;
-import java.net.URL;
-import java.net.URLConnection;
-import java.nio.file.Files;
-import java.nio.file.StandardCopyOption;
 import java.util.HashMap;
 import java.util.Map;
 
 public class JnrLoader {
+
+    private static final String LIBRARY_NAME = "lakesoul_io_c";
 
     private LibLakeSoulIO libLakeSoulIO = null;
 
@@ -37,60 +32,36 @@ public class JnrLoader {
             return;
         }
 
-        String libName = System.mapLibraryName("lakesoul_io_c");
-
-        String finalPath = null;
+        String libraryFile = System.mapLibraryName(LIBRARY_NAME);
+        String finalPath = NativeLibraryLoader.extract(JnrLoader.class, libraryFile);
+        Map<LibraryOption, Object> libraryOptions = new HashMap<>();
+        libraryOptions.put(LibraryOption.LoadNow, true);
 
         try {
-            String resourcePath = NativeLibraryResource.path(libName);
-            URL url = JnrLoader.class.getClassLoader().getResource(resourcePath);
-            if (url == null) {
-                throw new FileNotFoundException(resourcePath);
-            }
-            URLConnection connection = url.openConnection();
-            if (connection != null) {
-                connection.setUseCaches(false);
-                try (final InputStream is = connection.getInputStream()) {
-                    if (is == null) {
-                        throw new FileNotFoundException(libName);
-                    }
-                    File temp =
-                            File.createTempFile(
-                                    libName + "_",
-                                    ".tmp",
-                                    new File(System.getProperty("java.io.tmpdir")));
-                    temp.deleteOnExit();
-                    Files.copy(is, temp.toPath(), StandardCopyOption.REPLACE_EXISTING);
-                    finalPath = temp.getAbsolutePath();
-                }
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-            throw new IllegalStateException("error loading native libraries: " + e);
-        }
-
-        if (finalPath != null) {
-            Map<LibraryOption, Object> libraryOptions = new HashMap<>();
-            libraryOptions.put(LibraryOption.LoadNow, true);
-            libraryOptions.put(LibraryOption.IgnoreError, true);
-
-            JnrLoader.INSTANCE.libLakeSoulIO =
+            INSTANCE.libLakeSoulIO =
                     LibraryLoader.loadLibrary(LibLakeSoulIO.class, libraryOptions, finalPath);
-            if (INSTANCE.libLakeSoulIO != null) {
-                // spark will do the bound checking and null checking
-                // so disable them
-                System.setProperty("arrow.enable_unsafe_memory_access", "true");
-                System.setProperty("arrow.enable_null_check_for_get", "false");
-                System.setProperty("arrow.allocation.manager.type", "Netty");
-            }
+        } catch (RuntimeException | LinkageError error) {
+            throw NativeLibraryLoader.loadingError(
+                    JnrLoader.class, libraryFile, "unavailable", error);
         }
-
+        String nativeVersion;
+        try {
+            nativeVersion = INSTANCE.libLakeSoulIO.lakesoul_io_version().getString(0);
+        } catch (RuntimeException | LinkageError error) {
+            throw NativeLibraryLoader.loadingError(
+                    JnrLoader.class, libraryFile, "unavailable", error);
+        }
+        NativeLibraryLoader.validateNativeVersion(JnrLoader.class, libraryFile, nativeVersion);
+        if (INSTANCE.libLakeSoulIO != null) {
+            // Spark performs bound and null checking, so disable the duplicate Arrow checks.
+            System.setProperty("arrow.enable_unsafe_memory_access", "true");
+            System.setProperty("arrow.enable_null_check_for_get", "false");
+            System.setProperty("arrow.allocation.manager.type", "Netty");
+        }
         INSTANCE.hasLoaded = true;
     }
 
     public static synchronized void unload() {
-        INSTANCE.hasLoaded = false;
-        INSTANCE.libLakeSoulIO = null;
-        INSTANCE = null;
+        INSTANCE = new JnrLoader();
     }
 }
