@@ -137,29 +137,19 @@ object GlutenUtils extends Logging {
   }
 
   def createArrowColumnVector(vector: ValueVector): ColumnVector = {
-    if (isGlutenEnabled) {
-      new org.apache.gluten.vectorized.ArrowWritableColumnVector(
-        vector,
-        null,
-        0,
-        0,
-        false
-      )
-    } else {
-      new org.apache.spark.sql.arrow.ArrowColumnVector(vector)
-    }
+    new org.apache.gluten.vectorized.ArrowWritableColumnVector(
+      vector,
+      null,
+      0,
+      0,
+      false
+    )
   }
 
   def getValueVectorFromArrowVector(vector: ColumnVector): ValueVector = {
-    if (isGlutenEnabled) {
-      vector
-        .asInstanceOf[org.apache.gluten.vectorized.ArrowWritableColumnVector]
-        .getValueVector
-    } else {
-      vector
-        .asInstanceOf[org.apache.spark.sql.arrow.ArrowColumnVector]
-        .getValueVector
-    }
+    vector
+      .asInstanceOf[org.apache.gluten.vectorized.ArrowWritableColumnVector]
+      .getValueVector
   }
 
   def nativeWrap(
