@@ -1,0 +1,274 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Reusable Core Release Build
+
+on:
+  workflow_call:
+    inputs:
+      publish:
+        description: Publish production artifacts after all release gates pass
+        required: true
+        type: boolean
+      tag:
+        description: Signed final Core tag; empty for release PR and manual dry runs
+        required: false
+        default: ""
+        type: string
+    secrets:
+      OSSRH_USERNAME:
+        required: false
+      OSSRH_TOKEN:
+        required: false
+      MAVEN_SIGN_GPG_KEY:
+        required: false
+      MAVEN_SIGN_GPG_PASSPHRASE:
+        required: false
+      GH_PAGES_DEPLOY:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate-release:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out release commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Validate synchronized versions
+        run: python script/release.py check
+      - name: Validate production release gate
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "Production publication requires a final vX.Y.Z tag, got '$RELEASE_TAG'" >&2
+            exit 1
+          fi
+
+          python script/release.py check-tag "$RELEASE_TAG"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$GITHUB_SHA"
+
+          tag_ref="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG")"
+          test "$(jq -r '.object.type' <<<"$tag_ref")" = "tag"
+          tag_object="$(jq -r '.object.sha' <<<"$tag_ref")"
+          tag_data="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object")"
+          test "$(jq -r '.verification.verified' <<<"$tag_data")" = "true"
+          test "$(jq -r '.verification.reason' <<<"$tag_data")" = "valid"
+          test "$(jq -r '.object.type' <<<"$tag_data")" = "commit"
+          test "$(jq -r '.object.sha' <<<"$tag_data")" = "$GITHUB_SHA"
+
+          release_series="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+          release_branch="release/$release_series"
+          git fetch --no-tags origin "$release_branch:refs/remotes/origin/$release_branch"
+          git merge-base --is-ancestor "$GITHUB_SHA" "refs/remotes/origin/$release_branch"
+      - name: Enforce dry-run inputs
+        if: ${{ !inputs.publish }}
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          test -z "$RELEASE_TAG" || {
+            echo "Dry runs must not receive a publication tag" >&2
+            exit 1
+          }
+
+  build-native-linux-x86-64:
+    needs: validate-release
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out release commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install protoc
+        uses: arduino/setup-protoc@a8b67ba40b37d35169e222f3bb352603327985b6 # v2 branch
+        with:
+          version: "23.x"
+          repo-token: ${{ github.token }}
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable action
+        with:
+          toolchain: stable
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ". -> rust/target"
+      - name: Install cross
+        uses: taiki-e/install-action@288e746965032cfcc232e09af2daf5f23c14d780 # v2
+        with:
+          tool: cross@0.2.5
+      - name: Build Linux x86_64 native libraries
+        run: >-
+          cross -q build --target x86_64-unknown-linux-gnu --release --all-features
+          --package lakesoul-io-c --package lakesoul-metadata-c
+      - name: Stage native libraries
+        run: |
+          mkdir -p rust/target/release
+          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so rust/target/release/
+          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so rust/target/release/
+      - name: Upload Linux x86_64 native libraries
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: lakesoul-native-linux-x86-64
+          path: |
+            rust/target/release/liblakesoul_io_c.so
+            rust/target/release/liblakesoul_metadata_c.so
+          if-no-files-found: error
+
+  build-core:
+    needs: [validate-release, build-native-linux-x86-64]
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:14.5
+        env:
+          POSTGRES_PASSWORD: lakesoul_test
+          POSTGRES_USER: lakesoul_test
+          POSTGRES_DB: lakesoul_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - name: Check out release commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Download Linux x86_64 native libraries
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: lakesoul-native-linux-x86-64
+          path: rust/target/release
+      - name: Install PostgreSQL client
+        run: sudo apt-get update -q && sudo apt-get install -y postgresql-client
+      - name: Initialize metadata database
+        run: ./script/meta_init_for_local_test.sh -j 2
+      - name: Install protoc
+        uses: arduino/setup-protoc@a8b67ba40b37d35169e222f3bb352603327985b6 # v2 branch
+        with:
+          version: "23.x"
+          repo-token: ${{ github.token }}
+      - name: Set up JDK 11 for Core reactor
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          java-version: "11"
+          distribution: temurin
+          cache: maven
+      - name: Build and test Core reactor except Presto
+        run: mvn -B clean install -pl "!:lakesoul-presto-0.296" -Pcross-build
+      - name: Set up JDK 17 for Presto
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          java-version: "17"
+          distribution: temurin
+          cache: maven
+      - name: Build and test Presto
+        run: mvn -B verify -pl :lakesoul-presto-0.296 -Pcross-build
+      - name: Verify packaged native libraries
+        run: |
+          python script/verify_native_jars.py \
+            "lakesoul-spark/target/$(python script/get_jar_name.py lakesoul-spark)" \
+            "lakesoul-flink/target/$(python script/get_jar_name.py lakesoul-flink)" \
+            "lakesoul-presto/target/$(python script/get_jar_name.py lakesoul-presto)"
+      - name: Upload dry-run release JARs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: core-release-jars
+          path: |
+            lakesoul-spark/target/lakesoul-spark-3.5_2.12-*.jar
+            lakesoul-flink/target/lakesoul-flink-1.20_2.12-*.jar
+            lakesoul-presto/target/lakesoul-presto-0.296-*.jar
+          if-no-files-found: error
+
+  publish-maven-central:
+    if: inputs.publish
+    needs: [validate-release, build-core, build-native-linux-x86-64]
+    runs-on: ubuntu-24.04
+    environment: maven-central-production
+    services:
+      postgres:
+        image: postgres:14.5
+        env:
+          POSTGRES_PASSWORD: lakesoul_test
+          POSTGRES_USER: lakesoul_test
+          POSTGRES_DB: lakesoul_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - name: Check out signed release tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+      - name: Download Linux x86_64 native libraries
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: lakesoul-native-linux-x86-64
+          path: rust/target/release
+      - name: Install PostgreSQL client
+        run: sudo apt-get update -q && sudo apt-get install -y postgresql-client
+      - name: Initialize metadata database
+        run: ./script/meta_init_for_local_test.sh -j 2
+      - name: Install protoc
+        uses: arduino/setup-protoc@a8b67ba40b37d35169e222f3bb352603327985b6 # v2 branch
+        with:
+          version: "23.x"
+          repo-token: ${{ github.token }}
+      - name: Set up JDK 11 and Maven Central credentials
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          java-version: "11"
+          distribution: temurin
+          cache: maven
+          server-id: central
+          server-username: MAVEN_USERNAME
+          server-password: MAVEN_PASSWORD
+          gpg-private-key: ${{ secrets.MAVEN_SIGN_GPG_KEY }}
+          gpg-passphrase: GPG_PASSPHRASE
+      - name: Publish Core reactor except Presto
+        env:
+          MAVEN_USERNAME: ${{ secrets.OSSRH_USERNAME }}
+          MAVEN_PASSWORD: ${{ secrets.OSSRH_TOKEN }}
+          GPG_PASSPHRASE: ${{ secrets.MAVEN_SIGN_GPG_PASSPHRASE }}
+        run: >-
+          mvn -B deploy -pl "!:lakesoul-presto-0.296"
+          -Pcross-build,release-sign-artifacts
+      - name: Set up JDK 17 and Maven Central credentials
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          java-version: "17"
+          distribution: temurin
+          cache: maven
+          server-id: central
+          server-username: MAVEN_USERNAME
+          server-password: MAVEN_PASSWORD
+          gpg-private-key: ${{ secrets.MAVEN_SIGN_GPG_KEY }}
+          gpg-passphrase: GPG_PASSPHRASE
+      - name: Publish Presto
+        env:
+          MAVEN_USERNAME: ${{ secrets.OSSRH_USERNAME }}
+          MAVEN_PASSWORD: ${{ secrets.OSSRH_TOKEN }}
+          GPG_PASSPHRASE: ${{ secrets.MAVEN_SIGN_GPG_PASSPHRASE }}
+        run: >-
+          mvn -B deploy -pl :lakesoul-presto-0.296
+          -Pcross-build,release-sign-artifacts
+
+  publish-website:
+    if: inputs.publish
+    needs: [validate-release, publish-maven-central]
+    uses: ./.github/workflows/website-publish.yml
+    with:
+      ref: ${{ inputs.tag }}
+    secrets: inherit
