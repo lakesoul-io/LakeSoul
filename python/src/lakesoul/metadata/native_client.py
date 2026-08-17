@@ -272,6 +272,19 @@ class NativeMetadataClient:
             partition_info.snapshot,
         )
 
+    def get_data_files_of_single_partition(
+        self,
+        partition_info: PartitionInfo,
+    ) -> list[str]:
+        snapshot = [
+            (commit_id.high, commit_id.low) for commit_id in partition_info.snapshot
+        ]
+        return self._inner.get_data_files_of_single_partition(
+            partition_info.table_id,
+            partition_info.partition_desc,
+            snapshot,
+        )
+
     def get_arrow_schema_by_table_name(
         self,
         table_name: str,
@@ -382,13 +395,7 @@ class NativeMetadataClient:
             # )
         if not pk_cols:
             for partition in partition_infos:
-                data_files = []
-                data_commit_info_list = self.get_table_single_partition_data_info(
-                    partition
-                )
-                for data_commit_info in data_commit_info_list:
-                    for file_op in data_commit_info.file_ops:
-                        data_files.append(file_op.path)
+                data_files = self.get_data_files_of_single_partition(partition)
                 plan_partitions.append(
                     LakeSoulScanPlanPartition(
                         data_files,
@@ -403,17 +410,13 @@ class NativeMetadataClient:
             bucket_id_pattern = r".*_(\d+)(?:\..*)?$"
             for partition in partition_infos:
                 files = collections.defaultdict(list)
-                data_commit_info_list = self.get_table_single_partition_data_info(
-                    partition
-                )
-                for data_commit_info in data_commit_info_list:
-                    for file_op in data_commit_info.file_ops:
-                        match = re.search(bucket_id_pattern, file_op.path)
-                        if not match:
-                            raise ValueError(
-                                f"Cannot determine bucket id from file name {file_op.path}"
-                            )
-                        files[int(match.group(1))].append(file_op.path)
+                for path in self.get_data_files_of_single_partition(partition):
+                    match = re.search(bucket_id_pattern, path)
+                    if not match:
+                        raise ValueError(
+                            f"Cannot determine bucket id from file name {path}"
+                        )
+                    files[int(match.group(1))].append(path)
                 for bucket_id, bucket_files in files.items():
                     plan_partitions.append(
                         LakeSoulScanPlanPartition(
@@ -449,9 +452,6 @@ class NativeMetadataClient:
                     break
             if filtered:
                 continue
-            data_commit_info_list = self.get_table_single_partition_data_info(partition)
-            for data_commit_info in data_commit_info_list:
-                for file_op in data_commit_info.file_ops:
-                    data_files.append(file_op.path)
+            data_files.extend(self.get_data_files_of_single_partition(partition))
         _, pk_cols = self.get_partition_and_pk_cols(table_info)
         return data_files, pk_cols

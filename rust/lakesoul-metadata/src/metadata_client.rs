@@ -8,7 +8,10 @@ use std::fmt::{Debug, Formatter};
 use std::ops::DerefMut;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::{collections::HashMap, env, fs, vec};
+use std::{
+    collections::{HashMap, HashSet},
+    env, fs, vec,
+};
 
 use postgres::Config;
 use prost::Message;
@@ -1010,18 +1013,7 @@ impl MetaDataClient {
         let data_commit_info_list = self
             .get_data_commit_info_of_single_partition(partition_info)
             .await?;
-        // let data_commit_info_list = Vec::<DataCommitInfo>::new();
-        let data_file_list = data_commit_info_list
-            .iter()
-            .flat_map(|data_commit_info| {
-                data_commit_info
-                    .file_ops
-                    .iter()
-                    .map(|file_op| file_op.path.clone())
-                    .collect::<Vec<String>>()
-            })
-            .collect::<Vec<String>>();
-        Ok(data_file_list)
+        Ok(active_data_files(&data_commit_info_list))
     }
 
     async fn get_data_commit_info_of_single_partition(
@@ -1232,6 +1224,29 @@ pub fn table_path_id_from_table_info(table_info: &TableInfo) -> TablePathId {
     }
 }
 
+fn active_data_files(commits: &[DataCommitInfo]) -> Vec<String> {
+    let mut deleted = HashSet::new();
+    let mut active = Vec::new();
+
+    for file_op in commits
+        .iter()
+        .flat_map(|commit| commit.file_ops.iter())
+        .rev()
+    {
+        match file_op.file_op() {
+            entity::FileOp::Del => {
+                deleted.insert(&file_op.path);
+            }
+            entity::FileOp::Add if !deleted.contains(&file_op.path) => {
+                active.push(file_op.path.clone());
+            }
+            entity::FileOp::Add => {}
+        }
+    }
+    active.reverse();
+    active
+}
+
 fn data_commit_info_list_from_files(
     table_info: &TableInfo,
     files: Vec<DataFileInfo>,
@@ -1372,5 +1387,43 @@ mod tests {
         assert_eq!(commits[0].timestamp, 123);
         assert_eq!(commits[0].domain, "public");
         assert!(commits.iter().all(|commit| commit.commit_id.is_some()));
+    }
+
+    #[test]
+    fn active_data_files_apply_operations_in_snapshot_order() {
+        let file_op = |path: &str, operation: entity::FileOp| entity::DataFileOp {
+            path: path.to_string(),
+            file_op: operation.into(),
+            ..Default::default()
+        };
+        let commits = vec![
+            DataCommitInfo {
+                file_ops: vec![
+                    file_op("replaced.parquet", entity::FileOp::Add),
+                    file_op("readded.parquet", entity::FileOp::Add),
+                    file_op("active.parquet", entity::FileOp::Add),
+                ],
+                ..Default::default()
+            },
+            DataCommitInfo {
+                file_ops: vec![
+                    file_op("replaced.parquet", entity::FileOp::Del),
+                    file_op("readded.parquet", entity::FileOp::Del),
+                ],
+                ..Default::default()
+            },
+            DataCommitInfo {
+                file_ops: vec![
+                    file_op("readded.parquet", entity::FileOp::Add),
+                    file_op("new.parquet", entity::FileOp::Add),
+                ],
+                ..Default::default()
+            },
+        ];
+
+        assert_eq!(
+            active_data_files(&commits),
+            vec!["active.parquet", "readded.parquet", "new.parquet"]
+        );
     }
 }

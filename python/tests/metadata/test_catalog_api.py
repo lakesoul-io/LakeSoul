@@ -7,7 +7,13 @@ import pyarrow as pa
 
 import lakesoul.catalog as catalog_module
 from lakesoul.catalog import LakeSoulCatalog, LakeSoulTable, PostgresMetadataConfig
-from lakesoul.metadata import LakeSoulScanPlanPartition, TableInfo
+from lakesoul.metadata import (
+    LakeSoulScanPlanPartition,
+    NativeMetadataClient,
+    PartitionInfo,
+    TableInfo,
+    Uuid,
+)
 
 
 class DummyNativeClient:
@@ -334,3 +340,51 @@ def test_scan_resolves_catalog_context_to_scan_config() -> None:
         "analytics",
     )
     assert client.last_schema_request == ("events", "analytics", True)
+
+
+def test_native_scan_plan_uses_active_files_from_rust_client() -> None:
+    class NativeInner:
+        request: tuple[str, str, list[tuple[int, int]]] | None = None
+
+        def get_data_files_of_single_partition(
+            self,
+            table_id: str,
+            partition_desc: str,
+            snapshot: list[tuple[int, int]],
+        ) -> list[str]:
+            self.request = (table_id, partition_desc, snapshot)
+            return ["active.parquet", "readded.parquet", "new.parquet"]
+
+    inner = NativeInner()
+
+    class ScanPlanClient(NativeMetadataClient):
+        def __init__(self) -> None:
+            self._inner = inner
+
+        def get_table_info_by_name(self, table_name: str, namespace: str) -> TableInfo:
+            return _table_info(
+                table_name=table_name,
+                table_namespace=namespace,
+                partitions="part;",
+            )
+
+        def get_all_partition_info(self, table_id: str) -> list[PartitionInfo]:
+            return [
+                PartitionInfo(
+                    table_id=table_id,
+                    partition_desc="part=north",
+                    snapshot=[Uuid(high=1, low=2)],
+                )
+            ]
+
+    scan_plan = ScanPlanClient().get_scan_plan_partitions(
+        "events", namespace="analytics"
+    )
+
+    assert len(scan_plan) == 1
+    assert scan_plan[0].files == [
+        "active.parquet",
+        "readded.parquet",
+        "new.parquet",
+    ]
+    assert inner.request == ("table-id", "part=north", [(1, 2)])
