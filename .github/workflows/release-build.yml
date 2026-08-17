@@ -31,16 +31,36 @@ on:
 permissions:
   contents: read
 
+env:
+  LAKESOUL_PG_URL: jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified
+  LAKESOUL_PG_USERNAME: lakesoul_test
+  LAKESOUL_PG_PASSWORD: lakesoul_test
+  PGPASSWORD: lakesoul_test
+  MAVEN_OPTS: -Xmx8g
+
 jobs:
   validate-release:
+    name: Versions, coordinates, and policy
     runs-on: ubuntu-24.04
     steps:
       - name: Check out release commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+      - name: Set up JDK 11
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          java-version: "11"
+          distribution: temurin
+          cache: maven
       - name: Validate synchronized versions
         run: python script/release.py check
+      - name: Validate effective Maven coordinates
+        run: |
+          mvn -q -B help:effective-pom -Doutput=/tmp/lakesoul-effective-pom.xml
+          python script/verify_release_artifacts.py coordinates /tmp/lakesoul-effective-pom.xml
+      - name: Validate release license, headers, and dependency policy
+        run: python script/check_release_policy.py
       - name: Validate production release gate
         if: inputs.publish
         env:
@@ -80,7 +100,78 @@ jobs:
             exit 1
           }
 
+  rust-quality:
+    name: Rust format, clippy, and tests
+    needs: validate-release
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:14.5
+        env:
+          POSTGRES_PASSWORD: lakesoul_test
+          POSTGRES_USER: lakesoul_test
+          POSTGRES_DB: lakesoul_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: true
+      - name: Check out release commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable action
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - name: Install protoc
+        uses: arduino/setup-protoc@a8b67ba40b37d35169e222f3bb352603327985b6 # v2 branch
+        with:
+          version: "23.x"
+          repo-token: ${{ github.token }}
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ". -> rust/target"
+          key: release-gates
+      - name: Install PostgreSQL client
+        run: sudo apt-get update -q && sudo apt-get install -y postgresql-client
+      - name: Initialize metadata database
+        run: ./script/meta_init_for_local_test.sh -j 1
+      - name: Check Rust formatting
+        run: cargo -q fmt --all --check
+      - name: Run Clippy with warnings denied
+        env:
+          RUSTFLAGS: -Dwarnings
+        run: >-
+          cargo -q clippy --no-deps --all-features
+          -p lakesoul-io-c -p lakesoul-metadata-c -p lakesoul-python -p lakesoul-io
+      - name: Run Rust tests with legacy merge
+        env:
+          RUST_BACKTRACE: full
+          RUST_LOG: info
+        run: cargo -q test --profile test-fast --lib --bins --tests --jobs 2
+      - name: Run Rust tests with v2 merge
+        env:
+          LAKESOUL_IO_USE_V2_MERGE: "true"
+          RUST_BACKTRACE: full
+          RUST_LOG: info
+        run: cargo -q test --profile test-fast --lib --bins --tests --jobs 2
+
   build-native-linux-x86-64:
+    name: Build Linux x86_64 native libraries
     needs: validate-release
     runs-on: ubuntu-24.04
     steps:
@@ -121,7 +212,8 @@ jobs:
             rust/target/release/liblakesoul_metadata_c.so
           if-no-files-found: error
 
-  build-core:
+  core-tests:
+    name: Maven, Python, and signed artifact dry run
     needs: [validate-release, build-native-linux-x86-64]
     runs-on: ubuntu-24.04
     services:
@@ -155,41 +247,267 @@ jobs:
         with:
           version: "23.x"
           repo-token: ${{ github.token }}
+      - name: Generate ephemeral artifact-signing key
+        run: |
+          cat > /tmp/release-signing-key <<'KEY'
+          Key-Type: RSA
+          Key-Length: 3072
+          Name-Real: LakeSoul Release Gate
+          Name-Email: release-gate@lakesoul.invalid
+          Expire-Date: 1d
+          %no-protection
+          %commit
+          KEY
+          gpg --batch --generate-key /tmp/release-signing-key
+          release_gpg_key="$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "sec" { print $5; exit }')"
+          test -n "$release_gpg_key"
+          printf 'RELEASE_GPG_KEY=%s\n' "$release_gpg_key" >> "$GITHUB_ENV"
       - name: Set up JDK 11 for Core reactor
         uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           java-version: "11"
           distribution: temurin
           cache: maven
-      - name: Build and test Core reactor except Presto
-        run: mvn -B clean install -pl "!:lakesoul-presto-0.296" -Pcross-build
+      - name: Build, test, and sign Core reactor except Presto
+        run: >-
+          mvn -B clean install -pl "!:lakesoul-presto-0.296"
+          -Pcross-build,release-sign-artifacts -DperformRelease=true
+          -Dgpg.keyname="$RELEASE_GPG_KEY" -Dgpg.passphrase=
       - name: Set up JDK 17 for Presto
         uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           java-version: "17"
           distribution: temurin
           cache: maven
-      - name: Build and test Presto
-        run: mvn -B verify -pl :lakesoul-presto-0.296 -Pcross-build
+      - name: Build, test, and sign Presto
+        run: >-
+          mvn -B verify -pl :lakesoul-presto-0.296 -Pcross-build,release-sign-artifacts
+          -DperformRelease=true -Dgpg.keyname="$RELEASE_GPG_KEY" -Dgpg.passphrase=
+      - name: Set up Python 3.10
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.10"
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          enable-cache: true
+          cache-suffix: release-core-python
+          cache-dependency-glob: |
+            python/pyproject.toml
+            python/uv.lock
+      - name: Build Python extension and run Core compatibility subset
+        working-directory: python
+        run: |
+          uv sync --python 3.10 --group dev
+          uv run maturin develop --release
+          uv run pytest tests/_lib tests/io tests/arrow tests/compat/test_harness.py
       - name: Verify packaged native libraries
         run: |
           python script/verify_native_jars.py \
             "lakesoul-spark/target/$(python script/get_jar_name.py lakesoul-spark)" \
             "lakesoul-flink/target/$(python script/get_jar_name.py lakesoul-flink)" \
             "lakesoul-presto/target/$(python script/get_jar_name.py lakesoul-presto)"
+      - name: Verify JARs, sources, Javadoc, and detached signatures
+        run: python script/verify_release_artifacts.py artifacts --signatures
       - name: Upload dry-run release JARs
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: core-release-jars
           path: |
+            lakesoul-common/target/lakesoul-common-*.jar
+            native-io/lakesoul-io-java/target/lakesoul-io-java-*.jar
             lakesoul-spark/target/lakesoul-spark-3.5_2.12-*.jar
             lakesoul-flink/target/lakesoul-flink-1.20_2.12-*.jar
             lakesoul-presto/target/lakesoul-presto-0.296-*.jar
           if-no-files-found: error
 
+  connector-e2e-and-recovery:
+    name: Spark, Flink, Presto E2E and format recovery
+    needs: [validate-release, build-native-linux-x86-64]
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:14.5
+        env:
+          POSTGRES_PASSWORD: lakesoul_test
+          POSTGRES_USER: lakesoul_test
+          POSTGRES_DB: lakesoul_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: true
+      - name: Check out release commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Download Linux x86_64 native libraries
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: lakesoul-native-linux-x86-64
+          path: rust/target/release
+      - name: Install PostgreSQL client
+        run: sudo apt-get update -q && sudo apt-get install -y postgresql-client
+      - name: Initialize metadata database
+        run: ./script/meta_init_for_local_test.sh -j 2
+      - name: Install protoc
+        uses: arduino/setup-protoc@a8b67ba40b37d35169e222f3bb352603327985b6 # v2 branch
+        with:
+          version: "23.x"
+          repo-token: ${{ github.token }}
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable action
+        with:
+          toolchain: stable
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ". -> rust/target"
+          env-vars: JAVA_HOME
+      - name: Set up JDK 11 for Spark and Flink
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          java-version: "11"
+          distribution: temurin
+          cache: maven
+      - name: Build Spark and Flink E2E artifacts
+        run: >-
+          mvn -q -B install -pl :lakesoul-spark-3.5_2.12,:lakesoul-flink-1.20_2.12
+          -am -Pcross-build -DskipTests --file pom.xml
+      - name: Set up Python 3.10
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.10"
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          enable-cache: true
+          cache-suffix: release-e2e
+          cache-dependency-glob: |
+            python/pyproject.toml
+            python/uv.lock
+      - name: Build Python compatibility environment
+        working-directory: python
+        run: |
+          uv sync --python 3.10 --group dev --extra pandas --extra ray --extra daft --extra pyspark
+          uv run maturin develop --release
+      - name: Run Spark and Flink cross-engine E2E matrix
+        working-directory: python
+        env:
+          LAKESOUL_SOURCE_DIR: ${{ github.workspace }}
+          PYTHONPATH: tests:src
+          MAVEN_OPTS: -Xmx4g
+        run: >-
+          .venv/bin/python -m compat.run_matrix --mode full --cases smoke --engines all
+          --storage file:///tmp/lakesoul-release-compat/storage
+          --output-dir "${{ github.workspace }}/compatibility-artifacts/e2e"
+      - name: Run Parquet and Vortex compatibility matrix
+        working-directory: python
+        env:
+          LAKESOUL_SOURCE_DIR: ${{ github.workspace }}
+          PYTHONPATH: tests:src
+          MAVEN_OPTS: -Xmx4g
+        run: >-
+          .venv/bin/python -m compat.run_matrix --mode full
+          --cases format_parquet,format_vortex,format_vortex_compact
+          --writers pyarrow --readers spark,flink,pyarrow,datafusion
+          --storage file:///tmp/lakesoul-release-compat/storage
+          --output-dir "${{ github.workspace }}/compatibility-artifacts/formats"
+          --run-id release-formats
+      - name: Back up metadata and table files
+        run: |
+          pg_dump -h 127.0.0.1 -U lakesoul_test -Fc -f compatibility-artifacts/metadata.dump lakesoul_test
+          tar -C /tmp/lakesoul-release-compat -cf compatibility-artifacts/table-files.tar storage
+      - name: Destroy and restore metadata and table files
+        run: |
+          dropdb -h 127.0.0.1 -U lakesoul_test lakesoul_test
+          createdb -h 127.0.0.1 -U lakesoul_test lakesoul_test
+          rm -rf /tmp/lakesoul-release-compat/storage
+          pg_restore -h 127.0.0.1 -U lakesoul_test --exit-on-error -d lakesoul_test compatibility-artifacts/metadata.dump
+          tar -C /tmp/lakesoul-release-compat -xf compatibility-artifacts/table-files.tar
+      - name: Verify restored Parquet and Vortex tables
+        working-directory: python
+        env:
+          LAKESOUL_SOURCE_DIR: ${{ github.workspace }}
+          PYTHONPATH: tests:src
+        run: >-
+          .venv/bin/python -m compat.run_matrix
+          --read-manifest "${{ github.workspace }}/compatibility-artifacts/formats/manifest.json"
+          --readers pyarrow,datafusion
+          --output-dir "${{ github.workspace }}/compatibility-artifacts/recovery"
+      - name: Set up JDK 17 for Presto E2E
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          java-version: "17"
+          distribution: temurin
+          cache: maven
+      - name: Run Presto E2E tests
+        run: >-
+          mvn -B verify -pl :lakesoul-presto-0.296 -Pcross-build
+          -Dtest=LakeSoulSmokeTest,LakeSoulStorageTest
+          -Dsurefire.failIfNoSpecifiedTests=false
+      - name: Upload compatibility and recovery evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-compatibility-recovery
+          path: compatibility-artifacts
+          retention-days: 30
+          if-no-files-found: error
+
+  metadata-migration:
+    name: Metadata migration and PostgreSQL recovery
+    needs: validate-release
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:14.5
+        env:
+          POSTGRES_PASSWORD: lakesoul_test
+          POSTGRES_USER: lakesoul_test
+          POSTGRES_DB: lakesoul_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - name: Check out release history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Install PostgreSQL client
+        run: sudo apt-get update -q && sudo apt-get install -y postgresql-client
+      - name: Test v3 migration and backup recovery
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: "5432"
+          PGUSER: lakesoul_test
+          LAKESOUL_MIGRATION_BASELINE: v3.0.0
+        run: script/test_release_metadata.sh
+
   publish-maven-central:
     if: inputs.publish
-    needs: [validate-release, build-core, build-native-linux-x86-64]
+    needs:
+      - validate-release
+      - rust-quality
+      - build-native-linux-x86-64
+      - core-tests
+      - connector-e2e-and-recovery
+      - metadata-migration
     runs-on: ubuntu-24.04
     environment: maven-central-production
     services:

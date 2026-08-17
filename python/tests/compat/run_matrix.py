@@ -38,30 +38,67 @@ def main(argv: list[str] | None = None) -> int:
     python_dir = repo_root / "python"
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    run_id = args.run_id or uuid.uuid4().hex[:10]
 
+    source_manifest = None
+    if args.read_manifest:
+        source_manifest = json.loads(
+            Path(args.read_manifest).read_text(encoding="utf-8")
+        )
+    storage = source_manifest["storage"] if source_manifest else args.storage
+    run_id = (
+        source_manifest["run_id"]
+        if source_manifest
+        else args.run_id or uuid.uuid4().hex[:10]
+    )
     ctx = CompatContext(
         repo_root=repo_root,
         python_dir=python_dir,
         output_dir=output_dir,
-        storage_uri=args.storage.rstrip("/"),
+        storage_uri=storage.rstrip("/"),
         run_id=run_id,
-        object_store_options=_object_store_options(args.storage),
+        object_store_options=_object_store_options(storage),
     )
     engines = engine_registry()
     selected_writers, selected_readers = _resolve_engines(args, engines)
-    selected_cases = _resolve_cases(args.cases, args.mode)
+    selected_cases = (
+        list(source_manifest["cases"])
+        if source_manifest
+        else _resolve_cases(args.cases, args.mode)
+    )
     records: list[MatrixRecord] = []
     written: dict[tuple[str, str], TableRef] = {}
 
     try:
-        write_tasks, read_tasks = _plan_tasks(
-            args.mode,
-            selected_cases,
-            selected_writers,
-            selected_readers,
-            engines,
-        )
+        if source_manifest:
+            for record in source_manifest["records"]:
+                if record["operation"] != "write" or record["status"] != "passed":
+                    continue
+                ref = TableRef(
+                    case_name=record["case"],
+                    writer=record["writer"],
+                    table_name=record["table_name"],
+                    path=record["table_path"],
+                )
+                written[(ref.writer, ref.case_name)] = ref
+            if not written:
+                raise SystemExit(
+                    "recovery manifest contains no successful table writes"
+                )
+            write_tasks: list[tuple[str, str]] = []
+            read_tasks = [
+                (writer_name, reader_name, case_name)
+                for writer_name, case_name in sorted(written)
+                for reader_name in selected_readers
+            ]
+            selected_writers = sorted({writer for writer, _ in written})
+        else:
+            write_tasks, read_tasks = _plan_tasks(
+                args.mode,
+                selected_cases,
+                selected_writers,
+                selected_readers,
+                engines,
+            )
 
         for writer_name, case_name in write_tasks:
             case = CASES[case_name]
@@ -85,11 +122,14 @@ def main(argv: list[str] | None = None) -> int:
 
     manifest = {
         "run_id": run_id,
-        "mode": args.mode,
-        "storage": args.storage,
+        "mode": "recovery" if source_manifest else args.mode,
+        "storage": storage,
         "writers": selected_writers,
         "readers": selected_readers,
         "cases": selected_cases,
+        "source_manifest": str(Path(args.read_manifest).resolve())
+        if source_manifest
+        else None,
         "records": [asdict(record) for record in records],
     }
     manifest_file = output_dir / "manifest.json"
@@ -336,6 +376,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--output-dir", default="/tmp/lakesoul-compat-artifacts")
     parser.add_argument("--run-id")
+    parser.add_argument(
+        "--read-manifest",
+        help="read and verify tables recorded by a previous compatibility run",
+    )
     parser.add_argument(
         "--repo-root",
         default=str(Path(__file__).resolve().parents[3]),

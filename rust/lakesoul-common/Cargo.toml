@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
 [package]
 name = "lakesoul-common"
 authors.workspace = true
