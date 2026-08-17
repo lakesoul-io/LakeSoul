@@ -113,6 +113,33 @@ INSERT OVERWRITE TABLE ...
 
 before upgrading. Treat any job whose input omits existing range partitions as behavior-changing.
 
+### 3.4 Presto name matching
+
+The `4.0.0` Presto connector adds the catalog property:
+
+```properties
+case-sensitive-name-matching=false
+```
+
+The default is `false`. Schema, table, and exposed column identifiers are normalized to lower case, while schema and table lookup resolves the normalized identifier to the physical LakeSoul name without regard to case. If multiple physical schemas or tables differ only by case, lookup fails instead of selecting one arbitrarily.
+
+Deployments that intentionally use case-distinct names must set:
+
+```properties
+case-sensitive-name-matching=true
+```
+
+With that setting, schema and table lookup requires the exact physical name. Inventory case-only name collisions before the upgrade and verify quoted and unquoted application queries against the chosen setting.
+
+### 3.5 Presto timestamp mapping
+
+The `4.0.0` Presto connector maps Arrow timestamp fields, including fields carrying an Arrow timezone annotation, to Presto `TIMESTAMP`. LakeSoul `3.0.0` exposed timezone-annotated Arrow timestamp fields as `TIMESTAMP WITH TIME ZONE`; applications must not rely on that old type mapping after the upgrade.
+
+Second-, millisecond-, and microsecond-based Arrow timestamp vectors are converted to Presto's millisecond representation. Sub-millisecond digits in microsecond values are truncated. The Arrow timezone annotation is not preserved as a Presto `TIMESTAMP WITH TIME ZONE` value on this path.
+
+Before upgrading, verify application predicates, result serialization, and comparisons for representative timestamps, especially values with non-zero microseconds or timezone-dependent interpretation. Treat a requirement for timezone-preserving types or precision finer than milliseconds as unsupported by this connector version rather than inferring compatibility from `3.0.0`.
+
+
 ## 4. Pre-upgrade checks
 
 Complete and record every check before stopping the old deployment.
@@ -124,10 +151,12 @@ Complete and record every check before stopping the old deployment.
 3. Verify Spark uses `3.5.8` and Scala `2.12.15`.
 4. Verify Flink uses `1.20.0`, Flink CDC uses `3.5.0`, and its JVM is Java 11 or later.
 5. Verify Presto `0.296` will use Java 17.
-6. Remove every old Maven coordinate and every duplicate LakeSoul JAR from deployment manifests.
-7. Identify all writers, streaming queries, CDC jobs, compaction tasks, cleanup tasks, and metadata-management processes. The backup cannot begin until all of them are stopped.
-8. Review every range-partitioned overwrite for the semantic change in [Section 3.3](#33-range-partitioned-overwrite).
-9. Confirm enough PostgreSQL and table-storage capacity for an immutable backup plus an isolated restore.
+6. Select and record the Presto `case-sensitive-name-matching` setting, and inventory schemas and tables whose names differ only by case.
+7. Verify representative Presto timestamp columns and queries against the mapping in [Section 3.5](#35-presto-timestamp-mapping).
+8. Remove every old Maven coordinate and every duplicate LakeSoul JAR from deployment manifests.
+9. Identify all writers, streaming queries, CDC jobs, compaction tasks, cleanup tasks, and metadata-management processes. The backup cannot begin until all of them are stopped.
+10. Review every range-partitioned overwrite for the semantic change in [Section 3.3](#33-range-partitioned-overwrite).
+11. Confirm enough PostgreSQL and table-storage capacity for an immutable backup plus an isolated restore.
 
 Useful runtime commands include:
 
