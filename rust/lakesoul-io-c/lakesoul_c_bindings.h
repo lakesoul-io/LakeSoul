@@ -93,6 +93,11 @@ extern "C" {
 /// The returned pointer remains valid for the lifetime of the process and must not be freed.
 const char *lakesoul_io_version();
 
+/// Return the LakeSoul native build identity.
+///
+/// The returned pointer remains valid for the lifetime of the process and must not be freed.
+const char *lakesoul_io_build_info();
+
 /// Create a new [`IOConfigBuilder`]
 IOConfigBuilder *new_lakesoul_io_config_builder();
 
