@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,12 @@ class TableRef:
     path: str
 
 
+@dataclass(frozen=True, slots=True)
+class WriteEvidence:
+    files: tuple[str, ...]
+    physical_formats: tuple[str, ...]
+
+
 @dataclass(slots=True)
 class CompatContext:
     repo_root: Path
@@ -37,10 +44,12 @@ class CompatContext:
     storage_uri: str
     run_id: str
     object_store_options: dict[str, str]
+    forced_physical_format: str | None = None
 
     def table_ref(self, case: CaseSpec, writer: str) -> TableRef:
-        safe_writer = writer.replace("-", "_")
-        table_name = f"compat_{self.run_id}_{safe_writer}_{case.name}"
+        safe_run_id = re.sub(r"[^A-Za-z0-9_]+", "_", self.run_id)
+        safe_writer = re.sub(r"[^A-Za-z0-9_]+", "_", writer)
+        table_name = f"compat_{safe_run_id}_{safe_writer}_{case.name}"
         return TableRef(
             case_name=case.name,
             writer=writer,
@@ -70,7 +79,9 @@ class Engine:
         if name is not None:
             self.name = name
 
-    def write_case(self, case: CaseSpec, ref: TableRef, ctx: CompatContext) -> None:
+    def write_case(
+        self, case: CaseSpec, ref: TableRef, ctx: CompatContext
+    ) -> WriteEvidence | None:
         raise NotImplementedError
 
     def read_case(self, case: CaseSpec, ref: TableRef, ctx: CompatContext) -> pa.Table:
@@ -83,7 +94,9 @@ class Engine:
 class PyArrowEngine(Engine):
     name = "pyarrow"
 
-    def write_case(self, case: CaseSpec, ref: TableRef, ctx: CompatContext) -> None:
+    def write_case(
+        self, case: CaseSpec, ref: TableRef, ctx: CompatContext
+    ) -> WriteEvidence:
         from lakesoul import LakeSoulCatalog
 
         _remove_local_table_path(ref.path)
@@ -99,8 +112,25 @@ class PyArrowEngine(Engine):
             primary_keys=case.primary_keys,
             hash_bucket_num=_python_hash_bucket_num(case),
         )
+        files = []
+        physical_formats = []
+        requested_format = ctx.forced_physical_format or case.physical_format
+        expected_format = requested_format or "vortex-compact"
         for batch in case.batches:
-            table.write_arrow(batch, format=case.physical_format)
+            if requested_format is None:
+                result = table.write_arrow(batch)
+            else:
+                result = table.write_arrow(batch, format=requested_format)
+            for file_info in result.files:
+                actual_format = file_info.other_info.get("physical_format")
+                if actual_format != expected_format:
+                    raise AssertionError(
+                        f"writer reported physical format {actual_format!r}, "
+                        f"expected {expected_format!r}"
+                    )
+                files.append(file_info.path)
+                physical_formats.append(actual_format)
+        return WriteEvidence(tuple(files), tuple(physical_formats))
 
     def read_case(self, case: CaseSpec, ref: TableRef, ctx: CompatContext) -> pa.Table:
         from lakesoul import LakeSoulCatalog
@@ -154,6 +184,8 @@ class SparkEngine(Engine):
                         "hashPartitions", ",".join(case.primary_keys)
                     )
                 writer.save(spark_path)
+            elif case.replace_partitions:
+                df.write.format("lakesoul").mode("overwrite").save(spark_path)
             elif case.primary_keys:
                 LakeSoulTable.forPath(spark, spark_path).upsert(df)
             else:
@@ -185,6 +217,8 @@ class SparkEngine(Engine):
             .master("local[2]")
             .config("spark.ui.enabled", "false")
             .config("spark.sql.shuffle.partitions", "2")
+            .config("spark.pyspark.python", sys.executable)
+            .config("spark.pyspark.driver.python", sys.executable)
             .config("spark.sql.session.timeZone", "UTC")
             .config(
                 "spark.sql.extensions",
@@ -197,6 +231,11 @@ class SparkEngine(Engine):
             .config("spark.sql.warehouse.dir", str(warehouse_dir))
             .config("spark.jars", ",".join(jars))
         )
+        if ctx.forced_physical_format:
+            builder = builder.config(
+                "spark.dmetasoul.lakesoul.native.io.physical_format",
+                ctx.forced_physical_format,
+            )
         for key, value in _spark_object_store_configs(ctx.object_store_options).items():
             builder = builder.config(key, value)
         self._spark = builder.getOrCreate()
