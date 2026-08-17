@@ -49,10 +49,10 @@ https://dlcdn.apache.org/spark/spark-3.5.8/spark-3.5.8-bin-without-hadoop.tgz
 
 LakeSoul 发布 jar 包可以从 GitHub Releases 页面下载：https://github.com/lakesoul-io/LakeSoul/releases 。下载后请将 Jar 包放到 Spark 安装目录下的 jars 目录中：
 ```bash
-wget https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-spark-3.5-VAR::VERSION.jar -P $SPARK_HOME/jars
+wget https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-spark-3.5_2.12-VAR::VERSION.jar -P $SPARK_HOME/jars
 ```
 
-如果访问 Github 有问题，也可以从如下链接下载：https://mirrors.huaweicloud.com/repository/maven/com/dmetasoul/lakesoul-spark/3.5-VAR::VERSION/lakesoul-spark-3.5-VAR::VERSION.jar
+如果访问 Github 有问题，也可以从如下链接下载：https://mirrors.huaweicloud.com/repository/maven/com/dmetasoul/lakesoul-spark-3.5_2.12/VAR::VERSION/lakesoul-spark-3.5_2.12-VAR::VERSION.jar
 
 :::tip
 从 2.1.0 版本起，LakeSoul 自身的依赖已经通过 shade 方式打包到一个 jar 包中。之前的版本是多个 jar 包以 tar.gz 压缩包的形式发布。
@@ -99,9 +99,9 @@ spark.sql.catalog.lakesoul | org.apache.spark.sql.lakesoul.catalog.LakeSoulCatal
 spark.sql.defaultCatalog | lakesoul
 
 ### 1.4 Flink 本地环境搭建
-以当前发布最新版本为例，LakeSoul Flink jar 包下载地址为：https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-1.20-VAR::VERSION.jar
+以当前发布最新版本为例，LakeSoul Flink jar 包下载地址为：https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-1.20_2.12-VAR::VERSION.jar
 
-如果访问 Github 有问题，也可以从如下链接下载：https://mirrors.huaweicloud.com/repository/maven/com/dmetasoul/lakesoul-flink/1.20-VAR::VERSION/lakesoul-flink-1.20-VAR::VERSION.jar
+如果访问 Github 有问题，也可以从如下链接下载：https://mirrors.huaweicloud.com/repository/maven/com/dmetasoul/lakesoul-flink-1.20_2.12/VAR::VERSION/lakesoul-flink-1.20_2.12-VAR::VERSION.jar
 
 最新版本支持 flink 集群为1.20 jar下载地址为：https://dlcdn.apache.org/flink/flink-1.20.1/flink-1.20.1-bin-scala_2.12.tgz
 
@@ -113,7 +113,7 @@ spark.sql.defaultCatalog | lakesoul
 export lakesoul_home=/opt/soft/pg.property && ./bin/start-cluster.sh
 
 # 启动 flink sql client
-export lakesoul_home=/opt/soft/pg.property && ./bin/sql-client.sh embedded -j lakesoul-flink-1.20-VAR::VERSION.jar
+export lakesoul_home=/opt/soft/pg.property && ./bin/sql-client.sh embedded -j lakesoul-flink-1.20_2.12-VAR::VERSION.jar
 ```
 
 #### 1.4.2 将数据写入对象存储服务
@@ -236,7 +236,7 @@ docker run --net lakesoul-docker-compose-env_default --rm -ti \
     -v $(pwd)/lakesoul.properties:/opt/spark/work-dir/lakesoul.properties \
     --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/spark:3.5.8-py310-hadoop334 \
     spark-shell \
-    --packages com.dmetasoul:lakesoul-spark:3.5-3.0.0 \
+    --packages com.dmetasoul:lakesoul-spark-3.5_2.12:VAR::VERSION \
     --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension \
     --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog \
     --conf spark.sql.defaultCatalog=lakesoul \

@@ -126,7 +126,7 @@ jobs:
       - name: Build native libraries
         run: cargo -q build --release -p lakesoul-io-c -p lakesoul-metadata-c
       - name: Build Spark and Flink test artifacts
-        run: mvn -q -B package -pl lakesoul-spark,lakesoul-flink -am -Pcross-build -DskipTests --file pom.xml
+        run: mvn -q -B package -pl :lakesoul-spark-3.5_2.12,:lakesoul-flink-1.20_2.12 -am -Pcross-build -DskipTests --file pom.xml
       - name: Build Python package
         working-directory: python
         run: |
@@ -277,7 +277,7 @@ jobs:
       - name: Build native libraries
         run: cargo -q build --release -p lakesoul-io-c -p lakesoul-metadata-c
       - name: Build Spark and Flink test artifacts
-        run: mvn -q -B package -pl lakesoul-spark,lakesoul-flink -am -Pcross-build -DskipTests --file pom.xml
+        run: mvn -q -B package -pl :lakesoul-spark-3.5_2.12,:lakesoul-flink-1.20_2.12 -am -Pcross-build -DskipTests --file pom.xml
       - name: Build Python package
         working-directory: python
         run: |

@@ -46,7 +46,7 @@ trigger 和 pg 函数在数据库初始化的时候已经配置，默认压缩�
     --conf "spark.executor.extraJavaOptions=-XX:MaxDirectMemorySize=4G" \
     --conf "spark.executor.memoryOverhead=3g" \
     --class com.dmetasoul.lakesoul.spark.compaction.NewCompactionTask  \
-    jars/lakesoul-spark-3.5-VAR::VERSION.jar 
+    jars/lakesoul-spark-3.5_2.12-VAR::VERSION.jar 
     --threadpool.size=10
     --database=test
 ```

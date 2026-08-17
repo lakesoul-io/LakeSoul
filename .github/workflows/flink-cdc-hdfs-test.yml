@@ -88,7 +88,7 @@ jobs:
           mkdir -p rust/target/release
           cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so rust/target/release
           cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so rust/target/release
-          MAVEN_OPTS="-Xmx4000m" mvn -B install -f pom.xml -pl "!lakesoul-presto" -Pcross-build -DskipTests
+          MAVEN_OPTS="-Xmx4000m" mvn -B install -f pom.xml -pl "!:lakesoul-presto-0.296" -Pcross-build -DskipTests
       - name: Set up JDK 17
         uses: actions/setup-java@v5
         with:
@@ -97,7 +97,7 @@ jobs:
           cache: maven
       - name: Build LakeSoul Presto with Java 17
         run: |
-          MAVEN_OPTS="-Xmx4000m" mvn -B package -f pom.xml -pl lakesoul-presto -Pcross-build -DskipTests -e
+          MAVEN_OPTS="-Xmx4000m" mvn -B package -f pom.xml -pl :lakesoul-presto-0.296 -Pcross-build -DskipTests -e
       - name: Get jar names
         run: |
           {

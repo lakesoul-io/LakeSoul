@@ -52,7 +52,7 @@ After unpacking spark package, you could find LakeSoul distribution jar from htt
 wget https://dlcdn.apache.org/spark/spark-3.5.8/spark-3.5.8-bin-hadoop3.tgz
 tar xf spark-3.5.8-bin-hadoop3.tgz
 export SPARK_HOME=${PWD}/spark-3.5.8-bin-hadoop3
-wget https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-spark-VAR::VERSION-spark-3.5.jar -P $SPARK_HOME/jars
+wget https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-spark-3.5_2.12-VAR::VERSION.jar -P $SPARK_HOME/jars
 ```
 
 :::tip
@@ -91,7 +91,7 @@ spark.sql.catalog.lakesoul | org.apache.spark.sql.lakesoul.catalog.LakeSoulCatal
 spark.sql.defaultCatalog | lakesoul | set default catalog for spark
 
 ### 1.5 Setup Flink environment
-Download LakeSoul Flink jar: https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-1.20-VAR::VERSION.jar
+Download LakeSoul Flink jar: https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-1.20_2.12-VAR::VERSION.jar
 
 Download Flink: https://dlcdn.apache.org/flink/flink-1.20.1/flink-1.20.1-bin-scala_2.12.tgz
 
@@ -101,7 +101,7 @@ Enter the Flink installation directory and execute the following command:
 ```shell
 export lakesoul_home=/opt/soft/pg.property && ./bin/start-cluster.sh
 
-export lakesoul_home=/opt/soft/pg.property && ./bin/sql-client.sh embedded -j lakesoul-flink-1.20-VAR::VERSION.jar
+export lakesoul_home=/opt/soft/pg.property && ./bin/sql-client.sh embedded -j lakesoul-flink-1.20_2.12-VAR::VERSION.jar
 ```
 
 #### 1.5.2 Write data to object storage service
@@ -219,7 +219,7 @@ docker run --net lakesoul-docker-compose-env_default --rm -ti \
     -v $(pwd)/lakesoul.properties:/opt/spark/work-dir/lakesoul.properties \
     --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/spark:3.5.8-py310-hadoop334 \
     spark-shell \
-    --packages com.dmetasoul:lakesoul-spark:spark-3.5-VAR::VERSION \
+    --packages com.dmetasoul:lakesoul-spark-3.5_2.12:VAR::VERSION \
     --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension \
     --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog \
     --conf spark.sql.defaultCatalog=lakesoul \
