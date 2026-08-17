@@ -134,9 +134,8 @@ def test_daft_int64_set_predicates_are_pushed_down(
     field = pc.field("p_partkey")
     if predicate_kind == "between":
         predicate = dataframe["p_partkey"].between(100, 500)
-        arrow_filter = (
-            (field >= _typed_scalar(100, pa.int64()))
-            & (field <= _typed_scalar(500, pa.int64()))
+        arrow_filter = (field >= _typed_scalar(100, pa.int64())) & (
+            field <= _typed_scalar(500, pa.int64())
         )
     else:
         predicate = dataframe["p_partkey"].is_in([100, 200, 300])
@@ -167,27 +166,18 @@ def test_daft_nested_and_or_not_filter_is_pushed_down() -> None:
     pytest.importorskip("daft")
     dataframe = _catalog().scan("part").to_daft()
     predicate = (
-        (
-            dataframe["p_partkey"].between(100, 500)
-            & (dataframe["p_size"] >= 10)
-        )
-        | (
-            dataframe["p_brand"].is_in(["Brand#11", "Brand#22"])
-            & ~(dataframe["p_size"] == 50)
-        )
+        dataframe["p_partkey"].between(100, 500) & (dataframe["p_size"] >= 10)
+    ) | (
+        dataframe["p_brand"].is_in(["Brand#11", "Brand#22"])
+        & ~(dataframe["p_size"] == 50)
     )
     arrow_filter = (
-        (
-            (pc.field("p_partkey") >= _typed_scalar(100, pa.int64()))
-            & (pc.field("p_partkey") <= _typed_scalar(500, pa.int64()))
-            & (pc.field("p_size") >= _typed_scalar(10, pa.int32()))
-        )
-        | (
-            pc.field("p_brand").isin(
-                pa.array(["Brand#11", "Brand#22"], type=pa.string())
-            )
-            & ~(pc.field("p_size") == _typed_scalar(50, pa.int32()))
-        )
+        (pc.field("p_partkey") >= _typed_scalar(100, pa.int64()))
+        & (pc.field("p_partkey") <= _typed_scalar(500, pa.int64()))
+        & (pc.field("p_size") >= _typed_scalar(10, pa.int32()))
+    ) | (
+        pc.field("p_brand").isin(pa.array(["Brand#11", "Brand#22"], type=pa.string()))
+        & ~(pc.field("p_size") == _typed_scalar(50, pa.int32()))
     )
     _assert_filter_pushdown_matches_arrow(
         dataframe,
@@ -220,14 +210,12 @@ def test_daft_date32_range_filter_is_pushed_down() -> None:
     """Cover common Date32 >= and < range comparisons."""
     pytest.importorskip("daft")
     dataframe = _catalog().scan("orders").to_daft()
-    predicate = (
-        (dataframe["o_orderdate"] >= date(1995, 1, 1))
-        & (dataframe["o_orderdate"] < date(1996, 1, 1))
+    predicate = (dataframe["o_orderdate"] >= date(1995, 1, 1)) & (
+        dataframe["o_orderdate"] < date(1996, 1, 1)
     )
     arrow_filter = (
-        (pc.field("o_orderdate") >= _typed_scalar(date(1995, 1, 1), pa.date32()))
-        & (pc.field("o_orderdate") < _typed_scalar(date(1996, 1, 1), pa.date32()))
-    )
+        pc.field("o_orderdate") >= _typed_scalar(date(1995, 1, 1), pa.date32())
+    ) & (pc.field("o_orderdate") < _typed_scalar(date(1996, 1, 1), pa.date32()))
     _assert_filter_pushdown_matches_arrow(
         dataframe,
         predicate,
@@ -280,9 +268,7 @@ def _daft_to_table(dataframe, schema: pa.Schema) -> pa.Table:
 
 
 def _decimal_scalar(value: str) -> pc.Expression:
-    return pc.scalar(
-        pa.scalar(decimal.Decimal(value), type=pa.decimal128(15, 2))
-    )
+    return pc.scalar(pa.scalar(decimal.Decimal(value), type=pa.decimal128(15, 2)))
 
 
 def _typed_scalar(value: object, arrow_type: pa.DataType) -> pc.Expression:
@@ -318,7 +304,4 @@ def _assert_filter_pushdown_matches_arrow(
 def _row_counter(table: pa.Table) -> Counter[tuple[object, ...]]:
     """Compare complete rows without relying on scan task output order."""
     names = table.schema.names
-    return Counter(
-        tuple(row[name] for name in names)
-        for row in table.to_pylist()
-    )
+    return Counter(tuple(row[name] for name in names) for row in table.to_pylist())

@@ -62,9 +62,7 @@ def _fake_table(schema: pa.Schema):
 
 
 def _micropartition(values: list[int]) -> MicroPartition:
-    return MicroPartition.from_pydict(
-        {"id": pa.array(values, type=pa.int64())}
-    )
+    return MicroPartition.from_pydict({"id": pa.array(values, type=pa.int64())})
 
 
 def test_normalize_table_accepts_daft_arrow_representation_changes() -> None:

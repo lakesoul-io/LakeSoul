@@ -53,9 +53,7 @@ def test_daft_write_basic_append_reads_back_with_arrow_and_daft(
 
         first_result = table.write_daft(daft.from_arrow(first))
         second_result = table.write_daft(daft.from_arrow(second))
-        actual_arrow, actual_daft = _read_with_arrow_and_daft(
-            catalog.scan(table_name)
-        )
+        actual_arrow, actual_daft = _read_with_arrow_and_daft(catalog.scan(table_name))
         expected = _rows(pa.concat_tables([first, second]))
 
         assert first_result.row_count == 2
@@ -149,9 +147,7 @@ def test_daft_write_mixed_case_create_uses_datafusion_case_folding(
         )
 
         table.write_daft(daft.from_arrow(data))
-        actual_arrow, actual_daft = _read_with_arrow_and_daft(
-            catalog.scan(table_name)
-        )
+        actual_arrow, actual_daft = _read_with_arrow_and_daft(catalog.scan(table_name))
         expected = _rows(data)
 
         assert table.name == table_name.lower()
@@ -202,9 +198,7 @@ def test_daft_write_pk_upsert_reads_latest_rows_with_arrow(tmp_path: Path) -> No
 
         table.write_daft(daft.from_arrow(first))
         table.write_daft(daft.from_arrow(second))
-        actual_arrow, actual_daft = _read_with_arrow_and_daft(
-            catalog.scan(table_name)
-        )
+        actual_arrow, actual_daft = _read_with_arrow_and_daft(catalog.scan(table_name))
         expected = [
             {"id": 1, "name": "alice", "value": 10},
             {"id": 2, "name": "bob-updated", "value": 200},

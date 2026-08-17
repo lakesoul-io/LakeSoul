@@ -50,7 +50,9 @@ def write_lakesoul(
 ) -> WriteResult:
     """Write a Daft DataFrame through Daft's distributed DataSink API."""
     _require_daft()
-    del results_buffer_size  # Kept for source compatibility; native sinks do not collect.
+    del (
+        results_buffer_size
+    )  # Kept for source compatibility; native sinks do not collect.
 
     from lakesoul.daft.sink import LakeSoulDataSink
 

@@ -96,7 +96,9 @@ class LakeSoulDataSink(DataSink[LakeSoulWriteResult]):
         # max_file_size therefore limits file rollover within that
         # micropartition; it does not accumulate across micropartitions.
         for micropartition in micropartitions:
-            arrow_table = _normalize_table(micropartition.to_arrow(), self._table.schema)
+            arrow_table = _normalize_table(
+                micropartition.to_arrow(), self._table.schema
+            )
             if arrow_table.num_rows == 0:
                 yield _to_daft_write_result(_empty_write_result())
                 continue
@@ -218,18 +220,14 @@ def _is_compatible_daft_type(
     expected: pa.DataType,
 ) -> bool:
     """Allow only Arrow representation changes introduced by Daft."""
-    actual_is_string = pa.types.is_string(actual) or pa.types.is_large_string(
-        actual
-    )
+    actual_is_string = pa.types.is_string(actual) or pa.types.is_large_string(actual)
     expected_is_string = pa.types.is_string(expected) or pa.types.is_large_string(
         expected
     )
     if actual_is_string and expected_is_string:
         return True
 
-    actual_is_binary = pa.types.is_binary(actual) or pa.types.is_large_binary(
-        actual
-    )
+    actual_is_binary = pa.types.is_binary(actual) or pa.types.is_large_binary(actual)
     expected_is_binary = pa.types.is_binary(expected) or pa.types.is_large_binary(
         expected
     )
@@ -254,9 +252,7 @@ def _merge_write_results(
     write_results: list[LakeSoulWriteResult],
 ) -> LakeSoulWriteResult:
     files = tuple(
-        file_info
-        for write_result in write_results
-        for file_info in write_result.files
+        file_info for write_result in write_results for file_info in write_result.files
     )
     partitions: dict[str, list[Any]] = {}
     for file_info in files:

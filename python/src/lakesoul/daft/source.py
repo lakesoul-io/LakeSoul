@@ -173,8 +173,7 @@ def _to_arrow_filter(
         return _SchemaAwarePyArrowExpressionVisitor(schema).visit(expression)
     except Exception as error:
         raise ValueError(
-            "Daft filter cannot be pushed down to the LakeSoul reader: "
-            f"{error}"
+            f"Daft filter cannot be pushed down to the LakeSoul reader: {error}"
         ) from error
 
 
@@ -235,9 +234,7 @@ class _SchemaAwarePyArrowExpressionVisitor(_PyArrowExpressionVisitor):
         arrow_expression = self.visit(expression)
         arrow_lower = self._visit_decimal_operand(field, lower)
         arrow_upper = self._visit_decimal_operand(field, upper)
-        return (arrow_lower <= arrow_expression) & (
-            arrow_expression <= arrow_upper
-        )
+        return (arrow_lower <= arrow_expression) & (arrow_expression <= arrow_upper)
 
     def visit_is_in(
         self,
@@ -358,9 +355,7 @@ def _partition_matches(
     values = {}
     for name, field in partition_fields.items():
         if name not in raw_values:
-            raise ValueError(
-                f"LakeSoul partition metadata is missing column {name!r}"
-            )
+            raise ValueError(f"LakeSoul partition metadata is missing column {name!r}")
         array = pa.array([raw_values[name]], type=pa.string())
         values[name] = pc.cast(array, field.type, safe=True)
 
