@@ -244,12 +244,11 @@ When searching the repository, exclude generated or lock files where possible: `
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `rust-ci.yml` | Push/PR to `rust/**` | Cargo test with PostgreSQL + RustFS services |
-| `rust-clippy.yml` | Push/PR to `rust/**` | `cargo -q clippy` lint check |
+| `rust-ci.yml` | Push/PR to `rust/**` | Cargo test with PostgreSQL + RustFS services, plus Clippy lint check |
 | `maven-test.yml` | Push/PR (non-rust paths) | Builds Rust `.so`, then runs Spark + Flink Maven tests |
 | `flink-cdc-test.yml` | Scheduled/PR | End-to-end Flink CDC tests |
 | `python-ci.yml` | Push/PR to `python/**` | Python build + pytest |
-| `native-build.yml` | Push/PR | Cross-platform native library builds |
+| `native-build.yml` | Push/PR | Linux x64 native library builds |
 
 ---
 

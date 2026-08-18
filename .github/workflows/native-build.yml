@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-name: Cross build
+name: Linux x64 build
 
 on:
   push:
@@ -70,77 +70,9 @@ jobs:
           name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu
           path: ./rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so
 
-  build-windows-x86_64:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up JDK 11
-        uses: actions/setup-java@v5
-        with:
-          java-version: "11"
-          distribution: "temurin"
-          cache: maven
-      - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: ". -> rust/target"
-          env-vars: "JAVA_HOME"
-      - name: Build native libraries
-        run: cargo -q build --release --package lakesoul-io-c --package lakesoul-metadata-c --all-features
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lakesoul-nativeio-x86_64-pc-windows-msvc
-          path: ./rust/target/release/lakesoul_io_c.dll
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lakesoul-nativemetadata-x86_64-pc-windows-msvc
-          path: ./rust/target/release/lakesoul_metadata_c.dll
-
-  build-macos-x86_64:
-    runs-on: macos-latest
-    steps:
-      - name: Install automake
-        run: brew install automake
-      - uses: actions/checkout@v4
-      - name: Set up JDK 11
-        uses: actions/setup-java@v5
-        with:
-          java-version: "11"
-          distribution: "temurin"
-          cache: maven
-      - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: ". -> rust/target"
-          env-vars: "JAVA_HOME"
-      - name: Build native libraries
-        run: cargo -q build --release --package lakesoul-io-c --package lakesoul-metadata-c --all-features
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lakesoul-nativeio-x86_64-apple-darwin
-          path: ./rust/target/release/liblakesoul_io_c.dylib
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lakesoul-nativemetadata-x86_64-apple-darwin
-          path: ./rust/target/release/liblakesoul_metadata_c.dylib
-
   build-maven-package:
     runs-on: ubuntu-24.04
-    needs: [build-linux-x86_64, build-windows-x86_64, build-macos-x86_64]
+    needs: build-linux-x86_64
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -149,23 +81,7 @@ jobs:
           path: ./rust/target/release/
       - uses: actions/download-artifact@v4
         with:
-          name: lakesoul-nativeio-x86_64-apple-darwin
-          path: ./rust/target/release/
-      - uses: actions/download-artifact@v4
-        with:
-          name: lakesoul-nativeio-x86_64-pc-windows-msvc
-          path: ./rust/target/release/
-      - uses: actions/download-artifact@v4
-        with:
           name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu
-          path: ./rust/target/release/
-      - uses: actions/download-artifact@v4
-        with:
-          name: lakesoul-nativemetadata-x86_64-apple-darwin
-          path: ./rust/target/release/
-      - uses: actions/download-artifact@v4
-        with:
-          name: lakesoul-nativemetadata-x86_64-pc-windows-msvc
           path: ./rust/target/release/
       - name: Set up JDK 11
         uses: actions/setup-java@v5
