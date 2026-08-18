@@ -241,7 +241,8 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
     @Nullable
     @Override
     public RowData nextRecordFromSplit() {
-        if (reader == null) {
+        if (reader == null || currentVCR == null) {
+            LOG.info("No next record available, reader {}, vector root {}", reader, currentVCR);
             return null;
         }
         while (true) {
@@ -293,6 +294,10 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
 
             if (rd == null) {
                 continue;
+            }
+
+            if (rk == null) {
+                LOG.error("Row kind of cdc is null for split {}", split);
             }
 
             // we have get one valid row, return row with requested schema
