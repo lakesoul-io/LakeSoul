@@ -471,7 +471,7 @@ jobs:
           distribution: "temurin"
           cache: maven
       - name: Install psql
-        run: sudo apt-get install -y postgresql-client-16
+        run: sudo apt-get install -y postgresql-client-16 gdb
       - name: Init PG
         run: |
           PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql lakesoul_test
@@ -484,6 +484,9 @@ jobs:
       - name: Init PG RBAC USERS
         run: |
           PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_rbac_init_users_for_test.sql lakesoul_test
+      - name: Configure crash diagnostics
+        run: |
+          sudo sysctl -w kernel.core_pattern=/tmp/lakesoul-core.%e.%p.%t
 
       - name: Install Protoc
         uses: arduino/setup-protoc@v2
@@ -509,8 +512,38 @@ jobs:
           path: ./rust/target/release/
       - name: Build with Maven
         run: |
+          set -o pipefail
+          ulimit -c unlimited
+          export JDK_JAVA_OPTIONS="-XX:ErrorFile=/tmp/hs_err_pid%p.log -XX:+CreateCoredumpOnCrash"
+          export RUST_BACKTRACE=full
+          export RUST_LOG=info
           export LAKESOUL_IO_USE_V2_MERGE=true
-          MAVEN_OPTS="-Xmx5g" mvn -B clean test -pl :lakesoul-flink-1.20_2.12 -am -Pcross-build --file pom.xml -Dtest='LakeSoulRBACTest' -Dsurefire.failIfNoSpecifiedTests=false
+          MAVEN_OPTS="-Xmx5g" mvn -B clean test -pl :lakesoul-flink-1.20_2.12 -am -Pcross-build --file pom.xml -Dtest='LakeSoulRBACTest' -Dsurefire.failIfNoSpecifiedTests=false 2>&1 | tee /tmp/flink-rbac-maven.log
+      - name: Generate native crash backtraces
+        if: failure()
+        run: |
+          for core in /tmp/lakesoul-core.*; do
+            if [ ! -f "$core" ]; then
+              continue
+            fi
+            gdb --batch \
+              --ex "set pagination off" \
+              --ex "thread apply all bt full" \
+              "$JAVA_HOME/bin/java" "$core" > "${core}.backtrace.txt" 2>&1 || true
+          done
+      - name: Upload failure diagnostics
+        if: failure()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: flink-rbac-crash-diagnostics
+          path: |
+            /tmp/flink-rbac-maven.log
+            /tmp/hs_err_pid*.log
+            /tmp/lakesoul-core.*
+            lakesoul-flink/target/surefire-reports/
+          retention-days: 5
+          if-no-files-found: warn
       - name: Generate Report Site
         if: always()
         run: |
