@@ -17,7 +17,7 @@
 ```shell
 ./bin/flink run \
 -c org.apache.flink.lakesoul.entry.clean.NewCleanJob \
-lakesoul-flink-1.20-3.0.0-SNAPSHOT.jar \
+lakesoul-flink-1.20_2.12-VAR::VERSION.jar \
 --source_db.dbName lakesoul_test \
 --source_db.user lakesoul_test \
 --source_db.host localhost \

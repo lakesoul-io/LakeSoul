@@ -48,7 +48,7 @@ The use the following command to start the compaction service job:
     --conf "spark.executor.memoryOverhead=3g" \
     --class com.dmetasoul.lakesoul.spark.compaction.NewCompactionTask  \
     --conf spark.dmetasoul.lakesoul.compaction.level0.file.number.limit=2 \
-    jars/lakesoul-spark-3.5-VAR::VERSION.jar 
+    jars/lakesoul-spark-3.5_2.12-VAR::VERSION.jar 
     --threadpool.size=10
     --database=test
 ```

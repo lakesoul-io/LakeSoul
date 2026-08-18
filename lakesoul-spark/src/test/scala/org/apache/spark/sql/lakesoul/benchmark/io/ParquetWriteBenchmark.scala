@@ -15,9 +15,9 @@ import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
   * -v $PWD/lakesoul-spark/target:/opt/spark/work-dir/jars
   * swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/spark:3.5.8-py310-hadoop334
   * spark-submit --driver-memory 4g --jars
-  * /opt/spark/work-dir/jars/lakesoul-spark-3.5-3.0.0-SNAPSHOT.jar --class
+  * /opt/spark/work-dir/jars/lakesoul-spark-3.5_2.12-4.0.0-SNAPSHOT.jar --class
   * org.apache.spark.sql.lakesoul.benchmark.io.ParquetWriteBenchmark
-  * /opt/spark/work-dir/jars/lakesoul-spark-3.5-3.0.0-SNAPSHOT-tests.jar
+  * /opt/spark/work-dir/jars/lakesoul-spark-3.5_2.12-4.0.0-SNAPSHOT-tests.jar
   * --localtest
   */
 object ParquetWriteBenchmark {

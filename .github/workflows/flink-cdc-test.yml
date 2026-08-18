@@ -92,7 +92,7 @@ jobs:
           mkdir -p ~/.m2/repository
           tar xf gluten-maven-deps-1.6.0-spark35.tar.gz -C ~/.m2/repository
           rm -f gluten-maven-deps-1.6.0-spark35.tar.gz
-          MAVEN_OPTS="-Xmx4000m" mvn -q -B -pl lakesoul-flink,lakesoul-spark -am package -f pom.xml -Pcross-build -DskipTests
+          MAVEN_OPTS="-Xmx4000m" mvn -q -B -pl :lakesoul-flink-1.20_2.12,:lakesoul-spark-3.5_2.12 -am package -f pom.xml -Pcross-build -DskipTests
       - name: Get jar names
         run: |
           {

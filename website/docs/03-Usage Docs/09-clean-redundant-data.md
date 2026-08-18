@@ -88,7 +88,7 @@ Start the Spark cleanup command locally:
      --executor-cores 1 \
      --num-executors 20 \
      --class com.dmetasoul.lakesoul.spark.clean.CleanExpiredData \
-     jars/lakesoul-spark-3.5-VAR::VERSION.jar
+     jars/lakesoul-spark-3.5_2.12-VAR::VERSION.jar
 
 ```
 :::tip

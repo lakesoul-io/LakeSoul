@@ -31,9 +31,9 @@ $SPARK_HOME/bin/spark-shell --master local\[1\] --driver-memory 4g \
    --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog \
    --conf spark.sql.defaultCatalog=lakesoul \
    # Introduce the jars of LakeSoul Spark Gluten
-   --jars lakesoul-spark-gluten-3.5-VAR::VERSION.jar
+   --jars lakesoul-spark-gluten-3.5_2.12-VAR::VERSION.jar
 ```
-Note that the name of lakesoul's jar is `lakesoul-spark-gluten-3.5-VAR::VERSION.jar`.
+Note that the name of lakesoul's jar is `lakesoul-spark-gluten-3.5_2.12-VAR::VERSION.jar`.
 
 After starting the Spark task in this way, Gluten and LakeSoul can be enabled at the same time to achieve dual acceleration of IO performance and computing performance.
 

@@ -35,7 +35,7 @@ SPDX-License-Identifier: Apache-2.0
   <TabItem value="Spark SQL" label="Spark SQL" default>
 
   ```bash
-  spark-sql --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog --conf spark.sql.defaultCatalog=lakesoul  --jars lakesoul-spark-spark-3.5-VAR::VERSION.jar
+  spark-sql --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog --conf spark.sql.defaultCatalog=lakesoul  --jars lakesoul-spark-3.5_2.12-VAR::VERSION.jar
   ```
 
   </TabItem>
@@ -43,14 +43,14 @@ SPDX-License-Identifier: Apache-2.0
   <TabItem value="Scala" label="Scala">
 
   ```bash
-  spark-shell --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog --conf spark.sql.defaultCatalog=lakesoul  --jars lakesoul-spark-spark-3.5-VAR::VERSION.jar
+  spark-shell --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog --conf spark.sql.defaultCatalog=lakesoul  --jars lakesoul-spark-3.5_2.12-VAR::VERSION.jar
   ```
 </TabItem>
   <TabItem value="PySpark" label="PySpark">
 
   ```bash
   wget https://github.com/lakesoul-io/LakeSoul/tree/main/python/lakesoul/spark/tables.py
-  pyspark --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog --conf spark.sql.defaultCatalog=lakesoul --jars lakesoul-spark-spark-3.5-VAR::VERSION.jar --py-files tables.py
+  pyspark --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog --conf spark.sql.defaultCatalog=lakesoul --jars lakesoul-spark-3.5_2.12-VAR::VERSION.jar --py-files tables.py
   ```
 </TabItem>
   
@@ -61,8 +61,8 @@ SPDX-License-Identifier: Apache-2.0
 ```xml
 <dependency>
     <groupId>com.dmetasoul</groupId>
-    <artifactId>lakesoul-spark</artifactId>
-    <version>3.5-VAR::VERSION</version>
+    <artifactId>lakesoul-spark-3.5_2.12</artifactId>
+    <version>VAR::VERSION</version>
 </dependency>
 ```
 

@@ -140,7 +140,7 @@ jobs:
           LAKESOUL_SOURCE_DIR: ${{ github.workspace }}
           LAKESOUL_S3_TEST: "1"
         run: |
-          mvn package -pl lakesoul-spark -am -DskipTests
+          mvn package -pl :lakesoul-spark-3.5_2.12 -am -DskipTests
           cd python
           uv sync --python 3.10 --group dev
           export LAKESOUL_IO_USE_V2_MERGE=true

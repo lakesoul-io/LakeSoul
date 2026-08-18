@@ -49,7 +49,7 @@ docker run --rm -ti --net host \
     echo
 
     echo "=== Building Java workspace ==="
-    mvn package -pl lakesoul-spark -pl lakesoul-flink -pl lakesoul-presto -am -Pcross-build -DskipTests -Dmaven.repo.local=/opt/maven/.m2/repository --settings /opt/maven/.m2/settings.xml
+    mvn package -pl :lakesoul-spark-3.5_2.12 -pl :lakesoul-flink-1.20_2.12 -pl :lakesoul-presto-0.296 -am -Pcross-build -DskipTests -Dmaven.repo.local=/opt/maven/.m2/repository --settings /opt/maven/.m2/settings.xml
     echo
     echo "=== Build complete ==="
   '

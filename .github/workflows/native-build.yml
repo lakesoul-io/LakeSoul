@@ -96,7 +96,11 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Build with Maven
         run: |
-          MAVEN_OPTS="-Xmx4000m" mvn -B install --file pom.xml -pl "!lakesoul-presto" -Pcross-build -DskipTests -Dmaven.test.skip=true -e
+          MAVEN_OPTS="-Xmx4000m" mvn -B install --file pom.xml -pl "!:lakesoul-presto-0.296" -Pcross-build -DskipTests -Dmaven.test.skip=true -e
+      - name: Smoke test Linux x86_64 native loaders
+        run: |
+          mvn -B test --file pom.xml -pl :lakesoul-io-java -am -Pcross-build \
+            -Dtest=NativeLibrarySmokeTest -Dsurefire.failIfNoSpecifiedTests=false
       - name: Set up JDK 17 for Presto
         uses: actions/setup-java@v5
         with:
@@ -105,7 +109,13 @@ jobs:
           cache: maven
       - name: Build Presto with Java 17
         run: |
-          MAVEN_OPTS="-Xmx4000m" mvn -B package --file pom.xml -pl lakesoul-presto -Pcross-build -DskipTests -Dmaven.test.skip=true -e
+          MAVEN_OPTS="-Xmx4000m" mvn -B package --file pom.xml -pl :lakesoul-presto-0.296 -Pcross-build -DskipTests -Dmaven.test.skip=true -e
+      - name: Verify packaged native libraries
+        run: |
+          python script/verify_native_jars.py \
+            "lakesoul-spark/target/$(python script/get_jar_name.py lakesoul-spark)" \
+            "lakesoul-flink/target/$(python script/get_jar_name.py lakesoul-flink)" \
+            "lakesoul-presto/target/$(python script/get_jar_name.py lakesoul-presto)"
       - name: Upload Package
         uses: actions/upload-artifact@v4
         with:
