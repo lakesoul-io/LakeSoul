@@ -56,8 +56,6 @@ public class CleanUtils {
                 return;
             }
             logger.info("文件已删除: {}", filePath);
-            // 尝试删除空父目录
-            deleteEmptyParentDirs(fs, path.getParent());
         } catch (IOException e) {
             logger.error("删除文件失败: {}", filePath, e);
             throw new SQLException("删除文件失败: " + filePath, e);
