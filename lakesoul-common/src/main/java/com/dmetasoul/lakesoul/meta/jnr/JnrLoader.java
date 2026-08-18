@@ -39,9 +39,10 @@ public class JnrLoader {
         String finalPath = null;
 
         try {
-            URL url = JnrLoader.class.getClassLoader().getResource(libName);
+            String resourcePath = NativeLibraryResource.path(libName);
+            URL url = JnrLoader.class.getClassLoader().getResource(resourcePath);
             if (url == null) {
-                throw new FileNotFoundException(libName);
+                throw new FileNotFoundException(resourcePath);
             }
             URLConnection connection = url.openConnection();
             if (connection != null) {
