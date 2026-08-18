@@ -4,7 +4,9 @@
 
 [package]
 name = "lakesoul-flight"
+description = "Experimental Arrow Flight service; not part of LakeSoul Core GA"
 version.workspace = true
+publish = false
 edition.workspace = true
 
 

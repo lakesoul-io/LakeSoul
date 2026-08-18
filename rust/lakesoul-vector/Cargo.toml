@@ -5,6 +5,7 @@
 [package]
 name = "lakesoul-vector"
 version.workspace = true
+publish = false
 edition.workspace = true
 authors.workspace = true
 homepage.workspace = true

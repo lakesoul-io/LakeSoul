@@ -1,6 +1,7 @@
 [package]
 name = "lakesoul-console"
 version = { workspace = true }
+publish = false
 edition = { workspace = true }
 
 [dependencies]

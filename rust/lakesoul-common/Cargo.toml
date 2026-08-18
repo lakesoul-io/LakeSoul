@@ -6,6 +6,7 @@ homepage.workspace = true
 license.workspace = true
 readme.workspace = true
 version.workspace = true
+publish = false
 
 [dependencies]
 serde.workspace = true

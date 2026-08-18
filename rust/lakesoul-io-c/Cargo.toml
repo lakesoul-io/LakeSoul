@@ -5,6 +5,7 @@
 [package]
 name = "lakesoul-io-c"
 version = { workspace = true }
+publish = false
 edition = { workspace = true }
 
 [lib]

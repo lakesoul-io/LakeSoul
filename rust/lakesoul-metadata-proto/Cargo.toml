@@ -5,6 +5,7 @@
 [package]
 name = "lakesoul-metadata-proto"
 version = { workspace = true }
+publish = false
 edition = { workspace = true }
 build = "build.rs"
 

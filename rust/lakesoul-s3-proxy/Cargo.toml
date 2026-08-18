@@ -4,7 +4,9 @@
 
 [package]
 name = "lakesoul-s3-proxy"
+description = "Experimental S3 proxy; not part of LakeSoul Core GA"
 version.workspace = true
+publish = false
 edition.workspace = true
 
 
