@@ -27,7 +27,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main
         with:
           tool-cache: false
           android: true
@@ -36,36 +36,36 @@ jobs:
           large-packages: false
           docker-images: true
           swap-storage: true
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Set up JDK 11
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           java-version: "11"
           distribution: "temurin"
           cache: maven
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
+        uses: arduino/setup-protoc@a8b67ba40b37d35169e222f3bb352603327985b6 # v2 branch
         with:
           version: "23.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable action
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ". -> rust/target"
           env-vars: "JAVA_HOME"
       - name: Install cross
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@288e746965032cfcc232e09af2daf5f23c14d780 # v2
         with:
           tool: cross@0.2.5
       - name: Build native libraries
         run: cross -q build --target x86_64-unknown-linux-gnu --package lakesoul-io-c --package lakesoul-metadata-c --release --all-features
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: lakesoul-nativeio-x86_64-unknown-linux-gnu
           path: ./rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu
           path: ./rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so
@@ -74,23 +74,23 @@ jobs:
     runs-on: ubuntu-24.04
     needs: build-linux-x86_64
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: lakesoul-nativeio-x86_64-unknown-linux-gnu
           path: ./rust/target/release/
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu
           path: ./rust/target/release/
       - name: Set up JDK 11
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           java-version: "11"
           distribution: "temurin"
           cache: maven
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
+        uses: arduino/setup-protoc@a8b67ba40b37d35169e222f3bb352603327985b6 # v2 branch
         with:
           version: "23.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -102,7 +102,7 @@ jobs:
           mvn -B test --file pom.xml -pl :lakesoul-io-java -am -Pcross-build \
             -Dtest=NativeLibrarySmokeTest -Dsurefire.failIfNoSpecifiedTests=false
       - name: Set up JDK 17 for Presto
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           java-version: "17"
           distribution: "temurin"
@@ -117,7 +117,7 @@ jobs:
             "lakesoul-flink/target/$(python script/get_jar_name.py lakesoul-flink)" \
             "lakesoul-presto/target/$(python script/get_jar_name.py lakesoul-presto)"
       - name: Upload Package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: maven-package-upload
           path: |

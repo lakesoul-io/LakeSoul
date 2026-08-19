@@ -1,30 +1,45 @@
-# SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
 #
 # SPDX-License-Identifier: Apache-2.0
 
-name: Website Publish
+name: Reusable Website Publication
+
 on:
-  push:
-    tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"
-      - "py-v[0-9]+.[0-9]+.[0-9]+"
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: Validated signed Core release tag
+        required: true
+        type: string
+    secrets:
+      GH_PAGES_DEPLOY:
+        required: true
+
+permissions:
+  contents: read
 
 jobs:
   publish:
+    if: github.ref == format('refs/tags/{0}', inputs.ref)
     runs-on: ubuntu-24.04
+    environment: website-production
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Check out validated release tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 18
-          cache-dependency-path: "website/package-lock.json"
+          cache-dependency-path: website/package-lock.json
           cache: npm
-      - uses: webfactory/ssh-agent@v0.5.0
+      - name: Configure deployment key
+        uses: webfactory/ssh-agent@6b2f2c5354ff41f1edbbf7a17ea9b6178c89be9f # v0.5.0
         with:
           ssh-private-key: ${{ secrets.GH_PAGES_DEPLOY }}
-      - name: Deploy to GitHub Pages
-        working-directory: ./website
+      - name: Deploy website
+        working-directory: website
         env:
           USE_SSH: true
         run: |
