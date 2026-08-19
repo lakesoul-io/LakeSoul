@@ -3,20 +3,17 @@
 // SPDX-License-Identifier: Apache-2.0
 package com.dmetasoul.lakesoul.meta.jnr;
 
+import com.dmetasoul.lakesoul.nativeio.NativeLibraryLoader;
+
 import jnr.ffi.LibraryLoader;
 import jnr.ffi.LibraryOption;
 
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.InputStream;
-import java.net.URL;
-import java.net.URLConnection;
-import java.nio.file.Files;
-import java.nio.file.StandardCopyOption;
 import java.util.HashMap;
 import java.util.Map;
 
 public class JnrLoader {
+
+    private static final String LIBRARY_NAME = "lakesoul_metadata_c";
 
     private LibLakeSoulMetaData libLakeSoulMetaData = null;
 
@@ -34,47 +31,26 @@ public class JnrLoader {
             return;
         }
 
-        String libName = System.mapLibraryName("lakesoul_metadata_c");
-
-        String finalPath = null;
+        String libraryFile = System.mapLibraryName(LIBRARY_NAME);
+        String finalPath = NativeLibraryLoader.extract(JnrLoader.class, libraryFile);
+        Map<LibraryOption, Object> libraryOptions = new HashMap<>();
+        libraryOptions.put(LibraryOption.LoadNow, true);
 
         try {
-            String resourcePath = NativeLibraryResource.path(libName);
-            URL url = JnrLoader.class.getClassLoader().getResource(resourcePath);
-            if (url == null) {
-                throw new FileNotFoundException(resourcePath);
-            }
-            URLConnection connection = url.openConnection();
-            if (connection != null) {
-                connection.setUseCaches(false);
-                try (final InputStream is = connection.getInputStream()) {
-                    if (is == null) {
-                        throw new FileNotFoundException(libName);
-                    }
-                    File temp =
-                            File.createTempFile(
-                                    libName + "_",
-                                    ".tmp",
-                                    new File(System.getProperty("java.io.tmpdir")));
-                    temp.deleteOnExit();
-                    Files.copy(is, temp.toPath(), StandardCopyOption.REPLACE_EXISTING);
-                    finalPath = temp.getAbsolutePath();
-                }
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-            throw new IllegalStateException("error loading native libraries: " + e);
-        }
-
-        if (finalPath != null) {
-            Map<LibraryOption, Object> libraryOptions = new HashMap<>();
-            libraryOptions.put(LibraryOption.LoadNow, true);
-            libraryOptions.put(LibraryOption.IgnoreError, true);
-
-            JnrLoader.INSTANCE.libLakeSoulMetaData =
+            INSTANCE.libLakeSoulMetaData =
                     LibraryLoader.loadLibrary(LibLakeSoulMetaData.class, libraryOptions, finalPath);
+        } catch (RuntimeException | LinkageError error) {
+            throw NativeLibraryLoader.loadingError(
+                    JnrLoader.class, libraryFile, "unavailable", error);
         }
-
+        String nativeVersion;
+        try {
+            nativeVersion = INSTANCE.libLakeSoulMetaData.lakesoul_metadata_version().getString(0);
+        } catch (RuntimeException | LinkageError error) {
+            throw NativeLibraryLoader.loadingError(
+                    JnrLoader.class, libraryFile, "unavailable", error);
+        }
+        NativeLibraryLoader.validateNativeVersion(JnrLoader.class, libraryFile, nativeVersion);
         INSTANCE.hasLoaded = true;
     }
 }

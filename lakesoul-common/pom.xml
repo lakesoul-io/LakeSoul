@@ -218,8 +218,8 @@ SPDX-License-Identifier: Apache-2.0
                         <directory>${basedir}/../rust/target/release/</directory>
                         <targetPath>META-INF/native/${native.platform}</targetPath>
                         <includes>
-                            <include>liblakesoul_metadata_c.dylib</include>
                             <include>liblakesoul_metadata_c.so</include>
+                            <include>liblakesoul_metadata_c.dylib</include>
                             <include>lakesoul_metadata_c.dll</include>
                         </includes>
                         <excludes>
@@ -343,9 +343,7 @@ SPDX-License-Identifier: Apache-2.0
                         <directory>${basedir}/../rust/target/release/</directory>
                         <targetPath>META-INF/native/${native.platform}</targetPath>
                         <includes>
-                            <include>liblakesoul_metadata_c.dylib</include>
                             <include>liblakesoul_metadata_c.so</include>
-                            <include>lakesoul_metadata_c.dll</include>
                         </includes>
                         <excludes>
                             <exclude>deps</exclude>
