@@ -12,7 +12,14 @@ from lakesoul.io import WriteResult
 if TYPE_CHECKING:
     from lakesoul.catalog import LakeSoulScan, LakeSoulTable
 
-__all__ = ["LakeSoulDataSink", "read_lakesoul", "write_lakesoul"]
+__all__ = [
+    "LakeSoulCreateTableProperties",
+    "LakeSoulDataCatalog",
+    "LakeSoulDataSink",
+    "LakeSoulDataTable",
+    "read_lakesoul",
+    "write_lakesoul",
+]
 
 _INSTALL_MESSAGE = (
     "Daft support requires the optional dependency. "
@@ -77,6 +84,22 @@ def write_lakesoul(
 
 
 def __getattr__(name: str) -> Any:
+    if name in {
+        "LakeSoulCreateTableProperties",
+        "LakeSoulDataCatalog",
+        "LakeSoulDataTable",
+    }:
+        from lakesoul.daft.catalog import (
+            LakeSoulCreateTableProperties,
+            LakeSoulDataCatalog,
+            LakeSoulDataTable,
+        )
+
+        return {
+            "LakeSoulCreateTableProperties": LakeSoulCreateTableProperties,
+            "LakeSoulDataCatalog": LakeSoulDataCatalog,
+            "LakeSoulDataTable": LakeSoulDataTable,
+        }[name]
     if name == "LakeSoulDataSink":
         from lakesoul.daft.sink import LakeSoulDataSink
 

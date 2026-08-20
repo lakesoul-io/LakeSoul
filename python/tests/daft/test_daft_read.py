@@ -26,6 +26,83 @@ def _catalog() -> LakeSoulCatalog:
     return _CATALOG
 
 
+def test_daft_catalog_discovers_real_tpch_table() -> None:
+    pytest.importorskip("daft")
+    from lakesoul.daft import LakeSoulDataCatalog
+
+    catalog = LakeSoulDataCatalog(_catalog(), name="lakesoul")
+
+    assert "default" in {str(namespace) for namespace in catalog.list_namespaces()}
+    assert "default.part" in {str(identifier) for identifier in catalog.list_tables()}
+
+    qualified_table = catalog.get_table("default.part")
+    default_namespace_table = catalog.get_table("part")
+
+    assert qualified_table.name == "part"
+    assert default_namespace_table.lakesoul_table.id == (
+        qualified_table.lakesoul_table.id
+    )
+    assert qualified_table.schema().to_pyarrow_schema().names == [
+        "p_partkey",
+        "p_name",
+        "p_mfgr",
+        "p_brand",
+        "p_type",
+        "p_size",
+        "p_container",
+        "p_retailprice",
+        "p_comment",
+    ]
+
+
+def test_daft_session_resolves_real_current_namespace() -> None:
+    daft = pytest.importorskip("daft")
+    from lakesoul.daft import LakeSoulDataCatalog
+
+    session = daft.Session()
+    session.attach(LakeSoulDataCatalog(_catalog(), name="lakesoul"))
+    session.use("lakesoul.default")
+
+    table = session.get_table("part")
+
+    assert table.name == "part"
+    assert table.lakesoul_table.namespace == "default"
+
+
+def test_daft_session_reads_real_tpch_table_through_catalog() -> None:
+    daft = pytest.importorskip("daft")
+    from lakesoul.daft import LakeSoulDataCatalog
+
+    session = daft.Session()
+    session.attach(LakeSoulDataCatalog(_catalog(), name="lakesoul"))
+    dataframe = session.read_table(
+        "lakesoul.default.part",
+        columns=("p_partkey", "p_size"),
+    )
+    filtered = dataframe.where(dataframe["p_partkey"] <= 10)
+
+    plan_output = StringIO()
+    filtered.explain(show_all=True, file=plan_output)
+    assert "Filter pushdown =" in plan_output.getvalue()
+
+    actual = _daft_to_table(
+        filtered,
+        pa.schema({"p_partkey": pa.int64(), "p_size": pa.int32()}),
+    )
+    expected = (
+        _catalog()
+        .scan(
+            "part",
+            columns=("p_partkey", "p_size"),
+            filter=pc.field("p_partkey") <= _typed_scalar(10, pa.int64()),
+        )
+        .to_arrow_table()
+    )
+
+    assert actual.num_rows == 10
+    assert _row_counter(actual) == _row_counter(expected)
+
+
 def test_daft_simple_filter_matches_arrow_reader() -> None:
     pytest.importorskip("daft")
     filter = pc.field("p_size") == 50
