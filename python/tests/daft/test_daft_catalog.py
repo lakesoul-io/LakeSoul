@@ -38,13 +38,13 @@ class FakeLakeSoulCatalog:
         self.tables = {
             ("default", "part"): FakeLakeSoulTable("default", "part"),
             ("analytics", "events"): FakeLakeSoulTable("analytics", "events"),
-            ("company.czods", "orders"): FakeLakeSoulTable("company.czods", "orders"),
+            ("company.sales", "orders"): FakeLakeSoulTable("company.sales", "orders"),
         }
         self.dropped = None
         self.created = None
 
     def list_namespaces(self):
-        return ("default", "analytics", "company.czods")
+        return ("default", "analytics", "company.sales")
 
     def list_tables(self, namespace):
         return tuple(
@@ -80,17 +80,17 @@ def test_daft_catalog_lists_and_resolves_lakesoul_tables() -> None:
     assert catalog.list_namespaces() == [
         Identifier("default"),
         Identifier("analytics"),
-        Identifier("company", "czods"),
+        Identifier("company", "sales"),
     ]
     assert catalog.list_tables() == [
         Identifier("default", "part"),
         Identifier("analytics", "events"),
-        Identifier("company", "czods", "orders"),
+        Identifier("company", "sales", "orders"),
     ]
     assert catalog.has_table("part")
     assert catalog.has_table("analytics.events")
-    assert catalog.has_table("company.czods.orders")
-    assert catalog.has_namespace("company.czods")
+    assert catalog.has_table("company.sales.orders")
+    assert catalog.has_namespace("company.sales")
     assert not catalog.has_table("default.missing")
 
     table = catalog.get_table("analytics.events")
