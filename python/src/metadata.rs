@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 use arrow_pyarrow::PyArrowType;
 use arrow_schema::Schema;
 use lakesoul_metadata::{MetaDataClient, transfusion::DataFileInfo, utils::qualify_path};
-use lakesoul_metadata_proto::entity::{CommitOp, TableInfo};
+use lakesoul_metadata_proto::entity::{CommitOp, PartitionInfo, TableInfo, Uuid};
 use pyo3::{exceptions::PyRuntimeError, exceptions::PyValueError, prelude::*};
 
 use crate::install_module;
@@ -89,6 +89,32 @@ impl NativeMetadataClient {
                     files,
                     CommitOp::AppendCommit,
                 ))
+                .map_err(|error| PyRuntimeError::new_err(error.to_string()))
+        })
+    }
+
+    fn get_data_files_of_single_partition(
+        &self,
+        py: Python,
+        table_id: String,
+        partition_desc: String,
+        snapshot: Vec<(u64, u64)>,
+    ) -> PyResult<Vec<String>> {
+        let partition_info = PartitionInfo {
+            table_id,
+            partition_desc,
+            snapshot: snapshot
+                .into_iter()
+                .map(|(high, low)| Uuid { high, low })
+                .collect(),
+            ..Default::default()
+        };
+        py.detach(|| {
+            RUNTIME
+                .block_on(
+                    self.client
+                        .get_data_files_of_single_partition(&partition_info),
+                )
                 .map_err(|error| PyRuntimeError::new_err(error.to_string()))
         })
     }
