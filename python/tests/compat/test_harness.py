@@ -3,10 +3,15 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
+import pytest
+
 from compat.cases import CASES
 from compat.engines import engine_registry
 from compat.normalize import assert_table_matches, table_summary
-from compat.run_matrix import _plan_tasks
+from compat.run_matrix import _plan_tasks, main
 
 
 def test_pk_upsert_expected_table_keeps_latest_primary_key() -> None:
@@ -38,6 +43,50 @@ def test_summary_is_row_order_independent() -> None:
 
     assert actual == expected
     assert table_summary(table, table.schema)["row_count"] == 3
+
+
+def test_format_cases_cover_every_supported_physical_format() -> None:
+    assert {
+        CASES[name].physical_format
+        for name in (
+            "format_parquet",
+            "format_vortex",
+            "format_vortex_compact",
+        )
+    } == {"parquet", "vortex", "vortex-compact"}
+
+
+def test_recovery_rejects_manifest_without_successful_writes(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "run_id": "empty",
+                "storage": "file:///tmp/empty",
+                "cases": [],
+                "records": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        SystemExit,
+        match="recovery manifest contains no successful table writes",
+    ):
+        main(
+            [
+                "--read-manifest",
+                str(manifest),
+                "--writers",
+                "",
+                "--readers",
+                "",
+                "--output-dir",
+                str(tmp_path / "output"),
+            ]
+        )
 
 
 def test_smoke_plan_keeps_matrix_bounded() -> None:

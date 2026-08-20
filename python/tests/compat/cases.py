@@ -20,6 +20,7 @@ class CaseSpec:
     hash_bucket_num: int = 1
     read_columns: tuple[str, ...] | None = None
     read_partition_filter: dict[str, Any] | None = None
+    physical_format: str = "vortex-compact"
 
     @property
     def expected_table(self) -> pa.Table:
@@ -216,6 +217,18 @@ CASES: dict[str, CaseSpec] = {
         ),
     ),
 }
+
+CASES.update(
+    {
+        f"format_{physical_format.replace('-', '_')}": CaseSpec(
+            name=f"format_{physical_format.replace('-', '_')}",
+            schema=BASIC_APPEND_SCHEMA,
+            batches=CASES["basic_append"].batches,
+            physical_format=physical_format,
+        )
+        for physical_format in ("parquet", "vortex", "vortex-compact")
+    }
+)
 
 SMOKE_CASES = ("basic_append", "partitioned_append", "pk_upsert", "schema_types")
 FULL_CASES = tuple(CASES)

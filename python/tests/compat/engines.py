@@ -100,7 +100,7 @@ class PyArrowEngine(Engine):
             hash_bucket_num=_python_hash_bucket_num(case),
         )
         for batch in case.batches:
-            table.write_arrow(batch)
+            table.write_arrow(batch, format=case.physical_format)
 
     def read_case(self, case: CaseSpec, ref: TableRef, ctx: CompatContext) -> pa.Table:
         from lakesoul import LakeSoulCatalog
