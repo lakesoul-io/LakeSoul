@@ -61,6 +61,8 @@ jobs:
           python script/verify_release_artifacts.py coordinates /tmp/lakesoul-effective-pom.xml
       - name: Validate release license, headers, and dependency policy
         run: python script/check_release_policy.py
+      - name: Test metadata migration runner
+        run: python -m unittest script.tests.test_metadata_migrate
       - name: Validate production release gate
         if: inputs.publish
         env:
@@ -214,7 +216,7 @@ jobs:
 
   core-tests:
     name: Maven, Python, and signed artifact dry run
-    needs: [validate-release, build-native-linux-x86-64]
+    needs: [validate-release, build-native-linux-x86-64, metadata-migration]
     runs-on: ubuntu-24.04
     services:
       postgres:
@@ -323,7 +325,7 @@ jobs:
 
   connector-e2e-and-recovery:
     name: Spark, Flink, Presto E2E and format recovery
-    needs: [validate-release, build-native-linux-x86-64]
+    needs: [validate-release, build-native-linux-x86-64, metadata-migration]
     runs-on: ubuntu-24.04
     services:
       postgres:

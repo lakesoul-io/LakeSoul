@@ -82,9 +82,9 @@ Existing rows may keep both values as `NULL` until a `4.0.0` client writes or re
 ALTER TABLE data_commit_info REPLICA IDENTITY FULL;
 ```
 
-The current migration is additive and idempotent: it uses `ADD COLUMN IF NOT EXISTS`, preserves existing metadata rows, and is exercised by the `v3.0.0` migration gate. The current `script/meta_init.sql` does not drop or change the type or meaning of a `3.0.0` metadata column, so it is not, by itself, the incompatible-metadata point of no return defined in [Section 7](#7-points-of-no-return).
+The versioned migration in `script/metadata-migrations/` is additive and idempotent: it uses `ADD COLUMN IF NOT EXISTS`, preserves existing metadata rows, and is exercised by the `v3.0.0` migration gate. `script/metadata_migrate.py` records its version, description, SHA-256 checksum, installation time, and database role in `lakesoul_schema_migrations`. An applied migration whose checksum or description no longer matches the repository fails validation.
 
-Apply the DDL before starting any `4.0.0` process. After the DDL is applied, keep all `3.x` processes stopped even though these particular additions are backward-tolerant; mixed-version operation is not supported.
+Apply and check the DDL before deploying or starting any `4.0.0` binary. The runner requires an explicit PostgreSQL URL and holds a PostgreSQL advisory lock, so concurrent deployment processes cannot apply the same migration independently. After the DDL is applied, keep all `3.x` processes stopped even though these particular additions are backward-tolerant; mixed-version operation is not supported.
 
 ### 3.3 Range-partitioned overwrite
 
@@ -328,7 +328,7 @@ Operationally, treat enabling any writer's Vortex setting as approval to cross t
 
 The exact boundary is the successful commit of the first metadata migration that drops, renames, changes the type or meaning of a `3.0.x`-required column/type/function, or otherwise makes a `3.0.x` metadata client unable to perform its normal reads and writes.
 
-The additive Arrow columns and `REPLICA IDENTITY FULL` statement in the current `4.0.0` `script/meta_init.sql` do not meet that definition and therefore do not cross this boundary. If a deployment applies additional, site-specific, or later release-candidate DDL that does meet the definition, that DDL commit is the boundary.
+The additive Arrow columns and `REPLICA IDENTITY FULL` statement in `V4000000__core_4_0_0.sql` do not meet that definition and therefore do not cross this boundary. If a deployment applies additional, site-specific, or later release-candidate DDL that does meet the definition, that DDL commit is the boundary.
 
 After an incompatible migration:
 
@@ -344,11 +344,18 @@ After an incompatible migration:
 2. Stop every writer, reader service that mutates metadata, compaction job, cleanup job, CDC job, and scheduled deployment. Keep them stopped.
 3. Create one quiesced PostgreSQL and table-data backup pair using [Section 6](#6-verified-backup-procedure).
 4. Restore both backups into an isolated environment and complete the verification reads. Do not continue with an unverified backup.
-5. Apply the `4.0.0` metadata DDL before starting `4.0.0` processes:
+5. Apply and validate the `4.0.0` metadata migration before deploying any `4.0.0` binary. `LAKESOUL_PG_URL` may be a JDBC PostgreSQL URL; the runner removes the JDBC-only `stringtype` parameter for `psql`:
 
    ```bash
-   psql "$PGURI" -v ON_ERROR_STOP=1 -f script/meta_init.sql
+   export LAKESOUL_PG_URL='jdbc:postgresql://metadata.example:5432/lakesoul?stringtype=unspecified'
+   export LAKESOUL_PG_USERNAME='lakesoul'
+   export LAKESOUL_PG_PASSWORD='...'
+   python script/metadata_migrate.py status
+   python script/metadata_migrate.py migrate
+   python script/metadata_migrate.py check
    ```
+
+   `migrate` creates the migration-history table, serializes migrators with an advisory lock, applies each pending migration transactionally, and writes its history row in the same transaction. A failed DDL statement therefore cannot produce a successful history record. `check` must report the schema current before the binary deployment proceeds.
 
 6. Verify the Arrow columns and replica identity:
 
