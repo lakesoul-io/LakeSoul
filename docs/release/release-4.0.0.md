@@ -1,8 +1,8 @@
 # LakeSoul 4.0.0 Release Guide
 
-This document records the concrete versions, Maven coordinates, compatibility requirements, and implementation plan for the `4.0.0` release. The version-independent release policy and process live in [`release-guide.md`](release-guide.md).
+This document records the concrete versions, Maven coordinates, compatibility requirements, and implementation plan for the `4.0.0` release. The version-independent release policy and process live in [`release-guide.md`](release-guide.md); operator procedures live in [`upgrade-4.0.0.md`](upgrade-4.0.0.md).
 
-> Current status: This document describes the release scheme to be adopted starting with `4.0.0`. The version synchronization scripts, Linux x86_64 native packaging, and GitHub Actions release gates described here must still be implemented incrementally. Until that work is complete, the existing `deployment.yml` must not be used to publish `4.0.0` directly.
+> Current status: This document describes the release scheme to be adopted starting with `4.0.0`. The `v4.0.0` tag must not be created or published until every release gate succeeds on the final release commit and both protected publication environments are configured.
 
 ## 1. Target Versions
 
