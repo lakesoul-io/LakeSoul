@@ -78,15 +78,34 @@ class LakeSoulDataSource(DataSource):
             if name in columns or name in filter_columns
         )
         task_schema = _project_schema(self._arrow_schema, read_columns)
-        filter = _combine_filters(
-            self._scan_config.filter,
-            _to_arrow_filter(
+        daft_filter = None
+        try:
+            daft_filter = _to_arrow_filter(
                 pushdowns.filters,
                 schema=self._scan_config.schema,
-            ),
+            )
+        except ValueError:
+            # Daft keeps its filter above the source. An expression that Arrow
+            # cannot represent, such as a Python UDF, must be evaluated there.
+            pass
+        filter = _combine_filters(
+            self._scan_config.filter,
+            daft_filter,
         )
 
-        for scan_partition in self._scan_config.scan_partitions:
+        rank = self._scan_config.rank
+        world_size = self._scan_config.world_size
+        for index, scan_partition in enumerate(self._scan_config.scan_partitions):
+            # LakeSoul shards the complete scan plan by scan-partition index.
+            # Apply that rule before Daft turns each retained partition into a
+            # separate task; the task itself must not shard its one partition
+            # for a second time.
+            if (
+                rank is not None
+                and world_size is not None
+                and index % world_size != rank
+            ):
+                continue
             if not scan_partition.files:
                 continue
             if not _partition_matches(
@@ -99,8 +118,12 @@ class LakeSoulDataSource(DataSource):
             partition_config = replace(
                 self._scan_config,
                 scan_partitions=(scan_partition,),
-                rank=None,
-                world_size=None,
+                # Sharding has already been applied to the complete scan plan.
+                # Use an explicit one-rank scan so the Arrow dataset cannot
+                # infer torch.distributed rank/world_size and shard this task
+                # a second time.
+                rank=0,
+                world_size=1,
             )
             yield LakeSoulDataSourceTask(
                 partition_config,

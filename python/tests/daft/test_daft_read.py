@@ -302,6 +302,42 @@ def test_daft_date32_range_filter_is_pushed_down() -> None:
     )
 
 
+def test_daft_python_udf_filter_falls_back_to_daft() -> None:
+    """A valid Daft-only predicate must not make the LakeSoul scan fail."""
+    daft = pytest.importorskip("daft")
+
+    @daft.udf(return_dtype=daft.DataType.bool())
+    def is_even(values):
+        return [value % 2 == 0 for value in values]
+
+    scan = _catalog().scan("part", columns=("p_partkey",))
+    dataframe = scan.to_daft()
+    actual = _daft_to_table(
+        dataframe.where(is_even(dataframe["p_partkey"])),
+        scan.schema,
+    )
+    expected_values = [
+        value
+        for value in scan.to_arrow_table().column("p_partkey").to_pylist()
+        if value % 2 == 0
+    ]
+
+    assert Counter(actual.column("p_partkey").to_pylist()) == Counter(expected_values)
+
+
+def test_daft_shard_matches_lakesoul_arrow_shard() -> None:
+    """Daft must apply LakeSoul's scan-partition sharding before task creation."""
+    pytest.importorskip("daft")
+    scan = _catalog().scan("part", columns=("p_partkey",)).shard(1, 2)
+
+    actual = _daft_to_table(scan.to_daft(), scan.schema)
+    expected = scan.to_arrow_table()
+
+    assert Counter(actual.column("p_partkey").to_pylist()) == Counter(
+        expected.column("p_partkey").to_pylist()
+    )
+
+
 def test_daft_partition_filter_prunes_test_lfs_and_matches_metadata_scan() -> None:
     """A predicate on test_lfs.c2 must become a Daft Partition Filter."""
     pytest.importorskip("daft")
