@@ -1,15 +1,9 @@
-# SPDX-FileCopyrightText: 2023 LakeSoul Contributors
-#
 # SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright 2026 LakeSoul contributors
 
-from .catalog import (
-    LakeSoulCatalog,
-    LakeSoulScan,
-    LakeSoulTable,
-    PostgresMetadataConfig,
-    TableWriteConfig,
-)
-from .exceptions import (
+"""Public LakeSoul exception hierarchy."""
+
+from lakesoul._lib._metadata import (
     AlreadyExistsError,
     InvalidMetadataError,
     LakeSoulError,
@@ -23,15 +17,10 @@ from .exceptions import (
 __all__ = [
     "AlreadyExistsError",
     "InvalidMetadataError",
-    "LakeSoulCatalog",
     "LakeSoulError",
-    "LakeSoulScan",
-    "LakeSoulTable",
     "MetadataError",
     "MetadataUnavailableError",
     "NamespaceNotFoundError",
     "PermissionDeniedError",
-    "PostgresMetadataConfig",
     "TableNotFoundError",
-    "TableWriteConfig",
 ]

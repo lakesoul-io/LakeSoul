@@ -4,9 +4,20 @@
 from types import SimpleNamespace
 
 import pyarrow as pa
+import pytest
 
 import lakesoul.catalog as catalog_module
 from lakesoul.catalog import LakeSoulCatalog, LakeSoulTable, PostgresMetadataConfig
+from lakesoul.exceptions import (
+    AlreadyExistsError,
+    InvalidMetadataError,
+    LakeSoulError,
+    MetadataError,
+    MetadataUnavailableError,
+    NamespaceNotFoundError,
+    PermissionDeniedError,
+    TableNotFoundError,
+)
 from lakesoul.metadata import (
     LakeSoulScanPlanPartition,
     NativeMetadataClient,
@@ -388,3 +399,57 @@ def test_native_scan_plan_uses_active_files_from_rust_client() -> None:
         "new.parquet",
     ]
     assert inner.request == ("table-id", "part=north", [(1, 2)])
+
+
+def test_metadata_exception_hierarchy_is_public_and_runtime_compatible() -> None:
+    exception_types = (
+        TableNotFoundError,
+        NamespaceNotFoundError,
+        AlreadyExistsError,
+        MetadataUnavailableError,
+        PermissionDeniedError,
+        InvalidMetadataError,
+    )
+
+    assert issubclass(MetadataError, LakeSoulError)
+    assert issubclass(LakeSoulError, RuntimeError)
+    assert all(
+        issubclass(exception_type, MetadataError) for exception_type in exception_types
+    )
+
+
+def test_native_lookup_raises_typed_table_not_found() -> None:
+    class EmptyInner:
+        def exec_query(self, query_type: int, joined_string: str) -> bytes:
+            return b""
+
+    client = NativeMetadataClient._from_inner(EmptyInner())  # type: ignore[arg-type]
+
+    with pytest.raises(TableNotFoundError, match="events.*analytics"):
+        client.get_table_info_by_name("events", "analytics")
+
+
+@pytest.mark.parametrize("if_exists", [False, True])
+def test_drop_table_never_suppresses_metadata_unavailable(if_exists: bool) -> None:
+    class UnavailableClient(DummyNativeClient):
+        def drop_table(self, table_name: str, namespace: str) -> None:
+            raise MetadataUnavailableError("metadata unavailable")
+
+    catalog = LakeSoulCatalog(
+        namespace="analytics", _client=UnavailableClient("config")
+    )
+
+    with pytest.raises(MetadataUnavailableError, match="metadata unavailable"):
+        catalog.drop_table("events", if_exists=if_exists)
+
+
+def test_drop_table_if_exists_suppresses_only_table_not_found() -> None:
+    class MissingClient(DummyNativeClient):
+        def drop_table(self, table_name: str, namespace: str) -> None:
+            raise TableNotFoundError("table not found")
+
+    catalog = LakeSoulCatalog(namespace="analytics", _client=MissingClient("config"))
+
+    catalog.drop_table("events", if_exists=True)
+    with pytest.raises(TableNotFoundError, match="table not found"):
+        catalog.drop_table("events")
