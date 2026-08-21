@@ -2,6 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from lakesoul.exceptions import (
+    AlreadyExistsError,
+    InvalidMetadataError,
+    LakeSoulError,
+    MetadataError,
+    MetadataUnavailableError,
+    NamespaceNotFoundError,
+    PermissionDeniedError,
+    TableNotFoundError,
+)
+
 from .generated.entity_pb2 import (
     DataCommitInfo,
     JniWrapper,
@@ -18,14 +29,22 @@ from .native_client import (
 )
 
 __all__ = [
-    "NativeMetadataClient",
-    "LakeSoulScanPlanPartition",
-    "PostgresMetadataConfig",
+    "AlreadyExistsError",
     "DataCommitInfo",
+    "InvalidMetadataError",
     "JniWrapper",
+    "LakeSoulError",
+    "LakeSoulScanPlanPartition",
+    "MetadataError",
+    "MetadataUnavailableError",
     "Namespace",
+    "NamespaceNotFoundError",
+    "NativeMetadataClient",
     "PartitionInfo",
+    "PermissionDeniedError",
+    "PostgresMetadataConfig",
     "TableInfo",
     "TableNameId",
+    "TableNotFoundError",
     "Uuid",
 ]

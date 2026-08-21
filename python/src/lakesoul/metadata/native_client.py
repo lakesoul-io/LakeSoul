@@ -16,6 +16,7 @@ import pyarrow
 
 from lakesoul._lib._metadata import _NativeMetadataClient
 from lakesoul._lib._utils import _schema_from_metadata_str
+from lakesoul.exceptions import TableNotFoundError
 
 from .const import PARAM_DELIM, DaoType
 from .generated.entity_pb2 import (
@@ -180,9 +181,11 @@ class NativeMetadataClient:
             DaoType.SelectTableInfoByTableNameAndNameSpace,
             [table_name, namespace],
         )
-        if wrapper:
+        if wrapper and wrapper.table_info:
             return wrapper.table_info[0]
-        raise RuntimeError(f"table {table_name} is not found in namseapce {namespace}")
+        raise TableNotFoundError(
+            f"table {table_name} is not found in namespace {namespace}"
+        )
 
     def get_partition_info_by_table_id(
         self,

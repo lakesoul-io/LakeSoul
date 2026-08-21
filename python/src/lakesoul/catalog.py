@@ -15,7 +15,12 @@ import pyarrow.dataset as ds
 
 from lakesoul._lib._utils import _schema_from_metadata_str
 from lakesoul.io import IOConfig, Writer, WriteResult
-from lakesoul.metadata import NativeMetadataClient, PostgresMetadataConfig, TableInfo
+from lakesoul.metadata import (
+    NativeMetadataClient,
+    PostgresMetadataConfig,
+    TableInfo,
+    TableNotFoundError,
+)
 
 DEFAULT_SCAN_BATCH_SIZE: int = 2**10
 PhysicalFormat = Literal["parquet", "vortex", "vortex-compact"]
@@ -114,6 +119,12 @@ class LakeSoulCatalog:
         return self._client.list_tables(self._resolve_namespace(namespace))
 
     def table(self, name: str, namespace: str | None = None) -> LakeSoulTable:
+        """Load a table.
+
+        Raises:
+            TableNotFoundError: If the table does not exist.
+            MetadataError: If the metadata operation fails.
+        """
         namespace = self._resolve_namespace(namespace)
         table_info = self._client.get_table_info_by_name(
             _case_fold_identifier(name),
@@ -192,6 +203,13 @@ class LakeSoulCatalog:
         properties: Mapping[str, str] | None = None,
         domain: str = "public",
     ) -> LakeSoulTable:
+        """Create and load a table.
+
+        Raises:
+            AlreadyExistsError: If the table already exists.
+            NamespaceNotFoundError: If the namespace does not exist.
+            MetadataError: If the metadata operation fails.
+        """
         if not isinstance(schema, pa.Schema):
             raise TypeError("schema must be a pyarrow.Schema")
         table_name = _case_fold_identifier(name)
@@ -235,12 +253,20 @@ class LakeSoulCatalog:
         *,
         if_exists: bool = False,
     ) -> None:
+        """Drop a table.
+
+        ``if_exists`` suppresses only :class:`TableNotFoundError`.
+
+        Raises:
+            TableNotFoundError: If the table does not exist and ``if_exists`` is false.
+            MetadataError: If the metadata operation fails.
+        """
         namespace = self._resolve_namespace(namespace)
         name = _case_fold_identifier(name)
         try:
             self._client.drop_table(name, namespace)
-        except RuntimeError as error:
-            if if_exists and "not found" in str(error).lower():
+        except TableNotFoundError:
+            if if_exists:
                 return
             raise
 
