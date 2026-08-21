@@ -171,9 +171,9 @@ At minimum, the following work must be completed before publishing `4.0.0`.
 
 - The Spark upgrade guide must document Spark 3.5 and the new Maven coordinates.
 - Document the semantic changes to range-partitioned overwrite.
-- Test savepoint recovery from Flink CDC 3.0 to 3.5. Do not claim compatible recovery until it has been verified.
-- The Presto upgrade guide must document Presto 0.296, Java 17, and changes to timestamp and name matching behavior.
-- Do not promise an untested rolling upgrade with mixed Presto coordinator and worker versions.
+- Flink CDC `3.0` savepoint recovery into Flink CDC `3.5` is outside the supported `4.0.0` upgrade path. Require a stopped cutover with source retention or an independently tested replay/backfill procedure, and do not claim savepoint compatibility.
+- The Presto upgrade guide must document Presto `0.296`, Java 17, case-sensitive name matching, and the changed timestamp type and precision behavior.
+- Mixed old/new Presto coordinators, workers, connector JARs, and native libraries are unsupported. Require a stopped replacement of the complete Presto deployment.
 
 ## 7. Release Gates Specific to `4.0.0`
 
