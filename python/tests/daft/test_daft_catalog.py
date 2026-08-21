@@ -13,6 +13,12 @@ from daft.io.partitioning import PartitionField, PartitionTransform
 from daft.logical.schema import Field
 
 from lakesoul.daft import LakeSoulDataCatalog, LakeSoulDataTable
+from lakesoul.exceptions import (
+    InvalidMetadataError,
+    MetadataUnavailableError,
+    PermissionDeniedError,
+    TableNotFoundError,
+)
 
 
 class FakeLakeSoulTable:
@@ -57,11 +63,11 @@ class FakeLakeSoulCatalog:
         try:
             return self.tables[(namespace, name)]
         except KeyError as error:
-            raise RuntimeError("table not found") from error
+            raise TableNotFoundError("table not found") from error
 
     def drop_table(self, name, namespace):
         if (namespace, name) not in self.tables:
-            raise RuntimeError("table not found")
+            raise TableNotFoundError("table not found")
         self.dropped = (namespace, name)
 
     def create_table(self, name, **options):
@@ -126,6 +132,35 @@ def test_daft_catalog_translates_missing_tables_and_drop() -> None:
 
     catalog.drop_table("analytics.events")
     assert inner.dropped == ("analytics", "events")
+
+    with pytest.raises(NotFoundError, match="missing"):
+        catalog.drop_table("default.missing")
+
+
+@pytest.mark.parametrize(
+    "error_type",
+    [
+        MetadataUnavailableError,
+        PermissionDeniedError,
+        InvalidMetadataError,
+    ],
+)
+def test_daft_catalog_preserves_operational_table_errors(error_type) -> None:
+    class FailingLakeSoulCatalog(FakeLakeSoulCatalog):
+        def table(self, name, namespace):
+            raise error_type("metadata operation failed")
+
+        def drop_table(self, name, namespace):
+            raise error_type("metadata operation failed")
+
+    catalog = LakeSoulDataCatalog(FailingLakeSoulCatalog())
+
+    with pytest.raises(error_type, match="metadata operation failed"):
+        catalog.get_table("default.part")
+    with pytest.raises(error_type, match="metadata operation failed"):
+        catalog.has_table("default.part")
+    with pytest.raises(error_type, match="metadata operation failed"):
+        catalog.drop_table("default.part")
 
 
 def test_daft_catalog_creates_table_with_lakesoul_options() -> None:

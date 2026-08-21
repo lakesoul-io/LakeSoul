@@ -19,6 +19,7 @@ from daft.catalog import (
 )
 
 from lakesoul.catalog import LakeSoulCatalog, LakeSoulTable
+from lakesoul.exceptions import TableNotFoundError
 
 if TYPE_CHECKING:
     from daft.io.partitioning import PartitionField
@@ -120,7 +121,7 @@ class LakeSoulDataCatalog(Catalog):
         namespace, table_name = self._resolve_table_identifier(ident)
         try:
             table = self._catalog.table(table_name, namespace)
-        except RuntimeError as error:
+        except TableNotFoundError as error:
             raise NotFoundError(f"LakeSoul table {ident} was not found") from error
         return LakeSoulDataTable(table)
 
@@ -183,7 +184,7 @@ class LakeSoulDataCatalog(Catalog):
         namespace, table_name = self._resolve_table_identifier(ident)
         try:
             self._catalog.drop_table(table_name, namespace)
-        except RuntimeError as error:
+        except TableNotFoundError as error:
             raise NotFoundError(f"LakeSoul table {ident} was not found") from error
 
     def _create_namespace(self, ident: Identifier) -> None:
