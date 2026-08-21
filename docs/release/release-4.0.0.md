@@ -40,6 +40,14 @@ Git tag:             py-v2.0.0
 
 The main reasons for using a major version for `4.0.0` include default Vortex Compact writes, metadata Arrow schema changes, native ABI changes, the Spark 3.5 baseline, the Flink CDC upgrade, new Presto and Java baselines, and user-visible semantic changes.
 
+### 2.1 Irreversible Vortex compatibility boundary
+
+Vortex Compact is the default physical format for `4.0.0` writes. LakeSoul `3.0.x` reads Parquet but cannot read Vortex or Vortex Compact. The point of no return is the first successful metadata commit that makes a Vortex or Vortex Compact file written by `4.0.0` part of a visible table snapshot; creating an uncommitted temporary file does not cross the boundary.
+
+After that commit, replacing `4.0.0` binaries with `3.0.x` binaries is not rollback. In-place and mixed-version rolling rollback are unsupported. Recovery to `3.0.x` requires restoring both PostgreSQL metadata and table data from the same verified, quiesced pre-upgrade backup set. Rewriting selected Vortex files to Parquet is a forward conversion and does not restore the previous snapshot.
+
+Before crossing this boundary, operators must use the Parquet-only upgrade window defined in the [upgrade and recovery guide](upgrade-4.0.0.md#5-parquet-only-upgrade-window). Keep every writer on Parquet until legacy Parquet/Vortex/mixed-snapshot reads, controlled writes, and backup-set restoration have passed for the deployment.
+
 ## 3. Maven Coordinates
 
 Starting with `4.0.0`, Maven `<version>` represents only the LakeSoul Core version. External runtime and Scala binary versions are encoded in the `artifactId`.

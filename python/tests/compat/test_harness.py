@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from compat.cases import CASES
+from compat.legacy_fixture import backup_manifest, verify_backup
 from compat.engines import engine_registry
 from compat.normalize import assert_table_matches, table_summary
 from compat.run_matrix import _plan_tasks, main
@@ -54,6 +56,43 @@ def test_format_cases_cover_every_supported_physical_format() -> None:
             "format_vortex_compact",
         )
     } == {"parquet", "vortex", "vortex-compact"}
+
+
+def test_default_format_case_uses_writer_default() -> None:
+    assert CASES["format_default"].physical_format is None
+
+
+def test_range_overwrite_expected_table_replaces_only_touched_partition() -> None:
+    rows = sorted(
+        CASES["range_overwrite"].expected_table.to_pylist(), key=lambda row: row["id"]
+    )
+    assert rows == [
+        {"id": 2, "part": "south", "value": 20, "tag": "keep-south"},
+        {"id": 3, "part": "north", "value": 30, "tag": "new-north"},
+    ]
+
+
+def test_backup_manifest_binds_and_verifies_both_artifacts(tmp_path: Path) -> None:
+    metadata = tmp_path / "metadata.dump"
+    table_data = tmp_path / "table-data.tar"
+    manifest = tmp_path / "backup-set.json"
+    metadata.write_bytes(b"metadata")
+    table_data.write_bytes(b"table-data")
+    backup_manifest(
+        SimpleNamespace(
+            metadata=str(metadata),
+            table_data=str(table_data),
+            output=str(manifest),
+        )
+    )
+
+    verify_backup(SimpleNamespace(manifest=str(manifest)))
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    assert len(payload["backup_set_id"]) == 20
+
+    table_data.write_bytes(b"changed")
+    with pytest.raises(RuntimeError, match="table_data checksum"):
+        verify_backup(SimpleNamespace(manifest=str(manifest)))
 
 
 def test_recovery_rejects_manifest_without_successful_writes(

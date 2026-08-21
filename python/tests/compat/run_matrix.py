@@ -11,9 +11,16 @@ import time
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from compat.cases import CASES, FULL_CASES, SMOKE_CASES, CaseSpec
-from compat.engines import CompatContext, Engine, TableRef, engine_registry
+from compat.engines import (
+    CompatContext,
+    Engine,
+    TableRef,
+    WriteEvidence,
+    engine_registry,
+)
 from compat.normalize import assert_table_matches
 
 
@@ -30,6 +37,8 @@ class MatrixRecord:
     error: str | None = None
     actual: dict | None = None
     expected: dict | None = None
+    produced_files: tuple[str, ...] = ()
+    physical_formats: tuple[str, ...] = ()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -57,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
         storage_uri=storage.rstrip("/"),
         run_id=run_id,
         object_store_options=_object_store_options(storage),
+        forced_physical_format=args.force_physical_format,
     )
     engines = engine_registry()
     selected_writers, selected_readers = _resolve_engines(args, engines)
@@ -127,6 +137,7 @@ def main(argv: list[str] | None = None) -> int:
         "writers": selected_writers,
         "readers": selected_readers,
         "cases": selected_cases,
+        "forced_physical_format": args.force_physical_format,
         "source_manifest": str(Path(args.read_manifest).resolve())
         if source_manifest
         else None,
@@ -162,7 +173,18 @@ def _run_write(
 ) -> MatrixRecord:
     start = time.monotonic()
     try:
-        writer.write_case(case, ref, ctx)
+        evidence = writer.write_case(case, ref, ctx) or _filesystem_evidence(ref)
+        if ctx.forced_physical_format:
+            if not evidence.files:
+                raise AssertionError("writer produced no data files")
+            unexpected = sorted(
+                set(evidence.physical_formats) - {ctx.forced_physical_format}
+            )
+            if unexpected:
+                raise AssertionError(
+                    "Parquet-only window produced unexpected physical formats: "
+                    + ",".join(unexpected)
+                )
         status = "passed"
         error = None
     except Exception as exc:
@@ -177,6 +199,8 @@ def _run_write(
         table_path=ref.path,
         status=status,
         elapsed_seconds=time.monotonic() - start,
+        produced_files=evidence.files if status == "passed" else (),
+        physical_formats=evidence.physical_formats if status == "passed" else (),
         error=error,
     )
 
@@ -343,6 +367,22 @@ def _visible_partition_columns(case: CaseSpec) -> tuple[str, ...]:
     return tuple(column for column in case.partition_by if column in visible)
 
 
+def _filesystem_evidence(ref: TableRef) -> WriteEvidence:
+    parsed = urlparse(ref.path)
+    if parsed.scheme not in ("", "file"):
+        return WriteEvidence((), ())
+    root = Path(unquote(parsed.path if parsed.scheme else ref.path))
+    files = tuple(
+        str(path)
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and path.suffix in {".parquet", ".vortex"}
+    )
+    formats = tuple(
+        "parquet" if Path(path).suffix == ".parquet" else "vortex" for path in files
+    )
+    return WriteEvidence(files, formats)
+
+
 def _object_store_options(storage: str) -> dict[str, str]:
     if not storage.startswith(("s3://", "s3a://")):
         return {}
@@ -375,6 +415,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--cases", default="smoke", help="smoke, full, or comma-separated case names"
     )
     parser.add_argument("--output-dir", default="/tmp/lakesoul-compat-artifacts")
+    parser.add_argument(
+        "--force-physical-format",
+        choices=["parquet", "vortex", "vortex-compact"],
+        help="override every writer format and fail if produced files disagree",
+    )
     parser.add_argument("--run-id")
     parser.add_argument(
         "--read-manifest",

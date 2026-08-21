@@ -354,6 +354,8 @@ jobs:
           swap-storage: true
       - name: Check out release commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
       - name: Download Linux x86_64 native libraries
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -404,6 +406,40 @@ jobs:
         run: |
           uv sync --python 3.10 --group dev --extra pandas --extra ray --extra daft --extra pyspark
           uv run maturin develop --release
+      - name: Prepare pinned legacy format writers
+        env:
+          LEGACY_VORTEX_COMMIT: 6558e2a361421689d2813bb41cfd4837f5db0ed9
+        run: |
+          uv venv /tmp/lakesoul-spark-3-venv --python 3.10
+          uv pip install --python /tmp/lakesoul-spark-3-venv/bin/python \
+            pyspark==3.3.1 pyarrow==20.0.0
+          curl --fail --location --retry 3 \
+            --output /tmp/lakesoul-spark-3.3-3.0.0.jar \
+            https://repo1.maven.org/maven2/com/dmetasoul/lakesoul-spark/3.3-3.0.0/lakesoul-spark-3.3-3.0.0.jar
+
+          git worktree add --detach /tmp/lakesoul-legacy-vortex "$LEGACY_VORTEX_COMMIT"
+          uv venv /tmp/lakesoul-vortex-venv --python 3.10
+          uv pip install --python /tmp/lakesoul-vortex-venv/bin/python \
+            'maturin>=1,<2' 'grpcio-tools==1.70' 'pyarrow==20.0.0' \
+            numpy 'protobuf>=5.0' 'typing-extensions>=4.8' 'colorlog>=6'
+          (
+            cd /tmp/lakesoul-legacy-vortex/python
+            VIRTUAL_ENV=/tmp/lakesoul-vortex-venv \
+              /tmp/lakesoul-vortex-venv/bin/maturin develop --release
+          )
+      - name: Verify legacy formats and consistent pre-upgrade recovery
+        env:
+          CURRENT_PYTHON: ${{ github.workspace }}/python/.venv/bin/python
+          LEGACY_SPARK_PYTHON: /tmp/lakesoul-spark-3-venv/bin/python
+          LEGACY_SPARK_JAR: /tmp/lakesoul-spark-3.3-3.0.0.jar
+          LEGACY_VORTEX_PYTHON: /tmp/lakesoul-vortex-venv/bin/python
+          LEGACY_VORTEX_COMMIT: 6558e2a361421689d2813bb41cfd4837f5db0ed9
+          LAKESOUL_COMPAT_OUTPUT_DIR: compatibility-artifacts/legacy-recovery
+          LAKESOUL_COMPAT_STORAGE_DIR: /tmp/lakesoul-release-legacy/storage
+          PGHOST: 127.0.0.1
+          PGPORT: "5432"
+          PGUSER: lakesoul_test
+        run: script/test_release_file_compatibility.sh
       - name: Run Spark and Flink cross-engine E2E matrix
         working-directory: python
         env:
@@ -422,7 +458,7 @@ jobs:
           MAVEN_OPTS: -Xmx4g
         run: >-
           .venv/bin/python -m compat.run_matrix --mode full
-          --cases format_parquet,format_vortex,format_vortex_compact
+          --cases format_parquet,format_vortex,format_vortex_compact,format_default
           --writers pyarrow --readers spark,flink,pyarrow,datafusion
           --storage file:///tmp/lakesoul-release-compat/storage
           --output-dir "${{ github.workspace }}/compatibility-artifacts/formats"
