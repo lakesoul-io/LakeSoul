@@ -15,7 +15,9 @@ from lakesoul.metadata.generated.entity_pb2 import AppendCommit
 daft = pytest.importorskip("daft")
 
 
-def test_daft_write_basic_append_reads_back_with_arrow(tmp_path: Path) -> None:
+def test_daft_write_basic_append_reads_back_with_arrow_and_daft(
+    tmp_path: Path,
+) -> None:
     catalog = LakeSoulCatalog.from_env()
     table_name = _table_name("daft_basic")
     schema = pa.schema(
@@ -51,16 +53,18 @@ def test_daft_write_basic_append_reads_back_with_arrow(tmp_path: Path) -> None:
 
         first_result = table.write_daft(daft.from_arrow(first))
         second_result = table.write_daft(daft.from_arrow(second))
-        actual = catalog.scan(table_name).to_arrow_table()
+        actual_arrow, actual_daft = _read_with_arrow_and_daft(catalog.scan(table_name))
+        expected = _rows(pa.concat_tables([first, second]))
 
         assert first_result.row_count == 2
         assert second_result.row_count == 1
-        assert _rows(actual) == _rows(pa.concat_tables([first, second]))
+        assert _rows(actual_arrow) == expected
+        assert _rows(actual_daft) == expected
     finally:
         catalog.drop_table(table_name, if_exists=True)
 
 
-def test_daft_write_partitioned_append_reads_filtered_partition_with_arrow(
+def test_daft_write_partitioned_append_reads_with_arrow_and_daft(
     tmp_path: Path,
 ) -> None:
     catalog = LakeSoulCatalog.from_env()
@@ -90,18 +94,21 @@ def test_daft_write_partitioned_append_reads_filtered_partition_with_arrow(
         )
 
         result = table.write_daft(daft.from_arrow(data))
-        actual = catalog.scan(
+        scan = catalog.scan(
             table_name,
             partitions={"part": "north"},
             columns=("id", "part", "value"),
             retain_partition_columns=True,
-        ).to_arrow_table()
-
-        assert result.row_count == 4
-        assert _rows(actual) == [
+        )
+        actual_arrow, actual_daft = _read_with_arrow_and_daft(scan)
+        expected = [
             {"id": 1, "part": "north", "value": 10},
             {"id": 3, "part": "north", "value": 30},
         ]
+
+        assert result.row_count == 4
+        assert _rows(actual_arrow) == expected
+        assert _rows(actual_daft) == expected
     finally:
         catalog.drop_table(table_name, if_exists=True)
 
@@ -140,12 +147,14 @@ def test_daft_write_mixed_case_create_uses_datafusion_case_folding(
         )
 
         table.write_daft(daft.from_arrow(data))
-        actual = catalog.scan(table_name).to_arrow_table()
+        actual_arrow, actual_daft = _read_with_arrow_and_daft(catalog.scan(table_name))
+        expected = _rows(data)
 
         assert table.name == table_name.lower()
         assert table.schema == write_schema
         assert table.hash_bucket_num == 4
-        assert _rows(actual) == _rows(data)
+        assert _rows(actual_arrow) == expected
+        assert _rows(actual_daft) == expected
         assert _data_commit_ops(catalog, table) == [AppendCommit]
     finally:
         catalog.drop_table(table_name, if_exists=True)
@@ -189,14 +198,16 @@ def test_daft_write_pk_upsert_reads_latest_rows_with_arrow(tmp_path: Path) -> No
 
         table.write_daft(daft.from_arrow(first))
         table.write_daft(daft.from_arrow(second))
-        actual = catalog.scan(table_name).to_arrow_table()
-
-        assert _rows(actual) == [
+        actual_arrow, actual_daft = _read_with_arrow_and_daft(catalog.scan(table_name))
+        expected = [
             {"id": 1, "name": "alice", "value": 10},
             {"id": 2, "name": "bob-updated", "value": 200},
             {"id": 3, "name": "carol", "value": 30},
             {"id": 4, "name": "dave", "value": 40},
         ]
+
+        assert _rows(actual_arrow) == expected
+        assert _rows(actual_daft) == expected
         assert set(_data_commit_ops(catalog, table)) == {AppendCommit}
     finally:
         catalog.drop_table(table_name, if_exists=True)
@@ -208,6 +219,11 @@ def _table_name(prefix: str) -> str:
 
 def _rows(table: pa.Table) -> list[dict[str, object]]:
     return sorted(table.to_pylist(), key=lambda row: tuple(row.values()))
+
+
+def _read_with_arrow_and_daft(scan) -> tuple[pa.Table, pa.Table]:
+    """Read once through the baseline Arrow API and once through Daft Source."""
+    return scan.to_arrow_table(), scan.to_daft().to_arrow()
 
 
 def _data_commit_ops(catalog: LakeSoulCatalog, table) -> list[int]:
