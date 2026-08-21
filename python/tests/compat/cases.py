@@ -20,7 +20,8 @@ class CaseSpec:
     hash_bucket_num: int = 1
     read_columns: tuple[str, ...] | None = None
     read_partition_filter: dict[str, Any] | None = None
-    physical_format: str = "vortex-compact"
+    physical_format: str | None = "vortex-compact"
+    replace_partitions: bool = False
 
     @property
     def expected_table(self) -> pa.Table:
@@ -51,6 +52,22 @@ class CaseSpec:
                     key = tuple(row[col] for col in self.primary_keys)
                     rows_by_key[key] = row
             return _table_from_rows(list(rows_by_key.values()), self.schema)
+        if self.replace_partitions:
+            rows: list[dict[str, Any]] = []
+            for batch in self.batches:
+                incoming = batch.to_pylist()
+                replaced = {
+                    tuple(row[column] for column in self.partition_by)
+                    for row in incoming
+                }
+                rows = [
+                    row
+                    for row in rows
+                    if tuple(row[column] for column in self.partition_by)
+                    not in replaced
+                ]
+                rows.extend(incoming)
+            return _table_from_rows(rows, self.schema)
         return pa.concat_tables(self.batches, promote_options="default")
 
 
@@ -228,6 +245,62 @@ CASES.update(
         )
         for physical_format in ("parquet", "vortex", "vortex-compact")
     }
+)
+
+CASES["format_default"] = CaseSpec(
+    name="format_default",
+    schema=BASIC_APPEND_SCHEMA,
+    batches=CASES["basic_append"].batches,
+    physical_format=None,
+)
+
+for legacy_name in ("legacy_parquet", "legacy_vortex", "legacy_mixed"):
+    CASES[legacy_name] = CaseSpec(
+        name=legacy_name,
+        schema=BASIC_APPEND_SCHEMA,
+        batches=CASES["basic_append"].batches,
+    )
+
+CASES["upgrade_window_mixed"] = CaseSpec(
+    name="upgrade_window_mixed",
+    schema=BASIC_APPEND_SCHEMA,
+    batches=CASES["basic_append"].batches
+    + (
+        _table(
+            BASIC_APPEND_SCHEMA,
+            [
+                {
+                    "id": 4,
+                    "label": "upgrade-parquet",
+                    "score": 4.0,
+                    "active": True,
+                    "note": "4.0 parquet window",
+                }
+            ],
+        ),
+    ),
+    physical_format="parquet",
+)
+
+CASES["range_overwrite"] = CaseSpec(
+    name="range_overwrite",
+    schema=PARTITIONED_APPEND_SCHEMA,
+    batches=(
+        _table(
+            PARTITIONED_APPEND_SCHEMA,
+            [
+                {"id": 1, "part": "north", "value": 10, "tag": "old-north"},
+                {"id": 2, "part": "south", "value": 20, "tag": "keep-south"},
+            ],
+        ),
+        _table(
+            PARTITIONED_APPEND_SCHEMA,
+            [{"id": 3, "part": "north", "value": 30, "tag": "new-north"}],
+        ),
+    ),
+    partition_by=("part",),
+    physical_format="parquet",
+    replace_partitions=True,
 )
 
 SMOKE_CASES = ("basic_append", "partitioned_append", "pk_upsert", "schema_types")
