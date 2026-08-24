@@ -102,19 +102,21 @@ public class LakeSoulPartitionReader implements PartitionReader<LakeSoulPartitio
     }
 
     private Optional<RowData> nextRecord() throws IOException {
-        if (curArrowReader == null || curRecordId >= currentVSR.getRowCount()) {
-            curArrowReader = nextBatch();
-        }
-        if (curArrowReader == null) return Optional.empty();
-        RowData rd = curArrowReader.read(curRecordId);
-        curRecordId++;
-        if (cdcColumn != null && !cdcColumn.isEmpty() && rd != null) {
-            if (FlinkUtil.isCDCDelete((StringData) cdcFieldGetter.getFieldOrNull(rd))) {
-                // batch read from cdc table should filter delete rows
-                return nextRecord();
+        while (true) {
+            if (curArrowReader == null || curRecordId >= currentVSR.getRowCount()) {
+                curArrowReader = nextBatch();
             }
+            if (curArrowReader == null) return Optional.empty();
+            RowData rd = curArrowReader.read(curRecordId);
+            curRecordId++;
+            if (cdcColumn != null && !cdcColumn.isEmpty() && rd != null) {
+                if (FlinkUtil.isCDCDelete((StringData) cdcFieldGetter.getFieldOrNull(rd))) {
+                    // batch read from cdc table should filter delete rows
+                    continue;
+                }
+            }
+            return Optional.of(rd);
         }
-        return Optional.of(rd);
     }
 
     private ArrowReader nextBatch() throws IOException {
