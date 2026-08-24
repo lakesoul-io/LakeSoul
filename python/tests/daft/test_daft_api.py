@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib
 import sys
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -68,10 +69,13 @@ def test_read_lakesoul_creates_native_source(monkeypatch) -> None:
             return expected_dataframe
 
     monkeypatch.setattr(source_module, "LakeSoulDataSource", FakeSource)
-    scan = SimpleNamespace(
-        columns=("id",),
-        table=SimpleNamespace(partition_by=("region",)),
-        to_scan_config=lambda: scan_config,
+    scan = cast(
+        LakeSoulScan,
+        SimpleNamespace(
+            columns=("id",),
+            table=SimpleNamespace(partition_by=("region",)),
+            to_scan_config=lambda: scan_config,
+        ),
     )
 
     result = daft_module.read_lakesoul(scan)
@@ -82,6 +86,53 @@ def test_read_lakesoul_creates_native_source(monkeypatch) -> None:
         "columns": ("id",),
         "partition_columns": ("region",),
     }
+
+
+def test_daft_tasks_disable_arrow_resharding(monkeypatch) -> None:
+    import asyncio
+
+    import pyarrow as pa
+    from daft.io.pushdowns import Pushdowns
+
+    import lakesoul.daft.source as source_module
+    from lakesoul.arrow import LakeSoulScanConfig
+    from lakesoul.metadata import LakeSoulScanPlanPartition
+
+    captured = []
+
+    class FakeTask:
+        def __init__(self, scan_config, **kwargs) -> None:
+            captured.append((scan_config, kwargs))
+
+    monkeypatch.setattr(source_module, "LakeSoulDataSourceTask", FakeTask)
+    source = source_module.LakeSoulDataSource(
+        LakeSoulScanConfig(
+            table_name="target",
+            namespace="analytics",
+            schema=pa.schema([pa.field("id", pa.int64())]),
+            partition_schema=None,
+            scan_partitions=(
+                LakeSoulScanPlanPartition(["file:///tmp/part-0.parquet"], ["id"]),
+                LakeSoulScanPlanPartition(["file:///tmp/part-1.parquet"], ["id"]),
+            ),
+            partitions={},
+            object_store_options={},
+            rank=1,
+            world_size=2,
+        ),
+        columns=("id",),
+        partition_columns=(),
+    )
+
+    async def collect_tasks():
+        return [task async for task in source.get_tasks(Pushdowns())]
+
+    tasks = asyncio.run(collect_tasks())
+
+    assert len(tasks) == 1
+    assert captured[0][0].scan_partitions[0].files == ["file:///tmp/part-1.parquet"]
+    assert captured[0][0].rank is None
+    assert captured[0][0].world_size is None
 
 
 def test_write_lakesoul_uses_native_sink_and_returns_write_result(
@@ -106,7 +157,7 @@ def test_write_lakesoul_uses_native_sink_and_returns_write_result(
             return object()
 
     monkeypatch.setattr(sink_module, "LakeSoulDataSink", FakeSink)
-    table = object()
+    table = cast(LakeSoulTable, object())
 
     result = daft_module.write_lakesoul(
         FakeDataFrame(),

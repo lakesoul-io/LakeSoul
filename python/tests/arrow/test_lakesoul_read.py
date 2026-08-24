@@ -38,6 +38,35 @@ def test_lakesoul_dataset():
     assert total_rows == 20000
 
 
+def test_unsharded_dataset_ignores_torch_distributed(monkeypatch) -> None:
+    dist = pytest.importorskip("torch.distributed")
+    from lakesoul.arrow import Dataset, LakeSoulScanConfig
+    from lakesoul.metadata import LakeSoulScanPlanPartition
+
+    monkeypatch.setattr(dist, "get_rank", lambda: 1)
+    monkeypatch.setattr(dist, "get_world_size", lambda: 2)
+    scan_partitions = (
+        LakeSoulScanPlanPartition(["file:///tmp/part-0.parquet"], ["id"]),
+        LakeSoulScanPlanPartition(["file:///tmp/part-1.parquet"], ["id"]),
+    )
+    dataset = Dataset(
+        LakeSoulScanConfig(
+            table_name="target",
+            namespace="analytics",
+            schema=pa.schema([pa.field("id", pa.int64())]),
+            partition_schema=None,
+            scan_partitions=scan_partitions,
+            partitions={},
+            object_store_options={},
+        )
+    )
+
+    assert dataset.file_urls() == [
+        ["file:///tmp/part-0.parquet"],
+        ["file:///tmp/part-1.parquet"],
+    ]
+
+
 def test_dataset_parameters():
     lds = _dataset("part")
     with pytest.raises(NotImplementedError) as _:

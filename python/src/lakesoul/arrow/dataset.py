@@ -334,34 +334,18 @@ class Dataset(ds.Dataset):
         self, rank: int | None, world_size: int | None
     ) -> tuple[int | None, int | None]:
         if rank is None and world_size is None:
-            return self._try_get_rank_and_world_size()
-        elif rank is not None and world_size is not None:
-            if rank < 0:
-                raise ValueError(f"rank must be non-negative int; {rank} is invalid")
-            if world_size <= 0:
-                raise ValueError(
-                    f"world_size must be positive int; {world_size} is invalid"
-                )
-            if rank >= world_size:
-                raise ValueError(
-                    f"rank {rank} is out of range; world_size = {world_size}"
-                )
-            return rank, world_size
-        else:
+            return None, None
+        if rank is None or world_size is None:
             raise ValueError("rank and world_size must be both set or both unset")
-
-    def _try_get_rank_and_world_size(self) -> tuple[int | None, int | None]:
-        try:
-            import torch.distributed as dist
-        except ImportError:
-            return None, None
-        try:
-            rank = dist.get_rank()
-            world_size = dist.get_world_size()
-            return rank, world_size
-        except Exception as e:
-            logging.debug("Unable to obtain PyTorch distributed rank: %s", e)
-            return None, None
+        if rank < 0:
+            raise ValueError(f"rank must be non-negative int; {rank} is invalid")
+        if world_size <= 0:
+            raise ValueError(
+                f"world_size must be positive int; {world_size} is invalid"
+            )
+        if rank >= world_size:
+            raise ValueError(f"rank {rank} is out of range; world_size = {world_size}")
+        return rank, world_size
 
     def _filter_scan_partitions(
         self,

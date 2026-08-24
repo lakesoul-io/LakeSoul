@@ -119,11 +119,10 @@ class LakeSoulDataSource(DataSource):
                 self._scan_config,
                 scan_partitions=(scan_partition,),
                 # Sharding has already been applied to the complete scan plan.
-                # Use an explicit one-rank scan so the Arrow dataset cannot
-                # infer torch.distributed rank/world_size and shard this task
-                # a second time.
-                rank=0,
-                world_size=1,
+                # Each Daft task owns its one retained partition, so the Arrow
+                # dataset must not shard it again.
+                rank=None,
+                world_size=None,
             )
             yield LakeSoulDataSourceTask(
                 partition_config,
