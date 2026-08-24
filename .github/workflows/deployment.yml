@@ -14,8 +14,10 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-
+  actions: read
+  attestations: write
+  contents: write
+  id-token: write
 jobs:
   release:
     uses: ./.github/workflows/release-build.yml
