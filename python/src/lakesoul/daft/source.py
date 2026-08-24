@@ -119,11 +119,10 @@ class LakeSoulDataSource(DataSource):
                 self._scan_config,
                 scan_partitions=(scan_partition,),
                 # Sharding has already been applied to the complete scan plan.
-                # Use an explicit one-rank scan so the Arrow dataset cannot
-                # infer torch.distributed rank/world_size and shard this task
-                # a second time.
-                rank=0,
-                world_size=1,
+                # Each Daft task owns its one retained partition, so the Arrow
+                # dataset must not shard it again.
+                rank=None,
+                world_size=None,
             )
             yield LakeSoulDataSourceTask(
                 partition_config,
@@ -246,43 +245,43 @@ class _SchemaAwarePyArrowExpressionVisitor(_PyArrowExpressionVisitor):
 
     def visit_between(
         self,
-        expression: Expression,
+        expr: Expression,
         lower: Expression,
         upper: Expression,
     ) -> ds.Expression:
-        field = self._decimal_field_for_column(expression)
+        field = self._decimal_field_for_column(expr)
         if field is None:
-            return super().visit_between(expression, lower, upper)
+            return super().visit_between(expr, lower, upper)
 
-        arrow_expression = self.visit(expression)
+        arrow_expression = self.visit(expr)
         arrow_lower = self._visit_decimal_operand(field, lower)
         arrow_upper = self._visit_decimal_operand(field, upper)
         return (arrow_lower <= arrow_expression) & (arrow_expression <= arrow_upper)
 
     def visit_is_in(
         self,
-        expression: Expression,
+        expr: Expression,
         items: list[Expression],
     ) -> ds.Expression:
-        field = self._decimal_field_for_column(expression)
+        field = self._decimal_field_for_column(expr)
         if field is None:
-            return super().visit_is_in(expression, items)
+            return super().visit_is_in(expr, items)
 
         values: list[Decimal | None] = []
         for item in items:
             if not item.is_literal():
-                return super().visit_is_in(expression, items)
+                return super().visit_is_in(expr, items)
             value = item.as_py()
             if value is None:
                 values.append(None)
                 continue
             decimal_value = self._decimal_value(value)
             if decimal_value is None:
-                return super().visit_is_in(expression, items)
+                return super().visit_is_in(expr, items)
             values.append(decimal_value)
 
         value_set = pa.array(values, type=field.type)
-        return self.visit(expression).isin(value_set)
+        return self.visit(expr).isin(value_set)
 
     def _visit_comparison(
         self,
@@ -369,7 +368,7 @@ def _combine_filters(
 def _partition_matches(
     scan_partition: LakeSoulScanPlanPartition,
     partition_fields: dict[str, pa.Field],
-    filter: object | None,
+    filter: Expression | None,
 ) -> bool:
     if filter is None:
         return True
