@@ -11,6 +11,9 @@ on:
         description: Validated signed Core release tag
         required: true
         type: string
+    secrets:
+      GH_PAGES_DEPLOY:
+        required: true
 
 permissions:
   contents: read
@@ -19,7 +22,6 @@ jobs:
   publish:
     if: github.ref == format('refs/tags/{0}', inputs.ref)
     runs-on: ubuntu-24.04
-    environment: website-production
     steps:
       - name: Check out validated release tag
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
