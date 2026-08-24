@@ -101,6 +101,9 @@ def build_partition_vector_index(
     nlist: int = 256,
     total_bits: int = 7,
     metric: str = "L2",
+    rotator_type: str = "FhtKac",
+    seed: int = 42,
+    use_faster_config: bool = True,
     store_config: dict | None = None,
 ) -> dict:
     """Build (or update) the vector index for a single partition of a table.
@@ -121,6 +124,9 @@ def build_partition_vector_index(
         nlist: Number of IVF clusters (default 256).
         total_bits: RaBitQ total bits (default 7).
         metric: Distance metric, ``"L2"`` or ``"IP"`` (InnerProduct).
+        rotator_type: Rotation type, ``"FhtKac"`` or ``"Matrix"``.
+        seed: Random seed.
+        use_faster_config: Enable fast quantization.
         store_config: Dict with S3/local storage credentials:
             ``{"type": "s3", "bucket": "...", "region": "...",
                "access_key_id": "...", "secret_access_key": "...", ...}``.
@@ -186,6 +192,9 @@ def build_partition_vector_index(
                 nlist=nlist,
                 total_bits=total_bits,
                 metric=metric,
+                rotator_type=rotator_type,
+                seed=seed,
+                use_faster_config=use_faster_config,
             )
             if result == "ok":
                 succeeded += 1
@@ -219,6 +228,9 @@ def build_table_vector_index(
     nlist: int = 256,
     total_bits: int = 7,
     metric: str = "L2",
+    rotator_type: str = "FhtKac",
+    seed: int = 42,
+    use_faster_config: bool = True,
     store_config: dict | None = None,
 ) -> dict:
     """Build vector index for ALL partitions of a table.
@@ -245,6 +257,9 @@ def build_table_vector_index(
             nlist=nlist,
             total_bits=total_bits,
             metric=metric,
+            rotator_type=rotator_type,
+            seed=seed,
+            use_faster_config=use_faster_config,
             store_config=store_config,
         )
         results.append(result)

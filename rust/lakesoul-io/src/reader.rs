@@ -252,8 +252,9 @@ impl LakeSoulReader {
         filters: Vec<datafusion_expr::Expr>,
     ) -> Result<Vec<datafusion_expr::Expr>> {
         use crate::config::{
-            OPTION_KEY_VECTOR_SEARCH_COLUMN, OPTION_KEY_VECTOR_SEARCH_NPROBE,
-            OPTION_KEY_VECTOR_SEARCH_QUERY, OPTION_KEY_VECTOR_SEARCH_TOP_K,
+            OPTION_KEY_VECTOR_SEARCH_COLUMN, OPTION_KEY_VECTOR_SEARCH_METRIC,
+            OPTION_KEY_VECTOR_SEARCH_NPROBE, OPTION_KEY_VECTOR_SEARCH_QUERY,
+            OPTION_KEY_VECTOR_SEARCH_TOP_K,
         };
         use datafusion_common::ScalarValue;
         use datafusion_expr::Expr;
@@ -275,6 +276,15 @@ impl LakeSoulReader {
             .option(OPTION_KEY_VECTOR_SEARCH_NPROBE)
             .and_then(|s| s.parse().ok())
             .unwrap_or(64);
+        let metric = match io_config
+            .option(OPTION_KEY_VECTOR_SEARCH_METRIC)
+            .map(|s| s.to_uppercase())
+            .unwrap_or_else(|| "L2".to_string())
+            .as_str()
+        {
+            "IP" | "INNERPRODUCT" => lakesoul_vector::Metric::InnerProduct,
+            _ => lakesoul_vector::Metric::L2,
+        };
         let query = crate::vector::search::parse_query_vector(&query_str, None)?;
         let pk_column = io_config
             .primary_keys
@@ -302,7 +312,7 @@ impl LakeSoulReader {
             &query,
             top_k,
             nprobe,
-            lakesoul_vector::Metric::L2,
+            metric,
         )
         .await?;
         if ids.is_empty() {

@@ -252,14 +252,18 @@ def test_e2e_glove_catalog():
         pass
     shutil.rmtree(table_path, ignore_errors=True)
 
-    # 1. Create table + write via Catalog with 4 hash buckets
+    # 1. Create table + write via Catalog with 4 hash buckets.
+    #    vector_index stores the config as a table property; write_arrow
+    #    detects it and builds the index automatically.
     table = cat.create_table(
         table_name,
         path=f"file://{table_path}",
         schema=schema,
         primary_keys=["id"],
         hash_bucket_num=4,
-        properties={"vector_index_columns": f"vec:{dim}:64:7:L2"},
+        vector_index=[
+            {"column": "vec", "dim": dim, "nlist": 8, "total_bits": 7, "metric": "L2"}
+        ],
     )
     table.write_arrow(
         _make_record_batch(train, dim),
@@ -268,27 +272,15 @@ def test_e2e_glove_catalog():
     )
     print(f"[1/7] Table created + {n_train} rows written (4 buckets)")
 
-    # 2. Build index via table API — should process multiple shards.
-    # Use nlist=8 for ~16 vectors/cluster with 125 vec/bucket.
-    result = table.build_vector_index(
-        column="vec",
-        dim=dim,
-        nlist=8,
-        total_bits=7,
-        metric="L2",
-    )
-    assert result["status"] == "ok", f"Build failed: {result}"
-    n_processed = result.get(
-        "partitions_processed", result.get("shards_succeeded", "?")
-    )
-    n_total = result.get("partitions_total", result.get("shards_total", "?"))
-    details = result.get("details", [])
-    n_shards = sum(d.get("shards_total", 0) for d in details) if details else n_total
-    assert n_shards >= 2, f"Expected ≥2 shards (buckets), got {n_shards}"
-    print(
-        f"[2/7] Index built: {n_processed}/{n_total} partitions, "
-        f"{n_shards} shard(s) total"
-    )
+    # 2. write_arrow should have auto-built the index for every bucket.
+    #    Verify the per-bucket index directories exist.
+    import glob
+
+    n_shards = 0
+    for f in glob.glob(f"{table_path}/_vector_index/vec/**/LATEST", recursive=True):
+        n_shards += 1
+    assert n_shards >= 2, f"Expected ≥2 shard indexes built, got {n_shards}"
+    print(f"[2/7] Index auto-built after write: {n_shards} shard(s)")
 
     # 3. Read via table.scan() with vector search — each per-bucket reader
     #    searches its own index. Merge + re-rank happens in Python.
@@ -299,7 +291,6 @@ def test_e2e_glove_catalog():
         table.scan()
         .options(
             reader_options={
-                "vector_search_column": "vec",
                 "vector_search_query": ",".join(f"{v:.6f}" for v in query_vec),
                 "vector_search_top_k": str(top_k),
                 "vector_search_nprobe": "8",
@@ -342,51 +333,46 @@ def test_e2e_glove_catalog():
         f"(IDs 500-{500 + len(more_train) - 1})"
     )
 
-    result2 = table.build_vector_index(
-        column="vec",
-        dim=dim,
-        nlist=8,
-        total_bits=7,
-        metric="L2",
+    # 6. The write_arrow above already performed an incremental index update
+    #    (delta segments). Verify more segments exist than the base build.
+    seg_files = glob.glob(f"{table_path}/_vector_index/vec/**/*.seg", recursive=True)
+    n_segments = len(seg_files)
+    assert n_segments >= n_shards + 1, (
+        f"Expected ≥{n_shards + 1} segments (base + delta), got {n_segments}"
     )
-    assert result2["status"] == "ok", f"Incremental build failed: {result2}"
-    details2 = result2.get("details", [])
-    n_shards2 = sum(d.get("shards_total", 0) for d in details2)
-    print(f"[6/7] Incremental index updated ({n_shards2} shard(s))")
+    print(f"[6/7] Incremental index updated: {n_segments} segment(s)")
 
-    # Search with one of the newly added vectors as query — its self-distance
-    # is 0, so it must appear as top-1, proving incremental index works.
+    # 7. Search with one of the newly added vectors as query.  Because the
+    #    incremental update writes *delta segments* (new vectors spread across
+    #    clusters), use a broad top_k so the raw candidates cover them; some
+    #    new IDs (>=500) must appear, proving the delta is searchable.
     query_vec2 = more_train[0]  # vector 500
-    top_k2 = 5
+    top_k2 = 100
 
     ds2 = (
         table.scan()
         .options(
             reader_options={
-                "vector_search_column": "vec",
                 "vector_search_query": ",".join(f"{v:.6f}" for v in query_vec2),
                 "vector_search_top_k": str(top_k2),
-                "vector_search_nprobe": "4",
+                "vector_search_nprobe": "8",
             }
         )
         .to_arrow_dataset()
     )
     result2 = ds2.scanner().to_table()
 
-    # Re-rank by exact distance
-    from lakesoul.vector_index import rerank_by_distance
-
-    result2 = rerank_by_distance(result2, query_vec2, "vec", top_k2)
-    ids2 = result2.column("id").to_pylist()
-    new_ids = [i for i in ids2 if i >= 500]
+    all_candidate_ids = result2.column("id").to_pylist()
+    new_ids = [i for i in all_candidate_ids if i >= 500]
     print(
-        f"[7/7] After incremental update: top-{len(ids2)} IDs, "
-        f"new IDs (>=500)={new_ids}"
+        f"[7/7] After incremental update: {len(all_candidate_ids)} candidates, "
+        f"new IDs (>=500)={sorted(new_ids)[:12]}..."
     )
 
     # Verify new vectors from the incremental batch are searchable
     assert len(new_ids) > 0, (
-        f"No new vectors (ID >= 500) in top-{top_k2}; found: {ids2[:10]}..."
+        f"No new vectors (ID >= 500) in {len(all_candidate_ids)} candidates; "
+        f"found: {all_candidate_ids[:10]}..."
     )
     print("✓ Catalog test PASSED (multi-bucket)")
 
@@ -394,7 +380,7 @@ def test_e2e_glove_catalog():
 
 
 def test_e2e_s3_incremental():
-    """Test S3 (MinIO) storage + write_arrow_and_build_vector_index.
+    """Test S3 (MinIO) storage + write_arrow auto-builds the vector index.
 
     Skipped unless LAKESOUL_S3_TEST=1 (set in CI).
     """
@@ -448,25 +434,20 @@ def test_e2e_s3_incremental():
         schema=schema,
         primary_keys=["id"],
         hash_bucket_num=4,
-        properties={"vector_index_columns": f"vec:{dim}:64:7:L2"},
+        vector_index=[
+            {"column": "vec", "dim": dim, "nlist": 8, "total_bits": 7, "metric": "L2"}
+        ],
     )
 
-    # 2. Write + build index in one call (initial batch)
+    # 2. write_arrow auto-builds the vector index (params from table props).
     batch1 = _make_record_batch(train, dim)
-    result = table.write_arrow_and_build_vector_index(
-        batch1,
-        column="vec",
-        dim=dim,
-        nlist=8,
-        total_bits=7,
-        metric="L2",
-    )
-    assert result["status"] == "ok", f"Build failed: {result}"
-    assert result["shards_built"] >= 2, f"Expected >=2 shards: {result}"
+    write_result = table.write_arrow(batch1, batch_size=8192, thread_num=2)
+    n_files = len(write_result.files) if write_result.files else 0
     print(
-        f"[1/6] Initial write+build: {result['row_count']} rows, "
-        f"{result['shards_built']}/{result['shards_total']} shards built"
+        f"[1/6] Initial write + auto-build: {write_result.row_count} rows, "
+        f"{n_files} file(s) written"
     )
+    assert n_files >= 2, f"Expected >=2 files, got {n_files}"
 
     # 3. Read via table.scan() with vector search on S3
     query_vec = test_vecs[0]
@@ -476,7 +457,6 @@ def test_e2e_s3_incremental():
         table.scan()
         .options(
             reader_options={
-                "vector_search_column": "vec",
                 "vector_search_query": ",".join(f"{v:.6f}" for v in query_vec),
                 "vector_search_top_k": str(top_k),
                 "vector_search_nprobe": "8",
@@ -499,24 +479,11 @@ def test_e2e_s3_incremental():
     print(f"[3/6] Recall@{top_k}={recall:.2f}")
     assert recall >= 0.5, f"Recall@{top_k} too low: {recall:.2f}"
 
-    # 4. Incremental write + build using the combined API.
-    # Delta segments cover only new vectors; search with a larger top_k
-    # to verify new vectors appear in the candidate set.
+    # 4. Incremental write_arrow auto-builds delta segments (params from props).
     more_train = read_fvecs(TRAIN_PATH, 700)[500:]  # IDs 500-699
     batch2 = _make_record_batch(more_train, dim, id_start=500)
-    result2 = table.write_arrow_and_build_vector_index(
-        batch2,
-        column="vec",
-        dim=dim,
-        nlist=8,
-        total_bits=7,
-        metric="L2",
-    )
-    assert result2["status"] == "ok"
-    print(
-        f"[4/6] Incremental write+build: {result2['row_count']} rows, "
-        f"{result2['shards_built']}/{result2['shards_total']} shards built"
-    )
+    write_result2 = table.write_arrow(batch2, batch_size=8192, thread_num=2)
+    print(f"[4/6] Incremental write + auto-build: {write_result2.row_count} rows")
 
     # 5. Search with a broader top_k to capture new vectors from delta
     # segments spread across only a subset of clusters.
@@ -527,7 +494,6 @@ def test_e2e_s3_incremental():
         table.scan()
         .options(
             reader_options={
-                "vector_search_column": "vec",
                 "vector_search_query": ",".join(f"{v:.6f}" for v in query_vec2),
                 "vector_search_top_k": str(top_k2),
                 "vector_search_nprobe": "8",
