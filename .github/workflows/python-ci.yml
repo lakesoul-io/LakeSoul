@@ -99,6 +99,9 @@ jobs:
           docker-images: true
           swap-storage: true
       - uses: actions/checkout@v4
+      - name: Validate Python release tag
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        run: python script/release.py check-tag "$GITHUB_REF_NAME"
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
@@ -149,7 +152,7 @@ jobs:
           .venv/bin/python -m pytest ./tests/ -s
   publish:
     runs-on: ubuntu-24.04
-    if: startsWith(github.event.ref, 'refs/tags/py-v')
+    if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/py-v')
     needs: ["run-pytest"]
     env:
       PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple

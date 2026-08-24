@@ -16,7 +16,7 @@ The basic principles are:
 4. Spark, Flink, Presto, and Scala versions are runtime compatibility dimensions. They are encoded in the Maven `artifactId` and are no longer mixed into the LakeSoul `<version>`.
 5. Flight and S3 Proxy are currently Experimental components and are not part of the official Core release.
 6. A release PR is the release candidate; RC versions and RC tags are not mandatory.
-7. An official release may only be triggered by a signed final tag and must be approved through a protected environment before publication.
+7. An official release may only be triggered by a signed final tag after every release gate succeeds.
 8. Build, test, and publish are separate stages. No `workflow_dispatch` invocation may bypass the final tag and publish a production release directly.
 
 ## 2. Release Domains and Versions
@@ -42,7 +42,7 @@ The Core version is a single unified version expressed in three forms:
 
 The Core development version is represented by `<revision>` in the root `pom.xml`. Core Rust manifests must map it to the equivalent Cargo SemVer. CI must verify that both sides are consistent; changing only one side is not allowed.
 
-The website version represents the latest stable release, not the current development version. While a `<X.Y.Z>-SNAPSHOT` is under development, the website must continue to show the previous final release until `v<X.Y.Z>` is published.
+The website version represents the latest published stable release, not the current development or tagged-but-unpublished version. The release branch and final Core tag keep the previous stable value. Only the website publication job may set it to `<X.Y.Z>`, after Core artifacts have been published and verified.
 
 ### 2.2 Python
 
@@ -292,7 +292,7 @@ The release PR is the internal candidate and must include:
 - an upgrade guide;
 - documented rollback support and recovery procedures, including explicit points of no return and backup requirements;
 - a mapping between old and new Maven coordinates;
-- website release content. The latest stable version must change only after the official release succeeds, or atomically through the publish workflow.
+- website release content. The release commit and tag retain the previous stable version; the website publication job updates its checked-out copy only after the official Core release succeeds.
 
 The release PR runs the same reusable build workflow as the official release, with:
 
@@ -340,18 +340,16 @@ The tag workflow must:
 4. reject `SNAPSHOT`, `dev`, and unexpected prerelease versions;
 5. rerun the release build and all release gates;
 6. build immutable final artifacts;
-7. enter a protected GitHub Environment and wait for maintainer approval;
-8. publish to Maven Central after approval;
+7. publish to Maven Central after every release gate succeeds;
+8. verify the published Maven Central artifacts;
 9. create the GitHub Release and upload its assets;
 10. publish the website and the release notes;
 11. report registry URLs, artifact checksums, and the commit SHA.
 
-Recommended protected environments:
-
-```text
-maven-central
-website-production
-```
+Production credentials are repository Actions secrets. The caller must map
+each secret explicitly to the reusable release workflow; `secrets: inherit` is
+prohibited. Release workflows may reference registry, signing, and deployment
+credentials only in production publication and verification jobs.
 
 Production publication may only be triggered by a final tag. `workflow_dispatch` may run a dry run or retry safe build steps, but it must not publish a production release from an arbitrary branch or commit.
 
@@ -380,7 +378,7 @@ Process:
 3. Create a release PR that changes `<X.Y.(Z+1)>-SNAPSHOT` to `<X.Y.(Z+1)>`.
 4. Run the same release dry run.
 5. Create the signed tag `v<X.Y.(Z+1)>`.
-6. Publish after approval through the protected environment.
+6. Publish after all release gates succeed.
 7. Advance the release branch to `<X.Y.(Z+2)>-SNAPSHOT`.
 
 Patch releases do not use RCs by default.
@@ -399,7 +397,7 @@ Python releases are independent of Core:
 8. Advance to the next `.dev0` version after publication.
 9. Do not trigger a Core Maven release, Core GitHub Release, or website Core stable update.
 
-Python publication must use a protected environment and OIDC Trusted Publishing. Long-lived PyPI tokens must not be stored.
+Python publication must use OIDC Trusted Publishing. Long-lived PyPI tokens must not be stored.
 
 ## 11. Version Synchronization Tool
 
@@ -411,6 +409,7 @@ python script/release.py set-core <X.Y.Z>-SNAPSHOT
 python script/release.py set-core <X.Y.Z>
 python script/release.py set-python <X.Y.Z>.dev0
 python script/release.py check-tag v<X.Y.Z>
+python script/release.py set-website-stable <X.Y.Z>  # publication job only
 ```
 
 The tool must:
@@ -436,6 +435,6 @@ An official release must provide:
 - GitHub Actions pinned to fixed versions or commit SHAs;
 - no floating `master` or `latest` references for release toolchains;
 - explicit records of the source commit, Rust toolchain, JDK, Maven, and platform target;
-- registry credentials available only to protected publish jobs;
+- repository publication credentials explicitly mapped to the release workflow and referenced only by production publish or verification jobs;
 - OIDC Trusted Publishing for PyPI;
 - long-term traceability of release artifact build logs and checksums.

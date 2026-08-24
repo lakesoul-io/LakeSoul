@@ -154,7 +154,7 @@ class ReleaseToolTest(unittest.TestCase):
         )
         self.assertEqual("3.0.0", str(release.website_version(self.root)))
 
-    def test_set_core_final_synchronizes_website(self) -> None:
+    def test_set_core_final_leaves_website_on_published_version(self) -> None:
         result, _, stderr = self.run_main("set-core", "4.0.0")
 
         self.assertEqual(0, result, stderr)
@@ -163,8 +163,18 @@ class ReleaseToolTest(unittest.TestCase):
             'version = "4.0.0"',
             (self.root / "Cargo.toml").read_text(encoding="utf-8"),
         )
-        self.assertEqual("4.0.0", str(release.website_version(self.root)))
+        self.assertEqual("3.0.0", str(release.website_version(self.root)))
         self.assertEqual([], release.validate(self.root))
+
+    def test_set_website_stable_requires_matching_final_core(self) -> None:
+        result, _, stderr = self.run_main("set-website-stable", "4.0.0")
+        self.assertEqual(1, result)
+        self.assertIn("requires matching final Core", stderr)
+
+        self.assertEqual(0, self.run_main("set-core", "4.0.0")[0])
+        result, _, stderr = self.run_main("set-website-stable", "4.0.0")
+        self.assertEqual(0, result, stderr)
+        self.assertEqual("4.0.0", str(release.website_version(self.root)))
 
     def test_set_python_maps_pep440_development_version_to_cargo(self) -> None:
         result, _, stderr = self.run_main("set-python", "2.1.0.dev0")

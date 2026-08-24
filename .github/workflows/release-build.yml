@@ -615,7 +615,6 @@ jobs:
       - connector-e2e-and-recovery
       - metadata-migration
     runs-on: ubuntu-24.04
-    environment: maven-central-production
     services:
       postgres:
         image: postgres:14.5
@@ -693,7 +692,6 @@ jobs:
     if: inputs.publish
     needs: [validate-release, publish-maven-central]
     runs-on: ubuntu-24.04
-    environment: maven-central-production
     services:
       postgres:
         image: postgres:14.5
@@ -758,7 +756,6 @@ jobs:
     if: inputs.publish
     needs: [validate-release, assemble-release-assets, verify-published-release]
     runs-on: ubuntu-24.04
-    environment: maven-central-production
     permissions:
       contents: write
     steps:
@@ -817,4 +814,5 @@ jobs:
     uses: ./.github/workflows/website-publish.yml
     with:
       ref: ${{ inputs.tag }}
-    secrets: inherit
+    secrets:
+      GH_PAGES_DEPLOY: ${{ secrets.GH_PAGES_DEPLOY }}

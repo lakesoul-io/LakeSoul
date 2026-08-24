@@ -365,13 +365,9 @@ def validate(root: Path) -> list[str]:
                 f"python/Cargo.toml: version {cargo_python!r} != {python.cargo!r}"
             )
 
-        if core.snapshot and stable >= core.version:
+        if stable >= core.version:
             errors.append(
-                f"website stable version {stable} must precede development Core {core.maven}"
-            )
-        if not core.snapshot and stable != core.version:
-            errors.append(
-                f"website stable version {stable} must equal final Core {core.maven}"
+                f"website stable version {stable} must precede unpublished Core {core.maven}"
             )
 
         validate_maven(root, core, errors)
@@ -403,38 +399,53 @@ def apply_updates(
 def set_core(root: Path, value: str, check: bool = False) -> None:
     target = parse_core(value)
     stable = website_version(root)
-    if target.snapshot and stable >= target.version:
+    if stable >= target.version:
         raise ReleaseError(
-            f"website stable version {stable} must precede development Core {target.maven}"
+            f"website stable version {stable} must precede unpublished Core {target.maven}"
         )
 
-    updates: list[tuple[str, str] | None] = [
-        replace_value(
-            root,
-            "pom.xml",
-            r"<revision>([^<]+)</revision>",
-            target.maven,
-            "Maven revision",
-        ),
-        replace_value(
-            root,
-            "Cargo.toml",
-            r'^version\s*=\s*"([^"]+)"',
-            target.cargo,
-            "workspace package version",
-        ),
-    ]
-    if not target.snapshot:
-        updates.append(
+    apply_updates(
+        root,
+        [
+            replace_value(
+                root,
+                "pom.xml",
+                r"<revision>([^<]+)</revision>",
+                target.maven,
+                "Maven revision",
+            ),
+            replace_value(
+                root,
+                "Cargo.toml",
+                r'^version\s*=\s*"([^"]+)"',
+                target.cargo,
+                "workspace package version",
+            ),
+        ],
+        check,
+    )
+
+
+def set_website_stable(root: Path, value: str, check: bool = False) -> None:
+    target = parse_final(value, "website stable version")
+    core = core_version(root)
+    if core.snapshot or target != core.version:
+        raise ReleaseError(
+            f"website stable version {target} requires matching final Core, got {core.maven}"
+        )
+    apply_updates(
+        root,
+        [
             replace_value(
                 root,
                 "website/docusaurus.config.js",
                 r"^\s*VERSION:\s*['\"]([^'\"]+)['\"]",
-                str(target.version),
+                str(target),
                 "website VERSION replacement",
             )
-        )
-    apply_updates(root, updates, check)
+        ],
+        check,
+    )
 
 
 def set_python(root: Path, value: str, check: bool = False) -> None:
@@ -496,11 +507,12 @@ def check_tag(root: Path, tag: str) -> None:
                 f"Core tag {tag!r} does not match Core version {current.maven}"
             )
         stable = website_version(root)
-        if stable != tagged:
+        if stable >= tagged:
             raise ReleaseError(
-                f"Core tag {tag!r} does not match website stable version {stable}"
+                f"Core tag {tag!r} requires the website stable version to precede "
+                f"the unpublished Core version, got {stable}"
             )
-        print(f"Core tag {tag} matches Maven, Rust, and website versions.")
+        print(f"Core tag {tag} matches Maven and Rust versions.")
         return
 
     raise ReleaseError(f"unsupported tag {tag!r}; expected vX.Y.Z or py-vX.Y.Z")
@@ -516,6 +528,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     core_parser.add_argument("version")
     core_parser.add_argument(
+        "--check", action="store_true", help="report required changes without writing"
+    )
+    website_parser = subparsers.add_parser(
+        "set-website-stable",
+        help="set the website stable version after Core publication",
+    )
+    website_parser.add_argument("version")
+    website_parser.add_argument(
         "--check", action="store_true", help="report required changes without writing"
     )
 
@@ -548,6 +568,8 @@ def main(argv: list[str] | None = None, root: Path = ROOT) -> int:
             set_core(root, args.version, args.check)
         elif args.operation == "set-python":
             set_python(root, args.version, args.check)
+        elif args.operation == "set-website-stable":
+            set_website_stable(root, args.version, args.check)
         elif args.operation == "check-tag":
             check_tag(root, args.tag)
     except ReleaseError as error:
